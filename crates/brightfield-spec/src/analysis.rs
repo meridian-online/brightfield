@@ -334,20 +334,27 @@ fn collect_dag_edges(component: &Component, edges: &mut Vec<ParamEdge>) {
         Component::Input(inp) => {
             // An input that has as_param (writes to) and also consumes params
             // via filter_by or from creates a dependency edge.
+            // Self-referential edges (filter_by == as_param) are skipped — a
+            // widget that filters itself by the selection it contributes to is
+            // valid Mosaic (e.g. wnba-shots.yaml).
             if let Some(ref target) = inp.as_param {
                 if let Some(ref source) = inp.filter_by {
-                    edges.push(ParamEdge {
-                        from: source.0.clone(),
-                        to: target.0.clone(),
-                    });
+                    if source.0 != target.0 {
+                        edges.push(ParamEdge {
+                            from: source.0.clone(),
+                            to: target.0.clone(),
+                        });
+                    }
                 }
                 // Also check options for param refs that create dependencies.
                 for v in inp.options.values() {
                     if let ValueOrParamRef::Param(pr) = v {
-                        edges.push(ParamEdge {
-                            from: pr.0.clone(),
-                            to: target.0.clone(),
-                        });
+                        if pr.0 != target.0 {
+                            edges.push(ParamEdge {
+                                from: pr.0.clone(),
+                                to: target.0.clone(),
+                            });
+                        }
                     }
                 }
             }
@@ -417,7 +424,354 @@ fn check_type_mismatches_in(
 }
 
 // ---------------------------------------------------------------------------
-// SpecAnalysis (ac-09)
+// filterBy validation (cfs ac-01..ac-04)
+// ---------------------------------------------------------------------------
+
+/// Collect all param/selection names that are created by `as:` bindings
+/// on interactors and input widgets (implicit param creation in Mosaic).
+fn collect_as_bound_names(spec: &Spec) -> HashSet<String> {
+    let mut names = HashSet::new();
+    if let Some(root) = &spec.root {
+        collect_as_names(root, &mut names);
+    }
+    names
+}
+
+fn collect_as_names(component: &Component, names: &mut HashSet<String>) {
+    match component {
+        Component::Interactor(i) => {
+            if let Some(ValueOrParamRef::Param(pr)) = i.options.get("as") {
+                names.insert(pr.0.clone());
+            }
+        }
+        Component::Input(inp) => {
+            if let Some(ref pr) = inp.as_param {
+                names.insert(pr.0.clone());
+            }
+        }
+        Component::Plot(p) => {
+            for item in &p.items {
+                collect_as_names(item, names);
+            }
+        }
+        Component::HConcat(c) | Component::VConcat(c) => {
+            for item in &c.items {
+                collect_as_names(item, names);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Validate that every `filterBy` reference in the component tree points to
+/// a known selection — either declared in `params:` as a Selection, or
+/// implicitly created by an interactor/input's `as:` binding.
+///
+/// Returns `Err` on the first violation (missing or non-selection ref).
+pub fn validate_filter_by_refs(spec: &Spec) -> Result<(), ParseError> {
+    // Collect all known selection names: declared selections + as:-bound names.
+    let mut known_selections: HashSet<String> = HashSet::new();
+    for (name, node) in &spec.params {
+        if matches!(node, ParamNode::Selection(_)) {
+            known_selections.insert(name.clone());
+        }
+    }
+    // Interactors and inputs create implicit params/selections via `as:`.
+    known_selections.extend(collect_as_bound_names(spec));
+
+    if let Some(root) = &spec.root {
+        validate_filter_by_in(root, &spec.params, &known_selections, "root")?;
+    }
+    Ok(())
+}
+
+fn validate_filter_by_in(
+    component: &Component,
+    params: &IndexMap<String, ParamNode>,
+    known_selections: &HashSet<String>,
+    path: &str,
+) -> Result<(), ParseError> {
+    match component {
+        Component::Mark(m) => {
+            if let Some(ref data) = m.data {
+                if let crate::ast::MarkData::From { filter_by, .. } = data {
+                    if let Some(pr) = filter_by {
+                        check_filter_by_ref(&pr.0, params, known_selections, &format!("{path}/mark[{}].data.filterBy", m.kind.wire_name()))?;
+                    }
+                }
+            }
+            // Also check filterBy in mark options (direct mark-level filterBy)
+            if let Some(ValueOrParamRef::Param(pr)) = m.options.get("filterBy") {
+                check_filter_by_ref(&pr.0, params, known_selections, &format!("{path}/mark[{}].filterBy", m.kind.wire_name()))?;
+            }
+        }
+        Component::Input(inp) => {
+            if let Some(ref pr) = inp.filter_by {
+                check_filter_by_ref(&pr.0, params, known_selections, &format!("{path}/input[{}].filterBy", inp.kind.wire_name()))?;
+            }
+        }
+        Component::Interactor(_) => {
+            // Interactors don't have filterBy in the standard model
+        }
+        Component::Plot(p) => {
+            for (i, item) in p.items.iter().enumerate() {
+                validate_filter_by_in(item, params, known_selections, &format!("{path}/plot[{i}]"))?;
+            }
+        }
+        Component::HConcat(c) => {
+            for (i, item) in c.items.iter().enumerate() {
+                validate_filter_by_in(item, params, known_selections, &format!("{path}/hconcat[{i}]"))?;
+            }
+        }
+        Component::VConcat(c) => {
+            for (i, item) in c.items.iter().enumerate() {
+                validate_filter_by_in(item, params, known_selections, &format!("{path}/vconcat[{i}]"))?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn check_filter_by_ref(
+    name: &str,
+    params: &IndexMap<String, ParamNode>,
+    known_selections: &HashSet<String>,
+    path: &str,
+) -> Result<(), ParseError> {
+    // Check if it's a known selection (declared or interactor-created).
+    if known_selections.contains(name) {
+        return Ok(());
+    }
+    // If it's a declared value param, that's a type error.
+    if let Some(ParamNode::Value(_)) = params.get(name) {
+        return Err(ParseError::SchemaViolation {
+            path: path.to_string(),
+            detail: format!(
+                "filterBy references value param `{name}`, but filterBy requires a selection"
+            ),
+            span: None,
+        });
+    }
+    // Not declared at all and not an interactor-created selection.
+    Err(ParseError::SchemaViolation {
+        path: path.to_string(),
+        detail: format!("filterBy references undeclared param `{name}`"),
+        span: None,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Interactor binding validation (cfs ac-05, ac-06)
+// ---------------------------------------------------------------------------
+
+/// An interactor's write binding to a named selection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InteractorBinding {
+    /// Component path of the interactor.
+    pub path: ComponentPath,
+    /// The selection name it writes to.
+    pub selection: String,
+}
+
+/// Validate interactor `as:` bindings and collect warnings for missing or
+/// non-selection targets.
+pub fn validate_interactor_bindings(
+    spec: &Spec,
+) -> Vec<ParseWarning> {
+    let mut warnings = Vec::new();
+    if let Some(root) = &spec.root {
+        validate_interactor_bindings_in(root, &spec.params, "root", &mut warnings);
+    }
+    warnings
+}
+
+fn validate_interactor_bindings_in(
+    component: &Component,
+    params: &IndexMap<String, ParamNode>,
+    path: &str,
+    warnings: &mut Vec<ParseWarning>,
+) {
+    match component {
+        Component::Interactor(i) => {
+            if let Some(ValueOrParamRef::Param(pr)) = i.options.get("as") {
+                match params.get(&pr.0) {
+                    None => {
+                        warnings.push(ParseWarning::InteractorBindingMissing {
+                            name: pr.0.clone(),
+                        });
+                    }
+                    Some(ParamNode::Value(_)) => {
+                        warnings.push(ParseWarning::InteractorBindingNonSelection {
+                            name: pr.0.clone(),
+                        });
+                    }
+                    Some(ParamNode::Selection(_)) => {} // valid
+                }
+            }
+        }
+        Component::Plot(p) => {
+            for (i, item) in p.items.iter().enumerate() {
+                validate_interactor_bindings_in(item, params, &format!("{path}/plot[{i}]"), warnings);
+            }
+        }
+        Component::HConcat(c) => {
+            for (i, item) in c.items.iter().enumerate() {
+                validate_interactor_bindings_in(item, params, &format!("{path}/hconcat[{i}]"), warnings);
+            }
+        }
+        Component::VConcat(c) => {
+            for (i, item) in c.items.iter().enumerate() {
+                validate_interactor_bindings_in(item, params, &format!("{path}/vconcat[{i}]"), warnings);
+            }
+        }
+        _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Selection subscriber graph (cfs ac-07)
+// ---------------------------------------------------------------------------
+
+/// Map from selection name to component paths that subscribe via filterBy.
+pub type SelectionSubscriberGraph = HashMap<String, Vec<ComponentPath>>;
+
+/// Build the selection subscriber graph — only tracks filterBy subscriptions
+/// to selection params (distinct from the general subscriber graph in card 0005).
+/// Recognizes both declared selections and interactor-created implicit selections.
+pub fn build_selection_subscriber_graph(spec: &Spec) -> SelectionSubscriberGraph {
+    let mut graph: SelectionSubscriberGraph = HashMap::new();
+
+    // Seed with declared selections.
+    for (name, node) in &spec.params {
+        if matches!(node, ParamNode::Selection(_)) {
+            graph.entry(name.clone()).or_default();
+        }
+    }
+
+    // Seed with as:-bound names (interactors and inputs create implicit selections).
+    for name in collect_as_bound_names(spec) {
+        graph.entry(name).or_default();
+    }
+
+    // Walk component tree collecting filterBy refs that target known selections.
+    let known_selections: HashSet<String> = graph.keys().cloned().collect();
+    if let Some(root) = &spec.root {
+        collect_selection_subscribers(root, "root", &known_selections, &mut graph);
+    }
+
+    graph
+}
+
+fn collect_selection_subscribers(
+    component: &Component,
+    path: &str,
+    known_selections: &HashSet<String>,
+    graph: &mut SelectionSubscriberGraph,
+) {
+    match component {
+        Component::Mark(m) => {
+            let mark_path = format!("{path}/mark[{}]", m.kind.wire_name());
+            // Mark data filterBy
+            if let Some(ref data) = m.data {
+                if let crate::ast::MarkData::From { filter_by, .. } = data {
+                    if let Some(pr) = filter_by {
+                        if known_selections.contains(&pr.0) {
+                            graph
+                                .entry(pr.0.clone())
+                                .or_default()
+                                .push(ComponentPath(mark_path.clone()));
+                        }
+                    }
+                }
+            }
+            // Direct mark-level filterBy
+            if let Some(ValueOrParamRef::Param(pr)) = m.options.get("filterBy") {
+                if known_selections.contains(&pr.0) {
+                    graph
+                        .entry(pr.0.clone())
+                        .or_default()
+                        .push(ComponentPath(mark_path));
+                }
+            }
+        }
+        Component::Input(inp) => {
+            if let Some(ref pr) = inp.filter_by {
+                if known_selections.contains(&pr.0) {
+                    graph
+                        .entry(pr.0.clone())
+                        .or_default()
+                        .push(ComponentPath(format!("{path}/input[{}]", inp.kind.wire_name())));
+                }
+            }
+        }
+        Component::Plot(p) => {
+            for (i, item) in p.items.iter().enumerate() {
+                collect_selection_subscribers(item, &format!("{path}/plot[{i}]"), known_selections, graph);
+            }
+        }
+        Component::HConcat(c) => {
+            for (i, item) in c.items.iter().enumerate() {
+                collect_selection_subscribers(item, &format!("{path}/hconcat[{i}]"), known_selections, graph);
+            }
+        }
+        Component::VConcat(c) => {
+            for (i, item) in c.items.iter().enumerate() {
+                collect_selection_subscribers(item, &format!("{path}/vconcat[{i}]"), known_selections, graph);
+            }
+        }
+        _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Interactor bindings graph (cfs ac-08)
+// ---------------------------------------------------------------------------
+
+/// Build the list of interactor-to-selection bindings.
+pub fn build_interactor_bindings(spec: &Spec) -> Vec<InteractorBinding> {
+    let mut bindings = Vec::new();
+    if let Some(root) = &spec.root {
+        collect_interactor_bindings(root, "root", &mut bindings);
+    }
+    bindings
+}
+
+fn collect_interactor_bindings(
+    component: &Component,
+    path: &str,
+    bindings: &mut Vec<InteractorBinding>,
+) {
+    match component {
+        Component::Interactor(i) => {
+            if let Some(ValueOrParamRef::Param(pr)) = i.options.get("as") {
+                bindings.push(InteractorBinding {
+                    path: ComponentPath(format!("{path}/interactor[{}]", i.kind.wire_name())),
+                    selection: pr.0.clone(),
+                });
+            }
+        }
+        Component::Plot(p) => {
+            for (i, item) in p.items.iter().enumerate() {
+                collect_interactor_bindings(item, &format!("{path}/plot[{i}]"), bindings);
+            }
+        }
+        Component::HConcat(c) => {
+            for (i, item) in c.items.iter().enumerate() {
+                collect_interactor_bindings(item, &format!("{path}/hconcat[{i}]"), bindings);
+            }
+        }
+        Component::VConcat(c) => {
+            for (i, item) in c.items.iter().enumerate() {
+                collect_interactor_bindings(item, &format!("{path}/vconcat[{i}]"), bindings);
+            }
+        }
+        _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SpecAnalysis (ac-09, extended with cfs fields)
 // ---------------------------------------------------------------------------
 
 /// Result of static analysis on a parsed Spec.
@@ -429,6 +783,10 @@ pub struct SpecAnalysis {
     pub dependency_edges: Vec<ParamEdge>,
     /// Params in topological order (upstream before downstream).
     pub topological_order: Vec<String>,
+    /// Map from selection name to components that subscribe via filterBy.
+    pub selection_subscribers: SelectionSubscriberGraph,
+    /// Interactor-to-selection write bindings.
+    pub interactor_bindings: Vec<InteractorBinding>,
     /// Diagnostics discovered during analysis.
     pub warnings: Vec<ParseWarning>,
 }
@@ -436,11 +794,11 @@ pub struct SpecAnalysis {
 /// Run all static analyses on a parsed Spec.
 ///
 /// Returns `Err` if a cycle is detected in the param dependency graph
-/// (this is a hard error, not a warning).
+/// or if a filterBy reference is invalid (missing or non-selection param).
 pub fn analyse_spec(spec: &Spec) -> Result<SpecAnalysis, ParseError> {
     let subscriber_graph = build_subscriber_graph(spec);
 
-    // Dead param warnings (ac-04).
+    // Dead param warnings (rpw ac-04).
     let mut warnings: Vec<ParseWarning> = Vec::new();
     for (name, subscribers) in &subscriber_graph {
         if subscribers.is_empty() && spec.params.contains_key(name) {
@@ -450,16 +808,30 @@ pub fn analyse_spec(spec: &Spec) -> Result<SpecAnalysis, ParseError> {
         }
     }
 
-    // DAG and topological order (ac-05, ac-06).
+    // DAG and topological order (rpw ac-05, ac-06).
     let (dependency_edges, topological_order) = build_dependency_dag(spec)?;
 
-    // Type mismatch warnings (ac-07).
+    // Type mismatch warnings (rpw ac-07).
     warnings.extend(check_param_type_mismatches(spec));
+
+    // filterBy validation — hard error on missing or non-selection refs (cfs ac-01..ac-04).
+    validate_filter_by_refs(spec)?;
+
+    // Interactor binding warnings (cfs ac-05, ac-06).
+    warnings.extend(validate_interactor_bindings(spec));
+
+    // Selection subscriber graph (cfs ac-07).
+    let selection_subscribers = build_selection_subscriber_graph(spec);
+
+    // Interactor bindings (cfs ac-08).
+    let interactor_bindings = build_interactor_bindings(spec);
 
     Ok(SpecAnalysis {
         subscriber_graph,
         dependency_edges,
         topological_order,
+        selection_subscribers,
+        interactor_bindings,
         warnings,
     })
 }
@@ -580,10 +952,10 @@ plot:
     fn rpw_ac04_no_dead_param_when_referenced() {
         let yaml = r#"
 params:
-  threshold: 42
+  brush: { select: crossfilter }
 plot:
   - mark: dot
-    filterBy: $threshold
+    data: { from: t1, filterBy: $brush }
 "#;
         let out = parse_spec(yaml, Format::Yaml).expect("parses");
         let analysis = analyse_spec(&out.spec).expect("analysis succeeds");
@@ -738,7 +1110,7 @@ as: $threshold
     fn rpw_ac09_analyse_spec_integration() {
         let yaml = r#"
 params:
-  category: All
+  category: { select: intersect }
   unused: 99
 vconcat:
   - input: menu
@@ -834,5 +1206,270 @@ plot:
             tested += 1;
         }
         assert!(tested > 0, "no vendored specs found");
+    }
+
+    // -----------------------------------------------------------------------
+    // cfs (cross-filtered selections) tests
+    // -----------------------------------------------------------------------
+
+    // ac-01: filterBy on mark data referencing a missing param → error
+    #[test]
+    fn cfs_ac01_filterby_mark_missing_param() {
+        let yaml = r#"
+params:
+  brush: { select: crossfilter }
+plot:
+  - mark: dot
+    data: { from: t1, filterBy: $missing }
+"#;
+        let out = parse_spec(yaml, Format::Yaml).expect("parses");
+        let err = analyse_spec(&out.spec).unwrap_err();
+        match err {
+            ParseError::SchemaViolation { detail, .. } => {
+                assert!(detail.contains("missing"), "error should name the param: {detail}");
+                assert!(detail.contains("undeclared"), "error should say undeclared: {detail}");
+            }
+            other => panic!("expected SchemaViolation, got {other:?}"),
+        }
+    }
+
+    // ac-02: filterBy on mark data referencing a value param → error
+    #[test]
+    fn cfs_ac02_filterby_mark_value_param() {
+        let yaml = r#"
+params:
+  threshold: 42
+plot:
+  - mark: dot
+    data: { from: t1, filterBy: $threshold }
+"#;
+        let out = parse_spec(yaml, Format::Yaml).expect("parses");
+        let err = analyse_spec(&out.spec).unwrap_err();
+        match err {
+            ParseError::SchemaViolation { detail, .. } => {
+                assert!(detail.contains("threshold"), "error should name the param: {detail}");
+                assert!(detail.contains("selection"), "error should mention selection: {detail}");
+            }
+            other => panic!("expected SchemaViolation, got {other:?}"),
+        }
+    }
+
+    // ac-03: filterBy on input referencing a missing param → error
+    #[test]
+    fn cfs_ac03_filterby_input_missing_param() {
+        let yaml = r#"
+params:
+  brush: { select: crossfilter }
+input: menu
+filterBy: $ghost
+"#;
+        let out = parse_spec(yaml, Format::Yaml).expect("parses");
+        let err = analyse_spec(&out.spec).unwrap_err();
+        match err {
+            ParseError::SchemaViolation { detail, .. } => {
+                assert!(detail.contains("ghost"), "error should name the param: {detail}");
+            }
+            other => panic!("expected SchemaViolation, got {other:?}"),
+        }
+    }
+
+    // ac-04: filterBy on input referencing a value param → error
+    #[test]
+    fn cfs_ac04_filterby_input_value_param() {
+        let yaml = r#"
+params:
+  x: 1
+input: menu
+filterBy: $x
+"#;
+        let out = parse_spec(yaml, Format::Yaml).expect("parses");
+        let err = analyse_spec(&out.spec).unwrap_err();
+        match err {
+            ParseError::SchemaViolation { detail, .. } => {
+                assert!(detail.contains("x"), "error should name the param: {detail}");
+                assert!(detail.contains("selection"), "error should mention selection: {detail}");
+            }
+            other => panic!("expected SchemaViolation, got {other:?}"),
+        }
+    }
+
+    // ac-05: interactor as: missing param → warning
+    #[test]
+    fn cfs_ac05_interactor_binding_missing() {
+        let yaml = r#"
+plot:
+  - select: intervalX
+    as: $ghost
+  - mark: dot
+    x: delay
+"#;
+        let out = parse_spec(yaml, Format::Yaml).expect("parses");
+        let analysis = analyse_spec(&out.spec).expect("analysis succeeds");
+        assert!(
+            analysis.warnings.iter().any(|w| matches!(
+                w, ParseWarning::InteractorBindingMissing { name } if name == "ghost"
+            )),
+            "should warn about missing interactor binding target"
+        );
+    }
+
+    // ac-06: interactor as: value param → warning
+    #[test]
+    fn cfs_ac06_interactor_binding_non_selection() {
+        let yaml = r#"
+params:
+  count: 42
+plot:
+  - select: intervalX
+    as: $count
+  - mark: dot
+    x: delay
+"#;
+        let out = parse_spec(yaml, Format::Yaml).expect("parses");
+        let analysis = analyse_spec(&out.spec).expect("analysis succeeds");
+        assert!(
+            analysis.warnings.iter().any(|w| matches!(
+                w, ParseWarning::InteractorBindingNonSelection { name } if name == "count"
+            )),
+            "should warn about interactor binding to non-selection param"
+        );
+    }
+
+    // ac-07: selection subscriber graph
+    #[test]
+    fn cfs_ac07_selection_subscriber_graph() {
+        let yaml = r#"
+params:
+  brush: { select: crossfilter }
+vconcat:
+  - plot:
+    - mark: dot
+      data: { from: t1, filterBy: $brush }
+  - plot:
+    - mark: line
+      data: { from: t2, filterBy: $brush }
+"#;
+        let out = parse_spec(yaml, Format::Yaml).expect("parses");
+        let graph = build_selection_subscriber_graph(&out.spec);
+        let subs = graph.get("brush").expect("has brush");
+        assert!(subs.len() >= 2, "brush should have at least 2 subscribers, got {}", subs.len());
+    }
+
+    #[test]
+    fn cfs_ac07_selection_subscriber_graph_excludes_value_params() {
+        let yaml = r#"
+params:
+  threshold: 42
+  brush: { select: crossfilter }
+plot:
+  - mark: dot
+    data: { from: t1, filterBy: $brush }
+    x: $threshold
+"#;
+        let out = parse_spec(yaml, Format::Yaml).expect("parses");
+        let graph = build_selection_subscriber_graph(&out.spec);
+        // threshold is a value param, should NOT appear in selection subscriber graph
+        assert!(!graph.contains_key("threshold"), "value param should not be in selection subscriber graph");
+        // brush is a selection, should appear
+        assert!(graph.contains_key("brush"));
+    }
+
+    // ac-08: interactor bindings
+    #[test]
+    fn cfs_ac08_interactor_bindings() {
+        let yaml = r#"
+params:
+  brush: { select: crossfilter }
+vconcat:
+  - plot:
+    - select: intervalX
+      as: $brush
+    - mark: dot
+      data: { from: t1, filterBy: $brush }
+  - plot:
+    - select: intervalX
+      as: $brush
+    - mark: line
+      data: { from: t2, filterBy: $brush }
+"#;
+        let out = parse_spec(yaml, Format::Yaml).expect("parses");
+        let bindings = build_interactor_bindings(&out.spec);
+        assert_eq!(bindings.len(), 2, "should have 2 interactor bindings");
+        assert!(bindings.iter().all(|b| b.selection == "brush"), "all bindings should target brush");
+    }
+
+    // ac-09: SpecAnalysis integration with new fields
+    #[test]
+    fn cfs_ac09_analyse_spec_integration() {
+        let yaml = r#"
+params:
+  brush: { select: crossfilter }
+vconcat:
+  - plot:
+    - select: intervalX
+      as: $brush
+    - mark: dot
+      data: { from: flights, filterBy: $brush }
+  - plot:
+    - select: intervalX
+      as: $brush
+    - mark: rectY
+      data: { from: flights, filterBy: $brush }
+"#;
+        let out = parse_spec(yaml, Format::Yaml).expect("parses");
+        let analysis = analyse_spec(&out.spec).expect("analysis succeeds");
+
+        // selection_subscribers present
+        assert!(analysis.selection_subscribers.contains_key("brush"));
+        let subs = analysis.selection_subscribers.get("brush").unwrap();
+        assert!(subs.len() >= 2, "brush should have at least 2 selection subscribers");
+
+        // interactor_bindings present
+        assert_eq!(analysis.interactor_bindings.len(), 2);
+        assert!(analysis.interactor_bindings.iter().all(|b| b.selection == "brush"));
+
+        // No errors — valid crossfilter spec
+    }
+
+    // ac-10: vendored corpus passes analyse_spec
+    #[test]
+    fn cfs_ac10_vendored_corpus_passes_analyse() {
+        use std::path::PathBuf;
+        let corpus = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("vendor")
+            .join("mosaic-specs")
+            .join("yaml");
+        let mut tested = 0;
+        for entry in std::fs::read_dir(&corpus).expect("corpus dir exists").flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("read");
+            let out = parse_spec(&source, Format::Yaml)
+                .unwrap_or_else(|e| panic!("{}: parse failed: {e}", path.display()));
+            analyse_spec(&out.spec)
+                .unwrap_or_else(|e| panic!("{}: analyse_spec failed: {e}", path.display()));
+            tested += 1;
+        }
+        assert!(tested > 0, "no vendored specs found");
+    }
+
+    // ac-11: round-trip preserved (filterBy on selection still round-trips)
+    #[test]
+    fn cfs_ac11_round_trip_with_selection_filterby() {
+        let yaml = r#"
+params:
+  brush: { select: crossfilter }
+plot:
+  - mark: dot
+    data: { from: flights, filterBy: $brush }
+  - select: intervalX
+    as: $brush
+"#;
+        let a = parse_spec(yaml, Format::Yaml).expect("first parse");
+        let serialised = serde_yaml::to_string(&a.spec).expect("serialise");
+        let b = parse_spec(&serialised, Format::Yaml).expect("second parse");
+        assert_eq!(a.spec, b.spec, "round-trip should produce equal Specs");
     }
 }

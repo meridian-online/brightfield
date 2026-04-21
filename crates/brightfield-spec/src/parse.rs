@@ -217,6 +217,20 @@ pub enum ParseWarning {
         /// The widget kind that writes to this param.
         widget_kind: String,
     },
+
+    /// An interactor's `as:` references a param name that is not declared
+    /// in `params:`. Non-fatal because Mosaic may create selections implicitly.
+    InteractorBindingMissing {
+        /// The undeclared param name.
+        name: String,
+    },
+
+    /// An interactor's `as:` references a param that is declared as a
+    /// `ParamNode::Value`, not a `ParamNode::Selection`.
+    InteractorBindingNonSelection {
+        /// The param name.
+        name: String,
+    },
 }
 
 /// Result of a successful parse.

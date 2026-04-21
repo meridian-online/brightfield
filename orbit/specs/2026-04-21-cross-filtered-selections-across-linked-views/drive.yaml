@@ -1,0 +1,14 @@
+card: orbit/cards/0006-cross-filtered-selections-across-linked-views.yaml
+autonomy: full
+budget: 3
+iteration: 1
+current_spec: orbit/specs/2026-04-21-cross-filtered-selections-across-linked-views/
+status: complete
+history: []
+started: 2026-04-21T11:50:29Z
+review_cycles:
+  review_spec: 0
+  review_pr: 0
+review_cycle_dates:
+  review_spec: null
+  review_pr: null

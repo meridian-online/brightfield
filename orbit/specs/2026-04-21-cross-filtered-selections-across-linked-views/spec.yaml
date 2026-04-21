@@ -1,0 +1,155 @@
+goal: >
+  Extend the analysis module with selection-aware validation: reject filterBy
+  references to missing or non-selection params, validate interactor-to-selection
+  bindings, and build a selection subscriber graph that tracks which views
+  subscribe to which selections.
+
+constraints:
+  - "All 54+ vendored Mosaic specs must continue to parse and round-trip without error"
+  - "filterBy validation is a hard error (ParseError), not a warning — fast failure on broken wiring"
+  - "Validation runs in analyse_spec, not during the parse walk — the walker builds AST, analysis validates it"
+  - "Self-exclusion structure is per-view, not per-interactor (D3 decision)"
+  - "Resolution strategy is structural and fixed at parse time — no runtime mutation (D5 decision)"
+  - "Empty selection semantics (Predicate::True) are already correct in lower.rs — this card documents, not reimplements"
+
+acceptance_criteria:
+  - id: ac-01
+    ac_type: code
+    description: >
+      filterBy on mark data referencing a param name not declared in spec.params
+      produces ParseError::SchemaViolation with a message naming the missing param.
+    verification: >
+      Test: parse a spec with mark data filterBy: $missing where no param named
+      "missing" exists. analyse_spec returns Err with SchemaViolation.
+
+  - id: ac-02
+    ac_type: code
+    description: >
+      filterBy on mark data referencing a value param (ParamNode::Value, not Selection)
+      produces ParseError::SchemaViolation explaining the type mismatch.
+    verification: >
+      Test: parse a spec with params: { threshold: 42 } and mark data filterBy: $threshold.
+      analyse_spec returns Err with SchemaViolation mentioning "selection".
+
+  - id: ac-03
+    ac_type: code
+    description: >
+      filterBy on an Input widget referencing a missing param produces
+      ParseError::SchemaViolation.
+    verification: >
+      Test: parse a spec with input menu filterBy: $missing. analyse_spec returns Err.
+
+  - id: ac-04
+    ac_type: code
+    description: >
+      filterBy on an Input widget referencing a value param (not selection)
+      produces ParseError::SchemaViolation.
+    verification: >
+      Test: parse a spec with params: { x: 1 } and input menu filterBy: $x.
+      analyse_spec returns Err.
+
+  - id: ac-05
+    ac_type: code
+    description: >
+      Interactor as: $name where name is not declared in spec.params produces
+      ParseWarning::InteractorBindingMissing (non-fatal — interactors may write
+      to selections that are implicitly created at runtime by Mosaic).
+    verification: >
+      Test: parse a spec with select: intervalX, as: $ghost where no param
+      "ghost" is declared. analyse_spec succeeds but includes the warning.
+
+  - id: ac-06
+    ac_type: code
+    description: >
+      Interactor as: $name where name is declared as ParamNode::Value (not Selection)
+      produces ParseWarning::InteractorBindingNonSelection.
+    verification: >
+      Test: parse a spec with params: { count: 42 } and select: intervalX,
+      as: $count. analyse_spec succeeds with the warning.
+
+  - id: ac-07
+    ac_type: code
+    description: >
+      build_selection_subscriber_graph returns a map from selection name to the
+      set of component paths that subscribe via filterBy. Multiple views
+      subscribing to the same selection appear as multiple entries.
+    verification: >
+      Test: crossfilter spec with 2 plots both filterBy: $brush.
+      Graph has "brush" → [path1, path2].
+
+  - id: ac-08
+    ac_type: code
+    description: >
+      build_interactor_bindings returns a list of (interactor_path, selection_name)
+      pairs, one per interactor that declares as: $selection.
+    verification: >
+      Test: spec with 2 interactors both as: $brush. Returns 2 bindings.
+
+  - id: ac-09
+    ac_type: code
+    description: >
+      analyse_spec integrates the new selection validation — filterBy checks
+      and interactor binding checks run alongside existing param analysis.
+      SpecAnalysis gains selection_subscribers and interactor_bindings fields.
+    verification: >
+      Test: full crossfilter-style spec through analyse_spec. Result includes
+      selection_subscribers, interactor_bindings, and no errors.
+
+  - id: ac-10
+    ac_type: gate
+    description: >
+      Every vendored corpus spec that currently passes parse + analyse continues
+      to pass with the new validation. No false positives.
+    verification: >
+      Test: iterate all vendored yaml specs, parse each, run analyse_spec.
+      All succeed without error. Warnings are permitted.
+
+  - id: ac-11
+    ac_type: code
+    description: >
+      Round-trip property (parse → serialise → parse) is preserved. New analysis
+      does not modify the AST.
+    verification: >
+      Existing dfspec_ac11 round-trip test continues to pass.
+
+implementation_notes:
+  - "compile_selection in lower.rs already implements D1 (Predicate::True for empty) and D3 (self_source exclusion) — card 0006 validates the AST structure that feeds it"
+  - "filterBy validation walks mark.data.filter_by and input.filter_by, cross-referencing against spec.params"
+  - "InteractorBindingMissing is a warning, not an error — Mosaic allows interactors to write to selections not declared in params (they are created implicitly)"
+  - "InteractorBindingNonSelection is a warning — conservative, since the binding might be intentional in edge cases"
+  - "build_selection_subscriber_graph is distinct from build_subscriber_graph (card 0005) — it tracks only selection-consuming filterBy refs, not all param refs"
+  - "Existing SpecAnalysis struct gains two new fields: selection_subscribers and interactor_bindings"
+
+ontology_schema:
+  name: "SelectionValidation"
+  description: "Validation layer for selection bindings and filterBy references"
+  fields:
+    - name: "selection_subscribers"
+      type: "HashMap<String, Vec<ComponentPath>>"
+      description: "Map from selection name to components that subscribe via filterBy"
+    - name: "interactor_bindings"
+      type: "Vec<InteractorBinding>"
+      description: "List of interactor-to-selection write bindings"
+    - name: "InteractorBinding"
+      type: "struct { path: ComponentPath, selection: String }"
+      description: "A single interactor's write binding to a named selection"
+
+evaluation_principles:
+  - principle: "Correctness — no false positives on vendored corpus"
+    weight: 0.4
+  - principle: "Strictness — genuine errors are caught, not silently passed"
+    weight: 0.3
+  - principle: "Composability — new analysis integrates cleanly with card 0005's SpecAnalysis"
+    weight: 0.3
+
+exit_conditions:
+  - "All ACs marked done"
+  - "cargo test passes workspace-wide"
+  - "Vendored corpus passes with no new errors"
+
+metadata:
+  version: "1.0"
+  test_prefix: "cfs"
+  timestamp: "2026-04-21T11:50:29Z"
+  ambiguity_score: 0.05
+  interview_ref: "orbit/specs/2026-04-21-cross-filtered-selections-across-linked-views/interview.md"
