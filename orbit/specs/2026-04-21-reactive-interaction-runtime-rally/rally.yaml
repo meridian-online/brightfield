@@ -1,0 +1,30 @@
+rally: "reactive interaction runtime"
+autonomy: guided
+phase: complete
+started: 2026-04-21T12:00:00Z
+completed: 2026-04-21T12:15:00Z
+cards:
+  - path: orbit/cards/0005-reactive-parameters-with-input-widgets.yaml
+    status: complete
+    spec_dir: orbit/specs/2026-04-21-reactive-parameters-with-input-widgets/
+    branch: rally/reactive-parameters-with-input-widgets
+    worktree: main
+    parked_constraint: null
+  - path: orbit/cards/0006-cross-filtered-selections-across-linked-views.yaml
+    status: complete
+    spec_dir: orbit/specs/2026-04-21-cross-filtered-selections-across-linked-views/
+    branch: rally/cross-filtered-selections-across-linked-views
+    worktree: main
+    parked_constraint: null
+implementation_order:
+  - orbit/cards/0005-reactive-parameters-with-input-widgets.yaml
+  - orbit/cards/0006-cross-filtered-selections-across-linked-views.yaml
+order_rationale: |
+  Non-disjoint designs force serial order. Both cards modify
+  crates/brightfield-spec/src/parse.rs (ParseWarning variants, Input parsing,
+  filterBy validation) and both reference ast.rs (Input struct, ParamNode).
+  Card 0005 lands first because (a) it restructures Input with typed fields
+  (as_param, from, filter_by) that card 0006's filterBy validation depends on,
+  (b) it establishes ParseWarning::DeadParam and ParamTypeMismatch infrastructure
+  that card 0006 can extend, and (c) the subscriber graph / param dependency DAG
+  is independent foundational work that does not depend on selection compilation.

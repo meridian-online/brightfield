@@ -8,6 +8,7 @@
 //!
 //! See `README.md` for the Option Z vocabulary contract and v1 non-goals.
 
+pub mod analysis;
 pub mod ast;
 pub mod error;
 pub mod expr;

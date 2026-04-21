@@ -16,9 +16,27 @@ scenarios:
     then: "those widgets appear alongside plots as part of the dashboard and emit param or selection updates on interaction"
     source_lines: "brightfield-brief.md: 'Input widgets: slider, menu, search, table (sortable, load-on-scroll). These emit param or selection updates and are first-class coordinator clients.'"
 
-maturity: "planned"
+  - name: "Multiple subscribers all react to the same param"
+    given: "two plots both reference the same param in their query expressions"
+    when: "the param value changes"
+    then: "both plots re-query and re-render with the new value — no stale view is left behind"
+    source_lines: "brightfield-brief.md: 'When a param updates, all subscribing clients re-query and re-render.'"
 
-specs: []
+  - name: "Chained params propagate reactively"
+    given: "param A drives a query whose result sets param B, and a plot subscribes to param B"
+    when: "param A changes"
+    then: "param B updates from the intermediate query, and the downstream plot re-renders with B's new value"
+    source_lines: "brightfield-brief.md: 'Params: Reactive single-value variables shared across components.'"
+
+  - name: "Unsubscribed param change is harmless"
+    given: "a param exists but no plot or widget references it"
+    when: "the param value changes"
+    then: "no queries fire and no errors surface — the update is silently absorbed"
+
+maturity: "active"
+
+specs:
+  - orbit/specs/2026-04-21-reactive-parameters-with-input-widgets/spec.yaml
 
 references:
   - "brightfield-brief.md"

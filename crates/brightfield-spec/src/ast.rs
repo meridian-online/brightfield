@@ -321,7 +321,14 @@ pub struct Input {
     pub kind: InputKind,
     /// Status of this input in the registry.
     pub status: ImplStatus,
-    /// All option slots. Each value may be a lifted ParamRef.
+    /// `as: $param` — the param this widget writes to.
+    pub as_param: Option<ParamRef>,
+    /// `from:` — the data source this widget reads from (e.g. menu options).
+    pub from_source: Option<String>,
+    /// `filterBy: $param` — a selection or param that filters this widget's data.
+    pub filter_by: Option<ParamRef>,
+    /// Remaining option slots (everything except `as`, `from`, `filterBy`).
+    /// Each value may be a lifted ParamRef.
     pub options: IndexMap<String, ValueOrParamRef<SpecValue>>,
 }
 
@@ -508,6 +515,9 @@ mod tests {
         let _u = Input {
             kind: InputKind::Table,
             status: ImplStatus::Unimplemented,
+            as_param: None,
+            from_source: None,
+            filter_by: None,
             options: IndexMap::new(),
         };
     }

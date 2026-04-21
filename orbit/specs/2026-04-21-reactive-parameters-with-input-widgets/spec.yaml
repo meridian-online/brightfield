@@ -1,0 +1,197 @@
+goal: >
+  Promote Input widget-param bindings to typed AST fields, build the param
+  subscriber graph and dependency DAG at spec-load time, and add static
+  diagnostics for dead params, type mismatches, and dependency cycles — so
+  the reactive parameter infrastructure is correct by construction before
+  any runtime coordinator exists.
+
+constraints:
+  - "Input.as_param, Input.from, and Input.filter_by are typed Option<ParamRef> / Option<String> fields — not convention over the options bag"
+  - "ParseWarning variants are non-fatal — they do not abort parsing or produce Err"
+  - "Cycle detection rejects specs with circular param dependencies as a parse error (SchemaViolation)"
+  - "Existing brightfield-spec and brightfield-sql tests must continue to pass unchanged"
+  - "No runtime coordinator or query execution — this spec covers static analysis at parse/load time only"
+  - "The subscriber graph and DAG are pure functions of the parsed Spec — no I/O, no DuckDB"
+  - "All new public types live in brightfield-spec; the DAG builder may live in brightfield-spec or a new module in brightfield-sql"
+
+acceptance_criteria:
+  - id: ac-01
+    ac_type: code
+    description: >
+      Input struct gains typed fields: as_param (Option<ParamRef>),
+      from_source (Option<String>), filter_by (Option<ParamRef>).
+      The parser extracts these from the options bag before storing
+      remaining keys in Input.options.
+    verification: >
+      Unit test: parse a spec with an input declaring as/from/filterBy.
+      Assert the typed fields are populated and the keys are absent
+      from Input.options.
+
+  - id: ac-02
+    ac_type: code
+    description: >
+      Existing vendored specs (athletes.yaml, crossfilter.yaml, etc.)
+      parse successfully with the new Input struct and their typed
+      fields are correctly populated.
+    verification: >
+      Integration test: re-parse each vendored spec that contains inputs.
+      Assert no new SchemaViolation errors and that as_param/from_source/filter_by
+      match the expected values from the YAML.
+
+  - id: ac-03
+    ac_type: code
+    description: >
+      A subscriber graph maps each param name to its set of subscriber
+      component paths (marks, inputs, plots that reference the param
+      via expressions, filterBy, or from). Built in one pass over the
+      parsed Spec's component tree.
+    verification: >
+      Unit test: build the subscriber graph for a synthetic spec with
+      known param references. Assert the graph contains the expected
+      param-to-subscribers mappings.
+
+  - id: ac-04
+    ac_type: code
+    description: >
+      ParseWarning::DeadParam { name } is emitted for any param declared
+      in Spec.params that has zero subscribers in the subscriber graph.
+    verification: >
+      Unit test: parse a spec with a declared param that nothing references.
+      Assert the warning is present in ParseOutput.warnings.
+
+  - id: ac-05
+    ac_type: code
+    description: >
+      A param dependency DAG is built from the subscriber graph: nodes
+      are params, an edge from X to Y exists when a component that
+      consumes param X also writes param Y (via as_param). The DAG
+      exposes a topological ordering of params.
+    verification: >
+      Unit test: build the DAG for a spec with a known chain
+      (param A -> input with filterBy=$A and as=$B -> param B).
+      Assert the topological order is [A, B].
+
+  - id: ac-06
+    ac_type: code
+    description: >
+      Circular param dependencies are detected and produce a
+      SchemaViolation error naming the cycle participants.
+    verification: >
+      Unit test: construct a spec where param A -> input writing param B
+      and param B -> input writing param A. Assert parsing produces
+      SchemaViolation with both param names.
+
+  - id: ac-07
+    ac_type: code
+    description: >
+      ParseWarning::ParamTypeMismatch { param, expected, widget_kind }
+      is emitted when an Input's widget kind is provably incompatible
+      with the param's declared type. Provably incompatible pairs:
+      Slider writing to a Selection param, Table writing to a Scalar param.
+    verification: >
+      Unit test: parse specs with (a) slider bound to a selection param,
+      (b) table bound to a value param. Assert ParamTypeMismatch warning
+      in each case. Parse a valid pairing (slider + numeric value param)
+      and assert no warning.
+
+  - id: ac-08
+    ac_type: code
+    description: >
+      A WidgetOutputType enum (ScalarNumeric, ScalarString, Selection,
+      ArrayString) exists with a from_input_kind(InputKind) -> WidgetOutputType
+      constructor, and a ParamDeclaredType enum (ScalarNumeric, ScalarString,
+      ScalarBool, Selection, Array) exists with a
+      from_param_node(ParamNode) -> ParamDeclaredType constructor.
+    verification: >
+      Unit test: assert from_input_kind maps Slider->ScalarNumeric,
+      Menu->ScalarString, Search->ScalarString, Table->Selection.
+      Assert from_param_node maps Value(Integer)->ScalarNumeric,
+      Value(String)->ScalarString, Selection->Selection, etc.
+
+  - id: ac-09
+    ac_type: code
+    description: >
+      The subscriber graph, dependency DAG, and type-mismatch checks
+      are integrated into the parse pipeline: ParseOutput (or a new
+      SpecAnalysis struct) exposes the subscriber graph and topological
+      order alongside the existing Spec and warnings.
+    verification: >
+      Integration test: parse a multi-component spec end-to-end.
+      Assert the analysis results are accessible from the parse output
+      and contain the expected graph, order, and warnings.
+
+  - id: ac-10
+    ac_type: code
+    description: >
+      Specs with no params and no inputs produce an empty subscriber
+      graph, an empty DAG, and no warnings — the analysis is a no-op
+      that does not regress existing behaviour.
+    verification: >
+      Unit test: parse a minimal spec (data + one plot, no params).
+      Assert empty graph, empty topological order, zero new warnings.
+
+  - id: ac-11
+    ac_type: gate
+    description: >
+      All existing tests pass: cargo test --workspace succeeds with
+      zero failures and no new warnings.
+    verification: "cargo test --workspace"
+
+  - id: ac-12
+    ac_type: code
+    description: >
+      At least 15 new tests exist with the rpw_ prefix covering the
+      acceptance criteria above.
+    verification: "grep -r 'fn rpw_' crates/ | wc -l >= 15"
+
+implementation_notes:
+  - "The subscriber graph is a natural HashMap<String, Vec<ComponentPath>> — one pass over the component tree collecting ParamRef occurrences from expressions (ExpressionNode.params), filter_by fields, and from_source fields."
+  - "The DAG can use petgraph or a simple adjacency list with Kahn's algorithm for topological sort and cycle detection."
+  - "ParseWarning is the existing non-fatal diagnostic channel — new variants follow the same pattern as UnknownOption and Unimplemented."
+  - "The epoch counter (D1) is a runtime concern outside this spec's scope — it belongs in the coordinator, not the parser. This spec builds the static graph the coordinator will consume."
+  - "OQ2 from the interview (typed fields on Interactor) is deferred — card 0003's selection compilation already handles interactor bindings via the options bag."
+  - "OQ3 (max chain depth) is deferred — the DAG naturally handles arbitrary depth, and a hard limit can be added if corpus evidence motivates it."
+  - "The athletes.yaml vendored spec is the primary corpus reference for multi-input, chained-param behaviour."
+
+ontology_schema:
+  name: "ParamReactiveGraph"
+  description: "Static analysis of param dependencies and subscriber relationships in a Mosaic spec"
+  fields:
+    - name: "subscriber_graph"
+      type: "object"
+      description: "Map from param name to list of component paths that consume it"
+    - name: "dependency_dag"
+      type: "object"
+      description: "Directed edges from consumed param to produced param, via an intermediate component"
+    - name: "topological_order"
+      type: "array"
+      description: "Params sorted so that upstream params appear before downstream dependents"
+    - name: "widget_output_type"
+      type: "string"
+      description: "Enum classifying each InputKind's output type (ScalarNumeric, ScalarString, Selection, ArrayString)"
+    - name: "param_declared_type"
+      type: "string"
+      description: "Enum classifying each ParamNode's declared type (ScalarNumeric, ScalarString, ScalarBool, Selection, Array)"
+
+evaluation_principles:
+  - principle: "Correctness — the subscriber graph and DAG accurately reflect spec structure"
+    weight: 0.4
+  - principle: "Diagnostics quality — warnings catch real authoring errors without false positives"
+    weight: 0.3
+  - principle: "Non-regression — existing parse and conformance tests pass unchanged"
+    weight: 0.2
+  - principle: "Extensibility — the graph/DAG API is consumable by a future runtime coordinator"
+    weight: 0.1
+
+exit_conditions:
+  - "All 12 ACs pass verification"
+  - "cargo test --workspace succeeds with zero failures"
+  - "Vendored specs parse without regression"
+  - "The subscriber graph and topological order are accessible from the parse output"
+
+metadata:
+  version: "1.0"
+  test_prefix: "rpw"
+  timestamp: "2026-04-21T12:00:00Z"
+  ambiguity_score: 0.10
+  interview_ref: "orbit/specs/2026-04-21-reactive-parameters-with-input-widgets/interview.md"

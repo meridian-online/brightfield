@@ -200,6 +200,23 @@ pub enum ParseWarning {
         /// What this parser supports.
         supported: &'static str,
     },
+
+    /// A declared param has zero subscribers in the spec.
+    DeadParam {
+        /// The param name with no consumers.
+        name: String,
+    },
+
+    /// An input widget's output type is provably incompatible with its
+    /// target param's declared type.
+    ParamTypeMismatch {
+        /// The param name.
+        param: String,
+        /// The expected type from the param declaration.
+        expected: String,
+        /// The widget kind that writes to this param.
+        widget_kind: String,
+    },
 }
 
 /// Result of a successful parse.
@@ -902,16 +919,51 @@ impl Walker {
             });
         }
         let mut options = IndexMap::new();
+        let mut as_param: Option<ParamRef> = None;
+        let mut from_source: Option<String> = None;
+        let mut filter_by: Option<ParamRef> = None;
         for (k, val) in parent {
             let key = k.as_str().unwrap_or("").to_string();
             if key == "input" {
                 continue;
             }
-            options.insert(key.clone(), self.lift_field(&key, val));
+            match key.as_str() {
+                "as" => {
+                    let lifted = self.lift_field(&key, val);
+                    if let ValueOrParamRef::Param(pr) = lifted {
+                        as_param = Some(pr);
+                    } else {
+                        // Non-param `as:` value — store in options for compatibility
+                        options.insert(key, lifted);
+                    }
+                }
+                "filterBy" => {
+                    let lifted = self.lift_field(&key, val);
+                    if let ValueOrParamRef::Param(pr) = lifted {
+                        filter_by = Some(pr);
+                    } else {
+                        options.insert(key, lifted);
+                    }
+                }
+                "from" => {
+                    if let Some(s) = val.as_str() {
+                        from_source = Some(s.to_string());
+                    } else {
+                        let lifted = self.lift_field(&key, val);
+                        options.insert(key, lifted);
+                    }
+                }
+                _ => {
+                    options.insert(key.clone(), self.lift_field(&key, val));
+                }
+            }
         }
         Ok(Input {
             kind,
             status,
+            as_param,
+            from_source,
+            filter_by,
             options,
         })
     }
@@ -1312,6 +1364,15 @@ where
         }
         Component::Input(inp) => {
             map.serialize_entry("input", inp.kind.wire_name())?;
+            if let Some(ref pr) = inp.as_param {
+                map.serialize_entry("as", &pr.to_wire())?;
+            }
+            if let Some(ref src) = inp.from_source {
+                map.serialize_entry("from", src)?;
+            }
+            if let Some(ref pr) = inp.filter_by {
+                map.serialize_entry("filterBy", &pr.to_wire())?;
+            }
             for (k, v) in &inp.options {
                 map.serialize_entry(k, &SerValueOrParamRef(v))?;
             }
