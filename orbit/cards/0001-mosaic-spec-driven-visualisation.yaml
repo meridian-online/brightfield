@@ -1,0 +1,45 @@
+feature: "Mosaic-spec-driven visualisation"
+as_a: "data analyst authoring a visualisation"
+i_want: "to declare what I want to see in a portable YAML or JSON spec rather than writing rendering code"
+so_that: "my dashboards are reproducible, version-controllable, and decoupled from the rendering backend"
+
+scenarios:
+  - name: "Author a visualisation as a declarative spec"
+    given: "I have a dataset I want to visualise"
+    when: "I describe the visualisation in a Mosaic spec file and open it in brightfield"
+    then: "the described plots, scales, encodings, inputs, and layout are rendered as specified without any imperative code"
+    source_lines: "brightfield-brief.md: 'Spec-driven: The Mosaic declarative specification (YAML/JSON) is the stable contract. Users author visualisations and dashboards as portable spec files. The rendering backend is an implementation detail.'"
+
+  - name: "Spec covers the full vocabulary needed to describe a dashboard"
+    given: "I am writing a spec"
+    when: "I declare data definitions, params, selections, plots, marks, encodings, inputs, and layout"
+    then: "brightfield parses each of these constructs into its internal model and drives the view from them"
+    source_lines: "brightfield-brief.md: 'Scope: Data definitions, param/selection declarations, plot/mark/encoding definitions, input widgets, layout (hconcat/vconcat), metadata and config.'"
+
+  - name: "YAML and JSON are interchangeable spec formats"
+    given: "the same logical visualisation expressed as either YAML or JSON"
+    when: "I open either file in brightfield"
+    then: "both forms parse and render equivalently — the format is an encoding choice, not a semantic one"
+    source_lines: "brightfield-brief.md: 'The Mosaic declarative specification (YAML/JSON) is the stable contract.' / uwdata/mosaic/docs/examples/index.md: 'These visualizations can be specified using a JavaScript API, or in a standalone YAML or JSON file. Each example includes code for all three specification formats.'"
+
+  - name: "Reactive wiring is declared, not coded"
+    given: "a spec that references a param via $param in a SQL expression and filters a mark via filterBy: $selection"
+    when: "the spec is loaded"
+    then: "param substitution and selection filtering are wired up automatically from the spec without any imperative glue"
+    source_lines: "brightfield-brief.md: 'dynamic parameter substitution via Mosaic's $param SQL expression syntax.' / uwdata/mosaic/docs/public/specs/yaml/crossfilter.yaml: 'params: brush: { select: crossfilter }' … 'data: { from: flights, filterBy: $brush }'"
+
+  - name: "Malformed specs surface actionable diagnostics"
+    given: "a spec with an unknown mark type, an unresolved data reference, or a structural error"
+    when: "I open it in brightfield"
+    then: "brightfield fails with a diagnostic that names the problem and locates it in the spec, rather than crashing or rendering silently broken output"
+    source_lines: "author-directed during review (grounded in brightfield-brief.md §3.1 spec parsing responsibilities)"
+
+goal: "A Mosaic YAML spec defining a two-view cross-filtered dashboard renders interactively from the spec alone."
+
+maturity: "planned"
+
+specs:
+  - orbit/specs/2026-04-20-mosaic-spec-driven-visualisation/spec.yaml
+
+references:
+  - "brightfield-brief.md"

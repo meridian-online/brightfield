@@ -1,0 +1,30 @@
+feature: "Interactive feedback and focus"
+as_a: "analyst interacting with a live dashboard"
+i_want: "smooth transitions, hover tooltips, and focus affordances that highlight what I'm looking at"
+so_that: "the interface communicates what changed and what is selected without me having to reason about it"
+
+scenarios:
+  - name: "Hover reveals nearest-point detail"
+    given: "I hover over a plot"
+    when: "the cursor is near a datapoint"
+    then: "a tooltip appears showing the nearest point's details"
+    source_lines: "brightfield-brief.md: 'nearest — hover/tooltip nearest point.'"
+
+  - name: "Highlight dims non-selected marks"
+    given: "a selection is active"
+    when: "marks are rendered"
+    then: "marks outside the selection are visually dimmed so the selection stands out"
+    source_lines: "brightfield-brief.md: 'highlight — dim non-selected marks.'"
+
+  - name: "Smooth transitions on data or selection updates"
+    given: "a param or selection changes"
+    when: "the dashboard re-renders"
+    then: "marks transition smoothly rather than snapping, using easing-based animation"
+    source_lines: "brightfield-brief.md: 'Animation: GPUI's built-in animation system (easing functions, transformations, repeating animations) for smooth transitions on data/selection updates.'"
+
+maturity: "planned"
+
+specs: []
+
+references:
+  - "brightfield-brief.md"

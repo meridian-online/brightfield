@@ -1,0 +1,24 @@
+feature: "Multi-view dashboard composition"
+as_a: "analyst building a dashboard out of several plots and controls"
+i_want: "to lay out plots, inputs, and legends together horizontally and vertically"
+so_that: "I can present a coherent multi-view story, not just a single chart"
+
+scenarios:
+  - name: "Horizontal and vertical composition"
+    given: "a spec uses hconcat, vconcat, hspace, and vspace"
+    when: "it renders"
+    then: "plots, inputs, and legends arrange into the declared rows, columns, and gaps"
+    source_lines: "brightfield-brief.md: 'Layout: hconcat, vconcat, hspace, vspace — arranging multiple plots, inputs, and legends into dashboards.'"
+
+  - name: "Legends participate as interactors"
+    given: "a spec includes a legend bound to a selection"
+    when: "I click a legend entry"
+    then: "that selection updates and any views filtering on it respond accordingly"
+    source_lines: "brightfield-brief.md: 'Legends as interactive selection interactors.'"
+
+maturity: "planned"
+
+specs: []
+
+references:
+  - "brightfield-brief.md"

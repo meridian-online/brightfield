@@ -1,0 +1,24 @@
+feature: "Reactive parameters with input widgets"
+as_a: "analyst sweeping a variable across a visualisation"
+i_want: "to adjust a slider, menu, search box, or table selection and watch the view update live"
+so_that: "I can explore how a parameter affects the data without re-authoring the query"
+
+scenarios:
+  - name: "Slider drives a reactive parameter"
+    given: "a spec declares a param and a slider bound to it"
+    when: "I drag the slider"
+    then: "any plot whose query references that param re-queries and re-renders with the new value"
+    source_lines: "brightfield-brief.md: 'Params: Reactive single-value variables shared across components. When a param updates, all subscribing clients re-query and re-render.'"
+
+  - name: "Input widgets are first-class dashboard elements"
+    given: "a spec includes slider, menu, search, and table widgets"
+    when: "the spec renders"
+    then: "those widgets appear alongside plots as part of the dashboard and emit param or selection updates on interaction"
+    source_lines: "brightfield-brief.md: 'Input widgets: slider, menu, search, table (sortable, load-on-scroll). These emit param or selection updates and are first-class coordinator clients.'"
+
+maturity: "planned"
+
+specs: []
+
+references:
+  - "brightfield-brief.md"

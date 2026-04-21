@@ -1,0 +1,310 @@
+goal: |
+  A Mosaic YAML or JSON spec parses to a typed Rust AST (the `brightfield-spec`
+  crate) that the query engine, coordinator, and renderer can drive. Parsing is
+  total — every valid Mosaic 0.24.x spec produces an AST, even where brightfield
+  does not yet implement the mark, interactor, or input. Malformed specs fail
+  with `ParseError` variants carrying optional `SourceSpan`. Reactive wiring
+  (`$param`, `filterBy: $selection`) is lifted at parse time into structured
+  `ParamRef` AST nodes; SQL expressions are tokenised into `ExpressionNode`
+  with span interiors opaque to the parser.
+
+constraints:
+  - "AST is defined as sealed Rust enums (typed representation, not serde_json::Value pass-through)."
+  - "AST skeleton is staged: `Mark.options` is a flat `IndexMap<String, ValueOrParamRef<SpecValue>>` in v1; per-mark typed option structs are out of scope for this spec."
+  - "Vocabulary is registry-backed: a sealed enum covers Mosaic's full mark/interactor/input/component set, each entry flagged `Implemented | Planned | Unimplemented`. No `Other` variant; adding Mosaic names requires a registry edit."
+  - "`parse_spec(source: &str, format: Format) -> Result<ParseOutput, ParseError>` is the single entry point. `ParseOutput { spec: Spec, warnings: Vec<ParseWarning> }`."
+  - "Path-based convenience (`parse_spec_path`) sniffs format from file extension (`.yaml`/`.yml` → YAML; `.json` → JSON)."
+  - "Deserialisation uses `serde_yaml` and `serde_json` against a single serde-derived AST. Both formats round-trip to the same AST structure."
+  - "`#[serde(deny_unknown_fields)]` is applied to top-level heads only: `meta`, `config`, `plotDefaults`. Option bags on marks/plots/inputs are permissive."
+  - "Unknown option keys inside option bags are accepted silently into the AST and collected as `ParseWarning { kind: UnknownOption, .. }`."
+  - "Unknown mark/interactor/input/component names (not in the vocabulary registry) produce `ParseError::UnknownName` with the offending name and, where available, a `SourceSpan`."
+  - "Known-but-unimplemented names produce a `ParseWarning::Unimplemented` and an AST stub carrying identity + raw options; parsing succeeds."
+  - "`$param` / `$selection` references at field-value positions (`filterBy`, `as`, and mark option slots matching Mosaic's `maybeParam` surfaces) are lifted at parse time to `ParamRef(String)`. String form `\"$foo\"` and object form `{param: \"foo\"}` both yield `ParamRef(\"foo\")`."
+  - "SQL expressions (e.g. `sql:` fields) are tokenised at parse time into `ExpressionNode { spans: Vec<String>, params: Vec<ParamRef> }`. Span interiors are opaque `String` — the query generator owns SQL syntax."
+  - "Tokeniser grammar mirrors upstream Mosaic 0.24.x `packages/vgplot/spec/src/ExpressionNode.js`: `$` followed by an identifier (`[A-Za-z_][A-Za-z0-9_]*`) yields a `ParamRef`; a `$` inside a single-quoted string literal, a double-quoted identifier, or a `--` line comment is preserved verbatim as part of the surrounding span and does NOT yield a `ParamRef`. Block comments (`/* ... */`) are likewise literal-preserving."
+  - "Strict contexts for `$param` references are the field positions under the three top-level closed-vocabulary heads: all String-typed fields under `meta` (`title`, `description`, `version`, etc.), all scalar fields under `config`, and all scalar fields under `plotDefaults`. Detection: a post-deserialise visitor scans each String-typed field under these heads; any value whose leading non-whitespace character is `$` produces `ParseError::StrictContextUnresolvedRef { field_path, name, span }`. `$`-prefixed values are accepted only in positions on the lift surface (next constraint)."
+  - "Lift surface for `$param`/`$selection` references is pinned to every field position Mosaic's upstream `packages/vgplot/spec/src/parse-spec.js` routes through `maybeParam` in 0.24.x. For marks, this is every entry in the channel registry (`x`, `y`, `x1`, `x2`, `y1`, `y2`, `fill`, `stroke`, `strokeWidth`, `strokeOpacity`, `fillOpacity`, `opacity`, `r`, `symbol`, `dx`, `dy`, `size`, `rotate`, `text`, `textAnchor`, `fontSize`, `fontWeight`, `fontStyle`, `title`, `href`, `tip`, `z`, `sort`, `marker`, `curve`, `interval`, `interpolate`, `tension`, `offset`, `inset`, `frameAnchor`); plus data-declaration positions `filterBy`, `from`; plus input field-value slots (`as`, `value`, `min`, `max`, `step`, `options`, `field`); plus interactor field-value slots (`as`, `channels`, `field`, `pixelSize`). The enumerated list is tracked in a module constant `crates/brightfield-spec/src/parse/lift_surface.rs::LIFT_SURFACE_FIELDS` and sourced from upstream at the pinned commit."
+  - "`ParseError` is a `thiserror` enum with ~7–9 variants (unknown name, malformed data def, malformed param def, unresolved strict-context reference, schema violation, YAML parse error, JSON parse error, IO error). Each variant carries `span: Option<SourceSpan>` captured from `serde_yaml::Error::location()` / `serde_json::Error::line/column` where the deserialiser provides it."
+  - "`miette` is not a dependency of the parser crate. The crate publishes `SourceSpan` as a plain struct (`{ offset: usize, length: usize }`). Downstream app crates may wrap `ParseError` in `miette::Report` themselves."
+  - "Mosaic spec version target is pinned at 0.24.x; exposed publicly as `pub const SUPPORTED_MOSAIC_VERSION: &str`."
+  - "AST round-trip: `Spec` implements `Serialize` such that `parse_spec → serde_yaml::to_string → parse_spec` is idempotent on AST (same AST out). Serialised form is canonical YAML; JSON round-trip is a secondary target if cheap to add."
+  - "Source spans are best-effort in v1: captured when the underlying deserialiser supplies them; semantic errors detected post-deserialisation may carry `span: None`."
+  - "The reference corpus for totality + round-trip testing is vendored at `crates/brightfield-spec/vendor/mosaic-specs/yaml/` — a copy of `uwdata/mosaic@0.24.x` `docs/public/specs/yaml/`. A README.md in `vendor/mosaic-specs/` records the upstream commit SHA."
+
+acceptance_criteria:
+  - id: ac-01
+    ac_type: code
+    description: |
+      The `brightfield-spec` crate exists at `crates/brightfield-spec/` with a
+      `Cargo.toml` declaring edition 2021 (or later), and dependencies on
+      `serde` (with `derive`), `serde_yaml`, `serde_json`, `thiserror`, and
+      `indexmap` (with `serde`). No dependency on `miette`.
+    verification: "`cargo metadata --manifest-path crates/brightfield-spec/Cargo.toml` lists exactly these deps; `grep -q miette crates/brightfield-spec/Cargo.toml` returns non-zero."
+
+  - id: ac-02
+    ac_type: code
+    description: |
+      Core AST types are defined in `crates/brightfield-spec/src/ast/` with the
+      struct-vs-enum split the interview settles on:
+      (a) **Structs** — `Spec`, `Meta`, `Config`, `PlotDefaults`, `DataSource`,
+      `ParamNode`, `SelectionNode`, `Mark`, `Interactor`, `Input`, `PlotNode`,
+      `ExpressionNode`. `Mark` has shape
+      `{ kind: MarkKind, data: Option<PlotFrom>, options: IndexMap<String, ValueOrParamRef<SpecValue>> }`;
+      `Interactor { kind: InteractorKind, options: ... }` and
+      `Input { kind: InputKind, options: ... }` follow the same shape.
+      (b) **Sealed enums (composition level)** — `Component` (variants include
+      `Plot`, `HConcat`, `VConcat`, `InputComponent(Input)`, `MarkOnly(Mark)`)
+      and `ValueOrParamRef<T>`. No `#[non_exhaustive]`, no trailing `Other`
+      catch-all on `Component`.
+      (c) Kind-registry enums (`MarkKind`, `InteractorKind`, `InputKind`,
+      `ComponentKind`) are covered by AC-03.
+    verification: "`grep -Rq '^pub struct Mark ' crates/brightfield-spec/src/ast/` and the same for `Interactor`, `Input`; `grep -Rq '^pub enum Component ' crates/brightfield-spec/src/ast/`; unit test `ast::component_enum_is_sealed` asserts all `Component` variants are named explicitly and no variant is `Other`."
+
+  - id: ac-03
+    ac_type: code
+    description: |
+      A vocabulary registry module defines `MarkKind`, `InteractorKind`,
+      `InputKind`, `ComponentKind` as enums covering Mosaic 0.24.x's full
+      vocabulary. Each variant has an associated `ImplStatus` of
+      `Implemented | Planned | Unimplemented`. The registry is the sole
+      authority for name recognition — parsing consults it, and `SupportReport`
+      (future card 0002 work) will consume it.
+    verification: "`grep -Rq 'enum ImplStatus' crates/brightfield-spec/src/vocab/` finds the status enum; unit test `vocab::every_kind_has_status` asserts every variant of each Kind enum exposes an `ImplStatus` via a `status()` method."
+
+  - id: ac-04
+    ac_type: code
+    description: |
+      The public parse entry point is
+      `pub fn parse_spec(source: &str, format: Format) -> Result<ParseOutput, ParseError>`
+      where `Format = Yaml | Json` and
+      `ParseOutput { spec: Spec, warnings: Vec<ParseWarning> }`. A convenience
+      `pub fn parse_spec_path(path: &Path) -> Result<ParseOutput, ParseError>`
+      sniffs format from extension (`.yaml`/`.yml` → YAML; `.json` → JSON;
+      anything else → `ParseError::UnknownFormat`).
+    verification: "`cargo check --manifest-path crates/brightfield-spec/Cargo.toml` succeeds; doc-test for `parse_spec` in lib.rs passes."
+
+  - id: ac-05
+    ac_type: code
+    description: |
+      `$param` / `$selection` structural references are lifted at parse time
+      to `ParamRef(String)`. Both the string form (`"$foo"`) and the object
+      form (`{param: "foo"}`) produce the same `ParamRef("foo")`. Lifting
+      applies to **every** field position listed in the module constant
+      `LIFT_SURFACE_FIELDS` (sourced from upstream Mosaic 0.24.x's
+      `maybeParam` routing) — no field on the pinned list may accept a
+      `$`-prefixed string without lifting.
+    verification: "Unit test `parse::lifts_param_string_and_object_forms` parametrises over every entry in `LIFT_SURFACE_FIELDS`, parses both forms at that position, and asserts AST equality to `ParamRef(\"foo\")`. Test compiles to one assertion per field, so omissions surface as fails, not as silent under-coverage."
+
+  - id: ac-06
+    ac_type: code
+    description: |
+      SQL expressions (wherever Mosaic accepts a SQL string — e.g. `sql:`,
+      `filter:`, `domain:` computed forms) are tokenised into
+      `ExpressionNode { spans: Vec<String>, params: Vec<ParamRef> }`. The
+      tokeniser mirrors upstream Mosaic 0.24.x `ExpressionNode.js` behaviour
+      (see the grammar constraint above): `$`-followed-by-ident yields a
+      `ParamRef`; `$` inside single-quoted strings, double-quoted identifiers,
+      line comments (`--`), and block comments (`/* */`) is preserved as
+      literal span content.
+    verification: |
+      Unit tests in `parse::sql_tokeniser`:
+      (a) `params_outside_literals`: `"x > $lo AND x < $hi"` tokenises to
+        `spans=["x > ", " AND x < ", ""]`, `params=[ParamRef("lo"), ParamRef("hi")]`.
+      (b) `dollar_in_single_quoted_literal`: `"x = '$foo' AND y = $bar"`
+        tokenises to `spans=["x = '$foo' AND y = ", ""]`,
+        `params=[ParamRef("bar")]`.
+      (c) `dollar_in_double_quoted_identifier`: `"\"$col\" = $val"` tokenises
+        to `spans=["\"$col\" = ", ""]`, `params=[ParamRef("val")]`.
+      (d) `dollar_in_line_comment`: `"x -- $note\n + $y"` tokenises to
+        `spans=["x -- $note\n + ", ""]`, `params=[ParamRef("y")]`.
+      (e) `dollar_in_block_comment`: `"x /* $a */ + $b"` tokenises to
+        `spans=["x /* $a */ + ", ""]`, `params=[ParamRef("b")]`.
+
+  - id: ac-07
+    ac_type: code
+    description: |
+      `#[serde(deny_unknown_fields)]` is applied to `Meta`, `Config`, and
+      `PlotDefaults` structs. On mark/plot/input option bags, unknown keys are
+      accepted into the AST and collected as
+      `ParseWarning::UnknownOption { location, key, surface }`.
+    verification: "Unit test `parse::rejects_unknown_in_meta` asserts a spec with `meta: { bogus: true }` returns `ParseError`; unit test `parse::warns_on_unknown_option` asserts a spec with `mark: line, bogusOption: 1` parses successfully with one `UnknownOption` warning."
+
+  - id: ac-08
+    ac_type: code
+    description: |
+      Unknown mark/interactor/input/component names (not present in the
+      vocabulary registry) produce `ParseError::UnknownName { name, span,
+      surface }`. Known-but-unimplemented names produce a
+      `ParseWarning::Unimplemented { name, span, surface }` and an AST stub
+      node carrying the name's `Kind` variant, any parsed options, and an
+      `ImplStatus::Unimplemented | Planned` flag from the registry.
+    verification: "Unit tests `parse::unknown_mark_errors`, `parse::unimplemented_mark_stubs` assert the two behaviours respectively."
+
+  - id: ac-09
+    ac_type: code
+    description: |
+      `ParseError` is a `thiserror::Error` enum with at minimum:
+      `YamlSyntax { span }`, `JsonSyntax { span }`, `Io(io::Error)`,
+      `UnknownFormat { ext: String }`,
+      `UnknownName { name: String, surface: NameSurface, span: Option<SourceSpan> }`,
+      `MalformedDataDef { span: Option<SourceSpan> }`,
+      `MalformedParamDef { span: Option<SourceSpan> }`,
+      `StrictContextUnresolvedRef { field_path: String, name: String, span: Option<SourceSpan> }`,
+      `SchemaViolation { path: String, span: Option<SourceSpan> }`. Each
+      variant (except `Io` and `UnknownFormat`) carries
+      `span: Option<SourceSpan>`. `SourceSpan` is a plain public struct
+      `{ offset: usize, length: usize }` defined in the crate (not re-exported
+      from `miette`).
+    verification: "`grep -q 'pub struct SourceSpan' crates/brightfield-spec/src/error.rs`; unit test `error::variants_expose_span` constructs each variant and confirms the `span` accessor exists."
+
+  - id: ac-10
+    ac_type: code
+    description: |
+      The crate exposes `pub const SUPPORTED_MOSAIC_VERSION: &str = \"0.24.x\"`
+      and `pub const SUPPORTED_MOSAIC_MAJOR_MINOR: (u16, u16) = (0, 24)`.
+      `ParseOutput` includes a `mosaic_version: Option<String>` field
+      populated from the spec's top-level `meta.version` when present.
+      **Mismatch rule**: the spec's `meta.version`, parsed into
+      (major, minor), differs from `SUPPORTED_MOSAIC_MAJOR_MINOR`. A mismatch
+      produces `ParseWarning::VersionMismatch { found, expected }`. Matching
+      major.minor with any patch (including `0.24.0`, `0.24.3`, `0.24.x`) does
+      **not** warn. An unparseable version string produces
+      `ParseWarning::VersionMismatch` with `found` carrying the raw string.
+    verification: |
+      `grep -Rq 'SUPPORTED_MOSAIC_VERSION' crates/brightfield-spec/src/lib.rs`;
+      unit tests in `parse::version_handling`:
+      (a) `warns_on_major_mismatch`: `meta: { version: "1.0.0" }` → one `VersionMismatch`.
+      (b) `warns_on_minor_mismatch`: `meta: { version: "0.20.0" }` → one `VersionMismatch`.
+      (c) `accepts_same_major_minor_any_patch`: `meta: { version: "0.24.0" }` → no warning.
+      (d) `accepts_same_major_minor_any_patch_2`: `meta: { version: "0.24.3" }` → no warning.
+      (e) `warns_on_unparseable`: `meta: { version: "not-a-version" }` → one `VersionMismatch` with raw `found`.
+
+  - id: ac-11
+    ac_type: code
+    description: |
+      `Spec` and all its transitive AST types implement `serde::Serialize`
+      such that YAML round-trip is idempotent **on AST**: for every spec in
+      the vendored reference corpus,
+      `parse_spec(serialise(parse_spec(s))).spec == parse_spec(s).spec`.
+      `ParamRef` canonicalises on serialisation to the **string form**
+      (`"$name"`) unconditionally — never the object form — so textual output
+      is deterministic and position-independent. Textual idempotence
+      (serialise → parse → serialise is byte-equal) is explicitly **not**
+      a goal; AST idempotence is.
+    verification: "Integration test `tests/roundtrip.rs::every_corpus_spec_round_trips` iterates the vendored corpus and asserts `parse_spec(serialise(parse_spec(s))).spec == parse_spec(s).spec` per spec. Unit test `parse::paramref_serialises_as_string_form` asserts a spec containing `{param: foo}` re-serialises as `$foo`."
+
+  - id: ac-12
+    ac_type: gate
+    description: |
+      Every YAML spec under `crates/brightfield-spec/vendor/mosaic-specs/yaml/`
+      (vendored copy of `uwdata/mosaic@0.24.x` `docs/public/specs/yaml/`, at
+      minimum the 54 canon specs) parses without `ParseError`. `ParseWarning`
+      values are permitted — that is how the design surfaces
+      unimplemented vocabulary. A `vendor/mosaic-specs/README.md` records the
+      upstream commit SHA.
+    verification: "Integration test `tests/corpus_totality.rs::every_yaml_parses` iterates the vendored corpus and asserts each call to `parse_spec(contents, Yaml)` returns `Ok(_)`. Run: `cargo test --manifest-path crates/brightfield-spec/Cargo.toml --test corpus_totality`."
+
+  - id: ac-13
+    ac_type: gate
+    description: |
+      `crates/brightfield-spec/vendor/mosaic-specs/yaml/crossfilter.yaml`
+      parses to an AST satisfying:
+      (a) `spec.params["brush"]` is a `SelectionNode` with `select ==
+      \"crossfilter\"`;
+      (b) every plot in the spec whose data declaration references `$brush`
+      surfaces as `DataSource::From { filterBy: Some(ParamRef(\"brush\")), .. }`;
+      (c) any mark `as:` binding of `$brush` surfaces as `ParamRef(\"brush\")`
+      and not as a raw string.
+    verification: "Integration test `tests/crossfilter.rs::parses_structurally` asserts each of (a), (b), (c) by field-path inspection of the parsed AST."
+
+  - id: ac-14
+    ac_type: gate
+    description: |
+      Malformed specs produce located diagnostics, not panics or silent
+      acceptance. Test cases cover:
+      (a) malformed YAML (unterminated quote) → `ParseError::YamlSyntax`;
+      (b) malformed JSON (trailing comma) → `ParseError::JsonSyntax`;
+      (c) structural violation (`meta` containing an unknown field) →
+        `ParseError::SchemaViolation`;
+      (d) unknown mark name (e.g. `mark: fooBar`, where `fooBar` is not in the
+        vocabulary registry) → `ParseError::UnknownName`;
+      (e) `$`-prefixed value inside a strict context — specifically
+        `meta.title: "$missing"` — → `ParseError::StrictContextUnresolvedRef`
+        with `field_path == "meta.title"` and `name == "missing"`, per the
+        strict-context constraint.
+      Cases (a), (b), (c), (d), (e) each carry `span: Some(_)` (all are
+      detectable from the source location).
+    verification: "Integration test `tests/diagnostics.rs` covers each listed case; asserts variant identity, the named field values where specified, and `span.is_some()` for all five."
+
+  - id: ac-15
+    ac_type: doc
+    description: |
+      `crates/brightfield-spec/README.md` documents: (a) the parser entry points
+      (`parse_spec`, `parse_spec_path`), (b) the `ParseOutput` shape and the
+      meaning of `ParseWarning`, (c) the Option Z vocabulary contract (unknown
+      → error; unimplemented → warn+stub; option keys → warn; top-level heads
+      → strict), (d) the `SUPPORTED_MOSAIC_VERSION` pin and the vendored
+      corpus location, (e) the declared non-goals for v1 (per-mark typed
+      options, schemars cross-check, miette integration).
+    verification: "Manual read of `crates/brightfield-spec/README.md` confirms each of (a)–(e) is addressed in at least one paragraph or bulleted section."
+
+ontology_schema:
+  name: "MosaicSpecAST"
+  description: "The typed Rust representation of a parsed Mosaic 0.24.x YAML/JSON spec; forms the stable contract consumed by brightfield's query engine, coordinator, and renderer."
+  fields:
+    - name: "Spec"
+      type: "struct"
+      description: "Root node: meta, config, plotDefaults, params map, root component."
+    - name: "Component"
+      type: "sealed enum"
+      description: "Plot | HConcat | VConcat | Input | MarkOnly — the compositional units the spec may contain at the root or within layout containers."
+    - name: "Mark"
+      type: "struct"
+      description: "{ kind: MarkKind, data: Option<PlotFrom>, options: IndexMap<String, ValueOrParamRef<SpecValue>> } — per Q1 staged typing decision."
+    - name: "MarkKind"
+      type: "registry-backed enum"
+      description: "Sealed enum covering Mosaic's full mark vocabulary. Each variant carries an ImplStatus accessor."
+    - name: "ParamRef"
+      type: "newtype"
+      description: "ParamRef(String) — the lifted structural reference produced at parse time from $param strings and {param: ...} objects at field-value positions."
+    - name: "ExpressionNode"
+      type: "struct"
+      description: "{ spans: Vec<String>, params: Vec<ParamRef> } — tokenised SQL expression with param refs hoisted out of string interiors."
+    - name: "ImplStatus"
+      type: "enum"
+      description: "Implemented | Planned | Unimplemented — the status flag carried by every vocabulary entry; the hook card 0002's SupportReport consumes."
+    - name: "ParseError"
+      type: "thiserror enum"
+      description: "Sealed error variants with optional SourceSpan; no miette coupling."
+    - name: "ParseWarning"
+      type: "enum"
+      description: "UnknownOption | Unimplemented | VersionMismatch — non-fatal diagnostics returned alongside a successful parse."
+    - name: "SourceSpan"
+      type: "struct"
+      description: "{ offset: usize, length: usize } — plain public struct (not re-exported from miette)."
+
+evaluation_principles:
+  - principle: "Totality — every valid Mosaic 0.24.x spec produces an AST; unimplemented vocabulary stubs rather than errors."
+    weight: 0.30
+  - principle: "Diagnostic fidelity — malformed specs fail with located, typed errors; no panics, no silent acceptance."
+    weight: 0.25
+  - principle: "Structural introspection — $param/$selection refs and SQL param tokens are surfaced as first-class AST nodes (the coordinator walks AST, not strings)."
+    weight: 0.20
+  - principle: "Round-trip fidelity — parse → serialise → parse is AST-idempotent for the reference corpus."
+    weight: 0.15
+  - principle: "Library boundary — parser crate is miette-free and app-agnostic; downstream crates own presentation."
+    weight: 0.10
+
+exit_conditions:
+  - "All 15 ACs verified green on the current branch (`cargo test -p brightfield-spec` and the listed integration tests pass)."
+  - "Vendored corpus README records the upstream commit SHA."
+  - "Round-trip test passes for the full vendored corpus."
+  - "Crossfilter structural test passes with the three named assertions."
+  - "The crate compiles under `cargo check` with no warnings (`-D warnings` in CI)."
+
+metadata:
+  version: "1.0"
+  test_prefix: "dfspec"
+  timestamp: "2026-04-20T12:00:00Z"
+  ambiguity_score: 0.07
+  interview_ref: "orbit/specs/2026-04-20-mosaic-spec-driven-visualisation/interview.md"

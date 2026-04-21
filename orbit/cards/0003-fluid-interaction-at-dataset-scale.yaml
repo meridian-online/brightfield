@@ -1,0 +1,26 @@
+feature: "Fluid interaction at dataset scale"
+as_a: "analyst exploring a large dataset"
+i_want: "brushes, filters, and parameter changes to feel instantaneous even on millions to billions of rows"
+so_that: "I can follow my train of thought without the tool getting in the way"
+
+scenarios:
+  - name: "Interactive framerate on a multi-million-row dashboard"
+    given: "a Mosaic spec describing a two-view cross-filtered dashboard over a multi-million-row Parquet file"
+    when: "I pan, zoom, and brush inside that dashboard"
+    then: "the views redraw at 60+ FPS with filter response times under 100ms"
+    source_lines: "brightfield-brief.md: 'A Mosaic YAML spec defining a two-view cross-filtered dashboard over a multi-million-row Parquet file renders interactively at 60+ FPS with sub-100ms filter response times.'"
+
+  - name: "Scales to billion-row datasets without blowing up"
+    given: "a dataset on the order of a billion rows"
+    when: "I load a dashboard that visualises it"
+    then: "the dashboard remains interactive rather than falling back to static rendering or hanging"
+    source_lines: "brightfield-brief.md: 'The goal is a tool that can interactively visualise and explore datasets from thousands to billions of records with fluid, GPU-rendered interactions.'"
+
+goal: "60+ FPS, <100ms filter response on a multi-million-row cross-filtered dashboard."
+
+maturity: "planned"
+
+specs: []
+
+references:
+  - "brightfield-brief.md"

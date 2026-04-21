@@ -1,0 +1,30 @@
+feature: "Cross-filtered selections across linked views"
+as_a: "analyst investigating patterns across multiple charts"
+i_want: "a brush or click in one view to filter the others"
+so_that: "I can reason about how a subset of the data appears across different perspectives"
+
+scenarios:
+  - name: "Brush on one plot filters the others"
+    given: "a dashboard with two plots linked by a shared selection"
+    when: "I brush a region in the first plot using intervalX, intervalY, or intervalXY"
+    then: "the second plot updates to reflect only the rows inside that brushed region"
+    source_lines: "brightfield-brief.md: 'Selections: First-class query predicates (equivalent to SQL WHERE clauses) that can combine filters from multiple interactors across multiple views.'"
+
+  - name: "Selection resolution strategy is declared in the spec"
+    given: "a spec declares a selection with a resolution strategy of intersect, union, or single"
+    when: "multiple interactors contribute predicates to that selection"
+    then: "the resolved predicate combines those contributions according to the declared strategy"
+    source_lines: "brightfield-brief.md: 'Supports Mosaic's resolution strategies: intersect — combine all predicates with AND. union — combine with OR. single — only the most recent predicate.'"
+
+  - name: "A view's own selection does not filter itself"
+    given: "a plot contributes a predicate to a selection it is also bound to"
+    when: "the selection resolves for that plot's query"
+    then: "the plot's own predicate is excluded from its own filter so it retains context around the selection"
+    source_lines: "brightfield-brief.md: 'Cross-filter resolution — synthesise different predicates for different clients (e.g., exclude a client's own predicate from its own filter).'"
+
+maturity: "planned"
+
+specs: []
+
+references:
+  - "brightfield-brief.md"

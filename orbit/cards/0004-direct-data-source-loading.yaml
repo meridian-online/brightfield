@@ -1,0 +1,25 @@
+feature: "Direct data source loading"
+as_a: "analyst with data in common local formats"
+i_want: "to point brightfield at a Parquet, CSV, JSON, or DuckDB file and start exploring"
+so_that: "I don't need a separate ingestion step just to look at my data"
+
+scenarios:
+  - name: "Open a Parquet file by path"
+    given: "a spec that references a Parquet file on disk"
+    when: "I open the spec in brightfield"
+    then: "the file is loaded as a queryable data source and drives the declared plots"
+    source_lines: "brightfield-brief.md: 'Manages data source definitions: Parquet files, CSV, JSON, inline data, and DuckDB database files.'"
+
+  - name: "Attach to an existing DuckDB database file"
+    given: "a spec that references a DuckDB database file"
+    when: "I open that spec"
+    then: "brightfield reads from the existing database without requiring a copy or re-import"
+    source_lines: "brightfield-brief.md: 'Manages data source definitions: Parquet files, CSV, JSON, inline data, and DuckDB database files.'"
+
+maturity: "planned"
+
+specs: []
+
+references:
+  - "brightfield-brief.md"
+  - "arcform/README.md (upstream prep/transformation workflows live in arcform, not brightfield)"

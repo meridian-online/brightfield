@@ -1,0 +1,24 @@
+feature: "Single native binary distribution"
+as_a: "analyst installing the tool on my machine"
+i_want: "a single native executable with no runtime dependencies beyond my graphics drivers"
+so_that: "I can run brightfield in restricted environments and without installer ceremony"
+
+scenarios:
+  - name: "Run without a runtime or service"
+    given: "a user has downloaded the brightfield binary"
+    when: "they run it against a spec file"
+    then: "brightfield launches and renders without requiring a webview, HTTP server, language runtime, or database service"
+    source_lines: "brightfield-brief.md: 'The application is a single native binary with no runtime dependencies beyond system graphics drivers.'"
+
+  - name: "Run in an air-gapped environment"
+    given: "a machine with no network access but supported graphics drivers"
+    when: "the user launches brightfield on a local data file"
+    then: "the application renders the dashboard with no external service calls"
+    source_lines: "brightfield-brief.md: 'Single-process, in-memory ... No HTTP server, no WebSocket layer, no serialisation boundary between the query engine and the coordinator.'"
+
+maturity: "planned"
+
+specs: []
+
+references:
+  - "brightfield-brief.md"
