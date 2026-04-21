@@ -39,4 +39,20 @@ deviations:
       - seattle-temp.yaml
       - sorted-bars.yaml
       - table.yaml
-    conformance_layers_suppressed: [2, 3, 4]
+    conformance_layers_suppressed: [3, 4]
+  - id: DEV-0002
+    surface: "data source — DuckDB attach"
+    mosaic_behaviour: |
+      Mosaic web uses ATTACH without a read-only flag, allowing both
+      read and write access to the attached DuckDB database file.
+    brightfield_behaviour: |
+      brightfield emits ATTACH '<path>' AS "<alias>" (READ_ONLY),
+      enforcing read-only access to prevent accidental corruption of
+      the user's production database during exploration.
+    rationale: |
+      Exploration safety: the card's scope is read-only analysis. A
+      user pointing brightfield at a production .duckdb file should not
+      risk inadvertent writes. The READ_ONLY flag is a deliberate
+      safety divergence from Mosaic-web's wire shape.
+    affected_specs: []
+    conformance_layers_suppressed: [2]

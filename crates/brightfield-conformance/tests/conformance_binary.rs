@@ -52,9 +52,11 @@ fn dfconf_cli_layer_1_curated() {
 }
 
 #[test]
-fn dfconf_cli_layer_2_is_pending_not_fail() {
+fn dfconf_cli_layer_2_curated_all_pass() {
+    // Layer 2 is now active for curated corpus (DDL conformance via
+    // brightfield-sql emitter + .layer2.expected.sql fixtures).
     let (ok, stdout) = run(&["--layers", "2", "--corpus", "curated"]);
-    assert!(ok, "layer-2 curated must exit 0 (pending ≠ fail); stdout:\n{stdout}");
+    assert!(ok, "layer-2 curated must exit 0; stdout:\n{stdout}");
     let summary = stdout
         .lines()
         .find(|l| l.starts_with("SUMMARY:"))
@@ -63,9 +65,8 @@ fn dfconf_cli_layer_2_is_pending_not_fail() {
         summary.contains("failed=0"),
         "expected failed=0: {summary}"
     );
-    // Pending count equals curated spec count (layer 2 always returns pending).
     assert!(
-        !summary.contains("pending=0"),
-        "expected pending>0 on layer-2: {summary}"
+        summary.contains("passed=10"),
+        "expected passed=10 on layer-2 curated: {summary}"
     );
 }

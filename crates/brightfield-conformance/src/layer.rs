@@ -9,6 +9,7 @@
 
 use std::convert::TryFrom;
 use std::fmt;
+use std::path::PathBuf;
 
 use brightfield_spec::{parse_spec, Format, Spec};
 
@@ -157,9 +158,27 @@ impl LayerCheck for AstRoundTripCheck {
     }
 }
 
-/// Layer 2: SQL equivalence. V1 stub — returns `Pending` until the SQL
-/// emitter lands.
+/// Layer 2: SQL equivalence — data-source DDL slice.
+///
+/// Calls the `brightfield-sql` emitter to produce DDL for the spec's data
+/// sources, canonicalises the output, and string-diffs against the sibling
+/// `<name>.layer2.expected.sql` file. Plot-SELECT conformance stays pending
+/// until card 0003 ships.
 pub struct SqlEquivalenceCheck;
+
+impl SqlEquivalenceCheck {
+    /// Compute the expected-SQL fixture path for a given corpus entry.
+    fn expected_sql_path(fixture: &CorpusEntry) -> PathBuf {
+        let stem = fixture
+            .source_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+        fixture
+            .source_path
+            .with_file_name(format!("{stem}.layer2.expected.sql"))
+    }
+}
 
 impl LayerCheck for SqlEquivalenceCheck {
     fn layer(&self) -> ConformanceLayer {
@@ -167,12 +186,60 @@ impl LayerCheck for SqlEquivalenceCheck {
     }
     fn run(
         &self,
-        _spec: &Spec,
-        _fixture: &CorpusEntry,
+        spec: &Spec,
+        fixture: &CorpusEntry,
         _registry: &DeviationRegistry,
     ) -> LayerOutcome {
-        LayerOutcome::Pending {
-            reason: "SQL emitter not yet available",
+        // Check for expected SQL fixture
+        let expected_path = Self::expected_sql_path(fixture);
+        if !expected_path.exists() {
+            return LayerOutcome::Pending {
+                reason: "no expected SQL fixture",
+            };
+        }
+
+        // Read expected SQL
+        let expected = match std::fs::read_to_string(&expected_path) {
+            Ok(s) => s,
+            Err(e) => {
+                return LayerOutcome::Fail {
+                    details: format!("failed to read expected SQL at {}: {e}", expected_path.display()),
+                };
+            }
+        };
+
+        // Emit sources — pass None as base_dir so paths stay relative
+        // in canonical form. Conformance compares SQL shape, not resolved paths.
+        let output = match brightfield_sql::emit::emit_sources(spec, None) {
+            Ok(o) => o,
+            Err(e) => {
+                return LayerOutcome::Fail {
+                    details: format!("emission error: {e}"),
+                };
+            }
+        };
+
+        // Canonicalise and compare
+        let actual = brightfield_sql::render::canonicalise_ddl(&output.statements);
+
+        if actual == expected {
+            LayerOutcome::Pass
+        } else {
+            // Produce a readable diff
+            let mut diff = String::from("DDL mismatch:\n--- expected\n+++ actual\n");
+            for (i, (exp_line, act_line)) in
+                expected.lines().zip(actual.lines()).enumerate()
+            {
+                if exp_line != act_line {
+                    diff.push_str(&format!("line {}: expected '{}', got '{}'\n", i + 1, exp_line, act_line));
+                }
+            }
+            let exp_count = expected.lines().count();
+            let act_count = actual.lines().count();
+            if exp_count != act_count {
+                diff.push_str(&format!("line count: expected {exp_count}, actual {act_count}\n"));
+            }
+            LayerOutcome::Fail { details: diff }
         }
     }
 }
@@ -289,7 +356,8 @@ mod tests {
     }
 
     #[test]
-    fn dfconf_layer_2_returns_pending() {
+    fn dfconf_layer_2_missing_fixture_is_pending() {
+        // Synthetic fixture with no .layer2.expected.sql sibling → Pending
         let src = "plot:\n  - mark: line\n    data: { from: d }\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
         let reg = DeviationRegistry::default();
@@ -297,7 +365,7 @@ mod tests {
         assert_eq!(
             outcome,
             LayerOutcome::Pending {
-                reason: "SQL emitter not yet available"
+                reason: "no expected SQL fixture"
             }
         );
     }

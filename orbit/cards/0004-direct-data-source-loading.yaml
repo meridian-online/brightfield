@@ -16,9 +16,24 @@ scenarios:
     then: "brightfield reads from the existing database without requiring a copy or re-import"
     source_lines: "brightfield-brief.md: 'Manages data source definitions: Parquet files, CSV, JSON, inline data, and DuckDB database files.'"
 
-maturity: "planned"
+  - name: "Load a CSV file with inferred column types"
+    given: "a spec that references a CSV file on disk"
+    when: "I open the spec"
+    then: "the CSV is registered as a queryable data source with DuckDB-inferred column types; declared plots work without an explicit schema"
+    source_lines: "brightfield-brief.md §3.2: 'Manages data source definitions: Parquet files, CSV, JSON, inline data, and DuckDB database files.'"
 
-specs: []
+  - name: "Inline data in the spec works without an external file"
+    given: "a spec whose data source is a literal table defined inline in YAML"
+    when: "I open the spec"
+    then: "the inline rows are materialised as a queryable table and drive the declared plots — no external file required"
+    source_lines: "brightfield-brief.md §3.2: 'Manages data source definitions: Parquet files, CSV, JSON, inline data, and DuckDB database files.'"
+
+goal: "All five formats named in the brief (Parquet, CSV, JSON, inline, DuckDB) loadable by path reference from a spec."
+
+maturity: "active"
+
+specs:
+  - "orbit/specs/2026-04-21-direct-data-source-loading/spec.yaml"
 
 references:
   - "brightfield-brief.md"

@@ -9,6 +9,7 @@ description = "Portability contract between Mosaic web specs and brightfield: pr
 
 [dependencies]
 brightfield-spec = { path = "../brightfield-spec" }
+brightfield-sql = { path = "../brightfield-sql" }
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 thiserror = "1"

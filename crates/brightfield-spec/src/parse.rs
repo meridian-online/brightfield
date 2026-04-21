@@ -209,6 +209,10 @@ pub struct ParseOutput {
     pub spec: Spec,
     /// Non-fatal observations.
     pub warnings: Vec<ParseWarning>,
+    /// The parent directory of the source file, if parsed from a path.
+    /// `None` when parsed from a string. Used by the SQL emitter to resolve
+    /// relative `file:` paths against the spec's location.
+    pub base_dir: Option<std::path::PathBuf>,
 }
 
 /// Parse a Mosaic spec from source text.
@@ -243,6 +247,7 @@ pub fn parse_spec(source: &str, format: Format) -> Result<ParseOutput, ParseErro
     Ok(ParseOutput {
         spec,
         warnings: walker.warnings,
+        base_dir: None,
     })
 }
 
@@ -269,7 +274,9 @@ pub fn parse_spec_path(path: impl AsRef<Path>) -> Result<ParseOutput, ParseError
         }
     };
     let source = std::fs::read_to_string(path)?;
-    parse_spec(&source, format)
+    let mut output = parse_spec(&source, format)?;
+    output.base_dir = path.parent().map(std::path::Path::to_path_buf);
+    Ok(output)
 }
 
 // ---------------------------------------------------------------------------

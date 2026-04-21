@@ -215,10 +215,12 @@ mod tests {
         assert!(report.summary.pending > 0);
         for rec in &report.records {
             if rec.layer == ConformanceLayer::SqlEquivalence {
+                // Observed corpus entries have no .layer2.expected.sql fixture,
+                // so the active SqlEquivalenceCheck returns "no expected SQL fixture"
                 assert_eq!(
                     rec.outcome,
                     LayerOutcome::Pending {
-                        reason: "SQL emitter not yet available"
+                        reason: "no expected SQL fixture"
                     }
                 );
             }

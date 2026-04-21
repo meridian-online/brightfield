@@ -1,0 +1,16 @@
+[package]
+name = "brightfield-sql"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pure-function DuckDB SQL emitter for Mosaic spec data sources"
+
+[dependencies]
+brightfield-spec = { path = "../brightfield-spec" }
+thiserror = "2"
+indexmap = "2"
+
+[lints]
+workspace = true

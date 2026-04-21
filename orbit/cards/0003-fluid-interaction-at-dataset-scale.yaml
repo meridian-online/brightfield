@@ -16,6 +16,18 @@ scenarios:
     then: "the dashboard remains interactive rather than falling back to static rendering or hanging"
     source_lines: "brightfield-brief.md: 'The goal is a tool that can interactively visualise and explore datasets from thousands to billions of records with fluid, GPU-rendered interactions.'"
 
+  - name: "Cross-filter brush keeps both views in sync under 100ms"
+    given: "two linked plots sharing a selection, over a multi-million-row DuckDB table"
+    when: "I drag a brush on plot A"
+    then: "plot B's filtered data refreshes in under 100ms without brush stutter or the filtered view tearing"
+    source_lines: "brightfield-brief.md §3.3: 'Selections: First-class query predicates ... that can combine filters from multiple interactors across multiple views.' + §8: 'sub-100ms filter response times'"
+
+  - name: "Parameter slider updates downstream queries reactively"
+    given: "a spec with a slider bound to a parameter that drives an aggregate query"
+    when: "I drag the slider"
+    then: "the affected plot re-queries and re-renders live as the slider moves, without queueing a visible backlog"
+    source_lines: "brightfield-brief.md §3.3: 'Params: Reactive single-value variables shared across components. When a param updates, all subscribing clients re-query and re-render.' + §7 step 2"
+
 goal: "60+ FPS, <100ms filter response on a multi-million-row cross-filtered dashboard."
 
 maturity: "planned"

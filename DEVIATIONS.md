@@ -27,5 +27,24 @@ honest until then.
 
 **Affected specs:** crossfilter.yaml, facet-interval.yaml, flights-200k.yaml, legends.yaml, line.yaml, mark-types.yaml, overview-detail.yaml, seattle-temp.yaml, sorted-bars.yaml, table.yaml
 
-**Conformance layers suppressed:** 2, 3, 4
+**Conformance layers suppressed:** 3, 4
+
+## DEV-0002 — data source — DuckDB attach
+
+**Mosaic behaviour.** Mosaic web uses ATTACH without a read-only flag, allowing both
+read and write access to the attached DuckDB database file.
+
+
+**Brightfield behaviour.** brightfield emits ATTACH '<path>' AS "<alias>" (READ_ONLY),
+enforcing read-only access to prevent accidental corruption of
+the user's production database during exploration.
+
+
+**Rationale.** Exploration safety: the card's scope is read-only analysis. A
+user pointing brightfield at a production .duckdb file should not
+risk inadvertent writes. The READ_ONLY flag is a deliberate
+safety divergence from Mosaic-web's wire shape.
+
+
+**Conformance layers suppressed:** 2
 
