@@ -1,0 +1,424 @@
+goal: |
+  Define and enforce the portability contract between Mosaic web specs and
+  brightfield. Equivalence is layered: (1) AST round-trip, (2) SQL equivalence,
+  (3) visual-encoding equivalence, (4) interaction equivalence. Each layer is
+  an independently-diagnostic pass/fail gate. V1 ships the contract
+  machinery — preflight `SupportReport`, curated + observed corpora, deviation
+  registry + doc generator, and a conformance runner whose layer-1 gate runs
+  on every PR. Layers 2–4 are scaffolded behind stable trait seams so that
+  adding the SQL emitter / renderer / event pump in later cards wires up
+  without rework. Unsupported Mosaic features surface explicitly via
+  `SupportReport`; deliberate deviations are recorded in a structured
+  registry that drives both test suppressions and user-facing docs.
+
+constraints:
+  - "New crate `brightfield-conformance` at `crates/brightfield-conformance/` depends on `brightfield-spec` (path), `serde` + `derive`, `serde_yaml`, `thiserror`, `indexmap`. No `miette` dependency in the library."
+  - "`SupportReport` is a public struct `{ entries: Vec<SupportEntry> }` where `SupportEntry { identity: ComponentIdentity, surface: Surface, status: ImplStatus, span: Option<SourceSpan> }`. `ComponentIdentity` carries the stable kind-registry value (MarkKind / InteractorKind / InputKind / ComponentKind) defined by `brightfield-spec` — not a string — so the deviation registry keys against types, not labels."
+  - "Preflight walker `preflight(&Spec) -> SupportReport` traverses the AST once and emits one `SupportEntry` per Mosaic-identifiable component whose `ImplStatus` is `Planned` or `Unimplemented`. `Implemented` components produce no entry. Walk order is deterministic (document order)."
+  - "`SupportReport::blocking()` returns the subset of entries whose `status == Unimplemented`. `SupportReport::is_renderable()` returns `true` iff `blocking()` is empty — the decision gate between render-ok and render-error paths."
+  - "Equivalence layers are encoded as a sealed enum `ConformanceLayer = AstRoundTrip | SqlEquivalence | EncodingEquivalence | InteractionEquivalence` with `u8` discriminants 1..=4 for registry cross-reference."
+  - "Conformance runner trait seam: `trait LayerCheck { fn layer(&self) -> ConformanceLayer; fn run(&self, spec: &Spec, fixture: &CorpusEntry, registry: &DeviationRegistry) -> LayerOutcome; }`. The registry is threaded through `run` because a concrete check may need to resolve `LayerOutcome::Suppressed { deviation_id }` against the registry during its own dispatch (e.g. the SQL-equivalence check consulting whether an expected divergence at its layer is suppressed). V1 ships `AstRoundTripCheck` as the only concrete implementation; `SqlEquivalenceCheck`, `EncodingEquivalenceCheck`, `InteractionEquivalenceCheck` are declared as structs implementing `LayerCheck` that return `LayerOutcome::Pending { reason: &'static str }` until their downstream infra lands."
+  - "`LayerOutcome = Pass | Fail { details: String } | Suppressed { deviation_id: String } | Pending { reason: &'static str }`. `Pending::reason` is `&'static str` because the reason set is closed — one fixed literal per pending layer, known at compile time. `Pending` is distinct from `Suppressed`: pending means the machinery does not yet exist; suppressed means a deviation registry entry accepts the divergence. Only `Fail` fails the suite."
+  - "Two corpora are vendored: (a) `crates/brightfield-conformance/vendor/curated/yaml/` — 10–12 specs drawn from the interview's starter set (`line.yaml`, `crossfilter.yaml`, `mark-types.yaml`, `legends.yaml`, `flights-200k.yaml`, `overview-detail.yaml`, `seattle-temp.yaml`, `facet-interval.yaml`, `table.yaml`, `sorted-bars.yaml`); (b) `observed/` — a symbolic reference to `brightfield-spec`'s own vendored corpus (`crates/brightfield-spec/vendor/mosaic-specs/yaml/`) consumed via a path const. Curated is the cross-layer gate; observed is layer-1 only."
+  - "Each curated-corpus entry has a sibling fixture file `<name>.expected.yaml` declaring per-layer expectations: `{ layer_1: pass | suppressed(DEV-ID), layer_2: pass | pending | suppressed(DEV-ID), layer_3: ..., layer_4: ... }`. A curated entry whose layer_N expectation is `suppressed` without a matching registry ID fails the registry-integrity gate."
+
+  - "Corpus entries are represented in memory as `pub struct CorpusEntry { name: String, source_path: PathBuf, expectations: LayerExpectations }`, where `pub struct LayerExpectations { layer_1: Layer1Expectation, layer_2: LayerNExpectation, layer_3: LayerNExpectation, layer_4: LayerNExpectation }`, `pub enum Layer1Expectation = Pass | Suppressed(String)`, and `pub enum LayerNExpectation = Pass | Pending | Suppressed(String)` (string = deviation id). Layer 1 CANNOT be `Pending` — the AST round-trip machinery ships in v1 per constraint #6, so a curated `<name>.expected.yaml` declaring `layer_1: pending` is an `ExpectationError::InvalidLayer1Pending` at corpus-discovery time. Expectations are parsed at corpus-discovery time; a missing or malformed `<name>.expected.yaml` file is a hard error (`ExpectationError` variant), not silently treated as `Pending`. For observed-corpus entries (no sibling expected file), expectations default to `layer_1: Pass, layer_{2,3,4}: Pending` — observed is layer-1-only by constraint #8, so layers 2–4 never actually run there."
+
+  - "`ExpectationError` is a `thiserror::Error` enum with variants: `Io(io::Error)`, `YamlSyntax { path: PathBuf, error: String }`, `MissingField { path: PathBuf, field: &'static str }`, `InvalidLayer1Pending { path: PathBuf }`, `UnknownDeviationId { path: PathBuf, id: String }` (last one is loader-local: checks that the referenced id has `DEV-NNNN` shape, not that it exists in the registry — existence is AC-14's concern)."
+  - "Deviation registry lives at `deviations.yaml` at repo root. Schema: top-level `deviations:` list; each record has `id` (string, `DEV-NNNN` format, unique), `surface` (string), `mosaic_behaviour` (string), `brightfield_behaviour` (string), `rationale` (string), `affected_specs` (list of strings — filenames in curated/), `conformance_layers_suppressed` (list of integers 1..=4). Loader: `fn load_deviations(path: &Path) -> Result<DeviationRegistry, RegistryError>`."
+  - "`RegistryError` is a `thiserror::Error` enum with variants: `Io(io::Error)`, `YamlSyntax { error: String }`, `DuplicateId { id: String }`, `InvalidLayer { id: String, layer: u8 }`, `InvalidIdFormat { id: String }`, `MissingField { id: String, field: &'static str }`. `load_deviations` is a pure file-level validator (syntax, id format, id uniqueness, layer range, field completeness) — cross-artefact integrity between registry and curated corpus is owned exclusively by AC-14's registry-integrity gate, which has both in scope."
+  - "Doc generator binary `generate-deviations` reads `deviations.yaml` and writes `DEVIATIONS.md` at repo root. One section per deviation, stable-sorted by `id`. Output is deterministic (same input → byte-identical output) so CI can compare."
+  - "Conformance runner is exposed three ways: (a) `cargo test -p brightfield-conformance` runs layer-1 gate over curated + observed, plus registry-integrity, as `#[test]` functions; (b) `cargo run --bin conformance -- --layers 1,2,3,4 --corpus curated` drives the same `LayerCheck` registry from the CLI; (c) library API `run_conformance(corpus, layers, registry) -> ConformanceReport` is the entry both (a) and (b) call."
+  - "Layers 2, 3, 4 concrete `LayerCheck` impls return `LayerOutcome::Pending` in v1. Their `Pending::reason` names the missing downstream: `\"SQL emitter not yet available\"`, `\"renderer not yet available\"`, `\"event pump not yet available\"`. These become failing tests only when a later card flips them to concrete impls — v1 is honest scaffolding, not fake-green."
+  - "Curated corpus gate: every spec in curated passes (a) `parse_spec` without `ParseError`, and (b) `preflight(&spec).blocking()` is accounted for in `deviations.yaml` — i.e. any unimplemented component either lands in the curated spec because the spec itself is a deviation case, or the curated list excludes it. Registry-integrity test enforces the accounting."
+  - "Observed corpus gate: every spec in `brightfield-spec`'s vendored corpus passes layer-1 round-trip. This is the v1 sibling to card 0001's existing `corpus_totality` test — the same parse+round-trip invariant, surfaced through the conformance runner's `LayerCheck` seam so that when layers 2–4 activate, observed scales along the same plumbing."
+  - "Test prefix is `dfconf`. Fixture path constants live in `src/corpus.rs`. All error types implement `std::error::Error` via `thiserror`."
+  - "V1 is library + layer-1 gate + registry + doc generator. Non-goals: running layers 2–4 (requires later cards), generating `DEVIATIONS.md` automatically in CI (manual `cargo run --bin generate-deviations` is sufficient for v1), JSON output format for the runner (plain text with a machine-readable summary line at the end)."
+
+acceptance_criteria:
+  - id: ac-01
+    ac_type: code
+    description: |
+      New crate `brightfield-conformance` at `crates/brightfield-conformance/`.
+      `Cargo.toml` declares edition 2021+, `path = "../brightfield-spec"`
+      dependency on `brightfield-spec`, plus `serde` (with `derive`),
+      `serde_yaml`, `thiserror`, `indexmap`. No `miette` dependency. The
+      crate is added to the workspace `members` list at the repo root.
+    verification: |
+      `cargo metadata --manifest-path crates/brightfield-conformance/Cargo.toml`
+      shows the declared deps; `grep -q miette crates/brightfield-conformance/Cargo.toml`
+      returns non-zero; `grep -q brightfield-conformance Cargo.toml` at the
+      workspace root returns zero.
+
+  - id: ac-02
+    ac_type: code
+    description: |
+      `SupportReport` is a public struct in `src/support.rs` with field
+      `entries: Vec<SupportEntry>`. `SupportEntry` is
+      `{ identity: ComponentIdentity, surface: Surface, status: ImplStatus, span: Option<SourceSpan> }`.
+      `ComponentIdentity` is a sealed enum wrapping the kind-registry
+      enums from `brightfield-spec`:
+      `Mark(MarkKind) | Interactor(InteractorKind) | Input(InputKind) | Component(ComponentKind)`.
+      `Surface` names the AST location kind (`Mark | Interactor | Input | Layout`).
+      `ImplStatus` and `SourceSpan` are re-exported from `brightfield-spec`.
+    verification: |
+      `grep -Rq 'pub struct SupportReport' crates/brightfield-conformance/src/`;
+      `grep -Rq 'pub enum ComponentIdentity' crates/brightfield-conformance/src/`;
+      unit test `dfconf_support_entry_fields_round_trip` constructs a
+      `SupportEntry` for each identity variant and asserts field access.
+
+  - id: ac-03
+    ac_type: code
+    description: |
+      `pub fn preflight(spec: &brightfield_spec::Spec) -> SupportReport`
+      traverses the AST in document order and emits one `SupportEntry` per
+      component whose `ImplStatus` is `Planned` or `Unimplemented`. Components
+      with `ImplStatus::Implemented` produce no entry. Walk is deterministic:
+      given the same `Spec`, `preflight` produces bytewise-identical
+      `SupportReport`.
+    verification: |
+      Unit test `dfconf_preflight_reports_unimplemented_mark_only`: parse a
+      spec containing one `Implemented` mark + one `Unimplemented` mark →
+      `SupportReport` has exactly one entry, for the unimplemented one.
+      Unit test `dfconf_preflight_is_deterministic`: run `preflight` twice
+      on the same parsed spec → the two `SupportReport`s compare equal.
+
+  - id: ac-04
+    ac_type: code
+    description: |
+      `SupportReport::blocking() -> Vec<&SupportEntry>` returns the subset of
+      entries whose `status == ImplStatus::Unimplemented`.
+      `SupportReport::is_renderable() -> bool` returns `true` iff
+      `blocking().is_empty()`. A report containing only `Planned` entries is
+      renderable; any `Unimplemented` entry makes it non-renderable.
+    verification: |
+      Unit tests `dfconf_blocking_filters_unimplemented_only` and
+      `dfconf_is_renderable_matches_blocking` cover three cases: empty
+      report (renderable), planned-only (renderable), one unimplemented
+      (not renderable).
+
+  - id: ac-05
+    ac_type: code
+    description: |
+      `ConformanceLayer` is a sealed enum with variants
+      `AstRoundTrip = 1, SqlEquivalence = 2, EncodingEquivalence = 3,
+      InteractionEquivalence = 4` (explicit `#[repr(u8)]` discriminants).
+      `TryFrom<u8>` is implemented; invalid discriminants return
+      `Err(InvalidLayer)`. `impl Display for ConformanceLayer` renders
+      `"layer 1: AST round-trip"` etc.
+    verification: |
+      Unit tests `dfconf_layer_discriminants_match_spec` (asserts the four
+      discriminants 1..=4), `dfconf_layer_try_from_u8_round_trip` (valid
+      values round-trip, `5` errors), `dfconf_layer_display_format`.
+
+  - id: ac-06
+    ac_type: code
+    description: |
+      `trait LayerCheck { fn layer(&self) -> ConformanceLayer; fn run(&self,
+      spec: &Spec, fixture: &CorpusEntry, registry: &DeviationRegistry)
+      -> LayerOutcome; }`. `LayerOutcome` is a sealed enum:
+      `Pass | Fail { details: String } | Suppressed { deviation_id: String }
+      | Pending { reason: &'static str }`. The four concrete types
+      `AstRoundTripCheck`, `SqlEquivalenceCheck`, `EncodingEquivalenceCheck`,
+      `InteractionEquivalenceCheck` each implement `LayerCheck`. V1 impls:
+      `AstRoundTripCheck::run` parses, re-serialises, re-parses, and
+      compares AST; the other three return
+      `LayerOutcome::Pending { reason: "SQL emitter not yet available" }` /
+      `"renderer not yet available"` /
+      `"event pump not yet available"`.
+    verification: |
+      Unit test `dfconf_ast_round_trip_passes_on_valid_spec` runs
+      `AstRoundTripCheck` on a known-good fixture → `LayerOutcome::Pass`.
+      Unit tests `dfconf_layer_{2,3,4}_returns_pending` assert the three
+      pending strings verbatim. Unit test `dfconf_layer_check_dyn_dispatch`
+      constructs `Vec<Box<dyn LayerCheck>>` and invokes each via the trait.
+
+  - id: ac-07
+    ac_type: code
+    description: |
+      Curated corpus vendored at `crates/brightfield-conformance/vendor/curated/yaml/`
+      with 10–12 specs from the interview's starter set. Each spec has a
+      sibling `<name>.expected.yaml` declaring per-layer expectations with
+      schema
+      `{ layer_1: pass|suppressed(DEV-ID), layer_2: pass|pending|suppressed(DEV-ID),
+      layer_3: ..., layer_4: ... }`. A README at `vendor/curated/README.md`
+      records (a) the Mosaic upstream commit SHA the specs are copied from
+      and (b) the selection rationale per spec (one line each).
+    verification: |
+      `ls crates/brightfield-conformance/vendor/curated/yaml/*.yaml | grep -v '\.expected\.yaml$'`
+      lists between 10 and 12 files (exclusion is required because each
+      curated spec has a sibling `<name>.expected.yaml` that a bare `*.yaml`
+      glob would match); every listed curated `.yaml` has a matching
+      `.expected.yaml` sibling; `crates/brightfield-conformance/vendor/curated/README.md`
+      exists and contains both the upstream SHA (regex
+      `[0-9a-f]{7,40}`) and a per-spec rationale line.
+
+  - id: ac-08
+    ac_type: code
+    description: |
+      Observed corpus path const `pub const OBSERVED_CORPUS: &str`
+      holds a crate-relative path to the `brightfield-spec` vendored corpus
+      directory. Resolution primitive: the path is joined against
+      `env!("CARGO_MANIFEST_DIR")` at compile time (not process CWD) so
+      `cargo test` behaviour is identical whether invoked from the crate
+      dir, the workspace root, or via an IDE runner. `pub fn
+      observed_specs() -> impl Iterator<Item = PathBuf>` enumerates every
+      `.yaml` under that resolved path. The observed corpus is NOT
+      re-vendored under `brightfield-conformance`.
+    verification: |
+      Unit test `dfconf_observed_corpus_points_at_brightfield_spec`: reads
+      `OBSERVED_CORPUS`, resolves relative to the crate manifest, asserts
+      the directory exists and contains ≥1 `.yaml` file (floor is
+      deliberately low to stay resilient to upstream re-vendors — card
+      0001's corpus size is not committed as a stable invariant).
+
+  - id: ac-09
+    ac_type: code
+    description: |
+      `deviations.yaml` at repo root exists and is valid per the schema in
+      constraint #10. Initial content is either (a) an empty
+      `deviations: []` list, or (b) contains at least one placeholder
+      record illustrating every field — the choice is v1-editorial, but the
+      file MUST be valid and MUST load without `RegistryError`.
+      `pub struct DeviationRegistry { pub entries: IndexMap<String, Deviation> }`
+      keyed by `id`, where `pub struct Deviation { pub id: String, pub surface: String, pub mosaic_behaviour: String, pub brightfield_behaviour: String, pub rationale: String, pub affected_specs: Vec<String>, pub conformance_layers_suppressed: Vec<ConformanceLayer> }` — all fields `pub` so downstream consumers can read without accessors.
+      `pub fn load_deviations(path: &Path) -> Result<DeviationRegistry, RegistryError>`
+      parses the file and enforces id-uniqueness, `DEV-NNNN` format, layer
+      values in `1..=4`, and field completeness. Cross-artefact integrity
+      (affected-spec names pointing at real curated files) is NOT a
+      loader concern — that check lives in AC-14's registry-integrity
+      gate where both registry and corpus are in scope.
+    verification: |
+      `test -f deviations.yaml`; `grep -Rq 'pub struct Deviation ' crates/brightfield-conformance/src/`
+      finds the struct; unit test `dfconf_deviation_struct_shape` constructs
+      a `Deviation` literal using every documented field to lock the
+      public API. Unit test `dfconf_load_empty_registry` parses a fixture
+      with `deviations: []` → `DeviationRegistry` with zero entries. Unit
+      tests `dfconf_load_rejects_duplicate_id`,
+      `dfconf_load_rejects_invalid_layer`,
+      `dfconf_load_rejects_bad_id_format`,
+      `dfconf_load_rejects_missing_field` each feed a malformed
+      fixture and assert the matching `RegistryError` variant.
+
+  - id: ac-10
+    ac_type: code
+    description: |
+      `RegistryError` is a `thiserror::Error` enum with (at minimum):
+      `Io(io::Error)`, `YamlSyntax { error: String }`,
+      `DuplicateId { id: String }`, `InvalidLayer { id: String, layer: u8 }`,
+      `InvalidIdFormat { id: String }`,
+      `MissingField { id: String, field: &'static str }`. Every variant's
+      `Display` output names the offending id (where applicable). Note:
+      `UnknownAffectedSpec` is intentionally NOT a loader error —
+      cross-artefact integrity is owned by AC-14's gate, where both
+      registry and corpus are in scope.
+    verification: |
+      `grep -Rq 'pub enum RegistryError' crates/brightfield-conformance/src/`;
+      unit test `dfconf_registry_error_display_names_id` constructs each
+      variant and asserts the `Display` output contains the id.
+
+  - id: ac-11
+    ac_type: code
+    description: |
+      Binary target `generate-deviations` at
+      `crates/brightfield-conformance/src/bin/generate_deviations.rs` reads
+      `deviations.yaml` (path from CWD or `--input` arg) and writes
+      `DEVIATIONS.md` (path from `--output` arg, default `./DEVIATIONS.md`).
+      Output is stable-sorted by `id`. Output is deterministic: running
+      the binary twice on unchanged input produces byte-identical output.
+      Output uses LF line endings on all platforms (binary writes bytes
+      directly, bypassing platform text-mode translation) so the drift
+      gate below is cross-platform stable; v1 platform scope is
+      Unix-first but the LF discipline keeps Windows from spuriously
+      failing the drift test. When the registry is empty, output is a
+      short "(no deviations registered)" stub — NOT an error, NOT an
+      empty file.
+    verification: |
+      Integration test `tests/generate_deviations.rs::dfconf_output_is_deterministic`:
+      invoke the binary twice via `std::process::Command`, assert the two
+      outputs compare byte-equal. Test `dfconf_empty_registry_emits_stub`:
+      run against an empty registry, assert the output contains
+      `(no deviations registered)`. Test
+      `dfconf_committed_deviations_md_is_current`: invoke the binary
+      against the repo-root `deviations.yaml` into a tempfile, diff
+      against the committed `DEVIATIONS.md` at repo root, assert they
+      compare byte-equal — closes the drift gap between registry and
+      generated doc at near-zero cost, since the binary is deterministic.
+
+  - id: ac-12
+    ac_type: code
+    description: |
+      `pub fn run_conformance(corpus: Corpus, layers: &[ConformanceLayer],
+      registry: &DeviationRegistry) -> ConformanceReport` is the library
+      entry point. `Corpus = Curated | Observed`. `ConformanceReport`
+      contains per-spec per-layer `LayerOutcome` records plus a summary
+      (counts of Pass/Fail/Suppressed/Pending). The function dispatches
+      each `(spec, layer)` to the matching `LayerCheck` impl; unknown
+      layers are filtered silently.
+    verification: |
+      Unit test `dfconf_run_conformance_layer_1_curated_all_pass`: with an
+      empty registry, run layers `[AstRoundTrip]` over `Curated` → every
+      outcome is `Pass`; summary count matches corpus size. Unit test
+      `dfconf_run_conformance_mixed_layers`: run layers `[AstRoundTrip,
+      SqlEquivalence]` → layer-1 outcomes are all `Pass`, layer-2 outcomes
+      are all `Pending { reason: "SQL emitter not yet available" }`.
+
+  - id: ac-13
+    ac_type: code
+    description: |
+      Binary target `conformance` at
+      `crates/brightfield-conformance/src/bin/conformance.rs` exposes
+      `--layers <csv of 1..=4>` (default `1,2,3,4`) and
+      `--corpus <curated|observed>` (default `curated`). It loads
+      `deviations.yaml` from CWD, invokes `run_conformance`, and prints:
+      one line per `(spec, layer)` outcome, then a summary footer
+      `SUMMARY: passed=N failed=N suppressed=N pending=N`. Exit code is
+      non-zero iff any `LayerOutcome::Fail` is present.
+    verification: |
+      Integration test `tests/conformance_binary.rs::dfconf_cli_layer_1_curated`:
+      invoke the binary with `--layers 1 --corpus curated`, assert exit
+      code 0 and the summary line matches `SUMMARY: passed=\d+ failed=0
+      suppressed=\d+ pending=0`. Test
+      `dfconf_cli_layer_2_is_pending_not_fail`: invoke with `--layers 2
+      --corpus curated`, assert exit code 0 and `pending=\d+`.
+
+  - id: ac-14
+    ac_type: gate
+    description: |
+      Registry-integrity gate: every curated corpus entry's
+      `<name>.expected.yaml` file declares per-layer expectations, and every
+      `suppressed(DEV-ID)` reference resolves to a record in
+      `deviations.yaml`. Conversely, every `deviations.yaml` entry's
+      `affected_specs` list only names curated-corpus filenames. This is
+      one test, not four — asserts the bidirectional integrity.
+    verification: |
+      Integration test `tests/registry_integrity.rs::dfconf_registry_integrity`
+      loads the curated expectations + `deviations.yaml` and asserts:
+      (a) every `suppressed(DEV-ID)` references an id present in the
+      registry, (b) every registry `affected_specs` entry references a
+      file present under `vendor/curated/yaml/`.
+
+  - id: ac-15
+    ac_type: gate
+    description: |
+      Layer-1 corpus totality gate: `run_conformance(Observed,
+      &[AstRoundTrip], &empty_registry)` returns a report in which every
+      outcome is `LayerOutcome::Pass`. This is the sibling to
+      `brightfield-spec`'s `corpus_totality.rs` test, exercised through the
+      conformance runner's `LayerCheck` plumbing — proves the runner
+      scales the existing invariant.
+    verification: |
+      Integration test `tests/observed_layer1.rs::dfconf_observed_layer_1_all_pass`
+      runs the above call and asserts `report.summary.failed == 0 &&
+      report.summary.pending == 0 && report.summary.suppressed == 0 &&
+      report.summary.passed == observed_specs().count()`.
+
+  - id: ac-16
+    ac_type: gate
+    description: |
+      Curated corpus preflight gate: for every curated entry, `parse_spec`
+      succeeds without `ParseError`; `preflight(&spec).blocking()` is
+      either empty OR every blocking entry's `ComponentIdentity` is
+      accounted for in a deviation registry entry whose `affected_specs`
+      list names the entry. No curated spec may have an unaccounted-for
+      unimplemented component.
+    verification: |
+      Integration test `tests/curated_preflight.rs::dfconf_curated_preflight_accounted`
+      iterates curated corpus; for each entry, parses it, runs preflight,
+      and asserts every blocking entry's identity is referenced by some
+      deviation whose `affected_specs` includes this filename. Failure
+      message names the orphaned identity.
+
+  - id: ac-17
+    ac_type: doc
+    description: |
+      `crates/brightfield-conformance/README.md` documents: (a) the
+      `SupportReport` API (`preflight`, `blocking`, `is_renderable`),
+      (b) the curated vs observed corpora and growth rule, (c) the
+      deviation registry schema + `load_deviations` + `generate-deviations`,
+      (d) the conformance runner CLI + library entry, (e) v1 non-goals
+      (layers 2–4 return `Pending` until SQL emitter / renderer / event
+      pump land; JSON output format; automatic `DEVIATIONS.md` CI
+      regeneration). A top-level `DEVIATIONS.md` exists (generated; either
+      the "(no deviations registered)" stub or the populated output).
+    verification: |
+      Manual read of `crates/brightfield-conformance/README.md` confirms
+      each of (a)–(e) is addressed in at least one paragraph. `test -f
+      DEVIATIONS.md` at repo root.
+
+ontology_schema:
+  name: "MosaicConformance"
+  description: "Portability contract between Mosaic web specs and brightfield — layered equivalence gates, preflight SupportReport, deviation registry."
+  fields:
+    - name: "SupportReport"
+      type: "struct"
+      description: "{ entries: Vec<SupportEntry> } — the preflight pass's output; names every Planned or Unimplemented component."
+    - name: "SupportEntry"
+      type: "struct"
+      description: "{ identity: ComponentIdentity, surface: Surface, status: ImplStatus, span: Option<SourceSpan> }."
+    - name: "ComponentIdentity"
+      type: "sealed enum"
+      description: "Mark(MarkKind) | Interactor(InteractorKind) | Input(InputKind) | Component(ComponentKind) — stable identity across cards."
+    - name: "ConformanceLayer"
+      type: "sealed enum"
+      description: "AstRoundTrip=1 | SqlEquivalence=2 | EncodingEquivalence=3 | InteractionEquivalence=4."
+    - name: "LayerCheck"
+      type: "trait"
+      description: "fn layer() + fn run(&Spec, &CorpusEntry, &DeviationRegistry) -> LayerOutcome — the polymorphism seam."
+    - name: "LayerOutcome"
+      type: "sealed enum"
+      description: "Pass | Fail { details } | Suppressed { deviation_id } | Pending { reason } — the four distinguishable verdicts."
+    - name: "Corpus"
+      type: "sealed enum"
+      description: "Curated | Observed — the two corpora the runner dispatches over."
+    - name: "CorpusEntry"
+      type: "struct"
+      description: "{ name, source_path, expectations: LayerExpectations } — the in-memory representation of a single corpus spec that LayerCheck::run receives."
+    - name: "LayerExpectations"
+      type: "struct"
+      description: "{ layer_1, layer_2, layer_3, layer_4: Expectation } — parsed from sibling <name>.expected.yaml at corpus-discovery time."
+    - name: "Expectation"
+      type: "sealed enum"
+      description: "Pass | Pending | Suppressed(deviation_id) — per-layer expectation that the runner reconciles against LayerOutcome."
+    - name: "DeviationRegistry"
+      type: "struct"
+      description: "{ entries: IndexMap<String, Deviation> } — loaded from repo-root deviations.yaml."
+    - name: "Deviation"
+      type: "struct"
+      description: "{ id, surface, mosaic_behaviour, brightfield_behaviour, rationale, affected_specs, conformance_layers_suppressed }."
+    - name: "RegistryError"
+      type: "thiserror enum"
+      description: "Io | YamlSyntax | DuplicateId | InvalidLayer | InvalidIdFormat | MissingField. Cross-artefact checks (affected-spec existence in curated corpus) live in AC-14's registry-integrity gate, not in the loader."
+    - name: "ExpectationError"
+      type: "thiserror enum"
+      description: "Io | YamlSyntax | MissingField | InvalidLayer1Pending | UnknownDeviationId — errors raised during `<name>.expected.yaml` parsing at corpus-discovery time."
+    - name: "ConformanceReport"
+      type: "struct"
+      description: "Per-spec per-layer outcomes plus summary counts; drives both cargo-test and CLI output."
+
+evaluation_principles:
+  - principle: "Honest scaffolding — layers 2–4 return Pending, not fake-green. Upgrading to Pass requires concrete work in a later card."
+    weight: 0.25
+  - principle: "Structural introspection — SupportReport keys against typed identities from card 0001's registry, never string matching."
+    weight: 0.20
+  - principle: "Single source of truth — deviations.yaml drives both test suppressions and DEVIATIONS.md; no hand-maintained doc drift."
+    weight: 0.20
+  - principle: "Registry integrity — bidirectional checks (expected fixtures reference real deviations; deviations reference real specs) catch accidental detachment."
+    weight: 0.20
+  - principle: "Runner uniformity — test harness and CLI dispatch through the same `LayerCheck` plumbing, so adding a layer doesn't fork test vs runtime code paths."
+    weight: 0.15
+
+exit_conditions:
+  - "All 17 ACs verified green on the current branch."
+  - "`cargo test -p brightfield-conformance` passes."
+  - "`cargo run --bin conformance -- --layers 1 --corpus curated` exits 0 with `failed=0`."
+  - "`cargo run --bin conformance -- --layers 1 --corpus observed` exits 0 with `failed=0`."
+  - "`cargo run --bin generate-deviations` produces `DEVIATIONS.md` deterministically."
+  - "`cargo check -p brightfield-conformance` compiles without warnings (`-D warnings` in CI)."
+
+metadata:
+  version: "1.0"
+  test_prefix: "dfconf"
+  timestamp: "2026-04-20T13:00:00Z"
+  ambiguity_score: 0.08
+  interview_ref: "orbit/specs/2026-04-20-mosaic-web-spec-portability/interview.md"

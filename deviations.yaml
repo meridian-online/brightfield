@@ -1,0 +1,42 @@
+---
+# Deviation registry — single source of truth for deliberate divergences
+# between Mosaic-web rendering and brightfield. Consumed by:
+#   - the registry-integrity gate (tests/registry_integrity.rs)
+#   - the curated-preflight gate (tests/curated_preflight.rs)
+#   - the generate-deviations binary (emits DEVIATIONS.md)
+#
+# Schema: every record has { id (DEV-NNNN, unique), surface, mosaic_behaviour,
+# brightfield_behaviour, rationale, affected_specs (filenames in
+# vendor/curated/yaml/), conformance_layers_suppressed (list of 1..=4) }.
+deviations:
+  - id: DEV-0001
+    surface: rendering
+    mosaic_behaviour: |
+      Mosaic web renders plot/concat layouts, marks (dot, line, rectY, rule,
+      frame, etc.), legends, and interactors (intervalX, intervalXY,
+      highlight, toggle, nearest) against a live DuckDB session.
+    brightfield_behaviour: |
+      v1 ships the spec-portability contract only — the AST parser, preflight
+      SupportReport, deviation registry, and layer-1 AST round-trip gate. No
+      layout, mark, legend, interactor, or input is rendered yet; every
+      `ImplStatus` in `brightfield-spec`'s vocabulary registry is `Unimplemented`
+      pending the renderer card.
+    rationale: |
+      Honest scaffolding: layers 2 (SQL equivalence), 3 (encoding
+      equivalence), and 4 (interaction equivalence) return
+      `LayerOutcome::Pending` rather than fake-green. Flipping an individual
+      `LayerCheck` to Pass/Fail is what unblocks each curated spec; this
+      deviation is the accounting surface that keeps the preflight gate
+      honest until then.
+    affected_specs:
+      - crossfilter.yaml
+      - facet-interval.yaml
+      - flights-200k.yaml
+      - legends.yaml
+      - line.yaml
+      - mark-types.yaml
+      - overview-detail.yaml
+      - seattle-temp.yaml
+      - sorted-bars.yaml
+      - table.yaml
+    conformance_layers_suppressed: [2, 3, 4]

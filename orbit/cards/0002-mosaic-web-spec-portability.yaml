@@ -38,7 +38,8 @@ goal: "A reference set of Mosaic web example specs renders equivalently in brigh
 
 maturity: "planned"
 
-specs: []
+specs:
+  - orbit/specs/2026-04-20-mosaic-web-spec-portability/spec.yaml
 
 references:
   - "brightfield-brief.md"

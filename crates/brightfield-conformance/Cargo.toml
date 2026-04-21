@@ -1,0 +1,32 @@
+[package]
+name = "brightfield-conformance"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Portability contract between Mosaic web specs and brightfield: preflight SupportReport, deviation registry, layered conformance runner."
+
+[dependencies]
+brightfield-spec = { path = "../brightfield-spec" }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+thiserror = "1"
+indexmap = { version = "2", features = ["serde"] }
+
+# No miette — library boundary discipline inherited from brightfield-spec.
+
+[lib]
+name = "brightfield_conformance"
+path = "src/lib.rs"
+
+[[bin]]
+name = "conformance"
+path = "src/bin/conformance.rs"
+
+[[bin]]
+name = "generate-deviations"
+path = "src/bin/generate_deviations.rs"
+
+[lints]
+workspace = true

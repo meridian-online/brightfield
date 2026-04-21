@@ -3,6 +3,17 @@
 version = 3
 
 [[package]]
+name = "brightfield-conformance"
+version = "0.1.0"
+dependencies = [
+ "brightfield-spec",
+ "indexmap",
+ "serde",
+ "serde_yaml",
+ "thiserror",
+]
+
+[[package]]
 name = "brightfield-spec"
 version = "0.1.0"
 dependencies = [
