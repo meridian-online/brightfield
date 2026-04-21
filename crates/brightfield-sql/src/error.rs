@@ -28,4 +28,22 @@ pub enum EmitError {
         /// What went wrong.
         detail: String,
     },
+
+    /// A mark with an unimplemented `MarkKind` reached the emitter.
+    ///
+    /// Defence in depth — preflight should reject specs with unsupported marks
+    /// before the emitter runs. If this error surfaces in production, the
+    /// preflight gate has a gap.
+    #[error("unsupported mark kind: {kind}")]
+    UnsupportedMark {
+        /// The wire name of the unsupported `MarkKind`.
+        kind: String,
+    },
+
+    /// SQL parsing failed during structural conformance comparison.
+    #[error("SQL parse error: {detail}")]
+    SqlParseError {
+        /// The parser's diagnostic.
+        detail: String,
+    },
 }

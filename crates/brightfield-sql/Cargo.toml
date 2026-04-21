@@ -11,6 +11,7 @@ description = "Pure-function DuckDB SQL emitter for Mosaic spec data sources"
 brightfield-spec = { path = "../brightfield-spec" }
 thiserror = "2"
 indexmap = "2"
+sqlparser = { version = "0.61", features = ["visitor"] }
 
 [lints]
 workspace = true

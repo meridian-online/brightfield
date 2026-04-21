@@ -1,0 +1,297 @@
+goal: >
+  Land the QueryPlan IR, per-mark AST-to-IR lowering infrastructure, IR-to-SQL
+  rendering (DuckDB dialect), selection compilation with crossfilter resolution,
+  hybrid parameter binding model, optimisation pass pipeline shape, and
+  sqlparser-rs structural conformance in brightfield-sql. V1 registers no marks
+  as Implemented — the infrastructure is exercised via synthetic IR nodes in
+  tests. Mark implementations land in subsequent cards.
+
+constraints:
+  - "brightfield-sql already exists (card 0004) with emit.rs, source.rs, render.rs, error.rs — extend, do not restructure"
+  - "Pure functions only — no I/O, no DuckDB connection, no filesystem access in brightfield-sql"
+  - "QueryPlan IR mirrors DuckDB grammar deliberately — DuckDB is the only target"
+  - "EmitError is the single error type for the crate — extend it, do not add a second"
+  - "sqlparser-rs is the only new external dependency (add to brightfield-sql and brightfield-conformance)"
+  - "No marks are flipped to Implemented — ImplStatus gates remain Unimplemented"
+  - "Conformance layer 2 already passes for DDL (card 0004) — query conformance is additive, not breaking"
+  - "ExpressionNode.spans/params interleaving invariant (spans.len() == params.len() + 1) is load-bearing for SQL rendering"
+  - "All public types derive Debug, Clone, PartialEq, Eq where possible; QueryPlan must be Hash for shape-cache key"
+
+acceptance_criteria:
+  - id: ac-01
+    ac_type: code
+    description: >
+      QueryPlan IR in ir.rs: enum with variants Source, Filter, Projection,
+      Aggregation, Bin, Order, Limit. Each variant carries typed fields (e.g.
+      Filter { input: Box<QueryPlan>, predicate: Predicate }). QueryPlan
+      derives Hash for shape-cache keying. SelectionResolution is an
+      independent enum (Crossfilter, Intersect, Union, Single) with
+      impl From<ast::SelectionResolution> for the IR type — independent
+      so the IR is not coupled to AST serde changes.
+    verification: >
+      Unit tests construct each variant and assert Hash stability across
+      identical plans. Round-trip through Debug format is readable.
+
+  - id: ac-02
+    ac_type: code
+    description: >
+      Predicate type in ir.rs: enum with variants Expr(String),
+      Param { name: String, placeholder_index: usize },
+      And(Vec<Predicate>), Or(Vec<Predicate>), True, False. Predicate
+      implements Display for SQL rendering. And([]) renders "TRUE",
+      Or([]) renders "FALSE".
+    verification: >
+      Unit tests for Display on each variant. Empty And/Or edge cases covered.
+
+  - id: ac-03
+    ac_type: code
+    description: >
+      MarkLower trait in lower.rs: trait MarkLower { fn lower(&self, mark: &Mark,
+      ctx: &LowerCtx) -> Result<QueryPlan, EmitError>; } with LowerCtx holding
+      spec-level context (data sources, params, selections). Default impl
+      returns EmitError::UnsupportedMark { kind } for marks whose MarkKind
+      has no registered lowering. (Interview D6 showed a bare QueryPlan return;
+      the Result wrapper is the correct design — this is an intentional
+      improvement over the interview signature.)
+    verification: >
+      A synthetic mark with MarkData::From lowers to Source { table } →
+      Filter → Projection shape. An unimplemented MarkKind returns
+      UnsupportedMark.
+
+  - id: ac-04
+    ac_type: code
+    description: >
+      IR-to-SQL renderer in render.rs: fn render_query(plan: &QueryPlan,
+      bindings: &mut Vec<Binding>) -> String. Pattern-matches QueryPlan
+      variants into DuckDB-dialect SQL, accumulating Binding entries for
+      parameterised positions. Source renders as bare table name (the VIEW
+      created by card 0004's DDL). Filter renders WHERE clause (delegating
+      predicate rendering to Predicate::Display or expression_to_sql for
+      param-bearing predicates). Aggregation renders GROUP BY with DuckDB
+      positional syntax. Bin renders width_bucket() or CASE expression.
+      Existing canonicalise_ddl is unchanged.
+    verification: >
+      Unit tests for each variant. Composed plans (Source → Filter →
+      Projection) produce valid DuckDB SQL verified by sqlparser-rs parse.
+      Binding vector is populated for plans containing Predicate::Param nodes.
+
+  - id: ac-05
+    ac_type: code
+    description: >
+      Selection compilation in lower.rs: MarkData::From.filter_by resolves
+      to a Predicate via the spec's params map. Crossfilter resolution
+      drops predicates whose source_of_contribution matches the current view.
+      Empty selection (no active predicates) renders WHERE TRUE. Union
+      resolution combines predicates with OR; Intersect with AND.
+    verification: >
+      Unit test: two-view crossfilter spec where view A's brush predicate
+      is excluded from view A's own WHERE but included in view B's.
+      Empty-selection edge case renders WHERE TRUE.
+
+  - id: ac-06
+    ac_type: code
+    description: >
+      Binding model in binding.rs: EmittedQuery { sql: String,
+      bindings: Vec<Binding>, plan_hash: u64 }. (Interview D4 included a
+      `dependencies: QueryDeps` field; for v1 plan_hash subsumes this —
+      the structural hash already encodes which params affect the query.
+      QueryDeps is deferred to the card that lands the result-cache
+      coordinator, where explicit dependency tracking adds value beyond
+      the hash.) Binding enum: Scalar { param: String, position: usize }
+      | Selection { param: String }. Scalar params produce ? placeholders
+      in SQL. Selection params trigger WHERE-clause rebuild (the sql field
+      contains the full statement; bindings describe which positions are
+      parameterised).
+    verification: >
+      Unit test: a plan with one scalar param produces SQL with ? at the
+      correct position and one Scalar binding. Plan hash excludes bound
+      param values (identical structure → identical hash regardless of
+      current slider value).
+
+  - id: ac-07
+    ac_type: code
+    description: >
+      Pass pipeline in passes.rs: trait Pass { fn apply(&self, plan: QueryPlan)
+      -> QueryPlan; }. fn apply_passes(plan: QueryPlan, passes: &[Box<dyn Pass>])
+      -> QueryPlan folds left. V1 registers no passes — apply_passes with
+      empty slice is identity. The pipeline shape is load-bearing for future
+      pre-aggregation and M4 passes.
+    verification: >
+      Unit test: apply_passes with empty registry returns plan unchanged.
+      A synthetic NoOpPass that clones the plan composes correctly.
+
+  - id: ac-08
+    ac_type: code
+    description: >
+      Public entry point: fn emit_query(spec: &Spec, mark_index: usize,
+      param_values: Option<&ParamValues>) -> Result<EmittedQuery, EmitError>
+      in emit.rs. (Deliberate refinement of interview D6's
+      `fn emit(spec, preflight)` signature: mark_index enables per-mark
+      emission, param_values enables D4's hybrid binding mode, SupportReport
+      is dropped because preflight is a separate upstream phase — the emitter
+      trusts it has already run. The name changes from `emit` to `emit_query`
+      to coexist with card 0004's `emit_sources`.) param_values carries
+      current runtime values for Interpolated rendering (selection
+      re-emission); None uses Prepared mode with ? placeholders throughout.
+      Orchestrates: resolve mark → lower → apply passes → render (threading
+      &mut Vec<Binding>) → call plan.hash_structural() → assemble
+      EmittedQuery { sql, bindings, plan_hash }. Existing emit_sources is
+      unchanged. A convenience fn emit_all_queries returns
+      Vec<Result<EmittedQuery, EmitError>> for all marks. Unimplemented
+      marks return EmitError::UnsupportedMark { kind } (defence-in-depth
+      variant; InvariantViolation is reserved for truly unexpected states).
+    verification: >
+      Integration test with a synthetic Spec containing an Unimplemented
+      mark → UnsupportedMark. (Implemented-mark test deferred to the
+      card that flips the first MarkKind.)
+
+  - id: ac-09
+    ac_type: code
+    description: >
+      EmitError extended with new variants: UnsupportedMark { kind: String }
+      for marks that reach the emitter despite being Unimplemented (defence
+      in depth — should not occur in production). No existing variants
+      removed or renamed.
+    verification: >
+      Compile-time: all EmitError match arms in existing code still compile.
+      New variant has Display impl via thiserror.
+
+  - id: ac-10
+    ac_type: code
+    description: >
+      ExpressionNode SQL rendering: fn expression_to_sql(expr: &ExpressionNode,
+      bindings: &mut Vec<Binding>, mode: &BindingMode) -> Result<String,
+      EmitError>. Returns EmitError::InvariantViolation if
+      spans.len() != params.len() + 1 (defensive check for constraint 8;
+      the parser upholds this invariant but hand-constructed nodes may not).
+      BindingMode enum: Prepared (emits ? and records Binding::Scalar) |
+      Interpolated { values: &ParamValues } (emits literal values looked up
+      from the provided ParamValues map — used during selection re-emission
+      when current runtime values are known, per D4). ParamValues is a type
+      alias for IndexMap<String, SpecValue>. Respects spans/params
+      interleaving invariant.
+    verification: >
+      Unit test: ExpressionNode with 2 params renders "x > ? AND x < ?"
+      in Prepared mode with 2 Scalar bindings. Same expression in
+      Interpolated mode (with ParamValues {"lo": 42, "hi": 100}) renders
+      "x > 42 AND x < 100". Broken invariant (mismatched spans/params
+      lengths) returns InvariantViolation.
+
+  - id: ac-11
+    ac_type: code
+    description: >
+      sqlparser-rs structural conformance utility in a new conform.rs module
+      in brightfield-sql (low-level parse+compare utilities; brightfield-conformance
+      calls these for layer-2 checks — conform.rs is in brightfield-sql because
+      the emitter's own tests also need structural comparison).
+      fn parse_and_normalise(sql: &str) -> Result<Vec<sqlparser::ast::Statement>,
+      EmitError>. Parses SQL with DuckDB dialect, returns AST.
+      fn structural_eq(a: &str, b: &str) -> Result<bool, EmitError> compares
+      two SQL strings structurally (tolerates whitespace, alias, and keyword
+      case differences).
+    verification: >
+      Unit test: "SELECT * FROM t WHERE x > 1" structurally equals
+      "select * from t where x > 1". "SELECT * FROM t" does NOT structurally
+      equal "SELECT * FROM t WHERE TRUE".
+
+  - id: ac-12
+    ac_type: code
+    description: >
+      brightfield-sql/Cargo.toml adds sqlparser = "0.55" (or latest stable)
+      with features = ["visitor"]. brightfield-conformance/Cargo.toml adds
+      same. No other new external dependencies.
+    verification: >
+      cargo tree shows sqlparser in both crates. No unexpected transitive
+      deps added.
+
+  - id: ac-13
+    ac_type: code
+    description: >
+      lib.rs updated: pub mod ir, lower, binding, passes, conform. Existing
+      pub mod emit, error, render, pub(crate) mod source unchanged.
+    verification: >
+      All new modules accessible from external crates via brightfield_sql::ir,
+      brightfield_sql::lower, etc.
+
+  - id: ac-14
+    ac_type: code
+    description: >
+      QueryPlan::hash_structural(&self) -> u64 method. Hashes the plan
+      structure excluding bound parameter values (? positions are included
+      in the hash; their current values are not). Two plans differing only
+      in scalar param values produce identical structural hashes. Plans
+      differing in structure (added filter, changed aggregation) produce
+      different hashes.
+    verification: >
+      Unit test: identical structure + different param values → same hash.
+      Different structure → different hash (with high probability).
+
+  - id: ac-15
+    ac_type: gate
+    description: >
+      All existing tests pass: cargo test --workspace. Card 0004's 19
+      emit tests, conformance tests, spec tests all green. No regressions.
+    verification: >
+      CI gate: cargo test --workspace exits 0.
+
+  - id: ac-16
+    ac_type: code
+    description: >
+      Test suite for new modules: ≥5 tests in ir.rs (construction, hash,
+      display), ≥5 in lower.rs (synthetic lowering, invariant violation,
+      crossfilter), ≥5 in render.rs (per-variant SQL output, composed plans),
+      ≥3 in binding.rs (scalar, selection, plan hash), ≥2 in passes.rs
+      (identity, compose), ≥3 in conform.rs (structural eq, case
+      insensitivity, structural inequality). All prefixed dfir_.
+    verification: >
+      cargo test -p brightfield-sql shows ≥23 new tests passing alongside
+      existing dfsql_ tests.
+
+ontology_schema:
+  name: "QueryPlan"
+  description: "Typed intermediate representation for DuckDB query emission"
+  fields:
+    - name: "Source"
+      type: "QueryPlan variant"
+      description: "Leaf node referencing a named view (from card 0004 DDL)"
+    - name: "Filter"
+      type: "QueryPlan variant"
+      description: "WHERE clause with Predicate tree"
+    - name: "Projection"
+      type: "QueryPlan variant"
+      description: "SELECT column list"
+    - name: "Aggregation"
+      type: "QueryPlan variant"
+      description: "GROUP BY with aggregate expressions"
+    - name: "Bin"
+      type: "QueryPlan variant"
+      description: "Binning via width_bucket or CASE"
+    - name: "Order"
+      type: "QueryPlan variant"
+      description: "ORDER BY clause"
+    - name: "Limit"
+      type: "QueryPlan variant"
+      description: "LIMIT/OFFSET clause"
+
+evaluation_principles:
+  - principle: "Composability — IR nodes compose cleanly via Box<QueryPlan> nesting"
+    weight: 0.25
+  - principle: "Correctness — rendered SQL parses via sqlparser-rs with DuckDB dialect"
+    weight: 0.30
+  - principle: "Extensibility — adding a mark lowering requires only a new MarkLower impl"
+    weight: 0.20
+  - principle: "Non-regression — existing card 0004 tests and conformance gates stay green"
+    weight: 0.25
+
+exit_conditions:
+  - "cargo test --workspace exits 0 with ≥23 new dfir_ tests"
+  - "sqlparser-rs parses every SQL string emitted by render_query in tests"
+  - "No existing dfsql_ or dfconf_ tests broken"
+  - "EmittedQuery.plan_hash is stable across param-value changes"
+
+metadata:
+  version: "1.0"
+  test_prefix: "dfir"
+  timestamp: "2026-04-21T00:00:00Z"
+  ambiguity_score: 0.09
+  interview_ref: "orbit/specs/2026-04-21-fluid-interaction-at-dataset-scale/interview.md"

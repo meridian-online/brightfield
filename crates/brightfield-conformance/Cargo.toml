@@ -14,6 +14,7 @@ serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 thiserror = "1"
 indexmap = { version = "2", features = ["serde"] }
+sqlparser = { version = "0.61", features = ["visitor"] }
 
 # No miette — library boundary discipline inherited from brightfield-spec.
 

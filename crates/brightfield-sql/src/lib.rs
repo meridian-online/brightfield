@@ -8,7 +8,12 @@
 //! pure string-generation layer. Card 0003 extends it with per-plot SELECT
 //! emission.
 
+pub mod binding;
+pub mod conform;
 pub mod emit;
 pub mod error;
+pub mod ir;
+pub mod lower;
+pub mod passes;
 pub mod render;
 pub(crate) mod source;

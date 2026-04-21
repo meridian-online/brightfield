@@ -30,9 +30,10 @@ scenarios:
 
 goal: "60+ FPS, <100ms filter response on a multi-million-row cross-filtered dashboard."
 
-maturity: "planned"
+maturity: "active"
 
-specs: []
+specs:
+  - orbit/specs/2026-04-21-fluid-interaction-at-dataset-scale/spec.yaml
 
 references:
   - "brightfield-brief.md"
