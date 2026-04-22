@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/brightfield-spec", "crates/brightfield-conformance", "crates/brightfield-sql"]
+members = ["crates/brightfield-spec", "crates/brightfield-conformance", "crates/brightfield-sql", "crates/brightfield-engine"]
 resolver = "2"
 
 [workspace.package]

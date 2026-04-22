@@ -1,0 +1,30 @@
+rally: "mark lowering and DuckDB execution"
+autonomy: guided
+phase: complete
+started: 2026-04-22T09:00:00Z
+completed: 2026-04-22T14:00:00Z
+cards:
+  - path: orbit/cards/0008-grammar-of-graphics-mark-library.yaml
+    status: complete
+    spec_dir: orbit/specs/2026-04-22-grammar-of-graphics-mark-library/
+    branch: rally/grammar-of-graphics-mark-library
+    worktree: main
+    parked_constraint: null
+  - path: orbit/cards/0012-duckdb-execution-engine.yaml
+    status: complete
+    spec_dir: orbit/specs/2026-04-22-duckdb-execution-engine/
+    branch: rally/duckdb-execution-engine
+    worktree: main
+    parked_constraint: null
+implementation_order:
+  - orbit/cards/0012-duckdb-execution-engine.yaml
+  - orbit/cards/0008-grammar-of-graphics-mark-library.yaml
+order_rationale: |
+  Non-disjoint designs force serial order. Both cards touch
+  crates/brightfield-sql/src/ir.rs (card 0008 extends QueryPlan with new
+  aggregate variants; card 0012 consumes QueryPlan via EmittedQuery) and
+  root Cargo.toml (both add workspace members). Card 0012 lands first
+  because (a) it establishes the execution foundation (Engine/Session) that
+  card 0008's rendering side depends on, (b) it can be built with existing
+  DDL + test-only queries without needing mark lowerers, and (c) card 0008
+  then gets end-to-end integration tests against a working engine.

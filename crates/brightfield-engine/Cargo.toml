@@ -1,0 +1,17 @@
+[package]
+name = "brightfield-engine"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "In-process DuckDB execution engine for Mosaic spec pipelines"
+
+[dependencies]
+brightfield-spec = { path = "../brightfield-spec" }
+brightfield-sql = { path = "../brightfield-sql" }
+duckdb = { version = "1", features = ["bundled"] }
+thiserror = "2"
+
+[lints]
+workspace = true
