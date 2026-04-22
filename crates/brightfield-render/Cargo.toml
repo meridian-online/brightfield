@@ -1,0 +1,22 @@
+[package]
+name = "brightfield-render"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Headless chart rendering: Mosaic spec + Arrow data -> Vello scene"
+
+[dependencies]
+brightfield-spec = { path = "../brightfield-spec" }
+arrow = { version = "54", default-features = false, features = ["chrono-tz"] }
+vello = "0.4"
+kurbo = "0.11"
+peniko = "0.3"
+skrifa = "0.26"
+
+[dev-dependencies]
+vello = { version = "0.4", features = ["wgpu"] }
+
+[lints]
+workspace = true

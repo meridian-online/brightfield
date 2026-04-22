@@ -39,9 +39,10 @@ scenarios:
 
 goal: "A Mosaic spec with a dot, bar, or line mark renders as a GPU-accelerated interactive chart in a GPUI window, with axes and a colour legend, at 60+ FPS."
 
-maturity: "planned"
+maturity: "emerging"
 
-specs: []
+specs:
+  - "orbit/specs/2026-04-22-gpu-accelerated-mark-rendering/spec.yaml"
 
 references:
   - "brightfield-brief.md: GPU-accelerated native rendering target"
