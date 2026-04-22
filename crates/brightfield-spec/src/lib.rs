@@ -12,6 +12,7 @@ pub mod analysis;
 pub mod ast;
 pub mod error;
 pub mod expr;
+pub mod layout;
 pub mod parse;
 pub mod vocab;
 

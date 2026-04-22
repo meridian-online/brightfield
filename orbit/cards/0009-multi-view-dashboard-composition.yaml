@@ -16,9 +16,25 @@ scenarios:
     then: "that selection updates and any views filtering on it respond accordingly"
     source_lines: "brightfield-brief.md: 'Legends as interactive selection interactors.'"
 
-maturity: "planned"
+  - name: "Nested composition creates grid layouts"
+    given: "a spec nests vconcat inside hconcat (or vice versa)"
+    when: "it renders"
+    then: "the views arrange into a grid-like dashboard where each cell respects its declared dimensions"
 
-specs: []
+  - name: "Spacing controls separate views visually"
+    given: "a spec uses hspace or vspace between adjacent views"
+    when: "it renders"
+    then: "empty space of the declared size appears between the views, creating clear visual groupings"
+
+  - name: "Plots, inputs, and legends compose together"
+    given: "a spec with hconcat containing a plot, an input widget (menu or slider), and a standalone legend"
+    when: "it renders"
+    then: "all three element types are laid out side by side in the declared order, each sized appropriately for its content"
+
+maturity: "active"
+
+specs:
+  - "orbit/specs/2026-04-22-multi-view-dashboard-composition/spec.yaml"
 
 references:
   - "brightfield-brief.md"

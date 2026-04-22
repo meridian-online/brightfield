@@ -1,0 +1,55 @@
+feature: "GPU-accelerated mark rendering"
+as_a: "analytics author viewing my spec"
+i_want: "to see my declared marks, scales, axes, and legends rendered as an interactive chart in a GPU-accelerated window"
+so_that: "I get immediate visual feedback on the visualisation I'm authoring without leaving the spec-driven workflow"
+
+scenarios:
+  - name: "Dot plot renders from spec"
+    given: "a spec with a dot mark, x/y/colour encodings, and a data source"
+    when: "I open the spec in brightfield"
+    then: "positioned points appear at the correct x/y coordinates with the specified colour mapping"
+    source_lines: "brightfield-brief.md: 'GPU-accelerated native rendering: 120 FPS interactive'"
+
+  - name: "Bar chart renders from spec"
+    given: "a spec with a barY mark, a categorical x axis, and a value y axis"
+    when: "I open the spec"
+    then: "rectangles are drawn at the correct positions with widths proportional to the category band and heights proportional to the value"
+
+  - name: "Line chart renders from spec"
+    given: "a spec with a lineY mark, a time-series x axis, and a numeric y axis"
+    when: "I open the spec"
+    then: "a connected path follows the data points in x-order, with correct scale mapping on both axes"
+
+  - name: "Axes and scales appear alongside marks"
+    given: "a rendered chart with numeric, categorical, or time-series data"
+    when: "it renders"
+    then: "axes are drawn with tick marks, labels, and grid lines that reflect the data domain and scale type (linear, band, time)"
+    source_lines: "brightfield-brief.md: 'Scales (linear, log, band, time, colour, size, etc.) are inferred from the spec and wired between data and visual encoding.'"
+
+  - name: "Colour legend is generated from encoding"
+    given: "a spec where a mark encodes a data column as fill colour"
+    when: "it renders"
+    then: "a legend appears showing the colour-to-value mapping, positioned according to the spec or default layout"
+
+  - name: "Interactive response at frame rate"
+    given: "a rendered chart with a brush or hover interactor declared in the spec"
+    when: "I drag to brush or hover over marks"
+    then: "the visual feedback (highlight, selection rectangle, tooltip) responds at 60+ FPS without perceptible lag"
+    source_lines: "brightfield-brief.md: '120 FPS interactive, 60+ FPS on cross-filtered dashboards, sub-100ms filter response times'"
+
+goal: "A Mosaic spec with a dot, bar, or line mark renders as a GPU-accelerated interactive chart in a GPUI window, with axes and a colour legend, at 60+ FPS."
+
+maturity: "planned"
+
+specs: []
+
+references:
+  - "brightfield-brief.md: GPU-accelerated native rendering target"
+  - "GPUI (Zed): framework for GPU-accelerated UI — Metal/Vulkan, Mac/Linux/Windows"
+  - "gpui-plot (JakkuSakura): abandoned proof-of-concept, not viable"
+  - "Vello (Linebender): GPU compute 2D renderer, active development, render-to-texture integration path"
+  - "Lyon + wgpu: mature path tessellation + GPU, lower-level integration"
+  - "GPUI canvas PR (zed-industries/zed#42905): pending upstream support for arbitrary 2D drawing"
+  - "RillData: real-time analytics dashboard — data expression patterns, DuckDB-native"
+  - "MotherDuck: cloud DuckDB — query result visualisation, data expression UX"
+  - "apple/embedding-atlas: large-scale interactive data visualisation, GPU-accelerated scatter/embedding plots"
