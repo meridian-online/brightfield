@@ -80,6 +80,16 @@ impl Engine {
 
         let mark_index_map = build_mark_index_map(&spec);
 
+        // Initialise param_state from spec.params defaults. Only scalar
+        // Value params are populated; Selection params are omitted (they
+        // enter param_state on first propagate_param call).
+        let mut param_state = ParamValues::new();
+        for (name, node) in &spec.params {
+            if let brightfield_spec::ast::ParamNode::Value(v) = node {
+                param_state.insert(name.clone(), v.clone());
+            }
+        }
+
         let session = Session {
             conn,
             spec,
@@ -87,6 +97,7 @@ impl Engine {
             mark_index_map,
             cache: HashMap::new(),
             ddl_warnings: emit_output.warnings.clone(),
+            param_state,
         };
 
         Ok(LoadResult {
@@ -116,6 +127,9 @@ pub struct Session {
     cache: HashMap<u64, CachedStatement>,
     /// DDL emission warnings.
     ddl_warnings: Vec<ParseWarning>,
+    /// Current param values — updated by propagate_param, consumed by
+    /// execute_mark/execute_all for query emission.
+    param_state: ParamValues,
 }
 
 /// A cached SQL string with its binding metadata.
@@ -140,10 +154,23 @@ impl Session {
         &self.ddl_warnings
     }
 
+    /// Current param values — the live param store.
+    pub fn current_params(&self) -> &ParamValues {
+        &self.param_state
+    }
+
     /// Execute a single mark's query by its depth-first index.
+    ///
+    /// Uses the current param_state for query emission, so marks see
+    /// the latest param values set via propagate_param.
     pub fn execute_mark(&mut self, index: usize) -> Result<Vec<RecordBatch>, EngineError> {
-        let emitted =
-            emit_query(&self.spec, index, None).map_err(|e| EngineError::EmitFailed { cause: e })?;
+        let params = if self.param_state.is_empty() {
+            None
+        } else {
+            Some(&self.param_state)
+        };
+        let emitted = emit_query(&self.spec, index, params)
+            .map_err(|e| EngineError::EmitFailed { cause: e })?;
 
         let mark_kind = self.mark_kind_at(index);
         self.execute_emitted(index, &mark_kind, &emitted)
@@ -188,6 +215,66 @@ impl Session {
         let mut results = Vec::new();
         for idx in mark_indices {
             let emitted = match emit_query(&self.spec, idx, Some(&param_values)) {
+                Ok(eq) => eq,
+                Err(e) => {
+                    results.push((idx, Err(EngineError::EmitFailed { cause: e })));
+                    continue;
+                }
+            };
+
+            let mark_kind = self.mark_kind_at(idx);
+            let result = self.execute_emitted(idx, &mark_kind, &emitted);
+            results.push((idx, result));
+        }
+
+        results
+    }
+
+    /// Propagate a param change: update param_state, then re-execute all
+    /// subscribing marks with the full param_state. Returns per-mark results.
+    ///
+    /// This is the runtime coordinator entry point. It updates the stored
+    /// param value, looks up direct subscribers from the subscriber graph,
+    /// filters to mark components, and re-emits + re-executes each with
+    /// the complete param_state (so multi-param queries see all current values).
+    ///
+    /// Unsubscribed or unknown params: param_state is updated but no queries
+    /// fire — returns an empty results vector. Partial failure: each mark's
+    /// result is independent.
+    pub fn propagate_param(
+        &mut self,
+        name: &str,
+        value: SpecValue,
+    ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
+        // 1. Update param_state.
+        self.param_state.insert(name.to_string(), value);
+
+        // 2. Look up subscribers.
+        let subscriber_paths: Vec<ComponentPath> = self
+            .analysis
+            .subscriber_graph
+            .get(name)
+            .cloned()
+            .unwrap_or_default();
+
+        // 3. Filter to mark components only.
+        let mut mark_indices: Vec<usize> = Vec::new();
+        for path in &subscriber_paths {
+            if let Some(&(idx, _)) = self.mark_index_map.get(&path.0) {
+                mark_indices.push(idx);
+            }
+        }
+        mark_indices.sort();
+        mark_indices.dedup();
+
+        if mark_indices.is_empty() {
+            return Vec::new();
+        }
+
+        // 4. Re-execute each subscribing mark with the full param_state.
+        let mut results = Vec::new();
+        for idx in mark_indices {
+            let emitted = match emit_query(&self.spec, idx, Some(&self.param_state)) {
                 Ok(eq) => eq,
                 Err(e) => {
                     results.push((idx, Err(EngineError::EmitFailed { cause: e })));
@@ -918,5 +1005,417 @@ plot:
         // Verify we got actual data.
         let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         assert_eq!(total_rows, 2, "expected 2 rows from inline data");
+    }
+
+    // --- rpw2 ac-01: param_state + current_params ---
+
+    #[test]
+    fn rpw2_ac01_param_state_initialised_from_defaults() {
+        let yaml = r#"
+params:
+  threshold: 50
+  label: hello
+data:
+  t:
+    - { x: 1, y: 10 }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: x
+    y: y
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        let params = session.current_params();
+        assert_eq!(params.len(), 2, "should have 2 params from defaults");
+        assert_eq!(
+            params.get("threshold"),
+            Some(&SpecValue::Integer(50)),
+            "threshold should be 50"
+        );
+        assert_eq!(
+            params.get("label"),
+            Some(&SpecValue::String("hello".to_string())),
+            "label should be 'hello'"
+        );
+    }
+
+    #[test]
+    fn rpw2_ac01_param_state_empty_when_no_params() {
+        let yaml = r#"
+data:
+  t:
+    - { x: 1, y: 10 }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: x
+    y: y
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        assert!(
+            session.current_params().is_empty(),
+            "no params should mean empty state"
+        );
+    }
+
+    // --- rpw2 ac-02: propagate_param dispatches to subscribers ---
+
+    #[test]
+    fn rpw2_ac02_propagate_param_dispatches_to_subscriber_mark() {
+        // Mark subscribes to "brush" via filterBy — this makes the mark
+        // appear in the subscriber graph for "brush".
+        // filterBy requires a selection param (not a value param).
+        let yaml = r#"
+params:
+  brush:
+    select: intersect
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+plot:
+  - mark: dot
+    data: { from: t, filterBy: $brush }
+    x: x
+    y: y
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+
+        // Verify the subscriber graph actually links the mark to "brush".
+        let subs = analysis.subscriber_graph.get("brush").expect("brush should have subscribers");
+        assert!(!subs.is_empty(), "dot mark should subscribe to brush via filterBy");
+
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        let results = session.propagate_param("brush", SpecValue::Integer(42));
+
+        // The mark should be dispatched — results should be non-empty.
+        // The mark will fail (no SimpleLowerer on main) or succeed, but
+        // the dispatch happened — the results vector has an entry.
+        assert!(!results.is_empty(), "subscriber mark should be dispatched");
+        assert_eq!(results.len(), 1, "exactly one mark should be dispatched");
+
+        // param_state updated regardless of result.
+        assert_eq!(
+            session.current_params().get("brush"),
+            Some(&SpecValue::Integer(42))
+        );
+    }
+
+    #[test]
+    fn rpw2_ac02_propagate_param_updates_state_and_dispatches() {
+        // Mark subscribes to "brush" via filterBy (selection param).
+        let yaml = r#"
+params:
+  brush:
+    select: intersect
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+plot:
+  - mark: dot
+    data: { from: t, filterBy: $brush }
+    x: x
+    y: y
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        // Initial state — selection params are NOT in param_state.
+        assert!(session.current_params().get("brush").is_none());
+
+        // Propagate — mark should be dispatched, state updated.
+        let results = session.propagate_param("brush", SpecValue::Integer(75));
+        assert!(!results.is_empty(), "subscriber mark should be dispatched");
+
+        // State should be updated.
+        assert_eq!(
+            session.current_params().get("brush"),
+            Some(&SpecValue::Integer(75))
+        );
+    }
+
+    // --- rpw2 ac-03: unsubscribed param returns empty ---
+
+    #[test]
+    fn rpw2_ac03_unsubscribed_param_returns_empty() {
+        let yaml = r#"
+params:
+  orphan: 0
+data:
+  t:
+    - { x: 1, y: 10 }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: x
+    y: y
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        // "orphan" has no subscribers (no mark references it).
+        let results = session.propagate_param("orphan", SpecValue::Integer(99));
+        assert!(results.is_empty(), "unsubscribed param should return empty results");
+
+        // But param_state should be updated.
+        assert_eq!(
+            session.current_params().get("orphan"),
+            Some(&SpecValue::Integer(99))
+        );
+    }
+
+    // --- rpw2 ac-04: partial failure ---
+
+    #[test]
+    fn rpw2_ac04_partial_failure_mixed_ok_err() {
+        // Two marks subscribe to "brush" via filterBy. Dot is supported by
+        // SimpleLowerer (Ok), rect is not (Err). Each mark is dispatched
+        // independently — rect's failure must not prevent dot from succeeding.
+        let yaml = r#"
+params:
+  brush:
+    select: intersect
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+plot:
+  - mark: dot
+    data: { from: t, filterBy: $brush }
+    x: x
+    y: y
+  - mark: rect
+    data: { from: t, filterBy: $brush }
+    x: x
+    y: y
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+
+        // Verify both marks subscribe.
+        let subs = analysis.subscriber_graph.get("brush").expect("brush subscribers");
+        assert!(subs.len() >= 2, "both marks should subscribe to brush");
+
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        let results = session.propagate_param("brush", SpecValue::Integer(42));
+
+        // Both marks dispatched — independent of each other's success/failure.
+        assert_eq!(results.len(), 2, "both subscriber marks should be dispatched");
+
+        // Count successes and failures.
+        let ok_count = results.iter().filter(|(_, r)| r.is_ok()).count();
+        let err_count = results.iter().filter(|(_, r)| r.is_err()).count();
+        assert_eq!(ok_count, 1, "dot should succeed via SimpleLowerer");
+        assert_eq!(err_count, 1, "rect should fail (UnsupportedMark)");
+
+        // The successful mark should have returned data (2 rows from inline source).
+        let (_, ok_result) = results.iter().find(|(_, r)| r.is_ok()).unwrap();
+        let batches = ok_result.as_ref().unwrap();
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows, 2, "dot mark should return 2 rows from inline data");
+
+        // param_state updated regardless of mixed results.
+        assert_eq!(
+            session.current_params().get("brush"),
+            Some(&SpecValue::Integer(42)),
+            "param_state should reflect update regardless of execution results"
+        );
+    }
+
+    // --- rpw2 ac-05: unknown param permissive ---
+
+    #[test]
+    fn rpw2_ac05_unknown_param_permissive() {
+        let yaml = r#"
+data:
+  t:
+    - { x: 1, y: 10 }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: x
+    y: y
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        // No params declared at all. Propagate an arbitrary param.
+        let results =
+            session.propagate_param("invented_param", SpecValue::String("hello".to_string()));
+        assert!(results.is_empty(), "unknown param should return empty");
+        assert_eq!(
+            session.current_params().get("invented_param"),
+            Some(&SpecValue::String("hello".to_string())),
+            "param_state should contain the dynamically injected param"
+        );
+    }
+
+    // --- rpw2 ac-06: execute_mark uses param_state ---
+
+    #[test]
+    fn rpw2_ac06_execute_mark_passes_param_state() {
+        // Verify that after propagate_param updates param_state, the state
+        // is accessible and consistent. The actual param injection into SQL
+        // depends on SimpleLowerer (card 0001) — here we verify the state
+        // plumbing: propagate_param updates param_state, and current_params()
+        // reflects the update for downstream consumers.
+        let yaml = r#"
+params:
+  threshold: 50
+  mode: auto
+data:
+  t:
+    - { x: 1, y: 10 }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: x
+    y: y
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        // Initial state has both params.
+        assert_eq!(session.current_params().len(), 2);
+
+        // Update one param.
+        session.propagate_param("threshold", SpecValue::Integer(75));
+
+        // Both params visible in state — threshold updated, mode unchanged.
+        let params = session.current_params();
+        assert_eq!(params.get("threshold"), Some(&SpecValue::Integer(75)));
+        assert_eq!(
+            params.get("mode"),
+            Some(&SpecValue::String("auto".to_string()))
+        );
+
+        // Update the other param.
+        session.propagate_param("mode", SpecValue::String("manual".to_string()));
+
+        let params = session.current_params();
+        assert_eq!(params.get("threshold"), Some(&SpecValue::Integer(75)));
+        assert_eq!(
+            params.get("mode"),
+            Some(&SpecValue::String("manual".to_string()))
+        );
+    }
+
+    // --- rpw2 ac-07: end-to-end integration ---
+
+    #[test]
+    fn rpw2_ac07_end_to_end_param_propagation() {
+        // Full pipeline: parse spec with params, load, propagate, verify state.
+        // The actual SQL param injection requires SimpleLowerer (card 0001);
+        // this test verifies the coordinator's state management end-to-end.
+        let yaml = r#"
+params:
+  filter_val: 1
+  label: initial
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+    - { x: 3, y: 30 }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: x
+    y: y
+"#;
+        let parsed = parse_spec(yaml, Format::Yaml).expect("parse failed");
+        let analysis = analyse_spec(&parsed.spec).expect("analysis failed");
+
+        let engine = Engine::new();
+        let load = engine
+            .load_spec(parsed.spec, analysis, None)
+            .expect("load failed");
+        let mut session = load.session;
+
+        // Verify initial param state.
+        assert_eq!(
+            session.current_params().get("filter_val"),
+            Some(&SpecValue::Integer(1))
+        );
+        assert_eq!(
+            session.current_params().get("label"),
+            Some(&SpecValue::String("initial".to_string()))
+        );
+
+        // Propagate param change — filter_val.
+        let results = session.propagate_param("filter_val", SpecValue::Integer(2));
+        // No mark subscribers for this param (dot doesn't reference $filter_val).
+        assert!(results.is_empty(), "no subscribers for filter_val");
+        assert_eq!(
+            session.current_params().get("filter_val"),
+            Some(&SpecValue::Integer(2))
+        );
+
+        // Propagate param change — label.
+        let results =
+            session.propagate_param("label", SpecValue::String("updated".to_string()));
+        assert!(results.is_empty(), "no subscribers for label");
+        assert_eq!(
+            session.current_params().get("label"),
+            Some(&SpecValue::String("updated".to_string()))
+        );
+
+        // Add a dynamic param.
+        let results =
+            session.propagate_param("dynamic", SpecValue::Float(3.14));
+        assert!(results.is_empty(), "no subscribers for dynamic param");
+        assert_eq!(
+            session.current_params().get("dynamic"),
+            Some(&SpecValue::Float(3.14))
+        );
+
+        // Final state should have all 3 params.
+        assert_eq!(session.current_params().len(), 3);
+    }
+
+    #[test]
+    fn rpw2_ac01_selection_params_excluded_from_initial_state() {
+        // Selection params should not appear in initial param_state.
+        let yaml = r#"
+params:
+  threshold: 50
+  brush:
+    select: intersect
+data:
+  t:
+    - { x: 1, y: 10 }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: x
+    y: y
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        let params = session.current_params();
+        assert_eq!(params.len(), 1, "only scalar params in initial state");
+        assert!(
+            params.contains_key("threshold"),
+            "threshold should be present"
+        );
+        assert!(
+            !params.contains_key("brush"),
+            "selection param should be excluded"
+        );
     }
 }

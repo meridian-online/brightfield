@@ -53,6 +53,7 @@ maturity: "emerging"
 
 specs:
   - orbit/specs/2026-04-21-reactive-parameters-with-input-widgets/spec.yaml
+  - orbit/specs/2026-04-24-reactive-parameters-with-input-widgets/spec.yaml
 
 references:
   - "brightfield-brief.md"

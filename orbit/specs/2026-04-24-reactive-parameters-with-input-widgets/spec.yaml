@@ -1,0 +1,157 @@
+goal: >
+  Runtime coordinator in brightfield-engine that receives a param-change event,
+  looks up all direct subscribers from the SpecAnalysis subscriber graph,
+  re-executes their queries with the new param value injected, and returns
+  fresh RecordBatches for each affected mark. Partial failure is handled
+  gracefully. Chained DAG propagation is explicitly deferred.
+
+constraints:
+  - "Coordinator lives in brightfield-engine, extending Session — not a new crate"
+  - "Direct propagation only (single-hop param→subscribers) — chained DAG walking is deferred to a future spec"
+  - "Partial failure: one mark's re-query failure must not prevent other subscribers from updating"
+  - "Existing Session API (update_param, execute_mark, execute_all) unchanged in signature and behaviour"
+  - "All existing tests must continue to pass (cargo test --workspace)"
+  - "Session must track current param values so that subsequent queries (including execute_all) see updated values"
+  - "Unsubscribed param changes produce empty results with no error"
+
+acceptance_criteria:
+  - id: ac-01
+    ac_type: code
+    description: >
+      Session gains a param_state field (HashMap<String, SpecValue>) that
+      tracks the current value of each param. Initial values are populated
+      from the spec's declared param defaults at load time. The field is
+      accessible via Session::current_params().
+    verification: >
+      Unit test: load a spec with declared params that have default values.
+      Assert current_params() returns the expected defaults. Load a spec
+      with no params. Assert current_params() is empty.
+
+  - id: ac-02
+    ac_type: code
+    description: >
+      Session::propagate_param(name, value) updates param_state[name] to
+      the new value, then re-executes all subscribing marks using the
+      full param_state (not just the changed param). Returns
+      Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> — same shape
+      as update_param.
+    verification: >
+      Unit test: load a spec with a param and two subscribing dot marks
+      with data.from. Call propagate_param with a new value. Assert both
+      marks return Ok with RecordBatches. Assert param_state is updated.
+
+  - id: ac-03
+    ac_type: code
+    description: >
+      propagate_param for an unsubscribed param (no entries in subscriber
+      graph or only non-mark subscribers) updates param_state but returns
+      an empty results vector. No queries fire, no errors surface.
+    verification: >
+      Unit test: load a spec with a declared param that has zero mark
+      subscribers. Call propagate_param. Assert results is empty and
+      param_state reflects the new value.
+
+  - id: ac-04
+    ac_type: code
+    description: >
+      Partial failure: when propagate_param dispatches to N subscribing
+      marks and one fails (e.g. emit error for an unsupported mark type),
+      the other marks still receive fresh data. The failed mark produces
+      an Err entry in the results vector.
+    verification: >
+      Unit test: load a spec with two marks subscribing to the same param —
+      one valid (dot with data.from) and one invalid (rect, unsupported
+      lowerer). Call propagate_param. Assert one Ok result and one Err
+      result. Assert param_state still reflects the update.
+
+  - id: ac-05
+    ac_type: code
+    description: >
+      propagate_param for an unknown param name (not declared in spec.params
+      and not in the subscriber graph) returns an empty results vector
+      without error. param_state is updated regardless — the coordinator
+      is permissive on unknown params to support dynamic param injection.
+    verification: >
+      Unit test: load a spec with no params. Call propagate_param with
+      an arbitrary name and value. Assert results is empty and
+      param_state contains the new entry.
+
+  - id: ac-06
+    ac_type: code
+    description: >
+      execute_mark and execute_all use param_state when emitting queries.
+      After a propagate_param call, a subsequent execute_all produces
+      results that reflect the updated param values.
+    verification: >
+      Unit test: load a spec with a param and a subscribing mark. Call
+      propagate_param to set the param. Then call execute_all. Assert
+      the mark's query was emitted with the param value from param_state.
+
+  - id: ac-07
+    ac_type: code
+    description: >
+      End-to-end integration test: parse a spec YAML with a param, a
+      slider input bound to it via as_param, and a dot plot whose query
+      references the param. Load into the engine. Call propagate_param
+      with a new value. Assert the dot mark returns a fresh RecordBatch.
+    verification: >
+      Integration test with inline spec YAML. Parse → analyse → load →
+      propagate_param → assert Ok RecordBatch with expected row count.
+
+  - id: ac-08
+    ac_type: gate
+    description: >
+      All existing tests pass. cargo test --workspace produces no
+      regressions. All existing test suites in brightfield-spec,
+      brightfield-sql, brightfield-engine, brightfield-render, and
+      brightfield-ui continue to pass.
+    verification: "cargo test --workspace"
+
+  - id: ac-09
+    ac_type: code
+    description: >
+      At least 8 new tests exist with the rpw2_ prefix covering the
+      acceptance criteria above.
+    verification: "grep -r 'fn rpw2_' crates/ | wc -l >= 8"
+
+implementation_notes:
+  - "propagate_param orchestrates subscriber lookup, param_state update, and mark re-execution. It passes the full param_state (not just the changed param) to emit_query, so it cannot simply delegate to update_param — it needs its own emit+execute loop."
+  - "param_state is initialised from spec.params during load_spec. Only params with scalar defaults (Value nodes with Integer, Float, String, Bool) are populated. Selection params and params without defaults are omitted from the initial state — they enter param_state on first propagate_param call."
+  - "emit_query already accepts Option<&ParamValues>. propagate_param constructs ParamValues from the full param_state, not just the changed param. This ensures multi-param queries see all current values."
+  - "execute_mark currently calls emit_query with None for param_values. After this spec, it should pass &self.param_state (converted to ParamValues) so that even manual execute_mark calls see current param values."
+  - "The test prefix rpw2_ distinguishes v2 runtime tests from v1's rpw_ static analysis tests."
+  - "Session::update_param may be deprecated or made private after propagate_param exists, but that's a cleanup — not in scope for this spec."
+
+ontology_schema:
+  name: "ParamRuntimeCoordinator"
+  description: "Runtime coordination of param changes through the subscriber graph"
+  fields:
+    - name: "param_state"
+      type: "object"
+      description: "Map from param name to current SpecValue — the live param store"
+    - name: "propagation_result"
+      type: "array"
+      description: "Per-mark results from a param propagation: (mark_index, Result<RecordBatch>)"
+
+evaluation_principles:
+  - principle: "Correctness — propagate_param dispatches to exactly the right subscribers"
+    weight: 0.35
+  - principle: "Resilience — partial failure handling, unknown params, empty subscriber sets"
+    weight: 0.30
+  - principle: "Non-regression — existing tests and APIs unchanged"
+    weight: 0.20
+  - principle: "Param state consistency — param_state always reflects the latest values"
+    weight: 0.15
+
+exit_conditions:
+  - "All 9 ACs pass verification"
+  - "cargo test --workspace succeeds with zero failures"
+  - "propagate_param dispatches to subscribers and returns per-mark results"
+  - "param_state tracks current values and is used by execute_mark/execute_all"
+
+metadata:
+  version: "1.0"
+  test_prefix: "rpw2"
+  timestamp: "2026-04-24T14:00:00Z"
+  ambiguity_score: 0.065
+  interview_ref: "orbit/specs/2026-04-24-reactive-parameters-with-input-widgets/interview.md"
