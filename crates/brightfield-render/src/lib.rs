@@ -20,5 +20,5 @@ pub mod scene;
 pub use channel::ChannelMap;
 pub use layout::ChartLayout;
 pub use mark::MarkRenderer;
-pub use scale::{Scale, ScaleSet};
+pub use scale::{Scale, ScaleSet, ViewExtent};
 pub use scene::build_chart_scene;

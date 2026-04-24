@@ -309,6 +309,51 @@ pub fn emit_query(
     })
 }
 
+/// Emit a query for a single mark, applying the given passes to the plan.
+///
+/// This is the pass-aware variant of [`emit_query`]. The engine layer uses
+/// this to inject navigation filters (and future optimisation passes) into
+/// the query plan before SQL rendering.
+pub fn emit_query_with_passes(
+    spec: &Spec,
+    mark_index: usize,
+    _param_values: Option<&ParamValues>,
+    extra_passes: &[Box<dyn crate::passes::Pass>],
+) -> Result<EmittedQuery, EmitError> {
+    let marks = collect_marks(spec);
+    let mark = marks
+        .get(mark_index)
+        .ok_or_else(|| EmitError::InvariantViolation {
+            detail: format!(
+                "mark_index {} out of bounds (spec has {} marks)",
+                mark_index,
+                marks.len()
+            ),
+        })?;
+
+    let lowerers = default_lowerers();
+    let ctx = LowerCtx {
+        data_sources: &spec.data,
+        params: &spec.params,
+    };
+
+    let lowerer = find_lowerer(mark.kind, &lowerers);
+    let plan = lowerer.lower(mark, &ctx)?;
+
+    // Apply optimisation passes (built-in + caller-provided).
+    let plan = apply_passes(plan, extra_passes);
+
+    let plan_hash = plan.hash_structural();
+    let mut bindings: Vec<Binding> = Vec::new();
+    let sql = render_query(&plan, &mut bindings);
+
+    Ok(EmittedQuery {
+        sql,
+        bindings,
+        plan_hash,
+    })
+}
+
 /// Emit queries for all marks in the spec.
 ///
 /// Returns one `Result` per mark. Unimplemented marks return

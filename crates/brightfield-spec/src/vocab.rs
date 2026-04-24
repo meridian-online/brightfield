@@ -205,12 +205,12 @@ vocab_enum! {
         ToggleY => ("toggleY", Unimplemented),
         Highlight => ("highlight", Unimplemented),
         Region => ("region", Unimplemented),
-        Pan => ("pan", Unimplemented),
-        PanX => ("panX", Unimplemented),
-        PanY => ("panY", Unimplemented),
-        PanZoom => ("panZoom", Unimplemented),
-        PanZoomX => ("panZoomX", Unimplemented),
-        PanZoomY => ("panZoomY", Unimplemented),
+        Pan => ("pan", Implemented),
+        PanX => ("panX", Implemented),
+        PanY => ("panY", Implemented),
+        PanZoom => ("panZoom", Implemented),
+        PanZoomX => ("panZoomX", Implemented),
+        PanZoomY => ("panZoomY", Implemented),
     }
 }
 
@@ -283,6 +283,27 @@ mod tests {
         }
         for k in LegendChannel::all() {
             let _ = k.status();
+        }
+    }
+
+    /// ac-11 (nav): All six Pan/PanZoom interactor variants are Implemented.
+    #[test]
+    fn nav_ac11_pan_variants_implemented() {
+        let pan_variants = [
+            InteractorKind::Pan,
+            InteractorKind::PanX,
+            InteractorKind::PanY,
+            InteractorKind::PanZoom,
+            InteractorKind::PanZoomX,
+            InteractorKind::PanZoomY,
+        ];
+        for variant in &pan_variants {
+            assert_eq!(
+                variant.status(),
+                ImplStatus::Implemented,
+                "{:?} should be Implemented",
+                variant
+            );
         }
     }
 

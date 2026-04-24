@@ -76,6 +76,44 @@ impl Scale {
         }
     }
 
+    /// Map a pixel position back to a data value (inverse of `map_f64`).
+    ///
+    /// Returns `Some` for continuous scales (Linear, Time), `None` for discrete
+    /// scales (Band, Colour) where continuous inversion is undefined.
+    /// For Time scales, the returned f64 represents microsecond timestamp.
+    pub fn inverse_f64(&self, pixel: f64) -> Option<f64> {
+        match self {
+            Self::Linear {
+                domain_min,
+                domain_max,
+                range_start,
+                range_end,
+            } => {
+                let range_span = range_end - range_start;
+                if range_span.abs() < f64::EPSILON {
+                    return Some((*domain_min + *domain_max) / 2.0);
+                }
+                let t = (pixel - range_start) / range_span;
+                Some(domain_min + t * (domain_max - domain_min))
+            }
+            Self::Time {
+                domain_min_us,
+                domain_max_us,
+                range_start,
+                range_end,
+            } => {
+                let range_span = range_end - range_start;
+                if range_span.abs() < f64::EPSILON {
+                    return Some((*domain_min_us + *domain_max_us) as f64 / 2.0);
+                }
+                let t = (pixel - range_start) / range_span;
+                let domain_span = (*domain_max_us - *domain_min_us) as f64;
+                Some(*domain_min_us as f64 + t * domain_span)
+            }
+            Self::Band { .. } | Self::Colour { .. } => None,
+        }
+    }
+
     /// Map a category to a band centre position.
     pub fn map_category(&self, category: &str) -> Option<f64> {
         match self {
@@ -168,6 +206,20 @@ impl Scale {
             Self::Colour { .. } => 0.0,
         }
     }
+}
+
+/// Optional override of data-inferred scale domains per axis.
+///
+/// When `Some`, the chart renders only the specified data range on that axis.
+/// When `None`, the full data-inferred domain is used.
+/// Used by pan/zoom navigation — the interaction layer mutates this struct,
+/// the render and engine layers consume it read-only.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ViewExtent {
+    /// Overridden x-axis domain: `Some((min, max))` or `None` for full extent.
+    pub x: Option<(f64, f64)>,
+    /// Overridden y-axis domain: `Some((min, max))` or `None` for full extent.
+    pub y: Option<(f64, f64)>,
 }
 
 /// Collection of inferred scales for a chart, keyed by channel.
@@ -357,7 +409,7 @@ fn infer_column_scale(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Float64Array, Int64Array, StringArray, TimestampMicrosecondArray};
+    use arrow::array::{Float64Array, StringArray, TimestampMicrosecondArray};
     use arrow::datatypes::{Field, Schema};
     use arrow::record_batch::RecordBatch;
     use std::sync::Arc;
@@ -521,6 +573,111 @@ mod tests {
         assert!((scale.map_f64(0.0) - 0.0).abs() < f64::EPSILON);
         assert!((scale.map_f64(50.0) - 250.0).abs() < f64::EPSILON);
         assert!((scale.map_f64(100.0) - 500.0).abs() < f64::EPSILON);
+    }
+
+    // --- nav_ac01: ViewExtent ---
+
+    #[test]
+    fn nav_ac01_view_extent_with_both_axes() {
+        let ve = ViewExtent {
+            x: Some((10.0, 50.0)),
+            y: Some((100.0, 200.0)),
+        };
+        assert_eq!(ve.x, Some((10.0, 50.0)));
+        assert_eq!(ve.y, Some((100.0, 200.0)));
+    }
+
+    #[test]
+    fn nav_ac01_view_extent_with_none_axes() {
+        let ve = ViewExtent::default();
+        assert_eq!(ve.x, None);
+        assert_eq!(ve.y, None);
+    }
+
+    #[test]
+    fn nav_ac01_view_extent_partial() {
+        let ve = ViewExtent {
+            x: Some((1.0, 2.0)),
+            y: None,
+        };
+        assert!(ve.x.is_some());
+        assert!(ve.y.is_none());
+    }
+
+    // --- nav_ac02: Scale::inverse_f64 ---
+
+    #[test]
+    fn nav_ac02_linear_inverse_at_endpoints() {
+        let scale = Scale::Linear {
+            domain_min: 0.0,
+            domain_max: 100.0,
+            range_start: 0.0,
+            range_end: 500.0,
+        };
+        let inv_min = scale.inverse_f64(0.0).expect("linear should return Some");
+        let inv_max = scale.inverse_f64(500.0).expect("linear should return Some");
+        assert!((inv_min - 0.0).abs() < f64::EPSILON);
+        assert!((inv_max - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn nav_ac02_linear_inverse_at_midpoint() {
+        let scale = Scale::Linear {
+            domain_min: 0.0,
+            domain_max: 100.0,
+            range_start: 0.0,
+            range_end: 500.0,
+        };
+        let inv_mid = scale.inverse_f64(250.0).expect("linear should return Some");
+        assert!((inv_mid - 50.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn nav_ac02_linear_inverse_roundtrip() {
+        let scale = Scale::Linear {
+            domain_min: 10.0,
+            domain_max: 90.0,
+            range_start: 40.0,
+            range_end: 600.0,
+        };
+        let value = 55.0;
+        let pixel = scale.map_f64(value);
+        let roundtrip = scale.inverse_f64(pixel).unwrap();
+        assert!((roundtrip - value).abs() < 1e-10);
+    }
+
+    #[test]
+    fn nav_ac02_time_inverse() {
+        let scale = Scale::Time {
+            domain_min_us: 1_000_000,
+            domain_max_us: 4_000_000,
+            range_start: 0.0,
+            range_end: 300.0,
+        };
+        let inv = scale.inverse_f64(100.0).expect("time should return Some");
+        // At 1/3 of the range => 1/3 of domain span
+        let expected = 1_000_000.0 + (3_000_000.0 / 3.0);
+        assert!((inv - expected).abs() < 1.0);
+    }
+
+    #[test]
+    fn nav_ac02_band_inverse_returns_none() {
+        let scale = Scale::Band {
+            categories: vec!["a".to_string(), "b".to_string()],
+            range_start: 0.0,
+            range_end: 200.0,
+            padding: 0.1,
+        };
+        assert!(scale.inverse_f64(100.0).is_none());
+    }
+
+    #[test]
+    fn nav_ac02_colour_inverse_returns_none() {
+        let scale = Scale::Colour {
+            categories: vec!["a".to_string()],
+            palette: vec![[1.0, 0.0, 0.0, 1.0]],
+        };
+        assert!(scale.inverse_f64(50.0).is_none());
     }
 
     #[test]

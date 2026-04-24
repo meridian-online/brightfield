@@ -1,0 +1,115 @@
+goal: "Pan and zoom inside a plot to move between overview and detail without editing the spec — with axis lock, zoom reset, and zoom-triggered DuckDB re-query."
+
+constraints:
+  - "Scale enum stays immutable — view extent is a separate struct, not mutable fields on Scale"
+  - "ViewExtent lives in brightfield-render so both brightfield-ui and brightfield-engine can depend on it"
+  - "NavigationFilterPass uses the existing Pass trait and QueryPlan::Filter IR node — no new IR nodes"
+  - "Band and Colour scales are not navigable — navigation gestures on categorical axes are no-ops"
+  - "Full scene rebuild every frame during active gesture — no affine-transform shortcut"
+  - "Debounce timer for zoom-settle — not velocity-based, not platform gesture-phase events (future refinement)"
+  - "Scale::inverse_f64 returns f64 for all scale types (including Time) for API consistency with map_f64"
+
+acceptance_criteria:
+  - id: ac-01
+    ac_type: code
+    description: "ViewExtent struct in brightfield-render/src/scale.rs with x: Option<(f64, f64)> and y: Option<(f64, f64)> fields"
+    verification: "Unit test constructs ViewExtent with Some and None axes, asserts field access"
+
+  - id: ac-02
+    ac_type: code
+    description: "Scale::inverse_f64 method returns Option<f64> — Some for Linear and Time, None for Band and Colour"
+    verification: "Unit tests: Linear scale inverse at domain endpoints and midpoint; Time scale inverse; Band returns None; Colour returns None"
+
+  - id: ac-03
+    ac_type: code
+    description: "build_chart_scene accepts Option<&ViewExtent> and overrides inferred scale domains when Some — marks, axes, grid, and ticks reflect the overridden domain"
+    verification: "Unit test: build scene with ViewExtent narrowing x domain, assert scale domain_min/domain_max match the override; build with None, assert original data-inferred domain"
+
+  - id: ac-04
+    ac_type: code
+    description: "NavigationConfig struct with pan, zoom, x_navigable, y_navigable booleans; NavigationConfig::from_interactor_kind maps all six Pan/PanZoom variants correctly"
+    verification: "Unit test: all six InteractorKind variants produce correct NavigationConfig; non-navigation kinds return None"
+
+  - id: ac-05
+    ac_type: code
+    description: "Pan gesture handler computes normalised delta from pixel drag, applies to ViewExtent respecting NavigationConfig axis lock, and triggers scene rebuild"
+    verification: "Unit test: pan with x_navigable=true, y_navigable=false shifts only x extent; pan with both shifts both; assert ViewExtent values after pan"
+
+  - id: ac-06
+    ac_type: code
+    description: "Zoom gesture handler scales ViewExtent around cursor position using normalised coordinates, respecting axis lock"
+    verification: "Unit test: zoom in at center narrows domain symmetrically; zoom with y_navigable=false leaves y unchanged; assert ViewExtent values after zoom"
+
+  - id: ac-07
+    ac_type: code
+    description: "Double-click (or reset action) sets ViewExtent to None and rebuilds scene from original data-inferred ScaleSet"
+    verification: "Unit test: set ViewExtent to Some, call reset handler, assert ViewExtent is None"
+
+  - id: ac-08
+    ac_type: code
+    description: "Debounce timer with configurable duration (default 150ms) fires re-query after the last zoom/pan event — each new event resets the timer"
+    verification: "Unit test: simulate rapid zoom events, assert re-query fires only after the debounce window with no further events; assert timer reset on new event"
+
+  - id: ac-09
+    ac_type: code
+    description: "NavigationFilterPass implements Pass trait and inserts Filter node with BETWEEN predicate for each navigable axis with a non-None extent into the QueryPlan"
+    verification: "Unit test: pass with x extent only inserts one Filter; pass with both inserts two; pass with None extent is a no-op; assert predicate column names match ChannelMap"
+
+  - id: ac-10
+    ac_type: code
+    description: "Session::update_extent (or param-based equivalent) activates NavigationFilterPass in the pass pipeline and re-executes subscribing marks"
+    verification: "Integration test: call update_extent with a ViewExtent, assert emitted SQL contains BETWEEN clause for the navigable column"
+
+  - id: ac-11
+    ac_type: code
+    description: "InteractorKind Pan, PanX, PanY, PanZoom, PanZoomX, PanZoomY status flipped from Unimplemented to Implemented in vocab.rs"
+    verification: "Grep vocab.rs for the six variants and assert Implemented status"
+
+implementation_notes:
+  - "ViewExtent is a plain data struct — no methods beyond Default and Clone. The interaction layer owns mutation; the render and engine layers consume it read-only."
+  - "Normalised delta for pan: delta_data = (px_delta / range_width) * (domain_max - domain_min). For zoom: scale domain around cursor's normalised position within the range."
+  - "NavigationConfig lives in brightfield-ui — it is UI-layer interpretation of spec-layer InteractorKind. The six-arm match is the only coupling point."
+  - "The debounce timer should use GPUI's timer primitives if available; otherwise a simple Instant-based check in the frame loop."
+  - "NavigationFilterPass receives channel-to-column mapping as constructor argument — the mapping source (ChannelMap) is an implementation detail, not a dependency."
+  - "For Time scales, inverse_f64 returns microsecond timestamp as f64 — matches map_f64's input type."
+  - "ChartElement stores original_scales: Option<ScaleSet> alongside view_extent for reset capability."
+  - "The pass is only registered when ViewExtent has at least one Some axis — no pass registration at full extent."
+
+ontology_schema:
+  name: "InteractiveNavigation"
+  description: "Navigation state and configuration for pan/zoom within a chart"
+  fields:
+    - name: "ViewExtent"
+      type: "struct"
+      description: "Optional override of data-inferred scale domains per axis — None means full data extent"
+    - name: "NavigationConfig"
+      type: "struct"
+      description: "Typed axis-lock and pan/zoom capability derived from InteractorKind variant"
+    - name: "NavigationFilterPass"
+      type: "struct implementing Pass"
+      description: "IR pass inserting Filter nodes for the visible extent into the QueryPlan"
+    - name: "Scale::inverse_f64"
+      type: "method"
+      description: "Pixel-to-data inverse mapping — Some for continuous scales, None for discrete"
+
+evaluation_principles:
+  - principle: "Correctness — domain overrides produce correct mark positions, axis labels, and grid lines"
+    weight: 0.35
+  - principle: "Responsiveness — scene rebuild completes within 16ms for typical post-aggregation mark counts"
+    weight: 0.25
+  - principle: "Composability — ViewExtent flows cleanly from UI through render to engine without coupling"
+    weight: 0.25
+  - principle: "Robustness — categorical axes are correctly excluded, edge cases (empty data, single-point domain) handled"
+    weight: 0.15
+
+exit_conditions:
+  - "All 11 acceptance criteria pass with unit and integration tests"
+  - "cargo test passes for brightfield-render, brightfield-ui, brightfield-sql, and brightfield-engine"
+  - "cargo clippy reports no new warnings in modified crates"
+
+metadata:
+  version: "1.0"
+  test_prefix: "nav"
+  timestamp: "2026-04-22T17:30:00Z"
+  ambiguity_score: 0.08
+  interview_ref: "orbit/specs/2026-04-22-interactive-navigation/interview.md"

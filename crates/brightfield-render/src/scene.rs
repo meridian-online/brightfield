@@ -10,7 +10,7 @@ use crate::grid::{render_x_grid, render_y_grid};
 use crate::layout::ChartLayout;
 use crate::legend::render_colour_legend;
 use crate::mark::MarkRenderer;
-use crate::scale::{infer_scales, ScaleSet};
+use crate::scale::{infer_scales, Scale, ScaleSet, ViewExtent};
 
 /// Input data for building a chart scene.
 pub struct ChartData<'a> {
@@ -22,21 +22,70 @@ pub struct ChartData<'a> {
     pub renderer: &'a dyn MarkRenderer,
     /// Chart layout (dimensions and margins).
     pub layout: ChartLayout,
+    /// Optional view extent override for pan/zoom navigation.
+    /// When `Some`, scale domains are overridden to the specified range.
+    /// When `None`, the full data-inferred domain is used.
+    pub view_extent: Option<&'a ViewExtent>,
 }
 
 /// Build a complete chart scene from data and configuration.
 ///
 /// Orchestrates: infer scales -> render grid -> render marks -> render axes -> render legend.
 /// Returns the scene and the inferred scales (for interaction coordinate mapping).
+/// Override a scale's domain with the given min/max values.
+/// Only applies to continuous scales (Linear, Time). Band and Colour are returned unchanged.
+fn override_scale_domain(scale: &Scale, new_min: f64, new_max: f64) -> Scale {
+    match scale {
+        Scale::Linear {
+            range_start,
+            range_end,
+            ..
+        } => Scale::Linear {
+            domain_min: new_min,
+            domain_max: new_max,
+            range_start: *range_start,
+            range_end: *range_end,
+        },
+        Scale::Time {
+            range_start,
+            range_end,
+            ..
+        } => Scale::Time {
+            domain_min_us: new_min as i64,
+            domain_max_us: new_max as i64,
+            range_start: *range_start,
+            range_end: *range_end,
+        },
+        // Band and Colour scales are not navigable — return unchanged.
+        other => other.clone(),
+    }
+}
+
 pub fn build_chart_scene(data: &ChartData<'_>) -> (Scene, ScaleSet) {
     let mut scene = Scene::new();
 
-    let scales = infer_scales(
+    let mut scales = infer_scales(
         data.batch,
         data.channel_map,
         data.layout.x_range(),
         data.layout.y_range(),
     );
+
+    // Apply view extent override for pan/zoom navigation.
+    if let Some(extent) = data.view_extent {
+        if let Some((x_min, x_max)) = extent.x {
+            if let Some(x_scale) = scales.get(Channel::X) {
+                let overridden = override_scale_domain(x_scale, x_min, x_max);
+                scales.insert(Channel::X, overridden);
+            }
+        }
+        if let Some((y_min, y_max)) = extent.y {
+            if let Some(y_scale) = scales.get(Channel::Y) {
+                let overridden = override_scale_domain(y_scale, y_min, y_max);
+                scales.insert(Channel::Y, overridden);
+            }
+        }
+    }
 
     // Grid lines (behind marks).
     if let Some(x_scale) = scales.get(Channel::X) {
@@ -111,6 +160,7 @@ mod tests {
             channel_map: &cm,
             renderer: &renderer,
             layout,
+            view_extent: None,
         };
 
         let (scene, scales) = build_chart_scene(&data);
@@ -155,6 +205,7 @@ mod tests {
             channel_map: &cm,
             renderer: &renderer,
             layout,
+            view_extent: None,
         };
 
         let (scene, _scales) = build_chart_scene(&data);
@@ -199,6 +250,7 @@ mod tests {
             channel_map: &cm,
             renderer: &renderer,
             layout,
+            view_extent: None,
         };
 
         let (scene, _scales) = build_chart_scene(&data);
@@ -208,5 +260,63 @@ mod tests {
             encoding.path_tags.len() > 0,
             "line chart scene should have content"
         );
+    }
+
+    #[test]
+    fn nav_ac03_view_extent_overrides_scale_domain() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0, 4.0, 5.0])),
+                Arc::new(Float64Array::from(vec![10.0, 20.0, 30.0, 40.0, 50.0])),
+            ],
+        )
+        .unwrap();
+
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+
+        let layout = ChartLayout::new(640.0, 480.0);
+        let renderer = DotRenderer;
+
+        // Without view extent — full data domain.
+        let data_full = ChartData {
+            batch: &batch,
+            channel_map: &cm,
+            renderer: &renderer,
+            layout: layout.clone(),
+            view_extent: None,
+        };
+        let (_scene, scales_full) = build_chart_scene(&data_full);
+        let x_full = scales_full.get(Channel::X).unwrap();
+        assert!((x_full.domain_min().unwrap() - 1.0).abs() < f64::EPSILON);
+        assert!((x_full.domain_max().unwrap() - 5.0).abs() < f64::EPSILON);
+
+        // With view extent — narrowed x domain.
+        let extent = ViewExtent {
+            x: Some((2.0, 4.0)),
+            y: None,
+        };
+        let data_zoomed = ChartData {
+            batch: &batch,
+            channel_map: &cm,
+            renderer: &renderer,
+            layout,
+            view_extent: Some(&extent),
+        };
+        let (_scene, scales_zoomed) = build_chart_scene(&data_zoomed);
+        let x_zoomed = scales_zoomed.get(Channel::X).unwrap();
+        assert!((x_zoomed.domain_min().unwrap() - 2.0).abs() < f64::EPSILON);
+        assert!((x_zoomed.domain_max().unwrap() - 4.0).abs() < f64::EPSILON);
+
+        // Y should be unchanged.
+        let y_zoomed = scales_zoomed.get(Channel::Y).unwrap();
+        assert!((y_zoomed.domain_min().unwrap() - 10.0).abs() < f64::EPSILON);
+        assert!((y_zoomed.domain_max().unwrap() - 50.0).abs() < f64::EPSILON);
     }
 }

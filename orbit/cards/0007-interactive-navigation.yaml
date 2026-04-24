@@ -16,9 +16,25 @@ scenarios:
     then: "the scale domain adjusts and marks re-render at the new extent"
     source_lines: "brightfield-brief.md: 'Interactors: ... pan and zoom — navigation.'"
 
+  - name: "Zoom resets to full extent"
+    given: "a plot that has been panned or zoomed"
+    when: "I double-click or press a reset shortcut"
+    then: "the view restores the original scale domain showing the full data extent"
+
+  - name: "Pan and zoom respect axis lock"
+    given: "a spec where only one axis is declared as navigable"
+    when: "I pan or zoom"
+    then: "only the navigable axis moves; the locked axis stays fixed"
+
+  - name: "Zoom settles and re-queries data"
+    given: "a zoomed-in plot over a large dataset"
+    when: "the zoom gesture settles"
+    then: "DuckDB re-queries for the visible extent, replacing the preview with full-resolution data"
+
 maturity: "planned"
 
-specs: []
+specs:
+  - "orbit/specs/2026-04-22-interactive-navigation/spec.yaml"
 
 references:
   - "brightfield-brief.md"

@@ -14,6 +14,7 @@ pub mod emit;
 pub mod error;
 pub mod ir;
 pub mod lower;
+pub mod navigation_filter_pass;
 pub mod passes;
 pub mod render;
 pub(crate) mod source;

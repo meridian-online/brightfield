@@ -1,0 +1,24 @@
+rally: "interactive navigation and feedback"
+autonomy: guided
+phase: complete
+started: 2026-04-22T17:00:00Z
+completed: 2026-04-22T23:59:00Z
+cards:
+  - path: orbit/cards/0007-interactive-navigation.yaml
+    status: complete
+    spec_dir: orbit/specs/2026-04-22-interactive-navigation/
+    branch: rally/interactive-navigation
+    worktree: "main"
+    parked_constraint: null
+    pr: https://github.com/meridian-online/brightfield/pull/14
+  - path: orbit/cards/0010-interactive-feedback-and-focus.yaml
+    status: complete
+    spec_dir: orbit/specs/2026-04-22-interactive-feedback/
+    branch: rally/interactive-feedback
+    worktree: "main"
+    parked_constraint: null
+    pr: https://github.com/meridian-online/brightfield/pull/15
+implementation_order:
+  - orbit/cards/0007-interactive-navigation.yaml
+  - orbit/cards/0010-interactive-feedback-and-focus.yaml
+order_rationale: "Shared symbols in scene.rs (build_chart_scene), interaction.rs (InteractionState), and chart_element.rs (ChartElement). Card 0007 establishes foundational changes; card 0010 layers feedback on top."

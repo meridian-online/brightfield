@@ -352,7 +352,7 @@ pub fn count_scene_fills(scene: &Scene) -> usize {
 mod tests {
     use super::*;
     use crate::channel::{Channel, ChannelMap};
-    use crate::scale::{infer_scales, Scale, ScaleSet};
+    use crate::scale::{infer_scales, Scale};
     use arrow::array::{Float64Array, StringArray, TimestampMicrosecondArray};
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
     use arrow::record_batch::RecordBatch;
