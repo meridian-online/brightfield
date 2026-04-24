@@ -1,0 +1,14 @@
+card: orbit/cards/0013-gpu-accelerated-mark-rendering.yaml
+autonomy: full
+budget: 3
+iteration: 1
+current_spec: orbit/specs/2026-04-24-gpu-mark-rendering/
+status: review
+history: []
+started: 2026-04-24T04:00:00Z
+review_cycles:
+  review_spec: 1
+  review_pr: 0
+review_cycle_dates:
+  review_spec: 2026-04-24
+  review_pr: null

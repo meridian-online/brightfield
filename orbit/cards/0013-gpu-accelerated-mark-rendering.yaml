@@ -37,12 +37,36 @@ scenarios:
     then: "the visual feedback (highlight, selection rectangle, tooltip) responds at 60+ FPS without perceptible lag"
     source_lines: "brightfield-brief.md: '120 FPS interactive, 60+ FPS on cross-filtered dashboards, sub-100ms filter response times'"
 
-goal: "A Mosaic spec with a dot, bar, or line mark renders as a GPU-accelerated interactive chart in a GPUI window, with axes and a colour legend, at 60+ FPS."
+  - name: "ChartElement renders as a GPUI element"
+    given: "a ChartElement wrapping a Vello scene"
+    when: "GPUI paints the window"
+    then: "the chart appears as a GPU-rendered texture in the window"
+
+  - name: "Render loop repaints on data change"
+    given: "a visible chart in a GPUI window"
+    when: "the underlying data changes"
+    then: "the chart repaints without dropping below 60 FPS"
+
+  - name: "Window resize triggers relayout"
+    given: "a visible chart in a resizable window"
+    when: "the window is resized"
+    then: "the chart recalculates layout and repaints at the new dimensions"
+
+  - name: "Mouse events flow into InteractionState"
+    given: "a visible chart with an interactor declared in the spec"
+    when: "I click, drag, or hover"
+    then: "InteractionState updates and the overlay renders accordingly"
+
+goal: >
+  ChartElement implements the GPUI Element trait, rendering a Vello scene as a
+  GPU texture in a live window. Mouse events flow into InteractionState and the
+  render loop repaints on data or layout changes at 60+ FPS.
 
 maturity: "emerging"
 
 specs:
   - "orbit/specs/2026-04-22-gpu-accelerated-mark-rendering/spec.yaml"
+  - "orbit/specs/2026-04-24-gpu-mark-rendering/spec.yaml"
 
 references:
   - "brightfield-brief.md: GPU-accelerated native rendering target"

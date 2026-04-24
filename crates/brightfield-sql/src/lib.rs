@@ -12,6 +12,9 @@ pub mod binding;
 pub mod conform;
 pub mod emit;
 pub mod error;
+
+// Re-exports for downstream crates.
+pub use emit::collect_marks;
 pub mod ir;
 pub mod lower;
 pub mod navigation_filter_pass;

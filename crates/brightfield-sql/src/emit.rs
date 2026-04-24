@@ -226,7 +226,7 @@ pub(crate) fn spec_value_to_sql_literal(val: &SpecValue) -> String {
 }
 
 /// Collect all `Mark` nodes from the spec's component tree (depth-first).
-fn collect_marks(spec: &Spec) -> Vec<&Mark> {
+pub fn collect_marks(spec: &Spec) -> Vec<&Mark> {
     let mut marks = Vec::new();
     if let Some(root) = &spec.root {
         collect_marks_from_component(root, &mut marks);
@@ -375,15 +375,29 @@ mod query_tests {
 
     #[test]
     fn dfir_ac08_emit_query_unsupported_mark() {
-        // A spec with a mark (line) — all marks are Unimplemented in v1
-        let src = "plot:\n  - mark: line\n    data: { from: flights }\ndata:\n  flights: { file: flights.parquet }\n";
+        // Use a mark kind that SimpleLowerer is NOT registered for
+        let src = "plot:\n  - mark: rect\n    data: { from: flights }\ndata:\n  flights: { file: flights.parquet }\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
         let result = emit_query(&spec, 0, None);
         assert!(result.is_err());
         match result.unwrap_err() {
-            EmitError::UnsupportedMark { kind } => assert_eq!(kind, "line"),
+            EmitError::UnsupportedMark { kind } => assert_eq!(kind, "rect"),
             other => panic!("expected UnsupportedMark, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn msv_ac01_emit_query_succeeds_for_from_data() {
+        // SimpleLowerer handles line marks with data.from
+        let src = "plot:\n  - mark: line\n    data: { from: flights }\ndata:\n  flights: { file: flights.parquet }\n";
+        let spec = parse_spec(src, Format::Yaml).unwrap().spec;
+        let result = emit_query(&spec, 0, None);
+        assert!(result.is_ok(), "SimpleLowerer should handle line+data.from");
+        let emitted = result.unwrap();
+        assert!(
+            emitted.sql.contains("flights"),
+            "emitted SQL should reference the source table"
+        );
     }
 
     #[test]
@@ -403,8 +417,9 @@ mod query_tests {
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
         let results = emit_all_queries(&spec, None);
         assert_eq!(results.len(), 2, "should have one result per mark");
+        // SimpleLowerer handles both line and dot with data.from
         for result in &results {
-            assert!(result.is_err(), "all marks are unsupported in v1");
+            assert!(result.is_ok(), "line and dot with data.from should succeed via SimpleLowerer");
         }
     }
 

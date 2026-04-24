@@ -31,7 +31,7 @@ scenarios:
     when: "the zoom gesture settles"
     then: "DuckDB re-queries for the visible extent, replacing the preview with full-resolution data"
 
-maturity: "planned"
+maturity: "emerging"
 
 specs:
   - "orbit/specs/2026-04-22-interactive-navigation/spec.yaml"

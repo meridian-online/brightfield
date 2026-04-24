@@ -1,0 +1,148 @@
+goal: >
+  A Mosaic YAML spec opened in the brightfield app renders as an interactive
+  chart in a GPUI window. The engine executes queries against DuckDB, the
+  renderer paints marks from real Arrow data, and the interaction loop
+  repaints on data or layout changes.
+
+constraints:
+  - "brightfield-render must NOT gain dependencies on brightfield-engine or brightfield-sql"
+  - "brightfield-ui must NOT gain dependencies on brightfield-engine or brightfield-sql (the app crate bridges them)"
+  - "All existing tests across all crates must continue to pass"
+  - "The pipeline must handle marks that fail to lower gracefully — log a warning, skip the mark, render the rest"
+  - "The app binary accepts a spec file path as a CLI argument"
+  - "SimpleLowerer reads MarkData::From { source } and emits QueryPlan::Source { table: source } (SELECT * FROM view); it does not handle inline data or aggregation"
+  - "ChannelMap::from_mark extracts literal strings only; ParamRef channels are skipped (existing behaviour preserved)"
+  - "infer_scales_multi and build_multi_mark_scene are additive — existing single-mark APIs unchanged"
+  - "The orchestration pipeline is sequential and blocking for v2 — no async, no streaming"
+
+acceptance_criteria:
+  - id: ac-01
+    ac_type: code
+    description: >
+      SimpleLowerer struct implements MarkLower trait. Registered in
+      default_lowerers() for MarkKind::Dot, MarkKind::Line,
+      MarkKind::BarX, MarkKind::BarY (4 kinds). For a mark with MarkData::From { source },
+      it emits QueryPlan::Source { table: source }. If the mark has no data
+      or has MarkData::Inline, it returns EmitError::UnsupportedMark.
+    verification: >
+      Unit tests: SimpleLowerer produces correct QueryPlan::Source for a
+      dot mark with data.from. SimpleLowerer returns UnsupportedMark for
+      marks without data. default_lowerers() contains entries for all five
+      mark kinds. Session.execute_mark(0) succeeds for a dot mark with
+      data.from pointing to a loaded table (end-to-end: parse → emit →
+      execute → Arrow).
+
+  - id: ac-02
+    ac_type: code
+    description: >
+      infer_scales_multi() in brightfield-render takes
+      &[(&RecordBatch, &ChannelMap)] and returns a ScaleSet with domains
+      unioned across all batches. For each channel, it collects domain
+      values from all batches and produces a single scale spanning the
+      combined range. The existing infer_scales() is unchanged.
+    verification: >
+      Unit test: two batches with x ranges [1,5] and [3,8] produce a
+      single x scale with domain [1,8]. Two batches with different
+      categorical fill values union the categories.
+
+  - id: ac-03
+    ac_type: code
+    description: >
+      build_multi_mark_scene() in brightfield-render takes a slice of
+      ChartData references and produces a single Scene. It calls
+      infer_scales_multi for shared scales, renders grid once, then
+      each mark renderer, then axes and legend. Returns (Scene, ScaleSet).
+      The existing build_chart_scene() is unchanged.
+    verification: >
+      Unit test: two ChartData entries (dot + line) sharing x/y produce
+      a scene with non-empty content and scales for both x and y channels.
+
+  - id: ac-04
+    ac_type: code
+    description: >
+      New brightfield-app binary crate in crates/brightfield-app/. Added to
+      workspace members. Depends on brightfield-spec, brightfield-sql,
+      brightfield-engine, brightfield-render, brightfield-ui, and gpui. The
+      main() function: reads spec path from CLI args, calls parse_spec_path,
+      analyse_spec, Engine::load_spec, session.execute_all(), constructs
+      ChannelMap::from_mark for each mark, builds scene via
+      build_multi_mark_scene (or build_chart_scene for single mark),
+      and prints pipeline summary (mark count, scales, scene stats).
+      GPUI window display is deferred to a follow-up card requiring full
+      Xcode + Metal compiler for gpui_macos platform support.
+    verification: >
+      The binary compiles. cargo build -p brightfield-app succeeds. The
+      headless pipeline runs end-to-end: parse → analyse → engine →
+      render → scene stats output. GPUI window integration is a
+      documented follow-up (requires platform dependency).
+
+  - id: ac-05
+    ac_type: code
+    description: >
+      Graceful mark failure handling. When a mark's lowerer fails
+      (returns EmitError) or query execution fails, the pipeline logs
+      a warning with the mark index and error, skips the mark, and
+      continues rendering the remaining marks. The app does not crash
+      on partial failure.
+    verification: >
+      Unit test in the app crate: a spec with one valid mark and one
+      invalid mark (e.g. unknown type) produces a scene from the valid
+      mark only. The invalid mark produces a logged warning.
+
+  - id: ac-06
+    ac_type: code
+    description: >
+      ChannelMap::from_mark logs a warning when it encounters a
+      ParamRef channel instead of a literal string. The warning
+      includes the channel name and the param reference. This makes
+      the gap visible rather than silently dropping channels.
+    verification: >
+      Unit test: a mark with x: { $param: "slider1" } produces a
+      ChannelMap with no x entry and a logged warning.
+
+  - id: ac-07
+    ac_type: gate
+    description: >
+      All existing tests pass. cargo test --workspace produces no
+      regressions. All existing test suites in brightfield-spec,
+      brightfield-sql, brightfield-engine, brightfield-render, and
+      brightfield-ui continue to pass.
+    verification: >
+      cargo test --workspace — all green.
+
+implementation_notes:
+  - "SimpleLowerer emits QueryPlan::Source { table } — equivalent to SELECT * FROM view. Column projection is deferred to a future optimisation card."
+  - "infer_scales_multi iterates all (batch, channel_map) pairs, unions continuous domains (min/max) and categorical domains (set union)"
+  - "build_multi_mark_scene uses a single ChartLayout — all marks share the same plot area"
+  - "The app crate's main.rs is ~50 lines of imperative orchestration"
+  - "GPUI window code is present but commented out — requires gpui_macos platform (full Xcode + Metal compiler). The headless pipeline proves end-to-end correctness."
+  - "For v2, the app renders the first plot in the spec. Multi-plot layout (hconcat/vconcat) is deferred."
+  - "Error handling in the pipeline: parse errors → exit with diagnostic, analysis errors → exit with diagnostic, DDL errors → exit with diagnostic, mark errors → skip with warning"
+  - "ChartLayout in brightfield-render is distinct from ChartLayout in brightfield-ui. The render version defines plot area for scene building; the ui version adds coordinate mapping for mouse events."
+  - "The brightfield-app crate depends on both brightfield-render and brightfield-ui, bridging the render pipeline into the GPUI shell."
+  - "brightfield-render gains a tracing dependency for ChannelMap::from_mark ParamRef warnings (AC-06)"
+  - "The ChartView/ChartElement paint path from card 0013 (CPU readback via paint_image) is the mechanism — AC-04's window displays the chart via this established pipeline"
+
+evaluation_principles:
+  - principle: "End-to-end correctness — spec in, chart out, no manual glue"
+    weight: 0.35
+  - principle: "Graceful degradation — partial failure doesn't crash the app"
+    weight: 0.25
+  - principle: "Existing test preservation — zero regressions"
+    weight: 0.25
+  - principle: "Simplicity — minimal new abstractions, imperative orchestration"
+    weight: 0.15
+
+exit_conditions:
+  - "brightfield-app binary compiles and runs with a sample spec YAML"
+  - "SimpleLowerer produces SQL for dot, bar, line marks"
+  - "Multi-mark scene renders correctly with shared scales"
+  - "All existing workspace tests pass unchanged"
+  - "A spec with mixed valid and invalid marks renders the valid ones"
+
+metadata:
+  version: "1.0"
+  test_prefix: "msv"
+  timestamp: "2026-04-24T06:00:00Z"
+  ambiguity_score: 0.15
+  interview_ref: "orbit/specs/2026-04-24-mosaic-spec-visualisation/interview.md"

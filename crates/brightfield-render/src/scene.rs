@@ -10,7 +10,7 @@ use crate::grid::{render_x_grid, render_y_grid};
 use crate::layout::ChartLayout;
 use crate::legend::render_colour_legend;
 use crate::mark::{HighlightState, MarkRenderer};
-use crate::scale::{infer_scales, Scale, ScaleSet, ViewExtent};
+use crate::scale::{infer_scales, infer_scales_multi, Scale, ScaleSet, ViewExtent};
 
 /// Input data for building a chart scene.
 pub struct ChartData<'a> {
@@ -117,6 +117,82 @@ pub fn build_chart_scene(data: &ChartData<'_>) -> (Scene, ScaleSet) {
     // Colour legend.
     if let Some(fill_scale) = scales.get(Channel::Fill) {
         render_colour_legend(&mut scene, &data.layout, fill_scale);
+    }
+
+    (scene, scales)
+}
+
+/// Build a scene from multiple marks sharing a single set of scales.
+///
+/// Calls `infer_scales_multi` to union domains across all entries, renders grid
+/// once, then each mark renderer, then axes and legend. Returns `(Scene, ScaleSet)`.
+/// The existing `build_chart_scene()` is unchanged.
+pub fn build_multi_mark_scene(entries: &[&ChartData<'_>]) -> (Scene, ScaleSet) {
+    if entries.is_empty() {
+        return (Scene::new(), ScaleSet::new());
+    }
+
+    let layout = &entries[0].layout;
+    let mut scene = Scene::new();
+
+    // Collect (batch, channel_map) pairs for multi-scale inference.
+    let pairs: Vec<(&RecordBatch, &ChannelMap)> = entries
+        .iter()
+        .map(|d| (d.batch, d.channel_map))
+        .collect();
+
+    let mut scales = infer_scales_multi(&pairs, layout.x_range(), layout.y_range());
+
+    // Apply view extent from the first entry (shared navigation).
+    if let Some(extent) = entries[0].view_extent {
+        if let Some((x_min, x_max)) = extent.x {
+            if let Some(x_scale) = scales.get(Channel::X) {
+                let overridden = override_scale_domain(x_scale, x_min, x_max);
+                scales.insert(Channel::X, overridden);
+            }
+        }
+        if let Some((y_min, y_max)) = extent.y {
+            if let Some(y_scale) = scales.get(Channel::Y) {
+                let overridden = override_scale_domain(y_scale, y_min, y_max);
+                scales.insert(Channel::Y, overridden);
+            }
+        }
+    }
+
+    // Grid lines (behind marks).
+    if let Some(x_scale) = scales.get(Channel::X) {
+        let x_ticks = compute_ticks(x_scale, 5);
+        render_x_grid(&mut scene, layout, &x_ticks);
+    }
+    if let Some(y_scale) = scales.get(Channel::Y) {
+        let y_ticks = compute_ticks(y_scale, 5);
+        render_y_grid(&mut scene, layout, &y_ticks);
+    }
+
+    // Render each mark layer.
+    for entry in entries {
+        entry.renderer.render(
+            &mut scene,
+            entry.batch,
+            entry.channel_map,
+            &scales,
+            entry.highlight,
+        );
+    }
+
+    // Axes (on top of marks).
+    if let Some(x_scale) = scales.get(Channel::X) {
+        let x_ticks = compute_ticks(x_scale, 5);
+        render_x_axis(&mut scene, layout, &x_ticks);
+    }
+    if let Some(y_scale) = scales.get(Channel::Y) {
+        let y_ticks = compute_ticks(y_scale, 5);
+        render_y_axis(&mut scene, layout, &y_ticks);
+    }
+
+    // Colour legend.
+    if let Some(fill_scale) = scales.get(Channel::Fill) {
+        render_colour_legend(&mut scene, layout, fill_scale);
     }
 
     (scene, scales)
@@ -326,6 +402,87 @@ mod tests {
         let y_zoomed = scales_zoomed.get(Channel::Y).unwrap();
         assert!((y_zoomed.domain_min().unwrap() - 10.0).abs() < f64::EPSILON);
         assert!((y_zoomed.domain_max().unwrap() - 50.0).abs() < f64::EPSILON);
+    }
+
+    // --- msv ac-03: build_multi_mark_scene ---
+
+    #[test]
+    fn msv_ac03_multi_mark_scene_dot_and_line() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        let batch1 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Float64Array::from(vec![1.0, 3.0, 5.0])),
+                Arc::new(Float64Array::from(vec![10.0, 30.0, 50.0])),
+            ],
+        )
+        .unwrap();
+
+        let batch2 = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![2.0, 4.0, 8.0])),
+                Arc::new(Float64Array::from(vec![20.0, 40.0, 80.0])),
+            ],
+        )
+        .unwrap();
+
+        let mut cm1 = ChannelMap::new();
+        cm1.insert(Channel::X, "x".to_string());
+        cm1.insert(Channel::Y, "y".to_string());
+        let mut cm2 = ChannelMap::new();
+        cm2.insert(Channel::X, "x".to_string());
+        cm2.insert(Channel::Y, "y".to_string());
+
+        let layout = ChartLayout::new(640.0, 480.0);
+        let dot_renderer = DotRenderer;
+        let line_renderer = LineRenderer;
+
+        let data1 = ChartData {
+            batch: &batch1,
+            channel_map: &cm1,
+            renderer: &dot_renderer,
+            layout: layout.clone(),
+            view_extent: None,
+            highlight: None,
+        };
+        let data2 = ChartData {
+            batch: &batch2,
+            channel_map: &cm2,
+            renderer: &line_renderer,
+            layout,
+            view_extent: None,
+            highlight: None,
+        };
+
+        let (scene, scales) = build_multi_mark_scene(&[&data1, &data2]);
+
+        // Scene should be non-empty.
+        let encoding = scene.encoding();
+        assert!(
+            encoding.path_tags.len() > 0,
+            "multi-mark scene should have content"
+        );
+
+        // Scales should span the union of both batches.
+        let x = scales.get(Channel::X).expect("x scale should exist");
+        assert!((x.domain_min().unwrap() - 1.0).abs() < f64::EPSILON, "x min = union min");
+        assert!((x.domain_max().unwrap() - 8.0).abs() < f64::EPSILON, "x max = union max");
+
+        let y = scales.get(Channel::Y).expect("y scale should exist");
+        assert!((y.domain_min().unwrap() - 10.0).abs() < f64::EPSILON, "y min = union min");
+        assert!((y.domain_max().unwrap() - 80.0).abs() < f64::EPSILON, "y max = union max");
+    }
+
+    #[test]
+    fn msv_ac03_multi_mark_scene_empty_entries() {
+        let (scene, scales) = build_multi_mark_scene(&[]);
+        let encoding = scene.encoding();
+        assert_eq!(encoding.path_tags.len(), 0, "empty entries => empty scene");
+        assert!(scales.get(Channel::X).is_none());
     }
 
     #[test]

@@ -262,7 +262,7 @@ const CATEGORICAL_PALETTE: &[[f32; 4]] = &[
 /// Infer scales from a RecordBatch and ChannelMap.
 ///
 /// For each channel in the map, examines the corresponding Arrow column type:
-/// - Float64 / Int64 / numeric -> LinearScale
+/// - Float64 / Int64 / Int32 / Int16 / numeric -> LinearScale
 /// - Utf8 / string -> BandScale
 /// - Timestamp -> TimeScale
 ///
@@ -294,6 +294,173 @@ pub fn infer_scales(
     }
 
     set
+}
+
+/// Infer scales from multiple (RecordBatch, ChannelMap) pairs with unioned domains.
+///
+/// For each channel that appears in any channel map, collects domain values from
+/// all batches and produces a single scale spanning the combined range:
+/// - Linear: min(all_mins), max(all_maxes)
+/// - Band/Colour: set union of categories (preserving insertion order)
+/// - Time: min(all_mins), max(all_maxes)
+///
+/// The existing `infer_scales()` is unchanged.
+pub fn infer_scales_multi(
+    entries: &[(&RecordBatch, &ChannelMap)],
+    x_range: (f64, f64),
+    y_range: (f64, f64),
+) -> ScaleSet {
+    // Collect all channels across all entries.
+    let mut all_channels: Vec<Channel> = Vec::new();
+    for (_, cm) in entries {
+        for (ch, _) in cm.iter() {
+            if !all_channels.contains(ch) {
+                all_channels.push(*ch);
+            }
+        }
+    }
+
+    let mut set = ScaleSet::new();
+
+    for channel in &all_channels {
+        let (range_start, range_end) = match channel {
+            Channel::X | Channel::X1 | Channel::X2 => x_range,
+            Channel::Y | Channel::Y1 | Channel::Y2 => y_range,
+            _ => (0.0, 0.0),
+        };
+
+        // Collect per-batch scales for this channel and union them.
+        let mut scales_for_channel: Vec<Scale> = Vec::new();
+        for (batch, cm) in entries {
+            if let Some(col_name) = cm.get(*channel) {
+                let col_idx = match batch.schema().index_of(col_name) {
+                    Ok(idx) => idx,
+                    Err(_) => continue,
+                };
+                let col = batch.column(col_idx);
+                if let Some(s) = infer_column_scale(col.as_ref(), range_start, range_end, *channel)
+                {
+                    scales_for_channel.push(s);
+                }
+            }
+        }
+
+        if let Some(merged) = union_scales(&scales_for_channel, range_start, range_end) {
+            set.insert(*channel, merged);
+        }
+    }
+
+    set
+}
+
+/// Union a list of scales of the same type into a single scale.
+fn union_scales(scales: &[Scale], range_start: f64, range_end: f64) -> Option<Scale> {
+    if scales.is_empty() {
+        return None;
+    }
+
+    match &scales[0] {
+        Scale::Linear { .. } => {
+            let mut min = f64::INFINITY;
+            let mut max = f64::NEG_INFINITY;
+            for s in scales {
+                if let Scale::Linear {
+                    domain_min,
+                    domain_max,
+                    ..
+                } = s
+                {
+                    if *domain_min < min {
+                        min = *domain_min;
+                    }
+                    if *domain_max > max {
+                        max = *domain_max;
+                    }
+                }
+            }
+            if min.is_infinite() {
+                None
+            } else {
+                Some(Scale::Linear {
+                    domain_min: min,
+                    domain_max: max,
+                    range_start,
+                    range_end,
+                })
+            }
+        }
+        Scale::Band { padding, .. } => {
+            let padding = *padding;
+            let mut categories: Vec<String> = Vec::new();
+            for s in scales {
+                if let Scale::Band {
+                    categories: cats, ..
+                } = s
+                {
+                    for cat in cats {
+                        if !categories.contains(cat) {
+                            categories.push(cat.clone());
+                        }
+                    }
+                }
+            }
+            Some(Scale::Band {
+                categories,
+                range_start,
+                range_end,
+                padding,
+            })
+        }
+        Scale::Colour { palette, .. } => {
+            let palette = palette.clone();
+            let mut categories: Vec<String> = Vec::new();
+            for s in scales {
+                if let Scale::Colour {
+                    categories: cats, ..
+                } = s
+                {
+                    for cat in cats {
+                        if !categories.contains(cat) {
+                            categories.push(cat.clone());
+                        }
+                    }
+                }
+            }
+            Some(Scale::Colour {
+                categories,
+                palette,
+            })
+        }
+        Scale::Time { .. } => {
+            let mut min = i64::MAX;
+            let mut max = i64::MIN;
+            for s in scales {
+                if let Scale::Time {
+                    domain_min_us,
+                    domain_max_us,
+                    ..
+                } = s
+                {
+                    if *domain_min_us < min {
+                        min = *domain_min_us;
+                    }
+                    if *domain_max_us > max {
+                        max = *domain_max_us;
+                    }
+                }
+            }
+            if min == i64::MAX {
+                None
+            } else {
+                Some(Scale::Time {
+                    domain_min_us: min,
+                    domain_max_us: max,
+                    range_start,
+                    range_end,
+                })
+            }
+        }
+    }
 }
 
 fn infer_column_scale(
@@ -342,6 +509,54 @@ fn infer_column_scale(
                 }
             }
             if min == i64::MAX {
+                return None;
+            }
+            Some(Scale::Linear {
+                domain_min: min as f64,
+                domain_max: max as f64,
+                range_start,
+                range_end,
+            })
+        }
+        DataType::Int32 => {
+            let arr = col.as_any().downcast_ref::<arrow::array::Int32Array>()?;
+            let (mut min, mut max) = (i32::MAX, i32::MIN);
+            for i in 0..arr.len() {
+                if !arr.is_null(i) {
+                    let v = arr.value(i);
+                    if v < min {
+                        min = v;
+                    }
+                    if v > max {
+                        max = v;
+                    }
+                }
+            }
+            if min == i32::MAX {
+                return None;
+            }
+            Some(Scale::Linear {
+                domain_min: min as f64,
+                domain_max: max as f64,
+                range_start,
+                range_end,
+            })
+        }
+        DataType::Int16 => {
+            let arr = col.as_any().downcast_ref::<arrow::array::Int16Array>()?;
+            let (mut min, mut max) = (i16::MAX, i16::MIN);
+            for i in 0..arr.len() {
+                if !arr.is_null(i) {
+                    let v = arr.value(i);
+                    if v < min {
+                        min = v;
+                    }
+                    if v > max {
+                        max = v;
+                    }
+                }
+            }
+            if min == i16::MAX {
                 return None;
             }
             Some(Scale::Linear {
@@ -698,5 +913,132 @@ mod tests {
         let bw = scale.band_width().expect("should have band width");
         assert!(bw > 0.0);
         assert!(bw < 100.0); // each band is 100px wide, with 10% padding -> 90px
+    }
+
+    // --- msv ac-02: infer_scales_multi ---
+
+    #[test]
+    fn msv_ac02_multi_unions_linear_domains() {
+        // Batch 1: x in [1, 5], y in [10, 50]
+        let schema1 = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        let batch1 = RecordBatch::try_new(
+            schema1,
+            vec![
+                Arc::new(Float64Array::from(vec![1.0, 5.0])),
+                Arc::new(Float64Array::from(vec![10.0, 50.0])),
+            ],
+        )
+        .unwrap();
+
+        // Batch 2: x in [3, 8], y in [5, 30]
+        let schema2 = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        let batch2 = RecordBatch::try_new(
+            schema2,
+            vec![
+                Arc::new(Float64Array::from(vec![3.0, 8.0])),
+                Arc::new(Float64Array::from(vec![5.0, 30.0])),
+            ],
+        )
+        .unwrap();
+
+        let mut cm1 = ChannelMap::new();
+        cm1.insert(Channel::X, "x".to_string());
+        cm1.insert(Channel::Y, "y".to_string());
+        let mut cm2 = ChannelMap::new();
+        cm2.insert(Channel::X, "x".to_string());
+        cm2.insert(Channel::Y, "y".to_string());
+
+        let entries: Vec<(&RecordBatch, &ChannelMap)> = vec![(&batch1, &cm1), (&batch2, &cm2)];
+        let scales = infer_scales_multi(&entries, (40.0, 600.0), (450.0, 20.0));
+
+        let x = scales.get(Channel::X).expect("x scale should exist");
+        match x {
+            Scale::Linear {
+                domain_min,
+                domain_max,
+                ..
+            } => {
+                assert!((domain_min - 1.0).abs() < f64::EPSILON, "x min should be 1.0");
+                assert!((domain_max - 8.0).abs() < f64::EPSILON, "x max should be 8.0");
+            }
+            other => panic!("expected Linear scale for x, got: {other:?}"),
+        }
+
+        let y = scales.get(Channel::Y).expect("y scale should exist");
+        match y {
+            Scale::Linear {
+                domain_min,
+                domain_max,
+                ..
+            } => {
+                assert!((domain_min - 5.0).abs() < f64::EPSILON, "y min should be 5.0");
+                assert!((domain_max - 50.0).abs() < f64::EPSILON, "y max should be 50.0");
+            }
+            other => panic!("expected Linear scale for y, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn msv_ac02_multi_unions_categorical_fill() {
+        let schema1 = Arc::new(Schema::new(vec![
+            Field::new("category", DataType::Utf8, false),
+        ]));
+        let batch1 = RecordBatch::try_new(
+            schema1,
+            vec![Arc::new(StringArray::from(vec!["red", "blue"]))],
+        )
+        .unwrap();
+
+        let schema2 = Arc::new(Schema::new(vec![
+            Field::new("category", DataType::Utf8, false),
+        ]));
+        let batch2 = RecordBatch::try_new(
+            schema2,
+            vec![Arc::new(StringArray::from(vec!["blue", "green"]))],
+        )
+        .unwrap();
+
+        let mut cm1 = ChannelMap::new();
+        cm1.insert(Channel::Fill, "category".to_string());
+        let mut cm2 = ChannelMap::new();
+        cm2.insert(Channel::Fill, "category".to_string());
+
+        let entries: Vec<(&RecordBatch, &ChannelMap)> = vec![(&batch1, &cm1), (&batch2, &cm2)];
+        let scales = infer_scales_multi(&entries, (0.0, 0.0), (0.0, 0.0));
+
+        let fill = scales.get(Channel::Fill).expect("fill scale should exist");
+        match fill {
+            Scale::Colour { categories, .. } => {
+                // Union of {red, blue} and {blue, green} = {red, blue, green}
+                assert_eq!(categories.len(), 3);
+                assert!(categories.contains(&"red".to_string()));
+                assert!(categories.contains(&"blue".to_string()));
+                assert!(categories.contains(&"green".to_string()));
+            }
+            other => panic!("expected Colour scale for fill, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn msv_ac02_multi_single_entry_matches_infer_scales() {
+        let batch = make_numeric_batch();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+
+        let single = infer_scales(&batch, &cm, (40.0, 600.0), (400.0, 20.0));
+        let multi = infer_scales_multi(&[(&batch, &cm)], (40.0, 600.0), (400.0, 20.0));
+
+        // Both should produce identical domains
+        let sx = single.get(Channel::X).unwrap();
+        let mx = multi.get(Channel::X).unwrap();
+        assert!((sx.domain_min().unwrap() - mx.domain_min().unwrap()).abs() < f64::EPSILON);
+        assert!((sx.domain_max().unwrap() - mx.domain_max().unwrap()).abs() < f64::EPSILON);
     }
 }

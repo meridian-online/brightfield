@@ -100,13 +100,25 @@ impl ChannelMap {
     /// Extract a ChannelMap from a mark's options.
     ///
     /// Scans the mark's options for known channel names (x, y, fill, etc.)
-    /// and maps them to column name strings.
+    /// and maps them to column name strings. ParamRef channels are skipped
+    /// with a warning — they require reactive parameter resolution which is
+    /// not yet implemented.
     pub fn from_mark(mark: &Mark) -> Self {
         let mut cm = Self::new();
         for ch in Channel::all() {
             if let Some(val) = mark.options.get(ch.wire_name()) {
-                if let ValueOrParamRef::Value(SpecValue::String(col)) = val {
-                    cm.insert(*ch, col.clone());
+                match val {
+                    ValueOrParamRef::Value(SpecValue::String(col)) => {
+                        cm.insert(*ch, col.clone());
+                    }
+                    ValueOrParamRef::Param(param_ref) => {
+                        tracing::warn!(
+                            channel = ch.wire_name(),
+                            param = %param_ref.to_wire(),
+                            "skipping ParamRef channel — reactive parameters not yet supported"
+                        );
+                    }
+                    _ => {}
                 }
             }
         }
@@ -141,5 +153,37 @@ mod tests {
         assert_eq!(cm.get(Channel::Y), None);
         assert!(cm.has(Channel::X));
         assert!(!cm.has(Channel::Y));
+    }
+
+    #[test]
+    fn msv_ac06_from_mark_skips_param_ref() {
+        use brightfield_spec::ast::{Mark, ParamRef, SpecValue, ValueOrParamRef};
+        use brightfield_spec::vocab::{ImplStatus, MarkKind};
+
+        let mut options: indexmap::IndexMap<String, ValueOrParamRef<SpecValue>> =
+            Default::default();
+        // x is a ParamRef — should be skipped
+        options.insert(
+            "x".to_string(),
+            ValueOrParamRef::Param(ParamRef::new("slider1")),
+        );
+        // y is a literal string — should be included
+        options.insert(
+            "y".to_string(),
+            ValueOrParamRef::Value(SpecValue::String("col_y".to_string())),
+        );
+
+        let mark = Mark {
+            kind: MarkKind::Dot,
+            status: ImplStatus::Unimplemented,
+            data: None,
+            options,
+        };
+
+        let cm = ChannelMap::from_mark(&mark);
+        // x should be absent (ParamRef skipped)
+        assert!(!cm.has(Channel::X), "ParamRef channel should be skipped");
+        // y should be present (literal string)
+        assert_eq!(cm.get(Channel::Y), Some("col_y"));
     }
 }

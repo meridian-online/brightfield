@@ -22,9 +22,10 @@ scenarios:
     then: "marks transition smoothly rather than snapping, using easing-based animation"
     source_lines: "brightfield-brief.md: 'Animation: GPUI's built-in animation system (easing functions, transformations, repeating animations) for smooth transitions on data/selection updates.'"
 
-maturity: "planned"
+maturity: "emerging"
 
-specs: []
+specs:
+  - "orbit/specs/2026-04-22-interactive-feedback/spec.yaml"
 
 references:
   - "brightfield-brief.md"

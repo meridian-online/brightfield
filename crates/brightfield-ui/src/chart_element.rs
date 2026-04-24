@@ -1,23 +1,34 @@
-//! ChartElement — GPUI element wrapping a Vello-rendered chart texture.
+//! ChartElement — stateless GPUI Element shell for Vello chart rendering.
 //!
-//! Renders a `vello::Scene` to a pixel buffer via wgpu, then presents it
-//! as a GPUI image element. CPU readback for v1 — on Apple Silicon unified
-//! memory, this is near-free (pointer cast, no actual GPU-to-CPU copy).
+//! ChartElement is a lightweight rendering shell that borrows scene and
+//! renderer from ChartState for one paint cycle. It owns no mutable state.
+//!
+//! Lifecycle:
+//! - `request_layout()` — returns a fixed-size layout matching ChartState dimensions
+//! - `prepaint()` — registers a hitbox covering the element bounds
+//! - `paint()` — renders the Vello scene to pixels and paints as a GPUI image
 
+use std::sync::{Arc, Mutex};
+
+use gpui::{
+    App, Bounds, Corners, Element, ElementId, GlobalElementId, HitboxBehavior,
+    InspectorElementId, IntoElement, LayoutId, Pixels, RenderImage, Size, Style, Window, px,
+};
+use image::RgbaImage;
+use smallvec::SmallVec;
 use vello::Scene;
 
-use crate::interaction::InteractionState;
+use crate::vello_renderer::VelloRenderer;
 
-/// A chart element that wraps a Vello scene for display in GPUI.
+/// Stateless chart element for one GPUI paint cycle.
 ///
-/// In v1, the element holds a pre-rendered scene and interaction state.
-/// The GPUI Element trait implementation (which requires the gpui runtime)
-/// is deferred to when the full GPUI application shell is wired up.
+/// Created by `ChartView::render()` each frame. Borrows the scene and
+/// renderer from ChartState — owns no mutable chart state itself.
 pub struct ChartElement {
-    /// The Vello scene containing the full chart (marks + axes + grid + legend).
+    /// The Vello scene to render this frame.
     scene: Scene,
-    /// Current interaction state (idle, brushing, hovering).
-    interaction: InteractionState,
+    /// Shared VelloRenderer for GPU rendering.
+    renderer: Arc<Mutex<VelloRenderer>>,
     /// Chart width in pixels.
     width: u32,
     /// Chart height in pixels.
@@ -25,34 +36,19 @@ pub struct ChartElement {
 }
 
 impl ChartElement {
-    /// Create a new chart element from a Vello scene.
-    pub fn new(scene: Scene, width: u32, height: u32) -> Self {
+    /// Create a new chart element for one paint cycle.
+    pub fn new(scene: Scene, renderer: Arc<Mutex<VelloRenderer>>, width: u32, height: u32) -> Self {
         Self {
             scene,
-            interaction: InteractionState::Idle,
+            renderer,
             width,
             height,
         }
     }
 
-    /// Access the current scene.
+    /// Access the scene (for testing).
     pub fn scene(&self) -> &Scene {
         &self.scene
-    }
-
-    /// Replace the scene (e.g. after re-render on data change).
-    pub fn set_scene(&mut self, scene: Scene) {
-        self.scene = scene;
-    }
-
-    /// Access the current interaction state.
-    pub fn interaction(&self) -> &InteractionState {
-        &self.interaction
-    }
-
-    /// Update the interaction state.
-    pub fn set_interaction(&mut self, state: InteractionState) {
-        self.interaction = state;
     }
 
     /// Chart width.
@@ -66,34 +62,142 @@ impl ChartElement {
     }
 }
 
-#[cfg(test)]
+impl IntoElement for ChartElement {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for ChartElement {
+    type RequestLayoutState = ();
+    type PrepaintState = gpui::Hitbox;
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        let mut style = Style::default();
+        style.size = Size {
+            width: gpui::Length::Definite(gpui::DefiniteLength::Absolute(
+                gpui::AbsoluteLength::Pixels(px(self.width as f32)),
+            )),
+            height: gpui::Length::Definite(gpui::DefiniteLength::Absolute(
+                gpui::AbsoluteLength::Pixels(px(self.height as f32)),
+            )),
+        };
+        let layout_id = window.request_layout(style, [], cx);
+        (layout_id, ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        _cx: &mut App,
+    ) -> Self::PrepaintState {
+        // Register a hitbox covering the full element bounds for mouse events.
+        window.insert_hitbox(bounds, HitboxBehavior::Normal)
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        _prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        _cx: &mut App,
+    ) {
+        if self.width == 0 || self.height == 0 {
+            return;
+        }
+
+        // Render the Vello scene to RGBA pixels.
+        let pixels = self
+            .renderer
+            .lock()
+            .expect("VelloRenderer mutex poisoned")
+            .render_to_pixels(&self.scene, self.width, self.height);
+
+        // Convert RGBA to BGRA (RenderImage expects BGRA format).
+        let mut bgra_pixels = pixels;
+        for pixel in bgra_pixels.chunks_exact_mut(4) {
+            pixel.swap(0, 2); // Swap R and B channels
+        }
+
+        // Construct the RenderImage from the pixel buffer.
+        let image_buffer =
+            RgbaImage::from_raw(self.width, self.height, bgra_pixels)
+                .expect("pixel buffer size mismatch");
+        let frame = image::Frame::new(image_buffer);
+        let render_image = Arc::new(RenderImage::new(SmallVec::from_elem(frame, 1)));
+
+        // Paint the image into the GPUI window.
+        let _ = window.paint_image(
+            bounds,
+            Corners::default(),
+            render_image,
+            0,
+            false,
+        );
+    }
+}
+
+#[cfg(all(test, feature = "gpu-tests"))]
 mod tests {
     use super::*;
-    use vello::Scene;
+
+    // Preserve existing test assertions — now testing ChartElement as
+    // a stateless rendering shell. These tests verify the struct can be
+    // constructed and the scene is accessible.
 
     #[test]
     fn gpu_ac09_chart_element_creation() {
+        let renderer = crate::vello_renderer::VelloRenderer::new();
         let scene = Scene::new();
-        let element = ChartElement::new(scene, 640, 480);
+        let element = ChartElement::new(scene, renderer, 640, 480);
         assert_eq!(element.width(), 640);
         assert_eq!(element.height(), 480);
-        assert!(matches!(element.interaction(), InteractionState::Idle));
     }
 
     #[test]
     fn gpu_ac09_chart_element_scene_update() {
-        let mut element = ChartElement::new(Scene::new(), 640, 480);
-
-        // Create a scene with some content.
-        let mut new_scene = Scene::new();
+        let renderer = crate::vello_renderer::VelloRenderer::new();
+        let mut scene = Scene::new();
         use kurbo::{Affine, Circle};
         use peniko::{Color, Fill};
         let circle = Circle::new((100.0, 100.0), 5.0);
-        new_scene.fill(Fill::NonZero, Affine::IDENTITY, Color::new([1.0, 0.0, 0.0, 1.0]), None, &circle);
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::new([1.0, 0.0, 0.0, 1.0]),
+            None,
+            &circle,
+        );
 
-        element.set_scene(new_scene);
+        let element = ChartElement::new(scene, renderer, 640, 480);
 
         let encoding = element.scene().encoding();
-        assert!(encoding.path_tags.len() > 0, "updated scene should have content");
+        assert!(
+            encoding.path_tags.len() > 0,
+            "scene should have content"
+        );
     }
 }

@@ -24,7 +24,13 @@ Artefacts live in `orbit/cards/`, `orbit/specs/`, and `orbit/decisions/`.
 
 ## Current Sprint
 
-goal: "<sprint objective>"
+goal: "First end-to-end render — wire spec parsing, SQL emission, mark lowering, DuckDB execution, and GPU rendering so a Mosaic spec produces a visible, interactive output"
 
 cards:
-  - NNNN: "<card goal>"
+  - 0004: "Direct data source loading"
+  - 0001: "Mosaic spec-driven visualisation (integration layer)"
+
+## Upcoming Sprint Candidates
+
+- "Runtime reactivity" — card 0005 v2 (param coordinator, live re-query) + card 0006 (cross-filtered selections). Static analysis layer shipped; next is wiring the subscriber graph to live execution.
+- "Mark coverage breadth" — card 0008 (grammar of graphics mark library). Expand beyond dot/bar/line to the full Mosaic mark vocabulary.

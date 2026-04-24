@@ -34,12 +34,32 @@ scenarios:
     then: "brightfield fails with a diagnostic that names the problem and locates it in the spec, rather than crashing or rendering silently broken output"
     source_lines: "author-directed during review (grounded in brightfield-brief.md §3.1 spec parsing responsibilities)"
 
-goal: "A Mosaic YAML spec defining a two-view cross-filtered dashboard renders interactively from the spec alone."
+  - name: "Open a spec in the app and see a chart"
+    given: "a valid Mosaic spec YAML file on disk"
+    when: "I open it in the brightfield app"
+    then: "a window opens showing the rendered chart"
 
-maturity: "planned"
+  - name: "Engine feeds Arrow data to the renderer"
+    given: "a spec with a data source and a mark"
+    when: "the spec loads"
+    then: "the engine executes queries and the renderer receives Arrow RecordBatches — no hand-crafted test data"
+
+  - name: "Multiple marks render in the same view"
+    given: "a spec with two marks (e.g. dot + line) sharing the same data source"
+    when: "the spec renders"
+    then: "both marks appear in the same plot, sharing scales and axes"
+
+goal: >
+  A Mosaic YAML spec opened in the brightfield app renders as an interactive
+  chart in a GPUI window — engine executes queries, renderer paints marks
+  from real Arrow data, interaction events close the loop.
+
+maturity: "emerging"
 
 specs:
   - orbit/specs/2026-04-20-mosaic-spec-driven-visualisation/spec.yaml
+  - orbit/specs/2026-04-24-mosaic-spec-visualisation/spec.yaml
 
 references:
   - "brightfield-brief.md"
+  - "spec v1 delivered: Mosaic 0.24.x YAML/JSON parser, typed AST, vocabulary registry with ImplStatus, conformance layer 1"

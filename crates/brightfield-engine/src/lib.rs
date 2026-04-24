@@ -464,12 +464,13 @@ plot:
     // --- ac-04: execute_mark ---
     #[test]
     fn dex_ac04_execute_mark_unsupported() {
+        // Use a mark kind that SimpleLowerer is NOT registered for
         let yaml = r#"
 data:
   t:
     - { x: 1 }
 plot:
-  - mark: dot
+  - mark: rect
     data: { from: t }
 "#;
         let (spec, analysis) = parse_and_analyse(yaml);
@@ -489,6 +490,7 @@ plot:
     // --- ac-05: execute_all with partial failure ---
     #[test]
     fn dex_ac05_execute_all_partial_failure() {
+        // Mix a supported mark (dot with data.from) and an unsupported mark (rect)
         let yaml = r#"
 data:
   t:
@@ -496,7 +498,7 @@ data:
 plot:
   - mark: dot
     data: { from: t }
-  - mark: line
+  - mark: rect
     data: { from: t }
 "#;
         let (spec, analysis) = parse_and_analyse(yaml);
@@ -505,9 +507,35 @@ plot:
 
         let results = session.execute_all();
         assert_eq!(results.len(), 2);
-        for result in &results {
-            assert!(result.is_err());
-        }
+        // dot with data.from succeeds via SimpleLowerer
+        assert!(results[0].is_ok(), "dot with data.from should succeed");
+        // rect is unsupported
+        assert!(results[1].is_err(), "rect should be unsupported");
+    }
+
+    // --- msv ac-01: SimpleLowerer end-to-end via Session ---
+    #[test]
+    fn msv_ac01_execute_mark_dot_with_data_from() {
+        let yaml = r#"
+data:
+  flights:
+    - { origin: "SEA", delay: 14 }
+    - { origin: "LAX", delay: -3 }
+    - { origin: "SEA", delay: 22 }
+plot:
+  - mark: dot
+    data: { from: flights }
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        let result = session.execute_mark(0);
+        assert!(result.is_ok(), "execute_mark failed: {:?}", result.err());
+        let batches = result.unwrap();
+        assert!(!batches.is_empty(), "expected at least one RecordBatch");
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows, 3, "expected 3 rows from inline data");
     }
 
     // --- ac-08: DDL failure produces structured error ---
@@ -606,16 +634,16 @@ vconcat:
         let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
 
         // update_param should dispatch to mark subscribers only.
-        // Both dot and line are unsupported marks, so each produces EmitFailed.
+        // Both dot and line have data.from, so SimpleLowerer handles them.
         let results = session.update_param("brush", SpecValue::String("test".to_string()));
 
         // Key assertions:
         // 1. Results are non-empty — the param has mark subscribers.
         assert!(!results.is_empty(), "expected results for subscribing marks");
-        // 2. Each result is an error (marks are unsupported) — but the important
-        //    thing is that we got results, proving the subscriber graph was consulted.
+        // 2. Each result succeeds — SimpleLowerer handles dot and line with data.from.
+        //    The important thing is we got results, proving the subscriber graph was consulted.
         for (idx, result) in &results {
-            assert!(result.is_err(), "mark {idx} should fail (unsupported)");
+            assert!(result.is_ok(), "mark {idx} should succeed via SimpleLowerer");
         }
         // 3. Result count matches mark subscribers, not all subscribers.
         assert_eq!(results.len(), 2, "expected exactly 2 mark results");
@@ -731,7 +759,7 @@ plot:
     // --- ac-05: mixed partial failure via test helper ---
     #[test]
     fn dex_ac05_execute_all_mixed_results() {
-        // Two marks: one succeeds via test_execute_emitted, one fails via execute_mark.
+        // Two marks: one succeeds via SimpleLowerer, one fails (unsupported).
         // This demonstrates Session can produce mixed Ok+Err in the same session.
         let yaml = r#"
 data:
@@ -740,24 +768,19 @@ data:
 plot:
   - mark: dot
     data: { from: t }
-  - mark: line
+  - mark: rect
     data: { from: t }
 "#;
         let (spec, analysis) = parse_and_analyse(yaml);
         let engine = Engine::new();
         let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
 
-        // Mark 0 succeeds via hand-crafted query.
-        let emitted = EmittedQuery {
-            sql: "SELECT * FROM t".to_string(),
-            bindings: vec![],
-            plan_hash: 200,
-        };
-        let ok_result = session.test_execute_emitted(0, "dot", &emitted);
-        assert!(ok_result.is_ok(), "mark 0 should succeed with valid SQL");
+        // Mark 0 succeeds via SimpleLowerer (dot with data.from).
+        let ok_result = session.execute_mark(0);
+        assert!(ok_result.is_ok(), "mark 0 should succeed via SimpleLowerer");
         assert!(!ok_result.unwrap().is_empty());
 
-        // Mark 1 fails via execute_mark (unsupported lowerer).
+        // Mark 1 fails via execute_mark (rect is unsupported).
         let err_result = session.execute_mark(1);
         assert!(err_result.is_err(), "mark 1 should fail (unsupported)");
         assert!(matches!(
@@ -788,8 +811,7 @@ plot:
         let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
 
         // update_extent should attempt to emit with the navigation filter.
-        // Since dot is unsupported, we'll get EmitFailed — but that proves
-        // the pass pipeline is wired. Let's verify with a raw SQL test instead.
+        // SimpleLowerer handles dot with data.from, so the query succeeds.
         let results = session.update_extent(
             Some(("x", 2.0, 4.0)),
             None,
@@ -797,11 +819,10 @@ plot:
 
         // There should be exactly 1 mark result (the dot).
         assert_eq!(results.len(), 1, "expected 1 mark result");
-        // Dot is unsupported so it fails at emit — the important assertion
-        // is that update_extent ran without panic.
+        // Dot with data.from succeeds via SimpleLowerer + navigation filter pass.
         let (idx, result) = &results[0];
         assert_eq!(*idx, 0);
-        assert!(result.is_err(), "dot mark should fail (unsupported)");
+        assert!(result.is_ok(), "dot mark should succeed via SimpleLowerer");
     }
 
     #[test]

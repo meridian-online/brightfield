@@ -1,0 +1,175 @@
+goal: >
+  ChartElement implements the GPUI Element trait, rendering a Vello scene as a
+  GPU texture in a live window. Mouse events flow into InteractionState and the
+  render loop repaints on data or layout changes at 60+ FPS.
+
+constraints:
+  - "brightfield-render must NOT gain a gpui dependency"
+  - "ChartView and all GPUI wiring live in brightfield-ui"
+  - "All existing brightfield-render and brightfield-ui tests must continue to pass"
+  - "The render pipeline must work on Apple Silicon (macOS Metal via wgpu)"
+  - "ChartElement is the inner element (IntoElement); ChartView is the outer component (Render + Model)"
+  - "Vello rendering is synchronous in paint() — no background threading for v2"
+  - "The wgpu device is dedicated (not shared with GPUI), created once, shared via Arc"
+  - "ChartElement is a stateless rendering shell — it borrows scene and renderer from ChartState for one paint cycle. ChartState owns all mutable state; ChartElement owns none."
+  - "GPU-requiring tests (wgpu device creation) use #[cfg(feature = \"gpu-tests\")] so cargo test --workspace passes on headless CI without a GPU"
+  - "VelloRenderer::new() panics with a diagnostic message if wgpu device creation fails — the app cannot function without a GPU device"
+
+acceptance_criteria:
+  - id: ac-01
+    ac_type: code
+    description: >
+      ChartState struct holds the chart's reactive state: vello::Scene,
+      InteractionState, NavigationState, Transition, layout dimensions
+      (width, height), and a shared reference to the VelloRenderer.
+      ChartState is wrapped in gpui::Entity (Model<ChartState>) for
+      reactive notifications. ChartState owns all mutable chart state;
+      ChartElement borrows from it for one paint cycle.
+    verification: >
+      Unit test: construct a ChartState with a Scene and verify all fields
+      are accessible. Verify ChartState is Send (required by Entity).
+
+  - id: ac-02
+    ac_type: code
+    description: >
+      VelloRenderer struct wraps wgpu::Device, wgpu::Queue, and
+      vello::Renderer behind an Arc. VelloRenderer::new() creates a
+      standalone wgpu device (not shared with GPUI) and panics with a
+      diagnostic message if device creation fails. VelloRenderer has a
+      render_to_pixels() method that takes a &Scene, width, height and
+      returns Vec<u8> (RGBA pixels) by rendering to a wgpu texture and
+      reading back the pixel buffer.
+    verification: >
+      Unit test: create a VelloRenderer, render a simple Scene (one circle)
+      to pixels, verify the returned buffer has length width * height * 4
+      and contains non-zero pixels.
+
+  - id: ac-03
+    ac_type: code
+    description: >
+      ChartView struct implements gpui::Render. It owns an Entity<ChartState>.
+      ChartView::render() returns a ChartElement that implements
+      gpui::IntoElement. ChartView is the public API — consumers create a
+      ChartView with a Model<ChartState> and add it to a GPUI window.
+    verification: >
+      Test: verify ChartView can be constructed with an Entity<ChartState>.
+      Verify ChartView::render() returns a value that implements IntoElement
+      (compile-time check via trait bound).
+
+  - id: ac-04
+    ac_type: code
+    description: >
+      ChartElement implements gpui::Element with the three required methods:
+      request_layout() returns a fixed-size layout node matching ChartState
+      dimensions; prepaint() registers a hitbox covering the element bounds;
+      paint() calls VelloRenderer::render_to_pixels() with the current scene,
+      constructs an Arc<RenderImage>, and calls window.paint_image().
+    verification: >
+      Integration test: construct a ChartElement with a known Scene,
+      verify request_layout returns a valid LayoutId. Full paint cycle
+      requires GPUI runtime — verify via a GPUI test harness or manual
+      smoke test. At minimum: verify render_to_pixels produces correct
+      buffer dimensions and content.
+
+  - id: ac-05
+    ac_type: code
+    description: >
+      Mouse event handlers on ChartView: on_mouse_down, on_mouse_move,
+      on_mouse_up, on_scroll. Each handler transforms window coordinates
+      to element-local coordinates (subtract element origin), checks if
+      the point falls within the plot area bounds, and updates
+      InteractionState in the ChartState model via entity.update().
+      The model update triggers cx.notify() for automatic repaint.
+    verification: >
+      Unit test: simulate coordinate transforms — given a known element
+      origin and plot area bounds, verify that a point inside the plot
+      area produces the correct local coordinates and a point outside
+      is ignored. Verify InteractionState transitions (Idle → Brushing
+      on mouse_down inside plot area, Brushing → Idle on mouse_up).
+
+  - id: ac-06
+    ac_type: code
+    description: >
+      Repaint triggers via GPUI's Model notification system. When
+      ChartState.scene is updated (via set_scene()), the caller calls
+      cx.notify() on the entity to schedule a repaint. ChartView
+      observes the entity and re-renders on notification. No polling
+      or timer-driven render loop.
+    verification: >
+      Test: verify that entity.update(|state, cx| { state.set_scene(new);
+      cx.notify() }) triggers notification. Verify no timer or animation
+      frame is scheduled when the chart is idle (no active Transition).
+
+  - id: ac-07
+    ac_type: code
+    description: >
+      Window resize handling. ChartView observes window bounds changes
+      via GPUI's observe mechanism. On resize, update ChartState layout
+      dimensions and call cx.notify() to trigger repaint with new
+      dimensions. The Vello scene is re-rendered at the new size.
+    verification: >
+      Unit test: update ChartState dimensions and verify the layout
+      dimensions change. Verify that render_to_pixels respects the
+      new width/height.
+
+  - id: ac-08
+    ac_type: code
+    description: >
+      Coordinate mapping pipeline for mouse events. ChartLayout struct
+      (or equivalent) defines the plot area bounds within the element
+      (accounting for margins). The mapping is: window_pos - element_origin
+      → local_px; check local_px within plot_area; scale.inverse_f64(local_px)
+      → data_value. The element origin is captured from the bounds argument
+      in prepaint/paint.
+    verification: >
+      Unit test: given known margins (20/20/30/40) and chart dimensions
+      (640x480), verify plot area bounds are (40, 20, 620, 450). Given a
+      linear scale mapping [0, 100] to [40, 620], verify inverse transform
+      produces correct data values for known pixel positions.
+
+  - id: ac-09
+    ac_type: gate
+    description: >
+      All existing tests pass. cargo test --workspace produces no
+      regressions. The existing ChartElement tests (gpu_ac09_*) and
+      InteractionState tests continue to pass — the structs may be
+      refactored but the functionality is preserved.
+    verification: >
+      cargo test --workspace — all green.
+
+implementation_notes:
+  - "ChartElement already exists in chart_element.rs — evolve it rather than replacing"
+  - "InteractionState already exists in interaction.rs — keep it, just wire it to GPUI events"
+  - "VelloRenderer::render_to_pixels() uses vello::util::RenderContext pattern from Vello examples"
+  - "GPUI's paint_image() takes Arc<RenderImage> — construct from the pixel buffer"
+  - "Scale::inverse_f64 already exists from card 0007 — use it for coordinate mapping"
+  - "wgpu device creation: wgpu::Instance::new() → request_adapter() → request_device() — async but can block_on for v2"
+  - "For transitions, use cx.on_next_frame() to schedule ticks while Transition::state == Running"
+  - "GPUI Element trait requires: id(), source_location(), request_layout(), prepaint(), paint()"
+  - "Element::RequestLayoutState and PrepaintState associated types carry state between phases"
+  - "NavigationState and Transition are included in ChartState fields but their event-routing integration (pan/zoom gestures, transition scheduling via cx.on_next_frame) is deferred to the app shell card — this card establishes the struct and the GPUI Element machinery"
+  - "GPU-requiring tests must be gated behind #[cfg(feature = \"gpu-tests\")] so headless CI passes"
+
+evaluation_principles:
+  - principle: "Correctness — Element trait contract honoured faithfully"
+    weight: 0.35
+  - principle: "Integration — existing InteractionState and Scene types preserved"
+    weight: 0.30
+  - principle: "Simplicity — synchronous render, no threading, minimal new abstractions"
+    weight: 0.20
+  - principle: "Testability — as much as possible testable without full GPUI runtime"
+    weight: 0.15
+
+exit_conditions:
+  - "ChartView + ChartElement compile and pass all tests"
+  - "VelloRenderer produces correct pixel buffers from Vello scenes"
+  - "Mouse event coordinate transform pipeline is tested"
+  - "All existing tests pass unchanged"
+  - "If profiling reveals paint() exceeds 10ms for test scenes, file a card for async render extraction before shipping"
+
+metadata:
+  version: "1.1"
+  test_prefix: "gmr"
+  timestamp: "2026-04-24T04:00:00Z"
+  ambiguity_score: 0.10
+  interview_ref: "orbit/specs/2026-04-24-gpu-mark-rendering/interview.md"
