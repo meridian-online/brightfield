@@ -13,12 +13,18 @@ pub mod grid;
 pub mod layout;
 pub mod legend;
 pub mod mark;
+pub mod nearest;
 pub mod scale;
 pub mod scene;
+pub mod tooltip;
+pub mod transition;
 
 // Re-exports for downstream consumers.
 pub use channel::ChannelMap;
 pub use layout::ChartLayout;
-pub use mark::MarkRenderer;
+pub use mark::{HighlightState, MarkRenderer};
+pub use nearest::{find_nearest, NearestHit, NearestMode};
 pub use scale::{Scale, ScaleSet, ViewExtent};
 pub use scene::build_chart_scene;
+pub use tooltip::TooltipContent;
+pub use transition::{Transition, TransitionState};

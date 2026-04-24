@@ -11,6 +11,7 @@ use kurbo::{Affine, Point, Rect};
 use peniko::{Color, Fill};
 use vello::Scene;
 
+use brightfield_render::nearest::NearestHit;
 use brightfield_render::scale::ViewExtent;
 use brightfield_spec::vocab::InteractorKind;
 
@@ -30,6 +31,8 @@ pub enum InteractionState {
     Hovering {
         /// The hovered point in chart coordinates.
         point: Point,
+        /// Resolved nearest data point (if within max distance).
+        nearest: Option<NearestHit>,
     },
 }
 
@@ -98,7 +101,7 @@ impl InteractionState {
                 let stroke = kurbo::Stroke::new(1.5);
                 scene.stroke(&stroke, Affine::IDENTITY, BRUSH_BORDER_COLOUR, None, &rect);
             }
-            Self::Hovering { point } => {
+            Self::Hovering { point, .. } => {
                 let circle = kurbo::Circle::new(*point, HOVER_RADIUS);
                 scene.fill(Fill::NonZero, Affine::IDENTITY, HOVER_COLOUR, None, &circle);
             }
@@ -349,6 +352,7 @@ mod tests {
     fn gpu_ac10_hover_overlay_renders() {
         let state = InteractionState::Hovering {
             point: Point::new(50.0, 50.0),
+            nearest: None,
         };
 
         let mut scene = Scene::new();
@@ -596,6 +600,49 @@ mod tests {
             encoding.path_tags.len(),
             0,
             "idle state should not produce overlay content"
+        );
+    }
+
+    // --- ifb_ac10: Hovering with NearestHit ---
+
+    #[test]
+    fn ifb_ac10_hovering_with_nearest_hit() {
+        use brightfield_render::nearest::NearestHit;
+
+        let hit = NearestHit {
+            row: 3,
+            point: kurbo::Point::new(100.0, 200.0),
+            distance: 5.0,
+        };
+        let state = InteractionState::Hovering {
+            point: Point::new(102.0, 198.0),
+            nearest: Some(hit.clone()),
+        };
+
+        match &state {
+            InteractionState::Hovering { nearest, .. } => {
+                let hit = nearest.as_ref().unwrap();
+                assert_eq!(hit.row, 3);
+                assert!((hit.distance - 5.0).abs() < f64::EPSILON);
+            }
+            _ => panic!("expected Hovering state"),
+        }
+    }
+
+    #[test]
+    fn ifb_ac10_hovering_without_nearest_backward_compatible() {
+        let state = InteractionState::Hovering {
+            point: Point::new(50.0, 50.0),
+            nearest: None,
+        };
+        // Should still render overlay without panicking
+        let mut scene = Scene::new();
+        state.render_overlay(&mut scene);
+
+        let encoding = scene.encoding();
+        assert!(
+            encoding.path_tags.len() > 0,
+            "hovering without nearest should still render highlight circle"
         );
     }
 }

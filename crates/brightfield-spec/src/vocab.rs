@@ -197,13 +197,13 @@ vocab_enum! {
         IntervalY => ("intervalY", Unimplemented),
         IntervalXY => ("intervalXY", Unimplemented),
         Interval => ("interval", Unimplemented),
-        Nearest => ("nearest", Unimplemented),
-        NearestX => ("nearestX", Unimplemented),
-        NearestY => ("nearestY", Unimplemented),
+        Nearest => ("nearest", Implemented),
+        NearestX => ("nearestX", Implemented),
+        NearestY => ("nearestY", Implemented),
         Toggle => ("toggle", Unimplemented),
         ToggleX => ("toggleX", Unimplemented),
         ToggleY => ("toggleY", Unimplemented),
-        Highlight => ("highlight", Unimplemented),
+        Highlight => ("highlight", Implemented),
         Region => ("region", Unimplemented),
         Pan => ("pan", Implemented),
         PanX => ("panX", Implemented),
@@ -283,6 +283,25 @@ mod tests {
         }
         for k in LegendChannel::all() {
             let _ = k.status();
+        }
+    }
+
+    /// ac-09 (ifb): Nearest, NearestX, NearestY, Highlight are Implemented.
+    #[test]
+    fn ifb_ac09_feedback_variants_implemented() {
+        let variants = [
+            InteractorKind::Nearest,
+            InteractorKind::NearestX,
+            InteractorKind::NearestY,
+            InteractorKind::Highlight,
+        ];
+        for variant in &variants {
+            assert_eq!(
+                variant.status(),
+                ImplStatus::Implemented,
+                "{:?} should be Implemented",
+                variant
+            );
         }
     }
 

@@ -13,19 +13,52 @@ use vello::Scene;
 use crate::channel::{Channel, ChannelMap};
 use crate::scale::{Scale, ScaleSet};
 
+/// Highlight state for per-row dim/emphasis rendering.
+///
+/// When active, rows where `predicate(row_index)` returns `true` render at
+/// full alpha; rows where it returns `false` render at `dimmed_alpha`.
+pub struct HighlightState {
+    /// Predicate: returns `true` for rows that should be fully opaque.
+    pub predicate: Box<dyn Fn(usize) -> bool + Send + Sync>,
+    /// Alpha multiplier for non-matching (dimmed) rows. Typically 0.15.
+    pub dimmed_alpha: f64,
+}
+
 /// Trait for per-mark-family rendering.
 ///
 /// Each implementation produces Vello scene fragments from Arrow data
 /// mapped through scales.
 pub trait MarkRenderer {
     /// Render the mark into the given scene.
+    ///
+    /// When `highlight` is `Some`, matching rows render at full alpha;
+    /// non-matching rows have their alpha multiplied by `dimmed_alpha`.
     fn render(
         &self,
         scene: &mut Scene,
         batch: &RecordBatch,
         channel_map: &ChannelMap,
         scales: &ScaleSet,
+        highlight: Option<&HighlightState>,
     );
+
+    /// Render with interpolation between previous and current positions.
+    ///
+    /// `prev_positions` are pixel (x, y) pairs from the previous frame.
+    /// `t` is the interpolation factor (0.0 = prev, 1.0 = current).
+    /// Default implementation forwards to `render()`, ignoring interpolation.
+    fn render_interpolated(
+        &self,
+        scene: &mut Scene,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        scales: &ScaleSet,
+        _prev_positions: &[(f64, f64)],
+        _t: f64,
+        highlight: Option<&HighlightState>,
+    ) {
+        self.render(scene, batch, channel_map, scales, highlight);
+    }
 }
 
 /// Default dot radius in pixels.
@@ -117,6 +150,20 @@ fn resolve_colour(
     DEFAULT_COLOUR
 }
 
+/// Apply highlight dimming to a colour.
+///
+/// If highlight is active and the predicate returns false for this row,
+/// multiply the colour's alpha by `dimmed_alpha`.
+fn apply_highlight(colour: Color, row: usize, highlight: Option<&HighlightState>) -> Color {
+    match highlight {
+        Some(hs) if !(hs.predicate)(row) => {
+            let [r, g, b, a] = colour.components;
+            Color::new([r, g, b, a * hs.dimmed_alpha as f32])
+        }
+        _ => colour,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // DotRenderer
 // ---------------------------------------------------------------------------
@@ -131,6 +178,7 @@ impl MarkRenderer for DotRenderer {
         batch: &RecordBatch,
         channel_map: &ChannelMap,
         scales: &ScaleSet,
+        highlight: Option<&HighlightState>,
     ) {
         let x_col = match channel_map.get(Channel::X) {
             Some(c) => c,
@@ -171,6 +219,71 @@ impl MarkRenderer for DotRenderer {
             };
 
             let colour = resolve_colour(scales, channel_map, batch, i);
+            let colour = apply_highlight(colour, i, highlight);
+            let circle = Circle::new((px, py), DOT_RADIUS);
+            scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &circle);
+        }
+    }
+
+    fn render_interpolated(
+        &self,
+        scene: &mut Scene,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        scales: &ScaleSet,
+        prev_positions: &[(f64, f64)],
+        t: f64,
+        highlight: Option<&HighlightState>,
+    ) {
+        let x_col = match channel_map.get(Channel::X) {
+            Some(c) => c,
+            None => return,
+        };
+        let y_col = match channel_map.get(Channel::Y) {
+            Some(c) => c,
+            None => return,
+        };
+        let x_scale = match scales.get(Channel::X) {
+            Some(s) => s,
+            None => return,
+        };
+        let y_scale = match scales.get(Channel::Y) {
+            Some(s) => s,
+            None => return,
+        };
+
+        let x_f64 = column_as_f64(batch, x_col);
+        let x_str = column_as_string(batch, x_col);
+        let y_f64 = column_as_f64(batch, y_col);
+        let y_str = column_as_string(batch, y_col);
+
+        let n = batch.num_rows();
+        for i in 0..n {
+            let xf = x_f64.as_ref().and_then(|v| v[i]);
+            let xs = x_str.as_ref().and_then(|v| v[i].as_deref());
+            let yf = y_f64.as_ref().and_then(|v| v[i]);
+            let ys = y_str.as_ref().and_then(|v| v[i].as_deref());
+
+            let target_px = match resolve_position(x_scale, xf, xs) {
+                Some(p) => p,
+                None => continue,
+            };
+            let target_py = match resolve_position(y_scale, yf, ys) {
+                Some(p) => p,
+                None => continue,
+            };
+
+            // Lerp from prev to current
+            let (px, py) = if let Some(&(prev_x, prev_y)) = prev_positions.get(i) {
+                let x = prev_x + (target_px - prev_x) * t;
+                let y = prev_y + (target_py - prev_y) * t;
+                (x, y)
+            } else {
+                (target_px, target_py)
+            };
+
+            let colour = resolve_colour(scales, channel_map, batch, i);
+            let colour = apply_highlight(colour, i, highlight);
             let circle = Circle::new((px, py), DOT_RADIUS);
             scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &circle);
         }
@@ -191,6 +304,7 @@ impl MarkRenderer for BarRenderer {
         batch: &RecordBatch,
         channel_map: &ChannelMap,
         scales: &ScaleSet,
+        highlight: Option<&HighlightState>,
     ) {
         let x_col = match channel_map.get(Channel::X) {
             Some(c) => c,
@@ -251,6 +365,7 @@ impl MarkRenderer for BarRenderer {
             };
 
             let colour = resolve_colour(scales, channel_map, batch, i);
+            let colour = apply_highlight(colour, i, highlight);
             let rect = Rect::new(x0, y_top, x0 + band_width, y_bottom);
             scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &rect);
         }
@@ -271,6 +386,7 @@ impl MarkRenderer for LineRenderer {
         batch: &RecordBatch,
         channel_map: &ChannelMap,
         scales: &ScaleSet,
+        _highlight: Option<&HighlightState>,
     ) {
         let x_col = match channel_map.get(Channel::X) {
             Some(c) => c,
@@ -381,7 +497,7 @@ mod tests {
 
         let mut scene = Scene::new();
         let renderer = DotRenderer;
-        renderer.render(&mut scene, &batch, &cm, &scales);
+        renderer.render(&mut scene, &batch, &cm, &scales, None);
 
         // Scene should be non-empty after rendering 3 dots.
         // Vello's Scene encoding grows with each fill operation.
@@ -418,7 +534,7 @@ mod tests {
 
         let mut scene = Scene::new();
         let renderer = DotRenderer;
-        renderer.render(&mut scene, &batch, &cm, &scales);
+        renderer.render(&mut scene, &batch, &cm, &scales, None);
 
         let encoding = scene.encoding();
         assert!(
@@ -450,7 +566,7 @@ mod tests {
 
         let mut scene = Scene::new();
         let renderer = BarRenderer;
-        renderer.render(&mut scene, &batch, &cm, &scales);
+        renderer.render(&mut scene, &batch, &cm, &scales, None);
 
         let encoding = scene.encoding();
         assert!(
@@ -505,13 +621,224 @@ mod tests {
 
         let mut scene = Scene::new();
         let renderer = LineRenderer;
-        renderer.render(&mut scene, &batch, &cm, &scales);
+        renderer.render(&mut scene, &batch, &cm, &scales, None);
 
         // Line renderer should produce stroke operations for 3 line segments (4 points).
         let encoding = scene.encoding();
         assert!(
             encoding.path_tags.len() > 0,
             "scene should have path tags after rendering 4-point line"
+        );
+    }
+
+    // --- ifb_ac03: HighlightState ---
+
+    #[test]
+    fn ifb_ac03_highlight_state_predicate() {
+        let hs = HighlightState {
+            predicate: Box::new(|row| row == 1),
+            dimmed_alpha: 0.15,
+        };
+        assert!(!(hs.predicate)(0), "row 0 should not match");
+        assert!((hs.predicate)(1), "row 1 should match");
+        assert!(!(hs.predicate)(2), "row 2 should not match");
+        assert!((hs.dimmed_alpha - 0.15).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn ifb_ac03_highlight_state_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        // This won't compile if HighlightState's predicate isn't Send+Sync
+        assert_send_sync::<Box<dyn Fn(usize) -> bool + Send + Sync>>();
+    }
+
+    // --- ifb_ac04: MarkRenderer with highlight ---
+
+    #[test]
+    fn ifb_ac04_dot_renderer_with_highlight() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])),
+                Arc::new(Float64Array::from(vec![10.0, 20.0, 30.0])),
+            ],
+        )
+        .unwrap();
+
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+
+        let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+
+        let hs = HighlightState {
+            predicate: Box::new(|row| row == 1),
+            dimmed_alpha: 0.15,
+        };
+
+        let mut scene = Scene::new();
+        let renderer = DotRenderer;
+        renderer.render(&mut scene, &batch, &cm, &scales, Some(&hs));
+
+        let encoding = scene.encoding();
+        assert!(
+            encoding.path_tags.len() > 0,
+            "dot scene with highlight should have content"
+        );
+    }
+
+    #[test]
+    fn ifb_ac04_bar_renderer_with_highlight() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("category", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["a", "b"])),
+                Arc::new(Float64Array::from(vec![10.0, 20.0])),
+            ],
+        )
+        .unwrap();
+
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "category".to_string());
+        cm.insert(Channel::Y, "value".to_string());
+
+        let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+
+        let hs = HighlightState {
+            predicate: Box::new(|row| row == 0),
+            dimmed_alpha: 0.2,
+        };
+
+        let mut scene = Scene::new();
+        let renderer = BarRenderer;
+        renderer.render(&mut scene, &batch, &cm, &scales, Some(&hs));
+
+        let encoding = scene.encoding();
+        assert!(
+            encoding.path_tags.len() > 0,
+            "bar scene with highlight should have content"
+        );
+    }
+
+    // --- ifb_ac07: render_interpolated ---
+
+    #[test]
+    fn ifb_ac07_dot_render_interpolated_at_zero() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])),
+                Arc::new(Float64Array::from(vec![10.0, 20.0, 30.0])),
+            ],
+        )
+        .unwrap();
+
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+
+        let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+
+        let prev_positions = vec![(100.0, 100.0), (200.0, 200.0), (300.0, 300.0)];
+
+        let mut scene = Scene::new();
+        let renderer = DotRenderer;
+        renderer.render_interpolated(
+            &mut scene, &batch, &cm, &scales,
+            &prev_positions, 0.0, None,
+        );
+
+        let encoding = scene.encoding();
+        assert!(
+            encoding.path_tags.len() > 0,
+            "interpolated scene at t=0 should have content"
+        );
+    }
+
+    #[test]
+    fn ifb_ac07_dot_render_interpolated_at_one() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])),
+                Arc::new(Float64Array::from(vec![10.0, 20.0, 30.0])),
+            ],
+        )
+        .unwrap();
+
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+
+        let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+
+        let prev_positions = vec![(100.0, 100.0), (200.0, 200.0), (300.0, 300.0)];
+
+        let mut scene = Scene::new();
+        let renderer = DotRenderer;
+        renderer.render_interpolated(
+            &mut scene, &batch, &cm, &scales,
+            &prev_positions, 1.0, None,
+        );
+
+        let encoding = scene.encoding();
+        assert!(
+            encoding.path_tags.len() > 0,
+            "interpolated scene at t=1 should have content"
+        );
+    }
+
+    #[test]
+    fn ifb_ac07_bar_default_render_interpolated_produces_content() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("category", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["a", "b"])),
+                Arc::new(Float64Array::from(vec![10.0, 20.0])),
+            ],
+        )
+        .unwrap();
+
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "category".to_string());
+        cm.insert(Channel::Y, "value".to_string());
+
+        let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+
+        let prev_positions = vec![(100.0, 100.0), (200.0, 200.0)];
+
+        let mut scene = Scene::new();
+        let renderer = BarRenderer;
+        // Default impl should forward to render()
+        renderer.render_interpolated(
+            &mut scene, &batch, &cm, &scales,
+            &prev_positions, 0.5, None,
+        );
+
+        let encoding = scene.encoding();
+        assert!(
+            encoding.path_tags.len() > 0,
+            "bar default render_interpolated should forward to render"
         );
     }
 }

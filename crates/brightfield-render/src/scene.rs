@@ -9,7 +9,7 @@ use crate::channel::{Channel, ChannelMap};
 use crate::grid::{render_x_grid, render_y_grid};
 use crate::layout::ChartLayout;
 use crate::legend::render_colour_legend;
-use crate::mark::MarkRenderer;
+use crate::mark::{HighlightState, MarkRenderer};
 use crate::scale::{infer_scales, Scale, ScaleSet, ViewExtent};
 
 /// Input data for building a chart scene.
@@ -26,6 +26,9 @@ pub struct ChartData<'a> {
     /// When `Some`, scale domains are overridden to the specified range.
     /// When `None`, the full data-inferred domain is used.
     pub view_extent: Option<&'a ViewExtent>,
+    /// Optional highlight state for per-row dim/emphasis.
+    /// When `Some`, matching rows render at full alpha; non-matching rows are dimmed.
+    pub highlight: Option<&'a HighlightState>,
 }
 
 /// Build a complete chart scene from data and configuration.
@@ -99,7 +102,7 @@ pub fn build_chart_scene(data: &ChartData<'_>) -> (Scene, ScaleSet) {
 
     // Marks.
     data.renderer
-        .render(&mut scene, data.batch, data.channel_map, &scales);
+        .render(&mut scene, data.batch, data.channel_map, &scales, data.highlight);
 
     // Axes (on top of grid/marks).
     if let Some(x_scale) = scales.get(Channel::X) {
@@ -161,6 +164,7 @@ mod tests {
             renderer: &renderer,
             layout,
             view_extent: None,
+            highlight: None,
         };
 
         let (scene, scales) = build_chart_scene(&data);
@@ -206,6 +210,7 @@ mod tests {
             renderer: &renderer,
             layout,
             view_extent: None,
+            highlight: None,
         };
 
         let (scene, _scales) = build_chart_scene(&data);
@@ -251,6 +256,7 @@ mod tests {
             renderer: &renderer,
             layout,
             view_extent: None,
+            highlight: None,
         };
 
         let (scene, _scales) = build_chart_scene(&data);
@@ -291,6 +297,7 @@ mod tests {
             renderer: &renderer,
             layout: layout.clone(),
             view_extent: None,
+            highlight: None,
         };
         let (_scene, scales_full) = build_chart_scene(&data_full);
         let x_full = scales_full.get(Channel::X).unwrap();
@@ -308,6 +315,7 @@ mod tests {
             renderer: &renderer,
             layout,
             view_extent: Some(&extent),
+            highlight: None,
         };
         let (_scene, scales_zoomed) = build_chart_scene(&data_zoomed);
         let x_zoomed = scales_zoomed.get(Channel::X).unwrap();
@@ -318,5 +326,65 @@ mod tests {
         let y_zoomed = scales_zoomed.get(Channel::Y).unwrap();
         assert!((y_zoomed.domain_min().unwrap() - 10.0).abs() < f64::EPSILON);
         assert!((y_zoomed.domain_max().unwrap() - 50.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn ifb_ac05_build_chart_scene_with_highlight() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])),
+                Arc::new(Float64Array::from(vec![10.0, 20.0, 30.0])),
+            ],
+        )
+        .unwrap();
+
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+
+        let layout = ChartLayout::new(640.0, 480.0);
+        let renderer = DotRenderer;
+
+        let hs = crate::mark::HighlightState {
+            predicate: Box::new(|row| row == 1),
+            dimmed_alpha: 0.15,
+        };
+
+        // With highlight
+        let data = ChartData {
+            batch: &batch,
+            channel_map: &cm,
+            renderer: &renderer,
+            layout: layout.clone(),
+            view_extent: None,
+            highlight: Some(&hs),
+        };
+        let (scene, _scales) = build_chart_scene(&data);
+        let encoding = scene.encoding();
+        assert!(
+            encoding.path_tags.len() > 0,
+            "scene with highlight should have content"
+        );
+
+        // Without highlight (backward compat)
+        let data_no_hl = ChartData {
+            batch: &batch,
+            channel_map: &cm,
+            renderer: &renderer,
+            layout,
+            view_extent: None,
+            highlight: None,
+        };
+        let (scene2, _) = build_chart_scene(&data_no_hl);
+        let encoding2 = scene2.encoding();
+        assert!(
+            encoding2.path_tags.len() > 0,
+            "scene without highlight should also work"
+        );
     }
 }
