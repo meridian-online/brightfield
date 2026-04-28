@@ -10,6 +10,7 @@
 pub mod axis;
 pub mod channel;
 pub mod grid;
+pub mod kde;
 pub mod layout;
 pub mod legend;
 pub mod mark;

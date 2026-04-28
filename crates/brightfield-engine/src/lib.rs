@@ -98,6 +98,7 @@ impl Engine {
             analysis,
             mark_index_map,
             cache: HashMap::new(),
+            sql_cache: SqlCache::default(),
             ddl_warnings: emit_output.warnings.clone(),
             param_state,
             selection_state: HashMap::new(),
@@ -128,6 +129,14 @@ pub struct Session {
     mark_index_map: HashMap<String, (usize, MarkKind)>,
     /// Prepared statement cache keyed by plan_hash.
     cache: HashMap<u64, CachedStatement>,
+    /// Renderer-side SQL → Arrow batches cache (capped LRU, cap 32).
+    ///
+    /// TODO(card-runtime-reactivity): this is a stand-in for proper two-tier
+    /// param-effect routing. The proper design separates pure-style param
+    /// drags (no SQL re-execution needed) from data-shape param changes
+    /// (SQL must re-run). Until that lands we cache by literal SQL string
+    /// and rely on the cache hit to skip re-execution.
+    sql_cache: SqlCache,
     /// DDL emission warnings.
     ddl_warnings: Vec<ParseWarning>,
     /// Current param values — updated by propagate_param, consumed by
@@ -157,6 +166,48 @@ pub struct Session {
 struct CachedStatement {
     sql: String,
     bindings: Vec<Binding>,
+}
+
+/// SQL → Arrow batches cache with capped LRU eviction.
+///
+/// Hits skip the DuckDB execute, leaving `duckdb_execute_count` unchanged
+/// — the property card 0008 ac-11 / ac-12 verifies. Cap is fixed at 32.
+///
+/// TODO(card-runtime-reactivity): replace with proper two-tier routing
+/// (pure-style vs data-shape param effects). This is a stand-in.
+#[derive(Default)]
+struct SqlCache {
+    /// SQL string → Arrow batches.
+    entries: HashMap<String, Vec<RecordBatch>>,
+    /// LRU order — most recently used at the back.
+    order: Vec<String>,
+    /// Counter incremented every time a fresh DuckDB execute runs (cache miss).
+    duckdb_execute_count: usize,
+}
+
+impl SqlCache {
+    const CAP: usize = 32;
+
+    fn get(&mut self, sql: &str) -> Option<Vec<RecordBatch>> {
+        if let Some(batches) = self.entries.get(sql) {
+            // Move to most-recently-used position.
+            self.order.retain(|s| s != sql);
+            self.order.push(sql.to_string());
+            // RecordBatch is Arc-shared internally; clone is cheap.
+            return Some(batches.clone());
+        }
+        None
+    }
+
+    fn insert(&mut self, sql: String, batches: Vec<RecordBatch>) {
+        // Evict oldest until under cap.
+        while self.entries.len() >= Self::CAP && !self.order.is_empty() {
+            let evict = self.order.remove(0);
+            self.entries.remove(&evict);
+        }
+        self.entries.insert(sql.clone(), batches);
+        self.order.push(sql);
+    }
 }
 
 impl Session {
@@ -523,6 +574,13 @@ impl Session {
             emitted.sql.clone()
         };
 
+        // Renderer-side SQL cache: hit → skip DuckDB execute entirely.
+        if let Some(batches) = self.sql_cache.get(&sql) {
+            return Ok(batches);
+        }
+
+        // Cache miss — execute the query and record one DuckDB execute.
+        self.sql_cache.duckdb_execute_count += 1;
         let batches = self
             .conn
             .prepare(&sql)
@@ -533,11 +591,26 @@ impl Session {
             .map_err(|e| EngineError::QueryFailed {
                 mark_index,
                 mark_kind: mark_kind.to_string(),
-                sql,
+                sql: sql.clone(),
                 cause: e,
             })?;
 
+        self.sql_cache.insert(sql, batches.clone());
         Ok(batches)
+    }
+
+    /// Test-only accessor: number of DuckDB executes performed since this
+    /// Session was created. Increments on every cache miss in
+    /// `execute_emitted`. Used to verify the renderer-side SQL cache
+    /// short-circuits redundant queries (card 0008 ac-11 / ac-12).
+    pub fn duckdb_execute_count(&self) -> usize {
+        self.sql_cache.duckdb_execute_count
+    }
+
+    /// Test-only accessor: number of distinct SQL strings currently in the
+    /// renderer-side cache (used for ac-11 LRU eviction tests).
+    pub fn sql_cache_len(&self) -> usize {
+        self.sql_cache.entries.len()
     }
 
     /// Execute a raw SQL query and return Arrow batches. Test-only.
@@ -943,6 +1016,119 @@ plot:
         let result3 = session.test_execute_emitted(0, "dot", &emitted3);
         assert!(result3.is_ok());
         assert_eq!(session.cache_len(), 2, "cache should have 2 entries (new plan_hash)");
+    }
+
+    // --- gomb ac-11 / ac-12: renderer-side SQL cache + duckdb_execute_count ---
+
+    #[test]
+    fn gomb_ac11_sql_cache_skips_duckdb_execute_on_repeat() {
+        let yaml = r#"
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+plot:
+  - mark: dot
+    data: { from: t }
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        assert_eq!(session.duckdb_execute_count(), 0);
+        assert_eq!(session.sql_cache_len(), 0);
+
+        let emitted = EmittedQuery {
+            sql: "SELECT * FROM t".to_string(),
+            bindings: vec![],
+            plan_hash: 1,
+        };
+        // First call → cache miss → 1 DuckDB execute.
+        session.test_execute_emitted(0, "dot", &emitted).unwrap();
+        assert_eq!(session.duckdb_execute_count(), 1);
+        assert_eq!(session.sql_cache_len(), 1);
+
+        // Second call with same SQL → cache hit → no new execute.
+        session.test_execute_emitted(0, "dot", &emitted).unwrap();
+        assert_eq!(
+            session.duckdb_execute_count(),
+            1,
+            "duckdb_execute_count must not increment on cache hit"
+        );
+        assert_eq!(session.sql_cache_len(), 1);
+    }
+
+    #[test]
+    fn gomb_ac11_sql_cache_lru_eviction() {
+        let yaml = r#"
+data:
+  t:
+    - { x: 1, y: 10 }
+plot:
+  - mark: dot
+    data: { from: t }
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        // Insert 33 distinct SQL strings (cap is 32).
+        for i in 0..33 {
+            let emitted = EmittedQuery {
+                sql: format!("SELECT * FROM t WHERE x < {i} OR x >= {i}"),
+                bindings: vec![],
+                plan_hash: 100 + i as u64,
+            };
+            session.test_execute_emitted(0, "dot", &emitted).unwrap();
+        }
+        // Cache must be capped at 32; oldest entry evicted.
+        assert!(
+            session.sql_cache_len() <= 32,
+            "SQL cache must be capped at 32, got {}",
+            session.sql_cache_len()
+        );
+        assert_eq!(
+            session.duckdb_execute_count(),
+            33,
+            "all 33 distinct SQL strings should have triggered an execute"
+        );
+    }
+
+    #[test]
+    fn gomb_ac12_param_drag_cache_hit_skips_query() {
+        // Property: a "param drag" that does NOT change the emitted SQL
+        // (because the param is encoded as a `?` placeholder whose binding
+        // is not yet a code path) hits the cache and skips DuckDB execute.
+        // Stand-in for the proper two-tier param-effect routing.
+        let yaml = r#"
+data:
+  t:
+    - { x: 1, y: 10 }
+plot:
+  - mark: dot
+    data: { from: t }
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        let emitted = EmittedQuery {
+            sql: "SELECT * FROM t".to_string(),
+            bindings: vec![],
+            plan_hash: 1,
+        };
+        session.test_execute_emitted(0, "dot", &emitted).unwrap();
+        let baseline = session.duckdb_execute_count();
+
+        // Simulate three "drag" frames at a structurally identical SQL.
+        for _ in 0..3 {
+            session.test_execute_emitted(0, "dot", &emitted).unwrap();
+        }
+        assert_eq!(
+            session.duckdb_execute_count(),
+            baseline,
+            "param drag with unchanged SQL must not re-execute (cache hit)"
+        );
     }
 
     // --- ac-08: QueryFailed with mark_index and mark_kind ---

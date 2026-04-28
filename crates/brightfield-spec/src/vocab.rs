@@ -142,9 +142,9 @@ vocab_enum! {
         VectorY => ("vectorY", Unimplemented),
         Arrow => ("arrow", Unimplemented),
         // Density / heatmap / contour / raster
-        Density => ("density", Unimplemented),
-        DensityX => ("densityX", Unimplemented),
-        DensityY => ("densityY", Unimplemented),
+        Density => ("density", Implemented),
+        DensityX => ("densityX", Implemented),
+        DensityY => ("densityY", Implemented),
         DenseLine => ("denseLine", Unimplemented),
         Heatmap => ("heatmap", Unimplemented),
         Contour => ("contour", Unimplemented),
@@ -156,8 +156,8 @@ vocab_enum! {
         WaffleX => ("waffleX", Unimplemented),
         WaffleY => ("waffleY", Unimplemented),
         // Regression / error
-        RegressionY => ("regressionY", Unimplemented),
-        RegressionX => ("regressionX", Unimplemented),
+        RegressionY => ("regressionY", Implemented),
+        RegressionX => ("regressionX", Implemented),
         ErrorbarX => ("errorbarX", Unimplemented),
         ErrorbarY => ("errorbarY", Unimplemented),
         // Frame / axis / grid

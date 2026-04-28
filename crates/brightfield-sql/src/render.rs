@@ -206,6 +206,11 @@ pub fn render_query(plan: &QueryPlan, bindings: &mut Vec<Binding>) -> String {
             let group = positions.join(", ");
             format!("SELECT {select} FROM ({inner}) AS _a GROUP BY {group}")
         }
+        QueryPlan::AggregateScalar { input, aggregates } => {
+            let inner = render_query(input, bindings);
+            let select = aggregates.join(", ");
+            format!("SELECT {select} FROM ({inner}) AS _as")
+        }
         QueryPlan::Bin {
             input,
             column,
@@ -451,6 +456,27 @@ mod tests {
         let mut bindings = Vec::new();
         let sql = render_query(&plan, &mut bindings);
         assert!(sql.contains("ORDER BY x ASC, y DESC"));
+        assert_valid_sql(&sql);
+    }
+
+    #[test]
+    fn gomb_ac01_aggregate_scalar_emits_no_group_by() {
+        let plan = QueryPlan::AggregateScalar {
+            input: Box::new(QueryPlan::Source {
+                table: "athletes".to_string(),
+            }),
+            aggregates: vec!["regr_slope(height, weight) AS slope".to_string()],
+        };
+        let mut bindings = Vec::new();
+        let sql = render_query(&plan, &mut bindings);
+        assert!(
+            sql.contains("SELECT regr_slope(height, weight) AS slope FROM"),
+            "expected scalar aggregate select prefix, got: {sql}"
+        );
+        assert!(
+            !sql.contains("GROUP BY"),
+            "AggregateScalar must not emit GROUP BY, got: {sql}"
+        );
         assert_valid_sql(&sql);
     }
 

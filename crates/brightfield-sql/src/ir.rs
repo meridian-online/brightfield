@@ -117,6 +117,17 @@ pub enum QueryPlan {
         aggregates: Vec<String>,
     },
 
+    /// Scalar aggregation — produces a single row, no `GROUP BY`.
+    ///
+    /// Renders as `SELECT <aggregates> FROM (<input>)`. Used for
+    /// regression statistics (regr_slope, regr_intercept, ...) where
+    /// the output is a single row of summary statistics.
+    AggregateScalar {
+        input: Box<QueryPlan>,
+        /// Aggregate expressions (e.g. `"regr_slope(y, x) AS slope"`).
+        aggregates: Vec<String>,
+    },
+
     /// Binning via `width_bucket()` or `CASE` expression.
     Bin {
         input: Box<QueryPlan>,

@@ -500,4 +500,78 @@ mod query_tests {
             Err(EmitError::InvariantViolation { .. })
         ));
     }
+
+    // ----- gomb ac-13 — conformance snapshots for statistical marks -----
+    //
+    // Snapshots capture the emitted SQL string only. They do NOT capture
+    // the rendered Vello scene — that's a future-card concern (cross-platform
+    // float reproducibility around the Gaussian kernel will need tolerance
+    // comparison if we ever snapshot rendered pixels).
+
+    #[test]
+    fn gomb_ac13_density1d_x_snapshot() {
+        let src = r#"
+data:
+  athletes: { file: athletes.parquet }
+plot:
+  - mark: densityX
+    data: { from: athletes }
+    x: weight
+"#;
+        let spec = parse_spec(src, Format::Yaml).unwrap().spec;
+        let emitted = emit_query(&spec, 0, None, None).expect("emit");
+        // Stable shape: filter NULLs, group by width_bucket, count.
+        assert!(emitted.sql.contains("width_bucket"));
+        assert!(emitted.sql.contains("\"weight\""));
+        assert!(emitted.sql.contains("x_bin"));
+        assert!(emitted.sql.contains("COUNT(*)"));
+        assert!(emitted.sql.contains("IS NOT NULL"));
+        assert!(emitted.sql.contains("GROUP BY 1"));
+    }
+
+    #[test]
+    fn gomb_ac13_density2d_snapshot() {
+        let src = r#"
+data:
+  athletes: { file: athletes.parquet }
+plot:
+  - mark: density
+    data: { from: athletes }
+    x: weight
+    y: height
+    thresholds: 16
+"#;
+        let spec = parse_spec(src, Format::Yaml).unwrap().spec;
+        let emitted = emit_query(&spec, 0, None, None).expect("emit");
+        assert!(emitted.sql.contains("x_bin"));
+        assert!(emitted.sql.contains("y_bin"));
+        assert!(emitted.sql.contains("\"weight\""));
+        assert!(emitted.sql.contains("\"height\""));
+        assert!(emitted.sql.contains("16"));
+        assert!(emitted.sql.contains("GROUP BY 1, 2"));
+    }
+
+    #[test]
+    fn gomb_ac13_linear_regression_snapshot() {
+        let src = r#"
+data:
+  athletes: { file: athletes.parquet }
+plot:
+  - mark: regressionY
+    data: { from: athletes }
+    x: weight
+    y: height
+"#;
+        let spec = parse_spec(src, Format::Yaml).unwrap().spec;
+        let emitted = emit_query(&spec, 0, None, None).expect("emit");
+        // Aggregate-scalar shape: SELECT regr_* FROM (...) AS _as
+        assert!(emitted.sql.contains("regr_slope"));
+        assert!(emitted.sql.contains("regr_intercept"));
+        assert!(emitted.sql.contains("regr_count"));
+        assert!(emitted.sql.contains("regr_avgx"));
+        assert!(emitted.sql.contains("regr_sxx"));
+        assert!(emitted.sql.contains("regr_sxy"));
+        assert!(emitted.sql.contains("regr_syy"));
+        assert!(!emitted.sql.contains("GROUP BY"));
+    }
 }

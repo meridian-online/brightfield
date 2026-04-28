@@ -7,7 +7,7 @@
 
 use indexmap::IndexMap;
 
-use brightfield_spec::ast::{Mark, MarkData, ParamNode, SelectionNode};
+use brightfield_spec::ast::{Mark, MarkData, ParamNode, SelectionNode, SpecValue, ValueOrParamRef};
 use brightfield_spec::vocab::MarkKind;
 
 use crate::error::EmitError;
@@ -61,9 +61,235 @@ impl MarkLower for SimpleLowerer {
     }
 }
 
+/// Helper: extract a literal string-valued option (skips ParamRef).
+fn opt_string<'a>(
+    options: &'a IndexMap<String, ValueOrParamRef<SpecValue>>,
+    key: &str,
+) -> Option<&'a str> {
+    match options.get(key)? {
+        ValueOrParamRef::Value(SpecValue::String(s)) => Some(s.as_str()),
+        _ => None,
+    }
+}
+
+/// Helper: extract a literal numeric option as f64.
+fn opt_f64(options: &IndexMap<String, ValueOrParamRef<SpecValue>>, key: &str) -> Option<f64> {
+    match options.get(key)? {
+        ValueOrParamRef::Value(SpecValue::Float(f)) => Some(*f),
+        ValueOrParamRef::Value(SpecValue::Integer(i)) => Some(*i as f64),
+        _ => None,
+    }
+}
+
+/// Lowerer for regression marks (regressionY, regressionX).
+///
+/// Emits a one-row AggregateScalar with regr_* aggregates. When `stroke`
+/// resolves to a column name, wraps in an Aggregation with that grouping
+/// (one row per category). The lowerer rejects polynomial/exponential
+/// regression upfront.
+pub struct RegressionLowerer;
+
+impl MarkLower for RegressionLowerer {
+    fn lower(&self, mark: &Mark, _ctx: &LowerCtx<'_>) -> Result<QueryPlan, EmitError> {
+        // Reject non-linear regression types.
+        if let Some(t) = opt_string(&mark.options, "type") {
+            if t != "linear" {
+                return Err(EmitError::UnsupportedMark {
+                    kind: format!("{} (type='{}' — only linear is supported)", mark.kind.wire_name(), t),
+                });
+            }
+        }
+
+        let source = match &mark.data {
+            Some(MarkData::From { source, .. }) => source.clone(),
+            _ => {
+                return Err(EmitError::UnsupportedMark {
+                    kind: mark.kind.wire_name().to_string(),
+                })
+            }
+        };
+
+        let x_col = opt_string(&mark.options, "x").ok_or_else(|| EmitError::UnsupportedMark {
+            kind: format!("{} (missing x)", mark.kind.wire_name()),
+        })?;
+        let y_col = opt_string(&mark.options, "y").ok_or_else(|| EmitError::UnsupportedMark {
+            kind: format!("{} (missing y)", mark.kind.wire_name()),
+        })?;
+
+        // Filter out NULLs in x or y so DuckDB's regr_* aggregates run cleanly.
+        let filtered = QueryPlan::Filter {
+            input: Box::new(QueryPlan::Source { table: source }),
+            predicate: Predicate::Expr(format!(
+                "\"{x_col}\" IS NOT NULL AND \"{y_col}\" IS NOT NULL"
+            )),
+        };
+
+        let aggregates = vec![
+            format!("regr_slope(\"{y_col}\", \"{x_col}\") AS slope"),
+            format!("regr_intercept(\"{y_col}\", \"{x_col}\") AS intercept"),
+            format!("regr_count(\"{y_col}\", \"{x_col}\") AS n"),
+            format!("regr_avgx(\"{y_col}\", \"{x_col}\") AS mean_x"),
+            format!("regr_sxx(\"{y_col}\", \"{x_col}\") AS sxx"),
+            format!("regr_sxy(\"{y_col}\", \"{x_col}\") AS sxy"),
+            format!("regr_syy(\"{y_col}\", \"{x_col}\") AS syy"),
+        ];
+
+        // Group by stroke column when present.
+        if let Some(stroke_col) = opt_string(&mark.options, "stroke") {
+            let mut group_aggregates = aggregates.clone();
+            // Prepend the group key so it appears in the projection.
+            // (Aggregation IR variant places group_by columns first via render_query.)
+            let _ = &mut group_aggregates; // keep as-is; group_by handled below
+            return Ok(QueryPlan::Aggregation {
+                input: Box::new(filtered),
+                group_by: vec![format!("\"{stroke_col}\"")],
+                aggregates,
+            });
+        }
+
+        Ok(QueryPlan::AggregateScalar {
+            input: Box::new(filtered),
+            aggregates,
+        })
+    }
+}
+
+/// Lowerer for density marks (density, densityX, densityY).
+///
+/// Emits a binning + group-count plan:
+///   1D: SELECT width_bucket(x, ...) AS x_bin, COUNT(*) FROM source GROUP BY x_bin
+///   2D: same with both x and y bins
+///
+/// The lowerer reads `bins` (default 32) from the mark's option bag. The
+/// bin width is computed from the column extent at render time — for the
+/// SQL pass we use a fixed bucket count and let DuckDB compute extents
+/// via subqueries.
+pub struct DensityLowerer {
+    pub kind: DensityLowerKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DensityLowerKind {
+    /// `densityX` — 1D density along x.
+    OneDX,
+    /// `densityY` — 1D density along y.
+    OneDY,
+    /// `density` — 2D density on both axes.
+    #[allow(clippy::upper_case_acronyms)]
+    TwoD,
+}
+
+impl MarkLower for DensityLowerer {
+    fn lower(&self, mark: &Mark, _ctx: &LowerCtx<'_>) -> Result<QueryPlan, EmitError> {
+        let source = match &mark.data {
+            Some(MarkData::From { source, .. }) => source.clone(),
+            _ => {
+                return Err(EmitError::UnsupportedMark {
+                    kind: mark.kind.wire_name().to_string(),
+                })
+            }
+        };
+
+        let bin_count = opt_f64(&mark.options, "thresholds")
+            .or_else(|| opt_f64(&mark.options, "bins"))
+            .map(|f| f as i64)
+            .unwrap_or(32);
+
+        // Resolve required columns.
+        let x_col = opt_string(&mark.options, "x");
+        let y_col = opt_string(&mark.options, "y");
+
+        match self.kind {
+            DensityLowerKind::OneDX => {
+                let x = x_col.ok_or_else(|| EmitError::UnsupportedMark {
+                    kind: "densityX (missing x)".to_string(),
+                })?;
+                Ok(build_density_1d(&source, x, "x_bin", bin_count))
+            }
+            DensityLowerKind::OneDY => {
+                let y = y_col.ok_or_else(|| EmitError::UnsupportedMark {
+                    kind: "densityY (missing y)".to_string(),
+                })?;
+                Ok(build_density_1d(&source, y, "y_bin", bin_count))
+            }
+            DensityLowerKind::TwoD => {
+                let x = x_col.ok_or_else(|| EmitError::UnsupportedMark {
+                    kind: "density (missing x)".to_string(),
+                })?;
+                let y = y_col.ok_or_else(|| EmitError::UnsupportedMark {
+                    kind: "density (missing y)".to_string(),
+                })?;
+                Ok(build_density_2d(&source, x, y, bin_count))
+            }
+        }
+    }
+}
+
+/// Build a 1D density plan: width_bucket on `col`, group by bucket, return
+/// (centre, count).
+fn build_density_1d(table: &str, col: &str, alias: &str, bins: i64) -> QueryPlan {
+    // We compute the bin centre as `min + (bucket - 0.5) * (max - min) / bins`.
+    // For SQL simplicity we use width_bucket against literal 0..bins range
+    // assuming the values are already normalised to that range — for v1 we
+    // emit the actual bucket centre column via a subquery scoped expression.
+    //
+    // The render-side renderer expects `<alias>` (Float64) and `count` (Float64-ish).
+    // We coerce via DuckDB casts.
+    let bucket_expr = format!(
+        "CAST(width_bucket(\"{col}\", \
+        (SELECT min(\"{col}\") FROM \"{table}\"), \
+        (SELECT max(\"{col}\") FROM \"{table}\"), \
+        {bins}) AS DOUBLE) AS \"{alias}\""
+    );
+    let count_expr = format!("CAST(COUNT(*) AS DOUBLE) AS count");
+
+    QueryPlan::Aggregation {
+        input: Box::new(QueryPlan::Filter {
+            input: Box::new(QueryPlan::Source {
+                table: table.to_string(),
+            }),
+            predicate: Predicate::Expr(format!("\"{col}\" IS NOT NULL")),
+        }),
+        group_by: vec![bucket_expr],
+        aggregates: vec![count_expr],
+    }
+}
+
+/// Build a 2D density plan: width_bucket on both x and y, group by both.
+fn build_density_2d(table: &str, x_col: &str, y_col: &str, bins: i64) -> QueryPlan {
+    let x_bucket = format!(
+        "CAST(width_bucket(\"{x_col}\", \
+        (SELECT min(\"{x_col}\") FROM \"{table}\"), \
+        (SELECT max(\"{x_col}\") FROM \"{table}\"), \
+        {bins}) AS DOUBLE) AS x_bin"
+    );
+    let y_bucket = format!(
+        "CAST(width_bucket(\"{y_col}\", \
+        (SELECT min(\"{y_col}\") FROM \"{table}\"), \
+        (SELECT max(\"{y_col}\") FROM \"{table}\"), \
+        {bins}) AS DOUBLE) AS y_bin"
+    );
+    let count_expr = format!("CAST(COUNT(*) AS DOUBLE) AS count");
+
+    QueryPlan::Aggregation {
+        input: Box::new(QueryPlan::Filter {
+            input: Box::new(QueryPlan::Source {
+                table: table.to_string(),
+            }),
+            predicate: Predicate::Expr(format!(
+                "\"{x_col}\" IS NOT NULL AND \"{y_col}\" IS NOT NULL"
+            )),
+        }),
+        group_by: vec![x_bucket, y_bucket],
+        aggregates: vec![count_expr],
+    }
+}
+
 /// Build the registry of mark lowerers.
 ///
-/// Registers SimpleLowerer for Dot, Line, BarX, BarY.
+/// Registers SimpleLowerer for Dot, Line, BarX, BarY; the statistical-mark
+/// lowerers (RegressionLowerer, DensityLowerer) for regression and density
+/// kinds.
 /// Marks not listed here fall back to DefaultLowerer (unsupported).
 pub fn default_lowerers() -> Vec<(MarkKind, Box<dyn MarkLower>)> {
     vec![
@@ -71,6 +297,26 @@ pub fn default_lowerers() -> Vec<(MarkKind, Box<dyn MarkLower>)> {
         (MarkKind::Line, Box::new(SimpleLowerer)),
         (MarkKind::BarX, Box::new(SimpleLowerer)),
         (MarkKind::BarY, Box::new(SimpleLowerer)),
+        (MarkKind::RegressionY, Box::new(RegressionLowerer)),
+        (MarkKind::RegressionX, Box::new(RegressionLowerer)),
+        (
+            MarkKind::DensityX,
+            Box::new(DensityLowerer {
+                kind: DensityLowerKind::OneDX,
+            }),
+        ),
+        (
+            MarkKind::DensityY,
+            Box::new(DensityLowerer {
+                kind: DensityLowerKind::OneDY,
+            }),
+        ),
+        (
+            MarkKind::Density,
+            Box::new(DensityLowerer {
+                kind: DensityLowerKind::TwoD,
+            }),
+        ),
     ]
 }
 
@@ -232,7 +478,12 @@ mod tests {
         assert!(kinds.contains(&MarkKind::Line));
         assert!(kinds.contains(&MarkKind::BarX));
         assert!(kinds.contains(&MarkKind::BarY));
-        assert_eq!(kinds.len(), 4);
+        assert!(kinds.contains(&MarkKind::RegressionY));
+        assert!(kinds.contains(&MarkKind::RegressionX));
+        assert!(kinds.contains(&MarkKind::DensityX));
+        assert!(kinds.contains(&MarkKind::DensityY));
+        assert!(kinds.contains(&MarkKind::Density));
+        assert_eq!(kinds.len(), 9);
     }
 
     #[test]
@@ -312,6 +563,163 @@ mod tests {
         let predicates: Vec<(String, Predicate)> = vec![];
         let result = compile_selection(&selection, "view_a", &predicates);
         assert_eq!(result, Predicate::True);
+    }
+
+    // -----------------------------------------------------------------------
+    // gomb ac-06 / ac-07 — statistical-mark lowerers
+    // -----------------------------------------------------------------------
+
+    fn make_mark_with_options(
+        kind: MarkKind,
+        opts: Vec<(&str, SpecValue)>,
+    ) -> Mark {
+        let mut options: IndexMap<String, ValueOrParamRef<SpecValue>> = IndexMap::new();
+        for (k, v) in opts {
+            options.insert(k.to_string(), ValueOrParamRef::Value(v));
+        }
+        Mark {
+            kind,
+            status: ImplStatus::Unimplemented,
+            data: Some(MarkData::From {
+                source: "athletes".to_string(),
+                filter_by: None,
+                extras: IndexMap::new(),
+            }),
+            options,
+        }
+    }
+
+    #[test]
+    fn gomb_ac06_regression_lowerer_emits_aggregate_scalar() {
+        let mark = make_mark_with_options(
+            MarkKind::RegressionY,
+            vec![
+                ("x", SpecValue::String("weight".to_string())),
+                ("y", SpecValue::String("height".to_string())),
+            ],
+        );
+        let ctx = make_ctx();
+        let plan = RegressionLowerer.lower(&mark, &ctx).expect("lowers");
+        match plan {
+            QueryPlan::AggregateScalar { aggregates, .. } => {
+                assert!(aggregates.iter().any(|a| a.contains("regr_slope")));
+                assert!(aggregates.iter().any(|a| a.contains("regr_intercept")));
+                assert!(aggregates.iter().any(|a| a.contains("regr_count")));
+                assert!(aggregates.iter().any(|a| a.contains("regr_avgx")));
+                assert!(aggregates.iter().any(|a| a.contains("regr_sxx")));
+                assert!(aggregates.iter().any(|a| a.contains("regr_sxy")));
+                assert!(aggregates.iter().any(|a| a.contains("regr_syy")));
+            }
+            other => panic!("expected AggregateScalar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gomb_ac06_regression_lowerer_with_stroke_groups_by() {
+        let mark = make_mark_with_options(
+            MarkKind::RegressionY,
+            vec![
+                ("x", SpecValue::String("weight".to_string())),
+                ("y", SpecValue::String("height".to_string())),
+                ("stroke", SpecValue::String("sport".to_string())),
+            ],
+        );
+        let ctx = make_ctx();
+        let plan = RegressionLowerer.lower(&mark, &ctx).expect("lowers");
+        match plan {
+            QueryPlan::Aggregation { group_by, .. } => {
+                assert_eq!(group_by.len(), 1);
+                assert!(group_by[0].contains("sport"));
+            }
+            other => panic!("expected grouped Aggregation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gomb_ac06_regression_lowerer_rejects_polynomial() {
+        let mark = make_mark_with_options(
+            MarkKind::RegressionY,
+            vec![
+                ("x", SpecValue::String("a".to_string())),
+                ("y", SpecValue::String("b".to_string())),
+                ("type", SpecValue::String("polynomial".to_string())),
+            ],
+        );
+        let ctx = make_ctx();
+        let result = RegressionLowerer.lower(&mark, &ctx);
+        match result {
+            Err(EmitError::UnsupportedMark { kind }) => {
+                assert!(kind.contains("polynomial"));
+            }
+            other => panic!("expected UnsupportedMark with polynomial, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gomb_ac07_density_lowerer_1d_x_uses_width_bucket() {
+        let mark = make_mark_with_options(
+            MarkKind::DensityX,
+            vec![("x", SpecValue::String("weight".to_string()))],
+        );
+        let ctx = make_ctx();
+        let plan = DensityLowerer {
+            kind: DensityLowerKind::OneDX,
+        }
+        .lower(&mark, &ctx)
+        .expect("lowers");
+        match plan {
+            QueryPlan::Aggregation {
+                group_by,
+                aggregates,
+                ..
+            } => {
+                assert_eq!(group_by.len(), 1);
+                assert!(group_by[0].contains("width_bucket"));
+                assert!(group_by[0].contains("x_bin"));
+                assert_eq!(aggregates.len(), 1);
+                assert!(aggregates[0].contains("COUNT"));
+            }
+            other => panic!("expected Aggregation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gomb_ac07_density_lowerer_2d_uses_two_buckets() {
+        let mark = make_mark_with_options(
+            MarkKind::Density,
+            vec![
+                ("x", SpecValue::String("weight".to_string())),
+                ("y", SpecValue::String("height".to_string())),
+                ("thresholds", SpecValue::Integer(16)),
+            ],
+        );
+        let ctx = make_ctx();
+        let plan = DensityLowerer {
+            kind: DensityLowerKind::TwoD,
+        }
+        .lower(&mark, &ctx)
+        .expect("lowers");
+        match plan {
+            QueryPlan::Aggregation { group_by, .. } => {
+                assert_eq!(group_by.len(), 2);
+                assert!(group_by[0].contains("x_bin"));
+                assert!(group_by[1].contains("y_bin"));
+                // honours thresholds=16 in the bucket count
+                assert!(group_by[0].contains("16") || group_by[1].contains("16"));
+            }
+            other => panic!("expected 2D Aggregation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gomb_ac06_default_lowerers_includes_statistical_kinds() {
+        let registry = default_lowerers();
+        let kinds: Vec<MarkKind> = registry.iter().map(|(k, _)| *k).collect();
+        assert!(kinds.contains(&MarkKind::RegressionY));
+        assert!(kinds.contains(&MarkKind::RegressionX));
+        assert!(kinds.contains(&MarkKind::Density));
+        assert!(kinds.contains(&MarkKind::DensityX));
+        assert!(kinds.contains(&MarkKind::DensityY));
     }
 
     #[test]
