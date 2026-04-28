@@ -1,0 +1,338 @@
+goal: >
+  Runtime selection coordinator on Session: receives a brush/click predicate from an
+  interactor, stores per-contributor predicates in a typed selection_state,
+  walks the selection_subscribers graph, resolves per-subscriber merged predicates
+  via compile_selection (with parent-plot self-exclusion), and dispatches re-emit +
+  re-execute to subscribing marks. Mirrors propagate_param's partial-failure shape.
+  Closes the emit_query _param_values LOW from card 0005 v2 review by threading
+  both param_values and the new selection_predicates argument into emit_query.
+  Wires brush release in chart_view.on_mouse_up to the coordinator.
+
+constraints:
+  - "Coordinator lives on Session in brightfield-engine — no new crate"
+  - "Predicate IR (crates/brightfield-sql/src/ir.rs) is the runtime currency; no new AST or SpecValue variants"
+  - "Sync dispatch via &mut self; UI debounces on brush release (mirrors NavigationState.check_settle)"
+  - "Existing Session API (propagate_param, update_param, execute_mark, execute_all, update_extent) unchanged in signature and behaviour"
+  - "Self-exclusion identity is the parent plot path (decision 4) — string equality in compile_selection"
+  - "Resolution is per-subscriber, dispatch-time, no caching beyond DuckDB plan-hash cache"
+  - "Partial failure: one subscriber's emit/execute error must not block other subscribers (mirror propagate_param)"
+  - "selection_state is always updated regardless of subscriber outcomes"
+  - "The corpus regression gate (cfs ac-10) must remain green — no AST or parser changes"
+  - "brightfield-render keeps its no-gpui dependency invariant"
+  - "All existing tests must continue to pass (cargo test --workspace)"
+
+acceptance_criteria:
+  - id: ac-01
+    ac_type: code
+    description: >
+      Session gains a selection_state field of type
+      HashMap<String, Vec<(ComponentPath, Predicate)>>, alongside the
+      existing param_state. The map is empty after load_spec — selection
+      entries are populated only when propagate_selection is called.
+      Accessible via Session::current_selections().
+    verification: >
+      Unit test (cfs2_ac01_selection_state_initial_empty): load any spec
+      via Engine::load_spec. Assert current_selections() returns an empty
+      map. Then call propagate_selection once and assert the named
+      selection appears with the contributor and predicate stored.
+
+  - id: ac-02
+    ac_type: code
+    description: >
+      Session::propagate_selection(name, contributor, predicate) is added
+      with signature
+      `pub fn propagate_selection(&mut self, name: &str, contributor: ComponentPath, predicate: Predicate)
+        -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>`.
+      It (a) inserts/updates the (contributor, predicate) entry in
+      selection_state[name], replacing any prior entry from the same
+      contributor; (b) looks up subscribers from
+      analysis.selection_subscribers; (c) filters to mark components via
+      mark_index_map; (d) per subscriber, computes self_source via
+      parent_plot helper (ac-04), invokes compile_selection with the
+      current contributor list, lowers + emits + executes the resulting
+      query; (e) returns one (mark_index, Result) tuple per subscriber.
+    verification: >
+      Unit test (cfs2_ac02_propagate_selection_dispatches_to_subscribers):
+      load a spec with two plots both filterBy: $brush over the same data
+      source. Call propagate_selection("brush", contributor_path,
+      Predicate::Expr("x > 50")). Assert results.len() == 2 and both
+      entries are Ok with non-empty RecordBatches.
+
+  - id: ac-03
+    ac_type: code
+    description: >
+      Same-contributor replacement: a second propagate_selection call with
+      the same (selection, contributor) overwrites the prior predicate
+      rather than appending. Different contributors accumulate.
+    verification: >
+      Unit test (cfs2_ac03_same_contributor_replaces_predicate): call
+      propagate_selection twice with the same contributor path and
+      different predicates. Assert selection_state[name] contains exactly
+      one (contributor, predicate) pair, holding the second predicate.
+      Then call with a different contributor; assert two pairs exist.
+
+  - id: ac-04
+    ac_type: code
+    description: >
+      A new helper `parent_plot(path: &str) -> &str` lives near the
+      path-walking utilities (e.g. in brightfield-spec analysis module
+      or a new path_utils module). It returns the longest prefix of
+      `path` ending in `/plot[N]`, or the input string unchanged if no
+      such prefix exists. The selection coordinator uses parent_plot on
+      the dispatching mark's path to compute self_source for
+      compile_selection.
+    verification: >
+      Unit test (cfs2_ac04_parent_plot_helper):
+      - parent_plot("root/vconcat[0]/plot[1]/mark[dot]") == "root/vconcat[0]/plot[1]"
+      - parent_plot("root/plot[0]/mark[bar]") == "root/plot[0]"
+      - parent_plot("root/plot[0]/interactor[intervalX]") == "root/plot[0]"
+      - parent_plot("root/mark[dot]") == "root/mark[dot]" (no plot in path → unchanged)
+      - parent_plot("root") == "root" (degenerate)
+
+  - id: ac-05
+    ac_type: code
+    description: >
+      Self-exclusion via parent-plot identity: when a mark in plot P
+      contributes a predicate to selection S and another mark in plot P
+      also subscribes to S, the contributor's predicate is excluded
+      from the subscriber's filter. Marks in plot Q (different parent)
+      receive the full merged predicate. Driven by string equality on
+      parent plot path inside compile_selection.
+    verification: >
+      Unit test (cfs2_ac05_parent_plot_self_exclusion): load a spec
+      with a crossfilter selection across two plots, P0 and P1. Call
+      propagate_selection with contributor = parent_plot of an
+      interactor inside P0 and a non-trivial predicate. Inspect the
+      emitted SQL (via emit_query directly with current selection_state)
+      for the mark in P0: predicate must NOT appear. For the mark in
+      P1: predicate must appear.
+
+  - id: ac-06
+    ac_type: code
+    description: >
+      Resolution strategies — when multiple contributors exist on a
+      single selection, propagate_selection's dispatch invokes
+      compile_selection which honours the spec-declared resolution
+      strategy: intersect → AND, union → OR, single → last predicate,
+      crossfilter → AND with self-exclusion. This AC verifies the
+      runtime end-to-end (not the lower.rs unit, which already exists)
+      by asserting the SQL/predicate threaded into the executed query.
+    verification: >
+      Unit test (cfs2_ac06_resolution_strategies_runtime): build three
+      mini-specs (intersect, union, single), each with two contributors
+      contributing to the same selection. After two propagate_selection
+      calls, capture the emitted SQL for the subscribing mark and
+      assert the WHERE clause matches the resolution semantics
+      (AND join for intersect, OR join for union, only the second
+      predicate for single).
+
+  - id: ac-07
+    ac_type: code
+    description: >
+      Unsubscribed selection: propagate_selection for a name with no
+      entry in analysis.selection_subscribers updates selection_state
+      and returns an empty results vector. No queries fire, no errors
+      surface. Mirrors propagate_param's behaviour for unsubscribed
+      params.
+    verification: >
+      Unit test (cfs2_ac07_unsubscribed_selection_silent): load a spec
+      with no filterBy edges. Call propagate_selection with an
+      arbitrary selection name. Assert results.is_empty() and
+      selection_state contains the new entry.
+
+  - id: ac-08
+    ac_type: code
+    description: >
+      Partial failure: when propagate_selection dispatches to N
+      subscribing marks and one fails (e.g. emit error for an
+      unsupported mark type), the other marks still receive fresh data.
+      The failed mark produces an Err entry in the results vector.
+      Mirrors rpw2_ac04 exactly.
+    verification: >
+      Unit test (cfs2_ac08_partial_failure): load a spec with two marks
+      subscribing to the same selection — one supported (dot with
+      data.from) and one unsupported (e.g. rect with no registered
+      lowerer). Call propagate_selection. Assert results.len() == 2,
+      one Ok and one Err. Assert selection_state still reflects the
+      update.
+
+  - id: ac-09
+    ac_type: code
+    description: >
+      emit_query and emit_query_with_passes actually consume their
+      param_values argument AND gain a new selection_predicates
+      argument. The committed signature direction is additive:
+      `emit_query(spec, mark_index, param_values: Option<&ParamValues>,
+        selection_predicates: Option<&[(String, Predicate)]>) -> Result<EmittedQuery, EmitError>`.
+      Pre-existing call sites (execute_mark, execute_all, update_extent,
+      propagate_param) update to pass &self.param_state and None (or an
+      empty slice) for selection_predicates. propagate_selection passes
+      the resolved per-subscriber predicate slice. Closes the LOW
+      finding "emit_query ignores _param_values" from the card 0005 v2
+      PR review for both params and selections in a single signature
+      change. Implementation may choose to factor the
+      param-and-selection threading through a private helper that
+      both emit_query variants delegate to — that is an implementation
+      detail and does not change the public signature commitment above.
+    verification: >
+      Unit test (cfs2_ac09_emit_query_threads_param_and_selection):
+      with a spec containing a filterBy reference to a selection
+      $brush, call emit_query with a non-empty selection_predicates
+      slice carrying a Predicate for $brush. Assert the emitted SQL
+      contains a WHERE clause derived from the predicate (not "WHERE
+      TRUE"). Symmetric assertion: with a non-empty param_values map
+      whose entries are referenced by mark.data.filter_by, assert the
+      emitted SQL substitutes the param values rather than placeholder
+      bindings of the wrong polarity.
+
+  - id: ac-10
+    ac_type: code
+    description: >
+      Brush-to-predicate adapter in the UI layer: a small,
+      independently-testable function `brush_rect_to_predicate` (or
+      equivalent) takes a brush Rect, the selection kind
+      (intervalX | intervalY | intervalXY), and the bound channel
+      column names (e.g. {x: "speed", y: "delay"}), and returns a
+      Predicate. intervalX produces an AND of two range expressions on
+      the x channel; intervalY symmetric on y; intervalXY combines both.
+      Lives in brightfield-ui (or a small adapter crate the UI imports),
+      keeping the brightfield-render no-gpui invariant.
+    verification: >
+      Unit test (cfs2_ac10_brush_rect_to_predicate): for each of the
+      three interval kinds, construct a Rect and channel map, call the
+      adapter, and assert the resulting Predicate has the expected
+      And/Expr shape (e.g. for intervalX: Predicate::And of two
+      Predicate::Expr range bounds on column "x").
+
+  - id: ac-11
+    ac_type: code
+    description: >
+      Wire brush release to the coordinator: chart_view.rs::on_mouse_up,
+      when transitioning from InteractionState::Brushing into Idle,
+      invokes the brush-to-predicate adapter and then
+      session.propagate_selection(...). The UI side does not currently
+      hold a Session — the wiring is via the same integration point the
+      param coordinator uses (the app shell or a session handle held by
+      ChartView). The behaviour is verifiable through a UI-level test
+      fixture asserting that on_mouse_up at brush termination produces
+      a propagate_selection call (mock or test-double) with the
+      expected (selection_name, contributor_path, predicate) triple.
+    verification: >
+      Unit test (cfs2_ac11_on_mouse_up_dispatches_selection): construct
+      a ChartView with a session test double, simulate a mouse-down
+      → drag → mouse-up sequence over a brushable plot. Assert the
+      session test double recorded exactly one propagate_selection
+      call with the expected predicate. If wiring through a real
+      Session in tests is impractical, an equivalent integration test
+      driving on_mouse_up against a real Session in a headless harness
+      satisfies the AC.
+
+  - id: ac-12
+    ac_type: code
+    description: >
+      End-to-end integration test against the vendored
+      `crates/brightfield-spec/vendor/mosaic-specs/yaml/crossfilter.yaml`
+      spec: parse, analyse, load into the engine, simulate a brush in
+      one plot via propagate_selection, and assert the other plot's
+      mark returns a fresh Ok RecordBatch reflecting the predicate.
+      Demonstrates the full path: brush rect → predicate → coordinator
+      → resolved per-subscriber predicate → emit_query consumes it →
+      DuckDB returns filtered rows.
+    verification: >
+      Integration test (cfs2_ac12_crossfilter_yaml_end_to_end): load
+      the vendored crossfilter.yaml. Pick one plot's parent path as the
+      contributor. Pass a non-trivial Predicate (e.g. a single range
+      expression on the bound x channel of the contributor plot). Call
+      propagate_selection. Assert results contains an Ok entry for
+      every subscriber other than the contributor's own marks, and
+      that at least one returned RecordBatch has fewer rows than the
+      unfiltered execution.
+
+  - id: ac-13
+    ac_type: gate
+    description: >
+      Corpus regression gate remains green. Every vendored Mosaic spec
+      that currently passes parse + analyse continues to pass with the
+      runtime additions. No AST changes, no parser changes, no new
+      SpecValue variants — this slice should be structurally protected,
+      and the gate is the trip-wire.
+    verification: >
+      Existing cfs ac-10 (corpus parse) test passes unchanged.
+      cargo test --workspace shows the corpus iteration test green.
+
+  - id: ac-14
+    ac_type: gate
+    description: >
+      All existing tests pass. cargo test --workspace produces no
+      regressions. All existing test suites in brightfield-spec,
+      brightfield-sql, brightfield-engine, brightfield-render, and
+      brightfield-ui continue to pass. No breaking changes to public
+      Session API beyond strictly additive surface
+      (propagate_selection, current_selections, parent_plot helper).
+    verification: "cargo test --workspace"
+
+  - id: ac-15
+    ac_type: code
+    description: >
+      At least 8 new tests exist with the cfs2_ prefix covering the
+      acceptance criteria above (the 11 code-typed ACs above already
+      enumerate 12+ test names; this AC is the explicit count gate).
+    verification: "rg -n '\\bfn cfs2_' crates/ | wc -l >= 8"
+
+implementation_notes:
+  - "Coordinator entry: pub fn propagate_selection(&mut self, name: &str, contributor: ComponentPath, predicate: Predicate) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>. Mirrors propagate_param's body shape: state-update → subscriber lookup → mark filter → per-subscriber emit-and-execute loop → continue on error."
+  - "selection_state field on Session: HashMap<String, Vec<(ComponentPath, Predicate)>>. Use (contributor, predicate) tuples — same shape compile_selection consumes after stringifying the contributor path. Replacement of same-contributor entries is by linear scan (≤5 contributors per selection in corpus; sufficient)."
+  - "emit_query signature change: prefer adding a third argument `selection_predicates: Option<&[(String, Predicate)]>` so that lower.rs's existing compile_selection path can be invoked inside emit_query when the mark has filterBy edges. Alternative: the coordinator lowers and renders inline using a new internal helper, leaving emit_query untouched. Either choice closes the LOW; choose the additive-argument route to keep the emit surface canonical and to fix the existing _param_values gap in the same change."
+  - "parent_plot helper: live in brightfield-spec::analysis (next to ComponentPath) or a small path_utils module. Implementation: find the longest prefix ending in `/plot[<digits>]` via a single forward scan, or the input unchanged if no such prefix. Trivial; ≤10 lines."
+  - "Self-exclusion contract: contributor source_name in selection_state stored entries is the parent_plot of the *contributing* component path. Subscriber self_source at dispatch time is the parent_plot of the *subscriber's* mark path. Equality is byte-string equality. compile_selection's existing self_source filter (lower.rs:106) is the only code that needs to consume this — no changes needed there."
+  - "UI debounce: on_mouse_up fires propagate_selection synchronously on Brushing→Idle transition. NavigationState.check_settle (interaction.rs:292-303) is the precedent — selections do not need a full settle timer because mouse-up is itself a debounce edge. Future enhancement: throttle mid-drag updates if author requirements emerge."
+  - "Brush-to-predicate adapter: lives in brightfield-ui (the only crate that knows about Rect-in-chart-coordinates). Takes (rect, selection_kind, channel_columns) → Predicate. intervalX writes Predicate::And([Predicate::Expr(\"x >= rect.left\"), Predicate::Expr(\"x <= rect.right\")]) over the bound x channel column. intervalY symmetric. intervalXY combines all four. Tested in isolation."
+  - "on_mouse_up wiring: ChartView gains a Session handle (Arc<Mutex<Session>> or equivalent — chart_view does not currently hold one; this is the same wiring problem the param coordinator faced). The handle dispatches propagate_selection on Brushing→Idle. The exact handle type is implementation-detail; the AC test may use a test double if needed (cfs2_ac11)."
+  - "Test prefix cfs2_ matches the rpw_→rpw2_ precedent. Target: ≥8 tests; this spec enumerates 12 AC tests."
+  - "Partial-failure test (cfs2_ac08) mirrors rpw2_ac04: two subscribers, one supported and one unsupported (e.g. mark::Rect with no registered lowerer in default_lowerers), assert one Ok + one Err in the result vector."
+  - "Spec joins the card's specs: array as the v2 entry alongside 2026-04-21-cross-filtered-selections-across-linked-views/spec.yaml (v1)."
+
+ontology_schema:
+  name: "SelectionRuntimeCoordinator"
+  description: "Runtime coordination of selection updates through the selection_subscribers graph"
+  fields:
+    - name: "selection_state"
+      type: "HashMap<String, Vec<(ComponentPath, Predicate)>>"
+      description: "Live store of per-contributor predicates per selection"
+    - name: "propagate_selection"
+      type: "fn(&mut Session, &str, ComponentPath, Predicate) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>"
+      description: "Coordinator entry point. State-update + subscriber dispatch + partial-failure result."
+    - name: "parent_plot"
+      type: "fn(&str) -> &str"
+      description: "Self-exclusion identity helper. Strips a component path back to its enclosing plot prefix."
+    - name: "brush_rect_to_predicate"
+      type: "fn(Rect, SelectionKind, ChannelMap) -> Predicate"
+      description: "UI-side adapter. Converts a chart-coordinate brush rectangle into the IR Predicate the coordinator stores."
+
+evaluation_principles:
+  - principle: "Correctness — propagate_selection dispatches to exactly the right subscribers with the right merged predicates"
+    weight: 0.30
+  - principle: "Self-exclusion fidelity — parent-plot identity rule honoured per-subscriber, every time"
+    weight: 0.20
+  - principle: "Resilience — partial-failure pattern, unsubscribed selections silent, same-contributor replacement"
+    weight: 0.20
+  - principle: "Non-regression — corpus gate green, existing API unchanged, brightfield-render no-gpui invariant intact"
+    weight: 0.15
+  - principle: "Closing the _param_values gap — emit_query actually consumes both param_values and selection_predicates"
+    weight: 0.15
+
+exit_conditions:
+  - "All 15 ACs pass verification"
+  - "cargo test --workspace succeeds with zero failures"
+  - "cfs ac-10 corpus regression gate green"
+  - "≥8 new cfs2_ tests in crates/, with at least one end-to-end against vendored crossfilter.yaml"
+  - "emit_query consumes both param_values and selection_predicates (or coordinator lowers inline) — _param_values LOW from 0005 v2 review closed"
+  - "on_mouse_up dispatches propagate_selection on Brushing→Idle transition"
+
+metadata:
+  version: "1.0"
+  test_prefix: "cfs2"
+  timestamp: "2026-04-28T08:05:00Z"
+  ambiguity_score: 0.06
+  interview_ref: "orbit/specs/2026-04-28-cross-filtered-selections-runtime/interview.md"
+  decisions_ref: "orbit/specs/2026-04-28-cross-filtered-selections-runtime/decisions.md"
