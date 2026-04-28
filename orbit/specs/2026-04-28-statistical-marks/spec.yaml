@@ -1,0 +1,429 @@
+goal: >
+  Implement the statistical-marks slice of card 0008: density (1D and 2D KDE)
+  and regression (linear OLS with default 95% confidence band). Hybrid SQL +
+  Rust compute — DuckDB does aggregation/binning via regr_* and width_bucket,
+  Rust convolves histograms with Gaussian kernels and computes CI band geometry.
+  Adds one new IR variant (QueryPlan::AggregateScalar), three concrete renderers
+  (Density1DRenderer, Density2DRenderer, RegressionRenderer), a kde.rs module,
+  a default_renderers() registry that replaces the silent dot fallback, and a
+  renderer-side SQL-string cache so bandwidth slider drags re-render without
+  re-querying DuckDB. Vocabulary entries Density, DensityX, DensityY,
+  RegressionX, RegressionY flip from Unimplemented to Implemented; DenseLine,
+  Heatmap, Contour, Raster stay Unimplemented (deferred to a later slice).
+
+constraints:
+  - "brightfield-render keeps its no-gpui invariant — kde.rs is pure Rust + Arrow"
+  - "No new GPU compute shaders — Vello renders 2D paths only; KDE convolution is CPU"
+  - "Bandwidth in data units — Silverman's rule when omitted; matches Mosaic web defaults"
+  - "Density renderer split is geometry-driven (1D vs 2D), not vocabulary-driven"
+  - "Linear OLS only; ci default 0.95; polynomial/exponential reject with EmitError::UnsupportedMark"
+  - "default_renderers() replaces the silent _ => DotRenderer fallback in brightfield-app/src/main.rs"
+  - "Existing MarkRenderer trait, MarkLower registry, ChannelMap, ScaleSet, propagate_param/propagate_selection signatures unchanged"
+  - "No new dependencies (no nalgebra) — convolution and OLS analytics in pure Rust"
+  - "Renderer-side SQL cache is a stand-in for proper two-tier param-effect routing — TODO(card-runtime-reactivity) comment references the future card"
+  - "Existing tests must continue to pass: cargo test --workspace"
+  - "Corpus parse gate (cfs ac-10 / cfs2 ac-13 equivalent) remains green — vocab flips do not break parser"
+  - "Spec joins card 0008's specs: array as the statistical-marks slice"
+
+acceptance_criteria:
+  - id: ac-01
+    ac_type: code
+    description: >
+      A new IR variant `QueryPlan::AggregateScalar { input: Box<QueryPlan>,
+      aggregates: Vec<String> }` is added to crates/brightfield-sql/src/ir.rs.
+      Its emitter produces `SELECT <agg1>, <agg2>, ... FROM (<input>)` with no
+      GROUP BY. Used by RegressionLowerer to emit single-row OLS aggregates.
+    verification: >
+      Unit test (gomb_ac01_aggregate_scalar_emits_no_group_by): construct
+      `QueryPlan::AggregateScalar { input: Box::new(QueryPlan::Source { table:
+      "athletes" }), aggregates: vec!["regr_slope(height, weight) AS slope"] }`,
+      lower to SQL via the existing emit pipeline, assert output contains
+      `SELECT regr_slope(height, weight) AS slope FROM` and does NOT contain
+      `GROUP BY`.
+
+  - id: ac-02
+    ac_type: code
+    description: >
+      A new module `crates/brightfield-render/src/kde.rs` provides pure
+      Rust + Arrow Gaussian convolution helpers. It exposes:
+      `kde_1d(bins: &[u32], bandwidth: f64, bin_width: f64) -> Vec<f64>` —
+      convolves a 1D histogram with a Gaussian kernel of σ = bandwidth in
+      data units;
+      `kde_2d(bins: &[u32], shape: (usize, usize), bandwidth: (f64, f64),
+       bin_size: (f64, f64)) -> Vec<f64>` — flat row-major Vec input/output,
+      shape = (width, height), index = y*width + x;
+      `silverman_1d(samples: &[f64]) -> f64` and
+      `silverman_2d_per_axis(samples_x: &[f64], samples_y: &[f64]) ->
+       (f64, f64)` for default bandwidth selection. The module is no-gpui
+      and adds NO new crate dependencies — uses only existing arrow + std,
+      with separable 2D convolution (rows then columns) over the flat Vec
+      so no ndarray is required.
+    verification: >
+      Unit test (gomb_ac02_kde_1d_recovers_known_sigma): generate samples
+      from a normal distribution with σ=2, bin into a histogram, convolve
+      with kde_1d at bandwidth=silverman_1d(samples), assert the resulting
+      density's empirical std matches the true σ within 10% tolerance.
+      Unit test (gomb_ac02_kde_2d_smooths_grid): 2D δ-spike at the centre
+      of a 32×32 flat-Vec grid, convolve with kde_2d at bandwidth=(2.0, 2.0),
+      assert the peak is at the centre and the marginal sums recover an
+      isotropic Gaussian.
+
+  - id: ac-03
+    ac_type: code
+    description: >
+      A new `Density1DRenderer { axis: DensityAxis }` (with `DensityAxis ::
+      X | Y`) renders MarkKind::DensityX (axis=X) and MarkKind::DensityY
+      (axis=Y) by reading the histogram-shaped RecordBatch (columns
+      `bin: usize, c: u32`), running kde_1d, and emitting an areaY-shaped
+      filled curve along the perpendicular axis. Bandwidth is read from
+      mark options (data units); falls back to silverman_1d if omitted.
+      Lives at crates/brightfield-render/src/marks/density.rs (or
+      crates/brightfield-render/src/density.rs if marks/ doesn't exist
+      yet — implementer picks based on existing module layout).
+    verification: >
+      Unit test (gomb_ac03_density1d_renders_curve): build a synthetic
+      RecordBatch with 20 bins and a known histogram (e.g. centred normal
+      counts), invoke Density1DRenderer::render with axis=Y, count the
+      number of fills emitted into the Vello scene, assert >0 fills (the
+      density curve was drawn) and that `count_scene_fills` exceeds the
+      bare-axis baseline.
+
+  - id: ac-04
+    ac_type: code
+    description: >
+      A new `Density2DRenderer` renders MarkKind::Density. It reads the
+      2D histogram-shaped RecordBatch (columns `bin_x: usize, bin_y:
+      usize, c: u32`), runs kde_2d, emits a `width × height` grid of
+      Vello circles whose radius scales with per-cell density (the `r`
+      channel target — matches density2d.yaml). The grid dimensions
+      come from the resolved width/height channel-or-param values.
+    verification: >
+      Unit test (gomb_ac04_density2d_emits_circle_grid): build a 2D
+      synthetic histogram batch on a 16×16 grid, render with
+      Density2DRenderer at bandwidth=(1.0, 1.0), assert the scene
+      contains exactly 256 circles (16*16 cells) and that circle radii
+      are not all zero (the convolution produced non-trivial density).
+
+  - id: ac-05
+    ac_type: code
+    description: >
+      A new `RegressionRenderer` renders MarkKind::RegressionY (and
+      RegressionX). Consumes the AggregateScalar single-row batch
+      (columns slope, intercept, n, x_bar, sxx, syy, sxy) and the scale
+      set's x-extent. Always draws a two-point line from (x_min,
+      slope*x_min + intercept) to (x_max, slope*x_max + intercept).
+      When ci is enabled (default 0.95; ci=false disables), draws a
+      translucent CI band sampled at 32 grid points along x using the
+      analytic formulas s² = (syy - sxy²/sxx)/(n-2),
+      se(ŷ|x) = s · √(1/n + (x-x̄)²/sxx), band(x) = ŷ ± t_α/2,n-2 · se.
+      For n>=30, t_α/2 ≈ 1.96 at 95% (use the t-distribution lookup
+      with this approximation; large-n is the operating regime).
+    verification: >
+      Unit test (gomb_ac05_regression_anscombe): for Anscombe quartet
+      dataset I (canonical x=[10,8,13,9,11,14,6,4,12,7,5],
+      y=[8.04,6.95,7.58,8.81,8.33,9.96,7.24,4.26,10.84,4.82,5.68]),
+      manually compute the regression coefficients (slope ≈ 0.5,
+      intercept ≈ 3.0, r² ≈ 0.667), invoke RegressionRenderer with a
+      synthetic AggregateScalar batch carrying these values, assert the
+      rendered line geometry matches the expected endpoint coordinates
+      within 1% tolerance, and assert the CI band geometry has 32
+      sample points with non-monotonic widths (narrowest at x_bar,
+      widest at extremes).
+
+  - id: ac-06
+    ac_type: code
+    description: >
+      A new `RegressionLowerer` is registered for RegressionY and
+      RegressionX in default_lowerers(). It emits
+      `QueryPlan::AggregateScalar` with aggregates =
+      [regr_slope(y,x) AS slope, regr_intercept(y,x) AS intercept,
+       regr_count(y,x) AS n, regr_avgx(y,x) AS x_bar,
+       regr_sxx(y,x) AS sxx, regr_syy(y,x) AS syy,
+       regr_sxy(y,x) AS sxy], over the mark's data source with the
+      mark's filterBy applied. If a stroke channel is bound to a
+      categorical column (e.g. stroke: sex), the lowerer wraps the
+      AggregateScalar inside a normal `QueryPlan::Aggregation` with
+      `group_by: [stroke_col]` to produce per-series regression rows.
+      If the mark spec carries `type: <not linear>`, the lowerer
+      returns `EmitError::UnsupportedMark { detail: "regression type
+      <X> not yet supported, only linear" }`.
+    verification: >
+      Unit test (gomb_ac06_regression_lowerer_emits_regr_aggregates):
+      build a minimal MarkSpec with mark=regressionY, x=weight,
+      y=height, source=athletes; lower via RegressionLowerer; emit
+      SQL via the existing emit pipeline; assert SQL contains all
+      seven `regr_<>(height, weight)` aggregates.
+      Unit test (gomb_ac06_regression_lowerer_grouped_by_stroke):
+      add `stroke: sex` (categorical); assert emitted SQL contains
+      `GROUP BY sex`.
+      Unit test (gomb_ac06_regression_lowerer_rejects_polynomial):
+      add `type: quadratic`; assert the lowerer returns EmitError::
+      UnsupportedMark with the prescribed message.
+
+  - id: ac-07
+    ac_type: code
+    description: >
+      A new `DensityLowerer` is registered for Density, DensityX,
+      DensityY in default_lowerers(). For 1D densities it emits
+      `QueryPlan::Aggregation` with group_by = [bin], select = [
+      width_bucket(<data_col>, dom_min, dom_max, n_bins) AS bin,
+      COUNT(*) AS c], over the mark's data source with filterBy.
+      For 2D Density it emits the equivalent on (x, y) with bin_x,
+      bin_y, c columns. Domain extents (dom_min, dom_max) are
+      extracted from the resolved scale extent (or, when no extent is
+      bound at lower-time, emitted as MIN/MAX subqueries — implementer
+      may prefer the simpler MIN/MAX form, that is acceptable). n_bins
+      defaults to 100 for 1D; resolves from the width/height channel
+      values for 2D Density.
+    verification: >
+      Unit test (gomb_ac07_density_lowerer_1d_emits_width_bucket):
+      build a MarkSpec with mark=densityY, x=delay, source=flights;
+      lower; assert SQL contains `width_bucket(delay,` and
+      `GROUP BY bin`.
+      Unit test (gomb_ac07_density_lowerer_2d_emits_2d_bucket):
+      build a MarkSpec with mark=density, x=bill_length, y=bill_depth,
+      width=$bins, height=$bins; lower; assert SQL contains both
+      `width_bucket(bill_length,` and `width_bucket(bill_depth,` and
+      `GROUP BY bin_x, bin_y`.
+
+  - id: ac-08
+    ac_type: code
+    description: >
+      A new `default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer>)>`
+      function lives at crates/brightfield-render/src/mark.rs (or a new
+      registry module). A helper `find_renderer<'a>(renderers: &'a [(MarkKind,
+      Box<dyn MarkRenderer>)], kind: MarkKind) -> Option<&'a dyn
+      MarkRenderer>` accompanies it. The registry registers:
+      Dot → DotRenderer, BarX | BarY → BarRenderer, Line → LineRenderer,
+      Density → Density2DRenderer, DensityX | DensityY → Density1DRenderer
+      { axis }, RegressionY | RegressionX → RegressionRenderer.
+      DenseLine, Heatmap, Contour, Raster are not registered.
+    verification: >
+      Unit test (gomb_ac08_default_renderers_dispatch): call
+      default_renderers(); for each of MarkKind::Dot, BarX, BarY, Line,
+      Density, DensityX, DensityY, RegressionY, RegressionX, assert
+      find_renderer returns Some. For DenseLine, Heatmap, Contour,
+      Raster, assert find_renderer returns None.
+
+  - id: ac-09
+    ac_type: code
+    description: >
+      Vocabulary entries Density, DensityX, DensityY, RegressionY,
+      RegressionX flip from Unimplemented to Implemented in
+      crates/brightfield-spec/src/vocab.rs. DenseLine, Heatmap, Contour,
+      Raster stay Unimplemented.
+    verification: >
+      Unit test (gomb_ac09_vocab_status_flipped): instantiate the vocab
+      registry and assert MarkKind::Density, DensityX, DensityY,
+      RegressionY, RegressionX have status == Implemented; assert
+      DenseLine, Heatmap, Contour, Raster have status == Unimplemented.
+
+  - id: ac-10
+    ac_type: code
+    description: >
+      The dispatch site in crates/brightfield-app/src/main.rs (the existing
+      `_ => DotRenderer` flat-match fallback inside execute_mark or its
+      visualisation-pipeline equivalent — current line range circa 98-108,
+      may have shifted post-card-0006) is replaced by a call to
+      `default_renderers()` + `find_renderer(kind)`. When find_renderer
+      returns None, the dispatch returns `RendererError::UnsupportedMark
+      { kind }`, which the existing graceful-skip pattern at main.rs:88-91
+      (or its post-shift equivalent) handles by skipping the mark and
+      continuing the render pass. The silent dot fallback is gone.
+    verification: >
+      Structural check: rg the codebase for the literal `_ => DotRenderer`
+      pattern; assert zero matches outside test code. AND rg
+      brightfield-app/src/main.rs for `find_renderer(`; assert at least
+      one match (the dispatch site invokes the registry).
+      Unit test (gomb_ac10_dispatch_returns_unsupported_for_unregistered):
+      attempt to dispatch a hypothetical MarkKind::DenseLine through the
+      registry path; assert the result is RendererError::UnsupportedMark
+      (not a DotRenderer fallback).
+
+  - id: ac-11
+    ac_type: code
+    description: >
+      A renderer-side SQL execute cache lives in Session::execute_mark
+      (crates/brightfield-engine/src/lib.rs). Implementation: a
+      capped LRU keyed by EmittedQuery.sql, fixed cap of 32 entries
+      (document the cap in a code comment). On execute_mark, check the
+      cache before dispatching to DuckDB; on miss, execute, insert
+      (evicting the LRU entry if at capacity). A
+      `TODO(card-runtime-reactivity)` comment near the cache references
+      the future two-tier param-effect routing. The cache must be a
+      strict short-circuit — if the same SQL is re-emitted, DuckDB is
+      not re-executed.
+      Session exposes a test-only counter accessor
+      `pub(crate) fn duckdb_execute_count(&self) -> usize` (or an
+      equivalent visible-to-tests handle), incremented in execute_mark
+      immediately before the DuckDB execute call. This counter is the
+      ground truth for ac-11 and ac-12 verification.
+    verification: >
+      Unit test (gomb_ac11_sql_cache_skips_duckdb_on_repeat): load any
+      density spec; record duckdb_execute_count; call execute_mark twice
+      for the same mark with no intervening param/selection update;
+      assert the second call did not increment the counter.
+      Unit test (gomb_ac11_sql_cache_lru_eviction): insert >32 distinct
+      SQL strings via repeated execute_mark on a sequence of unique
+      queries (e.g. with varying filter literals); after 33 distinct
+      inserts, re-executing the FIRST SQL string causes a counter
+      increment (it was evicted) while re-executing the LAST SQL string
+      does not (it is still cached).
+
+  - id: ac-12
+    ac_type: code
+    description: >
+      A propagate_param call whose new value does NOT change the emitted
+      SQL string keeps the SQL cache warm — DuckDB is not re-executed,
+      param_state is still updated, and the subscriber is still dispatched
+      (so any render-affecting Rust-side compute can re-run).
+      Originally framed as the bandwidth-slider-drag scenario; the
+      bandwidth-as-runtime-param wiring (param-affects-render-only) is
+      deferred to the two-tier param-effect routing card. See
+      decisions.md "ac-12 verification reframe" (post-review correction
+      2026-04-28).
+    verification: >
+      Unit test (gomb_ac12_propagate_param_with_unchanged_sql_hits_cache):
+      load a minimal spec with a selection param "brush" subscribed by a
+      mark via filterBy; call propagate_param("brush", v1); record
+      duckdb_execute_count (the test-only accessor from ac-11); call
+      propagate_param("brush", v2). Selection params route through
+      selection_state predicates rather than inlining their value into
+      SQL, so the emitted SQL is byte-identical across calls. Assert
+      duckdb_execute_count is unchanged on the second call AND
+      param_state reflects the latest value AND the subscriber is
+      dispatched (results vec non-empty, all Ok).
+
+  - id: ac-13
+    ac_type: code
+    description: >
+      Conformance snapshots exist for density1d.yaml, density2d.yaml,
+      and linear-regression.yaml. Snapshot pattern follows the existing
+      conformance infrastructure (look in crates/brightfield-conformance);
+      each snapshot captures the emitted SQL string for the mark so
+      future changes that perturb SQL emission are caught.
+    verification: >
+      Snapshot tests (gomb_ac13_density1d_snapshot,
+      gomb_ac13_density2d_snapshot, gomb_ac13_linear_regression_snapshot):
+      load each vendored spec, lower the statistical mark, assert the
+      emitted SQL matches the on-disk snapshot. First-run inserts the
+      snapshot; subsequent runs assert equality.
+
+  - id: ac-14
+    ac_type: code
+    description: >
+      Parser known-keys allowlist accepts (without warning) all of
+      bandwidth, normalize, stack, offset, ci, thresholds. Verify
+      against crates/brightfield-spec/src/parse.rs and add any missing
+      entries. (bandwidth is already known per decisions.md; ci and
+      thresholds may need to be added.)
+    verification: >
+      Unit test (gomb_ac14_parser_accepts_kde_options): parse a synthetic
+      mark YAML with all six keys (bandwidth, normalize, stack, offset,
+      ci, thresholds) set to plausible values; assert the parser emits
+      no warnings about unknown keys and the values land in the AST.
+
+  - id: ac-15
+    ac_type: gate
+    description: >
+      Existing test suite remains green. cargo test --workspace produces
+      no regressions across brightfield-spec, brightfield-sql,
+      brightfield-engine, brightfield-render, brightfield-ui,
+      brightfield-conformance, brightfield-app.
+    verification: "cargo test --workspace"
+
+  - id: ac-16
+    ac_type: gate
+    description: >
+      Corpus parse regression gate remains green. Every vendored Mosaic
+      spec that currently parses continues to parse with the vocab flips
+      and parser allowlist additions. The flipped vocabulary must not
+      reject existing specs.
+    verification: >
+      Existing corpus iteration test (the equivalent of cfs ac-10 / cfs2
+      ac-13) passes unchanged.
+
+  - id: ac-17
+    ac_type: code
+    description: >
+      At least 8 new tests with the gomb_ prefix exist across the
+      crates/ tree, covering the ACs above. (The 13 code-typed ACs
+      above already enumerate 16+ test names; this AC is the count gate.)
+    verification: "rg -n '\\bfn gomb_' crates/ | wc -l >= 8"
+
+implementation_notes:
+  - "New IR variant `QueryPlan::AggregateScalar { input: Box<QueryPlan>, aggregates: Vec<String> }` at crates/brightfield-sql/src/ir.rs. Emitter (in emit.rs) produces `SELECT <comma-separated aggregates> FROM (<lowered input>)` with no GROUP BY. Mirror the existing Aggregation arm but skip the GROUP BY clause when group_by is None / empty."
+  - "kde.rs lives at crates/brightfield-render/src/kde.rs. Pure Rust + Arrow, no gpui (preserves brightfield-render's no-gpui invariant), no new external dependencies. 1D convolution: for each output bin i, sum kernel(j-i) * count[j] over j; kernel is a precomputed Gaussian truncated at ±3σ for performance. 2D convolution: use the separability of an isotropic Gaussian — convolve rows then columns over a flat Vec<u32>/Vec<f64> with explicit row-stride indexing (index = y*width + x). Silverman 1D: 1.06 * sigma_hat * n^(-1/5). Silverman 2D per-axis: 0.9 * min(sigma_hat, IQR_hat/1.34) * n^(-1/6). No nalgebra, no ndarray, no rayon."
+  - "Density1DRenderer at crates/brightfield-render/src/density.rs (or src/marks/density.rs if a marks/ submodule exists; check the layout shipped by f21b555). axis: DensityAxis enum with X | Y variants. Reads bin index + count from the RecordBatch, pulls bandwidth from ChannelMap or KDEParams, calls kde_1d, projects through ScaleSet, emits an areaY-shaped Vello path via existing scene utilities (look for the AreaY pattern in mark.rs if present; otherwise build a Bezier path from the convolved samples)."
+  - "Density2DRenderer in the same density module file. Reads 2D bin counts, calls kde_2d, emits one Vello Circle per cell with radius = scaled(density). Use the resolved width/height channel values for grid dimensions (these come from the AST as either u32 literals or ParamRefs that resolve at render time)."
+  - "RegressionRenderer at crates/brightfield-render/src/regression.rs. Reads the seven regr_* aggregate columns from the RecordBatch. For per-series regression (group_by stroke), the batch has multiple rows — render one line+band per row, coloured by the stroke value. Two-point line endpoints come from ScaleSet's x-extent (use ViewExtent if a pan/zoom override is active). CI band: 32 evenly-spaced x grid points, compute se(ŷ|x), draw two Bezier paths (upper and lower) closed into a translucent fill. ci default 0.95; ci=false disables the band; ci=<0..1> adjusts the t multiplier (use t-table or Student-t approximation — for n>=30, z_{α/2} is acceptable per the spec)."
+  - "RegressionLowerer at crates/brightfield-sql/src/lower.rs (or a new module lower/regression.rs). Implements MarkLower for the regression marks. Builds the AggregateScalar plan from the mark's source + filterBy + the stroke group_by (if present). Polynomial / non-linear types reject with EmitError::UnsupportedMark."
+  - "DensityLowerer in the same crate. Implements MarkLower for the three density marks. Builds the QueryPlan::Aggregation plan with width_bucket bins. For 2D, the bin indices are bin_x, bin_y. n_bins for 1D: default 100 (matches Mosaic); allow override via a `bins` mark option if simple (otherwise just 100 in this slice)."
+  - "default_renderers() at crates/brightfield-render/src/mark.rs (where the trait lives) returns Vec<(MarkKind, Box<dyn MarkRenderer>)>. find_renderer is a helper that scans the vec — O(n) is fine, the vec is small (<20 entries). Both are pub at the module level. The brightfield-app dispatcher holds a single instance of this vec for the lifetime of the app and dispatches via find_renderer."
+  - "main.rs dispatch site: replace the silent `_ => DotRenderer` arm with a `find_renderer(&self.renderers, kind).ok_or(RendererError::UnsupportedMark { kind })?` call. The existing graceful-skip pattern (the catch-block for emit/render errors at the per-mark loop) will already log+skip the unsupported mark, matching today's behaviour for unknown emit failures."
+  - "SQL cache in Session: a capped LRU keyed by EmittedQuery.sql string, value type `Vec<RecordBatch>`, fixed cap 32 entries. Implementation suggestion: an IndexMap (already a workspace dep) with manual cap-and-shift, or a simple Vec<(String, Vec<RecordBatch>)> with linear scan since cap=32 makes O(n) lookup negligible. Initialised empty at Session::new. execute_mark consults the cache first; on hit, returns cached batches AND does not increment duckdb_execute_count. On miss, increments the counter, executes against DuckDB, inserts (evicting LRU entry if at cap). The counter is exposed via `pub(crate) fn duckdb_execute_count(&self) -> usize` for ac-11 / ac-12 verification. When propagate_selection or any other state change might invalidate, the cache stays untouched — the SQL string itself is the cache key, so a different filterBy yields a different SQL string yields a cache miss naturally. Add: `// TODO(card-runtime-reactivity): replace this string-keyed cache with explicit param_affects: Query | Render tagging and two-tier coordinator routing.`"
+  - "Parser known-keys allowlist: rg crates/brightfield-spec/src/parse.rs for the existing list (look for `bandwidth` per decisions.md ref to line 117). Add ci, thresholds, normalize, stack, offset if not already present. Be conservative — match the existing pattern of accept-but-warn-if-unrecognised."
+  - "Conformance snapshots: study how density1d.yaml is currently handled in crates/brightfield-conformance (it likely already iterates and reports skip/error for the unimplemented mark). Add per-spec SQL snapshots for the three named files. Pattern follows card 0004's snapshot infra — look for the snapshot test files in conformance crate. Snapshots in this slice capture EMITTED SQL ONLY — not rendered Vello scenes. Future scene-output snapshots will need cross-platform float tolerance (macOS/Linux/Windows) but that is out of slice scope here."
+  - "Test prefix gomb_ — Grammar Of Mark Breadth (or however you want to read it). Mirrors cfs2_ / rpw2_ from prior cards. f21b555's tests use gpu_ prefix from the GPU rendering card (0013); we use gomb_ to keep the statistical-marks slice distinct."
+  - "Spec joins card 0008's specs: array as orbit/specs/2026-04-28-statistical-marks/spec.yaml. The existing 2026-04-22-grammar-of-graphics-mark-library/spec.yaml entry stays (that was the original whole-card spec, partially superseded by this slice + card 0013)."
+  - "Branch is rally/statistical-marks, stacked on rally/cross-filtered-selections-runtime — PR target is rally/cross-filtered-selections-runtime, NOT main."
+
+ontology_schema:
+  name: "StatisticalMarksSlice"
+  description: "Hybrid SQL+Rust statistical marks (KDE density 1D/2D, linear regression with CI band) plus a default renderer registry that replaces the silent-fallback dispatcher."
+  fields:
+    - name: "AggregateScalar"
+      type: "QueryPlan variant { input: Box<QueryPlan>, aggregates: Vec<String> }"
+      description: "No-group-by aggregate-only projection. Used by RegressionLowerer for the seven regr_* aggregates."
+    - name: "kde_1d / kde_2d"
+      type: "fn"
+      description: "Pure-Rust Gaussian convolution helpers in brightfield-render::kde."
+    - name: "silverman_1d / silverman_2d_per_axis"
+      type: "fn"
+      description: "Default-bandwidth helpers (data units) when bandwidth is omitted."
+    - name: "Density1DRenderer / Density2DRenderer / RegressionRenderer"
+      type: "MarkRenderer impls"
+      description: "Three new concrete renderers covering the statistical mark surface."
+    - name: "DensityLowerer / RegressionLowerer"
+      type: "MarkLower impls"
+      description: "Two new concrete lowerers registered in default_lowerers()."
+    - name: "default_renderers"
+      type: "fn() -> Vec<(MarkKind, Box<dyn MarkRenderer>)>"
+      description: "Renderer registry mirroring default_lowerers()'s pattern. Replaces the silent dot fallback."
+    - name: "find_renderer"
+      type: "fn(&[...], MarkKind) -> Option<&dyn MarkRenderer>"
+      description: "Lookup helper used at the dispatch site in brightfield-app."
+    - name: "execute_mark sql_cache"
+      type: "HashMap<String, Vec<RecordBatch>> on Session"
+      description: "Render-side SQL cache; short-circuits DuckDB execution on byte-identical re-emitted SQL. Stand-in for proper two-tier param routing."
+
+evaluation_principles:
+  - principle: "Correctness — KDE, OLS, and CI band match analytic references on canonical fixtures (Anscombe, normal-σ)"
+    weight: 0.30
+  - principle: "Clean separation — kde.rs no-gpui, registry pattern, hybrid compute split per D1"
+    weight: 0.20
+  - principle: "Reactivity — bandwidth slider re-renders without re-querying (D5 cache hit)"
+    weight: 0.15
+  - principle: "Non-regression — corpus parse gate green, existing tests pass, MarkRenderer/MarkLower trait surfaces unchanged"
+    weight: 0.15
+  - principle: "Surface honesty — silent dot fallback gone, polynomial regression rejects loudly, deferred marks remain Unimplemented"
+    weight: 0.20
+
+exit_conditions:
+  - "All 17 ACs pass verification"
+  - "cargo test --workspace succeeds with zero failures"
+  - "Corpus parse gate green"
+  - "≥8 gomb_ tests in crates/, including snapshot tests for density1d/density2d/linear-regression"
+  - "QueryPlan::AggregateScalar lands and is emitted by RegressionLowerer"
+  - "default_renderers() registry exists; silent dot fallback in brightfield-app/src/main.rs is removed"
+  - "Renderer-side SQL cache short-circuits repeat-emit; bandwidth-only param drag does not re-query"
+  - "Density and Regression vocabulary entries flipped to Implemented; DenseLine/Heatmap/Contour/Raster remain Unimplemented"
+  - "TODO(card-runtime-reactivity) comment in place near the SQL cache"
+
+metadata:
+  version: "1.1"
+  test_prefix: "gomb"
+  timestamp: "2026-04-28T18:25:00Z"
+  ambiguity_score: 0.05
+  interview_ref: "orbit/specs/2026-04-28-statistical-marks/interview.md"
+  decisions_ref: "orbit/specs/2026-04-28-statistical-marks/decisions.md"
