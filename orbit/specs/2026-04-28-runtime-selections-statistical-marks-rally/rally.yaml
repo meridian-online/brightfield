@@ -1,17 +1,17 @@
 rally: "runtime selections and statistical marks"
 autonomy: guided
-phase: designing
+phase: design-review
 started: 2026-04-28T07:05:50Z
 completed: null
 cards:
   - path: orbit/cards/0006-cross-filtered-selections-across-linked-views.yaml
-    status: designing
+    status: designed
     spec_dir: orbit/specs/2026-04-28-cross-filtered-selections-runtime/
     branch: rally/cross-filtered-selections-runtime
     worktree: null
     parked_constraint: null
   - path: orbit/cards/0008-grammar-of-graphics-mark-library.yaml
-    status: designing
+    status: designed
     spec_dir: orbit/specs/2026-04-28-statistical-marks/
     branch: rally/statistical-marks
     worktree: null
