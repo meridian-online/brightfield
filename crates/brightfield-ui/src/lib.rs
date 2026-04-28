@@ -19,6 +19,7 @@
 //!   device (not shared with GPUI).
 //! - **ChartLayout** — coordinate mapping pipeline for mouse events.
 
+pub mod brush;
 pub mod chart_element;
 pub mod chart_layout;
 pub mod chart_state;
@@ -26,6 +27,7 @@ pub mod chart_view;
 pub mod interaction;
 pub mod vello_renderer;
 
+pub use brush::{brush_rect_to_predicate, BrushKind, ChannelColumns};
 pub use chart_element::ChartElement;
 pub use chart_layout::ChartLayout;
 pub use chart_state::ChartState;

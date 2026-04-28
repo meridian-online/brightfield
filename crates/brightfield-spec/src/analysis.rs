@@ -93,6 +93,59 @@ impl ParamDeclaredType {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ComponentPath(pub String);
 
+/// Return the longest prefix of `path` that ends in a `/plot[<digits>]`
+/// segment, or `path` unchanged if no such segment exists.
+///
+/// Used by the runtime selection coordinator (card 0006 v2) for self-exclusion
+/// identity. A mark inside `root/vconcat[0]/plot[1]/mark[dot]` belongs to the
+/// plot at `root/vconcat[0]/plot[1]`; an interactor inside the same plot at
+/// `root/vconcat[0]/plot[1]/interactor[intervalX]` shares the same parent
+/// prefix. String equality on the result of `parent_plot` is the
+/// "view's own predicate" identity rule (card 0006 v2 decision 4).
+///
+/// Behaviour:
+/// - `parent_plot("root/vconcat[0]/plot[1]/mark[dot]")` → `"root/vconcat[0]/plot[1]"`
+/// - `parent_plot("root/plot[0]/interactor[intervalX]")` → `"root/plot[0]"`
+/// - `parent_plot("root/mark[dot]")` → `"root/mark[dot]"` (no plot in path → unchanged)
+/// - `parent_plot("root")` → `"root"` (degenerate)
+pub fn parent_plot(path: &str) -> &str {
+    // Walk byte indices forward, recording the end of the last `/plot[N]`
+    // segment we have seen. A plot segment is `/plot[<digits>]` followed
+    // by either `/` (continuation) or end-of-string (terminal).
+    //
+    // Linear single-pass; no allocation; returns a &str slice into `path`.
+    let bytes = path.as_bytes();
+    let pat = b"/plot[";
+    let mut last_end: Option<usize> = None;
+    let mut i = 0;
+    while i + pat.len() <= bytes.len() {
+        if &bytes[i..i + pat.len()] == pat {
+            // Scan digits after the `[`.
+            let mut j = i + pat.len();
+            let digits_start = j;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j > digits_start && j < bytes.len() && bytes[j] == b']' {
+                // The plot segment runs from `i` (inclusive of the leading `/`)
+                // to `j + 1` (exclusive — past the closing `]`).
+                let end = j + 1;
+                last_end = Some(end);
+                // Skip past this segment to keep matching nested plots.
+                // Plot inside plot is rare but the longest-match rule says
+                // we should still pick the deepest one.
+                i = end;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    match last_end {
+        Some(end) => &path[..end],
+        None => path,
+    }
+}
+
 /// Map from param name to the set of component paths that consume it.
 pub type SubscriberGraph = HashMap<String, Vec<ComponentPath>>;
 
@@ -844,6 +897,39 @@ pub fn analyse_spec(spec: &Spec) -> Result<SpecAnalysis, ParseError> {
 mod tests {
     use super::*;
     use crate::parse::{parse_spec, Format};
+
+    // ----- card 0006 v2 cfs2_ac04: parent_plot helper -----
+    #[test]
+    fn cfs2_ac04_parent_plot_helper() {
+        // mark inside vconcat → plot
+        assert_eq!(
+            parent_plot("root/vconcat[0]/plot[1]/mark[dot]"),
+            "root/vconcat[0]/plot[1]"
+        );
+        // mark inside plot at root level
+        assert_eq!(parent_plot("root/plot[0]/mark[bar]"), "root/plot[0]");
+        // interactor under a plot — same parent prefix as the mark
+        assert_eq!(
+            parent_plot("root/plot[0]/interactor[intervalX]"),
+            "root/plot[0]"
+        );
+        // mark not inside any plot — degenerate fallback returns input unchanged
+        assert_eq!(parent_plot("root/mark[dot]"), "root/mark[dot]");
+        // root only — no plot in path
+        assert_eq!(parent_plot("root"), "root");
+        // multi-digit plot index
+        assert_eq!(
+            parent_plot("root/plot[12]/mark[line]"),
+            "root/plot[12]"
+        );
+        // no /plot[ but contains substring "plot" — must not match
+        assert_eq!(parent_plot("root/plotter[0]"), "root/plotter[0]");
+        // nested concat hierarchy
+        assert_eq!(
+            parent_plot("root/hconcat[2]/vconcat[0]/plot[3]/mark[dot]"),
+            "root/hconcat[2]/vconcat[0]/plot[3]"
+        );
+    }
 
     // ac-01: typed fields on Input
     #[test]

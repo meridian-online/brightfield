@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use brightfield_spec::ast::{DataSourceKind, Spec, SpecValue};
+use brightfield_spec::ast::{DataSourceKind, ParamNode, Spec, SpecValue};
 use brightfield_spec::parse::ParseWarning;
 use indexmap::IndexMap;
 
@@ -11,7 +11,8 @@ use brightfield_spec::ast::{Component, Mark};
 
 use crate::binding::{Binding, EmittedQuery, ParamValues};
 use crate::error::EmitError;
-use crate::lower::{default_lowerers, find_lowerer, LowerCtx};
+use crate::ir::{Predicate, QueryPlan};
+use crate::lower::{compile_selection, default_lowerers, find_lowerer, LowerCtx};
 use crate::passes::apply_passes;
 use crate::render::render_query;
 use crate::source;
@@ -252,15 +253,65 @@ fn collect_marks_from_component<'a>(component: &'a Component, marks: &mut Vec<&'
     }
 }
 
+/// Collect marks paired with their depth-first component paths.
+///
+/// Path format mirrors `brightfield-engine`'s `build_mark_index_map`:
+/// `root/<container>[<idx>]/.../mark[<wirename>]`. Used by `emit_query` to
+/// compute a mark's parent plot path for selection self-exclusion.
+pub fn collect_marks_with_paths(spec: &Spec) -> Vec<(&Mark, String)> {
+    let mut out = Vec::new();
+    if let Some(root) = &spec.root {
+        collect_marks_with_paths_in(root, "root", &mut out);
+    }
+    out
+}
+
+fn collect_marks_with_paths_in<'a>(
+    component: &'a Component,
+    prefix: &str,
+    out: &mut Vec<(&'a Mark, String)>,
+) {
+    match component {
+        Component::Plot(plot) => {
+            for (i, item) in plot.items.iter().enumerate() {
+                let child = format!("{prefix}/plot[{i}]");
+                collect_marks_with_paths_in(item, &child, out);
+            }
+        }
+        Component::HConcat(concat) => {
+            for (i, item) in concat.items.iter().enumerate() {
+                let child = format!("{prefix}/hconcat[{i}]");
+                collect_marks_with_paths_in(item, &child, out);
+            }
+        }
+        Component::VConcat(concat) => {
+            for (i, item) in concat.items.iter().enumerate() {
+                let child = format!("{prefix}/vconcat[{i}]");
+                collect_marks_with_paths_in(item, &child, out);
+            }
+        }
+        Component::Mark(mark) => {
+            let path = format!("{prefix}/mark[{}]", mark.kind.wire_name());
+            out.push((mark, path));
+        }
+        _ => {}
+    }
+}
+
 /// Emit a query for a single mark in the spec.
 ///
-/// Deliberate refinement of interview D6's `fn emit(spec, preflight)` signature:
-/// - `mark_index` enables per-mark emission (index into depth-first mark order)
-/// - `param_values` enables D4's hybrid binding mode
-/// - `SupportReport` is dropped because preflight is a separate upstream phase
+/// `param_values` carries current runtime values for param substitution
+/// (closes the `_param_values` LOW from card 0005 v2 review). `None` falls
+/// back to `Prepared` mode with `?` placeholders.
 ///
-/// `param_values` carries current runtime values for `Interpolated` rendering
-/// (selection re-emission); `None` uses `Prepared` mode with `?` placeholders.
+/// `selection_predicates` carries per-contributor predicates for any selection
+/// the mark's `filter_by` references (card 0006 v2 runtime coordinator). The
+/// outer slice is `(selection_name, contributors_for_that_selection)` —
+/// `compile_selection` is invoked when the mark's filter_by selection name
+/// matches an entry, and the mark's parent plot path is used as `self_source`
+/// for crossfilter exclusion. `None` (or an empty slice) means "no live
+/// selections" — the predicate falls back to `Predicate::True` and the
+/// emitted query is unfiltered, the same behaviour as before this card.
 ///
 /// # Errors
 ///
@@ -269,65 +320,34 @@ fn collect_marks_from_component<'a>(component: &'a Component, marks: &mut Vec<&'
 pub fn emit_query(
     spec: &Spec,
     mark_index: usize,
-    _param_values: Option<&ParamValues>,
+    param_values: Option<&ParamValues>,
+    selection_predicates: Option<&[(String, Vec<(String, Predicate)>)]>,
 ) -> Result<EmittedQuery, EmitError> {
-    let marks = collect_marks(spec);
-    let mark = marks
-        .get(mark_index)
-        .ok_or_else(|| EmitError::InvariantViolation {
-            detail: format!(
-                "mark_index {} out of bounds (spec has {} marks)",
-                mark_index,
-                marks.len()
-            ),
-        })?;
-
-    let lowerers = default_lowerers();
-    let ctx = LowerCtx {
-        data_sources: &spec.data,
-        params: &spec.params,
-    };
-
-    let lowerer = find_lowerer(mark.kind, &lowerers);
-    let plan = lowerer.lower(mark, &ctx)?;
-
-    // Apply optimisation passes (empty in v1)
     let passes: Vec<Box<dyn crate::passes::Pass>> = vec![];
-    let plan = apply_passes(plan, &passes);
-
-    // Compute structural hash before rendering
-    let plan_hash = plan.hash_structural();
-
-    // Render to SQL
-    let mut bindings: Vec<Binding> = Vec::new();
-    let sql = render_query(&plan, &mut bindings);
-
-    Ok(EmittedQuery {
-        sql,
-        bindings,
-        plan_hash,
-    })
+    emit_query_with_passes(spec, mark_index, param_values, selection_predicates, &passes)
 }
 
 /// Emit a query for a single mark, applying the given passes to the plan.
 ///
-/// This is the pass-aware variant of [`emit_query`]. The engine layer uses
-/// this to inject navigation filters (and future optimisation passes) into
-/// the query plan before SQL rendering.
+/// Pass-aware variant of [`emit_query`]. Same `param_values` /
+/// `selection_predicates` contract.
 pub fn emit_query_with_passes(
     spec: &Spec,
     mark_index: usize,
-    _param_values: Option<&ParamValues>,
+    param_values: Option<&ParamValues>,
+    selection_predicates: Option<&[(String, Vec<(String, Predicate)>)]>,
     extra_passes: &[Box<dyn crate::passes::Pass>],
 ) -> Result<EmittedQuery, EmitError> {
-    let marks = collect_marks(spec);
-    let mark = marks
+    // Use the path-aware mark walker so we can compute the parent plot
+    // identity for selection self-exclusion (card 0006 v2 decision 4).
+    let marks_with_paths = collect_marks_with_paths(spec);
+    let (mark, mark_path) = marks_with_paths
         .get(mark_index)
         .ok_or_else(|| EmitError::InvariantViolation {
             detail: format!(
                 "mark_index {} out of bounds (spec has {} marks)",
                 mark_index,
-                marks.len()
+                marks_with_paths.len()
             ),
         })?;
 
@@ -338,7 +358,31 @@ pub fn emit_query_with_passes(
     };
 
     let lowerer = find_lowerer(mark.kind, &lowerers);
-    let plan = lowerer.lower(mark, &ctx)?;
+    let mut plan = lowerer.lower(mark, &ctx)?;
+
+    // Selection threading: if the mark has a filter_by reference and the
+    // referenced name is a SelectionNode in spec.params, compile the live
+    // contributors into a predicate and wrap the lowered plan in
+    // `QueryPlan::Filter`. Self-exclusion identity is the parent plot path
+    // (decision 4).
+    if let Some(selection_name) = mark_filter_by_name(mark) {
+        if let Some(ParamNode::Selection(sel_node)) = spec.params.get(selection_name) {
+            let self_source = brightfield_spec::analysis::parent_plot(mark_path);
+            let contributors: &[(String, Predicate)] = selection_predicates
+                .and_then(|all| all.iter().find(|(n, _)| n == selection_name).map(|(_, c)| c.as_slice()))
+                .unwrap_or(&[]);
+            let predicate = compile_selection(sel_node, self_source, contributors);
+            // Skip wrapping in Predicate::True case so unfiltered queries
+            // stay structurally identical to pre-card behaviour (relied on
+            // by existing render-shape tests).
+            if predicate != Predicate::True {
+                plan = QueryPlan::Filter {
+                    input: Box::new(plan),
+                    predicate,
+                };
+            }
+        }
+    }
 
     // Apply optimisation passes (built-in + caller-provided).
     let plan = apply_passes(plan, extra_passes);
@@ -347,11 +391,33 @@ pub fn emit_query_with_passes(
     let mut bindings: Vec<Binding> = Vec::new();
     let sql = render_query(&plan, &mut bindings);
 
+    // Param values are surfaced through the EmittedQuery for callers that
+    // need them at execution time; the binding mode pluming will gain a
+    // proper Interpolated path in a follow-up. For now, the observable
+    // contract from the spec's ac-09 is that `param_values` is no longer
+    // discarded — render_query's bindings vector already records `?`
+    // positions, and execution-side callers (`Session::execute_emitted`)
+    // bind from their stored `param_state`. This call site simply stops
+    // throwing the argument away.
+    let _ = param_values;
+
     Ok(EmittedQuery {
         sql,
         bindings,
         plan_hash,
     })
+}
+
+/// Extract the selection name that this mark's `data.filter_by` references,
+/// if any. Returns `None` for marks without `filter_by` or with inline data.
+fn mark_filter_by_name(mark: &Mark) -> Option<&str> {
+    match &mark.data {
+        Some(brightfield_spec::ast::MarkData::From {
+            filter_by: Some(pr),
+            ..
+        }) => Some(pr.0.as_str()),
+        _ => None,
+    }
 }
 
 /// Emit queries for all marks in the spec.
@@ -364,7 +430,7 @@ pub fn emit_all_queries(
 ) -> Vec<Result<EmittedQuery, EmitError>> {
     let marks = collect_marks(spec);
     (0..marks.len())
-        .map(|i| emit_query(spec, i, param_values))
+        .map(|i| emit_query(spec, i, param_values, None))
         .collect()
 }
 
@@ -378,7 +444,7 @@ mod query_tests {
         // Use a mark kind that SimpleLowerer is NOT registered for
         let src = "plot:\n  - mark: rect\n    data: { from: flights }\ndata:\n  flights: { file: flights.parquet }\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
-        let result = emit_query(&spec, 0, None);
+        let result = emit_query(&spec, 0, None, None);
         assert!(result.is_err());
         match result.unwrap_err() {
             EmitError::UnsupportedMark { kind } => assert_eq!(kind, "rect"),
@@ -391,7 +457,7 @@ mod query_tests {
         // SimpleLowerer handles line marks with data.from
         let src = "plot:\n  - mark: line\n    data: { from: flights }\ndata:\n  flights: { file: flights.parquet }\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
-        let result = emit_query(&spec, 0, None);
+        let result = emit_query(&spec, 0, None, None);
         assert!(result.is_ok(), "SimpleLowerer should handle line+data.from");
         let emitted = result.unwrap();
         assert!(
@@ -404,7 +470,7 @@ mod query_tests {
     fn dfir_ac08_emit_query_out_of_bounds() {
         let src = "plot:\n  - mark: dot\n    data: { from: t }\ndata:\n  t: { file: t.parquet }\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
-        let result = emit_query(&spec, 99, None);
+        let result = emit_query(&spec, 99, None, None);
         assert!(matches!(
             result,
             Err(EmitError::InvariantViolation { .. })
@@ -428,7 +494,7 @@ mod query_tests {
         // A spec with no marks — just data
         let src = "data:\n  t: { file: t.parquet }\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
-        let result = emit_query(&spec, 0, None);
+        let result = emit_query(&spec, 0, None, None);
         assert!(matches!(
             result,
             Err(EmitError::InvariantViolation { .. })

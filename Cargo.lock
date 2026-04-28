@@ -751,6 +751,96 @@ dependencies = [
 ]
 
 [[package]]
+name = "brightfield-app"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "brightfield-engine",
+ "brightfield-render",
+ "brightfield-spec",
+ "brightfield-sql",
+ "brightfield-ui",
+ "gpui",
+ "tracing",
+ "vello",
+]
+
+[[package]]
+name = "brightfield-conformance"
+version = "0.1.0"
+dependencies = [
+ "brightfield-spec",
+ "brightfield-sql",
+ "indexmap",
+ "serde",
+ "serde_yaml",
+ "sqlparser",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "brightfield-engine"
+version = "0.1.0"
+dependencies = [
+ "brightfield-spec",
+ "brightfield-sql",
+ "duckdb",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "brightfield-render"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "brightfield-spec",
+ "indexmap",
+ "kurbo",
+ "peniko 0.3.2",
+ "skrifa",
+ "tracing",
+ "vello",
+]
+
+[[package]]
+name = "brightfield-spec"
+version = "0.1.0"
+dependencies = [
+ "indexmap",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "brightfield-sql"
+version = "0.1.0"
+dependencies = [
+ "brightfield-spec",
+ "indexmap",
+ "sqlparser",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "brightfield-ui"
+version = "0.1.0"
+dependencies = [
+ "brightfield-engine",
+ "brightfield-render",
+ "brightfield-spec",
+ "brightfield-sql",
+ "gpui",
+ "image",
+ "kurbo",
+ "peniko 0.3.2",
+ "pollster 0.4.0",
+ "smallvec",
+ "vello",
+]
+
+[[package]]
 name = "bstr"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1378,95 +1468,6 @@ name = "data-url"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
-
-[[package]]
-name = "brightfield-app"
-version = "0.1.0"
-dependencies = [
- "arrow",
- "brightfield-engine",
- "brightfield-render",
- "brightfield-spec",
- "brightfield-sql",
- "brightfield-ui",
- "gpui",
- "tracing",
- "vello",
-]
-
-[[package]]
-name = "brightfield-conformance"
-version = "0.1.0"
-dependencies = [
- "brightfield-spec",
- "brightfield-sql",
- "indexmap",
- "serde",
- "serde_yaml",
- "sqlparser",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "brightfield-engine"
-version = "0.1.0"
-dependencies = [
- "brightfield-spec",
- "brightfield-sql",
- "duckdb",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "brightfield-render"
-version = "0.1.0"
-dependencies = [
- "arrow",
- "brightfield-spec",
- "indexmap",
- "kurbo",
- "peniko 0.3.2",
- "skrifa",
- "tracing",
- "vello",
-]
-
-[[package]]
-name = "brightfield-spec"
-version = "0.1.0"
-dependencies = [
- "indexmap",
- "serde",
- "serde_json",
- "serde_yaml",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "brightfield-sql"
-version = "0.1.0"
-dependencies = [
- "brightfield-spec",
- "indexmap",
- "sqlparser",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "brightfield-ui"
-version = "0.1.0"
-dependencies = [
- "brightfield-engine",
- "brightfield-render",
- "brightfield-spec",
- "gpui",
- "image",
- "kurbo",
- "peniko 0.3.2",
- "pollster 0.4.0",
- "smallvec",
- "vello",
-]
 
 [[package]]
 name = "deflate64"
