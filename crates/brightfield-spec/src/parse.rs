@@ -119,6 +119,10 @@ pub const LIFT_SURFACE_FIELDS: &[&str] = &[
     "thresholds",
     "weight",
     "select",
+    // Statistical mark options (density / regression)
+    "normalize",
+    "stack",
+    "ci",
     // Interactor/input
     "as",
     "field",
@@ -1716,6 +1720,31 @@ plot:
             _ => panic!("not a mark"),
         };
         assert!(m.options.contains_key("weirdKey"));
+    }
+
+    /// gomb ac-14 — statistical-mark options pass parser cleanly
+    /// (no SchemaViolation, no UnknownOption warning).
+    #[test]
+    fn gomb_ac14_statistical_mark_options_accepted() {
+        let cases = [
+            ("density", "bandwidth: 0.5"),
+            ("density", "normalize: \"max\""),
+            ("density", "stack: true"),
+            ("densityX", "thresholds: 32"),
+            ("regressionY", "ci: 0.95"),
+            ("regressionY", "stroke: \"red\""),
+        ];
+        for (mark, opt) in cases {
+            let src = format!("mark: {mark}\n{opt}\n");
+            let out = parse_spec(&src, Format::Yaml).expect("parses statistical mark");
+            assert!(
+                !out.warnings
+                    .iter()
+                    .any(|w| matches!(w, ParseWarning::UnknownOption { .. })),
+                "no UnknownOption warning for {mark}/{opt}; got {:?}",
+                out.warnings
+            );
+        }
     }
 
     /// ac-14 case (c) — post-D2: a `meta:` unknown field is not a

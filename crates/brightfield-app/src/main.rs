@@ -14,7 +14,7 @@ use std::process;
 use brightfield_engine::Engine;
 use brightfield_render::channel::ChannelMap;
 use brightfield_render::layout::ChartLayout;
-use brightfield_render::mark::{BarRenderer, DotRenderer, LineRenderer, MarkRenderer};
+use brightfield_render::mark::{default_renderers, find_renderer};
 use brightfield_render::scene::{build_chart_scene, build_multi_mark_scene, ChartData};
 use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::parse_spec_path;
@@ -95,28 +95,31 @@ fn run_pipeline(
     let height = 480.0_f64;
     let layout = ChartLayout::new(width, height);
 
-    let renderers: Vec<Box<dyn MarkRenderer>> = chart_entries
-        .iter()
-        .map(|(_, _, kind)| -> Box<dyn MarkRenderer> {
-            match kind {
-                MarkKind::Dot => Box::new(DotRenderer),
-                MarkKind::Line => Box::new(LineRenderer),
-                MarkKind::BarX | MarkKind::BarY => Box::new(BarRenderer),
-                _ => Box::new(DotRenderer), // fallback
-            }
-        })
-        .collect();
-
+    // Build the default renderer registry once and dispatch per-mark via
+    // find_renderer. Marks whose kind has no registered renderer are skipped
+    // with a tracing event (no silent dot fallback).
+    let registry = default_renderers();
     let chart_data: Vec<ChartData<'_>> = chart_entries
         .iter()
-        .zip(renderers.iter())
-        .map(|((batch, cm, _), renderer)| ChartData {
-            batch,
-            channel_map: cm,
-            renderer: renderer.as_ref(),
-            layout: layout.clone(),
-            view_extent: None,
-            highlight: None,
+        .filter_map(|(batch, cm, kind)| {
+            let renderer = match find_renderer(&registry, *kind) {
+                Some(r) => r,
+                None => {
+                    tracing::warn!(
+                        mark = ?kind,
+                        "no renderer registered for mark kind — skipping"
+                    );
+                    return None;
+                }
+            };
+            Some(ChartData {
+                batch,
+                channel_map: cm,
+                renderer,
+                layout: layout.clone(),
+                view_extent: None,
+                highlight: None,
+            })
         })
         .collect();
 
