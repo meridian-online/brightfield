@@ -16,5 +16,19 @@ cards:
     branch: rally/statistical-marks
     worktree: null
     parked_constraint: null
-implementation_order: null
-order_rationale: null
+implementation_order:
+  - orbit/cards/0006-cross-filtered-selections-across-linked-views.yaml
+  - orbit/cards/0008-grammar-of-graphics-mark-library.yaml
+order_rationale: >
+  Disjointness check found shared modification surface on Session
+  (crates/brightfield-engine/src/lib.rs) and emit_query
+  (crates/brightfield-sql/src/emit.rs). Serial required.
+  0006 lands first because it owns the bigger structural Session
+  change (new selection_state field + new propagate_selection method)
+  and modifies emit_query's signature to thread param_values and
+  selection predicates. Landing first means 0008's new
+  RegressionLowerer / DensityLowerer plug into the stable signature
+  from the start. Reverse order would force a 0008 refactor when
+  0006's signature change lands later. Stacked PRs:
+  rally/cross-filtered-selections-runtime → main, then
+  rally/statistical-marks → rally/cross-filtered-selections-runtime.
