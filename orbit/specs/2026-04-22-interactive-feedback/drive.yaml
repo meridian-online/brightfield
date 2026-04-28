@@ -3,12 +3,21 @@ autonomy: full
 budget: 3
 iteration: 1
 current_spec: orbit/specs/2026-04-22-interactive-feedback
-status: review
+status: complete
 history: []
 started: 2026-04-22T23:30:00Z
+completed: 2026-04-24T02:55:29Z
+merge_commit: a53b286
 review_cycles:
   review_spec: 1
   review_pr: 0
 review_cycle_dates:
   review_spec: "2026-04-22"
-  review_pr: null
+  review_pr: "2026-04-22"
+note: |
+  drive.yaml was stale (status: review) until reconciled on 2026-04-28.
+  Implementation merged to main as a53b286 on 2026-04-24 with APPROVE
+  verdict in review-pr-2026-04-22.md (cycle 1, no REQUEST_CHANGES).
+  review_cycles.review_pr remains 0 because no REQUEST_CHANGES verdict
+  was issued; review_cycle_dates.review_pr backfilled from the file's
+  date label.
