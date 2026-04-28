@@ -1060,6 +1060,20 @@ plot:
 
     #[test]
     fn gomb_ac11_sql_cache_lru_eviction() {
+        // Property: cache eviction is LRU, not FIFO/random/MRU.
+        // Strategy:
+        //   1. Insert k0..k31 (cache full at 32, oldest = k0).
+        //   2. Touch k0 again — cache hit, no execute, k0 moves to MRU.
+        //   3. Insert k32 — cache miss, evicts oldest. Under LRU this is k1
+        //      (not k0, which we just touched). Under FIFO it would be k0.
+        //   4. Re-execute k0 → must be a cache hit (no execute increment).
+        //   5. Re-execute k1 → must be a cache miss (execute increment).
+        // Counters at the end:
+        //   - 32 inserts (k0..k31) → 32 executes
+        //   - touching k0 → 0 executes (cache hit)
+        //   - inserting k32 → 1 execute → 33
+        //   - re-executing k0 → 0 executes (still cached) → 33
+        //   - re-executing k1 → 1 execute (was evicted) → 34
         let yaml = r#"
 data:
   t:
@@ -1072,62 +1086,115 @@ plot:
         let engine = Engine::new();
         let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
 
-        // Insert 33 distinct SQL strings (cap is 32).
-        for i in 0..33 {
-            let emitted = EmittedQuery {
-                sql: format!("SELECT * FROM t WHERE x < {i} OR x >= {i}"),
-                bindings: vec![],
-                plan_hash: 100 + i as u64,
-            };
-            session.test_execute_emitted(0, "dot", &emitted).unwrap();
+        let make = |i: usize| EmittedQuery {
+            sql: format!("SELECT * FROM t WHERE x < {i} OR x >= {i}"),
+            bindings: vec![],
+            plan_hash: 100 + i as u64,
+        };
+
+        // Step 1: fill the cache to capacity.
+        for i in 0..32 {
+            session.test_execute_emitted(0, "dot", &make(i)).unwrap();
         }
-        // Cache must be capped at 32; oldest entry evicted.
-        assert!(
-            session.sql_cache_len() <= 32,
-            "SQL cache must be capped at 32, got {}",
-            session.sql_cache_len()
+        assert_eq!(session.sql_cache_len(), 32);
+        assert_eq!(session.duckdb_execute_count(), 32);
+
+        // Step 2: touch k0 — cache hit, must NOT increment execute count.
+        session.test_execute_emitted(0, "dot", &make(0)).unwrap();
+        assert_eq!(
+            session.duckdb_execute_count(),
+            32,
+            "touching k0 must be a cache hit"
         );
+
+        // Step 3: insert k32 — under LRU this evicts k1 (now the oldest),
+        // not k0 (which we just touched).
+        session.test_execute_emitted(0, "dot", &make(32)).unwrap();
+        assert_eq!(session.sql_cache_len(), 32, "cache stays at cap");
+        assert_eq!(session.duckdb_execute_count(), 33);
+
+        // Step 4: re-execute k0 — under LRU it must still be cached.
+        // A FIFO/random/MRU policy would have evicted k0 here and this
+        // assertion would fail.
+        session.test_execute_emitted(0, "dot", &make(0)).unwrap();
         assert_eq!(
             session.duckdb_execute_count(),
             33,
-            "all 33 distinct SQL strings should have triggered an execute"
+            "k0 was MRU after step 2 — must still be in cache (LRU semantics)"
+        );
+
+        // Step 5: re-execute k1 — must be evicted (it was the oldest after
+        // k0 was touched in step 2). This locks in the LRU choice: k1 is
+        // gone, not k0.
+        session.test_execute_emitted(0, "dot", &make(1)).unwrap();
+        assert_eq!(
+            session.duckdb_execute_count(),
+            34,
+            "k1 must have been evicted under LRU when k32 was inserted"
         );
     }
 
     #[test]
-    fn gomb_ac12_param_drag_cache_hit_skips_query() {
-        // Property: a "param drag" that does NOT change the emitted SQL
-        // (because the param is encoded as a `?` placeholder whose binding
-        // is not yet a code path) hits the cache and skips DuckDB execute.
-        // Stand-in for the proper two-tier param-effect routing.
+    fn gomb_ac12_propagate_param_with_unchanged_sql_hits_cache() {
+        // Property: propagate_param re-dispatches subscribers via the SQL
+        // execute path. When the param's value does NOT affect the emitted
+        // SQL string, the second propagate_param call hits the cache and
+        // skips DuckDB.
+        //
+        // Setup: a selection param "brush" subscribed by a dot mark via
+        // filterBy. The brush *value* lands in param_state but does NOT
+        // appear in the emitted SQL (selection params are routed through
+        // selection_state predicates, not inlined). selection_state is
+        // empty for the contributor, so emit_query produces byte-identical
+        // SQL across propagate_param calls regardless of the brush value.
+        //
+        // This honours the spec's intent for ac-12 — "param mutation that
+        // does not change SQL keeps the cache warm" — without requiring
+        // bandwidth-as-runtime-param wiring, which is deferred to the
+        // two-tier param-effect routing card. See decisions.md decision
+        // "ac-12 verification reframe".
         let yaml = r#"
+params:
+  brush:
+    select: intersect
 data:
   t:
     - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
 plot:
   - mark: dot
-    data: { from: t }
+    data: { from: t, filterBy: $brush }
+    x: x
+    y: y
 "#;
         let (spec, analysis) = parse_and_analyse(yaml);
         let engine = Engine::new();
         let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
 
-        let emitted = EmittedQuery {
-            sql: "SELECT * FROM t".to_string(),
-            bindings: vec![],
-            plan_hash: 1,
-        };
-        session.test_execute_emitted(0, "dot", &emitted).unwrap();
+        // First propagate — cache miss, DuckDB executes once.
+        let r1 = session.propagate_param("brush", SpecValue::Integer(1));
+        assert_eq!(r1.len(), 1, "subscriber should be dispatched");
+        assert!(r1[0].1.is_ok(), "first execute must succeed: {:?}", r1[0].1);
         let baseline = session.duckdb_execute_count();
+        assert!(baseline >= 1, "first call must trigger at least one execute");
 
-        // Simulate three "drag" frames at a structurally identical SQL.
-        for _ in 0..3 {
-            session.test_execute_emitted(0, "dot", &emitted).unwrap();
-        }
+        // Second propagate — different value but selection_state unchanged,
+        // so the emitted SQL is byte-identical → cache hit, no new execute.
+        let r2 = session.propagate_param("brush", SpecValue::Integer(2));
+        assert_eq!(r2.len(), 1);
+        assert!(r2[0].1.is_ok(), "second execute must succeed: {:?}", r2[0].1);
         assert_eq!(
             session.duckdb_execute_count(),
             baseline,
-            "param drag with unchanged SQL must not re-execute (cache hit)"
+            "propagate_param with byte-identical SQL must hit the SQL cache \
+             and skip DuckDB execute"
+        );
+
+        // param_state still updated regardless of cache outcome.
+        assert_eq!(
+            session.current_params().get("brush"),
+            Some(&SpecValue::Integer(2)),
+            "param_state must reflect the latest propagate_param value"
         );
     }
 

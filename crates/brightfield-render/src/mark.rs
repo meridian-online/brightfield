@@ -529,10 +529,21 @@ impl MarkRenderer for Density1DRenderer {
             return;
         }
 
+        // Bin width derived from the first two centres. The lowerer emits
+        // width_bucket on a fixed (min, max, n_bins) range, so the grid is
+        // uniform by construction. If the lowerer ever switches to
+        // adaptive bins this assertion will catch the silent breakage.
         let bin_size = pairs[1].0 - pairs[0].0;
         if bin_size <= 0.0 {
             return;
         }
+        debug_assert!(
+            pairs.windows(2).all(|w| {
+                let d = w[1].0 - w[0].0;
+                (d - bin_size).abs() < bin_size * 1e-6
+            }),
+            "Density1DRenderer expects a uniform bin grid (lowerer invariant)"
+        );
 
         // Bandwidth: Silverman from reconstructed sample list.
         let mut samples: Vec<f64> = Vec::new();
@@ -737,15 +748,84 @@ impl MarkRenderer for Density2DRenderer {
 // RegressionRenderer (regressionY / regressionX)
 // ---------------------------------------------------------------------------
 
+/// Two-tailed Student-t critical value for confidence level `ci` and sample
+/// size `n`. Degrees of freedom is `n - 2` (OLS with one slope + one intercept).
+///
+/// Implementation: small lookup table for the canonical CIs (0.90, 0.95, 0.99)
+/// at common df values, with linear interpolation between bracketing rows.
+/// For df ≥ 30 the values approach the normal-distribution z-quantiles
+/// (1.645, 1.96, 2.576), and for df ≥ 60 we use those directly. For df < 1
+/// the band is undefined; the caller (`band_enabled`) gates this and we
+/// return 0 here as a safe fallback.
+fn t_critical(ci: f64, n: f64) -> f64 {
+    let df = (n - 2.0).max(0.0);
+
+    // Pick the bracketing CI column. We support 0.90 / 0.95 / 0.99 exactly;
+    // values in between snap to the nearest standard column. Out-of-range
+    // values clamp to 0.95.
+    let column = if ci >= 0.99 {
+        2 // 0.99
+    } else if ci >= 0.95 {
+        1 // 0.95
+    } else if ci >= 0.90 {
+        0 // 0.90
+    } else {
+        1 // default to 0.95
+    };
+
+    // Two-tailed critical values t(α/2, df) for α = 0.10, 0.05, 0.01.
+    // Source: standard t-tables; values rounded to 3 decimal places.
+    // Each row: (df, t_0.10, t_0.05, t_0.01).
+    const ROWS: &[(f64, [f64; 3])] = &[
+        (1.0, [6.314, 12.706, 63.657]),
+        (2.0, [2.920, 4.303, 9.925]),
+        (3.0, [2.353, 3.182, 5.841]),
+        (4.0, [2.132, 2.776, 4.604]),
+        (5.0, [2.015, 2.571, 4.032]),
+        (6.0, [1.943, 2.447, 3.707]),
+        (7.0, [1.895, 2.365, 3.499]),
+        (8.0, [1.860, 2.306, 3.355]),
+        (9.0, [1.833, 2.262, 3.250]),
+        (10.0, [1.812, 2.228, 3.169]),
+        (12.0, [1.782, 2.179, 3.055]),
+        (15.0, [1.753, 2.131, 2.947]),
+        (20.0, [1.725, 2.086, 2.845]),
+        (25.0, [1.708, 2.060, 2.787]),
+        (30.0, [1.697, 2.042, 2.750]),
+        (60.0, [1.671, 2.000, 2.660]),
+    ];
+    const Z_LIMIT: [f64; 3] = [1.645, 1.960, 2.576];
+
+    if df < 1.0 {
+        return 0.0;
+    }
+    if df >= 60.0 {
+        return Z_LIMIT[column];
+    }
+
+    // Linear interpolation between bracketing rows.
+    for w in ROWS.windows(2) {
+        let (df_lo, vals_lo) = w[0];
+        let (df_hi, vals_hi) = w[1];
+        if df >= df_lo && df <= df_hi {
+            let t = (df - df_lo) / (df_hi - df_lo);
+            return vals_lo[column] + t * (vals_hi[column] - vals_lo[column]);
+        }
+    }
+    // df > 60 handled above; df < 1 handled above; everything in between
+    // matched a row. Safe fallback to z.
+    Z_LIMIT[column]
+}
+
 /// Renders a linear OLS fit line plus a 95% (or configurable) CI band.
 ///
 /// Expects a one-row aggregate batch with columns:
 ///   - `slope` — regr_slope(y, x)
 ///   - `intercept` — regr_intercept(y, x)
 ///   - `n` — regr_count(y, x)
-///   - `mean_x` — regr_avgx(y, x)
-///   - `sxx` — regr_sxx(y, x)  (sum (x - mean_x)^2)
-///   - `sxy` — regr_sxy(y, x)  (sum (x - mean_x)(y - mean_y))
+///   - `x_bar` — regr_avgx(y, x)
+///   - `sxx` — regr_sxx(y, x)  (sum (x - x_bar)^2)
+///   - `sxy` — regr_sxy(y, x)  (sum (x - x_bar)(y - mean_y))
 ///   - `syy` — regr_syy(y, x)  (sum (y - mean_y)^2)
 ///
 /// The fitted line is sampled at 32 evenly-spaced x values across the
@@ -796,7 +876,7 @@ impl MarkRenderer for RegressionRenderer {
             Some(v) => v,
             None => return,
         };
-        let mean_x_vals = match column_as_f64(batch, "mean_x") {
+        let x_bar_vals = match column_as_f64(batch, "x_bar") {
             Some(v) => v,
             None => return,
         };
@@ -824,15 +904,6 @@ impl MarkRenderer for RegressionRenderer {
         };
 
         const SAMPLES: usize = 32;
-        let z = if self.ci >= 0.99 {
-            2.576
-        } else if self.ci >= 0.95 {
-            1.96
-        } else if self.ci >= 0.90 {
-            1.645
-        } else {
-            1.96
-        };
 
         // Stroke colour resolution: one row per group (if any), else default.
         for row in 0..batch.num_rows() {
@@ -844,17 +915,23 @@ impl MarkRenderer for RegressionRenderer {
                 Some(v) => v,
                 None => continue,
             };
+            // Spec: render the fitted line for n >= 2; suppress only the CI
+            // band when df = n - 2 < 1 (n < 3) — variance estimate undefined.
             let n = match n_vals[row] {
-                Some(v) if v >= 3.0 => v,
-                _ => continue, // need n >= 3 for variance estimate
+                Some(v) if v >= 2.0 => v,
+                _ => continue,
             };
-            let mean_x = mean_x_vals[row].unwrap_or(0.0);
+            // band_enabled: whether to draw the CI band on top of the line.
+            let band_enabled = n >= 3.0;
+            let x_bar = x_bar_vals[row].unwrap_or(0.0);
             let sxx = sxx_vals[row].unwrap_or(0.0);
             let sxy = sxy_vals[row].unwrap_or(0.0);
             let syy = syy_vals[row].unwrap_or(0.0);
 
             // Residual variance: s² = (Syy - Sxy²/Sxx) / (n - 2)
-            let s_sq = if sxx > 0.0 {
+            // Only meaningful when n >= 3; for n == 2 we still draw the line
+            // (the OLS fit is exact through both points).
+            let s_sq = if band_enabled && sxx > 0.0 {
                 (syy - (sxy * sxy) / sxx) / (n - 2.0)
             } else {
                 0.0
@@ -871,13 +948,13 @@ impl MarkRenderer for RegressionRenderer {
                 let t = (i as f64) / ((SAMPLES - 1) as f64);
                 let xv = x_min + (x_max - x_min) * t;
                 let yhat = slope * xv + intercept;
-                // se(ŷ|x) = s · √(1/n + (x - mean_x)² / sxx)
+                // se(ŷ|x) = s · √(1/n + (x - x_bar)² / sxx)
                 let se = if sxx > 0.0 {
-                    s * (1.0 / n + (xv - mean_x).powi(2) / sxx).sqrt()
+                    s * (1.0 / n + (xv - x_bar).powi(2) / sxx).sqrt()
                 } else {
                     0.0
                 };
-                let half = z * se;
+                let half = t_critical(self.ci, n) * se;
 
                 let px = x_scale.map_f64(xv);
                 let py_line = y_scale.map_f64(yhat);
@@ -887,19 +964,23 @@ impl MarkRenderer for RegressionRenderer {
             }
 
             // Draw CI band as a filled polygon (upper forward, lower reversed).
-            let mut band = BezPath::new();
-            band.move_to(upper[0]);
-            for &p in &upper[1..] {
-                band.line_to(p);
-            }
-            for &p in lower.iter().rev() {
-                band.line_to(p);
-            }
-            band.close_path();
+            // Suppressed when n < 3 — variance estimate has no degrees of
+            // freedom; the line still renders below.
+            if band_enabled {
+                let mut band = BezPath::new();
+                band.move_to(upper[0]);
+                for &p in &upper[1..] {
+                    band.line_to(p);
+                }
+                for &p in lower.iter().rev() {
+                    band.line_to(p);
+                }
+                band.close_path();
 
-            let [cr, cg, cb, _] = colour.components;
-            let band_colour = Color::new([cr, cg, cb, 0.20]);
-            scene.fill(Fill::NonZero, Affine::IDENTITY, band_colour, None, &band);
+                let [cr, cg, cb, _] = colour.components;
+                let band_colour = Color::new([cr, cg, cb, 0.20]);
+                scene.fill(Fill::NonZero, Affine::IDENTITY, band_colour, None, &band);
+            }
 
             // Draw the fitted line on top.
             let stroke = kurbo::Stroke::new(LINE_STROKE_WIDTH);
@@ -988,24 +1069,30 @@ pub fn find_renderer<'a>(
         .map(|(_, r)| r.as_ref())
 }
 
-/// Return the number of fill operations in a scene (for testing).
+/// Return the number of path-producing draw operations in a scene
+/// (for testing).
 ///
-/// This counts scene elements by encoding to a byte buffer and counting
-/// the draw commands. Simplified version for test assertions.
+/// Reads `vello_encoding::Encoding::n_paths`, which is incremented once per
+/// `Scene::fill` and once per `Scene::stroke` call. So a regression mark
+/// that emits one fill (the CI band) and one stroke (the fit line) reports
+/// `count_scene_paths == 2`. Density2D in a 3×3 grid reports `count_scene_paths
+/// >= 9` (one circle fill per cell). A renderer that early-returns and
+/// produces no geometry reports `0`.
+///
+/// This does NOT distinguish fills from strokes — vello's encoding routes
+/// both through `n_paths`. Tests that need to assert "fill exists AND
+/// stroke exists" can pair this with a `path_tags` length check or split
+/// the rendering into separate scenes.
+pub fn count_scene_paths(scene: &Scene) -> usize {
+    scene.encoding().n_paths as usize
+}
+
+/// Backward-compatible alias for the historical stub name. Despite "fills"
+/// in the name, this counts any path-producing draw op (fill OR stroke).
+/// Prefer [`count_scene_paths`] in new code.
+#[deprecated(note = "use count_scene_paths — counts fills+strokes, not just fills")]
 pub fn count_scene_fills(scene: &Scene) -> usize {
-    // Vello's Scene doesn't expose a public element count API.
-    // We use the encoding size as a proxy: each fill adds data to the encoding.
-    // For testing, we track fills manually via a counting wrapper.
-    //
-    // Since Vello doesn't expose internals, we accept that our unit tests
-    // verify the rendering logic (correct positions, colours) via the
-    // MarkRenderer implementations, and integration tests verify the
-    // final scene is non-empty.
-    //
-    // This function returns 0 as a placeholder — real fill counting
-    // requires rendering to pixels and inspecting output.
-    let _ = scene;
-    0
+    count_scene_paths(scene)
 }
 
 #[cfg(test)]
@@ -1383,10 +1470,12 @@ mod tests {
         let mut scene = Scene::new();
         let renderer = Density1DRenderer { axis: DensityAxis::X };
         renderer.render(&mut scene, &batch, &cm, &scales, None);
-        let encoding = scene.encoding();
+        // Spec ac-03 requires at least one fill (the density curve).
+        // count_scene_paths reads vello's n_paths counter — incremented
+        // once per fill or stroke.
         assert!(
-            encoding.path_tags.len() > 0,
-            "Density1DRenderer (X) must produce scene content"
+            count_scene_paths(&scene) >= 1,
+            "Density1DRenderer (X) must emit at least one filled path"
         );
     }
 
@@ -1414,10 +1503,9 @@ mod tests {
         let mut scene = Scene::new();
         let renderer = Density1DRenderer { axis: DensityAxis::Y };
         renderer.render(&mut scene, &batch, &cm, &scales, None);
-        let encoding = scene.encoding();
         assert!(
-            encoding.path_tags.len() > 0,
-            "Density1DRenderer (Y) must produce scene content"
+            count_scene_paths(&scene) >= 1,
+            "Density1DRenderer (Y) must emit at least one filled path"
         );
     }
 
@@ -1450,41 +1538,44 @@ mod tests {
         let mut scene = Scene::new();
         let renderer = Density2DRenderer;
         renderer.render(&mut scene, &batch, &cm, &scales, None);
-        let encoding = scene.encoding();
+        // Spec ac-04 requires one circle per non-empty cell. With a 3×3 grid
+        // of all-positive counts, the renderer must produce at least 9 fills.
+        // count_scene_paths gives a real count via vello's n_paths counter.
         assert!(
-            encoding.path_tags.len() > 0,
-            "Density2DRenderer must produce scene content"
+            count_scene_paths(&scene) >= 9,
+            "Density2DRenderer on 3×3 grid must emit ≥9 path operations, got {}",
+            count_scene_paths(&scene)
         );
     }
 
     #[test]
     fn gomb_ac05_regression_renders_line_and_ci_band() {
         // Anscombe Quartet I (the canonical OLS dataset).
-        // n=11, slope=0.5, intercept=3, mean_x=9, sxx=110.
+        // n=11, slope=0.5, intercept=3, x_bar=9, sxx=110.
         // We compute syy and sxy from the data.
         let xs = [10.0, 8.0, 13.0, 9.0, 11.0, 14.0, 6.0, 4.0, 12.0, 7.0, 5.0];
         let ys = [
             8.04, 6.95, 7.58, 8.81, 8.33, 9.96, 7.24, 4.26, 10.84, 4.82, 5.68,
         ];
         let n = xs.len() as f64;
-        let mean_x = xs.iter().sum::<f64>() / n;
+        let x_bar = xs.iter().sum::<f64>() / n;
         let mean_y = ys.iter().sum::<f64>() / n;
-        let sxx: f64 = xs.iter().map(|x| (x - mean_x).powi(2)).sum();
+        let sxx: f64 = xs.iter().map(|x| (x - x_bar).powi(2)).sum();
         let syy: f64 = ys.iter().map(|y| (y - mean_y).powi(2)).sum();
         let sxy: f64 = xs
             .iter()
             .zip(ys.iter())
-            .map(|(x, y)| (x - mean_x) * (y - mean_y))
+            .map(|(x, y)| (x - x_bar) * (y - mean_y))
             .sum();
         let slope = sxy / sxx;
-        let intercept = mean_y - slope * mean_x;
+        let intercept = mean_y - slope * x_bar;
 
         // Build a one-row aggregate batch.
         let schema = Arc::new(Schema::new(vec![
             Field::new("slope", DataType::Float64, false),
             Field::new("intercept", DataType::Float64, false),
             Field::new("n", DataType::Float64, false),
-            Field::new("mean_x", DataType::Float64, false),
+            Field::new("x_bar", DataType::Float64, false),
             Field::new("sxx", DataType::Float64, false),
             Field::new("sxy", DataType::Float64, false),
             Field::new("syy", DataType::Float64, false),
@@ -1495,7 +1586,7 @@ mod tests {
                 Arc::new(Float64Array::from(vec![slope])),
                 Arc::new(Float64Array::from(vec![intercept])),
                 Arc::new(Float64Array::from(vec![n])),
-                Arc::new(Float64Array::from(vec![mean_x])),
+                Arc::new(Float64Array::from(vec![x_bar])),
                 Arc::new(Float64Array::from(vec![sxx])),
                 Arc::new(Float64Array::from(vec![sxy])),
                 Arc::new(Float64Array::from(vec![syy])),
@@ -1528,11 +1619,13 @@ mod tests {
         let mut scene = Scene::new();
         let renderer = RegressionRenderer { ci: 0.95 };
         renderer.render(&mut scene, &batch, &cm, &scales, None);
-        let encoding = scene.encoding();
-        // Expect path tags from both the CI band fill and the fitted-line strokes.
+        // Spec ac-05 requires both a fitted line (stroke) AND a CI band
+        // (fill). vello's n_paths counter increments once per fill or
+        // stroke, so the regression renderer must produce ≥2 paths.
         assert!(
-            encoding.path_tags.len() > 0,
-            "RegressionRenderer must emit a fitted line plus CI band"
+            count_scene_paths(&scene) >= 2,
+            "RegressionRenderer must emit ≥2 paths (fitted line + CI band), got {}",
+            count_scene_paths(&scene)
         );
         // Sanity-check the slope/intercept on Anscombe I.
         assert!((slope - 0.5).abs() < 0.01, "Anscombe I slope ≈ 0.5 ({slope})");

@@ -128,7 +128,7 @@ impl MarkLower for RegressionLowerer {
             format!("regr_slope(\"{y_col}\", \"{x_col}\") AS slope"),
             format!("regr_intercept(\"{y_col}\", \"{x_col}\") AS intercept"),
             format!("regr_count(\"{y_col}\", \"{x_col}\") AS n"),
-            format!("regr_avgx(\"{y_col}\", \"{x_col}\") AS mean_x"),
+            format!("regr_avgx(\"{y_col}\", \"{x_col}\") AS x_bar"),
             format!("regr_sxx(\"{y_col}\", \"{x_col}\") AS sxx"),
             format!("regr_sxy(\"{y_col}\", \"{x_col}\") AS sxy"),
             format!("regr_syy(\"{y_col}\", \"{x_col}\") AS syy"),
@@ -160,10 +160,11 @@ impl MarkLower for RegressionLowerer {
 ///   1D: SELECT width_bucket(x, ...) AS x_bin, COUNT(*) FROM source GROUP BY x_bin
 ///   2D: same with both x and y bins
 ///
-/// The lowerer reads `bins` (default 32) from the mark's option bag. The
-/// bin width is computed from the column extent at render time — for the
-/// SQL pass we use a fixed bucket count and let DuckDB compute extents
-/// via subqueries.
+/// The lowerer reads `bins` (or `thresholds`) from the mark's option bag.
+/// Default is 100 to match Mosaic's reference implementation (spec 2026-04-28
+/// statistical-marks ac-07 implementation note). The bin width is computed
+/// from the column extent at render time — for the SQL pass we use a fixed
+/// bucket count and let DuckDB compute extents via subqueries.
 pub struct DensityLowerer {
     pub kind: DensityLowerKind,
 }
@@ -193,7 +194,7 @@ impl MarkLower for DensityLowerer {
         let bin_count = opt_f64(&mark.options, "thresholds")
             .or_else(|| opt_f64(&mark.options, "bins"))
             .map(|f| f as i64)
-            .unwrap_or(32);
+            .unwrap_or(100);
 
         // Resolve required columns.
         let x_col = opt_string(&mark.options, "x");

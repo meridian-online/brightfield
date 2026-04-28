@@ -273,20 +273,26 @@ acceptance_criteria:
   - id: ac-12
     ac_type: code
     description: >
-      Bandwidth slider drag re-renders without re-querying DuckDB.
-      Concretely: when only a render-affecting param (e.g. bandwidth)
-      changes via propagate_param, the emitted SQL string is byte-identical
-      to the prior execute, so the SQL cache hits, the Rust convolution
-      re-runs with the new bandwidth, and the rendered scene reflects
-      the new density. End-to-end behavioural test of D5.
+      A propagate_param call whose new value does NOT change the emitted
+      SQL string keeps the SQL cache warm — DuckDB is not re-executed,
+      param_state is still updated, and the subscriber is still dispatched
+      (so any render-affecting Rust-side compute can re-run).
+      Originally framed as the bandwidth-slider-drag scenario; the
+      bandwidth-as-runtime-param wiring (param-affects-render-only) is
+      deferred to the two-tier param-effect routing card. See
+      decisions.md "ac-12 verification reframe" (post-review correction
+      2026-04-28).
     verification: >
-      Unit test (gomb_ac12_bandwidth_param_no_requery): load
-      density1d.yaml (or an equivalent minimal density spec with a
-      bandwidth param); execute_mark once; record duckdb_execute_count
-      (the test-only accessor from ac-11); call propagate_param(
-      "bandwidth", new_value); assert duckdb_execute_count is unchanged
-      AND the rendered convolution output differs from the first render
-      (different bandwidth → different curve shape).
+      Unit test (gomb_ac12_propagate_param_with_unchanged_sql_hits_cache):
+      load a minimal spec with a selection param "brush" subscribed by a
+      mark via filterBy; call propagate_param("brush", v1); record
+      duckdb_execute_count (the test-only accessor from ac-11); call
+      propagate_param("brush", v2). Selection params route through
+      selection_state predicates rather than inlining their value into
+      SQL, so the emitted SQL is byte-identical across calls. Assert
+      duckdb_execute_count is unchanged on the second call AND
+      param_state reflects the latest value AND the subscriber is
+      dispatched (results vec non-empty, all Ok).
 
   - id: ac-13
     ac_type: code
