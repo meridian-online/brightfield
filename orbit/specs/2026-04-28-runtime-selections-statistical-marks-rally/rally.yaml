@@ -18,6 +18,13 @@ cards:
     worktree: "main"
     parked_constraint: null
     pr: "https://github.com/meridian-online/brightfield/pull/2"
+    post_review:
+      pass_completed: 2026-04-28T12:30:00Z
+      review_artefact: orbit/specs/2026-04-28-statistical-marks/review-pr-2026-04-28-fresh.md
+      fix_commit: 0377d07
+      fixed: [HIGH-1, HIGH-2, HIGH-3, HIGH-4, HIGH-5, MEDIUM-8, MEDIUM-10, MEDIUM-11]
+      deferred: [MEDIUM-6, MEDIUM-7, MEDIUM-9, LOW-12, LOW-13, LOW-14, LOW-15]
+      deferral_rationale: orbit/specs/2026-04-28-statistical-marks/decisions.md (Post-review corrections section)
 implementation_order:
   - orbit/cards/0006-cross-filtered-selections-across-linked-views.yaml
   - orbit/cards/0008-grammar-of-graphics-mark-library.yaml
