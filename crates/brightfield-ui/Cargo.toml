@@ -11,6 +11,7 @@ description = "GPUI application shell: Vello chart rendering + interaction in a 
 brightfield-render = { path = "../brightfield-render" }
 brightfield-engine = { path = "../brightfield-engine" }
 brightfield-spec = { path = "../brightfield-spec" }
+brightfield-sql = { path = "../brightfield-sql" }
 gpui = { git = "https://github.com/zed-industries/zed", rev = "14f0a254", package = "gpui" }
 vello = "0.4"
 kurbo = "0.11"

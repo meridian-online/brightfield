@@ -14,6 +14,7 @@ use std::path::Path;
 
 // Re-export duckdb's Arrow types so consumers don't need a separate arrow dep.
 pub use duckdb::arrow::record_batch::RecordBatch;
+pub use brightfield_sql::ir::Predicate as SqlPredicate;
 use duckdb::Connection;
 
 use brightfield_spec::analysis::{ComponentPath, SpecAnalysis};
@@ -23,6 +24,7 @@ use brightfield_spec::vocab::MarkKind;
 
 use brightfield_sql::binding::{Binding, EmittedQuery, ParamValues};
 use brightfield_sql::emit::{emit_query, emit_query_with_passes, emit_sources};
+use brightfield_sql::ir::Predicate;
 use brightfield_sql::navigation_filter_pass::NavigationFilterPass;
 use brightfield_sql::passes::Pass;
 
@@ -98,6 +100,7 @@ impl Engine {
             cache: HashMap::new(),
             ddl_warnings: emit_output.warnings.clone(),
             param_state,
+            selection_state: HashMap::new(),
         };
 
         Ok(LoadResult {
@@ -130,6 +133,14 @@ pub struct Session {
     /// Current param values — updated by propagate_param, consumed by
     /// execute_mark/execute_all for query emission.
     param_state: ParamValues,
+    /// Live per-contributor selection predicates — updated by
+    /// propagate_selection, consumed by execute_mark/execute_all/etc. via
+    /// selection_predicates_for_emit. Outer key: selection name. Inner
+    /// vec: (contributor_path, predicate) pairs, where contributor_path is
+    /// the parent plot path of the contributing component (card 0006 v2
+    /// decision 4 — string equality with subscriber's parent plot path
+    /// drives crossfilter self-exclusion in compile_selection).
+    selection_state: HashMap<String, Vec<(ComponentPath, Predicate)>>,
 }
 
 /// A cached SQL string with its binding metadata.
@@ -159,17 +170,137 @@ impl Session {
         &self.param_state
     }
 
+    /// Current selection state — the live per-contributor predicate store.
+    /// Card 0006 v2 ac-01.
+    pub fn current_selections(&self) -> &HashMap<String, Vec<(ComponentPath, Predicate)>> {
+        &self.selection_state
+    }
+
+    /// Convert the live `selection_state` into the shape `emit_query` consumes:
+    /// `Vec<(selection_name, Vec<(contributor_path_string, Predicate)>)>`. The
+    /// inner contributor strings are the `ComponentPath` payloads — already
+    /// stored as parent plot paths so `compile_selection`'s `self_source`
+    /// equality fires correctly for crossfilter self-exclusion.
+    fn selection_predicates_for_emit(&self) -> Vec<(String, Vec<(String, Predicate)>)> {
+        self.selection_state
+            .iter()
+            .map(|(name, contribs)| {
+                let pairs: Vec<(String, Predicate)> = contribs
+                    .iter()
+                    .map(|(path, pred)| (path.0.clone(), pred.clone()))
+                    .collect();
+                (name.clone(), pairs)
+            })
+            .collect()
+    }
+
+    /// Propagate a selection update: store the contributor's predicate in
+    /// `selection_state[name]` (replacing any prior entry from the same
+    /// contributor), look up subscribers from
+    /// `analysis.selection_subscribers`, filter to mark components, and
+    /// re-emit + re-execute each subscriber with per-subscriber merged
+    /// predicates resolved via `compile_selection` inside `emit_query`.
+    /// Returns one `(mark_index, Result)` tuple per subscriber.
+    ///
+    /// Mirrors [`Self::propagate_param`]'s shape — partial-failure pattern,
+    /// `selection_state` always updated regardless of subscriber outcomes,
+    /// unsubscribed selections silently absorbed (empty result vec, no
+    /// queries fire).
+    ///
+    /// Card 0006 v2 ac-02 / ac-03 / ac-07 / ac-08.
+    pub fn propagate_selection(
+        &mut self,
+        name: &str,
+        contributor: ComponentPath,
+        predicate: Predicate,
+    ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
+        // 1. Update selection_state — same-contributor entries are replaced
+        // (linear scan; ≤5 contributors per selection in the corpus).
+        let entries = self.selection_state.entry(name.to_string()).or_default();
+        if let Some(slot) = entries.iter_mut().find(|(p, _)| p == &contributor) {
+            slot.1 = predicate;
+        } else {
+            entries.push((contributor, predicate));
+        }
+
+        // 2. Look up subscribers from the static analysis graph.
+        let subscriber_paths: Vec<ComponentPath> = self
+            .analysis
+            .selection_subscribers
+            .get(name)
+            .cloned()
+            .unwrap_or_default();
+
+        // 3. Filter to mark components only.
+        let mut mark_indices: Vec<usize> = Vec::new();
+        for path in &subscriber_paths {
+            if let Some(&(idx, _)) = self.mark_index_map.get(&path.0) {
+                mark_indices.push(idx);
+            }
+        }
+        mark_indices.sort();
+        mark_indices.dedup();
+
+        if mark_indices.is_empty() {
+            return Vec::new();
+        }
+
+        // 4. Per-subscriber emit + execute. emit_query computes the
+        // per-subscriber `self_source` (parent plot path) internally and
+        // calls compile_selection, so the coordinator does not need to
+        // resolve per-subscriber predicates inline. Partial failure: each
+        // mark's outcome is independent; an emit error on one mark does
+        // not halt dispatch.
+        let selections = self.selection_predicates_for_emit();
+        let selections_ref: Option<&[(String, Vec<(String, Predicate)>)]> =
+            Some(selections.as_slice());
+
+        // Clone param_state into an owned snapshot so we hold no borrow on
+        // self while looping (execute_emitted needs &mut self for the
+        // statement cache).
+        let params_owned: ParamValues = self.param_state.clone();
+        let params_ref = if params_owned.is_empty() {
+            None
+        } else {
+            Some(&params_owned)
+        };
+
+        let mut results = Vec::new();
+        for idx in mark_indices {
+            let emitted = match emit_query(&self.spec, idx, params_ref, selections_ref) {
+                Ok(eq) => eq,
+                Err(e) => {
+                    results.push((idx, Err(EngineError::EmitFailed { cause: e })));
+                    continue;
+                }
+            };
+
+            let mark_kind = self.mark_kind_at(idx);
+            let result = self.execute_emitted(idx, &mark_kind, &emitted);
+            results.push((idx, result));
+        }
+
+        results
+    }
+
     /// Execute a single mark's query by its depth-first index.
     ///
-    /// Uses the current param_state for query emission, so marks see
-    /// the latest param values set via propagate_param.
+    /// Uses the current param_state and selection_state for query emission,
+    /// so marks see the latest param values (set via propagate_param) and
+    /// the latest selection predicates (set via propagate_selection).
     pub fn execute_mark(&mut self, index: usize) -> Result<Vec<RecordBatch>, EngineError> {
         let params = if self.param_state.is_empty() {
             None
         } else {
             Some(&self.param_state)
         };
-        let emitted = emit_query(&self.spec, index, params)
+        let selections = self.selection_predicates_for_emit();
+        let selections_ref: Option<&[(String, Vec<(String, Predicate)>)]> = if selections.is_empty() {
+            None
+        } else {
+            Some(selections.as_slice())
+        };
+        let emitted = emit_query(&self.spec, index, params, selections_ref)
             .map_err(|e| EngineError::EmitFailed { cause: e })?;
 
         let mark_kind = self.mark_kind_at(index);
@@ -212,9 +343,16 @@ impl Session {
         let mut param_values = ParamValues::new();
         param_values.insert(name.to_string(), value);
 
+        let selections = self.selection_predicates_for_emit();
+        let selections_ref: Option<&[(String, Vec<(String, Predicate)>)]> = if selections.is_empty() {
+            None
+        } else {
+            Some(selections.as_slice())
+        };
+
         let mut results = Vec::new();
         for idx in mark_indices {
-            let emitted = match emit_query(&self.spec, idx, Some(&param_values)) {
+            let emitted = match emit_query(&self.spec, idx, Some(&param_values), selections_ref) {
                 Ok(eq) => eq,
                 Err(e) => {
                     results.push((idx, Err(EngineError::EmitFailed { cause: e })));
@@ -272,9 +410,18 @@ impl Session {
         }
 
         // 4. Re-execute each subscribing mark with the full param_state.
+        // Selection predicates are threaded from the live selection_state
+        // so a propagate_param call after a brush release continues to
+        // honour the active selection (correctness over micro-optimisation).
+        let selections = self.selection_predicates_for_emit();
+        let selections_ref: Option<&[(String, Vec<(String, Predicate)>)]> = if selections.is_empty() {
+            None
+        } else {
+            Some(selections.as_slice())
+        };
         let mut results = Vec::new();
         for idx in mark_indices {
-            let emitted = match emit_query(&self.spec, idx, Some(&self.param_state)) {
+            let emitted = match emit_query(&self.spec, idx, Some(&self.param_state), selections_ref) {
                 Ok(eq) => eq,
                 Err(e) => {
                     results.push((idx, Err(EngineError::EmitFailed { cause: e })));
@@ -317,8 +464,21 @@ impl Session {
         let mark_count = self.mark_index_map.len();
         let mut results = Vec::new();
 
+        let selections = self.selection_predicates_for_emit();
+        let selections_ref: Option<&[(String, Vec<(String, Predicate)>)]> = if selections.is_empty() {
+            None
+        } else {
+            Some(selections.as_slice())
+        };
+
         for idx in 0..mark_count {
-            let emitted = match emit_query_with_passes(&self.spec, idx, None, &passes) {
+            let emitted = match emit_query_with_passes(
+                &self.spec,
+                idx,
+                None,
+                selections_ref,
+                &passes,
+            ) {
                 Ok(eq) => eq,
                 Err(e) => {
                     results.push((idx, Err(EngineError::EmitFailed { cause: e })));
@@ -1417,5 +1577,525 @@ plot:
             !params.contains_key("brush"),
             "selection param should be excluded"
         );
+    }
+
+    // ===========================================================================
+    // Card 0006 v2 — cross-filtered selections runtime coordinator (cfs2_)
+    // ===========================================================================
+
+    /// cfs2_ac01: selection_state is empty at load and gains an entry on first
+    /// propagate_selection.
+    #[test]
+    fn cfs2_ac01_selection_state_initial_empty() {
+        let yaml = r#"
+params:
+  brush:
+    select: intersect
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+plot:
+  - mark: dot
+    data: { from: t, filterBy: $brush }
+    x: x
+    y: y
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        // Initial selection_state is empty.
+        assert!(
+            session.current_selections().is_empty(),
+            "selection_state should be empty at load"
+        );
+
+        // First propagate_selection populates the entry.
+        let contrib = ComponentPath("root/plot[0]".to_string());
+        let pred = Predicate::Expr("x > 1".to_string());
+        let _ = session.propagate_selection("brush", contrib.clone(), pred.clone());
+
+        let state = session.current_selections();
+        let contribs = state.get("brush").expect("brush entry should exist");
+        assert_eq!(contribs.len(), 1, "exactly one contributor stored");
+        assert_eq!(contribs[0].0, contrib);
+        assert_eq!(contribs[0].1, pred);
+    }
+
+    /// cfs2_ac02: propagate_selection dispatches to all subscriber marks.
+    /// Two plots both filterBy $brush; result vec has one Ok per subscriber.
+    #[test]
+    fn cfs2_ac02_propagate_selection_dispatches_to_subscribers() {
+        let yaml = r#"
+params:
+  brush:
+    select: intersect
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+    - { x: 3, y: 30 }
+vconcat:
+  - plot:
+    - mark: dot
+      data: { from: t, filterBy: $brush }
+      x: x
+      y: y
+  - plot:
+    - mark: line
+      data: { from: t, filterBy: $brush }
+      x: x
+      y: y
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+
+        // Sanity: both marks are subscribers of $brush.
+        let subs = analysis
+            .selection_subscribers
+            .get("brush")
+            .expect("brush should have selection subscribers");
+        assert_eq!(subs.len(), 2, "both marks should subscribe to $brush");
+
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        // Brush from a separate plot path so the subscribers are not self-excluded.
+        let contributor = ComponentPath("root/plot[99]".to_string());
+        let pred = Predicate::Expr("x > 1".to_string());
+        let results = session.propagate_selection("brush", contributor, pred);
+
+        assert_eq!(results.len(), 2, "two subscriber marks dispatched");
+        for (idx, r) in &results {
+            assert!(r.is_ok(), "subscriber mark {idx} should succeed: {r:?}");
+            let batches = r.as_ref().unwrap();
+            let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+            assert_eq!(total, 2, "predicate x > 1 should keep 2 of 3 rows");
+        }
+    }
+
+    /// cfs2_ac03: a second propagate_selection from the same contributor
+    /// replaces the prior predicate. A different contributor accumulates.
+    #[test]
+    fn cfs2_ac03_same_contributor_replaces_predicate() {
+        let yaml = r#"
+params:
+  brush:
+    select: intersect
+data:
+  t:
+    - { x: 1, y: 10 }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: x
+    y: y
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        let contrib_a = ComponentPath("root/plot[0]".to_string());
+        let contrib_b = ComponentPath("root/plot[1]".to_string());
+
+        let _ = session.propagate_selection(
+            "brush",
+            contrib_a.clone(),
+            Predicate::Expr("x > 1".to_string()),
+        );
+        let _ = session.propagate_selection(
+            "brush",
+            contrib_a.clone(),
+            Predicate::Expr("x < 100".to_string()),
+        );
+        // Same contributor twice → still exactly one entry.
+        let state = session.current_selections();
+        let entries = state.get("brush").unwrap();
+        assert_eq!(entries.len(), 1, "same-contributor calls must replace, not append");
+        assert_eq!(entries[0].1, Predicate::Expr("x < 100".to_string()));
+
+        // Different contributor → accumulates.
+        let _ = session.propagate_selection(
+            "brush",
+            contrib_b.clone(),
+            Predicate::Expr("y > 5".to_string()),
+        );
+        let entries = session.current_selections().get("brush").unwrap();
+        assert_eq!(entries.len(), 2, "different contributors accumulate");
+    }
+
+    /// cfs2_ac05: parent-plot self-exclusion. A mark in plot[0] is the
+    /// contributor; a different mark in plot[0] subscribes; its own
+    /// predicate is excluded from its own filter when the selection
+    /// resolution is crossfilter. A subscriber in plot[1] receives the
+    /// predicate.
+    #[test]
+    fn cfs2_ac05_parent_plot_self_exclusion() {
+        // crossfilter resolution drops predicates whose contributor source
+        // matches the subscriber's self_source. We verify by emitting
+        // the SQL for each subscriber and checking whether the predicate
+        // text appears.
+        let yaml = r#"
+params:
+  brush:
+    select: crossfilter
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+vconcat:
+  - plot:
+    - mark: dot
+      data: { from: t, filterBy: $brush }
+      x: x
+      y: y
+  - plot:
+    - mark: line
+      data: { from: t, filterBy: $brush }
+      x: x
+      y: y
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        // Resolve the actual mark paths: under vconcat, plots are at
+        // root/vconcat[0]/plot[0]/mark[dot] and root/vconcat[0]/plot[1]/mark[line].
+        // We brush from plot[0]; only plot[0]'s mark is self-excluded.
+        let contributor = ComponentPath("root/vconcat[0]/plot[0]".to_string());
+        let pred_text = "x > 99999".to_string(); // distinctive marker in SQL
+        let _ = session.propagate_selection(
+            "brush",
+            contributor,
+            Predicate::Expr(pred_text.clone()),
+        );
+
+        // Re-emit each mark's SQL with the live selection_state and inspect.
+        let selections = session.selection_predicates_for_emit();
+        let selections_ref: Option<&[(String, Vec<(String, Predicate)>)]> = Some(&selections);
+
+        let emitted_idx_0 =
+            emit_query(&session.spec, 0, None, selections_ref).expect("emit mark 0");
+        let emitted_idx_1 =
+            emit_query(&session.spec, 1, None, selections_ref).expect("emit mark 1");
+
+        // Mark 0 lives at root/vconcat[0]/plot[0]/mark[dot] — its parent plot is
+        // root/vconcat[0]/plot[0], same as the contributor → self-excluded.
+        assert!(
+            !emitted_idx_0.sql.contains(&pred_text),
+            "mark 0 (same parent plot as contributor) must be self-excluded; got SQL: {}",
+            emitted_idx_0.sql
+        );
+        // Mark 1 lives at root/vconcat[0]/plot[1]/mark[line] — different
+        // parent plot prefix → predicate must be present.
+        assert!(
+            emitted_idx_1.sql.contains(&pred_text),
+            "mark 1 (different parent plot) must receive the predicate; got SQL: {}",
+            emitted_idx_1.sql
+        );
+    }
+
+    /// cfs2_ac06: resolution strategies threaded through emit_query
+    /// (intersect → AND, union → OR, single → last predicate). Verified
+    /// by inspecting the rendered SQL.
+    #[test]
+    fn cfs2_ac06_resolution_strategies_runtime() {
+        // Intersect: AND of contributors.
+        let yaml_intersect = r#"
+params:
+  brush:
+    select: intersect
+data:
+  t:
+    - { x: 1 }
+plot:
+  - mark: dot
+    data: { from: t, filterBy: $brush }
+    x: x
+"#;
+        // Union: OR of contributors.
+        let yaml_union = r#"
+params:
+  brush:
+    select: union
+data:
+  t:
+    - { x: 1 }
+plot:
+  - mark: dot
+    data: { from: t, filterBy: $brush }
+    x: x
+"#;
+        // Single: only the last contributor's predicate.
+        let yaml_single = r#"
+params:
+  brush:
+    select: single
+data:
+  t:
+    - { x: 1 }
+plot:
+  - mark: dot
+    data: { from: t, filterBy: $brush }
+    x: x
+"#;
+
+        for (yaml, expected_marker, unwanted_marker) in [
+            (yaml_intersect, " AND ", " OR "),
+            (yaml_union, " OR ", " AND "),
+            (yaml_single, "y_marker", "x_marker"),
+        ] {
+            let (spec, analysis) = parse_and_analyse(yaml);
+            let engine = Engine::new();
+            let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+            // Two contributors, distinctive markers in their predicates.
+            let _ = session.propagate_selection(
+                "brush",
+                ComponentPath("root/plot[100]".to_string()),
+                Predicate::Expr("x_marker = 1".to_string()),
+            );
+            let _ = session.propagate_selection(
+                "brush",
+                ComponentPath("root/plot[101]".to_string()),
+                Predicate::Expr("y_marker = 2".to_string()),
+            );
+
+            let selections = session.selection_predicates_for_emit();
+            let emitted = emit_query(&session.spec, 0, None, Some(&selections)).unwrap();
+
+            assert!(
+                emitted.sql.contains(expected_marker),
+                "expected `{expected_marker}` in SQL for resolution test; got: {}",
+                emitted.sql
+            );
+            // Single takes only the last predicate so the first marker must
+            // be absent. Intersect/Union retain both markers; the unwanted
+            // here is the *connective* of the other strategy.
+            if expected_marker == "y_marker" {
+                assert!(
+                    !emitted.sql.contains(unwanted_marker),
+                    "single resolution must drop earlier predicate; got: {}",
+                    emitted.sql
+                );
+            } else {
+                assert!(
+                    !emitted.sql.contains(unwanted_marker),
+                    "must not contain other resolution's connective; got: {}",
+                    emitted.sql
+                );
+            }
+        }
+    }
+
+    /// cfs2_ac07: an unsubscribed selection (no entry in
+    /// analysis.selection_subscribers) updates state but dispatches
+    /// nothing.
+    #[test]
+    fn cfs2_ac07_unsubscribed_selection_silent() {
+        let yaml = r#"
+data:
+  t:
+    - { x: 1, y: 10 }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: x
+    y: y
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        let results = session.propagate_selection(
+            "ghost",
+            ComponentPath("root/plot[0]".to_string()),
+            Predicate::Expr("x > 0".to_string()),
+        );
+
+        assert!(
+            results.is_empty(),
+            "unsubscribed selection: no marks dispatched"
+        );
+        // selection_state nonetheless updated.
+        assert!(
+            session.current_selections().contains_key("ghost"),
+            "selection_state should still record the contribution"
+        );
+    }
+
+    /// cfs2_ac08: partial failure. Two subscribers — one supported (dot)
+    /// and one unsupported (rect). One Ok + one Err; selection_state
+    /// updated regardless. Mirrors rpw2_ac04.
+    #[test]
+    fn cfs2_ac08_partial_failure() {
+        let yaml = r#"
+params:
+  brush:
+    select: intersect
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+plot:
+  - mark: dot
+    data: { from: t, filterBy: $brush }
+    x: x
+    y: y
+  - mark: rect
+    data: { from: t, filterBy: $brush }
+    x: x
+    y: y
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+
+        // Sanity check: both marks subscribe.
+        let subs = analysis
+            .selection_subscribers
+            .get("brush")
+            .expect("brush subscribers");
+        assert!(subs.len() >= 2, "both marks should subscribe to brush");
+
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        let results = session.propagate_selection(
+            "brush",
+            ComponentPath("root/plot[99]".to_string()),
+            Predicate::Expr("x > 0".to_string()),
+        );
+
+        assert_eq!(results.len(), 2, "both subscribers dispatched");
+        let ok_count = results.iter().filter(|(_, r)| r.is_ok()).count();
+        let err_count = results.iter().filter(|(_, r)| r.is_err()).count();
+        assert_eq!(ok_count, 1, "dot succeeds via SimpleLowerer");
+        assert_eq!(err_count, 1, "rect fails (UnsupportedMark)");
+
+        // selection_state updated regardless of partial failure.
+        assert!(session.current_selections().contains_key("brush"));
+    }
+
+    /// cfs2_ac09: emit_query consumes both param_values and
+    /// selection_predicates. With a non-empty selection_predicates slice
+    /// the resulting SQL contains a WHERE clause derived from the
+    /// predicate — not "WHERE TRUE".
+    #[test]
+    fn cfs2_ac09_emit_query_threads_param_and_selection() {
+        let yaml = r#"
+params:
+  brush:
+    select: intersect
+data:
+  t:
+    - { x: 1 }
+plot:
+  - mark: dot
+    data: { from: t, filterBy: $brush }
+    x: x
+"#;
+        let (spec, _analysis) = parse_and_analyse(yaml);
+
+        // No selection state → no Filter wrapping → no WHERE clause.
+        let no_sel = emit_query(&spec, 0, None, None).unwrap();
+        assert!(
+            !no_sel.sql.to_uppercase().contains("WHERE"),
+            "without selection predicates, SQL should not contain WHERE: {}",
+            no_sel.sql
+        );
+
+        // With a selection predicate, the SQL must contain the predicate text.
+        let predicates: Vec<(String, Vec<(String, Predicate)>)> = vec![(
+            "brush".to_string(),
+            vec![(
+                "root/plot[100]".to_string(),
+                Predicate::Expr("x = 42".to_string()),
+            )],
+        )];
+        let with_sel = emit_query(&spec, 0, None, Some(&predicates)).unwrap();
+        assert!(
+            with_sel.sql.to_uppercase().contains("WHERE"),
+            "with selection predicate, SQL must contain WHERE: {}",
+            with_sel.sql
+        );
+        assert!(
+            with_sel.sql.contains("x = 42"),
+            "predicate text must appear in SQL: {}",
+            with_sel.sql
+        );
+    }
+
+    /// cfs2_ac12: end-to-end against vendored crossfilter.yaml. Loads the
+    /// spec, propagates a selection, and verifies subscribers get filtered
+    /// rows via the full pipeline (parse → analyse → load → propagate
+    /// → emit_query consumes selection → DuckDB returns batches).
+    #[test]
+    fn cfs2_ac12_crossfilter_yaml_end_to_end() {
+        // Use an inline crossfilter-style spec rather than the vendored
+        // YAML directly: the vendor file uses parquet/csv files that
+        // require an actual filesystem path. The structural shape is
+        // what the AC verifies — multiple plots subscribing to a shared
+        // crossfilter selection, brushed from one plot path, observable
+        // row-count reduction in another.
+        let yaml = r#"
+params:
+  brush:
+    select: crossfilter
+data:
+  flights:
+    - { delay: 5, distance: 100, time: 6 }
+    - { delay: 10, distance: 200, time: 8 }
+    - { delay: 15, distance: 300, time: 10 }
+    - { delay: 20, distance: 400, time: 12 }
+    - { delay: 25, distance: 500, time: 14 }
+hconcat:
+  - plot:
+      - mark: dot
+        data: { from: flights, filterBy: $brush }
+        x: distance
+        y: delay
+  - plot:
+      - mark: dot
+        data: { from: flights, filterBy: $brush }
+        x: time
+        y: delay
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        // Baseline: unfiltered execution returns all 5 rows.
+        let baseline = session.execute_all();
+        let baseline_rows: usize = baseline
+            .iter()
+            .filter_map(|r| r.as_ref().ok())
+            .flat_map(|batches| batches.iter().map(|b| b.num_rows()))
+            .sum();
+        assert_eq!(baseline_rows, 10, "baseline: 5 rows × 2 marks = 10");
+
+        // Brush originates in the first plot — picks rows where distance
+        // is 100..=300 (3 of 5).
+        let contributor =
+            ComponentPath("root/hconcat[0]/plot[0]".to_string());
+        let predicate =
+            Predicate::Expr("distance >= 100 AND distance <= 300".to_string());
+        let results = session.propagate_selection("brush", contributor, predicate);
+
+        // The contributing plot's mark is self-excluded (crossfilter), so
+        // its result is dispatched but the predicate does not apply to it.
+        // The other plot's mark applies the predicate → 3 rows.
+        let other_plot_result = results
+            .iter()
+            .find(|(idx, _)| *idx == 1)
+            .expect("subscriber mark at index 1 must be dispatched");
+        let batches = other_plot_result
+            .1
+            .as_ref()
+            .expect("subscriber must succeed");
+        let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert!(
+            rows < 5,
+            "non-contributor subscriber must reflect predicate (got {rows} rows)"
+        );
+        assert_eq!(rows, 3, "predicate distance in 100..=300 keeps 3 rows");
     }
 }

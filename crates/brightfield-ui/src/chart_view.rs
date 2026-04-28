@@ -10,6 +10,11 @@
 use gpui::{Context, Entity, IntoElement, Render, Window};
 use kurbo::Point;
 
+use brightfield_engine::error::EngineError;
+use brightfield_engine::RecordBatch;
+use brightfield_spec::analysis::ComponentPath;
+
+use crate::brush::{brush_rect_to_predicate, BrushKind, ChannelColumns, SelectionDispatcher};
 use crate::chart_element::ChartElement;
 use crate::chart_state::ChartState;
 use crate::interaction::InteractionState;
@@ -108,6 +113,100 @@ impl ChartView {
         });
     }
 
+    /// Handle mouse up with a selection dispatcher attached: end
+    /// brushing, dispatch the brush rectangle as a Predicate to the
+    /// runtime selection coordinator (via the dispatcher), and return
+    /// to idle.
+    ///
+    /// `binding` carries the brushable plot's identity and channel
+    /// bindings — supplied by the caller because ChartView itself does
+    /// not know which selection it brushes into.
+    ///
+    /// Returns the dispatch results so the caller may surface
+    /// per-subscriber outcomes (logging, telemetry). Returns an empty
+    /// vec when there is no active brush.
+    pub fn on_mouse_up_with_dispatch<D: SelectionDispatcher>(
+        &mut self,
+        _window_pos: Point,
+        _element_origin: Point,
+        binding: &BrushBinding,
+        dispatcher: &mut D,
+        cx: &mut Context<Self>,
+    ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
+        let mut results = Vec::new();
+        self.state.update(cx, |state, cx| {
+            if let InteractionState::Brushing { start, current } = state.interaction() {
+                let rect = kurbo::Rect::new(
+                    start.x.min(current.x),
+                    start.y.min(current.y),
+                    start.x.max(current.x),
+                    start.y.max(current.y),
+                );
+                let predicate =
+                    brush_rect_to_predicate(rect, binding.kind, &binding.channels);
+                results = dispatcher.dispatch(
+                    &binding.selection_name,
+                    binding.contributor.clone(),
+                    predicate,
+                );
+                state.set_interaction(InteractionState::Idle);
+                cx.notify();
+            }
+        });
+        results
+    }
+}
+
+/// Identity of the brush at dispatch time: which selection it writes
+/// to, the contributing component path (for self-exclusion), the
+/// brush kind (intervalX / intervalY / intervalXY), and the channel
+/// columns the rect coordinates compare against.
+#[derive(Debug, Clone)]
+pub struct BrushBinding {
+    /// Name of the selection this brush contributes to (e.g. `brush`).
+    pub selection_name: String,
+    /// Parent-plot path of the contributor (for self-exclusion).
+    pub contributor: ComponentPath,
+    /// Brush kind (intervalX, intervalY, intervalXY).
+    pub kind: BrushKind,
+    /// Bound channel columns.
+    pub channels: ChannelColumns,
+}
+
+/// Pure helper for cfs2_ac11: given an InteractionState (which may or
+/// may not be Brushing), a binding, and a dispatcher, produce the
+/// dispatch result vec and the next InteractionState. Lifted out of
+/// the GPUI context for testability — chart_view.on_mouse_up_with_dispatch
+/// shares the same logic but threads it through Entity<ChartState>.
+pub fn commit_brush_release<D: SelectionDispatcher>(
+    interaction: &InteractionState,
+    binding: &BrushBinding,
+    dispatcher: &mut D,
+) -> (
+    InteractionState,
+    Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>,
+) {
+    if let InteractionState::Brushing { start, current } = interaction {
+        let rect = kurbo::Rect::new(
+            start.x.min(current.x),
+            start.y.min(current.y),
+            start.x.max(current.x),
+            start.y.max(current.y),
+        );
+        let predicate = brush_rect_to_predicate(rect, binding.kind, &binding.channels);
+        let results = dispatcher.dispatch(
+            &binding.selection_name,
+            binding.contributor.clone(),
+            predicate,
+        );
+        (InteractionState::Idle, results)
+    } else {
+        (interaction.clone(), Vec::new())
+    }
+}
+
+impl ChartView {
+
     /// Handle scroll (zoom gesture). Placeholder for navigation wiring.
     pub fn on_scroll(
         &mut self,
@@ -137,6 +236,7 @@ impl ChartView {
 mod tests {
     use super::*;
     use crate::chart_layout::ChartLayout;
+    use brightfield_sql::ir::Predicate;
     use kurbo::Point;
 
     // Unit tests for coordinate transform logic — these don't require
@@ -216,5 +316,100 @@ mod tests {
         let area = layout.plot_area();
         assert!((area.x1 - (1024.0 - 20.0)).abs() < f64::EPSILON);
         assert!((area.y1 - (768.0 - 30.0)).abs() < f64::EPSILON);
+    }
+
+    // --- cfs2_ac11: brush release dispatches a propagate_selection call ---
+
+    /// Recording test double: captures every dispatch call in order.
+    struct RecordingDispatcher {
+        calls: Vec<(String, ComponentPath, Predicate)>,
+    }
+
+    impl RecordingDispatcher {
+        fn new() -> Self {
+            Self { calls: Vec::new() }
+        }
+    }
+
+    impl SelectionDispatcher for RecordingDispatcher {
+        fn dispatch(
+            &mut self,
+            name: &str,
+            contributor: ComponentPath,
+            predicate: Predicate,
+        ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
+            self.calls.push((name.to_string(), contributor, predicate));
+            // Stub return: subscribers, if any, are mocked as zero —
+            // this double's contract is "did dispatch get called?".
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn cfs2_ac11_on_mouse_up_dispatches_selection() {
+        // Simulate the mouse-down → drag → mouse-up sequence at the
+        // InteractionState level, then drive commit_brush_release with a
+        // recording dispatcher. The recorded call must carry the
+        // selection name, contributor path, and a non-True Predicate
+        // derived from the brush rect.
+
+        // mouse-down: start a brush.
+        let mut interaction = InteractionState::start_brush(Point::new(20.0, 30.0));
+        // drag.
+        interaction.update_brush(Point::new(120.0, 230.0));
+
+        // mouse-up: commit.
+        let binding = BrushBinding {
+            selection_name: "brush".to_string(),
+            contributor: ComponentPath("root/plot[0]".to_string()),
+            kind: BrushKind::IntervalXY,
+            channels: ChannelColumns::xy("speed", "delay"),
+        };
+        let mut dispatcher = RecordingDispatcher::new();
+
+        let (next_state, _results) =
+            commit_brush_release(&interaction, &binding, &mut dispatcher);
+
+        // Exactly one dispatch.
+        assert_eq!(
+            dispatcher.calls.len(),
+            1,
+            "exactly one propagate_selection call on Brushing→Idle"
+        );
+        let (name, contributor, predicate) = &dispatcher.calls[0];
+        assert_eq!(name, "brush");
+        assert_eq!(contributor, &ComponentPath("root/plot[0]".to_string()));
+        // Predicate must be derived from the brush rect — not Predicate::True.
+        assert!(
+            !matches!(predicate, Predicate::True),
+            "brush release must produce a non-trivial predicate; got: {predicate:?}"
+        );
+        // State transitioned to Idle.
+        assert!(
+            matches!(next_state, InteractionState::Idle),
+            "post-release state should be Idle"
+        );
+    }
+
+    #[test]
+    fn cfs2_ac11_on_mouse_up_no_brush_no_dispatch() {
+        // If interaction is Idle (no active brush), mouse-up must not
+        // dispatch — same partial-failure / no-op discipline as the
+        // existing on_mouse_up.
+        let interaction = InteractionState::Idle;
+        let binding = BrushBinding {
+            selection_name: "brush".to_string(),
+            contributor: ComponentPath("root/plot[0]".to_string()),
+            kind: BrushKind::IntervalX,
+            channels: ChannelColumns::xy("speed", "delay"),
+        };
+        let mut dispatcher = RecordingDispatcher::new();
+
+        let (next_state, results) =
+            commit_brush_release(&interaction, &binding, &mut dispatcher);
+
+        assert!(dispatcher.calls.is_empty(), "no brush → no dispatch");
+        assert!(results.is_empty());
+        assert!(matches!(next_state, InteractionState::Idle));
     }
 }
