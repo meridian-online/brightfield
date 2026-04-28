@@ -24,7 +24,8 @@ scenarios:
 
 maturity: "planned"
 
-specs: []
+specs:
+  - orbit/specs/2026-04-28-statistical-marks/spec.yaml
 
 references:
   - "brightfield-brief.md"
