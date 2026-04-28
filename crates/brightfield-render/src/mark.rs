@@ -77,27 +77,36 @@ const LINE_STROKE_WIDTH: f64 = 2.0;
 // ---------------------------------------------------------------------------
 
 fn column_as_f64(batch: &RecordBatch, col_name: &str) -> Option<Vec<Option<f64>>> {
+    use arrow::array::{
+        Float32Array, Int16Array, Int32Array, Int8Array, UInt16Array, UInt32Array, UInt64Array,
+        UInt8Array,
+    };
     let idx = batch.schema().index_of(col_name).ok()?;
     let col = batch.column(idx);
+
+    macro_rules! cast_numeric {
+        ($arr_ty:ty) => {{
+            let arr = col.as_any().downcast_ref::<$arr_ty>()?;
+            Some(
+                (0..arr.len())
+                    .map(|i| if arr.is_null(i) { None } else { Some(arr.value(i) as f64) })
+                    .collect(),
+            )
+        }};
+    }
+
     match col.data_type() {
-        DataType::Float64 => {
-            let arr = col.as_any().downcast_ref::<Float64Array>()?;
-            Some((0..arr.len()).map(|i| {
-                if arr.is_null(i) { None } else { Some(arr.value(i)) }
-            }).collect())
-        }
-        DataType::Int64 => {
-            let arr = col.as_any().downcast_ref::<arrow::array::Int64Array>()?;
-            Some((0..arr.len()).map(|i| {
-                if arr.is_null(i) { None } else { Some(arr.value(i) as f64) }
-            }).collect())
-        }
-        DataType::Timestamp(TimeUnit::Microsecond, _) => {
-            let arr = col.as_any().downcast_ref::<TimestampMicrosecondArray>()?;
-            Some((0..arr.len()).map(|i| {
-                if arr.is_null(i) { None } else { Some(arr.value(i) as f64) }
-            }).collect())
-        }
+        DataType::Float64 => cast_numeric!(Float64Array),
+        DataType::Float32 => cast_numeric!(Float32Array),
+        DataType::Int64 => cast_numeric!(arrow::array::Int64Array),
+        DataType::Int32 => cast_numeric!(Int32Array),
+        DataType::Int16 => cast_numeric!(Int16Array),
+        DataType::Int8 => cast_numeric!(Int8Array),
+        DataType::UInt64 => cast_numeric!(UInt64Array),
+        DataType::UInt32 => cast_numeric!(UInt32Array),
+        DataType::UInt16 => cast_numeric!(UInt16Array),
+        DataType::UInt8 => cast_numeric!(UInt8Array),
+        DataType::Timestamp(TimeUnit::Microsecond, _) => cast_numeric!(TimestampMicrosecondArray),
         _ => None,
     }
 }
