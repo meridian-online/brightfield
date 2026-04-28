@@ -220,3 +220,51 @@ The current dispatch at `crates/brightfield-app/src/main.rs:98-108` is a flat `m
 - **What this slice explicitly does not deliver:** `DenseLine`, `Heatmap`, `Contour`, `Raster`, polynomial regression, `errorbarX`/`errorbarY`, M4 downsampling for line marks, GPU compute shaders, two-tier param-effect routing. These either belong to the specialised slice or to dedicated future cards.
 - **IR addition:** one new variant `QueryPlan::AggregateScalar { input, aggregates: Vec<String> }` to support regression's no-group-by aggregate-only projection. Document at `crates/brightfield-sql/src/ir.rs` alongside the existing `Aggregation` variant. Density reuses `Bin` + `Aggregation`.
 - **AST surface:** no new mark options beyond what the parser already accepts (`bandwidth`, `fillOpacity`, `stroke`, `r`, `width`, `height`, `filterBy` are already in the known-keys list at `crates/brightfield-spec/src/parse.rs`). `normalize`, `stack`, `offset`, `ci`, `thresholds` may need to be added to the known-keys allowlist before the slice ships — verify during implementation, add as needed.
+
+---
+
+## Post-review corrections (2026-04-28)
+
+A fresh independent PR review (`review-pr-2026-04-28-fresh.md`) surfaced gaps between what the spec said would be verified and what the merged code actually verified. Five HIGHs and several MEDIUMs were flagged. HIGHs were fixed in-place on `rally/statistical-marks`. MEDIUMs split between fix-now (small, in-scope) and defer-with-rationale (require architectural change). This section records both the fixes that landed and the conscious deferrals.
+
+### Fixed in this slice (post-review)
+
+```
+| #       | Finding                                                                            | Fix                                                                                                                                                                                                                                                                                                          |
+|---------|------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| HIGH 1  | `gomb_ac12` did not invoke `propagate_param`                                       | Test rewritten as `gomb_ac12_propagate_param_with_unchanged_sql_hits_cache`. Uses a selection param (`brush`) routed through `selection_state` predicates, so the param value never inlines into SQL. Two `propagate_param("brush", v)` calls produce byte-identical SQL → second call must hit the SQL cache. |
+| HIGH 2  | `gomb_ac11_sql_cache_lru_eviction` only checked size                                | Test extended: touch k0, insert k32, then re-execute k0 (must be cache hit) and k1 (must be cache miss). Locks LRU semantics in.                                                                                                                                                                              |
+| HIGH 3  | `count_scene_fills` was a stub returning `0`                                       | Replaced with `count_scene_paths` reading `vello_encoding::Encoding::n_paths`. Old name kept as `#[deprecated]` alias. `gomb_ac03` asserts ≥1, `gomb_ac04` asserts ≥9 (3×3 grid), `gomb_ac05` asserts ≥2 (line + band).                                                                                          |
+| HIGH 4  | Density default `n_bins = 32` diverged from spec (100)                              | Default changed to 100 in `crates/brightfield-sql/src/lower.rs::DensityLowerer`.                                                                                                                                                                                                                              |
+| HIGH 5  | Regression x-mean column was `mean_x`, spec mandated `x_bar`                        | Renamed in lowerer and `RegressionRenderer`; `gomb_ac05` test schema updated.                                                                                                                                                                                                                                 |
+| MEDIUM 8 | CI band used z-quantile (1.96) — too narrow for small n                             | Replaced with `t_critical(ci, n)` helper: lookup table for df ∈ {1..30, 60} at standard CIs (0.90/0.95/0.99) with linear interpolation. df ≥ 60 falls back to z-quantiles.                                                                                                                                  |
+| MEDIUM 10 | Regression silently dropped both line and band when n < 3                          | Now renders the OLS line for n ≥ 2 (fit is exact through 2 points); only the CI band is gated on n ≥ 3.                                                                                                                                                                                                       |
+| MEDIUM 11 | Density1D `bin_size` from first two centres assumed uniform grid                    | `debug_assert!` added: every adjacent pair must have the same width within 1e-6. Comment notes the lowerer's `width_bucket` invariant.                                                                                                                                                                       |
+```
+
+### Deferred with rationale
+
+```
+| #         | Finding                                                                | Why deferred                                                                                                                                                                                                | Trigger                                                                                |
+|-----------|------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------|
+| MEDIUM 6  | `Density{1D,2D}Renderer` ignore user-supplied `bandwidth` option       | Spec constraint line 21 mandates "MarkRenderer trait ... unchanged" in this slice. `render()` has no path for mark options, so threading bandwidth requires a trait extension.                              | Two-tier param-effect routing card (Decision 5). The same card adds option threading.  |
+| MEDIUM 7  | Density2D encodes density as alpha modulation, not radius scaling      | Functional equivalence at typical 32×32 grids; visual difference is perceptual not semantic. Radius-scaling needs per-cell sizing logic (max-radius derivation, overlap handling).                          | Density polish card (alongside Heatmap/Contour).                                       |
+| MEDIUM 9  | `gomb_ac13` SQL "snapshots" are substring `assert!`s                   | Insta-style golden-file snapshots are a separate testing-infrastructure investment that should land workspace-wide, not piecewise per slice.                                                                | Conformance snapshot infrastructure card.                                              |
+| LOW 12-15 | `silverman_axis` clones `silverman_1d`; O(n²) lookup; extra kinds; `_as` | Pure cosmetic/perf polish; no behavioural impact.                                                                                                                                                            | Address opportunistically when touching adjacent code.                                  |
+```
+
+### ac-12 reframe
+
+The original spec text for ac-12 promised a bandwidth-slider-drag scenario: a `propagate_param("bandwidth", v)` call must skip DuckDB but re-render the convolution with the new bandwidth. This requires three pieces of infrastructure that don't exist in this slice:
+
+1. The density mark must subscribe to `bandwidth` in the `subscriber_graph` (parsing must recognise `bandwidth: $bandwidth` as a param ref in mark options).
+2. The renderer must read `bandwidth` from `session.param_state` at render time.
+3. `propagate_param` must distinguish "render-affecting only" from "query-affecting" effects (the deferred D5 / two-tier routing).
+
+Pieces 1 and 2 require the same trait/option-threading change blocked by Decision 5's deferral and MEDIUM 6's rationale. Piece 3 is Decision 5 itself.
+
+The spec's underlying property — *"param mutation that doesn't change SQL keeps the cache warm"* — is preserved. We test it via the selection-param path because that's the one path in the current code where `propagate_param` produces byte-identical SQL across calls. When two-tier routing lands, ac-12 will be re-strengthened to the original bandwidth scenario.
+
+Spec ac-12 verification text was updated in the same commit as this decision. The original wording is preserved here for traceability:
+
+> Unit test (gomb_ac12_bandwidth_param_no_requery): load density1d.yaml (or an equivalent minimal density spec with a bandwidth param); execute_mark once; record duckdb_execute_count (the test-only accessor from ac-11); call propagate_param("bandwidth", new_value); assert duckdb_execute_count is unchanged AND the rendered convolution output differs from the first render (different bandwidth → different curve shape).
