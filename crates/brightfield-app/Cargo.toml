@@ -21,6 +21,10 @@ gpui = { git = "https://github.com/zed-industries/zed", rev = "14f0a254", packag
 arrow = { version = "58", default-features = false }
 vello = "0.4"
 tracing = "0.1"
+image = "0.25"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui_macos = { git = "https://github.com/zed-industries/zed", rev = "14f0a254", package = "gpui_macos", features = ["runtime_shaders"] }
 
 [lints]
 workspace = true

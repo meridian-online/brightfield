@@ -162,21 +162,54 @@ fn main() {
         encoding.draw_tags.len()
     );
 
-    // GPUI window display is deferred to a future build with full Xcode + Metal.
-    // The orchestration pipeline (parse → analyse → engine → render) is complete.
-    // To display: add gpui_macos dependency and uncomment the window code below.
-    //
-    // let renderer = brightfield_ui::VelloRenderer::new();
-    // let app = gpui::Application::with_platform(gpui_macos::MacPlatform::new(false).into());
-    // app.run(move |cx| {
-    //     let state = cx.new(|_| {
-    //         brightfield_ui::ChartState::new(scene, 640, 480, renderer)
-    //     });
-    //     let _window = cx.open_window(
-    //         gpui::WindowOptions::default(),
-    //         |_window, cx| cx.new(|_| brightfield_ui::ChartView::new(state)),
-    //     ).expect("failed to open window");
-    // });
+    // Debug path: dump rendered output to a PNG instead of opening a window.
+    // Triggered by `BRIGHTFIELD_DUMP_PNG=<path> brightfield <spec.yaml>`.
+    if let Ok(dump_path) = env::var("BRIGHTFIELD_DUMP_PNG") {
+        let renderer = brightfield_ui::VelloRenderer::new();
+        let pixels = renderer
+            .lock()
+            .expect("renderer mutex poisoned")
+            .render_to_pixels(&scene, 640, 480);
+        let img = image::RgbaImage::from_raw(640, 480, pixels)
+            .expect("pixel buffer size mismatch");
+        img.save(&dump_path).expect("failed to write PNG");
+        let non_zero = img.as_raw().iter().filter(|&&b| b != 0).count();
+        let total = img.as_raw().len();
+        eprintln!(
+            "PNG dumped: {dump_path} ({non_zero}/{total} non-zero bytes, {:.1}% coverage)",
+            100.0 * non_zero as f64 / total as f64
+        );
+        let _ = scales;
+        return;
+    }
+
+    // Open a native GPUI window and display the rendered scene.
+    #[cfg(target_os = "macos")]
+    {
+        use std::rc::Rc;
+        use gpui::AppContext;
+
+        let renderer = brightfield_ui::VelloRenderer::new();
+        let app = gpui::Application::with_platform(Rc::new(gpui_macos::MacPlatform::new(false)));
+        let _ = scales; // scales currently unused by the window path
+        app.run(move |cx| {
+            let state = cx.new(|_| {
+                brightfield_ui::ChartState::new(scene, 640, 480, renderer)
+            });
+            let _window = cx
+                .open_window(gpui::WindowOptions::default(), |_window, cx| {
+                    cx.new(|_| brightfield_ui::ChartView::new(state))
+                })
+                .expect("failed to open window");
+        });
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = scene;
+        let _ = scales;
+        eprintln!("GPUI window display is currently macOS-only.");
+    }
 }
 
 #[cfg(test)]
