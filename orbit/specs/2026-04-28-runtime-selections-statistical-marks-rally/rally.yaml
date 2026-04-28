@@ -1,8 +1,8 @@
 rally: "runtime selections and statistical marks"
 autonomy: guided
-phase: implementing
+phase: complete
 started: 2026-04-28T07:05:50Z
-completed: null
+completed: 2026-04-28T11:42:00Z
 cards:
   - path: orbit/cards/0006-cross-filtered-selections-across-linked-views.yaml
     status: complete
@@ -12,11 +12,12 @@ cards:
     parked_constraint: null
     pr: "https://github.com/meridian-online/brightfield/pull/1"
   - path: orbit/cards/0008-grammar-of-graphics-mark-library.yaml
-    status: implementing
+    status: complete
     spec_dir: orbit/specs/2026-04-28-statistical-marks/
     branch: rally/statistical-marks
     worktree: "main"
     parked_constraint: null
+    pr: "https://github.com/meridian-online/brightfield/pull/2"
 implementation_order:
   - orbit/cards/0006-cross-filtered-selections-across-linked-views.yaml
   - orbit/cards/0008-grammar-of-graphics-mark-library.yaml
