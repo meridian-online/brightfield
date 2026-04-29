@@ -14,7 +14,7 @@ constraints:
   - "Brushable-binding metadata: new derived view `analysis.brushable_bindings: Vec<BrushableBinding>` on SpecAnalysis. v1's `interactor_bindings` shape and count are untouched — cfs_ac08 count test stays green (Decision 4)."
   - "Persistence semantics: brush persists verbatim across param changes — the runtime trusts the predicate and does not infer domain meaningfulness (Decision 5). Pinned by ac-07 + ac-08."
   - "Test prefix is cfs3_; AC ids align 1:1 with test-function suffixes (cfs3_acNN_*); 9 code ACs + 1 gate (ac-10)."
-  - "Rally seam commitments — read-only or untouched: param_state, propagate_param body (post-rpw3), update_param, ParamDispatcher, SliderBinding, SliderState, commit_slider_release, topological_descendants, current_params, analysis.subscriber_graph schema, InputKind::Slider conformance, brightfield-render's no-gpui invariant. v2 propagate_selection signature, BrushBinding fields, brush_rect_to_predicate signature, on_mouse_up_with_dispatch signature, emit_query/emit_query_with_passes signatures, analysis.{interactor_bindings,topological_order,dependency_dag} schemas remain untouched."
+  - "Rally seam commitments — read-only or untouched: param_state, propagate_param body (post-rpw3), update_param, ParamDispatcher, SliderBinding, SliderState, commit_slider_release, topological_descendants, current_params, analysis.subscriber_graph schema, InputKind::Slider conformance, brightfield-render's no-gpui invariant. v2 propagate_selection signature, BrushBinding fields, brush_rect_to_predicate signature, emit_query/emit_query_with_passes signatures, analysis.{interactor_bindings,topological_order,dependency_dag} schemas remain untouched. **Carved out (intentionally changes)**: ChartView::on_mouse_up_with_dispatch parameter type and return shape (singular `&BrushBinding` → `&[BrushBinding]`; aggregated return type) — see ac-04. The cfs2_ac11 lifted-helper test stays green because `commit_brush_release` is preserved as a single-binding wrapper over `commit_brush_release_multi` (impl-notes para 5)."
 
 acceptance_criteria:
   - id: ac-01
@@ -63,7 +63,7 @@ acceptance_criteria:
 
   - id: ac-04
     ac_type: code
-    description: "ChartView::on_mouse_up_with_dispatch with a Vec<BrushBinding> dispatches one propagate_selection per kind-compatible binding. The result type generalises to Vec<(selection_name, Vec<(usize, Result<...>)>)> so callers see per-binding outcomes; signature otherwise unchanged for the singular case (a Vec of length 1)."
+    description: "ChartView::on_mouse_up_with_dispatch generalises to accept `&[BrushBinding]` and dispatches one propagate_selection per kind-compatible binding. Result shape generalises to `Vec<(String, Vec<(usize, Result<...>)>)>` so callers see per-binding outcomes. Verified through the cfs2_ac11 lifted-helper boundary (`commit_brush_release_multi`) — end-to-end GPUI event simulation is out of scope, matching the cfs2_ac11 / rpw3_ac12 precedent."
     verification: |
       cfs3_ac04_plot_drives_multiple_selections in crates/brightfield-ui tests:
       (a) constructs a synthetic InteractionState::Brushing with a 100x200
@@ -84,9 +84,11 @@ acceptance_criteria:
       builds a fixture spec with one plot containing one intervalXY interactor
       writing to $brush plus one panZoom interactor (filtered out); asserts
       analysis.brushable_bindings.len() == 1 and the single entry's fields
-      equal {interactor_path: root/plot[0]/interactor[0], parent_plot:
-      root/plot[0], selection: "brush", kind: IntervalXY, channels.x:
-      Some("speed"), channels.y: Some("delay")}.
+      equal {interactor_path: root/plot[0]/interactor[intervalXY],
+      parent_plot: root/plot[0], selection: "brush", kind: IntervalXY,
+      channels.x: Some("speed"), channels.y: Some("delay")}. Path uses
+      kind.wire_name() per the existing convention at
+      crates/brightfield-spec/src/analysis.rs:910.
 
   - id: ac-06
     ac_type: code
@@ -133,40 +135,84 @@ acceptance_criteria:
 
   - id: ac-09
     ac_type: code
-    description: "BrushKind::Point is a constructible enum variant; point_predicate(column, value) returns a Predicate::Expr that compares the column to the value verbatim. No chart_view dispatch path is wired — the variant exists for forward-compat with card 0005 v3."
+    description: "BrushKind::Point is a constructible enum variant; point_predicate(column, value) returns a Predicate::Expr that compares the column to the value verbatim. The `value` argument is documented as 'an already-formatted SQL literal' (e.g. `'Athletics'` for a string, `42` for a number) — point_predicate does not quote the value. No chart_view dispatch path is wired — the variant exists for forward-compat with card 0005 v3 (input-widget-driven point selections)."
     verification: |
       cfs3_ac09_brush_kind_point_constructs in crates/brightfield-ui/src/brush.rs tests:
       (a) constructs BrushKind::Point and asserts it != IntervalX/Y/XY (sealed
-          enum coverage);
+          enum coverage on the brightfield-ui side);
       (b) calls point_predicate("category", "'Athletics'") and asserts the
           returned Predicate::Expr's body contains "category" and the literal
-          value "'Athletics'";
-      (c) confirms BrushKind::Point is NOT in the brushable-kinds set
-          consumed by analysis::build_brushable_bindings (i.e. interactors
-          with no chart-side path don't surface as brushable).
+          value "'Athletics'" (the helper preserves the caller's quoting);
+      (c) builds a fixture spec with one plot containing exactly one
+          panZoom interactor (a non-brushable kind) and asserts
+          analysis.brushable_bindings is empty — i.e. non-{IntervalX,
+          IntervalY, IntervalXY} kinds are filtered out by
+          build_brushable_bindings. Uses panZoom rather than the BrushKind
+          mirror's Point variant to avoid coupling the spec-side test to a
+          UI-side enum naming choice; the property asserted is
+          "non-brushable kinds excluded", which is what matters.
 
   - id: ac-10
     ac_type: gate
-    description: "Rally seam regression gate: rpw3 tests, v2 (cfs2_*) tests, v1 (cfs_*) tests, and the corpus regression test (cfs ac-13) remain green. propagate_param body is byte-equivalent to the post-rpw3 commit; current_params, ParamDispatcher, SliderBinding, SliderState, commit_slider_release, topological_descendants, brightfield-render's no-gpui invariant, and v2 surface signatures are untouched. cfs2/cfs/cfs ac-13/rpw3 test sources are untouched."
+    description: "Rally seam regression gate: rpw3 tests, v2 (cfs2_*) tests, v1 (cfs_*) tests, and the corpus regression test (cfs ac-13) remain green. rpw3-shipped symbols (propagate_param, topological_descendants, ParamDispatcher, SliderBinding, SliderState, commit_slider_release) AND v1/v2 untouched-surface symbols (propagate_selection, BrushBinding, brush_rect_to_predicate, emit_query, emit_query_with_passes, InteractorBinding) keep their signatures. brightfield-render contains no gpui dependency. rpw3/cfs/cfs2 test function counts are unchanged from the rpw3 baseline."
     verification: |
       Run all four checks; each must pass:
       (1) cargo test -p brightfield-engine -p brightfield-spec -p brightfield-ui -p brightfield-render
       (2) cargo tree -p brightfield-render | rg gpui  # must produce zero matches
-      (3) git diff origin/rally/reactive-parameters-runtime -- \
+      (3) Signature-fingerprint diff. Base: origin/rally/reactive-parameters-runtime
+          (NOT origin/main) — this card stacks on the rpw3 PR, so the
+          rpw3-shipped symbols are the seam baseline. The diff covers BOTH
+          rpw3-shipped surfaces AND v1/v2 untouched surfaces. on_mouse_up_with_dispatch
+          is INTENTIONALLY omitted: ac-04 changes its parameter type and
+          return shape (carved out of constraint 7).
+
+          git diff origin/rally/reactive-parameters-runtime -- \
             crates/brightfield-engine/src/lib.rs \
+            crates/brightfield-spec/src/analysis.rs \
             crates/brightfield-ui/src/slider.rs \
+            crates/brightfield-ui/src/brush.rs \
           | rg -F -e 'pub fn propagate_param' \
                  -e 'pub fn topological_descendants' \
                  -e 'pub trait ParamDispatcher' \
                  -e 'pub struct SliderBinding' \
                  -e 'pub fn commit_slider_release' \
-                 -e 'pub enum SliderState'
-          # must produce zero signature-line hits — any hit means a rpw3-shipped symbol's signature changed
-      (4) git diff --stat origin/rally/reactive-parameters-runtime -- \
-            'crates/*/src/**rpw3*' 'crates/*/tests/**rpw3*' \
-            'crates/*/src/**cfs_*' 'crates/*/tests/**cfs_*' \
-            'crates/*/src/**cfs2_*' 'crates/*/tests/**cfs2_*'
-          # must be empty — rpw3/cfs/cfs2 test sources untouched
+                 -e 'pub enum SliderState' \
+                 -e 'pub fn propagate_selection' \
+                 -e 'pub struct BrushBinding' \
+                 -e 'pub fn brush_rect_to_predicate' \
+                 -e 'pub fn emit_query' \
+                 -e 'pub fn emit_query_with_passes' \
+                 -e 'pub struct InteractorBinding'
+          # must produce zero signature-line hits — any hit means a
+          # rpw3-shipped or v1/v2-untouched symbol's signature changed.
+
+      (4) Test-function count gate. cfs/cfs2/rpw3 tests live INLINE inside
+          existing source files, not in separate test modules, so a path
+          glob (e.g. 'crates/*/src/**cfs2*') matches zero files and is
+          unfalsifiable. Instead, count the matching test function
+          definitions across the workspace and require the counts to equal
+          the rpw3 baseline (i.e. this card adds no cfs/cfs2/rpw3 functions
+          and removes none):
+
+          # On the cfs3 branch:
+          rg -n '\bfn cfs_'   crates/ | wc -l   # must equal pre-cfs3 count: 9
+          rg -n '\bfn cfs2_'  crates/ | wc -l   # must equal pre-cfs3 count: 16
+          rg -n '\bfn rpw3_'  crates/ | wc -l   # must equal pre-cfs3 count: 13
+
+          The pre-cfs3 baseline counts are recorded above; any divergence
+          (function added, removed, or renamed) fails the gate. New cfs3_*
+          functions are tracked separately by the per-AC traceability and
+          do not enter this gate. Operationally, a tester may also re-run
+          the count on `origin/rally/reactive-parameters-runtime` and
+          confirm equality:
+
+          for prefix in cfs_ cfs2_ rpw3_; do
+            here=$(rg -n "\bfn $prefix" crates/ | wc -l)
+            base=$(git show "origin/rally/reactive-parameters-runtime:$(rg -l "\bfn $prefix" crates/ | head -1)" 2>/dev/null | rg -c "\bfn $prefix" || echo 0)
+            # Compare counts across the diff base, not just files modified.
+          done
+          # Or, more simply: rg the union of files touched by either branch
+          # for each prefix and require equal counts on both sides of the diff.
 
 implementation_notes:
   - "Files modified: crates/brightfield-engine/src/lib.rs (add Session::clear_selection ~50 LOC, no propagate_param change), crates/brightfield-ui/src/brush.rs (add BrushKind::Point variant, point_predicate, SelectionDispatcher::clear method + Session impl), crates/brightfield-ui/src/chart_view.rs (ChartView holds Vec<BrushBinding>; commit_brush_release_multi + commit_brush_clear lifted helpers; on_mouse_up_with_dispatch iterates), crates/brightfield-spec/src/analysis.rs (add BrushableBinding struct + build_brushable_bindings walker + brushable_bindings field on SpecAnalysis)."
@@ -175,8 +221,8 @@ implementation_notes:
   - "build_brushable_bindings walker: iterate analysis.interactor_bindings; for each, look up the InteractorKind via the spec AST (PlotItem::Interactor → kind), filter to {IntervalX, IntervalY, IntervalXY}, look up the parent plot's MarkKind axis bindings to populate channels. Plots without a brushable interactor produce zero entries; plots with multiple brushable interactors produce one entry each."
   - "commit_brush_release_multi(interaction, &[BrushBinding], &mut dispatcher) -> (next_state, Vec<(String, Vec<(usize, Result<...>)>)>) — the multi-binding lifted helper. commit_brush_release is preserved as a single-binding convenience wrapper (= commit_brush_release_multi with a 1-element slice) so cfs2_ac11 stays green."
   - "commit_brush_clear(interaction, binding, &mut dispatcher) -> (next_state, Vec<(usize, Result<...>)>) — fires when interaction is Idle OR a zero-area Brushing (start ≈ current with both axes within < EPSILON). Returns Idle as next_state. This is the click-vs-drag boundary: a non-zero brush goes through commit_brush_release; a zero-area click goes through commit_brush_clear."
-  - "Click-vs-drag gate at chart_view::on_mouse_up: branch on whether the brush rect has non-zero area (use the same EPSILON as commit_brush_clear). Non-zero → commit_brush_release_multi. Zero/idle → commit_brush_clear. on_mouse_down still starts a brush immediately — the discrimination happens at release time, not start time, so the user feedback during drag is unchanged."
-  - "Escape-key clearing is OUT OF SCOPE for this slice. Click-outside-active-brush is the canonical clearing path; escape-key routing requires GPUI keyboard event wiring not in this card. Filed as a follow-up if the next sprint touches GPUI input."
+  - "Click-vs-drag gate at chart_view::on_mouse_up: branch on whether the brush rect has non-zero area (use the same EPSILON as commit_brush_clear). Non-zero → commit_brush_release_multi. Zero/idle → commit_brush_clear. on_mouse_down still starts a brush immediately. **Rationale shift from decisions.md Q1:** the decision pack proposed start-time gating (minimum-drag-distance OR deferred-brush-start). At spec time we moved discrimination to release time via the zero-area branch — same observable behaviour for the user (no brush rendered for clicks below the drag threshold, since a zero-area brush is invisible) and no UX feedback change during drag. The release-time choice also keeps on_mouse_down's body byte-equivalent to v2, which simplifies ac-10's seam-fingerprint check."
+  - "Escape-key clearing is OUT OF SCOPE for this slice. Click-outside-active-brush is the canonical clearing path; escape-key routing requires GPUI keyboard event wiring not in this card. **Follow-up memo:** orbit/cards/memos/2026-04-29-escape-key-clearing.md — to be filed in the same commit as the implementation, mirroring the Decision 5 memo pattern (orbit/cards/memos/2026-04-29-selection-domain-meaningfulness.md)."
   - "Test naming discipline: every code AC ac-NN has exactly one test function cfs3_acNN_*. The audit traceability table assumes 1:1 mapping; do not bundle multiple tests under a single AC."
   - "Rally pair coordination: card 0005 v3 (rpw3) ships first on rally/reactive-parameters-runtime. This card branches off rally/reactive-parameters-runtime; the gate's signature-fingerprint diff is taken against that base, not main. PR is stacked: rally/cross-filtered-selections-interactors → rally/reactive-parameters-runtime."
 
@@ -224,12 +270,23 @@ exit_conditions:
   - "PR opened against rally/cross-filtered-selections-interactors targeting rally/reactive-parameters-runtime, description references this spec and notes the stacked-PR base."
 
 metadata:
-  version: "1.0"
+  version: "1.1"
   test_prefix: "cfs3"
-  timestamp: "2026-04-29T03:00:00Z"
-  ambiguity_score: 0.06
+  timestamp: "2026-04-29T03:30:00Z"
+  ambiguity_score: 0.045
   interview_ref: "orbit/specs/2026-04-29-cross-filtered-selections-interactors/interview.md"
   decisions_ref: "orbit/specs/2026-04-29-cross-filtered-selections-interactors/decisions.md"
   card_ref: "orbit/cards/0006-cross-filtered-selections-across-linked-views.yaml"
   rally_ref: "orbit/specs/2026-04-29-live-reactivity-rally/rally.yaml"
   paired_spec: "orbit/specs/2026-04-29-reactive-parameters-runtime/spec.yaml"
+  review_ref: "orbit/specs/2026-04-29-cross-filtered-selections-interactors/review-spec-2026-04-29.md"
+  review_revisions:
+    - "F1 (HIGH): ac-05 fixture path corrected — `interactor[0]` → `interactor[intervalXY]` per kind.wire_name() convention at analysis.rs:910."
+    - "F2 (HIGH): ac-10 step (4) replaced unfalsifiable path glob with rg-based test-function count gate against the rpw3 baseline (cfs/cfs2/rpw3 tests live inline in source files)."
+    - "F3 (HIGH): ac-10 step (3) signature-fingerprint diff extended to cover v1/v2 untouched surfaces (propagate_selection, BrushBinding, brush_rect_to_predicate, emit_query, emit_query_with_passes, InteractorBinding) in addition to the rpw3-shipped surfaces."
+    - "F4 (HIGH): constraint 7 carved out on_mouse_up_with_dispatch as an intentional change (parameter type and return shape both move per ac-04); cfs2_ac11 stays green via the commit_brush_release single-binding wrapper preserved in impl-notes para 5; on_mouse_up_with_dispatch is omitted from the ac-10 fingerprint diff."
+    - "F5 (MEDIUM): ac-04 description now explicitly names the cfs2_ac11 / rpw3_ac12 lifted-helper boundary (verified through commit_brush_release_multi), preventing reviewer confusion about end-to-end GPUI coverage."
+    - "F7 (LOW): ac-09 description documents point_predicate's `value` argument contract — already-formatted SQL literal — to prevent unquoted-string foot-guns in the rpw3 v3 input-table consumer."
+    - "F8 (LOW): impl-notes para 8 names the escape-key follow-up memo path (orbit/cards/memos/2026-04-29-escape-key-clearing.md) for symmetry with the Decision 5 memo."
+    - "F9 (LOW): impl-notes para 7 documents the click-vs-drag rationale shift from decisions.md Q1 (start-time gating) to release-time zero-area branch."
+    - "F10 (LOW): ac-09 sub-clause (c) reframed to assert 'non-brushable kinds excluded' using a panZoom fixture, avoiding the cross-crate enum coupling."
