@@ -1,6 +1,6 @@
 rally: "live reactivity"
 autonomy: guided
-phase: design-review
+phase: implementing
 started: 2026-04-29T00:00:00Z
 completed: null
 cards:
@@ -16,5 +16,23 @@ cards:
     branch: rally/cross-filtered-selections-interactors
     worktree: null
     parked_constraint: null
-implementation_order: null
-order_rationale: null
+implementation_order:
+  - orbit/cards/0005-reactive-parameters-with-input-widgets.yaml
+  - orbit/cards/0006-cross-filtered-selections-across-linked-views.yaml
+order_rationale: >
+  Disjointness check found shared file modification surface on
+  crates/brightfield-engine/src/lib.rs (different methods —
+  propagate_param body for 0005, new clear_selection for 0006) and
+  crates/brightfield-spec/src/analysis.rs (free function topological_descendants
+  for 0005, BrushableBinding struct + new field on SpecAnalysis for 0006).
+  Logical intent is disjoint but file boundaries overlap, so serial.
+  0005 first because it is smaller and behaviourally isolated (one body
+  change, one new slider widget, vocab flip). 0006's cfs3_ac09 regression
+  test asserts propagate_param does not clobber selection_state — landing
+  0005 first means this test exercises the new chained-walk body,
+  proving the rally seam on the actually-shipping behaviour. 0006's
+  structural additions (SpecAnalysis field, Vec<BrushBinding> refactor,
+  clear_selection method, SelectionDispatcher::clear trait method) rebase
+  cleanly on top. Stacked PRs:
+  rally/reactive-parameters-runtime -> main, then
+  rally/cross-filtered-selections-interactors -> rally/reactive-parameters-runtime.
