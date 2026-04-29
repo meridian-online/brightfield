@@ -5,11 +5,12 @@ started: 2026-04-29T00:00:00Z
 completed: null
 cards:
   - path: orbit/cards/0005-reactive-parameters-with-input-widgets.yaml
-    status: implementing
+    status: complete
     spec_dir: orbit/specs/2026-04-29-reactive-parameters-runtime/
     branch: rally/reactive-parameters-runtime
     worktree: "main"
     parked_constraint: null
+    pr: https://github.com/meridian-online/brightfield/pull/4
   - path: orbit/cards/0006-cross-filtered-selections-across-linked-views.yaml
     status: designed
     spec_dir: orbit/specs/2026-04-29-cross-filtered-selections-interactors/
