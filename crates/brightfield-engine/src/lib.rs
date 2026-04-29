@@ -9,7 +9,7 @@
 
 pub mod error;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 // Re-export duckdb's Arrow types so consumers don't need a separate arrow dep.
@@ -419,70 +419,122 @@ impl Session {
         results
     }
 
-    /// Propagate a param change: update param_state, then re-execute all
-    /// subscribing marks with the full param_state. Returns per-mark results.
+    /// Propagate a param change: update param_state, then walk the param
+    /// dependency DAG starting at `name` and re-execute all marks subscribing
+    /// to any descendant param, in topological order. Returns one
+    /// (mark_index, Result) tuple per subscribing mark.
     ///
     /// This is the runtime coordinator entry point. It updates the stored
-    /// param value, looks up direct subscribers from the subscriber graph,
-    /// filters to mark components, and re-emits + re-executes each with
-    /// the complete param_state (so multi-param queries see all current values).
+    /// param value, computes the descendant chain via
+    /// [`brightfield_spec::analysis::topological_descendants`], and dispatches
+    /// at every level against the full `param_state` and the active
+    /// `selection_state`. The selection-predicate slice is captured ONCE
+    /// before the loop, so chained re-execution honours the active brush
+    /// at every level (rpw3 ac-04 / decision 2 invariant).
+    ///
+    /// **Dedup invariant (rpw3 ac-05 / decision 3 — first-level-wins):** a
+    /// mark whose query references both an upstream param (e.g. `$A`) and a
+    /// descendant (`$B` with `A → B`) appears in `subscriber_graph[A]`
+    /// AND `subscriber_graph[B]`. The walk dispatches it at A's level
+    /// (the topologically-earliest level whose subscriber list contains
+    /// it) and skips it at B's level via a `dispatched` HashSet carried
+    /// across levels. This produces a result vec with one entry per
+    /// affected mark, ordered by first-appearance level.
+    ///
+    /// **Computed-param case-iii deferral (decision 2 / ac-15):** the walk
+    /// reads `param_state` for every level but writes `param_state` only
+    /// for the explicitly named root. Downstream params are NOT mutated by
+    /// the walk — that case (`ParamNode::FromQuery`) requires AST surface
+    /// not present in v3 and is deferred.
     ///
     /// Unsubscribed or unknown params: param_state is updated but no queries
     /// fire — returns an empty results vector. Partial failure: each mark's
-    /// result is independent.
+    /// result is independent and a per-mark emit/execute error never halts
+    /// the walk (decision 4).
+    ///
+    /// rpw3 ac-04, ac-05, ac-06, ac-07, ac-08, ac-15.
     pub fn propagate_param(
         &mut self,
         name: &str,
         value: SpecValue,
     ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
-        // 1. Update param_state.
+        // 1. Update param_state for the named root only.
+        //    (Decision 2 case iii — downstream params are read, never written.)
         self.param_state.insert(name.to_string(), value);
 
-        // 2. Look up subscribers.
-        let subscriber_paths: Vec<ComponentPath> = self
-            .analysis
-            .subscriber_graph
-            .get(name)
-            .cloned()
-            .unwrap_or_default();
+        // 2. Compute the topological walk order: [root, descendant_0, ...].
+        let order: Vec<String> =
+            brightfield_spec::analysis::topological_descendants(&self.analysis, name);
 
-        // 3. Filter to mark components only.
-        let mut mark_indices: Vec<usize> = Vec::new();
-        for path in &subscriber_paths {
-            if let Some(&(idx, _)) = self.mark_index_map.get(&path.0) {
-                mark_indices.push(idx);
-            }
-        }
-        mark_indices.sort();
-        mark_indices.dedup();
-
-        if mark_indices.is_empty() {
-            return Vec::new();
-        }
-
-        // 4. Re-execute each subscribing mark with the full param_state.
-        // Selection predicates are threaded from the live selection_state
-        // so a propagate_param call after a brush release continues to
-        // honour the active selection (correctness over micro-optimisation).
+        // 3. Capture the selection-predicate slice ONCE before the loop.
+        //    Every level of the walk receives the same slice, so a chained
+        //    re-execution after a brush release continues to honour the
+        //    active selection (rpw3 ac-04 invariant). Capturing inside the
+        //    loop would re-read self.selection_state at every level — no
+        //    behavioural difference today, but a foot-gun if a future change
+        //    accidentally mutates selection_state mid-walk.
         let selections = self.selection_predicates_for_emit();
-        let selections_ref: Option<&[(String, Vec<(String, Predicate)>)]> = if selections.is_empty() {
-            None
-        } else {
-            Some(selections.as_slice())
-        };
-        let mut results = Vec::new();
-        for idx in mark_indices {
-            let emitted = match emit_query(&self.spec, idx, Some(&self.param_state), selections_ref) {
-                Ok(eq) => eq,
-                Err(e) => {
-                    results.push((idx, Err(EngineError::EmitFailed { cause: e })));
-                    continue;
-                }
+        let selections_ref: Option<&[(String, Vec<(String, Predicate)>)]> =
+            if selections.is_empty() {
+                None
+            } else {
+                Some(selections.as_slice())
             };
 
-            let mark_kind = self.mark_kind_at(idx);
-            let result = self.execute_emitted(idx, &mark_kind, &emitted);
-            results.push((idx, result));
+        // 4. Walk the order. `dispatched` carries cross-level state for the
+        //    first-level-wins dedup invariant.
+        let mut dispatched: HashSet<usize> = HashSet::new();
+        let mut results: Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> = Vec::new();
+
+        for level in &order {
+            // Look up subscribers for this level's param.
+            let subscriber_paths: Vec<ComponentPath> = self
+                .analysis
+                .subscriber_graph
+                .get(level)
+                .cloned()
+                .unwrap_or_default();
+
+            // Filter to mark components only, drop already-dispatched.
+            let mut mark_indices: Vec<usize> = Vec::new();
+            for path in &subscriber_paths {
+                if let Some(&(idx, _)) = self.mark_index_map.get(&path.0) {
+                    if !dispatched.contains(&idx) {
+                        mark_indices.push(idx);
+                    }
+                }
+            }
+            mark_indices.sort();
+            mark_indices.dedup();
+
+            if mark_indices.is_empty() {
+                continue;
+            }
+
+            for idx in mark_indices {
+                // First-level-wins guard (in case a path appears twice in
+                // subscriber_paths for the same mark within one level).
+                if !dispatched.insert(idx) {
+                    continue;
+                }
+                let emitted = match emit_query(
+                    &self.spec,
+                    idx,
+                    Some(&self.param_state),
+                    selections_ref,
+                ) {
+                    Ok(eq) => eq,
+                    Err(e) => {
+                        results
+                            .push((idx, Err(EngineError::EmitFailed { cause: e })));
+                        continue;
+                    }
+                };
+
+                let mark_kind = self.mark_kind_at(idx);
+                let result = self.execute_emitted(idx, &mark_kind, &emitted);
+                results.push((idx, result));
+            }
         }
 
         results
@@ -1829,6 +1881,478 @@ plot:
         assert!(
             !params.contains_key("brush"),
             "selection param should be excluded"
+        );
+    }
+
+    // ===========================================================================
+    // Card 0005 v3 — reactive parameters chained walk + slider widget (rpw3_)
+    // ===========================================================================
+
+    /// rpw3 ac-04: propagate_param walks topological_descendants and dispatches
+    /// subscribing marks at every level against full param_state AND the active
+    /// selection_state. Selection passthrough is verified end-to-end: with a
+    /// brush predicate of "1 = 0" pre-populated in selection_state by a
+    /// contributor in a different parent plot, both m_A (subscribing to $A)
+    /// and m_B (subscribing to $B, descendant of A in the DAG) must produce
+    /// Ok results with zero rows — the brush WHERE-clause is threaded through
+    /// to emit_query at every level.
+    #[test]
+    fn rpw3_ac04_propagate_param_chained_walk() {
+        // Chained DAG A → B (via menu input that filterBy $A and writes $B).
+        // m_A and m_B both filterBy $brush AND subscribe to $A / $B
+        // respectively via the opacity ParamRef channel. The marks live in
+        // a different parent plot than the brush contributor so cfs2
+        // self-exclusion does not fire — the brush predicate filters them.
+        let yaml = r#"
+params:
+  A: { select: intersect }
+  B: { select: intersect }
+  brush: { select: intersect }
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+hconcat:
+  - input: menu
+    filterBy: $A
+    as: $B
+    from: t
+    column: x
+  - plot:
+    - mark: dot
+      data: { from: t, filterBy: $brush }
+      x: x
+      y: y
+      opacity: $A
+    - mark: dot
+      data: { from: t, filterBy: $brush }
+      x: x
+      y: y
+      opacity: $B
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+
+        // Sanity: DAG edge A → B exists.
+        assert!(
+            analysis
+                .dependency_edges
+                .iter()
+                .any(|e| e.from == "A" && e.to == "B"),
+            "expected DAG edge A → B from menu input; got {:?}",
+            analysis.dependency_edges
+        );
+        // Sanity: subscriber graph routes A and B to the right marks.
+        let a_subs = analysis
+            .subscriber_graph
+            .get("A")
+            .expect("A in subscriber_graph");
+        assert!(
+            a_subs.iter().any(|p| p.0.contains("mark[dot]")),
+            "A should have a mark subscriber via opacity; got {:?}",
+            a_subs
+        );
+        let b_subs = analysis
+            .subscriber_graph
+            .get("B")
+            .expect("B in subscriber_graph");
+        assert!(
+            b_subs.iter().any(|p| p.0.contains("mark[dot]")),
+            "B should have a mark subscriber via opacity; got {:?}",
+            b_subs
+        );
+
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        // Pre-populate selection_state with a brush predicate of "1 = 0"
+        // (filters all rows). Contributor is the menu input's path — a
+        // DIFFERENT parent plot than where the marks live, so
+        // self-exclusion does not strip the predicate.
+        let contributor = ComponentPath("root/hconcat[0]".to_string());
+        let _ = session.propagate_selection(
+            "brush",
+            contributor,
+            Predicate::Expr("1 = 0".to_string()),
+        );
+
+        // Now propagate A. Walk should reach both A and B levels, and
+        // dispatch m_A at A's level and m_B at B's level. Both emit_query
+        // calls receive the same selections_ref with brush.
+        let results = session.propagate_param("A", SpecValue::Integer(1));
+
+        assert_eq!(
+            results.len(),
+            2,
+            "chained walk must dispatch both m_A (level A) and m_B (level B); got {:?}",
+            results.iter().map(|(idx, r)| (*idx, r.is_ok())).collect::<Vec<_>>()
+        );
+
+        // Both marks should be Ok (dot lowerer is supported).
+        for (idx, result) in &results {
+            assert!(
+                result.is_ok(),
+                "mark {idx} should succeed via SimpleLowerer; got {result:?}"
+            );
+        }
+
+        // Selection passthrough invariant: brush predicate "1 = 0" filters
+        // all rows out at BOTH levels. If selections_ref were dropped at
+        // level B, m_B would return 2 rows.
+        for (idx, result) in &results {
+            let batches = result.as_ref().unwrap();
+            let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+            assert_eq!(
+                total_rows, 0,
+                "mark {idx} must have brush predicate threaded — \
+                 expected 0 rows, got {total_rows}. Selection passthrough broken."
+            );
+        }
+
+        // Selection state retained — the walk is read-only over selection_state.
+        let state = session.current_selections();
+        assert!(
+            state.contains_key("brush"),
+            "brush must remain in selection_state after propagate_param"
+        );
+    }
+
+    /// rpw3 ac-05: per-walk dedup is first-level-wins. A mark whose query
+    /// references both $A and $B (where A → B in the DAG) appears in
+    /// subscriber_graph for both A and B. The walk must dispatch it at A's
+    /// level (the topologically-earliest level in the walk where it
+    /// appears) and skip it at B's level. Asserted via index ordering in
+    /// the result vec — last-level-wins would also produce at-most-once
+    /// but with a different ordering.
+    #[test]
+    fn rpw3_ac05_propagate_param_first_level_wins_dedup() {
+        // Chained DAG A → B. Two marks:
+        //   m_AB: subscribes to BOTH $A and $B (via opacity: $A AND fill: $B)
+        //   m_B:  subscribes only to $B (via opacity: $B)
+        //
+        // After propagate_param("A", v):
+        //   Level "A": subscriber_graph[A] = [m_AB]. Dispatch m_AB.
+        //   Level "B": subscriber_graph[B] = [m_AB, m_B]. m_AB is already
+        //              dispatched — skip via first-level-wins dedup. Dispatch m_B.
+        // Result vec ordering: [m_AB at level A, m_B at level B]. Ordering is
+        // the falsifiable property — last-level-wins would produce the same
+        // count but with m_AB after m_B (since m_AB would dispatch at B's
+        // level after m_B).
+        let yaml = r#"
+params:
+  A: { select: intersect }
+  B: { select: intersect }
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+hconcat:
+  - input: menu
+    filterBy: $A
+    as: $B
+    from: t
+    column: x
+  - plot:
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+      opacity: $A
+      fill: $B
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+      opacity: $B
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+
+        // Sanity: m_AB is in subscriber_graph for BOTH A and B; m_B is only
+        // in subscriber_graph for B.
+        let a_subs = analysis.subscriber_graph.get("A").unwrap();
+        let b_subs = analysis.subscriber_graph.get("B").unwrap();
+        assert!(
+            a_subs.iter().any(|p| p.0.ends_with("mark[dot]") && !p.0.contains("plot[1]")),
+            "subscriber_graph[A] should contain at least one mark; got {:?}",
+            a_subs
+        );
+        assert!(
+            b_subs.len() >= 2,
+            "subscriber_graph[B] should contain at least 2 marks (m_AB and m_B); got {:?}",
+            b_subs
+        );
+
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        let results = session.propagate_param("A", SpecValue::Integer(1));
+
+        // First-level-wins property (a): exactly 2 entries — m_AB once + m_B.
+        assert_eq!(
+            results.len(),
+            2,
+            "first-level-wins dedup must yield 2 results (m_AB once + m_B); got {results:?}"
+        );
+
+        // Mark indices: in depth-first order, m_AB is index 0, m_B is index 1
+        // (both dot marks, m_AB is first inside the plot).
+        let mark_ab = 0usize;
+        let mark_b = 1usize;
+
+        // Both marks dispatched.
+        let result_indices: Vec<usize> = results.iter().map(|(i, _)| *i).collect();
+        assert!(
+            result_indices.contains(&mark_ab),
+            "m_AB (index {mark_ab}) must appear in results; got {result_indices:?}"
+        );
+        assert!(
+            result_indices.contains(&mark_b),
+            "m_B (index {mark_b}) must appear in results; got {result_indices:?}"
+        );
+
+        // First-level-wins property (b): m_AB precedes m_B in the result vec
+        // (m_AB dispatched at A's level, m_B at B's level). Last-level-wins
+        // would produce the reverse ordering since m_AB would be skipped at
+        // A's level and dispatched at B's level after m_B.
+        let pos_ab = result_indices.iter().position(|&i| i == mark_ab).unwrap();
+        let pos_b = result_indices.iter().position(|&i| i == mark_b).unwrap();
+        assert!(
+            pos_ab < pos_b,
+            "m_AB must precede m_B (first-level-wins → m_AB at level A); got order {result_indices:?}"
+        );
+    }
+
+    /// rpw3 ac-06: descendants-only scope. Marks subscribing only to non-
+    /// descendant params (DAG siblings of the propagated root, or unrelated
+    /// params) must NOT be re-executed.
+    #[test]
+    fn rpw3_ac06_propagate_param_descendants_only() {
+        // DAG: parent P → A, parent P → C (A and C are siblings in the DAG).
+        // Marks: m_A subscribes to $A; m_C subscribes to $C.
+        // Propagate A: only m_A should dispatch — m_C is a non-descendant.
+        let yaml = r#"
+params:
+  P: { select: intersect }
+  A: { select: intersect }
+  C: { select: intersect }
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+hconcat:
+  - input: menu      # creates P → A
+    filterBy: $P
+    as: $A
+    from: t
+    column: x
+  - input: menu      # creates P → C
+    filterBy: $P
+    as: $C
+    from: t
+    column: x
+  - plot:
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+      opacity: $A
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+      opacity: $C
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+
+        // Sanity: P → A and P → C both exist; A → C does NOT.
+        let edges = &analysis.dependency_edges;
+        assert!(edges.iter().any(|e| e.from == "P" && e.to == "A"));
+        assert!(edges.iter().any(|e| e.from == "P" && e.to == "C"));
+        assert!(
+            !edges.iter().any(|e| e.from == "A" && e.to == "C"),
+            "A and C must be DAG siblings (no edge between them)"
+        );
+
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        let results = session.propagate_param("A", SpecValue::Integer(1));
+
+        // Only m_A (mark index 0 in depth-first order) should dispatch.
+        // m_C (mark index 1) is a non-descendant of A.
+        assert_eq!(
+            results.len(),
+            1,
+            "only m_A should dispatch — m_C is a non-descendant; got {results:?}"
+        );
+        assert_eq!(
+            results[0].0, 0,
+            "expected mark index 0 (m_A), got {}",
+            results[0].0
+        );
+    }
+
+    /// rpw3 ac-07: propagating to a param with no subscribers and no
+    /// descendants returns an empty result vec, but param_state is updated.
+    #[test]
+    fn rpw3_ac07_propagate_param_unsubscribed_leaf() {
+        let yaml = r#"
+params:
+  orphan: 0
+data:
+  t:
+    - { x: 1, y: 10 }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: x
+    y: y
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        let results = session.propagate_param("orphan", SpecValue::Integer(99));
+        assert!(
+            results.is_empty(),
+            "unsubscribed leaf with no descendants must return empty; got {results:?}"
+        );
+        assert_eq!(
+            session.current_params().get("orphan"),
+            Some(&SpecValue::Integer(99)),
+            "param_state must reflect the new value regardless of dispatch outcome"
+        );
+    }
+
+    /// rpw3 ac-08: partial failure — strengthens v2 rpw2_ac04 by naming the
+    /// EngineError discriminant, the lowerer registration scheme, and the
+    /// param_state assertion. Two marks subscribe to $brush via the same
+    /// edge (data.filterBy): one dot (registered lowerer → Ok) and one rect
+    /// (no registered lowerer → Err with EmitFailed { cause: UnsupportedMark }).
+    /// The walk continues across mixed Ok/Err and updates param_state.
+    #[test]
+    fn rpw3_ac08_propagate_param_partial_failure() {
+        let yaml = r#"
+params:
+  brush: { select: intersect }
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+plot:
+  - mark: dot
+    data: { from: t, filterBy: $brush }
+    x: x
+    y: y
+  - mark: rect
+    data: { from: t, filterBy: $brush }
+    x: x
+    y: y
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        let results = session.propagate_param("brush", SpecValue::Integer(7));
+
+        // (a) results.len() == 2 — both marks dispatched.
+        assert_eq!(
+            results.len(),
+            2,
+            "both marks must be dispatched; got {results:?}"
+        );
+
+        // (b) dot mark Ok with non-empty batches; (c) rect mark Err with the
+        // EmitFailed { cause: UnsupportedMark } discriminant.
+        let dot_idx = 0usize;
+        let rect_idx = 1usize;
+        let dot_result = results
+            .iter()
+            .find(|(i, _)| *i == dot_idx)
+            .expect("dot at index 0 in results");
+        let rect_result = results
+            .iter()
+            .find(|(i, _)| *i == rect_idx)
+            .expect("rect at index 1 in results");
+
+        let dot_batches = dot_result
+            .1
+            .as_ref()
+            .expect("dot mark must be Ok via SimpleLowerer");
+        let dot_rows: usize = dot_batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(
+            dot_rows, 2,
+            "dot must return 2 rows from inline data (no contributor → no filter); got {dot_rows}"
+        );
+
+        match &rect_result.1 {
+            Err(EngineError::EmitFailed { cause }) => {
+                let msg = format!("{cause:?}");
+                assert!(
+                    msg.contains("Unsupported"),
+                    "rect Err cause must indicate UnsupportedMark; got {msg}"
+                );
+            }
+            other => panic!(
+                "rect must produce Err(EngineError::EmitFailed {{ cause: UnsupportedMark }}); got {other:?}"
+            ),
+        }
+
+        // (d) param_state updated regardless of mixed Ok/Err.
+        assert_eq!(
+            session.current_params().get("brush"),
+            Some(&SpecValue::Integer(7)),
+            "param_state must reflect the new value regardless of dispatch outcome"
+        );
+    }
+
+    /// rpw3 ac-15: case-iii deferral guard. The walk reads param_state for
+    /// every level but writes param_state only for the explicitly named
+    /// root. Downstream params keep their initial values. Locks down
+    /// Decision 2's deferral as a behavioural property — a future
+    /// implementer who silently extends the walk to derive downstream
+    /// param values from query results would break this test.
+    #[test]
+    fn rpw3_ac15_propagate_param_does_not_mutate_downstream_params() {
+        // Chained DAG A → B. Initial param_state has both A and B set.
+        // After propagate_param("A", new_a), B should remain at its
+        // initial value (the walk MUST NOT compute a new value for B from
+        // the dispatched B-subscribers' query results — that's case iii).
+        //
+        // Note: A and B are scalar-typed here (not selections) so they
+        // appear in initial param_state. Selection params are excluded
+        // from param_state entirely, which would muddy the assertion.
+        let yaml = r#"
+params:
+  A: 100
+  B: 200
+data:
+  t:
+    - { x: 1, y: 10 }
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        // Initial state.
+        assert_eq!(session.current_params().get("A"), Some(&SpecValue::Integer(100)));
+        assert_eq!(session.current_params().get("B"), Some(&SpecValue::Integer(200)));
+
+        // Propagate A with a new value. No subscribers to dispatch (no
+        // marks in this minimal spec) — but the walk still iterates the
+        // descendants of A in topological_descendants(analysis, "A").
+        let _ = session.propagate_param("A", SpecValue::Integer(999));
+
+        // (a) A reflects new value.
+        assert_eq!(
+            session.current_params().get("A"),
+            Some(&SpecValue::Integer(999)),
+            "A must reflect propagated value"
+        );
+        // (b) B unchanged — case-iii deferral holds.
+        assert_eq!(
+            session.current_params().get("B"),
+            Some(&SpecValue::Integer(200)),
+            "B must NOT be mutated by the walk — case-iii deferral guard"
         );
     }
 

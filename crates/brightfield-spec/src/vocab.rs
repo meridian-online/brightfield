@@ -219,7 +219,7 @@ vocab_enum! {
     pub enum InputKind {
         Menu => ("menu", Unimplemented),
         Search => ("search", Unimplemented),
-        Slider => ("slider", Unimplemented),
+        Slider => ("slider", Implemented),
         Table => ("table", Unimplemented),
     }
 }
@@ -303,6 +303,29 @@ mod tests {
                 variant
             );
         }
+    }
+
+    /// rpw3 ac-14: InputKind::Slider is Implemented, and the canonical
+    /// Implemented fixture set (collected via filter over all variants)
+    /// contains InputKind::Slider. Regression-guards against an accidental
+    /// revert to Unimplemented.
+    #[test]
+    fn rpw3_ac14_input_kind_slider_implemented() {
+        assert_eq!(
+            InputKind::Slider.status(),
+            ImplStatus::Implemented,
+            "InputKind::Slider must be Implemented after rpw3"
+        );
+        let implemented: Vec<InputKind> = InputKind::all()
+            .iter()
+            .copied()
+            .filter(|k| k.status() == ImplStatus::Implemented)
+            .collect();
+        assert!(
+            implemented.contains(&InputKind::Slider),
+            "canonical Implemented set must contain Slider; got {:?}",
+            implemented
+        );
     }
 
     /// ac-11 (nav): All six Pan/PanZoom interactor variants are Implemented.

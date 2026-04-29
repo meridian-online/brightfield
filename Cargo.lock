@@ -844,6 +844,7 @@ dependencies = [
  "brightfield-sql",
  "gpui",
  "image",
+ "indexmap",
  "kurbo",
  "peniko 0.3.2",
  "pollster 0.4.0",
