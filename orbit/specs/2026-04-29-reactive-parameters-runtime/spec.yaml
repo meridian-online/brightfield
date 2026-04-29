@@ -1,0 +1,154 @@
+goal: >
+  Strengthen the param coordinator into a topological DAG walk and ship the first
+  end-to-end input widget (slider). When an analyst drags a slider, the new
+  value flows through ParamDispatcher → Session::propagate_param, the walk
+  re-executes every affected mark in topological order against full param_state,
+  and the UI receives a result vec it can render. Closes the param half of the
+  live-reactivity sprint while preserving cross-coordinator symmetry with the
+  shipped selections runtime (cfs2).
+
+constraints:
+  - "Single coordinator entry point: extend propagate_param in place; do not introduce a sibling propagate_param_chain method (Decision 1)."
+  - "Walk semantics: topological re-execution against full param_state at each level; computed-param case (ParamNode::FromQuery) is out of scope (Decision 2)."
+  - "Per-walk dedup is first-level-wins via a HashSet<usize> carried across levels; the existing in-level sort+dedup at engine/lib.rs:456-457 still handles the same-level case (Decision 3)."
+  - "Partial-failure shape matches propagate_selection exactly: per-subscriber Result, continue on emit/execute error, param_state always updated, walk continues across levels regardless of per-mark errors (Decision 4)."
+  - "Widget surface: ship Slider end-to-end; Menu/Search/Table remain Unimplemented and are deferred (Decision 5)."
+  - "Coordinator returns Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>; UI observes the result vec and triggers re-render. brightfield-engine remains free of any render dependency (Decision 6)."
+  - "Rally seam commitments — read-only or untouched: selection_state, propagate_selection, current_selections, SelectionDispatcher, BrushBinding, brush_rect_to_predicate, on_mouse_up_with_dispatch, emit_query/emit_query_with_passes signatures, update_param, analysis.{subscriber_graph,topological_order,dependency_dag} schemas, brightfield-render's no-gpui invariant, corpus regression gate (cfs ac-13)."
+  - "Test prefix is rpw3_; ≥10 tests across engine, spec, and UI layers."
+
+acceptance_criteria:
+  - id: ac-01
+    ac_type: code
+    description: "topological_descendants returns root followed by all descendants in topological order for a simple linear chain (A → B → C produces [A, B, C])."
+    verification: "rpw3_ac01_topological_descendants_simple_chain in crates/brightfield-spec/src/analysis.rs tests builds a 3-node DAG and asserts the result vector."
+
+  - id: ac-02
+    ac_type: code
+    description: "topological_descendants returns the correct descendant set for the athletes.yaml corpus chain (filtered widget chain, case ii from interview Q2)."
+    verification: "rpw3_ac02_topological_descendants_athletes_yaml loads the corpus fixture, calls topological_descendants on the root param, and asserts the returned ordering matches the analysis.topological_order projection over descendants."
+
+  - id: ac-03
+    ac_type: code
+    description: "topological_descendants returns just [root] when the root param has no descendants in dependency_dag."
+    verification: "rpw3_ac03_topological_descendants_leaf_root constructs a SpecAnalysis where root has zero outgoing DAG edges, asserts result == [root]."
+
+  - id: ac-04
+    ac_type: code
+    description: "propagate_param walks topological_descendants and dispatches subscribing marks at every level, against full param_state."
+    verification: "rpw3_ac04_propagate_param_chained_walk constructs a two-level DAG (A → B) with a mark subscribing only to B, propagates A, asserts the result vec contains the B-subscribing mark."
+
+  - id: ac-05
+    ac_type: code
+    description: "propagate_param first-level-wins dedup: a mark subscribing to both A and a descendant of A appears exactly once in the result vec, dispatched at A's level."
+    verification: "rpw3_ac05_propagate_param_first_level_wins_dedup constructs A → B and a mark whose query references both $A and $B, propagates A, asserts the mark appears in the result vec at most once."
+
+  - id: ac-06
+    ac_type: code
+    description: "propagate_param descendants-only scope: marks subscribing only to non-descendant params (siblings of A) are not re-executed."
+    verification: "rpw3_ac06_propagate_param_descendants_only constructs a DAG with A and a sibling C (both children of an unrelated parent), a mark subscribing only to C, propagates A, asserts the C-only mark is absent from the result vec."
+
+  - id: ac-07
+    ac_type: code
+    description: "propagate_param on a param with no subscribers and no descendants returns an empty result vec, but param_state is still updated."
+    verification: "rpw3_ac07_propagate_param_unsubscribed_leaf propagates a fresh param with zero subscribers and zero DAG children, asserts result.is_empty() AND current_params() reflects the new value."
+
+  - id: ac-08
+    ac_type: code
+    description: "propagate_param partial failure: with two subscribers — one whose mark has a registered lowerer (Ok), one whose mark has no registered lowerer (Err) — the result vec contains both entries with the expected Ok/Err shape, and param_state is updated regardless. Strengthens v2 rpw2_ac04."
+    verification: "rpw3_ac08_propagate_param_partial_failure registers only the dot lowerer, builds a spec with one dot subscriber and one rect subscriber to the same param, propagates, asserts results.len() == 2 with one Ok + one Err and param_state reflects the new value."
+
+  - id: ac-09
+    ac_type: code
+    description: "ParamDispatcher::dispatch on Session forwards to propagate_param identically — same return shape, same param_state effect."
+    verification: "rpw3_ac09_param_dispatcher_session_impl invokes <Session as ParamDispatcher>::dispatch(name, value) and asserts the returned Vec<(usize, Result<...>)> equals what propagate_param returns for the same inputs, and current_params() agrees."
+
+  - id: ac-10
+    ac_type: code
+    description: "SliderBinding captures param_name plus min/max/step from the Input.options block on construction."
+    verification: "rpw3_ac10_slider_binding_from_input_options constructs a SliderBinding from an Input fixture with options {min: 0.0, max: 100.0, step: 1.0}, asserts the binding fields equal the input."
+
+  - id: ac-11
+    ac_type: code
+    description: "commit_slider_release is a pure helper that, given a SliderBinding, current value, and any &mut impl ParamDispatcher, invokes dispatch with the binding's param_name and the current value as a SpecValue. Mirrors commit_brush_release in chart_view.rs."
+    verification: "rpw3_ac11_commit_slider_release_dispatches feeds a recording-dispatcher double into commit_slider_release with a SliderBinding and a value, asserts the double recorded a single dispatch call with the expected (name, value)."
+
+  - id: ac-12
+    ac_type: code
+    description: "Slider widget on_mouse_up triggers commit_slider_release; mouse_down without mouse_up never triggers it (mid-drag is overlay-only state on the widget)."
+    verification: "rpw3_ac12_slider_on_mouse_up_dispatches and rpw3_ac13_slider_no_drag_no_dispatch (UI tests against a recording dispatcher double): the first sends mouse_down then mouse_up and asserts one dispatch; the second sends mouse_down only and asserts zero dispatches."
+
+  - id: ac-13
+    ac_type: code
+    description: "InputKind::Slider conformance flip: vocab marks Slider as Implemented; a regression assertion in the vocab conformance tests prevents a future revert to Unimplemented."
+    verification: "rpw3_ac14_input_kind_slider_implemented in crates/brightfield-spec/src/vocab.rs tests asserts InputKind::Slider.is_implemented() == true and that the canonical Implemented fixture set contains InputKind::Slider."
+
+  - id: ac-14
+    ac_type: gate
+    description: "Rally seam regression gate: existing v2 tests (rpw2_*), cfs2 tests, and the corpus regression test (cfs ac-13) remain green. propagate_selection, current_selections, SelectionDispatcher, BrushBinding, brush_rect_to_predicate, on_mouse_up_with_dispatch, emit_query/emit_query_with_passes signatures, update_param, and analysis.{subscriber_graph,topological_order,dependency_dag} schemas are untouched. brightfield-render contains no gpui dependency."
+    verification: "Run cargo test -p brightfield-engine -p brightfield-spec -p brightfield-ui -p brightfield-render and cargo tree -p brightfield-render | rg gpui (must produce no match). All v2/cfs2 tests pass with zero modifications to their source."
+
+implementation_notes:
+  - "Files modified: crates/brightfield-engine/src/lib.rs (propagate_param body, lines 433-489 — signature unchanged), crates/brightfield-spec/src/analysis.rs (add topological_descendants near build_dependency_dag at lines 315-383), crates/brightfield-spec/src/vocab.rs (InputKind::Slider line 222 flip), crates/brightfield-ui/src/lib.rs (re-export new slider module)."
+  - "Files added: crates/brightfield-ui/src/slider.rs holding Slider GPUI widget, SliderBinding, ParamDispatcher trait, impl ParamDispatcher for Session, and commit_slider_release pure helper."
+  - "topological_descendants signature: pub fn topological_descendants(analysis: &SpecAnalysis, root: &str) -> Vec<String>. Pure DAG traversal restricted to descendants; root included as first element. No mutation of analysis."
+  - "ParamDispatcher trait shape mirrors SelectionDispatcher in crates/brightfield-ui/src/brush.rs:120-140 verbatim — fn dispatch(&mut self, name: &str, value: SpecValue) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>."
+  - "commit_slider_release mirrors commit_brush_release in chart_view.rs:181-206; takes &SliderBinding, value, and &mut impl ParamDispatcher; returns the result vec for the caller to thread into ChartState::apply_results + cx.notify()."
+  - "Walk implementation in propagate_param: (1) update param_state immediately; (2) compute order = topological_descendants(&analysis, name); (3) initialise dispatched: HashSet<usize>; (4) for each level p in order, gather subscribers via analysis.subscriber_graph[p], skip indices already in dispatched, dedup in-level (existing sort+dedup), then dispatch via emit_query and append (mark_idx, Result) to results, inserting into dispatched on dispatch."
+  - "Coordinator-side selection_state passthrough: emit_query already consumes both param_values and selection_predicates after cfs2; the new walk hands the same selection_state slice to every level, so chained re-execution honours the active brush."
+  - "SliderBinding<->Input.options coupling lives in slider.rs only; analysis.rs does not learn about Slider specifics — the binding is constructed at the UI layer from an Input AST node."
+  - "Computed-param case (Decision 2 case iii — ParamNode::FromQuery) is explicitly out of scope. Document the deferral in the slider module's top-of-file comment so the next driver knows where to start."
+  - "ChartView wiring: a future helper ChartView::propagate_param_and_redraw is allowed but not required by this spec. The Slider widget owns its dispatcher invocation; ChartState observation is the consumer's concern."
+
+ontology_schema:
+  name: "ReactiveParamsV3"
+  description: "Models the slice — coordinator chain walk, dispatcher trait, slider widget, and vocab flip."
+  fields:
+    - name: "topological_descendants"
+      type: "function"
+      description: "Pure free function in brightfield-spec/analysis.rs. Inputs: &SpecAnalysis, &str (root param). Output: Vec<String> in topological order, root first."
+    - name: "propagate_param_walk"
+      type: "method body"
+      description: "New body of Session::propagate_param. Updates param_state, walks topological_descendants, deduplicates marks first-level-wins via HashSet<usize>, dispatches per level via emit_query honouring current selection_state."
+    - name: "ParamDispatcher"
+      type: "trait"
+      description: "Mirror of SelectionDispatcher. fn dispatch(&mut self, name: &str, value: SpecValue) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>. Implemented for Session by forwarding to propagate_param."
+    - name: "SliderBinding"
+      type: "struct"
+      description: "{ param_name: String, min: f64, max: f64, step: Option<f64> }. Constructed at the UI layer from Input.options."
+    - name: "Slider"
+      type: "GPUI widget"
+      description: "Track + thumb, mouse handlers, current value as overlay state during drag, commits via commit_slider_release on mouse_up."
+    - name: "commit_slider_release"
+      type: "function"
+      description: "Pure helper. Inputs: &SliderBinding, value: f64, &mut impl ParamDispatcher. Output: Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>. Enables UI tests against a recording dispatcher double."
+    - name: "InputKind::Slider"
+      type: "vocab variant flip"
+      description: "Status moves from Unimplemented to Implemented in crates/brightfield-spec/src/vocab.rs:222."
+
+evaluation_principles:
+  - principle: "Cross-coordinator symmetry — propagate_param's shape and partial-failure behaviour mirror propagate_selection, so the runtime layer reads as a single pattern rather than two."
+    weight: 0.25
+  - principle: "Rally seam discipline — selection_state and the cfs2 surface are read-only or untouched; existing tests and the corpus regression gate stay green."
+    weight: 0.25
+  - principle: "Test depth — ≥10 tests covering chained walk, dedup, partial failure, descendants-only scope, leaf no-op, dispatcher forwarding, slider binding, slider dispatch path, no-drag-no-dispatch, vocab conformance."
+    weight: 0.25
+  - principle: "Widget end-to-end — slider lands as a real GPUI widget, not a stub. The trait + binding shape lets Menu/Search/Table slot in later without coordinator changes."
+    weight: 0.25
+
+exit_conditions:
+  - "All 14 acceptance criteria green."
+  - "cargo test -p brightfield-engine -p brightfield-spec -p brightfield-ui -p brightfield-render passes."
+  - "cargo tree -p brightfield-render | rg gpui returns no match."
+  - "Existing rpw2_*, cfs_*, cfs2_* tests pass without source modifications."
+  - "Card 0005 specs array contains this spec path."
+  - "PR opened against rally/reactive-parameters-runtime targeting main, description references this spec."
+
+metadata:
+  version: "1.0"
+  test_prefix: "rpw3"
+  timestamp: "2026-04-29T00:45:00Z"
+  ambiguity_score: 0.065
+  interview_ref: "orbit/specs/2026-04-29-reactive-parameters-runtime/interview.md"
+  card_ref: "orbit/cards/0005-reactive-parameters-with-input-widgets.yaml"
+  rally_ref: "orbit/specs/2026-04-29-live-reactivity-rally/rally.yaml"
