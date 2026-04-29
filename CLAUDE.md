@@ -24,13 +24,17 @@ Artefacts live in `orbit/cards/`, `orbit/specs/`, and `orbit/decisions/`.
 
 ## Current Sprint
 
-goal: "First end-to-end render — wire spec parsing, SQL emission, mark lowering, DuckDB execution, and GPU rendering so a Mosaic spec produces a visible, interactive output"
+goal: "Live reactivity — param widgets re-execute downstream queries and cross-filtered selections propagate across views, turning the static first-render into an interactive dashboard"
 
 cards:
-  - 0004: "Direct data source loading"
-  - 0001: "Mosaic spec-driven visualisation (integration layer)"
+  - 0005: "Reactive parameters with input widgets" (v2 — wire the param coordinator to live execution)
+  - 0006: "Cross-filtered selections across linked views"
+
+## Previously Shipped
+
+- "First end-to-end render" — cards 0001 + 0004. Spec → SQL → DuckDB → GPU render → native GPUI window. Shipped at 7cb7005 (2026-04-29).
 
 ## Upcoming Sprint Candidates
 
-- "Runtime reactivity" — card 0005 v2 (param coordinator, live re-query) + card 0006 (cross-filtered selections). Static analysis layer shipped; next is wiring the subscriber graph to live execution.
-- "Mark coverage breadth" — card 0008 (grammar of graphics mark library). Expand beyond dot/bar/line to the full Mosaic mark vocabulary.
+- "Mark coverage breadth" — card 0008 (grammar of graphics mark library). Expand beyond dot/line/bar/density/regression to areaY, rect, text, rule, and the specialised marks (geo, hexbin, contour, raster).
+- "Harden the render" — fold in the findings from `orbit/cards/memos/2026-04-29-first-render-followups.md`: literal channel values, vocab/runtime alignment, execution-conformance test layer, window/chart sizing.
