@@ -35,10 +35,30 @@ history:
     ac_count: 10
     test_prefix: cfs3
     notes: revised per review cycle 1 — all 4 HIGH and the MEDIUM resolved; 4 LOW also addressed.
+  - stage: review-spec
+    completed: 2026-04-29T03:42:00Z
+    cycle: 2
+    verdict: REQUEST_CHANGES
+    artefact: orbit/specs/2026-04-29-cross-filtered-selections-interactors/review-spec-2026-04-29-cycle2.md
+    findings:
+      high: 2
+      medium: 0
+      low: 0
+    notes: |
+      N1 (HIGH): ac-10 step (4) baseline counts wrong — actual cfs_ = 12, cfs2_ = 16, rpw3_ = 16.
+      N2 (HIGH): ac-10 step (3) file path list missing chart_view.rs (BrushBinding) and brightfield-sql/src/emit.rs (emit_query, emit_query_with_passes). All cycle-1 findings (F1-F10) verified resolved.
+  - stage: spec
+    completed: 2026-04-29T03:45:00Z
+    artefact: orbit/specs/2026-04-29-cross-filtered-selections-interactors/spec.yaml
+    version: "1.2"
+    ambiguity_score: 0.04
+    ac_count: 10
+    test_prefix: cfs3
+    notes: revised per review cycle 2 — N1 and N2 resolved; baseline counts measured empirically against origin/rally/reactive-parameters-runtime commit 69ed0e4.
 started: 2026-04-29T03:00:00Z
 review_cycles:
-  review_spec: 1
+  review_spec: 2
   review_pr: 0
 review_cycle_dates:
-  review_spec: 2026-04-29T03:25:00Z
+  review_spec: 2026-04-29T03:42:00Z
   review_pr: null

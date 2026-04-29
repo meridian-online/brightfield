@@ -171,6 +171,8 @@ acceptance_criteria:
             crates/brightfield-spec/src/analysis.rs \
             crates/brightfield-ui/src/slider.rs \
             crates/brightfield-ui/src/brush.rs \
+            crates/brightfield-ui/src/chart_view.rs \
+            crates/brightfield-sql/src/emit.rs \
           | rg -F -e 'pub fn propagate_param' \
                  -e 'pub fn topological_descendants' \
                  -e 'pub trait ParamDispatcher' \
@@ -185,6 +187,17 @@ acceptance_criteria:
                  -e 'pub struct InteractorBinding'
           # must produce zero signature-line hits — any hit means a
           # rpw3-shipped or v1/v2-untouched symbol's signature changed.
+          # File paths chosen to cover each symbol's home file:
+          #   - propagate_param, propagate_selection: brightfield-engine/src/lib.rs
+          #   - topological_descendants, InteractorBinding: brightfield-spec/src/analysis.rs
+          #   - ParamDispatcher, SliderBinding, SliderState, commit_slider_release: brightfield-ui/src/slider.rs
+          #   - brush_rect_to_predicate: brightfield-ui/src/brush.rs
+          #   - BrushBinding: brightfield-ui/src/chart_view.rs (not brush.rs)
+          #   - emit_query, emit_query_with_passes: brightfield-sql/src/emit.rs (not engine)
+          # chart_view.rs is included for BrushBinding pinning even though
+          # ac-04 modifies on_mouse_up_with_dispatch in the same file —
+          # that's safe because the pattern list does NOT match
+          # on_mouse_up_with_dispatch by design (carved out in constraint 7).
 
       (4) Test-function count gate. cfs/cfs2/rpw3 tests live INLINE inside
           existing source files, not in separate test modules, so a path
@@ -195,9 +208,13 @@ acceptance_criteria:
           and removes none):
 
           # On the cfs3 branch:
-          rg -n '\bfn cfs_'   crates/ | wc -l   # must equal pre-cfs3 count: 9
+          rg -n '\bfn cfs_'   crates/ | wc -l   # must equal pre-cfs3 count: 12
           rg -n '\bfn cfs2_'  crates/ | wc -l   # must equal pre-cfs3 count: 16
-          rg -n '\bfn rpw3_'  crates/ | wc -l   # must equal pre-cfs3 count: 13
+          rg -n '\bfn rpw3_'  crates/ | wc -l   # must equal pre-cfs3 count: 16
+
+          # Baseline counts measured on origin/rally/reactive-parameters-runtime
+          # (the rpw3 PR's tip), commit 69ed0e4. Re-measure if the rally branch
+          # advances before this card's PR review.
 
           The pre-cfs3 baseline counts are recorded above; any divergence
           (function added, removed, or renamed) fails the gate. New cfs3_*
@@ -270,10 +287,10 @@ exit_conditions:
   - "PR opened against rally/cross-filtered-selections-interactors targeting rally/reactive-parameters-runtime, description references this spec and notes the stacked-PR base."
 
 metadata:
-  version: "1.1"
+  version: "1.2"
   test_prefix: "cfs3"
-  timestamp: "2026-04-29T03:30:00Z"
-  ambiguity_score: 0.045
+  timestamp: "2026-04-29T03:45:00Z"
+  ambiguity_score: 0.04
   interview_ref: "orbit/specs/2026-04-29-cross-filtered-selections-interactors/interview.md"
   decisions_ref: "orbit/specs/2026-04-29-cross-filtered-selections-interactors/decisions.md"
   card_ref: "orbit/cards/0006-cross-filtered-selections-across-linked-views.yaml"
@@ -290,3 +307,6 @@ metadata:
     - "F8 (LOW): impl-notes para 8 names the escape-key follow-up memo path (orbit/cards/memos/2026-04-29-escape-key-clearing.md) for symmetry with the Decision 5 memo."
     - "F9 (LOW): impl-notes para 7 documents the click-vs-drag rationale shift from decisions.md Q1 (start-time gating) to release-time zero-area branch."
     - "F10 (LOW): ac-09 sub-clause (c) reframed to assert 'non-brushable kinds excluded' using a panZoom fixture, avoiding the cross-crate enum coupling."
+    - "Cycle 2:"
+    - "N1 (HIGH): ac-10 step (4) baseline counts corrected — cfs_ = 12 (was 9), cfs2_ = 16 (correct), rpw3_ = 16 (was 13). Counts measured on origin/rally/reactive-parameters-runtime commit 69ed0e4."
+    - "N2 (HIGH): ac-10 step (3) file path list extended to cover every symbol's home file — added crates/brightfield-ui/src/chart_view.rs (BrushBinding) and crates/brightfield-sql/src/emit.rs (emit_query, emit_query_with_passes). The fingerprint diff is now actually capable of catching signature drift on those three pins."
