@@ -11,10 +11,27 @@ history:
     ambiguity_score: 0.065
     ac_count: 14
     test_prefix: rpw3
+  - stage: review-spec
+    completed: 2026-04-29T00:50:00Z
+    cycle: 1
+    verdict: REQUEST_CHANGES
+    artefact: orbit/specs/2026-04-29-reactive-parameters-runtime/review-spec-2026-04-29.md
+    findings:
+      medium: 3
+      low: 4
+    notes: AC-id ↔ test-name divergence; ac-08 under-specified; ac-14 gate ambiguous; folded LOW findings 4-7 (first-level ordering, lifted-helper boundary, case-iii guard, selection_state passthrough)
+  - stage: spec
+    completed: 2026-04-29T00:55:00Z
+    artefact: orbit/specs/2026-04-29-reactive-parameters-runtime/spec.yaml
+    version: "1.1"
+    ambiguity_score: 0.05
+    ac_count: 16
+    test_prefix: rpw3
+    notes: revised per review cycle 1 — renumbered ACs 1:1, tightened ac-08/ac-16, added ac-15 case-iii guard, strengthened ac-04 selection passthrough
 started: 2026-04-29T00:30:00Z
 review_cycles:
-  review_spec: 0
+  review_spec: 1
   review_pr: 0
 review_cycle_dates:
-  review_spec: null
+  review_spec: 2026-04-29T00:50:00Z
   review_pr: null
