@@ -3,7 +3,7 @@ autonomy: full
 budget: 3
 iteration: 1
 current_spec: orbit/specs/2026-04-29-cross-filtered-selections-interactors/
-status: spec
+status: review-spec
 history:
   - stage: spec
     completed: 2026-04-29T03:00:00Z
@@ -12,10 +12,33 @@ history:
     ac_count: 10
     test_prefix: cfs3
     notes: 9 code ACs (cfs3_ac01..cfs3_ac09) + 1 rally seam gate (ac-10). 1:1 AC ↔ test alignment per rpw3 v1.1 precedent.
+  - stage: review-spec
+    completed: 2026-04-29T03:25:00Z
+    cycle: 1
+    verdict: REQUEST_CHANGES
+    artefact: orbit/specs/2026-04-29-cross-filtered-selections-interactors/review-spec-2026-04-29.md
+    findings:
+      high: 4
+      medium: 1
+      low: 4
+    notes: |
+      F1 ac-05 fixture path wrong (interactor[0] should be interactor[intervalXY]).
+      F2 ac-10 step-4 path glob unfalsifiable — cfs/cfs2/rpw3 tests are inline in source files.
+      F3 ac-10 fingerprint diff omits v1/v2 surfaces.
+      F4 constraint 7 contradicts ac-04 on on_mouse_up_with_dispatch signature.
+      F5 ac-04 description should name the cfs2_ac11 lifted-helper boundary.
+  - stage: spec
+    completed: 2026-04-29T03:30:00Z
+    artefact: orbit/specs/2026-04-29-cross-filtered-selections-interactors/spec.yaml
+    version: "1.1"
+    ambiguity_score: 0.045
+    ac_count: 10
+    test_prefix: cfs3
+    notes: revised per review cycle 1 — all 4 HIGH and the MEDIUM resolved; 4 LOW also addressed.
 started: 2026-04-29T03:00:00Z
 review_cycles:
-  review_spec: 0
+  review_spec: 1
   review_pr: 0
 review_cycle_dates:
-  review_spec: null
+  review_spec: 2026-04-29T03:25:00Z
   review_pr: null
