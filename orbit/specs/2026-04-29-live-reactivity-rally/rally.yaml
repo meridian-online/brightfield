@@ -1,8 +1,8 @@
 rally: "live reactivity"
 autonomy: guided
-phase: implementing
+phase: complete
 started: 2026-04-29T00:00:00Z
-completed: null
+completed: 2026-04-29T05:00:00Z
 cards:
   - path: orbit/cards/0005-reactive-parameters-with-input-widgets.yaml
     status: complete
@@ -12,11 +12,12 @@ cards:
     parked_constraint: null
     pr: https://github.com/meridian-online/brightfield/pull/4
   - path: orbit/cards/0006-cross-filtered-selections-across-linked-views.yaml
-    status: designed
+    status: complete
     spec_dir: orbit/specs/2026-04-29-cross-filtered-selections-interactors/
     branch: rally/cross-filtered-selections-interactors
-    worktree: null
+    worktree: "main"
     parked_constraint: null
+    pr: https://github.com/meridian-online/brightfield/pull/5
 implementation_order:
   - orbit/cards/0005-reactive-parameters-with-input-widgets.yaml
   - orbit/cards/0006-cross-filtered-selections-across-linked-views.yaml
