@@ -23,5 +23,8 @@ smallvec = "1"
 [features]
 gpu-tests = []
 
+[dev-dependencies]
+indexmap = "2"
+
 [lints]
 workspace = true

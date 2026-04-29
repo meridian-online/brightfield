@@ -382,6 +382,114 @@ pub fn build_dependency_dag(
     Ok((edges, order))
 }
 
+/// Topological order of `root` and all its descendants in the param
+/// dependency DAG. Returns a vec with `root` as the first element followed by
+/// every transitively-downstream param, in an order that places parents
+/// before children.
+///
+/// Used by [`crate::ast::Spec`] consumers (the runtime coordinator) when a
+/// param-change event fires: walking this order re-executes subscribing
+/// marks at every level, so a change to a root param flows through chained
+/// `filterBy`/`as_param` widgets in their declared dependency order.
+///
+/// Behaviour:
+/// - Root is always included as the first element, even when it has no
+///   outgoing edges (a leaf root returns `vec![root]`).
+/// - The return order is a topological sort of the *descendant subgraph*,
+///   not a slice of `analysis.topological_order` — this keeps the function
+///   well-defined when the DAG contains other roots whose own descendants
+///   precede `root` globally but should not appear in this walk.
+/// - The DAG is acyclic by construction (cycles are rejected by
+///   [`build_dependency_dag`] / [`analyse_spec`]); we use Kahn's algorithm
+///   over the descendant subgraph for determinism.
+/// - Self-edges are impossible by construction (`collect_dag_edges` skips
+///   them — see `wnba-shots.yaml`).
+///
+/// rpw3 ac-01, ac-02, ac-03.
+#[must_use]
+pub fn topological_descendants(analysis: &SpecAnalysis, root: &str) -> Vec<String> {
+    // Build adjacency over `analysis.dependency_edges` keyed by `from`.
+    let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
+    for edge in &analysis.dependency_edges {
+        adj.entry(edge.from.as_str())
+            .or_default()
+            .push(edge.to.as_str());
+    }
+
+    // Reachability sweep from `root` to delineate the descendant subgraph.
+    // Iterative DFS; a node is added to `descendants` only on first visit.
+    let mut descendants: HashSet<&str> = HashSet::new();
+    let mut stack: Vec<&str> = vec![root];
+    while let Some(node) = stack.pop() {
+        if !descendants.insert(node) {
+            continue;
+        }
+        if let Some(children) = adj.get(node) {
+            for &child in children {
+                if !descendants.contains(child) {
+                    stack.push(child);
+                }
+            }
+        }
+    }
+
+    // If `root` has no DAG presence at all (not in any edge), still include it.
+    if descendants.is_empty() {
+        return vec![root.to_string()];
+    }
+
+    // In-degree restricted to the descendant subgraph.
+    let mut in_degree: HashMap<&str, usize> = HashMap::new();
+    for &node in &descendants {
+        in_degree.insert(node, 0);
+    }
+    for edge in &analysis.dependency_edges {
+        if descendants.contains(edge.from.as_str())
+            && descendants.contains(edge.to.as_str())
+        {
+            *in_degree.entry(edge.to.as_str()).or_insert(0) += 1;
+        }
+    }
+
+    // Kahn's algorithm seeded with `root` first so it always appears at
+    // index 0 (even if other descendant nodes also have in-degree 0,
+    // which can only happen if they are unreachable from `root` — and
+    // by construction `descendants` only contains reachable nodes).
+    let mut queue: VecDeque<&str> = VecDeque::new();
+    queue.push_back(root);
+    // Other zero-in-degree nodes inside the subgraph (none, by construction
+    // of reachability) — guarded loop below for robustness.
+    for (&node, &deg) in &in_degree {
+        if deg == 0 && node != root {
+            queue.push_back(node);
+        }
+    }
+
+    let mut order: Vec<String> = Vec::with_capacity(descendants.len());
+    let mut seen: HashSet<&str> = HashSet::new();
+    while let Some(node) = queue.pop_front() {
+        if !seen.insert(node) {
+            continue;
+        }
+        order.push(node.to_string());
+        if let Some(children) = adj.get(node) {
+            for &child in children {
+                if !descendants.contains(child) {
+                    continue;
+                }
+                if let Some(deg) = in_degree.get_mut(child) {
+                    *deg -= 1;
+                    if *deg == 0 {
+                        queue.push_back(child);
+                    }
+                }
+            }
+        }
+    }
+
+    order
+}
+
 fn collect_dag_edges(component: &Component, edges: &mut Vec<ParamEdge>) {
     match component {
         Component::Input(inp) => {
@@ -897,6 +1005,99 @@ pub fn analyse_spec(spec: &Spec) -> Result<SpecAnalysis, ParseError> {
 mod tests {
     use super::*;
     use crate::parse::{parse_spec, Format};
+
+    // Helper: build a SpecAnalysis with the given dependency edges, no
+    // subscribers, no warnings — for topological_descendants tests.
+    fn analysis_with_edges(edges: Vec<(&str, &str)>) -> SpecAnalysis {
+        SpecAnalysis {
+            subscriber_graph: SubscriberGraph::new(),
+            dependency_edges: edges
+                .into_iter()
+                .map(|(f, t)| ParamEdge {
+                    from: f.to_string(),
+                    to: t.to_string(),
+                })
+                .collect(),
+            topological_order: Vec::new(),
+            selection_subscribers: SelectionSubscriberGraph::new(),
+            interactor_bindings: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    /// rpw3 ac-01: topological_descendants on a simple linear chain
+    /// A → B → C returns [A, B, C].
+    #[test]
+    fn rpw3_ac01_topological_descendants_simple_chain() {
+        let analysis = analysis_with_edges(vec![("A", "B"), ("B", "C")]);
+        let order = topological_descendants(&analysis, "A");
+        assert_eq!(order, vec!["A".to_string(), "B".to_string(), "C".to_string()]);
+    }
+
+    /// rpw3 ac-02: topological_descendants on the athletes.yaml corpus
+    /// chain returns the expected descendant ordering.
+    ///
+    /// athletes.yaml DAG: category → query → hover (search input writes
+    /// $query and reads $category; table input writes $hover and reads
+    /// $query).
+    #[test]
+    fn rpw3_ac02_topological_descendants_athletes_yaml() {
+        let yaml = std::fs::read_to_string(
+            "vendor/mosaic-specs/yaml/athletes.yaml",
+        )
+        .expect("athletes.yaml fixture must be readable");
+        let parsed = parse_spec(&yaml, Format::Yaml).expect("parse athletes.yaml");
+        let analysis = analyse_spec(&parsed.spec).expect("analyse athletes.yaml");
+
+        // Walk descendants from `category`.
+        let order = topological_descendants(&analysis, "category");
+        assert_eq!(order[0], "category", "root must be first");
+        // hover depends on query (transitively on category) — must come after query.
+        let pos_query = order
+            .iter()
+            .position(|n| n == "query")
+            .expect("query in descendants");
+        let pos_hover = order
+            .iter()
+            .position(|n| n == "hover")
+            .expect("hover in descendants");
+        assert!(
+            pos_query < pos_hover,
+            "query must precede hover; got order: {:?}",
+            order
+        );
+        // Cross-check against analysis.topological_order projection over
+        // the descendant set: positions must be consistent.
+        let descendant_set: HashSet<&str> = order.iter().map(String::as_str).collect();
+        let projected: Vec<&String> = analysis
+            .topological_order
+            .iter()
+            .filter(|n| descendant_set.contains(n.as_str()))
+            .collect();
+        let projected_strs: Vec<String> =
+            projected.into_iter().cloned().collect();
+        assert_eq!(
+            order, projected_strs,
+            "topological_descendants must agree with analysis.topological_order projection"
+        );
+    }
+
+    /// rpw3 ac-03: topological_descendants on a leaf root (no DAG edges
+    /// out, possibly not in DAG at all) returns [root].
+    #[test]
+    fn rpw3_ac03_topological_descendants_leaf_root() {
+        // Root with zero outgoing edges, but present as a target of
+        // another edge — its descendants are just [itself].
+        let analysis = analysis_with_edges(vec![("upstream", "root")]);
+        let order = topological_descendants(&analysis, "root");
+        assert_eq!(order, vec!["root".to_string()]);
+
+        // Root not present in the DAG at all (no edges): still returns
+        // [root] (the coordinator must still update param_state).
+        let empty_analysis = analysis_with_edges(vec![]);
+        let order = topological_descendants(&empty_analysis, "isolated");
+        assert_eq!(order, vec!["isolated".to_string()]);
+    }
 
     // ----- card 0006 v2 cfs2_ac04: parent_plot helper -----
     #[test]
