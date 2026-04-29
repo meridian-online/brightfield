@@ -22,6 +22,24 @@ scenarios:
     then: "the plot's own predicate is excluded from its own filter so it retains context around the selection"
     source_lines: "brightfield-brief.md: 'Cross-filter resolution — synthesise different predicates for different clients (e.g., exclude a client's own predicate from its own filter).'"
 
+  - name: "Clearing a selection retracts its predicate"
+    given: "a selection has been populated by an interactor on one plot and is filtering linked views"
+    when: "I dismiss the selection — clicking outside the brushed region or otherwise clearing it"
+    then: "the contributor's predicate is retracted, the selection re-resolves without it, and downstream views revert to the unfiltered data"
+    source_lines: "brightfield-brief.md: 'Selections are live predicates — interactors contribute and retract them; clients re-resolve on every change.'"
+
+  - name: "A plot can drive multiple selections at once"
+    given: "a plot is bound as contributor to two distinct selections (e.g. a point selection on one channel and an interval selection on another)"
+    when: "I make both a point selection and an interval selection on the same plot"
+    then: "each selection holds its own predicate independently, and any view subscribing to either selection sees only that selection's resolved predicate"
+    source_lines: "brightfield-brief.md: 'A single component may emit predicates into multiple selections — each selection is its own first-class channel.'"
+
+  - name: "Selections persist across param changes when the domain still applies"
+    given: "a brush is active on a plot whose query references a reactive param"
+    when: "a slider changes that param and the plot's data refreshes"
+    then: "the brush predicate persists and continues to filter downstream views — the selection is independent of param-driven re-execution as long as the brushed domain is still meaningful"
+    source_lines: "brightfield-brief.md: 'Params and selections are orthogonal channels — a param change re-queries data, but selection predicates are retained until explicitly retracted.'"
+
 maturity: "emerging"
 
 specs:
