@@ -1,0 +1,235 @@
+goal: >
+  Close the three new scenarios on card 0006 (clearing retracts a contributor's
+  predicate; one plot can drive multiple selections; selections persist across
+  param changes when the domain still applies) without disturbing the v1/v2
+  surface. Adds Session::clear_selection, generalises ChartView to a
+  Vec<BrushBinding>, lands BrushKind::Point as a forward-compat type for the
+  rally pair (card 0005 v3 owns input-widget-driven point selections), and
+  pins the param ↔ selection rally seam with a regression test.
+
+constraints:
+  - "Coordinator surface: new `Session::clear_selection(name, contributor)` symmetric to propagate_selection — linear-scan find-and-remove on the contributor list, then re-emit + re-execute via the existing dispatch loop. No change to propagate_selection / propagate_param signatures (Decision 1)."
+  - "Point selection driver: chart-side click-to-point is deferred. This card lands `BrushKind::Point` + `point_predicate(column, value)` adapter only — no chart_view dispatch path. Input-widget-driven point selections are card 0005 v3's surface (Decision 2)."
+  - "Multi-binding shape: ChartView holds `Vec<BrushBinding>`; `on_mouse_up_with_dispatch` iterates and dispatches one propagate_selection per kind-compatible binding. The BrushBinding struct stays singular; multiplicity lives at the call site (Decision 3)."
+  - "Brushable-binding metadata: new derived view `analysis.brushable_bindings: Vec<BrushableBinding>` on SpecAnalysis. v1's `interactor_bindings` shape and count are untouched — cfs_ac08 count test stays green (Decision 4)."
+  - "Persistence semantics: brush persists verbatim across param changes — the runtime trusts the predicate and does not infer domain meaningfulness (Decision 5). Pinned by ac-07 + ac-08."
+  - "Test prefix is cfs3_; AC ids align 1:1 with test-function suffixes (cfs3_acNN_*); 9 code ACs + 1 gate (ac-10)."
+  - "Rally seam commitments — read-only or untouched: param_state, propagate_param body (post-rpw3), update_param, ParamDispatcher, SliderBinding, SliderState, commit_slider_release, topological_descendants, current_params, analysis.subscriber_graph schema, InputKind::Slider conformance, brightfield-render's no-gpui invariant. v2 propagate_selection signature, BrushBinding fields, brush_rect_to_predicate signature, on_mouse_up_with_dispatch signature, emit_query/emit_query_with_passes signatures, analysis.{interactor_bindings,topological_order,dependency_dag} schemas remain untouched."
+
+acceptance_criteria:
+  - id: ac-01
+    ac_type: code
+    description: "Session::clear_selection removes the named contributor from selection_state[name] and re-executes every subscriber to that selection. The result vec mirrors propagate_selection's shape (per-subscriber Result, walk continues past per-mark errors)."
+    verification: |
+      cfs3_ac01_clear_selection_removes_contributor in
+      crates/brightfield-engine/src/lib.rs tests:
+      (a) builds a session with one selection populated by two contributors
+          (paths root/plot[0] and root/plot[1]) and one subscribing mark;
+      (b) calls session.clear_selection("brush", ComponentPath("root/plot[0]"));
+      (c) asserts session.current_selections().get("brush") contains exactly
+          one entry whose contributor is root/plot[1];
+      (d) asserts the returned Vec<(usize, Result<...>)> has one entry
+          (the single subscriber) and that entry is Ok with at least one
+          RecordBatch (verifying the re-execution actually fired).
+
+  - id: ac-02
+    ac_type: code
+    description: "Session::clear_selection on a name with no contributors (or an unknown selection) is a silent no-op: empty result vec, no panic, selection_state untouched."
+    verification: |
+      cfs3_ac02_clear_selection_unsubscribed_silent:
+      (a) calls session.clear_selection("does_not_exist", ComponentPath("root/plot[0]"))
+          on a session with no selections — asserts the return vec is empty
+          and no panic;
+      (b) calls session.clear_selection on a known selection name with a
+          contributor that is not in its list — asserts the selection's
+          contributor list is unchanged and the return vec is empty.
+
+  - id: ac-03
+    ac_type: code
+    description: "commit_brush_clear is a pure helper that, given an InteractionState, a BrushBinding, and a SelectionDispatcher with a `clear` method, dispatches a clear call when the interaction was *not* a meaningful brush (Idle, or a zero-area Brushing whose start ≈ current). Mirrors commit_brush_release at chart_view.rs:181-206. The SelectionDispatcher trait grows a `clear(name, contributor)` method that the Session impl forwards to clear_selection."
+    verification: |
+      cfs3_ac03_click_outside_active_brush_clears in crates/brightfield-ui/src/chart_view.rs tests:
+      (a) constructs an InteractionState::Idle, a BrushBinding for selection
+          "brush" + contributor root/plot[0], feeds them through
+          commit_brush_clear with a recording dispatcher;
+      (b) asserts the recording dispatcher logged exactly one `clear` call
+          with the expected (name, contributor);
+      (c) repeats with a Brushing state whose start == current (zero-area)
+          and asserts the dispatcher logged exactly one `clear` call
+          (zero-area click is a clear, not a release);
+      (d) confirms a non-zero Brushing state passing through commit_brush_clear
+          does NOT dispatch (release-vs-clear discrimination — release goes
+          through commit_brush_release).
+
+  - id: ac-04
+    ac_type: code
+    description: "ChartView::on_mouse_up_with_dispatch with a Vec<BrushBinding> dispatches one propagate_selection per kind-compatible binding. The result type generalises to Vec<(selection_name, Vec<(usize, Result<...>)>)> so callers see per-binding outcomes; signature otherwise unchanged for the singular case (a Vec of length 1)."
+    verification: |
+      cfs3_ac04_plot_drives_multiple_selections in crates/brightfield-ui tests:
+      (a) constructs a synthetic InteractionState::Brushing with a 100x200
+          rect and two BrushBindings — one IntervalXY writing to selection $a,
+          one IntervalX writing to selection $b — bound to the same plot;
+      (b) drives commit_brush_release_multi (the lifted helper accepting
+          &[BrushBinding]) with a recording dispatcher;
+      (c) asserts the dispatcher recorded exactly two dispatch calls;
+      (d) asserts each call's selection_name matches its binding ($a and $b
+          appear once each), and the IntervalX binding's predicate references
+          only the x channel (no y bounds — kind-compatibility filter ran).
+
+  - id: ac-05
+    ac_type: code
+    description: "analysis.brushable_bindings is built from a SpecAnalysis: every interactor whose kind is brush-compatible (IntervalX, IntervalY, IntervalXY) produces one BrushableBinding carrying interactor_path, parent_plot path, selection name, kind, and the parent plot's resolved channel columns. Non-brush interactors (Toggle, Highlight, Nearest*, Pan*) are filtered out."
+    verification: |
+      cfs3_ac05_brushable_bindings_built in crates/brightfield-spec/src/analysis.rs tests:
+      builds a fixture spec with one plot containing one intervalXY interactor
+      writing to $brush plus one panZoom interactor (filtered out); asserts
+      analysis.brushable_bindings.len() == 1 and the single entry's fields
+      equal {interactor_path: root/plot[0]/interactor[0], parent_plot:
+      root/plot[0], selection: "brush", kind: IntervalXY, channels.x:
+      Some("speed"), channels.y: Some("delay")}.
+
+  - id: ac-06
+    ac_type: code
+    description: "From<&BrushableBinding> for BrushBinding lives in brightfield-ui (BrushBinding's home crate). The conversion preserves selection_name, contributor (= parent_plot), kind, and channels verbatim."
+    verification: |
+      cfs3_ac06_brushable_binding_to_brush_binding in crates/brightfield-ui tests:
+      constructs a BrushableBinding fixture (selection "brush", parent_plot
+      root/plot[0], kind IntervalXY, channels speed/delay), converts via
+      BrushBinding::from(&binding) (or .into()), asserts every field on the
+      resulting BrushBinding matches its source.
+
+  - id: ac-07
+    ac_type: code
+    description: "A param change after a brush release does NOT lose the brush. Concretely: populate selection_state with one contributor's predicate, propagate a param value, observe that the dispatched marks' SQL still contains the brush WHERE-clause and that current_selections is unchanged. This pins the v2 lib.rs:464-466 behaviour as a regression test."
+    verification: |
+      cfs3_ac07_param_change_preserves_selection in
+      crates/brightfield-engine/src/lib.rs tests:
+      (a) builds a session with a param P, a selection "brush" populated by
+          one contributor with a non-trivial predicate, and one mark
+          subscribing to both P and "brush";
+      (b) snapshots current_selections() into a clone;
+      (c) calls propagate_param("P", new_value);
+      (d) asserts current_selections() equals the snapshot
+          (HashMap<String, Vec<(ComponentPath, Predicate)>> equality);
+      (e) asserts the dispatched mark's emitted SQL contains the brush's
+          WHERE-clause fragment (or, equivalently, the dispatched-result's
+          row count reflects the active brush — the same falsifiable shape
+          rpw3_ac04 used).
+
+  - id: ac-08
+    ac_type: code
+    description: "Rally seam regression: propagate_param's body never writes to selection_state. Pure source-level + behavioural assertion that the rpw3 chained walk reads but never mutates the cfs2/cfs3 state."
+    verification: |
+      cfs3_ac08_propagate_param_does_not_clobber_selection_state in
+      crates/brightfield-engine/src/lib.rs tests:
+      (a) builds a session with a populated selection_state (one contributor,
+          non-trivial predicate);
+      (b) snapshots selection_state via current_selections() into a clone;
+      (c) calls propagate_param twice with different values for the same
+          param (covers both the first-walk and re-entry paths);
+      (d) asserts current_selections() equals the snapshot after both calls,
+          field-by-field — same selections, same contributors, same predicates,
+          same insertion order on the contributor list.
+
+  - id: ac-09
+    ac_type: code
+    description: "BrushKind::Point is a constructible enum variant; point_predicate(column, value) returns a Predicate::Expr that compares the column to the value verbatim. No chart_view dispatch path is wired — the variant exists for forward-compat with card 0005 v3."
+    verification: |
+      cfs3_ac09_brush_kind_point_constructs in crates/brightfield-ui/src/brush.rs tests:
+      (a) constructs BrushKind::Point and asserts it != IntervalX/Y/XY (sealed
+          enum coverage);
+      (b) calls point_predicate("category", "'Athletics'") and asserts the
+          returned Predicate::Expr's body contains "category" and the literal
+          value "'Athletics'";
+      (c) confirms BrushKind::Point is NOT in the brushable-kinds set
+          consumed by analysis::build_brushable_bindings (i.e. interactors
+          with no chart-side path don't surface as brushable).
+
+  - id: ac-10
+    ac_type: gate
+    description: "Rally seam regression gate: rpw3 tests, v2 (cfs2_*) tests, v1 (cfs_*) tests, and the corpus regression test (cfs ac-13) remain green. propagate_param body is byte-equivalent to the post-rpw3 commit; current_params, ParamDispatcher, SliderBinding, SliderState, commit_slider_release, topological_descendants, brightfield-render's no-gpui invariant, and v2 surface signatures are untouched. cfs2/cfs/cfs ac-13/rpw3 test sources are untouched."
+    verification: |
+      Run all four checks; each must pass:
+      (1) cargo test -p brightfield-engine -p brightfield-spec -p brightfield-ui -p brightfield-render
+      (2) cargo tree -p brightfield-render | rg gpui  # must produce zero matches
+      (3) git diff origin/rally/reactive-parameters-runtime -- \
+            crates/brightfield-engine/src/lib.rs \
+            crates/brightfield-ui/src/slider.rs \
+          | rg -F -e 'pub fn propagate_param' \
+                 -e 'pub fn topological_descendants' \
+                 -e 'pub trait ParamDispatcher' \
+                 -e 'pub struct SliderBinding' \
+                 -e 'pub fn commit_slider_release' \
+                 -e 'pub enum SliderState'
+          # must produce zero signature-line hits — any hit means a rpw3-shipped symbol's signature changed
+      (4) git diff --stat origin/rally/reactive-parameters-runtime -- \
+            'crates/*/src/**rpw3*' 'crates/*/tests/**rpw3*' \
+            'crates/*/src/**cfs_*' 'crates/*/tests/**cfs_*' \
+            'crates/*/src/**cfs2_*' 'crates/*/tests/**cfs2_*'
+          # must be empty — rpw3/cfs/cfs2 test sources untouched
+
+implementation_notes:
+  - "Files modified: crates/brightfield-engine/src/lib.rs (add Session::clear_selection ~50 LOC, no propagate_param change), crates/brightfield-ui/src/brush.rs (add BrushKind::Point variant, point_predicate, SelectionDispatcher::clear method + Session impl), crates/brightfield-ui/src/chart_view.rs (ChartView holds Vec<BrushBinding>; commit_brush_release_multi + commit_brush_clear lifted helpers; on_mouse_up_with_dispatch iterates), crates/brightfield-spec/src/analysis.rs (add BrushableBinding struct + build_brushable_bindings walker + brushable_bindings field on SpecAnalysis)."
+  - "Session::clear_selection body: linear-scan over selection_state[name].iter().position(|(p, _)| p == &contributor); if Some(idx), remove and re-dispatch through subscriber list; if None, return empty vec. The dispatch loop is identical in shape to propagate_selection at lib.rs:262-335 — extract a shared helper if convenient, but a duplicate is also acceptable for clarity."
+  - "BrushableBinding struct: { pub interactor_path: ComponentPath, pub parent_plot: ComponentPath, pub selection: String, pub kind: BrushKind, pub channels: ChannelColumns }. Lives in brightfield-spec, but BrushKind/ChannelColumns are owned by brightfield-ui — re-define minimal mirror types in brightfield-spec to avoid the reverse dependency, OR introduce a shared crate. **Decision (defer to spec time): mirror enums in brightfield-spec.** ChannelColumns mirror is { x: Option<String>, y: Option<String> }; BrushKind mirror enumerates IntervalX/IntervalY/IntervalXY/Point in the same order. The From<&BrushableBinding> for BrushBinding lives in brightfield-ui and translates between the two enums."
+  - "build_brushable_bindings walker: iterate analysis.interactor_bindings; for each, look up the InteractorKind via the spec AST (PlotItem::Interactor → kind), filter to {IntervalX, IntervalY, IntervalXY}, look up the parent plot's MarkKind axis bindings to populate channels. Plots without a brushable interactor produce zero entries; plots with multiple brushable interactors produce one entry each."
+  - "commit_brush_release_multi(interaction, &[BrushBinding], &mut dispatcher) -> (next_state, Vec<(String, Vec<(usize, Result<...>)>)>) — the multi-binding lifted helper. commit_brush_release is preserved as a single-binding convenience wrapper (= commit_brush_release_multi with a 1-element slice) so cfs2_ac11 stays green."
+  - "commit_brush_clear(interaction, binding, &mut dispatcher) -> (next_state, Vec<(usize, Result<...>)>) — fires when interaction is Idle OR a zero-area Brushing (start ≈ current with both axes within < EPSILON). Returns Idle as next_state. This is the click-vs-drag boundary: a non-zero brush goes through commit_brush_release; a zero-area click goes through commit_brush_clear."
+  - "Click-vs-drag gate at chart_view::on_mouse_up: branch on whether the brush rect has non-zero area (use the same EPSILON as commit_brush_clear). Non-zero → commit_brush_release_multi. Zero/idle → commit_brush_clear. on_mouse_down still starts a brush immediately — the discrimination happens at release time, not start time, so the user feedback during drag is unchanged."
+  - "Escape-key clearing is OUT OF SCOPE for this slice. Click-outside-active-brush is the canonical clearing path; escape-key routing requires GPUI keyboard event wiring not in this card. Filed as a follow-up if the next sprint touches GPUI input."
+  - "Test naming discipline: every code AC ac-NN has exactly one test function cfs3_acNN_*. The audit traceability table assumes 1:1 mapping; do not bundle multiple tests under a single AC."
+  - "Rally pair coordination: card 0005 v3 (rpw3) ships first on rally/reactive-parameters-runtime. This card branches off rally/reactive-parameters-runtime; the gate's signature-fingerprint diff is taken against that base, not main. PR is stacked: rally/cross-filtered-selections-interactors → rally/reactive-parameters-runtime."
+
+ontology_schema:
+  name: "CrossFilteredSelectionsV3"
+  description: "Models the slice — clear_selection, multi-binding ChartView, BrushableBinding analysis view, BrushKind::Point forward-compat, and the rpw3 ↔ cfs2/cfs3 rally-seam regression."
+  fields:
+    - name: "clear_selection"
+      type: "Session method"
+      description: "fn clear_selection(&mut self, name: &str, contributor: ComponentPath) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>. Linear-scan find-and-remove on selection_state[name], then dispatch re-execution to every subscriber. Symmetric to propagate_selection."
+    - name: "BrushableBinding"
+      type: "struct in brightfield-spec"
+      description: "{ interactor_path: ComponentPath, parent_plot: ComponentPath, selection: String, kind: BrushKind (mirror), channels: ChannelColumns (mirror) }. Constructed by build_brushable_bindings during SpecAnalysis assembly."
+    - name: "From<&BrushableBinding> for BrushBinding"
+      type: "trait impl in brightfield-ui"
+      description: "Translates the spec-side mirror types to the UI-side BrushKind/ChannelColumns. Layering: brightfield-ui depends on brightfield-spec; the conversion lives at the consumer."
+    - name: "commit_brush_release_multi"
+      type: "function"
+      description: "Pure helper: (interaction, &[BrushBinding], &mut dispatcher) → (next_state, Vec<(String, Vec<...>)>). Iterates bindings, dispatches one propagate_selection per kind-compatible binding, returns aggregated results."
+    - name: "commit_brush_clear"
+      type: "function"
+      description: "Pure helper: (interaction, &BrushBinding, &mut dispatcher) → (next_state, Vec<...>). Fires on Idle or zero-area Brushing. Returns Idle next_state."
+    - name: "BrushKind::Point"
+      type: "enum variant"
+      description: "Forward-compat type for chart-side click-to-point. point_predicate(column, value) → Predicate::Expr. Not surfaced in build_brushable_bindings (no chart-side dispatch path)."
+    - name: "SelectionDispatcher::clear"
+      type: "trait method"
+      description: "fn clear(&mut self, name: &str, contributor: ComponentPath) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>. The Session impl forwards to clear_selection."
+
+evaluation_principles:
+  - principle: "Cross-coordinator symmetry — clear_selection mirrors propagate_selection's shape, persistence semantics mirror v2's cross-coordinator-isolation rule (param ↔ selection), and the rally seam regression test (ac-08) pins the actually-shipping behaviour rather than asserting the structural property in prose."
+    weight: 0.25
+  - principle: "Surface non-disturbance — v1's interactor_bindings shape, v2's BrushBinding fields and propagate_selection signature, and rpw3's ParamDispatcher / SliderBinding / commit_slider_release / topological_descendants surfaces are read-only or untouched. cfs/cfs2/rpw3 test sources are untouched. The seam fingerprint diff in ac-10 makes drift falsifiable."
+    weight: 0.25
+  - principle: "Test depth — 9 code ACs aligned 1:1 with cfs3_acNN_* test functions, plus one gate. Coverage spans clearing (×2), click-outside-clear pure helper, multi-binding dispatch, brushable_bindings build + conversion, persistence (×2 — one positive, one rally seam), and BrushKind::Point forward-compat."
+    weight: 0.25
+  - principle: "Rally pair coordination — the spec is explicit that BrushKind::Point lands as a type with no chart-side path, that escape-key clearing is deferred, and that the gate's fingerprint diff base is rally/reactive-parameters-runtime not main. Reviewers (and the next driver) can locate every deferred surface."
+    weight: 0.25
+
+exit_conditions:
+  - "All 9 code acceptance criteria green (cfs3_ac01..cfs3_ac09)."
+  - "Rally seam gate ac-10 green: cargo test passes, brightfield-render contains no gpui dependency, signature-fingerprint diff against rally/reactive-parameters-runtime produces no hits, rpw3/cfs/cfs2 test source diff is empty."
+  - "Existing rpw3_*, cfs_*, cfs2_*, rpw2_*, rpw_* tests pass without source modifications."
+  - "Card 0006 specs array contains this spec path."
+  - "PR opened against rally/cross-filtered-selections-interactors targeting rally/reactive-parameters-runtime, description references this spec and notes the stacked-PR base."
+
+metadata:
+  version: "1.0"
+  test_prefix: "cfs3"
+  timestamp: "2026-04-29T03:00:00Z"
+  ambiguity_score: 0.06
+  interview_ref: "orbit/specs/2026-04-29-cross-filtered-selections-interactors/interview.md"
+  decisions_ref: "orbit/specs/2026-04-29-cross-filtered-selections-interactors/decisions.md"
+  card_ref: "orbit/cards/0006-cross-filtered-selections-across-linked-views.yaml"
+  rally_ref: "orbit/specs/2026-04-29-live-reactivity-rally/rally.yaml"
+  paired_spec: "orbit/specs/2026-04-29-reactive-parameters-runtime/spec.yaml"

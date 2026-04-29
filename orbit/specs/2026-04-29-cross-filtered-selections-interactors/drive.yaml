@@ -1,0 +1,21 @@
+card: orbit/cards/0006-cross-filtered-selections-across-linked-views.yaml
+autonomy: full
+budget: 3
+iteration: 1
+current_spec: orbit/specs/2026-04-29-cross-filtered-selections-interactors/
+status: spec
+history:
+  - stage: spec
+    completed: 2026-04-29T03:00:00Z
+    artefact: orbit/specs/2026-04-29-cross-filtered-selections-interactors/spec.yaml
+    ambiguity_score: 0.06
+    ac_count: 10
+    test_prefix: cfs3
+    notes: 9 code ACs (cfs3_ac01..cfs3_ac09) + 1 rally seam gate (ac-10). 1:1 AC ↔ test alignment per rpw3 v1.1 precedent.
+started: 2026-04-29T03:00:00Z
+review_cycles:
+  review_spec: 0
+  review_pr: 0
+review_cycle_dates:
+  review_spec: null
+  review_pr: null
