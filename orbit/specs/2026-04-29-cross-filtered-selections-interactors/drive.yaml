@@ -1,0 +1,106 @@
+card: orbit/cards/0006-cross-filtered-selections-across-linked-views.yaml
+autonomy: full
+budget: 3
+iteration: 1
+current_spec: orbit/specs/2026-04-29-cross-filtered-selections-interactors/
+status: complete
+history:
+  - stage: spec
+    completed: 2026-04-29T03:00:00Z
+    artefact: orbit/specs/2026-04-29-cross-filtered-selections-interactors/spec.yaml
+    ambiguity_score: 0.06
+    ac_count: 10
+    test_prefix: cfs3
+    notes: 9 code ACs (cfs3_ac01..cfs3_ac09) + 1 rally seam gate (ac-10). 1:1 AC ↔ test alignment per rpw3 v1.1 precedent.
+  - stage: review-spec
+    completed: 2026-04-29T03:25:00Z
+    cycle: 1
+    verdict: REQUEST_CHANGES
+    artefact: orbit/specs/2026-04-29-cross-filtered-selections-interactors/review-spec-2026-04-29.md
+    findings:
+      high: 4
+      medium: 1
+      low: 4
+    notes: |
+      F1 ac-05 fixture path wrong (interactor[0] should be interactor[intervalXY]).
+      F2 ac-10 step-4 path glob unfalsifiable — cfs/cfs2/rpw3 tests are inline in source files.
+      F3 ac-10 fingerprint diff omits v1/v2 surfaces.
+      F4 constraint 7 contradicts ac-04 on on_mouse_up_with_dispatch signature.
+      F5 ac-04 description should name the cfs2_ac11 lifted-helper boundary.
+  - stage: spec
+    completed: 2026-04-29T03:30:00Z
+    artefact: orbit/specs/2026-04-29-cross-filtered-selections-interactors/spec.yaml
+    version: "1.1"
+    ambiguity_score: 0.045
+    ac_count: 10
+    test_prefix: cfs3
+    notes: revised per review cycle 1 — all 4 HIGH and the MEDIUM resolved; 4 LOW also addressed.
+  - stage: review-spec
+    completed: 2026-04-29T03:42:00Z
+    cycle: 2
+    verdict: REQUEST_CHANGES
+    artefact: orbit/specs/2026-04-29-cross-filtered-selections-interactors/review-spec-2026-04-29-cycle2.md
+    findings:
+      high: 2
+      medium: 0
+      low: 0
+    notes: |
+      N1 (HIGH): ac-10 step (4) baseline counts wrong — actual cfs_ = 12, cfs2_ = 16, rpw3_ = 16.
+      N2 (HIGH): ac-10 step (3) file path list missing chart_view.rs (BrushBinding) and brightfield-sql/src/emit.rs (emit_query, emit_query_with_passes). All cycle-1 findings (F1-F10) verified resolved.
+  - stage: spec
+    completed: 2026-04-29T03:45:00Z
+    artefact: orbit/specs/2026-04-29-cross-filtered-selections-interactors/spec.yaml
+    version: "1.2"
+    ambiguity_score: 0.04
+    ac_count: 10
+    test_prefix: cfs3
+    notes: revised per review cycle 2 — N1 and N2 resolved; baseline counts measured empirically against origin/rally/reactive-parameters-runtime commit 69ed0e4.
+  - stage: review-spec
+    completed: 2026-04-29T03:55:00Z
+    cycle: 3
+    verdict: APPROVE
+    artefact: orbit/specs/2026-04-29-cross-filtered-selections-interactors/review-spec-2026-04-29-cycle3.md
+    findings:
+      high: 0
+      medium: 0
+      low: 0
+    notes: APPROVE — N1 and N2 resolved (baselines empirically re-verified, file path list now covers BrushBinding and emit_query homes). No new findings on v1.2 revision diff. Cycle-1 F1–F10 spot-check confirms prior resolution stands.
+  - stage: implement
+    completed: 2026-04-29T04:30:00Z
+    artefact: de7acb3
+    notes: |
+      All 9 code ACs landed (cfs3_ac01..cfs3_ac09). Rally seam ac-10 green:
+      cargo test 286 passing across engine/spec/ui/render (13 suites);
+      brightfield-render free of gpui dep; signature-fingerprint diff vs
+      origin/rally/reactive-parameters-runtime produces zero non-hunk-header
+      hits; test counts cfs_=12 / cfs2_=16 / rpw3_=16 unchanged. Escape-key
+      follow-up memo filed at orbit/cards/memos/2026-04-29-escape-key-clearing.md.
+      Single commit de7acb3 covers all 4 source files + memo (1094 insertions,
+      33 deletions).
+  - stage: review-pr
+    completed: 2026-04-29T05:00:00Z
+    cycle: 1
+    verdict: APPROVE
+    artefact: orbit/specs/2026-04-29-cross-filtered-selections-interactors/review-pr-2026-04-29.md
+    findings:
+      high: 0
+      medium: 0
+      low: 1
+    notes: |
+      Cold-context forked agent verified all 9 code ACs (1:1 with cfs3_acNN_*
+      tests) and ac-10 rally seam gate (4/4 checks). Constraints honoured —
+      mirror-enum strategy keeps brightfield-spec → brightfield-ui dep arrow
+      one-way; cfs2_ac11 lifted-helper boundary preserved via single-binding
+      wrapper; path convention {path}/plot[i]/interactor[kind] applied.
+      Decision pack alignment confirmed (click-outside canonical, Point
+      type-only, release-time zero-area click-vs-drag). One LOW advisory
+      (non-blocking): cfs2_ac11 could additionally assert
+      dispatcher.clear_calls.is_empty() for tighter boundary discipline.
+started: 2026-04-29T03:00:00Z
+completed: 2026-04-29T05:00:00Z
+review_cycles:
+  review_spec: 3
+  review_pr: 1
+review_cycle_dates:
+  review_spec: 2026-04-29T03:55:00Z
+  review_pr: 2026-04-29T05:00:00Z

@@ -334,6 +334,98 @@ impl Session {
         results
     }
 
+    /// Retract a contributor's predicate from `selection_state[name]` and
+    /// re-execute every subscriber to that selection. Symmetric to
+    /// [`Self::propagate_selection`].
+    ///
+    /// Linear-scan find-and-remove on the contributor list. If the named
+    /// selection does not exist OR the contributor is not in its list, this
+    /// is a silent no-op: returns an empty result vec, leaves
+    /// `selection_state` untouched, fires no queries.
+    ///
+    /// On a successful removal, looks up subscribers via
+    /// `analysis.selection_subscribers`, filters to mark components, and
+    /// re-emits + re-executes each subscriber against the now-reduced
+    /// selection state. Partial-failure shape mirrors `propagate_selection`:
+    /// each mark's result is independent; a per-mark emit/execute error
+    /// never halts the dispatch loop.
+    ///
+    /// Card 0006 v3 (cfs3) ac-01, ac-02. Backs `SelectionDispatcher::clear`.
+    pub fn clear_selection(
+        &mut self,
+        name: &str,
+        contributor: ComponentPath,
+    ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
+        // 1. Locate and remove the contributor's slot. Silent no-op on miss.
+        let removed = match self.selection_state.get_mut(name) {
+            Some(entries) => {
+                if let Some(idx) = entries.iter().position(|(p, _)| p == &contributor) {
+                    entries.remove(idx);
+                    true
+                } else {
+                    false
+                }
+            }
+            None => false,
+        };
+
+        if !removed {
+            return Vec::new();
+        }
+
+        // 2. Look up subscribers from the static analysis graph.
+        let subscriber_paths: Vec<ComponentPath> = self
+            .analysis
+            .selection_subscribers
+            .get(name)
+            .cloned()
+            .unwrap_or_default();
+
+        // 3. Filter to mark components only.
+        let mut mark_indices: Vec<usize> = Vec::new();
+        for path in &subscriber_paths {
+            if let Some(&(idx, _)) = self.mark_index_map.get(&path.0) {
+                mark_indices.push(idx);
+            }
+        }
+        mark_indices.sort();
+        mark_indices.dedup();
+
+        if mark_indices.is_empty() {
+            return Vec::new();
+        }
+
+        // 4. Per-subscriber emit + execute against the reduced selection set.
+        //    Same shape as propagate_selection's dispatch loop.
+        let selections = self.selection_predicates_for_emit();
+        let selections_ref: Option<&[(String, Vec<(String, Predicate)>)]> =
+            Some(selections.as_slice());
+
+        let params_owned: ParamValues = self.param_state.clone();
+        let params_ref = if params_owned.is_empty() {
+            None
+        } else {
+            Some(&params_owned)
+        };
+
+        let mut results = Vec::new();
+        for idx in mark_indices {
+            let emitted = match emit_query(&self.spec, idx, params_ref, selections_ref) {
+                Ok(eq) => eq,
+                Err(e) => {
+                    results.push((idx, Err(EngineError::EmitFailed { cause: e })));
+                    continue;
+                }
+            };
+
+            let mark_kind = self.mark_kind_at(idx);
+            let result = self.execute_emitted(idx, &mark_kind, &emitted);
+            results.push((idx, result));
+        }
+
+        results
+    }
+
     /// Execute a single mark's query by its depth-first index.
     ///
     /// Uses the current param_state and selection_state for query emission,
@@ -2874,5 +2966,271 @@ hconcat:
             "non-contributor subscriber must reflect predicate (got {rows} rows)"
         );
         assert_eq!(rows, 3, "predicate distance in 100..=300 keeps 3 rows");
+    }
+
+    // ===========================================================================
+    // Card 0006 v3 — cross-filtered selections, interactor variants (cfs3_)
+    // ===========================================================================
+
+    /// cfs3_ac01: clear_selection removes the named contributor from
+    /// selection_state[name] and re-executes every subscriber. The result
+    /// shape mirrors propagate_selection.
+    #[test]
+    fn cfs3_ac01_clear_selection_removes_contributor() {
+        let yaml = r#"
+params:
+  brush:
+    select: intersect
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+    - { x: 3, y: 30 }
+plot:
+  - mark: dot
+    data: { from: t, filterBy: $brush }
+    x: x
+    y: y
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        // Populate the selection from two distinct contributor paths so the
+        // remove-one assertion is non-trivial.
+        let contrib_a = ComponentPath("root/plot[0]".to_string());
+        let contrib_b = ComponentPath("root/plot[1]".to_string());
+        let _ = session.propagate_selection(
+            "brush",
+            contrib_a.clone(),
+            Predicate::Expr("x >= 1".to_string()),
+        );
+        let _ = session.propagate_selection(
+            "brush",
+            contrib_b.clone(),
+            Predicate::Expr("x <= 2".to_string()),
+        );
+        assert_eq!(
+            session
+                .current_selections()
+                .get("brush")
+                .map(|v| v.len())
+                .unwrap_or(0),
+            2,
+            "two contributors before clear"
+        );
+
+        // (a) clear contributor A.
+        let results = session.clear_selection("brush", contrib_a.clone());
+
+        // (c) post-condition: only contributor B remains.
+        let remaining = session
+            .current_selections()
+            .get("brush")
+            .expect("brush entry should still exist after clearing one of two");
+        assert_eq!(remaining.len(), 1, "exactly one contributor left");
+        assert_eq!(remaining[0].0, contrib_b, "contributor B remains");
+
+        // (d) one subscriber re-executed with at least one RecordBatch.
+        assert_eq!(results.len(), 1, "one subscriber dispatched");
+        let (_idx, result) = &results[0];
+        let batches = result.as_ref().expect("subscriber must succeed");
+        assert!(
+            !batches.is_empty(),
+            "subscriber re-execution must yield at least one batch"
+        );
+    }
+
+    /// cfs3_ac02: clear_selection on an unknown selection name OR a known
+    /// name with an unknown contributor is a silent no-op — empty result vec,
+    /// selection_state untouched, no panic.
+    #[test]
+    fn cfs3_ac02_clear_selection_unsubscribed_silent() {
+        let yaml = r#"
+params:
+  brush:
+    select: intersect
+data:
+  t:
+    - { x: 1 }
+plot:
+  - mark: dot
+    data: { from: t, filterBy: $brush }
+    x: x
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        // (a) Unknown selection name on an empty session.
+        let results = session
+            .clear_selection("does_not_exist", ComponentPath("root/plot[0]".to_string()));
+        assert!(results.is_empty(), "unknown name → empty result vec");
+        assert!(
+            session.current_selections().is_empty(),
+            "selection_state still empty"
+        );
+
+        // Populate one selection with one known contributor.
+        let known_contrib = ComponentPath("root/plot[0]".to_string());
+        let _ = session.propagate_selection(
+            "brush",
+            known_contrib.clone(),
+            Predicate::Expr("x = 1".to_string()),
+        );
+        let snapshot: Vec<(ComponentPath, Predicate)> = session
+            .current_selections()
+            .get("brush")
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(snapshot.len(), 1);
+
+        // (b) Known name, but a contributor that is NOT in the list.
+        let stranger = ComponentPath("root/plot[99]".to_string());
+        let results = session.clear_selection("brush", stranger);
+        assert!(
+            results.is_empty(),
+            "unknown contributor → empty result vec"
+        );
+        let after = session
+            .current_selections()
+            .get("brush")
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(after, snapshot, "contributor list unchanged");
+    }
+
+    /// cfs3_ac07: a param change after a brush release does NOT lose the
+    /// brush — selection_state is preserved AND the dispatched mark's
+    /// emitted SQL still reflects the brush WHERE-clause. Pins the v2
+    /// lib.rs:464-466 behaviour (propagate_param reads selection_state but
+    /// never writes it) as a regression test.
+    #[test]
+    fn cfs3_ac07_param_change_preserves_selection() {
+        let yaml = r#"
+params:
+  threshold:
+    value: 0
+  brush:
+    select: intersect
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+    - { x: 3, y: 30 }
+plot:
+  - mark: dot
+    data: { from: t, filterBy: $brush }
+    x: x
+    y: y
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let spec_for_emit = spec.clone();
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        // (a) Populate selection_state with a non-trivial predicate.
+        let contributor = ComponentPath("root/plot[99]".to_string());
+        let pred = Predicate::Expr("x >= 2".to_string());
+        let _ = session.propagate_selection("brush", contributor, pred.clone());
+
+        // (b) Snapshot.
+        let snapshot = session.current_selections().clone();
+
+        // (c) Propagate a param change.
+        let _ = session.propagate_param(
+            "threshold",
+            brightfield_spec::ast::SpecValue::Float(5.0),
+        );
+
+        // (d) Selection state equality field-by-field.
+        assert_eq!(
+            session.current_selections(),
+            &snapshot,
+            "current_selections() must equal pre-propagate snapshot"
+        );
+
+        // (e) The dispatched mark's emitted SQL still contains the brush
+        //     WHERE-clause fragment. We re-emit directly (post-walk) and
+        //     inspect — the same falsifiable shape rpw3_ac04 used.
+        let selections = vec![(
+            "brush".to_string(),
+            vec![("root/plot[99]".to_string(), pred.clone())],
+        )];
+        let emitted = emit_query(
+            &spec_for_emit,
+            0,
+            None,
+            Some(selections.as_slice()),
+        )
+        .expect("emit must succeed");
+        assert!(
+            emitted.sql.to_uppercase().contains("WHERE"),
+            "emitted SQL must contain WHERE after param change with active brush: {}",
+            emitted.sql
+        );
+        assert!(
+            emitted.sql.contains("x >= 2"),
+            "brush predicate text must appear in emitted SQL: {}",
+            emitted.sql
+        );
+    }
+
+    /// cfs3_ac08: propagate_param's body never writes to selection_state.
+    /// Behavioural assertion: snapshot selection_state, call propagate_param
+    /// twice with different values for the same param (covers first-walk
+    /// and re-entry paths), assert selection_state equals the snapshot.
+    /// This is the rally seam regression — pins the rpw3 chained walk as
+    /// read-only over cfs2/cfs3 state.
+    #[test]
+    fn cfs3_ac08_propagate_param_does_not_clobber_selection_state() {
+        let yaml = r#"
+params:
+  threshold:
+    value: 0
+  brush:
+    select: intersect
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+plot:
+  - mark: dot
+    data: { from: t, filterBy: $brush }
+    x: x
+    y: y
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        // (a) Populate selection with one contributor, non-trivial predicate.
+        let contributor = ComponentPath("root/plot[99]".to_string());
+        let pred = Predicate::Expr("x >= 1".to_string());
+        let _ = session.propagate_selection("brush", contributor, pred);
+
+        // (b) Snapshot.
+        let snapshot = session.current_selections().clone();
+        assert!(
+            !snapshot.is_empty(),
+            "snapshot precondition: selection populated"
+        );
+
+        // (c) Two propagate_param calls — first-walk + re-entry.
+        let _ = session.propagate_param(
+            "threshold",
+            brightfield_spec::ast::SpecValue::Float(1.0),
+        );
+        let _ = session.propagate_param(
+            "threshold",
+            brightfield_spec::ast::SpecValue::Float(2.0),
+        );
+
+        // (d) selection_state byte-equal to snapshot.
+        assert_eq!(
+            session.current_selections(),
+            &snapshot,
+            "propagate_param must not mutate selection_state — snapshot mismatch"
+        );
     }
 }

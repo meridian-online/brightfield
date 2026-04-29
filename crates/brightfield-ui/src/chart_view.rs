@@ -12,7 +12,7 @@ use kurbo::Point;
 
 use brightfield_engine::error::EngineError;
 use brightfield_engine::RecordBatch;
-use brightfield_spec::analysis::ComponentPath;
+use brightfield_spec::analysis::{BrushableBinding, ComponentPath};
 
 use crate::brush::{brush_rect_to_predicate, BrushKind, ChannelColumns, SelectionDispatcher};
 use crate::chart_element::ChartElement;
@@ -118,22 +118,25 @@ impl ChartView {
     /// runtime selection coordinator (via the dispatcher), and return
     /// to idle.
     ///
-    /// `binding` carries the brushable plot's identity and channel
-    /// bindings — supplied by the caller because ChartView itself does
-    /// not know which selection it brushes into.
+    /// `bindings` is a slice — a single plot may drive multiple
+    /// selections (e.g. an intervalXY brush plus an intervalX brush
+    /// writing to a different selection). One `propagate_selection` is
+    /// dispatched per binding, with each binding's predicate computed
+    /// against its own kind. cfs3 ac-04.
     ///
-    /// Returns the dispatch results so the caller may surface
-    /// per-subscriber outcomes (logging, telemetry). Returns an empty
+    /// Returns aggregated per-binding dispatch results
+    /// `Vec<(selection_name, Vec<(mark_index, Result)>)>` so callers may
+    /// surface per-subscriber outcomes per selection. Returns an empty
     /// vec when there is no active brush.
     pub fn on_mouse_up_with_dispatch<D: SelectionDispatcher>(
         &mut self,
         _window_pos: Point,
         _element_origin: Point,
-        binding: &BrushBinding,
+        bindings: &[BrushBinding],
         dispatcher: &mut D,
         cx: &mut Context<Self>,
-    ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
-        let mut results = Vec::new();
+    ) -> Vec<(String, Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>)> {
+        let mut aggregated = Vec::new();
         self.state.update(cx, |state, cx| {
             if let InteractionState::Brushing { start, current } = state.interaction() {
                 let rect = kurbo::Rect::new(
@@ -142,18 +145,21 @@ impl ChartView {
                     start.x.max(current.x),
                     start.y.max(current.y),
                 );
-                let predicate =
-                    brush_rect_to_predicate(rect, binding.kind, &binding.channels);
-                results = dispatcher.dispatch(
-                    &binding.selection_name,
-                    binding.contributor.clone(),
-                    predicate,
-                );
+                for binding in bindings {
+                    let predicate =
+                        brush_rect_to_predicate(rect, binding.kind, &binding.channels);
+                    let results = dispatcher.dispatch(
+                        &binding.selection_name,
+                        binding.contributor.clone(),
+                        predicate,
+                    );
+                    aggregated.push((binding.selection_name.clone(), results));
+                }
                 state.set_interaction(InteractionState::Idle);
                 cx.notify();
             }
         });
-        results
+        aggregated
     }
 }
 
@@ -173,18 +179,29 @@ pub struct BrushBinding {
     pub channels: ChannelColumns,
 }
 
-/// Pure helper for cfs2_ac11: given an InteractionState (which may or
-/// may not be Brushing), a binding, and a dispatcher, produce the
-/// dispatch result vec and the next InteractionState. Lifted out of
-/// the GPUI context for testability — chart_view.on_mouse_up_with_dispatch
-/// shares the same logic but threads it through Entity<ChartState>.
-pub fn commit_brush_release<D: SelectionDispatcher>(
+/// Epsilon for the click-vs-drag boundary — a brush whose extent on both
+/// axes is less than `ZERO_AREA_EPSILON` pixels is treated as a click and
+/// routed through [`commit_brush_clear`] (a `clear` dispatch). Anything
+/// larger is a drag and goes through [`commit_brush_release`] (a
+/// `dispatch` with the rect-derived predicate).
+pub const ZERO_AREA_EPSILON: f64 = 0.5;
+
+/// Multi-binding form of [`commit_brush_release`]. Iterates the supplied
+/// bindings and dispatches one selection per binding — each binding's
+/// predicate is computed using its own kind (kind-compatibility filter).
+/// Returns the next `InteractionState` (always `Idle` after a release) plus
+/// per-binding aggregated dispatch results.
+///
+/// cfs3 ac-04. Single-binding consumers should call
+/// [`commit_brush_release`] (a 1-element-slice wrapper preserved for the
+/// cfs2_ac11 boundary).
+pub fn commit_brush_release_multi<D: SelectionDispatcher>(
     interaction: &InteractionState,
-    binding: &BrushBinding,
+    bindings: &[BrushBinding],
     dispatcher: &mut D,
 ) -> (
     InteractionState,
-    Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>,
+    Vec<(String, Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>)>,
 ) {
     if let InteractionState::Brushing { start, current } = interaction {
         let rect = kurbo::Rect::new(
@@ -193,15 +210,100 @@ pub fn commit_brush_release<D: SelectionDispatcher>(
             start.x.max(current.x),
             start.y.max(current.y),
         );
-        let predicate = brush_rect_to_predicate(rect, binding.kind, &binding.channels);
-        let results = dispatcher.dispatch(
-            &binding.selection_name,
-            binding.contributor.clone(),
-            predicate,
-        );
+        let mut aggregated = Vec::with_capacity(bindings.len());
+        for binding in bindings {
+            let predicate = brush_rect_to_predicate(rect, binding.kind, &binding.channels);
+            let results = dispatcher.dispatch(
+                &binding.selection_name,
+                binding.contributor.clone(),
+                predicate,
+            );
+            aggregated.push((binding.selection_name.clone(), results));
+        }
+        (InteractionState::Idle, aggregated)
+    } else {
+        (interaction.clone(), Vec::new())
+    }
+}
+
+/// Pure helper for cfs2_ac11: given an InteractionState (which may or
+/// may not be Brushing), a binding, and a dispatcher, produce the
+/// dispatch result vec and the next InteractionState. Lifted out of
+/// the GPUI context for testability — chart_view.on_mouse_up_with_dispatch
+/// shares the same logic but threads it through Entity<ChartState>.
+///
+/// **cfs3 wrapper:** preserved as a single-binding convenience over
+/// [`commit_brush_release_multi`] so the cfs2_ac11 surface stays green.
+pub fn commit_brush_release<D: SelectionDispatcher>(
+    interaction: &InteractionState,
+    binding: &BrushBinding,
+    dispatcher: &mut D,
+) -> (
+    InteractionState,
+    Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>,
+) {
+    let (next_state, mut aggregated) =
+        commit_brush_release_multi(interaction, std::slice::from_ref(binding), dispatcher);
+    let results = aggregated.pop().map(|(_, r)| r).unwrap_or_default();
+    (next_state, results)
+}
+
+/// Pure helper for the click-vs-drag boundary. When `interaction` is
+/// `Idle` OR a zero-area `Brushing` (start ≈ current within
+/// [`ZERO_AREA_EPSILON`] on both axes), dispatch a `clear` call on the
+/// supplied binding's selection and return `Idle` as the next state. A
+/// non-zero `Brushing` does NOT dispatch through this path — it goes
+/// through [`commit_brush_release`] (the drag-release path).
+///
+/// cfs3 ac-03.
+pub fn commit_brush_clear<D: SelectionDispatcher>(
+    interaction: &InteractionState,
+    binding: &BrushBinding,
+    dispatcher: &mut D,
+) -> (
+    InteractionState,
+    Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>,
+) {
+    let should_clear = match interaction {
+        InteractionState::Idle => true,
+        InteractionState::Brushing { start, current } => {
+            (start.x - current.x).abs() < ZERO_AREA_EPSILON
+                && (start.y - current.y).abs() < ZERO_AREA_EPSILON
+        }
+        _ => false,
+    };
+    if should_clear {
+        let results = dispatcher.clear(&binding.selection_name, binding.contributor.clone());
         (InteractionState::Idle, results)
     } else {
         (interaction.clone(), Vec::new())
+    }
+}
+
+/// Convert a spec-side [`BrushableBinding`] into a UI-side [`BrushBinding`]
+/// by translating the mirror enums (`BrushKind`, `ChannelColumns`). The
+/// conversion is faithful — every field copies through verbatim. cfs3 ac-06.
+impl From<&BrushableBinding> for BrushBinding {
+    fn from(b: &BrushableBinding) -> Self {
+        BrushBinding {
+            selection_name: b.selection.clone(),
+            contributor: b.parent_plot.clone(),
+            kind: brush_kind_from_spec(b.kind),
+            channels: ChannelColumns {
+                x: b.channels.x.clone(),
+                y: b.channels.y.clone(),
+            },
+        }
+    }
+}
+
+fn brush_kind_from_spec(kind: brightfield_spec::analysis::BrushKind) -> BrushKind {
+    use brightfield_spec::analysis::BrushKind as Spec;
+    match kind {
+        Spec::IntervalX => BrushKind::IntervalX,
+        Spec::IntervalY => BrushKind::IntervalY,
+        Spec::IntervalXY => BrushKind::IntervalXY,
+        Spec::Point => BrushKind::Point,
     }
 }
 
@@ -320,14 +422,19 @@ mod tests {
 
     // --- cfs2_ac11: brush release dispatches a propagate_selection call ---
 
-    /// Recording test double: captures every dispatch call in order.
+    /// Recording test double: captures every dispatch and clear call
+    /// in order so tests can assert call counts, ordering, and arguments.
     struct RecordingDispatcher {
         calls: Vec<(String, ComponentPath, Predicate)>,
+        clear_calls: Vec<(String, ComponentPath)>,
     }
 
     impl RecordingDispatcher {
         fn new() -> Self {
-            Self { calls: Vec::new() }
+            Self {
+                calls: Vec::new(),
+                clear_calls: Vec::new(),
+            }
         }
     }
 
@@ -341,6 +448,15 @@ mod tests {
             self.calls.push((name.to_string(), contributor, predicate));
             // Stub return: subscribers, if any, are mocked as zero —
             // this double's contract is "did dispatch get called?".
+            Vec::new()
+        }
+
+        fn clear(
+            &mut self,
+            name: &str,
+            contributor: ComponentPath,
+        ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
+            self.clear_calls.push((name.to_string(), contributor));
             Vec::new()
         }
     }
@@ -411,5 +527,181 @@ mod tests {
         assert!(dispatcher.calls.is_empty(), "no brush → no dispatch");
         assert!(results.is_empty());
         assert!(matches!(next_state, InteractionState::Idle));
+    }
+
+    // ---------------------------------------------------------------------
+    // cfs3 — clearing, multi-binding dispatch, BrushableBinding conversion
+    // ---------------------------------------------------------------------
+
+    /// cfs3_ac03: commit_brush_clear dispatches a `clear` call when the
+    /// interaction is Idle OR a zero-area Brushing (click). A non-zero
+    /// Brushing does NOT clear (that path is the drag-release, handled by
+    /// commit_brush_release). Returns Idle as the next state on a clear.
+    #[test]
+    fn cfs3_ac03_click_outside_active_brush_clears() {
+        let binding = BrushBinding {
+            selection_name: "brush".to_string(),
+            contributor: ComponentPath("root/plot[0]".to_string()),
+            kind: BrushKind::IntervalX,
+            channels: ChannelColumns::xy("speed", "delay"),
+        };
+
+        // (a) Idle → one clear call.
+        let mut dispatcher = RecordingDispatcher::new();
+        let (next_state, results) =
+            commit_brush_clear(&InteractionState::Idle, &binding, &mut dispatcher);
+        assert!(dispatcher.calls.is_empty(), "no dispatch on clear path");
+        assert_eq!(
+            dispatcher.clear_calls.len(),
+            1,
+            "Idle → exactly one clear call"
+        );
+        let (name, contributor) = &dispatcher.clear_calls[0];
+        assert_eq!(name, "brush");
+        assert_eq!(contributor, &ComponentPath("root/plot[0]".to_string()));
+        assert!(results.is_empty(), "test double's stub returns no results");
+        assert!(matches!(next_state, InteractionState::Idle));
+
+        // (c) Zero-area Brushing → still a clear (click below drag threshold).
+        let mut dispatcher = RecordingDispatcher::new();
+        let zero_area = {
+            let p = Point::new(100.0, 200.0);
+            let mut s = InteractionState::start_brush(p);
+            // Move within epsilon — still classified as zero-area.
+            s.update_brush(Point::new(p.x + 0.1, p.y - 0.1));
+            s
+        };
+        let (next_state, _) =
+            commit_brush_clear(&zero_area, &binding, &mut dispatcher);
+        assert_eq!(
+            dispatcher.clear_calls.len(),
+            1,
+            "zero-area Brushing → exactly one clear call"
+        );
+        assert!(matches!(next_state, InteractionState::Idle));
+
+        // (d) Non-zero Brushing → NO dispatch through this path.
+        //     (Drag releases go through commit_brush_release.)
+        let mut dispatcher = RecordingDispatcher::new();
+        let mut drag = InteractionState::start_brush(Point::new(20.0, 30.0));
+        drag.update_brush(Point::new(120.0, 230.0));
+        let (next_state, _) = commit_brush_clear(&drag, &binding, &mut dispatcher);
+        assert!(
+            dispatcher.calls.is_empty() && dispatcher.clear_calls.is_empty(),
+            "non-zero Brushing → neither dispatch nor clear via this path"
+        );
+        // State is unchanged on the no-op path.
+        assert!(matches!(next_state, InteractionState::Brushing { .. }));
+    }
+
+    /// cfs3_ac04: commit_brush_release_multi (the lifted multi-binding
+    /// helper) dispatches one propagate_selection per binding, with each
+    /// binding's predicate computed against its own kind. Verifies the
+    /// kind-compatibility filter — an IntervalX binding produces an x-only
+    /// predicate even when the rect has a non-zero y extent.
+    #[test]
+    fn cfs3_ac04_plot_drives_multiple_selections() {
+        // (a) Construct a Brushing state with a 100x200 rect (non-zero on
+        //     both axes).
+        let mut interaction = InteractionState::start_brush(Point::new(20.0, 30.0));
+        interaction.update_brush(Point::new(120.0, 230.0));
+
+        // Two bindings on the same plot writing to different selections.
+        let binding_xy = BrushBinding {
+            selection_name: "a".to_string(),
+            contributor: ComponentPath("root/plot[0]".to_string()),
+            kind: BrushKind::IntervalXY,
+            channels: ChannelColumns::xy("speed", "delay"),
+        };
+        let binding_x = BrushBinding {
+            selection_name: "b".to_string(),
+            contributor: ComponentPath("root/plot[0]".to_string()),
+            kind: BrushKind::IntervalX,
+            channels: ChannelColumns::xy("speed", "delay"),
+        };
+        let bindings = [binding_xy, binding_x];
+
+        // (b) Drive commit_brush_release_multi.
+        let mut dispatcher = RecordingDispatcher::new();
+        let (next_state, aggregated) =
+            commit_brush_release_multi(&interaction, &bindings, &mut dispatcher);
+
+        // (c) Two dispatch calls, one per binding.
+        assert_eq!(
+            dispatcher.calls.len(),
+            2,
+            "two bindings → two propagate_selection calls"
+        );
+        // (d) Each call's selection_name matches its binding.
+        let names: Vec<&str> = dispatcher
+            .calls
+            .iter()
+            .map(|(n, _, _)| n.as_str())
+            .collect();
+        assert!(names.contains(&"a"), "selection $a dispatched");
+        assert!(names.contains(&"b"), "selection $b dispatched");
+
+        // The IntervalX binding's predicate references only the x channel.
+        let (_, _, b_pred) = dispatcher
+            .calls
+            .iter()
+            .find(|(n, _, _)| n == "b")
+            .expect("selection b dispatched");
+        match b_pred {
+            Predicate::And(clauses) => {
+                assert_eq!(clauses.len(), 2, "IntervalX → two clauses (x-only)");
+                for c in clauses {
+                    let s = match c {
+                        Predicate::Expr(s) => s,
+                        _ => panic!("expected Expr clause"),
+                    };
+                    assert!(
+                        s.contains("speed"),
+                        "IntervalX predicate must reference x col only: {s}"
+                    );
+                    assert!(
+                        !s.contains("delay"),
+                        "IntervalX predicate must NOT reference y col: {s}"
+                    );
+                }
+            }
+            other => panic!("expected Predicate::And for IntervalX, got {other:?}"),
+        }
+
+        // Aggregated return shape mirrors the dispatcher record.
+        assert_eq!(aggregated.len(), 2);
+        assert!(matches!(next_state, InteractionState::Idle));
+    }
+
+    /// cfs3_ac06: BrushBinding::from(&BrushableBinding) preserves every
+    /// field — selection_name, contributor (= parent_plot), kind, and
+    /// channels — translating between the spec-side and ui-side mirror
+    /// enums verbatim.
+    #[test]
+    fn cfs3_ac06_brushable_binding_to_brush_binding() {
+        let spec_binding = BrushableBinding {
+            interactor_path: ComponentPath(
+                "root/plot[0]/interactor[intervalXY]".to_string(),
+            ),
+            parent_plot: ComponentPath("root/plot[0]".to_string()),
+            selection: "brush".to_string(),
+            kind: brightfield_spec::analysis::BrushKind::IntervalXY,
+            channels: brightfield_spec::analysis::ChannelColumns {
+                x: Some("speed".to_string()),
+                y: Some("delay".to_string()),
+            },
+        };
+
+        let ui_binding: BrushBinding = (&spec_binding).into();
+
+        assert_eq!(ui_binding.selection_name, "brush");
+        assert_eq!(
+            ui_binding.contributor,
+            ComponentPath("root/plot[0]".to_string()),
+            "contributor = parent_plot"
+        );
+        assert_eq!(ui_binding.kind, BrushKind::IntervalXY);
+        assert_eq!(ui_binding.channels.x.as_deref(), Some("speed"));
+        assert_eq!(ui_binding.channels.y.as_deref(), Some("delay"));
     }
 }
