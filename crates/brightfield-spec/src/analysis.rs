@@ -14,7 +14,7 @@ use crate::ast::{
 };
 use crate::error::ParseError;
 use crate::parse::ParseWarning;
-use crate::vocab::InputKind;
+use crate::vocab::{InputKind, InteractorKind};
 
 // ---------------------------------------------------------------------------
 // Type enums (ac-08)
@@ -932,6 +932,166 @@ fn collect_interactor_bindings(
 }
 
 // ---------------------------------------------------------------------------
+// Brushable interactor bindings (cfs3 ac-05, ac-09)
+// ---------------------------------------------------------------------------
+
+/// Mirror of `brightfield_ui::brush::BrushKind`. Lives in brightfield-spec so
+/// `SpecAnalysis` can name brushable interactor variants without a reverse
+/// dependency on brightfield-ui. Variant order matches the UI-side enum.
+///
+/// `Point` is forward-compat for input-widget-driven point selections (card
+/// 0005 v3); the spec-side analysis filters it out of `brushable_bindings`
+/// because no chart-side dispatch path exists for it in v3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrushKind {
+    /// X-only interval brush (intervalX).
+    IntervalX,
+    /// Y-only interval brush (intervalY).
+    IntervalY,
+    /// 2D interval brush (intervalXY).
+    IntervalXY,
+    /// Point selection (forward-compat — card 0005 v3 input-widget surface).
+    Point,
+}
+
+impl BrushKind {
+    /// Map an `InteractorKind` to a brushable variant. Returns `None` for
+    /// non-brushable kinds (Toggle, Highlight, Nearest*, Pan*, Region, etc.).
+    #[must_use]
+    pub fn from_interactor_kind(kind: InteractorKind) -> Option<Self> {
+        match kind {
+            InteractorKind::IntervalX => Some(Self::IntervalX),
+            InteractorKind::IntervalY => Some(Self::IntervalY),
+            InteractorKind::IntervalXY => Some(Self::IntervalXY),
+            _ => None,
+        }
+    }
+}
+
+/// Mirror of `brightfield_ui::brush::ChannelColumns`. The plot-resolved x/y
+/// SQL column expressions that a brush's coordinates compare against.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChannelColumns {
+    /// Column expression for the x channel (the first child mark's `x:` slot).
+    pub x: Option<String>,
+    /// Column expression for the y channel (the first child mark's `y:` slot).
+    pub y: Option<String>,
+}
+
+/// A brushable interactor binding — one entry per `(plot, brushable interactor)`
+/// pair, carrying enough metadata for the UI side to construct a `BrushBinding`
+/// (selection name, contributor path, kind, channel columns).
+///
+/// Built by [`build_brushable_bindings`] during [`analyse_spec`]. Filters out
+/// non-brushable interactor kinds (Toggle, Pan*, Highlight, Nearest*, Region).
+/// `interactor_bindings` (the v1 surface) is untouched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrushableBinding {
+    /// Component path of the interactor (e.g. `root/plot[0]/interactor[intervalXY]`).
+    pub interactor_path: ComponentPath,
+    /// Component path of the parent plot (e.g. `root/plot[0]`).
+    /// This is the contributor identity used for crossfilter self-exclusion.
+    pub parent_plot: ComponentPath,
+    /// Selection name the interactor writes to (`as: $brush` → `"brush"`).
+    pub selection: String,
+    /// Brush kind (mirror enum).
+    pub kind: BrushKind,
+    /// Resolved x/y channel columns from the parent plot's first child mark.
+    pub channels: ChannelColumns,
+}
+
+/// Walk the spec tree and build the list of brushable interactor bindings.
+/// Each `(Plot, brushable Interactor)` pair produces one entry; the parent
+/// plot's first child Mark's `x:` and `y:` options become the channels.
+pub fn build_brushable_bindings(spec: &Spec) -> Vec<BrushableBinding> {
+    let mut bindings = Vec::new();
+    if let Some(root) = &spec.root {
+        collect_brushable_bindings(root, "root", &mut bindings);
+    }
+    bindings
+}
+
+fn collect_brushable_bindings(
+    component: &Component,
+    path: &str,
+    bindings: &mut Vec<BrushableBinding>,
+) {
+    match component {
+        Component::Plot(p) => {
+            // Resolve channels once per plot from the first child Mark.
+            // Channels are shared across all brushable interactors in this
+            // plot — they describe the plot's data axes, not the interactor's.
+            let channels = first_mark_channels(&p.items);
+            // Mirror `collect_interactor_bindings`'s convention: each item
+            // position contributes `/plot[i]` to the path, then the matched
+            // Interactor branch appends `/interactor[kind]`. The synthetic
+            // `plot[i]` segment is the parent-plot identity used elsewhere
+            // for crossfilter self-exclusion.
+            for (i, item) in p.items.iter().enumerate() {
+                let item_path = format!("{path}/plot[{i}]");
+                match item {
+                    Component::Interactor(intc) => {
+                        let Some(kind) = BrushKind::from_interactor_kind(intc.kind) else {
+                            continue;
+                        };
+                        let Some(ValueOrParamRef::Param(pr)) = intc.options.get("as") else {
+                            continue;
+                        };
+                        bindings.push(BrushableBinding {
+                            interactor_path: ComponentPath(format!(
+                                "{item_path}/interactor[{}]",
+                                intc.kind.wire_name()
+                            )),
+                            parent_plot: ComponentPath(item_path.clone()),
+                            selection: pr.0.clone(),
+                            kind,
+                            channels: channels.clone(),
+                        });
+                    }
+                    Component::Plot(_) | Component::HConcat(_) | Component::VConcat(_) => {
+                        collect_brushable_bindings(item, &item_path, bindings);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Component::HConcat(c) => {
+            for (i, item) in c.items.iter().enumerate() {
+                collect_brushable_bindings(item, &format!("{path}/hconcat[{i}]"), bindings);
+            }
+        }
+        Component::VConcat(c) => {
+            for (i, item) in c.items.iter().enumerate() {
+                collect_brushable_bindings(item, &format!("{path}/vconcat[{i}]"), bindings);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Inspect the first `Mark` child of a plot's items list and pull its `x:`
+/// and `y:` channel options. Skips non-mark items (interactors, legends).
+/// Returns empty `ChannelColumns` if no mark or no string-valued channels.
+fn first_mark_channels(items: &[Component]) -> ChannelColumns {
+    for item in items {
+        if let Component::Mark(m) = item {
+            return ChannelColumns {
+                x: option_string(m, "x"),
+                y: option_string(m, "y"),
+            };
+        }
+    }
+    ChannelColumns::default()
+}
+
+fn option_string(mark: &Mark, key: &str) -> Option<String> {
+    match mark.options.get(key)? {
+        ValueOrParamRef::Value(SpecValue::String(s)) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SpecAnalysis (ac-09, extended with cfs fields)
 // ---------------------------------------------------------------------------
 
@@ -948,6 +1108,10 @@ pub struct SpecAnalysis {
     pub selection_subscribers: SelectionSubscriberGraph,
     /// Interactor-to-selection write bindings.
     pub interactor_bindings: Vec<InteractorBinding>,
+    /// Brushable interactor bindings — derived view filtering
+    /// `interactor_bindings` to brush-compatible kinds and pairing each with
+    /// resolved channel columns. Card 0006 v3 (cfs3) ac-05.
+    pub brushable_bindings: Vec<BrushableBinding>,
     /// Diagnostics discovered during analysis.
     pub warnings: Vec<ParseWarning>,
 }
@@ -987,12 +1151,17 @@ pub fn analyse_spec(spec: &Spec) -> Result<SpecAnalysis, ParseError> {
     // Interactor bindings (cfs ac-08).
     let interactor_bindings = build_interactor_bindings(spec);
 
+    // Brushable bindings (cfs3 ac-05): derived from interactor_bindings,
+    // filtered to brush-compatible kinds, paired with parent plot channels.
+    let brushable_bindings = build_brushable_bindings(spec);
+
     Ok(SpecAnalysis {
         subscriber_graph,
         dependency_edges,
         topological_order,
         selection_subscribers,
         interactor_bindings,
+        brushable_bindings,
         warnings,
     })
 }
@@ -1021,6 +1190,7 @@ mod tests {
             topological_order: Vec::new(),
             selection_subscribers: SelectionSubscriberGraph::new(),
             interactor_bindings: Vec::new(),
+            brushable_bindings: Vec::new(),
             warnings: Vec::new(),
         }
     }
@@ -1758,5 +1928,77 @@ plot:
         let serialised = serde_yaml::to_string(&a.spec).expect("serialise");
         let b = parse_spec(&serialised, Format::Yaml).expect("second parse");
         assert_eq!(a.spec, b.spec, "round-trip should produce equal Specs");
+    }
+
+    // -----------------------------------------------------------------------
+    // cfs3 — brushable_bindings derived view (card 0006 v3)
+    // -----------------------------------------------------------------------
+
+    /// cfs3_ac05: build_brushable_bindings filters interactor_bindings to
+    /// brush-compatible kinds (IntervalX/Y/XY) and pairs each with the
+    /// parent plot's resolved channel columns. Non-brushable interactors
+    /// (panZoom etc.) are excluded.
+    #[test]
+    fn cfs3_ac05_brushable_bindings_built() {
+        let yaml = r#"
+params:
+  brush: { select: crossfilter }
+plot:
+  - select: intervalXY
+    as: $brush
+  - select: panZoom
+  - mark: dot
+    data: { from: flights, filterBy: $brush }
+    x: speed
+    y: delay
+"#;
+        let out = parse_spec(yaml, Format::Yaml).expect("parses");
+        let analysis = analyse_spec(&out.spec).expect("analysis succeeds");
+
+        assert_eq!(
+            analysis.brushable_bindings.len(),
+            1,
+            "panZoom is filtered out — exactly one brushable binding remains"
+        );
+        let bb = &analysis.brushable_bindings[0];
+        assert_eq!(
+            bb.interactor_path,
+            ComponentPath("root/plot[0]/interactor[intervalXY]".to_string()),
+            "path uses kind.wire_name() per analysis convention"
+        );
+        assert_eq!(
+            bb.parent_plot,
+            ComponentPath("root/plot[0]".to_string()),
+            "parent plot is the contributor identity"
+        );
+        assert_eq!(bb.selection, "brush");
+        assert_eq!(bb.kind, BrushKind::IntervalXY);
+        assert_eq!(bb.channels.x.as_deref(), Some("speed"));
+        assert_eq!(bb.channels.y.as_deref(), Some("delay"));
+    }
+
+    /// cfs3_ac09 (sub-clause c — spec-side property): a plot containing only
+    /// non-brushable interactors (panZoom) produces zero brushable bindings.
+    /// Asserts the property "non-brushable kinds excluded from
+    /// brushable_bindings" without coupling to the UI-side BrushKind::Point
+    /// naming.
+    #[test]
+    fn cfs3_ac09_non_brushable_kinds_excluded() {
+        let yaml = r#"
+params: {}
+plot:
+  - select: panZoom
+  - mark: dot
+    data: { from: flights }
+    x: speed
+    y: delay
+"#;
+        let out = parse_spec(yaml, Format::Yaml).expect("parses");
+        let analysis = analyse_spec(&out.spec).expect("analysis succeeds");
+        assert!(
+            analysis.brushable_bindings.is_empty(),
+            "panZoom-only plot must yield no brushable bindings: {:?}",
+            analysis.brushable_bindings
+        );
     }
 }

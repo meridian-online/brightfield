@@ -25,6 +25,11 @@ pub enum BrushKind {
     IntervalY,
     /// 2D interval brush (intervalXY).
     IntervalXY,
+    /// Point selection — a single (column, value) equality predicate
+    /// produced by chart-side click-to-point or input-widget-driven
+    /// selections (card 0005 v3 surface). v3 lands the variant + adapter
+    /// only; no chart_view dispatch path is wired (cfs3 ac-09 / decision 2).
+    Point,
 }
 
 /// Channel column names bound by the brushing plot — i.e. the SQL
@@ -111,7 +116,23 @@ pub fn brush_rect_to_predicate(
             }
             _ => Predicate::True,
         },
+        // Point selections are not produced from a rect — callers use
+        // [`point_predicate`] directly. The rect-to-predicate path returns
+        // a degenerate `True` for completeness (cfs3 ac-09).
+        BrushKind::Point => Predicate::True,
     }
+}
+
+/// Convert a (column, value) pair into a `Predicate::Expr` of shape
+/// `column = value`, where `value` is treated as an **already-formatted SQL
+/// literal** — the helper does not quote it. Callers pass `'Athletics'`
+/// (with quotes) for a string match or `42` (no quotes) for a number.
+///
+/// This is the v3 forward-compat adapter for input-widget-driven point
+/// selections (card 0005 v3); chart-side click-to-point dispatch is
+/// deferred (cfs3 decision 2 / ac-09).
+pub fn point_predicate(column: &str, value: &str) -> Predicate {
+    Predicate::Expr(format!("{column} = {value}"))
 }
 
 /// Trait abstracting the selection-dispatch surface ChartView calls
@@ -126,6 +147,17 @@ pub trait SelectionDispatcher {
         contributor: ComponentPath,
         predicate: Predicate,
     ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>;
+
+    /// Retract a contributor's predicate from the named selection — the
+    /// click-outside-active-brush path. Mirrors
+    /// `Session::clear_selection`'s shape: returns one
+    /// `(mark_index, Result)` per subscriber that re-executes against the
+    /// reduced selection state. Card 0006 v3 (cfs3) ac-01, ac-03.
+    fn clear(
+        &mut self,
+        name: &str,
+        contributor: ComponentPath,
+    ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>;
 }
 
 impl SelectionDispatcher for brightfield_engine::Session {
@@ -136,6 +168,14 @@ impl SelectionDispatcher for brightfield_engine::Session {
         predicate: Predicate,
     ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
         self.propagate_selection(name, contributor, predicate)
+    }
+
+    fn clear(
+        &mut self,
+        name: &str,
+        contributor: ComponentPath,
+    ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
+        self.clear_selection(name, contributor)
     }
 }
 
@@ -240,5 +280,52 @@ mod tests {
         // intervalX needs x channel — missing → True.
         let pred = brush_rect_to_predicate(rect, BrushKind::IntervalX, &channels);
         assert_eq!(pred, Predicate::True);
+    }
+
+    // ---------------------------------------------------------------------
+    // cfs3 — BrushKind::Point + point_predicate (card 0006 v3)
+    // ---------------------------------------------------------------------
+
+    /// cfs3_ac09: BrushKind::Point is a constructible enum variant distinct
+    /// from the interval variants, and `point_predicate(column, value)`
+    /// returns a `Predicate::Expr` containing the column and the **already-
+    /// formatted SQL literal** value (no quoting performed by the helper).
+    /// The "non-brushable kinds excluded" sub-clause is asserted spec-side
+    /// in `cfs3_ac09_non_brushable_kinds_excluded` (analysis.rs).
+    #[test]
+    fn cfs3_ac09_brush_kind_point_constructs() {
+        // (a) Sealed-enum coverage: Point is distinct from each interval.
+        let p = BrushKind::Point;
+        assert_ne!(p, BrushKind::IntervalX);
+        assert_ne!(p, BrushKind::IntervalY);
+        assert_ne!(p, BrushKind::IntervalXY);
+
+        // (b) point_predicate preserves the caller's quoting verbatim.
+        // String literal — caller supplies the surrounding quotes.
+        let pred_str = point_predicate("category", "'Athletics'");
+        match &pred_str {
+            Predicate::Expr(s) => {
+                assert!(s.contains("category"), "column name must appear: {s}");
+                assert!(
+                    s.contains("'Athletics'"),
+                    "literal value preserved verbatim with quotes: {s}"
+                );
+            }
+            other => panic!("expected Predicate::Expr, got {other:?}"),
+        }
+
+        // Numeric literal — caller supplies no quotes.
+        let pred_num = point_predicate("count", "42");
+        match &pred_num {
+            Predicate::Expr(s) => {
+                assert!(s.contains("count"), "column name must appear: {s}");
+                assert!(s.contains("42"), "literal value preserved verbatim: {s}");
+                assert!(
+                    !s.contains("'42'"),
+                    "helper must NOT add quotes to numeric literal: {s}"
+                );
+            }
+            other => panic!("expected Predicate::Expr, got {other:?}"),
+        }
     }
 }
