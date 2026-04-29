@@ -1,0 +1,20 @@
+rally: "live reactivity"
+autonomy: guided
+phase: approved
+started: 2026-04-29T00:00:00Z
+completed: null
+cards:
+  - path: orbit/cards/0005-reactive-parameters-with-input-widgets.yaml
+    status: proposed
+    spec_dir: orbit/specs/2026-04-29-reactive-parameters-runtime/
+    branch: rally/reactive-parameters-runtime
+    worktree: null
+    parked_constraint: null
+  - path: orbit/cards/0006-cross-filtered-selections-across-linked-views.yaml
+    status: proposed
+    spec_dir: orbit/specs/2026-04-29-cross-filtered-selections-interactors/
+    branch: rally/cross-filtered-selections-interactors
+    worktree: null
+    parked_constraint: null
+implementation_order: null
+order_rationale: null
