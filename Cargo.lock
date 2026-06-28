@@ -772,7 +772,6 @@ dependencies = [
  "gpui",
  "gpui_macos",
  "image",
- "tracing",
  "vello",
 ]
 
@@ -809,7 +808,6 @@ dependencies = [
  "kurbo",
  "peniko 0.3.2",
  "skrifa",
- "tracing",
  "vello",
 ]
 

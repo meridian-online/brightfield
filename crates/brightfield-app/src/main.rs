@@ -23,6 +23,36 @@ use brightfield_sql::collect_marks;
 
 use brightfield_render::ScaleSet;
 
+/// Concatenate the record batches from one mark's query into a single batch.
+///
+/// DuckDB streams results one batch per internal vector (~2048 rows), so a
+/// query returning more than one chunk arrives as several batches. Rendering
+/// only the first would silently drop the rest. Returns `None` for an empty
+/// result. On the rare concat failure, falls back to the first batch (with a
+/// warning) rather than dropping the mark entirely.
+fn concat_result_batches(
+    batches: Vec<arrow::record_batch::RecordBatch>,
+) -> Option<arrow::record_batch::RecordBatch> {
+    match batches.len() {
+        0 => None,
+        1 => batches.into_iter().next(),
+        _ => {
+            let schema = batches[0].schema();
+            match arrow::compute::concat_batches(&schema, &batches) {
+                Ok(batch) => Some(batch),
+                Err(e) => {
+                    eprintln!(
+                        "warning: could not concatenate {} result batches ({e}); \
+                         rendering the first chunk only",
+                        batches.len()
+                    );
+                    batches.into_iter().next()
+                }
+            }
+        }
+    }
+}
+
 /// Run the spec-to-scene pipeline, returning the scene and entry count.
 fn run_pipeline(
     spec_path: &str,
@@ -73,7 +103,11 @@ fn run_pipeline(
     for (i, result) in results.into_iter().enumerate() {
         match result {
             Ok(batches) => {
-                if let Some(batch) = batches.into_iter().next() {
+                // DuckDB streams results one batch per ~2048-row vector, so a
+                // query wider than a single chunk arrives as several batches.
+                // Concatenate them; keeping only the first silently truncates
+                // the result (a large scatter would render only its first chunk).
+                if let Some(batch) = concat_result_batches(batches) {
                     let mark = marks[i];
                     let cm = ChannelMap::from_mark(mark);
                     chart_entries.push((batch, cm, mark.kind));
@@ -97,7 +131,7 @@ fn run_pipeline(
 
     // Build the default renderer registry once and dispatch per-mark via
     // find_renderer. Marks whose kind has no registered renderer are skipped
-    // with a tracing event (no silent dot fallback).
+    // with a warning (no silent dot fallback).
     let registry = default_renderers();
     let chart_data: Vec<ChartData<'_>> = chart_entries
         .iter()
@@ -105,10 +139,7 @@ fn run_pipeline(
             let renderer = match find_renderer(&registry, *kind) {
                 Some(r) => r,
                 None => {
-                    tracing::warn!(
-                        mark = ?kind,
-                        "no renderer registered for mark kind — skipping"
-                    );
+                    eprintln!("warning: no renderer for mark kind {kind:?} — skipping");
                     return None;
                 }
             };
@@ -221,6 +252,32 @@ mod tests {
     use brightfield_render::scene::{build_multi_mark_scene, ChartData};
     use brightfield_spec::analysis::analyse_spec;
     use brightfield_spec::{parse_spec, Format};
+
+    #[test]
+    fn concat_result_batches_combines_chunks_not_truncates() {
+        use arrow::array::Int32Array;
+        use arrow::datatypes::{DataType, Field, Schema};
+        use arrow::record_batch::RecordBatch;
+        use std::sync::Arc;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));
+        let chunk1 =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(vec![1, 2]))])
+                .unwrap();
+        let chunk2 =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![3, 4, 5]))]).unwrap();
+
+        // Empty result -> None (nothing to render).
+        assert!(super::concat_result_batches(vec![]).is_none());
+
+        // Single chunk -> passed through unchanged.
+        let single = super::concat_result_batches(vec![chunk1.clone()]).unwrap();
+        assert_eq!(single.num_rows(), 2);
+
+        // Multiple chunks -> concatenated (2 + 3 = 5), NOT truncated to the first.
+        let combined = super::concat_result_batches(vec![chunk1, chunk2]).unwrap();
+        assert_eq!(combined.num_rows(), 5, "all chunks must be retained, not just the first");
+    }
 
     #[test]
     fn msv_ac05_graceful_failure_skips_invalid_mark() {

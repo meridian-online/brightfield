@@ -1,0 +1,37 @@
+meta:
+  title: Scatter — Brightfield example
+  description: |
+    A self-contained scatter plot over inline data — no external files needed.
+
+      cargo run -p brightfield-app -- examples/scatter.yaml
+
+    On macOS this opens a native window. Anywhere else (or for a quick check),
+    render to an image instead:
+
+      BRIGHTFIELD_DUMP_PNG=scatter.png cargo run -p brightfield-app -- examples/scatter.yaml
+data:
+  points:
+    - { weight: 52, height: 158, group: A }
+    - { weight: 55, height: 161, group: A }
+    - { weight: 58, height: 164, group: A }
+    - { weight: 61, height: 166, group: A }
+    - { weight: 64, height: 169, group: A }
+    - { weight: 67, height: 171, group: B }
+    - { weight: 70, height: 173, group: B }
+    - { weight: 72, height: 174, group: B }
+    - { weight: 75, height: 177, group: B }
+    - { weight: 78, height: 179, group: B }
+    - { weight: 81, height: 180, group: B }
+    - { weight: 84, height: 182, group: C }
+    - { weight: 88, height: 184, group: C }
+    - { weight: 91, height: 187, group: C }
+    - { weight: 95, height: 188, group: C }
+    - { weight: 99, height: 191, group: C }
+plot:
+  - mark: dot
+    data: { from: points }
+    x: weight
+    y: height
+    fill: group
+width: 640
+height: 480

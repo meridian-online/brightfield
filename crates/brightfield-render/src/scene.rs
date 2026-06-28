@@ -2,6 +2,8 @@
 //! into a single vello::Scene.
 
 use arrow::record_batch::RecordBatch;
+use kurbo::{Affine, Rect};
+use peniko::{Color, Fill};
 use vello::Scene;
 
 use crate::axis::{compute_ticks, render_x_axis, render_y_axis};
@@ -11,6 +13,19 @@ use crate::layout::ChartLayout;
 use crate::legend::render_colour_legend;
 use crate::mark::{HighlightState, MarkRenderer};
 use crate::scale::{infer_scales, infer_scales_multi, Scale, ScaleSet, ViewExtent};
+
+/// Opaque white chart background. Drawn first so grid, marks, axes and legend
+/// composite on top. Without it the scene renders onto transparency, which a
+/// PNG export shows as a black/checkerboard backdrop and which makes a working
+/// chart look broken.
+const BACKGROUND_COLOUR: Color = Color::new([1.0, 1.0, 1.0, 1.0]);
+
+/// Fill the full chart area with [`BACKGROUND_COLOUR`]. Must be the first
+/// geometry added to the scene so everything else draws on top.
+fn render_background(scene: &mut Scene, layout: &ChartLayout) {
+    let rect = Rect::new(0.0, 0.0, layout.width, layout.height);
+    scene.fill(Fill::NonZero, Affine::IDENTITY, BACKGROUND_COLOUR, None, &rect);
+}
 
 /// Input data for building a chart scene.
 pub struct ChartData<'a> {
@@ -66,6 +81,7 @@ fn override_scale_domain(scale: &Scale, new_min: f64, new_max: f64) -> Scale {
 
 pub fn build_chart_scene(data: &ChartData<'_>) -> (Scene, ScaleSet) {
     let mut scene = Scene::new();
+    render_background(&mut scene, &data.layout);
 
     let mut scales = infer_scales(
         data.batch,
@@ -134,6 +150,7 @@ pub fn build_multi_mark_scene(entries: &[&ChartData<'_>]) -> (Scene, ScaleSet) {
 
     let layout = &entries[0].layout;
     let mut scene = Scene::new();
+    render_background(&mut scene, layout);
 
     // Collect (batch, channel_map) pairs for multi-scale inference.
     let pairs: Vec<(&RecordBatch, &ChannelMap)> = entries
