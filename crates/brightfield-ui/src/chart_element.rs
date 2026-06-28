@@ -1,64 +1,46 @@
-//! ChartElement — stateless GPUI Element shell for Vello chart rendering.
+//! ChartElement — GPUI Element that paints the chart and routes mouse input.
 //!
-//! ChartElement is a lightweight rendering shell that borrows scene and
-//! renderer from ChartState for one paint cycle. It owns no mutable state.
+//! ChartElement is created fresh by `ChartView::render()` each frame. It holds
+//! the `Entity<ChartState>` and, on paint:
+//!   1. composites the interaction overlay (brush rect / hover marker) onto a
+//!      clone of the current scene,
+//!   2. rasterises that scene with the shared Vello renderer and paints it, and
+//!   3. registers window mouse listeners that drive the chart's interaction
+//!      state (brush / hover). GPUI clears per-frame listeners each frame, so
+//!      they are re-registered every paint; a state change calls
+//!      `window.refresh()` to repaint with the updated overlay.
 //!
 //! Lifecycle:
-//! - `request_layout()` — returns a fixed-size layout matching ChartState dimensions
+//! - `request_layout()` — fixed-size layout from ChartState dimensions
 //! - `prepaint()` — registers a hitbox covering the element bounds
-//! - `paint()` — renders the Vello scene to pixels and paints as a GPUI image
+//! - `paint()` — composite + rasterise + paint + wire mouse events
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use gpui::{
-    App, Bounds, Corners, Element, ElementId, GlobalElementId, HitboxBehavior,
-    InspectorElementId, IntoElement, LayoutId, Pixels, RenderImage, Size, Style, Window, px,
+    App, Bounds, Corners, Element, ElementId, Entity, GlobalElementId, HitboxBehavior,
+    InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, RenderImage, Size, Style, Window, px,
 };
 use image::RgbaImage;
+use kurbo::Point;
 use smallvec::SmallVec;
-use vello::Scene;
 
-use crate::vello_renderer::VelloRenderer;
+use crate::chart_state::ChartState;
 
-/// Stateless chart element for one GPUI paint cycle.
+/// GPUI element that paints a chart from its `ChartState` and routes mouse input.
 ///
-/// Created by `ChartView::render()` each frame. Borrows the scene and
-/// renderer from ChartState — owns no mutable chart state itself.
+/// Created by `ChartView::render()` each frame. Owns no chart state of its own —
+/// it reads and updates the shared `Entity<ChartState>`.
 pub struct ChartElement {
-    /// The Vello scene to render this frame.
-    scene: Scene,
-    /// Shared VelloRenderer for GPU rendering.
-    renderer: Arc<Mutex<VelloRenderer>>,
-    /// Chart width in pixels.
-    width: u32,
-    /// Chart height in pixels.
-    height: u32,
+    /// The reactive chart state entity.
+    state: Entity<ChartState>,
 }
 
 impl ChartElement {
-    /// Create a new chart element for one paint cycle.
-    pub fn new(scene: Scene, renderer: Arc<Mutex<VelloRenderer>>, width: u32, height: u32) -> Self {
-        Self {
-            scene,
-            renderer,
-            width,
-            height,
-        }
-    }
-
-    /// Access the scene (for testing).
-    pub fn scene(&self) -> &Scene {
-        &self.scene
-    }
-
-    /// Chart width.
-    pub fn width(&self) -> u32 {
-        self.width
-    }
-
-    /// Chart height.
-    pub fn height(&self) -> u32 {
-        self.height
+    /// Create a chart element bound to the given state entity.
+    pub fn new(state: Entity<ChartState>) -> Self {
+        Self { state }
     }
 }
 
@@ -89,13 +71,17 @@ impl Element for ChartElement {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
+        let (width, height) = {
+            let state = self.state.read(cx);
+            (state.width(), state.height())
+        };
         let mut style = Style::default();
         style.size = Size {
             width: gpui::Length::Definite(gpui::DefiniteLength::Absolute(
-                gpui::AbsoluteLength::Pixels(px(self.width as f32)),
+                gpui::AbsoluteLength::Pixels(px(width as f32)),
             )),
             height: gpui::Length::Definite(gpui::DefiniteLength::Absolute(
-                gpui::AbsoluteLength::Pixels(px(self.height as f32)),
+                gpui::AbsoluteLength::Pixels(px(height as f32)),
             )),
         };
         let layout_id = window.request_layout(style, [], cx);
@@ -121,20 +107,87 @@ impl Element for ChartElement {
         _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
-        _prepaint: &mut Self::PrepaintState,
+        prepaint: &mut Self::PrepaintState,
         window: &mut Window,
-        _cx: &mut App,
+        cx: &mut App,
     ) {
-        if self.width == 0 || self.height == 0 {
+        // Register window mouse listeners FIRST, so input survives even a
+        // transient zero-size frame (the raster below may early-return, but the
+        // listeners only need bounds.origin + the hitbox). The element origin
+        // maps window-space positions to chart-local coordinates; the hitbox
+        // restricts presses to this element. GPUI clears per-frame listeners, so
+        // they are re-registered every paint, and window.refresh() is the
+        // repaint trigger when the interaction state changes.
+        let element_origin = Point::new(bounds.origin.x.to_f64(), bounds.origin.y.to_f64());
+
+        // Mouse down — begin a brush if the press is over the chart.
+        window.on_mouse_event({
+            let state = self.state.clone();
+            let hitbox = prepaint.clone();
+            move |event: &MouseDownEvent, phase, window, cx| {
+                if phase.bubble()
+                    && event.button == MouseButton::Left
+                    && hitbox.is_hovered(window)
+                {
+                    let pos = Point::new(event.position.x.to_f64(), event.position.y.to_f64());
+                    let changed = state.update(cx, |s, _| s.pointer_down(pos, element_origin));
+                    if changed {
+                        window.refresh();
+                    }
+                }
+            }
+        });
+
+        // Mouse move — extend the brush while the button is held, or update hover.
+        window.on_mouse_event({
+            let state = self.state.clone();
+            move |event: &MouseMoveEvent, phase, window, cx| {
+                if phase.bubble() {
+                    let pos = Point::new(event.position.x.to_f64(), event.position.y.to_f64());
+                    let held = event.pressed_button == Some(MouseButton::Left);
+                    let changed = state.update(cx, |s, _| s.pointer_move(pos, element_origin, held));
+                    if changed {
+                        window.refresh();
+                    }
+                }
+            }
+        });
+
+        // Mouse up — end an active brush.
+        window.on_mouse_event({
+            let state = self.state.clone();
+            move |event: &MouseUpEvent, phase, window, cx| {
+                if phase.bubble() && event.button == MouseButton::Left {
+                    let changed = state.update(cx, |s, _| s.pointer_up());
+                    if changed {
+                        window.refresh();
+                    }
+                }
+            }
+        });
+
+        // Pull the current scene + interaction out of state and composite the
+        // interaction overlay (brush rect / hover marker) onto a scene clone.
+        let (mut scene, interaction, renderer, width, height) = {
+            let state = self.state.read(cx);
+            (
+                state.scene().clone(),
+                state.interaction().clone(),
+                state.renderer().clone(),
+                state.width(),
+                state.height(),
+            )
+        };
+        if width == 0 || height == 0 {
             return;
         }
+        interaction.render_overlay(&mut scene);
 
-        // Render the Vello scene to RGBA pixels.
-        let pixels = self
-            .renderer
+        // Rasterise the composited scene and paint it as a GPUI image.
+        let pixels = renderer
             .lock()
             .expect("VelloRenderer mutex poisoned")
-            .render_to_pixels(&self.scene, self.width, self.height);
+            .render_to_pixels(&scene, width, height);
 
         // Convert RGBA to BGRA (RenderImage expects BGRA format).
         let mut bgra_pixels = pixels;
@@ -142,62 +195,10 @@ impl Element for ChartElement {
             pixel.swap(0, 2); // Swap R and B channels
         }
 
-        // Construct the RenderImage from the pixel buffer.
         let image_buffer =
-            RgbaImage::from_raw(self.width, self.height, bgra_pixels)
-                .expect("pixel buffer size mismatch");
+            RgbaImage::from_raw(width, height, bgra_pixels).expect("pixel buffer size mismatch");
         let frame = image::Frame::new(image_buffer);
         let render_image = Arc::new(RenderImage::new(SmallVec::from_elem(frame, 1)));
-
-        // Paint the image into the GPUI window.
-        let _ = window.paint_image(
-            bounds,
-            Corners::default(),
-            render_image,
-            0,
-            false,
-        );
-    }
-}
-
-#[cfg(all(test, feature = "gpu-tests"))]
-mod tests {
-    use super::*;
-
-    // Preserve existing test assertions — now testing ChartElement as
-    // a stateless rendering shell. These tests verify the struct can be
-    // constructed and the scene is accessible.
-
-    #[test]
-    fn gpu_ac09_chart_element_creation() {
-        let renderer = crate::vello_renderer::VelloRenderer::new();
-        let scene = Scene::new();
-        let element = ChartElement::new(scene, renderer, 640, 480);
-        assert_eq!(element.width(), 640);
-        assert_eq!(element.height(), 480);
-    }
-
-    #[test]
-    fn gpu_ac09_chart_element_scene_update() {
-        let renderer = crate::vello_renderer::VelloRenderer::new();
-        let mut scene = Scene::new();
-        use kurbo::{Affine, Circle};
-        use peniko::{Color, Fill};
-        let circle = Circle::new((100.0, 100.0), 5.0);
-        scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            Color::new([1.0, 0.0, 0.0, 1.0]),
-            None,
-            &circle,
-        );
-
-        let element = ChartElement::new(scene, renderer, 640, 480);
-
-        let encoding = element.scene().encoding();
-        assert!(
-            encoding.path_tags.len() > 0,
-            "scene should have content"
-        );
+        let _ = window.paint_image(bounds, Corners::default(), render_image, 0, false);
     }
 }
