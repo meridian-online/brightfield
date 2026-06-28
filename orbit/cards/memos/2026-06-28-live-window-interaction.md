@@ -40,8 +40,9 @@ once, the mouse-down hitbox resolves true, `event.position` and `bounds.origin` 
 same window-space frame, and `window.refresh()` genuinely forces the repaint. No blocker,
 no infinite repaint loop.
 
-**A human still needs to confirm in a real macOS window** (e.g. `/verify`, or
-`cargo run -p brightfield-app -- examples/scatter.yaml` and drag/hover).
+**Confirmed working in a real macOS window by the user on 2026-06-29** — brushing
+(blue rect tracking + clamped to the plot) and hover (orange marker following the cursor)
+behave as intended. The adversarial review's positive verdict held up at runtime.
 
 ## Review fixes applied in this pass
 
