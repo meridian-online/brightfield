@@ -4,11 +4,12 @@
 //! Vec<Tick>. The scene builder draws ticks as lines and labels as text.
 
 use kurbo::{Affine, Line, Point};
-use peniko::{Color, Fill};
+use peniko::Color;
 use vello::Scene;
 
 use crate::layout::ChartLayout;
 use crate::scale::Scale;
+use crate::text::{draw_text, TextAnchor, LABEL_COLOUR, LABEL_SIZE};
 
 /// A computed tick mark with its position and label.
 #[derive(Debug, Clone)]
@@ -196,24 +197,15 @@ pub fn render_x_axis(scene: &mut Scene, layout: &ChartLayout, ticks: &[Tick]) {
         );
         scene.stroke(&stroke, Affine::IDENTITY, TICK_COLOUR, None, &tick_line);
 
-        // Label: render as a small rect placeholder (proper text rendering
-        // requires font shaping with skrifa, which is wired in the scene builder).
-        // For v1, we draw a small indicator at the label position.
-        let label_y = y + TICK_LENGTH + 2.0;
-        let label_width = tick.label.len() as f64 * 5.0;
-        let label_rect = kurbo::Rect::new(
-            tick.position - label_width / 2.0,
-            label_y,
-            tick.position + label_width / 2.0,
-            label_y + 10.0,
-        );
-        // Use a very light fill as a placeholder for text bounds.
-        scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            Color::new([0.0, 0.0, 0.0, 0.0]),
-            None,
-            &label_rect,
+        // Tick label, centred under the tick mark.
+        draw_text(
+            scene,
+            &tick.label,
+            tick.position,
+            y + TICK_LENGTH + f64::from(LABEL_SIZE),
+            LABEL_SIZE,
+            LABEL_COLOUR,
+            TextAnchor::Middle,
         );
     }
 }
@@ -230,13 +222,24 @@ pub fn render_y_axis(scene: &mut Scene, layout: &ChartLayout, ticks: &[Tick]) {
     );
     scene.stroke(&stroke, Affine::IDENTITY, AXIS_COLOUR, None, &axis_line);
 
-    // Tick marks.
+    // Tick marks and labels.
     for tick in ticks {
         let tick_line = Line::new(
             Point::new(x - TICK_LENGTH, tick.position),
             Point::new(x, tick.position),
         );
         scene.stroke(&stroke, Affine::IDENTITY, TICK_COLOUR, None, &tick_line);
+
+        // Label, right-aligned in the left margin and vertically centred on the tick.
+        draw_text(
+            scene,
+            &tick.label,
+            x - TICK_LENGTH - 3.0,
+            tick.position + f64::from(LABEL_SIZE) / 3.0,
+            LABEL_SIZE,
+            LABEL_COLOUR,
+            TextAnchor::End,
+        );
     }
 }
 
