@@ -2,6 +2,8 @@
 //! into a single vello::Scene.
 
 use arrow::record_batch::RecordBatch;
+use kurbo::{Affine, Rect};
+use peniko::{Color, Fill, Mix};
 use vello::Scene;
 
 use crate::axis::{compute_ticks, render_x_axis, render_y_axis};
@@ -11,6 +13,19 @@ use crate::layout::ChartLayout;
 use crate::legend::render_colour_legend;
 use crate::mark::{HighlightState, MarkRenderer};
 use crate::scale::{infer_scales, infer_scales_multi, Scale, ScaleSet, ViewExtent};
+
+/// Opaque white chart background. Drawn first so grid, marks, axes and legend
+/// composite on top. Without it the scene renders onto transparency, which a
+/// PNG export shows as a black/checkerboard backdrop and which makes a working
+/// chart look broken.
+const BACKGROUND_COLOUR: Color = Color::new([1.0, 1.0, 1.0, 1.0]);
+
+/// Fill the full chart area with [`BACKGROUND_COLOUR`]. Must be the first
+/// geometry added to the scene so everything else draws on top.
+fn render_background(scene: &mut Scene, layout: &ChartLayout) {
+    let rect = Rect::new(0.0, 0.0, layout.width, layout.height);
+    scene.fill(Fill::NonZero, Affine::IDENTITY, BACKGROUND_COLOUR, None, &rect);
+}
 
 /// Input data for building a chart scene.
 pub struct ChartData<'a> {
@@ -64,8 +79,39 @@ fn override_scale_domain(scale: &Scale, new_min: f64, new_max: f64) -> Scale {
     }
 }
 
+/// Plot-area rectangle in pixel coordinates, used to clip mark geometry so it
+/// can't spill onto the axes or margins.
+fn plot_area_rect(layout: &ChartLayout) -> Rect {
+    Rect::new(
+        layout.plot_x_start(),
+        layout.plot_y_start(),
+        layout.plot_x_end(),
+        layout.plot_y_end(),
+    )
+}
+
+/// Extend a linear scale's domain to include zero, so e.g. bars baseline on the
+/// axis instead of extrapolating off the plot. Non-linear scales are unchanged.
+fn extend_domain_to_zero(scale: &Scale) -> Scale {
+    match scale {
+        Scale::Linear {
+            domain_min,
+            domain_max,
+            range_start,
+            range_end,
+        } => Scale::Linear {
+            domain_min: domain_min.min(0.0),
+            domain_max: domain_max.max(0.0),
+            range_start: *range_start,
+            range_end: *range_end,
+        },
+        other => other.clone(),
+    }
+}
+
 pub fn build_chart_scene(data: &ChartData<'_>) -> (Scene, ScaleSet) {
     let mut scene = Scene::new();
+    render_background(&mut scene, &data.layout);
 
     let mut scales = infer_scales(
         data.batch,
@@ -73,6 +119,16 @@ pub fn build_chart_scene(data: &ChartData<'_>) -> (Scene, ScaleSet) {
         data.layout.x_range(),
         data.layout.y_range(),
     );
+
+    // Anchor the value axis at zero for marks that need it (e.g. bars), so the
+    // baseline lands on the axis rather than extrapolating off the plot. Applied
+    // before any view-extent override so an explicit pan/zoom still wins.
+    if let Some(ch) = data.renderer.zero_baseline_channel() {
+        if let Some(scale) = scales.get(ch) {
+            let zeroed = extend_domain_to_zero(scale);
+            scales.insert(ch, zeroed);
+        }
+    }
 
     // Apply view extent override for pan/zoom navigation.
     if let Some(extent) = data.view_extent {
@@ -100,9 +156,12 @@ pub fn build_chart_scene(data: &ChartData<'_>) -> (Scene, ScaleSet) {
         render_y_grid(&mut scene, &data.layout, &y_ticks);
     }
 
-    // Marks.
+    // Marks, clipped to the plot area so geometry can't spill onto axes/margins.
+    let plot_clip = plot_area_rect(&data.layout);
+    scene.push_layer(Mix::Clip, 1.0, Affine::IDENTITY, &plot_clip);
     data.renderer
         .render(&mut scene, data.batch, data.channel_map, &scales, data.highlight);
+    scene.pop_layer();
 
     // Axes (on top of grid/marks).
     if let Some(x_scale) = scales.get(Channel::X) {
@@ -134,6 +193,7 @@ pub fn build_multi_mark_scene(entries: &[&ChartData<'_>]) -> (Scene, ScaleSet) {
 
     let layout = &entries[0].layout;
     let mut scene = Scene::new();
+    render_background(&mut scene, layout);
 
     // Collect (batch, channel_map) pairs for multi-scale inference.
     let pairs: Vec<(&RecordBatch, &ChannelMap)> = entries
@@ -142,6 +202,22 @@ pub fn build_multi_mark_scene(entries: &[&ChartData<'_>]) -> (Scene, ScaleSet) {
         .collect();
 
     let mut scales = infer_scales_multi(&pairs, layout.x_range(), layout.y_range());
+
+    // Anchor value axes at zero for any mark that needs it (e.g. bars).
+    let mut zero_channels: Vec<Channel> = Vec::new();
+    for entry in entries {
+        if let Some(ch) = entry.renderer.zero_baseline_channel() {
+            if !zero_channels.contains(&ch) {
+                zero_channels.push(ch);
+            }
+        }
+    }
+    for ch in zero_channels {
+        if let Some(scale) = scales.get(ch) {
+            let zeroed = extend_domain_to_zero(scale);
+            scales.insert(ch, zeroed);
+        }
+    }
 
     // Apply view extent from the first entry (shared navigation).
     if let Some(extent) = entries[0].view_extent {
@@ -169,7 +245,9 @@ pub fn build_multi_mark_scene(entries: &[&ChartData<'_>]) -> (Scene, ScaleSet) {
         render_y_grid(&mut scene, layout, &y_ticks);
     }
 
-    // Render each mark layer.
+    // Render each mark layer, clipped to the plot area.
+    let plot_clip = plot_area_rect(layout);
+    scene.push_layer(Mix::Clip, 1.0, Affine::IDENTITY, &plot_clip);
     for entry in entries {
         entry.renderer.render(
             &mut scene,
@@ -179,6 +257,7 @@ pub fn build_multi_mark_scene(entries: &[&ChartData<'_>]) -> (Scene, ScaleSet) {
             entry.highlight,
         );
     }
+    scene.pop_layer();
 
     // Axes (on top of marks).
     if let Some(x_scale) = scales.get(Channel::X) {
@@ -295,6 +374,77 @@ mod tests {
         assert!(
             encoding.path_tags.len() > 0,
             "bar chart scene should have content"
+        );
+    }
+
+    #[test]
+    fn gpu_bars_zero_baseline_anchors_value_axis() {
+        // Bar values [10, 20, 30]: the y-domain must be extended to include 0 so
+        // the baseline lands on the axis instead of extrapolating off the plot.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("category", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+                Arc::new(Float64Array::from(vec![10.0, 20.0, 30.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "category".to_string());
+        cm.insert(Channel::Y, "value".to_string());
+        let data = ChartData {
+            batch: &batch,
+            channel_map: &cm,
+            renderer: &BarRenderer,
+            layout: ChartLayout::new(640.0, 480.0),
+            view_extent: None,
+            highlight: None,
+        };
+        let (_scene, scales) = build_chart_scene(&data);
+        let y = scales.get(Channel::Y).unwrap();
+        assert!(
+            (y.domain_min().unwrap() - 0.0).abs() < f64::EPSILON,
+            "bar y-domain should start at 0, got {:?}",
+            y.domain_min()
+        );
+        assert!((y.domain_max().unwrap() - 30.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn gpu_dots_do_not_zero_anchor() {
+        // Dots keep their data-driven domain — no zero baseline.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])),
+                Arc::new(Float64Array::from(vec![10.0, 20.0, 30.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        let data = ChartData {
+            batch: &batch,
+            channel_map: &cm,
+            renderer: &DotRenderer,
+            layout: ChartLayout::new(640.0, 480.0),
+            view_extent: None,
+            highlight: None,
+        };
+        let (_scene, scales) = build_chart_scene(&data);
+        let y = scales.get(Channel::Y).unwrap();
+        assert!(
+            (y.domain_min().unwrap() - 10.0).abs() < f64::EPSILON,
+            "dot y-domain should be data-driven (10), not 0"
         );
     }
 

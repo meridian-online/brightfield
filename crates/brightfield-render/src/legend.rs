@@ -7,6 +7,7 @@ use vello::Scene;
 
 use crate::layout::ChartLayout;
 use crate::scale::Scale;
+use crate::text::{draw_text, measure_width, TextAnchor, LABEL_COLOUR, LABEL_SIZE};
 
 /// Swatch size in pixels.
 const SWATCH_SIZE: f64 = 12.0;
@@ -14,8 +15,14 @@ const SWATCH_SIZE: f64 = 12.0;
 /// Vertical spacing between legend entries.
 const ENTRY_SPACING: f64 = 18.0;
 
-/// Legend left margin from the plot area's right edge.
-const LEGEND_MARGIN: f64 = 10.0;
+/// Inset of the legend panel from the plot-area corner.
+const LEGEND_INSET: f64 = 8.0;
+
+/// Padding inside the legend panel.
+const LEGEND_PADDING: f64 = 6.0;
+
+/// Gap between a swatch and its label.
+const LEGEND_LABEL_GAP: f64 = 4.0;
 
 /// Render a colour legend into the scene.
 ///
@@ -39,9 +46,39 @@ pub fn render_colour_legend(
         return;
     }
 
-    // Position: right of plot area.
-    let legend_x = layout.plot_x_end() + LEGEND_MARGIN;
-    let legend_y_start = layout.plot_y_start();
+    // Size the panel to the widest label so nothing clips.
+    let max_label = categories
+        .iter()
+        .map(|c| measure_width(c, LABEL_SIZE))
+        .fold(0.0_f64, f64::max);
+    let n = categories.len() as f64;
+    let box_width = LEGEND_PADDING * 2.0 + SWATCH_SIZE + LEGEND_LABEL_GAP + max_label;
+    let box_height = LEGEND_PADDING * 2.0 + (n - 1.0) * ENTRY_SPACING + SWATCH_SIZE;
+
+    // Anchor inside the plot area's top-right corner (the right margin is too
+    // narrow to hold the legend, and an inside panel reads as intentional).
+    let box_x = layout.plot_x_end() - box_width - LEGEND_INSET;
+    let box_y = layout.plot_y_start() + LEGEND_INSET;
+
+    // Translucent background panel + thin border for legibility over marks/grid.
+    let panel = Rect::new(box_x, box_y, box_x + box_width, box_y + box_height);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        Color::new([1.0, 1.0, 1.0, 0.85]),
+        None,
+        &panel,
+    );
+    scene.stroke(
+        &kurbo::Stroke::new(0.5),
+        Affine::IDENTITY,
+        Color::new([0.8, 0.8, 0.8, 1.0]),
+        None,
+        &panel,
+    );
+
+    let legend_x = box_x + LEGEND_PADDING;
+    let legend_y_start = box_y + LEGEND_PADDING;
 
     for (i, (cat, colour)) in categories.iter().zip(palette.iter().cycle()).enumerate() {
         let y = legend_y_start + i as f64 * ENTRY_SPACING;
@@ -56,17 +93,15 @@ pub fn render_colour_legend(
             &swatch,
         );
 
-        // Text label placeholder (proportional to label length).
-        let label_x = legend_x + SWATCH_SIZE + 4.0;
-        let label_width = cat.len() as f64 * 5.0;
-        let label_rect = Rect::new(label_x, y, label_x + label_width, y + SWATCH_SIZE);
-        // Transparent rect as text placeholder.
-        scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            Color::new([0.0, 0.0, 0.0, 0.0]),
-            None,
-            &label_rect,
+        // Entry label, vertically centred on the swatch.
+        draw_text(
+            scene,
+            cat,
+            legend_x + SWATCH_SIZE + LEGEND_LABEL_GAP,
+            y + SWATCH_SIZE * 0.5 + f64::from(LABEL_SIZE) / 3.0,
+            LABEL_SIZE,
+            LABEL_COLOUR,
+            TextAnchor::Start,
         );
     }
 }

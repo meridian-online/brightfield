@@ -42,14 +42,10 @@ impl ChartView {
 }
 
 impl Render for ChartView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.state.read(cx);
-        ChartElement::new(
-            state.scene().clone(),
-            state.renderer().clone(),
-            state.width(),
-            state.height(),
-        )
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        // ChartElement reads the scene + interaction from the state entity each
+        // paint, composites the overlay, and wires mouse events back to it.
+        ChartElement::new(self.state.clone())
     }
 }
 
@@ -63,51 +59,33 @@ impl Render for ChartView {
 //   4. cx.notify() triggers automatic repaint
 
 impl ChartView {
+    // These delegate to the canonical `ChartState` pointer transitions so the
+    // live event wiring (ChartElement) and this handler API stay in lock-step.
+
     /// Handle mouse down: start brushing if inside the plot area.
     pub fn on_mouse_down(&mut self, window_pos: Point, element_origin: Point, cx: &mut Context<Self>) {
-        let layout = self.state.read(cx).layout().clone();
-        let local = layout.window_to_local(window_pos, element_origin);
-
-        if layout.contains(local) {
-            self.state.update(cx, |state, cx| {
-                state.set_interaction(InteractionState::start_brush(local));
+        self.state.update(cx, |state, cx| {
+            if state.pointer_down(window_pos, element_origin) {
                 cx.notify();
-            });
-        }
+            }
+        });
     }
 
-    /// Handle mouse move: update brush or set hover state.
+    /// Handle mouse move: update brush or set hover state. (Legacy embedding API;
+    /// the live window drives interaction through `ChartElement`. Assumes the
+    /// button is held so an in-progress brush continues.)
     pub fn on_mouse_move(&mut self, window_pos: Point, element_origin: Point, cx: &mut Context<Self>) {
-        let layout = self.state.read(cx).layout().clone();
-        let local = layout.window_to_local(window_pos, element_origin);
-
-        if !layout.contains(local) {
-            return;
-        }
-
         self.state.update(cx, |state, cx| {
-            match state.interaction() {
-                InteractionState::Brushing { .. } => {
-                    let mut interaction = state.interaction().clone();
-                    interaction.update_brush(local);
-                    state.set_interaction(interaction);
-                }
-                InteractionState::Idle | InteractionState::Hovering { .. } => {
-                    state.set_interaction(InteractionState::Hovering {
-                        point: local,
-                        nearest: None,
-                    });
-                }
+            if state.pointer_move(window_pos, element_origin, true) {
+                cx.notify();
             }
-            cx.notify();
         });
     }
 
     /// Handle mouse up: end brushing, return to idle.
     pub fn on_mouse_up(&mut self, _window_pos: Point, _element_origin: Point, cx: &mut Context<Self>) {
         self.state.update(cx, |state, cx| {
-            if matches!(state.interaction(), InteractionState::Brushing { .. }) {
-                state.set_interaction(InteractionState::Idle);
+            if state.pointer_up() {
                 cx.notify();
             }
         });

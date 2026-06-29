@@ -1,0 +1,24 @@
+meta:
+  title: Bars — Brightfield example
+  description: |
+    A self-contained bar chart over inline data — no external files needed.
+
+      cargo run -p brightfield-app -- examples/bars.yaml
+
+    Demonstrates a band (categorical) x-axis and a zero-anchored value axis, so
+    the bars baseline on the axis rather than floating.
+data:
+  fruit:
+    - { name: Apples, count: 30 }
+    - { name: Pears, count: 18 }
+    - { name: Cherries, count: 45 }
+    - { name: Plums, count: 22 }
+    - { name: Figs, count: 12 }
+    - { name: Grapes, count: 38 }
+plot:
+  - mark: barY
+    data: { from: fruit }
+    x: name
+    y: count
+width: 640
+height: 480

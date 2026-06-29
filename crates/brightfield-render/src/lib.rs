@@ -17,6 +17,7 @@ pub mod mark;
 pub mod nearest;
 pub mod scale;
 pub mod scene;
+pub mod text;
 pub mod tooltip;
 pub mod transition;
 

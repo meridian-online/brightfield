@@ -61,6 +61,15 @@ pub trait MarkRenderer {
     ) {
         self.render(scene, batch, channel_map, scales, highlight);
     }
+
+    /// The channel whose value-axis domain must include zero for this mark to
+    /// render correctly — e.g. bars baseline at zero, so a domain of [10, 30]
+    /// would otherwise place the baseline far below the plot. `None` for marks
+    /// that don't need a zero baseline. The scene builder extends the named
+    /// scale's domain to include 0 before rendering.
+    fn zero_baseline_channel(&self) -> Option<Channel> {
+        None
+    }
 }
 
 /// Default dot radius in pixels.
@@ -380,6 +389,11 @@ impl MarkRenderer for BarRenderer {
             let rect = Rect::new(x0, y_top, x0 + band_width, y_bottom);
             scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &rect);
         }
+    }
+
+    fn zero_baseline_channel(&self) -> Option<Channel> {
+        // Bars baseline at zero on the value (y) axis.
+        Some(Channel::Y)
     }
 }
 

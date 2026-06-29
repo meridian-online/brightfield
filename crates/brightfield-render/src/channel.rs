@@ -112,10 +112,11 @@ impl ChannelMap {
                         cm.insert(*ch, col.clone());
                     }
                     ValueOrParamRef::Param(param_ref) => {
-                        tracing::warn!(
-                            channel = ch.wire_name(),
-                            param = %param_ref.to_wire(),
-                            "skipping ParamRef channel — reactive parameters not yet supported"
+                        eprintln!(
+                            "warning: skipping channel `{}` bound to param `{}` \
+                             — reactive parameters not yet supported",
+                            ch.wire_name(),
+                            param_ref.to_wire()
                         );
                     }
                     _ => {}

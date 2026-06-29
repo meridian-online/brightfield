@@ -14,7 +14,6 @@ vello = "0.4"
 kurbo = "0.11"
 peniko = "0.3"
 skrifa = "0.26"
-tracing = "0.1"
 indexmap = "2"
 
 [dev-dependencies]

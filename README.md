@@ -6,6 +6,22 @@ GPU-native desktop application for interactive data visualisation at any scale. 
 
 The goal is a tool that can interactively visualise and explore datasets from thousands to billions of records with fluid, GPU-rendered interactions, without the performance ceiling of browser-based rendering or the overhead of a webview shell.
 
+## Quick Start
+
+Brightfield builds with a standard Rust toolchain (1.80+). From a clone of the repo, render the self-contained example spec:
+
+```sh
+# macOS — opens a native, GPU-rendered window
+cargo run -p brightfield-app -- examples/scatter.yaml
+
+# Linux / headless / CI — render the chart straight to a PNG
+BRIGHTFIELD_DUMP_PNG=scatter.png cargo run -p brightfield-app -- examples/scatter.yaml
+```
+
+`examples/scatter.yaml` is inline data — nothing external to download. Over 50 further Mosaic specs ship under [`crates/brightfield-spec/vendor/mosaic-specs/yaml/`](crates/brightfield-spec/vendor/mosaic-specs/yaml/); note that many read from Parquet/CSV files that are not bundled, so not all of them render out of the box yet.
+
+The native window is currently macOS-only (it needs GPUI's Metal backend). On Linux and Windows, use `BRIGHTFIELD_DUMP_PNG=<path>` to render to an image — the headless render path is cross-platform. Live-window support on other platforms tracks GPUI's progress (see [Platform Support](#platform-support)).
+
 ## Design Principles
 
 - **Spec-driven.** The Mosaic declarative specification (YAML/JSON) is the stable contract. Users author visualisations and dashboards as portable spec files. The rendering backend is an implementation detail.
@@ -132,5 +148,7 @@ Contributions welcome! Please open an issue or PR.
 Part of the [Meridian](https://meridian.online) project.
 
 Built with [GPUI](https://www.gpui.rs/) (Zed's GPU-accelerated UI framework), [gpui-plot](https://crates.io/crates/gpui-plot) (native plotting foundation), [DuckDB](https://duckdb.org) via [duckdb-rs](https://crates.io/crates/duckdb), [Apache Arrow](https://arrow.apache.org/) via [arrow-rs](https://github.com/apache/arrow-rs), and [Serde](https://serde.rs).
+
+Chart labels are rendered with [IBM Plex Sans](https://github.com/IBM/plex), bundled under the [SIL Open Font License 1.1](crates/brightfield-render/assets/fonts/LICENSE-IBMPlexSans.txt).
 
 Spec format, grammar-of-graphics semantics, param/selection model, and query optimisation strategies derived from the [Mosaic](https://idl.uw.edu/mosaic/) project (UW IDL + CMU DIG — see [Mosaic TVCG'24](https://idl.uw.edu/papers/mosaic)).
