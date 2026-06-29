@@ -7,8 +7,7 @@
 //! to a GPUI window. ChartView::render() returns a ChartElement that
 //! implements the Element trait.
 
-use gpui::{Context, Entity, IntoElement, Render, Window};
-use kurbo::Point;
+use gpui::{div, px, Context, Entity, IntoElement, ParentElement, Render, Styled, Window};
 
 use brightfield_engine::error::EngineError;
 use brightfield_engine::RecordBatch;
@@ -19,125 +18,63 @@ use crate::chart_element::ChartElement;
 use crate::chart_state::ChartState;
 use crate::interaction::InteractionState;
 
-/// GPUI Render component for chart display.
-///
-/// Owns an `Entity<ChartState>` for reactive notifications.
-/// `render()` returns a `ChartElement` that paints the current
-/// Vello scene as a GPU texture.
+/// One plot positioned in the dashboard: its rect (in dashboard pixels) and its
+/// own reactive [`ChartState`]. Each plot owns its state — and thus its own
+/// raster cache and interaction — so hover/brush are independent per plot.
+pub struct PlacedChart {
+    /// Left edge within the dashboard, in pixels.
+    pub x: f64,
+    /// Top edge within the dashboard, in pixels.
+    pub y: f64,
+    /// Plot width in pixels.
+    pub width: f64,
+    /// Plot height in pixels.
+    pub height: f64,
+    /// The plot's reactive chart state.
+    pub state: Entity<ChartState>,
+}
+
+/// GPUI render component for a dashboard: hosts one [`ChartElement`] per plot,
+/// each absolutely positioned at its layout rect, in a container sized to the
+/// dashboard's bounding box. A single-plot spec is just a one-plot dashboard.
 pub struct ChartView {
-    /// The chart state entity (Model).
-    state: Entity<ChartState>,
+    /// Dashboard width in pixels.
+    width: f64,
+    /// Dashboard height in pixels.
+    height: f64,
+    /// The positioned plots.
+    charts: Vec<PlacedChart>,
 }
 
 impl ChartView {
-    /// Create a new ChartView from an entity handle.
-    pub fn new(state: Entity<ChartState>) -> Self {
-        Self { state }
-    }
-
-    /// Access the state entity.
-    pub fn state(&self) -> &Entity<ChartState> {
-        &self.state
+    /// Create a dashboard view of the given size hosting the positioned plots.
+    pub fn new(width: f64, height: f64, charts: Vec<PlacedChart>) -> Self {
+        Self {
+            width,
+            height,
+            charts,
+        }
     }
 }
 
 impl Render for ChartView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        // ChartElement reads the scene + interaction from the state entity each
-        // paint, composites the overlay, and wires mouse events back to it.
-        ChartElement::new(self.state.clone())
-    }
-}
-
-// --- AC-05: Mouse event handlers ---
-//
-// Mouse events are wired up when ChartView is registered as a GPUI view.
-// The coordinate transform pipeline:
-//   1. window_pos - element_origin → local_px
-//   2. Check local_px within plot area bounds
-//   3. Update InteractionState in ChartState via entity.update()
-//   4. cx.notify() triggers automatic repaint
-
-impl ChartView {
-    // These delegate to the canonical `ChartState` pointer transitions so the
-    // live event wiring (ChartElement) and this handler API stay in lock-step.
-
-    /// Handle mouse down: start brushing if inside the plot area.
-    pub fn on_mouse_down(&mut self, window_pos: Point, element_origin: Point, cx: &mut Context<Self>) {
-        self.state.update(cx, |state, cx| {
-            if state.pointer_down(window_pos, element_origin) {
-                cx.notify();
-            }
-        });
-    }
-
-    /// Handle mouse move: update brush or set hover state. (Legacy embedding API;
-    /// the live window drives interaction through `ChartElement`. Assumes the
-    /// button is held so an in-progress brush continues.)
-    pub fn on_mouse_move(&mut self, window_pos: Point, element_origin: Point, cx: &mut Context<Self>) {
-        self.state.update(cx, |state, cx| {
-            if state.pointer_move(window_pos, element_origin, true) {
-                cx.notify();
-            }
-        });
-    }
-
-    /// Handle mouse up: end brushing, return to idle.
-    pub fn on_mouse_up(&mut self, _window_pos: Point, _element_origin: Point, cx: &mut Context<Self>) {
-        self.state.update(cx, |state, cx| {
-            if state.pointer_up() {
-                cx.notify();
-            }
-        });
-    }
-
-    /// Handle mouse up with a selection dispatcher attached: end
-    /// brushing, dispatch the brush rectangle as a Predicate to the
-    /// runtime selection coordinator (via the dispatcher), and return
-    /// to idle.
-    ///
-    /// `bindings` is a slice — a single plot may drive multiple
-    /// selections (e.g. an intervalXY brush plus an intervalX brush
-    /// writing to a different selection). One `propagate_selection` is
-    /// dispatched per binding, with each binding's predicate computed
-    /// against its own kind. cfs3 ac-04.
-    ///
-    /// Returns aggregated per-binding dispatch results
-    /// `Vec<(selection_name, Vec<(mark_index, Result)>)>` so callers may
-    /// surface per-subscriber outcomes per selection. Returns an empty
-    /// vec when there is no active brush.
-    pub fn on_mouse_up_with_dispatch<D: SelectionDispatcher>(
-        &mut self,
-        _window_pos: Point,
-        _element_origin: Point,
-        bindings: &[BrushBinding],
-        dispatcher: &mut D,
-        cx: &mut Context<Self>,
-    ) -> Vec<(String, Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>)> {
-        let mut aggregated = Vec::new();
-        self.state.update(cx, |state, cx| {
-            if let InteractionState::Brushing { start, current } = state.interaction() {
-                let rect = kurbo::Rect::new(
-                    start.x.min(current.x),
-                    start.y.min(current.y),
-                    start.x.max(current.x),
-                    start.y.max(current.y),
-                );
-                for binding in bindings {
-                    let predicate =
-                        brush_rect_to_predicate(rect, binding.kind, &binding.channels);
-                    let results = dispatcher.dispatch(
-                        &binding.selection_name,
-                        binding.contributor.clone(),
-                        predicate,
-                    );
-                    aggregated.push((binding.selection_name.clone(), results));
-                }
-                state.set_interaction(InteractionState::Idle);
-                cx.notify();
-            }
-        });
-        aggregated
+        // A relative container of the dashboard's size, with each plot absolutely
+        // positioned at its rect. Each ChartElement reads its own ChartState and
+        // wires its own mouse events, so plots don't share interaction.
+        div()
+            .relative()
+            .w(px(self.width as f32))
+            .h(px(self.height as f32))
+            .children(self.charts.iter().enumerate().map(|(i, c)| {
+                div()
+                    .absolute()
+                    .left(px(c.x as f32))
+                    .top(px(c.y as f32))
+                    .w(px(c.width as f32))
+                    .h(px(c.height as f32))
+                    .child(ChartElement::new(c.state.clone(), i))
+            }))
     }
 }
 
@@ -282,32 +219,6 @@ fn brush_kind_from_spec(kind: brightfield_spec::analysis::BrushKind) -> BrushKin
         Spec::IntervalY => BrushKind::IntervalY,
         Spec::IntervalXY => BrushKind::IntervalXY,
         Spec::Point => BrushKind::Point,
-    }
-}
-
-impl ChartView {
-
-    /// Handle scroll (zoom gesture). Placeholder for navigation wiring.
-    pub fn on_scroll(
-        &mut self,
-        _window_pos: Point,
-        _element_origin: Point,
-        _delta: Point,
-        _cx: &mut Context<Self>,
-    ) {
-        // Navigation event routing (pan/zoom gestures, transition scheduling
-        // via cx.on_next_frame) is deferred to the app shell card.
-        // This method establishes the handler signature.
-    }
-
-    // --- AC-07: Window resize ---
-
-    /// Handle window resize by updating ChartState dimensions.
-    pub fn on_resize(&mut self, width: u32, height: u32, cx: &mut Context<Self>) {
-        self.state.update(cx, |state, cx| {
-            state.set_dimensions(width, height);
-            cx.notify();
-        });
     }
 }
 

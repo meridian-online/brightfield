@@ -48,20 +48,35 @@ dashboard.yaml` (scatter + bar, inline data) renders headlessly to a 720×300 PN
 with two plots side by side, each with independent axes. Single-plot specs
 (scatter/bars) are unchanged.
 
-## Current window behaviour (intermediate)
+## Window hosting (increment 5 — done)
 
-The macOS window still wraps the *composite* scene in a single `ChartState`, so a
-multi-plot spec shows both plots but with one shared hitbox/interaction. Single-
-plot specs are unaffected (correct interaction). Per-plot interaction comes with
-the flex host below.
+The macOS window now hosts **one `ChartElement` per plot**, each absolutely
+positioned at its layout rect inside a relative container sized to the dashboard,
+with its own `ChartState` (so its own raster cache *and* interaction). `ChartView`
+holds `Vec<PlacedChart{x,y,w,h,state}>`; `run_pipeline` returns a `Dashboard` of
+per-plot scenes (the PNG path composites them, the window hosts them). The N
+states share one `VelloRenderer` (per-`ChartState` caches, so no collision).
 
-## Next
+Per-plot interaction isolation: mouse-down is hitbox-gated so a brush starts only
+in the plot under the cursor; hover is treated as a no-button gesture (a held
+button means a drag is in progress, so it never lights a sibling's hover marker).
+Hot-reload matches plots by stable `ComponentPath` + geometry — a data/visual
+edit swaps each plot's scene in place; any structural change (count, which plots
+render, or any size/position) prints "restart to apply".
 
-- **Increment 5 (window):** `ChartView` returns a `div().flex_row()/flex_col()`
-  tree of one `ChartElement` per plot (one `ChartState` each), spacers as gaps.
-  Per-plot hover/brush for free. *Needs a window eyeball.*
-- **Increment 6:** hot-reload rebuilding N states on structural change; wire
-  `Input`(slider)/`Legend` nodes; window resize / overflow policy.
+The GPUI hosting was adversarially reviewed against the gpui source (verdict:
+renders correctly with independent per-plot brush; positioning, hitbox-gated
+press, per-state rendering and repaint are sound). The two flagged defects —
+sibling hover bleed while dragging a brush across plots, and a count-only reload
+guard that could corrupt the view on a size change or plot reshuffle — are fixed.
+**Needs a window eyeball** to confirm side-by-side plots + independent hover/brush.
+
+## Next (increment 6)
+
+- Wire `Input`(slider)/`Legend`/spacer nodes into the host (plots-only today).
+- Structural hot-reload that rebuilds/repositions N states in place (hand the
+  watcher the `ChartView` entity) instead of "restart to apply"; window resize /
+  overflow policy.
 
 ## Deferred
 

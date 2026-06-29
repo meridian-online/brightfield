@@ -239,14 +239,17 @@ impl ChartState {
                 true
             }
             InteractionState::Hovering { .. } | InteractionState::Idle => {
-                if self.layout.contains(local) {
+                if !button_held && self.layout.contains(local) {
+                    // Hover is a no-button gesture; a held button means a drag is
+                    // in progress (e.g. a brush in a sibling plot), so don't light
+                    // up a hover marker here.
                     self.interaction = InteractionState::Hovering {
                         point: local,
                         nearest: None,
                     };
                     true
                 } else if matches!(self.interaction, InteractionState::Hovering { .. }) {
-                    // Pointer left the plot area — drop the hover marker.
+                    // Pointer left the plot area (or a button went down) — drop hover.
                     self.interaction = InteractionState::Idle;
                     true
                 } else {

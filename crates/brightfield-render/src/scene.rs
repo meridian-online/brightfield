@@ -277,39 +277,22 @@ pub fn build_multi_mark_scene(entries: &[&ChartData<'_>]) -> (Scene, ScaleSet) {
     (scene, scales)
 }
 
-/// One plot in a dashboard: its origin in the dashboard and the mark data to
-/// render inside it. Each plot's marks share a [`ChartLayout`] sized to the
-/// plot's region (via their [`ChartData::layout`]).
-pub struct DashboardPlot<'a> {
-    /// Top-left origin of the plot within the dashboard, in pixels.
-    pub origin: (f64, f64),
-    /// The plot's marks (each a [`ChartData`] laid out in the plot's local space).
-    pub data: Vec<&'a ChartData<'a>>,
-}
-
-/// Compose multiple plots into one dashboard scene.
+/// Compose pre-rendered plot scenes into one dashboard scene.
 ///
-/// Each plot is rendered independently in its own local coordinate space (its
-/// own axes/grid/legend, with domains unioned only *within* the plot — never
-/// across plots), then translated to its origin. A white background fills the
-/// whole dashboard first so inter-plot gaps aren't transparent.
+/// Each plot scene is built independently by the caller (its own axes/grid/
+/// legend, domains unioned only *within* the plot) via [`build_multi_mark_scene`]
+/// against a [`ChartLayout`] sized to the plot; this places each at its
+/// `(origin_x, origin_y)` over a white dashboard background so inter-plot gaps
+/// aren't transparent.
 ///
-/// This is the headless composition used to verify multi-view rendering; the
-/// live window hosts one element per plot rather than a single composite (so
-/// each plot keeps independent interaction), but both share this per-plot
-/// scene-building path.
-pub fn build_dashboard_scene(width: f64, height: f64, plots: &[DashboardPlot<'_>]) -> Scene {
+/// The live window hosts one element per plot (so each keeps independent
+/// interaction); this single-composite path is used for the headless/PNG render
+/// and shares the same per-plot scenes.
+pub fn compose_dashboard(width: f64, height: f64, plots: &[(f64, f64, &Scene)]) -> Scene {
     let mut scene = Scene::new();
     render_background(&mut scene, &ChartLayout::new(width, height));
-    for plot in plots {
-        if plot.data.is_empty() {
-            continue;
-        }
-        let (plot_scene, _scales) = build_multi_mark_scene(&plot.data);
-        scene.append(
-            &plot_scene,
-            Some(Affine::translate((plot.origin.0, plot.origin.1))),
-        );
+    for (origin_x, origin_y, plot_scene) in plots {
+        scene.append(plot_scene, Some(Affine::translate((*origin_x, *origin_y))));
     }
     scene
 }
@@ -360,26 +343,19 @@ mod tests {
             highlight: None,
         };
 
-        let two = build_dashboard_scene(
-            600.0,
-            200.0,
-            &[
-                DashboardPlot { origin: (0.0, 0.0), data: vec![&d0] },
-                DashboardPlot { origin: (300.0, 0.0), data: vec![&d1] },
-            ],
-        );
-        let one = build_dashboard_scene(
-            600.0,
-            200.0,
-            &[DashboardPlot { origin: (0.0, 0.0), data: vec![&d0] }],
-        );
+        // Each plot's scene is built independently, then composited.
+        let (s0, _) = build_multi_mark_scene(&[&d0]);
+        let (s1, _) = build_multi_mark_scene(&[&d1]);
+
+        let two = compose_dashboard(600.0, 200.0, &[(0.0, 0.0, &s0), (300.0, 0.0, &s1)]);
+        let one = compose_dashboard(600.0, 200.0, &[(0.0, 0.0, &s0)]);
         assert!(
             two.encoding().path_tags.len() > one.encoding().path_tags.len(),
             "two composed plots produce more geometry than one"
         );
 
         // An empty dashboard still paints its background.
-        let empty = build_dashboard_scene(600.0, 200.0, &[]);
+        let empty = compose_dashboard(600.0, 200.0, &[]);
         assert!(
             empty.encoding().path_tags.len() > 0,
             "dashboard background fills even with no plots"

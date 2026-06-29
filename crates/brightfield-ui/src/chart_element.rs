@@ -32,12 +32,20 @@ use crate::interaction::InteractionState;
 pub struct ChartElement {
     /// The reactive chart state entity.
     state: Entity<ChartState>,
+    /// Stable, per-plot element id. (Sibling charts already get independent
+    /// hitboxes — each `insert_hitbox` mints a unique id — so this is for GPUI's
+    /// per-element state keying rather than relying on anonymous ids.)
+    id: ElementId,
 }
 
 impl ChartElement {
-    /// Create a chart element bound to the given state entity.
-    pub fn new(state: Entity<ChartState>) -> Self {
-        Self { state }
+    /// Create a chart element bound to the given state entity. `index` gives the
+    /// element a stable id distinguishing it from sibling plots in a dashboard.
+    pub fn new(state: Entity<ChartState>, index: usize) -> Self {
+        Self {
+            state,
+            id: ElementId::from(("brightfield-plot", index)),
+        }
     }
 }
 
@@ -54,7 +62,7 @@ impl Element for ChartElement {
     type PrepaintState = gpui::Hitbox;
 
     fn id(&self) -> Option<ElementId> {
-        None
+        Some(self.id.clone())
     }
 
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
