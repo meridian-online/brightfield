@@ -15,18 +15,15 @@
 //! - `prepaint()` — registers a hitbox covering the element bounds
 //! - `paint()` — composite + rasterise + paint + wire mouse events
 
-use std::sync::Arc;
-
 use gpui::{
-    App, Bounds, Corners, Element, ElementId, Entity, GlobalElementId, HitboxBehavior,
-    InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, RenderImage, Size, Style, Window, px,
+    fill, point, px, size, App, BorderStyle, Bounds, Corners, Element, ElementId, Entity,
+    GlobalElementId, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Rgba, Size, Style, Window,
 };
-use image::RgbaImage;
 use kurbo::Point;
-use smallvec::SmallVec;
 
 use crate::chart_state::ChartState;
+use crate::interaction::InteractionState;
 
 /// GPUI element that paints a chart from its `ChartState` and routes mouse input.
 ///
@@ -166,39 +163,68 @@ impl Element for ChartElement {
             }
         });
 
-        // Pull the current scene + interaction out of state and composite the
-        // interaction overlay (brush rect / hover marker) onto a scene clone.
-        let (mut scene, interaction, renderer, width, height) = {
+        // Fetch the cached, device-resolution base raster (re-rendered only when
+        // the scene changes) and paint it; then draw the interaction overlay as
+        // cheap GPUI quads on top, so hovering/brushing never re-run Vello.
+        let sf = window.scale_factor();
+        let (base, interaction) = {
             let state = self.state.read(cx);
-            (
-                state.scene().clone(),
-                state.interaction().clone(),
-                state.renderer().clone(),
-                state.width(),
-                state.height(),
-            )
+            if state.width() == 0 || state.height() == 0 {
+                return; // nothing to rasterise; mouse listeners already registered
+            }
+            (state.base_image(sf), state.interaction().clone())
         };
-        if width == 0 || height == 0 {
-            return;
+
+        let _ = window.paint_image(bounds, Corners::default(), base, 0, false);
+        paint_overlay(window, bounds, &interaction);
+    }
+}
+
+/// Convert a straight-alpha RGBA tuple (0–1) to a GPUI colour.
+fn rgba(r: f32, g: f32, b: f32, a: f32) -> Hsla {
+    Rgba { r, g, b, a }.into()
+}
+
+/// Hover marker radius in logical pixels (mirrors `interaction::render_overlay`).
+const HOVER_RADIUS: f64 = 8.0;
+
+/// Paint the interaction overlay (brush rectangle / hover marker) as GPUI quads
+/// over the chart image. Coordinates are element-local logical pixels — the same
+/// space the interaction state stores — offset by the element origin. Drawing
+/// the overlay as quads (rather than compositing into the Vello scene) means an
+/// interaction repaint reuses the cached base raster instead of re-rendering.
+fn paint_overlay(window: &mut Window, bounds: Bounds<Pixels>, interaction: &InteractionState) {
+    let ox = bounds.origin.x;
+    let oy = bounds.origin.y;
+    match interaction {
+        InteractionState::Idle => {}
+        InteractionState::Brushing { start, current } => {
+            let x0 = start.x.min(current.x);
+            let y0 = start.y.min(current.y);
+            let w = (start.x.max(current.x) - x0) as f32;
+            let h = (start.y.max(current.y) - y0) as f32;
+            let rect = Bounds {
+                origin: point(ox + px(x0 as f32), oy + px(y0 as f32)),
+                size: size(px(w), px(h)),
+            };
+            let mut q = fill(rect, rgba(0.306, 0.475, 0.655, 0.251));
+            q.border_widths = (1.5).into();
+            q.border_color = rgba(0.306, 0.475, 0.655, 0.753);
+            q.border_style = BorderStyle::Solid;
+            window.paint_quad(q);
         }
-        interaction.render_overlay(&mut scene);
-
-        // Rasterise the composited scene and paint it as a GPUI image.
-        let pixels = renderer
-            .lock()
-            .expect("VelloRenderer mutex poisoned")
-            .render_to_pixels(&scene, width, height);
-
-        // Convert RGBA to BGRA (RenderImage expects BGRA format).
-        let mut bgra_pixels = pixels;
-        for pixel in bgra_pixels.chunks_exact_mut(4) {
-            pixel.swap(0, 2); // Swap R and B channels
+        InteractionState::Hovering { point: p, .. } => {
+            let d = (HOVER_RADIUS * 2.0) as f32;
+            let rect = Bounds {
+                origin: point(
+                    ox + px((p.x - HOVER_RADIUS) as f32),
+                    oy + px((p.y - HOVER_RADIUS) as f32),
+                ),
+                size: size(px(d), px(d)),
+            };
+            let mut q = fill(rect, rgba(0.949, 0.557, 0.169, 0.376));
+            q.corner_radii = (HOVER_RADIUS as f32).into(); // round the quad into a circle
+            window.paint_quad(q);
         }
-
-        let image_buffer =
-            RgbaImage::from_raw(width, height, bgra_pixels).expect("pixel buffer size mismatch");
-        let frame = image::Frame::new(image_buffer);
-        let render_image = Arc::new(RenderImage::new(SmallVec::from_elem(frame, 1)));
-        let _ = window.paint_image(bounds, Corners::default(), render_image, 0, false);
     }
 }
