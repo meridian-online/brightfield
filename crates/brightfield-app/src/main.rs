@@ -249,18 +249,31 @@ fn main() {
     // Debug path: dump rendered output to a PNG instead of opening a window.
     // Triggered by `BRIGHTFIELD_DUMP_PNG=<path> brightfield <spec.yaml>`.
     if let Ok(dump_path) = env::var("BRIGHTFIELD_DUMP_PNG") {
+        // Optional supersampling for HiDPI verification: BRIGHTFIELD_DUMP_SCALE=2
+        // renders at device resolution via the same scale-the-scene path the
+        // window uses for crisp Retina output.
+        let scale: f32 = env::var("BRIGHTFIELD_DUMP_SCALE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|s: &f32| *s > 0.0)
+            .unwrap_or(1.0);
+        let dev_w = (640.0 * scale).round() as u32;
+        let dev_h = (480.0 * scale).round() as u32;
+        let mut scaled = vello::Scene::new();
+        scaled.append(&scene, Some(vello::kurbo::Affine::scale(f64::from(scale))));
+
         let renderer = brightfield_ui::VelloRenderer::new();
         let pixels = renderer
             .lock()
             .expect("renderer mutex poisoned")
-            .render_to_pixels(&scene, 640, 480);
-        let img = image::RgbaImage::from_raw(640, 480, pixels)
+            .render_to_pixels(&scaled, dev_w, dev_h);
+        let img = image::RgbaImage::from_raw(dev_w, dev_h, pixels)
             .expect("pixel buffer size mismatch");
         img.save(&dump_path).expect("failed to write PNG");
         let non_zero = img.as_raw().iter().filter(|&&b| b != 0).count();
         let total = img.as_raw().len();
         eprintln!(
-            "PNG dumped: {dump_path} ({non_zero}/{total} non-zero bytes, {:.1}% coverage)",
+            "PNG dumped: {dump_path} ({dev_w}x{dev_h}, {non_zero}/{total} non-zero bytes, {:.1}% coverage)",
             100.0 * non_zero as f64 / total as f64
         );
         let _ = scales;

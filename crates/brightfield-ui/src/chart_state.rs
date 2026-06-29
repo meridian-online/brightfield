@@ -8,9 +8,11 @@
 //! ChartElement borrows from ChartState for one paint cycle. ChartState owns
 //! all mutable state; ChartElement owns none.
 
+use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
-use kurbo::Point;
+use gpui::RenderImage;
+use kurbo::{Affine, Point};
 use vello::Scene;
 
 use crate::chart_layout::ChartLayout;
@@ -39,6 +41,19 @@ pub struct ChartState {
     renderer: Arc<Mutex<VelloRenderer>>,
     /// Layout with coordinate mapping (derived from width/height).
     layout: ChartLayout,
+    /// Cached device-resolution raster of the current scene (without the
+    /// interaction overlay), reused while the scene and target dimensions are
+    /// unchanged so hovering/brushing don't re-run Vello. Interior-mutable
+    /// because it is populated lazily during `paint` (a `&self` context); held
+    /// per-chart, so multiple charts never share or evict each other's raster.
+    base_cache: RefCell<Option<BaseRaster>>,
+}
+
+/// A cached device-resolution rasterisation of [`ChartState::scene`].
+struct BaseRaster {
+    dev_w: u32,
+    dev_h: u32,
+    image: Arc<RenderImage>,
 }
 
 impl ChartState {
@@ -53,6 +68,7 @@ impl ChartState {
             height,
             renderer,
             layout: ChartLayout::new(width as f64, height as f64),
+            base_cache: RefCell::new(None),
         }
     }
 
@@ -67,6 +83,58 @@ impl ChartState {
     /// entity to trigger a repaint.
     pub fn set_scene(&mut self, scene: Scene) {
         self.scene = scene;
+        // Invalidate the cached raster so the next paint re-renders.
+        *self.base_cache.borrow_mut() = None;
+    }
+
+    /// The current scene rasterised at device resolution and returned as a GPUI
+    /// image, reusing the cached result while the scene and target dimensions
+    /// are unchanged. `scale_factor` is the window's device pixel ratio: the
+    /// scene (in logical coordinates) is scaled up to the device pixel grid so
+    /// the chart stays crisp on HiDPI displays rather than being upscaled by the
+    /// compositor. The interaction overlay is NOT included — it is painted as
+    /// GPUI quads on top — so hovering/brushing reuse this cached raster.
+    pub fn base_image(&self, scale_factor: f32) -> Arc<RenderImage> {
+        let sf = f64::from(scale_factor.max(1.0));
+        // Match paint_image, which scales the logical bounds by the device ratio
+        // and ceils the size: render at exactly that device size and scale the
+        // scene to fill it, so the mapping is 1:1 (crisp) even at a fractional
+        // scale factor.
+        let dev_w = (f64::from(self.width) * sf).ceil().max(1.0) as u32;
+        let dev_h = (f64::from(self.height) * sf).ceil().max(1.0) as u32;
+
+        if let Some(cached) = self.base_cache.borrow().as_ref() {
+            if cached.dev_w == dev_w && cached.dev_h == dev_h {
+                return cached.image.clone();
+            }
+        }
+
+        let scale_x = f64::from(dev_w) / f64::from(self.width.max(1));
+        let scale_y = f64::from(dev_h) / f64::from(self.height.max(1));
+        let mut scaled = Scene::new();
+        scaled.append(&self.scene, Some(Affine::scale_non_uniform(scale_x, scale_y)));
+
+        let mut pixels = self
+            .renderer
+            .lock()
+            .expect("VelloRenderer mutex poisoned")
+            .render_to_pixels(&scaled, dev_w, dev_h);
+        // RenderImage expects BGRA.
+        for px in pixels.chunks_exact_mut(4) {
+            px.swap(0, 2);
+        }
+        let buffer =
+            image::RgbaImage::from_raw(dev_w, dev_h, pixels).expect("pixel buffer size mismatch");
+        let image = Arc::new(RenderImage::new(smallvec::SmallVec::from_elem(
+            image::Frame::new(buffer),
+            1,
+        )));
+        *self.base_cache.borrow_mut() = Some(BaseRaster {
+            dev_w,
+            dev_h,
+            image: image.clone(),
+        });
+        image
     }
 
     /// Access the current interaction state.
@@ -114,6 +182,8 @@ impl ChartState {
         self.width = width;
         self.height = height;
         self.layout = ChartLayout::new(width as f64, height as f64);
+        // Dimensions changed — invalidate the cached raster.
+        *self.base_cache.borrow_mut() = None;
     }
 
     /// Access the shared VelloRenderer.
