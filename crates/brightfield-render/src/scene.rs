@@ -277,6 +277,43 @@ pub fn build_multi_mark_scene(entries: &[&ChartData<'_>]) -> (Scene, ScaleSet) {
     (scene, scales)
 }
 
+/// One plot in a dashboard: its origin in the dashboard and the mark data to
+/// render inside it. Each plot's marks share a [`ChartLayout`] sized to the
+/// plot's region (via their [`ChartData::layout`]).
+pub struct DashboardPlot<'a> {
+    /// Top-left origin of the plot within the dashboard, in pixels.
+    pub origin: (f64, f64),
+    /// The plot's marks (each a [`ChartData`] laid out in the plot's local space).
+    pub data: Vec<&'a ChartData<'a>>,
+}
+
+/// Compose multiple plots into one dashboard scene.
+///
+/// Each plot is rendered independently in its own local coordinate space (its
+/// own axes/grid/legend, with domains unioned only *within* the plot — never
+/// across plots), then translated to its origin. A white background fills the
+/// whole dashboard first so inter-plot gaps aren't transparent.
+///
+/// This is the headless composition used to verify multi-view rendering; the
+/// live window hosts one element per plot rather than a single composite (so
+/// each plot keeps independent interaction), but both share this per-plot
+/// scene-building path.
+pub fn build_dashboard_scene(width: f64, height: f64, plots: &[DashboardPlot<'_>]) -> Scene {
+    let mut scene = Scene::new();
+    render_background(&mut scene, &ChartLayout::new(width, height));
+    for plot in plots {
+        if plot.data.is_empty() {
+            continue;
+        }
+        let (plot_scene, _scales) = build_multi_mark_scene(&plot.data);
+        scene.append(
+            &plot_scene,
+            Some(Affine::translate((plot.origin.0, plot.origin.1))),
+        );
+    }
+    scene
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,6 +324,67 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
     use arrow::record_batch::RecordBatch;
     use std::sync::Arc;
+
+    #[test]
+    fn mvdash_dashboard_scene_composes_independent_plots() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])),
+                Arc::new(Float64Array::from(vec![10.0, 20.0, 30.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        let dot = DotRenderer;
+        let d0 = ChartData {
+            batch: &batch,
+            channel_map: &cm,
+            renderer: &dot,
+            layout: ChartLayout::new(300.0, 200.0),
+            view_extent: None,
+            highlight: None,
+        };
+        let d1 = ChartData {
+            batch: &batch,
+            channel_map: &cm,
+            renderer: &dot,
+            layout: ChartLayout::new(300.0, 200.0),
+            view_extent: None,
+            highlight: None,
+        };
+
+        let two = build_dashboard_scene(
+            600.0,
+            200.0,
+            &[
+                DashboardPlot { origin: (0.0, 0.0), data: vec![&d0] },
+                DashboardPlot { origin: (300.0, 0.0), data: vec![&d1] },
+            ],
+        );
+        let one = build_dashboard_scene(
+            600.0,
+            200.0,
+            &[DashboardPlot { origin: (0.0, 0.0), data: vec![&d0] }],
+        );
+        assert!(
+            two.encoding().path_tags.len() > one.encoding().path_tags.len(),
+            "two composed plots produce more geometry than one"
+        );
+
+        // An empty dashboard still paints its background.
+        let empty = build_dashboard_scene(600.0, 200.0, &[]);
+        assert!(
+            empty.encoding().path_tags.len() > 0,
+            "dashboard background fills even with no plots"
+        );
+    }
 
     #[test]
     fn gpu_ac08_build_dot_chart_scene() {

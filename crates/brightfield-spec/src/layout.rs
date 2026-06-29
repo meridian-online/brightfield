@@ -273,6 +273,57 @@ fn layout_vspace(space: &SpaceNode, x: f64, y: f64) -> LayoutNode {
 }
 
 // ---------------------------------------------------------------------------
+// Plot placement (multi-view)
+// ---------------------------------------------------------------------------
+
+/// A plot leaf with its component-path identity and positioned rect.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlacedPlot {
+    /// Component path of the plot node (e.g. `root`, `root/hconcat[0]`).
+    /// Matches `brightfield_sql::collect_plot_groups`' `plot_path`, so a
+    /// positioned plot joins back to its marks' data.
+    pub path: String,
+    /// The plot's position and size within the viewport.
+    pub rect: Rect,
+}
+
+/// The positioned plot leaves of a spec, each with its component-path identity.
+///
+/// This is the multi-view consumer's view of the layout — "where does each plot
+/// go, and which plot is it?" The `path` join key matches the per-plot mark
+/// grouping, so a renderer can place each plot's scene at its rect.
+#[must_use]
+pub fn placed_plots(spec: &Spec, viewport: Rect) -> Vec<PlacedPlot> {
+    let mut out = Vec::new();
+    if let Some(tree) = compute_layout(spec, viewport) {
+        collect_placed_plots(&tree, "root", &mut out);
+    }
+    out
+}
+
+fn collect_placed_plots(node: &LayoutNode, path: &str, out: &mut Vec<PlacedPlot>) {
+    match node {
+        LayoutNode::Plot { rect, .. } => out.push(PlacedPlot {
+            path: path.to_string(),
+            rect: *rect,
+        }),
+        LayoutNode::HConcat { children, .. } => {
+            for (i, child) in children.iter().enumerate() {
+                collect_placed_plots(child, &format!("{path}/hconcat[{i}]"), out);
+            }
+        }
+        LayoutNode::VConcat { children, .. } => {
+            for (i, child) in children.iter().enumerate() {
+                collect_placed_plots(child, &format!("{path}/vconcat[{i}]"), out);
+            }
+        }
+        // Non-plot leaves (spacers, standalone legends/inputs/marks) are not
+        // plot render units; ignored here.
+        _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -282,6 +333,35 @@ mod tests {
     use crate::ast::*;
     use crate::parse::{parse_spec, Format};
     use indexmap::IndexMap;
+
+    // multi-view: placed_plots joins identity to positioned rects
+    #[test]
+    fn mvdash_placed_plots_hconcat_paths_and_rects() {
+        let yaml = r#"
+data:
+  t:
+    - { x: 1, y: 2 }
+hconcat:
+  - plot:
+      - { mark: dot, data: { from: t }, x: x, y: y }
+    width: 300
+    height: 200
+  - plot:
+      - { mark: line, data: { from: t }, x: x, y: y }
+    width: 300
+    height: 200
+"#;
+        let parsed = parse_spec(yaml, Format::Yaml).expect("parse");
+        let plots = placed_plots(&parsed.spec, Rect::new(0.0, 0.0, 0.0, 0.0));
+
+        assert_eq!(plots.len(), 2, "two plots placed");
+        // Paths match collect_plot_groups' plot_path so data joins to position.
+        assert_eq!(plots[0].path, "root/hconcat[0]");
+        assert_eq!(plots[1].path, "root/hconcat[1]");
+        // hconcat stacks left-to-right with declared sizes.
+        assert_eq!(plots[0].rect, Rect::new(0.0, 0.0, 300.0, 200.0));
+        assert_eq!(plots[1].rect, Rect::new(300.0, 0.0, 300.0, 200.0));
+    }
 
     // ac-01: Rect struct
     #[test]

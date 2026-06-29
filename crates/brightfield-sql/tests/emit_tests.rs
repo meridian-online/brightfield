@@ -342,3 +342,60 @@ fn dfsql_unknown_extension_errors() {
         other => panic!("Expected UnknownFormat, got: {other}"),
     }
 }
+
+// ── multi-view: per-plot mark grouping ──────────────────────────────────────
+
+#[test]
+fn mvdash_collect_plot_groups_hconcat_two_plots() {
+    use brightfield_sql::{collect_marks, collect_plot_groups};
+    use brightfield_spec::parse_spec;
+    use brightfield_spec::parse::Format;
+
+    // hconcat of two plots: the first owns two marks, the second one.
+    let yaml = r#"
+data:
+  t:
+    - { x: 1, y: 2 }
+hconcat:
+  - plot:
+      - { mark: dot, data: { from: t }, x: x, y: y }
+      - { mark: line, data: { from: t }, x: x, y: y }
+  - plot:
+      - { mark: barY, data: { from: t }, x: x, y: y }
+"#;
+    let parsed = parse_spec(yaml, Format::Yaml).expect("parse");
+    let groups = collect_plot_groups(&parsed.spec);
+
+    assert_eq!(groups.len(), 2, "two plots → two groups");
+    // Marks in the SAME plot stay grouped (the per-mark plot[i] segment is an
+    // item index, not the plot's identity).
+    assert_eq!(groups[0].mark_indices, vec![0, 1], "first plot owns marks 0,1");
+    assert_eq!(groups[1].mark_indices, vec![2], "second plot owns mark 2");
+    // Plot path = the plot node's container path (joins to the layout tree).
+    assert_eq!(groups[0].plot_path, "root/hconcat[0]");
+    assert_eq!(groups[1].plot_path, "root/hconcat[1]");
+    // Indices align with the flat execute order.
+    assert_eq!(collect_marks(&parsed.spec).len(), 3);
+}
+
+#[test]
+fn mvdash_collect_plot_groups_single_top_level_plot() {
+    use brightfield_sql::collect_plot_groups;
+    use brightfield_spec::parse_spec;
+    use brightfield_spec::parse::Format;
+
+    let yaml = r#"
+data:
+  t:
+    - { x: 1, y: 2 }
+plot:
+  - { mark: dot, data: { from: t }, x: x, y: y }
+  - { mark: line, data: { from: t }, x: x, y: y }
+"#;
+    let parsed = parse_spec(yaml, Format::Yaml).expect("parse");
+    let groups = collect_plot_groups(&parsed.spec);
+
+    assert_eq!(groups.len(), 1, "single top-level plot → one group");
+    assert_eq!(groups[0].mark_indices, vec![0, 1]);
+    assert_eq!(groups[0].plot_path, "root");
+}

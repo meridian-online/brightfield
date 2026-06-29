@@ -298,6 +298,103 @@ fn collect_marks_with_paths_in<'a>(
     }
 }
 
+/// A plot and the flat mark indices it owns.
+///
+/// `mark_indices` are indices into the depth-first mark order produced by
+/// [`collect_marks`] — i.e. the same order the engine executes and returns
+/// results in — so a consumer can pull each plot's results out of a flat
+/// `execute_all` vector. `plot_path` is the plot node's component path (e.g.
+/// `root`, `root/hconcat[0]`), matching the identity attached to the layout
+/// tree, so a positioned plot rect joins back to its data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlotGroup {
+    /// Component path of the owning plot node.
+    pub plot_path: String,
+    /// Indices (into [`collect_marks`] order) of the marks in this plot.
+    pub mark_indices: Vec<usize>,
+}
+
+/// Group the spec's marks by their owning plot, in first-appearance order.
+///
+/// One [`PlotGroup`] per `Plot` node, carrying the flat mark indices of every
+/// mark inside it. Note the path scheme labels each *item* of a plot as
+/// `plot[i]`, so the per-mark path's `plot[i]` segment is an item index, not the
+/// plot's identity — grouping therefore keys on the plot node's own path
+/// (computed by this walk) rather than `analysis::parent_plot`. A mark that is
+/// not inside any plot (degenerate; Mosaic marks normally live in a plot) gets
+/// its own single-mark group so it still renders.
+pub fn collect_plot_groups(spec: &Spec) -> Vec<PlotGroup> {
+    let mut groups: Vec<PlotGroup> = Vec::new();
+    let mut next_mark: usize = 0;
+    if let Some(root) = &spec.root {
+        collect_plot_groups_in(root, "root", None, &mut next_mark, &mut groups);
+    }
+    groups
+}
+
+fn collect_plot_groups_in(
+    component: &Component,
+    path: &str,
+    current_group: Option<usize>,
+    next_mark: &mut usize,
+    groups: &mut Vec<PlotGroup>,
+) {
+    match component {
+        Component::Plot(plot) => {
+            // A plot node is a render unit: open a group keyed on its own path,
+            // then route its marks into it.
+            let group_idx = groups.len();
+            groups.push(PlotGroup {
+                plot_path: path.to_string(),
+                mark_indices: Vec::new(),
+            });
+            for (i, item) in plot.items.iter().enumerate() {
+                collect_plot_groups_in(
+                    item,
+                    &format!("{path}/plot[{i}]"),
+                    Some(group_idx),
+                    next_mark,
+                    groups,
+                );
+            }
+        }
+        Component::HConcat(concat) => {
+            for (i, item) in concat.items.iter().enumerate() {
+                collect_plot_groups_in(
+                    item,
+                    &format!("{path}/hconcat[{i}]"),
+                    current_group,
+                    next_mark,
+                    groups,
+                );
+            }
+        }
+        Component::VConcat(concat) => {
+            for (i, item) in concat.items.iter().enumerate() {
+                collect_plot_groups_in(
+                    item,
+                    &format!("{path}/vconcat[{i}]"),
+                    current_group,
+                    next_mark,
+                    groups,
+                );
+            }
+        }
+        Component::Mark(_) => {
+            let idx = *next_mark;
+            *next_mark += 1;
+            match current_group {
+                Some(g) => groups[g].mark_indices.push(idx),
+                None => groups.push(PlotGroup {
+                    plot_path: path.to_string(),
+                    mark_indices: vec![idx],
+                }),
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Emit a query for a single mark in the spec.
 ///
 /// `param_values` carries current runtime values for param substitution
