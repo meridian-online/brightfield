@@ -33,9 +33,9 @@ background pipeline + `Send` scene hand-off is sound (no deadlock, no Send viola
 no busy-spin, no quit-panic), and `refresh_windows()` drives `ChartView::render →
 ChartElement::paint` to re-read the new scene via the macOS display link.
 
-**Needs a human to confirm in a window**: `cargo run -p brightfield-app --
-examples/scatter.yaml`, edit `examples/scatter.yaml` (e.g. change a `y` value or a
-`group`), save, and watch the chart update.
+**Confirmed working in a real macOS window by the user on 2026-06-29** — editing
+`examples/scatter.yaml` and saving updates the chart without a restart. The
+adversarial review's positive verdict held up at runtime.
 
 ## Review fixes applied
 
