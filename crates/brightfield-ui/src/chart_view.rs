@@ -10,7 +10,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use gpui::{div, px, Context, Entity, IntoElement, ParentElement, Render, Styled, Window};
+use gpui::{div, px, rgb, Context, Entity, IntoElement, ParentElement, Render, Styled, Window};
 
 use brightfield_engine::error::EngineError;
 use brightfield_engine::RecordBatch;
@@ -67,22 +67,33 @@ impl ChartView {
 
 impl Render for ChartView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        // A relative container of the dashboard's size, with each plot absolutely
-        // positioned at its rect. Each ChartElement reads its own ChartState and
-        // wires its own mouse events, so plots don't share interaction.
+        // Fill the window with a white background and centre the dashboard, so a
+        // resized (larger) window shows a clean margin rather than the black void
+        // of the unpainted backing layer. The inner container is the dashboard's
+        // fixed size, with each plot absolutely positioned at its rect; each
+        // ChartElement reads its own ChartState and wires its own mouse events,
+        // so plots don't share interaction.
         div()
-            .relative()
-            .w(px(self.width as f32))
-            .h(px(self.height as f32))
-            .children(self.charts.iter().enumerate().map(|(i, c)| {
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgb(0xffffff))
+            .child(
                 div()
-                    .absolute()
-                    .left(px(c.x as f32))
-                    .top(px(c.y as f32))
-                    .w(px(c.width as f32))
-                    .h(px(c.height as f32))
-                    .child(ChartElement::new(c.state.clone(), i, c.coordinator.clone()))
-            }))
+                    .relative()
+                    .w(px(self.width as f32))
+                    .h(px(self.height as f32))
+                    .children(self.charts.iter().enumerate().map(|(i, c)| {
+                        div()
+                            .absolute()
+                            .left(px(c.x as f32))
+                            .top(px(c.y as f32))
+                            .w(px(c.width as f32))
+                            .h(px(c.height as f32))
+                            .child(ChartElement::new(c.state.clone(), i, c.coordinator.clone()))
+                    })),
+            )
     }
 }
 

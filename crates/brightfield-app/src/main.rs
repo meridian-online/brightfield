@@ -471,8 +471,28 @@ fn main() {
                 })
                 .collect();
 
+            // Size the window's content to the dashboard instead of
+            // WindowOptions::default() (which opened a huge window with the chart
+            // in a corner and a black void around it). `window_bounds` is the
+            // CONTENT rect — the macOS titlebar is added above it — so use the
+            // exact dashboard size. The window is resizable; ChartView fills it
+            // with a white background and centres the plots, so enlarging shows a
+            // clean margin rather than a void (chart-scaling reflow is inc 6).
+            let window_size = gpui::size(gpui::px(width as f32), gpui::px(height as f32));
+            let window_opts = gpui::WindowOptions {
+                window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::centered(
+                    None,
+                    window_size,
+                    cx,
+                ))),
+                titlebar: Some(gpui::TitlebarOptions {
+                    title: Some("Brightfield".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
             let _window = cx
-                .open_window(gpui::WindowOptions::default(), move |_window, cx| {
+                .open_window(window_opts, move |_window, cx| {
                     cx.new(|_| {
                         brightfield_ui::ChartView::new(f64::from(width), f64::from(height), charts)
                     })
