@@ -1,0 +1,44 @@
+meta:
+  title: Cross-filter — Brightfield example
+  description: |
+    Two linked scatter plots over one shared table. Drag an x-range in either
+    plot to filter the other to that range; click a plot to clear its selection.
+    Both plots brush into the same `$brush` selection and are filtered by it, so
+    each cross-filters the other (a plot never filters itself).
+
+      cargo run -p brightfield-app -- examples/crossfilter.yaml
+params:
+  brush: { select: crossfilter }
+data:
+  readings:
+    - { temp: 2,  power: 14, humidity: 70 }
+    - { temp: 5,  power: 18, humidity: 66 }
+    - { temp: 8,  power: 21, humidity: 61 }
+    - { temp: 11, power: 25, humidity: 58 }
+    - { temp: 14, power: 30, humidity: 54 }
+    - { temp: 17, power: 34, humidity: 49 }
+    - { temp: 20, power: 39, humidity: 45 }
+    - { temp: 23, power: 41, humidity: 41 }
+    - { temp: 26, power: 44, humidity: 38 }
+    - { temp: 29, power: 47, humidity: 34 }
+    - { temp: 32, power: 49, humidity: 30 }
+    - { temp: 35, power: 52, humidity: 27 }
+hconcat:
+  - plot:
+      - mark: dot
+        data: { from: readings, filterBy: $brush }
+        x: temp
+        y: power
+      - select: intervalX
+        as: $brush
+    width: 360
+    height: 300
+  - plot:
+      - mark: dot
+        data: { from: readings, filterBy: $brush }
+        x: temp
+        y: humidity
+      - select: intervalX
+        as: $brush
+    width: 360
+    height: 300

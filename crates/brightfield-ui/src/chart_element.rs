@@ -15,6 +15,9 @@
 //! - `prepaint()` — registers a hitbox covering the element bounds
 //! - `paint()` — composite + rasterise + paint + wire mouse events
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use gpui::{
     fill, point, px, size, App, BorderStyle, Bounds, Corners, Element, ElementId, Entity,
     GlobalElementId, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton,
@@ -23,6 +26,7 @@ use gpui::{
 use kurbo::Point;
 
 use crate::chart_state::ChartState;
+use crate::crossfilter::CrossfilterCoordinator;
 use crate::interaction::InteractionState;
 
 /// GPUI element that paints a chart from its `ChartState` and routes mouse input.
@@ -32,19 +36,34 @@ use crate::interaction::InteractionState;
 pub struct ChartElement {
     /// The reactive chart state entity.
     state: Entity<ChartState>,
+    /// This plot's index, both for the stable element id and as the plot index
+    /// into the cross-filter coordinator (charts are hosted in plot order).
+    index: usize,
     /// Stable, per-plot element id. (Sibling charts already get independent
     /// hitboxes — each `insert_hitbox` mints a unique id — so this is for GPUI's
     /// per-element state keying rather than relying on anonymous ids.)
     id: ElementId,
+    /// Shared cross-filter coordinator. When present, a brush release routes
+    /// through it to re-query and re-render subscriber plots; `None` means the
+    /// brush is purely visual (no linked views).
+    coordinator: Option<Rc<RefCell<CrossfilterCoordinator>>>,
 }
 
 impl ChartElement {
     /// Create a chart element bound to the given state entity. `index` gives the
-    /// element a stable id distinguishing it from sibling plots in a dashboard.
-    pub fn new(state: Entity<ChartState>, index: usize) -> Self {
+    /// element a stable id distinguishing it from sibling plots in a dashboard,
+    /// and is the plot index into `coordinator`. `coordinator` is `None` for a
+    /// dashboard that doesn't cross-filter.
+    pub fn new(
+        state: Entity<ChartState>,
+        index: usize,
+        coordinator: Option<Rc<RefCell<CrossfilterCoordinator>>>,
+    ) -> Self {
         Self {
             state,
+            index,
             id: ElementId::from(("brightfield-plot", index)),
+            coordinator,
         }
     }
 }
@@ -158,13 +177,28 @@ impl Element for ChartElement {
             }
         });
 
-        // Mouse up — end an active brush.
+        // Mouse up — commit the brush (cross-filter the linked views, if wired)
+        // then end the visual brush. The commit reads this plot's Brushing rect
+        // BEFORE pointer_up clears it, dispatches the selection through the
+        // coordinator's live Session, and swaps the re-queried subscriber scenes.
         window.on_mouse_event({
             let state = self.state.clone();
+            let coordinator = self.coordinator.clone();
+            let plot_index = self.index;
             move |event: &MouseUpEvent, phase, window, cx| {
                 if phase.bubble() && event.button == MouseButton::Left {
+                    // `committed` is true only for the plot that was actually
+                    // brushed, so an untouched sibling's listener doesn't trigger
+                    // a redundant window refresh.
+                    let committed = match &coordinator {
+                        Some(coord) => {
+                            let interaction = state.read(cx).interaction().clone();
+                            coord.borrow_mut().commit_brush(plot_index, &interaction, cx)
+                        }
+                        None => false,
+                    };
                     let changed = state.update(cx, |s, _| s.pointer_up());
-                    if changed {
+                    if changed || committed {
                         window.refresh();
                     }
                 }
