@@ -224,19 +224,14 @@ fn crossfilter_brush_in_plot_a_filters_plot_b() {
 }
 
 /// Self-exclusion: a plot that brushes AND is filtered by its own selection
-/// must not filter itself. Brushing a sub-range should leave the mark's rows
+/// must not filter itself. Brushing a sub-range leaves the mark's rows
 /// unchanged.
 ///
-/// NB: this currently FAILS and documents a real defect. The contributor
-/// identity stored for a brush is `parent_plot(interactor_path)` = the
-/// interactor's item-index segment (`…/plot[1]`), while the subscriber mark's
-/// `self_source` is `parent_plot(mark_path)` = the mark's item-index segment
-/// (`…/plot[0]`). Within one plot these differ, so `compile_selection`'s
-/// self-exclusion never matches and the plot filters itself. The fix (a stable
-/// plot identity shared by both sides) is the next cross-filter increment;
-/// kept `#[ignore]` as an executable repro until then.
+/// This was the executable repro for the self-exclusion defect (contributor
+/// identity used the interactor's item-index path while the subscriber used the
+/// mark's, so within one plot they never matched). Fixed by `plot_node_path` —
+/// both sides now resolve to the stable plot-node identity.
 #[test]
-#[ignore = "known self-exclusion defect: contributor vs subscriber plot identity mismatch — fix in next increment"]
 fn crossfilter_plot_does_not_filter_itself() {
     let parsed = parse_spec(SELF_SPEC, Format::Yaml).expect("spec parses");
     let spec = parsed.spec;

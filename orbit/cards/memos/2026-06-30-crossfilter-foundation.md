@@ -41,33 +41,36 @@ proof of the chain with a real `Session` and a real analysis-derived
 Coordinates are authored directly in column units; the pixel→data inversion the
 live window needs is deferred (it's tractable — see below).
 
-## Bug surfaced: a plot filters itself (self-exclusion broken)
+## Bug surfaced AND fixed: a plot filtered itself (self-exclusion)
 
 The same test harness, pointed at a single plot that both brushes **and** is
-filtered by its own selection, shows the plot filtering **itself** (`left: 2,
+filtered by its own selection, showed the plot filtering **itself** (`left: 2,
 right: 6`). Under Mosaic `crossfilter` resolution a plot must *not* filter
-itself. Kept as an `#[ignore]`d executable repro
-(`crossfilter_plot_does_not_filter_itself`).
+itself.
 
 Root cause: `analysis::parent_plot()` returns the *item-index* segment of
-whichever component path you hand it. The brush contributor is
+whichever component path you hand it. The brush contributor was
 `parent_plot(interactor_path)` = `…/plot[<interactor item index>]`; the
-subscriber's `self_source` (emit.rs) is `parent_plot(mark_path)` =
+subscriber's `self_source` (emit.rs) was `parent_plot(mark_path)` =
 `…/plot[<mark item index>]`. Within one plot the interactor and the mark have
-different item indices, so the two "plot identities" never match and
-`compile_selection`'s self-exclusion drop never fires.
+different item indices, so the two "plot identities" never matched and
+`compile_selection`'s self-exclusion drop never fired. A pre-existing latent
+defect masked by the `RecordingDispatcher` (which never did real path matching);
+even the engine's own `cfs2_ac05`/`cfs2_ac12` masked it by hand-feeding a
+contributor that happened to equal the *mark's* item-index path (no interactor
+in those specs).
 
-This is a pre-existing latent defect masked by the `RecordingDispatcher` (which
-never did real path matching). The fix is a **stable plot identity** shared by
-both sides — the plot *node* path (the prefix before the synthetic `/plot[i]`),
-which is exactly what `collect_plot_groups` already keys on. Cross-cutting
-(analysis + emit + the cfs tests that hard-code `root/plot[0]` contributors), so
-it's the next increment.
+Fix: a stable **plot-node identity** — `analysis::plot_node_path(path)` returns
+the prefix *before* the synthetic `/plot[i]` segment, so every component in a
+plot (mark or interactor, any item index) maps to the same string, matching the
+identity `collect_plot_groups` already keys on. `build_brushable_bindings` now
+stores it as the contributor, and emit.rs uses it for `self_source`. The engine
+self-exclusion tests were updated to the plot-node contributor form, and the
+repro (`crossfilter_plot_does_not_filter_itself`) now passes.
 
 ## Next increments
 
-1. **Self-exclusion fix** — stable plot identity; un-`#[ignore]` the repro.
-2. **Live window wiring** — keep the `Session` alive past `run_pipeline`
+1. **Live window wiring** — keep the `Session` alive past `run_pipeline`
    (`Rc<RefCell<Session>>` on the main thread, since DuckDB is `!Send`); store
    each plot's `ScaleSet` on its `ChartState` (today discarded as `_scales`);
    invert the pixel brush via `Scale::inverse_f64` (already exists — it accounts
@@ -75,7 +78,7 @@ it's the next increment.
    through `commit_brush_release_multi`/`commit_brush_clear`; bridge returned
    batches back into the subscriber plot's scene via `set_scene` + notify (the
    same swap the hot-reload watcher already uses).
-3. **Clear/retract + watcher reconciliation**, plus an `examples/crossfilter.yaml`
+2. **Clear/retract + watcher reconciliation**, plus an `examples/crossfilter.yaml`
    the window can demonstrate.
 
 ## Deferred / known limits (from the design pass)
