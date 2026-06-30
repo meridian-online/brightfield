@@ -104,7 +104,7 @@ vocab_enum! {
     /// renderer for it.
     pub enum MarkKind {
         // Area / bar / column
-        AreaY => ("areaY", Unimplemented),
+        AreaY => ("areaY", Implemented),
         AreaX => ("areaX", Unimplemented),
         BarY => ("barY", Unimplemented),
         BarX => ("barX", Unimplemented),

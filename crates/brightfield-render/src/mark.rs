@@ -470,6 +470,83 @@ impl MarkRenderer for LineRenderer {
 }
 
 // ---------------------------------------------------------------------------
+// AreaRenderer (areaY)
+// ---------------------------------------------------------------------------
+
+/// Fill alpha for area marks, so an overlaid line or dots stay legible.
+const AREA_FILL_ALPHA: f32 = 0.75;
+
+/// Renders an `areaY` mark: the band between the `y = 0` baseline and the value
+/// line `y(x)`, filled. Points are taken in x-order (like [`LineRenderer`]); the
+/// fill is the resolved colour softened by [`AREA_FILL_ALPHA`].
+pub struct AreaRenderer;
+
+impl MarkRenderer for AreaRenderer {
+    fn render(
+        &self,
+        scene: &mut Scene,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        scales: &ScaleSet,
+        _highlight: Option<&HighlightState>,
+    ) {
+        let x_col = match channel_map.get(Channel::X) {
+            Some(c) => c,
+            None => return,
+        };
+        let y_col = match channel_map.get(Channel::Y) {
+            Some(c) => c,
+            None => return,
+        };
+        let x_scale = match scales.get(Channel::X) {
+            Some(s) => s,
+            None => return,
+        };
+        let y_scale = match scales.get(Channel::Y) {
+            Some(s) => s,
+            None => return,
+        };
+
+        let (x_vals, y_vals) = match (column_as_f64(batch, x_col), column_as_f64(batch, y_col)) {
+            (Some(x), Some(y)) => (x, y),
+            _ => return,
+        };
+
+        // Valid (pixel x, pixel y) pairs, sorted by x (the scale is monotonic).
+        let mut points: Vec<(f64, f64)> = Vec::new();
+        for i in 0..batch.num_rows() {
+            if let (Some(xv), Some(yv)) = (x_vals[i], y_vals[i]) {
+                points.push((x_scale.map_f64(xv), y_scale.map_f64(yv)));
+            }
+        }
+        points.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        if points.len() < 2 {
+            return;
+        }
+
+        // Outline: start on the baseline under the first point, trace the value
+        // line, drop back to the baseline under the last point, and close.
+        let baseline = y_scale.map_f64(0.0);
+        let mut path = BezPath::new();
+        path.move_to((points[0].0, baseline));
+        for &(px, py) in &points {
+            path.line_to((px, py));
+        }
+        path.line_to((points[points.len() - 1].0, baseline));
+        path.close_path();
+
+        let [r, g, b, a] = resolve_colour(scales, channel_map, batch, 0).components;
+        let colour = Color::new([r, g, b, a * AREA_FILL_ALPHA]);
+        scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &path);
+    }
+
+    fn zero_baseline_channel(&self) -> Option<Channel> {
+        // The filled band reaches the y=0 baseline, so the y-domain must include 0.
+        Some(Channel::Y)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Density1DRenderer (density / densityX / densityY)
 // ---------------------------------------------------------------------------
 
@@ -1064,6 +1141,7 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
     v.push((MarkKind::Line, Box::new(LineRenderer)));
     v.push((MarkKind::LineX, Box::new(LineRenderer)));
     v.push((MarkKind::LineY, Box::new(LineRenderer)));
+    v.push((MarkKind::AreaY, Box::new(AreaRenderer)));
     v.push((
         MarkKind::DensityX,
         Box::new(Density1DRenderer { axis: DensityAxis::X }),
@@ -1283,6 +1361,61 @@ mod tests {
             encoding.path_tags.len() > 0,
             "scene should have path tags after rendering 4-point line"
         );
+    }
+
+    // --- mark breadth: areaY ---
+
+    #[test]
+    fn area_renderer_fills_one_band_to_baseline() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![0.0, 1.0, 2.0, 3.0])),
+                Arc::new(Float64Array::from(vec![10.0, 25.0, 15.0, 30.0])),
+            ],
+        )
+        .unwrap();
+
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+
+        let mut scene = Scene::new();
+        AreaRenderer.render(&mut scene, &batch, &cm, &scales, None);
+
+        // The area is a single filled path (baseline → value line → baseline).
+        assert_eq!(count_scene_paths(&scene), 1, "areaY emits one filled path");
+        // The value axis must include zero so the baseline sits on-plot.
+        assert_eq!(AreaRenderer.zero_baseline_channel(), Some(Channel::Y));
+    }
+
+    #[test]
+    fn area_renderer_needs_two_points() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![1.0])),
+                Arc::new(Float64Array::from(vec![10.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+
+        let mut scene = Scene::new();
+        AreaRenderer.render(&mut scene, &batch, &cm, &scales, None);
+        assert_eq!(count_scene_paths(&scene), 0, "a single point can't form an area");
     }
 
     // --- ifb_ac03: HighlightState ---
