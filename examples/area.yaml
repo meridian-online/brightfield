@@ -1,0 +1,32 @@
+meta:
+  title: Area — Brightfield example
+  description: |
+    An `areaY` mark — the filled band between the y=0 baseline and the value
+    line — with a `line` mark drawn on top for a crisp edge.
+
+      cargo run -p brightfield-app -- examples/area.yaml
+data:
+  series:
+    - { t: 0,  v: 12 }
+    - { t: 1,  v: 19 }
+    - { t: 2,  v: 15 }
+    - { t: 3,  v: 27 }
+    - { t: 4,  v: 34 }
+    - { t: 5,  v: 30 }
+    - { t: 6,  v: 41 }
+    - { t: 7,  v: 38 }
+    - { t: 8,  v: 47 }
+    - { t: 9,  v: 43 }
+    - { t: 10, v: 52 }
+    - { t: 11, v: 49 }
+plot:
+  - mark: areaY
+    data: { from: series }
+    x: t
+    y: v
+  - mark: line
+    data: { from: series }
+    x: t
+    y: v
+width: 640
+height: 400

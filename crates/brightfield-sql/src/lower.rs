@@ -296,6 +296,7 @@ pub fn default_lowerers() -> Vec<(MarkKind, Box<dyn MarkLower>)> {
     vec![
         (MarkKind::Dot, Box::new(SimpleLowerer)),
         (MarkKind::Line, Box::new(SimpleLowerer)),
+        (MarkKind::AreaY, Box::new(SimpleLowerer)),
         (MarkKind::BarX, Box::new(SimpleLowerer)),
         (MarkKind::BarY, Box::new(SimpleLowerer)),
         (MarkKind::RegressionY, Box::new(RegressionLowerer)),
@@ -477,6 +478,7 @@ mod tests {
         let kinds: Vec<MarkKind> = registry.iter().map(|(k, _)| *k).collect();
         assert!(kinds.contains(&MarkKind::Dot));
         assert!(kinds.contains(&MarkKind::Line));
+        assert!(kinds.contains(&MarkKind::AreaY));
         assert!(kinds.contains(&MarkKind::BarX));
         assert!(kinds.contains(&MarkKind::BarY));
         assert!(kinds.contains(&MarkKind::RegressionY));
@@ -484,7 +486,7 @@ mod tests {
         assert!(kinds.contains(&MarkKind::DensityX));
         assert!(kinds.contains(&MarkKind::DensityY));
         assert!(kinds.contains(&MarkKind::Density));
-        assert_eq!(kinds.len(), 9);
+        assert_eq!(kinds.len(), 10);
     }
 
     #[test]
