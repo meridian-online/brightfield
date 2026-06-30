@@ -7,6 +7,9 @@
 //! to a GPUI window. ChartView::render() returns a ChartElement that
 //! implements the Element trait.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use gpui::{div, px, Context, Entity, IntoElement, ParentElement, Render, Styled, Window};
 
 use brightfield_engine::error::EngineError;
@@ -16,6 +19,7 @@ use brightfield_spec::analysis::{BrushableBinding, ComponentPath};
 use crate::brush::{brush_rect_to_predicate, BrushKind, ChannelColumns, SelectionDispatcher};
 use crate::chart_element::ChartElement;
 use crate::chart_state::ChartState;
+use crate::crossfilter::CrossfilterCoordinator;
 use crate::interaction::InteractionState;
 
 /// One plot positioned in the dashboard: its rect (in dashboard pixels) and its
@@ -32,6 +36,10 @@ pub struct PlacedChart {
     pub height: f64,
     /// The plot's reactive chart state.
     pub state: Entity<ChartState>,
+    /// Shared cross-filter coordinator, if this dashboard cross-filters. When
+    /// present, a brush release on this plot routes through it (re-query +
+    /// re-render subscribers); when `None`, the brush is purely visual.
+    pub coordinator: Option<Rc<RefCell<CrossfilterCoordinator>>>,
 }
 
 /// GPUI render component for a dashboard: hosts one [`ChartElement`] per plot,
@@ -73,7 +81,7 @@ impl Render for ChartView {
                     .top(px(c.y as f32))
                     .w(px(c.width as f32))
                     .h(px(c.height as f32))
-                    .child(ChartElement::new(c.state.clone(), i))
+                    .child(ChartElement::new(c.state.clone(), i, c.coordinator.clone()))
             }))
     }
 }

@@ -11,16 +11,18 @@ use std::env;
 use std::path::Path;
 use std::process;
 
-use brightfield_engine::Engine;
+use brightfield_engine::{Engine, Session};
 use brightfield_render::channel::ChannelMap;
 use brightfield_render::layout::ChartLayout;
 use brightfield_render::mark::{default_renderers, find_renderer};
+use brightfield_render::scale::ScaleSet;
 use brightfield_render::scene::{build_multi_mark_scene, compose_dashboard, ChartData};
 use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::layout::{placed_plots, Rect};
 use brightfield_spec::parse_spec_path;
-use brightfield_spec::vocab::MarkKind;
 use brightfield_sql::{collect_marks, collect_plot_groups};
+use brightfield_ui::chart_view::BrushBinding;
+use brightfield_ui::{CrossfilterCoordinator, LivePlot, MarkInput};
 
 /// Concatenate the record batches from one mark's query into a single batch.
 ///
@@ -71,22 +73,61 @@ struct Dashboard {
     plots: Vec<PlotRender>,
 }
 
-/// Run the spec-to-scene pipeline, returning a [`Dashboard`] — one independently
-/// rendered scene per plot (each with its own axes/scales), positioned per the
-/// layout pass. A single plot is just a one-plot dashboard.
+/// Live engine + render state kept alive for in-window interaction (cross-filter).
+/// Only the window path uses this; the headless/PNG path and the hot-reload
+/// watcher drop it — dropping the non-`Send` [`Session`] is what lets the watcher
+/// run the pipeline off the main thread.
+struct LiveParts {
+    session: Session,
+    /// Per flat mark index (aligned with `collect_marks` order).
+    marks: Vec<MarkInput>,
+    /// Per plot, aligned 1:1 with `Dashboard.plots`.
+    plots: Vec<LivePlotMeta>,
+}
+
+/// Per-plot live metadata captured during rendering, joined to its `ChartState`
+/// entity in `main` to build the [`CrossfilterCoordinator`].
+struct LivePlotMeta {
+    path: String,
+    mark_indices: Vec<usize>,
+    layout: ChartLayout,
+    bindings: Vec<BrushBinding>,
+    scales: ScaleSet,
+}
+
+/// Thin wrapper for the headless/PNG path and the hot-reload watcher: runs the
+/// full pipeline and returns just the renderable [`Dashboard`], dropping the live
+/// engine state. Dropping the non-`Send` [`Session`] here is what lets the
+/// watcher run this off the main thread (a `Dashboard` is `Send`).
 ///
 /// Returns `Err` (rather than exiting) on any failure, so callers can recover —
 /// the hot-reload watcher keeps the last good chart when a mid-edit save is
 /// momentarily invalid. `main` turns the initial error into a clean exit.
 fn run_pipeline(spec_path: &str) -> Result<Dashboard, String> {
+    build_everything(spec_path).map(|(dashboard, _live)| dashboard)
+}
+
+/// Run the spec-to-scene pipeline, returning a [`Dashboard`] — one independently
+/// rendered scene per plot (each with its own axes/scales), positioned per the
+/// layout pass — AND the live engine/render state ([`LiveParts`]) the window
+/// needs for in-window cross-filtering. A single plot is just a one-plot
+/// dashboard.
+fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
     // 1. Parse the spec.
     let parsed = parse_spec_path(spec_path).map_err(|e| format!("parse error: {e}"))?;
     for w in &parsed.warnings {
         eprintln!("parse warning: {w:?}");
     }
 
-    // 2. Analyse the spec.
+    // 2. Analyse. Convert the brush bindings (one per brushable interactor,
+    //    each carrying its plot-node contributor identity) before `analysis` is
+    //    moved into the engine.
     let analysis = analyse_spec(&parsed.spec).map_err(|e| format!("analysis error: {e}"))?;
+    let brush_bindings: Vec<(String, BrushBinding)> = analysis
+        .brushable_bindings
+        .iter()
+        .map(|bb| (bb.parent_plot.0.clone(), BrushBinding::from(bb)))
+        .collect();
 
     // 3. Load into engine (creates DuckDB views).
     let engine = Engine::new();
@@ -97,36 +138,39 @@ fn run_pipeline(spec_path: &str) -> Result<Dashboard, String> {
     let mut session = load.session;
 
     // 4. Execute all marks, building per-mark inputs indexed by the flat mark
-    //    order (= execution order). A failed mark becomes None and is skipped
-    //    (AC-05: graceful failure). Batches are concatenated so a >2048-row
-    //    result isn't silently truncated to its first chunk.
+    //    order (= execution order). A failed mark keeps `batch: None` and is
+    //    skipped when rendering (AC-05: graceful failure); its channels/kind are
+    //    still recorded so a later cross-filter re-execution can render it.
+    //    Batches are concatenated so a >2048-row result isn't truncated.
     let results = session.execute_all();
     let marks = collect_marks(&parsed.spec);
-    let mut mark_inputs: Vec<Option<(arrow::record_batch::RecordBatch, ChannelMap, MarkKind)>> =
-        Vec::with_capacity(marks.len());
+    let mut mark_inputs: Vec<MarkInput> = Vec::with_capacity(marks.len());
     for (i, result) in results.into_iter().enumerate() {
-        match result {
-            Ok(batches) => match concat_result_batches(batches) {
-                Some(batch) => {
-                    let mark = marks[i];
-                    mark_inputs.push(Some((batch, ChannelMap::from_mark(mark), mark.kind)));
-                }
-                None => mark_inputs.push(None),
-            },
+        let mark = marks[i];
+        let batch = match result {
+            Ok(batches) => concat_result_batches(batches),
             Err(e) => {
                 eprintln!("warning: skipping mark {i}: {e}");
-                mark_inputs.push(None);
+                None
             }
-        }
+        };
+        mark_inputs.push(MarkInput {
+            batch,
+            channels: ChannelMap::from_mark(mark),
+            kind: mark.kind,
+        });
     }
 
     // 5. Lay the plots out, group each plot's marks, and build one scene per
-    //    plot (its own axes/scales) at the position from the layout pass.
+    //    plot (its own axes/scales) at the position from the layout pass. Keep
+    //    each plot's inferred scales (for pixel→data brush inversion) and the
+    //    brush bindings it contributes, for the live cross-filter coordinator.
     let placed = placed_plots(&parsed.spec, Rect::new(0.0, 0.0, 0.0, 0.0));
     let groups = collect_plot_groups(&parsed.spec);
     let registry = default_renderers();
 
     let mut plots: Vec<PlotRender> = Vec::new();
+    let mut live_plots: Vec<LivePlotMeta> = Vec::new();
     for plot in &placed {
         let group = match groups.iter().find(|g| g.plot_path == plot.path) {
             Some(g) => g,
@@ -137,18 +181,19 @@ fn run_pipeline(spec_path: &str) -> Result<Dashboard, String> {
             .mark_indices
             .iter()
             .filter_map(|&mi| {
-                let (batch, cm, kind) = mark_inputs[mi].as_ref()?;
-                match find_renderer(&registry, *kind) {
+                let m = mark_inputs.get(mi)?;
+                let batch = m.batch.as_ref()?;
+                match find_renderer(&registry, m.kind) {
                     Some(renderer) => Some(ChartData {
                         batch,
-                        channel_map: cm,
+                        channel_map: &m.channels,
                         renderer,
                         layout: layout.clone(),
                         view_extent: None,
                         highlight: None,
                     }),
                     None => {
-                        eprintln!("warning: no renderer for mark kind {kind:?} — skipping");
+                        eprintln!("warning: no renderer for mark kind {:?} — skipping", m.kind);
                         None
                     }
                 }
@@ -158,7 +203,17 @@ fn run_pipeline(spec_path: &str) -> Result<Dashboard, String> {
             continue;
         }
         let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
-        let (scene, _scales) = build_multi_mark_scene(&refs);
+        let (scene, scales) = build_multi_mark_scene(&refs);
+        drop(refs);
+        drop(chart_data);
+
+        // Bindings whose contributor identity is this plot's node path.
+        let bindings: Vec<BrushBinding> = brush_bindings
+            .iter()
+            .filter(|(contributor, _)| *contributor == plot.path)
+            .map(|(_, b)| b.clone())
+            .collect();
+
         plots.push(PlotRender {
             path: plot.path.clone(),
             x: plot.rect.x,
@@ -166,6 +221,13 @@ fn run_pipeline(spec_path: &str) -> Result<Dashboard, String> {
             width: plot.rect.width.ceil() as u32,
             height: plot.rect.height.ceil() as u32,
             scene,
+        });
+        live_plots.push(LivePlotMeta {
+            path: plot.path.clone(),
+            mark_indices: group.mark_indices.clone(),
+            layout,
+            bindings,
+            scales,
         });
     }
 
@@ -183,7 +245,14 @@ fn run_pipeline(spec_path: &str) -> Result<Dashboard, String> {
         .map(|p| p.rect.y + p.rect.height)
         .fold(0.0_f64, f64::max)
         .ceil() as u32;
-    Ok(Dashboard { width, height, plots })
+    Ok((
+        Dashboard { width, height, plots },
+        LiveParts {
+            session,
+            marks: mark_inputs,
+            plots: live_plots,
+        },
+    ))
 }
 
 /// Last-modified time of the spec file, for change detection. `None` if the
@@ -292,8 +361,8 @@ fn main() {
     }
     let spec_path = &args[1];
 
-    let dashboard = match run_pipeline(spec_path) {
-        Ok(d) => d,
+    let (dashboard, live) = match build_everything(spec_path) {
+        Ok(parts) => parts,
         Err(e) => {
             eprintln!("{e}");
             process::exit(1);
@@ -359,32 +428,48 @@ fn main() {
         let app = gpui::Application::with_platform(Rc::new(gpui_macos::MacPlatform::new(false)));
         let spec_path = spec_path.to_string();
         let Dashboard { width, height, plots } = dashboard;
+        let LiveParts { session, marks, plots: live_plots_meta } = live;
         app.run(move |cx| {
-            // One ChartState (and element) per plot; the watcher tracks each by
-            // its stable path + geometry for hot-reload.
-            let mut charts: Vec<brightfield_ui::PlacedChart> = Vec::with_capacity(plots.len());
+            // One ChartState per plot; the watcher tracks each by its stable
+            // path + geometry for hot-reload.
             let mut watched: Vec<WatchedPlot> = Vec::with_capacity(plots.len());
             for p in plots {
                 let (x, y, w, h) = (p.x, p.y, f64::from(p.width), f64::from(p.height));
                 let state = cx.new(|_| {
                     brightfield_ui::ChartState::new(p.scene, p.width, p.height, renderer.clone())
                 });
-                watched.push(WatchedPlot {
-                    path: p.path,
-                    x,
-                    y,
-                    width: w,
-                    height: h,
-                    state: state.clone(),
-                });
-                charts.push(brightfield_ui::PlacedChart {
-                    x,
-                    y,
-                    width: w,
-                    height: h,
-                    state,
-                });
+                watched.push(WatchedPlot { path: p.path, x, y, width: w, height: h, state });
             }
+
+            // Build the live cross-filter coordinator, joining each plot's
+            // metadata to its state entity (same order as the dashboard plots).
+            // `None` when nothing brushes — the brush then stays purely visual.
+            let live_plots: Vec<LivePlot> = live_plots_meta
+                .into_iter()
+                .zip(watched.iter())
+                .map(|(meta, w)| LivePlot {
+                    path: meta.path,
+                    mark_indices: meta.mark_indices,
+                    layout: meta.layout,
+                    bindings: meta.bindings,
+                    scales: meta.scales,
+                    state: w.state.clone(),
+                })
+                .collect();
+            let coordinator = CrossfilterCoordinator::new(session, marks, live_plots);
+
+            // One placed chart per plot, each wired to the shared coordinator.
+            let charts: Vec<brightfield_ui::PlacedChart> = watched
+                .iter()
+                .map(|w| brightfield_ui::PlacedChart {
+                    x: w.x,
+                    y: w.y,
+                    width: w.width,
+                    height: w.height,
+                    state: w.state.clone(),
+                    coordinator: coordinator.clone(),
+                })
+                .collect();
 
             let _window = cx
                 .open_window(gpui::WindowOptions::default(), move |_window, cx| {
@@ -401,7 +486,7 @@ fn main() {
 
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = dashboard;
+        let _ = (dashboard, live);
         eprintln!(
             "GPUI window display is currently macOS-only. \
              Re-run with BRIGHTFIELD_DUMP_PNG=out.png to render the chart to an image."

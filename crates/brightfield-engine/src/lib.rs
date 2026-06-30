@@ -17,6 +17,26 @@ pub use duckdb::arrow::record_batch::RecordBatch;
 pub use brightfield_sql::ir::Predicate as SqlPredicate;
 use duckdb::Connection;
 
+/// Concatenate a query's result chunks into a single [`RecordBatch`], or `None`
+/// if empty. A DuckDB result arrives as one batch per ~2048 rows; renderers and
+/// the cross-filter coordinator want one batch per mark. Uses duckdb's bundled
+/// Arrow so callers in crates without a direct `arrow` dependency (e.g.
+/// `brightfield-ui`) can concatenate re-execution results. Falls back to the
+/// first chunk if concatenation fails (schema mismatch is not expected).
+pub fn concat_batches(batches: Vec<RecordBatch>) -> Option<RecordBatch> {
+    match batches.len() {
+        0 => None,
+        1 => batches.into_iter().next(),
+        _ => {
+            let schema = batches[0].schema();
+            match duckdb::arrow::compute::concat_batches(&schema, &batches) {
+                Ok(batch) => Some(batch),
+                Err(_) => batches.into_iter().next(),
+            }
+        }
+    }
+}
+
 use brightfield_spec::analysis::{ComponentPath, SpecAnalysis};
 use brightfield_spec::ast::{Component, Spec, SpecValue};
 use brightfield_spec::parse::ParseWarning;
