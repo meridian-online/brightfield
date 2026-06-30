@@ -226,22 +226,24 @@ impl MarkLower for DensityLowerer {
     }
 }
 
-/// Build a 1D density plan: width_bucket on `col`, group by bucket, return
+/// Portable 1-based equiwidth bucket of `col` over its `[min, max]` range into
+/// `bins` buckets, cast to DOUBLE. Replaces DuckDB's `width_bucket(col, lo, hi,
+/// n)`, which the bundled libduckdb lacks (first-render follow-up #4 — density
+/// silently rendered nothing). `width_bucket(v, lo, hi, n)` ==
+/// `floor((v - lo) / (hi - lo) * n) + 1`; `nullif` guards the all-equal case.
+fn equiwidth_bucket(table: &str, col: &str, bins: i64) -> String {
+    let lo = format!("(SELECT min(\"{col}\") FROM \"{table}\")");
+    let hi = format!("(SELECT max(\"{col}\") FROM \"{table}\")");
+    format!(
+        "CAST(floor((\"{col}\" - {lo}) / nullif({hi} - {lo}, 0) * {bins}) + 1 AS DOUBLE)"
+    )
+}
+
+/// Build a 1D density plan: equiwidth bucket on `col`, group by bucket, return
 /// (centre, count).
 fn build_density_1d(table: &str, col: &str, alias: &str, bins: i64) -> QueryPlan {
-    // We compute the bin centre as `min + (bucket - 0.5) * (max - min) / bins`.
-    // For SQL simplicity we use width_bucket against literal 0..bins range
-    // assuming the values are already normalised to that range — for v1 we
-    // emit the actual bucket centre column via a subquery scoped expression.
-    //
     // The render-side renderer expects `<alias>` (Float64) and `count` (Float64-ish).
-    // We coerce via DuckDB casts.
-    let bucket_expr = format!(
-        "CAST(width_bucket(\"{col}\", \
-        (SELECT min(\"{col}\") FROM \"{table}\"), \
-        (SELECT max(\"{col}\") FROM \"{table}\"), \
-        {bins}) AS DOUBLE) AS \"{alias}\""
-    );
+    let bucket_expr = format!("{} AS \"{alias}\"", equiwidth_bucket(table, col, bins));
     let count_expr = format!("CAST(COUNT(*) AS DOUBLE) AS count");
 
     QueryPlan::Aggregation {
@@ -256,20 +258,10 @@ fn build_density_1d(table: &str, col: &str, alias: &str, bins: i64) -> QueryPlan
     }
 }
 
-/// Build a 2D density plan: width_bucket on both x and y, group by both.
+/// Build a 2D density plan: equiwidth bucket on both x and y, group by both.
 fn build_density_2d(table: &str, x_col: &str, y_col: &str, bins: i64) -> QueryPlan {
-    let x_bucket = format!(
-        "CAST(width_bucket(\"{x_col}\", \
-        (SELECT min(\"{x_col}\") FROM \"{table}\"), \
-        (SELECT max(\"{x_col}\") FROM \"{table}\"), \
-        {bins}) AS DOUBLE) AS x_bin"
-    );
-    let y_bucket = format!(
-        "CAST(width_bucket(\"{y_col}\", \
-        (SELECT min(\"{y_col}\") FROM \"{table}\"), \
-        (SELECT max(\"{y_col}\") FROM \"{table}\"), \
-        {bins}) AS DOUBLE) AS y_bin"
-    );
+    let x_bucket = format!("{} AS x_bin", equiwidth_bucket(table, x_col, bins));
+    let y_bucket = format!("{} AS y_bin", equiwidth_bucket(table, y_col, bins));
     let count_expr = format!("CAST(COUNT(*) AS DOUBLE) AS count");
 
     QueryPlan::Aggregation {
@@ -667,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn gomb_ac07_density_lowerer_1d_x_uses_width_bucket() {
+    fn gomb_ac07_density_lowerer_1d_x_uses_equiwidth_bucket() {
         let mark = make_mark_with_options(
             MarkKind::DensityX,
             vec![("x", SpecValue::String("weight".to_string()))],
@@ -685,7 +677,8 @@ mod tests {
                 ..
             } => {
                 assert_eq!(group_by.len(), 1);
-                assert!(group_by[0].contains("width_bucket"));
+                // Portable equiwidth binning (no width_bucket — see follow-up #4).
+                assert!(group_by[0].contains("floor"));
                 assert!(group_by[0].contains("x_bin"));
                 assert_eq!(aggregates.len(), 1);
                 assert!(aggregates[0].contains("COUNT"));

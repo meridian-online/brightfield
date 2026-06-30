@@ -619,8 +619,9 @@ plot:
 "#;
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
         let emitted = emit_query(&spec, 0, None, None).expect("emit");
-        // Stable shape: filter NULLs, group by width_bucket, count.
-        assert!(emitted.sql.contains("width_bucket"));
+        // Stable shape: filter NULLs, group by an equiwidth bucket, count.
+        // (Portable `floor(...)` binning, not width_bucket — follow-up #4.)
+        assert!(emitted.sql.contains("floor"));
         assert!(emitted.sql.contains("\"weight\""));
         assert!(emitted.sql.contains("x_bin"));
         assert!(emitted.sql.contains("COUNT(*)"));
