@@ -267,6 +267,59 @@ const CATEGORICAL_PALETTE: &[[f32; 4]] = &[
 /// - Timestamp -> TimeScale
 ///
 /// `x_range` and `y_range` are the pixel ranges for x and y axes respectively.
+/// Fold any literal channel values (e.g. `y: 0`) into the scale set so a
+/// constant-positioned mark (like a baseline rule) is placed correctly. A
+/// literal on a positional axis extends an existing Linear scale's domain to
+/// include the value (so an off-range literal stays on-plot), or — when no
+/// column gave that axis a scale — synthesises a Linear scale around the value.
+/// Non-linear (Band/Time/Colour) scales are left unchanged.
+fn extend_scales_with_literals<I: Iterator<Item = (Channel, f64)>>(
+    set: &mut ScaleSet,
+    literals: I,
+    x_range: (f64, f64),
+    y_range: (f64, f64),
+) {
+    for (channel, value) in literals {
+        let (range_start, range_end) = match channel {
+            Channel::X | Channel::X1 | Channel::X2 => x_range,
+            Channel::Y | Channel::Y1 | Channel::Y2 => y_range,
+            _ => continue, // literals only position on x/y axes
+        };
+        let new_scale = match set.get(channel) {
+            Some(Scale::Linear {
+                domain_min,
+                domain_max,
+                ..
+            }) => Some(Scale::Linear {
+                domain_min: domain_min.min(value),
+                domain_max: domain_max.max(value),
+                range_start,
+                range_end,
+            }),
+            Some(_) => None, // non-linear axis: can't merge a numeric literal
+            None => {
+                // No column scale on this axis — synthesise one spanning 0..value
+                // (baseline-friendly), guarding against a zero span.
+                let (lo, hi) = (value.min(0.0), value.max(0.0));
+                let (lo, hi) = if (hi - lo).abs() < f64::EPSILON {
+                    (value - 1.0, value + 1.0)
+                } else {
+                    (lo, hi)
+                };
+                Some(Scale::Linear {
+                    domain_min: lo,
+                    domain_max: hi,
+                    range_start,
+                    range_end,
+                })
+            }
+        };
+        if let Some(s) = new_scale {
+            set.insert(channel, s);
+        }
+    }
+}
+
 pub fn infer_scales(
     batch: &RecordBatch,
     channel_map: &ChannelMap,
@@ -293,6 +346,7 @@ pub fn infer_scales(
         }
     }
 
+    extend_scales_with_literals(&mut set, channel_map.literals_iter(), x_range, y_range);
     set
 }
 
@@ -350,6 +404,9 @@ pub fn infer_scales_multi(
         }
     }
 
+    for (_, cm) in entries {
+        extend_scales_with_literals(&mut set, cm.literals_iter(), x_range, y_range);
+    }
     set
 }
 

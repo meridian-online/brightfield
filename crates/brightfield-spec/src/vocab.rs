@@ -127,8 +127,8 @@ vocab_enum! {
         RectY => ("rectY", Unimplemented),
         // Rules / ticks
         Rule => ("rule", Unimplemented),
-        RuleX => ("ruleX", Unimplemented),
-        RuleY => ("ruleY", Unimplemented),
+        RuleX => ("ruleX", Implemented),
+        RuleY => ("ruleY", Implemented),
         TickX => ("tickX", Unimplemented),
         TickY => ("tickY", Unimplemented),
         // Text

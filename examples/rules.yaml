@@ -1,0 +1,40 @@
+meta:
+  title: Rules — Brightfield example
+  description: |
+    A scatter (dot) with reference lines (ruleY). Rules are positioned by either
+    a constant LITERAL channel value (e.g. `y: 30` — a baseline/threshold) or a
+    data column (one line per row). A rule spans the perpendicular axis, so it
+    lives in a plot that also gives that axis a scale (here, the scatter's x).
+
+      cargo run -p brightfield-app -- examples/rules.yaml
+data:
+  points:
+    - { x: 1,  y: 14 }
+    - { x: 2,  y: 22 }
+    - { x: 3,  y: 19 }
+    - { x: 4,  y: 31 }
+    - { x: 5,  y: 28 }
+    - { x: 6,  y: 37 }
+    - { x: 7,  y: 33 }
+    - { x: 8,  y: 44 }
+    - { x: 9,  y: 41 }
+    - { x: 10, y: 48 }
+  thresholds:
+    - { level: 25 }
+    - { level: 40 }
+plot:
+  # The scatter — provides the x (span) and y scales.
+  - mark: dot
+    data: { from: points }
+    x: x
+    y: y
+  # A constant baseline at y = 30 — a LITERAL channel value (one line).
+  - mark: ruleY
+    data: { from: points }
+    y: 30
+  # Two thresholds from a column — one horizontal line per row.
+  - mark: ruleY
+    data: { from: thresholds }
+    y: level
+width: 640
+height: 400
