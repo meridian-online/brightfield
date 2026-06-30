@@ -470,16 +470,31 @@ impl MarkRenderer for LineRenderer {
 }
 
 // ---------------------------------------------------------------------------
-// AreaRenderer (areaY)
+// AreaRenderer (areaY / areaX)
 // ---------------------------------------------------------------------------
 
 /// Fill alpha for area marks, so an overlaid line or dots stay legible.
 const AREA_FILL_ALPHA: f32 = 0.75;
 
-/// Renders an `areaY` mark: the band between the `y = 0` baseline and the value
-/// line `y(x)`, filled. Points are taken in x-order (like [`LineRenderer`]); the
-/// fill is the resolved colour softened by [`AREA_FILL_ALPHA`].
-pub struct AreaRenderer;
+/// Which axis an area mark is oriented along.
+#[derive(Clone, Copy)]
+pub enum AreaAxis {
+    /// `areaY`: fill vertically between the `y = 0` baseline and the value line
+    /// `y(x)`; points ordered along x.
+    Y,
+    /// `areaX`: fill horizontally between the `x = 0` baseline and the value
+    /// line `x(y)`; points ordered along y.
+    X,
+}
+
+/// Renders an area mark: the band between a zero baseline and the value line,
+/// filled. Points are taken in order along the position axis (like
+/// [`LineRenderer`]); the fill is the resolved colour softened by
+/// [`AREA_FILL_ALPHA`].
+pub struct AreaRenderer {
+    /// Orientation — `Y` for areaY, `X` for areaX.
+    pub axis: AreaAxis,
+}
 
 impl MarkRenderer for AreaRenderer {
     fn render(
@@ -512,27 +527,48 @@ impl MarkRenderer for AreaRenderer {
             _ => return,
         };
 
-        // Valid (pixel x, pixel y) pairs, sorted by x (the scale is monotonic).
+        // Valid (pixel x, pixel y) pairs.
         let mut points: Vec<(f64, f64)> = Vec::new();
         for i in 0..batch.num_rows() {
             if let (Some(xv), Some(yv)) = (x_vals[i], y_vals[i]) {
                 points.push((x_scale.map_f64(xv), y_scale.map_f64(yv)));
             }
         }
-        points.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        // Order along the position axis (the scale is monotonic, so pixel order
+        // matches data order): x for areaY, y for areaX.
+        match self.axis {
+            AreaAxis::Y => {
+                points.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+            }
+            AreaAxis::X => {
+                points.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            }
+        }
         if points.len() < 2 {
             return;
         }
 
-        // Outline: start on the baseline under the first point, trace the value
-        // line, drop back to the baseline under the last point, and close.
-        let baseline = y_scale.map_f64(0.0);
+        // Outline: start on the baseline at the first point, trace the value
+        // line, drop back to the baseline at the last point, and close.
         let mut path = BezPath::new();
-        path.move_to((points[0].0, baseline));
-        for &(px, py) in &points {
-            path.line_to((px, py));
+        match self.axis {
+            AreaAxis::Y => {
+                let baseline = y_scale.map_f64(0.0);
+                path.move_to((points[0].0, baseline));
+                for &(px, py) in &points {
+                    path.line_to((px, py));
+                }
+                path.line_to((points[points.len() - 1].0, baseline));
+            }
+            AreaAxis::X => {
+                let baseline = x_scale.map_f64(0.0);
+                path.move_to((baseline, points[0].1));
+                for &(px, py) in &points {
+                    path.line_to((px, py));
+                }
+                path.line_to((baseline, points[points.len() - 1].1));
+            }
         }
-        path.line_to((points[points.len() - 1].0, baseline));
         path.close_path();
 
         let [r, g, b, a] = resolve_colour(scales, channel_map, batch, 0).components;
@@ -541,8 +577,12 @@ impl MarkRenderer for AreaRenderer {
     }
 
     fn zero_baseline_channel(&self) -> Option<Channel> {
-        // The filled band reaches the y=0 baseline, so the y-domain must include 0.
-        Some(Channel::Y)
+        // The filled band reaches the zero baseline on the value axis, so that
+        // axis's domain must include 0.
+        match self.axis {
+            AreaAxis::Y => Some(Channel::Y),
+            AreaAxis::X => Some(Channel::X),
+        }
     }
 }
 
@@ -1141,7 +1181,8 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
     v.push((MarkKind::Line, Box::new(LineRenderer)));
     v.push((MarkKind::LineX, Box::new(LineRenderer)));
     v.push((MarkKind::LineY, Box::new(LineRenderer)));
-    v.push((MarkKind::AreaY, Box::new(AreaRenderer)));
+    v.push((MarkKind::AreaY, Box::new(AreaRenderer { axis: AreaAxis::Y })));
+    v.push((MarkKind::AreaX, Box::new(AreaRenderer { axis: AreaAxis::X })));
     v.push((
         MarkKind::DensityX,
         Box::new(Density1DRenderer { axis: DensityAxis::X }),
@@ -1386,12 +1427,20 @@ mod tests {
         let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
 
         let mut scene = Scene::new();
-        AreaRenderer.render(&mut scene, &batch, &cm, &scales, None);
+        let area_y = AreaRenderer { axis: AreaAxis::Y };
+        area_y.render(&mut scene, &batch, &cm, &scales, None);
 
         // The area is a single filled path (baseline → value line → baseline).
         assert_eq!(count_scene_paths(&scene), 1, "areaY emits one filled path");
         // The value axis must include zero so the baseline sits on-plot.
-        assert_eq!(AreaRenderer.zero_baseline_channel(), Some(Channel::Y));
+        assert_eq!(area_y.zero_baseline_channel(), Some(Channel::Y));
+
+        // areaX is the mirror: it fills to the x=0 baseline and anchors x.
+        let mut scene_x = Scene::new();
+        let area_x = AreaRenderer { axis: AreaAxis::X };
+        area_x.render(&mut scene_x, &batch, &cm, &scales, None);
+        assert_eq!(count_scene_paths(&scene_x), 1, "areaX emits one filled path");
+        assert_eq!(area_x.zero_baseline_channel(), Some(Channel::X));
     }
 
     #[test]
@@ -1414,7 +1463,7 @@ mod tests {
         let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
 
         let mut scene = Scene::new();
-        AreaRenderer.render(&mut scene, &batch, &cm, &scales, None);
+        AreaRenderer { axis: AreaAxis::Y }.render(&mut scene, &batch, &cm, &scales, None);
         assert_eq!(count_scene_paths(&scene), 0, "a single point can't form an area");
     }
 
