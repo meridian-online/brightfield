@@ -14,6 +14,7 @@ use vello::Scene;
 use crate::channel::{Channel, ChannelMap};
 use crate::kde::{kde_1d, kde_2d, silverman_1d, silverman_2d_per_axis};
 use crate::scale::{Scale, ScaleSet};
+use crate::text::{draw_text, TextAnchor};
 
 /// Highlight state for per-row dim/emphasis rendering.
 ///
@@ -663,6 +664,85 @@ impl MarkRenderer for RuleRenderer {
 }
 
 // ---------------------------------------------------------------------------
+// TextRenderer (text)
+// ---------------------------------------------------------------------------
+
+/// Font size for text-mark labels, in logical pixels.
+const TEXT_MARK_SIZE: f32 = 11.0;
+
+/// Renders a `text` mark: a string label centred at each `(x, y)` data position.
+/// The label content comes from the `text` channel (a string column); `x`/`y`
+/// position it (numeric or categorical, like the dot mark). A row with no label
+/// or an unresolvable position is skipped.
+pub struct TextRenderer;
+
+impl MarkRenderer for TextRenderer {
+    fn render(
+        &self,
+        scene: &mut Scene,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        scales: &ScaleSet,
+        highlight: Option<&HighlightState>,
+    ) {
+        let x_col = match channel_map.get(Channel::X) {
+            Some(c) => c,
+            None => return,
+        };
+        let y_col = match channel_map.get(Channel::Y) {
+            Some(c) => c,
+            None => return,
+        };
+        let text_col = match channel_map.get(Channel::Text) {
+            Some(c) => c,
+            None => return,
+        };
+        let x_scale = match scales.get(Channel::X) {
+            Some(s) => s,
+            None => return,
+        };
+        let y_scale = match scales.get(Channel::Y) {
+            Some(s) => s,
+            None => return,
+        };
+
+        let x_f64 = column_as_f64(batch, x_col);
+        let x_str = column_as_string(batch, x_col);
+        let y_f64 = column_as_f64(batch, y_col);
+        let y_str = column_as_string(batch, y_col);
+        let labels = match column_as_string(batch, text_col) {
+            Some(v) => v,
+            None => return,
+        };
+
+        for i in 0..batch.num_rows() {
+            let label = match labels.get(i).and_then(|o| o.as_deref()) {
+                Some(s) => s,
+                None => continue,
+            };
+            let px = match resolve_position(
+                x_scale,
+                x_f64.as_ref().and_then(|v| v[i]),
+                x_str.as_ref().and_then(|v| v[i].as_deref()),
+            ) {
+                Some(p) => p,
+                None => continue,
+            };
+            let py = match resolve_position(
+                y_scale,
+                y_f64.as_ref().and_then(|v| v[i]),
+                y_str.as_ref().and_then(|v| v[i].as_deref()),
+            ) {
+                Some(p) => p,
+                None => continue,
+            };
+            let colour = apply_highlight(resolve_colour(scales, channel_map, batch, i), i, highlight);
+            draw_text(scene, label, px, py, TEXT_MARK_SIZE, colour, TextAnchor::Middle);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Density1DRenderer (density / densityX / densityY)
 // ---------------------------------------------------------------------------
 
@@ -1261,6 +1341,7 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
     v.push((MarkKind::AreaX, Box::new(AreaRenderer { axis: AreaAxis::X })));
     v.push((MarkKind::RuleX, Box::new(RuleRenderer { axis: RuleAxis::X })));
     v.push((MarkKind::RuleY, Box::new(RuleRenderer { axis: RuleAxis::Y })));
+    v.push((MarkKind::Text, Box::new(TextRenderer)));
     v.push((
         MarkKind::DensityX,
         Box::new(Density1DRenderer { axis: DensityAxis::X }),
@@ -1305,6 +1386,14 @@ pub fn find_renderer<'a>(
 /// the rendering into separate scenes.
 pub fn count_scene_paths(scene: &Scene) -> usize {
     scene.encoding().n_paths as usize
+}
+
+/// Return the number of positioned glyphs in a scene (for testing text marks).
+///
+/// Glyphs are encoded into `resources.glyphs`, NOT through `n_paths`, so a text
+/// mark reports `count_scene_paths == 0` but a non-zero `count_scene_glyphs`.
+pub fn count_scene_glyphs(scene: &Scene) -> usize {
+    scene.encoding().resources.glyphs.len()
 }
 
 /// Backward-compatible alias for the historical stub name. Despite "fills"
@@ -1619,6 +1708,36 @@ mod tests {
             0,
             "no perpendicular (x) scale → the rule can't span, so nothing draws"
         );
+    }
+
+    // --- mark breadth: text labels ---
+
+    #[test]
+    fn text_renderer_draws_a_glyph_per_character() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+            Field::new("label", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![1.0, 2.0])),
+                Arc::new(Float64Array::from(vec![10.0, 20.0])),
+                Arc::new(StringArray::from(vec!["AB", "CDE"])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        cm.insert(Channel::Text, "label".to_string());
+        let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+
+        let mut scene = Scene::new();
+        TextRenderer.render(&mut scene, &batch, &cm, &scales, None);
+        // "AB" + "CDE" = 5 glyphs. Glyphs encode into resources, not n_paths.
+        assert_eq!(count_scene_glyphs(&scene), 5, "one glyph per label character");
     }
 
     // --- ifb_ac03: HighlightState ---

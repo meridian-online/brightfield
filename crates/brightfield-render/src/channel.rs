@@ -20,6 +20,8 @@ pub enum Channel {
     Y1,
     X2,
     Y2,
+    /// Text content channel (the label column for text marks).
+    Text,
 }
 
 impl Channel {
@@ -35,6 +37,7 @@ impl Channel {
             Self::Y1 => "y1",
             Self::X2 => "x2",
             Self::Y2 => "y2",
+            Self::Text => "text",
         }
     }
 
@@ -50,6 +53,7 @@ impl Channel {
             Self::Y1,
             Self::X2,
             Self::Y2,
+            Self::Text,
         ]
     }
 
@@ -65,6 +69,7 @@ impl Channel {
             "y1" => Some(Self::Y1),
             "x2" => Some(Self::X2),
             "y2" => Some(Self::Y2),
+            "text" => Some(Self::Text),
             _ => None,
         }
     }

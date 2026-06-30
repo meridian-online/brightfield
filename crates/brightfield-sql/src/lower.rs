@@ -300,6 +300,7 @@ pub fn default_lowerers() -> Vec<(MarkKind, Box<dyn MarkLower>)> {
         (MarkKind::AreaX, Box::new(SimpleLowerer)),
         (MarkKind::RuleX, Box::new(SimpleLowerer)),
         (MarkKind::RuleY, Box::new(SimpleLowerer)),
+        (MarkKind::Text, Box::new(SimpleLowerer)),
         (MarkKind::BarX, Box::new(SimpleLowerer)),
         (MarkKind::BarY, Box::new(SimpleLowerer)),
         (MarkKind::RegressionY, Box::new(RegressionLowerer)),
@@ -485,6 +486,7 @@ mod tests {
         assert!(kinds.contains(&MarkKind::AreaX));
         assert!(kinds.contains(&MarkKind::RuleX));
         assert!(kinds.contains(&MarkKind::RuleY));
+        assert!(kinds.contains(&MarkKind::Text));
         assert!(kinds.contains(&MarkKind::BarX));
         assert!(kinds.contains(&MarkKind::BarY));
         assert!(kinds.contains(&MarkKind::RegressionY));
@@ -492,7 +494,7 @@ mod tests {
         assert!(kinds.contains(&MarkKind::DensityX));
         assert!(kinds.contains(&MarkKind::DensityY));
         assert!(kinds.contains(&MarkKind::Density));
-        assert_eq!(kinds.len(), 13);
+        assert_eq!(kinds.len(), 14);
     }
 
     #[test]

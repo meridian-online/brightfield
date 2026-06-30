@@ -1,0 +1,25 @@
+meta:
+  title: Text labels — Brightfield example
+  description: |
+    A `text` mark places a string label (from the `text` channel) at each
+    (x, y) data position — annotations and labelled scatters.
+
+      cargo run -p brightfield-app -- examples/text.yaml
+data:
+  langs:
+    - { speed: 2, ergonomics: 8, name: Python }
+    - { speed: 9, ergonomics: 4, name: C }
+    - { speed: 8, ergonomics: 7, name: Rust }
+    - { speed: 5, ergonomics: 9, name: Ruby }
+    - { speed: 7, ergonomics: 6, name: Go }
+    - { speed: 3, ergonomics: 5, name: Java }
+    - { speed: 6, ergonomics: 8, name: Kotlin }
+    - { speed: 4, ergonomics: 3, name: Perl }
+plot:
+  - mark: text
+    data: { from: langs }
+    x: speed
+    y: ergonomics
+    text: name
+width: 640
+height: 400

@@ -132,7 +132,7 @@ vocab_enum! {
         TickX => ("tickX", Unimplemented),
         TickY => ("tickY", Unimplemented),
         // Text
-        Text => ("text", Unimplemented),
+        Text => ("text", Implemented),
         TextX => ("textX", Unimplemented),
         TextY => ("textY", Unimplemented),
         // Links / vectors / arrows
