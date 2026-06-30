@@ -91,8 +91,10 @@ mod tests {
 
     #[test]
     fn dfconf_identity_status_flows_through() {
-        let id = ComponentIdentity::Mark(MarkKind::Line);
-        // MarkKind::Line is Unimplemented in card 0001's registry.
+        // MarkKind::Rect is genuinely Unimplemented (no renderer/lowerer), so it
+        // proves Unimplemented status flows through ComponentIdentity. (Line is
+        // now Implemented and renders end-to-end.)
+        let id = ComponentIdentity::Mark(MarkKind::Rect);
         assert_eq!(id.status(), brightfield_spec::ImplStatus::Unimplemented);
     }
 
