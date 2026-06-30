@@ -2628,10 +2628,12 @@ vconcat:
         let engine = Engine::new();
         let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
 
-        // Resolve the actual mark paths: under vconcat, plots are at
-        // root/vconcat[0]/plot[0]/mark[dot] and root/vconcat[0]/plot[1]/mark[line].
-        // We brush from plot[0]; only plot[0]'s mark is self-excluded.
-        let contributor = ComponentPath("root/vconcat[0]/plot[0]".to_string());
+        // The two plots are vconcat items 0 and 1, so their marks are at
+        // root/vconcat[0]/plot[0]/mark[dot] and root/vconcat[1]/plot[0]/mark[line];
+        // their stable plot-node identities are root/vconcat[0] and
+        // root/vconcat[1]. We brush from the first plot (root/vconcat[0]); only
+        // its own mark is self-excluded.
+        let contributor = ComponentPath("root/vconcat[0]".to_string());
         let pred_text = "x > 99999".to_string(); // distinctive marker in SQL
         let _ = session.propagate_selection(
             "brush",
@@ -2648,15 +2650,15 @@ vconcat:
         let emitted_idx_1 =
             emit_query(&session.spec, 1, None, selections_ref).expect("emit mark 1");
 
-        // Mark 0 lives at root/vconcat[0]/plot[0]/mark[dot] — its parent plot is
-        // root/vconcat[0]/plot[0], same as the contributor → self-excluded.
+        // Mark 0 lives at root/vconcat[0]/plot[0]/mark[dot] — its plot-node path
+        // is root/vconcat[0], same as the contributor → self-excluded.
         assert!(
             !emitted_idx_0.sql.contains(&pred_text),
-            "mark 0 (same parent plot as contributor) must be self-excluded; got SQL: {}",
+            "mark 0 (same plot node as contributor) must be self-excluded; got SQL: {}",
             emitted_idx_0.sql
         );
-        // Mark 1 lives at root/vconcat[0]/plot[1]/mark[line] — different
-        // parent plot prefix → predicate must be present.
+        // Mark 1 lives at root/vconcat[1]/plot[0]/mark[line] — different
+        // plot node → predicate must be present.
         assert!(
             emitted_idx_1.sql.contains(&pred_text),
             "mark 1 (different parent plot) must receive the predicate; got SQL: {}",
@@ -2941,10 +2943,10 @@ hconcat:
             .sum();
         assert_eq!(baseline_rows, 10, "baseline: 5 rows × 2 marks = 10");
 
-        // Brush originates in the first plot — picks rows where distance
-        // is 100..=300 (3 of 5).
+        // Brush originates in the first plot (plot-node path root/hconcat[0])
+        // — picks rows where distance is 100..=300 (3 of 5).
         let contributor =
-            ComponentPath("root/hconcat[0]/plot[0]".to_string());
+            ComponentPath("root/hconcat[0]".to_string());
         let predicate =
             Predicate::Expr("distance >= 100 AND distance <= 300".to_string());
         let results = session.propagate_selection("brush", contributor, predicate);

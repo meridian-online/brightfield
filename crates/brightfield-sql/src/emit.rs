@@ -405,8 +405,8 @@ fn collect_plot_groups_in(
 /// the mark's `filter_by` references (card 0006 v2 runtime coordinator). The
 /// outer slice is `(selection_name, contributors_for_that_selection)` —
 /// `compile_selection` is invoked when the mark's filter_by selection name
-/// matches an entry, and the mark's parent plot path is used as `self_source`
-/// for crossfilter exclusion. `None` (or an empty slice) means "no live
+/// matches an entry, and the mark's stable plot-node path is used as
+/// `self_source` for crossfilter exclusion. `None` (or an empty slice) means "no live
 /// selections" — the predicate falls back to `Predicate::True` and the
 /// emitted query is unfiltered, the same behaviour as before this card.
 ///
@@ -460,11 +460,13 @@ pub fn emit_query_with_passes(
     // Selection threading: if the mark has a filter_by reference and the
     // referenced name is a SelectionNode in spec.params, compile the live
     // contributors into a predicate and wrap the lowered plan in
-    // `QueryPlan::Filter`. Self-exclusion identity is the parent plot path
-    // (decision 4).
+    // `QueryPlan::Filter`. Self-exclusion identity is the stable plot-node path
+    // (decision 4) — `plot_node_path`, NOT `parent_plot`, so a mark and the
+    // brushing interactor in the same plot resolve to the same identity (else a
+    // plot filters itself; card 0006).
     if let Some(selection_name) = mark_filter_by_name(mark) {
         if let Some(ParamNode::Selection(sel_node)) = spec.params.get(selection_name) {
-            let self_source = brightfield_spec::analysis::parent_plot(mark_path);
+            let self_source = brightfield_spec::analysis::plot_node_path(mark_path);
             let contributors: &[(String, Predicate)] = selection_predicates
                 .and_then(|all| all.iter().find(|(n, _)| n == selection_name).map(|(_, c)| c.as_slice()))
                 .unwrap_or(&[]);

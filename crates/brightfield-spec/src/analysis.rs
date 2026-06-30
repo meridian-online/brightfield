@@ -146,6 +146,51 @@ pub fn parent_plot(path: &str) -> &str {
     }
 }
 
+/// Return the STABLE identity of the plot a component lives in: the path prefix
+/// BEFORE the synthetic `/plot[i]` item segment.
+///
+/// Unlike [`parent_plot`] — which keeps the `/plot[i]` segment and so returns a
+/// *different* string for a plot's mark (`…/plot[0]`) than for its interactor
+/// (`…/plot[1]`), because `i` is the component's item-index — every component
+/// inside one plot maps to the SAME `plot_node_path`. This is the identity
+/// crossfilter self-exclusion must compare on: the contributor is an interactor
+/// and the subscriber is a mark, and they have to agree for a plot to recognise
+/// its own predicate. It equals the plot-node path `collect_plot_groups` keys
+/// on (card 0006).
+///
+/// Behaviour:
+/// - `plot_node_path("root/hconcat[0]/plot[1]/mark[dot]")` → `"root/hconcat[0]"`
+/// - `plot_node_path("root/hconcat[0]/plot[0]/interactor[intervalX]")` → `"root/hconcat[0]"`
+/// - `plot_node_path("root/plot[2]/mark[bar]")` → `"root"`
+/// - `plot_node_path("root/mark[dot]")` → `"root/mark[dot]"` (no plot segment → unchanged)
+pub fn plot_node_path(path: &str) -> &str {
+    // Same digit-validated scan as `parent_plot`, but we keep the START of the
+    // last `/plot[N]` segment rather than its end, and slice up to it.
+    let bytes = path.as_bytes();
+    let pat = b"/plot[";
+    let mut last_start: Option<usize> = None;
+    let mut i = 0;
+    while i + pat.len() <= bytes.len() {
+        if &bytes[i..i + pat.len()] == pat {
+            let mut j = i + pat.len();
+            let digits_start = j;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j > digits_start && j < bytes.len() && bytes[j] == b']' {
+                last_start = Some(i);
+                i = j + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    match last_start {
+        Some(start) => &path[..start],
+        None => path,
+    }
+}
+
 /// Map from param name to the set of component paths that consume it.
 pub type SubscriberGraph = HashMap<String, Vec<ComponentPath>>;
 
@@ -1042,7 +1087,15 @@ fn collect_brushable_bindings(
                                 "{item_path}/interactor[{}]",
                                 intc.kind.wire_name()
                             )),
-                            parent_plot: ComponentPath(item_path.clone()),
+                            // The contributor identity is the plot NODE path
+                            // (`path`), not the interactor's item-index path
+                            // (`item_path`). Self-exclusion compares this
+                            // against the subscriber mark's `plot_node_path`, so
+                            // both sides must use the stable plot identity —
+                            // otherwise a plot's interactor (`…/plot[1]`) and its
+                            // mark (`…/plot[0]`) never match and the plot filters
+                            // itself. (card 0006)
+                            parent_plot: ComponentPath(path.to_string()),
                             selection: pr.0.clone(),
                             kind,
                             channels: channels.clone(),
@@ -1299,6 +1352,36 @@ mod tests {
         assert_eq!(
             parent_plot("root/hconcat[2]/vconcat[0]/plot[3]/mark[dot]"),
             "root/hconcat[2]/vconcat[0]/plot[3]"
+        );
+    }
+
+    // ----- card 0006: plot_node_path stable plot identity -----
+    #[test]
+    fn crossfilter_plot_node_path_is_item_index_stable() {
+        // A plot's mark and its brushing interactor have different item
+        // indices, but must resolve to the SAME plot identity.
+        assert_eq!(
+            plot_node_path("root/hconcat[0]/plot[0]/mark[dot]"),
+            "root/hconcat[0]"
+        );
+        assert_eq!(
+            plot_node_path("root/hconcat[0]/plot[1]/interactor[intervalX]"),
+            "root/hconcat[0]",
+            "interactor (item 1) collapses to the same plot node as the mark (item 0)"
+        );
+        // Root-level plot → the plot node is `root`.
+        assert_eq!(plot_node_path("root/plot[2]/mark[bar]"), "root");
+        // Distinct plots in a concat stay distinct.
+        assert_eq!(plot_node_path("root/vconcat[0]/plot[0]/mark[dot]"), "root/vconcat[0]");
+        assert_eq!(plot_node_path("root/vconcat[1]/plot[0]/mark[line]"), "root/vconcat[1]");
+        // No /plot[ segment → unchanged. "plotter" must not match.
+        assert_eq!(plot_node_path("root/mark[dot]"), "root/mark[dot]");
+        assert_eq!(plot_node_path("root/plotter[0]"), "root/plotter[0]");
+        // Nested plot-in-plot: strip only the deepest /plot[ segment, so the
+        // nested plot's mark and a nested interactor still agree.
+        assert_eq!(
+            plot_node_path("root/plot[0]/plot[1]/mark[dot]"),
+            "root/plot[0]"
         );
     }
 
@@ -1968,8 +2051,10 @@ plot:
         );
         assert_eq!(
             bb.parent_plot,
-            ComponentPath("root/plot[0]".to_string()),
-            "parent plot is the contributor identity"
+            ComponentPath("root".to_string()),
+            "contributor identity is the stable plot-node path (here the root \
+             plot), NOT the interactor's item-index path — so it matches the \
+             subscriber mark's plot_node_path for self-exclusion"
         );
         assert_eq!(bb.selection, "brush");
         assert_eq!(bb.kind, BrushKind::IntervalXY);
