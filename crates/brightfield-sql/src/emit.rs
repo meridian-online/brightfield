@@ -619,11 +619,15 @@ plot:
 "#;
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
         let emitted = emit_query(&spec, 0, None, None).expect("emit");
-        // Stable shape: filter NULLs, group by an equiwidth bucket, count.
-        // (Portable `floor(...)` binning, not width_bucket — follow-up #4.)
+        // Stable shape: filter NULLs, group by an equiwidth bucket centre
+        // aliased to the channel column, count. (Portable `floor(...)` binning,
+        // not width_bucket — follow-up #4.)
         assert!(emitted.sql.contains("floor"));
         assert!(emitted.sql.contains("\"weight\""));
-        assert!(emitted.sql.contains("x_bin"));
+        assert!(emitted.sql.contains("AS \"weight\""));
+        // Bucket CENTRE, not index: `0.5` offset + `least` top-bucket clamp.
+        assert!(emitted.sql.contains("0.5"));
+        assert!(emitted.sql.contains("least"));
         assert!(emitted.sql.contains("COUNT(*)"));
         assert!(emitted.sql.contains("IS NOT NULL"));
         assert!(emitted.sql.contains("GROUP BY 1"));
@@ -643,10 +647,12 @@ plot:
 "#;
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
         let emitted = emit_query(&spec, 0, None, None).expect("emit");
-        assert!(emitted.sql.contains("x_bin"));
-        assert!(emitted.sql.contains("y_bin"));
+        assert!(emitted.sql.contains("AS \"weight\""));
+        assert!(emitted.sql.contains("AS \"height\""));
         assert!(emitted.sql.contains("\"weight\""));
         assert!(emitted.sql.contains("\"height\""));
+        // Bucket CENTRES, not indices.
+        assert!(emitted.sql.contains("0.5"));
         assert!(emitted.sql.contains("16"));
         assert!(emitted.sql.contains("GROUP BY 1, 2"));
     }
@@ -672,6 +678,11 @@ plot:
         assert!(emitted.sql.contains("regr_sxx"));
         assert!(emitted.sql.contains("regr_sxy"));
         assert!(emitted.sql.contains("regr_syy"));
+        // Data extents the renderer builds its x/y scales from.
+        assert!(emitted.sql.contains("AS x_min"));
+        assert!(emitted.sql.contains("AS x_max"));
+        assert!(emitted.sql.contains("AS y_min"));
+        assert!(emitted.sql.contains("AS y_max"));
         assert!(!emitted.sql.contains("GROUP BY"));
     }
 }

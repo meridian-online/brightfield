@@ -320,6 +320,42 @@ fn extend_scales_with_literals<I: Iterator<Item = (Channel, f64)>>(
     }
 }
 
+/// Insert or widen a Linear scale on `channel` so its domain spans `[min, max]`
+/// over the given pixel `range`.
+///
+/// Statistical marks build positional scales from emitted data extents rather
+/// than an inferable column (e.g. regression's x/y come from `x_min`/`x_max`
+/// aggregates — the executed batch has no raw x/y column). When a sibling mark
+/// already established a Linear scale on the channel, the domain is unioned so
+/// co-rendered marks share one axis; an existing non-Linear (Band/Time/Colour)
+/// scale is left untouched.
+pub fn merge_linear_scale(
+    set: &mut ScaleSet,
+    channel: Channel,
+    min: f64,
+    max: f64,
+    range: (f64, f64),
+) {
+    let (domain_min, domain_max) = match set.get(channel) {
+        Some(Scale::Linear {
+            domain_min,
+            domain_max,
+            ..
+        }) => (domain_min.min(min), domain_max.max(max)),
+        Some(_) => return, // non-linear axis already established
+        None => (min, max),
+    };
+    set.insert(
+        channel,
+        Scale::Linear {
+            domain_min,
+            domain_max,
+            range_start: range.0,
+            range_end: range.1,
+        },
+    );
+}
+
 pub fn infer_scales(
     batch: &RecordBatch,
     channel_map: &ChannelMap,
@@ -1097,5 +1133,55 @@ mod tests {
         let mx = multi.get(Channel::X).unwrap();
         assert!((sx.domain_min().unwrap() - mx.domain_min().unwrap()).abs() < f64::EPSILON);
         assert!((sx.domain_max().unwrap() - mx.domain_max().unwrap()).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn merge_linear_scale_inserts_unions_and_skips_nonlinear() {
+        let range = (0.0, 100.0);
+
+        // Absent → insert.
+        let mut set = ScaleSet::new();
+        merge_linear_scale(&mut set, Channel::X, 2.0, 8.0, range);
+        match set.get(Channel::X).expect("x scale inserted") {
+            Scale::Linear {
+                domain_min,
+                domain_max,
+                range_start,
+                range_end,
+            } => {
+                assert_eq!((*domain_min, *domain_max), (2.0, 8.0));
+                assert_eq!((*range_start, *range_end), (0.0, 100.0));
+            }
+            other => panic!("expected Linear, got {other:?}"),
+        }
+
+        // Present Linear → union (widen) on both ends.
+        merge_linear_scale(&mut set, Channel::X, 1.0, 5.0, range);
+        merge_linear_scale(&mut set, Channel::X, 4.0, 12.0, range);
+        match set.get(Channel::X).unwrap() {
+            Scale::Linear {
+                domain_min,
+                domain_max,
+                ..
+            } => assert_eq!((*domain_min, *domain_max), (1.0, 12.0)),
+            other => panic!("expected Linear, got {other:?}"),
+        }
+
+        // Present non-Linear → left untouched (don't clobber a Band axis).
+        let mut set2 = ScaleSet::new();
+        set2.insert(
+            Channel::X,
+            Scale::Band {
+                categories: vec!["a".to_string(), "b".to_string()],
+                range_start: 0.0,
+                range_end: 10.0,
+                padding: 0.1,
+            },
+        );
+        merge_linear_scale(&mut set2, Channel::X, 1.0, 9.0, range);
+        assert!(
+            matches!(set2.get(Channel::X).unwrap(), Scale::Band { .. }),
+            "non-linear scale must not be overwritten by merge_linear_scale"
+        );
     }
 }

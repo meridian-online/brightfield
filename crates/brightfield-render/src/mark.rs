@@ -12,8 +12,8 @@ use peniko::{Color, Fill};
 use vello::Scene;
 
 use crate::channel::{Channel, ChannelMap};
-use crate::kde::{kde_1d, kde_2d, silverman_1d, silverman_2d_per_axis};
-use crate::scale::{Scale, ScaleSet};
+use crate::kde::{kde_1d_weighted, kde_2d, silverman_1d_weighted, silverman_2d_per_axis};
+use crate::scale::{merge_linear_scale, Scale, ScaleSet};
 use crate::text::{draw_text, TextAnchor};
 
 /// Highlight state for per-row dim/emphasis rendering.
@@ -70,6 +70,27 @@ pub trait MarkRenderer {
     /// scale's domain to include 0 before rendering.
     fn zero_baseline_channel(&self) -> Option<Channel> {
         None
+    }
+
+    /// Contribute positional scales this mark needs but that generic column
+    /// inference can't supply from the executed batch. The scene builders call
+    /// this once per mark after `infer_scales`/`infer_scales_multi`, before
+    /// rendering, passing the plot-area pixel ranges.
+    ///
+    /// Most marks need nothing here — their x/y bind to inferable columns, so
+    /// the default is a no-op. Statistical marks transform their data, leaving a
+    /// positional axis with no inferable column:
+    ///   - regression emits only coefficients, so its x/y domains come from the
+    ///     emitted `x_min`/`x_max`/`y_min`/`y_max` extents;
+    ///   - 1D density has no data column on the perpendicular "density" axis.
+    fn augment_scales(
+        &self,
+        _scales: &mut ScaleSet,
+        _batch: &RecordBatch,
+        _channel_map: &ChannelMap,
+        _x_range: (f64, f64),
+        _y_range: (f64, f64),
+    ) {
     }
 }
 
@@ -758,14 +779,17 @@ pub enum DensityAxis {
     Y,
 }
 
-/// Renders a 1D density curve from a pre-binned (bucket, count) batch.
+/// Renders a 1D density curve from a pre-binned (centre, count) batch.
 ///
 /// The lowerer produces a RecordBatch with two columns:
-///   - the binned axis column (e.g. `x_bin`) — Float64 (bin centres in data units)
-///   - a `count` column — Int64
+///   - the binned axis column, aliased to the channel column name — Float64 bin
+///     centres in data units (only OCCUPIED buckets; a GROUP BY omits empties)
+///   - a `count` column — Float64
 ///
-/// At render time the data column is read into a flat histogram, convolved
-/// with a Gaussian via `kde_1d`, then drawn as a filled path.
+/// At render time the (centre, count) pairs are treated as weighted samples; a
+/// Gaussian KDE is evaluated over a fixed grid via `kde_1d_weighted` (robust to
+/// the gapped, non-uniform centres a GROUP BY leaves behind), then drawn as a
+/// filled path against a synthesised normalised density axis.
 pub struct Density1DRenderer {
     pub axis: DensityAxis,
 }
@@ -825,71 +849,63 @@ impl MarkRenderer for Density1DRenderer {
             return;
         }
 
-        // Bin width derived from the first two centres. The lowerer emits
-        // width_bucket on a fixed (min, max, n_bins) range, so the grid is
-        // uniform by construction. If the lowerer ever switches to
-        // adaptive bins this assertion will catch the silent breakage.
-        let bin_size = pairs[1].0 - pairs[0].0;
-        if bin_size <= 0.0 {
-            return;
-        }
-        debug_assert!(
-            pairs.windows(2).all(|w| {
-                let d = w[1].0 - w[0].0;
-                (d - bin_size).abs() < bin_size * 1e-6
-            }),
-            "Density1DRenderer expects a uniform bin grid (lowerer invariant)"
-        );
-
-        // Bandwidth: Silverman from reconstructed sample list.
-        let mut samples: Vec<f64> = Vec::new();
-        for (centre, count) in &pairs {
-            for _ in 0..*count {
-                samples.push(*centre);
-            }
-        }
-        let bandwidth = silverman_1d(&samples);
+        // Treat the (centre, count) pairs as WEIGHTED samples throughout — never
+        // un-bin to the full row count (a single bucket's count can be in the
+        // millions, and render() runs on every scene build / reactive rebuild).
+        let weighted: Vec<(f64, f64)> = pairs.iter().map(|(c, n)| (*c, *n as f64)).collect();
+        let bandwidth = silverman_1d_weighted(&weighted);
         if bandwidth <= 0.0 {
             return;
         }
 
-        let counts: Vec<u32> = pairs.iter().map(|(_, c)| *c).collect();
-        let density = kde_1d(&counts, bandwidth, bin_size);
+        // Evaluate the KDE on a fixed uniform grid spanning the data extent. A
+        // GROUP BY density query returns only the OCCUPIED buckets, so the bin
+        // centres are gapped / non-uniform whenever the data has gaps. Summing
+        // the weighted kernel directly (rather than convolving a histogram, which
+        // assumes a dense uniform grid) is robust to that — see `kde_1d_weighted`.
+        // NOTE: the grid is clamped to the data extent [lo, hi]; the curve does
+        // not extend a few bandwidths past the extremes to taper to zero (a
+        // fidelity nicety Observable Plot offers) — tracked as a follow-up.
+        let lo = pairs.first().unwrap().0;
+        let hi = pairs.last().unwrap().0;
+        if hi <= lo {
+            return;
+        }
+        const GRID: usize = 192;
+        let grid: Vec<f64> = (0..GRID)
+            .map(|i| lo + (hi - lo) * (i as f64) / ((GRID - 1) as f64))
+            .collect();
+        let density = kde_1d_weighted(&weighted, bandwidth, &grid);
 
-        // Map peak density to the density axis range.
         let max_density = density.iter().cloned().fold(0.0_f64, f64::max);
         if max_density <= 0.0 {
             return;
         }
 
-        // We want density 0 to render at the density-axis baseline,
-        // density max to render near the far end of the axis range.
+        // Density 0 renders at the density-axis baseline; density max near the
+        // far end of the axis range.
         let baseline_pixel = density_scale.range_start();
         let peak_pixel = density_scale.range_end();
         let pixel_height = peak_pixel - baseline_pixel;
 
         let mut path = BezPath::new();
-        let mut started = false;
-        for (i, (centre, _)) in pairs.iter().enumerate() {
-            let bin_pixel = bin_scale.map_f64(*centre);
+        for (i, &centre) in grid.iter().enumerate() {
+            let bin_pixel = bin_scale.map_f64(centre);
             let normalised = density[i] / max_density;
             let dens_pixel = baseline_pixel + normalised * pixel_height;
             let (px, py) = match self.axis {
                 DensityAxis::X => (bin_pixel, dens_pixel),
                 DensityAxis::Y => (dens_pixel, bin_pixel),
             };
-            if !started {
+            if i == 0 {
                 path.move_to((px, py));
-                started = true;
             } else {
                 path.line_to((px, py));
             }
         }
-        // Close back to baseline so the path is fillable.
-        let last = pairs.last().unwrap();
-        let first = pairs.first().unwrap();
-        let last_bin = bin_scale.map_f64(last.0);
-        let first_bin = bin_scale.map_f64(first.0);
+        // Close back to the baseline so the path is fillable.
+        let last_bin = bin_scale.map_f64(hi);
+        let first_bin = bin_scale.map_f64(lo);
         match self.axis {
             DensityAxis::X => {
                 path.line_to((last_bin, baseline_pixel));
@@ -904,6 +920,35 @@ impl MarkRenderer for Density1DRenderer {
 
         let colour = DEFAULT_COLOUR;
         scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &path);
+    }
+
+    fn augment_scales(
+        &self,
+        scales: &mut ScaleSet,
+        _batch: &RecordBatch,
+        _channel_map: &ChannelMap,
+        x_range: (f64, f64),
+        y_range: (f64, f64),
+    ) {
+        // The bin axis is an ordinary inferable column (centres aliased to the
+        // channel). The perpendicular "density" axis has no data column, so
+        // synthesise a normalised [0, 1] scale over its pixel range — unless a
+        // sibling mark already provided that axis.
+        let (density_channel, range) = match self.axis {
+            DensityAxis::X => (Channel::Y, y_range),
+            DensityAxis::Y => (Channel::X, x_range),
+        };
+        if scales.get(density_channel).is_none() {
+            scales.insert(
+                density_channel,
+                Scale::Linear {
+                    domain_min: 0.0,
+                    domain_max: 1.0,
+                    range_start: range.0,
+                    range_end: range.1,
+                },
+            );
+        }
     }
 }
 
@@ -1289,6 +1334,36 @@ impl MarkRenderer for RegressionRenderer {
             }
         }
     }
+
+    fn augment_scales(
+        &self,
+        scales: &mut ScaleSet,
+        batch: &RecordBatch,
+        _channel_map: &ChannelMap,
+        x_range: (f64, f64),
+        y_range: (f64, f64),
+    ) {
+        // The executed batch holds only coefficients (no raw x/y rows), so build
+        // the x/y scales the renderer samples over from the emitted data
+        // extents. Unioned with any sibling-provided scale via merge_linear_scale.
+        if let Some((min, max)) = column_extent(batch, "x_min", "x_max") {
+            merge_linear_scale(scales, Channel::X, min, max, x_range);
+        }
+        if let Some((min, max)) = column_extent(batch, "y_min", "y_max") {
+            merge_linear_scale(scales, Channel::Y, min, max, y_range);
+        }
+    }
+}
+
+/// Min of `min_col` and max of `max_col` across all rows (the regression batch
+/// has one row, or one per stroke group). `None` if either column is absent or
+/// entirely null.
+fn column_extent(batch: &RecordBatch, min_col: &str, max_col: &str) -> Option<(f64, f64)> {
+    let mins = column_as_f64(batch, min_col)?;
+    let maxs = column_as_f64(batch, max_col)?;
+    let lo = mins.into_iter().flatten().fold(f64::INFINITY, f64::min);
+    let hi = maxs.into_iter().flatten().fold(f64::NEG_INFINITY, f64::max);
+    (lo.is_finite() && hi.is_finite()).then_some((lo, hi))
 }
 
 /// Resolve stroke colour for regression — checks `stroke` channel value first,

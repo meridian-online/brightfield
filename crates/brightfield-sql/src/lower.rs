@@ -132,6 +132,16 @@ impl MarkLower for RegressionLowerer {
             format!("regr_sxx(\"{y_col}\", \"{x_col}\") AS sxx"),
             format!("regr_sxy(\"{y_col}\", \"{x_col}\") AS sxy"),
             format!("regr_syy(\"{y_col}\", \"{x_col}\") AS syy"),
+            // Data extents for render-time scale construction. The executed
+            // batch holds only coefficients (no raw x/y rows), so the renderer
+            // can't infer x/y scales from a column — it builds them from these
+            // extents instead (see `RegressionRenderer::augment_scales`). The
+            // filter above already drops NULL x/y, so min/max are over the
+            // fitted sample.
+            format!("CAST(min(\"{x_col}\") AS DOUBLE) AS x_min"),
+            format!("CAST(max(\"{x_col}\") AS DOUBLE) AS x_max"),
+            format!("CAST(min(\"{y_col}\") AS DOUBLE) AS y_min"),
+            format!("CAST(max(\"{y_col}\") AS DOUBLE) AS y_max"),
         ];
 
         // Group by stroke column when present.
@@ -156,9 +166,11 @@ impl MarkLower for RegressionLowerer {
 
 /// Lowerer for density marks (density, densityX, densityY).
 ///
-/// Emits a binning + group-count plan:
-///   1D: SELECT width_bucket(x, ...) AS x_bin, COUNT(*) FROM source GROUP BY x_bin
-///   2D: same with both x and y bins
+/// Emits a binning + group-count plan whose binned axis is the bucket **centre
+/// in data units, aliased to the channel column name** (so it flows through
+/// generic scale inference like an ordinary positional column):
+///   1D: SELECT <centre(x)> AS "x", COUNT(*) FROM source GROUP BY 1
+///   2D: same with both x and y centres
 ///
 /// The lowerer reads `bins` (or `thresholds`) from the mark's option bag.
 /// Default is 100 to match Mosaic's reference implementation (spec 2026-04-28
@@ -205,13 +217,13 @@ impl MarkLower for DensityLowerer {
                 let x = x_col.ok_or_else(|| EmitError::UnsupportedMark {
                     kind: "densityX (missing x)".to_string(),
                 })?;
-                Ok(build_density_1d(&source, x, "x_bin", bin_count))
+                Ok(build_density_1d(&source, x, bin_count))
             }
             DensityLowerKind::OneDY => {
                 let y = y_col.ok_or_else(|| EmitError::UnsupportedMark {
                     kind: "densityY (missing y)".to_string(),
                 })?;
-                Ok(build_density_1d(&source, y, "y_bin", bin_count))
+                Ok(build_density_1d(&source, y, bin_count))
             }
             DensityLowerKind::TwoD => {
                 let x = x_col.ok_or_else(|| EmitError::UnsupportedMark {
@@ -226,25 +238,43 @@ impl MarkLower for DensityLowerer {
     }
 }
 
-/// Portable 1-based equiwidth bucket of `col` over its `[min, max]` range into
-/// `bins` buckets, cast to DOUBLE. Replaces DuckDB's `width_bucket(col, lo, hi,
-/// n)`, which the bundled libduckdb lacks (first-render follow-up #4 — density
-/// silently rendered nothing). `width_bucket(v, lo, hi, n)` ==
-/// `floor((v - lo) / (hi - lo) * n) + 1`; `nullif` guards the all-equal case.
-fn equiwidth_bucket(table: &str, col: &str, bins: i64) -> String {
+/// Portable data-unit **centre** of the equiwidth bucket containing `col`, over
+/// the column's `[min, max]` range split into `bins` buckets, cast to DOUBLE.
+///
+/// The statistical-mark renderers expect bin centres *in data units* — the
+/// curve then maps through the ordinary positional scale and the axis reads in
+/// data units. The earlier lowerer emitted the 1-based bucket *index*, which the
+/// renderer never positioned correctly: half of the statistical-mark contract
+/// bug (the other half — aliasing the output to the channel column, below).
+/// DuckDB's `width_bucket` is also absent from the bundled libduckdb (first-
+/// render follow-up #4), so this stays expressed with portable `floor`.
+///
+/// With `w = (hi - lo)/bins` and 0-based bucket `b = floor((v - lo)/(hi - lo)·bins)`,
+/// the centre is `lo + (b + 0.5)·w`, i.e.
+/// `lo + (floor((v - lo)/(hi - lo)·bins) + 0.5)·(hi - lo)/bins`. `nullif` guards
+/// the all-equal (`hi == lo`) degenerate case. `least(b, bins - 1)` folds the
+/// maximum value (where `(v - lo)/(hi - lo) == 1` ⇒ `floor == bins`) into the top
+/// legitimate bucket instead of a phantom bucket centred half a bin past `hi`.
+fn equiwidth_bin_centre(table: &str, col: &str, bins: i64) -> String {
     let lo = format!("(SELECT min(\"{col}\") FROM \"{table}\")");
     let hi = format!("(SELECT max(\"{col}\") FROM \"{table}\")");
+    let top = bins - 1;
     format!(
-        "CAST(floor((\"{col}\" - {lo}) / nullif({hi} - {lo}, 0) * {bins}) + 1 AS DOUBLE)"
+        "CAST({lo} + (least(floor((\"{col}\" - {lo}) / nullif({hi} - {lo}, 0) * {bins}), {top}) + 0.5) \
+         * ({hi} - {lo}) / {bins} AS DOUBLE)"
     )
 }
 
-/// Build a 1D density plan: equiwidth bucket on `col`, group by bucket, return
-/// (centre, count).
-fn build_density_1d(table: &str, col: &str, alias: &str, bins: i64) -> QueryPlan {
-    // The render-side renderer expects `<alias>` (Float64) and `count` (Float64-ish).
-    let bucket_expr = format!("{} AS \"{alias}\"", equiwidth_bucket(table, col, bins));
-    let count_expr = format!("CAST(COUNT(*) AS DOUBLE) AS count");
+/// Build a 1D density plan: bin `col` into equiwidth buckets, group by bucket,
+/// and emit the bucket **centre aliased to the channel column name** (so generic
+/// scale inference and `ChannelMap::get` treat it like any positional column)
+/// alongside the per-bucket `count`.
+fn build_density_1d(table: &str, col: &str, bins: i64) -> QueryPlan {
+    let centre_expr = format!("{} AS \"{col}\"", equiwidth_bin_centre(table, col, bins));
+    // The occupancy column is always named `count` (the renderer reads it by that
+    // literal name). A density channel bound to a column literally named `count`
+    // would collide here — a known, pathological edge left untreated.
+    let count_expr = "CAST(COUNT(*) AS DOUBLE) AS count".to_string();
 
     QueryPlan::Aggregation {
         input: Box::new(QueryPlan::Filter {
@@ -253,16 +283,17 @@ fn build_density_1d(table: &str, col: &str, alias: &str, bins: i64) -> QueryPlan
             }),
             predicate: Predicate::Expr(format!("\"{col}\" IS NOT NULL")),
         }),
-        group_by: vec![bucket_expr],
+        group_by: vec![centre_expr],
         aggregates: vec![count_expr],
     }
 }
 
-/// Build a 2D density plan: equiwidth bucket on both x and y, group by both.
+/// Build a 2D density plan: equiwidth-bin both x and y, group by both, and emit
+/// each axis's bucket centre aliased to its channel column name (plus `count`).
 fn build_density_2d(table: &str, x_col: &str, y_col: &str, bins: i64) -> QueryPlan {
-    let x_bucket = format!("{} AS x_bin", equiwidth_bucket(table, x_col, bins));
-    let y_bucket = format!("{} AS y_bin", equiwidth_bucket(table, y_col, bins));
-    let count_expr = format!("CAST(COUNT(*) AS DOUBLE) AS count");
+    let x_centre = format!("{} AS \"{x_col}\"", equiwidth_bin_centre(table, x_col, bins));
+    let y_centre = format!("{} AS \"{y_col}\"", equiwidth_bin_centre(table, y_col, bins));
+    let count_expr = "CAST(COUNT(*) AS DOUBLE) AS count".to_string();
 
     QueryPlan::Aggregation {
         input: Box::new(QueryPlan::Filter {
@@ -273,7 +304,7 @@ fn build_density_2d(table: &str, x_col: &str, y_col: &str, bins: i64) -> QueryPl
                 "\"{x_col}\" IS NOT NULL AND \"{y_col}\" IS NOT NULL"
             )),
         }),
-        group_by: vec![x_bucket, y_bucket],
+        group_by: vec![x_centre, y_centre],
         aggregates: vec![count_expr],
     }
 }
@@ -612,6 +643,11 @@ mod tests {
                 assert!(aggregates.iter().any(|a| a.contains("regr_sxx")));
                 assert!(aggregates.iter().any(|a| a.contains("regr_sxy")));
                 assert!(aggregates.iter().any(|a| a.contains("regr_syy")));
+                // Data extents the renderer builds its x/y scales from.
+                assert!(aggregates.iter().any(|a| a.contains("AS x_min")));
+                assert!(aggregates.iter().any(|a| a.contains("AS x_max")));
+                assert!(aggregates.iter().any(|a| a.contains("AS y_min")));
+                assert!(aggregates.iter().any(|a| a.contains("AS y_max")));
             }
             other => panic!("expected AggregateScalar, got {other:?}"),
         }
@@ -677,9 +713,14 @@ mod tests {
                 ..
             } => {
                 assert_eq!(group_by.len(), 1);
-                // Portable equiwidth binning (no width_bucket — see follow-up #4).
+                // Portable equiwidth binning (no width_bucket — see follow-up #4),
+                // emitting the bucket CENTRE (not the index) aliased to the channel
+                // column name. `0.5` pins the centre offset (an index form would
+                // have `+ 1` and no `0.5`); `least` pins the top-bucket clamp.
                 assert!(group_by[0].contains("floor"));
-                assert!(group_by[0].contains("x_bin"));
+                assert!(group_by[0].contains("0.5"));
+                assert!(group_by[0].contains("least"));
+                assert!(group_by[0].contains("AS \"weight\""));
                 assert_eq!(aggregates.len(), 1);
                 assert!(aggregates[0].contains("COUNT"));
             }
@@ -706,8 +747,12 @@ mod tests {
         match plan {
             QueryPlan::Aggregation { group_by, .. } => {
                 assert_eq!(group_by.len(), 2);
-                assert!(group_by[0].contains("x_bin"));
-                assert!(group_by[1].contains("y_bin"));
+                // Each axis's bucket CENTRE (note `0.5`, not an index) is aliased
+                // to its channel column.
+                assert!(group_by[0].contains("AS \"weight\""));
+                assert!(group_by[0].contains("0.5"));
+                assert!(group_by[1].contains("AS \"height\""));
+                assert!(group_by[1].contains("0.5"));
                 // honours thresholds=16 in the bucket count
                 assert!(group_by[0].contains("16") || group_by[1].contains("16"));
             }

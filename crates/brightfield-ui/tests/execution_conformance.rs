@@ -57,7 +57,16 @@ fn render_spec(yaml: &str) -> (usize, usize) {
     // Scales inferred across all marks, so e.g. a rule's perpendicular axis has
     // a scale even when a sibling mark provides it.
     let entries: Vec<(&RecordBatch, &ChannelMap)> = metas.iter().map(|(cm, _, b)| (b, cm)).collect();
-    let scales = infer_scales_multi(&entries, layout.x_range(), layout.y_range());
+    let mut scales = infer_scales_multi(&entries, layout.x_range(), layout.y_range());
+
+    // Mirror the real scene builders: let each mark contribute positional scales
+    // that generic column inference can't supply (regression's x/y extents,
+    // 1D-density's perpendicular axis).
+    for (cm, kind, batch) in &metas {
+        if let Some(renderer) = find_renderer(&registry, *kind) {
+            renderer.augment_scales(&mut scales, batch, cm, layout.x_range(), layout.y_range());
+        }
+    }
 
     let mut scene = Scene::new();
     for (cm, kind, batch) in &metas {
@@ -196,16 +205,16 @@ plot:
     );
 }
 
-// The three statistical marks below are marked `Implemented` but render NOTHING
-// end-to-end — the conformance layer's first catch. Their lowerers emit
-// aggregate/binned columns (x_bin/y_bin/count, regression coefficients) but the
-// renderers read the raw x/y channel columns, so the batch has no column the
-// renderer (or scale inference) can find. `width_bucket` (now fixed to portable
-// `floor`) was only the first blocker for density. Kept as executable repros;
-// the renderer/SQL output-column contract is the follow-up (and these marks
-// should be demoted to Unimplemented until it lands).
+// The three statistical marks below were the conformance layer's first catch:
+// marked `Implemented` but rendering NOTHING end-to-end. Their lowerers emitted
+// aggregate/binned columns while the renderers and scale inference looked for the
+// raw x/y channel columns, so the executed batch had no column they could find.
+// Fixed by the statistical-mark contract work: density now emits bucket *centres
+// in data units, aliased to the channel column* (so the bin axis flows through
+// generic scale inference); regression emits x/y data extents; and each renderer
+// contributes the positional scales generic inference can't supply — the
+// perpendicular density axis, regression's x/y domains — via `augment_scales`.
 #[test]
-#[ignore = "statistical-mark renderer/SQL column-contract mismatch — renders nothing end-to-end (follow-up)"]
 fn regressiony_renders_geometry() {
     assert_renders(
         "regressionY",
@@ -222,7 +231,6 @@ plot:
 }
 
 #[test]
-#[ignore = "statistical-mark renderer/SQL column-contract mismatch — renders nothing end-to-end (follow-up)"]
 fn density_2d_renders_geometry() {
     assert_renders(
         "density",
@@ -239,7 +247,6 @@ plot:
 }
 
 #[test]
-#[ignore = "statistical-mark renderer/SQL column-contract mismatch — renders nothing end-to-end (follow-up)"]
 fn density_x_renders_geometry() {
     assert_renders(
         "densityX",
@@ -250,6 +257,23 @@ plot:
   - mark: densityX
     data: { from: t }
     x: a
+"#,
+    );
+}
+
+#[test]
+fn density_y_renders_geometry() {
+    // densityY exercises the DensityAxis::Y branch of `augment_scales` — the
+    // perpendicular (x) density axis is synthesised over x_range, not inferred.
+    assert_renders(
+        "densityY",
+        r#"
+data:
+  t: [{ a: 1 }, { a: 2 }, { a: 2 }, { a: 3 }, { a: 3 }, { a: 3 }, { a: 4 }, { a: 5 }]
+plot:
+  - mark: densityY
+    data: { from: t }
+    y: a
 "#,
     );
 }

@@ -1,0 +1,39 @@
+meta:
+  title: Regression — Brightfield example
+  description: |
+    A `regressionY` mark — the ordinary-least-squares fit line with a 95%
+    confidence band — drawn over a `dot` scatter of the same data.
+
+      cargo run -p brightfield-app -- examples/regression.yaml
+
+    Headless:
+
+      BRIGHTFIELD_DUMP_PNG=regression.png cargo run -p brightfield-app -- examples/regression.yaml
+data:
+  points:
+    - { weight: 52, height: 158 }
+    - { weight: 55, height: 163 }
+    - { weight: 58, height: 161 }
+    - { weight: 61, height: 168 }
+    - { weight: 64, height: 166 }
+    - { weight: 67, height: 172 }
+    - { weight: 70, height: 170 }
+    - { weight: 72, height: 176 }
+    - { weight: 75, height: 174 }
+    - { weight: 78, height: 181 }
+    - { weight: 81, height: 178 }
+    - { weight: 84, height: 185 }
+    - { weight: 88, height: 183 }
+    - { weight: 91, height: 189 }
+    - { weight: 95, height: 187 }
+plot:
+  - mark: dot
+    data: { from: points }
+    x: weight
+    y: height
+  - mark: regressionY
+    data: { from: points }
+    x: weight
+    y: height
+width: 640
+height: 480

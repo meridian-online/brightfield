@@ -33,10 +33,29 @@ renderer onto a **fresh scene** (no background) and counts only mark geometry.
 - Removed the `examples/density.yaml` I'd added prematurely — density renders
   blank until the contract fix.
 
-## Follow-up (task #7)
+## Follow-up (task #7) — RESOLVED
 
-Reconcile the renderer↔SQL output-column contract for the statistical marks
-(alias the SQL output to the channel names, or read the binned/coefficient
-columns), un-`#[ignore]` the repros, and realign their vocab status (they're
-currently over-reported `Implemented`; demote until they render, watching the
-curated `deviations.yaml`).
+Reconciled the renderer↔SQL output-column contract for the statistical marks:
+
+- **Density** — the lowerer now emits the equiwidth bucket **centre in data
+  units, aliased to the channel column name** (`floor`-binned, `least`-clamped at
+  the top bucket so the max value doesn't overflow into a phantom bucket), so the
+  bin axis flows through generic scale inference like an ordinary positional
+  column. `Density1DRenderer` was rewritten to evaluate a **weighted** Gaussian
+  KDE over a fixed grid (`kde_1d_weighted` / `silverman_1d_weighted`) — robust to
+  the gapped, non-uniform centres a `GROUP BY` leaves behind (the old histogram
+  convolution assumed a uniform grid and *panicked* on gaps).
+- **Regression** — the lowerer also emits `x_min`/`x_max`/`y_min`/`y_max`
+  extents; the executed batch otherwise has only coefficients.
+- New `MarkRenderer::augment_scales` hook (mirrors `zero_baseline_channel`):
+  regression builds its x/y scales from the extents (`merge_linear_scale`);
+  1D density synthesises a normalised `[0, 1]` perpendicular density axis. Wired
+  into `build_chart_scene`, `build_multi_mark_scene`, and the conformance harness.
+- The 3 repros are **un-`#[ignore]`d and pass** (+ a `densityY` case); vocab
+  status stays `Implemented` (no demotion needed — they render). Verified
+  headless via PNG dumps (`examples/{density,density-x,regression}.yaml`).
+
+Deferred (low severity, noted in code): a density positional channel bound to a
+column literally named `count` collides with the occupancy aggregate; the 1D
+density curve is clamped to the data extent and does not taper a few bandwidths
+past the extremes (an Observable Plot nicety).

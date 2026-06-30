@@ -120,6 +120,16 @@ pub fn build_chart_scene(data: &ChartData<'_>) -> (Scene, ScaleSet) {
         data.layout.y_range(),
     );
 
+    // Let the mark contribute positional scales generic column inference can't
+    // supply (regression's x/y extents, 1D-density's perpendicular axis).
+    data.renderer.augment_scales(
+        &mut scales,
+        data.batch,
+        data.channel_map,
+        data.layout.x_range(),
+        data.layout.y_range(),
+    );
+
     // Anchor the value axis at zero for marks that need it (e.g. bars), so the
     // baseline lands on the axis rather than extrapolating off the plot. Applied
     // before any view-extent override so an explicit pan/zoom still wins.
@@ -202,6 +212,18 @@ pub fn build_multi_mark_scene(entries: &[&ChartData<'_>]) -> (Scene, ScaleSet) {
         .collect();
 
     let mut scales = infer_scales_multi(&pairs, layout.x_range(), layout.y_range());
+
+    // Let each mark contribute positional scales generic column inference can't
+    // supply (regression's x/y extents, 1D-density's perpendicular axis).
+    for entry in entries {
+        entry.renderer.augment_scales(
+            &mut scales,
+            entry.batch,
+            entry.channel_map,
+            layout.x_range(),
+            layout.y_range(),
+        );
+    }
 
     // Anchor value axes at zero for any mark that needs it (e.g. bars).
     let mut zero_channels: Vec<Channel> = Vec::new();
