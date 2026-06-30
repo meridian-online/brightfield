@@ -1,0 +1,32 @@
+meta:
+  title: Dashboard — Brightfield example
+  description: |
+    A self-contained two-plot dashboard (hconcat) over inline data — a scatter
+    and a bar chart side by side, each with its own axes.
+
+      cargo run -p brightfield-app -- examples/dashboard.yaml
+data:
+  points:
+    - { x: 52, y: 158, g: A }
+    - { x: 58, y: 164, g: A }
+    - { x: 64, y: 169, g: A }
+    - { x: 70, y: 173, g: B }
+    - { x: 75, y: 177, g: B }
+    - { x: 81, y: 180, g: B }
+    - { x: 88, y: 184, g: C }
+    - { x: 95, y: 188, g: C }
+  fruit:
+    - { name: Apples, count: 30 }
+    - { name: Pears, count: 18 }
+    - { name: Cherries, count: 45 }
+    - { name: Plums, count: 22 }
+    - { name: Figs, count: 12 }
+hconcat:
+  - plot:
+      - { mark: dot, data: { from: points }, x: x, y: y, fill: g }
+    width: 360
+    height: 300
+  - plot:
+      - { mark: barY, data: { from: fruit }, x: name, y: count }
+    width: 360
+    height: 300

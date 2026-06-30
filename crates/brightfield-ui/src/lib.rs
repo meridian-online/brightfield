@@ -32,7 +32,7 @@ pub use brush::{brush_rect_to_predicate, BrushKind, ChannelColumns};
 pub use chart_element::ChartElement;
 pub use chart_layout::ChartLayout;
 pub use chart_state::ChartState;
-pub use chart_view::ChartView;
+pub use chart_view::{ChartView, PlacedChart};
 pub use interaction::InteractionState;
 pub use slider::{commit_slider_release, ParamDispatcher, SliderBinding, SliderState};
 pub use vello_renderer::VelloRenderer;

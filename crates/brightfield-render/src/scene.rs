@@ -277,6 +277,26 @@ pub fn build_multi_mark_scene(entries: &[&ChartData<'_>]) -> (Scene, ScaleSet) {
     (scene, scales)
 }
 
+/// Compose pre-rendered plot scenes into one dashboard scene.
+///
+/// Each plot scene is built independently by the caller (its own axes/grid/
+/// legend, domains unioned only *within* the plot) via [`build_multi_mark_scene`]
+/// against a [`ChartLayout`] sized to the plot; this places each at its
+/// `(origin_x, origin_y)` over a white dashboard background so inter-plot gaps
+/// aren't transparent.
+///
+/// The live window hosts one element per plot (so each keeps independent
+/// interaction); this single-composite path is used for the headless/PNG render
+/// and shares the same per-plot scenes.
+pub fn compose_dashboard(width: f64, height: f64, plots: &[(f64, f64, &Scene)]) -> Scene {
+    let mut scene = Scene::new();
+    render_background(&mut scene, &ChartLayout::new(width, height));
+    for (origin_x, origin_y, plot_scene) in plots {
+        scene.append(plot_scene, Some(Affine::translate((*origin_x, *origin_y))));
+    }
+    scene
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,6 +307,60 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
     use arrow::record_batch::RecordBatch;
     use std::sync::Arc;
+
+    #[test]
+    fn mvdash_dashboard_scene_composes_independent_plots() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])),
+                Arc::new(Float64Array::from(vec![10.0, 20.0, 30.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        let dot = DotRenderer;
+        let d0 = ChartData {
+            batch: &batch,
+            channel_map: &cm,
+            renderer: &dot,
+            layout: ChartLayout::new(300.0, 200.0),
+            view_extent: None,
+            highlight: None,
+        };
+        let d1 = ChartData {
+            batch: &batch,
+            channel_map: &cm,
+            renderer: &dot,
+            layout: ChartLayout::new(300.0, 200.0),
+            view_extent: None,
+            highlight: None,
+        };
+
+        // Each plot's scene is built independently, then composited.
+        let (s0, _) = build_multi_mark_scene(&[&d0]);
+        let (s1, _) = build_multi_mark_scene(&[&d1]);
+
+        let two = compose_dashboard(600.0, 200.0, &[(0.0, 0.0, &s0), (300.0, 0.0, &s1)]);
+        let one = compose_dashboard(600.0, 200.0, &[(0.0, 0.0, &s0)]);
+        assert!(
+            two.encoding().path_tags.len() > one.encoding().path_tags.len(),
+            "two composed plots produce more geometry than one"
+        );
+
+        // An empty dashboard still paints its background.
+        let empty = compose_dashboard(600.0, 200.0, &[]);
+        assert!(
+            empty.encoding().path_tags.len() > 0,
+            "dashboard background fills even with no plots"
+        );
+    }
 
     #[test]
     fn gpu_ac08_build_dot_chart_scene() {

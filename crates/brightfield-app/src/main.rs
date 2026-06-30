@@ -15,13 +15,12 @@ use brightfield_engine::Engine;
 use brightfield_render::channel::ChannelMap;
 use brightfield_render::layout::ChartLayout;
 use brightfield_render::mark::{default_renderers, find_renderer};
-use brightfield_render::scene::{build_chart_scene, build_multi_mark_scene, ChartData};
+use brightfield_render::scene::{build_multi_mark_scene, compose_dashboard, ChartData};
 use brightfield_spec::analysis::analyse_spec;
+use brightfield_spec::layout::{placed_plots, Rect};
 use brightfield_spec::parse_spec_path;
 use brightfield_spec::vocab::MarkKind;
-use brightfield_sql::collect_marks;
-
-use brightfield_render::ScaleSet;
+use brightfield_sql::{collect_marks, collect_plot_groups};
 
 /// Concatenate the record batches from one mark's query into a single batch.
 ///
@@ -53,12 +52,33 @@ fn concat_result_batches(
     }
 }
 
-/// Run the spec-to-scene pipeline, returning the scene, scales and mark count.
+/// One rendered plot: its component-path identity, position/size in the
+/// dashboard, and its own scene.
+struct PlotRender {
+    path: String,
+    x: f64,
+    y: f64,
+    width: u32,
+    height: u32,
+    scene: vello::Scene,
+}
+
+/// A rendered dashboard: the bounding-box dimensions and one scene per plot.
+/// The headless/PNG path composites these; the window hosts one element per plot.
+struct Dashboard {
+    width: u32,
+    height: u32,
+    plots: Vec<PlotRender>,
+}
+
+/// Run the spec-to-scene pipeline, returning a [`Dashboard`] — one independently
+/// rendered scene per plot (each with its own axes/scales), positioned per the
+/// layout pass. A single plot is just a one-plot dashboard.
 ///
 /// Returns `Err` (rather than exiting) on any failure, so callers can recover —
 /// the hot-reload watcher keeps the last good chart when a mid-edit save is
 /// momentarily invalid. `main` turns the initial error into a clean exit.
-fn run_pipeline(spec_path: &str) -> Result<(vello::Scene, ScaleSet, usize), String> {
+fn run_pipeline(spec_path: &str) -> Result<Dashboard, String> {
     // 1. Parse the spec.
     let parsed = parse_spec_path(spec_path).map_err(|e| format!("parse error: {e}"))?;
     for w in &parsed.warnings {
@@ -76,74 +96,94 @@ fn run_pipeline(spec_path: &str) -> Result<(vello::Scene, ScaleSet, usize), Stri
         .map_err(|e| format!("engine error: {e}"))?;
     let mut session = load.session;
 
-    // 4. Execute all marks, collecting successful results (AC-05: graceful failure).
+    // 4. Execute all marks, building per-mark inputs indexed by the flat mark
+    //    order (= execution order). A failed mark becomes None and is skipped
+    //    (AC-05: graceful failure). Batches are concatenated so a >2048-row
+    //    result isn't silently truncated to its first chunk.
     let results = session.execute_all();
     let marks = collect_marks(&parsed.spec);
-
-    let mut chart_entries: Vec<(arrow::record_batch::RecordBatch, ChannelMap, MarkKind)> =
-        Vec::new();
+    let mut mark_inputs: Vec<Option<(arrow::record_batch::RecordBatch, ChannelMap, MarkKind)>> =
+        Vec::with_capacity(marks.len());
     for (i, result) in results.into_iter().enumerate() {
         match result {
-            Ok(batches) => {
-                // DuckDB streams results one batch per ~2048-row vector, so a
-                // query wider than a single chunk arrives as several batches.
-                // Concatenate them; keeping only the first silently truncates
-                // the result (a large scatter would render only its first chunk).
-                if let Some(batch) = concat_result_batches(batches) {
+            Ok(batches) => match concat_result_batches(batches) {
+                Some(batch) => {
                     let mark = marks[i];
-                    let cm = ChannelMap::from_mark(mark);
-                    chart_entries.push((batch, cm, mark.kind));
+                    mark_inputs.push(Some((batch, ChannelMap::from_mark(mark), mark.kind)));
                 }
-            }
+                None => mark_inputs.push(None),
+            },
             Err(e) => {
                 eprintln!("warning: skipping mark {i}: {e}");
+                mark_inputs.push(None);
             }
         }
     }
 
-    if chart_entries.is_empty() {
+    // 5. Lay the plots out, group each plot's marks, and build one scene per
+    //    plot (its own axes/scales) at the position from the layout pass.
+    let placed = placed_plots(&parsed.spec, Rect::new(0.0, 0.0, 0.0, 0.0));
+    let groups = collect_plot_groups(&parsed.spec);
+    let registry = default_renderers();
+
+    let mut plots: Vec<PlotRender> = Vec::new();
+    for plot in &placed {
+        let group = match groups.iter().find(|g| g.plot_path == plot.path) {
+            Some(g) => g,
+            None => continue,
+        };
+        let layout = ChartLayout::new(plot.rect.width, plot.rect.height);
+        let chart_data: Vec<ChartData<'_>> = group
+            .mark_indices
+            .iter()
+            .filter_map(|&mi| {
+                let (batch, cm, kind) = mark_inputs[mi].as_ref()?;
+                match find_renderer(&registry, *kind) {
+                    Some(renderer) => Some(ChartData {
+                        batch,
+                        channel_map: cm,
+                        renderer,
+                        layout: layout.clone(),
+                        view_extent: None,
+                        highlight: None,
+                    }),
+                    None => {
+                        eprintln!("warning: no renderer for mark kind {kind:?} — skipping");
+                        None
+                    }
+                }
+            })
+            .collect();
+        if chart_data.is_empty() {
+            continue;
+        }
+        let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
+        let (scene, _scales) = build_multi_mark_scene(&refs);
+        plots.push(PlotRender {
+            path: plot.path.clone(),
+            x: plot.rect.x,
+            y: plot.rect.y,
+            width: plot.rect.width.ceil() as u32,
+            height: plot.rect.height.ceil() as u32,
+            scene,
+        });
+    }
+
+    if plots.is_empty() {
         return Err("no marks rendered successfully".to_string());
     }
 
-    // 5. Build the scene.
-    let width = 640.0_f64;
-    let height = 480.0_f64;
-    let layout = ChartLayout::new(width, height);
-
-    // Build the default renderer registry once and dispatch per-mark via
-    // find_renderer. Marks whose kind has no registered renderer are skipped
-    // with a warning (no silent dot fallback).
-    let registry = default_renderers();
-    let chart_data: Vec<ChartData<'_>> = chart_entries
+    let width = placed
         .iter()
-        .filter_map(|(batch, cm, kind)| {
-            let renderer = match find_renderer(&registry, *kind) {
-                Some(r) => r,
-                None => {
-                    eprintln!("warning: no renderer for mark kind {kind:?} — skipping");
-                    return None;
-                }
-            };
-            Some(ChartData {
-                batch,
-                channel_map: cm,
-                renderer,
-                layout: layout.clone(),
-                view_extent: None,
-                highlight: None,
-            })
-        })
-        .collect();
-
-    let mark_count = chart_data.len();
-    let (scene, scales) = if chart_data.len() == 1 {
-        build_chart_scene(&chart_data[0])
-    } else {
-        let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
-        build_multi_mark_scene(&refs)
-    };
-
-    Ok((scene, scales, mark_count))
+        .map(|p| p.rect.x + p.rect.width)
+        .fold(0.0_f64, f64::max)
+        .ceil() as u32;
+    let height = placed
+        .iter()
+        .map(|p| p.rect.y + p.rect.height)
+        .fold(0.0_f64, f64::max)
+        .ceil() as u32;
+    Ok(Dashboard { width, height, plots })
 }
 
 /// Last-modified time of the spec file, for change detection. `None` if the
@@ -158,12 +198,20 @@ fn file_mtime(path: &str) -> Option<std::time::SystemTime> {
 /// rendered scene when it changes — turning the edit→see loop interactive
 /// without a restart. A save that fails to parse/execute keeps the last good
 /// chart (the warning is printed) rather than killing the window.
+/// A plot the watcher tracks: its stable component path, fixed geometry, and
+/// reactive state. Hot-reload matches new plots to these by `path`.
 #[cfg(target_os = "macos")]
-fn spawn_spec_watcher(
-    cx: &mut gpui::App,
+struct WatchedPlot {
+    path: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
     state: gpui::Entity<brightfield_ui::ChartState>,
-    spec_path: String,
-) {
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_spec_watcher(cx: &mut gpui::App, watched: Vec<WatchedPlot>, spec_path: String) {
     const POLL: std::time::Duration = std::time::Duration::from_millis(300);
 
     cx.spawn(async move |cx: &mut gpui::AsyncApp| {
@@ -176,9 +224,8 @@ fn spawn_spec_watcher(
             }
             last = now;
 
-            // Re-run the (blocking) pipeline off the main thread; keep only the
-            // scene (Scene is Send) so the result can cross the thread boundary.
-            // catch_unwind contains a panicking pipeline (a parses-but-degenerate
+            // Re-run the (blocking) pipeline off the main thread (Dashboard is
+            // Send). catch_unwind contains a panicking pipeline (a degenerate
             // mid-edit spec) so a bad save keeps the last good chart rather than
             // crashing the window — the same guarantee the Err paths give.
             let path = spec_path.clone();
@@ -187,18 +234,43 @@ fn spawn_spec_watcher(
                 .spawn(async move {
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_pipeline(&path)))
                         .unwrap_or_else(|_| Err("pipeline panicked".to_string()))
-                        .map(|(scene, _, _)| scene)
                 })
                 .await;
 
             match built {
-                Ok(scene) => {
-                    // Swap in the new scene and repaint, flushed in one update cycle.
-                    cx.update(|app| {
-                        state.update(app, |s, c| {
-                            s.set_scene(scene);
-                            c.notify();
+                Ok(dashboard) => {
+                    // Only a data/visual change is hot-swappable: the window's
+                    // plot layout is fixed at launch, so require exactly the same
+                    // plots (by stable path) at the same geometry. Any structural
+                    // change (count, which plots render, or any size/position)
+                    // can't be absorbed in place — restart to apply.
+                    let same_layout = dashboard.plots.len() == watched.len()
+                        && dashboard.plots.iter().all(|p| {
+                            watched.iter().any(|w| {
+                                w.path == p.path
+                                    && w.x == p.x
+                                    && w.y == p.y
+                                    && w.width == f64::from(p.width)
+                                    && w.height == f64::from(p.height)
+                            })
                         });
+                    if !same_layout {
+                        eprintln!("reload skipped: dashboard layout changed; restart to apply");
+                        continue;
+                    }
+                    // Swap each plot's new scene into its state (matched by path),
+                    // then repaint once.
+                    let mut scenes: std::collections::HashMap<String, vello::Scene> =
+                        dashboard.plots.into_iter().map(|p| (p.path, p.scene)).collect();
+                    cx.update(|app| {
+                        for w in &watched {
+                            if let Some(scene) = scenes.remove(&w.path) {
+                                w.state.update(app, |s, c| {
+                                    s.set_scene(scene);
+                                    c.notify();
+                                });
+                            }
+                        }
                         app.refresh_windows();
                     });
                     eprintln!("reloaded {spec_path}");
@@ -220,8 +292,8 @@ fn main() {
     }
     let spec_path = &args[1];
 
-    let (scene, scales, mark_count) = match run_pipeline(spec_path) {
-        Ok(result) => result,
+    let dashboard = match run_pipeline(spec_path) {
+        Ok(d) => d,
         Err(e) => {
             eprintln!("{e}");
             process::exit(1);
@@ -229,25 +301,14 @@ fn main() {
     };
 
     eprintln!(
-        "Pipeline complete: {mark_count} mark(s) rendered, {} scale(s) inferred",
-        ["x", "y"]
-            .iter()
-            .filter(|ch| scales
-                .get(brightfield_render::channel::Channel::from_wire(ch).unwrap())
-                .is_some())
-            .count()
+        "Pipeline complete: {}x{} dashboard, {} plot(s)",
+        dashboard.width,
+        dashboard.height,
+        dashboard.plots.len()
     );
 
-    // Print scene stats for verification.
-    let encoding = scene.encoding();
-    eprintln!(
-        "Scene: {} path tags, {} draw tags",
-        encoding.path_tags.len(),
-        encoding.draw_tags.len()
-    );
-
-    // Debug path: dump rendered output to a PNG instead of opening a window.
-    // Triggered by `BRIGHTFIELD_DUMP_PNG=<path> brightfield <spec.yaml>`.
+    // Debug path: composite the per-plot scenes and dump a PNG instead of
+    // opening a window. Triggered by `BRIGHTFIELD_DUMP_PNG=<path>`.
     if let Ok(dump_path) = env::var("BRIGHTFIELD_DUMP_PNG") {
         // Optional supersampling for HiDPI verification: BRIGHTFIELD_DUMP_SCALE=2
         // renders at device resolution via the same scale-the-scene path the
@@ -257,10 +318,18 @@ fn main() {
             .and_then(|s| s.parse().ok())
             .filter(|s: &f32| *s > 0.0)
             .unwrap_or(1.0);
-        let dev_w = (640.0 * scale).round() as u32;
-        let dev_h = (480.0 * scale).round() as u32;
+        let placements: Vec<(f64, f64, &vello::Scene)> =
+            dashboard.plots.iter().map(|p| (p.x, p.y, &p.scene)).collect();
+        let composite = compose_dashboard(
+            f64::from(dashboard.width),
+            f64::from(dashboard.height),
+            &placements,
+        );
+
+        let dev_w = ((dashboard.width as f32) * scale).round() as u32;
+        let dev_h = ((dashboard.height as f32) * scale).round() as u32;
         let mut scaled = vello::Scene::new();
-        scaled.append(&scene, Some(vello::kurbo::Affine::scale(f64::from(scale))));
+        scaled.append(&composite, Some(vello::kurbo::Affine::scale(f64::from(scale))));
 
         let renderer = brightfield_ui::VelloRenderer::new();
         let pixels = renderer
@@ -276,41 +345,67 @@ fn main() {
             "PNG dumped: {dump_path} ({dev_w}x{dev_h}, {non_zero}/{total} non-zero bytes, {:.1}% coverage)",
             100.0 * non_zero as f64 / total as f64
         );
-        let _ = scales;
         return;
     }
 
-    // Open a native GPUI window and display the rendered scene.
+    // Open a native GPUI window: one ChartElement per plot, positioned per the
+    // layout, each with its own ChartState (so interaction is per-plot).
     #[cfg(target_os = "macos")]
     {
-        use std::rc::Rc;
         use gpui::AppContext;
+        use std::rc::Rc;
 
         let renderer = brightfield_ui::VelloRenderer::new();
         let app = gpui::Application::with_platform(Rc::new(gpui_macos::MacPlatform::new(false)));
-        let _ = scales; // scales currently unused by the window path
         let spec_path = spec_path.to_string();
+        let Dashboard { width, height, plots } = dashboard;
         app.run(move |cx| {
-            let state = cx.new(|_| {
-                brightfield_ui::ChartState::new(scene, 640, 480, renderer)
-            });
-            let view_state = state.clone();
+            // One ChartState (and element) per plot; the watcher tracks each by
+            // its stable path + geometry for hot-reload.
+            let mut charts: Vec<brightfield_ui::PlacedChart> = Vec::with_capacity(plots.len());
+            let mut watched: Vec<WatchedPlot> = Vec::with_capacity(plots.len());
+            for p in plots {
+                let (x, y, w, h) = (p.x, p.y, f64::from(p.width), f64::from(p.height));
+                let state = cx.new(|_| {
+                    brightfield_ui::ChartState::new(p.scene, p.width, p.height, renderer.clone())
+                });
+                watched.push(WatchedPlot {
+                    path: p.path,
+                    x,
+                    y,
+                    width: w,
+                    height: h,
+                    state: state.clone(),
+                });
+                charts.push(brightfield_ui::PlacedChart {
+                    x,
+                    y,
+                    width: w,
+                    height: h,
+                    state,
+                });
+            }
+
             let _window = cx
                 .open_window(gpui::WindowOptions::default(), move |_window, cx| {
-                    cx.new(|_| brightfield_ui::ChartView::new(view_state))
+                    cx.new(|_| {
+                        brightfield_ui::ChartView::new(f64::from(width), f64::from(height), charts)
+                    })
                 })
                 .expect("failed to open window");
 
-            // Hot-reload: swap in a freshly rendered scene when the spec changes.
-            spawn_spec_watcher(cx, state, spec_path);
+            // Hot-reload: swap each plot's scene when the spec changes on disk.
+            spawn_spec_watcher(cx, watched, spec_path);
         });
     }
 
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = scene;
-        let _ = scales;
-        eprintln!("GPUI window display is currently macOS-only.");
+        let _ = dashboard;
+        eprintln!(
+            "GPUI window display is currently macOS-only. \
+             Re-run with BRIGHTFIELD_DUMP_PNG=out.png to render the chart to an image."
+        );
     }
 }
 
