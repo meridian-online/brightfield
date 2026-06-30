@@ -1,0 +1,27 @@
+meta:
+  title: Area X — Brightfield example
+  description: |
+    An `areaX` mark — the horizontal mirror of areaY. The filled band runs from
+    the x=0 baseline rightward to the value line x(y), with points ordered along
+    the y (position) axis.
+
+      cargo run -p brightfield-app -- examples/area-x.yaml
+data:
+  series:
+    - { pos: 0,  val: 12 }
+    - { pos: 1,  val: 19 }
+    - { pos: 2,  val: 15 }
+    - { pos: 3,  val: 27 }
+    - { pos: 4,  val: 34 }
+    - { pos: 5,  val: 30 }
+    - { pos: 6,  val: 41 }
+    - { pos: 7,  val: 38 }
+    - { pos: 8,  val: 47 }
+    - { pos: 9,  val: 43 }
+plot:
+  - mark: areaX
+    data: { from: series }
+    x: val
+    y: pos
+width: 640
+height: 400
