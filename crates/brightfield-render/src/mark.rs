@@ -587,6 +587,82 @@ impl MarkRenderer for AreaRenderer {
 }
 
 // ---------------------------------------------------------------------------
+// RuleRenderer (ruleX / ruleY)
+// ---------------------------------------------------------------------------
+
+/// Which axis a rule is positioned on.
+#[derive(Clone, Copy)]
+pub enum RuleAxis {
+    /// `ruleX`: vertical lines at each x position, spanning the full y-extent.
+    X,
+    /// `ruleY`: horizontal lines at each y position, spanning the full x-extent.
+    Y,
+}
+
+/// Renders rule marks: thin straight lines spanning the plot, positioned by one
+/// channel — reference lines, thresholds, baselines. The position channel may be
+/// a column (one rule per row) OR a constant literal (one rule, e.g. `y: 0`).
+///
+/// A rule spans the PERPENDICULAR axis, so that axis's scale must exist. It does
+/// whenever a sibling mark (or the rule's own data) gives that axis a scale; a
+/// standalone single-channel rule with no perpendicular data does not render.
+pub struct RuleRenderer {
+    /// Orientation — `X` for ruleX (verticals), `Y` for ruleY (horizontals).
+    pub axis: RuleAxis,
+}
+
+impl MarkRenderer for RuleRenderer {
+    fn render(
+        &self,
+        scene: &mut Scene,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        scales: &ScaleSet,
+        _highlight: Option<&HighlightState>,
+    ) {
+        let (pos_channel, span_channel) = match self.axis {
+            RuleAxis::X => (Channel::X, Channel::Y),
+            RuleAxis::Y => (Channel::Y, Channel::X),
+        };
+        let pos_scale = match scales.get(pos_channel) {
+            Some(s) => s,
+            None => return,
+        };
+        // The line spans the perpendicular axis's pixel range.
+        let span_scale = match scales.get(span_channel) {
+            Some(s) => s,
+            None => return,
+        };
+        let (span0, span1) = (span_scale.range_start(), span_scale.range_end());
+
+        // Positions in pixels: a literal constant (one rule) or a column value
+        // per row (one rule each).
+        let positions: Vec<f64> = if let Some(literal) = channel_map.literal(pos_channel) {
+            vec![pos_scale.map_f64(literal)]
+        } else if let Some(col) = channel_map.get(pos_channel) {
+            match column_as_f64(batch, col) {
+                Some(vals) => vals
+                    .iter()
+                    .filter_map(|v| v.map(|x| pos_scale.map_f64(x)))
+                    .collect(),
+                None => return,
+            }
+        } else {
+            return;
+        };
+
+        let stroke = kurbo::Stroke::new(LINE_STROKE_WIDTH);
+        for p in positions {
+            let line = match self.axis {
+                RuleAxis::X => Line::new((p, span0), (p, span1)),
+                RuleAxis::Y => Line::new((span0, p), (span1, p)),
+            };
+            scene.stroke(&stroke, Affine::IDENTITY, DEFAULT_COLOUR, None, &line);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Density1DRenderer (density / densityX / densityY)
 // ---------------------------------------------------------------------------
 
@@ -1183,6 +1259,8 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
     v.push((MarkKind::LineY, Box::new(LineRenderer)));
     v.push((MarkKind::AreaY, Box::new(AreaRenderer { axis: AreaAxis::Y })));
     v.push((MarkKind::AreaX, Box::new(AreaRenderer { axis: AreaAxis::X })));
+    v.push((MarkKind::RuleX, Box::new(RuleRenderer { axis: RuleAxis::X })));
+    v.push((MarkKind::RuleY, Box::new(RuleRenderer { axis: RuleAxis::Y })));
     v.push((
         MarkKind::DensityX,
         Box::new(Density1DRenderer { axis: DensityAxis::X }),
@@ -1465,6 +1543,82 @@ mod tests {
         let mut scene = Scene::new();
         AreaRenderer { axis: AreaAxis::Y }.render(&mut scene, &batch, &cm, &scales, None);
         assert_eq!(count_scene_paths(&scene), 0, "a single point can't form an area");
+    }
+
+    // --- mark breadth: rule (with literal channel values) ---
+
+    #[test]
+    fn rule_renderer_literal_y_draws_one_line() {
+        // x column gives the span scale; y is a constant literal (the position).
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Float64, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Float64Array::from(vec![0.0, 1.0, 2.0, 3.0]))])
+                .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert_literal(Channel::Y, 5.0);
+
+        let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        assert!(
+            scales.get(Channel::Y).is_some(),
+            "a literal y synthesises a y-scale so the rule can position"
+        );
+
+        let mut scene = Scene::new();
+        RuleRenderer { axis: RuleAxis::Y }.render(&mut scene, &batch, &cm, &scales, None);
+        assert_eq!(
+            count_scene_paths(&scene),
+            1,
+            "a literal ruleY draws exactly one horizontal line"
+        );
+    }
+
+    #[test]
+    fn rule_renderer_column_x_draws_one_per_row() {
+        // ruleX positioned by a column → one vertical line per row; y column
+        // provides the perpendicular span.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("t", DataType::Float64, false),
+            Field::new("v", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])),
+                Arc::new(Float64Array::from(vec![10.0, 20.0, 30.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "t".to_string());
+        cm.insert(Channel::Y, "v".to_string());
+
+        let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        let mut scene = Scene::new();
+        RuleRenderer { axis: RuleAxis::X }.render(&mut scene, &batch, &cm, &scales, None);
+        assert_eq!(
+            count_scene_paths(&scene),
+            3,
+            "a column-positioned ruleX draws one vertical line per row"
+        );
+    }
+
+    #[test]
+    fn rule_renderer_needs_perpendicular_scale() {
+        // ruleY with only a y literal and no x scale: can't span, draws nothing.
+        let schema = Arc::new(Schema::new(vec![Field::new("z", DataType::Float64, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Float64Array::from(vec![1.0]))]).unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert_literal(Channel::Y, 5.0); // y position, but no x channel anywhere
+        let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        let mut scene = Scene::new();
+        RuleRenderer { axis: RuleAxis::Y }.render(&mut scene, &batch, &cm, &scales, None);
+        assert_eq!(
+            count_scene_paths(&scene),
+            0,
+            "no perpendicular (x) scale → the rule can't span, so nothing draws"
+        );
     }
 
     // --- ifb_ac03: HighlightState ---

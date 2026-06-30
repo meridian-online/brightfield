@@ -70,10 +70,15 @@ impl Channel {
     }
 }
 
-/// Maps visual encoding channels to column names in the RecordBatch.
+/// Maps visual encoding channels to column names in the RecordBatch, plus any
+/// channels bound to a constant **literal** value (e.g. `y: 0` for a baseline
+/// rule). Columns and literals are kept in separate maps so existing
+/// column-based renderers are unaffected; renderers that accept constants read
+/// [`ChannelMap::literal`].
 #[derive(Debug, Clone, Default)]
 pub struct ChannelMap {
     map: HashMap<Channel, String>,
+    literals: HashMap<Channel, f64>,
 }
 
 impl ChannelMap {
@@ -87,12 +92,27 @@ impl ChannelMap {
         self.map.insert(channel, column);
     }
 
+    /// Insert a channel -> constant literal value (e.g. `y: 0`).
+    pub fn insert_literal(&mut self, channel: Channel, value: f64) {
+        self.literals.insert(channel, value);
+    }
+
     /// Look up the column name for a channel.
     pub fn get(&self, channel: Channel) -> Option<&str> {
         self.map.get(&channel).map(|s| s.as_str())
     }
 
-    /// True if the channel is mapped.
+    /// Look up the constant literal value bound to a channel, if any.
+    pub fn literal(&self, channel: Channel) -> Option<f64> {
+        self.literals.get(&channel).copied()
+    }
+
+    /// Iterator over channels bound to a literal value.
+    pub fn literals_iter(&self) -> impl Iterator<Item = (Channel, f64)> + '_ {
+        self.literals.iter().map(|(c, v)| (*c, *v))
+    }
+
+    /// True if the channel is mapped to a column.
     pub fn has(&self, channel: Channel) -> bool {
         self.map.contains_key(&channel)
     }
@@ -110,6 +130,14 @@ impl ChannelMap {
                 match val {
                     ValueOrParamRef::Value(SpecValue::String(col)) => {
                         cm.insert(*ch, col.clone());
+                    }
+                    // Numeric literals bind the channel to a constant for all
+                    // rows (e.g. `y: 0` for a baseline rule).
+                    ValueOrParamRef::Value(SpecValue::Integer(i)) => {
+                        cm.insert_literal(*ch, *i as f64);
+                    }
+                    ValueOrParamRef::Value(SpecValue::Float(f)) => {
+                        cm.insert_literal(*ch, *f);
                     }
                     ValueOrParamRef::Param(param_ref) => {
                         eprintln!(
@@ -186,5 +214,33 @@ mod tests {
         assert!(!cm.has(Channel::X), "ParamRef channel should be skipped");
         // y should be present (literal string)
         assert_eq!(cm.get(Channel::Y), Some("col_y"));
+    }
+
+    #[test]
+    fn from_mark_captures_numeric_literal_channel() {
+        use brightfield_spec::ast::{Mark, SpecValue, ValueOrParamRef};
+        use brightfield_spec::vocab::{ImplStatus, MarkKind};
+
+        let mut options: indexmap::IndexMap<String, ValueOrParamRef<SpecValue>> =
+            Default::default();
+        // x is a column reference; y is a numeric literal (e.g. a baseline).
+        options.insert(
+            "x".to_string(),
+            ValueOrParamRef::Value(SpecValue::String("col_x".to_string())),
+        );
+        options.insert("y".to_string(), ValueOrParamRef::Value(SpecValue::Integer(0)));
+
+        let mark = Mark {
+            kind: MarkKind::RuleY,
+            status: ImplStatus::Implemented,
+            data: None,
+            options,
+        };
+
+        let cm = ChannelMap::from_mark(&mark);
+        assert_eq!(cm.get(Channel::X), Some("col_x"), "x is a column");
+        assert_eq!(cm.get(Channel::Y), None, "a literal y is not a column");
+        assert_eq!(cm.literal(Channel::Y), Some(0.0), "literal y captured as 0.0");
+        assert_eq!(cm.literal(Channel::X), None, "x has no literal");
     }
 }
