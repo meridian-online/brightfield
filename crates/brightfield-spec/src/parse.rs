@@ -1512,9 +1512,11 @@ plot:
 
     #[test]
     fn dfspec_ac08_unimplemented_mark_warns_with_stub() {
+        // `cell` is a genuinely-unimplemented mark (no renderer/lowerer), so it
+        // still warns. (dot/line/bar are now Implemented and no longer warn.)
         let src = r#"
 plot:
-  - mark: dot
+  - mark: cell
     x: a
     y: b
 "#;
@@ -1522,7 +1524,7 @@ plot:
         assert!(out
             .warnings
             .iter()
-            .any(|w| matches!(w, ParseWarning::Unimplemented { name, .. } if name == "dot")));
+            .any(|w| matches!(w, ParseWarning::Unimplemented { name, .. } if name == "cell")));
     }
 
     #[test]

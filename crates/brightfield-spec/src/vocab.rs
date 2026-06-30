@@ -106,19 +106,19 @@ vocab_enum! {
         // Area / bar / column
         AreaY => ("areaY", Implemented),
         AreaX => ("areaX", Implemented),
-        BarY => ("barY", Unimplemented),
-        BarX => ("barX", Unimplemented),
+        BarY => ("barY", Implemented),
+        BarX => ("barX", Implemented),
         // Cells
         Cell => ("cell", Unimplemented),
         CellX => ("cellX", Unimplemented),
         CellY => ("cellY", Unimplemented),
         // Dots / circles
-        Dot => ("dot", Unimplemented),
+        Dot => ("dot", Implemented),
         DotX => ("dotX", Unimplemented),
         DotY => ("dotY", Unimplemented),
         Circle => ("circle", Unimplemented),
         // Lines
-        Line => ("line", Unimplemented),
+        Line => ("line", Implemented),
         LineX => ("lineX", Unimplemented),
         LineY => ("lineY", Unimplemented),
         // Rectangles
@@ -193,9 +193,9 @@ vocab_enum! {
     /// `single`, `union`). Those names are modelled by
     /// [`SelectionResolution`], not here.
     pub enum InteractorKind {
-        IntervalX => ("intervalX", Unimplemented),
-        IntervalY => ("intervalY", Unimplemented),
-        IntervalXY => ("intervalXY", Unimplemented),
+        IntervalX => ("intervalX", Implemented),
+        IntervalY => ("intervalY", Implemented),
+        IntervalXY => ("intervalXY", Implemented),
         Interval => ("interval", Unimplemented),
         Nearest => ("nearest", Implemented),
         NearestX => ("nearestX", Implemented),
