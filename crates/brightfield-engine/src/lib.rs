@@ -722,21 +722,25 @@ impl Session {
         mark_kind: &str,
         emitted: &EmittedQuery,
     ) -> Result<Vec<RecordBatch>, EngineError> {
-        // Check cache: if plan_hash matches, we know the SQL structure is
-        // identical (scalar param change). Use the cached SQL.
-        let sql = if let Some(cached) = self.cache.get(&emitted.plan_hash) {
-            cached.sql.clone()
-        } else {
-            // Cache miss — new structural plan. Store it.
-            self.cache.insert(
-                emitted.plan_hash,
-                CachedStatement {
+        // Execute the freshly-emitted SQL directly — it is already
+        // param-interpolated (card 0014), so it is always the correct query for
+        // the current param_state; never serve a cached string that might predate
+        // a param change. Still record the plan for stability tracking, but BOUND
+        // the map: with interpolation each distinct inlined param value yields a
+        // distinct plan_hash, so a dragged param would otherwise grow this cache
+        // without bound. The recorded SQL is redundant with `emitted.sql`, so a
+        // cap is safe — beyond it we simply stop recording; execution is
+        // unaffected. (Renderer-side dedup is the LRU-capped `sql_cache` below.)
+        const PLAN_CACHE_CAP: usize = 64;
+        if self.cache.len() < PLAN_CACHE_CAP {
+            self.cache
+                .entry(emitted.plan_hash)
+                .or_insert_with(|| CachedStatement {
                     sql: emitted.sql.clone(),
                     bindings: emitted.bindings.clone(),
-                },
-            );
-            emitted.sql.clone()
-        };
+                });
+        }
+        let sql = emitted.sql.clone();
 
         // Renderer-side SQL cache: hit → skip DuckDB execute entirely.
         if let Some(batches) = self.sql_cache.get(&sql) {
@@ -1543,6 +1547,39 @@ plot:
         assert!(
             rows_after < rows_before,
             "raising the threshold must drop points: {rows_before} -> {rows_after}"
+        );
+    }
+
+    /// Review regression (card 0014): interpolation makes each distinct inlined
+    /// param value a distinct plan_hash, so a dragged param (the feature's whole
+    /// point) must not grow the plan-stability cache without bound.
+    #[test]
+    fn pefr_plan_cache_bounded_under_param_sweep() {
+        let yaml = r#"
+params:
+  k: 0
+data:
+  t:
+    - { x: 1 }
+    - { x: 50 }
+    - { x: 150 }
+plot:
+  - mark: dot
+    data: { from: t, filter: "x > $k" }
+    x: x
+    y: x
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+        let _ = session.execute_all();
+        for k in 0..200i64 {
+            let _ = session.propagate_param("k", SpecValue::Integer(k));
+        }
+        assert!(
+            session.cache_len() <= 64,
+            "plan cache must stay bounded under a 200-value param sweep; got {}",
+            session.cache_len()
         );
     }
 
