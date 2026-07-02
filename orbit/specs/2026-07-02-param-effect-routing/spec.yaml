@@ -1,0 +1,116 @@
+goal: >
+  Make a scalar param actually change downstream query output. Close the
+  emit_query param-discard stub via interpolation, lower a bare $param positional
+  channel and a data.filter expression into the emitted SQL, subscribe params
+  embedded in expressions, and fold inlined param values into plan_hash so both
+  caches stay correct. After this slice, propagate_param on a scalar param
+  re-executes the affected marks and returns DIFFERENT RecordBatches — verified
+  by the exact probe that today returns byte-identical output — unblocking the
+  window-gated slider live-wiring. The two-tier split (pure vs data-shape) is
+  realized by the cache layer, not a new router.
+
+constraints:
+  - "Binding mechanism is INTERPOLATION: param values are substituted into the emitted SQL via spec_value_to_sql_literal; execute_emitted stays parameter-free (Decision 1). Do not add a prepared-binding execute path."
+  - "Scope: positional $param channels + data.filter expressions only. Expression channels beyond data.filter, aggregation-option params (bins/ci/bandwidth), and render-only visual-channel params are OUT of scope (Decisions 2, 5)."
+  - "Cache correctness: fold only the ACTUALLY-INLINED (param,value) pairs into plan_hash; selection params (routed through predicates, never inlined) must NOT enter the key (Decision 3). gomb_ac11 and gomb_ac12 must still pass unchanged."
+  - "Projected param channel alias is the param name; both brightfield-sql (projection) and brightfield-render (ChannelMap) derive it from the same ParamRef (Decision 4)."
+  - "Two-tier routing is emergent from the cache; no explicit pure/data-shape classifier is added (Decision 5)."
+  - "Rally seam — untouched or read-only: propagate_selection, selection_state, current_selections, SelectionDispatcher, BrushBinding, brush_rect_to_predicate, CrossfilterCoordinator, propagate_param's topological-walk semantics, ParamDispatcher, commit_slider_release, analysis.{subscriber_graph,topological_order,dependency_dag} schemas, brightfield-render's no-gpui invariant. emit_query / emit_query_with_passes SIGNATURES stay as-is (param_values already threaded)."
+  - "Test prefix is pefr_; AC ids align 1:1 with test-function suffixes (pefr_acNN_*)."
+  - "Public repo: no private names in code/specs/commits."
+
+acceptance_criteria:
+  - id: ac-01
+    ac_type: code
+    description: "emit_query no longer discards param_values: a query whose plan references a param interpolates the param's concrete value into the emitted SQL (the `let _ = param_values` stub is closed)."
+    verification: "pefr_ac01_emit_interpolates_scalar_param in crates/brightfield-sql/src/emit.rs tests: build a spec+plan that references a scalar param, call emit_query with param_values={k: 20}, assert the returned EmittedQuery.sql contains `20` and does not contain a bare `$k` or `?` placeholder for that param."
+
+  - id: ac-02
+    ac_type: code
+    description: "Interpolation is injection-safe: a string-valued param is emitted through spec_value_to_sql_literal (single-quoted / escaped), never raw."
+    verification: "pefr_ac02_interpolation_escapes_string_param: interpolate a param whose value is a SpecValue::String containing a quote; assert the emitted SQL contains the single-quoted, escaped literal (matches spec_value_to_sql_literal output) rather than the raw string."
+
+  - id: ac-03
+    ac_type: code
+    description: "A bare $param positional channel lowers into the SELECT as `<param> AS \"<param_name>\"` — the channel is projected into the query rather than dropped."
+    verification: "pefr_ac03_param_channel_projected: lower a mark with `y: $k` and `data: { from: t }`; render the plan; assert the SQL projects a column aliased to the param name (`AS \"k\"`) carrying the param placeholder, so interpolation yields `<value> AS \"k\"`."
+
+  - id: ac-04
+    ac_type: code
+    description: "ChannelMap::from_mark maps a $param positional channel to the param-name column (no longer skipped with a warning); it agrees with the lowerer's alias."
+    verification: "pefr_ac04_channelmap_maps_param_channel in crates/brightfield-render/src/channel.rs: from_mark on a mark with `y: $k` yields cm.column(Channel::Y) == \"k\" (and no longer routes it to the skip/warn branch). The prior msv_ac06 skip test is updated to reflect param channels now mapping."
+
+  - id: ac-05
+    ac_type: code
+    description: "End-to-end reactive channel (THE PROBE): a scalar param bound to a positional channel changes the mark's batch output when the param changes. propagate_param re-executes the mark and the projected column's values reflect the new value."
+    verification: "pefr_ac05_propagate_param_changes_channel_batch in crates/brightfield-engine: load a spec with `params: {k: 3}` and a mark `y: $k`; execute_all, read the `k` column (all == 3); propagate_param(\"k\", Integer(20)); assert the re-executed batch's `k` column values are all 20 (byte-different from before). This is the probe that returns identical output today."
+
+  - id: ac-06
+    ac_type: code
+    description: "A param embedded in a SQL Expression (channel or data.filter) registers the mark as a subscriber of that param."
+    verification: "pefr_ac06_expression_param_subscribes in crates/brightfield-spec/src/analysis.rs: a mark with `data: { from: t, filter: \"x > $k\" }` (or an expression channel) produces a subscriber_graph entry for `k` pointing at the mark. Extends collect_spec_value_subscribers to recurse Expression/Param."
+
+  - id: ac-07
+    ac_type: code
+    description: "A `data.filter` expression lowers into a WHERE clause that references the param, and interpolation substitutes the value."
+    verification: "pefr_ac07_data_filter_lowers_to_where in crates/brightfield-sql: lower a mark with `data: { from: t, filter: \"x > $k\" }`; assert the plan wraps the source in a Filter and the emitted SQL (with param_values={k:2}) contains a `WHERE ... x > 2` fragment."
+
+  - id: ac-08
+    ac_type: code
+    description: "End-to-end reactive filter: propagate_param on a filter param changes the mark's row set."
+    verification: "pefr_ac08_propagate_param_filter_changes_rows: spec with `params: {k: 0}`, data with rows spanning x, a mark `data: { from: t, filter: \"x > $k\" }`; execute_all row count at k=0; propagate_param(\"k\", Integer(2)); assert the re-executed batch has fewer rows (the filter tightened), proving the param reaches the WHERE."
+
+  - id: ac-09
+    ac_type: code
+    description: "Data-shape param change misses the cache and re-executes DuckDB (the SQL changed)."
+    verification: "pefr_ac09_data_shape_param_reexecutes: with the ac-08 spec, record duckdb_execute_count after the first propagate; propagate a DIFFERENT k; assert duckdb_execute_count increased (cache miss → re-execute) and the batch differs."
+
+  - id: ac-10
+    ac_type: code
+    description: "SQL-invariant param change keeps the cache warm: a selection param (routed through predicates, never inlined) does not increment duckdb_execute_count. gomb_ac12 is preserved unchanged."
+    verification: "pefr_ac10_sql_invariant_param_hits_cache re-asserts the gomb_ac12 property with the new interpolation path present (selection param brush → byte-identical SQL → no new execute); the existing gomb_ac12 test remains green without modification."
+
+  - id: ac-11
+    ac_type: code
+    description: "plan_hash folds inlined param values: it differs across distinct inlined scalar values but is identical across changes to a non-inlined (selection) param."
+    verification: "pefr_ac11_plan_hash_reflects_inlined_values in crates/brightfield-sql: emit_query for a $k-inlined mark with k=3 vs k=20 yields different plan_hash; emit_query for a selection-param mark with two brush values yields identical plan_hash (selection not inlined)."
+
+  - id: ac-12
+    ac_type: code
+    description: "Example spec renders differently at two param values, headless. A new examples/ spec with a scalar param drives a visible change; the app's PNG dump differs between two param values."
+    verification: "pefr_ac12_example_param_renders_reactively: an execution-conformance-style test (crates/brightfield-ui/tests) renders the example spec's mark at the default param and at an overridden param (via propagate_param), asserting the resulting scene geometry / batch differs. examples/param-threshold.yaml (or similar) is added."
+
+  - id: ac-13
+    ac_type: gate
+    description: "Rally seam intact: the cross-filter / selection path, propagate_param's walk semantics, emit_query signatures, and brightfield-render's no-gpui invariant are unchanged; the full workspace suite is green."
+    verification: |
+      Manual + CI gate:
+      (a) `cargo test --workspace` green (no regressions in cfs*, rpw*, gomb* suites);
+      (b) `git diff` shows emit_query/emit_query_with_passes SIGNATURES unchanged;
+      (c) brightfield-render has no new gpui dependency;
+      (d) propagate_selection / selection_state / SelectionDispatcher / commit_slider_release untouched.
+
+implementation_notes:
+  - "Interpolation site: replace `let _ = param_values;` (emit.rs:501). Reuse binding.rs's Interpolated mode for ExpressionNodes; for lowerer-emitted projection/filter strings carrying `$name`, substitute via a bounded pass using spec_value_to_sql_literal. Only substitute params present in param_values; leave unknown `$name` intact (matches binding.rs:93-98)."
+  - "plan_hash: after interpolation, fold the set of (param, value) pairs actually substituted into plan_hash (e.g. combine plan.hash_structural() with a hash of the sorted inlined pairs). Selection params are compiled to Predicate::Expr strings, not inlined, so they never enter the fold — preserving gomb_ac12. Update the plan_hash doc comment."
+  - "Param channel projection: SimpleLowerer (lower.rs:52) currently emits QueryPlan::Source (SELECT *). For a mark with $param positional channels, wrap the source in a Projection that keeps `*` and adds `$param AS \"<param>\"` per param channel. Read channels from mark.options as ValueOrParamRef::Param."
+  - "data.filter: MarkData::From.extras may carry a `filter`/`where` SpecValue::Expression (ast.rs:346). Lower it into QueryPlan::Filter with the expression rendered (params → placeholders interpolated). Confirm the parser already routes a `filter:` key into extras as an Expression (parse.rs string_to_spec_value); if not, thread it."
+  - "Subscription: extend collect_spec_value_subscribers (analysis.rs:330-344) to handle SpecValue::Expression (subscribe each embedded ParamRef) and SpecValue::Param. Also ensure a mark's data.filter expression is walked for subscribers (collect_mark_subscribers currently only checks filter_by + options)."
+  - "ChannelMap alias: channel.rs:147 — replace the skip/warn for ValueOrParamRef::Param with cm.insert(ch, param_ref.0.clone()). Update msv_ac06 test."
+  - "Cross-crate alias contract: the projection alias (lower.rs) and the ChannelMap column (channel.rs) both equal ParamRef.0. Document the same-named-table-column edge (defer hardening)."
+  - "Verification harness: the throwaway probe used this session (params:{k:3}, mark y:$k, propagate_param(k,20)) is the ac-05 template. Add examples/param-threshold.yaml for ac-12 and a PNG eyeball."
+
+gate:
+  id: ac-13
+  description: "Rally seam + full-suite green (see ac-13)."
+
+ambiguity_score: 0.12
+ambiguity_notes: >
+  Low. Design pack fixes the mechanism (interpolation), scope (positional
+  channels + data.filter), cache strategy (plan_hash fold), and alias (param
+  name). Residual ambiguity: (a) whether the parser already lowers a `filter:`
+  key on mark data into an Expression in extras, or needs threading — resolve by
+  reading parse.rs during ac-07; (b) exact plan_hash fold representation — any
+  stable hash of the inlined pairs satisfies ac-11; (c) whether to project param
+  channels in all lowerers or only SimpleLowerer for this slice — SimpleLowerer
+  suffices for the ACs, others deferred.
