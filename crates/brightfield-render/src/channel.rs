@@ -145,12 +145,33 @@ impl ChannelMap {
                         cm.insert_literal(*ch, *f);
                     }
                     ValueOrParamRef::Param(param_ref) => {
-                        eprintln!(
-                            "warning: skipping channel `{}` bound to param `{}` \
-                             — reactive parameters not yet supported",
-                            ch.wire_name(),
-                            param_ref.to_wire()
-                        );
+                        // A positional channel bound to a `$param` is projected
+                        // into the query as `$param AS "<param>"` by the lowerer
+                        // (card 0014, Decision 2), sourced from param_state at
+                        // emit time. Map it to that param-named column so the
+                        // renderer reads the interpolated value — and so a
+                        // param change flows through to the render. Non-positional
+                        // channels (fill/stroke/size/text) bound to a param are
+                        // the deferred render-only case (Decision 5).
+                        if matches!(
+                            ch,
+                            Channel::X
+                                | Channel::Y
+                                | Channel::X1
+                                | Channel::Y1
+                                | Channel::X2
+                                | Channel::Y2
+                        ) {
+                            cm.insert(*ch, param_ref.0.clone());
+                        } else {
+                            eprintln!(
+                                "warning: skipping non-positional channel `{}` \
+                                 bound to param `{}` — render-only param channels \
+                                 are not yet supported",
+                                ch.wire_name(),
+                                param_ref.to_wire()
+                            );
+                        }
                     }
                     _ => {}
                 }
@@ -189,36 +210,55 @@ mod tests {
         assert!(!cm.has(Channel::Y));
     }
 
+    /// pefr ac-04 (card 0014): a POSITIONAL channel bound to a `$param` maps to
+    /// the param-named column (the lowerer projects `$param AS "<param>"`), so
+    /// the renderer reads the interpolated value. A NON-positional channel
+    /// (fill/stroke/size/text) bound to a param is still skipped (the deferred
+    /// render-only case). Supersedes the old msv_ac06 skip-everything behaviour.
     #[test]
-    fn msv_ac06_from_mark_skips_param_ref() {
+    fn pefr_ac04_from_mark_maps_positional_param_channel() {
         use brightfield_spec::ast::{Mark, ParamRef, SpecValue, ValueOrParamRef};
         use brightfield_spec::vocab::{ImplStatus, MarkKind};
 
         let mut options: indexmap::IndexMap<String, ValueOrParamRef<SpecValue>> =
             Default::default();
-        // x is a ParamRef — should be skipped
-        options.insert(
-            "x".to_string(),
-            ValueOrParamRef::Param(ParamRef::new("slider1")),
-        );
-        // y is a literal string — should be included
+        // y (positional) is a ParamRef — now mapped to the param-named column.
         options.insert(
             "y".to_string(),
-            ValueOrParamRef::Value(SpecValue::String("col_y".to_string())),
+            ValueOrParamRef::Param(ParamRef::new("threshold")),
+        );
+        // x is a literal column reference.
+        options.insert(
+            "x".to_string(),
+            ValueOrParamRef::Value(SpecValue::String("col_x".to_string())),
+        );
+        // fill (non-positional) is a ParamRef — still skipped (render-only case).
+        options.insert(
+            "fill".to_string(),
+            ValueOrParamRef::Param(ParamRef::new("colour")),
         );
 
         let mark = Mark {
             kind: MarkKind::Dot,
-            status: ImplStatus::Unimplemented,
+            status: ImplStatus::Implemented,
             data: None,
             options,
         };
 
         let cm = ChannelMap::from_mark(&mark);
-        // x should be absent (ParamRef skipped)
-        assert!(!cm.has(Channel::X), "ParamRef channel should be skipped");
-        // y should be present (literal string)
-        assert_eq!(cm.get(Channel::Y), Some("col_y"));
+        // Positional param channel → mapped to the param name.
+        assert_eq!(
+            cm.get(Channel::Y),
+            Some("threshold"),
+            "positional $param channel maps to the param-named column"
+        );
+        // Column ref unchanged.
+        assert_eq!(cm.get(Channel::X), Some("col_x"));
+        // Non-positional param channel → still absent (deferred render-only).
+        assert!(
+            !cm.has(Channel::Fill),
+            "non-positional $param channel is still skipped"
+        );
     }
 
     #[test]

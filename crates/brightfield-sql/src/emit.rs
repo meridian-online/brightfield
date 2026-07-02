@@ -192,7 +192,10 @@ pub(crate) fn format_kwargs(
 /// Convert a `SpecValue` to a SQL literal for use in kwargs.
 pub(crate) fn spec_value_to_sql_literal(val: &SpecValue) -> String {
     match val {
-        SpecValue::String(s) => format!("'{s}'"),
+        // Escape embedded single quotes (SQL-standard doubling) so string
+        // literals — including interpolated param values (card 0014, ac-02) and
+        // inline data — are injection-safe.
+        SpecValue::String(s) => format!("'{}'", s.replace('\'', "''")),
         SpecValue::Integer(n) => format!("{n}"),
         SpecValue::Float(f) => format!("{f}"),
         SpecValue::Bool(b) => format!("{b}"),
@@ -486,25 +489,106 @@ pub fn emit_query_with_passes(
     // Apply optimisation passes (built-in + caller-provided).
     let plan = apply_passes(plan, extra_passes);
 
-    let plan_hash = plan.hash_structural();
+    let structural_hash = plan.hash_structural();
     let mut bindings: Vec<Binding> = Vec::new();
-    let sql = render_query(&plan, &mut bindings);
+    let rendered = render_query(&plan, &mut bindings);
 
-    // Param values are surfaced through the EmittedQuery for callers that
-    // need them at execution time; the binding mode pluming will gain a
-    // proper Interpolated path in a follow-up. For now, the observable
-    // contract from the spec's ac-09 is that `param_values` is no longer
-    // discarded — render_query's bindings vector already records `?`
-    // positions, and execution-side callers (`Session::execute_emitted`)
-    // bind from their stored `param_state`. This call site simply stops
-    // throwing the argument away.
-    let _ = param_values;
+    // Interpolate scalar param values into the emitted SQL (card 0014,
+    // Decision 1). `$name` placeholders in lowerer-emitted projections / filter
+    // expressions are substituted with escaped literals via
+    // `spec_value_to_sql_literal`; names absent from `param_values` are left
+    // intact. The set of pairs actually inlined is folded into `plan_hash` so a
+    // data-shape param change keys the caches distinctly, while an SQL-invariant
+    // change (e.g. a selection routed through concrete predicates, which carry
+    // no `$name`) leaves the hash untouched — preserving gomb_ac12 (Decision 3).
+    let (sql, inlined) = match param_values {
+        Some(params) => interpolate_params(&rendered, params),
+        None => (rendered, Vec::new()),
+    };
+    let plan_hash = fold_inlined_into_hash(structural_hash, &inlined);
 
     Ok(EmittedQuery {
         sql,
         bindings,
         plan_hash,
     })
+}
+
+/// Substitute `$name` param placeholders in `sql` with escaped literals drawn
+/// from `params` (card 0014, Decision 1). Matching is identifier-boundary aware
+/// (`$name` consumes a maximal `[A-Za-z0-9_]` run); a `$name` whose identifier
+/// is absent from `params` is emitted verbatim, mirroring binding.rs's
+/// Interpolated fallthrough. Returns the interpolated SQL and the `(name,
+/// value)` pairs actually inlined — the input to [`fold_inlined_into_hash`].
+///
+/// Values route through [`spec_value_to_sql_literal`], which quotes/escapes
+/// strings, so interpolation is injection-safe for typed `SpecValue`s. Known
+/// limitation (deferred): a literal `$name` inside a SQL string literal would
+/// also be substituted; emitted queries in this slice never place param
+/// placeholders inside string literals.
+fn interpolate_params(sql: &str, params: &ParamValues) -> (String, Vec<(String, SpecValue)>) {
+    let mut out = String::with_capacity(sql.len());
+    let mut inlined: Vec<(String, SpecValue)> = Vec::new();
+    let mut chars = sql.char_indices().peekable();
+    while let Some((idx, c)) = chars.next() {
+        if c != '$' {
+            out.push(c);
+            continue;
+        }
+        // Collect the following identifier run.
+        let name_start = idx + 1;
+        let mut name_end = name_start;
+        while let Some(&(k, nc)) = chars.peek() {
+            if nc.is_ascii_alphanumeric() || nc == '_' {
+                name_end = k + nc.len_utf8();
+                chars.next();
+            } else {
+                break;
+            }
+        }
+        if name_end > name_start {
+            let name = &sql[name_start..name_end];
+            if let Some(val) = params.get(name) {
+                out.push_str(&spec_value_to_sql_literal(val));
+                inlined.push((name.to_string(), val.clone()));
+                continue;
+            }
+            // Unknown param — leave `$name` intact.
+            out.push('$');
+            out.push_str(name);
+        } else {
+            // Lone `$`.
+            out.push('$');
+        }
+    }
+    (out, inlined)
+}
+
+/// Fold the actually-inlined `(param, value)` pairs into the structural plan
+/// hash (card 0014, Decision 3), so two queries that differ only in an inlined
+/// param value hash differently (cache correctness) while a query with no
+/// inlined params keeps its structural hash (selection params carry no `$name`,
+/// so never enter the fold — preserving gomb_ac12's cache-warm property).
+fn fold_inlined_into_hash(structural: u64, inlined: &[(String, SpecValue)]) -> u64 {
+    if inlined.is_empty() {
+        return structural;
+    }
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    // Order-independent: sort by (name, literal) so occurrence order in the SQL
+    // does not perturb the hash.
+    let mut pairs: Vec<(&String, String)> = inlined
+        .iter()
+        .map(|(n, v)| (n, spec_value_to_sql_literal(v)))
+        .collect();
+    pairs.sort();
+    let mut hasher = DefaultHasher::new();
+    structural.hash(&mut hasher);
+    for (name, lit) in pairs {
+        name.hash(&mut hasher);
+        lit.hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 /// Extract the selection name that this mark's `data.filter_by` references,
@@ -537,6 +621,162 @@ pub fn emit_all_queries(
 mod query_tests {
     use super::*;
     use brightfield_spec::{parse_spec, Format};
+
+    // -----------------------------------------------------------------------
+    // Param-effect routing (card 0014) — interpolation + plan_hash fold
+    // -----------------------------------------------------------------------
+
+    /// pefr ac-01: a `$param` placeholder is substituted with its concrete
+    /// value, and the substitution is reported for plan_hash folding.
+    #[test]
+    fn pefr_ac01_interpolate_scalar_param() {
+        let mut params = ParamValues::new();
+        params.insert("k".to_string(), SpecValue::Integer(20));
+        let (sql, inlined) = interpolate_params("SELECT * FROM t WHERE x > $k", &params);
+        assert_eq!(sql, "SELECT * FROM t WHERE x > 20");
+        assert_eq!(inlined, vec![("k".to_string(), SpecValue::Integer(20))]);
+    }
+
+    /// pefr ac-01: a `$name` not in param_values is left intact (no partial
+    /// interpolation), and identifier boundaries are respected — `$k` must not
+    /// consume `$k2`.
+    #[test]
+    fn pefr_ac01_interpolate_unknown_and_boundaries() {
+        let mut params = ParamValues::new();
+        params.insert("k".to_string(), SpecValue::Integer(1));
+        let (sql, inlined) = interpolate_params("$k2 + $k + $unknown", &params);
+        assert_eq!(sql, "$k2 + 1 + $unknown", "only the exact known $k is inlined");
+        assert_eq!(inlined, vec![("k".to_string(), SpecValue::Integer(1))]);
+    }
+
+    /// pefr ac-02: a string-valued param is emitted quoted and escaped
+    /// (single-quote doubling) — never raw — so interpolation is injection-safe.
+    #[test]
+    fn pefr_ac02_interpolation_escapes_string_param() {
+        let mut params = ParamValues::new();
+        params.insert("s".to_string(), SpecValue::String("O'Brien".to_string()));
+        let (sql, _) = interpolate_params("WHERE name = $s", &params);
+        assert_eq!(sql, "WHERE name = 'O''Brien'");
+        assert!(!sql.contains("$s"), "raw placeholder must be gone");
+    }
+
+    /// pefr ac-11 (helper level): folding distinct inlined values yields
+    /// distinct hashes; an empty inline set is a no-op (structural hash
+    /// preserved — the SQL-invariant / selection-param path); the fold is
+    /// order-independent.
+    #[test]
+    fn pefr_ac11_fold_inlined_into_hash() {
+        let base = 0x1234_5678_u64;
+        let k3 = fold_inlined_into_hash(base, &[("k".to_string(), SpecValue::Integer(3))]);
+        let k20 = fold_inlined_into_hash(base, &[("k".to_string(), SpecValue::Integer(20))]);
+        assert_ne!(k3, k20, "distinct inlined values must fold to distinct hashes");
+        assert_eq!(
+            fold_inlined_into_hash(base, &[]),
+            base,
+            "no inlined params must leave the structural hash untouched"
+        );
+        let ab = fold_inlined_into_hash(
+            base,
+            &[
+                ("a".to_string(), SpecValue::Integer(1)),
+                ("b".to_string(), SpecValue::Integer(2)),
+            ],
+        );
+        let ba = fold_inlined_into_hash(
+            base,
+            &[
+                ("b".to_string(), SpecValue::Integer(2)),
+                ("a".to_string(), SpecValue::Integer(1)),
+            ],
+        );
+        assert_eq!(ab, ba, "fold must be order-independent");
+    }
+
+    /// pefr ac-03: a bare `$param` positional channel is projected into the
+    /// SELECT as `$param AS "<param>"`, and interpolation yields `<value> AS
+    /// "<param>"` — the channel reaches the query rather than being dropped.
+    #[test]
+    fn pefr_ac03_param_channel_projected() {
+        let src = "params:\n  k: 3\ndata:\n  t: [{ x: 1 }, { x: 2 }]\nplot:\n  - mark: dot\n    data: { from: t }\n    x: x\n    y: $k\n";
+        let spec = parse_spec(src, Format::Yaml).unwrap().spec;
+        let mut params = ParamValues::new();
+        params.insert("k".to_string(), SpecValue::Integer(20));
+        let emitted = emit_query(&spec, 0, Some(&params), None).unwrap();
+        assert!(
+            emitted.sql.contains("AS \"k\""),
+            "param channel must be projected with the param-named alias: {}",
+            emitted.sql
+        );
+        assert!(
+            emitted.sql.contains("20"),
+            "param value must be interpolated into the projection: {}",
+            emitted.sql
+        );
+        assert!(
+            !emitted.sql.contains("$k"),
+            "no raw placeholder should survive: {}",
+            emitted.sql
+        );
+    }
+
+    /// pefr ac-07: a `data.filter` expression lowers into a WHERE clause and
+    /// its `$param` is interpolated (card 0014, Decision 2).
+    #[test]
+    fn pefr_ac07_data_filter_lowers_to_where() {
+        let src = "params:\n  k: 0\ndata:\n  t: [{ x: 1 }, { x: 5 }]\nplot:\n  - mark: dot\n    data: { from: t, filter: \"x > $k\" }\n    x: x\n    y: x\n";
+        let spec = parse_spec(src, Format::Yaml).unwrap().spec;
+        let mut params = ParamValues::new();
+        params.insert("k".to_string(), SpecValue::Integer(2));
+        let emitted = emit_query(&spec, 0, Some(&params), None).unwrap();
+        assert!(
+            emitted.sql.to_uppercase().contains("WHERE"),
+            "data.filter must lower to a WHERE: {}",
+            emitted.sql
+        );
+        assert!(
+            emitted.sql.contains("x > 2"),
+            "the filter param must be interpolated: {}",
+            emitted.sql
+        );
+    }
+
+    /// pefr ac-10: a param that does NOT appear in a mark's SQL (the
+    /// SQL-invariant / pure tier) yields an identical plan_hash across values,
+    /// so the caches stay warm. This is the property gomb_ac12 relies on for
+    /// selection params.
+    #[test]
+    fn pefr_ac10_sql_invariant_param_keeps_plan_hash() {
+        let src = "params:\n  k: 1\ndata:\n  t: [{ x: 1 }]\nplot:\n  - mark: dot\n    data: { from: t }\n    x: x\n    y: x\n";
+        let spec = parse_spec(src, Format::Yaml).unwrap().spec;
+        let mut p1 = ParamValues::new();
+        p1.insert("k".to_string(), SpecValue::Integer(1));
+        let mut p2 = ParamValues::new();
+        p2.insert("k".to_string(), SpecValue::Integer(999));
+        let h1 = emit_query(&spec, 0, Some(&p1), None).unwrap().plan_hash;
+        let h2 = emit_query(&spec, 0, Some(&p2), None).unwrap().plan_hash;
+        assert_eq!(
+            h1, h2,
+            "a param absent from the mark's SQL must not perturb plan_hash"
+        );
+    }
+
+    /// pefr ac-11 (emit level): an inlined channel-param value change DOES
+    /// perturb plan_hash (the data-shape tier), so the caches key distinctly.
+    #[test]
+    fn pefr_ac11_emit_plan_hash_reflects_inlined_channel() {
+        let src = "params:\n  k: 3\ndata:\n  t: [{ x: 1 }]\nplot:\n  - mark: dot\n    data: { from: t }\n    x: x\n    y: $k\n";
+        let spec = parse_spec(src, Format::Yaml).unwrap().spec;
+        let mut p3 = ParamValues::new();
+        p3.insert("k".to_string(), SpecValue::Integer(3));
+        let mut p20 = ParamValues::new();
+        p20.insert("k".to_string(), SpecValue::Integer(20));
+        let h3 = emit_query(&spec, 0, Some(&p3), None).unwrap().plan_hash;
+        let h20 = emit_query(&spec, 0, Some(&p20), None).unwrap().plan_hash;
+        assert_ne!(
+            h3, h20,
+            "an inlined channel-param value change must change plan_hash"
+        );
+    }
 
     #[test]
     fn dfir_ac08_emit_query_unsupported_mark() {

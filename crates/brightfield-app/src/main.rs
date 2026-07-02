@@ -112,6 +112,19 @@ fn run_pipeline(spec_path: &str) -> Result<Dashboard, String> {
 /// layout pass — AND the live engine/render state ([`LiveParts`]) the window
 /// needs for in-window cross-filtering. A single plot is just a one-plot
 /// dashboard.
+/// Parse a `BRIGHTFIELD_PARAM_OVERRIDE` value into a `SpecValue` — integer,
+/// then float, then string (card 0014 headless preview).
+fn parse_override_value(raw: &str) -> brightfield_spec::ast::SpecValue {
+    use brightfield_spec::ast::SpecValue;
+    if let Ok(i) = raw.parse::<i64>() {
+        SpecValue::Integer(i)
+    } else if let Ok(f) = raw.parse::<f64>() {
+        SpecValue::Float(f)
+    } else {
+        SpecValue::String(raw.to_string())
+    }
+}
+
 fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
     // 1. Parse the spec.
     let parsed = parse_spec_path(spec_path).map_err(|e| format!("parse error: {e}"))?;
@@ -136,6 +149,18 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
         .load_spec(parsed.spec.clone(), analysis, spec_dir)
         .map_err(|e| format!("engine error: {e}"))?;
     let mut session = load.session;
+
+    // 3b. Optional headless param override (card 0014): apply
+    //     BRIGHTFIELD_PARAM_OVERRIDE="name=value[,name=value]" before executing,
+    //     so a PNG dump can preview the dashboard at a chosen param value — the
+    //     same propagate_param path a slider will drive live once the widget lands.
+    if let Ok(overrides) = env::var("BRIGHTFIELD_PARAM_OVERRIDE") {
+        for pair in overrides.split(',') {
+            if let Some((name, raw)) = pair.split_once('=') {
+                let _ = session.propagate_param(name.trim(), parse_override_value(raw.trim()));
+            }
+        }
+    }
 
     // 4. Execute all marks, building per-mark inputs indexed by the flat mark
     //    order (= execution order). A failed mark keeps `batch: None` and is

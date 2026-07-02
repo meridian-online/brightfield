@@ -1362,6 +1362,190 @@ plot:
         );
     }
 
+    /// Robustly read a numeric column as f64 across DuckDB's integer/float
+    /// return types (card 0014 tests).
+    fn column_as_f64_vec(batches: &[RecordBatch], name: &str) -> Vec<f64> {
+        use duckdb::arrow::array::{Array, Float64Array};
+        use duckdb::arrow::compute::cast;
+        use duckdb::arrow::datatypes::DataType;
+        let mut out = Vec::new();
+        for b in batches {
+            let idx = b
+                .schema()
+                .index_of(name)
+                .unwrap_or_else(|_| panic!("column `{name}` absent; schema = {:?}", b.schema()));
+            let col = cast(b.column(idx), &DataType::Float64).expect("cast to f64");
+            let arr = col
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .expect("f64 array");
+            for i in 0..arr.len() {
+                out.push(arr.value(i));
+            }
+        }
+        out
+    }
+
+    /// pefr ac-05 (THE PROBE): a scalar param bound to a positional channel
+    /// changes the mark's batch output when the param changes. Before card 0014
+    /// this returned byte-identical output (in fact no `y`/`k` column at all).
+    #[test]
+    fn pefr_ac05_propagate_param_changes_channel_batch() {
+        let yaml = r#"
+params:
+  k: 3
+data:
+  t:
+    - { x: 1 }
+    - { x: 2 }
+    - { x: 3 }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: x
+    y: $k
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        // Initial execution uses the default k = 3.
+        let before = session.execute_all();
+        let batch_before = before[0].as_ref().expect("dot executes");
+        assert_eq!(
+            column_as_f64_vec(batch_before, "k"),
+            vec![3.0, 3.0, 3.0],
+            "the $k channel column reflects the default param value"
+        );
+
+        // Change the param — the subscribing mark re-executes with the new value.
+        let results = session.propagate_param("k", SpecValue::Integer(20));
+        assert_eq!(results.len(), 1, "the $k-channel mark must be re-dispatched");
+        let batch_after = results[0].1.as_ref().expect("re-execute succeeds");
+        assert_eq!(
+            column_as_f64_vec(batch_after, "k"),
+            vec![20.0, 20.0, 20.0],
+            "the channel column now reflects the new param value — reactive"
+        );
+    }
+
+    /// pefr ac-08 (card 0014): propagate_param on a `data.filter` param
+    /// re-filters the row set — the param reaches the WHERE clause.
+    #[test]
+    fn pefr_ac08_propagate_param_filter_changes_rows() {
+        let yaml = r#"
+params:
+  k: 0
+data:
+  t:
+    - { x: 1 }
+    - { x: 2 }
+    - { x: 3 }
+    - { x: 4 }
+plot:
+  - mark: dot
+    data: { from: t, filter: "x > $k" }
+    x: x
+    y: x
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        let before = session.execute_all();
+        let rows_before: usize = before[0]
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum();
+        assert_eq!(rows_before, 4, "k=0: all four rows pass x > 0");
+
+        let results = session.propagate_param("k", SpecValue::Integer(2));
+        assert_eq!(results.len(), 1, "the filter mark must be re-dispatched");
+        let rows_after: usize = results[0]
+            .1
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum();
+        assert_eq!(rows_after, 2, "k=2: only x=3,4 pass x > 2 — the filter tightened");
+    }
+
+    /// pefr ac-09 (card 0014): a data-shape param change (new WHERE value)
+    /// misses the cache and re-executes DuckDB — the plan_hash fold keys the
+    /// caches on the inlined value, so no stale batch is returned.
+    #[test]
+    fn pefr_ac09_data_shape_param_reexecutes() {
+        let yaml = r#"
+params:
+  k: 0
+data:
+  t:
+    - { x: 1 }
+    - { x: 2 }
+    - { x: 3 }
+    - { x: 4 }
+plot:
+  - mark: dot
+    data: { from: t, filter: "x > $k" }
+    x: x
+    y: x
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+        let _ = session.execute_all();
+        let _ = session.propagate_param("k", SpecValue::Integer(2));
+        let count_after_first = session.duckdb_execute_count();
+
+        let results = session.propagate_param("k", SpecValue::Integer(3));
+        assert!(
+            session.duckdb_execute_count() > count_after_first,
+            "a data-shape param change must miss the cache and re-execute DuckDB"
+        );
+        let rows: usize = results[0]
+            .1
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum();
+        assert_eq!(rows, 1, "k=3: only x=4 passes x > 3 — fresh (not stale) batch");
+    }
+
+    /// pefr ac-12 (card 0014): the shipped example spec is reactive — raising
+    /// the threshold param re-executes the query and drops points.
+    #[test]
+    fn pefr_ac12_example_param_threshold_is_reactive() {
+        let yaml = include_str!("../../../examples/param-threshold.yaml");
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        let before = session.execute_all();
+        let rows_before: usize = before[0]
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum();
+
+        let results = session.propagate_param("threshold", SpecValue::Integer(6));
+        let rows_after: usize = results[0]
+            .1
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum();
+        assert!(
+            rows_after < rows_before,
+            "raising the threshold must drop points: {rows_before} -> {rows_after}"
+        );
+    }
+
     // --- ac-08: QueryFailed with mark_index and mark_kind ---
     #[test]
     fn dex_ac08_query_failed_with_mark_context() {
