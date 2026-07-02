@@ -18,11 +18,12 @@ use brightfield_render::mark::{default_renderers, find_renderer};
 use brightfield_render::scale::ScaleSet;
 use brightfield_render::scene::{build_multi_mark_scene, compose_dashboard, ChartData};
 use brightfield_spec::analysis::analyse_spec;
-use brightfield_spec::layout::{placed_plots, Rect};
+use brightfield_spec::layout::{placed_input_nodes, placed_plots, Rect};
 use brightfield_spec::parse_spec_path;
+use brightfield_spec::vocab::InputKind;
 use brightfield_sql::{collect_marks, collect_plot_groups};
 use brightfield_ui::chart_view::BrushBinding;
-use brightfield_ui::{CrossfilterCoordinator, LivePlot, MarkInput};
+use brightfield_ui::{CrossfilterCoordinator, LivePlot, MarkInput, SliderBinding};
 
 /// Concatenate the record batches from one mark's query into a single batch.
 ///
@@ -83,6 +84,9 @@ struct LiveParts {
     marks: Vec<MarkInput>,
     /// Per plot, aligned 1:1 with `Dashboard.plots`.
     plots: Vec<LivePlotMeta>,
+    /// Dashboard-level slider bindings (card 0005), fed to the coordinator so a
+    /// slider release drives `propagate_param`. Order matches the hosted sliders.
+    slider_bindings: Vec<SliderBinding>,
 }
 
 /// Per-plot live metadata captured during rendering, joined to its `ChartState`
@@ -260,6 +264,17 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
         return Err("no marks rendered successfully".to_string());
     }
 
+    // Slider bindings (card 0005): each composition-level `input: slider` with a
+    // param target + numeric bounds drives a param through the coordinator. The
+    // visual widget + rect are hosted separately (the window path); here we only
+    // capture the bindings the coordinator dispatches through.
+    let slider_bindings: Vec<SliderBinding> =
+        placed_input_nodes(&parsed.spec, Rect::new(0.0, 0.0, 0.0, 0.0))
+            .into_iter()
+            .filter(|(_, input)| input.kind == InputKind::Slider)
+            .filter_map(|(_, input)| SliderBinding::from_input(input))
+            .collect();
+
     let width = placed
         .iter()
         .map(|p| p.rect.x + p.rect.width)
@@ -276,6 +291,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             session,
             marks: mark_inputs,
             plots: live_plots,
+            slider_bindings,
         },
     ))
 }
@@ -453,7 +469,12 @@ fn main() {
         let app = gpui::Application::with_platform(Rc::new(gpui_macos::MacPlatform::new(false)));
         let spec_path = spec_path.to_string();
         let Dashboard { width, height, plots } = dashboard;
-        let LiveParts { session, marks, plots: live_plots_meta } = live;
+        let LiveParts {
+            session,
+            marks,
+            plots: live_plots_meta,
+            slider_bindings,
+        } = live;
         app.run(move |cx| {
             // One ChartState per plot; the watcher tracks each by its stable
             // path + geometry for hot-reload.
@@ -481,7 +502,8 @@ fn main() {
                     state: w.state.clone(),
                 })
                 .collect();
-            let coordinator = CrossfilterCoordinator::new(session, marks, live_plots);
+            let coordinator =
+                CrossfilterCoordinator::new(session, marks, live_plots, slider_bindings);
 
             // One placed chart per plot, each wired to the shared coordinator.
             let charts: Vec<brightfield_ui::PlacedChart> = watched

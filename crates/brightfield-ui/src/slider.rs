@@ -188,10 +188,83 @@ pub fn commit_slider_release<D: ParamDispatcher>(
     }
 }
 
+/// Map a horizontal pixel position on a slider track to a param value in
+/// `[binding.min, binding.max]`, snapped to `step` when present.
+///
+/// `px`, `track_left`, and `track_width` are logical pixels in the same space
+/// (the widget's own coordinate frame). A position outside the track clamps to
+/// the nearest end. The inverse — value → thumb fraction, for drawing — is
+/// [`thumb_fraction`].
+#[must_use]
+pub fn value_at(px: f64, track_left: f64, track_width: f64, binding: &SliderBinding) -> f64 {
+    let frac = if track_width > 0.0 {
+        ((px - track_left) / track_width).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let raw = binding.min + frac * (binding.max - binding.min);
+    match binding.step {
+        // Snap to the nearest step measured from min, then clamp to the domain.
+        Some(step) if step > 0.0 => {
+            let snapped = binding.min + ((raw - binding.min) / step).round() * step;
+            snapped.clamp(binding.min, binding.max)
+        }
+        _ => raw,
+    }
+}
+
+/// The normalised `[0, 1]` position of `value` along the track — used to place
+/// the thumb. Clamped to the domain; the inverse of [`value_at`]'s fraction.
+#[must_use]
+pub fn thumb_fraction(value: f64, binding: &SliderBinding) -> f64 {
+    if binding.max > binding.min {
+        ((value - binding.min) / (binding.max - binding.min)).clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use brightfield_spec::ast::ParamRef;
+
+    fn binding(min: f64, max: f64, step: Option<f64>) -> SliderBinding {
+        SliderBinding {
+            param_name: "k".to_string(),
+            min,
+            max,
+            step,
+        }
+    }
+
+    // slw ac-04 (card 0005): a track pixel maps to a param value; endpoints and
+    // mid are exact, step snaps, out-of-track clamps.
+    #[test]
+    fn slw_ac04_value_at_maps_track_pixels() {
+        let b = binding(0.0, 10.0, Some(1.0)); // track x=100..300 (width 200)
+        assert_eq!(value_at(100.0, 100.0, 200.0, &b), 0.0, "left = min");
+        assert_eq!(value_at(300.0, 100.0, 200.0, &b), 10.0, "right = max");
+        assert_eq!(value_at(200.0, 100.0, 200.0, &b), 5.0, "mid = 5");
+        assert_eq!(value_at(160.0, 100.0, 200.0, &b), 3.0, "0.3 -> snapped 3");
+        assert_eq!(value_at(50.0, 100.0, 200.0, &b), 0.0, "left of track clamps");
+        assert_eq!(value_at(400.0, 100.0, 200.0, &b), 10.0, "right of track clamps");
+
+        // Continuous (no step): exact fractional value.
+        let c = binding(0.0, 1.0, None);
+        assert!((value_at(150.0, 100.0, 200.0, &c) - 0.25).abs() < 1e-9);
+    }
+
+    // slw ac-04: thumb_fraction is the drawing-side inverse and clamps.
+    #[test]
+    fn slw_ac04_thumb_fraction_inverts_value() {
+        let b = binding(0.0, 10.0, Some(1.0));
+        assert_eq!(thumb_fraction(0.0, &b), 0.0);
+        assert_eq!(thumb_fraction(10.0, &b), 1.0);
+        assert_eq!(thumb_fraction(5.0, &b), 0.5);
+        assert_eq!(thumb_fraction(-5.0, &b), 0.0, "clamps below min");
+        assert_eq!(thumb_fraction(15.0, &b), 1.0, "clamps above max");
+    }
     use brightfield_spec::vocab::{ImplStatus, InputKind};
     use indexmap::IndexMap;
 
