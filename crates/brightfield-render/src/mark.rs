@@ -103,6 +103,13 @@ const DEFAULT_COLOUR: Color = Color::new([0.306, 0.475, 0.655, 1.0]);
 /// Default line stroke width.
 const LINE_STROKE_WIDTH: f64 = 2.0;
 
+/// Reserved output-column name the density lowerers emit for the per-bin
+/// occupancy count. Kept distinct from any user column so a density positional
+/// channel bound to a column literally named `count` can't collide with it (the
+/// bin centre is aliased to the channel column name). Must match the alias in
+/// brightfield-sql's `build_density_1d`/`build_density_2d`.
+const DENSITY_COUNT_COL: &str = "__bf_count";
+
 // ---------------------------------------------------------------------------
 // Helpers: extract f64 values from columns regardless of source type
 // ---------------------------------------------------------------------------
@@ -794,6 +801,34 @@ pub struct Density1DRenderer {
     pub axis: DensityAxis,
 }
 
+/// Read a 1D density mark's occupied `(centre, count)` pairs from `batch`,
+/// sorted by centre — the weighted samples both `render` and `augment_scales`
+/// build the KDE (and its extent) from. Counts come from the reserved
+/// [`DENSITY_COUNT_COL`]. `None` when fewer than two distinct bins survive (too
+/// few to form a curve).
+fn density_1d_weighted_pairs(batch: &RecordBatch, bin_col: &str) -> Option<Vec<(f64, f64)>> {
+    let bin_vals = column_as_f64(batch, bin_col)?;
+    let count_vals = column_as_f64(batch, DENSITY_COUNT_COL)?;
+    let mut pairs: Vec<(f64, f64)> = Vec::with_capacity(bin_vals.len());
+    for (b, c) in bin_vals.into_iter().zip(count_vals) {
+        if let (Some(b), Some(c)) = (b, c) {
+            pairs.push((b, c.max(0.0)));
+        }
+    }
+    pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    if pairs.len() < 2 {
+        None
+    } else {
+        Some(pairs)
+    }
+}
+
+/// KDE evaluation extends this many bandwidths past the data extremes — the
+/// kernel's ±3σ truncation support — so the density curve tapers to ~0 at the
+/// tails rather than dropping in a vertical cliff at the data min/max. `render`
+/// pads the grid by this and `augment_scales` widens the bin axis to match.
+const DENSITY_TAIL_SIGMAS: f64 = 3.0;
+
 impl MarkRenderer for Density1DRenderer {
     fn render(
         &self,
@@ -823,59 +858,38 @@ impl MarkRenderer for Density1DRenderer {
             None => return,
         };
 
-        // Sort batch rows by bin centre (the lowerer does NOT order by bin —
-        // GROUP BY in DuckDB has no implicit ordering).
-        let bin_vals_opt = column_as_f64(batch, bin_col);
-        let count_vals_opt = column_as_f64(batch, "count");
-        let (bin_vals, count_vals) = match (bin_vals_opt, count_vals_opt) {
-            (Some(b), Some(c)) => (b, c),
-            _ => return,
-        };
-
-        let n = batch.num_rows();
-        if n < 2 {
-            return;
-        }
-
-        // Build (centre, count) pairs and sort by centre.
-        let mut pairs: Vec<(f64, u32)> = Vec::with_capacity(n);
-        for i in 0..n {
-            if let (Some(b), Some(c)) = (bin_vals[i], count_vals[i]) {
-                pairs.push((b, c.max(0.0).round() as u32));
-            }
-        }
-        pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-        if pairs.len() < 2 {
-            return;
-        }
-
-        // Treat the (centre, count) pairs as WEIGHTED samples throughout — never
+        // (centre, count) pairs, sorted by centre, as WEIGHTED samples — never
         // un-bin to the full row count (a single bucket's count can be in the
         // millions, and render() runs on every scene build / reactive rebuild).
-        let weighted: Vec<(f64, f64)> = pairs.iter().map(|(c, n)| (*c, *n as f64)).collect();
-        let bandwidth = silverman_1d_weighted(&weighted);
+        let pairs = match density_1d_weighted_pairs(batch, bin_col) {
+            Some(p) => p,
+            None => return,
+        };
+        let bandwidth = silverman_1d_weighted(&pairs);
         if bandwidth <= 0.0 {
             return;
         }
-
-        // Evaluate the KDE on a fixed uniform grid spanning the data extent. A
-        // GROUP BY density query returns only the OCCUPIED buckets, so the bin
-        // centres are gapped / non-uniform whenever the data has gaps. Summing
-        // the weighted kernel directly (rather than convolving a histogram, which
-        // assumes a dense uniform grid) is robust to that — see `kde_1d_weighted`.
-        // NOTE: the grid is clamped to the data extent [lo, hi]; the curve does
-        // not extend a few bandwidths past the extremes to taper to zero (a
-        // fidelity nicety Observable Plot offers) — tracked as a follow-up.
         let lo = pairs.first().unwrap().0;
         let hi = pairs.last().unwrap().0;
         if hi <= lo {
             return;
         }
+
+        // Evaluate the KDE on a fixed uniform grid. A GROUP BY density query
+        // returns only the OCCUPIED buckets, so the bin centres are gapped /
+        // non-uniform whenever the data has gaps; summing the weighted kernel
+        // directly (rather than convolving a histogram, which assumes a dense
+        // uniform grid) is robust to that — see `kde_1d_weighted`. The grid
+        // extends ±3σ past the data (matching the bin axis widened in
+        // `augment_scales`) so the curve tapers to ~0 at the tails.
+        let pad = DENSITY_TAIL_SIGMAS * bandwidth;
+        let g_lo = lo - pad;
+        let g_hi = hi + pad;
         const GRID: usize = 192;
         let grid: Vec<f64> = (0..GRID)
-            .map(|i| lo + (hi - lo) * (i as f64) / ((GRID - 1) as f64))
+            .map(|i| g_lo + (g_hi - g_lo) * (i as f64) / ((GRID - 1) as f64))
             .collect();
-        let density = kde_1d_weighted(&weighted, bandwidth, &grid);
+        let density = kde_1d_weighted(&pairs, bandwidth, &grid);
 
         let max_density = density.iter().cloned().fold(0.0_f64, f64::max);
         if max_density <= 0.0 {
@@ -903,9 +917,9 @@ impl MarkRenderer for Density1DRenderer {
                 path.line_to((px, py));
             }
         }
-        // Close back to the baseline so the path is fillable.
-        let last_bin = bin_scale.map_f64(hi);
-        let first_bin = bin_scale.map_f64(lo);
+        // Close back to the baseline at the padded ends (density ~0 there).
+        let last_bin = bin_scale.map_f64(g_hi);
+        let first_bin = bin_scale.map_f64(g_lo);
         match self.axis {
             DensityAxis::X => {
                 path.line_to((last_bin, baseline_pixel));
@@ -925,27 +939,42 @@ impl MarkRenderer for Density1DRenderer {
     fn augment_scales(
         &self,
         scales: &mut ScaleSet,
-        _batch: &RecordBatch,
-        _channel_map: &ChannelMap,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
         x_range: (f64, f64),
         y_range: (f64, f64),
     ) {
-        // The bin axis is an ordinary inferable column (centres aliased to the
-        // channel). The perpendicular "density" axis has no data column, so
-        // synthesise a normalised [0, 1] scale over its pixel range — unless a
-        // sibling mark already provided that axis.
-        let (density_channel, range) = match self.axis {
-            DensityAxis::X => (Channel::Y, y_range),
-            DensityAxis::Y => (Channel::X, x_range),
+        let (bin_channel, bin_range, density_channel, density_range) = match self.axis {
+            DensityAxis::X => (Channel::X, x_range, Channel::Y, y_range),
+            DensityAxis::Y => (Channel::Y, y_range, Channel::X, x_range),
         };
+
+        // Widen the bin axis to the padded KDE domain (±3σ past the data,
+        // matching `render`'s grid) so the tapered tails are on-plot rather than
+        // clipped. Unions with the inferred [lo, hi] via merge_linear_scale.
+        if let Some(bin_col) = channel_map.get(bin_channel) {
+            if let Some(pairs) = density_1d_weighted_pairs(batch, bin_col) {
+                let bandwidth = silverman_1d_weighted(&pairs);
+                let lo = pairs.first().unwrap().0;
+                let hi = pairs.last().unwrap().0;
+                if bandwidth > 0.0 && hi > lo {
+                    let pad = DENSITY_TAIL_SIGMAS * bandwidth;
+                    merge_linear_scale(scales, bin_channel, lo - pad, hi + pad, bin_range);
+                }
+            }
+        }
+
+        // The perpendicular "density" axis has no data column — synthesise a
+        // normalised [0, 1] scale over its pixel range unless a sibling mark
+        // already provided that axis.
         if scales.get(density_channel).is_none() {
             scales.insert(
                 density_channel,
                 Scale::Linear {
                     domain_min: 0.0,
                     domain_max: 1.0,
-                    range_start: range.0,
-                    range_end: range.1,
+                    range_start: density_range.0,
+                    range_end: density_range.1,
                 },
             );
         }
@@ -997,7 +1026,7 @@ impl MarkRenderer for Density2DRenderer {
             Some(v) => v,
             None => return,
         };
-        let count_vals = match column_as_f64(batch, "count") {
+        let count_vals = match column_as_f64(batch, DENSITY_COUNT_COL) {
             Some(v) => v,
             None => return,
         };
@@ -1996,7 +2025,7 @@ mod tests {
         // 8 bins centred at 0..7; counts form a roughly Gaussian shape.
         let schema = Arc::new(Schema::new(vec![
             Field::new("x_bin", DataType::Float64, false),
-            Field::new("count", DataType::Float64, false),
+            Field::new(DENSITY_COUNT_COL, DataType::Float64, false),
         ]));
         RecordBatch::try_new(
             schema,
@@ -2017,11 +2046,13 @@ mod tests {
         let batch = density_1d_batch();
         let mut cm = ChannelMap::new();
         cm.insert(Channel::X, "x_bin".to_string());
-        cm.insert(Channel::Y, "count".to_string());
-        let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        // Perpendicular density axis + padded bin axis come from augment_scales,
+        // mirroring the real pipeline (the batch has no perpendicular column).
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        let renderer = Density1DRenderer { axis: DensityAxis::X };
+        renderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
 
         let mut scene = Scene::new();
-        let renderer = Density1DRenderer { axis: DensityAxis::X };
         renderer.render(&mut scene, &batch, &cm, &scales, None);
         // Spec ac-03 requires at least one fill (the density curve).
         // count_scene_paths reads vello's n_paths counter — incremented
@@ -2037,7 +2068,7 @@ mod tests {
         // For DensityY, y is the binned axis; x is density magnitude.
         let schema = Arc::new(Schema::new(vec![
             Field::new("y_bin", DataType::Float64, false),
-            Field::new("count", DataType::Float64, false),
+            Field::new(DENSITY_COUNT_COL, DataType::Float64, false),
         ]));
         let batch = RecordBatch::try_new(
             schema,
@@ -2050,11 +2081,12 @@ mod tests {
 
         let mut cm = ChannelMap::new();
         cm.insert(Channel::Y, "y_bin".to_string());
-        cm.insert(Channel::X, "count".to_string());
-        let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        // Perpendicular density axis (x) synthesised by augment_scales.
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        let renderer = Density1DRenderer { axis: DensityAxis::Y };
+        renderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
 
         let mut scene = Scene::new();
-        let renderer = Density1DRenderer { axis: DensityAxis::Y };
         renderer.render(&mut scene, &batch, &cm, &scales, None);
         assert!(
             count_scene_paths(&scene) >= 1,
@@ -2068,7 +2100,7 @@ mod tests {
         let schema = Arc::new(Schema::new(vec![
             Field::new("x_bin", DataType::Float64, false),
             Field::new("y_bin", DataType::Float64, false),
-            Field::new("count", DataType::Float64, false),
+            Field::new(DENSITY_COUNT_COL, DataType::Float64, false),
         ]));
         let xs = vec![0.0, 1.0, 2.0, 0.0, 1.0, 2.0, 0.0, 1.0, 2.0];
         let ys = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0];
