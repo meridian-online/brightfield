@@ -1,0 +1,47 @@
+meta:
+  title: Density (2D) — Brightfield example
+  description: |
+    A 2D `density` mark — a kernel-density estimate over (x, y), drawn as a grid
+    of circles whose opacity encodes local density. The lowerer equiwidth-bins
+    both axes (here `thresholds: 12`) and the renderer smooths the histogram.
+
+      cargo run -p brightfield-app -- examples/density.yaml
+
+    Headless:
+
+      BRIGHTFIELD_DUMP_PNG=density.png cargo run -p brightfield-app -- examples/density.yaml
+data:
+  points:
+    - { x: 10, y: 10 }
+    - { x: 11, y: 12 }
+    - { x: 12, y: 11 }
+    - { x: 12, y: 13 }
+    - { x: 13, y: 12 }
+    - { x: 13, y: 14 }
+    - { x: 14, y: 13 }
+    - { x: 14, y: 15 }
+    - { x: 15, y: 14 }
+    - { x: 15, y: 16 }
+    - { x: 16, y: 15 }
+    - { x: 16, y: 13 }
+    - { x: 17, y: 16 }
+    - { x: 18, y: 17 }
+    - { x: 19, y: 18 }
+    - { x: 22, y: 24 }
+    - { x: 23, y: 25 }
+    - { x: 24, y: 24 }
+    - { x: 24, y: 26 }
+    - { x: 25, y: 25 }
+    - { x: 25, y: 27 }
+    - { x: 26, y: 26 }
+    - { x: 27, y: 25 }
+    - { x: 27, y: 28 }
+    - { x: 28, y: 27 }
+plot:
+  - mark: density
+    data: { from: points }
+    x: x
+    y: y
+    thresholds: 12
+width: 640
+height: 480

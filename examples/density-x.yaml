@@ -1,0 +1,55 @@
+meta:
+  title: Density (1D) — Brightfield example
+  description: |
+    A 1D `densityX` mark — a kernel-density estimate of the distribution of `x`,
+    drawn as a filled curve. The lowerer equiwidth-bins x and counts; the
+    renderer convolves the histogram with a Gaussian (Silverman bandwidth). The
+    perpendicular axis is a normalised [0, 1] density scale.
+
+      cargo run -p brightfield-app -- examples/density-x.yaml
+
+    Headless:
+
+      BRIGHTFIELD_DUMP_PNG=density-x.png cargo run -p brightfield-app -- examples/density-x.yaml
+data:
+  samples:
+    - { x: 1 }
+    - { x: 2 }
+    - { x: 2 }
+    - { x: 3 }
+    - { x: 3 }
+    - { x: 3 }
+    - { x: 4 }
+    - { x: 4 }
+    - { x: 4 }
+    - { x: 4 }
+    - { x: 5 }
+    - { x: 5 }
+    - { x: 5 }
+    - { x: 5 }
+    - { x: 5 }
+    - { x: 6 }
+    - { x: 6 }
+    - { x: 6 }
+    - { x: 6 }
+    - { x: 7 }
+    - { x: 7 }
+    - { x: 7 }
+    - { x: 8 }
+    - { x: 8 }
+    - { x: 9 }
+    - { x: 11 }
+    - { x: 12 }
+    - { x: 12 }
+    - { x: 13 }
+    - { x: 13 }
+    - { x: 13 }
+    - { x: 14 }
+    - { x: 14 }
+    - { x: 15 }
+plot:
+  - mark: densityX
+    data: { from: samples }
+    x: x
+width: 640
+height: 480

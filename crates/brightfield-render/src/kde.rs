@@ -63,6 +63,47 @@ pub fn kde_1d(bins: &[u32], bandwidth: f64, bin_size: f64) -> Vec<f64> {
     out
 }
 
+/// 1D Gaussian KDE evaluated directly at arbitrary `grid` points from weighted
+/// samples `(position, weight)`.
+///
+/// Unlike [`kde_1d`], which convolves a *dense uniform* histogram, this sums the
+/// kernel over the samples for each grid point, so it is robust to gapped or
+/// non-uniformly-spaced positions. That is exactly the shape a `GROUP BY`
+/// density query returns: only the *occupied* buckets, with empty buckets
+/// omitted — which makes the surviving bin centres non-uniform whenever the data
+/// has gaps.
+///
+/// Returns `density[k]` at `grid[k]`, normalised so the estimate integrates to 1
+/// over the real line (each sample contributes `weight / Σweight`). `bandwidth`,
+/// the sample positions, and the grid are all in data units. The kernel is
+/// truncated at ±3σ to match [`kde_1d`]. Empty grid → empty; empty samples or
+/// non-positive bandwidth / total weight → zeros.
+pub fn kde_1d_weighted(samples: &[(f64, f64)], bandwidth: f64, grid: &[f64]) -> Vec<f64> {
+    if grid.is_empty() {
+        return Vec::new();
+    }
+    let total: f64 = samples.iter().map(|(_, w)| *w).sum();
+    if samples.is_empty() || bandwidth <= 0.0 || total <= 0.0 {
+        return vec![0.0; grid.len()];
+    }
+
+    let inv_h = 1.0 / bandwidth;
+    let norm = inv_h / (total * (2.0 * std::f64::consts::PI).sqrt());
+    grid.iter()
+        .map(|&g| {
+            let mut acc = 0.0;
+            for &(pos, w) in samples {
+                let u = (g - pos) * inv_h;
+                // Truncate at ±3σ, matching kde_1d's kernel support.
+                if u.abs() <= 3.0 {
+                    acc += w * (-0.5 * u * u).exp();
+                }
+            }
+            acc * norm
+        })
+        .collect()
+}
+
 /// 2D Gaussian KDE over a flat row-major histogram.
 ///
 /// `bins` has length `shape.0 * shape.1` where `shape.0` is the number of rows
@@ -161,6 +202,34 @@ pub fn silverman_1d(samples: &[f64]) -> f64 {
         return 0.0;
     }
     1.06 * sigma * n_f.powf(-1.0 / 5.0)
+}
+
+/// Silverman's rule of thumb from **weighted** samples `(position, weight)`.
+///
+/// Equivalent to [`silverman_1d`] over the expanded sample list (each position
+/// repeated `weight` times) but O(distinct positions) — so a pre-binned density
+/// histogram need not be un-binned back to its full row count (a single bucket's
+/// count can be in the millions). `n = Σ weight`; returns `0.0` when `n < 2` or
+/// the weighted variance is zero.
+pub fn silverman_1d_weighted(samples: &[(f64, f64)]) -> f64 {
+    let n: f64 = samples.iter().map(|(_, w)| *w).sum();
+    if n < 2.0 {
+        return 0.0;
+    }
+    let mean = samples.iter().map(|(x, w)| x * w).sum::<f64>() / n;
+    let var = samples
+        .iter()
+        .map(|(x, w)| {
+            let d = x - mean;
+            w * d * d
+        })
+        .sum::<f64>()
+        / (n - 1.0);
+    let sigma = var.sqrt();
+    if sigma == 0.0 {
+        return 0.0;
+    }
+    1.06 * sigma * n.powf(-1.0 / 5.0)
 }
 
 /// Silverman's rule for 2D, applied per-axis.
@@ -267,6 +336,63 @@ mod tests {
         let bins = vec![0u32, 1, 0];
         let density = kde_1d(&bins, 0.0, 1.0);
         assert_eq!(density, vec![0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn kde_1d_weighted_peak_and_symmetry() {
+        // Single weighted sample at x = 5, evaluated on a symmetric grid: the
+        // peak sits at the sample and the curve is symmetric around it.
+        let grid: Vec<f64> = (0..=10).map(|i| i as f64).collect();
+        let density = kde_1d_weighted(&[(5.0, 3.0)], 1.0, &grid);
+        assert_eq!(density.len(), 11);
+        let peak = density[5];
+        for (i, &d) in density.iter().enumerate() {
+            assert!(d <= peak + 1e-12, "grid {i} density {d} > peak {peak}");
+        }
+        assert!((density[4] - density[6]).abs() < 1e-9);
+        assert!((density[3] - density[7]).abs() < 1e-9);
+    }
+
+    #[test]
+    fn kde_1d_weighted_robust_to_gapped_positions() {
+        // Two clusters with a gap (no samples near x = 5) — the histogram-based
+        // kde_1d would need a dense uniform grid; the weighted form does not.
+        // The estimate must dip in the gap and rise back over the far cluster.
+        let samples = [(1.0, 2.0), (2.0, 3.0), (8.0, 3.0), (9.0, 2.0)];
+        let grid: Vec<f64> = (0..=10).map(|i| i as f64).collect();
+        let density = kde_1d_weighted(&samples, 1.0, &grid);
+        assert!(density.iter().all(|d| d.is_finite() && *d >= 0.0));
+        assert!(density[5] < density[1], "gap should be lower than left cluster");
+        assert!(density[9] > density[5], "right cluster should rise above the gap");
+        // Heavier-weighted left cluster (5 vs 5 here is equal) — total mass split
+        // by weight: both clusters present.
+        assert!(density[1] > 0.0 && density[9] > 0.0);
+    }
+
+    #[test]
+    fn silverman_1d_weighted_matches_expanded() {
+        // The weighted form must equal silverman_1d over the un-binned samples.
+        let weighted = [(1.0, 2.0), (3.0, 1.0), (7.0, 3.0)];
+        let mut expanded: Vec<f64> = Vec::new();
+        for &(x, w) in &weighted {
+            for _ in 0..(w as usize) {
+                expanded.push(x);
+            }
+        }
+        let a = silverman_1d_weighted(&weighted);
+        let b = silverman_1d(&expanded);
+        assert!((a - b).abs() < 1e-12, "weighted {a} != expanded {b}");
+        // Degenerate: total weight < 2, or zero variance → 0.
+        assert_eq!(silverman_1d_weighted(&[(5.0, 1.0)]), 0.0);
+        assert_eq!(silverman_1d_weighted(&[(5.0, 4.0)]), 0.0); // all mass at one point
+    }
+
+    #[test]
+    fn kde_1d_weighted_degenerate_inputs() {
+        // Empty grid → empty; zero bandwidth / empty samples → zeros.
+        assert!(kde_1d_weighted(&[(1.0, 1.0)], 1.0, &[]).is_empty());
+        assert_eq!(kde_1d_weighted(&[(1.0, 1.0)], 0.0, &[0.0, 1.0]), vec![0.0, 0.0]);
+        assert_eq!(kde_1d_weighted(&[], 1.0, &[0.0, 1.0]), vec![0.0, 0.0]);
     }
 
     #[test]
