@@ -197,20 +197,26 @@ vocab_enum! {
         IntervalY => ("intervalY", Implemented),
         IntervalXY => ("intervalXY", Implemented),
         Interval => ("interval", Unimplemented),
-        Nearest => ("nearest", Implemented),
-        NearestX => ("nearestX", Implemented),
-        NearestY => ("nearestY", Implemented),
+        // Demoted to Unimplemented (harden, 2026-07-02): parsed but unwired —
+        // `find_nearest` has no production caller and hover resolves `nearest:
+        // None`. See 2026-07-02-interactor-status-demotion.md.
+        Nearest => ("nearest", Unimplemented),
+        NearestX => ("nearestX", Unimplemented),
+        NearestY => ("nearestY", Unimplemented),
         Toggle => ("toggle", Unimplemented),
         ToggleX => ("toggleX", Unimplemented),
         ToggleY => ("toggleY", Unimplemented),
         Highlight => ("highlight", Implemented),
         Region => ("region", Unimplemented),
-        Pan => ("pan", Implemented),
-        PanX => ("panX", Implemented),
-        PanY => ("panY", Implemented),
-        PanZoom => ("panZoom", Implemented),
-        PanZoomX => ("panZoomX", Implemented),
-        PanZoomY => ("panZoomY", Implemented),
+        // Demoted to Unimplemented (harden, 2026-07-02): parsed but unwired —
+        // apply_pan/apply_zoom/ChartState::set_navigation have no production
+        // caller (no scroll/wheel handler; NavigationState is always None).
+        Pan => ("pan", Unimplemented),
+        PanX => ("panX", Unimplemented),
+        PanY => ("panY", Unimplemented),
+        PanZoom => ("panZoom", Unimplemented),
+        PanZoomX => ("panZoomX", Unimplemented),
+        PanZoomY => ("panZoomY", Unimplemented),
     }
 }
 
@@ -219,7 +225,10 @@ vocab_enum! {
     pub enum InputKind {
         Menu => ("menu", Unimplemented),
         Search => ("search", Unimplemented),
-        Slider => ("slider", Implemented),
+        // Demoted to Unimplemented (harden, 2026-07-02): parsed but unwired —
+        // the app renders no input widgets; the slider helpers are test-only.
+        // Re-promote when the param coordinator drives re-execution (card 0005).
+        Slider => ("slider", Unimplemented),
         Table => ("table", Unimplemented),
     }
 }
@@ -286,35 +295,41 @@ mod tests {
         }
     }
 
-    /// ac-09 (ifb): Nearest, NearestX, NearestY, Highlight are Implemented.
+    /// ac-09 (ifb) — REVISED (harden, 2026-07-02). `Highlight` stays
+    /// `Implemented` (the renderer's `HighlightState` dim/emphasis is wired), but
+    /// `Nearest`/`NearestX`/`NearestY` are demoted to `Unimplemented`: parsed but
+    /// unwired (`find_nearest` has no production caller; hover resolves
+    /// `nearest: None`). Reverses ifb ac-09/ac-10 — see the demotion memo.
     #[test]
-    fn ifb_ac09_feedback_variants_implemented() {
-        let variants = [
+    fn feedback_variant_statuses_after_demotion() {
+        assert_eq!(
+            InteractorKind::Highlight.status(),
+            ImplStatus::Implemented,
+            "Highlight stays Implemented — its renderer HighlightState is wired"
+        );
+        for variant in [
             InteractorKind::Nearest,
             InteractorKind::NearestX,
             InteractorKind::NearestY,
-            InteractorKind::Highlight,
-        ];
-        for variant in &variants {
+        ] {
             assert_eq!(
                 variant.status(),
-                ImplStatus::Implemented,
-                "{:?} should be Implemented",
-                variant
+                ImplStatus::Unimplemented,
+                "{variant:?} is parsed but unwired — demoted until a hover handler consumes it"
             );
         }
     }
 
-    /// rpw3 ac-14: InputKind::Slider is Implemented, and the canonical
-    /// Implemented fixture set (collected via filter over all variants)
-    /// contains InputKind::Slider. Regression-guards against an accidental
-    /// revert to Unimplemented.
+    /// rpw3 ac-14 — REVERSED (harden, 2026-07-02). `InputKind::Slider` is demoted
+    /// to `Unimplemented`: the slider helpers exist and are unit-tested but the
+    /// app renders no input widgets, so nothing on the live loop consumes a
+    /// slider. Re-promote when the param coordinator drives re-execution (0005).
     #[test]
-    fn rpw3_ac14_input_kind_slider_implemented() {
+    fn input_kind_slider_unimplemented_until_wired() {
         assert_eq!(
             InputKind::Slider.status(),
-            ImplStatus::Implemented,
-            "InputKind::Slider must be Implemented after rpw3"
+            ImplStatus::Unimplemented,
+            "Slider is parsed but unwired — demoted until input widgets render"
         );
         let implemented: Vec<InputKind> = InputKind::all()
             .iter()
@@ -322,29 +337,29 @@ mod tests {
             .filter(|k| k.status() == ImplStatus::Implemented)
             .collect();
         assert!(
-            implemented.contains(&InputKind::Slider),
-            "canonical Implemented set must contain Slider; got {:?}",
-            implemented
+            !implemented.contains(&InputKind::Slider),
+            "Slider must NOT be in the Implemented set until it is wired; got {implemented:?}"
         );
     }
 
-    /// ac-11 (nav): All six Pan/PanZoom interactor variants are Implemented.
+    /// ac-11 (nav) — REVERSED (harden, 2026-07-02). The six Pan/PanZoom variants
+    /// are demoted to `Unimplemented`: `apply_pan`/`apply_zoom`/
+    /// `ChartState::set_navigation` exist and are unit-tested, but no production
+    /// caller wires them (no scroll/wheel handler; navigation is always None).
     #[test]
-    fn nav_ac11_pan_variants_implemented() {
-        let pan_variants = [
+    fn pan_variants_unimplemented_until_wired() {
+        for variant in [
             InteractorKind::Pan,
             InteractorKind::PanX,
             InteractorKind::PanY,
             InteractorKind::PanZoom,
             InteractorKind::PanZoomX,
             InteractorKind::PanZoomY,
-        ];
-        for variant in &pan_variants {
+        ] {
             assert_eq!(
                 variant.status(),
-                ImplStatus::Implemented,
-                "{:?} should be Implemented",
-                variant
+                ImplStatus::Unimplemented,
+                "{variant:?} is parsed but unwired — demoted until navigation is consumed"
             );
         }
     }
