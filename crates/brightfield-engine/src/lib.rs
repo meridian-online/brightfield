@@ -686,11 +686,22 @@ impl Session {
             Some(selections.as_slice())
         };
 
+        // Pass the current param_state so a positional `$param` channel (card
+        // 0014) is interpolated during navigation too — otherwise `$name` would
+        // reach DuckDB as an unbound placeholder and the mark would fail on every
+        // pan/zoom.
+        let params_owned: ParamValues = self.param_state.clone();
+        let params_ref = if params_owned.is_empty() {
+            None
+        } else {
+            Some(&params_owned)
+        };
+
         for idx in 0..mark_count {
             let emitted = match emit_query_with_passes(
                 &self.spec,
                 idx,
-                None,
+                params_ref,
                 selections_ref,
                 &passes,
             ) {
@@ -722,21 +733,25 @@ impl Session {
         mark_kind: &str,
         emitted: &EmittedQuery,
     ) -> Result<Vec<RecordBatch>, EngineError> {
-        // Check cache: if plan_hash matches, we know the SQL structure is
-        // identical (scalar param change). Use the cached SQL.
-        let sql = if let Some(cached) = self.cache.get(&emitted.plan_hash) {
-            cached.sql.clone()
-        } else {
-            // Cache miss — new structural plan. Store it.
-            self.cache.insert(
-                emitted.plan_hash,
-                CachedStatement {
+        // Execute the freshly-emitted SQL directly — it is already
+        // param-interpolated (card 0014), so it is always the correct query for
+        // the current param_state; never serve a cached string that might predate
+        // a param change. Still record the plan for stability tracking, but BOUND
+        // the map: with interpolation each distinct inlined param value yields a
+        // distinct plan_hash, so a dragged param would otherwise grow this cache
+        // without bound. The recorded SQL is redundant with `emitted.sql`, so a
+        // cap is safe — beyond it we simply stop recording; execution is
+        // unaffected. (Renderer-side dedup is the LRU-capped `sql_cache` below.)
+        const PLAN_CACHE_CAP: usize = 64;
+        if self.cache.len() < PLAN_CACHE_CAP {
+            self.cache
+                .entry(emitted.plan_hash)
+                .or_insert_with(|| CachedStatement {
                     sql: emitted.sql.clone(),
                     bindings: emitted.bindings.clone(),
-                },
-            );
-            emitted.sql.clone()
-        };
+                });
+        }
+        let sql = emitted.sql.clone();
 
         // Renderer-side SQL cache: hit → skip DuckDB execute entirely.
         if let Some(batches) = self.sql_cache.get(&sql) {
@@ -1359,6 +1374,269 @@ plot:
             session.current_params().get("brush"),
             Some(&SpecValue::Integer(2)),
             "param_state must reflect the latest propagate_param value"
+        );
+    }
+
+    /// Robustly read a numeric column as f64 across DuckDB's integer/float
+    /// return types (card 0014 tests).
+    fn column_as_f64_vec(batches: &[RecordBatch], name: &str) -> Vec<f64> {
+        use duckdb::arrow::array::{Array, Float64Array};
+        use duckdb::arrow::compute::cast;
+        use duckdb::arrow::datatypes::DataType;
+        let mut out = Vec::new();
+        for b in batches {
+            let idx = b
+                .schema()
+                .index_of(name)
+                .unwrap_or_else(|_| panic!("column `{name}` absent; schema = {:?}", b.schema()));
+            let col = cast(b.column(idx), &DataType::Float64).expect("cast to f64");
+            let arr = col
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .expect("f64 array");
+            for i in 0..arr.len() {
+                out.push(arr.value(i));
+            }
+        }
+        out
+    }
+
+    /// pefr ac-05 (THE PROBE): a scalar param bound to a positional channel
+    /// changes the mark's batch output when the param changes. Before card 0014
+    /// this returned byte-identical output (in fact no `y`/`k` column at all).
+    #[test]
+    fn pefr_ac05_propagate_param_changes_channel_batch() {
+        let yaml = r#"
+params:
+  k: 3
+data:
+  t:
+    - { x: 1 }
+    - { x: 2 }
+    - { x: 3 }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: x
+    y: $k
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        // Initial execution uses the default k = 3.
+        let before = session.execute_all();
+        let batch_before = before[0].as_ref().expect("dot executes");
+        assert_eq!(
+            column_as_f64_vec(batch_before, "k"),
+            vec![3.0, 3.0, 3.0],
+            "the $k channel column reflects the default param value"
+        );
+
+        // Change the param — the subscribing mark re-executes with the new value.
+        let results = session.propagate_param("k", SpecValue::Integer(20));
+        assert_eq!(results.len(), 1, "the $k-channel mark must be re-dispatched");
+        let batch_after = results[0].1.as_ref().expect("re-execute succeeds");
+        assert_eq!(
+            column_as_f64_vec(batch_after, "k"),
+            vec![20.0, 20.0, 20.0],
+            "the channel column now reflects the new param value — reactive"
+        );
+    }
+
+    /// pefr ac-08 (card 0014): propagate_param on a `data.filter` param
+    /// re-filters the row set — the param reaches the WHERE clause.
+    #[test]
+    fn pefr_ac08_propagate_param_filter_changes_rows() {
+        let yaml = r#"
+params:
+  k: 0
+data:
+  t:
+    - { x: 1 }
+    - { x: 2 }
+    - { x: 3 }
+    - { x: 4 }
+plot:
+  - mark: dot
+    data: { from: t, filter: "x > $k" }
+    x: x
+    y: x
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        let before = session.execute_all();
+        let rows_before: usize = before[0]
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum();
+        assert_eq!(rows_before, 4, "k=0: all four rows pass x > 0");
+
+        let results = session.propagate_param("k", SpecValue::Integer(2));
+        assert_eq!(results.len(), 1, "the filter mark must be re-dispatched");
+        let rows_after: usize = results[0]
+            .1
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum();
+        assert_eq!(rows_after, 2, "k=2: only x=3,4 pass x > 2 — the filter tightened");
+    }
+
+    /// pefr ac-09 (card 0014): a data-shape param change (new WHERE value)
+    /// misses the cache and re-executes DuckDB — the plan_hash fold keys the
+    /// caches on the inlined value, so no stale batch is returned.
+    #[test]
+    fn pefr_ac09_data_shape_param_reexecutes() {
+        let yaml = r#"
+params:
+  k: 0
+data:
+  t:
+    - { x: 1 }
+    - { x: 2 }
+    - { x: 3 }
+    - { x: 4 }
+plot:
+  - mark: dot
+    data: { from: t, filter: "x > $k" }
+    x: x
+    y: x
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+        let _ = session.execute_all();
+        let _ = session.propagate_param("k", SpecValue::Integer(2));
+        let count_after_first = session.duckdb_execute_count();
+
+        let results = session.propagate_param("k", SpecValue::Integer(3));
+        assert!(
+            session.duckdb_execute_count() > count_after_first,
+            "a data-shape param change must miss the cache and re-execute DuckDB"
+        );
+        let rows: usize = results[0]
+            .1
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum();
+        assert_eq!(rows, 1, "k=3: only x=4 passes x > 3 — fresh (not stale) batch");
+    }
+
+    /// pefr ac-12 (card 0014): the shipped example spec is reactive — raising
+    /// the threshold param re-executes the query and drops points.
+    #[test]
+    fn pefr_ac12_example_param_threshold_is_reactive() {
+        let yaml = include_str!("../../../examples/param-threshold.yaml");
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        let before = session.execute_all();
+        let rows_before: usize = before[0]
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum();
+
+        let results = session.propagate_param("threshold", SpecValue::Integer(6));
+        let rows_after: usize = results[0]
+            .1
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum();
+        assert!(
+            rows_after < rows_before,
+            "raising the threshold must drop points: {rows_before} -> {rows_after}"
+        );
+    }
+
+    /// Review regression (card 0014): interpolation makes each distinct inlined
+    /// param value a distinct plan_hash, so a dragged param (the feature's whole
+    /// point) must not grow the plan-stability cache without bound.
+    #[test]
+    fn pefr_plan_cache_bounded_under_param_sweep() {
+        let yaml = r#"
+params:
+  k: 0
+data:
+  t:
+    - { x: 1 }
+    - { x: 50 }
+    - { x: 150 }
+plot:
+  - mark: dot
+    data: { from: t, filter: "x > $k" }
+    x: x
+    y: x
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+        let _ = session.execute_all();
+        for k in 0..200i64 {
+            let _ = session.propagate_param("k", SpecValue::Integer(k));
+        }
+        assert!(
+            session.cache_len() <= 64,
+            "plan cache must stay bounded under a 200-value param sweep; got {}",
+            session.cache_len()
+        );
+    }
+
+    /// Review regression (card 0014 #1): a FRACTIONAL param on a positional
+    /// channel must produce a DOUBLE column, not DECIMAL — the renderer's
+    /// column_as_f64 reads Float/Int but not Decimal, so a bare `3.5 AS "k"`
+    /// would silently render nothing. The projection CASTs to DOUBLE.
+    #[test]
+    fn pefr_float_param_channel_is_double_typed() {
+        use duckdb::arrow::datatypes::DataType;
+        let yaml = "params:\n  k: 0\ndata:\n  t:\n    - { x: 1 }\n    - { x: 2 }\nplot:\n  - mark: dot\n    data: { from: t }\n    x: x\n    y: $k\n";
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+        let results = session.propagate_param("k", SpecValue::Float(3.5));
+        let batches = results[0].1.as_ref().unwrap();
+        let col = batches[0]
+            .column_by_name("k")
+            .expect("param column must be projected");
+        assert_eq!(
+            col.data_type(),
+            &DataType::Float64,
+            "fractional param channel must be DOUBLE-typed, got {:?}",
+            col.data_type()
+        );
+    }
+
+    /// Review regression (card 0014 #3): navigation (pan/zoom via update_extent)
+    /// must interpolate param channels too — otherwise `$k` reaches DuckDB as an
+    /// unbound placeholder and the mark fails on every pan/zoom.
+    #[test]
+    fn pefr_navigation_preserves_param_channel() {
+        let yaml = "params:\n  k: 5\ndata:\n  t:\n    - { x: 1 }\n    - { x: 2 }\n    - { x: 3 }\nplot:\n  - mark: dot\n    data: { from: t }\n    x: x\n    y: $k\n";
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+        let results = session.update_extent(Some(("x", 1.5, 3.5)), None);
+        assert!(
+            results[0].1.is_ok(),
+            "navigation with a positional param channel must not fail: {:?}",
+            results[0].1
+        );
+        let batches = results[0].1.as_ref().unwrap();
+        assert!(
+            batches.iter().any(|b| b.column_by_name("k").is_some()),
+            "the param column must survive navigation"
         );
     }
 

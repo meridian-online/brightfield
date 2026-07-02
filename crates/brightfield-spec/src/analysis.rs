@@ -274,14 +274,23 @@ fn collect_subscribers(component: &Component, path: &str, graph: &mut Subscriber
 fn collect_mark_subscribers(mark: &Mark, path: &str, graph: &mut SubscriberGraph) {
     let mark_path = format!("{path}/mark[{}]", mark.kind.wire_name());
 
-    // Mark data filterBy
+    // Mark data filterBy + any params in the `filter` expression (which lowers
+    // to a WHERE — card 0014). Only the `filter` extra affects the emitted query,
+    // so subscribing on other extras would trigger re-executions that change
+    // nothing; scope the walk to `filter`.
     if let Some(ref data) = mark.data {
-        if let crate::ast::MarkData::From { filter_by, .. } = data {
+        if let crate::ast::MarkData::From {
+            filter_by, extras, ..
+        } = data
+        {
             if let Some(pr) = filter_by {
                 graph
                     .entry(pr.0.clone())
                     .or_default()
                     .push(ComponentPath(mark_path.clone()));
+            }
+            if let Some(filter) = extras.get("filter") {
+                collect_spec_value_subscribers(filter, &mark_path, graph);
             }
         }
     }
@@ -337,6 +346,24 @@ fn collect_spec_value_subscribers(sv: &SpecValue, path: &str, graph: &mut Subscr
         SpecValue::Array(arr) => {
             for v in arr {
                 collect_spec_value_subscribers(v, path, graph);
+            }
+        }
+        // A param referenced directly, or embedded in a SQL expression (e.g. a
+        // `filter: "x > $k"` or an expression channel), subscribes the owning
+        // component to that param (card 0014, ac-06) — so a data-shape param
+        // change re-executes the mark.
+        SpecValue::Param(pr) => {
+            graph
+                .entry(pr.0.clone())
+                .or_default()
+                .push(ComponentPath(path.to_string()));
+        }
+        SpecValue::Expression(e) => {
+            for pr in &e.params {
+                graph
+                    .entry(pr.0.clone())
+                    .or_default()
+                    .push(ComponentPath(path.to_string()));
             }
         }
         _ => {}
@@ -1449,6 +1476,34 @@ plot:
         let graph = build_subscriber_graph(&out.spec);
         let subs = graph.get("threshold").expect("has threshold");
         assert!(!subs.is_empty(), "threshold should have subscribers");
+    }
+
+    /// pefr ac-06 (card 0014): a param embedded in a `data.filter` SQL
+    /// expression subscribes the mark, so propagate_param re-executes it.
+    /// Before card 0014, collect_spec_value_subscribers ignored Expressions.
+    #[test]
+    fn pefr_ac06_expression_param_subscribes() {
+        let yaml = r#"
+params:
+  k: 0
+data:
+  t: [{ x: 1 }, { x: 5 }]
+plot:
+  - mark: dot
+    data: { from: t, filter: "x > $k" }
+    x: x
+    y: x
+"#;
+        let out = parse_spec(yaml, Format::Yaml).expect("parses");
+        let graph = build_subscriber_graph(&out.spec);
+        let subs = graph
+            .get("k")
+            .expect("filter param k should have subscribers");
+        assert!(
+            subs.iter().any(|p| p.0.contains("mark[dot]")),
+            "the data.filter param k should subscribe the dot mark; got {:?}",
+            subs
+        );
     }
 
     #[test]

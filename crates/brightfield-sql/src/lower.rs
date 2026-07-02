@@ -51,13 +51,75 @@ pub struct SimpleLowerer;
 impl MarkLower for SimpleLowerer {
     fn lower(&self, mark: &Mark, _ctx: &LowerCtx<'_>) -> Result<QueryPlan, EmitError> {
         match &mark.data {
-            Some(MarkData::From { source, .. }) => Ok(QueryPlan::Source {
-                table: source.clone(),
-            }),
+            Some(MarkData::From { source, extras, .. }) => {
+                let base = QueryPlan::Source {
+                    table: source.clone(),
+                };
+                let filtered = apply_data_filter(extras, base);
+                Ok(project_param_channels(mark, filtered))
+            }
             Some(MarkData::Inline(_)) | None => Err(EmitError::UnsupportedMark {
                 kind: mark.kind.wire_name().to_string(),
             }),
         }
+    }
+}
+
+/// Positional-channel option keys whose `$param` binding is projected into the
+/// query (card 0014, Decision 2). Kept in sync with brightfield-render's
+/// positional `Channel` set (x/y/x1/y1/x2/y2); non-positional channels
+/// (fill/stroke/size/text) bound to a param are the deferred render-only case.
+const POSITIONAL_CHANNEL_KEYS: &[&str] = &["x", "y", "x1", "y1", "x2", "y2"];
+
+/// If `mark` binds any positional channel to a bare `$param`, wrap `base` in a
+/// Projection that keeps `*` and adds `$param AS "<param>"` for each DISTINCT
+/// param — so the value (interpolated from param_state at emit time) becomes a
+/// real query column the renderer reads. A no-op when no positional channel is
+/// param-bound, leaving the plain `SELECT *` plan (and every existing test)
+/// untouched.
+fn project_param_channels(mark: &Mark, base: QueryPlan) -> QueryPlan {
+    let mut seen: Vec<String> = Vec::new();
+    let mut cols: Vec<String> = vec!["*".to_string()];
+    for key in POSITIONAL_CHANNEL_KEYS {
+        if let Some(ValueOrParamRef::Param(pr)) = mark.options.get(*key) {
+            if !seen.iter().any(|s| s == &pr.0) {
+                seen.push(pr.0.clone());
+                // CAST to DOUBLE so a FRACTIONAL param value doesn't type the
+                // column as DECIMAL — the renderer's column_as_f64 reads
+                // Float/Int but not Decimal, so a bare `3.5 AS "k"` would silently
+                // render nothing. DOUBLE covers integer and float params alike.
+                cols.push(format!("CAST(${} AS DOUBLE) AS \"{}\"", pr.0, pr.0));
+            }
+        }
+    }
+    if cols.len() == 1 {
+        base
+    } else {
+        QueryPlan::Projection {
+            input: Box::new(base),
+            columns: cols,
+        }
+    }
+}
+
+/// If `extras` carries a `filter` (`data: { from, filter: "..." }`), wrap `plan`
+/// in a WHERE (card 0014, Decision 2). A no-op when there is no filter.
+///
+/// A filter that references a `$param` parses to an `Expression` (rendered to raw
+/// SQL text with the `$name` preserved for emit-time interpolation, so the param
+/// re-filters rows on propagate_param); a param-FREE filter (e.g. `"x > 2"`)
+/// parses to a plain `String` that is already raw predicate text, used verbatim
+/// (NOT quoted — quoting would turn the WHERE into a constant-string no-op that
+/// silently passes every row).
+fn apply_data_filter(extras: &IndexMap<String, SpecValue>, plan: QueryPlan) -> QueryPlan {
+    let predicate = match extras.get("filter") {
+        Some(expr @ SpecValue::Expression(_)) => crate::emit::spec_value_to_sql_literal(expr),
+        Some(SpecValue::String(s)) => s.clone(),
+        _ => return plan,
+    };
+    QueryPlan::Filter {
+        input: Box::new(plan),
+        predicate: Predicate::Expr(predicate),
     }
 }
 
