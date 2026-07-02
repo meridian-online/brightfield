@@ -123,6 +123,12 @@ A is the smallest genuinely-reactive slice and is fully headless-verifiable via 
 
 **Option A.** Fold only the *actually-inlined* `(param, value)` pairs into `plan_hash` (selection params, which aren't inlined, stay out of the key → `gomb_ac12` unchanged). Update the `plan_hash` doc comment to note it now identifies the concrete SQL. Cite: lib.rs:712-739; gomb_ac12; gomb_ac11.
 
+### Implementation amendment — landed on Option B
+
+Option A shipped first, then adversarial self-review caught its flaw: folding the value into `plan_hash` makes every distinct param value a distinct key, so the **unbounded** `self.cache` grows without limit under a dragged param — precisely this feature's use case. Fixing the growth (bounding `self.cache`) also revealed the fold was redundant: once `execute_emitted` runs `emitted.sql` directly (it is already concrete), the `plan_hash → sql` reuse is never consulted, so no value need enter the hash.
+
+Final design is **Option B**: `execute_emitted` runs the concrete `emitted.sql`; `plan_hash` stays purely **structural**; cache correctness across param values comes entirely from the LRU-capped `sql_cache` (keyed on the literal SQL). `self.cache` reverts to a bounded plan-stability record. Option B's stated "loses" (blast radius on `cache_len` tests) proved minor — `cache_len` still counts distinct plans, bounded at 64. `gomb_ac11`/`ac12` unchanged. This supersedes ac-11's fold (see spec.yaml).
+
 ---
 
 ## Decision 4: How does a projected `$param` channel name its column (the cross-crate alias)?

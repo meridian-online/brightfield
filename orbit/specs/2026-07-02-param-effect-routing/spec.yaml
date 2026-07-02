@@ -2,8 +2,11 @@ goal: >
   Make a scalar param actually change downstream query output. Close the
   emit_query param-discard stub via interpolation, lower a bare $param positional
   channel and a data.filter expression into the emitted SQL, subscribe params
-  embedded in expressions, and fold inlined param values into plan_hash so both
-  caches stay correct. After this slice, propagate_param on a scalar param
+  embedded in expressions, and keep the caches correct across param values.
+  (Implementation refinement — Decision 3: execute the concrete interpolated SQL
+  directly and dedup on it via the LRU sql_cache; plan_hash stays structural, no
+  value-fold. See decisions.md "Implementation amendment".) After this slice,
+  propagate_param on a scalar param
   re-executes the affected marks and returns DIFFERENT RecordBatches — verified
   by the exact probe that today returns byte-identical output — unblocking the
   window-gated slider live-wiring. The two-tier split (pure vs data-shape) is
@@ -12,7 +15,7 @@ goal: >
 constraints:
   - "Binding mechanism is INTERPOLATION: param values are substituted into the emitted SQL via spec_value_to_sql_literal; execute_emitted stays parameter-free (Decision 1). Do not add a prepared-binding execute path."
   - "Scope: positional $param channels + data.filter expressions only. Expression channels beyond data.filter, aggregation-option params (bins/ci/bandwidth), and render-only visual-channel params are OUT of scope (Decisions 2, 5)."
-  - "Cache correctness: fold only the ACTUALLY-INLINED (param,value) pairs into plan_hash; selection params (routed through predicates, never inlined) must NOT enter the key (Decision 3). gomb_ac11 and gomb_ac12 must still pass unchanged."
+  - "Cache correctness (Decision 3, as-built Option B): execute_emitted runs the concrete interpolated emitted.sql directly and dedups on the literal SQL via the LRU sql_cache; plan_hash stays STRUCTURAL (no value-fold — it was removed after review showed it grew the plan cache without bound). Selection params route through predicates (SQL genuinely unchanged → cache hit). gomb_ac11 and gomb_ac12 must still pass unchanged."
   - "Projected param channel alias is the param name; both brightfield-sql (projection) and brightfield-render (ChannelMap) derive it from the same ParamRef (Decision 4)."
   - "Two-tier routing is emergent from the cache; no explicit pure/data-shape classifier is added (Decision 5)."
   - "Rally seam — untouched or read-only: propagate_selection, selection_state, current_selections, SelectionDispatcher, BrushBinding, brush_rect_to_predicate, CrossfilterCoordinator, propagate_param's topological-walk semantics, ParamDispatcher, commit_slider_release, analysis.{subscriber_graph,topological_order,dependency_dag} schemas, brightfield-render's no-gpui invariant. emit_query / emit_query_with_passes SIGNATURES stay as-is (param_values already threaded)."
@@ -72,8 +75,8 @@ acceptance_criteria:
 
   - id: ac-11
     ac_type: code
-    description: "plan_hash folds inlined param values: it differs across distinct inlined scalar values but is identical across changes to a non-inlined (selection) param."
-    verification: "pefr_ac11_plan_hash_reflects_inlined_values in crates/brightfield-sql: emit_query for a $k-inlined mark with k=3 vs k=20 yields different plan_hash; emit_query for a selection-param mark with two brush values yields identical plan_hash (selection not inlined)."
+    description: "AMENDED (Decision 3 → Option B): plan_hash stays STRUCTURAL — a channel-param value change is reflected in the concrete emitted SQL but NOT in plan_hash; execute_emitted runs emitted.sql directly and dedups on the literal SQL via the LRU sql_cache, so no value-fold is needed. (The original fold was removed after review showed it grew the plan cache without bound.) Cache correctness across param values is proven by ac-09 (re-execute) + the bounded-sweep regression test."
+    verification: "pefr_ac11_emit_channel_param_changes_sql_not_structural_hash in crates/brightfield-sql: k=3 vs k=20 yield different emitted.sql but identical (structural) plan_hash. pefr_plan_cache_bounded_under_param_sweep in crates/brightfield-engine: a 200-value sweep keeps cache_len ≤ 64. gomb_ac11/ac12 unchanged."
 
   - id: ac-12
     ac_type: code
@@ -92,13 +95,26 @@ acceptance_criteria:
 
 implementation_notes:
   - "Interpolation site: replace `let _ = param_values;` (emit.rs:501). Reuse binding.rs's Interpolated mode for ExpressionNodes; for lowerer-emitted projection/filter strings carrying `$name`, substitute via a bounded pass using spec_value_to_sql_literal. Only substitute params present in param_values; leave unknown `$name` intact (matches binding.rs:93-98)."
-  - "plan_hash: after interpolation, fold the set of (param, value) pairs actually substituted into plan_hash (e.g. combine plan.hash_structural() with a hash of the sorted inlined pairs). Selection params are compiled to Predicate::Expr strings, not inlined, so they never enter the fold — preserving gomb_ac12. Update the plan_hash doc comment."
+  - "plan_hash (AS-BUILT, Decision 3 Option B): NO fold. execute_emitted runs emitted.sql directly (already concrete) and bounds self.cache; sql_cache (LRU, keyed on literal SQL) governs re-execution dedup. plan_hash = plan.hash_structural() only. The value-fold was implemented then removed after review found it grew self.cache without bound and was redundant with direct execution."
   - "Param channel projection: SimpleLowerer (lower.rs:52) currently emits QueryPlan::Source (SELECT *). For a mark with $param positional channels, wrap the source in a Projection that keeps `*` and adds `$param AS \"<param>\"` per param channel. Read channels from mark.options as ValueOrParamRef::Param."
   - "data.filter: MarkData::From.extras may carry a `filter`/`where` SpecValue::Expression (ast.rs:346). Lower it into QueryPlan::Filter with the expression rendered (params → placeholders interpolated). Confirm the parser already routes a `filter:` key into extras as an Expression (parse.rs string_to_spec_value); if not, thread it."
   - "Subscription: extend collect_spec_value_subscribers (analysis.rs:330-344) to handle SpecValue::Expression (subscribe each embedded ParamRef) and SpecValue::Param. Also ensure a mark's data.filter expression is walked for subscribers (collect_mark_subscribers currently only checks filter_by + options)."
   - "ChannelMap alias: channel.rs:147 — replace the skip/warn for ValueOrParamRef::Param with cm.insert(ch, param_ref.0.clone()). Update msv_ac06 test."
   - "Cross-crate alias contract: the projection alias (lower.rs) and the ChannelMap column (channel.rs) both equal ParamRef.0. Document the same-named-table-column edge (defer hardening)."
   - "Verification harness: the throwaway probe used this session (params:{k:3}, mark y:$k, propagate_param(k,20)) is the ac-05 template. Add examples/param-threshold.yaml for ac-12 and a PNG eyeball."
+
+review_hardening:
+  summary: "Adversarial self-review after implementation found + fixed six correctness/robustness bugs (all with regression tests); two edges deferred."
+  fixed:
+    - "#1 Fractional param on a positional channel rendered nothing (DECIMAL column, unreadable by column_as_f64). Projection now CASTs to DOUBLE. (pefr_float_param_channel_is_double_typed + PNG.)"
+    - "#3 Pan/zoom (update_extent) passed None for param_values → $k unbound → mark failed on every navigation. Now threads param_state. (pefr_navigation_preserves_param_channel.)"
+    - "#4 A param-free data.filter parses to String and was silently dropped. apply_data_filter lowers String filters to a raw WHERE. (pefr_param_free_filter_lowers_to_where.)"
+    - "#5 A $name inside a SQL string literal was substituted. interpolate_params is string-literal aware (handles '' escape). (pefr_interpolation_skips_string_literals.)"
+    - "#6 Non-finite float param → invalid SQL. spec_value_to_sql_literal emits DuckDB quoted specials."
+    - "#8 Subscription walked all data.extras; scoped to the `filter` extra (the only one lowered)."
+  deferred:
+    - "#2 A param named identically to a source column: `SELECT *, CAST($k AS DOUBLE) AS \"k\"` yields two `k` columns and the renderer reads the source one (param has no effect). The Decision-4 edge; fix is a reserved alias or `* EXCLUDE`. Unusual collision; documented."
+    - "#7 An undeclared param in a channel/filter leaves `$name` un-substituted → graceful mark failure (no crash). Only filterBy is validated today; upfront validation is a follow-up."
 
 gate:
   id: ac-13
@@ -107,10 +123,10 @@ gate:
 ambiguity_score: 0.12
 ambiguity_notes: >
   Low. Design pack fixes the mechanism (interpolation), scope (positional
-  channels + data.filter), cache strategy (plan_hash fold), and alias (param
-  name). Residual ambiguity: (a) whether the parser already lowers a `filter:`
-  key on mark data into an Expression in extras, or needs threading — resolve by
-  reading parse.rs during ac-07; (b) exact plan_hash fold representation — any
-  stable hash of the inlined pairs satisfies ac-11; (c) whether to project param
-  channels in all lowerers or only SimpleLowerer for this slice — SimpleLowerer
-  suffices for the ACs, others deferred.
+  channels + data.filter), cache strategy (execute concrete SQL directly, keep
+  plan_hash structural — see Decision 3 amendment), and alias (param name).
+  Residual ambiguity resolved during build: (a) the parser lowers a `filter:`
+  key into extras as a String (param-free) or Expression (param-bearing) — both
+  now handled (ac-07 + review #4); (b) whether to project param channels in all
+  lowerers or only SimpleLowerer for this slice — SimpleLowerer suffices for the
+  ACs, others deferred.
