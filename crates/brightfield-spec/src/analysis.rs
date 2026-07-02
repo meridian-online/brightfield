@@ -274,8 +274,10 @@ fn collect_subscribers(component: &Component, path: &str, graph: &mut Subscriber
 fn collect_mark_subscribers(mark: &Mark, path: &str, graph: &mut SubscriberGraph) {
     let mark_path = format!("{path}/mark[{}]", mark.kind.wire_name());
 
-    // Mark data filterBy + any params embedded in data extras (e.g. a
-    // `filter: "x > $k"` expression, which lowers to a WHERE — card 0014).
+    // Mark data filterBy + any params in the `filter` expression (which lowers
+    // to a WHERE — card 0014). Only the `filter` extra affects the emitted query,
+    // so subscribing on other extras would trigger re-executions that change
+    // nothing; scope the walk to `filter`.
     if let Some(ref data) = mark.data {
         if let crate::ast::MarkData::From {
             filter_by, extras, ..
@@ -287,8 +289,8 @@ fn collect_mark_subscribers(mark: &Mark, path: &str, graph: &mut SubscriberGraph
                     .or_default()
                     .push(ComponentPath(mark_path.clone()));
             }
-            for v in extras.values() {
-                collect_spec_value_subscribers(v, &mark_path, graph);
+            if let Some(filter) = extras.get("filter") {
+                collect_spec_value_subscribers(filter, &mark_path, graph);
             }
         }
     }

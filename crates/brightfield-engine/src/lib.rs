@@ -686,11 +686,22 @@ impl Session {
             Some(selections.as_slice())
         };
 
+        // Pass the current param_state so a positional `$param` channel (card
+        // 0014) is interpolated during navigation too — otherwise `$name` would
+        // reach DuckDB as an unbound placeholder and the mark would fail on every
+        // pan/zoom.
+        let params_owned: ParamValues = self.param_state.clone();
+        let params_ref = if params_owned.is_empty() {
+            None
+        } else {
+            Some(&params_owned)
+        };
+
         for idx in 0..mark_count {
             let emitted = match emit_query_with_passes(
                 &self.spec,
                 idx,
-                None,
+                params_ref,
                 selections_ref,
                 &passes,
             ) {
@@ -1580,6 +1591,52 @@ plot:
             session.cache_len() <= 64,
             "plan cache must stay bounded under a 200-value param sweep; got {}",
             session.cache_len()
+        );
+    }
+
+    /// Review regression (card 0014 #1): a FRACTIONAL param on a positional
+    /// channel must produce a DOUBLE column, not DECIMAL — the renderer's
+    /// column_as_f64 reads Float/Int but not Decimal, so a bare `3.5 AS "k"`
+    /// would silently render nothing. The projection CASTs to DOUBLE.
+    #[test]
+    fn pefr_float_param_channel_is_double_typed() {
+        use duckdb::arrow::datatypes::DataType;
+        let yaml = "params:\n  k: 0\ndata:\n  t:\n    - { x: 1 }\n    - { x: 2 }\nplot:\n  - mark: dot\n    data: { from: t }\n    x: x\n    y: $k\n";
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+        let results = session.propagate_param("k", SpecValue::Float(3.5));
+        let batches = results[0].1.as_ref().unwrap();
+        let col = batches[0]
+            .column_by_name("k")
+            .expect("param column must be projected");
+        assert_eq!(
+            col.data_type(),
+            &DataType::Float64,
+            "fractional param channel must be DOUBLE-typed, got {:?}",
+            col.data_type()
+        );
+    }
+
+    /// Review regression (card 0014 #3): navigation (pan/zoom via update_extent)
+    /// must interpolate param channels too — otherwise `$k` reaches DuckDB as an
+    /// unbound placeholder and the mark fails on every pan/zoom.
+    #[test]
+    fn pefr_navigation_preserves_param_channel() {
+        let yaml = "params:\n  k: 5\ndata:\n  t:\n    - { x: 1 }\n    - { x: 2 }\n    - { x: 3 }\nplot:\n  - mark: dot\n    data: { from: t }\n    x: x\n    y: $k\n";
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+        let results = session.update_extent(Some(("x", 1.5, 3.5)), None);
+        assert!(
+            results[0].1.is_ok(),
+            "navigation with a positional param channel must not fail: {:?}",
+            results[0].1
+        );
+        let batches = results[0].1.as_ref().unwrap();
+        assert!(
+            batches.iter().any(|b| b.column_by_name("k").is_some()),
+            "the param column must survive navigation"
         );
     }
 

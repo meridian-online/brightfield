@@ -84,7 +84,11 @@ fn project_param_channels(mark: &Mark, base: QueryPlan) -> QueryPlan {
         if let Some(ValueOrParamRef::Param(pr)) = mark.options.get(*key) {
             if !seen.iter().any(|s| s == &pr.0) {
                 seen.push(pr.0.clone());
-                cols.push(format!("${} AS \"{}\"", pr.0, pr.0));
+                // CAST to DOUBLE so a FRACTIONAL param value doesn't type the
+                // column as DECIMAL — the renderer's column_as_f64 reads
+                // Float/Int but not Decimal, so a bare `3.5 AS "k"` would silently
+                // render nothing. DOUBLE covers integer and float params alike.
+                cols.push(format!("CAST(${} AS DOUBLE) AS \"{}\"", pr.0, pr.0));
             }
         }
     }
@@ -98,17 +102,24 @@ fn project_param_channels(mark: &Mark, base: QueryPlan) -> QueryPlan {
     }
 }
 
-/// If `extras` carries a `filter` expression (`data: { from, filter: "..." }`),
-/// wrap `plan` in a WHERE (card 0014, Decision 2). `$param` placeholders in the
-/// expression are interpolated from param_state at emit time, so a filter param
-/// re-filters the rows on propagate_param. A no-op when there is no filter.
+/// If `extras` carries a `filter` (`data: { from, filter: "..." }`), wrap `plan`
+/// in a WHERE (card 0014, Decision 2). A no-op when there is no filter.
+///
+/// A filter that references a `$param` parses to an `Expression` (rendered to raw
+/// SQL text with the `$name` preserved for emit-time interpolation, so the param
+/// re-filters rows on propagate_param); a param-FREE filter (e.g. `"x > 2"`)
+/// parses to a plain `String` that is already raw predicate text, used verbatim
+/// (NOT quoted — quoting would turn the WHERE into a constant-string no-op that
+/// silently passes every row).
 fn apply_data_filter(extras: &IndexMap<String, SpecValue>, plan: QueryPlan) -> QueryPlan {
-    match extras.get("filter") {
-        Some(expr @ SpecValue::Expression(_)) => QueryPlan::Filter {
-            input: Box::new(plan),
-            predicate: Predicate::Expr(crate::emit::spec_value_to_sql_literal(expr)),
-        },
-        _ => plan,
+    let predicate = match extras.get("filter") {
+        Some(expr @ SpecValue::Expression(_)) => crate::emit::spec_value_to_sql_literal(expr),
+        Some(SpecValue::String(s)) => s.clone(),
+        _ => return plan,
+    };
+    QueryPlan::Filter {
+        input: Box::new(plan),
+        predicate: Predicate::Expr(predicate),
     }
 }
 
