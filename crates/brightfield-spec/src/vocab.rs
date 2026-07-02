@@ -225,10 +225,10 @@ vocab_enum! {
     pub enum InputKind {
         Menu => ("menu", Unimplemented),
         Search => ("search", Unimplemented),
-        // Demoted to Unimplemented (harden, 2026-07-02): parsed but unwired —
-        // the app renders no input widgets; the slider helpers are test-only.
-        // Re-promote when the param coordinator drives re-execution (card 0005).
-        Slider => ("slider", Unimplemented),
+        // Wired end-to-end (card 0005, 2026-07-03): a hosted SliderElement drives
+        // its param via commit_slider → propagate_param → re-render. Menu/Search/
+        // Table remain Unimplemented (no widget yet).
+        Slider => ("slider", Implemented),
         Table => ("table", Unimplemented),
     }
 }
@@ -320,25 +320,26 @@ mod tests {
         }
     }
 
-    /// rpw3 ac-14 — REVERSED (harden, 2026-07-02). `InputKind::Slider` is demoted
-    /// to `Unimplemented`: the slider helpers exist and are unit-tested but the
-    /// app renders no input widgets, so nothing on the live loop consumes a
-    /// slider. Re-promote when the param coordinator drives re-execution (0005).
+    /// slw ac-08 (card 0005, 2026-07-03). `InputKind::Slider` is Implemented: a
+    /// hosted SliderElement drives its param through commit_slider →
+    /// propagate_param → re-render (reversing the 2026-07-02 harden demotion for
+    /// slider only). The other input kinds — Menu/Search/Table — stay Unimplemented.
     #[test]
-    fn input_kind_slider_unimplemented_until_wired() {
+    fn slw_ac08_input_kind_slider_implemented_when_wired() {
         assert_eq!(
             InputKind::Slider.status(),
-            ImplStatus::Unimplemented,
-            "Slider is parsed but unwired — demoted until input widgets render"
+            ImplStatus::Implemented,
+            "Slider is wired end-to-end (card 0005) — re-promoted"
         );
         let implemented: Vec<InputKind> = InputKind::all()
             .iter()
             .copied()
             .filter(|k| k.status() == ImplStatus::Implemented)
             .collect();
-        assert!(
-            !implemented.contains(&InputKind::Slider),
-            "Slider must NOT be in the Implemented set until it is wired; got {implemented:?}"
+        assert_eq!(
+            implemented,
+            vec![InputKind::Slider],
+            "only Slider is implemented; Menu/Search/Table remain Unimplemented"
         );
     }
 

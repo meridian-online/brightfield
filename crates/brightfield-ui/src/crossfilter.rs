@@ -448,4 +448,58 @@ plot:
         assert!(after < before, "raising threshold drops rows: {before} -> {after}");
         assert_eq!(after, 1);
     }
+
+    // slw ac-09 (card 0005): the shipped example ties the whole chain together —
+    // its `input: slider` yields a binding via the layout join, and committing a
+    // higher threshold through the coordinator drops points.
+    #[test]
+    fn slw_ac09_example_slider_drives_the_mark() {
+        use brightfield_engine::Engine;
+        use brightfield_spec::analysis::analyse_spec;
+        use brightfield_spec::layout::placed_input_nodes;
+        use brightfield_spec::layout::Rect as LayoutRect;
+        use brightfield_spec::vocab::InputKind;
+        use brightfield_spec::{parse_spec, Format};
+        use brightfield_sql::collect_marks;
+
+        let yaml = include_str!("../../../examples/param-slider.yaml");
+        let parsed = parse_spec(yaml, Format::Yaml).expect("example parses");
+
+        // The example's input:slider yields a binding via the layout path-join.
+        let (_, input) = placed_input_nodes(&parsed.spec, LayoutRect::new(0.0, 0.0, 0.0, 0.0))
+            .into_iter()
+            .find(|(_, i)| i.kind == InputKind::Slider)
+            .expect("example declares an input:slider");
+        let binding = SliderBinding::from_input(input).expect("binding from the example slider");
+        assert_eq!(binding.param_name, "threshold");
+
+        let analysis = analyse_spec(&parsed.spec).expect("analyse");
+        let engine = Engine::new();
+        let mut session = engine
+            .load_spec(parsed.spec.clone(), analysis, None)
+            .expect("load")
+            .session;
+        let results = session.execute_all();
+        let marks_ast = collect_marks(&parsed.spec);
+        let marks: Vec<MarkInput> = results
+            .into_iter()
+            .enumerate()
+            .map(|(i, r)| MarkInput {
+                batch: r.ok().and_then(concat_batches),
+                channels: ChannelMap::from_mark(marks_ast[i]),
+                kind: marks_ast[i].kind,
+            })
+            .collect();
+
+        let coord = CrossfilterCoordinator::new(session, marks, vec![], vec![binding])
+            .expect("coordinator");
+        let mut c = coord.borrow_mut();
+        let before = c.marks[0].batch.as_ref().map_or(0, |b| b.num_rows());
+        c.apply_slider(0, &SliderState::Released { value: 7.0 });
+        let after = c.marks[0].batch.as_ref().map_or(0, |b| b.num_rows());
+        assert!(
+            after < before,
+            "raising the example slider drops points: {before} -> {after}"
+        );
+    }
 }

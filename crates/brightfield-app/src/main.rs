@@ -66,12 +66,34 @@ struct PlotRender {
     scene: vello::Scene,
 }
 
-/// A rendered dashboard: the bounding-box dimensions and one scene per plot.
-/// The headless/PNG path composites these; the window hosts one element per plot.
+/// A slider widget's placement (card 0005): its dashboard rect, the param binding
+/// it drives, and the thumb's resting value. The window path turns each into a
+/// hosted `SliderElement`; the headless/PNG path draws it into the composite.
+struct SliderPlacement {
+    rect: Rect,
+    binding: SliderBinding,
+    value: f64,
+}
+
+/// A rendered dashboard: the bounding-box dimensions, one scene per plot, and the
+/// placed slider widgets. The headless/PNG path composites these; the window
+/// hosts one element per plot + one per slider.
 struct Dashboard {
     width: u32,
     height: u32,
     plots: Vec<PlotRender>,
+    sliders: Vec<SliderPlacement>,
+}
+
+/// Coerce a scalar `SpecValue` (a param default) to `f64` for a slider's resting
+/// value; `None` for non-scalar params.
+fn spec_value_as_f64(v: &brightfield_spec::ast::SpecValue) -> Option<f64> {
+    use brightfield_spec::ast::SpecValue;
+    match v {
+        SpecValue::Integer(i) => Some(*i as f64),
+        SpecValue::Float(f) => Some(*f),
+        _ => None,
+    }
 }
 
 /// Live engine + render state kept alive for in-window interaction (cross-filter).
@@ -84,9 +106,6 @@ struct LiveParts {
     marks: Vec<MarkInput>,
     /// Per plot, aligned 1:1 with `Dashboard.plots`.
     plots: Vec<LivePlotMeta>,
-    /// Dashboard-level slider bindings (card 0005), fed to the coordinator so a
-    /// slider release drives `propagate_param`. Order matches the hosted sliders.
-    slider_bindings: Vec<SliderBinding>,
 }
 
 /// Per-plot live metadata captured during rendering, joined to its `ChartState`
@@ -264,34 +283,54 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
         return Err("no marks rendered successfully".to_string());
     }
 
-    // Slider bindings (card 0005): each composition-level `input: slider` with a
-    // param target + numeric bounds drives a param through the coordinator. The
-    // visual widget + rect are hosted separately (the window path); here we only
-    // capture the bindings the coordinator dispatches through.
-    let slider_bindings: Vec<SliderBinding> =
+    // Slider placements (card 0005): each composition-level `input: slider` with
+    // a param target + numeric bounds becomes a hosted widget at its layout rect,
+    // its thumb resting at the param's current (default) value.
+    let sliders: Vec<SliderPlacement> =
         placed_input_nodes(&parsed.spec, Rect::new(0.0, 0.0, 0.0, 0.0))
             .into_iter()
             .filter(|(_, input)| input.kind == InputKind::Slider)
-            .filter_map(|(_, input)| SliderBinding::from_input(input))
+            .filter_map(|(rect, input)| {
+                let binding = SliderBinding::from_input(input)?;
+                let value = session
+                    .current_params()
+                    .get(&binding.param_name)
+                    .and_then(spec_value_as_f64)
+                    .unwrap_or(binding.min)
+                    .clamp(binding.min, binding.max);
+                Some(SliderPlacement {
+                    rect,
+                    binding,
+                    value,
+                })
+            })
             .collect();
 
+    // Fold slider rects into the dashboard size so a slider beside/below the
+    // plots reserves its space (the window is the bounding box).
     let width = placed
         .iter()
         .map(|p| p.rect.x + p.rect.width)
+        .chain(sliders.iter().map(|s| s.rect.x + s.rect.width))
         .fold(0.0_f64, f64::max)
         .ceil() as u32;
     let height = placed
         .iter()
         .map(|p| p.rect.y + p.rect.height)
+        .chain(sliders.iter().map(|s| s.rect.y + s.rect.height))
         .fold(0.0_f64, f64::max)
         .ceil() as u32;
     Ok((
-        Dashboard { width, height, plots },
+        Dashboard {
+            width,
+            height,
+            plots,
+            sliders,
+        },
         LiveParts {
             session,
             marks: mark_inputs,
             plots: live_plots,
-            slider_bindings,
         },
     ))
 }
@@ -430,11 +469,29 @@ fn main() {
             .unwrap_or(1.0);
         let placements: Vec<(f64, f64, &vello::Scene)> =
             dashboard.plots.iter().map(|p| (p.x, p.y, &p.scene)).collect();
-        let composite = compose_dashboard(
+        let mut composite = compose_dashboard(
             f64::from(dashboard.width),
             f64::from(dashboard.height),
             &placements,
         );
+        // Draw the resting slider widgets into the composite so the PNG previews
+        // them (card 0005). The thumb sits at the param's current value.
+        for s in &dashboard.sliders {
+            let span = s.binding.max - s.binding.min;
+            let frac = if span > 0.0 {
+                (s.value - s.binding.min) / span
+            } else {
+                0.0
+            };
+            brightfield_render::scene::render_slider(
+                &mut composite,
+                s.rect.x,
+                s.rect.y,
+                s.rect.width,
+                s.rect.height,
+                frac,
+            );
+        }
 
         let dev_w = ((dashboard.width as f32) * scale).round() as u32;
         let dev_h = ((dashboard.height as f32) * scale).round() as u32;
@@ -468,12 +525,11 @@ fn main() {
         let renderer = brightfield_ui::VelloRenderer::new();
         let app = gpui::Application::with_platform(Rc::new(gpui_macos::MacPlatform::new(false)));
         let spec_path = spec_path.to_string();
-        let Dashboard { width, height, plots } = dashboard;
+        let Dashboard { width, height, plots, sliders } = dashboard;
         let LiveParts {
             session,
             marks,
             plots: live_plots_meta,
-            slider_bindings,
         } = live;
         app.run(move |cx| {
             // One ChartState per plot; the watcher tracks each by its stable
@@ -502,6 +558,11 @@ fn main() {
                     state: w.state.clone(),
                 })
                 .collect();
+            // Coordinator slider bindings, in the same order as the hosted slider
+            // widgets below (both derived from `sliders`), so a widget's index
+            // matches its binding.
+            let slider_bindings: Vec<SliderBinding> =
+                sliders.iter().map(|s| s.binding.clone()).collect();
             let coordinator =
                 CrossfilterCoordinator::new(session, marks, live_plots, slider_bindings);
 
@@ -514,6 +575,21 @@ fn main() {
                     width: w.width,
                     height: w.height,
                     state: w.state.clone(),
+                    coordinator: coordinator.clone(),
+                })
+                .collect();
+
+            // One placed slider widget per input:slider, wired to the same
+            // coordinator; index = position (matching the slider_bindings order).
+            let placed_sliders: Vec<brightfield_ui::PlacedSlider> = sliders
+                .iter()
+                .map(|s| brightfield_ui::PlacedSlider {
+                    x: s.rect.x,
+                    y: s.rect.y,
+                    width: s.rect.width,
+                    height: s.rect.height,
+                    binding: s.binding.clone(),
+                    state: cx.new(|_| brightfield_ui::SliderWidget::new(s.value)),
                     coordinator: coordinator.clone(),
                 })
                 .collect();
@@ -541,7 +617,12 @@ fn main() {
             let _window = cx
                 .open_window(window_opts, move |_window, cx| {
                     cx.new(|_| {
-                        brightfield_ui::ChartView::new(f64::from(width), f64::from(height), charts)
+                        brightfield_ui::ChartView::new(
+                            f64::from(width),
+                            f64::from(height),
+                            charts,
+                            placed_sliders,
+                        )
                     })
                 })
                 .expect("failed to open window");

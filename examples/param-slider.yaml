@@ -1,0 +1,35 @@
+# Reactive slider demo (card 0005 — live input widget).
+#
+# The `threshold` slider below the scatter re-executes its query on release:
+# drag the thumb and, when you let go, the filtered points drop or reappear. It
+# drives the same `propagate_param` path as the headless param-threshold demo,
+# now from a hosted widget.
+#
+# Run the window (macOS) and drag the slider:
+#   cargo run -p brightfield-app -- examples/param-slider.yaml
+# Preview a value headlessly:
+#   BRIGHTFIELD_PARAM_OVERRIDE="threshold=6" BRIGHTFIELD_DUMP_PNG=out.png \
+#     cargo run -p brightfield-app -- examples/param-slider.yaml
+params:
+  threshold: 2
+data:
+  points:
+    - { x: 1, y: 3 }
+    - { x: 2, y: 5 }
+    - { x: 3, y: 2 }
+    - { x: 4, y: 8 }
+    - { x: 5, y: 4 }
+    - { x: 6, y: 7 }
+    - { x: 7, y: 6 }
+    - { x: 8, y: 9 }
+vconcat:
+  - plot:
+      - { mark: dot, data: { from: points, filter: "x > $threshold" }, x: x, y: y }
+    width: 640
+    height: 400
+  - input: slider
+    label: Threshold
+    as: $threshold
+    min: 0
+    max: 8
+    step: 1
