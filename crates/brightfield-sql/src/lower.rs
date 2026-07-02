@@ -333,10 +333,10 @@ fn equiwidth_bin_centre(table: &str, col: &str, bins: i64) -> String {
 /// alongside the per-bucket `count`.
 fn build_density_1d(table: &str, col: &str, bins: i64) -> QueryPlan {
     let centre_expr = format!("{} AS \"{col}\"", equiwidth_bin_centre(table, col, bins));
-    // The occupancy column is always named `count` (the renderer reads it by that
-    // literal name). A density channel bound to a column literally named `count`
-    // would collide here — a known, pathological edge left untreated.
-    let count_expr = "CAST(COUNT(*) AS DOUBLE) AS count".to_string();
+    // Occupancy is aliased to the reserved `__bf_count` (not `count`) so it can't
+    // collide with the bin centre when a density channel is bound to a column
+    // literally named `count`. The renderer reads it as `DENSITY_COUNT_COL`.
+    let count_expr = "CAST(COUNT(*) AS DOUBLE) AS __bf_count".to_string();
 
     QueryPlan::Aggregation {
         input: Box::new(QueryPlan::Filter {
@@ -355,7 +355,8 @@ fn build_density_1d(table: &str, col: &str, bins: i64) -> QueryPlan {
 fn build_density_2d(table: &str, x_col: &str, y_col: &str, bins: i64) -> QueryPlan {
     let x_centre = format!("{} AS \"{x_col}\"", equiwidth_bin_centre(table, x_col, bins));
     let y_centre = format!("{} AS \"{y_col}\"", equiwidth_bin_centre(table, y_col, bins));
-    let count_expr = "CAST(COUNT(*) AS DOUBLE) AS count".to_string();
+    // Reserved occupancy alias — see build_density_1d.
+    let count_expr = "CAST(COUNT(*) AS DOUBLE) AS __bf_count".to_string();
 
     QueryPlan::Aggregation {
         input: Box::new(QueryPlan::Filter {

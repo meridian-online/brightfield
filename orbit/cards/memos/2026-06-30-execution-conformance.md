@@ -55,7 +55,19 @@ Reconciled the renderer↔SQL output-column contract for the statistical marks:
   status stays `Implemented` (no demotion needed — they render). Verified
   headless via PNG dumps (`examples/{density,density-x,regression}.yaml`).
 
-Deferred (low severity, noted in code): a density positional channel bound to a
-column literally named `count` collides with the occupancy aggregate; the 1D
-density curve is clamped to the data extent and does not taper a few bandwidths
-past the extremes (an Observable Plot nicety).
+## Follow-ups (both RESOLVED)
+
+The two low-severity items deferred above are now closed:
+
+- **`count` column collision** — the density lowerers alias the occupancy count
+  to the reserved `__bf_count` (not `count`), kept distinct from the bin centre
+  (which is aliased to the channel column name). The renderers read it via
+  `DENSITY_COUNT_COL`. A density channel bound to a column literally named
+  `count` no longer collides with the aggregate.
+- **Taper past the extremes** — the 1D density KDE now evaluates over a grid
+  extended ±3σ past the data (`DENSITY_TAIL_SIGMAS`, the kernel's truncation
+  support), and `augment_scales` widens the bin axis to match, so the curve
+  tapers smoothly to ~0 instead of dropping in a vertical cliff at the data
+  min/max. `render` and `augment_scales` share the extent/bandwidth via the
+  `density_1d_weighted_pairs` helper so their padded domains stay in lock-step.
+  Verified headless (`examples/density-x.yaml`).
