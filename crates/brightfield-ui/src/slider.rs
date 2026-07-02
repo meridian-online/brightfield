@@ -91,6 +91,13 @@ impl SliderBinding {
         let param_name = input.as_param.as_ref()?.0.clone();
         let min = read_numeric_option(input, "min")?;
         let max = read_numeric_option(input, "max")?;
+        // Reject a degenerate domain (non-finite bounds, or min >= max): it can't
+        // drive a functional slider and would panic the downstream `f64::clamp`
+        // (which asserts min <= max). Skipping it is consistent with the
+        // computed-param case — a malformed input yields no widget, not a crash.
+        if !(min.is_finite() && max.is_finite() && min < max) {
+            return None;
+        }
         let step = read_numeric_option(input, "step");
         Some(Self {
             param_name,
@@ -205,9 +212,12 @@ pub fn value_at(px: f64, track_left: f64, track_width: f64, binding: &SliderBind
     let raw = binding.min + frac * (binding.max - binding.min);
     match binding.step {
         // Snap to the nearest step measured from min, then clamp to the domain.
+        // `.max(min).min(max)` rather than `f64::clamp` so a caller-constructed
+        // binding with min > max yields a defined value instead of a panic
+        // (`from_input` already rejects such domains for spec-driven sliders).
         Some(step) if step > 0.0 => {
             let snapped = binding.min + ((raw - binding.min) / step).round() * step;
-            snapped.clamp(binding.min, binding.max)
+            snapped.max(binding.min).min(binding.max)
         }
         _ => raw,
     }
@@ -371,6 +381,62 @@ mod tests {
         assert!((binding.min - 0.0).abs() < f64::EPSILON);
         assert!((binding.max - 100.0).abs() < f64::EPSILON);
         assert_eq!(binding.step, None);
+    }
+
+    /// slw review-fix: a degenerate domain (min > max, min == max, or non-finite
+    /// bounds) yields no binding — `from_input` rejects it rather than producing a
+    /// slider that would panic the downstream `f64::clamp`.
+    #[test]
+    fn slw_from_input_rejects_degenerate_domain() {
+        // Inverted bounds.
+        assert!(
+            SliderBinding::from_input(&input_fixture(
+                SpecValue::Integer(8),
+                SpecValue::Integer(0),
+                Some(SpecValue::Integer(1)),
+            ))
+            .is_none(),
+            "min > max is rejected"
+        );
+        // Empty domain.
+        assert!(
+            SliderBinding::from_input(&input_fixture(
+                SpecValue::Integer(5),
+                SpecValue::Integer(5),
+                None,
+            ))
+            .is_none(),
+            "min == max is rejected"
+        );
+        // Non-finite bound.
+        assert!(
+            SliderBinding::from_input(&input_fixture(
+                SpecValue::Float(0.0),
+                SpecValue::Float(f64::NAN),
+                None,
+            ))
+            .is_none(),
+            "NaN bound is rejected"
+        );
+    }
+
+    /// slw review-fix: `value_at` never panics even on a caller-constructed
+    /// inverted binding (the public helper defends itself; `from_input` guards the
+    /// spec path). Rust's `f64::clamp` would assert min <= max — this must not.
+    #[test]
+    fn slw_value_at_no_panic_on_inverted_binding() {
+        let inverted = SliderBinding {
+            param_name: "t".to_string(),
+            min: 8.0,
+            max: 0.0,
+            step: Some(1.0),
+        };
+        // Any of these would panic under `f64::clamp`; here they just return a
+        // finite, defined value.
+        for px in [0.0, 100.0, 300.0] {
+            let v = value_at(px, 0.0, 200.0, &inverted);
+            assert!(v.is_finite(), "value_at stays finite for px={px}");
+        }
     }
 
     /// rpw3 ac-11: commit_slider_release dispatches the binding's

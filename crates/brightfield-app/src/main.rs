@@ -185,6 +185,33 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
         }
     }
 
+    // 3c. Reconcile each slider's param to its declared [min, max] before
+    //     executing (card 0005). A spec whose param default lies outside the
+    //     slider's own domain (an authoring inconsistency) would otherwise render
+    //     one value while the clamped thumb rests at another; clamping the param
+    //     to the slider's range keeps the first render and the thumb in agreement.
+    //     A no-op for well-formed specs (default already in range).
+    for (_, input) in placed_input_nodes(&parsed.spec, Rect::new(0.0, 0.0, 0.0, 0.0)) {
+        if input.kind != InputKind::Slider {
+            continue;
+        }
+        if let Some(binding) = SliderBinding::from_input(input) {
+            if let Some(v) = session
+                .current_params()
+                .get(&binding.param_name)
+                .and_then(spec_value_as_f64)
+            {
+                let clamped = v.max(binding.min).min(binding.max);
+                if clamped != v {
+                    let _ = session.propagate_param(
+                        &binding.param_name,
+                        brightfield_spec::ast::SpecValue::Float(clamped),
+                    );
+                }
+            }
+        }
+    }
+
     // 4. Execute all marks, building per-mark inputs indexed by the flat mark
     //    order (= execution order). A failed mark keeps `batch: None` and is
     //    skipped when rendering (AC-05: graceful failure); its channels/kind are
@@ -297,7 +324,8 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
                     .get(&binding.param_name)
                     .and_then(spec_value_as_f64)
                     .unwrap_or(binding.min)
-                    .clamp(binding.min, binding.max);
+                    .max(binding.min)
+                    .min(binding.max);
                 Some(SliderPlacement {
                     rect,
                     binding,
