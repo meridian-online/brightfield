@@ -289,8 +289,11 @@ impl Session {
         // moves to the TAIL (retain-then-push), so vec order reflects recency:
         // SelectionResolution::Single resolves via `.last()`, so the "most
         // recent" predicate must be the last element, not the source's original
-        // slot. AND/OR strategies are order-independent, so this is harmless for
-        // them. Linear scan; ≤5 contributors per selection in the corpus. (0006)
+        // slot. For AND/OR strategies the RESULTS are order-independent; the only
+        // cost is that reordering changes the emitted SQL string, so a re-contribution
+        // of an identical predicate by a non-tail source can miss the SQL cache and
+        // re-execute — a minor cache-warmth edge, never a wrong result. Linear
+        // scan; ≤5 contributors per selection in the corpus. (card 0006)
         let entries = self.selection_state.entry(name.to_string()).or_default();
         entries.retain(|(p, _)| p != &contributor);
         entries.push((contributor, predicate));

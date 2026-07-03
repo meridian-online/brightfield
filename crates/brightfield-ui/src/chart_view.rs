@@ -194,6 +194,18 @@ pub fn commit_brush_release_multi<D: SelectionDispatcher>(
         );
         let mut aggregated = Vec::with_capacity(bindings.len());
         for binding in bindings {
+            // Kind-compatibility filter: a rect DRAG only drives interval
+            // selections. Point selections (toggleX/Y) are click-driven, and a
+            // plot may carry both a point and an interval interactor — so
+            // skipping the point bindings here stops a y-drag from dispatching a
+            // degenerate `Predicate::True` (select-all) into the point selection.
+            // Their real predicate is produced by the click gesture (deferred).
+            if matches!(
+                binding.kind,
+                BrushKind::Point | BrushKind::PointX | BrushKind::PointY
+            ) {
+                continue;
+            }
             let predicate = brush_rect_to_predicate(rect, binding.kind, &binding.channels);
             let results = dispatcher.dispatch(
                 &binding.selection_name,
@@ -485,6 +497,45 @@ mod tests {
         assert!(dispatcher.calls.is_empty(), "no brush → no dispatch");
         assert!(results.is_empty());
         assert!(matches!(next_state, InteractionState::Idle));
+    }
+
+    /// cfs point-selection (card 0006): a rect DRAG skips point-kind bindings —
+    /// only interval selections are rect-driven. A plot carrying BOTH a toggleX
+    /// (PointX) and an intervalY binding must dispatch only the interval on a
+    /// drag, never a degenerate `True` into the point selection.
+    #[test]
+    fn drag_skips_point_bindings() {
+        let mut interaction = InteractionState::start_brush(Point::new(20.0, 30.0));
+        interaction.update_brush(Point::new(120.0, 230.0));
+
+        let bindings = [
+            BrushBinding {
+                selection_name: "pt".to_string(),
+                contributor: ComponentPath("root/plot[0]".to_string()),
+                kind: BrushKind::PointX,
+                channels: ChannelColumns::xy("speed", "delay"),
+            },
+            BrushBinding {
+                selection_name: "iv".to_string(),
+                contributor: ComponentPath("root/plot[0]".to_string()),
+                kind: BrushKind::IntervalY,
+                channels: ChannelColumns::xy("speed", "delay"),
+            },
+        ];
+        let mut dispatcher = RecordingDispatcher::new();
+        let (_state, aggregated) =
+            commit_brush_release_multi(&interaction, &bindings, &mut dispatcher);
+
+        assert_eq!(
+            dispatcher.calls.len(),
+            1,
+            "only the interval binding dispatches on a drag; the point is skipped"
+        );
+        assert_eq!(
+            dispatcher.calls[0].0, "iv",
+            "the dispatched selection is the interval, not the point"
+        );
+        assert_eq!(aggregated.len(), 1);
     }
 
     // ---------------------------------------------------------------------
