@@ -148,7 +148,9 @@ vocab_enum! {
         DenseLine => ("denseLine", Unimplemented),
         Heatmap => ("heatmap", Unimplemented),
         Contour => ("contour", Unimplemented),
-        Raster => ("raster", Unimplemented),
+        // Binned 2D count heatmap — filled cells coloured (by alpha) per bin
+        // count, reusing the 2D density binning. (card 0008 mark breadth)
+        Raster => ("raster", Implemented),
         // Hex
         Hexbin => ("hexbin", Unimplemented),
         Hexgrid => ("hexgrid", Unimplemented),
