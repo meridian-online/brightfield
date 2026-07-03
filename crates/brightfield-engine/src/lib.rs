@@ -969,7 +969,7 @@ data:
   t:
     - { x: 1 }
 plot:
-  - mark: rect
+  - mark: hexbin
     data: { from: t }
 "#;
         let (spec, analysis) = parse_and_analyse(yaml);
@@ -989,7 +989,7 @@ plot:
     // --- ac-05: execute_all with partial failure ---
     #[test]
     fn dex_ac05_execute_all_partial_failure() {
-        // Mix a supported mark (dot with data.from) and an unsupported mark (rect)
+        // Mix a supported mark (dot with data.from) and an unsupported mark (hexbin)
         let yaml = r#"
 data:
   t:
@@ -997,7 +997,7 @@ data:
 plot:
   - mark: dot
     data: { from: t }
-  - mark: rect
+  - mark: hexbin
     data: { from: t }
 "#;
         let (spec, analysis) = parse_and_analyse(yaml);
@@ -1008,8 +1008,8 @@ plot:
         assert_eq!(results.len(), 2);
         // dot with data.from succeeds via SimpleLowerer
         assert!(results[0].is_ok(), "dot with data.from should succeed");
-        // rect is unsupported
-        assert!(results[1].is_err(), "rect should be unsupported");
+        // hexbin is unsupported
+        assert!(results[1].is_err(), "hexbin should be unsupported");
     }
 
     // --- msv ac-01: SimpleLowerer end-to-end via Session ---
@@ -1710,7 +1710,7 @@ data:
 plot:
   - mark: dot
     data: { from: t }
-  - mark: rect
+  - mark: hexbin
     data: { from: t }
 "#;
         let (spec, analysis) = parse_and_analyse(yaml);
@@ -1722,7 +1722,7 @@ plot:
         assert!(ok_result.is_ok(), "mark 0 should succeed via SimpleLowerer");
         assert!(!ok_result.unwrap().is_empty());
 
-        // Mark 1 fails via execute_mark (rect is unsupported).
+        // Mark 1 fails via execute_mark (hexbin is unsupported).
         let err_result = session.execute_mark(1);
         assert!(err_result.is_err(), "mark 1 should fail (unsupported)");
         assert!(matches!(
@@ -2035,8 +2035,8 @@ plot:
     #[test]
     fn rpw2_ac04_partial_failure_mixed_ok_err() {
         // Two marks subscribe to "brush" via filterBy. Dot is supported by
-        // SimpleLowerer (Ok), rect is not (Err). Each mark is dispatched
-        // independently — rect's failure must not prevent dot from succeeding.
+        // SimpleLowerer (Ok), hexbin is not (Err). Each mark is dispatched
+        // independently — hexbin's failure must not prevent dot from succeeding.
         let yaml = r#"
 params:
   brush:
@@ -2050,7 +2050,7 @@ plot:
     data: { from: t, filterBy: $brush }
     x: x
     y: y
-  - mark: rect
+  - mark: hexbin
     data: { from: t, filterBy: $brush }
     x: x
     y: y
@@ -2073,7 +2073,7 @@ plot:
         let ok_count = results.iter().filter(|(_, r)| r.is_ok()).count();
         let err_count = results.iter().filter(|(_, r)| r.is_err()).count();
         assert_eq!(ok_count, 1, "dot should succeed via SimpleLowerer");
-        assert_eq!(err_count, 1, "rect should fail (UnsupportedMark)");
+        assert_eq!(err_count, 1, "hexbin should fail (UnsupportedMark)");
 
         // The successful mark should have returned data (2 rows from inline source).
         let (_, ok_result) = results.iter().find(|(_, r)| r.is_ok()).unwrap();
@@ -2616,7 +2616,7 @@ plot:
     /// rpw3 ac-08: partial failure — strengthens v2 rpw2_ac04 by naming the
     /// EngineError discriminant, the lowerer registration scheme, and the
     /// param_state assertion. Two marks subscribe to $brush via the same
-    /// edge (data.filterBy): one dot (registered lowerer → Ok) and one rect
+    /// edge (data.filterBy): one dot (registered lowerer → Ok) and one hexbin
     /// (no registered lowerer → Err with EmitFailed { cause: UnsupportedMark }).
     /// The walk continues across mixed Ok/Err and updates param_state.
     #[test]
@@ -2633,7 +2633,7 @@ plot:
     data: { from: t, filterBy: $brush }
     x: x
     y: y
-  - mark: rect
+  - mark: hexbin
     data: { from: t, filterBy: $brush }
     x: x
     y: y
@@ -2651,18 +2651,18 @@ plot:
             "both marks must be dispatched; got {results:?}"
         );
 
-        // (b) dot mark Ok with non-empty batches; (c) rect mark Err with the
+        // (b) dot mark Ok with non-empty batches; (c) hexbin mark Err with the
         // EmitFailed { cause: UnsupportedMark } discriminant.
         let dot_idx = 0usize;
-        let rect_idx = 1usize;
+        let hexbin_idx = 1usize;
         let dot_result = results
             .iter()
             .find(|(i, _)| *i == dot_idx)
             .expect("dot at index 0 in results");
-        let rect_result = results
+        let hexbin_result = results
             .iter()
-            .find(|(i, _)| *i == rect_idx)
-            .expect("rect at index 1 in results");
+            .find(|(i, _)| *i == hexbin_idx)
+            .expect("hexbin at index 1 in results");
 
         let dot_batches = dot_result
             .1
@@ -2674,16 +2674,16 @@ plot:
             "dot must return 2 rows from inline data (no contributor → no filter); got {dot_rows}"
         );
 
-        match &rect_result.1 {
+        match &hexbin_result.1 {
             Err(EngineError::EmitFailed { cause }) => {
                 let msg = format!("{cause:?}");
                 assert!(
                     msg.contains("Unsupported"),
-                    "rect Err cause must indicate UnsupportedMark; got {msg}"
+                    "hexbin Err cause must indicate UnsupportedMark; got {msg}"
                 );
             }
             other => panic!(
-                "rect must produce Err(EngineError::EmitFailed {{ cause: UnsupportedMark }}); got {other:?}"
+                "hexbin must produce Err(EngineError::EmitFailed {{ cause: UnsupportedMark }}); got {other:?}"
             ),
         }
 
@@ -3094,7 +3094,7 @@ plot:
     }
 
     /// cfs2_ac08: partial failure. Two subscribers — one supported (dot)
-    /// and one unsupported (rect). One Ok + one Err; selection_state
+    /// and one unsupported (hexbin). One Ok + one Err; selection_state
     /// updated regardless. Mirrors rpw2_ac04.
     #[test]
     fn cfs2_ac08_partial_failure() {
@@ -3111,7 +3111,7 @@ plot:
     data: { from: t, filterBy: $brush }
     x: x
     y: y
-  - mark: rect
+  - mark: hexbin
     data: { from: t, filterBy: $brush }
     x: x
     y: y
@@ -3138,7 +3138,7 @@ plot:
         let ok_count = results.iter().filter(|(_, r)| r.is_ok()).count();
         let err_count = results.iter().filter(|(_, r)| r.is_err()).count();
         assert_eq!(ok_count, 1, "dot succeeds via SimpleLowerer");
-        assert_eq!(err_count, 1, "rect fails (UnsupportedMark)");
+        assert_eq!(err_count, 1, "hexbin fails (UnsupportedMark)");
 
         // selection_state updated regardless of partial failure.
         assert!(session.current_selections().contains_key("brush"));

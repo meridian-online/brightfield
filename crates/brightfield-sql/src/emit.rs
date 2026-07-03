@@ -802,12 +802,12 @@ mod query_tests {
     #[test]
     fn dfir_ac08_emit_query_unsupported_mark() {
         // Use a mark kind that SimpleLowerer is NOT registered for
-        let src = "plot:\n  - mark: rect\n    data: { from: flights }\ndata:\n  flights: { file: flights.parquet }\n";
+        let src = "plot:\n  - mark: hexbin\n    data: { from: flights }\ndata:\n  flights: { file: flights.parquet }\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
         let result = emit_query(&spec, 0, None, None);
         assert!(result.is_err());
         match result.unwrap_err() {
-            EmitError::UnsupportedMark { kind } => assert_eq!(kind, "rect"),
+            EmitError::UnsupportedMark { kind } => assert_eq!(kind, "hexbin"),
             other => panic!("expected UnsupportedMark, got {other:?}"),
         }
     }

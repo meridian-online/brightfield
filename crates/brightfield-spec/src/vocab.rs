@@ -122,9 +122,12 @@ vocab_enum! {
         LineX => ("lineX", Unimplemented),
         LineY => ("lineY", Unimplemented),
         // Rectangles
-        Rect => ("rect", Unimplemented),
-        RectX => ("rectX", Unimplemented),
-        RectY => ("rectY", Unimplemented),
+        // rect/rectX/rectY wired end-to-end (card 0008, 2026-07-03): RectRenderer
+        // draws rectangles from explicit x1/x2 × y1/y2 extents (bare `rect`), or a
+        // ranged edge + zero-baselined value (rectX/rectY numeric-edged bars).
+        Rect => ("rect", Implemented),
+        RectX => ("rectX", Implemented),
+        RectY => ("rectY", Implemented),
         // Rules / ticks
         Rule => ("rule", Unimplemented),
         RuleX => ("ruleX", Implemented),

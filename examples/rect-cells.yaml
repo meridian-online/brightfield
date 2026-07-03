@@ -1,0 +1,27 @@
+# Explicit 2-D rectangles (card 0008 — bare `rect` mark).
+#
+# Bare `rect` takes an explicit x-extent [x1, x2] AND y-extent [y1, y2] per row —
+# the substrate for binned 2-D charts (heatmap cells, treemaps). Both axes are
+# quantitative scales synthesised from the interval columns; `fill` colours each
+# cell categorically.
+#
+# Preview headlessly:
+#   BRIGHTFIELD_DUMP_PNG=out.png cargo run -p brightfield-app -- examples/rect-cells.yaml
+data:
+  cells:
+    - { x1: 0, x2: 2, y1: 0, y2: 3, g: a }
+    - { x1: 2, x2: 5, y1: 0, y2: 2, g: b }
+    - { x1: 0, x2: 3, y1: 3, y2: 5, g: c }
+    - { x1: 3, x2: 5, y1: 2, y2: 5, g: a }
+    - { x1: 5, x2: 8, y1: 0, y2: 4, g: b }
+    - { x1: 5, x2: 7, y1: 4, y2: 6, g: c }
+plot:
+  - mark: rect
+    data: { from: cells }
+    x1: x1
+    x2: x2
+    y1: y1
+    y2: y2
+    fill: g
+width: 640
+height: 400

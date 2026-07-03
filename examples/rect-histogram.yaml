@@ -1,0 +1,27 @@
+# Numeric-edged histogram (card 0008 — rectY mark).
+#
+# rectY draws one rectangle per row spanning an explicit x-interval [x1, x2]
+# from a zero y-baseline — a histogram with numeric (not categorical) bin edges,
+# so adjacent bars touch. Unlike barY (categorical band x), the x-axis here is a
+# true quantitative scale synthesised from the bin edges.
+#
+# Preview headlessly:
+#   BRIGHTFIELD_DUMP_PNG=out.png cargo run -p brightfield-app -- examples/rect-histogram.yaml
+data:
+  bins:
+    - { lo: 0, hi: 1, count: 2 }
+    - { lo: 1, hi: 2, count: 5 }
+    - { lo: 2, hi: 3, count: 9 }
+    - { lo: 3, hi: 4, count: 13 }
+    - { lo: 4, hi: 5, count: 11 }
+    - { lo: 5, hi: 6, count: 6 }
+    - { lo: 6, hi: 7, count: 3 }
+    - { lo: 7, hi: 8, count: 1 }
+plot:
+  - mark: rectY
+    data: { from: bins }
+    x1: lo
+    x2: hi
+    y: count
+width: 640
+height: 400
