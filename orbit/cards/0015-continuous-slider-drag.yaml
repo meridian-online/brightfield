@@ -1,0 +1,79 @@
+feature: "Continuous slider drag (live re-execution while dragging)"
+as_a: "analyst sweeping a value across a visualisation"
+i_want: "the plots to update continuously as I drag a slider, not only when I let go"
+so_that: "I get immediate visual feedback while exploring a range — the interaction feels direct instead of commit-then-see"
+
+# Follow-up to card 0005 v2 (slider widget, shipped in PR #25). That card wired a
+# hosted SliderElement whose thumb tracks the cursor live but whose plots re-filter
+# only on mouse-UP (commit-on-release): mid-drag is overlay-only, no re-query. That
+# was a deliberate deferral — each refresh re-executes every subscribing mark's
+# DuckDB query, so re-querying on every drag pixel would hammer the engine. After
+# eyeballing the shipped drag, the user asked for continuous-during-drag as a
+# follow-up. This card is that work. The heart of it is NOT "call commit more
+# often" — it is a throttled, cancellable re-execution model so a fast drag stays
+# responsive on a real engine and never renders a stale frame.
+
+scenarios:
+  - name: "Dragging updates the plots continuously, not just on release"
+    given: "a hosted slider driving a data-shape param, thumb mid-drag"
+    when: "the thumb moves across the track"
+    then: "subscribing marks re-execute and repaint as the value changes — the plot tracks the drag, not just the final release"
+    source_lines: "today the mouse-move handler updates the SliderState::Dragging overlay only; commit fires solely on Released (crates/brightfield-ui/src/slider_element.rs mouse-up handler + commit_slider_release, which no-ops on any non-Released state)"
+
+  - name: "Re-execution is throttled/coalesced, not one query per pixel"
+    given: "a fast drag spanning many pixels, MouseMove firing faster than a query completes"
+    when: "intermediate values arrive while a re-execution is in flight"
+    then: "intermediate values are coalesced — at most one re-execution in flight at a time (or a fixed trailing cadence), so no backlog of stale queries queues up behind the drag"
+    source_lines: "value_at maps every pixel to a value (crates/brightfield-ui/src/slider.rs); there is no rate-limit between a value change and a re-execution today because re-execution only happens once, on release"
+
+  - name: "The latest value wins — stale results are discarded"
+    given: "a re-execution is running when the thumb moves again to a newer value"
+    when: "the newer value's result and the older in-flight result both resolve"
+    then: "only the newest value's result renders; the superseded result is dropped (or its query cancelled) — the plot never flashes an out-of-date frame or settles on a value the thumb has already left"
+    source_lines: "commit_slider is synchronous and single-shot on release (crates/brightfield-ui/src/crossfilter.rs); there is no latest-value token or cancellation model for concurrent mid-drag re-executions"
+
+  - name: "Release still commits the final value authoritatively, exactly once"
+    given: "continuous drag has been firing throttled intermediate re-executions"
+    when: "the user releases the mouse"
+    then: "the final value is committed once as the resting value (param + thumb settle there), even if the last move was coalesced away — no missed final frame, consistent with today's release semantics"
+    source_lines: "commit-on-release is the shipped behaviour (orbit/specs/2026-07-03-slider-widget/decisions.md Decision 2; spec.yaml ac-11)"
+
+  - name: "The thumb overlay stays smooth even when the engine is slow"
+    given: "a query that takes longer than the drag's frame budget"
+    when: "dragging continuously"
+    then: "the thumb tracks the cursor at full frame rate regardless of query latency — the overlay is decoupled from re-execution; only the plot lags to the throttle cadence, so the drag never feels stuck"
+    source_lines: "the thumb overlay repaint is already decoupled from re-execution (mid-drag is overlay-only today) — this property must be preserved when re-execution is added to the drag path"
+
+  - name: "Two-tier routing is respected — cheap params stay cheap"
+    given: "a pure-render param vs a data-shape param (card 0014's two tiers) dragged continuously"
+    when: "each is dragged"
+    then: "a pure-render param updates every frame without any SQL; a data-shape param uses the throttled/cancellable re-execution path — the routing from card 0014 is honoured, not bypassed"
+    source_lines: "card 0014 param-effect routing distinguishes pure-render (no SQL) from data-shape (re-execute) param changes"
+
+  - name: "Intermediate drag values don't pollute correctness-sensitive caches"
+    given: "the LRU sql_cache keyed on concrete SQL, and a data-shape param swept through many intermediate values"
+    when: "each intermediate value re-executes"
+    then: "cache correctness holds (no stale batch is ever returned), and the flood of one-off intermediate SQL strings does not evict genuinely reused entries in a way that breaks the resting-state cache warmth"
+    source_lines: "execute_emitted caches by plan_hash + concrete SQL via the LRU sql_cache (crates/brightfield-engine/src/lib.rs); card 0014 established its correctness invariants (gomb_ac12)"
+
+goal: >
+  Upgrade the shipped release-only slider (card 0005 v2) to re-execute
+  continuously while dragging, WITHOUT sacrificing responsiveness on a real
+  DuckDB engine. The core is a throttled, cancellable re-execution model: coalesce
+  intermediate drag values to at most one in-flight query, discard/cancel stale
+  results so the latest value always wins, keep the thumb overlay decoupled and
+  smooth, and commit the final value once on release. Respect card 0014's two-tier
+  routing (pure-render drags need no SQL) and keep the sql_cache correct under a
+  flood of intermediate values. Verified by the live macOS drag (the plot tracks
+  the thumb) plus headless coverage of the coalescing/latest-value-wins logic.
+
+maturity: "emerging"
+
+specs: []
+
+references:
+  - "card 0005 (reactive-parameters-with-input-widgets) v2 — shipped the slider with commit-on-release; mid-drag overlay-only; continuous-drag explicitly deferred (PR #25)"
+  - "orbit/specs/2026-07-03-slider-widget/decisions.md + spec.yaml — Decision 2 (commit-on-release), ac-11 (live drag), deferred 'live-drag continuous'"
+  - "card 0014 (param-effect-routing) — two-tier pure-render vs data-shape routing this card must respect"
+  - "user request (2026-07-03, post-merge eyeball of PR #25): after confirming release-only works, asked for continuous-during-drag as a follow-up"
+  - "open design questions (for orb:design): throttle vs trailing-debounce vs strict one-in-flight; query-cancellation model (DuckDB interrupt vs discard-result-by-token); where the async boundary lives (GPUI timer / background executor vs a synchronous coalesce on the main loop); how the coordinator tags and matches the latest-value token; whether intermediate values bypass or share the LRU sql_cache; frame-budget target for the overlay vs the plot cadence"
