@@ -1,0 +1,29 @@
+# Standalone legend hosting (multi-view inc 6): a `legend: color` node placed as
+# a composition sibling (not inside a plot) renders the colour scale of the plot
+# its `for:` names — here the `scatter` plot's `grp` fill encoding — as swatches
+# at its own layout rect, to the right of the plot.
+#
+#   BRIGHTFIELD_DUMP_PNG=legend.png cargo run -p brightfield-app -- examples/legend-standalone.yaml
+#
+# (The plot also draws its own inline fill legend in its top-right corner; the
+# standalone node is the separately-positioned one on the far right.)
+data:
+  t:
+    - { x: 1, y: 3, grp: alpha }
+    - { x: 2, y: 5, grp: beta }
+    - { x: 3, y: 4, grp: gamma }
+    - { x: 4, y: 6, grp: alpha }
+    - { x: 5, y: 5, grp: beta }
+    - { x: 6, y: 2, grp: gamma }
+hconcat:
+  - plot:
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+      fill: grp
+    name: scatter
+    width: 380
+    height: 300
+  - legend: color
+    for: scatter

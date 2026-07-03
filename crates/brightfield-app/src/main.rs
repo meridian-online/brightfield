@@ -7,20 +7,24 @@
 //! which needs full Xcode + Metal compiler). Without it, the pipeline runs
 //! headlessly and prints a summary.
 
+use std::collections::HashMap;
 use std::env;
 use std::path::Path;
 use std::process;
 
 use brightfield_engine::{Engine, Session};
-use brightfield_render::channel::ChannelMap;
+use brightfield_render::channel::{Channel, ChannelMap};
 use brightfield_render::layout::ChartLayout;
+use brightfield_render::legend::{colour_legend_size, render_colour_legend_at};
 use brightfield_render::mark::{default_renderers, find_renderer};
-use brightfield_render::scale::ScaleSet;
+use brightfield_render::scale::{Scale, ScaleSet};
 use brightfield_render::scene::{build_multi_mark_scene, compose_dashboard, ChartData};
 use brightfield_spec::analysis::analyse_spec;
-use brightfield_spec::layout::{placed_input_nodes, placed_plots, Rect};
+use brightfield_spec::layout::{
+    collect_plot_nodes, placed_input_nodes, placed_legend_nodes, placed_plots, Rect,
+};
 use brightfield_spec::parse_spec_path;
-use brightfield_spec::vocab::InputKind;
+use brightfield_spec::vocab::{InputKind, LegendChannel};
 use brightfield_sql::{collect_marks, collect_plot_groups};
 use brightfield_ui::chart_view::BrushBinding;
 use brightfield_ui::{CrossfilterCoordinator, LivePlot, MarkInput, SliderBinding};
@@ -75,14 +79,149 @@ struct SliderPlacement {
     value: f64,
 }
 
-/// A rendered dashboard: the bounding-box dimensions, one scene per plot, and the
-/// placed slider widgets. The headless/PNG path composites these; the window
-/// hosts one element per plot + one per slider.
+/// A standalone `legend:` node's placement (multi-view inc 6): its dashboard rect
+/// and the colour scale it displays, resolved from the plot its `for:` names. The
+/// headless/PNG path draws it into the composite; hosting it as a window element
+/// is a follow-up (see the legends/spacers memo).
+struct LegendPlacement {
+    rect: Rect,
+    scale: Scale,
+}
+
+/// A rendered dashboard: the bounding-box dimensions, one scene per plot, the
+/// placed slider widgets, and the standalone legends. The headless/PNG path
+/// composites these; the window hosts one element per plot + one per slider
+/// (legend window-hosting is a follow-up).
 struct Dashboard {
     width: u32,
     height: u32,
     plots: Vec<PlotRender>,
     sliders: Vec<SliderPlacement>,
+    legends: Vec<LegendPlacement>,
+}
+
+/// The colour (fill/stroke) scale of a plot's [`ScaleSet`], if it has one — the
+/// scale a standalone legend for that plot displays. Fill takes precedence over
+/// stroke (a mark colour-encoded on both is unusual; fill is the common case).
+fn colour_scale_of(scales: &ScaleSet) -> Option<Scale> {
+    // Filter each channel to a Colour scale BEFORE falling back — otherwise a
+    // present-but-non-Colour Fill (e.g. a numeric fill inferred as Linear) would
+    // short-circuit `or_else` and mask a real categorical Stroke colour scale.
+    let is_colour = |s: &&Scale| matches!(s, Scale::Colour { .. });
+    scales
+        .get(Channel::Fill)
+        .filter(is_colour)
+        .or_else(|| scales.get(Channel::Stroke).filter(is_colour))
+        .cloned()
+}
+
+/// How a standalone legend's `for:` attribute is authored.
+enum LegendFor {
+    /// No `for:` key — eligible for the sole-colour-plot fallback.
+    Absent,
+    /// `for: <literal-name>` — must resolve to that named plot or be skipped.
+    Named(String),
+    /// `for:` present but not a literal string (e.g. a param `$sel`) —
+    /// unsupported, so skipped rather than silently borrowing another scale.
+    Unresolvable,
+}
+
+/// Classify a standalone legend's `for:` attribute.
+fn legend_for(node: &brightfield_spec::ast::LegendNode) -> LegendFor {
+    use brightfield_spec::ast::{SpecValue, ValueOrParamRef};
+    match node.options.get("for") {
+        None => LegendFor::Absent,
+        Some(ValueOrParamRef::Value(SpecValue::String(s))) => LegendFor::Named(s.clone()),
+        Some(_) => LegendFor::Unresolvable,
+    }
+}
+
+/// Resolve each standalone `legend:` node to a positioned colour scale.
+///
+/// A legend displays the colour scale of the plot its `for:` names (matched
+/// against the plot's `name` attribute). When `for:` is absent or unmatched and
+/// the dashboard has exactly one colour-encoded plot, that plot's scale is used
+/// (the common single-legend case). A legend that resolves to no colour scale —
+/// or names a non-`color` channel (opacity/symbol are unimplemented) — is
+/// skipped with a diagnostic. Multi-colour-scale disambiguation and `for:`
+/// validation errors are a follow-up.
+fn resolve_legends(spec: &brightfield_spec::ast::Spec, live_plots: &[LivePlotMeta]) -> Vec<LegendPlacement> {
+    // path → colour scale, for every colour-encoded plot.
+    let mut by_path: HashMap<&str, Scale> = HashMap::new();
+    for lp in live_plots {
+        if let Some(cs) = colour_scale_of(&lp.scales) {
+            by_path.insert(lp.path.as_str(), cs);
+        }
+    }
+    // name → colour scale, for plots that carry a `name` attribute. A duplicate
+    // name is an authoring error (the `for:` reference becomes ambiguous); warn
+    // rather than silently resolving to whichever plot happens to be last.
+    let mut by_name: HashMap<String, Scale> = HashMap::new();
+    for (path, node) in collect_plot_nodes(spec) {
+        if let (Some(cs), Some(brightfield_spec::ast::SpecValue::String(name))) =
+            (by_path.get(path.as_str()), node.attributes.get("name"))
+        {
+            if by_name.insert(name.clone(), cs.clone()).is_some() {
+                eprintln!(
+                    "warning: two colour-encoded plots share name {name:?} — a legend `for: {name}` is ambiguous; using the last"
+                );
+            }
+        }
+    }
+    // The dashboard's sole colour scale — the `for:`-absent convenience fallback.
+    let sole = if by_path.len() == 1 {
+        by_path.values().next().cloned()
+    } else {
+        None
+    };
+
+    let mut out = Vec::new();
+    for (rect, node) in placed_legend_nodes(spec, Rect::new(0.0, 0.0, 0.0, 0.0)) {
+        if node.channel != LegendChannel::Color {
+            eprintln!(
+                "warning: standalone legend channel {:?} is unimplemented — skipping",
+                node.channel
+            );
+            continue;
+        }
+        // An explicit `for:` must resolve to that named plot's scale — never
+        // silently borrow another plot's. The sole-colour-plot convenience
+        // applies ONLY when `for:` is genuinely absent; a present-but-
+        // unresolvable `for:` (a typo'd name or a param) is skipped + warned.
+        let scale = match legend_for(node) {
+            LegendFor::Named(name) => match by_name.get(&name) {
+                Some(scale) => Some(scale.clone()),
+                None => {
+                    eprintln!("warning: standalone legend `for: {name}` names no colour-encoded plot — skipping");
+                    None
+                }
+            },
+            LegendFor::Absent => {
+                if sole.is_none() {
+                    eprintln!("warning: standalone legend has no `for:` and the dashboard has no single colour-encoded plot — skipping");
+                }
+                sole.clone()
+            }
+            LegendFor::Unresolvable => {
+                eprintln!("warning: standalone legend `for:` must be a literal plot name — skipping");
+                None
+            }
+        };
+        if let Some(scale) = scale {
+            // Size the placement to the panel the renderer will actually draw
+            // (content-sized), so the composite bounding-box fold reserves enough
+            // room and the legend is never clipped off-canvas. The layout node's
+            // fixed 120×24 reservation is only a placeholder (the scale is unknown
+            // at layout time). Residual: a legend FOLLOWED by another element in a
+            // concat can still overlap it — single-pass layout can't reflow.
+            let (w, h) = colour_legend_size(&scale).unwrap_or((rect.width, rect.height));
+            out.push(LegendPlacement {
+                rect: Rect::new(rect.x, rect.y, w, h),
+                scale,
+            });
+        }
+    }
+    out
 }
 
 /// Coerce a scalar `SpecValue` (a param default) to `f64` for a slider's resting
@@ -334,18 +473,25 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             })
             .collect();
 
-    // Fold slider rects into the dashboard size so a slider beside/below the
-    // plots reserves its space (the window is the bounding box).
+    // Standalone legends (multi-view inc 6): resolve each `legend:` node to the
+    // colour scale of the plot its `for:` names. Resolved before `live_plots` is
+    // moved into `LiveParts` (it borrows the per-plot scales).
+    let legends = resolve_legends(&parsed.spec, &live_plots);
+
+    // Fold slider + legend rects into the dashboard size so a widget beside/below
+    // the plots reserves its space (the window is the bounding box).
     let width = placed
         .iter()
         .map(|p| p.rect.x + p.rect.width)
         .chain(sliders.iter().map(|s| s.rect.x + s.rect.width))
+        .chain(legends.iter().map(|l| l.rect.x + l.rect.width))
         .fold(0.0_f64, f64::max)
         .ceil() as u32;
     let height = placed
         .iter()
         .map(|p| p.rect.y + p.rect.height)
         .chain(sliders.iter().map(|s| s.rect.y + s.rect.height))
+        .chain(legends.iter().map(|l| l.rect.y + l.rect.height))
         .fold(0.0_f64, f64::max)
         .ceil() as u32;
     Ok((
@@ -354,6 +500,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             height,
             plots,
             sliders,
+            legends,
         },
         LiveParts {
             session,
@@ -520,6 +667,11 @@ fn main() {
                 frac,
             );
         }
+        // Draw the standalone legends into the composite at their layout rects
+        // (multi-view inc 6). Each shows its resolved plot's colour scale.
+        for l in &dashboard.legends {
+            render_colour_legend_at(&mut composite, l.rect.x, l.rect.y, &l.scale);
+        }
 
         let dev_w = ((dashboard.width as f32) * scale).round() as u32;
         let dev_h = ((dashboard.height as f32) * scale).round() as u32;
@@ -553,7 +705,10 @@ fn main() {
         let renderer = brightfield_ui::VelloRenderer::new();
         let app = gpui::Application::with_platform(Rc::new(gpui_macos::MacPlatform::new(false)));
         let spec_path = spec_path.to_string();
-        let Dashboard { width, height, plots, sliders } = dashboard;
+        // `legends`: the standalone colour legends render in the headless/PNG
+        // composite; hosting them as window elements is a follow-up (see the
+        // legends/spacers memo), so the window path ignores them for now.
+        let Dashboard { width, height, plots, sliders, legends: _ } = dashboard;
         let LiveParts {
             session,
             marks,
@@ -704,6 +859,71 @@ mod tests {
         // Multiple chunks -> concatenated (2 + 3 = 5), NOT truncated to the first.
         let combined = super::concat_result_batches(vec![chunk1, chunk2]).unwrap();
         assert_eq!(combined.num_rows(), 5, "all chunks must be retained, not just the first");
+    }
+
+    #[test]
+    fn colour_scale_of_prefers_a_colour_channel_over_a_present_non_colour_fill() {
+        use brightfield_render::scale::{Scale, ScaleSet};
+        // A numeric fill (Linear) must NOT mask a categorical stroke Colour scale:
+        // filter-per-channel-before-or_else, not or_else-then-filter.
+        let colour = Scale::Colour {
+            categories: vec!["a".to_string(), "b".to_string()],
+            palette: vec![[0.3, 0.4, 0.6, 1.0], [0.9, 0.5, 0.1, 1.0]],
+        };
+        let linear = Scale::Linear {
+            domain_min: 0.0,
+            domain_max: 1.0,
+            range_start: 0.0,
+            range_end: 1.0,
+        };
+        let mut scales = ScaleSet::new();
+        scales.insert(Channel::Fill, linear);
+        scales.insert(Channel::Stroke, colour);
+        assert!(
+            matches!(super::colour_scale_of(&scales), Some(Scale::Colour { .. })),
+            "a categorical stroke colour scale must be found even when fill is a non-colour scale"
+        );
+
+        // Fill takes precedence when both are colour.
+        let mut both = ScaleSet::new();
+        both.insert(
+            Channel::Fill,
+            Scale::Colour { categories: vec!["f".into()], palette: vec![[0.1, 0.1, 0.1, 1.0]] },
+        );
+        both.insert(
+            Channel::Stroke,
+            Scale::Colour { categories: vec!["s".into()], palette: vec![[0.2, 0.2, 0.2, 1.0]] },
+        );
+        match super::colour_scale_of(&both) {
+            Some(Scale::Colour { categories, .. }) => assert_eq!(categories, vec!["f".to_string()]),
+            other => panic!("expected the fill colour scale, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn legend_for_classifies_absent_named_and_unresolvable() {
+        use brightfield_spec::ast::{LegendNode, ParamRef, SpecValue, ValueOrParamRef};
+        use brightfield_spec::vocab::{ImplStatus, LegendChannel};
+
+        // `options` is an IndexMap; the field type drives the `collect` target,
+        // so no direct indexmap dependency is needed here.
+        let node = |opts: Vec<(&str, ValueOrParamRef<SpecValue>)>| LegendNode {
+            channel: LegendChannel::Color,
+            status: ImplStatus::Implemented,
+            options: opts.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
+        };
+
+        assert!(matches!(super::legend_for(&node(vec![])), super::LegendFor::Absent));
+        assert!(matches!(
+            super::legend_for(&node(vec![("for", ValueOrParamRef::Value(SpecValue::String("p".into())))])),
+            super::LegendFor::Named(ref n) if n == "p"
+        ));
+        // A param-valued `for:` is unresolvable — it must NOT fall through to the
+        // sole-plot fallback (that would silently borrow another plot's scale).
+        assert!(matches!(
+            super::legend_for(&node(vec![("for", ValueOrParamRef::Param(ParamRef::new("sel")))])),
+            super::LegendFor::Unresolvable
+        ));
     }
 
     #[test]

@@ -24,14 +24,50 @@ const LEGEND_PADDING: f64 = 6.0;
 /// Gap between a swatch and its label.
 const LEGEND_LABEL_GAP: f64 = 4.0;
 
-/// Render a colour legend into the scene.
-///
-/// The legend is positioned to the right of the plot area within the
-/// right margin area. Each entry shows a coloured swatch and a text
-/// label placeholder.
+/// The pixel size `(width, height)` a colour legend panel needs for the given
+/// scale's categories, or `None` for a non-colour / empty scale.
+#[must_use]
+pub fn colour_legend_size(colour_scale: &Scale) -> Option<(f64, f64)> {
+    let categories = match colour_scale {
+        Scale::Colour { categories, .. } if !categories.is_empty() => categories,
+        _ => return None,
+    };
+    let max_label = categories
+        .iter()
+        .map(|c| measure_width(c, LABEL_SIZE))
+        .fold(0.0_f64, f64::max);
+    let n = categories.len() as f64;
+    let width = LEGEND_PADDING * 2.0 + SWATCH_SIZE + LEGEND_LABEL_GAP + max_label;
+    let height = LEGEND_PADDING * 2.0 + (n - 1.0) * ENTRY_SPACING + SWATCH_SIZE;
+    Some((width, height))
+}
+
+/// Render a colour legend for a mark's fill encoding, anchored inside the plot
+/// area's top-right corner (the right margin is too narrow to hold the legend,
+/// and an inside panel reads as intentional). This is the plot's *inline*
+/// legend; a standalone `legend:` node uses [`render_colour_legend_at`].
 pub fn render_colour_legend(
     scene: &mut Scene,
     layout: &ChartLayout,
+    colour_scale: &Scale,
+) {
+    let Some((box_width, _)) = colour_legend_size(colour_scale) else {
+        return;
+    };
+    let box_x = layout.plot_x_end() - box_width - LEGEND_INSET;
+    let box_y = layout.plot_y_start() + LEGEND_INSET;
+    render_colour_legend_at(scene, box_x, box_y, colour_scale);
+}
+
+/// Render a colour legend with its panel's top-left corner at `(box_x, box_y)`.
+///
+/// The positioned form used to host a standalone `legend:` node at its layout
+/// rect. Each entry is a coloured swatch and its category label. No-op for a
+/// non-colour or empty scale.
+pub fn render_colour_legend_at(
+    scene: &mut Scene,
+    box_x: f64,
+    box_y: f64,
     colour_scale: &Scale,
 ) {
     let (categories, palette) = match colour_scale {
@@ -46,19 +82,9 @@ pub fn render_colour_legend(
         return;
     }
 
-    // Size the panel to the widest label so nothing clips.
-    let max_label = categories
-        .iter()
-        .map(|c| measure_width(c, LABEL_SIZE))
-        .fold(0.0_f64, f64::max);
-    let n = categories.len() as f64;
-    let box_width = LEGEND_PADDING * 2.0 + SWATCH_SIZE + LEGEND_LABEL_GAP + max_label;
-    let box_height = LEGEND_PADDING * 2.0 + (n - 1.0) * ENTRY_SPACING + SWATCH_SIZE;
-
-    // Anchor inside the plot area's top-right corner (the right margin is too
-    // narrow to hold the legend, and an inside panel reads as intentional).
-    let box_x = layout.plot_x_end() - box_width - LEGEND_INSET;
-    let box_y = layout.plot_y_start() + LEGEND_INSET;
+    let Some((box_width, box_height)) = colour_legend_size(colour_scale) else {
+        return;
+    };
 
     // Translucent background panel + thin border for legibility over marks/grid.
     let panel = Rect::new(box_x, box_y, box_x + box_width, box_y + box_height);
@@ -159,5 +185,59 @@ mod tests {
             0,
             "legend should not render for non-colour scale"
         );
+    }
+
+    fn colour_scale_3() -> Scale {
+        Scale::Colour {
+            categories: vec!["a".to_string(), "bb".to_string(), "ccc".to_string()],
+            palette: vec![
+                [0.3, 0.4, 0.6, 1.0],
+                [0.9, 0.5, 0.1, 1.0],
+                [0.8, 0.3, 0.3, 1.0],
+            ],
+        }
+    }
+
+    // Standalone-legend hosting: the positioned variant draws content at an
+    // arbitrary origin (its layout rect), independent of any plot.
+    #[test]
+    fn standalone_legend_at_origin_draws_content() {
+        let mut scene = Scene::new();
+        render_colour_legend_at(&mut scene, 640.0, 40.0, &colour_scale_3());
+        assert!(
+            scene.encoding().path_tags.len() > 0,
+            "positioned legend should draw swatches + panel at its origin"
+        );
+    }
+
+    #[test]
+    fn standalone_legend_at_skips_non_colour_scale() {
+        let mut scene = Scene::new();
+        let linear = Scale::Linear {
+            domain_min: 0.0,
+            domain_max: 1.0,
+            range_start: 0.0,
+            range_end: 1.0,
+        };
+        render_colour_legend_at(&mut scene, 10.0, 10.0, &linear);
+        assert_eq!(
+            scene.encoding().path_tags.len(),
+            0,
+            "no content for a non-colour scale"
+        );
+    }
+
+    #[test]
+    fn colour_legend_size_scales_with_entries() {
+        let (w, h) = colour_legend_size(&colour_scale_3()).expect("colour scale has a size");
+        assert!(w > 0.0 && h > 0.0);
+        // Height grows with entry count; 3 entries taller than 1.
+        let one = Scale::Colour {
+            categories: vec!["a".to_string()],
+            palette: vec![[0.3, 0.4, 0.6, 1.0]],
+        };
+        let (_, h1) = colour_legend_size(&one).unwrap();
+        assert!(h > h1, "3-entry legend is taller than 1-entry");
+        assert!(colour_legend_size(&one).is_some());
     }
 }
