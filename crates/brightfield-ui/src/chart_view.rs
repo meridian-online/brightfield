@@ -14,9 +14,16 @@ use gpui::{div, px, rgb, Context, Entity, IntoElement, ParentElement, Render, St
 
 use brightfield_engine::error::EngineError;
 use brightfield_engine::RecordBatch;
+use brightfield_render::channel::ChannelMap;
+use brightfield_render::nearest::{
+    column_value_at, find_nearest, is_numeric_point_column, NearestMode,
+};
+use brightfield_render::scale::ScaleSet;
 use brightfield_spec::analysis::{BrushableBinding, ComponentPath};
 
-use crate::brush::{brush_rect_to_predicate, BrushKind, ChannelColumns, SelectionDispatcher};
+use crate::brush::{
+    brush_rect_to_predicate, point_to_predicate, BrushKind, ChannelColumns, SelectionDispatcher,
+};
 use crate::chart_element::ChartElement;
 use crate::chart_state::ChartState;
 use crate::crossfilter::CrossfilterCoordinator;
@@ -272,6 +279,132 @@ pub fn commit_brush_clear<D: SelectionDispatcher>(
     } else {
         (interaction.clone(), Vec::new())
     }
+}
+
+/// Commit a CLICK gesture across a plot's bindings (card 0006 — the point-
+/// selection gesture that finishes cross-filter). Unlike a drag (which drives
+/// interval selections), a click drives POINT selections:
+///
+/// - A `PointX`/`PointY` binding **snaps to the nearest datum**: `find_nearest`
+///   locates the closest rendered point to `click_px` (in pixels, so the hit
+///   radius is uniform on screen), and the datum's EXACT stored value is read
+///   and dispatched as `col = value`. Selecting the *continuous* click
+///   coordinate would never equal a discrete datum under `=`, so snapping is
+///   what makes point selection actually match rows.
+/// - A click that **misses every datum** (nothing within the hit radius) clears
+///   the point selection — click-empty-space to deselect.
+/// - An interval (or bare `Point`, deferred) binding **clears** on a click —
+///   the click-outside-brush retract that [`commit_brush_clear`] performs.
+///
+/// Point selection forms a numeric `col = value` predicate, so it is scoped to
+/// continuous numeric axes; a `PointX`/`PointY` binding on a categorical
+/// (string) or temporal axis is SKIPPED (a no-op) rather than mis-clearing or
+/// dispatching a literal DuckDB can't match — those axis types need type-aware
+/// predicates (a follow-up, see the point-selection memo).
+///
+/// `marks` are the plot's `(batch, channel_map)` pairs to search (a plot may
+/// layer several); `scales` map data → the same pixel space as `click_px`.
+/// Returns `(Idle, per-binding results)`, mirroring
+/// [`commit_brush_release_multi`].
+pub fn commit_click_multi<D: SelectionDispatcher>(
+    click_px: kurbo::Point,
+    marks: &[(&RecordBatch, &ChannelMap)],
+    scales: &ScaleSet,
+    bindings: &[BrushBinding],
+    dispatcher: &mut D,
+) -> (
+    InteractionState,
+    Vec<(String, Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>)>,
+) {
+    // (selection, contributor) pairs a point binding SELECTED this click, so a
+    // sibling interval (or point-miss) on the SAME target doesn't clear the point
+    // we just set — a plot may carry both a toggle and an interval interactor.
+    let mut selected: std::collections::HashSet<(String, String)> =
+        std::collections::HashSet::new();
+    let mut aggregated = Vec::with_capacity(bindings.len());
+    for binding in bindings {
+        let key = (
+            binding.selection_name.clone(),
+            binding.contributor.0.clone(),
+        );
+        let results = match binding.kind {
+            BrushKind::PointX | BrushKind::PointY => {
+                let column = if matches!(binding.kind, BrushKind::PointX) {
+                    binding.channels.x.as_deref()
+                } else {
+                    binding.channels.y.as_deref()
+                };
+                // Numeric-axis scope: skip categorical/temporal point bindings.
+                let numeric = column
+                    .is_some_and(|c| marks.iter().any(|(b, _)| is_numeric_point_column(b, c)));
+                if !numeric {
+                    continue;
+                }
+                let mode = if matches!(binding.kind, BrushKind::PointX) {
+                    NearestMode::X
+                } else {
+                    NearestMode::Y
+                };
+                match nearest_datum_value(click_px, marks, scales, binding, mode) {
+                    // Hit: select that datum's exact value.
+                    Some(value) => {
+                        selected.insert(key);
+                        let predicate = point_to_predicate(value, binding.kind, &binding.channels);
+                        dispatcher.dispatch(
+                            &binding.selection_name,
+                            binding.contributor.clone(),
+                            predicate,
+                        )
+                    }
+                    // Miss (clicked empty space): deselect — unless a sibling
+                    // point binding already selected this same target.
+                    None if selected.contains(&key) => continue,
+                    None => dispatcher.clear(&binding.selection_name, binding.contributor.clone()),
+                }
+            }
+            // Interval kinds and bare `Point` (deferred): a click clears — unless
+            // a sibling point binding already selected this same target.
+            _ if selected.contains(&key) => continue,
+            _ => dispatcher.clear(&binding.selection_name, binding.contributor.clone()),
+        };
+        aggregated.push((binding.selection_name.clone(), results));
+    }
+    (InteractionState::Idle, aggregated)
+}
+
+/// Value of the datum nearest `click_px` along the axis a point binding selects,
+/// searched in pixel space across all the plot's `marks` (keeping the globally
+/// closest hit). Reads the EXACT stored cell at the hit row from the binding's
+/// channel column — so the dispatched `col = value` matches a real datum, not
+/// the continuous click coordinate. `None` on a miss (no datum within the hit
+/// radius) or when the binding has no column on its axis.
+fn nearest_datum_value(
+    click_px: kurbo::Point,
+    marks: &[(&RecordBatch, &ChannelMap)],
+    scales: &ScaleSet,
+    binding: &BrushBinding,
+    mode: NearestMode,
+) -> Option<f64> {
+    let column = match binding.kind {
+        BrushKind::PointX => binding.channels.x.as_deref()?,
+        BrushKind::PointY => binding.channels.y.as_deref()?,
+        _ => return None,
+    };
+    let mut best: Option<(f64, f64)> = None; // (pixel distance, data value)
+    for (batch, channel_map) in marks {
+        let hit = match find_nearest(click_px, batch, channel_map, scales, mode, None) {
+            Some(h) => h,
+            None => continue,
+        };
+        let value = match column_value_at(batch, column, hit.row) {
+            Some(v) => v,
+            None => continue,
+        };
+        if best.map_or(true, |(d, _)| hit.distance < d) {
+            best = Some((hit.distance, value));
+        }
+    }
+    best.map(|(_, v)| v)
 }
 
 /// Convert a spec-side [`BrushableBinding`] into a UI-side [`BrushBinding`]

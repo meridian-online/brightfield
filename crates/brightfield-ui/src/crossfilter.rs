@@ -37,7 +37,7 @@ use brightfield_spec::vocab::MarkKind;
 
 use crate::chart_state::ChartState;
 use crate::chart_view::{
-    commit_brush_clear, commit_brush_release_multi, BrushBinding, ZERO_AREA_EPSILON,
+    commit_brush_release_multi, commit_click_multi, BrushBinding, ZERO_AREA_EPSILON,
 };
 use crate::interaction::InteractionState;
 use crate::slider::{commit_slider_release, SliderBinding, SliderState};
@@ -166,11 +166,31 @@ impl CrossfilterCoordinator {
                 self.absorb(results, &mut to_rebuild);
             }
         } else {
-            // A click on this plot: retract its contribution from each selection
-            // it writes, re-executing the subscribers back toward unfiltered.
-            for binding in &bindings {
-                let (_next, results) =
-                    commit_brush_clear(&InteractionState::Idle, binding, &mut self.session);
+            // A click on this plot. Point selections (toggleX/Y) snap to the
+            // nearest datum and dispatch its exact value; a click on empty space,
+            // and any interval selection, clears — retracting this plot's
+            // contribution so subscribers re-execute back toward unfiltered.
+            // `start` is the click in element-local pixels (== `current`); the
+            // plot's marks + scales let the shared helper resolve the datum.
+            let aggregated = {
+                let marks: Vec<(&RecordBatch, &ChannelMap)> = self.plots[plot_index]
+                    .mark_indices
+                    .iter()
+                    .filter_map(|&mi| {
+                        let m = self.marks.get(mi)?;
+                        Some((m.batch.as_ref()?, &m.channels))
+                    })
+                    .collect();
+                let (_next, aggregated) = commit_click_multi(
+                    start,
+                    &marks,
+                    &self.plots[plot_index].scales,
+                    &bindings,
+                    &mut self.session,
+                );
+                aggregated
+            };
+            for (_selection, results) in aggregated {
                 self.absorb(results, &mut to_rebuild);
             }
         }

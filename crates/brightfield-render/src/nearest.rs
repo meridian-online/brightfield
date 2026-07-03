@@ -103,47 +103,81 @@ fn map_value(scale: &Scale, value: f64) -> f64 {
 }
 
 /// Extract f64 values from a column regardless of source numeric type.
+///
+/// Covers every signed/unsigned integer width, both float widths, and
+/// microsecond timestamps — the same breadth as the mark renderer's coercion.
+/// DuckDB types inline YAML integers as `Int32`, so omitting the narrower widths
+/// silently made `find_nearest` (and thus hover / point-selection) a no-op on
+/// integer columns.
 fn column_as_f64(batch: &RecordBatch, col_name: &str) -> Option<Vec<Option<f64>>> {
+    use arrow::array::{
+        Float32Array, Int16Array, Int32Array, Int8Array, UInt16Array, UInt32Array, UInt64Array,
+        UInt8Array,
+    };
     let idx = batch.schema().index_of(col_name).ok()?;
     let col = batch.column(idx);
+
+    macro_rules! cast_numeric {
+        ($arr_ty:ty) => {{
+            let arr = col.as_any().downcast_ref::<$arr_ty>()?;
+            Some(
+                (0..arr.len())
+                    .map(|i| if arr.is_null(i) { None } else { Some(arr.value(i) as f64) })
+                    .collect(),
+            )
+        }};
+    }
+
     match col.data_type() {
-        DataType::Float64 => {
-            let arr = col.as_any().downcast_ref::<Float64Array>()?;
-            Some(
-                (0..arr.len())
-                    .map(|i| if arr.is_null(i) { None } else { Some(arr.value(i)) })
-                    .collect(),
-            )
-        }
-        DataType::Int64 => {
-            let arr = col.as_any().downcast_ref::<Int64Array>()?;
-            Some(
-                (0..arr.len())
-                    .map(|i| {
-                        if arr.is_null(i) {
-                            None
-                        } else {
-                            Some(arr.value(i) as f64)
-                        }
-                    })
-                    .collect(),
-            )
-        }
-        DataType::Timestamp(TimeUnit::Microsecond, _) => {
-            let arr = col.as_any().downcast_ref::<TimestampMicrosecondArray>()?;
-            Some(
-                (0..arr.len())
-                    .map(|i| {
-                        if arr.is_null(i) {
-                            None
-                        } else {
-                            Some(arr.value(i) as f64)
-                        }
-                    })
-                    .collect(),
-            )
-        }
+        DataType::Float64 => cast_numeric!(Float64Array),
+        DataType::Float32 => cast_numeric!(Float32Array),
+        DataType::Int64 => cast_numeric!(Int64Array),
+        DataType::Int32 => cast_numeric!(Int32Array),
+        DataType::Int16 => cast_numeric!(Int16Array),
+        DataType::Int8 => cast_numeric!(Int8Array),
+        DataType::UInt64 => cast_numeric!(UInt64Array),
+        DataType::UInt32 => cast_numeric!(UInt32Array),
+        DataType::UInt16 => cast_numeric!(UInt16Array),
+        DataType::UInt8 => cast_numeric!(UInt8Array),
+        DataType::Timestamp(TimeUnit::Microsecond, _) => cast_numeric!(TimestampMicrosecondArray),
         _ => None,
+    }
+}
+
+/// The numeric value of a single cell as `f64`, coerced from any supported
+/// column type. `None` for a null, an out-of-range row, or a non-numeric column.
+///
+/// Point selection (card 0006) reads a datum's EXACT stored value this way: the
+/// dispatched predicate is `col = value`, and equating the continuous click
+/// coordinate would never match a discrete datum.
+pub fn column_value_at(batch: &RecordBatch, col_name: &str, row: usize) -> Option<f64> {
+    column_as_f64(batch, col_name)?.get(row).copied().flatten()
+}
+
+/// Whether `col` is a **continuous numeric** type whose value a point predicate
+/// can equate as a bare SQL literal (`col = value`).
+///
+/// Integers and floats qualify. Temporal columns do NOT — a microsecond integer
+/// literal won't equal a `TIMESTAMP`. Strings do NOT — they need a quoted,
+/// escaped literal (and categorical nearest-resolution). Point selection is
+/// scoped to numeric axes for now; callers skip the rest (see the point-
+/// selection follow-up memo). `false` for a missing column.
+pub fn is_numeric_point_column(batch: &RecordBatch, col_name: &str) -> bool {
+    match batch.schema().field_with_name(col_name) {
+        Ok(f) => matches!(
+            f.data_type(),
+            DataType::Int8
+                | DataType::Int16
+                | DataType::Int32
+                | DataType::Int64
+                | DataType::UInt8
+                | DataType::UInt16
+                | DataType::UInt32
+                | DataType::UInt64
+                | DataType::Float32
+                | DataType::Float64
+        ),
+        Err(_) => false,
     }
 }
 
