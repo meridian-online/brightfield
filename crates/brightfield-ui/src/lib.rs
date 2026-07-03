@@ -27,14 +27,16 @@ pub mod chart_view;
 pub mod crossfilter;
 pub mod interaction;
 pub mod slider;
+pub mod slider_element;
 pub mod vello_renderer;
 
 pub use brush::{brush_rect_to_predicate, BrushKind, ChannelColumns};
 pub use chart_element::ChartElement;
 pub use chart_layout::ChartLayout;
 pub use chart_state::ChartState;
-pub use chart_view::{ChartView, PlacedChart};
+pub use chart_view::{ChartView, PlacedChart, PlacedSlider};
 pub use crossfilter::{CrossfilterCoordinator, LivePlot, MarkInput};
 pub use interaction::InteractionState;
 pub use slider::{commit_slider_release, ParamDispatcher, SliderBinding, SliderState};
+pub use slider_element::{SliderElement, SliderWidget};
 pub use vello_renderer::VelloRenderer;

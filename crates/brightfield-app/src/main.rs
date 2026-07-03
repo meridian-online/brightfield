@@ -18,11 +18,12 @@ use brightfield_render::mark::{default_renderers, find_renderer};
 use brightfield_render::scale::ScaleSet;
 use brightfield_render::scene::{build_multi_mark_scene, compose_dashboard, ChartData};
 use brightfield_spec::analysis::analyse_spec;
-use brightfield_spec::layout::{placed_plots, Rect};
+use brightfield_spec::layout::{placed_input_nodes, placed_plots, Rect};
 use brightfield_spec::parse_spec_path;
+use brightfield_spec::vocab::InputKind;
 use brightfield_sql::{collect_marks, collect_plot_groups};
 use brightfield_ui::chart_view::BrushBinding;
-use brightfield_ui::{CrossfilterCoordinator, LivePlot, MarkInput};
+use brightfield_ui::{CrossfilterCoordinator, LivePlot, MarkInput, SliderBinding};
 
 /// Concatenate the record batches from one mark's query into a single batch.
 ///
@@ -65,12 +66,34 @@ struct PlotRender {
     scene: vello::Scene,
 }
 
-/// A rendered dashboard: the bounding-box dimensions and one scene per plot.
-/// The headless/PNG path composites these; the window hosts one element per plot.
+/// A slider widget's placement (card 0005): its dashboard rect, the param binding
+/// it drives, and the thumb's resting value. The window path turns each into a
+/// hosted `SliderElement`; the headless/PNG path draws it into the composite.
+struct SliderPlacement {
+    rect: Rect,
+    binding: SliderBinding,
+    value: f64,
+}
+
+/// A rendered dashboard: the bounding-box dimensions, one scene per plot, and the
+/// placed slider widgets. The headless/PNG path composites these; the window
+/// hosts one element per plot + one per slider.
 struct Dashboard {
     width: u32,
     height: u32,
     plots: Vec<PlotRender>,
+    sliders: Vec<SliderPlacement>,
+}
+
+/// Coerce a scalar `SpecValue` (a param default) to `f64` for a slider's resting
+/// value; `None` for non-scalar params.
+fn spec_value_as_f64(v: &brightfield_spec::ast::SpecValue) -> Option<f64> {
+    use brightfield_spec::ast::SpecValue;
+    match v {
+        SpecValue::Integer(i) => Some(*i as f64),
+        SpecValue::Float(f) => Some(*f),
+        _ => None,
+    }
 }
 
 /// Live engine + render state kept alive for in-window interaction (cross-filter).
@@ -158,6 +181,33 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
         for pair in overrides.split(',') {
             if let Some((name, raw)) = pair.split_once('=') {
                 let _ = session.propagate_param(name.trim(), parse_override_value(raw.trim()));
+            }
+        }
+    }
+
+    // 3c. Reconcile each slider's param to its declared [min, max] before
+    //     executing (card 0005). A spec whose param default lies outside the
+    //     slider's own domain (an authoring inconsistency) would otherwise render
+    //     one value while the clamped thumb rests at another; clamping the param
+    //     to the slider's range keeps the first render and the thumb in agreement.
+    //     A no-op for well-formed specs (default already in range).
+    for (_, input) in placed_input_nodes(&parsed.spec, Rect::new(0.0, 0.0, 0.0, 0.0)) {
+        if input.kind != InputKind::Slider {
+            continue;
+        }
+        if let Some(binding) = SliderBinding::from_input(input) {
+            if let Some(v) = session
+                .current_params()
+                .get(&binding.param_name)
+                .and_then(spec_value_as_f64)
+            {
+                let clamped = v.max(binding.min).min(binding.max);
+                if clamped != v {
+                    let _ = session.propagate_param(
+                        &binding.param_name,
+                        brightfield_spec::ast::SpecValue::Float(clamped),
+                    );
+                }
             }
         }
     }
@@ -260,18 +310,51 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
         return Err("no marks rendered successfully".to_string());
     }
 
+    // Slider placements (card 0005): each composition-level `input: slider` with
+    // a param target + numeric bounds becomes a hosted widget at its layout rect,
+    // its thumb resting at the param's current (default) value.
+    let sliders: Vec<SliderPlacement> =
+        placed_input_nodes(&parsed.spec, Rect::new(0.0, 0.0, 0.0, 0.0))
+            .into_iter()
+            .filter(|(_, input)| input.kind == InputKind::Slider)
+            .filter_map(|(rect, input)| {
+                let binding = SliderBinding::from_input(input)?;
+                let value = session
+                    .current_params()
+                    .get(&binding.param_name)
+                    .and_then(spec_value_as_f64)
+                    .unwrap_or(binding.min)
+                    .max(binding.min)
+                    .min(binding.max);
+                Some(SliderPlacement {
+                    rect,
+                    binding,
+                    value,
+                })
+            })
+            .collect();
+
+    // Fold slider rects into the dashboard size so a slider beside/below the
+    // plots reserves its space (the window is the bounding box).
     let width = placed
         .iter()
         .map(|p| p.rect.x + p.rect.width)
+        .chain(sliders.iter().map(|s| s.rect.x + s.rect.width))
         .fold(0.0_f64, f64::max)
         .ceil() as u32;
     let height = placed
         .iter()
         .map(|p| p.rect.y + p.rect.height)
+        .chain(sliders.iter().map(|s| s.rect.y + s.rect.height))
         .fold(0.0_f64, f64::max)
         .ceil() as u32;
     Ok((
-        Dashboard { width, height, plots },
+        Dashboard {
+            width,
+            height,
+            plots,
+            sliders,
+        },
         LiveParts {
             session,
             marks: mark_inputs,
@@ -414,11 +497,29 @@ fn main() {
             .unwrap_or(1.0);
         let placements: Vec<(f64, f64, &vello::Scene)> =
             dashboard.plots.iter().map(|p| (p.x, p.y, &p.scene)).collect();
-        let composite = compose_dashboard(
+        let mut composite = compose_dashboard(
             f64::from(dashboard.width),
             f64::from(dashboard.height),
             &placements,
         );
+        // Draw the resting slider widgets into the composite so the PNG previews
+        // them (card 0005). The thumb sits at the param's current value.
+        for s in &dashboard.sliders {
+            let span = s.binding.max - s.binding.min;
+            let frac = if span > 0.0 {
+                (s.value - s.binding.min) / span
+            } else {
+                0.0
+            };
+            brightfield_render::scene::render_slider(
+                &mut composite,
+                s.rect.x,
+                s.rect.y,
+                s.rect.width,
+                s.rect.height,
+                frac,
+            );
+        }
 
         let dev_w = ((dashboard.width as f32) * scale).round() as u32;
         let dev_h = ((dashboard.height as f32) * scale).round() as u32;
@@ -452,8 +553,12 @@ fn main() {
         let renderer = brightfield_ui::VelloRenderer::new();
         let app = gpui::Application::with_platform(Rc::new(gpui_macos::MacPlatform::new(false)));
         let spec_path = spec_path.to_string();
-        let Dashboard { width, height, plots } = dashboard;
-        let LiveParts { session, marks, plots: live_plots_meta } = live;
+        let Dashboard { width, height, plots, sliders } = dashboard;
+        let LiveParts {
+            session,
+            marks,
+            plots: live_plots_meta,
+        } = live;
         app.run(move |cx| {
             // One ChartState per plot; the watcher tracks each by its stable
             // path + geometry for hot-reload.
@@ -481,7 +586,13 @@ fn main() {
                     state: w.state.clone(),
                 })
                 .collect();
-            let coordinator = CrossfilterCoordinator::new(session, marks, live_plots);
+            // Coordinator slider bindings, in the same order as the hosted slider
+            // widgets below (both derived from `sliders`), so a widget's index
+            // matches its binding.
+            let slider_bindings: Vec<SliderBinding> =
+                sliders.iter().map(|s| s.binding.clone()).collect();
+            let coordinator =
+                CrossfilterCoordinator::new(session, marks, live_plots, slider_bindings);
 
             // One placed chart per plot, each wired to the shared coordinator.
             let charts: Vec<brightfield_ui::PlacedChart> = watched
@@ -492,6 +603,21 @@ fn main() {
                     width: w.width,
                     height: w.height,
                     state: w.state.clone(),
+                    coordinator: coordinator.clone(),
+                })
+                .collect();
+
+            // One placed slider widget per input:slider, wired to the same
+            // coordinator; index = position (matching the slider_bindings order).
+            let placed_sliders: Vec<brightfield_ui::PlacedSlider> = sliders
+                .iter()
+                .map(|s| brightfield_ui::PlacedSlider {
+                    x: s.rect.x,
+                    y: s.rect.y,
+                    width: s.rect.width,
+                    height: s.rect.height,
+                    binding: s.binding.clone(),
+                    state: cx.new(|_| brightfield_ui::SliderWidget::new(s.value)),
                     coordinator: coordinator.clone(),
                 })
                 .collect();
@@ -519,7 +645,12 @@ fn main() {
             let _window = cx
                 .open_window(window_opts, move |_window, cx| {
                     cx.new(|_| {
-                        brightfield_ui::ChartView::new(f64::from(width), f64::from(height), charts)
+                        brightfield_ui::ChartView::new(
+                            f64::from(width),
+                            f64::from(height),
+                            charts,
+                            placed_sliders,
+                        )
                     })
                 })
                 .expect("failed to open window");

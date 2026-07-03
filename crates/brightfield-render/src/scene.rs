@@ -2,7 +2,7 @@
 //! into a single vello::Scene.
 
 use arrow::record_batch::RecordBatch;
-use kurbo::{Affine, Rect};
+use kurbo::{Affine, Circle, Rect, RoundedRect};
 use peniko::{Color, Fill, Mix};
 use vello::Scene;
 
@@ -319,12 +319,57 @@ pub fn compose_dashboard(width: f64, height: f64, plots: &[(f64, f64, &Scene)]) 
     scene
 }
 
+/// Slider widget colours + geometry — kept in sync with the live GPUI
+/// `SliderElement` so the headless PNG matches the window (card 0005).
+const SLIDER_TRACK_COLOUR: Color = Color::new([0.82, 0.83, 0.86, 1.0]);
+const SLIDER_THUMB_COLOUR: Color = Color::new([0.306, 0.475, 0.655, 1.0]);
+const SLIDER_THUMB_RADIUS: f64 = 7.0;
+const SLIDER_TRACK_THICKNESS: f64 = 4.0;
+
+/// Draw a slider widget (rounded track + circular thumb) into `scene` at the
+/// dashboard-space rect `(x, y, width, height)`, the thumb at `frac` (0..1) along
+/// the track. `frac` is the value's normalised position (`(value-min)/(max-min)`),
+/// matching the live element's `thumb_fraction`. Used by the headless PNG dump to
+/// preview the resting widget.
+pub fn render_slider(scene: &mut Scene, x: f64, y: f64, width: f64, height: f64, frac: f64) {
+    let inset = SLIDER_THUMB_RADIUS;
+    let track_left = x + inset;
+    let track_w = (width - inset * 2.0).max(0.0);
+    let cy = y + height / 2.0;
+
+    let track = RoundedRect::new(
+        track_left,
+        cy - SLIDER_TRACK_THICKNESS / 2.0,
+        track_left + track_w,
+        cy + SLIDER_TRACK_THICKNESS / 2.0,
+        SLIDER_TRACK_THICKNESS / 2.0,
+    );
+    scene.fill(Fill::NonZero, Affine::IDENTITY, SLIDER_TRACK_COLOUR, None, &track);
+
+    let thumb_cx = track_left + track_w * frac.clamp(0.0, 1.0);
+    let thumb = Circle::new((thumb_cx, cy), SLIDER_THUMB_RADIUS);
+    scene.fill(Fill::NonZero, Affine::IDENTITY, SLIDER_THUMB_COLOUR, None, &thumb);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::channel::{Channel, ChannelMap};
     use crate::layout::ChartLayout;
     use crate::mark::{BarRenderer, DotRenderer, LineRenderer};
+
+    // slw ac-10 (card 0005): render_slider draws exactly two shapes — the track
+    // and the thumb — into the scene (headless proof the widget renders).
+    #[test]
+    fn slw_ac10_render_slider_draws_track_and_thumb() {
+        let mut scene = Scene::new();
+        render_slider(&mut scene, 0.0, 400.0, 200.0, 32.0, 0.5);
+        assert_eq!(
+            crate::mark::count_scene_paths(&scene),
+            2,
+            "slider draws a track + a thumb"
+        );
+    }
     use arrow::array::{Float64Array, StringArray, TimestampMicrosecondArray};
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
     use arrow::record_batch::RecordBatch;

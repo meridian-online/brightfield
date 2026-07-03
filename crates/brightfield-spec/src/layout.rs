@@ -4,7 +4,7 @@
 //! [`LayoutNode`] trees with pixel-accurate coordinates using a simple box
 //! model: sequential stacking with fixed sizes, no flex negotiation.
 
-use crate::ast::{Component, ConcatNode, PlotNode, Spec, SpaceNode, SpecValue};
+use crate::ast::{Component, ConcatNode, Input, PlotNode, Spec, SpaceNode, SpecValue};
 
 // ---------------------------------------------------------------------------
 // Rect
@@ -324,6 +324,119 @@ fn collect_placed_plots(node: &LayoutNode, path: &str, out: &mut Vec<PlacedPlot>
 }
 
 // ---------------------------------------------------------------------------
+// Input placement (widgets — card 0005)
+// ---------------------------------------------------------------------------
+
+/// A composition-level input widget (e.g. a slider) with its component-path
+/// identity and positioned rect — the input analogue of [`PlacedPlot`].
+///
+/// The `path` uses the same scheme as [`PlacedPlot`] / `collect_plot_groups`
+/// (`root`, `root/hconcat[0]`, …), so it joins to the input's AST node via
+/// [`collect_input_nodes`]. See [`placed_input_nodes`] for the joined view.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlacedInput {
+    /// Component path of the input node.
+    pub path: String,
+    /// The widget's position and reserved size within the viewport.
+    pub rect: Rect,
+}
+
+/// The positioned composition-level input leaves of a spec.
+///
+/// Mirrors [`placed_plots`]: walks the layout tree and emits one [`PlacedInput`]
+/// per `input:` node placed in an hconcat/vconcat. Inputs nested inside a plot's
+/// items are not composition widgets and are ignored (matching
+/// [`collect_placed_plots`]'s stop-at-plot behaviour).
+#[must_use]
+pub fn placed_inputs(spec: &Spec, viewport: Rect) -> Vec<PlacedInput> {
+    let mut out = Vec::new();
+    if let Some(tree) = compute_layout(spec, viewport) {
+        collect_placed_inputs(&tree, "root", &mut out);
+    }
+    out
+}
+
+fn collect_placed_inputs(node: &LayoutNode, path: &str, out: &mut Vec<PlacedInput>) {
+    match node {
+        LayoutNode::Input { rect } => out.push(PlacedInput {
+            path: path.to_string(),
+            rect: *rect,
+        }),
+        LayoutNode::HConcat { children, .. } => {
+            for (i, child) in children.iter().enumerate() {
+                collect_placed_inputs(child, &format!("{path}/hconcat[{i}]"), out);
+            }
+        }
+        LayoutNode::VConcat { children, .. } => {
+            for (i, child) in children.iter().enumerate() {
+                collect_placed_inputs(child, &format!("{path}/vconcat[{i}]"), out);
+            }
+        }
+        // Stop at plots (a slider is a composition sibling, not a plot item);
+        // ignore spacers/legends/marks/interactors.
+        _ => {}
+    }
+}
+
+/// The composition-level input AST nodes of a spec, each paired with its
+/// component path — the node-side of the [`placed_inputs`] join.
+///
+/// Walks the [`Component`] tree with the *same* path scheme as
+/// [`collect_placed_inputs`] (which walks the layout tree). Because
+/// [`compute_layout`] maps each Component to exactly one LayoutNode, the paths
+/// align, so a placed rect joins to its `Input` node by path.
+#[must_use]
+pub fn collect_input_nodes(spec: &Spec) -> Vec<(String, &Input)> {
+    let mut out = Vec::new();
+    if let Some(root) = &spec.root {
+        collect_input_nodes_in(root, "root", &mut out);
+    }
+    out
+}
+
+fn collect_input_nodes_in<'a>(
+    component: &'a Component,
+    path: &str,
+    out: &mut Vec<(String, &'a Input)>,
+) {
+    match component {
+        Component::Input(input) => out.push((path.to_string(), input)),
+        Component::HConcat(concat) => {
+            for (i, item) in concat.items.iter().enumerate() {
+                collect_input_nodes_in(item, &format!("{path}/hconcat[{i}]"), out);
+            }
+        }
+        Component::VConcat(concat) => {
+            for (i, item) in concat.items.iter().enumerate() {
+                collect_input_nodes_in(item, &format!("{path}/vconcat[{i}]"), out);
+            }
+        }
+        // Stop at plots; ignore spacers/legends/marks/interactors.
+        _ => {}
+    }
+}
+
+/// Positioned input widgets joined to their AST nodes: `(rect, &Input)` per
+/// composition-level input. This is the app-facing view — build a
+/// [`SliderBinding`] from each `&Input` and host a widget at its `rect`.
+///
+/// [`SliderBinding`]: (see brightfield-ui)
+#[must_use]
+pub fn placed_input_nodes<'a>(spec: &'a Spec, viewport: Rect) -> Vec<(Rect, &'a Input)> {
+    let placed = placed_inputs(spec, viewport);
+    let nodes = collect_input_nodes(spec);
+    placed
+        .into_iter()
+        .filter_map(|p| {
+            nodes
+                .iter()
+                .find(|(path, _)| path == &p.path)
+                .map(|(_, node)| (p.rect, *node))
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -333,6 +446,73 @@ mod tests {
     use crate::ast::*;
     use crate::parse::{parse_spec, Format};
     use indexmap::IndexMap;
+
+    /// A vconcat>hconcat>[plot, input:slider] spec used by the slider tests.
+    const SLIDER_SPEC: &str = r#"
+data:
+  t:
+    - { x: 1, y: 2 }
+vconcat:
+  - hconcat:
+      - plot:
+          - { mark: dot, data: { from: t }, x: x, y: y }
+        width: 300
+        height: 200
+      - input: slider
+        as: $threshold
+        min: 0
+        max: 10
+        step: 1
+"#;
+
+    // slw ac-01 (card 0005): placed_inputs surfaces a composition-level input's
+    // rect + path (the rect the multi-view extraction used to drop).
+    #[test]
+    fn slw_ac01_placed_inputs_path_and_rect() {
+        let parsed = parse_spec(SLIDER_SPEC, Format::Yaml).expect("parse");
+        let inputs = placed_inputs(&parsed.spec, Rect::new(0.0, 0.0, 0.0, 0.0));
+        assert_eq!(inputs.len(), 1, "one composition-level input");
+        assert_eq!(inputs[0].path, "root/vconcat[0]/hconcat[1]");
+        // Reserved 200x32, stacked right of the 300-wide plot.
+        assert_eq!(inputs[0].rect, Rect::new(300.0, 0.0, 200.0, 32.0));
+
+        // A plots-only spec yields no placed inputs.
+        let plots_only = r#"
+data:
+  t: [{ x: 1, y: 2 }]
+plot:
+  - { mark: dot, data: { from: t }, x: x, y: y }
+"#;
+        let p2 = parse_spec(plots_only, Format::Yaml).expect("parse");
+        assert!(placed_inputs(&p2.spec, Rect::zero()).is_empty());
+    }
+
+    // slw ac-02: collect_input_nodes paths match placed_inputs, and
+    // placed_input_nodes joins each rect to the Input that writes the param.
+    #[test]
+    fn slw_ac02_collect_input_nodes_and_join() {
+        let parsed = parse_spec(SLIDER_SPEC, Format::Yaml).expect("parse");
+        let spec = &parsed.spec;
+
+        let nodes = collect_input_nodes(spec);
+        let placed = placed_inputs(spec, Rect::zero());
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(placed.len(), 1);
+        assert_eq!(nodes[0].0, placed[0].path, "node path matches placed path");
+        assert_eq!(
+            nodes[0].1.as_param.as_ref().map(|p| p.0.as_str()),
+            Some("threshold"),
+            "the input writes $threshold"
+        );
+
+        let joined = placed_input_nodes(spec, Rect::zero());
+        assert_eq!(joined.len(), 1);
+        assert_eq!(joined[0].0, Rect::new(300.0, 0.0, 200.0, 32.0));
+        assert_eq!(
+            joined[0].1.as_param.as_ref().map(|p| p.0.as_str()),
+            Some("threshold")
+        );
+    }
 
     // multi-view: placed_plots joins identity to positioned rects
     #[test]

@@ -91,6 +91,13 @@ impl SliderBinding {
         let param_name = input.as_param.as_ref()?.0.clone();
         let min = read_numeric_option(input, "min")?;
         let max = read_numeric_option(input, "max")?;
+        // Reject a degenerate domain (non-finite bounds, or min >= max): it can't
+        // drive a functional slider and would panic the downstream `f64::clamp`
+        // (which asserts min <= max). Skipping it is consistent with the
+        // computed-param case — a malformed input yields no widget, not a crash.
+        if !(min.is_finite() && max.is_finite() && min < max) {
+            return None;
+        }
         let step = read_numeric_option(input, "step");
         Some(Self {
             param_name,
@@ -188,10 +195,86 @@ pub fn commit_slider_release<D: ParamDispatcher>(
     }
 }
 
+/// Map a horizontal pixel position on a slider track to a param value in
+/// `[binding.min, binding.max]`, snapped to `step` when present.
+///
+/// `px`, `track_left`, and `track_width` are logical pixels in the same space
+/// (the widget's own coordinate frame). A position outside the track clamps to
+/// the nearest end. The inverse — value → thumb fraction, for drawing — is
+/// [`thumb_fraction`].
+#[must_use]
+pub fn value_at(px: f64, track_left: f64, track_width: f64, binding: &SliderBinding) -> f64 {
+    let frac = if track_width > 0.0 {
+        ((px - track_left) / track_width).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let raw = binding.min + frac * (binding.max - binding.min);
+    match binding.step {
+        // Snap to the nearest step measured from min, then clamp to the domain.
+        // `.max(min).min(max)` rather than `f64::clamp` so a caller-constructed
+        // binding with min > max yields a defined value instead of a panic
+        // (`from_input` already rejects such domains for spec-driven sliders).
+        Some(step) if step > 0.0 => {
+            let snapped = binding.min + ((raw - binding.min) / step).round() * step;
+            snapped.max(binding.min).min(binding.max)
+        }
+        _ => raw,
+    }
+}
+
+/// The normalised `[0, 1]` position of `value` along the track — used to place
+/// the thumb. Clamped to the domain; the inverse of [`value_at`]'s fraction.
+#[must_use]
+pub fn thumb_fraction(value: f64, binding: &SliderBinding) -> f64 {
+    if binding.max > binding.min {
+        ((value - binding.min) / (binding.max - binding.min)).clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use brightfield_spec::ast::ParamRef;
+
+    fn binding(min: f64, max: f64, step: Option<f64>) -> SliderBinding {
+        SliderBinding {
+            param_name: "k".to_string(),
+            min,
+            max,
+            step,
+        }
+    }
+
+    // slw ac-04 (card 0005): a track pixel maps to a param value; endpoints and
+    // mid are exact, step snaps, out-of-track clamps.
+    #[test]
+    fn slw_ac04_value_at_maps_track_pixels() {
+        let b = binding(0.0, 10.0, Some(1.0)); // track x=100..300 (width 200)
+        assert_eq!(value_at(100.0, 100.0, 200.0, &b), 0.0, "left = min");
+        assert_eq!(value_at(300.0, 100.0, 200.0, &b), 10.0, "right = max");
+        assert_eq!(value_at(200.0, 100.0, 200.0, &b), 5.0, "mid = 5");
+        assert_eq!(value_at(160.0, 100.0, 200.0, &b), 3.0, "0.3 -> snapped 3");
+        assert_eq!(value_at(50.0, 100.0, 200.0, &b), 0.0, "left of track clamps");
+        assert_eq!(value_at(400.0, 100.0, 200.0, &b), 10.0, "right of track clamps");
+
+        // Continuous (no step): exact fractional value.
+        let c = binding(0.0, 1.0, None);
+        assert!((value_at(150.0, 100.0, 200.0, &c) - 0.25).abs() < 1e-9);
+    }
+
+    // slw ac-04: thumb_fraction is the drawing-side inverse and clamps.
+    #[test]
+    fn slw_ac04_thumb_fraction_inverts_value() {
+        let b = binding(0.0, 10.0, Some(1.0));
+        assert_eq!(thumb_fraction(0.0, &b), 0.0);
+        assert_eq!(thumb_fraction(10.0, &b), 1.0);
+        assert_eq!(thumb_fraction(5.0, &b), 0.5);
+        assert_eq!(thumb_fraction(-5.0, &b), 0.0, "clamps below min");
+        assert_eq!(thumb_fraction(15.0, &b), 1.0, "clamps above max");
+    }
     use brightfield_spec::vocab::{ImplStatus, InputKind};
     use indexmap::IndexMap;
 
@@ -298,6 +381,62 @@ mod tests {
         assert!((binding.min - 0.0).abs() < f64::EPSILON);
         assert!((binding.max - 100.0).abs() < f64::EPSILON);
         assert_eq!(binding.step, None);
+    }
+
+    /// slw review-fix: a degenerate domain (min > max, min == max, or non-finite
+    /// bounds) yields no binding — `from_input` rejects it rather than producing a
+    /// slider that would panic the downstream `f64::clamp`.
+    #[test]
+    fn slw_from_input_rejects_degenerate_domain() {
+        // Inverted bounds.
+        assert!(
+            SliderBinding::from_input(&input_fixture(
+                SpecValue::Integer(8),
+                SpecValue::Integer(0),
+                Some(SpecValue::Integer(1)),
+            ))
+            .is_none(),
+            "min > max is rejected"
+        );
+        // Empty domain.
+        assert!(
+            SliderBinding::from_input(&input_fixture(
+                SpecValue::Integer(5),
+                SpecValue::Integer(5),
+                None,
+            ))
+            .is_none(),
+            "min == max is rejected"
+        );
+        // Non-finite bound.
+        assert!(
+            SliderBinding::from_input(&input_fixture(
+                SpecValue::Float(0.0),
+                SpecValue::Float(f64::NAN),
+                None,
+            ))
+            .is_none(),
+            "NaN bound is rejected"
+        );
+    }
+
+    /// slw review-fix: `value_at` never panics even on a caller-constructed
+    /// inverted binding (the public helper defends itself; `from_input` guards the
+    /// spec path). Rust's `f64::clamp` would assert min <= max — this must not.
+    #[test]
+    fn slw_value_at_no_panic_on_inverted_binding() {
+        let inverted = SliderBinding {
+            param_name: "t".to_string(),
+            min: 8.0,
+            max: 0.0,
+            step: Some(1.0),
+        };
+        // Any of these would panic under `f64::clamp`; here they just return a
+        // finite, defined value.
+        for px in [0.0, 100.0, 300.0] {
+            let v = value_at(px, 0.0, 200.0, &inverted);
+            assert!(v.is_finite(), "value_at stays finite for px={px}");
+        }
     }
 
     /// rpw3 ac-11: commit_slider_release dispatches the binding's

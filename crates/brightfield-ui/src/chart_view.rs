@@ -21,6 +21,8 @@ use crate::chart_element::ChartElement;
 use crate::chart_state::ChartState;
 use crate::crossfilter::CrossfilterCoordinator;
 use crate::interaction::InteractionState;
+use crate::slider::SliderBinding;
+use crate::slider_element::{SliderElement, SliderWidget};
 
 /// One plot positioned in the dashboard: its rect (in dashboard pixels) and its
 /// own reactive [`ChartState`]. Each plot owns its state — and thus its own
@@ -42,9 +44,30 @@ pub struct PlacedChart {
     pub coordinator: Option<Rc<RefCell<CrossfilterCoordinator>>>,
 }
 
-/// GPUI render component for a dashboard: hosts one [`ChartElement`] per plot,
-/// each absolutely positioned at its layout rect, in a container sized to the
-/// dashboard's bounding box. A single-plot spec is just a one-plot dashboard.
+/// One slider widget positioned in the dashboard (card 0005): its rect, the
+/// param binding it drives, its reactive widget state, and the shared coordinator
+/// its release commits through.
+pub struct PlacedSlider {
+    /// Left edge within the dashboard, in pixels.
+    pub x: f64,
+    /// Top edge within the dashboard, in pixels.
+    pub y: f64,
+    /// Widget width in pixels.
+    pub width: f64,
+    /// Widget height in pixels.
+    pub height: f64,
+    /// The param binding (name + min/max/step).
+    pub binding: SliderBinding,
+    /// Reactive widget state (resting value + drag gesture).
+    pub state: Entity<SliderWidget>,
+    /// Shared coordinator; a release routes through it to re-query + repaint.
+    pub coordinator: Option<Rc<RefCell<CrossfilterCoordinator>>>,
+}
+
+/// GPUI render component for a dashboard: hosts one [`ChartElement`] per plot and
+/// one [`SliderElement`] per slider, each absolutely positioned at its layout
+/// rect, in a container sized to the dashboard's bounding box. A single-plot spec
+/// is just a one-plot dashboard.
 pub struct ChartView {
     /// Dashboard width in pixels.
     width: f64,
@@ -52,15 +75,24 @@ pub struct ChartView {
     height: f64,
     /// The positioned plots.
     charts: Vec<PlacedChart>,
+    /// The positioned slider widgets (card 0005).
+    sliders: Vec<PlacedSlider>,
 }
 
 impl ChartView {
-    /// Create a dashboard view of the given size hosting the positioned plots.
-    pub fn new(width: f64, height: f64, charts: Vec<PlacedChart>) -> Self {
+    /// Create a dashboard view of the given size hosting the positioned plots and
+    /// slider widgets.
+    pub fn new(
+        width: f64,
+        height: f64,
+        charts: Vec<PlacedChart>,
+        sliders: Vec<PlacedSlider>,
+    ) -> Self {
         Self {
             width,
             height,
             charts,
+            sliders,
         }
     }
 }
@@ -92,6 +124,22 @@ impl Render for ChartView {
                             .w(px(c.width as f32))
                             .h(px(c.height as f32))
                             .child(ChartElement::new(c.state.clone(), i, c.coordinator.clone()))
+                    }))
+                    .children(self.sliders.iter().enumerate().map(|(i, s)| {
+                        div()
+                            .absolute()
+                            .left(px(s.x as f32))
+                            .top(px(s.y as f32))
+                            .w(px(s.width as f32))
+                            .h(px(s.height as f32))
+                            .child(SliderElement::new(
+                                s.state.clone(),
+                                s.binding.clone(),
+                                s.width,
+                                s.height,
+                                i,
+                                s.coordinator.clone(),
+                            ))
                     })),
             )
     }

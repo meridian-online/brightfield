@@ -1,0 +1,96 @@
+goal: >
+  Host a live slider widget in the dashboard that drives a scalar param: dragging
+  it and releasing re-executes the subscribing marks (via propagate_param) and
+  repaints exactly those plots. Completes the window-gated half of card 0005 by
+  wiring the already-tested slider model (SliderBinding/SliderState/
+  commit_slider_release) to a GPUI Element and the layout/host, reusing the live
+  cross-filter coordinator's absorb/build_plot_scene/repaint path. Commit-on-
+  release; the drag interaction is verified by human eyeball, everything else
+  headlessly.
+
+constraints:
+  - "Coordinator: EXTEND CrossfilterCoordinator with slider_bindings + commit_slider; reuse absorb/build_plot_scene/set_scene UNCHANGED. No parallel coordinator (Decision 1)."
+  - "Commit-on-release only: mid-drag mutates SliderState + window.refresh() (overlay), never propagate_param (Decision 2). Matches rpw3_ac13."
+  - "Slider footprint is the declared 200x32 layout rect; window bounding-box fold MUST include input rects (Decision 3)."
+  - "Placed-input surfacing uses the plot path-join idiom: placed_inputs (LayoutNode) + collect_input_nodes (Component) in spec/layout.rs, joined by path (Decision 4)."
+  - "SliderElement is new GPUI code in brightfield-ui, copied from ChartElement; brightfield-render stays gpui-free (Decision 5)."
+  - "Rally seam — untouched or read-only: propagate_param / propagate_selection / commit_slider_release / SliderState / SliderBinding / ParamDispatcher signatures; the cross-filter brush path (commit_brush/absorb/build_plot_scene stay behaviour-compatible); analysis subscriber_graph; emit/lower param interpolation (card 0014)."
+
+acceptance_criteria:
+  - id: ac-01
+    ac_type: code
+    description: "placed_inputs(spec, viewport) returns a PlacedInput{path, rect} for each composition-level input, with the same component path scheme plots use (root/hconcat[i], root/vconcat[i]) and the reserved 200x32 rect at its stacked position."
+    verification: "slw_ac01 in brightfield-spec/src/layout.rs: a vconcat>hconcat>[plot, input:slider] spec yields one PlacedInput at the expected path and rect; a plots-only spec yields none."
+
+  - id: ac-02
+    ac_type: code
+    description: "collect_input_nodes(spec) returns (path, &Input) for each composition-level input with paths identical to placed_inputs; placed_input_nodes(spec, viewport) joins them into Vec<(Rect, &Input)>."
+    verification: "slw_ac02 in brightfield-spec/src/layout.rs: for the same spec, collect_input_nodes path == placed_inputs path, and placed_input_nodes pairs the rect with the Input whose as_param is the slider's target."
+
+  - id: ac-03
+    ac_type: code
+    description: "SliderBinding::from_input builds param_name/min/max/step from an input:slider node; a node missing as_param or numeric min/max yields None (computed-param deferred)."
+    verification: "slw_ac03 in brightfield-ui/src/slider.rs (extend existing from_input tests): parse an input:slider with as/min/max/step from placed_input_nodes and assert the binding fields; assert None for a $param bound."
+
+  - id: ac-04
+    ac_type: code
+    description: "A slider value maps to a param value: frac = clamp((px - track_left)/track_width, 0, 1); value = min + frac*(max-min), snapped to step when present. Endpoints and mid map exactly."
+    verification: "slw_ac04 in brightfield-ui/src/slider.rs: a pure value_at(px, track_left, track_width, &binding) helper returns min at left, max at right, and step-snapped values between; out-of-track px clamps."
+
+  - id: ac-05
+    ac_type: code
+    description: "build_everything collects a PlacedSlider{rect, binding, state?} per input:slider into the Dashboard, and the window width/height fold includes input rects (a slider below/beside the plots is not clipped)."
+    verification: "slw_ac05 in brightfield-app: build_everything on the example returns a non-empty sliders vec with the expected binding; the computed dashboard height/width covers the slider rect (>= plot bbox extended by the input rect)."
+
+  - id: ac-06
+    ac_type: code
+    description: "CrossfilterCoordinator::commit_slider on a Released state calls propagate_param and rebuilds exactly the subscriber plots' scenes; a plot whose mark's filter references the slider param changes, others do not."
+    verification: "slw_ac06 in brightfield-ui/src/crossfilter.rs: build a coordinator from the example, commit_slider with Released{value} that changes the threshold, assert the subscriber plot's MarkInput.batch row-count changed and a non-subscriber plot's did not (mirrors the crossfilter commit_brush test)."
+
+  - id: ac-07
+    ac_type: code
+    description: "Commit-on-release contract at the coordinator: a non-Released (Dragging/Idle) SliderState passed to commit_slider is a no-op (no propagate_param, no scene rebuild)."
+    verification: "slw_ac07 in brightfield-ui: commit_slider with Dragging{..} returns false / leaves batches unchanged; only Released commits (composes rpw3_ac13's model-level guarantee at the coordinator)."
+
+  - id: ac-08
+    ac_type: code
+    description: "InputKind::Slider is re-promoted to Implemented once wired; the vocab guard test is updated to assert Slider IS implemented (reversing PR #22 for slider only; nearest/pan stay Unimplemented)."
+    verification: "slw_ac08 in brightfield-spec/src/vocab.rs: Slider maps to (\"slider\", Implemented); the demotion test is replaced with input_kind_slider_implemented_when_wired; nearest*/pan* remain Unimplemented."
+
+  - id: ac-09
+    ac_type: code
+    description: "An example spec (examples/param-slider.yaml) declares input:slider with as/min/max/step driving a filter param, parses cleanly, and its slider commit re-executes the mark headlessly (load → commit_slider/propagate_param at two values → row count changes)."
+    verification: "slw_ac09 (brightfield-app or engine test): include_str! the example, drive the slider param low→high, assert the mark's row count changes (reuses the pefr_ac12 pattern for a slider-declared spec)."
+
+  - id: ac-10
+    ac_type: manual
+    description: "Resting-widget PNG: the headless dashboard dump renders the slider (track + thumb at the current value) at its layout rect, so layout/geometry is eyeball-verifiable before the live drag."
+    verification: "BRIGHTFIELD_DUMP_PNG on examples/param-slider.yaml shows the slider track+thumb at the reserved rect, thumb positioned per the default value; visually inspected."
+
+  - id: ac-11
+    ac_type: manual
+    description: "Live drag (macOS app + human eyeball): dragging the slider moves the thumb smoothly (overlay only), and on release the subscriber plot re-renders to reflect the new param value; no re-query mid-drag."
+    verification: "Run the app on examples/param-slider.yaml; drag the slider; observe thumb tracks the cursor during drag and the plot updates on release. HELD for the user."
+
+gate:
+  id: ac-12
+  description: >
+    cargo test --workspace green (no regressions in mvdc*/rpw3*/gomb*/pefr*/cfs*
+    suites); brightfield-render has no new gpui dependency; the cross-filter brush
+    path (commit_brush/absorb/build_plot_scene) stays behaviour-compatible;
+    propagate_param / commit_slider_release / SliderState signatures unchanged.
+
+deferred:
+  - "Live-drag continuous re-execution (v1 is commit-on-release)."
+  - "Slider stretch/align to a full-width band (box model is fixed-size; v1 uses the declared 200x32)."
+  - "Computed-param sliders (min/max/step as $param refs) — from_input returns None today."
+  - "Other input kinds (menu/search/table) and structural hot-reload of an added slider region."
+
+ambiguity_score: 0.1
+ambiguity_notes: >
+  Low — the recon resolved the coordinator choice (extend), the commit model
+  (on-release), the layout surfacing (path-join), and the widget pattern (copy
+  ChartElement). Residual: (a) exact host wiring of the SliderState entity in
+  main() (mirror the ChartState entity creation); (b) whether the resting-widget
+  PNG renders via a vello sub-scene in compose_dashboard or is skipped for a
+  reserved-space-only dump — decide during ac-10.
