@@ -9,6 +9,7 @@
 
 use brightfield_engine::error::EngineError;
 use brightfield_engine::RecordBatch;
+use brightfield_render::nearest::SelectionValue;
 use brightfield_sql::ir::Predicate;
 use brightfield_spec::analysis::ComponentPath;
 use kurbo::Rect;
@@ -127,23 +128,28 @@ pub fn brush_rect_to_predicate(
     }
 }
 
-/// Convert a clicked data value into an equality predicate for a point
-/// selection. `PointX` compares the plot's x column, `PointY` its y column, to
-/// `value` (formatted as a bare numeric literal — no quoting, matching a numeric
-/// axis). A missing channel for the kind, or a non-point kind, yields
+/// Convert a resolved point-selection value into an equality predicate. `PointX`
+/// compares the plot's x column, `PointY` its y column, to `value`. The
+/// [`SelectionValue`] formats a type-correct literal: a bare number/integer, a
+/// quoted+escaped string for a categorical axis, or `make_timestamp(us)` for a
+/// temporal axis. A missing channel for the kind, or a non-point kind, yields
 /// `Predicate::True` (degenerate).
 ///
-/// This is the data-path adapter for `toggleX`/`toggleY` selections: the value
-/// is the click's data-space coordinate on that axis. Resolving that coordinate
-/// from a pixel click (nearest data point) is the window click-gesture increment.
-pub fn point_to_predicate(value: f64, kind: BrushKind, channels: &ChannelColumns) -> Predicate {
+/// This is the data-path adapter for `toggleX`/`toggleY` selections: the value is
+/// resolved from the click (nearest datum on a continuous axis; nearest category
+/// on a band axis) by the window click gesture.
+pub fn point_to_predicate(
+    value: &SelectionValue,
+    kind: BrushKind,
+    channels: &ChannelColumns,
+) -> Predicate {
     let column = match kind {
         BrushKind::PointX => channels.x.as_deref(),
         BrushKind::PointY => channels.y.as_deref(),
         _ => None,
     };
     match column {
-        Some(col) => point_predicate(col, &value.to_string()),
+        Some(col) => point_predicate(col, &value.literal()),
         None => Predicate::True,
     }
 }
@@ -357,32 +363,52 @@ mod tests {
     /// cfs point-selection (card 0006): point_to_predicate maps a clicked data
     /// value onto the plot's x column (PointX) or y column (PointY) as an
     /// equality predicate; a missing channel or non-point kind degenerates to
-    /// True.
+    /// True. Each `SelectionValue` variant formats a type-correct literal.
     #[test]
     fn point_to_predicate_maps_value_onto_channel() {
         let channels = ChannelColumns::xy("speed", "delay");
 
-        // PointX → `speed = 3`.
-        match point_to_predicate(3.0, BrushKind::PointX, &channels) {
+        // PointX numeric → `speed = 3`.
+        match point_to_predicate(&SelectionValue::Int(3), BrushKind::PointX, &channels) {
             Predicate::Expr(s) => {
-                assert_eq!(s, "speed = 3", "PointX equality on x column, numeric literal");
+                assert_eq!(s, "speed = 3", "PointX equality on x column, integer literal");
             }
             other => panic!("expected Expr, got {other:?}"),
         }
-        // PointY → `delay = 40`.
-        match point_to_predicate(40.0, BrushKind::PointY, &channels) {
+        // PointY numeric → `delay = 40`.
+        match point_to_predicate(&SelectionValue::Int(40), BrushKind::PointY, &channels) {
             Predicate::Expr(s) => assert_eq!(s, "delay = 40", "PointY equality on y column"),
+            other => panic!("expected Expr, got {other:?}"),
+        }
+        // Categorical → quoted, embedded quote escaped by doubling.
+        match point_to_predicate(
+            &SelectionValue::Text("O'Hara".to_string()),
+            BrushKind::PointX,
+            &channels,
+        ) {
+            Predicate::Expr(s) => assert_eq!(s, "speed = 'O''Hara'", "string literal is quoted+escaped"),
+            other => panic!("expected Expr, got {other:?}"),
+        }
+        // Temporal → make_timestamp, not a bare integer.
+        match point_to_predicate(
+            &SelectionValue::Timestamp(1_700_000_000_000_000),
+            BrushKind::PointX,
+            &channels,
+        ) {
+            Predicate::Expr(s) => {
+                assert_eq!(s, "speed = make_timestamp(1700000000000000)", "temporal literal")
+            }
             other => panic!("expected Expr, got {other:?}"),
         }
         // Missing channel → True.
         assert_eq!(
-            point_to_predicate(1.0, BrushKind::PointY, &ChannelColumns::x_only("speed")),
+            point_to_predicate(&SelectionValue::Number(1.0), BrushKind::PointY, &ChannelColumns::x_only("speed")),
             Predicate::True,
             "PointY with no y channel is a degenerate no-op"
         );
         // Non-point kind → True (this helper only produces point predicates).
         assert_eq!(
-            point_to_predicate(1.0, BrushKind::IntervalX, &channels),
+            point_to_predicate(&SelectionValue::Number(1.0), BrushKind::IntervalX, &channels),
             Predicate::True
         );
     }

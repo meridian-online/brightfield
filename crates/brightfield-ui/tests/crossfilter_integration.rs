@@ -23,6 +23,7 @@ use brightfield_engine::Engine;
 use brightfield_render::channel::{Channel, ChannelMap};
 use brightfield_render::layout::ChartLayout;
 use brightfield_render::mark::{count_scene_paths, default_renderers, find_renderer};
+use brightfield_render::nearest::SelectionValue;
 use brightfield_render::scale::infer_scales;
 use brightfield_render::scene::{build_multi_mark_scene, ChartData};
 use brightfield_spec::analysis::analyse_spec;
@@ -474,8 +475,8 @@ fn crossfilter_point_toggle_x_filters_downstream() {
     let baseline_rows = total_rows(session.execute_all()[1].as_ref().expect("plot B executes"));
     assert_eq!(baseline_rows, 6);
 
-    // A click on data value x=3 → point predicate `x = 3`.
-    let pred = point_to_predicate(3.0, ui_binding.kind, &ui_binding.channels);
+    // A click on data value x=3 → point predicate `x = 3` (inline ints are Int32).
+    let pred = point_to_predicate(&SelectionValue::Int(3), ui_binding.kind, &ui_binding.channels);
     let results = session.propagate_selection(
         &ui_binding.selection_name,
         ui_binding.contributor.clone(),
@@ -567,7 +568,7 @@ fn crossfilter_two_selections_stay_independent() {
     // Values chosen so cross-contamination collapses a subscriber to 0 rows:
     // $pt = x=5 (its row has y=50, OUTSIDE the interval) and $iv = y∈[25,45]
     // (rows y=30,40 → x=3,4, none of which is x=5). So x=5 AND y∈[25,45] = 0.
-    let pt_pred = point_to_predicate(5.0, pt_b.kind, &pt_b.channels);
+    let pt_pred = point_to_predicate(&SelectionValue::Int(5), pt_b.kind, &pt_b.channels);
     let iv_pred = brush_rect_to_predicate(Rect::new(0.0, 25.0, 100.0, 45.0), iv_b.kind, &iv_b.channels);
 
     // Populate BOTH selections first, so each subscriber is later measured with
@@ -737,11 +738,10 @@ fn crossfilter_interval_click_clears_via_shared_path() {
     );
 }
 
-/// A `toggleX` on a CATEGORICAL (string) axis is out of numeric scope: point
-/// selection forms a `col = value` numeric predicate that can't equate a string.
-/// The gesture SKIPS such a binding — a clean no-op — rather than mis-clearing
-/// (find_nearest can't read a string column) or dispatching a broken literal.
-/// Categorical point selection is a documented follow-up.
+/// A `toggleX` on a CATEGORICAL (band) axis resolves the clicked category from
+/// the band scale (a pixel→category inverse) and dispatches `cat = 'B'` — a
+/// quoted string literal. Clicking category B's band filters the linked plot to
+/// B's row. The canonical Mosaic "click a bar to filter" point selection.
 const SPEC_POINT_CATEGORICAL: &str = r#"
 params:
   pick: { select: crossfilter }
@@ -770,7 +770,7 @@ hconcat:
 "#;
 
 #[test]
-fn crossfilter_categorical_point_click_is_noop() {
+fn crossfilter_categorical_point_click_selects_clicked_category() {
     let parsed = parse_spec(SPEC_POINT_CATEGORICAL, Format::Yaml).expect("spec parses");
     let spec = parsed.spec;
     let analysis = analyse_spec(&spec).expect("spec analyses");
@@ -797,21 +797,57 @@ fn crossfilter_categorical_point_click_is_noop() {
     let bindings = [binding];
     let marks_meta = [(&batch_a, &plot_a_channels)];
 
-    // A click anywhere on the categorical toggle plot dispatches nothing.
+    // Click at category B's band centre → resolves to `cat = 'B'`.
+    let bx = scales
+        .get(Channel::X)
+        .and_then(|s| s.map_category("B"))
+        .expect("band scale maps category B to a pixel");
     let (_next, aggregated) = commit_click_multi(
-        Point::new(100.0, 100.0),
+        Point::new(bx, 100.0),
         &marks_meta,
         &scales,
         &bindings,
         &mut session,
     );
-    assert!(
-        aggregated.is_empty(),
-        "a categorical point binding is skipped — neither selects nor clears"
+    assert_eq!(aggregated.len(), 1, "the categorical click dispatches one selection");
+    let (name, results) = &aggregated[0];
+    assert_eq!(name, "pick");
+    let (mark_index, result) = &results[0];
+    assert_eq!(*mark_index, 1, "plot B (index 1) is the subscriber");
+    assert_eq!(
+        total_rows(result.as_ref().expect("plot B re-executes under the categorical selection")),
+        1,
+        "cat = 'B' selects exactly B's row"
+    );
+
+    // A click at category A's centre re-selects A (a different category).
+    let ax = scales.get(Channel::X).and_then(|s| s.map_category("A")).unwrap();
+    let (_n2, agg2) = commit_click_multi(
+        Point::new(ax, 100.0),
+        &marks_meta,
+        &scales,
+        &bindings,
+        &mut session,
     );
     assert_eq!(
-        total_rows(session.execute_all()[1].as_ref().expect("plot B")),
+        total_rows(agg2[0].1[0].1.as_ref().expect("B re-executes")),
+        1,
+        "cat = 'A' now selects A's row"
+    );
+
+    // A click LEFT of the band axis range (the margin) clears the selection —
+    // the reset affordance a tiled band axis otherwise lacks.
+    let range_start = scales.get(Channel::X).unwrap().range_start();
+    let (_n3, agg3) = commit_click_multi(
+        Point::new(range_start - 20.0, 100.0),
+        &marks_meta,
+        &scales,
+        &bindings,
+        &mut session,
+    );
+    assert_eq!(
+        total_rows(agg3[0].1[0].1.as_ref().expect("B re-executes on clear")),
         baseline_b,
-        "plot B is unchanged — the categorical click was a no-op"
+        "clicking outside the bands clears → plot B shows all categories again"
     );
 }

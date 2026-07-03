@@ -1,19 +1,43 @@
 Findings from the adversarial review of the live point-click gesture (card 0006 — the pixel→datum increment that finishes cross-filter point selection). The gesture works for the common case — a click on a NUMERIC scatter axis snaps to the nearest datum and dispatches its exact value. These are the deferred edges; distill into specs under card 0006 (or a follow-up card) rather than opening new cards ad hoc.
 
-## 1. Point selection is numeric-axis-only (categorical + temporal deferred) — GUARDED in this PR
+## 1. Type-aware POINT predicates — DONE (categorical + temporal point selection)
 
-`point_to_predicate` forms a bare `col = value` numeric literal, and `find_nearest` resolves the datum via `column_as_f64` (numeric only). So point selection is scoped to continuous numeric axes. This PR **guards** the two out-of-scope axis types so a click is a clean no-op rather than misbehaving (`is_numeric_point_column` gates the binding in `commit_click_multi`):
+**Resolved** by the typed-predicates increment. Point selection is no longer
+numeric-only: `commit_click_multi`/`resolve_point_value` produce a
+`SelectionValue { Number | Int | Text | Timestamp }` (`brightfield_render::nearest`)
+whose `literal()` formats a type-correct SQL literal, and `point_to_predicate`
+takes it.
 
-- **Categorical (string / Band axis)** — the canonical Mosaic "click a bar to filter". Needs: a categorical nearest-resolution path (map a category to its band-centre pixel; `find_nearest` today can't read a Utf8 column), and a **quoted, escaped string predicate** (`col = 'value'`). Without the guard, clicking a bar silently CLEARED the whole dashboard (find_nearest → None → deselect).
-- **Temporal (Timestamp axis)** — clicking a time-axis datum read the value as microseconds-f64 and emitted `ts = 1700000000000000`; DuckDB has no implicit `BIGINT → TIMESTAMP` cast, so `propagate_selection` errored and `absorb` swallowed it (subscriber kept its old batch). Needs a **temporal literal predicate** (e.g. `ts = make_timestamp(us)`). NOTE this is **systemic**: the interval-brush predicates (`x_range_predicate`/`y_range_predicate` in `brush.rs`) have the identical bare-integer flaw on temporal axes, so a temporal-literal predicate builder fixes brushing too.
+- **Categorical (string / Band axis)** — the canonical Mosaic "click a bar to
+  filter" now works: `band_category_at` resolves the clicked category from the
+  band scale (a pixel→category inverse — no datum scan), and the predicate is a
+  quoted, escaped `col = 'value'`. (`examples/point-select-categorical.yaml`.)
+  Because a band axis tiles the plot (no empty space to click), the **clear**
+  affordance is a click in the axis margin (outside the band pixel range).
+  Mosaic-style **toggle-off** (click the same bar again to deselect) needs the
+  current selection state at click time and is a follow-up.
+- **Temporal (Timestamp axis)** — a time-axis click emits `col = make_timestamp(us)`
+  for a naive `TIMESTAMP`, and `col = make_timestamp(us) AT TIME ZONE 'UTC'` for a
+  `TIMESTAMPTZ` column (the tz field distinguishes them). The plain `make_timestamp`
+  is a naive value that DuckDB shifts through the session TimeZone, so the
+  tz-anchored form is required to match a `TIMESTAMPTZ` column under the default
+  (machine-local) session — otherwise the selection silently matched zero rows.
 
-→ Spec under card 0006: **type-aware selection predicates** (string equality + escaping, temporal literals) + categorical nearest-resolution. Shared with interval brushing for the temporal half.
+**Still open — temporal INTERVAL brushes.** The systemic half remains: the
+interval-brush range predicates (`x_range_predicate`/`y_range_predicate` in
+`brush.rs`) still emit bare-integer microsecond bounds on a temporal axis, so a
+DRAG (not a click) on a time axis errors the same way point selection used to.
+Applying the same `make_timestamp` formatting to `brush_rect_to_predicate`
+(threading the axis's scale type through the invert→predicate path in
+`crossfilter.rs`) is the remaining follow-up.
 
-## 2. Int64/UInt64 keys above 2^53 lose precision through `as f64`
+## 2. Int64/UInt64 keys above 2^53 — DONE for point selection
 
-`column_value_at` reads the datum via `column_as_f64`, which coerces every integer through `arr.value(i) as f64`. For an Int64/UInt64 value beyond 2^53 (~9.007e15 — snowflake ids, epoch-nanoseconds), the f64 rounds, so `col = <rounded>` matches zero rows despite the "exact stored value" promise. The common inline-YAML Int32 case is exact. Fix: an integer-preserving value path (read the raw i64/u64 and format it directly) once the predicate builder is type-aware (folds into #1).
-
-→ Spec under card 0006 (same type-aware-predicate increment).
+**Resolved.** `column_typed_value_at` reads integer columns as `SelectionValue::Int(i64)`
+and formats the exact stored integer, so a large key (snowflake id, epoch-nanos)
+selects the right row instead of a rounded one. (Note `find_nearest` still snaps
+via `f64` — fine, that only picks the nearest datum; the *value* read is exact.
+UInt64 above `i64::MAX` is the one remaining lossy edge.)
 
 ## 3. `find_nearest` requires BOTH axes even for a single-axis mode
 

@@ -15,9 +15,11 @@ use gpui::{div, px, rgb, Context, Entity, IntoElement, ParentElement, Render, St
 use brightfield_engine::error::EngineError;
 use brightfield_engine::RecordBatch;
 use brightfield_render::channel::ChannelMap;
+use brightfield_render::channel::Channel;
 use brightfield_render::nearest::{
-    column_value_at, find_nearest, is_numeric_point_column, NearestMode,
+    band_category_at, column_typed_value_at, find_nearest, NearestMode, SelectionValue,
 };
+use brightfield_render::scale::Scale;
 use brightfield_render::scale::ScaleSet;
 use brightfield_spec::analysis::{BrushableBinding, ComponentPath};
 
@@ -297,10 +299,11 @@ pub fn commit_brush_clear<D: SelectionDispatcher>(
 ///   the click-outside-brush retract that [`commit_brush_clear`] performs.
 ///
 /// Point selection forms a numeric `col = value` predicate, so it is scoped to
-/// continuous numeric axes; a `PointX`/`PointY` binding on a categorical
-/// (string) or temporal axis is SKIPPED (a no-op) rather than mis-clearing or
-/// dispatching a literal DuckDB can't match — those axis types need type-aware
-/// predicates (a follow-up, see the point-selection memo).
+/// numeric, categorical, and temporal axes: a continuous axis snaps to the
+/// nearest rendered datum and reads its exact typed value; a categorical (band)
+/// axis resolves the clicked category directly from the scale. The dispatched
+/// `col = value` uses a type-correct literal (bare number/int, quoted+escaped
+/// string, or `make_timestamp(us)`) via [`SelectionValue`].
 ///
 /// `marks` are the plot's `(batch, channel_map)` pairs to search (a plot may
 /// layer several); `scales` map data → the same pixel space as `click_px`.
@@ -329,35 +332,25 @@ pub fn commit_click_multi<D: SelectionDispatcher>(
         );
         let results = match binding.kind {
             BrushKind::PointX | BrushKind::PointY => {
-                let column = if matches!(binding.kind, BrushKind::PointX) {
-                    binding.channels.x.as_deref()
-                } else {
-                    binding.channels.y.as_deref()
-                };
-                // Numeric-axis scope: skip categorical/temporal point bindings.
-                let numeric = column
-                    .is_some_and(|c| marks.iter().any(|(b, _)| is_numeric_point_column(b, c)));
-                if !numeric {
-                    continue;
-                }
                 let mode = if matches!(binding.kind, BrushKind::PointX) {
                     NearestMode::X
                 } else {
                     NearestMode::Y
                 };
-                match nearest_datum_value(click_px, marks, scales, binding, mode) {
-                    // Hit: select that datum's exact value.
+                match resolve_point_value(click_px, marks, scales, binding, mode) {
+                    // Hit: select that datum's (or category's) exact value.
                     Some(value) => {
                         selected.insert(key);
-                        let predicate = point_to_predicate(value, binding.kind, &binding.channels);
+                        let predicate = point_to_predicate(&value, binding.kind, &binding.channels);
                         dispatcher.dispatch(
                             &binding.selection_name,
                             binding.contributor.clone(),
                             predicate,
                         )
                     }
-                    // Miss (clicked empty space): deselect — unless a sibling
-                    // point binding already selected this same target.
+                    // Miss (clicked empty space on a continuous axis, or no column
+                    // on the axis): deselect — unless a sibling point binding
+                    // already selected this same target.
                     None if selected.contains(&key) => continue,
                     None => dispatcher.clear(&binding.selection_name, binding.contributor.clone()),
                 }
@@ -372,35 +365,57 @@ pub fn commit_click_multi<D: SelectionDispatcher>(
     (InteractionState::Idle, aggregated)
 }
 
-/// Value of the datum nearest `click_px` along the axis a point binding selects,
-/// searched in pixel space across all the plot's `marks` (keeping the globally
-/// closest hit). Reads the EXACT stored cell at the hit row from the binding's
-/// channel column — so the dispatched `col = value` matches a real datum, not
-/// the continuous click coordinate. `None` on a miss (no datum within the hit
-/// radius) or when the binding has no column on its axis.
-fn nearest_datum_value(
+/// The [`SelectionValue`] a point click resolves to along the axis a binding
+/// selects.
+///
+/// - **Categorical (band) axis**: the axis position *is* the value, so the
+///   clicked category is resolved directly from the band scale (a pixel→category
+///   inverse) — a `Text` value. There is no datum to snap to, so a categorical
+///   click always resolves (to the nearest category).
+/// - **Continuous (linear/time) axis**: snaps to the nearest rendered datum
+///   across all the plot's `marks` (globally closest in pixel space) and reads
+///   its EXACT stored cell — a `Number`/`Int`/`Timestamp`. So the dispatched
+///   `col = value` matches a real datum, not the continuous click coordinate.
+///
+/// `None` when the binding has no column on its axis, or on a continuous-axis
+/// miss (no datum within the hit radius).
+fn resolve_point_value(
     click_px: kurbo::Point,
     marks: &[(&RecordBatch, &ChannelMap)],
     scales: &ScaleSet,
     binding: &BrushBinding,
     mode: NearestMode,
-) -> Option<f64> {
-    let column = match binding.kind {
-        BrushKind::PointX => binding.channels.x.as_deref()?,
-        BrushKind::PointY => binding.channels.y.as_deref()?,
+) -> Option<SelectionValue> {
+    let (column, axis, cursor_on_axis) = match binding.kind {
+        BrushKind::PointX => (binding.channels.x.as_deref()?, Channel::X, click_px.x),
+        BrushKind::PointY => (binding.channels.y.as_deref()?, Channel::Y, click_px.y),
         _ => return None,
     };
-    let mut best: Option<(f64, f64)> = None; // (pixel distance, data value)
+
+    // Categorical axis: resolve the clicked category from the band scale. A click
+    // OUTSIDE the band's pixel range (e.g. in the axis margin) resolves to `None`
+    // so it clears — otherwise every click snaps to the nearest category and the
+    // filter could never be retracted (full toggle-off is a follow-up).
+    if let Some(scale @ Scale::Band { range_start, range_end, .. }) = scales.get(axis) {
+        let (lo, hi) = (range_start.min(*range_end), range_start.max(*range_end));
+        if cursor_on_axis < lo || cursor_on_axis > hi {
+            return None;
+        }
+        return band_category_at(scale, cursor_on_axis).map(SelectionValue::Text);
+    }
+
+    // Continuous axis: snap to the nearest rendered datum, read its typed value.
+    let mut best: Option<(f64, SelectionValue)> = None; // (pixel distance, value)
     for (batch, channel_map) in marks {
         let hit = match find_nearest(click_px, batch, channel_map, scales, mode, None) {
             Some(h) => h,
             None => continue,
         };
-        let value = match column_value_at(batch, column, hit.row) {
+        let value = match column_typed_value_at(batch, column, hit.row) {
             Some(v) => v,
             None => continue,
         };
-        if best.map_or(true, |(d, _)| hit.distance < d) {
+        if best.as_ref().map_or(true, |(d, _)| hit.distance < *d) {
             best = Some((hit.distance, value));
         }
     }
