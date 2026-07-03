@@ -27,9 +27,10 @@ use brightfield_render::scene::{build_multi_mark_scene, ChartData};
 use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::{parse_spec, Format};
 use brightfield_sql::collect_marks;
+use brightfield_ui::brush::{brush_rect_to_predicate, point_to_predicate, BrushKind};
 use brightfield_ui::chart_view::{commit_brush_clear, commit_brush_release_multi, BrushBinding};
 use brightfield_ui::InteractionState;
-use kurbo::Point;
+use kurbo::{Point, Rect};
 
 /// A two-plot dashboard over one inline table. Plot A (left) carries an
 /// `intervalX` brush writing `$brush`; plot B (right) is filtered BY `$brush`.
@@ -87,6 +88,70 @@ plot:
     y: y
   - select: intervalX
     as: $brush
+"#;
+
+/// Plot A carries an `intervalY` brush; plot B is filtered by it. Brushing a
+/// y-range on A must reduce plot B's rows on the y column. (scenario 1, Y)
+const SPEC_Y: &str = r#"
+params:
+  brush: { select: crossfilter }
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+    - { x: 3, y: 30 }
+    - { x: 4, y: 40 }
+    - { x: 5, y: 50 }
+    - { x: 6, y: 60 }
+hconcat:
+  - plot:
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+    - select: intervalY
+      as: $brush
+    width: 360
+    height: 300
+  - plot:
+    - mark: dot
+      data: { from: t, filterBy: $brush }
+      x: x
+      y: y
+    width: 360
+    height: 300
+"#;
+
+/// Plot A carries an `intervalXY` brush; plot B is filtered by it. Brushing a
+/// 2D region must restrict plot B on BOTH axes. (scenario 1, XY)
+const SPEC_XY: &str = r#"
+params:
+  brush: { select: crossfilter }
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+    - { x: 3, y: 30 }
+    - { x: 4, y: 40 }
+    - { x: 5, y: 50 }
+    - { x: 6, y: 60 }
+hconcat:
+  - plot:
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+    - select: intervalXY
+      as: $brush
+    width: 360
+    height: 300
+  - plot:
+    - mark: dot
+      data: { from: t, filterBy: $brush }
+      x: x
+      y: y
+    width: 360
+    height: 300
 "#;
 
 /// Sum the rows across a batch list.
@@ -223,6 +288,92 @@ fn crossfilter_brush_in_plot_a_filters_plot_b() {
     );
 }
 
+/// scenario 1 (Y): an analysis-derived `intervalY` binding threaded through a
+/// live Session reduces the downstream plot on the y column — the y-channel
+/// resolution path into an actual row reduction, which was proven nowhere
+/// end-to-end (only intervalX was).
+#[test]
+fn crossfilter_brush_interval_y_filters_downstream() {
+    let parsed = parse_spec(SPEC_Y, Format::Yaml).expect("spec parses");
+    let spec = parsed.spec;
+    let analysis = analyse_spec(&spec).expect("spec analyses");
+
+    let spec_binding = &analysis.brushable_bindings[0];
+    assert_eq!(
+        spec_binding.channels.y.as_deref(),
+        Some("y"),
+        "y channel resolved from plot A's dot mark"
+    );
+    let bindings = [BrushBinding::from(spec_binding)];
+
+    let engine = Engine::new();
+    let mut session = engine
+        .load_spec(spec, analysis, None)
+        .expect("spec loads")
+        .session;
+
+    let baseline_rows = total_rows(session.execute_all()[1].as_ref().expect("plot B executes"));
+    assert_eq!(baseline_rows, 6, "all 6 rows before any brush");
+
+    // Brush a y-range [25, 45] in DATA coords; x is immaterial for intervalY.
+    let mut interaction = InteractionState::start_brush(Point::new(0.0, 25.0));
+    interaction.update_brush(Point::new(100.0, 45.0));
+    let (_state, aggregated) = commit_brush_release_multi(&interaction, &bindings, &mut session);
+
+    let (_name, results) = &aggregated[0];
+    let (mark_index, result) = &results[0];
+    assert_eq!(*mark_index, 1, "the subscriber is plot B's mark");
+    let filtered_rows = total_rows(result.as_ref().expect("plot B re-executes under y-brush"));
+    // y∈[25,45] keeps y=30,40 → rows x=3,4: 2 of 6.
+    assert!(
+        filtered_rows < baseline_rows,
+        "intervalY brush reduces plot B rows: {filtered_rows} !< {baseline_rows}"
+    );
+    assert_eq!(filtered_rows, 2, "y∈[25,45] keeps y=30,40");
+}
+
+/// scenario 1 (XY): an analysis-derived `intervalXY` binding restricts the
+/// downstream plot on BOTH axes. The ranges are chosen so the 2D result is
+/// strictly smaller than either axis alone would give — proving both bounds
+/// bind, not just one.
+#[test]
+fn crossfilter_brush_interval_xy_filters_downstream() {
+    let parsed = parse_spec(SPEC_XY, Format::Yaml).expect("spec parses");
+    let spec = parsed.spec;
+    let analysis = analyse_spec(&spec).expect("spec analyses");
+
+    let spec_binding = &analysis.brushable_bindings[0];
+    assert_eq!(spec_binding.channels.x.as_deref(), Some("x"));
+    assert_eq!(spec_binding.channels.y.as_deref(), Some("y"));
+    let bindings = [BrushBinding::from(spec_binding)];
+
+    let engine = Engine::new();
+    let mut session = engine
+        .load_spec(spec, analysis, None)
+        .expect("spec loads")
+        .session;
+
+    let baseline_rows = total_rows(session.execute_all()[1].as_ref().expect("plot B executes"));
+    assert_eq!(baseline_rows, 6);
+
+    // Brush x∈[2.5,5.5] (would keep x=3,4,5 → 3 rows on its own) AND
+    // y∈[15,45] (would keep y=20,30,40 → x=2,3,4 → 3 rows on its own).
+    // The intersection is x∈{3,4} = 2 rows: strictly fewer than either axis,
+    // so a dropped bound on either axis would show 3, not 2.
+    let mut interaction = InteractionState::start_brush(Point::new(2.5, 15.0));
+    interaction.update_brush(Point::new(5.5, 45.0));
+    let (_state, aggregated) = commit_brush_release_multi(&interaction, &bindings, &mut session);
+
+    let (_name, results) = &aggregated[0];
+    let (mark_index, result) = &results[0];
+    assert_eq!(*mark_index, 1);
+    let filtered_rows = total_rows(result.as_ref().expect("plot B re-executes under xy-brush"));
+    assert_eq!(
+        filtered_rows, 2,
+        "intervalXY intersects both axes: x∈{{3,4}} (fewer than either axis's 3)"
+    );
+}
+
 /// Self-exclusion: a plot that brushes AND is filtered by its own selection
 /// must not filter itself. Brushing a sub-range leaves the mark's rows
 /// unchanged.
@@ -258,5 +409,184 @@ fn crossfilter_plot_does_not_filter_itself() {
     assert_eq!(
         rows, baseline_rows,
         "a plot must not filter itself under crossfilter (self-exclusion)"
+    );
+}
+
+/// Plot A carries a `toggleX` point selection; plot B is filtered by it. A
+/// click on data value x=3 must restrict plot B to that single value.
+const SPEC_POINT: &str = r#"
+params:
+  pt: { select: crossfilter }
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+    - { x: 3, y: 30 }
+    - { x: 4, y: 40 }
+    - { x: 5, y: 50 }
+    - { x: 6, y: 60 }
+hconcat:
+  - plot:
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+    - select: toggleX
+      as: $pt
+    width: 360
+    height: 300
+  - plot:
+    - mark: dot
+      data: { from: t, filterBy: $pt }
+      x: x
+      y: y
+    width: 360
+    height: 300
+"#;
+
+/// scenario 5 (feature): a `toggleX` point selection threads through the same
+/// binding pipeline as the interval brushes — analysis yields a PointX binding,
+/// `point_to_predicate` turns a clicked value into `x = <value>`, and the live
+/// Session restricts the downstream plot to that single value.
+#[test]
+fn crossfilter_point_toggle_x_filters_downstream() {
+    let parsed = parse_spec(SPEC_POINT, Format::Yaml).expect("spec parses");
+    let spec = parsed.spec;
+    let analysis = analyse_spec(&spec).expect("spec analyses");
+
+    let ui_binding = BrushBinding::from(&analysis.brushable_bindings[0]);
+    assert_eq!(ui_binding.kind, BrushKind::PointX, "toggleX → PointX");
+    assert_eq!(ui_binding.channels.x.as_deref(), Some("x"));
+
+    let engine = Engine::new();
+    let mut session = engine
+        .load_spec(spec, analysis, None)
+        .expect("spec loads")
+        .session;
+    let baseline_rows = total_rows(session.execute_all()[1].as_ref().expect("plot B executes"));
+    assert_eq!(baseline_rows, 6);
+
+    // A click on data value x=3 → point predicate `x = 3`.
+    let pred = point_to_predicate(3.0, ui_binding.kind, &ui_binding.channels);
+    let results = session.propagate_selection(
+        &ui_binding.selection_name,
+        ui_binding.contributor.clone(),
+        pred,
+    );
+    let (mark_index, result) = &results[0];
+    assert_eq!(*mark_index, 1, "plot B (index 1) is the subscriber");
+    let rows = total_rows(result.as_ref().expect("plot B re-executes under point selection"));
+    assert_eq!(rows, 1, "x = 3 selects exactly one row");
+}
+
+/// Plot A drives TWO selections — a `toggleX` point (`$pt`) and an `intervalY`
+/// (`$iv`). Plot B is filtered by `$pt`, plot C by `$iv`. Each selection must
+/// reach only its own subscriber with only its own predicate.
+const SPEC_TWO_SELECTIONS: &str = r#"
+params:
+  pt: { select: crossfilter }
+  iv: { select: crossfilter }
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+    - { x: 3, y: 30 }
+    - { x: 4, y: 40 }
+    - { x: 5, y: 50 }
+    - { x: 6, y: 60 }
+hconcat:
+  - plot:
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+    - select: toggleX
+      as: $pt
+    - select: intervalY
+      as: $iv
+    width: 360
+    height: 300
+  - plot:
+    - mark: dot
+      data: { from: t, filterBy: $pt }
+      x: x
+      y: y
+    width: 360
+    height: 300
+  - plot:
+    - mark: dot
+      data: { from: t, filterBy: $iv }
+      x: x
+      y: y
+    width: 360
+    height: 300
+"#;
+
+/// scenario 5 (the decisive independence assertion): one plot drives a point
+/// selection AND an interval selection into two distinct channels. A subscriber
+/// to the point selection sees ONLY the point predicate; a subscriber to the
+/// interval sees ONLY the interval predicate. Values are chosen so any
+/// cross-contamination would collapse a subscriber to zero rows.
+#[test]
+fn crossfilter_two_selections_stay_independent() {
+    let parsed = parse_spec(SPEC_TWO_SELECTIONS, Format::Yaml).expect("spec parses");
+    let spec = parsed.spec;
+    let analysis = analyse_spec(&spec).expect("spec analyses");
+
+    // Two bindings on plot A: a PointX ($pt) and an IntervalY ($iv).
+    use brightfield_spec::analysis::BrushKind as Spec;
+    let pt_b = analysis
+        .brushable_bindings
+        .iter()
+        .find(|b| b.kind == Spec::PointX)
+        .map(BrushBinding::from)
+        .expect("toggleX binding");
+    let iv_b = analysis
+        .brushable_bindings
+        .iter()
+        .find(|b| b.kind == Spec::IntervalY)
+        .map(BrushBinding::from)
+        .expect("intervalY binding");
+    assert_eq!(pt_b.selection_name, "pt");
+    assert_eq!(iv_b.selection_name, "iv");
+
+    let engine = Engine::new();
+    let mut session = engine
+        .load_spec(spec, analysis, None)
+        .expect("spec loads")
+        .session;
+
+    // $pt = x=5 (its row has y=50, OUTSIDE the interval below) and
+    // $iv = y∈[25,45] (rows y=30,40 → x=3,4, none of which is x=5). So if the
+    // point subscriber were wrongly ALSO filtered by the interval it would be 0
+    // rows, and vice versa — each non-zero count proves isolation.
+    let pt_pred = point_to_predicate(5.0, pt_b.kind, &pt_b.channels);
+    let pt_results =
+        session.propagate_selection(&pt_b.selection_name, pt_b.contributor.clone(), pt_pred);
+    // Subscriber to $pt is plot B (mark index 1) only.
+    assert_eq!(pt_results.len(), 1, "only plot B subscribes to $pt");
+    let (pt_idx, pt_res) = &pt_results[0];
+    assert_eq!(*pt_idx, 1);
+    assert_eq!(
+        total_rows(pt_res.as_ref().expect("B re-executes")),
+        1,
+        "plot B sees only $pt (x=5) → 1 row; would be 0 if $iv leaked in"
+    );
+
+    let iv_pred = brush_rect_to_predicate(
+        Rect::new(0.0, 25.0, 100.0, 45.0),
+        iv_b.kind,
+        &iv_b.channels,
+    );
+    let iv_results =
+        session.propagate_selection(&iv_b.selection_name, iv_b.contributor.clone(), iv_pred);
+    // Subscriber to $iv is plot C (mark index 2) only.
+    assert_eq!(iv_results.len(), 1, "only plot C subscribes to $iv");
+    let (iv_idx, iv_res) = &iv_results[0];
+    assert_eq!(*iv_idx, 2);
+    assert_eq!(
+        total_rows(iv_res.as_ref().expect("C re-executes")),
+        2,
+        "plot C sees only $iv (y∈[25,45]) → 2 rows; would be 0 if $pt leaked in"
     );
 }

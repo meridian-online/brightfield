@@ -286,6 +286,8 @@ fn brush_kind_from_spec(kind: brightfield_spec::analysis::BrushKind) -> BrushKin
         Spec::IntervalY => BrushKind::IntervalY,
         Spec::IntervalXY => BrushKind::IntervalXY,
         Spec::Point => BrushKind::Point,
+        Spec::PointX => BrushKind::PointX,
+        Spec::PointY => BrushKind::PointY,
     }
 }
 
