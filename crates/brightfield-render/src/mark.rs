@@ -13,7 +13,7 @@ use vello::Scene;
 
 use crate::channel::{Channel, ChannelMap};
 use crate::kde::{kde_1d_weighted, kde_2d, silverman_1d_weighted, silverman_2d_per_axis};
-use crate::scale::{merge_linear_scale, Scale, ScaleSet};
+use crate::scale::{merge_linear_scale, Scale, ScaleSet, SequentialScheme};
 use crate::text::{draw_text, TextAnchor};
 
 /// Highlight state for per-row dim/emphasis rendering.
@@ -1313,9 +1313,12 @@ impl MarkRenderer for Density2DRenderer {
 // RasterRenderer (raster — binned 2D count heatmap)
 // ---------------------------------------------------------------------------
 
-/// Minimum cell alpha, so every OCCUPIED bin (count ≥ 1) is visible rather than
-/// fading to invisible near the low end of the count range.
-const RASTER_MIN_ALPHA: f32 = 0.25;
+/// Minimum ramp position for an OCCUPIED bin (count ≥ 1), so the sparsest cells
+/// stay visibly tinted rather than washing out to the low end of a light-anchored
+/// scheme (blues starts near-white). Replaces the former `RASTER_MIN_ALPHA` — the
+/// same visibility guarantee, expressed as a floor on ramp position `t` (the
+/// domain is zero-anchored, so an occupied cell already sits above `t = 0`).
+const RASTER_MIN_T: f64 = 0.15;
 
 /// Sorted unique values from a nullable column, de-duplicated within a tolerance.
 fn sorted_unique(vals: &[Option<f64>]) -> Vec<f64> {
@@ -1372,12 +1375,18 @@ fn bin_step(centres: &[f64]) -> Option<f64> {
 }
 
 /// Renders a 2D count heatmap. The density lowerer emits `(x_centre, y_centre,
-/// count)` for each OCCUPIED bin; this draws one filled cell per bin with alpha
-/// proportional to the raw count — a single-hue density map, no KDE smoothing.
+/// count)` for each OCCUPIED bin; this draws one filled cell per bin coloured by
+/// its raw count through a sequential colour ramp — a true count → gradient
+/// heatmap, no KDE smoothing.
 ///
-/// A sequential colour ramp (count → gradient) is a follow-up: [`Scale`] has no
-/// continuous-colour form, so alpha-on-one-hue is the encoding today.
-pub struct RasterRenderer;
+/// The ramp is the Fill [`Scale::Sequential`] this mark's [`Self::augment_scales`]
+/// builds from the count domain; `scheme` selects its colours. If the Fill scale
+/// is somehow absent, `render` falls back to the legacy alpha-on-steelblue path.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RasterRenderer {
+    /// The continuous colour scheme (default viridis).
+    pub scheme: SequentialScheme,
+}
 
 impl MarkRenderer for RasterRenderer {
     fn render(
@@ -1419,6 +1428,14 @@ impl MarkRenderer for RasterRenderer {
             return;
         }
 
+        // Prefer the Fill Sequential ramp (built by augment_scales). Its domain is
+        // zero-anchored [0, max_count]; each occupied cell samples the ramp at its
+        // count, floored at RASTER_MIN_T so the sparsest cells stay visible. A
+        // missing / non-Sequential Fill scale falls back to alpha-on-steelblue.
+        let fill_ramp = match scales.get(Channel::Fill) {
+            Some(scale @ Scale::Sequential { .. }) => Some(scale),
+            _ => None,
+        };
         let [cr, cg, cb, _] = DEFAULT_COLOUR.components;
         for i in 0..batch.num_rows() {
             let (Some(cx), Some(cy), Some(count)) = (x_vals[i], y_vals[i], count_vals[i]) else {
@@ -1437,23 +1454,30 @@ impl MarkRenderer for RasterRenderer {
             if !(left.is_finite() && right.is_finite() && top.is_finite() && bottom.is_finite()) {
                 continue;
             }
-            // Alpha encodes count, floored so every occupied cell is visible.
-            let t = (count / max_count).clamp(0.0, 1.0) as f32;
-            let alpha = RASTER_MIN_ALPHA + (1.0 - RASTER_MIN_ALPHA) * t;
+            let colour = match fill_ramp {
+                Some(ramp) => {
+                    // Floor the ramp position at RASTER_MIN_T. The domain is
+                    // [0, max_count], so a floored position `p` is the value
+                    // `p · max_count`; the ramp colour carries full alpha.
+                    let t = (count / max_count).clamp(0.0, 1.0).max(RASTER_MIN_T);
+                    Color::new(ramp.map_continuous(t * max_count))
+                }
+                None => {
+                    // Legacy fallback: single-hue with count-proportional alpha,
+                    // floored at RASTER_MIN_T so every occupied cell is visible.
+                    let t = (count / max_count).clamp(0.0, 1.0).max(RASTER_MIN_T) as f32;
+                    Color::new([cr, cg, cb, t])
+                }
+            };
             let cell = kurbo::Rect::new(left, top, right, bottom);
-            scene.fill(
-                Fill::NonZero,
-                Affine::IDENTITY,
-                Color::new([cr, cg, cb, alpha]),
-                None,
-                &cell,
-            );
+            scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &cell);
         }
     }
 
     /// Widen the linear x/y domains by half a bin so the outermost cells (which
     /// extend ±half a bin past their centres) fit inside the plot area rather
-    /// than overflowing into the axis margins.
+    /// than overflowing into the axis margins, and build the count → colour ramp
+    /// under [`Channel::Fill`] so the legend plumbing picks it up.
     fn augment_scales(
         &self,
         scales: &mut ScaleSet,
@@ -1474,6 +1498,24 @@ impl MarkRenderer for RasterRenderer {
                 (bin_step(&centres), centres.first(), centres.last())
             {
                 merge_linear_scale(scales, channel, lo - step / 2.0, hi + step / 2.0, range);
+            }
+        }
+
+        // Count → colour ramp under Fill, zero-anchored at [0, max_count] so an
+        // occupied cell (count ≥ 1) maps above the ramp's low end. Generic column
+        // inference can't build this — the count lives in the reserved
+        // `__bf_count` column, not the mark's channel map.
+        if let Some(counts) = column_as_f64(batch, DENSITY_COUNT_COL) {
+            let max_count = counts.iter().flatten().cloned().fold(0.0_f64, f64::max);
+            if max_count > 0.0 {
+                scales.insert(
+                    Channel::Fill,
+                    Scale::Sequential {
+                        domain_min: 0.0,
+                        domain_max: max_count,
+                        stops: self.scheme.stops(),
+                    },
+                );
             }
         }
     }
@@ -1823,7 +1865,7 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
         Box::new(Density1DRenderer { axis: DensityAxis::Y }),
     ));
     v.push((MarkKind::Density, Box::new(Density2DRenderer)));
-    v.push((MarkKind::Raster, Box::new(RasterRenderer)));
+    v.push((MarkKind::Raster, Box::new(RasterRenderer::default())));
     v.push((MarkKind::RegressionY, Box::new(RegressionRenderer::default())));
     v.push((MarkKind::RegressionX, Box::new(RegressionRenderer::default())));
     v
@@ -2539,15 +2581,68 @@ mod tests {
         let mut cm = ChannelMap::new();
         cm.insert(Channel::X, "x_bin".to_string());
         cm.insert(Channel::Y, "y_bin".to_string());
-        let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        RasterRenderer::default().augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
 
         let mut scene = Scene::new();
-        RasterRenderer.render(&mut scene, &batch, &cm, &scales, None);
+        RasterRenderer::default().render(&mut scene, &batch, &cm, &scales, None);
         assert!(
             count_scene_paths(&scene) >= 9,
             "raster on a 3×3 grid must emit ≥9 filled cells, got {}",
             count_scene_paths(&scene)
         );
+    }
+
+    // scs_ac05: each occupied cell is coloured through the Fill Sequential ramp
+    // (count → map_continuous), so different counts get different fills; with no
+    // Fill scale it falls back to the legacy path without panicking.
+    #[test]
+    fn scs_ac05_raster_colours_cells_through_ramp() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x_bin", DataType::Float64, false),
+            Field::new("y_bin", DataType::Float64, false),
+            Field::new(DENSITY_COUNT_COL, DataType::Float64, false),
+        ]));
+        // Two occupied bins on a diagonal (so each axis has ≥2 distinct centres
+        // for the bin-pitch recovery) with very different counts (1 vs 100).
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![0.0, 1.0])),
+                Arc::new(Float64Array::from(vec![0.0, 1.0])),
+                Arc::new(Float64Array::from(vec![1.0, 100.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x_bin".to_string());
+        cm.insert(Channel::Y, "y_bin".to_string());
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        RasterRenderer::default().augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+
+        // The low-count and high-count cells sample different ramp colours. The
+        // render floors the normalised position at RASTER_MIN_T: count 1 over
+        // max 100 → t = 0.15 → sample value 15; count 100 → t = 1 → sample 100.
+        let ramp = scales.get(Channel::Fill).expect("fill ramp built");
+        let low = ramp.map_continuous((1.0_f64 / 100.0).max(RASTER_MIN_T) * 100.0);
+        let high = ramp.map_continuous(100.0);
+        assert!(low != high, "ramp maps different counts to different colours");
+
+        // Rendering produces both cells.
+        let mut scene = Scene::new();
+        RasterRenderer::default().render(&mut scene, &batch, &cm, &scales, None);
+        assert!(count_scene_paths(&scene) >= 2, "two occupied cells render");
+
+        // Fallback: with the Fill scale removed, cells still render (no panic).
+        let mut bare = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        RasterRenderer::default().augment_scales(&mut bare, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        // Rebuild without the Fill scale by re-inferring x/y widening only.
+        let mut no_fill = ScaleSet::new();
+        no_fill.insert(Channel::X, bare.get(Channel::X).unwrap().clone());
+        no_fill.insert(Channel::Y, bare.get(Channel::Y).unwrap().clone());
+        let mut scene2 = Scene::new();
+        RasterRenderer::default().render(&mut scene2, &batch, &cm, &no_fill, None);
+        assert!(count_scene_paths(&scene2) >= 2, "fallback path still renders cells");
     }
 
     // augment_scales widens the linear x/y domains by half a bin so the edge
@@ -2573,7 +2668,7 @@ mod tests {
         cm.insert(Channel::X, "x_bin".to_string());
         cm.insert(Channel::Y, "y_bin".to_string());
         let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
-        RasterRenderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        RasterRenderer::default().augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
 
         match scales.get(Channel::X) {
             Some(Scale::Linear { domain_min, domain_max, .. }) => {
@@ -2582,6 +2677,45 @@ mod tests {
             }
             other => panic!("expected a widened linear x scale, got {other:?}"),
         }
+    }
+
+    // scs_ac04: augment_scales builds a Fill Sequential zero-anchored at
+    // [0, max_count] with the scheme's stops, alongside the x/y half-bin widening.
+    #[test]
+    fn scs_ac04_raster_augment_scales_builds_fill_sequential() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x_bin", DataType::Float64, false),
+            Field::new("y_bin", DataType::Float64, false),
+            Field::new(DENSITY_COUNT_COL, DataType::Float64, false),
+        ]));
+        // Centres 0,1,2 on both axes; counts up to 7 → domain [0, 7].
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![0.0, 1.0, 2.0])),
+                Arc::new(Float64Array::from(vec![0.0, 1.0, 2.0])),
+                Arc::new(Float64Array::from(vec![3.0, 7.0, 1.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x_bin".to_string());
+        cm.insert(Channel::Y, "y_bin".to_string());
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        let renderer = RasterRenderer { scheme: SequentialScheme::Blues };
+        renderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+
+        match scales.get(Channel::Fill) {
+            Some(Scale::Sequential { domain_min, domain_max, stops }) => {
+                assert!((domain_min - 0.0).abs() < f64::EPSILON, "domain zero-anchored");
+                assert!((domain_max - 7.0).abs() < f64::EPSILON, "domain_max == max count");
+                assert_eq!(stops, &SequentialScheme::Blues.stops(), "stops match the scheme");
+            }
+            other => panic!("expected a Fill Sequential scale, got {other:?}"),
+        }
+        // The x/y half-bin widening still holds.
+        assert_eq!(scales.get(Channel::X).unwrap().domain_min(), Some(-0.5));
+        assert_eq!(scales.get(Channel::Y).unwrap().domain_max(), Some(2.5));
     }
 
     #[test]
