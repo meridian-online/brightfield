@@ -273,6 +273,10 @@ struct LivePlotMeta {
     layout: ChartLayout,
     bindings: Vec<BrushBinding>,
     scales: ScaleSet,
+    /// Whether the plot draws its own inline colour legend (false when a
+    /// standalone `legend:` node relocated it) — carried to the coordinator so a
+    /// live re-render keeps the same suppression.
+    draw_inline_legend: bool,
 }
 
 /// Thin wrapper for the headless/PNG path and the hot-reload watcher: runs the
@@ -517,6 +521,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             layout,
             bindings,
             scales,
+            draw_inline_legend,
         });
     }
 
@@ -813,6 +818,7 @@ fn main() {
                     layout: meta.layout,
                     bindings: meta.bindings,
                     scales: meta.scales,
+                    draw_inline_legend: meta.draw_inline_legend,
                     state: w.state.clone(),
                 })
                 .collect();
@@ -1027,6 +1033,7 @@ hconcat:
             layout: ChartLayout::new(300.0, 200.0),
             bindings: vec![],
             scales,
+            draw_inline_legend: true,
         };
         let placements = super::resolve_legends(&spec, std::slice::from_ref(&meta));
         assert_eq!(placements.len(), 1, "one standalone legend resolves");
