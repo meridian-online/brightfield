@@ -279,7 +279,9 @@ impl CrossfilterCoordinator {
             })
             .collect();
         let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
-        let (scene, scales) = build_multi_mark_scene(&refs);
+        // A cross-filter re-render keeps the plot's inline legend; standalone-
+        // legend suppression is resolved at the app layer, not here.
+        let (scene, scales) = build_multi_mark_scene(&refs, true);
         drop(refs);
         drop(chart_data);
 

@@ -5,8 +5,8 @@
 #
 #   BRIGHTFIELD_DUMP_PNG=legend.png cargo run -p brightfield-app -- examples/legend-standalone.yaml
 #
-# (The plot also draws its own inline fill legend in its top-right corner; the
-# standalone node is the separately-positioned one on the far right.)
+# An explicit `for:` RELOCATES the plot's legend: the plot no longer draws its
+# own inline (top-right) legend, so the scale appears once, on the far right.
 data:
   t:
     - { x: 1, y: 3, grp: alpha }

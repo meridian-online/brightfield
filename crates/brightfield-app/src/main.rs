@@ -7,7 +7,7 @@
 //! which needs full Xcode + Metal compiler). Without it, the pipeline runs
 //! headlessly and prints a summary.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::Path;
 use std::process;
@@ -383,6 +383,33 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
     let groups = collect_plot_groups(&parsed.spec);
     let registry = default_renderers();
 
+    // Plot paths whose inline colour legend an explicit standalone
+    // `legend: color for: <name>` node relocates — the plot must NOT also draw its
+    // own top-right legend, or the same scale appears twice. A bare `legend:`
+    // (no `for:`) stays an addition, so only explicit `for:` targets suppress.
+    let legend_suppressed: HashSet<String> = {
+        let mut name_to_path: HashMap<String, String> = HashMap::new();
+        for (path, node) in collect_plot_nodes(&parsed.spec) {
+            if let Some(brightfield_spec::ast::SpecValue::String(name)) =
+                node.attributes.get("name")
+            {
+                name_to_path.insert(name.clone(), path);
+            }
+        }
+        let mut set = HashSet::new();
+        for (_rect, node) in placed_legend_nodes(&parsed.spec, Rect::new(0.0, 0.0, 0.0, 0.0)) {
+            if node.channel != LegendChannel::Color {
+                continue;
+            }
+            if let LegendFor::Named(name) = legend_for(node) {
+                if let Some(path) = name_to_path.get(&name) {
+                    set.insert(path.clone());
+                }
+            }
+        }
+        set
+    };
+
     let mut plots: Vec<PlotRender> = Vec::new();
     let mut live_plots: Vec<LivePlotMeta> = Vec::new();
     for plot in &placed {
@@ -417,7 +444,8 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             continue;
         }
         let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
-        let (scene, scales) = build_multi_mark_scene(&refs);
+        let draw_inline_legend = !legend_suppressed.contains(&plot.path);
+        let (scene, scales) = build_multi_mark_scene(&refs, draw_inline_legend);
         drop(refs);
         drop(chart_data);
 
@@ -1006,7 +1034,7 @@ plot:
             highlight: None,
         }];
         let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
-        let (scene, scales) = build_multi_mark_scene(&refs);
+        let (scene, scales) = build_multi_mark_scene(&refs, true);
 
         // Scene should be non-empty (the valid dot mark rendered).
         let encoding = scene.encoding();

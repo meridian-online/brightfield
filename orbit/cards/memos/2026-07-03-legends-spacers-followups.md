@@ -1,7 +1,10 @@
 # Legends & spacers hosting — follow-ups (multi-view inc 6)
 
 This increment hosts **spacers** (already functional — see below) and renders
-**standalone colour legends** in the headless composite. What's deferred:
+**standalone colour legends** in the headless composite. A standalone
+`legend: color for: <name>` now **relocates** the plot's legend — the plot's own
+inline (top-right) legend is suppressed so the scale isn't drawn twice (item 7).
+What's deferred:
 
 ## 1. Window hosting of standalone legends (eyeball-gated)
 
@@ -79,3 +82,21 @@ neighbouring plots' offsets, a *dropped* legend that sits *between* two plots
 leaves a ~120px blank gap with no legend (a warning fires about the skip, but not
 the gap). Cosmetic, gated behind a resolution-failure warning. Same root as #5 —
 layout reserves before the app knows whether the legend resolves.
+
+## 7. Inline-legend suppression — residual cases
+
+An explicit `legend: color for: <name>` now suppresses that plot's inline legend
+(main.rs computes `legend_suppressed` from the plot-name→legend `for:` map and
+passes `draw_inline_legend=false` to `build_multi_mark_scene`). Two residuals:
+
+- **A bare `legend:` (no `for:`) still ADDS** rather than relocating — it resolves
+  to the sole colour-encoded plot only *after* the scenes are built (needs the
+  scales), so suppressing it would mean a scene rebuild. Deliberately left as an
+  addition: an explicit `for:` reads as "move it here," a bare legend as "also show
+  one." Revisit if product testing wants bare legends to relocate too.
+- **A cross-filter re-render re-draws the inline legend** — `crossfilter.rs` passes
+  `draw_inline_legend=true` because standalone-legend suppression is resolved at the
+  app layer, not in the UI crate. A plot that is BOTH cross-filtered and has a
+  relocated legend would regain its inline legend after a brush. No current example
+  hits this; the clean fix is to thread the suppression flag into the crossfilter
+  scene rebuild.
