@@ -5,6 +5,7 @@ use kurbo::{Affine, Rect};
 use peniko::{Color, Fill};
 use vello::Scene;
 
+use crate::axis::format_number;
 use crate::layout::ChartLayout;
 use crate::scale::Scale;
 use crate::text::{draw_text, measure_width, TextAnchor, LABEL_COLOUR, LABEL_SIZE};
@@ -24,10 +25,31 @@ const LEGEND_PADDING: f64 = 6.0;
 /// Gap between a swatch and its label.
 const LEGEND_LABEL_GAP: f64 = 4.0;
 
+/// Gradient bar width in pixels (continuous legend).
+const BAR_WIDTH: f64 = 14.0;
+
+/// Gradient bar height in pixels (continuous legend).
+const BAR_HEIGHT: f64 = 96.0;
+
+/// Number of stacked quads sampling the ramp down the bar. Enough to read as a
+/// smooth gradient without a gradient-brush dependency.
+const BAR_SAMPLES: usize = 48;
+
 /// The pixel size `(width, height)` a colour legend panel needs for the given
-/// scale's categories, or `None` for a non-colour / empty scale.
+/// scale, or `None` for a non-colour / empty scale. Dispatches on the scale
+/// kind: a categorical [`Scale::Colour`] sizes a swatch column, a continuous
+/// [`Scale::Sequential`] sizes a gradient bar.
 #[must_use]
 pub fn colour_legend_size(colour_scale: &Scale) -> Option<(f64, f64)> {
+    match colour_scale {
+        Scale::Colour { .. } => swatch_legend_size(colour_scale),
+        Scale::Sequential { .. } => sequential_legend_size(colour_scale),
+        _ => None,
+    }
+}
+
+/// The pixel size of the swatch column for a categorical [`Scale::Colour`].
+fn swatch_legend_size(colour_scale: &Scale) -> Option<(f64, f64)> {
     let categories = match colour_scale {
         Scale::Colour { categories, .. } if !categories.is_empty() => categories,
         _ => return None,
@@ -39,6 +61,24 @@ pub fn colour_legend_size(colour_scale: &Scale) -> Option<(f64, f64)> {
     let n = categories.len() as f64;
     let width = LEGEND_PADDING * 2.0 + SWATCH_SIZE + LEGEND_LABEL_GAP + max_label;
     let height = LEGEND_PADDING * 2.0 + (n - 1.0) * ENTRY_SPACING + SWATCH_SIZE;
+    Some((width, height))
+}
+
+/// The pixel size `(width, height)` of the gradient bar for a continuous
+/// [`Scale::Sequential`], sized to hold the bar plus its min/mid/max tick labels;
+/// `None` for any other scale.
+#[must_use]
+pub fn sequential_legend_size(scale: &Scale) -> Option<(f64, f64)> {
+    let (dmin, dmax) = match scale {
+        Scale::Sequential { domain_min, domain_max, .. } => (*domain_min, *domain_max),
+        _ => return None,
+    };
+    let max_label = [dmin, (dmin + dmax) / 2.0, dmax]
+        .iter()
+        .map(|v| measure_width(&format_number(*v), LABEL_SIZE))
+        .fold(0.0_f64, f64::max);
+    let width = LEGEND_PADDING * 2.0 + BAR_WIDTH + LEGEND_LABEL_GAP + max_label;
+    let height = LEGEND_PADDING * 2.0 + BAR_HEIGHT;
     Some((width, height))
 }
 
@@ -59,12 +99,29 @@ pub fn render_colour_legend(
     render_colour_legend_at(scene, box_x, box_y, colour_scale);
 }
 
-/// Render a colour legend with its panel's top-left corner at `(box_x, box_y)`.
+/// Render a colour legend at `(box_x, box_y)`, dispatching on the scale kind: a
+/// categorical [`Scale::Colour`] draws swatches, a continuous
+/// [`Scale::Sequential`] draws a gradient bar. No-op for any other scale.
 ///
-/// The positioned form used to host a standalone `legend:` node at its layout
-/// rect. Each entry is a coloured swatch and its category label. No-op for a
-/// non-colour or empty scale.
+/// This is the single entry point both the inline and standalone paths call so
+/// the swatch/bar choice lives in one place.
 pub fn render_colour_legend_at(
+    scene: &mut Scene,
+    box_x: f64,
+    box_y: f64,
+    colour_scale: &Scale,
+) {
+    match colour_scale {
+        Scale::Colour { .. } => render_swatch_legend_at(scene, box_x, box_y, colour_scale),
+        Scale::Sequential { .. } => render_sequential_legend_at(scene, box_x, box_y, colour_scale),
+        _ => {}
+    }
+}
+
+/// Render a categorical swatch legend with its panel's top-left corner at
+/// `(box_x, box_y)`. Each entry is a coloured swatch and its category label.
+/// No-op for a non-colour or empty scale.
+fn render_swatch_legend_at(
     scene: &mut Scene,
     box_x: f64,
     box_y: f64,
@@ -82,7 +139,7 @@ pub fn render_colour_legend_at(
         return;
     }
 
-    let Some((box_width, box_height)) = colour_legend_size(colour_scale) else {
+    let Some((box_width, box_height)) = swatch_legend_size(colour_scale) else {
         return;
     };
 
@@ -125,6 +182,92 @@ pub fn render_colour_legend_at(
             cat,
             legend_x + SWATCH_SIZE + LEGEND_LABEL_GAP,
             y + SWATCH_SIZE * 0.5 + f64::from(LABEL_SIZE) / 3.0,
+            LABEL_SIZE,
+            LABEL_COLOUR,
+            TextAnchor::Start,
+        );
+    }
+}
+
+/// Render a continuous gradient-bar legend for a [`Scale::Sequential`], panel
+/// top-left at `(box_x, box_y)`. The bar is a vertical ramp — high value at the
+/// top — drawn as [`BAR_SAMPLES`] stacked sampled quads (no gradient-brush
+/// dependency), with min / mid / max numeric tick labels beside it read from the
+/// scale's domain extent. No-op for any non-Sequential scale.
+pub fn render_sequential_legend_at(
+    scene: &mut Scene,
+    box_x: f64,
+    box_y: f64,
+    scale: &Scale,
+) {
+    let (dmin, dmax) = match scale {
+        Scale::Sequential { domain_min, domain_max, .. } => (*domain_min, *domain_max),
+        _ => return,
+    };
+    let Some((box_width, box_height)) = sequential_legend_size(scale) else {
+        return;
+    };
+
+    // Translucent background panel + thin border, matching the swatch legend.
+    let panel = Rect::new(box_x, box_y, box_x + box_width, box_y + box_height);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        Color::new([1.0, 1.0, 1.0, 0.85]),
+        None,
+        &panel,
+    );
+    scene.stroke(
+        &kurbo::Stroke::new(0.5),
+        Affine::IDENTITY,
+        Color::new([0.8, 0.8, 0.8, 1.0]),
+        None,
+        &panel,
+    );
+
+    let bar_x = box_x + LEGEND_PADDING;
+    let bar_top = box_y + LEGEND_PADDING;
+    let slice_h = BAR_HEIGHT / BAR_SAMPLES as f64;
+
+    // Stack sampled quads top (max) → bottom (min). Each slice samples the ramp
+    // at its centre; the top slice reads the ramp's high end.
+    for s in 0..BAR_SAMPLES {
+        let y = bar_top + s as f64 * slice_h;
+        let t = 1.0 - (s as f64 + 0.5) / BAR_SAMPLES as f64;
+        let value = dmin + t * (dmax - dmin);
+        let quad = Rect::new(bar_x, y, bar_x + BAR_WIDTH, y + slice_h + 0.5);
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::new(scale.map_continuous(value)),
+            None,
+            &quad,
+        );
+    }
+
+    // Thin border around the bar so a light-anchored ramp reads against the panel.
+    let bar = Rect::new(bar_x, bar_top, bar_x + BAR_WIDTH, bar_top + BAR_HEIGHT);
+    scene.stroke(
+        &kurbo::Stroke::new(0.5),
+        Affine::IDENTITY,
+        Color::new([0.6, 0.6, 0.6, 1.0]),
+        None,
+        &bar,
+    );
+
+    // Min / mid / max tick labels beside the bar (max at top, min at bottom).
+    let label_x = bar_x + BAR_WIDTH + LEGEND_LABEL_GAP;
+    let baseline_nudge = f64::from(LABEL_SIZE) / 3.0;
+    for (frac, value) in [
+        (0.0, dmax),
+        (0.5, (dmin + dmax) / 2.0),
+        (1.0, dmin),
+    ] {
+        draw_text(
+            scene,
+            &format_number(value),
+            label_x,
+            bar_top + frac * BAR_HEIGHT + baseline_nudge,
             LABEL_SIZE,
             LABEL_COLOUR,
             TextAnchor::Start,
@@ -239,5 +382,63 @@ mod tests {
         let (_, h1) = colour_legend_size(&one).unwrap();
         assert!(h > h1, "3-entry legend is taller than 1-entry");
         assert!(colour_legend_size(&one).is_some());
+    }
+
+    // --- scs_ac06: continuous gradient-bar legend ---
+
+    fn sequential_scale() -> Scale {
+        Scale::Sequential {
+            domain_min: 0.0,
+            domain_max: 42.0,
+            stops: vec![
+                [0.0, 0.0, 0.0, 1.0],
+                [0.5, 0.5, 0.5, 1.0],
+                [1.0, 1.0, 1.0, 1.0],
+            ],
+        }
+    }
+
+    #[test]
+    fn scs_ac06_sequential_legend_draws_bar_and_dispatches() {
+        // The bar (sampled quads + border) produces scene content.
+        let mut scene = Scene::new();
+        render_sequential_legend_at(&mut scene, 40.0, 40.0, &sequential_scale());
+        assert!(
+            scene.encoding().path_tags.len() > 0,
+            "gradient bar should draw sampled quads at its origin"
+        );
+
+        // It is a no-op for a non-Sequential scale.
+        let mut scene2 = Scene::new();
+        let linear = Scale::Linear {
+            domain_min: 0.0,
+            domain_max: 1.0,
+            range_start: 0.0,
+            range_end: 1.0,
+        };
+        render_sequential_legend_at(&mut scene2, 10.0, 10.0, &linear);
+        assert_eq!(scene2.encoding().path_tags.len(), 0, "no bar for a linear scale");
+
+        // sequential_legend_size is Some for Sequential, None for Band.
+        assert!(sequential_legend_size(&sequential_scale()).is_some());
+        let band = Scale::Band {
+            categories: vec!["a".into()],
+            range_start: 0.0,
+            range_end: 10.0,
+            padding: 0.1,
+        };
+        assert!(sequential_legend_size(&band).is_none());
+
+        // colour_legend_size dispatches a Sequential to the bar size.
+        assert_eq!(
+            colour_legend_size(&sequential_scale()),
+            sequential_legend_size(&sequential_scale()),
+            "colour_legend_size routes Sequential to the gradient-bar size"
+        );
+
+        // The shared entry point routes a Sequential to the bar (draws content).
+        let mut scene3 = Scene::new();
+        render_colour_legend_at(&mut scene3, 40.0, 40.0, &sequential_scale());
+        assert!(scene3.encoding().path_tags.len() > 0, "dispatch draws the bar");
     }
 }

@@ -170,7 +170,7 @@ fn nice_step(span: f64, target_count: usize) -> f64 {
 }
 
 /// Format a number for tick labels.
-fn format_number(value: f64) -> String {
+pub(crate) fn format_number(value: f64) -> String {
     if (value - value.round()).abs() < 1e-9 {
         format!("{}", value.round() as i64)
     } else {
