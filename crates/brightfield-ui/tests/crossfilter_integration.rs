@@ -20,15 +20,19 @@
 //! deliberately bypassed here (the brush rect is authored in column units).
 
 use brightfield_engine::Engine;
-use brightfield_render::channel::ChannelMap;
+use brightfield_render::channel::{Channel, ChannelMap};
 use brightfield_render::layout::ChartLayout;
 use brightfield_render::mark::{count_scene_paths, default_renderers, find_renderer};
+use brightfield_render::nearest::SelectionValue;
+use brightfield_render::scale::infer_scales;
 use brightfield_render::scene::{build_multi_mark_scene, ChartData};
 use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::{parse_spec, Format};
 use brightfield_sql::collect_marks;
 use brightfield_ui::brush::{brush_rect_to_predicate, point_to_predicate, BrushKind};
-use brightfield_ui::chart_view::{commit_brush_clear, commit_brush_release_multi, BrushBinding};
+use brightfield_ui::chart_view::{
+    commit_brush_clear, commit_brush_release_multi, commit_click_multi, BrushBinding,
+};
 use brightfield_ui::InteractionState;
 use kurbo::{Point, Rect};
 
@@ -471,8 +475,8 @@ fn crossfilter_point_toggle_x_filters_downstream() {
     let baseline_rows = total_rows(session.execute_all()[1].as_ref().expect("plot B executes"));
     assert_eq!(baseline_rows, 6);
 
-    // A click on data value x=3 → point predicate `x = 3`.
-    let pred = point_to_predicate(3.0, ui_binding.kind, &ui_binding.channels);
+    // A click on data value x=3 → point predicate `x = 3` (inline ints are Int32).
+    let pred = point_to_predicate(&SelectionValue::Int(3), ui_binding.kind, &ui_binding.channels);
     let results = session.propagate_selection(
         &ui_binding.selection_name,
         ui_binding.contributor.clone(),
@@ -564,7 +568,7 @@ fn crossfilter_two_selections_stay_independent() {
     // Values chosen so cross-contamination collapses a subscriber to 0 rows:
     // $pt = x=5 (its row has y=50, OUTSIDE the interval) and $iv = y∈[25,45]
     // (rows y=30,40 → x=3,4, none of which is x=5). So x=5 AND y∈[25,45] = 0.
-    let pt_pred = point_to_predicate(5.0, pt_b.kind, &pt_b.channels);
+    let pt_pred = point_to_predicate(&SelectionValue::Int(5), pt_b.kind, &pt_b.channels);
     let iv_pred = brush_rect_to_predicate(Rect::new(0.0, 25.0, 100.0, 45.0), iv_b.kind, &iv_b.channels);
 
     // Populate BOTH selections first, so each subscriber is later measured with
@@ -601,5 +605,249 @@ fn crossfilter_two_selections_stay_independent() {
         total_rows(pt_res.as_ref().expect("B re-executes")),
         1,
         "plot B sees only $pt (x=5) → 1 row; would be 0 if $iv leaked in"
+    );
+}
+
+/// scenario 5 (feature) — the LIVE point-CLICK gesture, the pixel→data increment
+/// the data-path test above explicitly deferred. A click PIXEL landing on the
+/// x=3 datum is resolved by `commit_click_multi` (via `find_nearest` + the plot's
+/// scales) to that datum's EXACT stored value, dispatched as `x = 3`; plot B
+/// restricts to it. A second click far from every datum finds no hit and CLEARS
+/// the selection, restoring plot B to full. This is the production gesture path
+/// (pixel in → nearest datum → point_to_predicate → propagate_selection).
+#[test]
+fn crossfilter_point_click_resolves_and_selects_nearest_datum() {
+    let parsed = parse_spec(SPEC_POINT, Format::Yaml).expect("spec parses");
+    let spec = parsed.spec;
+    let analysis = analyse_spec(&spec).expect("spec analyses");
+
+    let binding = BrushBinding::from(&analysis.brushable_bindings[0]);
+    assert_eq!(binding.kind, BrushKind::PointX, "toggleX → PointX");
+
+    // Plot A's mark metadata (index 0), captured before `spec` moves into the
+    // session — the nearest-datum search needs the batch + channel columns.
+    let marks = collect_marks(&spec);
+    let plot_a_channels = ChannelMap::from_mark(marks[0]);
+
+    let engine = Engine::new();
+    let mut session = engine
+        .load_spec(spec, analysis, None)
+        .expect("spec loads")
+        .session;
+
+    let baseline = session.execute_all();
+    let batch_a = baseline[0].as_ref().expect("plot A executes")[0].clone();
+    let baseline_b = total_rows(baseline[1].as_ref().expect("plot B executes"));
+    assert_eq!(baseline_b, 6);
+    drop(baseline);
+
+    // Scales for plot A over the spec's 360×300 plot. The click pixel is the x=3
+    // datum mapped THROUGH these scales, so it lands exactly on that point.
+    let layout = ChartLayout::new(360.0, 300.0);
+    let scales = infer_scales(&batch_a, &plot_a_channels, layout.x_range(), layout.y_range());
+    let x3_px = scales.get(Channel::X).expect("x scale").map_f64(3.0);
+    let y3_px = scales.get(Channel::Y).expect("y scale").map_f64(30.0);
+
+    let bindings = [binding];
+    let marks_meta = [(&batch_a, &plot_a_channels)];
+
+    // Click on the x=3 datum → `x = 3` → plot B restricts to that one row.
+    let (_next, aggregated) = commit_click_multi(
+        Point::new(x3_px, y3_px),
+        &marks_meta,
+        &scales,
+        &bindings,
+        &mut session,
+    );
+    assert_eq!(aggregated.len(), 1, "one binding dispatched");
+    let (_sel, results) = &aggregated[0];
+    let (mark_index, result) = &results[0];
+    assert_eq!(*mark_index, 1, "plot B (index 1) is the subscriber");
+    assert_eq!(
+        total_rows(result.as_ref().expect("plot B re-executes under point select")),
+        1,
+        "click resolves to x=3 and selects exactly that datum"
+    );
+
+    // Click far to the right of every datum (X-distance ≫ hit radius) → a miss →
+    // the selection clears, restoring plot B to all 6 rows.
+    let x6_px = scales.get(Channel::X).expect("x scale").map_f64(6.0);
+    let (_n2, agg2) = commit_click_multi(
+        Point::new(x6_px + 200.0, y3_px),
+        &marks_meta,
+        &scales,
+        &bindings,
+        &mut session,
+    );
+    let (_s2, results2) = &agg2[0];
+    assert_eq!(
+        total_rows(results2[0].1.as_ref().expect("plot B re-executes on clear")),
+        baseline_b,
+        "a click on empty space clears the point selection → plot B full again"
+    );
+}
+
+/// A click on a plot whose binding is an INTERVAL (not a point) still CLEARS
+/// through the shared click path — the click-outside-brush retract must survive
+/// the point-selection addition. Brush to filter plot B, then click to clear.
+#[test]
+fn crossfilter_interval_click_clears_via_shared_path() {
+    let parsed = parse_spec(SPEC, Format::Yaml).expect("spec parses");
+    let spec = parsed.spec;
+    let analysis = analyse_spec(&spec).expect("spec analyses");
+    let binding = BrushBinding::from(&analysis.brushable_bindings[0]);
+    assert_eq!(binding.kind, BrushKind::IntervalX);
+
+    let marks = collect_marks(&spec);
+    let plot_a_channels = ChannelMap::from_mark(marks[0]);
+
+    let engine = Engine::new();
+    let mut session = engine
+        .load_spec(spec, analysis, None)
+        .expect("spec loads")
+        .session;
+
+    let baseline = session.execute_all();
+    let batch_a = baseline[0].as_ref().expect("plot A executes")[0].clone();
+    let baseline_b = total_rows(baseline[1].as_ref().expect("plot B executes"));
+    drop(baseline);
+
+    // First brush x∈[2.5,4.5] (data space) to filter plot B down.
+    let bindings = [binding];
+    let mut brush = InteractionState::start_brush(Point::new(2.5, 0.0));
+    brush.update_brush(Point::new(4.5, 100.0));
+    let (_n, agg) = commit_brush_release_multi(&brush, &bindings, &mut session);
+    let filtered = total_rows(agg[0].1[0].1.as_ref().expect("B re-executes under brush"));
+    assert!(filtered < baseline_b, "brush reduces plot B");
+
+    // Now a click (any pixel) on the interval plot → clears → plot B full again.
+    let layout = ChartLayout::new(360.0, 300.0);
+    let scales = infer_scales(&batch_a, &plot_a_channels, layout.x_range(), layout.y_range());
+    let marks_meta = [(&batch_a, &plot_a_channels)];
+    let (_n2, agg2) = commit_click_multi(
+        Point::new(180.0, 150.0),
+        &marks_meta,
+        &scales,
+        &bindings,
+        &mut session,
+    );
+    assert_eq!(
+        total_rows(agg2[0].1[0].1.as_ref().expect("B re-executes on clear")),
+        baseline_b,
+        "clicking the interval plot clears its brush → plot B full again"
+    );
+}
+
+/// A `toggleX` on a CATEGORICAL (band) axis resolves the clicked category from
+/// the band scale (a pixel→category inverse) and dispatches `cat = 'B'` — a
+/// quoted string literal. Clicking category B's band filters the linked plot to
+/// B's row. The canonical Mosaic "click a bar to filter" point selection.
+const SPEC_POINT_CATEGORICAL: &str = r#"
+params:
+  pick: { select: crossfilter }
+data:
+  t:
+    - { cat: A, n: 3 }
+    - { cat: B, n: 7 }
+    - { cat: C, n: 5 }
+hconcat:
+  - plot:
+    - mark: barY
+      data: { from: t }
+      x: cat
+      y: n
+    - select: toggleX
+      as: $pick
+    width: 360
+    height: 300
+  - plot:
+    - mark: barY
+      data: { from: t, filterBy: $pick }
+      x: cat
+      y: n
+    width: 360
+    height: 300
+"#;
+
+#[test]
+fn crossfilter_categorical_point_click_selects_clicked_category() {
+    let parsed = parse_spec(SPEC_POINT_CATEGORICAL, Format::Yaml).expect("spec parses");
+    let spec = parsed.spec;
+    let analysis = analyse_spec(&spec).expect("spec analyses");
+    let binding = BrushBinding::from(&analysis.brushable_bindings[0]);
+    assert_eq!(binding.kind, BrushKind::PointX, "toggleX → PointX");
+    assert_eq!(binding.channels.x.as_deref(), Some("cat"), "x is the string column");
+
+    let marks = collect_marks(&spec);
+    let plot_a_channels = ChannelMap::from_mark(marks[0]);
+
+    let engine = Engine::new();
+    let mut session = engine
+        .load_spec(spec, analysis, None)
+        .expect("spec loads")
+        .session;
+    let baseline = session.execute_all();
+    let batch_a = baseline[0].as_ref().expect("plot A executes")[0].clone();
+    let baseline_b = total_rows(baseline[1].as_ref().expect("plot B executes"));
+    assert_eq!(baseline_b, 3);
+    drop(baseline);
+
+    let layout = ChartLayout::new(360.0, 300.0);
+    let scales = infer_scales(&batch_a, &plot_a_channels, layout.x_range(), layout.y_range());
+    let bindings = [binding];
+    let marks_meta = [(&batch_a, &plot_a_channels)];
+
+    // Click at category B's band centre → resolves to `cat = 'B'`.
+    let bx = scales
+        .get(Channel::X)
+        .and_then(|s| s.map_category("B"))
+        .expect("band scale maps category B to a pixel");
+    let (_next, aggregated) = commit_click_multi(
+        Point::new(bx, 100.0),
+        &marks_meta,
+        &scales,
+        &bindings,
+        &mut session,
+    );
+    assert_eq!(aggregated.len(), 1, "the categorical click dispatches one selection");
+    let (name, results) = &aggregated[0];
+    assert_eq!(name, "pick");
+    let (mark_index, result) = &results[0];
+    assert_eq!(*mark_index, 1, "plot B (index 1) is the subscriber");
+    assert_eq!(
+        total_rows(result.as_ref().expect("plot B re-executes under the categorical selection")),
+        1,
+        "cat = 'B' selects exactly B's row"
+    );
+
+    // A click at category A's centre re-selects A (a different category).
+    let ax = scales.get(Channel::X).and_then(|s| s.map_category("A")).unwrap();
+    let (_n2, agg2) = commit_click_multi(
+        Point::new(ax, 100.0),
+        &marks_meta,
+        &scales,
+        &bindings,
+        &mut session,
+    );
+    assert_eq!(
+        total_rows(agg2[0].1[0].1.as_ref().expect("B re-executes")),
+        1,
+        "cat = 'A' now selects A's row"
+    );
+
+    // A click LEFT of the band axis range (the margin) clears the selection —
+    // the reset affordance a tiled band axis otherwise lacks.
+    let range_start = scales.get(Channel::X).unwrap().range_start();
+    let (_n3, agg3) = commit_click_multi(
+        Point::new(range_start - 20.0, 100.0),
+        &marks_meta,
+        &scales,
+        &bindings,
+        &mut session,
+    );
+    assert_eq!(
+        total_rows(agg3[0].1[0].1.as_ref().expect("B re-executes on clear")),
+        baseline_b,
+        "clicking outside the bands clears → plot B shows all categories again"
     );
 }

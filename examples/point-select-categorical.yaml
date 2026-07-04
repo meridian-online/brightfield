@@ -1,0 +1,36 @@
+# Categorical point selection (card 0006, type-aware predicates): clicking a bar
+# resolves the clicked category from the band scale and dispatches `region = '…'`
+# — a quoted string literal — cross-filtering the right plot to that category.
+# The canonical Mosaic "click a bar to filter" interaction.
+#
+# Window-gated (the live click needs the macOS app). Headless resting render:
+#   BRIGHTFIELD_DUMP_PNG=cat.png cargo run -p brightfield-app -- examples/point-select-categorical.yaml
+params:
+  pick: { select: crossfilter }
+data:
+  sales:
+    - { region: North, quarter: Q1, revenue: 12 }
+    - { region: North, quarter: Q2, revenue: 18 }
+    - { region: South, quarter: Q1, revenue: 9 }
+    - { region: South, quarter: Q2, revenue: 15 }
+    - { region: East,  quarter: Q1, revenue: 7 }
+    - { region: East,  quarter: Q2, revenue: 11 }
+hconcat:
+  - plot:
+    - mark: barY
+      data: { from: sales }
+      x: region
+      y: revenue
+    - select: toggleX
+      as: $pick
+    width: 340
+    height: 300
+  - plot:
+    # Detail: one dot per sales row. Clicking a region on the left filters this
+    # to just that region's rows (6 dots → 2), a clear cross-filter effect.
+    - mark: dot
+      data: { from: sales, filterBy: $pick }
+      x: quarter
+      y: revenue
+    width: 340
+    height: 300
