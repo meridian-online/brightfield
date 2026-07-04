@@ -4,7 +4,8 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-rust-version = "1.80"
+# Floor set by vello 0.9 (rust-version 1.88); kurbo/peniko/skrifa need 1.85.
+rust-version = "1.88"
 license = "MIT"
 repository = "https://github.com/meridian-online/brightfield"
 

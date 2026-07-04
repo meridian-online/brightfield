@@ -13,9 +13,9 @@ brightfield-engine = { path = "../brightfield-engine" }
 brightfield-spec = { path = "../brightfield-spec" }
 brightfield-sql = { path = "../brightfield-sql" }
 gpui = { git = "https://github.com/zed-industries/zed", rev = "14f0a254", package = "gpui" }
-vello = "0.4"
-kurbo = "0.11"
-peniko = "0.3"
+vello = "0.9"
+kurbo = "0.13"
+peniko = "0.6"
 pollster = "0.4"
 image = "0.25"
 smallvec = "1"
