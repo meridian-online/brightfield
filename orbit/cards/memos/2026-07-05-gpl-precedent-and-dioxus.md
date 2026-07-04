@@ -1,0 +1,38 @@
+Due-diligence memo: how the gpui ecosystem actually handles the zed GPL chain (Longbridge precedent), whether Dioxus would be a better base for Brightfield, and what a framework exit would cost. Follows the licensing addendum in `2026-07-04-framing-the-canvas.md`. All repo/registry claims verified 2026-07-05 by fetching the actual manifests/lockfiles.
+
+## How Longbridge handles the GPL chain: they don't
+
+- gpui-component's workspace has **no `[patch]`, stub, or vendoring** for ztracing/zlog/sum_tree (only an unrelated `psm` WASM patch). Their **committed Cargo.lock has carried the full GPL chain continuously since 2026-02-21** — the commit (PR #2054) that moved them off clean crates.io `gpui 0.2.2` onto zed git for the `gpui_platform` split. Their README and install docs recommend exactly those git deps.
+- **Issue #2475 "GPL-3.0 in dependency chain"** (2026-06-16, cargo-deny output naming zlog/ztracing/sum_tree at their pinned rev): open, **zero comments, no maintainer response**.
+- They are not GPL-naive: PR #132 (Aug 2024, lead maintainer) — "Cleanup first version impls for avoid GPL license" — rewrote early code derived from Zed's GPL crates. Aware then; silent on the transitive chain now.
+- **Longbridge Pro** (their proprietary trading app): manifest not public, but if it builds on their post-Feb-2026 line it statically links GPL-3.0 code in a closed binary — non-compliant absent source availability. The only escape is being pinned to the frozen clean snapshot (crates.io gpui 0.2.2 / gpui-component ≤0.5.1); no public evidence either way, and their library's direction of travel points the other way.
+
+## Timeline + ecosystem pattern
+
+- The chain is young: `ztracing`/`ztracing_macro` were created **2025-12-05** (zed PR #44147), the same commit that gave `sum_tree` its non-optional ztracing dep, GPL-licensed from day one. Any zed-git gpui build at revs ≥ 2025-12-05 links GPL; crates.io gpui 0.2.2 (2025-10-22) predates it, which is *why* the published snapshot is clean.
+- **zed's posture:** issue #55470 (2026-05-02, labeled `area:legal`) — sole maintainer response: "dicey… brought this up internally." No fix merged as of today, though the issue notes the fix is tiny (two `use` lines + one Cargo.toml line). A related PR (#57948) merely tidied license files; it did not relicense or make the dep optional. Watch this issue — upstream may still fix it.
+- **Nobody in the ecosystem stubs or vendors around it.** gpui-ce's published crate is clean (pre-ztracing Apache subcrates) but its git tree pulls post-ztracing zed `sum_tree`; gpui-unofficial republished the GPL crates to crates.io verbatim (honestly labeled). The only clean configurations anywhere are those frozen on the Oct-2025 snapshot. Brightfield's planned stub-patch + cargo-deny gate would make it *more* license-disciplined than the ecosystem it sits in, at a cost of hours.
+- **Tail risk to watch:** zed's direction (collab AGPL→GPL, ztracing GPL by choice) means new GPL crates may appear in the tree. The stub firewall + cargo-deny gate at every pin bump detects any new entrant. The stub strategy only breaks if a *functional* (non-shim) core dep goes GPL — that's the trigger that would genuinely reopen the framework question.
+
+## Would Dioxus be better? No — verified, not reflexive
+
+Dioxus 0.7.x (MIT OR Apache-2.0, funded YC team, real velocity) has two desktop renderers, and each fails a Brightfield-critical axis:
+
+- **Blitz / dioxus-native** (Stylo + Taffy + Parley + **Vello**) is the attractive one — its `CustomPaintSource`/`use_wgpu` API would host our vello Scenes natively in the paint tree, no raster+blit. But its own maintainers call it "pre-alpha… we would not yet recommend building apps with it" / "not ready for production usage"; text selection, scroll/wheel events, clipboard, and IME are planned or backlogged (roadmap #119); no known production deployment exists. Also not license-neutral: Stylo is MPL-2.0 (shippable in MIT, but notice-carrying). Betting an *authoring tool* (text editing! keyboard!) on it is platform risk on every axis that defines the app.
+- **WebView renderer** (the mature one, used by all named production users): **no wgpu interop** — the ask has been an open, unassigned issue since Oct 2024 (#3086). A GPU chart canvas means streaming rasters across an IPC boundary per frame — poison for brush/cross-filter latency. Worst of both worlds for us.
+- **Keyboard-first:** Dioxus has DOM-style key events and menu accelerators; **no keymap/key-context/action-dispatch system**. GPUI ships all of it, battle-tested by Zed — it is the native substrate for the VisiData grammar (`2026-07-04-visidata-keyboard-grammar.md`). On Dioxus we'd build that layer ourselves on a renderer that hasn't finished focus events.
+- **Chrome:** no dock/panel ecosystem exists for Dioxus; gpui-component's inventory (dock, tiles, virtualized table, tree-sitter editor with LSP, charts) is nearly point-for-point an analytics workspace.
+- **What Dioxus genuinely offers us — the web consumer path — is framework-independent.** Dioxus-web renders to the DOM, not Blitz, so the vello chart canvas needs its own WASM+WebGPU path *anyway* (WebGPU now ships in Chrome/Edge/Safari 26/Firefox 141+). That same vello-in-canvas play is available to a future Brightfield consumer mode without adopting Dioxus: the portable asset is the chart engine + Mosaic spec, not the UI framework.
+
+## The exit price (coupling audit)
+
+Framework anxiety should be priced, and it's low. Workspace = 27,210 LOC; gpui appears **only** in brightfield-ui + brightfield-app (4,978 LOC), and even there 48% of brightfield-ui is deliberately gpui-free (interaction.rs, slider.rs, brush.rs, vello_renderer.rs — which owns its own wgpu device — chart_layout.rs). The gpui handoff is one choke point: RGBA buffer → `RenderImage` (`chart_state.rs:97-135`) → one `paint_image` call (`chart_element.rs:220`). A full port to any framework that can blit a buffer, draw overlay rects, and deliver mouse events is **~1,080 LOC rewritten (~4%); ~96% of the workspace survives**, including all coordinator/dispatch logic (headlessly tested, gpui appears only as the final "swap scene + notify" step).
+
+## Conclusions
+
+1. **Stay on GPUI.** The GPL wart is three shim crates handled by an hours-scale stub patch; nothing Dioxus offers today outweighs Zed-grade keyboard dispatch + gpui-component's workspace inventory for an authoring app.
+2. **The stub patch + cargo-deny gate is the whole "handling"** — do it once, gate it in CI, re-check at every pin bump. The ecosystem's alternative (freeze on Oct-2025 crates.io or ignore) is worse on both freshness and compliance.
+3. **Protect the thin-shell discipline** — it *is* the insurance policy. The ~4% exit price exists because element shells stay thin and logic stays framework-free; hold new UI work (WorkspaceView, LegendElement, surfaces) to the same pattern.
+4. **Re-evaluation triggers:** (a) zed fixes #55470 or ships the post-split crates.io gpui → drop the stubs / consider published releases; (b) a functional core zed crate goes GPL → reopen the framework question with the 1.1k-LOC price tag in hand; (c) Blitz reaches its self-declared production designation *and* consumer-mode web delivery becomes a committed sprint → prototype the standalone vello-WASM-WebGPU canvas first, judge Dioxus only for the consumer app, never by rewriting the authoring app.
+
+→ No card yet; feeds the same "framed window" milestone as `2026-07-04-framing-the-canvas.md`. The stub patch is a candidate first task of that card (or a standalone chore PR — it is spec-free and headlessly verifiable via `cargo tree`/cargo-deny).
