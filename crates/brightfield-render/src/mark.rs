@@ -1115,6 +1115,176 @@ impl MarkRenderer for Density2DRenderer {
 }
 
 // ---------------------------------------------------------------------------
+// RasterRenderer (raster — binned 2D count heatmap)
+// ---------------------------------------------------------------------------
+
+/// Minimum cell alpha, so every OCCUPIED bin (count ≥ 1) is visible rather than
+/// fading to invisible near the low end of the count range.
+const RASTER_MIN_ALPHA: f32 = 0.25;
+
+/// Sorted unique values from a nullable column, de-duplicated within a tolerance.
+fn sorted_unique(vals: &[Option<f64>]) -> Vec<f64> {
+    let mut out: Vec<f64> = Vec::new();
+    for v in vals.iter().flatten() {
+        if !out.iter().any(|u| (*u - *v).abs() < 1e-9) {
+            out.push(*v);
+        }
+    }
+    out.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    out
+}
+
+/// The bin pitch (width of one bin, in data units). Equiwidth bin centres sit at
+/// `lo + (bucket + 0.5)·w`, so every gap between two occupied centres is an
+/// *integer multiple* of the width `w` — the pitch is therefore the GCD of the
+/// gaps (their largest common divisor), which we recover as `min_gap / k` for the
+/// smallest `k` whose quotient divides every gap.
+///
+/// This stays correct when NO two occupied bins are adjacent: with discrete data
+/// and `bins` over-specified relative to the range, consecutive values can land in
+/// buckets two-or-more apart, so the smallest gap alone would over-estimate the
+/// width (a 2-apart gap reads as `2w`) and cells would over-cover the empty bins
+/// between them. `None` for fewer than two distinct centres.
+fn bin_step(centres: &[f64]) -> Option<f64> {
+    let gaps: Vec<f64> = centres
+        .windows(2)
+        .map(|w| w[1] - w[0])
+        .filter(|d| *d > 1e-9)
+        .collect();
+    let min_gap = gaps
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, f64::min);
+    if !min_gap.is_finite() {
+        return None;
+    }
+    // The width divides min_gap, so try min_gap/1, min_gap/2, … and take the first
+    // (largest width) that divides every gap — that is their GCD. The common dense
+    // case has an adjacent occupied pair, so k=1 (width == min_gap) hits immediately.
+    // Cap k so extreme sparsity (>12-apart bins) degrades to min_gap rather than
+    // float noise picking a spuriously tiny width.
+    let divides = |w: f64, gap: f64| {
+        let ratio = gap / w;
+        (ratio - ratio.round()).abs() < 1e-6
+    };
+    for k in 1..=12 {
+        let w = min_gap / f64::from(k);
+        if gaps.iter().all(|g| divides(w, *g)) {
+            return Some(w);
+        }
+    }
+    Some(min_gap)
+}
+
+/// Renders a 2D count heatmap. The density lowerer emits `(x_centre, y_centre,
+/// count)` for each OCCUPIED bin; this draws one filled cell per bin with alpha
+/// proportional to the raw count — a single-hue density map, no KDE smoothing.
+///
+/// A sequential colour ramp (count → gradient) is a follow-up: [`Scale`] has no
+/// continuous-colour form, so alpha-on-one-hue is the encoding today.
+pub struct RasterRenderer;
+
+impl MarkRenderer for RasterRenderer {
+    fn render(
+        &self,
+        scene: &mut Scene,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        scales: &ScaleSet,
+        _highlight: Option<&HighlightState>,
+    ) {
+        let (Some(x_col), Some(y_col)) =
+            (channel_map.get(Channel::X), channel_map.get(Channel::Y))
+        else {
+            return;
+        };
+        let (Some(x_scale), Some(y_scale)) =
+            (scales.get(Channel::X), scales.get(Channel::Y))
+        else {
+            return;
+        };
+        let (Some(x_vals), Some(y_vals), Some(count_vals)) = (
+            column_as_f64(batch, x_col),
+            column_as_f64(batch, y_col),
+            column_as_f64(batch, DENSITY_COUNT_COL),
+        ) else {
+            return;
+        };
+
+        // Bin pitch from the unique centres on each axis.
+        let (Some(dx), Some(dy)) = (
+            bin_step(&sorted_unique(&x_vals)),
+            bin_step(&sorted_unique(&y_vals)),
+        ) else {
+            return;
+        };
+
+        let max_count = count_vals.iter().flatten().cloned().fold(0.0_f64, f64::max);
+        if max_count <= 0.0 {
+            return;
+        }
+
+        let [cr, cg, cb, _] = DEFAULT_COLOUR.components;
+        for i in 0..batch.num_rows() {
+            let (Some(cx), Some(cy), Some(count)) = (x_vals[i], y_vals[i], count_vals[i]) else {
+                continue;
+            };
+            if count <= 0.0 {
+                continue;
+            }
+            // Cell spans its centre ± half a bin, mapped to pixels.
+            let xa = x_scale.map_f64(cx - dx / 2.0);
+            let xb = x_scale.map_f64(cx + dx / 2.0);
+            let ya = y_scale.map_f64(cy - dy / 2.0);
+            let yb = y_scale.map_f64(cy + dy / 2.0);
+            let (left, right) = (xa.min(xb), xa.max(xb));
+            let (top, bottom) = (ya.min(yb), ya.max(yb));
+            if !(left.is_finite() && right.is_finite() && top.is_finite() && bottom.is_finite()) {
+                continue;
+            }
+            // Alpha encodes count, floored so every occupied cell is visible.
+            let t = (count / max_count).clamp(0.0, 1.0) as f32;
+            let alpha = RASTER_MIN_ALPHA + (1.0 - RASTER_MIN_ALPHA) * t;
+            let cell = kurbo::Rect::new(left, top, right, bottom);
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                Color::new([cr, cg, cb, alpha]),
+                None,
+                &cell,
+            );
+        }
+    }
+
+    /// Widen the linear x/y domains by half a bin so the outermost cells (which
+    /// extend ±half a bin past their centres) fit inside the plot area rather
+    /// than overflowing into the axis margins.
+    fn augment_scales(
+        &self,
+        scales: &mut ScaleSet,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        x_range: (f64, f64),
+        y_range: (f64, f64),
+    ) {
+        for (channel, range) in [(Channel::X, x_range), (Channel::Y, y_range)] {
+            let Some(col) = channel_map.get(channel) else {
+                continue;
+            };
+            let Some(vals) = column_as_f64(batch, col) else {
+                continue;
+            };
+            let centres = sorted_unique(&vals);
+            if let (Some(step), Some(&lo), Some(&hi)) =
+                (bin_step(&centres), centres.first(), centres.last())
+            {
+                merge_linear_scale(scales, channel, lo - step / 2.0, hi + step / 2.0, range);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // RegressionRenderer (regressionY / regressionX)
 // ---------------------------------------------------------------------------
 
@@ -1455,6 +1625,7 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
         Box::new(Density1DRenderer { axis: DensityAxis::Y }),
     ));
     v.push((MarkKind::Density, Box::new(Density2DRenderer)));
+    v.push((MarkKind::Raster, Box::new(RasterRenderer)));
     v.push((MarkKind::RegressionY, Box::new(RegressionRenderer::default())));
     v.push((MarkKind::RegressionX, Box::new(RegressionRenderer::default())));
     v
@@ -2131,6 +2302,88 @@ mod tests {
             "Density2DRenderer on 3×3 grid must emit ≥9 path operations, got {}",
             count_scene_paths(&scene)
         );
+    }
+
+    // bin_step recovers the true pitch as the GCD of the gaps, even when NO two
+    // occupied bins are adjacent (the min-gap-only approach would over-estimate).
+    #[test]
+    fn raster_bin_step_recovers_pitch_from_sparse_centres() {
+        // Occupied bins at 0, 2, 3 (bin at 1 empty): gaps {2, 1}, GCD 1.
+        assert_eq!(bin_step(&[0.0, 2.0, 3.0]), Some(1.0));
+        // No adjacent occupied pair: centres 2 & 3 buckets apart → gaps {0.9, 1.35}.
+        // Min-gap alone would say 0.9 (2× too wide); the GCD recovers the true 0.45.
+        let step = bin_step(&[0.0, 0.9, 2.25]).expect("recovers pitch");
+        assert!((step - 0.45).abs() < 1e-9, "GCD of {{0.9, 1.35}} is 0.45, got {step}");
+        assert_eq!(bin_step(&[10.0]), None, "one centre → no step");
+        assert_eq!(sorted_unique(&[Some(2.0), None, Some(2.0), Some(1.0)]), vec![1.0, 2.0]);
+    }
+
+    // A raster draws one filled cell per occupied bin — a 3×3 grid → ≥9 fills.
+    #[test]
+    fn raster_renders_one_cell_per_bin() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x_bin", DataType::Float64, false),
+            Field::new("y_bin", DataType::Float64, false),
+            Field::new(DENSITY_COUNT_COL, DataType::Float64, false),
+        ]));
+        let xs = vec![0.0, 1.0, 2.0, 0.0, 1.0, 2.0, 0.0, 1.0, 2.0];
+        let ys = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0];
+        let counts = vec![1.0, 4.0, 1.0, 4.0, 16.0, 4.0, 1.0, 4.0, 1.0];
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(xs)),
+                Arc::new(Float64Array::from(ys)),
+                Arc::new(Float64Array::from(counts)),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x_bin".to_string());
+        cm.insert(Channel::Y, "y_bin".to_string());
+        let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+
+        let mut scene = Scene::new();
+        RasterRenderer.render(&mut scene, &batch, &cm, &scales, None);
+        assert!(
+            count_scene_paths(&scene) >= 9,
+            "raster on a 3×3 grid must emit ≥9 filled cells, got {}",
+            count_scene_paths(&scene)
+        );
+    }
+
+    // augment_scales widens the linear x/y domains by half a bin so the edge
+    // cells (which extend ±half a bin past their centres) fit in the plot.
+    #[test]
+    fn raster_augment_scales_widens_domain_by_half_bin() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x_bin", DataType::Float64, false),
+            Field::new("y_bin", DataType::Float64, false),
+            Field::new(DENSITY_COUNT_COL, DataType::Float64, false),
+        ]));
+        // Centres 0,1,2 on both axes → bin pitch 1.0.
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![0.0, 1.0, 2.0])),
+                Arc::new(Float64Array::from(vec![0.0, 1.0, 2.0])),
+                Arc::new(Float64Array::from(vec![1.0, 1.0, 1.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x_bin".to_string());
+        cm.insert(Channel::Y, "y_bin".to_string());
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        RasterRenderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+
+        match scales.get(Channel::X) {
+            Some(Scale::Linear { domain_min, domain_max, .. }) => {
+                assert!((domain_min - (-0.5)).abs() < 1e-9, "x domain min widened to -0.5");
+                assert!((domain_max - 2.5).abs() < 1e-9, "x domain max widened to 2.5");
+            }
+            other => panic!("expected a widened linear x scale, got {other:?}"),
+        }
     }
 
     #[test]
