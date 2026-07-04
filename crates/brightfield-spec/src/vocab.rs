@@ -267,7 +267,10 @@ vocab_enum! {
 vocab_enum! {
     /// Known legend channels. Keyed to the `legend:` discriminator value.
     pub enum LegendChannel {
-        Color => ("color", Unimplemented),
+        // A standalone `legend: color` renders its `for:` plot's colour scale as
+        // swatches at the legend's layout rect (multi-view inc 6, headless
+        // composite). Opacity/symbol legends have no renderer yet.
+        Color => ("color", Implemented),
         Opacity => ("opacity", Unimplemented),
         Symbol => ("symbol", Unimplemented),
     }

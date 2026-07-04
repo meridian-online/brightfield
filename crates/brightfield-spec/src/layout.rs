@@ -436,6 +436,150 @@ pub fn placed_input_nodes<'a>(spec: &'a Spec, viewport: Rect) -> Vec<(Rect, &'a 
         .collect()
 }
 
+/// The plot AST nodes of a spec, each paired with its component path — the
+/// same path scheme as [`placed_plots`]. Lets a consumer join a positioned plot
+/// back to its `PlotNode` (e.g. to read the `name` attribute a standalone
+/// legend's `for:` references).
+#[must_use]
+pub fn collect_plot_nodes(spec: &Spec) -> Vec<(String, &PlotNode)> {
+    let mut out = Vec::new();
+    if let Some(root) = &spec.root {
+        collect_plot_nodes_in(root, "root", &mut out);
+    }
+    out
+}
+
+fn collect_plot_nodes_in<'a>(
+    component: &'a Component,
+    path: &str,
+    out: &mut Vec<(String, &'a PlotNode)>,
+) {
+    match component {
+        Component::Plot(plot) => out.push((path.to_string(), plot)),
+        Component::HConcat(concat) => {
+            for (i, item) in concat.items.iter().enumerate() {
+                collect_plot_nodes_in(item, &format!("{path}/hconcat[{i}]"), out);
+            }
+        }
+        Component::VConcat(concat) => {
+            for (i, item) in concat.items.iter().enumerate() {
+                collect_plot_nodes_in(item, &format!("{path}/vconcat[{i}]"), out);
+            }
+        }
+        _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Legend placement (standalone colour legends)
+// ---------------------------------------------------------------------------
+
+/// A composition-level standalone `legend:` node with its component-path
+/// identity and positioned rect — the legend analogue of [`PlacedInput`].
+///
+/// Uses the same path scheme as [`PlacedPlot`] / [`placed_inputs`], so a placed
+/// legend joins to its [`LegendNode`] via [`collect_legend_nodes`]. See
+/// [`placed_legend_nodes`] for the joined view an app hosts.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlacedLegend {
+    /// Component path of the legend node.
+    pub path: String,
+    /// The legend's position and reserved size within the viewport.
+    pub rect: Rect,
+}
+
+/// The positioned composition-level standalone legends of a spec.
+///
+/// Mirrors [`placed_inputs`]: walks the layout tree and emits one
+/// [`PlacedLegend`] per `legend:` node placed in an hconcat/vconcat. A legend
+/// nested inside a plot's items is that plot's own inline legend (drawn in the
+/// plot scene), not a composition node, so it is ignored here.
+#[must_use]
+pub fn placed_legends(spec: &Spec, viewport: Rect) -> Vec<PlacedLegend> {
+    let mut out = Vec::new();
+    if let Some(tree) = compute_layout(spec, viewport) {
+        collect_placed_legends(&tree, "root", &mut out);
+    }
+    out
+}
+
+fn collect_placed_legends(node: &LayoutNode, path: &str, out: &mut Vec<PlacedLegend>) {
+    match node {
+        LayoutNode::Legend { rect } => out.push(PlacedLegend {
+            path: path.to_string(),
+            rect: *rect,
+        }),
+        LayoutNode::HConcat { children, .. } => {
+            for (i, child) in children.iter().enumerate() {
+                collect_placed_legends(child, &format!("{path}/hconcat[{i}]"), out);
+            }
+        }
+        LayoutNode::VConcat { children, .. } => {
+            for (i, child) in children.iter().enumerate() {
+                collect_placed_legends(child, &format!("{path}/vconcat[{i}]"), out);
+            }
+        }
+        // Stop at plots (an inline legend is a plot item, not a composition
+        // node); ignore spacers/inputs/marks/interactors.
+        _ => {}
+    }
+}
+
+/// The composition-level standalone legend AST nodes, each paired with its
+/// component path — the node-side of the [`placed_legends`] join. Walks the
+/// [`Component`] tree with the same path scheme as [`collect_placed_legends`].
+#[must_use]
+pub fn collect_legend_nodes(spec: &Spec) -> Vec<(String, &crate::ast::LegendNode)> {
+    let mut out = Vec::new();
+    if let Some(root) = &spec.root {
+        collect_legend_nodes_in(root, "root", &mut out);
+    }
+    out
+}
+
+fn collect_legend_nodes_in<'a>(
+    component: &'a Component,
+    path: &str,
+    out: &mut Vec<(String, &'a crate::ast::LegendNode)>,
+) {
+    match component {
+        Component::Legend(legend) => out.push((path.to_string(), legend)),
+        Component::HConcat(concat) => {
+            for (i, item) in concat.items.iter().enumerate() {
+                collect_legend_nodes_in(item, &format!("{path}/hconcat[{i}]"), out);
+            }
+        }
+        Component::VConcat(concat) => {
+            for (i, item) in concat.items.iter().enumerate() {
+                collect_legend_nodes_in(item, &format!("{path}/vconcat[{i}]"), out);
+            }
+        }
+        // Stop at plots; ignore spacers/inputs/marks/interactors.
+        _ => {}
+    }
+}
+
+/// Positioned standalone legends joined to their AST nodes: `(rect, &LegendNode)`
+/// per composition-level legend. The app-facing view — resolve each legend's
+/// `for:` plot and draw its colour scale at `rect`.
+#[must_use]
+pub fn placed_legend_nodes<'a>(
+    spec: &'a Spec,
+    viewport: Rect,
+) -> Vec<(Rect, &'a crate::ast::LegendNode)> {
+    let placed = placed_legends(spec, viewport);
+    let nodes = collect_legend_nodes(spec);
+    placed
+        .into_iter()
+        .filter_map(|p| {
+            nodes
+                .iter()
+                .find(|(path, _)| path == &p.path)
+                .map(|(_, node)| (p.rect, *node))
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -541,6 +685,66 @@ hconcat:
         // hconcat stacks left-to-right with declared sizes.
         assert_eq!(plots[0].rect, Rect::new(0.0, 0.0, 300.0, 200.0));
         assert_eq!(plots[1].rect, Rect::new(300.0, 0.0, 300.0, 200.0));
+    }
+
+    // Spacer hosting: an `hspace:` between two plots offsets the right plot by
+    // the gap. placed_plots drives both the window and the composite, so the
+    // offset is the whole of "hosting" a spacer (a gap renders nothing).
+    #[test]
+    fn hspace_offsets_subsequent_plot() {
+        let yaml = r#"
+data:
+  t:
+    - { x: 1, y: 2 }
+hconcat:
+  - plot:
+      - { mark: dot, data: { from: t }, x: x, y: y }
+    width: 300
+    height: 200
+  - hspace: 64
+  - plot:
+      - { mark: line, data: { from: t }, x: x, y: y }
+    width: 300
+    height: 200
+"#;
+        let parsed = parse_spec(yaml, Format::Yaml).expect("parse");
+        let plots = placed_plots(&parsed.spec, Rect::zero());
+        assert_eq!(plots.len(), 2, "spacers are not plots");
+        assert_eq!(plots[0].rect.x, 0.0);
+        // Second plot pushed right by plot-0 width (300) + the 64px spacer.
+        assert_eq!(
+            plots[1].rect.x, 364.0,
+            "the 64px hspace offsets the right plot"
+        );
+    }
+
+    // Standalone legend placement: a composition-level `legend:` node is emitted
+    // by placed_legends (an inline plot legend is not), joined to its LegendNode.
+    #[test]
+    fn placed_legend_nodes_join_rect_to_node() {
+        let yaml = r#"
+data:
+  t:
+    - { x: 1, y: 2, grp: a }
+hconcat:
+  - plot:
+      - { mark: dot, data: { from: t }, x: x, y: y, fill: grp }
+    name: scatter
+    width: 300
+    height: 200
+  - legend: color
+    for: scatter
+"#;
+        let parsed = parse_spec(yaml, Format::Yaml).expect("parse");
+        let legends = placed_legends(&parsed.spec, Rect::zero());
+        assert_eq!(legends.len(), 1, "one standalone legend");
+        assert_eq!(legends[0].path, "root/hconcat[1]");
+        // Positioned to the right of the 300px plot.
+        assert_eq!(legends[0].rect.x, 300.0);
+
+        let joined = placed_legend_nodes(&parsed.spec, Rect::zero());
+        assert_eq!(joined.len(), 1);
+        assert_eq!(joined[0].1.channel, crate::vocab::LegendChannel::Color);
     }
 
     // ac-01: Rect struct
