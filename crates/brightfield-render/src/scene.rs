@@ -196,7 +196,14 @@ pub fn build_chart_scene(data: &ChartData<'_>) -> (Scene, ScaleSet) {
 /// Calls `infer_scales_multi` to union domains across all entries, renders grid
 /// once, then each mark renderer, then axes and legend. Returns `(Scene, ScaleSet)`.
 /// The existing `build_chart_scene()` is unchanged.
-pub fn build_multi_mark_scene(entries: &[&ChartData<'_>]) -> (Scene, ScaleSet) {
+///
+/// `draw_inline_legend` controls the plot's own colour legend in its top-right
+/// corner. Pass `false` when a standalone `legend:` node has relocated it to a
+/// separate layout rect, so the same scale isn't drawn twice.
+pub fn build_multi_mark_scene(
+    entries: &[&ChartData<'_>],
+    draw_inline_legend: bool,
+) -> (Scene, ScaleSet) {
     if entries.is_empty() {
         return (Scene::new(), ScaleSet::new());
     }
@@ -291,9 +298,11 @@ pub fn build_multi_mark_scene(entries: &[&ChartData<'_>]) -> (Scene, ScaleSet) {
         render_y_axis(&mut scene, layout, &y_ticks);
     }
 
-    // Colour legend.
-    if let Some(fill_scale) = scales.get(Channel::Fill) {
-        render_colour_legend(&mut scene, layout, fill_scale);
+    // Colour legend — unless a standalone `legend:` node has relocated it.
+    if draw_inline_legend {
+        if let Some(fill_scale) = scales.get(Channel::Fill) {
+            render_colour_legend(&mut scene, layout, fill_scale);
+        }
     }
 
     (scene, scales)
@@ -375,6 +384,50 @@ mod tests {
     use arrow::record_batch::RecordBatch;
     use std::sync::Arc;
 
+    // A fill-colour plot draws an inline legend by default; `draw_inline_legend =
+    // false` suppresses it, so the scale isn't drawn twice when a standalone
+    // `legend:` node has relocated it. (multi-view inc 6 — two-legend fix)
+    #[test]
+    fn build_multi_mark_scene_suppresses_inline_legend_when_asked() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+            Field::new("grp", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])),
+                Arc::new(Float64Array::from(vec![10.0, 20.0, 30.0])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        cm.insert(Channel::Fill, "grp".to_string());
+        let dot = DotRenderer;
+        let data = ChartData {
+            batch: &batch,
+            channel_map: &cm,
+            renderer: &dot,
+            layout: ChartLayout::new(400.0, 300.0),
+            view_extent: None,
+            highlight: None,
+        };
+        let (with_legend, _) = build_multi_mark_scene(&[&data], true);
+        let (without_legend, _) = build_multi_mark_scene(&[&data], false);
+        let (n_with, n_without) = (
+            crate::mark::count_scene_paths(&with_legend),
+            crate::mark::count_scene_paths(&without_legend),
+        );
+        assert!(
+            n_with > n_without,
+            "suppressing the inline legend must drop its swatch/panel fills: {n_with} !> {n_without}"
+        );
+    }
+
     #[test]
     fn mvdash_dashboard_scene_composes_independent_plots() {
         let schema = Arc::new(Schema::new(vec![
@@ -411,8 +464,8 @@ mod tests {
         };
 
         // Each plot's scene is built independently, then composited.
-        let (s0, _) = build_multi_mark_scene(&[&d0]);
-        let (s1, _) = build_multi_mark_scene(&[&d1]);
+        let (s0, _) = build_multi_mark_scene(&[&d0], true);
+        let (s1, _) = build_multi_mark_scene(&[&d1], true);
 
         let two = compose_dashboard(600.0, 200.0, &[(0.0, 0.0, &s0), (300.0, 0.0, &s1)]);
         let one = compose_dashboard(600.0, 200.0, &[(0.0, 0.0, &s0)]);
@@ -749,7 +802,7 @@ mod tests {
             highlight: None,
         };
 
-        let (scene, scales) = build_multi_mark_scene(&[&data1, &data2]);
+        let (scene, scales) = build_multi_mark_scene(&[&data1, &data2], true);
 
         // Scene should be non-empty.
         let encoding = scene.encoding();
@@ -770,7 +823,7 @@ mod tests {
 
     #[test]
     fn msv_ac03_multi_mark_scene_empty_entries() {
-        let (scene, scales) = build_multi_mark_scene(&[]);
+        let (scene, scales) = build_multi_mark_scene(&[], true);
         let encoding = scene.encoding();
         assert_eq!(encoding.path_tags.len(), 0, "empty entries => empty scene");
         assert!(scales.get(Channel::X).is_none());

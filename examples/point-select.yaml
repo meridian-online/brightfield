@@ -1,0 +1,43 @@
+# Point selection via click (card 0006 — the toggleX gesture).
+#
+# Two linked scatter plots over one table. The LEFT plot carries a `toggleX`
+# point interactor writing `$pick`; the RIGHT plot is filtered by it. CLICK a
+# dot on the left — the gesture snaps to the nearest datum and selects its exact
+# x value, so the right plot collapses to the rows sharing that x. Click empty
+# space to clear.
+#
+#   cargo run -p brightfield-app -- examples/point-select.yaml
+#
+# (Interaction is live-window only; a headless PNG shows the resting, unfiltered
+# dashboard.)
+params:
+  pick: { select: crossfilter }
+data:
+  t:
+    - { x: 1, y: 12, g: a }
+    - { x: 2, y: 27, g: b }
+    - { x: 3, y: 19, g: a }
+    - { x: 4, y: 33, g: c }
+    - { x: 5, y: 22, g: b }
+    - { x: 6, y: 41, g: c }
+    - { x: 7, y: 30, g: a }
+    - { x: 8, y: 25, g: b }
+hconcat:
+  - plot:
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+      fill: g
+    - select: toggleX
+      as: $pick
+    width: 360
+    height: 320
+  - plot:
+    - mark: dot
+      data: { from: t, filterBy: $pick }
+      x: x
+      y: y
+      fill: g
+    width: 360
+    height: 320

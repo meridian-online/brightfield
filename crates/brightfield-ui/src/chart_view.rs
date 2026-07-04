@@ -14,9 +14,18 @@ use gpui::{div, px, rgb, Context, Entity, IntoElement, ParentElement, Render, St
 
 use brightfield_engine::error::EngineError;
 use brightfield_engine::RecordBatch;
+use brightfield_render::channel::ChannelMap;
+use brightfield_render::channel::Channel;
+use brightfield_render::nearest::{
+    band_category_at, column_typed_value_at, find_nearest, NearestMode, SelectionValue,
+};
+use brightfield_render::scale::Scale;
+use brightfield_render::scale::ScaleSet;
 use brightfield_spec::analysis::{BrushableBinding, ComponentPath};
 
-use crate::brush::{brush_rect_to_predicate, BrushKind, ChannelColumns, SelectionDispatcher};
+use crate::brush::{
+    brush_rect_to_predicate, point_to_predicate, BrushKind, ChannelColumns, SelectionDispatcher,
+};
 use crate::chart_element::ChartElement;
 use crate::chart_state::ChartState;
 use crate::crossfilter::CrossfilterCoordinator;
@@ -194,6 +203,18 @@ pub fn commit_brush_release_multi<D: SelectionDispatcher>(
         );
         let mut aggregated = Vec::with_capacity(bindings.len());
         for binding in bindings {
+            // Kind-compatibility filter: a rect DRAG only drives interval
+            // selections. Point selections (toggleX/Y) are click-driven, and a
+            // plot may carry both a point and an interval interactor — so
+            // skipping the point bindings here stops a y-drag from dispatching a
+            // degenerate `Predicate::True` (select-all) into the point selection.
+            // Their real predicate is produced by the click gesture (deferred).
+            if matches!(
+                binding.kind,
+                BrushKind::Point | BrushKind::PointX | BrushKind::PointY
+            ) {
+                continue;
+            }
             let predicate = brush_rect_to_predicate(rect, binding.kind, &binding.channels);
             let results = dispatcher.dispatch(
                 &binding.selection_name,
@@ -262,6 +283,145 @@ pub fn commit_brush_clear<D: SelectionDispatcher>(
     }
 }
 
+/// Commit a CLICK gesture across a plot's bindings (card 0006 — the point-
+/// selection gesture that finishes cross-filter). Unlike a drag (which drives
+/// interval selections), a click drives POINT selections:
+///
+/// - A `PointX`/`PointY` binding **snaps to the nearest datum**: `find_nearest`
+///   locates the closest rendered point to `click_px` (in pixels, so the hit
+///   radius is uniform on screen), and the datum's EXACT stored value is read
+///   and dispatched as `col = value`. Selecting the *continuous* click
+///   coordinate would never equal a discrete datum under `=`, so snapping is
+///   what makes point selection actually match rows.
+/// - A click that **misses every datum** (nothing within the hit radius) clears
+///   the point selection — click-empty-space to deselect.
+/// - An interval (or bare `Point`, deferred) binding **clears** on a click —
+///   the click-outside-brush retract that [`commit_brush_clear`] performs.
+///
+/// Point selection forms a numeric `col = value` predicate, so it is scoped to
+/// numeric, categorical, and temporal axes: a continuous axis snaps to the
+/// nearest rendered datum and reads its exact typed value; a categorical (band)
+/// axis resolves the clicked category directly from the scale. The dispatched
+/// `col = value` uses a type-correct literal (bare number/int, quoted+escaped
+/// string, or `make_timestamp(us)`) via [`SelectionValue`].
+///
+/// `marks` are the plot's `(batch, channel_map)` pairs to search (a plot may
+/// layer several); `scales` map data → the same pixel space as `click_px`.
+/// Returns `(Idle, per-binding results)`, mirroring
+/// [`commit_brush_release_multi`].
+pub fn commit_click_multi<D: SelectionDispatcher>(
+    click_px: kurbo::Point,
+    marks: &[(&RecordBatch, &ChannelMap)],
+    scales: &ScaleSet,
+    bindings: &[BrushBinding],
+    dispatcher: &mut D,
+) -> (
+    InteractionState,
+    Vec<(String, Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>)>,
+) {
+    // (selection, contributor) pairs a point binding SELECTED this click, so a
+    // sibling interval (or point-miss) on the SAME target doesn't clear the point
+    // we just set — a plot may carry both a toggle and an interval interactor.
+    let mut selected: std::collections::HashSet<(String, String)> =
+        std::collections::HashSet::new();
+    let mut aggregated = Vec::with_capacity(bindings.len());
+    for binding in bindings {
+        let key = (
+            binding.selection_name.clone(),
+            binding.contributor.0.clone(),
+        );
+        let results = match binding.kind {
+            BrushKind::PointX | BrushKind::PointY => {
+                let mode = if matches!(binding.kind, BrushKind::PointX) {
+                    NearestMode::X
+                } else {
+                    NearestMode::Y
+                };
+                match resolve_point_value(click_px, marks, scales, binding, mode) {
+                    // Hit: select that datum's (or category's) exact value.
+                    Some(value) => {
+                        selected.insert(key);
+                        let predicate = point_to_predicate(&value, binding.kind, &binding.channels);
+                        dispatcher.dispatch(
+                            &binding.selection_name,
+                            binding.contributor.clone(),
+                            predicate,
+                        )
+                    }
+                    // Miss (clicked empty space on a continuous axis, or no column
+                    // on the axis): deselect — unless a sibling point binding
+                    // already selected this same target.
+                    None if selected.contains(&key) => continue,
+                    None => dispatcher.clear(&binding.selection_name, binding.contributor.clone()),
+                }
+            }
+            // Interval kinds and bare `Point` (deferred): a click clears — unless
+            // a sibling point binding already selected this same target.
+            _ if selected.contains(&key) => continue,
+            _ => dispatcher.clear(&binding.selection_name, binding.contributor.clone()),
+        };
+        aggregated.push((binding.selection_name.clone(), results));
+    }
+    (InteractionState::Idle, aggregated)
+}
+
+/// The [`SelectionValue`] a point click resolves to along the axis a binding
+/// selects.
+///
+/// - **Categorical (band) axis**: the axis position *is* the value, so the
+///   clicked category is resolved directly from the band scale (a pixel→category
+///   inverse) — a `Text` value. There is no datum to snap to, so a categorical
+///   click always resolves (to the nearest category).
+/// - **Continuous (linear/time) axis**: snaps to the nearest rendered datum
+///   across all the plot's `marks` (globally closest in pixel space) and reads
+///   its EXACT stored cell — a `Number`/`Int`/`Timestamp`. So the dispatched
+///   `col = value` matches a real datum, not the continuous click coordinate.
+///
+/// `None` when the binding has no column on its axis, or on a continuous-axis
+/// miss (no datum within the hit radius).
+fn resolve_point_value(
+    click_px: kurbo::Point,
+    marks: &[(&RecordBatch, &ChannelMap)],
+    scales: &ScaleSet,
+    binding: &BrushBinding,
+    mode: NearestMode,
+) -> Option<SelectionValue> {
+    let (column, axis, cursor_on_axis) = match binding.kind {
+        BrushKind::PointX => (binding.channels.x.as_deref()?, Channel::X, click_px.x),
+        BrushKind::PointY => (binding.channels.y.as_deref()?, Channel::Y, click_px.y),
+        _ => return None,
+    };
+
+    // Categorical axis: resolve the clicked category from the band scale. A click
+    // OUTSIDE the band's pixel range (e.g. in the axis margin) resolves to `None`
+    // so it clears — otherwise every click snaps to the nearest category and the
+    // filter could never be retracted (full toggle-off is a follow-up).
+    if let Some(scale @ Scale::Band { range_start, range_end, .. }) = scales.get(axis) {
+        let (lo, hi) = (range_start.min(*range_end), range_start.max(*range_end));
+        if cursor_on_axis < lo || cursor_on_axis > hi {
+            return None;
+        }
+        return band_category_at(scale, cursor_on_axis).map(SelectionValue::Text);
+    }
+
+    // Continuous axis: snap to the nearest rendered datum, read its typed value.
+    let mut best: Option<(f64, SelectionValue)> = None; // (pixel distance, value)
+    for (batch, channel_map) in marks {
+        let hit = match find_nearest(click_px, batch, channel_map, scales, mode, None) {
+            Some(h) => h,
+            None => continue,
+        };
+        let value = match column_typed_value_at(batch, column, hit.row) {
+            Some(v) => v,
+            None => continue,
+        };
+        if best.as_ref().map_or(true, |(d, _)| hit.distance < *d) {
+            best = Some((hit.distance, value));
+        }
+    }
+    best.map(|(_, v)| v)
+}
+
 /// Convert a spec-side [`BrushableBinding`] into a UI-side [`BrushBinding`]
 /// by translating the mirror enums (`BrushKind`, `ChannelColumns`). The
 /// conversion is faithful — every field copies through verbatim. cfs3 ac-06.
@@ -286,6 +446,8 @@ fn brush_kind_from_spec(kind: brightfield_spec::analysis::BrushKind) -> BrushKin
         Spec::IntervalY => BrushKind::IntervalY,
         Spec::IntervalXY => BrushKind::IntervalXY,
         Spec::Point => BrushKind::Point,
+        Spec::PointX => BrushKind::PointX,
+        Spec::PointY => BrushKind::PointY,
     }
 }
 
@@ -483,6 +645,45 @@ mod tests {
         assert!(dispatcher.calls.is_empty(), "no brush → no dispatch");
         assert!(results.is_empty());
         assert!(matches!(next_state, InteractionState::Idle));
+    }
+
+    /// cfs point-selection (card 0006): a rect DRAG skips point-kind bindings —
+    /// only interval selections are rect-driven. A plot carrying BOTH a toggleX
+    /// (PointX) and an intervalY binding must dispatch only the interval on a
+    /// drag, never a degenerate `True` into the point selection.
+    #[test]
+    fn drag_skips_point_bindings() {
+        let mut interaction = InteractionState::start_brush(Point::new(20.0, 30.0));
+        interaction.update_brush(Point::new(120.0, 230.0));
+
+        let bindings = [
+            BrushBinding {
+                selection_name: "pt".to_string(),
+                contributor: ComponentPath("root/plot[0]".to_string()),
+                kind: BrushKind::PointX,
+                channels: ChannelColumns::xy("speed", "delay"),
+            },
+            BrushBinding {
+                selection_name: "iv".to_string(),
+                contributor: ComponentPath("root/plot[0]".to_string()),
+                kind: BrushKind::IntervalY,
+                channels: ChannelColumns::xy("speed", "delay"),
+            },
+        ];
+        let mut dispatcher = RecordingDispatcher::new();
+        let (_state, aggregated) =
+            commit_brush_release_multi(&interaction, &bindings, &mut dispatcher);
+
+        assert_eq!(
+            dispatcher.calls.len(),
+            1,
+            "only the interval binding dispatches on a drag; the point is skipped"
+        );
+        assert_eq!(
+            dispatcher.calls[0].0, "iv",
+            "the dispatched selection is the interval, not the point"
+        );
+        assert_eq!(aggregated.len(), 1);
     }
 
     // ---------------------------------------------------------------------

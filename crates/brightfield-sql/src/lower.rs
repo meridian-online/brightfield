@@ -412,6 +412,14 @@ pub fn default_lowerers() -> Vec<(MarkKind, Box<dyn MarkLower>)> {
                 kind: DensityLowerKind::TwoD,
             }),
         ),
+        // Raster reuses the 2D density binning — the same (x centre, y centre,
+        // count) grid — and renders filled cells coloured by count.
+        (
+            MarkKind::Raster,
+            Box::new(DensityLowerer {
+                kind: DensityLowerKind::TwoD,
+            }),
+        ),
     ]
 }
 
@@ -586,7 +594,8 @@ mod tests {
         assert!(kinds.contains(&MarkKind::DensityX));
         assert!(kinds.contains(&MarkKind::DensityY));
         assert!(kinds.contains(&MarkKind::Density));
-        assert_eq!(kinds.len(), 17);
+        assert!(kinds.contains(&MarkKind::Raster));
+        assert_eq!(kinds.len(), 18);
     }
 
     #[test]

@@ -285,14 +285,18 @@ impl Session {
         contributor: ComponentPath,
         predicate: Predicate,
     ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
-        // 1. Update selection_state — same-contributor entries are replaced
-        // (linear scan; ≤5 contributors per selection in the corpus).
+        // 1. Update selection_state. A re-contribution from an existing source
+        // moves to the TAIL (retain-then-push), so vec order reflects recency:
+        // SelectionResolution::Single resolves via `.last()`, so the "most
+        // recent" predicate must be the last element, not the source's original
+        // slot. For AND/OR strategies the RESULTS are order-independent; the only
+        // cost is that reordering changes the emitted SQL string, so a re-contribution
+        // of an identical predicate by a non-tail source can miss the SQL cache and
+        // re-execute — a minor cache-warmth edge, never a wrong result. Linear
+        // scan; ≤5 contributors per selection in the corpus. (card 0006)
         let entries = self.selection_state.entry(name.to_string()).or_default();
-        if let Some(slot) = entries.iter_mut().find(|(p, _)| p == &contributor) {
-            slot.1 = predicate;
-        } else {
-            entries.push((contributor, predicate));
-        }
+        entries.retain(|(p, _)| p != &contributor);
+        entries.push((contributor, predicate));
 
         // 2. Look up subscribers from the static analysis graph.
         let subscriber_paths: Vec<ComponentPath> = self
@@ -3055,6 +3059,54 @@ plot:
                 );
             }
         }
+    }
+
+    /// cfs review-fix (card 0006): `select: single` resolves the MOST RECENT
+    /// contribution. When an existing source re-contributes, its new predicate
+    /// must become "last" — regressed before the fix because propagate_selection
+    /// updated the predicate in the source's original slot, so an earlier
+    /// source's re-contribution stayed behind a later source and `.last()`
+    /// returned the stale one.
+    #[test]
+    fn cfs_single_recontribution_becomes_most_recent() {
+        let yaml = r#"
+params:
+  brush:
+    select: single
+data:
+  t:
+    - { x: 1 }
+plot:
+  - mark: dot
+    data: { from: t, filterBy: $brush }
+    x: x
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+
+        let source_a = ComponentPath("root/plot[100]".to_string());
+        let source_b = ComponentPath("root/plot[101]".to_string());
+
+        // A contributes, then B (B is now "most recent"), then A re-contributes
+        // a NEW predicate — A must now be the most recent.
+        let _ = session.propagate_selection("brush", source_a.clone(), Predicate::Expr("a_old = 1".to_string()));
+        let _ = session.propagate_selection("brush", source_b.clone(), Predicate::Expr("b_marker = 2".to_string()));
+        let _ = session.propagate_selection("brush", source_a.clone(), Predicate::Expr("a_new = 3".to_string()));
+
+        let selections = session.selection_predicates_for_emit();
+        let emitted = emit_query(&session.spec, 0, None, Some(&selections)).unwrap();
+
+        assert!(
+            emitted.sql.contains("a_new"),
+            "single must resolve A's re-contribution as most recent; got: {}",
+            emitted.sql
+        );
+        assert!(
+            !emitted.sql.contains("b_marker") && !emitted.sql.contains("a_old"),
+            "single must drop the superseded predicates (b_marker, a_old); got: {}",
+            emitted.sql
+        );
     }
 
     /// cfs2_ac07: an unsubscribed selection (no entry in
