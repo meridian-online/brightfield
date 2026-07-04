@@ -48,3 +48,23 @@ safety divergence from Mosaic-web's wire shape.
 
 **Conformance layers suppressed:** 2
 
+## DEV-0003 — colour scale — sequential scheme default
+
+**Mosaic behaviour.** Mosaic/Observable Plot default an unspecified quantitative colour
+scale's scheme to `turbo` (a rainbow map).
+
+
+**Brightfield behaviour.** brightfield defaults the sequential colour scheme to `viridis`.
+`turbo` remains available by name (`colorScheme: turbo`), so a spec
+that names a scheme renders it; only the *unspecified* default differs.
+
+
+**Rationale.** Perceptual uniformity and colourblind safety: viridis is perceptually
+uniform and colourblind-safe, whereas turbo is a rainbow map with known
+perceptual artefacts at the extremes. Viridis is the de-facto modern
+default (matplotlib, ggplot). Spec portability is preserved — a
+`colorScheme: turbo` spec still renders turbo; only the default diverges.
+
+
+**Conformance layers suppressed:** 3
+

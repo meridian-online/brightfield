@@ -400,4 +400,12 @@ mod tests {
         }
         assert!(MarkKind::from_wire("fooBar").is_none());
     }
+
+    /// scs_ac09 (card 0008, sequential colour scale). `LegendChannel::Color`
+    /// stays Implemented — it now covers continuous (gradient-bar) legends as
+    /// well as categorical (swatch) legends.
+    #[test]
+    fn scs_ac09_legend_color_channel_stays_implemented() {
+        assert_eq!(LegendChannel::Color.status(), ImplStatus::Implemented);
+    }
 }
