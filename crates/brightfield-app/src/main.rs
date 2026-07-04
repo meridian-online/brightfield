@@ -1102,6 +1102,55 @@ hconcat:
         }
     }
 
+    // scs_ac08 (review strengthening): drive the REAL consumption seam end-to-end
+    // — build_everything reads the plot's colorScheme, builds the per-mark
+    // RasterRenderer override, and threads it through augment_scales — so a key
+    // typo or raster_boxes index drift can't silently render everything viridis.
+    #[test]
+    fn scs_ac08_colorscheme_consumed_end_to_end() {
+        use brightfield_render::scale::{Scale, SequentialScheme};
+
+        const SRC: &str = r#"
+data:
+  points:
+    - { x: 1, y: 1 }
+    - { x: 2, y: 2 }
+    - { x: 3, y: 3 }
+plot:
+  - mark: raster
+    data: { from: points }
+    x: x
+    y: y
+colorScheme: blues
+"#;
+        // Write the spec to a temp file — build_everything takes a path.
+        let dir = std::env::temp_dir().join(format!("bf-scs-ac08-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("raster-blues.yaml");
+        std::fs::write(&path, SRC).unwrap();
+
+        let (_dashboard, live) =
+            super::build_everything(path.to_str().unwrap()).expect("pipeline runs");
+        // The single raster plot's post-assembly Fill scale is the blues ramp —
+        // proving colorScheme flowed all the way through the assembly seam.
+        let fill = live.plots[0]
+            .scales
+            .get(Channel::Fill)
+            .expect("raster plot has a Fill scale");
+        match fill {
+            Scale::Sequential { stops, .. } => {
+                assert_eq!(
+                    stops,
+                    &SequentialScheme::Blues.stops(),
+                    "colorScheme: blues must reach the rendered Fill ramp (not the viridis default)"
+                );
+            }
+            other => panic!("expected a blues Fill Sequential, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn legend_for_classifies_absent_named_and_unresolvable() {
         use brightfield_spec::ast::{LegendNode, ParamRef, SpecValue, ValueOrParamRef};
