@@ -5,8 +5,14 @@ resolver = "2"
 [workspace.package]
 edition = "2021"
 rust-version = "1.80"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 repository = "https://github.com/meridian-online/brightfield"
+
+# Replace zed's GPL-3.0 tracing shim with a clean-room no-op stub so Brightfield
+# binaries link no GPL code (the chain is gpui -> sum_tree -> ztracing -> zlog).
+# Guarded by `cargo deny check licenses` (deny.toml) at every pin bump.
+[patch."https://github.com/zed-industries/zed"]
+ztracing = { path = "stubs/ztracing" }
 
 [workspace.lints.rust]
 unused_must_use = "warn"

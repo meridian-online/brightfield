@@ -1,0 +1,42 @@
+# License gate: `cargo deny check licenses`
+#
+# Purpose: Brightfield ships MIT binaries, but gpui is built from the zed git
+# tree, which has carried GPL-3.0 crates since 2025-12-05 (sum_tree -> ztracing
+# -> zlog; zed issue #55470). The GPL shims are replaced by clean-room stubs via
+# the [patch] section in Cargo.toml; this config makes any copyleft regression a
+# loud failure at every pin bump. See
+# orbit/cards/memos/2026-07-05-gpl-precedent-and-dioxus.md.
+
+[licenses]
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "BSL-1.0",
+  "CC0-1.0",
+  "Unicode-3.0",
+  "bzip2-1.0.6",
+  "NCSA",
+  "CDLA-Permissive-2.0",
+  # MPL-2.0 is file-scoped weak copyleft: acceptable in an MIT binary provided
+  # the MPL-covered files' source stays available (it is: crates.io). Flag any
+  # new MPL entrant in review rather than blocking the build.
+  "MPL-2.0",
+]
+
+# Zed-tree crates whose manifests omit a license field. The zed repo licenses
+# its non-GPL crates Apache-2.0 (each of these sits alongside LICENSE-APACHE in
+# the tree; verified at pin 14f0a254).
+[[licenses.clarify]]
+crate = "gpui_util"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "gpui_shared_string"
+expression = "Apache-2.0"
+license-files = []
