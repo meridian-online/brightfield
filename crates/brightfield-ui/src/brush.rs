@@ -30,6 +30,10 @@ pub enum BrushKind {
     /// selections (card 0005 v3 surface). v3 lands the variant + adapter
     /// only; no chart_view dispatch path is wired (cfs3 ac-09 / decision 2).
     Point,
+    /// X-channel point selection (toggleX) — `x = <clicked value>`.
+    PointX,
+    /// Y-channel point selection (toggleY) — `y = <clicked value>`.
+    PointY,
 }
 
 /// Channel column names bound by the brushing plot — i.e. the SQL
@@ -117,9 +121,30 @@ pub fn brush_rect_to_predicate(
             _ => Predicate::True,
         },
         // Point selections are not produced from a rect — callers use
-        // [`point_predicate`] directly. The rect-to-predicate path returns
-        // a degenerate `True` for completeness (cfs3 ac-09).
-        BrushKind::Point => Predicate::True,
+        // [`point_to_predicate`] / [`point_predicate`] directly. The
+        // rect-to-predicate path returns a degenerate `True` for completeness.
+        BrushKind::Point | BrushKind::PointX | BrushKind::PointY => Predicate::True,
+    }
+}
+
+/// Convert a clicked data value into an equality predicate for a point
+/// selection. `PointX` compares the plot's x column, `PointY` its y column, to
+/// `value` (formatted as a bare numeric literal — no quoting, matching a numeric
+/// axis). A missing channel for the kind, or a non-point kind, yields
+/// `Predicate::True` (degenerate).
+///
+/// This is the data-path adapter for `toggleX`/`toggleY` selections: the value
+/// is the click's data-space coordinate on that axis. Resolving that coordinate
+/// from a pixel click (nearest data point) is the window click-gesture increment.
+pub fn point_to_predicate(value: f64, kind: BrushKind, channels: &ChannelColumns) -> Predicate {
+    let column = match kind {
+        BrushKind::PointX => channels.x.as_deref(),
+        BrushKind::PointY => channels.y.as_deref(),
+        _ => None,
+    };
+    match column {
+        Some(col) => point_predicate(col, &value.to_string()),
+        None => Predicate::True,
     }
 }
 
@@ -327,5 +352,38 @@ mod tests {
             }
             other => panic!("expected Predicate::Expr, got {other:?}"),
         }
+    }
+
+    /// cfs point-selection (card 0006): point_to_predicate maps a clicked data
+    /// value onto the plot's x column (PointX) or y column (PointY) as an
+    /// equality predicate; a missing channel or non-point kind degenerates to
+    /// True.
+    #[test]
+    fn point_to_predicate_maps_value_onto_channel() {
+        let channels = ChannelColumns::xy("speed", "delay");
+
+        // PointX → `speed = 3`.
+        match point_to_predicate(3.0, BrushKind::PointX, &channels) {
+            Predicate::Expr(s) => {
+                assert_eq!(s, "speed = 3", "PointX equality on x column, numeric literal");
+            }
+            other => panic!("expected Expr, got {other:?}"),
+        }
+        // PointY → `delay = 40`.
+        match point_to_predicate(40.0, BrushKind::PointY, &channels) {
+            Predicate::Expr(s) => assert_eq!(s, "delay = 40", "PointY equality on y column"),
+            other => panic!("expected Expr, got {other:?}"),
+        }
+        // Missing channel → True.
+        assert_eq!(
+            point_to_predicate(1.0, BrushKind::PointY, &ChannelColumns::x_only("speed")),
+            Predicate::True,
+            "PointY with no y channel is a degenerate no-op"
+        );
+        // Non-point kind → True (this helper only produces point predicates).
+        assert_eq!(
+            point_to_predicate(1.0, BrushKind::IntervalX, &channels),
+            Predicate::True
+        );
     }
 }

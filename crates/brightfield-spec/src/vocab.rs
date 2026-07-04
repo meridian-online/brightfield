@@ -203,9 +203,13 @@ vocab_enum! {
         Nearest => ("nearest", Unimplemented),
         NearestX => ("nearestX", Unimplemented),
         NearestY => ("nearestY", Unimplemented),
+        // toggleX/toggleY wired end-to-end (card 0006, 2026-07-03): each becomes
+        // a single-channel point selection (BrushKind::PointX/PointY) that drives
+        // an equality predicate through propagate_selection. `toggle` (both axes)
+        // stays Unimplemented until its value-pair producer + click gesture land.
         Toggle => ("toggle", Unimplemented),
-        ToggleX => ("toggleX", Unimplemented),
-        ToggleY => ("toggleY", Unimplemented),
+        ToggleX => ("toggleX", Implemented),
+        ToggleY => ("toggleY", Implemented),
         Highlight => ("highlight", Implemented),
         Region => ("region", Unimplemented),
         // Demoted to Unimplemented (harden, 2026-07-02): parsed but unwired —
@@ -340,6 +344,22 @@ mod tests {
             implemented,
             vec![InputKind::Slider],
             "only Slider is implemented; Menu/Search/Table remain Unimplemented"
+        );
+    }
+
+    /// cfs point-selection (card 0006, 2026-07-03). `toggleX`/`toggleY` are
+    /// Implemented: each maps to a single-channel point selection
+    /// (BrushKind::PointX/PointY) that drives an equality predicate through
+    /// propagate_selection. `toggle` (both axes) stays Unimplemented until its
+    /// value-pair producer + click gesture land.
+    #[test]
+    fn toggle_x_y_implemented_toggle_deferred() {
+        assert_eq!(InteractorKind::ToggleX.status(), ImplStatus::Implemented);
+        assert_eq!(InteractorKind::ToggleY.status(), ImplStatus::Implemented);
+        assert_eq!(
+            InteractorKind::Toggle.status(),
+            ImplStatus::Unimplemented,
+            "toggle (both axes) stays deferred until its value-pair producer lands"
         );
     }
 

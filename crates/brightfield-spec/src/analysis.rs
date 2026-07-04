@@ -1024,17 +1024,27 @@ pub enum BrushKind {
     IntervalXY,
     /// Point selection (forward-compat — card 0005 v3 input-widget surface).
     Point,
+    /// X-channel point selection (toggleX): `x = <clicked value>`.
+    PointX,
+    /// Y-channel point selection (toggleY): `y = <clicked value>`.
+    PointY,
 }
 
 impl BrushKind {
     /// Map an `InteractorKind` to a brushable variant. Returns `None` for
-    /// non-brushable kinds (Toggle, Highlight, Nearest*, Pan*, Region, etc.).
+    /// non-brushable kinds (Highlight, Nearest*, Pan*, Region, etc.).
+    ///
+    /// `toggleX`/`toggleY` become the single-channel point kinds. `toggle`
+    /// (both axes) stays unmapped for now: its value-pair predicate producer
+    /// lands with the window click-gesture increment.
     #[must_use]
     pub fn from_interactor_kind(kind: InteractorKind) -> Option<Self> {
         match kind {
             InteractorKind::IntervalX => Some(Self::IntervalX),
             InteractorKind::IntervalY => Some(Self::IntervalY),
             InteractorKind::IntervalXY => Some(Self::IntervalXY),
+            InteractorKind::ToggleX => Some(Self::PointX),
+            InteractorKind::ToggleY => Some(Self::PointY),
             _ => None,
         }
     }
@@ -2139,6 +2149,43 @@ plot:
             analysis.brushable_bindings.is_empty(),
             "panZoom-only plot must yield no brushable bindings: {:?}",
             analysis.brushable_bindings
+        );
+    }
+
+    /// cfs point-selection (card 0006): a `toggleX` interactor becomes a
+    /// brushable binding of kind `PointX` carrying the plot's x column; a
+    /// `toggleY` becomes `PointY` on the y column. This wires point selections
+    /// into the same binding pipeline the interval brushes use.
+    #[test]
+    fn toggle_x_y_produce_point_bindings() {
+        let yaml = r#"
+params:
+  sel: { select: single }
+plot:
+  - select: toggleX
+    as: $sel
+  - select: toggleY
+    as: $sel
+  - mark: dot
+    data: { from: flights, filterBy: $sel }
+    x: speed
+    y: delay
+"#;
+        let out = parse_spec(yaml, Format::Yaml).expect("parses");
+        let analysis = analyse_spec(&out.spec).expect("analysis succeeds");
+
+        let kinds: Vec<(BrushKind, Option<&str>, Option<&str>)> = analysis
+            .brushable_bindings
+            .iter()
+            .map(|b| (b.kind, b.channels.x.as_deref(), b.channels.y.as_deref()))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (BrushKind::PointX, Some("speed"), Some("delay")),
+                (BrushKind::PointY, Some("speed"), Some("delay")),
+            ],
+            "toggleX→PointX and toggleY→PointY, each carrying the plot's channels"
         );
     }
 }
