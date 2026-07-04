@@ -174,7 +174,8 @@ fn resolve_position(
         Scale::Band { .. } => {
             value_str.and_then(|s| scale.map_category(s))
         }
-        Scale::Colour { .. } => None,
+        // Colour ramps (categorical or sequential) don't position on an axis.
+        Scale::Colour { .. } | Scale::Sequential { .. } => None,
     }
 }
 
