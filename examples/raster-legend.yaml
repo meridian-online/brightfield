@@ -1,12 +1,11 @@
-# Raster mark (card 0008 mark breadth): a binned 2D COUNT heatmap. Points are
-# binned into a grid (reusing the 2D density binning); each occupied cell is a
-# filled rectangle coloured by how many points fall in it through a sequential
-# colour ramp. With no `colorScheme`, the default is viridis (dark purple → bright
-# yellow): the two blobs read as bright ramp-high cores over a dark, sparse
-# background. See raster-blues.yaml for a single-hue variant and
-# raster-legend.yaml for the standalone gradient legend.
+# Standalone continuous legend (card 0008 sequential colour scale): a
+# `legend: color for: heat` node placed as a composition sibling renders the
+# raster plot's count → colour ramp as a vertical GRADIENT BAR (with min/mid/max
+# tick labels) at its own layout rect, to the right of the plot. An explicit
+# `for:` relocates the plot's inline legend, so the ramp appears once, on the far
+# right, colour-matching the cells.
 #
-#   BRIGHTFIELD_DUMP_PNG=raster.png cargo run -p brightfield-app -- examples/raster.yaml
+#   BRIGHTFIELD_DUMP_PNG=raster-legend.png cargo run -p brightfield-app -- examples/raster-legend.yaml
 data:
   points:
     - { x: 2.658, y: 3.952 }
@@ -509,11 +508,15 @@ data:
     - { x: 6.480, y: 5.825 }
     - { x: 6.667, y: 5.590 }
     - { x: 6.982, y: 5.576 }
-plot:
-  - mark: raster
-    data: { from: points }
-    x: x
-    y: y
-    bins: 20
-width: 520
-height: 420
+hconcat:
+  - plot:
+    - mark: raster
+      data: { from: points }
+      x: x
+      y: y
+      bins: 20
+    name: heat
+    width: 460
+    height: 420
+  - legend: color
+    for: heat
