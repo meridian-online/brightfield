@@ -16,15 +16,15 @@ use brightfield_engine::{Engine, Session};
 use brightfield_render::channel::{Channel, ChannelMap};
 use brightfield_render::layout::ChartLayout;
 use brightfield_render::legend::{colour_legend_size, render_colour_legend_at};
-use brightfield_render::mark::{default_renderers, find_renderer};
-use brightfield_render::scale::{Scale, ScaleSet};
+use brightfield_render::mark::{default_renderers, find_renderer, MarkRenderer, RasterRenderer};
+use brightfield_render::scale::{Scale, ScaleSet, SequentialScheme};
 use brightfield_render::scene::{build_multi_mark_scene, compose_dashboard, ChartData};
 use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::layout::{
     collect_plot_nodes, placed_input_nodes, placed_legend_nodes, placed_plots, Rect,
 };
 use brightfield_spec::parse_spec_path;
-use brightfield_spec::vocab::{InputKind, LegendChannel};
+use brightfield_spec::vocab::{InputKind, LegendChannel, MarkKind};
 use brightfield_sql::{collect_marks, collect_plot_groups};
 use brightfield_ui::chart_view::BrushBinding;
 use brightfield_ui::{CrossfilterCoordinator, LivePlot, MarkInput, SliderBinding};
@@ -103,16 +103,34 @@ struct Dashboard {
 /// The colour (fill/stroke) scale of a plot's [`ScaleSet`], if it has one — the
 /// scale a standalone legend for that plot displays. Fill takes precedence over
 /// stroke (a mark colour-encoded on both is unusual; fill is the common case).
+/// Accepts both a categorical [`Scale::Colour`] (swatch legend) and a continuous
+/// [`Scale::Sequential`] (gradient-bar legend, e.g. a raster's count ramp).
 fn colour_scale_of(scales: &ScaleSet) -> Option<Scale> {
-    // Filter each channel to a Colour scale BEFORE falling back — otherwise a
-    // present-but-non-Colour Fill (e.g. a numeric fill inferred as Linear) would
+    // Filter each channel to a colour scale BEFORE falling back — otherwise a
+    // present-but-non-colour Fill (e.g. a numeric fill inferred as Linear) would
     // short-circuit `or_else` and mask a real categorical Stroke colour scale.
-    let is_colour = |s: &&Scale| matches!(s, Scale::Colour { .. });
+    let is_colour = |s: &&Scale| matches!(s, Scale::Colour { .. } | Scale::Sequential { .. });
     scales
         .get(Channel::Fill)
         .filter(is_colour)
         .or_else(|| scales.get(Channel::Stroke).filter(is_colour))
         .cloned()
+}
+
+/// Resolve a raster plot's colour scheme from its `colorScheme` attribute,
+/// defaulting to viridis and warning on an unrecognised name. `colorScheme` is a
+/// plot-level attribute (Mosaic's colour scale is plot-scoped); it is consumed on
+/// the headless authoring path. The live cross-filter path inherits the viridis
+/// default (a recorded follow-up — see the spec's deferred list).
+fn raster_scheme(color_scheme: Option<&brightfield_spec::ast::SpecValue>) -> SequentialScheme {
+    use brightfield_spec::ast::SpecValue;
+    match color_scheme {
+        Some(SpecValue::String(name)) => SequentialScheme::from_wire(name).unwrap_or_else(|| {
+            eprintln!("warning: unknown colorScheme {name:?} — falling back to viridis");
+            SequentialScheme::default()
+        }),
+        _ => SequentialScheme::default(),
+    }
 }
 
 /// How a standalone legend's `for:` attribute is authored.
@@ -410,6 +428,10 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
         set
     };
 
+    // path → plot node, for reading plot-level attributes (colorScheme) during
+    // assembly. Kept as a Vec (plot counts are tiny) to hold the paths alive.
+    let plot_nodes = collect_plot_nodes(&parsed.spec);
+
     let mut plots: Vec<PlotRender> = Vec::new();
     let mut live_plots: Vec<LivePlotMeta> = Vec::new();
     for plot in &placed {
@@ -418,28 +440,53 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             None => continue,
         };
         let layout = ChartLayout::new(plot.rect.width, plot.rect.height);
-        let chart_data: Vec<ChartData<'_>> = group
+
+        // The plot's colour scheme, applied to its raster marks (headless path).
+        let scheme = plot_nodes
+            .iter()
+            .find(|(path, _)| *path == plot.path)
+            .map(|(_, node)| raster_scheme(node.attributes.get("colorScheme")))
+            .unwrap_or_default();
+
+        // Owned per-mark renderer overrides. A raster mark uses a scheme-configured
+        // RasterRenderer (built here so the plot's colorScheme is honoured); every
+        // other mark borrows the shared registry. Declared before `chart_data` so
+        // the boxes outlive the references into them.
+        let raster_boxes: Vec<Option<Box<dyn MarkRenderer + Send + Sync>>> = group
             .mark_indices
             .iter()
-            .filter_map(|&mi| {
-                let m = mark_inputs.get(mi)?;
-                let batch = m.batch.as_ref()?;
-                match find_renderer(&registry, m.kind) {
-                    Some(renderer) => Some(ChartData {
-                        batch,
-                        channel_map: &m.channels,
-                        renderer,
-                        layout: layout.clone(),
-                        view_extent: None,
-                        highlight: None,
-                    }),
-                    None => {
-                        eprintln!("warning: no renderer for mark kind {:?} — skipping", m.kind);
-                        None
-                    }
-                }
+            .map(|&mi| {
+                let is_raster =
+                    mark_inputs.get(mi).is_some_and(|m| m.kind == MarkKind::Raster);
+                is_raster
+                    .then(|| Box::new(RasterRenderer { scheme }) as Box<dyn MarkRenderer + Send + Sync>)
             })
             .collect();
+
+        let mut chart_data: Vec<ChartData<'_>> = Vec::new();
+        for (j, &mi) in group.mark_indices.iter().enumerate() {
+            let Some(m) = mark_inputs.get(mi) else { continue };
+            let Some(batch) = m.batch.as_ref() else { continue };
+            let renderer: &dyn MarkRenderer = if let Some(b) = &raster_boxes[j] {
+                b.as_ref()
+            } else {
+                match find_renderer(&registry, m.kind) {
+                    Some(r) => r,
+                    None => {
+                        eprintln!("warning: no renderer for mark kind {:?} — skipping", m.kind);
+                        continue;
+                    }
+                }
+            };
+            chart_data.push(ChartData {
+                batch,
+                channel_map: &m.channels,
+                renderer,
+                layout: layout.clone(),
+                view_extent: None,
+                highlight: None,
+            });
+        }
         if chart_data.is_empty() {
             continue;
         }
@@ -925,6 +972,126 @@ mod tests {
         match super::colour_scale_of(&both) {
             Some(Scale::Colour { categories, .. }) => assert_eq!(categories, vec!["f".to_string()]),
             other => panic!("expected the fill colour scale, got {other:?}"),
+        }
+    }
+
+    // scs_ac07: a raster plot's Fill Sequential resolves for a standalone legend,
+    // sized as a gradient bar.
+    #[test]
+    fn scs_ac07_sequential_resolves_for_standalone_legend() {
+        use brightfield_render::legend::sequential_legend_size;
+        use brightfield_render::scale::{Scale, ScaleSet, SequentialScheme};
+        use brightfield_render::ChartLayout;
+        use brightfield_spec::ast::SpecValue;
+        use brightfield_spec::{layout::collect_plot_nodes, parse_spec, Format};
+
+        const SRC: &str = r#"
+data:
+  points:
+    - { x: 1, y: 1 }
+    - { x: 2, y: 2 }
+hconcat:
+  - plot:
+    - mark: raster
+      data: { from: points }
+      x: x
+      y: y
+    name: heat
+  - legend: color
+    for: heat
+"#;
+        let spec = parse_spec(SRC, Format::Yaml).expect("parse").spec;
+        let (path, _) = collect_plot_nodes(&spec)
+            .into_iter()
+            .find(|(_, n)| n.attributes.get("name") == Some(&SpecValue::String("heat".into())))
+            .expect("named raster plot");
+
+        // A raster plot's Fill scale is the count → colour ramp.
+        let mut scales = ScaleSet::new();
+        scales.insert(
+            Channel::Fill,
+            Scale::Sequential {
+                domain_min: 0.0,
+                domain_max: 10.0,
+                stops: SequentialScheme::Viridis.stops(),
+            },
+        );
+        assert!(
+            matches!(super::colour_scale_of(&scales), Some(Scale::Sequential { .. })),
+            "colour_scale_of surfaces the Fill Sequential"
+        );
+
+        let meta = super::LivePlotMeta {
+            path,
+            mark_indices: vec![],
+            layout: ChartLayout::new(300.0, 200.0),
+            bindings: vec![],
+            scales,
+        };
+        let placements = super::resolve_legends(&spec, std::slice::from_ref(&meta));
+        assert_eq!(placements.len(), 1, "one standalone legend resolves");
+        let placement = &placements[0];
+        let expected_size = match &placement.scale {
+            Scale::Sequential { .. } => sequential_legend_size(&placement.scale).unwrap(),
+            other => panic!("expected a Sequential legend scale, got {other:?}"),
+        };
+        assert!(
+            (placement.rect.width - expected_size.0).abs() < 1e-9,
+            "placement sized via the gradient-bar size"
+        );
+    }
+
+    // scs_ac08: the assembly resolves a raster plot's colorScheme to a scheme,
+    // and a RasterRenderer built with it produces the matching Fill ramp.
+    #[test]
+    fn scs_ac08_colorscheme_selects_the_ramp() {
+        use arrow::array::Float64Array;
+        use arrow::datatypes::{DataType, Field, Schema};
+        use arrow::record_batch::RecordBatch;
+        use brightfield_render::mark::{MarkRenderer, RasterRenderer};
+        use brightfield_render::scale::{Scale, ScaleSet, SequentialScheme};
+        use brightfield_spec::ast::SpecValue;
+        use std::sync::Arc;
+
+        // colorScheme resolution: known name → scheme; unknown / absent → viridis.
+        let blues = SpecValue::String("blues".into());
+        assert_eq!(super::raster_scheme(Some(&blues)), SequentialScheme::Blues);
+        let bad = SpecValue::String("notascheme".into());
+        assert_eq!(
+            super::raster_scheme(Some(&bad)),
+            SequentialScheme::Viridis,
+            "unknown scheme falls back to viridis (warning path)"
+        );
+        assert_eq!(super::raster_scheme(None), SequentialScheme::Viridis);
+
+        // A RasterRenderer built from `blues` produces a Fill Sequential whose
+        // stops are the blues ramp.
+        let scheme = super::raster_scheme(Some(&blues));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x_bin", DataType::Float64, false),
+            Field::new("y_bin", DataType::Float64, false),
+            Field::new("__bf_count", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![0.0, 1.0])),
+                Arc::new(Float64Array::from(vec![0.0, 1.0])),
+                Arc::new(Float64Array::from(vec![2.0, 9.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x_bin".to_string());
+        cm.insert(Channel::Y, "y_bin".to_string());
+        let mut scales = ScaleSet::new();
+        RasterRenderer { scheme }.augment_scales(&mut scales, &batch, &cm, (0.0, 100.0), (100.0, 0.0));
+        match scales.get(Channel::Fill) {
+            Some(Scale::Sequential { stops, domain_max, .. }) => {
+                assert_eq!(stops, &SequentialScheme::Blues.stops(), "blues ramp stops");
+                assert!((domain_max - 9.0).abs() < f64::EPSILON, "domain_max == max count");
+            }
+            other => panic!("expected a blues Fill Sequential, got {other:?}"),
         }
     }
 
