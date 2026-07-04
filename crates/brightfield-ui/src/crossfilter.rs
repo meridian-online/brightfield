@@ -324,7 +324,7 @@ fn render_plot_scene(
                 batch,
                 channel_map: &m.channels,
                 renderer,
-                layout: layout.clone(),
+                layout: *layout,
                 view_extent: None,
                 highlight: None,
             })
