@@ -187,15 +187,15 @@ mod tests {
 
     #[test]
     fn dfconf_preflight_reports_unimplemented_mark_only() {
-        // Preflight records only non-Implemented marks. `rect` is genuinely
+        // Preflight records only non-Implemented marks. `hexbin` is genuinely
         // unimplemented (no renderer/lowerer), so it appears; this captures the
         // spirit: one unimplemented mark → one entry naming it. (line is now
         // Implemented and would be omitted.)
-        let spec = parse("plot:\n  - mark: rect\n    data: { from: t }\n");
+        let spec = parse("plot:\n  - mark: hexbin\n    data: { from: t }\n");
         let report = preflight(&spec);
         assert!(report.entries.iter().any(|e| matches!(
             e.identity,
-            ComponentIdentity::Mark(brightfield_spec::MarkKind::Rect)
+            ComponentIdentity::Mark(brightfield_spec::MarkKind::Hexbin)
         )));
     }
 

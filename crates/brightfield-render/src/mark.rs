@@ -616,6 +616,200 @@ impl MarkRenderer for AreaRenderer {
 }
 
 // ---------------------------------------------------------------------------
+// RectRenderer (rect / rectX / rectY)
+// ---------------------------------------------------------------------------
+
+/// Which ranged form a rect mark takes.
+#[derive(Clone, Copy)]
+pub enum RectKind {
+    /// `rect`: an explicit x-extent (`x1`..`x2`) × y-extent (`y1`..`y2`).
+    Xy,
+    /// `rectX`: the x-axis is a zero-baselined value (`x`), the y-axis a ranged
+    /// interval (`y1`..`y2`) — a horizontal numeric-edged bar / histogram.
+    X,
+    /// `rectY`: the y-axis is a zero-baselined value (`y`), the x-axis a ranged
+    /// interval (`x1`..`x2`) — a vertical numeric-edged bar / histogram.
+    Y,
+}
+
+/// Renders a rectangle per row spanning an x-extent × y-extent. Unlike
+/// [`BarRenderer`] (categorical band x + value y), rect works in a purely
+/// quantitative frame: the extents come from `x1`/`x2`/`y1`/`y2` columns, or —
+/// for the `rectX`/`rectY` value forms — from a zero baseline to the `x`/`y`
+/// value. This is the substrate for binned 2-D charts and histograms with
+/// numeric bin edges.
+pub struct RectRenderer {
+    /// The ranged form (`rect` / `rectX` / `rectY`).
+    pub kind: RectKind,
+}
+
+/// Min/max over one or more `Option<f64>` column vectors, ignoring nulls.
+fn columns_extent(cols: &[&[Option<f64>]]) -> Option<(f64, f64)> {
+    let mut min = f64::INFINITY;
+    let mut max = f64::NEG_INFINITY;
+    for col in cols {
+        for v in col.iter().flatten() {
+            min = min.min(*v);
+            max = max.max(*v);
+        }
+    }
+    (min.is_finite() && max.is_finite()).then_some((min, max))
+}
+
+impl RectRenderer {
+    /// Per-row data-space edges `(a, b)` for one axis. For a ranged axis these
+    /// are the two interval columns; for a value axis they are the zero baseline
+    /// and the value column. `None` when a required channel/column is absent.
+    fn axis_edges(
+        &self,
+        ranged: bool,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        interval: (Channel, Channel),
+        value: Channel,
+    ) -> Option<(Vec<Option<f64>>, Vec<Option<f64>>)> {
+        if ranged {
+            let a = column_as_f64(batch, channel_map.get(interval.0)?)?;
+            let b = column_as_f64(batch, channel_map.get(interval.1)?)?;
+            Some((a, b))
+        } else {
+            let v = column_as_f64(batch, channel_map.get(value)?)?;
+            let baseline = vec![Some(0.0); v.len()];
+            Some((baseline, v))
+        }
+    }
+}
+
+impl MarkRenderer for RectRenderer {
+    fn render(
+        &self,
+        scene: &mut Scene,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        scales: &ScaleSet,
+        highlight: Option<&HighlightState>,
+    ) {
+        let x_scale = match scales.get(Channel::X) {
+            Some(s) => s,
+            None => return,
+        };
+        let y_scale = match scales.get(Channel::Y) {
+            Some(s) => s,
+            None => return,
+        };
+
+        // X ranged for rect/rectY; a value (baseline→x) for rectX.
+        let x_ranged = matches!(self.kind, RectKind::Xy | RectKind::Y);
+        let y_ranged = matches!(self.kind, RectKind::Xy | RectKind::X);
+        let (xa, xb) = match self.axis_edges(
+            x_ranged,
+            batch,
+            channel_map,
+            (Channel::X1, Channel::X2),
+            Channel::X,
+        ) {
+            Some(e) => e,
+            None => return,
+        };
+        let (ya, yb) = match self.axis_edges(
+            y_ranged,
+            batch,
+            channel_map,
+            (Channel::Y1, Channel::Y2),
+            Channel::Y,
+        ) {
+            Some(e) => e,
+            None => return,
+        };
+
+        for i in 0..batch.num_rows() {
+            let (xav, xbv, yav, ybv) = match (xa[i], xb[i], ya[i], yb[i]) {
+                (Some(a), Some(b), Some(c), Some(d)) => (a, b, c, d),
+                _ => continue,
+            };
+            // Map both endpoints through the ONE shared axis scale, then order.
+            let (left, right) = {
+                let (p, q) = (x_scale.map_f64(xav), x_scale.map_f64(xbv));
+                (p.min(q), p.max(q))
+            };
+            let (top, bottom) = {
+                let (p, q) = (y_scale.map_f64(yav), y_scale.map_f64(ybv));
+                (p.min(q), p.max(q))
+            };
+            // Drop non-finite geometry before it reaches Vello. A genuine (non-
+            // null) NaN in a bound column survives the None check above, and
+            // `f64::min/max` propagate NaN only when BOTH endpoints of an axis are
+            // NaN (a single NaN edge collapses to the finite one → caught as
+            // zero-area below). A zero-span synthesized scale can likewise map to
+            // ±inf. Reject both here rather than rasterise malformed paths.
+            if !left.is_finite() || !right.is_finite() || !top.is_finite() || !bottom.is_finite() {
+                continue;
+            }
+            // Skip degenerate (zero-area) rects — an empty bin or collapsed edge.
+            if (right - left) < f64::EPSILON || (bottom - top) < f64::EPSILON {
+                continue;
+            }
+
+            let colour = resolve_colour(scales, channel_map, batch, i);
+            let colour = apply_highlight(colour, i, highlight);
+            let rect = Rect::new(left, top, right, bottom);
+            scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &rect);
+        }
+    }
+
+    fn zero_baseline_channel(&self) -> Option<Channel> {
+        // The value form baselines at zero on its value axis, so that axis's
+        // domain must include 0. The fully-ranged `rect` has no baseline.
+        match self.kind {
+            RectKind::Y => Some(Channel::Y),
+            RectKind::X => Some(Channel::X),
+            RectKind::Xy => None,
+        }
+    }
+
+    fn augment_scales(
+        &self,
+        scales: &mut ScaleSet,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        x_range: (f64, f64),
+        y_range: (f64, f64),
+    ) {
+        // A ranged axis has x1/x2 (or y1/y2) columns but no bare x/y column, so
+        // `infer_scales` never builds Channel::X/Y — which axes and grid key off.
+        // Synthesise one shared Channel::X (Y) Linear scale spanning both edges,
+        // so both endpoints map through the SAME scale (not their own X1/X2).
+        //
+        // KNOWN LIMITATION (inherited from `merge_linear_scale`, shared with the
+        // regression/density synthesis; see the rect-marks follow-up memo):
+        //   * If a sibling mark in the same plot already set a NON-linear
+        //     Channel::X/Y (a line over a Timestamp → Time, a bar over a Band),
+        //     `merge_linear_scale` leaves it untouched, so this rect's extent
+        //     never widens that axis and bins past the sibling's domain clip.
+        //   * A standalone time-binned rect synthesises a plain Linear scale over
+        //     raw-microsecond edges (`column_as_f64` casts Timestamp → µs), so the
+        //     axis shows microsecond integers rather than a Time scale.
+        // Both await time/band-aware ranged-axis synthesis; geometry is correct.
+        if let (Some(x1c), Some(x2c)) = (channel_map.get(Channel::X1), channel_map.get(Channel::X2))
+        {
+            if let (Some(x1), Some(x2)) = (column_as_f64(batch, x1c), column_as_f64(batch, x2c)) {
+                if let Some((min, max)) = columns_extent(&[&x1, &x2]) {
+                    merge_linear_scale(scales, Channel::X, min, max, x_range);
+                }
+            }
+        }
+        if let (Some(y1c), Some(y2c)) = (channel_map.get(Channel::Y1), channel_map.get(Channel::Y2))
+        {
+            if let (Some(y1), Some(y2)) = (column_as_f64(batch, y1c), column_as_f64(batch, y2c)) {
+                if let Some((min, max)) = columns_extent(&[&y1, &y2]) {
+                    merge_linear_scale(scales, Channel::Y, min, max, y_range);
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // RuleRenderer (ruleX / ruleY)
 // ---------------------------------------------------------------------------
 
@@ -1615,6 +1809,9 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
     v.push((MarkKind::AreaX, Box::new(AreaRenderer { axis: AreaAxis::X })));
     v.push((MarkKind::RuleX, Box::new(RuleRenderer { axis: RuleAxis::X })));
     v.push((MarkKind::RuleY, Box::new(RuleRenderer { axis: RuleAxis::Y })));
+    v.push((MarkKind::Rect, Box::new(RectRenderer { kind: RectKind::Xy })));
+    v.push((MarkKind::RectX, Box::new(RectRenderer { kind: RectKind::X })));
+    v.push((MarkKind::RectY, Box::new(RectRenderer { kind: RectKind::Y })));
     v.push((MarkKind::Text, Box::new(TextRenderer)));
     v.push((
         MarkKind::DensityX,
@@ -2524,6 +2721,281 @@ mod tests {
         assert!(
             encoding.path_tags.len() > 0,
             "bar default render_interpolated should forward to render"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // RectRenderer (card 0008)
+    // -----------------------------------------------------------------------
+
+    /// rectY: three x-binned bars from a zero y baseline. Proves (a) one fill per
+    /// row and (b) the load-bearing mechanism — augment_scales synthesizes a
+    /// single shared Channel::X Linear scale spanning [min(x1), max(x2)], which
+    /// infer_scales never builds (there is no bare x column).
+    #[test]
+    fn recty_one_fill_per_row_and_synthesizes_shared_x_scale() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x1", DataType::Float64, false),
+            Field::new("x2", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![0.0, 1.0, 2.0])),
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])),
+                Arc::new(Float64Array::from(vec![10.0, 20.0, 15.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X1, "x1".to_string());
+        cm.insert(Channel::X2, "x2".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+
+        let (xr, yr) = ((40.0, 600.0), (450.0, 20.0));
+        let mut scales = infer_scales(&batch, &cm, xr, yr);
+        assert!(
+            scales.get(Channel::X).is_none(),
+            "no bare Channel::X before augment (only X1/X2 from the columns)"
+        );
+
+        let renderer = RectRenderer { kind: RectKind::Y };
+        renderer.augment_scales(&mut scales, &batch, &cm, xr, yr);
+        match scales.get(Channel::X) {
+            Some(Scale::Linear {
+                domain_min,
+                domain_max,
+                ..
+            }) => {
+                assert_eq!(*domain_min, 0.0, "shared X domain min = min(x1)");
+                assert_eq!(*domain_max, 3.0, "shared X domain max = max(x2)");
+            }
+            other => panic!("expected synthesized Linear X scale, got {other:?}"),
+        }
+        assert_eq!(
+            renderer.zero_baseline_channel(),
+            Some(Channel::Y),
+            "rectY baselines on the y value axis"
+        );
+
+        let mut scene = Scene::new();
+        renderer.render(&mut scene, &batch, &cm, &scales, None);
+        assert_eq!(count_scene_paths(&scene), 3, "one fill per x-bin");
+    }
+
+    /// rectX: y-binned horizontal bars from a zero x baseline. Mirror of rectY —
+    /// augment synthesizes the shared Channel::Y scale, baseline is on X.
+    #[test]
+    fn rectx_synthesizes_shared_y_scale_and_baselines_on_x() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("y1", DataType::Float64, false),
+            Field::new("y2", DataType::Float64, false),
+            Field::new("x", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![0.0, 2.0])),
+                Arc::new(Float64Array::from(vec![2.0, 5.0])),
+                Arc::new(Float64Array::from(vec![10.0, 30.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::Y1, "y1".to_string());
+        cm.insert(Channel::Y2, "y2".to_string());
+        cm.insert(Channel::X, "x".to_string());
+
+        let (xr, yr) = ((40.0, 600.0), (450.0, 20.0));
+        let mut scales = infer_scales(&batch, &cm, xr, yr);
+        let renderer = RectRenderer { kind: RectKind::X };
+        renderer.augment_scales(&mut scales, &batch, &cm, xr, yr);
+        match scales.get(Channel::Y) {
+            Some(Scale::Linear {
+                domain_min,
+                domain_max,
+                ..
+            }) => {
+                assert_eq!(*domain_min, 0.0);
+                assert_eq!(*domain_max, 5.0);
+            }
+            other => panic!("expected synthesized Linear Y scale, got {other:?}"),
+        }
+        assert_eq!(renderer.zero_baseline_channel(), Some(Channel::X));
+
+        let mut scene = Scene::new();
+        renderer.render(&mut scene, &batch, &cm, &scales, None);
+        assert_eq!(count_scene_paths(&scene), 2, "one fill per y-bin");
+    }
+
+    /// Bare `rect`: both axes ranged (x1/x2 × y1/y2). augment synthesizes BOTH
+    /// shared scales; no zero baseline.
+    #[test]
+    fn rect_xy_both_axes_ranged() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x1", DataType::Float64, false),
+            Field::new("x2", DataType::Float64, false),
+            Field::new("y1", DataType::Float64, false),
+            Field::new("y2", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![0.0, 2.0])),
+                Arc::new(Float64Array::from(vec![1.0, 4.0])),
+                Arc::new(Float64Array::from(vec![0.0, 1.0])),
+                Arc::new(Float64Array::from(vec![3.0, 6.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X1, "x1".to_string());
+        cm.insert(Channel::X2, "x2".to_string());
+        cm.insert(Channel::Y1, "y1".to_string());
+        cm.insert(Channel::Y2, "y2".to_string());
+
+        let (xr, yr) = ((40.0, 600.0), (450.0, 20.0));
+        let mut scales = infer_scales(&batch, &cm, xr, yr);
+        let renderer = RectRenderer { kind: RectKind::Xy };
+        renderer.augment_scales(&mut scales, &batch, &cm, xr, yr);
+        assert!(scales.get(Channel::X).is_some(), "shared X synthesized");
+        assert!(scales.get(Channel::Y).is_some(), "shared Y synthesized");
+        assert_eq!(
+            renderer.zero_baseline_channel(),
+            None,
+            "bare rect has no baseline"
+        );
+
+        let mut scene = Scene::new();
+        renderer.render(&mut scene, &batch, &cm, &scales, None);
+        assert_eq!(count_scene_paths(&scene), 2);
+    }
+
+    /// A zero-width bin (x1 == x2) and a null endpoint are skipped, never
+    /// panicking — only the one valid bin draws.
+    #[test]
+    fn rect_skips_degenerate_and_null_rows() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x1", DataType::Float64, true),
+            Field::new("x2", DataType::Float64, true),
+            Field::new("y", DataType::Float64, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![Some(0.0), Some(1.0), Some(2.0)])),
+                // row 1: x1==x2 (zero width); row 2: null upper edge.
+                Arc::new(Float64Array::from(vec![Some(1.0), Some(1.0), None])),
+                Arc::new(Float64Array::from(vec![Some(10.0), Some(20.0), Some(15.0)])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X1, "x1".to_string());
+        cm.insert(Channel::X2, "x2".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+
+        let (xr, yr) = ((40.0, 600.0), (450.0, 20.0));
+        let mut scales = infer_scales(&batch, &cm, xr, yr);
+        let renderer = RectRenderer { kind: RectKind::Y };
+        renderer.augment_scales(&mut scales, &batch, &cm, xr, yr);
+
+        let mut scene = Scene::new();
+        renderer.render(&mut scene, &batch, &cm, &scales, None);
+        assert_eq!(
+            count_scene_paths(&scene),
+            1,
+            "only the single well-formed bin draws (zero-width + null skipped)"
+        );
+    }
+
+    /// A categorical fill column colours each rect — still one fill per row.
+    #[test]
+    fn rect_categorical_fill() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x1", DataType::Float64, false),
+            Field::new("x2", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+            Field::new("g", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![0.0, 1.0])),
+                Arc::new(Float64Array::from(vec![1.0, 2.0])),
+                Arc::new(Float64Array::from(vec![10.0, 20.0])),
+                Arc::new(StringArray::from(vec!["a", "b"])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X1, "x1".to_string());
+        cm.insert(Channel::X2, "x2".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        cm.insert(Channel::Fill, "g".to_string());
+
+        let (xr, yr) = ((40.0, 600.0), (450.0, 20.0));
+        let mut scales = infer_scales(&batch, &cm, xr, yr);
+        let renderer = RectRenderer { kind: RectKind::Y };
+        renderer.augment_scales(&mut scales, &batch, &cm, xr, yr);
+
+        let mut scene = Scene::new();
+        renderer.render(&mut scene, &batch, &cm, &scales, None);
+        assert_eq!(
+            count_scene_paths(&scene),
+            2,
+            "one filled rect per row, coloured by g"
+        );
+    }
+
+    /// A genuine (non-null) NaN in both x-edges of a row is dropped, not handed
+    /// to Vello as malformed geometry; the finite rows still draw. `columns_extent`
+    /// ignores NaN, so the synthesized scale stays finite.
+    #[test]
+    fn rect_skips_non_finite_edges() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x1", DataType::Float64, false),
+            Field::new("x2", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![0.0, f64::NAN, 2.0])),
+                Arc::new(Float64Array::from(vec![1.0, f64::NAN, 3.0])),
+                Arc::new(Float64Array::from(vec![10.0, 20.0, 15.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X1, "x1".to_string());
+        cm.insert(Channel::X2, "x2".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+
+        let (xr, yr) = ((40.0, 600.0), (450.0, 20.0));
+        let mut scales = infer_scales(&batch, &cm, xr, yr);
+        let renderer = RectRenderer { kind: RectKind::Y };
+        renderer.augment_scales(&mut scales, &batch, &cm, xr, yr);
+        match scales.get(Channel::X) {
+            Some(Scale::Linear {
+                domain_min,
+                domain_max,
+                ..
+            }) => {
+                assert!(domain_min.is_finite() && domain_max.is_finite());
+                assert_eq!(*domain_min, 0.0);
+                assert_eq!(*domain_max, 3.0);
+            }
+            other => panic!("expected finite Linear X scale, got {other:?}"),
+        }
+
+        let mut scene = Scene::new();
+        renderer.render(&mut scene, &batch, &cm, &scales, None);
+        assert_eq!(
+            count_scene_paths(&scene),
+            2,
+            "the NaN-edged row is dropped; the two finite bins draw"
         );
     }
 }

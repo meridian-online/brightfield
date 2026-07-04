@@ -171,6 +171,65 @@ plot:
 }
 
 #[test]
+fn recty_renders_geometry() {
+    // rectY: numeric-edged bars — x-bins [lo, hi], y value from zero. Exercises
+    // RectRenderer::augment_scales synthesizing the shared Channel::X scale from
+    // the x1/x2 columns (no bare x column exists), then the per-bin fills.
+    assert_renders(
+        "rectY",
+        r#"
+data:
+  bins: [{ lo: 0, hi: 1, n: 3 }, { lo: 1, hi: 2, n: 7 }, { lo: 2, hi: 3, n: 5 }]
+plot:
+  - mark: rectY
+    data: { from: bins }
+    x1: lo
+    x2: hi
+    y: n
+"#,
+    );
+}
+
+#[test]
+fn rectx_renders_geometry() {
+    // rectX: horizontal numeric-edged bars — y-bins [lo, hi], x value from zero.
+    assert_renders(
+        "rectX",
+        r#"
+data:
+  bins: [{ lo: 0, hi: 1, n: 3 }, { lo: 1, hi: 2, n: 7 }, { lo: 2, hi: 3, n: 5 }]
+plot:
+  - mark: rectX
+    data: { from: bins }
+    y1: lo
+    y2: hi
+    x: n
+"#,
+    );
+}
+
+#[test]
+fn rect_renders_geometry() {
+    // Bare rect: both axes ranged (x-extent [x1,x2] × y-extent [y1,y2]).
+    // augment_scales synthesizes BOTH shared Channel::X and Channel::Y scales
+    // from the interval columns — neither has a bare x/y column to infer from.
+    assert_renders(
+        "rect",
+        r#"
+data:
+  cells: [{ x1: 0, x2: 1, y1: 0, y2: 2 }, { x1: 1, x2: 3, y1: 1, y2: 4 }, { x1: 2, x2: 4, y1: 2, y2: 5 }]
+plot:
+  - mark: rect
+    data: { from: cells }
+    x1: x1
+    x2: x2
+    y1: y1
+    y2: y2
+"#,
+    );
+}
+
+#[test]
 fn ruley_renders_geometry() {
     // ruleY needs a perpendicular (x) scale; the rule's own x column provides
     // it. Its y is a literal channel value (a baseline at 6).

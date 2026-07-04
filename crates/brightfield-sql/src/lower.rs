@@ -389,6 +389,9 @@ pub fn default_lowerers() -> Vec<(MarkKind, Box<dyn MarkLower>)> {
         (MarkKind::Text, Box::new(SimpleLowerer)),
         (MarkKind::BarX, Box::new(SimpleLowerer)),
         (MarkKind::BarY, Box::new(SimpleLowerer)),
+        (MarkKind::Rect, Box::new(SimpleLowerer)),
+        (MarkKind::RectX, Box::new(SimpleLowerer)),
+        (MarkKind::RectY, Box::new(SimpleLowerer)),
         (MarkKind::RegressionY, Box::new(RegressionLowerer)),
         (MarkKind::RegressionX, Box::new(RegressionLowerer)),
         (
@@ -518,9 +521,9 @@ mod tests {
     #[test]
     fn dfir_ac03_find_lowerer_falls_back_to_default() {
         let registry = default_lowerers();
-        // Rect is not registered — should fall back to DefaultLowerer
-        let lowerer = find_lowerer(MarkKind::Rect, &registry);
-        let mark = make_mark(MarkKind::Rect);
+        // Hexbin is not registered — should fall back to DefaultLowerer
+        let lowerer = find_lowerer(MarkKind::Hexbin, &registry);
+        let mark = make_mark(MarkKind::Hexbin);
         let ctx = make_ctx();
         let result = lowerer.lower(&mark, &ctx);
         assert!(matches!(result, Err(EmitError::UnsupportedMark { .. })));
@@ -583,13 +586,16 @@ mod tests {
         assert!(kinds.contains(&MarkKind::Text));
         assert!(kinds.contains(&MarkKind::BarX));
         assert!(kinds.contains(&MarkKind::BarY));
+        assert!(kinds.contains(&MarkKind::Rect));
+        assert!(kinds.contains(&MarkKind::RectX));
+        assert!(kinds.contains(&MarkKind::RectY));
         assert!(kinds.contains(&MarkKind::RegressionY));
         assert!(kinds.contains(&MarkKind::RegressionX));
         assert!(kinds.contains(&MarkKind::DensityX));
         assert!(kinds.contains(&MarkKind::DensityY));
         assert!(kinds.contains(&MarkKind::Density));
         assert!(kinds.contains(&MarkKind::Raster));
-        assert_eq!(kinds.len(), 15);
+        assert_eq!(kinds.len(), 18);
     }
 
     #[test]
