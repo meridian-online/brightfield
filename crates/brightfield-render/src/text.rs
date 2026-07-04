@@ -10,7 +10,7 @@
 use std::sync::{Arc, OnceLock};
 
 use kurbo::Affine;
-use peniko::{Blob, Color, Fill, Font};
+use peniko::{Blob, Color, Fill, FontData};
 use skrifa::metrics::GlyphMetrics;
 use skrifa::prelude::*;
 use vello::{Glyph, Scene};
@@ -36,9 +36,9 @@ pub enum TextAnchor {
 }
 
 /// The bundled font, parsed once and reused across draws.
-fn ui_font() -> &'static Font {
-    static FONT: OnceLock<Font> = OnceLock::new();
-    FONT.get_or_init(|| Font::new(Blob::new(Arc::new(FONT_DATA)), 0))
+fn ui_font() -> &'static FontData {
+    static FONT: OnceLock<FontData> = OnceLock::new();
+    FONT.get_or_init(|| FontData::new(Blob::new(Arc::new(FONT_DATA)), 0))
 }
 
 /// Sum the pixel advance widths of `text`'s glyphs at the metrics' size.

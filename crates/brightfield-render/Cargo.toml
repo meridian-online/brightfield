@@ -10,14 +10,14 @@ description = "Headless chart rendering: Mosaic spec + Arrow data -> Vello scene
 [dependencies]
 brightfield-spec = { path = "../brightfield-spec" }
 arrow = { version = "58", default-features = false, features = ["chrono-tz"] }
-vello = "0.4"
-kurbo = "0.11"
-peniko = "0.3"
-skrifa = "0.26"
+vello = "0.9"
+kurbo = "0.13"
+peniko = "0.6"
+skrifa = "0.42"
 indexmap = "2"
 
 [dev-dependencies]
-vello = { version = "0.4", features = ["wgpu"] }
+vello = { version = "0.9", features = ["wgpu"] }
 
 [lints]
 workspace = true

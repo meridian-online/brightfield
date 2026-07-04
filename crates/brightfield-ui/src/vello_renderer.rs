@@ -59,8 +59,8 @@ impl VelloRenderer {
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
                 memory_hints: wgpu::MemoryHints::default(),
+                ..Default::default()
             },
-            None,
         ))
         .expect(
             "VelloRenderer: failed to create wgpu device. \
@@ -70,10 +70,10 @@ impl VelloRenderer {
         let renderer = VelloInner::new(
             &device,
             RendererOptions {
-                surface_format: None,
                 use_cpu: false,
                 antialiasing_support: vello::AaSupport::all(),
                 num_init_threads: None,
+                pipeline_cache: None,
             },
         )
         .expect("VelloRenderer: failed to create Vello renderer.");
@@ -153,9 +153,9 @@ impl VelloRenderer {
 
         encoder.copy_texture_to_buffer(
             texture.as_image_copy(),
-            wgpu::ImageCopyBuffer {
+            wgpu::TexelCopyBufferInfo {
                 buffer: &buffer,
-                layout: wgpu::ImageDataLayout {
+                layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(padded_bytes_per_row),
                     rows_per_image: Some(height),
@@ -176,7 +176,9 @@ impl VelloRenderer {
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
             sender.send(result).unwrap();
         });
-        self.device.poll(wgpu::Maintain::Wait);
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("GPU poll failed while waiting for readback");
         receiver
             .recv()
             .expect("GPU readback channel closed")

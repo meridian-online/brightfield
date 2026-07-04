@@ -3,7 +3,7 @@
 
 use arrow::record_batch::RecordBatch;
 use kurbo::{Affine, Circle, Rect, RoundedRect};
-use peniko::{Color, Fill, Mix};
+use peniko::{Color, Fill};
 use vello::Scene;
 
 use crate::axis::{compute_ticks, render_x_axis, render_y_axis};
@@ -168,7 +168,7 @@ pub fn build_chart_scene(data: &ChartData<'_>) -> (Scene, ScaleSet) {
 
     // Marks, clipped to the plot area so geometry can't spill onto axes/margins.
     let plot_clip = plot_area_rect(&data.layout);
-    scene.push_layer(Mix::Clip, 1.0, Affine::IDENTITY, &plot_clip);
+    scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &plot_clip);
     data.renderer
         .render(&mut scene, data.batch, data.channel_map, &scales, data.highlight);
     scene.pop_layer();
@@ -276,7 +276,7 @@ pub fn build_multi_mark_scene(
 
     // Render each mark layer, clipped to the plot area.
     let plot_clip = plot_area_rect(layout);
-    scene.push_layer(Mix::Clip, 1.0, Affine::IDENTITY, &plot_clip);
+    scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &plot_clip);
     for entry in entries {
         entry.renderer.render(
             &mut scene,
