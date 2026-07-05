@@ -225,7 +225,11 @@ impl Render for CanvasPanel {
 /// The right-dock YAML editor: a tree-sitter code editor seeded from the
 /// spec file. Save-driven, not change-driven — cmd-s writes the buffer
 /// atomically to the spec path and the EXISTING mtime watcher re-renders;
-/// nothing here touches the reload machinery.
+/// nothing here touches the reload machinery. Every save routes through
+/// the framework-free `spec_save::decide_save` guard: an external change
+/// on disk warns instead of being silently overwritten (a second
+/// consecutive cmd-s forces the write), and an editor whose boot seed
+/// failed refuses to save at all.
 pub struct EditorPanel {
     /// The code-editor state (their entity; `value()` is the buffer).
     state: Entity<InputState>,
@@ -235,14 +239,22 @@ pub struct EditorPanel {
     tab_title: SharedString,
     /// Shared presentation state (visibility mapping input).
     presentation: Entity<PresentationState>,
+    /// The file text the buffer was last synced with (the boot seed, a
+    /// successful save, or a pristine reseed). `None` = the boot read
+    /// failed and no reseed has landed — save refuses (truncation guard).
+    last_synced: Option<String>,
+    /// A conflict warning was issued and not yet resolved: the NEXT cmd-s
+    /// overwrites the external change (two-step confirm).
+    conflict_pending: bool,
 }
 
 impl EditorPanel {
     /// Build the editor over `spec_path`, seeded with `seed` (the file's
-    /// contents at boot).
+    /// contents at boot; `None` when the boot read failed — the editor
+    /// opens empty and refuses to save until a reseed lands).
     pub fn new(
         spec_path: PathBuf,
-        seed: &str,
+        seed: Option<&str>,
         presentation: Entity<PresentationState>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -251,7 +263,7 @@ impl EditorPanel {
             InputState::new(window, cx)
                 .code_editor("yaml")
                 .line_number(true)
-                .default_value(seed.to_string())
+                .default_value(seed.unwrap_or_default().to_string())
         });
         let tab_title = spec_path
             .file_name()
@@ -262,22 +274,85 @@ impl EditorPanel {
             spec_path,
             tab_title: tab_title.into(),
             presentation,
+            last_synced: seed.map(str::to_string),
+            conflict_pending: false,
         }
     }
 
-    /// `SaveSpec` handler (cmd-s, editor context): the pure atomic write.
-    /// Success is quiet — the watcher's re-render (or a rejection
-    /// notification, aws_ac05) is the feedback. A filesystem failure
-    /// surfaces immediately.
+    /// `SaveSpec` handler (cmd-s, editor context): `decide_save` first,
+    /// then the pure atomic write. Success is quiet — the watcher's
+    /// re-render (or a rejection notification, aws_ac05) is the feedback.
+    /// A conflict or refusal surfaces as a workspace notification; a
+    /// filesystem failure surfaces immediately.
     fn save(&mut self, _: &SaveSpec, window: &mut Window, cx: &mut Context<Self>) {
         let buffer = self.state.read(cx).value();
-        if let Err(e) = spec_save::save_spec_atomic(buffer.as_ref(), &self.spec_path) {
-            let message = format!("Save failed: {e}");
-            eprintln!("{message}");
-            Root::update(window, cx, |root, window, cx| {
-                root.push_notification(Notification::error(message.clone()), window, cx);
-            });
+        let file_now = std::fs::read_to_string(&self.spec_path).ok();
+        let decision = if self.conflict_pending {
+            // The previous cmd-s warned about this conflict: the author
+            // saved again, so the buffer wins.
+            spec_save::SaveDecision::Write
+        } else {
+            spec_save::decide_save(buffer.as_ref(), file_now.as_deref(), self.last_synced.as_deref())
+        };
+        self.conflict_pending = false;
+        match decision {
+            spec_save::SaveDecision::Unchanged => {
+                // Buffer == file: nothing to write, and the two are in
+                // sync by definition.
+                self.last_synced = Some(buffer.to_string());
+            }
+            spec_save::SaveDecision::RefuseUnseeded => {
+                let message = format!(
+                    "Save refused: {} could not be read when the editor opened — \
+                     saving would overwrite contents the editor never held",
+                    self.spec_path.display()
+                );
+                eprintln!("{message}");
+                Root::update(window, cx, |root, window, cx| {
+                    root.push_notification(Notification::error(message.clone()), window, cx);
+                });
+            }
+            spec_save::SaveDecision::ExternalConflict => {
+                self.conflict_pending = true;
+                let message =
+                    "Spec changed on disk since it was loaded — save again to overwrite".to_string();
+                eprintln!("Save deferred: {message}");
+                Root::update(window, cx, |root, window, cx| {
+                    root.push_notification(Notification::warning(message.clone()), window, cx);
+                });
+            }
+            spec_save::SaveDecision::Write => {
+                match spec_save::save_spec_atomic(buffer.as_ref(), &self.spec_path) {
+                    Ok(_) => {
+                        self.last_synced = Some(buffer.to_string());
+                    }
+                    Err(e) => {
+                        let message = format!("Save failed: {e}");
+                        eprintln!("{message}");
+                        Root::update(window, cx, |root, window, cx| {
+                            root.push_notification(Notification::error(message.clone()), window, cx);
+                        });
+                    }
+                }
+            }
         }
+    }
+
+    /// Adopt `contents` from disk when the buffer is pristine — the
+    /// watcher taps this on every observed mtime change, so an external
+    /// edit refreshes an untouched editor instead of arming the conflict
+    /// guard. A dirty buffer is left alone (cmd-s then routes through the
+    /// conflict path); our own save's echo is a no-op. The decision is
+    /// `spec_save::should_reseed`, framework-free.
+    pub fn reseed_from_disk(&mut self, contents: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let buffer = self.state.read(cx).value();
+        if !spec_save::should_reseed(buffer.as_ref(), self.last_synced.as_deref(), contents) {
+            return;
+        }
+        self.state
+            .update(cx, |state, cx| state.set_value(contents.to_string(), window, cx));
+        self.last_synced = Some(contents.to_string());
+        self.conflict_pending = false;
     }
 }
 
@@ -532,6 +607,41 @@ impl WorkspaceRoot {
         )
         .detach();
 
+        // `LayoutChanged` alone has blind spots in their tree: `Dock::resize`
+        // ends in a bare notify (no DockEvent), and a bare center
+        // `DockItem::tab` is skipped by their `subscribe_item` (it assumes
+        // StackPanel parents) — so dock widths and center tab changes would
+        // otherwise persist only via the quit flush, and a crash would lose
+        // them. Observe the dock entities and the center TabPanel directly,
+        // funnelling into the same debounced policy: skip-if-unchanged +
+        // debounce absorb the notify-storm a drag produces. (A split center
+        // — the restored-layout shape — IS covered by their subscription.)
+        let (edge_docks, center_tabs) = {
+            let area = dock_area.read(cx);
+            let edge_docks: Vec<_> = [area.left_dock(), area.right_dock(), area.bottom_dock()]
+                .into_iter()
+                .flatten()
+                .cloned()
+                .collect();
+            let center_tabs = match area.center() {
+                DockItem::Tabs { view, .. } => Some(view.clone()),
+                _ => None,
+            };
+            (edge_docks, center_tabs)
+        };
+        for dock in edge_docks {
+            cx.observe_in(&dock, window, |this: &mut Self, _, window, cx| {
+                this.schedule_save(window, cx);
+            })
+            .detach();
+        }
+        if let Some(tabs) = center_tabs {
+            cx.observe_in(&tabs, window, |this: &mut Self, _, window, cx| {
+                this.schedule_save(window, cx);
+            })
+            .detach();
+        }
+
         // …and a flush on quit (pending debounce or not).
         cx.on_app_quit(|this: &mut Self, cx| {
             let action = if layout_persistable(this.presentation.read(cx).mode) {
@@ -610,9 +720,15 @@ impl WorkspaceRoot {
                 .timer(Duration::from_millis(SAVE_DEBOUNCE_MS))
                 .await;
             let _ = this.update_in(window, |this, _window, cx| {
+                // Re-check persistability AT FIRE TIME: `p` may have been
+                // pressed during the debounce window, and the serialised
+                // state below would then be the presentation collapse. The
+                // policy suppresses the write but keeps the deadline armed
+                // (the quit flush in authoring writes pending changes).
+                let persistable = layout_persistable(this.presentation.read(cx).mode);
                 let json = this.serialised_state(cx);
                 let now = this.now_ms();
-                if let SaveAction::Write(json) = this.policy.timer_fired(now, &json) {
+                if let SaveAction::Write(json) = this.policy.timer_fired(now, &json, persistable) {
                     if let Some(path) = this.state_path.clone() {
                         if let Err(e) = dock_state_file::write_state_file(&path, &json) {
                             eprintln!("dock layout: save failed: {e}");

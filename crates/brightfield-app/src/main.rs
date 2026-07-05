@@ -879,6 +879,7 @@ fn spawn_spec_watcher(
     spec_path: String,
     launch_chrome: ChromeSnapshot,
     workspace_window: gpui::WindowHandle<gpui_component::Root>,
+    editor: Option<gpui::Entity<shell::EditorPanel>>,
 ) {
     const POLL: std::time::Duration = std::time::Duration::from_millis(300);
     use reload_feedback::{reload_notification, ReloadOutcome};
@@ -892,6 +893,22 @@ fn spawn_spec_watcher(
                 continue;
             }
             last = now;
+
+            // A PRISTINE editor buffer follows the file it mirrors: adopt
+            // the changed contents before the reload runs (the decision is
+            // spec_save::should_reseed — a dirty buffer is left alone and
+            // our own save's echo is a no-op). A tap only: no reload branch
+            // below is entered, skipped, or reordered by this.
+            if let Some(editor) = editor.as_ref() {
+                if let Ok(contents) = std::fs::read_to_string(&spec_path) {
+                    let editor = editor.clone();
+                    let _ = workspace_window.update(cx, |_root, window, cx| {
+                        editor.update(cx, |editor, cx| {
+                            editor.reseed_from_disk(&contents, window, cx);
+                        });
+                    });
+                }
+            }
 
             // Re-run the (blocking) pipeline off the main thread (Dashboard is
             // Send). catch_unwind contains a panicking pipeline (a degenerate
@@ -1088,9 +1105,10 @@ fn main() {
         return;
     }
 
-    // Open a native GPUI window: a WorkspaceView (header strip + padded content
-    // area — card 0016) hosting one ChartElement per plot, positioned per the
-    // layout, each with its own ChartState (so interaction is per-plot).
+    // Open a native GPUI window: the docked authoring workspace (card 0017) —
+    // a DockArea hosting the canvas panel (one ChartElement per plot,
+    // positioned per the layout, each with its own ChartState so interaction
+    // is per-plot), the YAML spec editor, and the data sidebar.
     #[cfg(target_os = "macos")]
     {
         use gpui::AppContext;
@@ -1106,7 +1124,7 @@ fn main() {
         let spec_path = spec_path.to_string();
         let Dashboard { width, height, plots, sliders, legends, meta_title } = dashboard;
         // The dashboard's display title — the ONE resolver call feeding both
-        // the native titlebar and the WorkspaceView header strip below.
+        // the native titlebar and the canvas panel's tab title below.
         let title = brightfield_ui::resolve_title(meta_title.as_deref(), &spec_path);
         let LiveParts {
             session,
@@ -1118,8 +1136,20 @@ fn main() {
         // into the coordinator: the editor buffer seed (the spec file's
         // text) and the sidebar derivation (spec AST + the column names of
         // the batches the pipeline ALREADY executed — no new DuckDB
-        // queries, aws_ac06).
-        let editor_seed = std::fs::read_to_string(&spec_path).unwrap_or_default();
+        // queries, aws_ac06). A failed seed read is passed through as None
+        // — NOT an empty string, which the editor could later "save" over
+        // the real file (the empty-seed truncation guard): an unseeded
+        // editor refuses cmd-s until a pristine reseed lands.
+        let editor_seed: Option<String> = match std::fs::read_to_string(&spec_path) {
+            Ok(text) => Some(text),
+            Err(e) => {
+                eprintln!(
+                    "spec editor: failed to read {spec_path} for the editor seed ({e}); \
+                     the editor opens empty and will refuse to save until the file is readable"
+                );
+                None
+            }
+        };
         let mark_schema_columns: Vec<Vec<String>> = marks
             .iter()
             .map(|m| {
@@ -1243,6 +1273,15 @@ fn main() {
             // in the 0017 tabletop).
             let (win_w, win_h) =
                 shell_model::initial_window_size(f64::from(width), f64::from(height));
+            // Clamp to the primary display's visible bounds (menu bar/dock
+            // excluded): a dashboard plus both dock widths can exceed a
+            // laptop display, and centring an oversized content rect would
+            // push the titlebar off-screen. No display info → unclamped.
+            let display_size = cx
+                .primary_display()
+                .map(|d| d.visible_bounds().size)
+                .map(|s| (f64::from(s.width), f64::from(s.height)));
+            let (win_w, win_h) = shell_model::clamp_to_display((win_w, win_h), display_size);
             let window_size = gpui::size(gpui::px(win_w as f32), gpui::px(win_h as f32));
             let window_opts = gpui::WindowOptions {
                 window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::centered(
@@ -1259,10 +1298,15 @@ fn main() {
                 ..Default::default()
             };
             // The canvas panel entity, captured out of the window closure so
-            // boot focus lands on it (bare `p` from the first keypress).
+            // boot focus lands on it (bare `p` from the first keypress) —
+            // and the editor panel, captured for the watcher's pristine
+            // reseed tap below.
             let canvas_slot: Rc<std::cell::RefCell<Option<gpui::Entity<shell::CanvasPanel>>>> =
                 Rc::new(std::cell::RefCell::new(None));
             let canvas_capture = canvas_slot.clone();
+            let editor_slot: Rc<std::cell::RefCell<Option<gpui::Entity<shell::EditorPanel>>>> =
+                Rc::new(std::cell::RefCell::new(None));
+            let editor_capture = editor_slot.clone();
             let spec_path_for_editor = spec_path.clone();
             let window = cx
                 .open_window(window_opts, move |window, cx| {
@@ -1289,12 +1333,13 @@ fn main() {
                     let editor = cx.new(|cx| {
                         shell::EditorPanel::new(
                             std::path::PathBuf::from(&spec_path_for_editor),
-                            &editor_seed,
+                            editor_seed.as_deref(),
                             presentation.clone(),
                             window,
                             cx,
                         )
                     });
+                    *editor_capture.borrow_mut() = Some(editor.clone());
                     let sidebar = cx.new(|cx| {
                         shell::SidebarPanel::new(sidebar_listings, presentation.clone(), cx)
                     });
@@ -1317,8 +1362,12 @@ fn main() {
 
             // Hot-reload: swap each plot's scene when the spec changes on
             // disk; rejections additionally surface as workspace
-            // notifications (aws_ac05's tap — same outcomes, same stderr).
-            spawn_spec_watcher(cx, watched, spec_path, launch_chrome, window);
+            // notifications (aws_ac05's tap — same outcomes, same stderr),
+            // and a PRISTINE editor buffer reseeds from the changed file
+            // (the watcher's second sanctioned tap — reload control flow
+            // untouched).
+            let editor = editor_slot.borrow().clone();
+            spawn_spec_watcher(cx, watched, spec_path, launch_chrome, window, editor);
         });
     }
 

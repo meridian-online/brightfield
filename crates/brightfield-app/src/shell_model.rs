@@ -85,6 +85,20 @@ pub fn initial_window_size(dashboard_width: f64, dashboard_height: f64) -> (f64,
     (w + SIDEBAR_DOCK_WIDTH + EDITOR_DOCK_WIDTH, h)
 }
 
+/// Clamp an initial window content size to the display's visible bounds
+/// (menu bar / taskbar excluded): a dashboard plus both dock widths can
+/// exceed a laptop display, and centring an oversized content rect pushes
+/// the titlebar off-screen. `None` (headless, or no display information)
+/// passes the size through unclamped — centring then falls back to the
+/// platform's own behaviour.
+#[must_use]
+pub fn clamp_to_display(size: (f64, f64), display: Option<(f64, f64)>) -> (f64, f64) {
+    match display {
+        Some((display_w, display_h)) => (size.0.min(display_w), size.1.min(display_h)),
+        None => size,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,6 +106,15 @@ mod tests {
     /// aws_ac07: the mode → visibility mapping over both modes and all
     /// three panel roles — authoring shows everything; presentation keeps
     /// ONLY the canvas. The docks-open bit follows the same flip.
+    ///
+    /// Layout invariance (the AC's other clause) rides on this mapping
+    /// being a pure function of (mode, role): the PNG dump path returns
+    /// before any shell construction (aws_ac01's seam), and the
+    /// spec-derived layout takes no shell state (fww_ac03's pinned
+    /// invariance), so toggling presentation cannot affect PNG output.
+    /// Purity is a property of the signature (no hidden state to probe) —
+    /// the BEHAVIOURAL pin is dump_seam.rs's run-twice byte-identity test
+    /// against the real binary, not a repeated-call assertion here.
     #[test]
     fn aws_ac07_presentation_hides_authoring_panels_keeps_canvas() {
         use PanelRole::*;
@@ -118,21 +141,6 @@ mod tests {
         assert!(panel_visible(mode, Editor) && docks_open(mode));
     }
 
-    /// aws_ac07 / aws_ac01 (layout invariance): the mapping consumes ONLY
-    /// (mode, role) — the PNG dump path (which returns before any shell
-    /// construction, aws_ac01's seam) can never observe it, and the
-    /// spec-derived layout takes no shell state (fww_ac03's pinned
-    /// invariance) — so toggling presentation cannot affect PNG output.
-    #[test]
-    fn aws_ac07_mapping_is_a_pure_function_of_mode_and_role() {
-        for _ in 0..3 {
-            assert!(
-                !panel_visible(PresentationMode::Presentation, PanelRole::Editor),
-                "same inputs, same outputs — no hidden state"
-            );
-        }
-    }
-
     /// aws_ac03 (presentation guard): layout events persist only while
     /// authoring — presentation's own dock collapses never overwrite the
     /// saved authoring arrangement.
@@ -151,5 +159,30 @@ mod tests {
         let (w, h) = initial_window_size(800.0, 600.0);
         assert_eq!(w, framed_w + SIDEBAR_DOCK_WIDTH + EDITOR_DOCK_WIDTH);
         assert_eq!(h, framed_h);
+    }
+
+    /// aws_ac03 (geometry clamp): the initial content size never exceeds
+    /// the display's visible bounds — an oversized dashboard clamps per
+    /// axis (so `Bounds::centered` cannot push the titlebar off-screen),
+    /// a fitting window is untouched, and headless (no display) passes
+    /// through unclamped.
+    #[test]
+    fn aws_ac03_initial_window_clamps_to_visible_display_bounds() {
+        let laptop = Some((1512.0, 944.0));
+
+        // Oversized on both axes → exactly the display size.
+        assert_eq!(clamp_to_display((2600.0, 1300.0), laptop), (1512.0, 944.0));
+        // One oversized axis clamps independently.
+        assert_eq!(clamp_to_display((2600.0, 700.0), laptop), (1512.0, 700.0));
+        assert_eq!(clamp_to_display((900.0, 1300.0), laptop), (900.0, 944.0));
+        // A window that fits is untouched.
+        assert_eq!(clamp_to_display((900.0, 700.0), laptop), (900.0, 700.0));
+        // No display information → unclamped passthrough.
+        assert_eq!(clamp_to_display((2600.0, 1300.0), None), (2600.0, 1300.0));
+
+        // The real caller feeds initial_window_size through the clamp: the
+        // result is always <= the display on both axes.
+        let (w, h) = clamp_to_display(initial_window_size(2400.0, 1200.0), laptop);
+        assert!(w <= 1512.0 && h <= 944.0, "clamped ({w}, {h}) fits the display");
     }
 }
