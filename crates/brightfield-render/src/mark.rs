@@ -1177,14 +1177,156 @@ impl MarkRenderer for Density1DRenderer {
 }
 
 // ---------------------------------------------------------------------------
+// Shared KDE grid (density / heatmap / contour)
+// ---------------------------------------------------------------------------
+
+/// A reconstructed, KDE-smoothed 2D grid — the shared substrate of the
+/// `density`, `heatmap`, and `contour` renderers (card 0008, density marks).
+///
+/// The density lowerer emits one `(x centre, y centre, __bf_count)` row per
+/// OCCUPIED bin; [`build_kde_grid`] reconstructs the dense rectangular
+/// histogram from those rows, picks bandwidths, and runs [`kde_2d`]. Each
+/// consumer then draws the smoothed field its own way: density as
+/// alpha-encoded circles, heatmap as ramp-filled cells, contour as iso-lines.
+pub(crate) struct KdeGrid {
+    /// Sorted unique x bin centres (grid columns), in data units.
+    pub x_centres: Vec<f64>,
+    /// Sorted unique y bin centres (grid rows), in data units.
+    pub y_centres: Vec<f64>,
+    /// Column pitch — `x_centres[1] - x_centres[0]` (> 0).
+    pub dx: f64,
+    /// Row pitch — `y_centres[1] - y_centres[0]` (> 0).
+    pub dy: f64,
+    /// Row-major smoothed density: cell `(row, col)` — row indexing
+    /// `y_centres`, col indexing `x_centres` — is `density[row * cols + col]`.
+    pub density: Vec<f64>,
+    /// Maximum density value over the grid (> 0).
+    pub max_density: f64,
+}
+
+impl KdeGrid {
+    /// Number of grid rows (y bin centres).
+    pub fn rows(&self) -> usize {
+        self.y_centres.len()
+    }
+
+    /// Number of grid columns (x bin centres).
+    pub fn cols(&self) -> usize {
+        self.x_centres.len()
+    }
+}
+
+/// Reconstruct the 2D histogram from a density-lowerer batch and smooth it
+/// with [`kde_2d`] — extracted verbatim from `Density2DRenderer::render` so
+/// heatmap and contour ride the identical grid (behaviour-identity is pinned
+/// by the byte-identical density example PNGs and `dmk_ac01`).
+///
+/// `bandwidth`, when present (the mark's `bandwidth:` attribute, in data
+/// units), is applied to both axes; otherwise Silverman's rule runs per axis
+/// over the reconstructed samples. Returns `None` whenever the inline path
+/// would have early-returned: a missing/non-numeric column, fewer than two
+/// distinct centres on either axis, a non-positive pitch or bandwidth, or an
+/// all-zero smoothed field.
+pub(crate) fn build_kde_grid(
+    batch: &RecordBatch,
+    x_col: &str,
+    y_col: &str,
+    bandwidth: Option<f64>,
+) -> Option<KdeGrid> {
+    let x_vals = column_as_f64(batch, x_col)?;
+    let y_vals = column_as_f64(batch, y_col)?;
+    let count_vals = column_as_f64(batch, DENSITY_COUNT_COL)?;
+
+    // Collect unique bin centres on each axis (sorted).
+    let mut x_centres: Vec<f64> = Vec::new();
+    let mut y_centres: Vec<f64> = Vec::new();
+    let mut tuples: Vec<(f64, f64, u32)> = Vec::new();
+    for i in 0..batch.num_rows() {
+        if let (Some(xv), Some(yv), Some(c)) = (x_vals[i], y_vals[i], count_vals[i]) {
+            tuples.push((xv, yv, c.max(0.0).round() as u32));
+            if !x_centres.iter().any(|v| (*v - xv).abs() < 1e-9) {
+                x_centres.push(xv);
+            }
+            if !y_centres.iter().any(|v| (*v - yv).abs() < 1e-9) {
+                y_centres.push(yv);
+            }
+        }
+    }
+    x_centres.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    y_centres.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    let cols = x_centres.len();
+    let rows = y_centres.len();
+    if cols < 2 || rows < 2 {
+        return None;
+    }
+    let dx = x_centres[1] - x_centres[0];
+    let dy = y_centres[1] - y_centres[0];
+    if dx <= 0.0 || dy <= 0.0 {
+        return None;
+    }
+
+    // Build flat row-major histogram.
+    let mut bins = vec![0u32; rows * cols];
+    for (xv, yv, c) in &tuples {
+        let cx = x_centres
+            .iter()
+            .position(|v| (*v - xv).abs() < 1e-9)
+            .unwrap();
+        let cy = y_centres
+            .iter()
+            .position(|v| (*v - yv).abs() < 1e-9)
+            .unwrap();
+        bins[cy * cols + cx] = *c;
+    }
+
+    // Bandwidth: the mark's explicit attribute on both axes, else Silverman
+    // from the reconstructed (x, y) samples.
+    let (h_x, h_y) = match bandwidth {
+        Some(h) => (h, h),
+        None => {
+            let mut xs_samples: Vec<f64> = Vec::new();
+            let mut ys_samples: Vec<f64> = Vec::new();
+            for r in 0..rows {
+                for c in 0..cols {
+                    for _ in 0..bins[r * cols + c] {
+                        xs_samples.push(x_centres[c]);
+                        ys_samples.push(y_centres[r]);
+                    }
+                }
+            }
+            silverman_2d_per_axis(&xs_samples, &ys_samples)
+        }
+    };
+    if h_x <= 0.0 || h_y <= 0.0 {
+        return None;
+    }
+
+    let density = kde_2d(&bins, (rows, cols), (h_x, h_y), (dx, dy));
+    let max_density = density.iter().cloned().fold(0.0_f64, f64::max);
+    if max_density <= 0.0 {
+        return None;
+    }
+
+    Some(KdeGrid {
+        x_centres,
+        y_centres,
+        dx,
+        dy,
+        density,
+        max_density,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Density2DRenderer (density with both x and y bins)
 // ---------------------------------------------------------------------------
 
 /// Renders 2D density as a grid of circles whose alpha encodes density value.
 ///
 /// The lowerer emits `(x_bin, y_bin, count)`; this renderer reconstructs the
-/// rectangular histogram, runs `kde_2d`, and draws a circle per cell with
-/// alpha proportional to normalised density.
+/// rectangular histogram via the shared [`build_kde_grid`] helper and draws a
+/// circle per cell with alpha proportional to normalised density.
 pub struct Density2DRenderer;
 
 impl MarkRenderer for Density2DRenderer {
@@ -1213,93 +1355,21 @@ impl MarkRenderer for Density2DRenderer {
             None => return,
         };
 
-        let x_vals = match column_as_f64(batch, x_col) {
-            Some(v) => v,
-            None => return,
-        };
-        let y_vals = match column_as_f64(batch, y_col) {
-            Some(v) => v,
-            None => return,
-        };
-        let count_vals = match column_as_f64(batch, DENSITY_COUNT_COL) {
-            Some(v) => v,
+        let grid = match build_kde_grid(batch, x_col, y_col, None) {
+            Some(g) => g,
             None => return,
         };
 
-        // Collect unique bin centres on each axis (sorted).
-        let mut x_centres: Vec<f64> = Vec::new();
-        let mut y_centres: Vec<f64> = Vec::new();
-        let mut tuples: Vec<(f64, f64, u32)> = Vec::new();
-        for i in 0..batch.num_rows() {
-            if let (Some(xv), Some(yv), Some(c)) = (x_vals[i], y_vals[i], count_vals[i]) {
-                tuples.push((xv, yv, c.max(0.0).round() as u32));
-                if !x_centres.iter().any(|v| (*v - xv).abs() < 1e-9) {
-                    x_centres.push(xv);
-                }
-                if !y_centres.iter().any(|v| (*v - yv).abs() < 1e-9) {
-                    y_centres.push(yv);
-                }
-            }
-        }
-        x_centres.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        y_centres.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-
-        let cols = x_centres.len();
-        let rows = y_centres.len();
-        if cols < 2 || rows < 2 {
-            return;
-        }
-        let dx = x_centres[1] - x_centres[0];
-        let dy = y_centres[1] - y_centres[0];
-        if dx <= 0.0 || dy <= 0.0 {
-            return;
-        }
-
-        // Build flat row-major histogram.
-        let mut bins = vec![0u32; rows * cols];
-        for (xv, yv, c) in &tuples {
-            let cx = x_centres
-                .iter()
-                .position(|v| (*v - xv).abs() < 1e-9)
-                .unwrap();
-            let cy = y_centres
-                .iter()
-                .position(|v| (*v - yv).abs() < 1e-9)
-                .unwrap();
-            bins[cy * cols + cx] = *c;
-        }
-
-        // Bandwidth from reconstructed (x, y) samples.
-        let mut xs_samples: Vec<f64> = Vec::new();
-        let mut ys_samples: Vec<f64> = Vec::new();
-        for r in 0..rows {
-            for c in 0..cols {
-                for _ in 0..bins[r * cols + c] {
-                    xs_samples.push(x_centres[c]);
-                    ys_samples.push(y_centres[r]);
-                }
-            }
-        }
-        let (h_x, h_y) = silverman_2d_per_axis(&xs_samples, &ys_samples);
-        if h_x <= 0.0 || h_y <= 0.0 {
-            return;
-        }
-
-        let density = kde_2d(&bins, (rows, cols), (h_x, h_y), (dx, dy));
-        let max_density = density.iter().cloned().fold(0.0_f64, f64::max);
-        if max_density <= 0.0 {
-            return;
-        }
-
+        let (rows, cols) = (grid.rows(), grid.cols());
         let radius = DOT_RADIUS.max(2.0);
         for r in 0..rows {
             for c in 0..cols {
-                let normalised = density[r * cols + c] / max_density;
+                let normalised = grid.density[r * cols + c] / grid.max_density;
                 if normalised <= 0.01 {
                     continue;
                 }
-                let px = x_scale.map_f64(x_centres[c]);
-                let py = y_scale.map_f64(y_centres[r]);
+                let px = x_scale.map_f64(grid.x_centres[c]);
+                let py = y_scale.map_f64(grid.y_centres[r]);
                 let [cr, cg, cb, _ca] = DEFAULT_COLOUR.components;
                 let colour = Color::new([cr, cg, cb, normalised as f32]);
                 let circle = Circle::new((px, py), radius);
@@ -2567,6 +2637,86 @@ mod tests {
             "Density2DRenderer on 3×3 grid must emit ≥9 path operations, got {}",
             count_scene_paths(&scene)
         );
+    }
+
+    // dmk_ac01 (card 0008, density marks): the shared KDE-grid helper reproduces
+    // exactly the values the inline Density2D path produced — same histogram
+    // reconstruction (row order and gaps included), same Silverman bandwidths,
+    // same kde_2d call — pinned by replaying the inline formula over the fixture
+    // and asserting bitwise equality. (The byte-identical density example PNGs
+    // are the end-to-end gate; this pins the seam headlessly.)
+    #[test]
+    fn dmk_ac01_kde_grid_helper_matches_inline_path() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x_bin", DataType::Float64, false),
+            Field::new("y_bin", DataType::Float64, false),
+            Field::new(DENSITY_COUNT_COL, DataType::Float64, false),
+        ]));
+        // 3×3 grid with a hot centre, deliberately in SCRAMBLED row order so the
+        // helper's centre-sorting + position mapping is exercised, with one cell
+        // (2, 0) omitted so an unoccupied bin stays zero in the histogram.
+        let xs = vec![1.0, 0.0, 2.0, 0.0, 1.0, 2.0, 1.0, 0.0];
+        let ys = vec![1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 2.0, 2.0];
+        let counts = vec![16.0, 1.0, 1.0, 4.0, 4.0, 4.0, 4.0, 1.0];
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(xs)),
+                Arc::new(Float64Array::from(ys)),
+                Arc::new(Float64Array::from(counts)),
+            ],
+        )
+        .unwrap();
+
+        let grid = build_kde_grid(&batch, "x_bin", "y_bin", None).expect("grid builds");
+        assert_eq!(grid.x_centres, vec![0.0, 1.0, 2.0], "x centres sorted");
+        assert_eq!(grid.y_centres, vec![0.0, 1.0, 2.0], "y centres sorted");
+        assert_eq!(grid.dx, 1.0);
+        assert_eq!(grid.dy, 1.0);
+        assert_eq!((grid.rows(), grid.cols()), (3, 3));
+
+        // Replay the inline path's formula: dense row-major histogram (row = y),
+        // Silverman per-axis over the expanded samples, kde_2d.
+        #[rustfmt::skip]
+        let bins: Vec<u32> = vec![
+            1, 4, 1,  // y = 0
+            4, 16, 4, // y = 1
+            1, 4, 0,  // y = 2 — (2, 2) unoccupied
+        ];
+        let mut xs_samples: Vec<f64> = Vec::new();
+        let mut ys_samples: Vec<f64> = Vec::new();
+        for r in 0..3 {
+            for c in 0..3 {
+                for _ in 0..bins[r * 3 + c] {
+                    xs_samples.push(c as f64);
+                    ys_samples.push(r as f64);
+                }
+            }
+        }
+        let (h_x, h_y) = silverman_2d_per_axis(&xs_samples, &ys_samples);
+        let expected = kde_2d(&bins, (3, 3), (h_x, h_y), (1.0, 1.0));
+        assert_eq!(
+            grid.density, expected,
+            "helper grid must be bitwise-identical to the inline path's kde_2d output"
+        );
+        let expected_max = expected.iter().cloned().fold(0.0_f64, f64::max);
+        assert_eq!(grid.max_density, expected_max);
+
+        // An explicit bandwidth overrides Silverman on both axes.
+        let with_bw = build_kde_grid(&batch, "x_bin", "y_bin", Some(0.5)).expect("grid builds");
+        assert_eq!(
+            with_bw.density,
+            kde_2d(&bins, (3, 3), (0.5, 0.5), (1.0, 1.0)),
+            "explicit bandwidth reaches kde_2d on both axes"
+        );
+        assert!(
+            with_bw.density != grid.density,
+            "the explicit bandwidth actually changes the field"
+        );
+
+        // Degenerate inputs return None exactly where the inline path returned.
+        assert!(build_kde_grid(&batch, "missing", "y_bin", None).is_none());
+        assert!(build_kde_grid(&batch, "x_bin", "y_bin", Some(0.0)).is_none());
     }
 
     // bin_step recovers the true pitch as the GCD of the gaps, even when NO two
