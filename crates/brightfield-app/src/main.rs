@@ -21,7 +21,8 @@ use brightfield_render::scale::{Scale, ScaleSet, SequentialScheme};
 use brightfield_render::scene::{build_multi_mark_scene, compose_dashboard, ChartData};
 use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::layout::{
-    collect_plot_nodes, placed_input_nodes, placed_legend_nodes, placed_plots, Rect,
+    collect_legend_nodes, collect_plot_nodes, placed_input_nodes, placed_legend_nodes,
+    placed_legends, placed_plots, Rect,
 };
 use brightfield_spec::parse_spec_path;
 use brightfield_spec::vocab::{InputKind, LegendChannel, MarkKind};
@@ -79,11 +80,16 @@ struct SliderPlacement {
     value: f64,
 }
 
-/// A standalone `legend:` node's placement (multi-view inc 6): its dashboard rect
-/// and the colour scale it displays, resolved from the plot its `for:` names. The
-/// headless/PNG path draws it into the composite; the window hosts it as a
-/// display-only `LegendElement` at the same rect (card 0016).
+/// A standalone `legend:` node's placement (multi-view inc 6): its component
+/// path, its dashboard rect, and the colour scale it displays, resolved from
+/// the plot its `for:` names. The headless/PNG path draws it into the
+/// composite; the window hosts it as a `LegendElement` at the same rect (card
+/// 0016) — display-only unless the node is bound `as:` a selection, in which
+/// case `path` joins it to its analysis [`LegendBinding`] (card 0009).
+///
+/// [`LegendBinding`]: brightfield_spec::analysis::LegendBinding
 struct LegendPlacement {
+    path: String,
     rect: Rect,
     scale: Scale,
 }
@@ -103,21 +109,44 @@ struct Dashboard {
 }
 
 /// Map each resolved [`LegendPlacement`] to its hosted window descriptor —
-/// one display-only [`brightfield_ui::PlacedLegend`] per placement, at the
-/// placement's rect (card 0016). The live path and the fww_ac05 view-model
-/// test share this single mapping.
+/// one [`brightfield_ui::PlacedLegend`] per placement, at the placement's
+/// rect (card 0016). The live path and the fww_ac05/lcf_ac05 view-model
+/// tests share this single mapping.
+///
+/// A placement whose node carries a producer binding (card 0009) — matched
+/// by legend path against `bindings`, categorical [`Scale::Colour`] only —
+/// is additionally wired to `coordinator` at its binding index, so a swatch
+/// click commits through `commit_legend_click`. Sequential (gradient) and
+/// unbound legends stay display-only, exactly as 0016 shipped.
 #[cfg(any(target_os = "macos", test))]
-fn placed_legend_views(legends: &[LegendPlacement]) -> Vec<brightfield_ui::PlacedLegend> {
+fn placed_legend_views(
+    legends: &[LegendPlacement],
+    bindings: &[brightfield_spec::analysis::LegendBinding],
+    coordinator: Option<&std::rc::Rc<std::cell::RefCell<brightfield_ui::CrossfilterCoordinator>>>,
+) -> Vec<brightfield_ui::PlacedLegend> {
     legends
         .iter()
         .map(|l| {
-            brightfield_ui::PlacedLegend::new(
+            let placed = brightfield_ui::PlacedLegend::new(
                 l.rect.x,
                 l.rect.y,
                 l.rect.width,
                 l.rect.height,
                 l.scale.clone(),
-            )
+            );
+            let bound = coordinator.and_then(|coord| {
+                if !matches!(l.scale, Scale::Colour { .. }) {
+                    return None;
+                }
+                bindings
+                    .iter()
+                    .position(|b| b.legend_path.0 == l.path)
+                    .map(|index| (index, coord.clone()))
+            });
+            match bound {
+                Some((index, coord)) => placed.with_binding(index, coord),
+                None => placed,
+            }
         })
         .collect()
 }
@@ -217,7 +246,14 @@ fn resolve_legends(spec: &brightfield_spec::ast::Spec, live_plots: &[LivePlotMet
     };
 
     let mut out = Vec::new();
-    for (rect, node) in placed_legend_nodes(spec, Rect::new(0.0, 0.0, 0.0, 0.0)) {
+    // The placed-rect ↔ AST-node join, path retained: the placement's path is
+    // what joins a bound legend to its analysis LegendBinding (card 0009).
+    let nodes = collect_legend_nodes(spec);
+    for placed in placed_legends(spec, Rect::new(0.0, 0.0, 0.0, 0.0)) {
+        let Some((_, node)) = nodes.iter().find(|(path, _)| path == &placed.path) else {
+            continue;
+        };
+        let rect = placed.rect;
         if node.channel != LegendChannel::Color {
             eprintln!(
                 "warning: standalone legend channel {:?} is unimplemented — skipping",
@@ -257,6 +293,7 @@ fn resolve_legends(spec: &brightfield_spec::ast::Spec, live_plots: &[LivePlotMet
             // concat can still overlap it — single-pass layout can't reflow.
             let (w, h) = colour_legend_size(&scale).unwrap_or((rect.width, rect.height));
             out.push(LegendPlacement {
+                path: placed.path,
                 rect: Rect::new(rect.x, rect.y, w, h),
                 scale,
             });
@@ -286,6 +323,9 @@ struct LiveParts {
     marks: Vec<MarkInput>,
     /// Per plot, aligned 1:1 with `Dashboard.plots`.
     plots: Vec<LivePlotMeta>,
+    /// Legend producer bindings (card 0009), in analysis order — the
+    /// coordinator's legend index space; placements join by legend path.
+    legend_bindings: Vec<brightfield_spec::analysis::LegendBinding>,
 }
 
 /// Per-plot live metadata captured during rendering, joined to its `ChartState`
@@ -421,6 +461,9 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
         .iter()
         .map(|bb| (bb.parent_plot.0.clone(), BrushBinding::from(bb)))
         .collect();
+    // Legend producer bindings (card 0009), kept for the window path — a
+    // bound legend's swatch click dispatches through the coordinator.
+    let legend_bindings = analysis.legend_bindings.clone();
 
     // 3. Load into engine (creates DuckDB views).
     let engine = Engine::new();
@@ -684,6 +727,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             session,
             marks: mark_inputs,
             plots: live_plots,
+            legend_bindings,
         },
     ))
 }
@@ -908,6 +952,7 @@ fn main() {
             session,
             marks,
             plots: live_plots_meta,
+            legend_bindings,
         } = live;
         // Launch-time chrome snapshot for the hot-reload gate: the title,
         // hosted legends, and per-plot render metadata are fixed at launch,
@@ -949,8 +994,18 @@ fn main() {
             // matches its binding.
             let slider_bindings: Vec<SliderBinding> =
                 sliders.iter().map(|s| s.binding.clone()).collect();
-            let coordinator =
-                CrossfilterCoordinator::new(session, marks, live_plots, slider_bindings);
+            // Coordinator legend bindings (card 0009), in analysis order — the
+            // same slice `placed_legend_views` positions against, so a hosted
+            // legend's index matches its binding.
+            let legend_select_bindings: Vec<brightfield_ui::LegendSelectBinding> =
+                legend_bindings.iter().map(Into::into).collect();
+            let coordinator = CrossfilterCoordinator::new(
+                session,
+                marks,
+                live_plots,
+                slider_bindings,
+                legend_select_bindings,
+            );
 
             // One placed chart per plot, each wired to the shared coordinator.
             let charts: Vec<brightfield_ui::PlacedChart> = watched
@@ -980,9 +1035,12 @@ fn main() {
                 })
                 .collect();
 
-            // One display-only legend descriptor per resolved placement, hosted
-            // at its layout rect beside the plots (card 0016).
-            let placed_legends = placed_legend_views(&legends);
+            // One hosted legend descriptor per resolved placement, at its
+            // layout rect beside the plots (card 0016) — a bound categorical
+            // legend additionally carries the coordinator + its binding index,
+            // arming click-to-filter (card 0009); the rest stay display-only.
+            let hosted_legends =
+                placed_legend_views(&legends, &legend_bindings, coordinator.as_ref());
 
             // The workspace key bindings, declared as data: bare `p` toggles
             // presentation mode inside the workspace key context (card 0016 —
@@ -1020,7 +1078,7 @@ fn main() {
                             f64::from(height),
                             charts,
                             placed_sliders,
-                            placed_legends,
+                            hosted_legends,
                         )
                     });
                     cx.new(|cx| brightfield_ui::WorkspaceView::new(title, chart_view, cx))
@@ -1307,6 +1365,7 @@ colorScheme: blues
 
         let placements = vec![
             super::LegendPlacement {
+                path: "root/hconcat[1]".into(),
                 rect: Rect::new(400.0, 20.0, 90.0, 66.0),
                 scale: Scale::Colour {
                     categories: vec!["a".into(), "b".into()],
@@ -1314,6 +1373,7 @@ colorScheme: blues
                 },
             },
             super::LegendPlacement {
+                path: "root/hconcat[2]".into(),
                 rect: Rect::new(400.0, 120.0, 60.0, 108.0),
                 scale: Scale::Sequential {
                     domain_min: 0.0,
@@ -1323,19 +1383,107 @@ colorScheme: blues
             },
         ];
 
-        let views = super::placed_legend_views(&placements);
+        let views = super::placed_legend_views(&placements, &[], None);
         assert_eq!(views.len(), placements.len(), "one child per placement");
         for (view, placement) in views.iter().zip(&placements) {
             assert_eq!(view.x, placement.rect.x);
             assert_eq!(view.y, placement.rect.y);
             assert_eq!(view.width, placement.rect.width);
             assert_eq!(view.height, placement.rect.height);
+            assert!(view.binding.is_none(), "no bindings, no coordinator: display-only");
         }
         assert!(
             matches!(views[0].scale, Scale::Colour { .. })
                 && matches!(views[1].scale, Scale::Sequential { .. }),
             "each child carries its placement's scale"
         );
+    }
+
+    // lcf_ac05 (card 0009): the view-model mapping arms click-to-filter ONLY
+    // for a bound categorical legend — it carries the coordinator + its
+    // binding index (positioned by legend path against the analysis binding
+    // list) — while Sequential and unbound placements stay display-only.
+    #[test]
+    fn lcf_ac05_only_bound_colour_legends_carry_coordinator_and_index() {
+        use brightfield_render::scale::Scale;
+        use brightfield_spec::analysis::{ComponentPath, LegendBinding};
+        use brightfield_spec::layout::Rect;
+        use brightfield_ui::{CrossfilterCoordinator, LegendSelectBinding, MarkInput};
+        use brightfield_engine::Engine;
+        use brightfield_spec::analysis::analyse_spec;
+
+        // A real (legend-only) coordinator over a minimal live session.
+        let yaml = r#"
+params:
+  sel: { select: crossfilter }
+data:
+  t:
+    - { x: 1, y: 2, g: a }
+plot:
+  - mark: dot
+    data: { from: t, filterBy: $sel }
+    x: x
+    y: y
+    fill: g
+"#;
+        let parsed = parse_spec(yaml, Format::Yaml).expect("parse");
+        let analysis = analyse_spec(&parsed.spec).expect("analyse");
+        let session = Engine::new()
+            .load_spec(parsed.spec, analysis, None)
+            .expect("load")
+            .session;
+        let ui_binding = LegendSelectBinding {
+            selection_name: "sel".into(),
+            contributor: ComponentPath("root".into()),
+            column: "g".into(),
+        };
+        let coordinator =
+            CrossfilterCoordinator::new(session, Vec::<MarkInput>::new(), vec![], vec![], vec![ui_binding])
+                .expect("legend-only liveness (lcf_ac03) keeps the coordinator");
+
+        let colour = Scale::Colour {
+            categories: vec!["a".into()],
+            palette: vec![[0.3, 0.4, 0.6, 1.0]],
+        };
+        let placements = vec![
+            // Bound categorical legend (path matches the binding below).
+            super::LegendPlacement {
+                path: "root/hconcat[1]".into(),
+                rect: Rect::new(400.0, 20.0, 90.0, 30.0),
+                scale: colour.clone(),
+            },
+            // Sequential legend — never clickable, even if a path matched.
+            super::LegendPlacement {
+                path: "root/hconcat[2]".into(),
+                rect: Rect::new(400.0, 80.0, 60.0, 108.0),
+                scale: Scale::Sequential {
+                    domain_min: 0.0,
+                    domain_max: 9.0,
+                    stops: brightfield_render::scale::SequentialScheme::Viridis.stops(),
+                },
+            },
+            // Unbound categorical legend (no binding carries its path).
+            super::LegendPlacement {
+                path: "root/hconcat[3]".into(),
+                rect: Rect::new(400.0, 200.0, 90.0, 30.0),
+                scale: colour,
+            },
+        ];
+        let bindings = vec![LegendBinding {
+            legend_path: ComponentPath("root/hconcat[1]".into()),
+            plot_path: ComponentPath("root/hconcat[0]".into()),
+            selection: "sel".into(),
+            colour_column: "g".into(),
+        }];
+
+        let views = super::placed_legend_views(&placements, &bindings, Some(&coordinator));
+        assert_eq!(views.len(), 3);
+        match &views[0].binding {
+            Some((index, _)) => assert_eq!(*index, 0, "bound legend carries its binding index"),
+            None => panic!("the bound categorical legend must carry the coordinator"),
+        }
+        assert!(views[1].binding.is_none(), "Sequential legends stay display-only");
+        assert!(views[2].binding.is_none(), "unbound legends stay display-only");
     }
 
     // fww_ac06 (card 0016): colorScheme reaches the LIVE path — build_everything
@@ -1487,6 +1635,7 @@ colorScheme: {color_scheme}
             palette: vec![[0.3, 0.4, 0.6, 1.0]],
         };
         let legend = super::LegendPlacement {
+            path: "root/hconcat[1]".to_string(),
             rect: Rect::new(1.0, 2.0, 3.0, 4.0),
             scale: scale.clone(),
         };

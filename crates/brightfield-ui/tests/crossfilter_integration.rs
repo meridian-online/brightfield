@@ -29,7 +29,9 @@ use brightfield_render::scene::{build_multi_mark_scene, ChartData};
 use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::{parse_spec, Format};
 use brightfield_sql::collect_marks;
-use brightfield_ui::brush::{brush_rect_to_predicate, point_to_predicate, BrushKind};
+use brightfield_ui::brush::{
+    brush_rect_to_predicate, point_predicate, point_to_predicate, BrushKind,
+};
 use brightfield_ui::chart_view::{
     commit_brush_clear, commit_brush_release_multi, commit_click_multi, BrushBinding,
 };
@@ -849,5 +851,159 @@ fn crossfilter_categorical_point_click_selects_clicked_category() {
         total_rows(agg3[0].1[0].1.as_ref().expect("B re-executes on clear")),
         baseline_b,
         "clicking outside the bands clears → plot B shows all categories again"
+    );
+}
+
+/// A legend bound `as: $sel for: scatter` (card 0009). The scatter plot ALSO
+/// subscribes to `$sel` (the self-exclusion case), plot B (mark 1) is the
+/// downstream subscriber, and plot C (mark 2) subscribes to an independent
+/// selection `$other`. One category — `O'Hara` — carries an embedded quote.
+const SPEC_LEGEND: &str = r#"
+params:
+  sel: { select: crossfilter }
+  other: { select: crossfilter }
+data:
+  t:
+    - { x: 1, y: 10, species: adelie }
+    - { x: 2, y: 20, species: adelie }
+    - { x: 3, y: 30, species: gentoo }
+    - { x: 4, y: 40, species: gentoo }
+    - { x: 5, y: 50, species: gentoo }
+    - { x: 6, y: 60, species: "O'Hara" }
+hconcat:
+  - plot:
+    - mark: dot
+      data: { from: t, filterBy: $sel }
+      x: x
+      y: y
+      fill: species
+    name: scatter
+    width: 360
+    height: 300
+  - legend: color
+    for: scatter
+    as: $sel
+  - plot:
+    - mark: dot
+      data: { from: t, filterBy: $sel }
+      x: x
+      y: y
+    width: 360
+    height: 300
+  - plot:
+    - mark: dot
+      data: { from: t, filterBy: $other }
+      x: x
+      y: y
+    width: 360
+    height: 300
+"#;
+
+/// lcf_ac04 (card 0009) — the legend-click DATA path end-to-end through the
+/// real session, mirroring `crossfilter_point_toggle_x_filters_downstream`
+/// (analysis-derived binding → predicate → `propagate_selection`) and
+/// `crossfilter_plot_does_not_filter_itself` (the for:-plot is the
+/// contributor, so self-exclusion leaves it unfiltered):
+///
+/// - clicking `gentoo` dispatches `species = 'gentoo'` (a typed #31 text
+///   literal) and reduces plot B's rows; the scatter plot — subscribed to the
+///   SAME selection — keeps every row (self-exclusion via contributor path);
+/// - a pre-existing selection on another column (`$other` on y) is measured
+///   before and after and never contaminated;
+/// - toggle-off (`clear_selection`, what `commit_legend_click` issues for a
+///   same-swatch click) restores plot B in full;
+/// - the quote-escaping case: `O'Hara` dispatches as `'O''Hara'` and matches
+///   exactly its row.
+#[test]
+fn lcf_ac04_legend_click_filters_downstream_via_real_session() {
+    let parsed = parse_spec(SPEC_LEGEND, Format::Yaml).expect("spec parses");
+    let spec = parsed.spec;
+    let analysis = analyse_spec(&spec).expect("spec analyses");
+
+    // The producer binding is real analysis output, not hand-built — the
+    // same fields commit_legend_click dispatches from.
+    assert_eq!(analysis.legend_bindings.len(), 1, "one bound legend");
+    let binding = analysis.legend_bindings[0].clone();
+    assert_eq!(binding.selection, "sel");
+    assert_eq!(
+        binding.plot_path.0, "root/hconcat[0]",
+        "contributor = the for:-plot's node path"
+    );
+    assert_eq!(binding.colour_column, "species");
+
+    let engine = Engine::new();
+    let mut session = engine
+        .load_spec(spec, analysis, None)
+        .expect("spec loads")
+        .session;
+
+    let baseline = session.execute_all();
+    let rows_at = |r: &[(usize, Result<Vec<brightfield_engine::RecordBatch>, _>)], idx: usize| {
+        let (i, res) = r.iter().find(|(i, _)| *i == idx).expect("mark re-executed");
+        assert_eq!(*i, idx);
+        total_rows(res.as_ref().expect("mark re-executes ok"))
+    };
+    assert_eq!(total_rows(baseline[0].as_ref().expect("scatter executes")), 6);
+    assert_eq!(total_rows(baseline[1].as_ref().expect("plot B executes")), 6);
+    assert_eq!(total_rows(baseline[2].as_ref().expect("plot C executes")), 6);
+    drop(baseline);
+
+    // A pre-existing selection on ANOTHER column: $other keeps y >= 35
+    // (3 rows: x=4,5,6). Contamination by `species = 'gentoo'` (x=3,4,5)
+    // would collapse plot C to 2 rows — measurable, not coincidental.
+    use brightfield_spec::analysis::ComponentPath;
+    use brightfield_sql::ir::Predicate;
+    let other = session.propagate_selection(
+        "other",
+        ComponentPath("root/hconcat[0]".into()),
+        Predicate::Expr("y >= 35".into()),
+    );
+    assert_eq!(rows_at(&other, 2), 3, "$other alone keeps 3 rows in plot C");
+
+    // --- The legend click: `species = 'gentoo'`, exactly what
+    // commit_legend_click builds from the binding (point_predicate over the
+    // Text literal). Both $sel subscribers re-execute.
+    let gentoo = point_predicate(
+        &binding.colour_column,
+        &SelectionValue::Text("gentoo".into()).literal(),
+    );
+    let results = session.propagate_selection("sel", binding.plot_path.clone(), gentoo);
+    assert_eq!(results.len(), 2, "both $sel subscribers re-execute (marks 0 and 1)");
+    assert_eq!(
+        rows_at(&results, 0),
+        6,
+        "the for:-plot is NOT filtered by its own legend (self-exclusion)"
+    );
+    assert_eq!(rows_at(&results, 1), 3, "species = 'gentoo' keeps 3 rows downstream");
+
+    // Independence: re-propagate $other while $sel is live — plot C still
+    // sees ONLY the y-predicate (3 rows, not the contaminated 2).
+    let other_again = session.propagate_selection(
+        "other",
+        ComponentPath("root/hconcat[0]".into()),
+        Predicate::Expr("y >= 35".into()),
+    );
+    assert_eq!(
+        rows_at(&other_again, 2),
+        3,
+        "$sel never leaks into $other's subscriber"
+    );
+
+    // Toggle-off: the same-swatch click clears the legend's contribution —
+    // plot B returns to full; the scatter plot stays full throughout.
+    let cleared = session.clear_selection("sel", binding.plot_path.clone());
+    assert_eq!(rows_at(&cleared, 0), 6);
+    assert_eq!(rows_at(&cleared, 1), 6, "toggle-off restores every row");
+
+    // Quote-escaping (#31 typed literals): the O'Hara swatch dispatches a
+    // doubled-quote literal and matches exactly its row.
+    let ohara_literal = SelectionValue::Text("O'Hara".into()).literal();
+    assert_eq!(ohara_literal, "'O''Hara'", "embedded quote is doubled");
+    let ohara = point_predicate(&binding.colour_column, &ohara_literal);
+    let results = session.propagate_selection("sel", binding.plot_path, ohara);
+    assert_eq!(
+        rows_at(&results, 1),
+        1,
+        "species = 'O''Hara' selects exactly the quoted row"
     );
 }
