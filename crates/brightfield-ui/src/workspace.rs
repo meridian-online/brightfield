@@ -9,7 +9,9 @@
 //!   `TogglePresentation` action flips.
 //! - [`framed_window_size`] — dashboard bbox + chrome extents. The formula is
 //!   mode-independent by construction: toggling presentation never resizes the
-//!   window, only re-centres the canvas ([`canvas_origin`]).
+//!   window, only re-centres the canvas — and the LIVE re-centre is
+//!   `WorkspaceView`'s flex layout; the test module keeps a `canvas_origin`
+//!   geometry oracle mirroring it for the fww_ac01 assertion.
 //! - [`resolve_title`] — `meta.title` wins, spec filename stem falls back. The
 //!   single resolver feeding both the native titlebar and the header strip.
 
@@ -62,38 +64,15 @@ impl PresentationMode {
 /// the chrome extents (header strip above, content padding on every side).
 ///
 /// Deliberately takes no [`PresentationMode`]: the window keeps its size when
-/// presentation toggles (the locked pick) — only [`canvas_origin`] moves.
+/// presentation toggles (the locked pick) — only the canvas mount moves, and
+/// that movement is `WorkspaceView`'s flex centring (items_center /
+/// justify_center reclaiming the hidden chrome's space), not a function here.
 #[must_use]
 pub fn framed_window_size(dashboard_width: f64, dashboard_height: f64) -> (f64, f64) {
     (
         dashboard_width + 2.0 * CONTENT_PADDING,
         dashboard_height + HEADER_HEIGHT + 2.0 * CONTENT_PADDING,
     )
-}
-
-/// Where the dashboard canvas mounts inside a window of `window` size:
-/// centred in the padded content area below the header (authoring), or
-/// centred in the full window (presentation — the chrome's freed space is
-/// reclaimed without any window resize).
-#[must_use]
-pub fn canvas_origin(
-    mode: PresentationMode,
-    window: (f64, f64),
-    dashboard: (f64, f64),
-) -> (f64, f64) {
-    let (win_w, win_h) = window;
-    let (dash_w, dash_h) = dashboard;
-    match mode {
-        PresentationMode::Authoring => {
-            let content_w = (win_w - 2.0 * CONTENT_PADDING).max(0.0);
-            let content_h = (win_h - HEADER_HEIGHT - 2.0 * CONTENT_PADDING).max(0.0);
-            (
-                CONTENT_PADDING + (content_w - dash_w) / 2.0,
-                HEADER_HEIGHT + CONTENT_PADDING + (content_h - dash_h) / 2.0,
-            )
-        }
-        PresentationMode::Presentation => ((win_w - dash_w) / 2.0, (win_h - dash_h) / 2.0),
-    }
 }
 
 /// The dashboard's display title: `meta.title` when declared (and non-blank),
@@ -117,9 +96,38 @@ pub fn resolve_title(meta_title: Option<&str>, spec_path: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Geometry oracle for the re-centre assertion below: where the dashboard
+    /// canvas mounts inside a window of `window` size in each mode — centred
+    /// in the padded content area below the header (authoring), or centred in
+    /// the full window (presentation). The LIVE re-centre is `WorkspaceView`'s
+    /// flex layout (items_center/justify_center reclaiming the hidden
+    /// chrome's space, eyeballed at ac-11); this mirror has no production
+    /// caller and exists so fww_ac01 can assert the geometry headlessly.
+    fn canvas_origin(
+        mode: PresentationMode,
+        window: (f64, f64),
+        dashboard: (f64, f64),
+    ) -> (f64, f64) {
+        let (win_w, win_h) = window;
+        let (dash_w, dash_h) = dashboard;
+        match mode {
+            PresentationMode::Authoring => {
+                let content_w = (win_w - 2.0 * CONTENT_PADDING).max(0.0);
+                let content_h = (win_h - HEADER_HEIGHT - 2.0 * CONTENT_PADDING).max(0.0);
+                (
+                    CONTENT_PADDING + (content_w - dash_w) / 2.0,
+                    HEADER_HEIGHT + CONTENT_PADDING + (content_h - dash_h) / 2.0,
+                )
+            }
+            PresentationMode::Presentation => ((win_w - dash_w) / 2.0, (win_h - dash_h) / 2.0),
+        }
+    }
+
     /// fww_ac01: framed window size = dashboard bbox + chrome extents, and the
     /// formula is presentation-independent — toggling only moves the canvas
     /// mount origin (re-centred in the full window), never the window size.
+    /// The origin here is the test-module `canvas_origin` oracle above — a
+    /// stand-in for `WorkspaceView`'s flex re-centre (ac-11's eyeball).
     #[test]
     fn fww_ac01_window_size_adds_chrome_and_toggle_recentres() {
         let (dash_w, dash_h) = (800.0, 600.0);

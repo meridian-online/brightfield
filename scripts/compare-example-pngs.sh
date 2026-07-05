@@ -31,7 +31,11 @@ trap 'rm -rf "$out_dir"' EXIT
 identical=0 differing=0 new=0
 for f in examples/*.yaml; do
     name="$(basename "$f" .yaml)"
-    BRIGHTFIELD_DUMP_PNG="$out_dir/$name.png" cargo run -q -p brightfield-app -- "$f" >/dev/null 2>&1
+    # Attribute a failed render instead of letting `set -e` abort the loop
+    # silently: keep stderr in a file and replay it on failure.
+    BRIGHTFIELD_DUMP_PNG="$out_dir/$name.png" cargo run -q -p brightfield-app -- "$f" \
+        >/dev/null 2>"$out_dir/$name.stderr" \
+        || { echo "RENDER FAILED: $name — stderr:" >&2; cat "$out_dir/$name.stderr" >&2; exit 1; }
     if [ ! -f "$baseline_dir/$name.png" ]; then
         echo "NEW:      $name (no baseline)"
         new=$((new + 1))

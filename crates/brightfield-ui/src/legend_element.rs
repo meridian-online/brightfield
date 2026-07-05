@@ -4,7 +4,10 @@
 //! file is the window layer, mirroring `chart_element.rs`'s raster path:
 //! vello scene → device-resolution RGBA (BGRA-swapped) → `RenderImage` → one
 //! `paint_image` (the chart_state.rs choke point pattern, with the same
-//! scale-factor-aware cache so repaints don't re-run Vello).
+//! scale-factor-aware cache so repaints don't re-run Vello). The raster is
+//! padded by the panel border's 0.25 logical-px overhang on every side (see
+//! [`legend_raster_geometry`]) so the window paints the full stroke the PNG
+//! composite shows, instead of clipping it at the buffer edge.
 //!
 //! **Display-only:** no mouse listeners, no coordinator, no hitbox. Legend
 //! hit-testing arrives with the click-to-filter card; until then the element
@@ -58,6 +61,24 @@ impl PlacedLegend {
             cache: Rc::new(RefCell::new(None)),
         }
     }
+}
+
+/// Raster-buffer geometry for a legend panel of `width` × `height` logical px
+/// at `scale_factor`: the composite draws the panel's 0.5px border stroke
+/// centred on the panel rect edge, so 0.25 logical px of stroke overhangs each
+/// side. In the PNG the surrounding canvas absorbs that overhang; a buffer
+/// starting exactly at the rect edge would clip it. Pad the device buffer by
+/// the overhang (ceiled to whole device pixels) per side, so interior
+/// alignment is untouched and the border renders whole.
+///
+/// Returns `(dev_w, dev_h, pad_dev)`: the padded buffer size and the per-side
+/// pad, all in device pixels. Kept gpui-free so the geometry is headlessly
+/// testable.
+fn legend_raster_geometry(width: f64, height: f64, scale_factor: f64) -> (u32, u32, u32) {
+    let pad_dev = (0.25 * scale_factor).ceil() as u32;
+    let dev_w = (width * scale_factor).ceil().max(1.0) as u32 + 2 * pad_dev;
+    let dev_h = (height * scale_factor).ceil().max(1.0) as u32 + 2 * pad_dev;
+    (dev_w, dev_h, pad_dev)
 }
 
 /// A cached device-resolution rasterisation of a legend scene (mirrors
@@ -163,10 +184,12 @@ impl Element for LegendElement {
             return;
         }
         // Match chart_state::base_image: render at the ceiled device size and
-        // scale the scene to fill it, so the legend stays crisp on HiDPI.
+        // scale the scene to fill it, so the legend stays crisp on HiDPI —
+        // padded by the border's overhang so the 0.5px edge stroke isn't
+        // clipped (see legend_raster_geometry).
         let sf = f64::from(window.scale_factor().max(1.0));
-        let dev_w = (self.width * sf).ceil().max(1.0) as u32;
-        let dev_h = (self.height * sf).ceil().max(1.0) as u32;
+        let (dev_w, dev_h, pad_dev) = legend_raster_geometry(self.width, self.height, sf);
+        let pad_logical = f64::from(pad_dev) / sf;
 
         let cached = {
             let cache = self.cache.borrow();
@@ -181,10 +204,19 @@ impl Element for LegendElement {
                 let Some((scene, _)) = build_legend_scene(&self.scale) else {
                     return; // non-colour scale: nothing to paint
                 };
-                let scale_x = f64::from(dev_w) / self.width;
-                let scale_y = f64::from(dev_h) / self.height;
+                let scale_x = f64::from(dev_w - 2 * pad_dev) / self.width;
+                let scale_y = f64::from(dev_h - 2 * pad_dev) / self.height;
                 let mut scaled = Scene::new();
-                scaled.append(&scene, Some(Affine::scale_non_uniform(scale_x, scale_y)));
+                // Whole-device-pixel translate applied AFTER the scale: the
+                // content lands exactly pad_dev px in from each buffer edge,
+                // so interior alignment matches the unpadded raster.
+                scaled.append(
+                    &scene,
+                    Some(
+                        Affine::translate((f64::from(pad_dev), f64::from(pad_dev)))
+                            * Affine::scale_non_uniform(scale_x, scale_y),
+                    ),
+                );
 
                 let mut pixels = self
                     .renderer
@@ -210,6 +242,39 @@ impl Element for LegendElement {
             }
         };
 
-        let _ = window.paint_image(bounds, Corners::default(), image, 0, false);
+        // Paint at bounds inflated by the same logical pad per side, so the
+        // panel's interior stays at its layout rect and only the border's
+        // overhang spills into the (previously clipped) quarter-pixel fringe.
+        let pad_px = px(pad_logical as f32);
+        let padded = Bounds {
+            origin: gpui::point(bounds.origin.x - pad_px, bounds.origin.y - pad_px),
+            size: gpui::size(
+                bounds.size.width + pad_px + pad_px,
+                bounds.size.height + pad_px + pad_px,
+            ),
+        };
+        let _ = window.paint_image(padded, Corners::default(), image, 0, false);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::legend_raster_geometry;
+
+    /// fww_ac04 (post-review, sub-pixel border parity): the raster buffer is
+    /// padded by the panel border's 0.25 logical-px overhang, ceiled to whole
+    /// device pixels per side, so the window legend paints the full stroke
+    /// the PNG composite shows.
+    #[test]
+    fn fww_ac04_raster_buffer_pads_for_border_overhang() {
+        // sf = 1: a 0.25px overhang ceils to a 1-device-px pad per side.
+        assert_eq!(legend_raster_geometry(120.0, 24.0, 1.0), (122, 26, 1));
+        // sf = 2 (Retina): 0.5 device px of overhang still ceils to 1.
+        assert_eq!(legend_raster_geometry(120.0, 24.0, 2.0), (242, 50, 1));
+        // sf = 8: exactly 2 device px per side.
+        assert_eq!(legend_raster_geometry(120.0, 24.0, 8.0), (964, 196, 2));
+        // Fractional logical sizes keep the ceil-then-pad order (content
+        // ceils first, pad is added outside it).
+        assert_eq!(legend_raster_geometry(120.5, 24.5, 2.0), (243, 51, 1));
     }
 }

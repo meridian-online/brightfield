@@ -47,8 +47,7 @@ pub use slider::{commit_slider_release, ParamDispatcher, SliderBinding, SliderSt
 pub use slider_element::{SliderElement, SliderWidget};
 pub use vello_renderer::VelloRenderer;
 pub use workspace::{
-    canvas_origin, framed_window_size, resolve_title, PresentationMode, CONTENT_PADDING,
-    HEADER_HEIGHT,
+    framed_window_size, resolve_title, PresentationMode, CONTENT_PADDING, HEADER_HEIGHT,
 };
 pub use workspace_view::{
     workspace_key_bindings, TogglePresentation, WorkspaceView, WORKSPACE_KEY_CONTEXT,

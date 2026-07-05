@@ -85,7 +85,7 @@ fn walk_component(component: &brightfield_spec::Component, entries: &mut Vec<Sup
         }
         Component::HSpace(_) => maybe_push_layout(ComponentKind::HSpace, entries),
         Component::VSpace(_) => maybe_push_layout(ComponentKind::VSpace, entries),
-        Component::Legend(_) => maybe_push_layout(ComponentKind::Legend, entries),
+        Component::Legend(node) => push_legend(node, entries),
         Component::Mark(m) => push_mark(m, entries),
         Component::Interactor(i) => push_interactor(i, entries),
         Component::Input(ip) => push_input(ip, entries),
@@ -97,6 +97,29 @@ fn maybe_push_layout(kind: ComponentKind, entries: &mut Vec<SupportEntry>) {
     if status != ImplStatus::Implemented {
         entries.push(SupportEntry {
             identity: ComponentIdentity::Component(kind),
+            surface: Surface::Layout,
+            status,
+            span: None,
+        });
+    }
+}
+
+/// A standalone `legend:` node is renderable only when BOTH the Legend
+/// component and its declared channel are Implemented — `legend: symbol` /
+/// `legend: opacity` have no renderer (their `LegendChannel` stays
+/// Unimplemented), so the channel's status decides the entry even though
+/// `ComponentKind::Legend` itself is Implemented. The entry keeps the Legend
+/// component identity: it is the `legend:` node that cannot render.
+fn push_legend(legend: &brightfield_spec::ast::LegendNode, entries: &mut Vec<SupportEntry>) {
+    let component_status = ComponentKind::Legend.status();
+    let status = if component_status == ImplStatus::Implemented {
+        legend.channel.status()
+    } else {
+        component_status
+    };
+    if status != ImplStatus::Implemented {
+        entries.push(SupportEntry {
+            identity: ComponentIdentity::Component(ComponentKind::Legend),
             surface: Surface::Layout,
             status,
             span: None,
@@ -197,6 +220,49 @@ mod tests {
             e.identity,
             ComponentIdentity::Mark(brightfield_spec::MarkKind::Hexbin)
         )));
+    }
+
+    #[test]
+    fn dfconf_preflight_legend_channel_gates_renderability() {
+        // Card 0016 review (F1): ComponentKind::Legend is Implemented, but only
+        // the `color` channel renders — `legend: symbol` / `legend: opacity`
+        // are still unrenderable (LegendChannel Unimplemented), so the legend
+        // arm must consult the CHANNEL status, not just the component's.
+        let symbol = parse(
+            "hconcat:\n  - plot:\n    - mark: dot\n      data: { from: t }\n  - legend: symbol\n",
+        );
+        let report = preflight(&symbol);
+        let legend_entries: Vec<&SupportEntry> = report
+            .entries
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e.identity,
+                    ComponentIdentity::Component(ComponentKind::Legend)
+                )
+            })
+            .collect();
+        assert_eq!(
+            legend_entries.len(),
+            1,
+            "an unrenderable legend channel must surface exactly one entry"
+        );
+        assert_eq!(legend_entries[0].status, ImplStatus::Unimplemented);
+        assert_eq!(legend_entries[0].surface, Surface::Layout);
+
+        // `legend: color` renders end-to-end: no Legend entry at all.
+        let color = parse(
+            "hconcat:\n  - plot:\n    - mark: dot\n      data: { from: t }\n  - legend: color\n",
+        );
+        assert!(
+            !preflight(&color).entries.iter().any(|e| {
+                matches!(
+                    e.identity,
+                    ComponentIdentity::Component(ComponentKind::Legend)
+                )
+            }),
+            "an Implemented channel must not appear in preflight"
+        );
     }
 
     #[test]

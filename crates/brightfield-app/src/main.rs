@@ -141,9 +141,10 @@ fn colour_scale_of(scales: &ScaleSet) -> Option<Scale> {
 
 /// Resolve a raster plot's colour scheme from its `colorScheme` attribute,
 /// defaulting to viridis and warning on an unrecognised name. `colorScheme` is a
-/// plot-level attribute (Mosaic's colour scale is plot-scoped); it is consumed on
-/// the headless authoring path. The live cross-filter path inherits the viridis
-/// default (a recorded follow-up — see the spec's deferred list).
+/// plot-level attribute (Mosaic's colour scale is plot-scoped); the resolved
+/// scheme drives the first render and rides [`LivePlotMeta::scheme`] to the live
+/// cross-filter path, so a rebuild constructs the same scheme-configured raster
+/// renderer (card 0016, ac-06).
 fn raster_scheme(color_scheme: Option<&brightfield_spec::ast::SpecValue>) -> SequentialScheme {
     use brightfield_spec::ast::SpecValue;
     match color_scheme {
@@ -305,16 +306,85 @@ struct LivePlotMeta {
     scheme: SequentialScheme,
 }
 
-/// Thin wrapper for the headless/PNG path and the hot-reload watcher: runs the
-/// full pipeline and returns just the renderable [`Dashboard`], dropping the live
-/// engine state. Dropping the non-`Send` [`Session`] here is what lets the
-/// watcher run this off the main thread (a `Dashboard` is `Send`).
+/// The launch-fixed chrome + render metadata the hot-reload gate compares
+/// against each rebuilt spec. The watcher can hot-swap plot scenes, but the
+/// window's chrome (titlebar/header title), its hosted legends, and the
+/// coordinator's per-plot render metadata (colorScheme, inline-legend
+/// suppression) are all captured at launch — a rebuild that changes any of
+/// them must fall back to "restart to apply" rather than silently reloading
+/// with stale chrome or reverting on the next gesture-driven re-render.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, PartialEq)]
+struct ChromeSnapshot {
+    /// Resolved display title (`meta.title` or the spec filename stem).
+    title: String,
+    /// Per hosted legend, in document order: layout rect plus a cheap
+    /// structural key of the displayed scale (its `Debug` form).
+    legends: Vec<(f64, f64, f64, f64, String)>,
+    /// Per plot, in dashboard order: path, resolved colour scheme, and
+    /// whether the plot draws its own inline legend.
+    plot_render_meta: Vec<(String, SequentialScheme, bool)>,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl ChromeSnapshot {
+    /// Snapshot the chrome-relevant slice of a built dashboard.
+    fn capture(title: String, legends: &[LegendPlacement], plots: &[LivePlotMeta]) -> Self {
+        Self {
+            title,
+            legends: legends
+                .iter()
+                .map(|l| {
+                    (
+                        l.rect.x,
+                        l.rect.y,
+                        l.rect.width,
+                        l.rect.height,
+                        format!("{:?}", l.scale),
+                    )
+                })
+                .collect(),
+            plot_render_meta: plots
+                .iter()
+                .map(|p| (p.path.clone(), p.scheme, p.draw_inline_legend))
+                .collect(),
+        }
+    }
+}
+
+/// The first launch-vs-rebuilt chrome divergence a hot reload cannot apply in
+/// place, if any — `None` means the edit is plots-only and safe to hot-swap.
+/// Pure so the reload gate is headlessly testable.
+#[cfg(any(target_os = "macos", test))]
+fn chrome_divergence(launch: &ChromeSnapshot, rebuilt: &ChromeSnapshot) -> Option<&'static str> {
+    if launch.title != rebuilt.title {
+        return Some("dashboard title");
+    }
+    if launch.legends != rebuilt.legends {
+        return Some("legend placement/scale");
+    }
+    if launch.plot_render_meta != rebuilt.plot_render_meta {
+        return Some("per-plot render metadata (colorScheme/inline legend)");
+    }
+    None
+}
+
+/// Thin wrapper for the hot-reload watcher: runs the full pipeline and returns
+/// the renderable [`Dashboard`] plus the rebuilt [`ChromeSnapshot`] the reload
+/// gate compares, dropping the live engine state. Dropping the non-`Send`
+/// [`Session`] here is what lets the watcher run this off the main thread
+/// (a `Dashboard` and a `ChromeSnapshot` are `Send`).
 ///
 /// Returns `Err` (rather than exiting) on any failure, so callers can recover —
 /// the hot-reload watcher keeps the last good chart when a mid-edit save is
-/// momentarily invalid. `main` turns the initial error into a clean exit.
-fn run_pipeline(spec_path: &str) -> Result<Dashboard, String> {
-    build_everything(spec_path).map(|(dashboard, _live)| dashboard)
+/// momentarily invalid.
+#[cfg(any(target_os = "macos", test))]
+fn run_pipeline(spec_path: &str) -> Result<(Dashboard, ChromeSnapshot), String> {
+    build_everything(spec_path).map(|(dashboard, live)| {
+        let title = brightfield_ui::resolve_title(dashboard.meta_title.as_deref(), spec_path);
+        let chrome = ChromeSnapshot::capture(title, &dashboard.legends, &live.plots);
+        (dashboard, chrome)
+    })
 }
 
 /// Run the spec-to-scene pipeline, returning a [`Dashboard`] — one independently
@@ -471,7 +541,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
         };
         let layout = ChartLayout::new(plot.rect.width, plot.rect.height);
 
-        // The plot's colour scheme, applied to its raster marks (headless path).
+        // The plot's colour scheme, applied to its raster marks.
         let scheme = plot_nodes
             .iter()
             .find(|(path, _)| *path == plot.path)
@@ -643,7 +713,12 @@ struct WatchedPlot {
 }
 
 #[cfg(target_os = "macos")]
-fn spawn_spec_watcher(cx: &mut gpui::App, watched: Vec<WatchedPlot>, spec_path: String) {
+fn spawn_spec_watcher(
+    cx: &mut gpui::App,
+    watched: Vec<WatchedPlot>,
+    spec_path: String,
+    launch_chrome: ChromeSnapshot,
+) {
     const POLL: std::time::Duration = std::time::Duration::from_millis(300);
 
     cx.spawn(async move |cx: &mut gpui::AsyncApp| {
@@ -670,7 +745,7 @@ fn spawn_spec_watcher(cx: &mut gpui::App, watched: Vec<WatchedPlot>, spec_path: 
                 .await;
 
             match built {
-                Ok(dashboard) => {
+                Ok((dashboard, rebuilt_chrome)) => {
                     // Only a data/visual change is hot-swappable: the window's
                     // plot layout is fixed at launch, so require exactly the same
                     // plots (by stable path) at the same geometry. Any structural
@@ -688,6 +763,16 @@ fn spawn_spec_watcher(cx: &mut gpui::App, watched: Vec<WatchedPlot>, spec_path: 
                         });
                     if !same_layout {
                         eprintln!("reload skipped: dashboard layout changed; restart to apply");
+                        continue;
+                    }
+                    // The chrome (title, hosted legends) and the coordinator's
+                    // per-plot render metadata are equally launch-fixed: the
+                    // swap below only replaces plot scenes, so an edit to any
+                    // of them would otherwise reload with stale chrome — or
+                    // revert on the next gesture-driven re-render (a changed
+                    // colorScheme would snap back to the launch scheme).
+                    if let Some(what) = chrome_divergence(&launch_chrome, &rebuilt_chrome) {
+                        eprintln!("reload skipped: {what} changed; restart to apply");
                         continue;
                     }
                     // Swap each plot's new scene into its state (matched by path),
@@ -824,6 +909,12 @@ fn main() {
             marks,
             plots: live_plots_meta,
         } = live;
+        // Launch-time chrome snapshot for the hot-reload gate: the title,
+        // hosted legends, and per-plot render metadata are fixed at launch,
+        // so the watcher refuses to hot-swap when a rebuild diverges on any
+        // of them ("restart to apply" — same contract as a layout change).
+        let launch_chrome =
+            ChromeSnapshot::capture(title.clone(), &legends, &live_plots_meta);
         app.run(move |cx| {
             // One ChartState per plot; the watcher tracks each by its stable
             // path + geometry for hot-reload.
@@ -945,7 +1036,7 @@ fn main() {
                 .expect("focus workspace root");
 
             // Hot-reload: swap each plot's scene when the spec changes on disk.
-            spawn_spec_watcher(cx, watched, spec_path);
+            spawn_spec_watcher(cx, watched, spec_path, launch_chrome);
         });
     }
 
@@ -1324,6 +1415,101 @@ colorScheme: {color_scheme}
         // If run_pipeline still exited, this test process would die here.
         let missing = super::run_pipeline("/nonexistent/brightfield/spec.yaml");
         assert!(missing.is_err(), "missing spec should return Err, not exit");
+    }
+
+    /// Card 0016 review (F2): the hot-reload chrome gate is a pure comparison —
+    /// a plots-only rebuild passes, while a title / legend / render-metadata
+    /// divergence names what changed so the watcher prints "restart to apply"
+    /// instead of silently hot-swapping stale chrome.
+    #[test]
+    fn reload_gate_blocks_chrome_and_render_meta_divergence() {
+        use brightfield_render::scale::SequentialScheme;
+
+        let snapshot =
+            |title: &str, scheme: SequentialScheme, inline: bool| super::ChromeSnapshot {
+                title: title.to_string(),
+                legends: vec![(10.0, 20.0, 120.0, 24.0, "Colour".to_string())],
+                plot_render_meta: vec![("/plot/0".to_string(), scheme, inline)],
+            };
+        let launch = snapshot("framed", SequentialScheme::Blues, true);
+
+        // Plots-only edit: identical chrome → hot-swap allowed.
+        assert_eq!(
+            super::chrome_divergence(&launch, &snapshot("framed", SequentialScheme::Blues, true)),
+            None
+        );
+        // Title edit reloads with a stale header/titlebar without the gate.
+        assert_eq!(
+            super::chrome_divergence(&launch, &snapshot("renamed", SequentialScheme::Blues, true)),
+            Some("dashboard title")
+        );
+        // colorScheme edit: without the gate the swap renders the new scheme
+        // once, then the NEXT brush/slider gesture reverts to the launch-time
+        // scheme held by the coordinator.
+        assert_eq!(
+            super::chrome_divergence(
+                &launch,
+                &snapshot("framed", SequentialScheme::Viridis, true)
+            ),
+            Some("per-plot render metadata (colorScheme/inline legend)")
+        );
+        // Inline-legend suppression flip (a standalone legend gained/lost its
+        // `for:` target).
+        assert_eq!(
+            super::chrome_divergence(&launch, &snapshot("framed", SequentialScheme::Blues, false)),
+            Some("per-plot render metadata (colorScheme/inline legend)")
+        );
+        // Hosted-legend rect or scale change.
+        let mut moved = snapshot("framed", SequentialScheme::Blues, true);
+        moved.legends[0].0 = 99.0;
+        assert_eq!(
+            super::chrome_divergence(&launch, &moved),
+            Some("legend placement/scale")
+        );
+        let mut recoloured = snapshot("framed", SequentialScheme::Blues, true);
+        recoloured.legends[0].4 = "Sequential".to_string();
+        assert_eq!(
+            super::chrome_divergence(&launch, &recoloured),
+            Some("legend placement/scale")
+        );
+    }
+
+    /// Card 0016 review (F2): `ChromeSnapshot::capture` maps the launch parts
+    /// into the gate's comparison keys — rect + scale Debug key per legend,
+    /// path + scheme + inline flag per plot.
+    #[test]
+    fn reload_gate_snapshot_captures_comparison_keys() {
+        use brightfield_render::scale::{Scale, ScaleSet, SequentialScheme};
+        use brightfield_spec::layout::Rect;
+
+        let scale = Scale::Colour {
+            categories: vec!["a".to_string()],
+            palette: vec![[0.3, 0.4, 0.6, 1.0]],
+        };
+        let legend = super::LegendPlacement {
+            rect: Rect::new(1.0, 2.0, 3.0, 4.0),
+            scale: scale.clone(),
+        };
+        let meta = super::LivePlotMeta {
+            path: "/plot/0".to_string(),
+            mark_indices: vec![0],
+            layout: ChartLayout::new(320.0, 240.0),
+            bindings: Vec::new(),
+            scales: ScaleSet::new(),
+            draw_inline_legend: false,
+            scheme: SequentialScheme::Blues,
+        };
+
+        let snap = super::ChromeSnapshot::capture("framed".to_string(), &[legend], &[meta]);
+        assert_eq!(snap.title, "framed");
+        assert_eq!(
+            snap.legends,
+            vec![(1.0, 2.0, 3.0, 4.0, format!("{scale:?}"))]
+        );
+        assert_eq!(
+            snap.plot_render_meta,
+            vec![("/plot/0".to_string(), SequentialScheme::Blues, false)]
+        );
     }
 
     #[test]
