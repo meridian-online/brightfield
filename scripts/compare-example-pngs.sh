@@ -14,13 +14,6 @@
 #
 # Examples with no baseline PNG (new in the branch under test) are reported
 # as NEW and do not fail the run. Any DIFFERS is a halt condition.
-#
-# Known caveat: the raster family (raster, raster-blues, raster-legend) is
-# not byte-stable run-to-run even on an unmodified checkout — DuckDB's
-# GROUP BY row order varies, so anti-aliased cell edges blend in a different
-# draw order (~0.1% of pixels, small deltas). A DIFFERS on those examples
-# must be re-checked against two runs of the SAME commit before it is
-# treated as a regression.
 
 set -euo pipefail
 
