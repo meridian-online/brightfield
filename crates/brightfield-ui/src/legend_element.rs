@@ -17,14 +17,14 @@
 //! [`CrossfilterCoordinator::commit_legend_click`]. Sequential (gradient)
 //! legends never bind — they have no discrete entries.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use gpui::{
     px, App, Bounds, Corners, Element, ElementId, GlobalElementId, HitboxBehavior,
-    InspectorElementId, IntoElement, LayoutId, MouseButton, MouseUpEvent, Pixels, RenderImage,
-    Size, Style, Window,
+    InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseUpEvent, Pixels,
+    RenderImage, Size, Style, Window,
 };
 use kurbo::{Affine, Point};
 use vello::Scene;
@@ -55,6 +55,12 @@ pub struct PlacedLegend {
     /// the shared coordinator, present only for a legend bound `as:` a
     /// selection (card 0009). `None` = display-only, exactly as 0016 shipped.
     pub binding: Option<(usize, Rc<RefCell<CrossfilterCoordinator>>)>,
+    /// Whether the current mouse press originated inside this legend's panel
+    /// — the press-origin half of the click decision (card 0009 F6). Lives on
+    /// the placement (not the per-frame element) so it survives element
+    /// recreation between the press and the release; a drag that starts on a
+    /// plot and releases over the legend must not dispatch.
+    pressed: Rc<Cell<bool>>,
     /// Cached device-resolution raster, shared with the per-frame elements so
     /// hovering/toggling elsewhere never re-runs Vello for a static legend.
     cache: Rc<RefCell<Option<LegendRaster>>>,
@@ -71,6 +77,7 @@ impl PlacedLegend {
             height,
             scale,
             binding: None,
+            pressed: Rc::new(Cell::new(false)),
             cache: Rc::new(RefCell::new(None)),
         }
     }
@@ -113,6 +120,16 @@ pub fn swatch_hit_category(local: Point, scale: &Scale) -> Option<String> {
         .and_then(|i| categories.get(i).cloned())
 }
 
+/// The press/release decision for a bound legend's click (card 0009 F6):
+/// consume the recorded press-origin flag — so a stale press can never leak
+/// into a later gesture — and commit only when the press originated inside
+/// the panel AND the release lands inside it. A drag that starts on a plot
+/// (e.g. a brush) and releases over the legend, or starts on the legend and
+/// releases elsewhere, never dispatches.
+fn legend_click_decision(pressed: &Cell<bool>, released_inside: bool) -> bool {
+    pressed.replace(false) && released_inside
+}
+
 /// Raster-buffer geometry for a legend panel of `width` × `height` logical px
 /// at `scale_factor`: the composite draws the panel's 0.5px border stroke
 /// centred on the panel rect edge, so 0.25 logical px of stroke overhangs each
@@ -152,6 +169,9 @@ pub struct LegendElement {
     /// Coordinator + binding index for a bound legend (card 0009); `None`
     /// keeps the element display-only.
     binding: Option<(usize, Rc<RefCell<CrossfilterCoordinator>>)>,
+    /// Shared press-origin flag (see [`PlacedLegend::pressed`]) — set on
+    /// mouse-down, consumed by the mouse-up decision (card 0009 F6).
+    pressed: Rc<Cell<bool>>,
     cache: Rc<RefCell<Option<LegendRaster>>>,
     renderer: Arc<Mutex<VelloRenderer>>,
 }
@@ -167,6 +187,7 @@ impl LegendElement {
             height: placed.height,
             id: ElementId::from(("brightfield-legend", index)),
             binding: placed.binding.clone(),
+            pressed: placed.pressed.clone(),
             cache: placed.cache.clone(),
             renderer,
         }
@@ -245,26 +266,39 @@ impl Element for LegendElement {
         window: &mut Window,
         _cx: &mut App,
     ) {
-        // Bound categorical legend: register the mouse-up hit-test (card
-        // 0009). GPUI clears per-frame listeners each frame, so this is
-        // re-registered every paint (the chart_element.rs pattern). The
-        // hitbox scopes the click to this element; the element origin maps
-        // the window-space release to panel-local coordinates, which feed
-        // the swatch entry-rect hit-test directly — the raster's border-pad
-        // inflation cancels out because paint offsets the image by the same
-        // pad (see `swatch_hit_category`).
+        // Bound categorical legend: register the press-origin recorder and
+        // the mouse-up hit-test (card 0009). GPUI clears per-frame listeners
+        // each frame, so both are re-registered every paint (the
+        // chart_element.rs pattern). The hitbox scopes the gesture to this
+        // element; the element origin maps the window-space release to
+        // panel-local coordinates, which feed the swatch entry-rect hit-test
+        // directly — the raster's border-pad inflation cancels out because
+        // paint offsets the image by the same pad (see `swatch_hit_category`).
         if let (Some((legend_index, coordinator)), Some(hitbox)) = (&self.binding, &*prepaint) {
             if matches!(self.scale, Scale::Colour { .. }) {
+                // Press-origin recorder (F6): every left press stamps whether
+                // it landed on this panel; the flag rides the placement so it
+                // survives element recreation until the release consumes it.
+                window.on_mouse_event({
+                    let pressed = self.pressed.clone();
+                    let hitbox = hitbox.clone();
+                    move |event: &MouseDownEvent, phase, window, _cx| {
+                        if phase.bubble() && event.button == MouseButton::Left {
+                            pressed.set(hitbox.is_hovered(window));
+                        }
+                    }
+                });
                 window.on_mouse_event({
                     let coordinator = coordinator.clone();
                     let hitbox = hitbox.clone();
+                    let pressed = self.pressed.clone();
                     let scale = self.scale.clone();
                     let legend_index = *legend_index;
                     let origin = Point::new(bounds.origin.x.to_f64(), bounds.origin.y.to_f64());
                     move |event: &MouseUpEvent, phase, window, cx| {
                         if phase.bubble()
                             && event.button == MouseButton::Left
-                            && hitbox.is_hovered(window)
+                            && legend_click_decision(&pressed, hitbox.is_hovered(window))
                         {
                             let local = Point::new(
                                 event.position.x.to_f64() - origin.x,
@@ -362,10 +396,11 @@ impl Element for LegendElement {
 
 #[cfg(test)]
 mod tests {
-    use super::{legend_raster_geometry, swatch_hit_category};
+    use super::{legend_click_decision, legend_raster_geometry, swatch_hit_category};
     use brightfield_render::legend::swatch_entry_rects;
     use brightfield_render::scale::Scale;
     use kurbo::Point;
+    use std::cell::Cell;
 
     /// fww_ac04 (post-review, sub-pixel border parity): the raster buffer is
     /// padded by the panel border's 0.25 logical-px overhang, ceiled to whole
@@ -430,5 +465,37 @@ mod tests {
             stops: vec![[0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0, 1.0]],
         };
         assert_eq!(swatch_hit_category(Point::new(10.0, 10.0), &sequential), None);
+    }
+
+    /// Card 0009 F6: the click decision requires the press to have
+    /// originated inside the panel AND the release to land inside it — all
+    /// four press-in/out × release-in/out combinations — and always consumes
+    /// the press flag so no stale press leaks into a later gesture (a brush
+    /// drag released over the legend must not dispatch a click).
+    #[test]
+    fn lcf_f6_click_decision_requires_press_and_release_inside() {
+        let pressed = Cell::new(false);
+
+        // press-in × release-in → commits, flag consumed.
+        pressed.set(true);
+        assert!(legend_click_decision(&pressed, true));
+        assert!(!pressed.get(), "the press flag is consumed by the decision");
+
+        // press-in × release-out → no commit (started here, let go elsewhere).
+        pressed.set(true);
+        assert!(!legend_click_decision(&pressed, false));
+        assert!(!pressed.get(), "consumed even when the release misses");
+
+        // press-out × release-in → no commit (a drag arriving from a plot).
+        pressed.set(false);
+        assert!(!legend_click_decision(&pressed, true));
+
+        // press-out × release-out → no commit.
+        pressed.set(false);
+        assert!(!legend_click_decision(&pressed, false));
+
+        // The consumed flag means a release-only gesture later (no new
+        // press on the panel) still cannot commit.
+        assert!(!legend_click_decision(&pressed, true));
     }
 }

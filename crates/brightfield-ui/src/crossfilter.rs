@@ -127,11 +127,12 @@ pub struct CrossfilterCoordinator {
     slider_bindings: Vec<SliderBinding>,
     /// Dashboard-level legend producer bindings (card 0009), indexed by the
     /// bound legend's position in the analysis binding list — the index a
-    /// hosted `LegendElement` carries.
+    /// hosted `LegendElement` carries. Toggle state is NOT mirrored here: the
+    /// engine's `(selection, contributor)` slot is shared with the plot's
+    /// brush/point interactors, so the toggle decision reads the slot itself
+    /// via [`Session::contributor_predicate`] (a mirror desynchronises the
+    /// moment any other gesture writes the slot).
     legend_bindings: Vec<LegendSelectBinding>,
-    /// Per legend binding: the currently toggled category (single-select
-    /// toggle state). `None` = no category selected.
-    legend_selected: Vec<Option<String>>,
     /// flat mark index → owning plot index (into `plots`).
     mark_to_plot: HashMap<usize, usize>,
     renderers: Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>)>,
@@ -163,14 +164,12 @@ impl CrossfilterCoordinator {
                 mark_to_plot.insert(mi, pi);
             }
         }
-        let legend_selected = vec![None; legend_bindings.len()];
         Some(Rc::new(RefCell::new(Self {
             session,
             marks,
             plots,
             slider_bindings,
             legend_bindings,
-            legend_selected,
             mark_to_plot,
             renderers: default_renderers(),
         })))
@@ -343,11 +342,21 @@ impl CrossfilterCoordinator {
     /// The gpui-free half of [`Self::commit_legend_click`] — the single-select
     /// toggle state machine (lcf ac-03):
     ///
-    /// - a NEW (or different) category dispatches `column = 'category'` via
-    ///   [`SelectionValue::Text`]'s quoted+escaped literal;
-    /// - the SAME category clears (toggle off);
-    /// - an empty-panel click clears whatever was selected;
-    /// - an empty-panel click with nothing selected is a no-op (`None`).
+    /// - a category whose exact point predicate is NOT the slot's current
+    ///   predicate dispatches `column = 'category'` via
+    ///   [`SelectionValue::Text`]'s quoted+escaped literal (covers new,
+    ///   different, and slot-replaced-by-a-brush cases alike);
+    /// - a category whose predicate IS the slot's current one clears
+    ///   (toggle off);
+    /// - an empty-panel click clears whatever the slot holds;
+    /// - an empty-panel click with an empty slot is a no-op (`None`).
+    ///
+    /// The decision reads the engine's live `(selection, contributor)` slot
+    /// (`Session::contributor_predicate`) rather than a UI-side mirror: the
+    /// slot is shared with the `for:`-plot's brush/point interactors, so a
+    /// brush that replaced it (or an empty plot click that removed it) is
+    /// observed directly — a mirror would invert the toggle after any such
+    /// gesture.
     ///
     /// Dispatch and clear go through the same [`SelectionDispatcher`] surface
     /// (`Session::propagate_selection` / `clear_selection`) the brush path
@@ -360,37 +369,46 @@ impl CrossfilterCoordinator {
         hit: Option<&str>,
     ) -> Option<HashSet<usize>> {
         let binding = self.legend_bindings.get(legend_index)?.clone();
-        let selected = self.legend_selected.get(legend_index)?.clone();
         let results = match hit {
-            // A new or different category: single-select — the fresh
-            // predicate REPLACES this contributor's previous one (the store
-            // is keyed by contributor), so no interim clear is needed.
-            Some(cat) if selected.as_deref() != Some(cat) => {
+            Some(cat) => {
                 let predicate = point_predicate(
                     &binding.column,
                     &SelectionValue::Text(cat.to_string()).literal(),
                 );
-                self.legend_selected[legend_index] = Some(cat.to_string());
-                self.session.dispatch(
-                    &binding.selection_name,
-                    binding.contributor.clone(),
-                    predicate,
-                )
+                let slot_holds_same = self
+                    .session
+                    .contributor_predicate(&binding.selection_name, &binding.contributor.0)
+                    == Some(&predicate);
+                if slot_holds_same {
+                    // The same category again: toggle off.
+                    self.session
+                        .clear(&binding.selection_name, binding.contributor.clone())
+                } else {
+                    // New/different category — or a brush currently occupies
+                    // the slot: single-select, the fresh predicate REPLACES
+                    // this contributor's previous one (the store is keyed by
+                    // contributor), so no interim clear is needed.
+                    self.session.dispatch(
+                        &binding.selection_name,
+                        binding.contributor.clone(),
+                        predicate,
+                    )
+                }
             }
-            // The same category again: toggle off.
-            Some(_) => {
-                self.legend_selected[legend_index] = None;
-                self.session
-                    .clear(&binding.selection_name, binding.contributor.clone())
+            None => {
+                if self
+                    .session
+                    .contributor_predicate(&binding.selection_name, &binding.contributor.0)
+                    .is_some()
+                {
+                    // Empty-panel click with a live contribution: clear it.
+                    self.session
+                        .clear(&binding.selection_name, binding.contributor.clone())
+                } else {
+                    // Empty-panel click with an empty slot: no-op.
+                    return None;
+                }
             }
-            // Empty-panel click with a live selection: clear it.
-            None if selected.is_some() => {
-                self.legend_selected[legend_index] = None;
-                self.session
-                    .clear(&binding.selection_name, binding.contributor.clone())
-            }
-            // Empty-panel click with nothing selected: no-op.
-            None => return None,
         };
         let mut to_rebuild: HashSet<usize> = HashSet::new();
         self.absorb(results, &mut to_rebuild);
@@ -887,11 +905,21 @@ hconcat:
             .expect("lcf_ac03 liveness: a bound legend alone keeps the coordinator alive")
     }
 
+    /// The predicate the legend's contributor slot currently holds, read
+    /// through the same engine lookup `apply_legend_click` decides from.
+    fn slot_expr(c: &CrossfilterCoordinator) -> Option<String> {
+        let b = &c.legend_bindings[0];
+        c.session
+            .contributor_predicate(&b.selection_name, &b.contributor.0)
+            .map(|p| format!("{p:?}"))
+    }
+
     /// lcf_ac03: the toggle state machine drives dispatch/clear through the
     /// coordinator against a real session — new category filters the
     /// downstream mark, a different category switches, the same category
     /// clears, and an empty-panel click clears (or no-ops when nothing is
-    /// selected). The subscriber's batch (mark 1) is the observable.
+    /// selected). The subscriber's batch (mark 1) is the observable; the
+    /// engine's contributor slot (not a UI mirror) is the toggle state.
     #[test]
     fn lcf_ac03_legend_toggle_state_machine_dispatches_and_clears() {
         let coord = legend_toggle_coordinator();
@@ -911,27 +939,108 @@ hconcat:
 
         // NEW: click 'gentoo' → col = 'gentoo' → 3 of 6 rows downstream.
         assert!(c.apply_legend_click(0, Some("gentoo")).is_some());
-        assert_eq!(c.legend_selected[0].as_deref(), Some("gentoo"));
+        assert!(slot_expr(&c).unwrap().contains("'gentoo'"));
         assert_eq!(rows(&c), 3, "species = 'gentoo' keeps 3 rows");
 
         // DIFFERENT: click 'adelie' → switches, no stacking → 2 rows.
         assert!(c.apply_legend_click(0, Some("adelie")).is_some());
-        assert_eq!(c.legend_selected[0].as_deref(), Some("adelie"));
+        assert!(slot_expr(&c).unwrap().contains("'adelie'"));
         assert_eq!(rows(&c), 2, "switching selects only the new category");
 
         // SAME: click 'adelie' again → toggle off → all rows restored.
         assert!(c.apply_legend_click(0, Some("adelie")).is_some());
-        assert_eq!(c.legend_selected[0], None);
+        assert_eq!(slot_expr(&c), None, "toggle-off empties the slot");
         assert_eq!(rows(&c), baseline, "toggle-off restores the full result");
 
         // EMPTY after a select: select then click empty panel → cleared.
         assert!(c.apply_legend_click(0, Some("chinstrap")).is_some());
         assert_eq!(rows(&c), 1);
         assert!(c.apply_legend_click(0, None).is_some(), "empty click clears");
-        assert_eq!(c.legend_selected[0], None);
+        assert_eq!(slot_expr(&c), None);
         assert_eq!(rows(&c), baseline);
 
         // Out-of-range legend index: no-op.
         assert!(c.apply_legend_click(9, Some("gentoo")).is_none());
+    }
+
+    /// Regression (card 0009 F1a): the `(selection, contributor)` slot is
+    /// shared with the `for:`-plot's brush/point interactors. After a brush
+    /// replaces the legend's dispatched predicate, clicking the SAME swatch
+    /// again must DISPATCH (replacing the brush with the category predicate)
+    /// — a UI-side selected-category mirror would instead clear, inverting
+    /// the toggle.
+    #[test]
+    fn lcf_f1a_brush_replacing_the_slot_does_not_invert_the_toggle() {
+        use brightfield_sql::ir::Predicate;
+
+        let coord = legend_toggle_coordinator();
+        let mut c = coord.borrow_mut();
+        let rows = |c: &CrossfilterCoordinator| {
+            c.marks[1].batch.as_ref().map_or(0, |b| b.num_rows())
+        };
+
+        // Legend click: species = 'gentoo' → 3 rows downstream.
+        assert!(c.apply_legend_click(0, Some("gentoo")).is_some());
+        assert_eq!(rows(&c), 3);
+
+        // A brush on the same plot writes the SAME (selection, contributor)
+        // slot — exactly what commit_brush dispatches for an intervalX on
+        // the scatter plot (contributor = the plot's node path).
+        let contributor = c.legend_bindings[0].contributor.clone();
+        let _ = c.session.dispatch(
+            "sel",
+            contributor,
+            Predicate::And(vec![
+                Predicate::Expr("x >= 1".to_string()),
+                Predicate::Expr("x <= 2".to_string()),
+            ]),
+        );
+        assert!(
+            slot_expr(&c).unwrap().contains("x >= 1"),
+            "the brush replaced the legend's predicate in the shared slot"
+        );
+
+        // Same-swatch click: the slot holds a brush, not the category
+        // predicate — so this must DISPATCH species = 'gentoo', not clear.
+        assert!(c.apply_legend_click(0, Some("gentoo")).is_some());
+        assert!(
+            slot_expr(&c).unwrap().contains("'gentoo'"),
+            "same-swatch click after a brush dispatches the category"
+        );
+        assert_eq!(rows(&c), 3, "downstream re-filters to the category");
+    }
+
+    /// Regression (card 0009 F1b): after the slot is emptied behind the
+    /// legend's back (an empty plot click clears this contributor), the same
+    /// swatch must dispatch again in ONE click — a mirror still holding the
+    /// category would treat it as a toggle-off no-op round trip.
+    #[test]
+    fn lcf_f1b_external_clear_does_not_eat_the_next_swatch_click() {
+        let coord = legend_toggle_coordinator();
+        let mut c = coord.borrow_mut();
+        let rows = |c: &CrossfilterCoordinator| {
+            c.marks[1].batch.as_ref().map_or(0, |b| b.num_rows())
+        };
+        let baseline = rows(&c);
+
+        // Legend click: species = 'gentoo' → 3 rows downstream.
+        assert!(c.apply_legend_click(0, Some("gentoo")).is_some());
+        assert_eq!(rows(&c), 3);
+
+        // An empty click on the plot clears this contributor's slot — the
+        // same clear commit_brush issues for a zero-area gesture.
+        let contributor = c.legend_bindings[0].contributor.clone();
+        let _ = c.session.clear("sel", contributor);
+        assert_eq!(slot_expr(&c), None, "the plot click emptied the slot");
+
+        // ONE same-swatch click must re-dispatch (slot empty → dispatch),
+        // not no-op against a stale mirror.
+        assert!(
+            c.apply_legend_click(0, Some("gentoo")).is_some(),
+            "the first click after an external clear dispatches"
+        );
+        assert!(slot_expr(&c).unwrap().contains("'gentoo'"));
+        assert_eq!(rows(&c), 3);
+        assert_ne!(rows(&c), baseline);
     }
 }

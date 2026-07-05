@@ -247,6 +247,24 @@ impl Session {
         &self.selection_state
     }
 
+    /// The predicate `contributor` currently holds in selection `name`, if
+    /// any — a read-only lookup into the live per-contributor store (card
+    /// 0009). `contributor` is the `ComponentPath` payload string (the parent
+    /// plot path), matching the keys `propagate_selection` stores.
+    ///
+    /// The legend toggle derives its dispatch-vs-clear decision from this
+    /// slot rather than a UI-side mirror: the slot is shared with the plot's
+    /// brush/point interactors (same `(selection, contributor)` identity), so
+    /// any gesture that replaces or removes it is observed here instead of
+    /// silently desynchronising a mirror.
+    pub fn contributor_predicate(&self, name: &str, contributor: &str) -> Option<&Predicate> {
+        self.selection_state
+            .get(name)?
+            .iter()
+            .find(|(path, _)| path.0 == contributor)
+            .map(|(_, predicate)| predicate)
+    }
+
     /// Convert the live `selection_state` into the shape `emit_query` consumes:
     /// `Vec<(selection_name, Vec<(contributor_path_string, Predicate)>)>`. The
     /// inner contributor strings are the `ComponentPath` payloads — already

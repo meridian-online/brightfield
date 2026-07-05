@@ -10,30 +10,10 @@
 use brightfield_conformance::{preflight, ComponentIdentity, Surface};
 use brightfield_spec::{parse_spec, ComponentKind, Format, ParseWarning};
 
-const LEGEND_AS_BINDING: &str = r#"
-params:
-  sel: { select: crossfilter }
-data:
-  t:
-    - { x: 1, y: 3, g: a }
-    - { x: 2, y: 5, g: b }
-hconcat:
-  - plot:
-    - mark: dot
-      data: { from: t }
-      x: x
-      y: y
-      fill: g
-    name: scatter
-  - legend: color
-    for: scatter
-    as: $sel
-  - plot:
-    - mark: dot
-      data: { from: t, filterBy: $sel }
-      x: x
-      y: y
-"#;
+/// The SHIPPED example (card 0009 F8): the conformance gate pins the real
+/// `examples/legend-select.yaml`, not a hand-inlined near-copy that could
+/// drift from what users actually run.
+const LEGEND_AS_BINDING: &str = include_str!("../../../examples/legend-select.yaml");
 
 #[test]
 fn lcf_ac06_legend_as_binding_parses_and_preflights_implemented() {
@@ -82,6 +62,14 @@ fn lcf_ac06_legend_as_binding_parses_and_preflights_implemented() {
 
 #[test]
 fn lcf_ac06_symbol_legend_binding_still_channel_blocked() {
+    // The replace below must rewrite exactly the ONE legend node — if the
+    // example ever grows a second `legend: color` (or a comment containing
+    // it), this fixture would silently stop testing what it claims to.
+    assert_eq!(
+        LEGEND_AS_BINDING.matches("legend: color").count(),
+        1,
+        "examples/legend-select.yaml must contain exactly one `legend: color`"
+    );
     let symbol = LEGEND_AS_BINDING.replace("legend: color", "legend: symbol");
     let parsed = parse_spec(&symbol, Format::Yaml).expect("symbol-legend spec still parses");
 

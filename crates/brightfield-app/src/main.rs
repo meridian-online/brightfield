@@ -302,6 +302,67 @@ fn resolve_legends(spec: &brightfield_spec::ast::Spec, live_plots: &[LivePlotMet
     out
 }
 
+/// Reconcile the analysis-side legend producer bindings against the LIVE
+/// legend placements (card 0009 F4, interim until the two population counts
+/// unify). `build_legend_bindings` counts colour-encoded plots by STRING
+/// `fill:`/`stroke:` option, while [`resolve_legends`] counts by live
+/// Colour/Sequential scale — the populations diverge (a numeric fill counts
+/// statically but infers Linear; a raster plot counts live via its Sequential
+/// Fill but has no fill option), so their sole-plot fallbacks can disagree.
+///
+/// (a) A binding whose legend has NO placement is discarded — a phantom
+/// binding would hold the coordinator open with no clickable surface.
+/// (b) A PLACED legend carrying `as:` with no surviving binding gets a
+/// diagnostic — its clicks would silently do nothing.
+///
+/// Returns the surviving bindings plus human-readable diagnostics (the caller
+/// eprintlns them); pure so both halves are headlessly testable.
+fn reconcile_legend_bindings(
+    spec: &brightfield_spec::ast::Spec,
+    placements: &[LegendPlacement],
+    bindings: Vec<brightfield_spec::analysis::LegendBinding>,
+) -> (Vec<brightfield_spec::analysis::LegendBinding>, Vec<String>) {
+    use brightfield_spec::ast::ValueOrParamRef;
+
+    let placed: HashSet<&str> = placements.iter().map(|l| l.path.as_str()).collect();
+    let (retained, orphaned): (Vec<_>, Vec<_>) = bindings
+        .into_iter()
+        .partition(|b| placed.contains(b.legend_path.0.as_str()));
+
+    let mut diagnostics: Vec<String> = orphaned
+        .iter()
+        .map(|b| {
+            format!(
+                "legend binding `as: ${}` at {} has no hosted legend — discarding \
+                 (the legend did not resolve to a colour scale, so its clicks would \
+                 have no surface)",
+                b.selection, b.legend_path.0
+            )
+        })
+        .collect();
+
+    let nodes = collect_legend_nodes(spec);
+    for l in placements {
+        if retained.iter().any(|b| b.legend_path.0 == l.path) {
+            continue;
+        }
+        let carries_as = nodes
+            .iter()
+            .find(|(path, _)| path == &l.path)
+            .is_some_and(|(_, node)| {
+                matches!(node.options.get("as"), Some(ValueOrParamRef::Param(_)))
+            });
+        if carries_as {
+            diagnostics.push(format!(
+                "legend at {} carries `as:` but no selection binding matched — \
+                 clicks on it will not filter",
+                l.path
+            ));
+        }
+    }
+    (retained, diagnostics)
+}
+
 /// Coerce a scalar `SpecValue` (a param default) to `f64` for a slider's resting
 /// value; `None` for non-scalar params.
 fn spec_value_as_f64(v: &brightfield_spec::ast::SpecValue) -> Option<f64> {
@@ -348,11 +409,13 @@ struct LivePlotMeta {
 
 /// The launch-fixed chrome + render metadata the hot-reload gate compares
 /// against each rebuilt spec. The watcher can hot-swap plot scenes, but the
-/// window's chrome (titlebar/header title), its hosted legends, and the
-/// coordinator's per-plot render metadata (colorScheme, inline-legend
-/// suppression) are all captured at launch — a rebuild that changes any of
-/// them must fall back to "restart to apply" rather than silently reloading
-/// with stale chrome or reverting on the next gesture-driven re-render.
+/// window's chrome (titlebar/header title), its hosted legends, the legend
+/// selection bindings (a bound legend's click wiring — `as:`/`for:` — is
+/// captured into the coordinator at launch), and the coordinator's per-plot
+/// render metadata (colorScheme, inline-legend suppression) are all captured
+/// at launch — a rebuild that changes any of them must fall back to "restart
+/// to apply" rather than silently reloading with stale chrome, stale click
+/// wiring, or reverting on the next gesture-driven re-render.
 #[cfg(any(target_os = "macos", test))]
 #[derive(Debug, PartialEq)]
 struct ChromeSnapshot {
@@ -361,6 +424,12 @@ struct ChromeSnapshot {
     /// Per hosted legend, in document order: layout rect plus a cheap
     /// structural key of the displayed scale (its `Debug` form).
     legends: Vec<(f64, f64, f64, f64, String)>,
+    /// Per legend producer binding (card 0009), in analysis order: the click
+    /// wiring keys (legend path, `for:`-plot path, selection name, colour
+    /// column). An `as:`/`for:`-only edit changes these WITHOUT moving any
+    /// legend rect or scale, so the gate needs them explicitly — otherwise a
+    /// hot swap would keep the launch-time coordinator's stale click wiring.
+    legend_bindings: Vec<(String, String, String, String)>,
     /// Per plot, in dashboard order: path, resolved colour scheme, and
     /// whether the plot draws its own inline legend.
     plot_render_meta: Vec<(String, SequentialScheme, bool)>,
@@ -369,7 +438,12 @@ struct ChromeSnapshot {
 #[cfg(any(target_os = "macos", test))]
 impl ChromeSnapshot {
     /// Snapshot the chrome-relevant slice of a built dashboard.
-    fn capture(title: String, legends: &[LegendPlacement], plots: &[LivePlotMeta]) -> Self {
+    fn capture(
+        title: String,
+        legends: &[LegendPlacement],
+        bindings: &[brightfield_spec::analysis::LegendBinding],
+        plots: &[LivePlotMeta],
+    ) -> Self {
         Self {
             title,
             legends: legends
@@ -381,6 +455,17 @@ impl ChromeSnapshot {
                         l.rect.width,
                         l.rect.height,
                         format!("{:?}", l.scale),
+                    )
+                })
+                .collect(),
+            legend_bindings: bindings
+                .iter()
+                .map(|b| {
+                    (
+                        b.legend_path.0.clone(),
+                        b.plot_path.0.clone(),
+                        b.selection.clone(),
+                        b.colour_column.clone(),
                     )
                 })
                 .collect(),
@@ -403,6 +488,9 @@ fn chrome_divergence(launch: &ChromeSnapshot, rebuilt: &ChromeSnapshot) -> Optio
     if launch.legends != rebuilt.legends {
         return Some("legend placement/scale");
     }
+    if launch.legend_bindings != rebuilt.legend_bindings {
+        return Some("legend selection binding (as:/for:)");
+    }
     if launch.plot_render_meta != rebuilt.plot_render_meta {
         return Some("per-plot render metadata (colorScheme/inline legend)");
     }
@@ -422,7 +510,12 @@ fn chrome_divergence(launch: &ChromeSnapshot, rebuilt: &ChromeSnapshot) -> Optio
 fn run_pipeline(spec_path: &str) -> Result<(Dashboard, ChromeSnapshot), String> {
     build_everything(spec_path).map(|(dashboard, live)| {
         let title = brightfield_ui::resolve_title(dashboard.meta_title.as_deref(), spec_path);
-        let chrome = ChromeSnapshot::capture(title, &dashboard.legends, &live.plots);
+        let chrome = ChromeSnapshot::capture(
+            title,
+            &dashboard.legends,
+            &live.legend_bindings,
+            &live.plots,
+        );
         (dashboard, chrome)
     })
 }
@@ -698,6 +791,15 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
     // moved into `LiveParts` (it borrows the per-plot scales).
     let legends = resolve_legends(&parsed.spec, &live_plots);
 
+    // Reconcile the producer bindings against the live placements (card 0009
+    // F4): drop phantom bindings with no hosted legend, and diagnose placed
+    // `as:` legends whose clicks would be dead.
+    let (legend_bindings, legend_binding_diags) =
+        reconcile_legend_bindings(&parsed.spec, &legends, legend_bindings);
+    for d in &legend_binding_diags {
+        eprintln!("warning: {d}");
+    }
+
     // Fold slider + legend rects into the dashboard size so a widget beside/below
     // the plots reserves its space (the window is the bounding box).
     let width = placed
@@ -955,11 +1057,12 @@ fn main() {
             legend_bindings,
         } = live;
         // Launch-time chrome snapshot for the hot-reload gate: the title,
-        // hosted legends, and per-plot render metadata are fixed at launch,
-        // so the watcher refuses to hot-swap when a rebuild diverges on any
-        // of them ("restart to apply" — same contract as a layout change).
+        // hosted legends, legend selection bindings (click wiring), and
+        // per-plot render metadata are fixed at launch, so the watcher
+        // refuses to hot-swap when a rebuild diverges on any of them
+        // ("restart to apply" — same contract as a layout change).
         let launch_chrome =
-            ChromeSnapshot::capture(title.clone(), &legends, &live_plots_meta);
+            ChromeSnapshot::capture(title.clone(), &legends, &legend_bindings, &live_plots_meta);
         app.run(move |cx| {
             // One ChartState per plot; the watcher tracks each by its stable
             // path + geometry for hot-reload.
@@ -1577,6 +1680,12 @@ colorScheme: {color_scheme}
             |title: &str, scheme: SequentialScheme, inline: bool| super::ChromeSnapshot {
                 title: title.to_string(),
                 legends: vec![(10.0, 20.0, 120.0, 24.0, "Colour".to_string())],
+                legend_bindings: vec![(
+                    "root/hconcat[1]".to_string(),
+                    "root/hconcat[0]".to_string(),
+                    "sel".to_string(),
+                    "species".to_string(),
+                )],
                 plot_render_meta: vec![("/plot/0".to_string(), scheme, inline)],
             };
         let launch = snapshot("framed", SequentialScheme::Blues, true);
@@ -1620,14 +1729,35 @@ colorScheme: {color_scheme}
             super::chrome_divergence(&launch, &recoloured),
             Some("legend placement/scale")
         );
+
+        // Binding-only divergence (card 0009 F7): an `as:`/`for:`-only edit
+        // moves NO rect and changes NO scale — the legend still sits at the
+        // same place drawing the same swatches — but its click wiring
+        // (selection name here; equally plot path or colour column) differs,
+        // so a hot swap would dispatch through the stale launch bindings.
+        let mut rebound = snapshot("framed", SequentialScheme::Blues, true);
+        rebound.legend_bindings[0].2 = "other".to_string();
+        assert_eq!(
+            super::chrome_divergence(&launch, &rebound),
+            Some("legend selection binding (as:/for:)")
+        );
+        // Removing the binding altogether (as: deleted) equally gates.
+        let mut unbound = snapshot("framed", SequentialScheme::Blues, true);
+        unbound.legend_bindings.clear();
+        assert_eq!(
+            super::chrome_divergence(&launch, &unbound),
+            Some("legend selection binding (as:/for:)")
+        );
     }
 
     /// Card 0016 review (F2): `ChromeSnapshot::capture` maps the launch parts
     /// into the gate's comparison keys — rect + scale Debug key per legend,
+    /// the click-wiring key tuple per legend binding (card 0009 F7), and
     /// path + scheme + inline flag per plot.
     #[test]
     fn reload_gate_snapshot_captures_comparison_keys() {
         use brightfield_render::scale::{Scale, ScaleSet, SequentialScheme};
+        use brightfield_spec::analysis::{ComponentPath, LegendBinding};
         use brightfield_spec::layout::Rect;
 
         let scale = Scale::Colour {
@@ -1639,6 +1769,12 @@ colorScheme: {color_scheme}
             rect: Rect::new(1.0, 2.0, 3.0, 4.0),
             scale: scale.clone(),
         };
+        let binding = LegendBinding {
+            legend_path: ComponentPath("root/hconcat[1]".to_string()),
+            plot_path: ComponentPath("root/hconcat[0]".to_string()),
+            selection: "sel".to_string(),
+            colour_column: "species".to_string(),
+        };
         let meta = super::LivePlotMeta {
             path: "/plot/0".to_string(),
             mark_indices: vec![0],
@@ -1649,16 +1785,182 @@ colorScheme: {color_scheme}
             scheme: SequentialScheme::Blues,
         };
 
-        let snap = super::ChromeSnapshot::capture("framed".to_string(), &[legend], &[meta]);
+        let snap = super::ChromeSnapshot::capture(
+            "framed".to_string(),
+            &[legend],
+            &[binding],
+            &[meta],
+        );
         assert_eq!(snap.title, "framed");
         assert_eq!(
             snap.legends,
             vec![(1.0, 2.0, 3.0, 4.0, format!("{scale:?}"))]
         );
         assert_eq!(
+            snap.legend_bindings,
+            vec![(
+                "root/hconcat[1]".to_string(),
+                "root/hconcat[0]".to_string(),
+                "sel".to_string(),
+                "species".to_string(),
+            )],
+            "the click-wiring keys ride the snapshot (card 0009 F7)"
+        );
+        assert_eq!(
             snap.plot_render_meta,
             vec![("/plot/0".to_string(), SequentialScheme::Blues, false)]
         );
+    }
+
+    /// Card 0009 F4a (static/live divergence, phantom binding): a dot plot
+    /// with a string `fill:` plus a raster plot. `build_legend_bindings`
+    /// counts colour plots by string fill option (dot only → sole → binding
+    /// forms), but `resolve_legends` counts by LIVE scale (dot Colour AND
+    /// raster Sequential → two → no sole → the bare legend gets NO
+    /// placement). The reconcile must discard the phantom binding — else it
+    /// holds the coordinator open with no clickable surface — and liveness
+    /// must follow the placements.
+    #[test]
+    fn lcf_f4_orphan_binding_discarded_and_liveness_follows_placements() {
+        use brightfield_ui::{CrossfilterCoordinator, LegendSelectBinding};
+
+        const SRC: &str = r#"
+params:
+  sel: { select: crossfilter }
+data:
+  t:
+    - { x: 1, y: 2, g: a }
+    - { x: 2, y: 3, g: b }
+    - { x: 3, y: 4, g: a }
+hconcat:
+  - plot:
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+      fill: g
+  - plot:
+    - mark: raster
+      data: { from: t }
+      x: x
+      y: y
+  - legend: color
+    as: $sel
+"#;
+        let dir = std::env::temp_dir().join(format!("bf-lcf-f4a-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("dot-raster.yaml");
+        std::fs::write(&path, SRC).unwrap();
+
+        let (dashboard, live) =
+            super::build_everything(path.to_str().unwrap()).expect("pipeline runs");
+
+        // The static analysis DID produce a binding (the divergence premise)…
+        let parsed = parse_spec(SRC, Format::Yaml).expect("parse");
+        let analysis = analyse_spec(&parsed.spec).expect("analyse");
+        assert_eq!(
+            analysis.legend_bindings.len(),
+            1,
+            "premise: the static sole-fallback binds (string-fill population = 1)"
+        );
+        // …but the live placements skipped the legend (live population = 2),
+        // so the reconcile discards the phantom and diagnoses it.
+        assert!(
+            dashboard.legends.is_empty(),
+            "premise: two live colour scales → the bare legend gets no placement"
+        );
+        assert!(
+            live.legend_bindings.is_empty(),
+            "the phantom binding is discarded (card 0009 F4a)"
+        );
+        let (retained, diags) = super::reconcile_legend_bindings(
+            &parsed.spec,
+            &dashboard.legends,
+            analysis.legend_bindings,
+        );
+        assert!(retained.is_empty());
+        assert!(
+            diags.iter().any(|d| d.contains("no hosted legend")),
+            "the discard is diagnosed: {diags:?}"
+        );
+
+        // Coordinator liveness follows the placements: with the phantom gone
+        // (and no brushes/sliders) the dashboard is not live.
+        let legend_select: Vec<LegendSelectBinding> =
+            live.legend_bindings.iter().map(Into::into).collect();
+        assert!(
+            CrossfilterCoordinator::new(live.session, live.marks, vec![], vec![], legend_select)
+                .is_none(),
+            "no placement → no binding → no coordinator"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Card 0009 F4b (static/live divergence, dead clicks diagnosed): two
+    /// plots whose `fill:` options are BOTH strings (one names a numeric
+    /// column) — the static population is 2 (ambiguous, no binding) while
+    /// the live population is 1 (the numeric fill infers Linear, not
+    /// Colour), so the bare legend IS placed but carries `as:` with no
+    /// binding. The reconcile diagnoses the dead clicks.
+    #[test]
+    fn lcf_f4_placed_as_legend_without_binding_is_diagnosed() {
+        const SRC: &str = r#"
+params:
+  sel: { select: crossfilter }
+data:
+  t:
+    - { x: 1, y: 2, g: a, n: 5 }
+    - { x: 2, y: 3, g: b, n: 7 }
+hconcat:
+  - plot:
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+      fill: g
+  - plot:
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+      fill: n
+  - legend: color
+    as: $sel
+"#;
+        let dir = std::env::temp_dir().join(format!("bf-lcf-f4b-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("numeric-fill.yaml");
+        std::fs::write(&path, SRC).unwrap();
+
+        let (dashboard, live) =
+            super::build_everything(path.to_str().unwrap()).expect("pipeline runs");
+
+        let parsed = parse_spec(SRC, Format::Yaml).expect("parse");
+        let analysis = analyse_spec(&parsed.spec).expect("analyse");
+        assert!(
+            analysis.legend_bindings.is_empty(),
+            "premise: two string-fill plots → static sole-fallback is ambiguous"
+        );
+        assert_eq!(
+            dashboard.legends.len(),
+            1,
+            "premise: one live Colour scale → the bare legend IS placed"
+        );
+        assert!(live.legend_bindings.is_empty());
+
+        let (retained, diags) = super::reconcile_legend_bindings(
+            &parsed.spec,
+            &dashboard.legends,
+            analysis.legend_bindings,
+        );
+        assert!(retained.is_empty());
+        assert!(
+            diags.iter().any(|d| d.contains("clicks on it will not filter")),
+            "the placed-but-unbound `as:` legend is diagnosed (card 0009 F4b): {diags:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

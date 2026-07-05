@@ -1206,7 +1206,13 @@ fn option_string(mark: &Mark, key: &str) -> Option<String> {
 ///
 /// Built by [`build_legend_bindings`] during [`analyse_spec`]. Legends
 /// without `as:`, non-`color` channels, and unresolvable `for:` targets
-/// yield no binding (they stay display-only).
+/// yield no binding (they stay display-only). The `as:` target must be a
+/// DECLARED selection with `crossfilter` resolution — the only resolution
+/// under which `compile_selection` self-excludes the contributor's own
+/// plot; any other target (undeclared, a value param, or a
+/// single/intersect/union selection) is skipped with a `LegendBinding*`
+/// warning, because binding it would let the legend filter its own `for:`
+/// plot and invalidate the launch-time colour-scale snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LegendBinding {
     /// Component path of the legend node (e.g. `root/hconcat[1]`).
@@ -1243,7 +1249,13 @@ fn plot_colour_column(plot: &crate::ast::PlotNode) -> Option<String> {
 /// non-literal `for:` (a param) never binds. "Colour-encoded" here means the
 /// plot's first mark carries a string `fill:`/`stroke:` column — the static
 /// mirror of the resolver's live colour-scale check.
-pub fn build_legend_bindings(spec: &Spec) -> Vec<LegendBinding> {
+///
+/// The `as:` target is validated against `spec.params`: only a declared
+/// selection with `crossfilter` resolution binds (the self-exclusion
+/// precondition — see [`LegendBinding`]); anything else skips the legend and
+/// pushes a `LegendBinding*` warning onto `warnings`, mirroring the
+/// interactor-binding warning family.
+pub fn build_legend_bindings(spec: &Spec, warnings: &mut Vec<ParseWarning>) -> Vec<LegendBinding> {
     use crate::layout::{collect_legend_nodes, collect_plot_nodes};
     use crate::vocab::LegendChannel;
 
@@ -1277,6 +1289,34 @@ pub fn build_legend_bindings(spec: &Spec) -> Vec<LegendBinding> {
         let Some(ValueOrParamRef::Param(selection)) = node.options.get("as") else {
             continue; // no `as:` — display-only, exactly as card 0016 shipped
         };
+        // Self-exclusion gating: compile_selection self-excludes ONLY under
+        // Crossfilter resolution, so a legend bound to any other target would
+        // filter its own `for:` plot (select: single) or reference nothing.
+        // Skip + warn, mirroring the interactor-binding warning family.
+        match spec.params.get(&selection.0) {
+            None => {
+                warnings.push(ParseWarning::LegendBindingMissing {
+                    name: selection.0.clone(),
+                });
+                continue;
+            }
+            Some(ParamNode::Value(_)) => {
+                warnings.push(ParseWarning::LegendBindingNonSelection {
+                    name: selection.0.clone(),
+                });
+                continue;
+            }
+            Some(ParamNode::Selection(sel))
+                if sel.select != crate::vocab::SelectionResolution::Crossfilter =>
+            {
+                warnings.push(ParseWarning::LegendBindingNonCrossfilter {
+                    name: selection.0.clone(),
+                    resolution: sel.select.wire_name().to_string(),
+                });
+                continue;
+            }
+            Some(ParamNode::Selection(_)) => {} // crossfilter: valid
+        }
         let resolved = match node.options.get("for") {
             Some(ValueOrParamRef::Value(SpecValue::String(name))) => by_name.get(name).cloned(),
             None => sole.clone(),
@@ -1324,6 +1364,46 @@ pub struct SpecAnalysis {
     pub warnings: Vec<ParseWarning>,
 }
 
+/// Param names PRODUCED somewhere in the component tree — the raw `as:`
+/// option refs of BOTH producer forms: interactors (which also push a
+/// pseudo-subscriber into the graph) and legends (which deliberately do
+/// not — see the legend arm of [`collect_subscribers`]). Collected from the
+/// raw option bag, any channel, unconditionally (no binding validation):
+/// a param someone writes to is not "dead" even if the producer is
+/// otherwise mis-configured.
+fn collect_produced_params(spec: &Spec) -> HashSet<String> {
+    fn walk(component: &Component, produced: &mut HashSet<String>) {
+        match component {
+            Component::Interactor(i) => {
+                if let Some(ValueOrParamRef::Param(pr)) = i.options.get("as") {
+                    produced.insert(pr.0.clone());
+                }
+            }
+            Component::Legend(l) => {
+                if let Some(ValueOrParamRef::Param(pr)) = l.options.get("as") {
+                    produced.insert(pr.0.clone());
+                }
+            }
+            Component::Plot(p) => {
+                for item in &p.items {
+                    walk(item, produced);
+                }
+            }
+            Component::HConcat(c) | Component::VConcat(c) => {
+                for item in &c.items {
+                    walk(item, produced);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut produced = HashSet::new();
+    if let Some(root) = &spec.root {
+        walk(root, &mut produced);
+    }
+    produced
+}
+
 /// Run all static analyses on a parsed Spec.
 ///
 /// Returns `Err` if a cycle is detected in the param dependency graph
@@ -1331,10 +1411,16 @@ pub struct SpecAnalysis {
 pub fn analyse_spec(spec: &Spec) -> Result<SpecAnalysis, ParseError> {
     let subscriber_graph = build_subscriber_graph(spec);
 
-    // Dead param warnings (rpw ac-04).
+    // Dead param warnings (rpw ac-04). A param PRODUCED by an interactor or
+    // legend `as:` is not dead even with zero subscribers: interactors
+    // suppress the warning via their pseudo-subscriber push in
+    // collect_subscribers, and legends (whose `as:` is deliberately NOT a
+    // subscription — card 0009) are covered by the produced set, keeping the
+    // two producer forms symmetric.
+    let produced = collect_produced_params(spec);
     let mut warnings: Vec<ParseWarning> = Vec::new();
     for (name, subscribers) in &subscriber_graph {
-        if subscribers.is_empty() && spec.params.contains_key(name) {
+        if subscribers.is_empty() && spec.params.contains_key(name) && !produced.contains(name) {
             warnings.push(ParseWarning::DeadParam {
                 name: name.clone(),
             });
@@ -1363,8 +1449,9 @@ pub fn analyse_spec(spec: &Spec) -> Result<SpecAnalysis, ParseError> {
     // filtered to brush-compatible kinds, paired with parent plot channels.
     let brushable_bindings = build_brushable_bindings(spec);
 
-    // Legend producer bindings (card 0009, lcf ac-01).
-    let legend_bindings = build_legend_bindings(spec);
+    // Legend producer bindings (card 0009, lcf ac-01) — pushes LegendBinding*
+    // warnings for `as:` targets that fail the crossfilter precondition.
+    let legend_bindings = build_legend_bindings(spec, &mut warnings);
 
     Ok(SpecAnalysis {
         subscriber_graph,
@@ -2466,6 +2553,287 @@ hconcat:
         assert!(
             analysis.legend_bindings.is_empty(),
             "a display-only legend (no as:) yields no binding"
+        );
+    }
+
+    /// lcf F2 (named ≠ sole): with TWO colour-encoded plots, `for: scatter`
+    /// must resolve by NAME to the scatter plot — a mutant that falls back to
+    /// "the sole colour plot" either binds nothing (two candidates) or the
+    /// wrong plot, and fails here. The single-colour-plot fixtures above
+    /// cannot distinguish named resolution from the sole fallback.
+    #[test]
+    fn lcf_f2_named_for_resolves_among_multiple_colour_plots() {
+        let yaml = r#"
+params:
+  sel: { select: crossfilter }
+hconcat:
+  - plot:
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+      fill: species
+    name: scatter
+  - plot:
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+      fill: grp
+    name: other
+  - legend: color
+    for: scatter
+    as: $sel
+"#;
+        let out = parse_spec(yaml, Format::Yaml).expect("parses");
+        let analysis = analyse_spec(&out.spec).expect("analysis succeeds");
+        assert_eq!(
+            analysis.legend_bindings.len(),
+            1,
+            "exactly one binding: {:?}",
+            analysis.legend_bindings
+        );
+        let b = &analysis.legend_bindings[0];
+        assert_eq!(
+            b.plot_path.0, "root/hconcat[0]",
+            "for: scatter resolves to the NAMED plot, not a sole fallback"
+        );
+        assert_eq!(b.colour_column, "species", "the named plot's fill column");
+    }
+
+    /// lcf F2 (named-but-unmatched): a `for:` that names no colour-encoded
+    /// plot binds NOTHING, even when a sole colour plot exists — never
+    /// silently borrow another plot's scale (mirrors resolve_legends'
+    /// explicit-for:-must-match rule). A param-valued `for:` is equally
+    /// unresolvable. Duplicate plot names resolve last-wins, matching the
+    /// resolver.
+    #[test]
+    fn lcf_f2_unmatched_for_never_borrows_the_sole_plot() {
+        // for: nosuch + one sole colour plot → EMPTY, not the sole plot.
+        let unmatched = r#"
+params:
+  sel: { select: crossfilter }
+hconcat:
+  - plot:
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+      fill: grp
+    name: scatter
+  - legend: color
+    for: nosuch
+    as: $sel
+"#;
+        let out = parse_spec(unmatched, Format::Yaml).expect("parses");
+        let analysis = analyse_spec(&out.spec).expect("analysis succeeds");
+        assert!(
+            analysis.legend_bindings.is_empty(),
+            "for: nosuch must not borrow the sole colour plot: {:?}",
+            analysis.legend_bindings
+        );
+
+        // for: $param → unresolvable, no binding.
+        let param_for = r#"
+params:
+  sel: { select: crossfilter }
+  which: scatter
+hconcat:
+  - plot:
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+      fill: grp
+    name: scatter
+  - legend: color
+    for: $which
+    as: $sel
+"#;
+        let out = parse_spec(param_for, Format::Yaml).expect("parses");
+        let analysis = analyse_spec(&out.spec).expect("analysis succeeds");
+        assert!(
+            analysis.legend_bindings.is_empty(),
+            "a param-valued for: never binds: {:?}",
+            analysis.legend_bindings
+        );
+
+        // Duplicate name → last-wins (matching resolve_legends).
+        let duplicate = r#"
+params:
+  sel: { select: crossfilter }
+hconcat:
+  - plot:
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+      fill: first_col
+    name: scatter
+  - plot:
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+      fill: second_col
+    name: scatter
+  - legend: color
+    for: scatter
+    as: $sel
+"#;
+        let out = parse_spec(duplicate, Format::Yaml).expect("parses");
+        let analysis = analyse_spec(&out.spec).expect("analysis succeeds");
+        assert_eq!(analysis.legend_bindings.len(), 1);
+        assert_eq!(
+            analysis.legend_bindings[0].plot_path.0, "root/hconcat[1]",
+            "duplicate plot names resolve last-wins, matching resolve_legends"
+        );
+        assert_eq!(analysis.legend_bindings[0].colour_column, "second_col");
+    }
+
+    /// lcf F3 (self-exclusion gating): the `as:` target must be a DECLARED
+    /// selection with crossfilter resolution — the only resolution
+    /// compile_selection self-excludes under. A `select: single` target
+    /// would filter the legend's own for:-plot, so it yields NO binding and
+    /// a LegendBindingNonCrossfilter warning; an undeclared name and a value
+    /// param likewise skip with their own warning kinds.
+    #[test]
+    fn lcf_f3_non_crossfilter_as_targets_skip_with_warnings() {
+        let with_params = |params: &str| {
+            format!(
+                r#"
+params:
+{params}
+hconcat:
+  - plot:
+    - mark: dot
+      data: {{ from: t }}
+      x: x
+      y: y
+      fill: grp
+    name: scatter
+  - legend: color
+    for: scatter
+    as: $sel
+"#
+            )
+        };
+
+        // select: single — declared selection, wrong resolution.
+        let out =
+            parse_spec(&with_params("  sel: { select: single }"), Format::Yaml).expect("parses");
+        let analysis = analyse_spec(&out.spec).expect("analysis succeeds");
+        assert!(
+            analysis.legend_bindings.is_empty(),
+            "a select: single target must not bind (it would filter its own plot): {:?}",
+            analysis.legend_bindings
+        );
+        assert!(
+            analysis.warnings.iter().any(|w| matches!(
+                w,
+                ParseWarning::LegendBindingNonCrossfilter { name, resolution }
+                    if name == "sel" && resolution == "single"
+            )),
+            "warns non-crossfilter: {:?}",
+            analysis.warnings
+        );
+
+        // Undeclared param name.
+        let undeclared = r#"
+hconcat:
+  - plot:
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+      fill: grp
+    name: scatter
+  - legend: color
+    for: scatter
+    as: $sel
+"#;
+        let out = parse_spec(undeclared, Format::Yaml).expect("parses");
+        let analysis = analyse_spec(&out.spec).expect("analysis succeeds");
+        assert!(analysis.legend_bindings.is_empty());
+        assert!(
+            analysis.warnings.iter().any(|w| matches!(
+                w,
+                ParseWarning::LegendBindingMissing { name } if name == "sel"
+            )),
+            "warns missing: {:?}",
+            analysis.warnings
+        );
+
+        // Value param.
+        let out = parse_spec(&with_params("  sel: 42"), Format::Yaml).expect("parses");
+        let analysis = analyse_spec(&out.spec).expect("analysis succeeds");
+        assert!(analysis.legend_bindings.is_empty());
+        assert!(
+            analysis.warnings.iter().any(|w| matches!(
+                w,
+                ParseWarning::LegendBindingNonSelection { name } if name == "sel"
+            )),
+            "warns non-selection: {:?}",
+            analysis.warnings
+        );
+
+        // Control: crossfilter binds cleanly, no LegendBinding* warnings.
+        let out = parse_spec(&with_params("  sel: { select: crossfilter }"), Format::Yaml)
+            .expect("parses");
+        let analysis = analyse_spec(&out.spec).expect("analysis succeeds");
+        assert_eq!(analysis.legend_bindings.len(), 1);
+        assert!(
+            !analysis.warnings.iter().any(|w| matches!(
+                w,
+                ParseWarning::LegendBindingMissing { .. }
+                    | ParseWarning::LegendBindingNonSelection { .. }
+                    | ParseWarning::LegendBindingNonCrossfilter { .. }
+            )),
+            "a crossfilter target binds without warnings: {:?}",
+            analysis.warnings
+        );
+    }
+
+    /// lcf F5 (DeadParam symmetry): a selection produced ONLY by a legend
+    /// `as:` (no filterBy subscriber anywhere) must not flag DeadParam —
+    /// interactor producers already suppress it via their pseudo-subscriber
+    /// push, and the produced-params set extends the same courtesy to legend
+    /// producers. A genuinely dead param still warns.
+    #[test]
+    fn lcf_f5_legend_only_produced_selection_is_not_dead() {
+        let yaml = r#"
+params:
+  sel: { select: crossfilter }
+  unused: 7
+hconcat:
+  - plot:
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+      fill: grp
+    name: scatter
+  - legend: color
+    for: scatter
+    as: $sel
+"#;
+        let out = parse_spec(yaml, Format::Yaml).expect("parses");
+        let analysis = analyse_spec(&out.spec).expect("analysis succeeds");
+        assert!(
+            !analysis.warnings.iter().any(|w| matches!(
+                w,
+                ParseWarning::DeadParam { name } if name == "sel"
+            )),
+            "a legend-only-produced selection is not dead: {:?}",
+            analysis.warnings
+        );
+        assert!(
+            analysis.warnings.iter().any(|w| matches!(
+                w,
+                ParseWarning::DeadParam { name } if name == "unused"
+            )),
+            "a genuinely dead param still warns: {:?}",
+            analysis.warnings
         );
     }
 }
