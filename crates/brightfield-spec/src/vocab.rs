@@ -252,7 +252,11 @@ vocab_enum! {
         VConcat => ("vconcat", Unimplemented),
         HSpace => ("hspace", Unimplemented),
         VSpace => ("vspace", Unimplemented),
-        Legend => ("legend", Unimplemented),
+        // Standalone `legend:` nodes render end-to-end (card 0016): resolved to
+        // their `for:` plot's colour scale, drawn into the headless composite
+        // AND hosted in the window as a display-only LegendElement at the same
+        // layout rect.
+        Legend => ("legend", Implemented),
     }
 }
 
@@ -407,5 +411,28 @@ mod tests {
     #[test]
     fn scs_ac09_legend_color_channel_stays_implemented() {
         assert_eq!(LegendChannel::Color.status(), ImplStatus::Implemented);
+    }
+
+    /// fww_ac05 (card 0016, framed window). `ComponentKind::Legend` is
+    /// promoted to Implemented: standalone legends render in the headless
+    /// composite AND as hosted window elements at their layout rects. The
+    /// other layout components stay Unimplemented (DEV-0001 scaffolding).
+    #[test]
+    fn fww_ac05_component_legend_implemented_when_hosted() {
+        assert_eq!(
+            ComponentKind::Legend.status(),
+            ImplStatus::Implemented,
+            "legend is hosted in the window (card 0016) — promoted"
+        );
+        let implemented: Vec<ComponentKind> = ComponentKind::all()
+            .iter()
+            .copied()
+            .filter(|k| k.status() == ImplStatus::Implemented)
+            .collect();
+        assert_eq!(
+            implemented,
+            vec![ComponentKind::Legend],
+            "only Legend is implemented; the layout components remain Unimplemented"
+        );
     }
 }

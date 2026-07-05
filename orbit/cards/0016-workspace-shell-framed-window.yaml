@@ -38,7 +38,8 @@ goal: "Every example spec opens as a framed window — title strip, window-hoste
 
 maturity: "planned"
 
-specs: []
+specs:
+  - "orbit/specs/2026-07-05-framed-window/spec.yaml"
 
 references:
   - "orbit/cards/memos/2026-07-04-framing-the-canvas.md: the source memo — three-layer framing model, Option A (minimal hand-rolled shell), spec↔shell ownership rule"

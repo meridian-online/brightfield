@@ -30,8 +30,8 @@ use brightfield_engine::error::EngineError;
 use brightfield_engine::{concat_batches, RecordBatch, Session};
 use brightfield_render::channel::{Channel, ChannelMap};
 use brightfield_render::layout::ChartLayout;
-use brightfield_render::mark::{default_renderers, find_renderer, MarkRenderer};
-use brightfield_render::scale::{Scale, ScaleSet};
+use brightfield_render::mark::{default_renderers, find_renderer, MarkRenderer, RasterRenderer};
+use brightfield_render::scale::{Scale, ScaleSet, SequentialScheme};
 use brightfield_render::scene::{build_multi_mark_scene, ChartData};
 use brightfield_spec::vocab::MarkKind;
 
@@ -72,6 +72,12 @@ pub struct LivePlot {
     /// the app layer and carried here so a live re-render honours the same
     /// suppression instead of resurrecting the inline legend.
     pub draw_inline_legend: bool,
+    /// The plot's declared `colorScheme` (default viridis), applied to its
+    /// raster marks — resolved at the app layer (like `draw_inline_legend`) and
+    /// carried here so a live rebuild constructs the same scheme-configured
+    /// `RasterRenderer` the first render used (card 0016, closing #36's
+    /// live-path parity gap). Render-only: no SQL / plan-hash involvement.
+    pub scheme: SequentialScheme,
     /// Reactive state entity — the scene we swap when this plot is re-filtered.
     pub state: Entity<ChartState>,
 }
@@ -287,6 +293,7 @@ impl CrossfilterCoordinator {
         let mark_indices = self.plots[plot_index].mark_indices.clone();
         let layout = self.plots[plot_index].layout.clone();
         let draw_inline_legend = self.plots[plot_index].draw_inline_legend;
+        let scheme = self.plots[plot_index].scheme;
 
         let (scene, scales) = render_plot_scene(
             &self.marks,
@@ -294,6 +301,7 @@ impl CrossfilterCoordinator {
             &mark_indices,
             &layout,
             draw_inline_legend,
+            scheme,
         );
         self.plots[plot_index].scales = scales;
         scene
@@ -306,20 +314,29 @@ impl CrossfilterCoordinator {
 /// the inline legend), so a live re-render honours the same choice rather than
 /// resurrecting the inline legend — which now matters because every raster plot
 /// carries a Fill (Sequential) scale and would otherwise grow a gradient bar
-/// after the first brush.
+/// after the first brush. `scheme` likewise mirrors the plot's resolved
+/// `colorScheme`: a raster mark renders through a scheme-configured
+/// [`RasterRenderer`] (matching the headless first render) instead of the
+/// registry's viridis default (card 0016).
 fn render_plot_scene(
     marks: &[MarkInput],
     renderers: &[(MarkKind, Box<dyn MarkRenderer + Send + Sync>)],
     mark_indices: &[usize],
     layout: &ChartLayout,
     draw_inline_legend: bool,
+    scheme: SequentialScheme,
 ) -> (Scene, ScaleSet) {
+    let raster = RasterRenderer { scheme };
     let chart_data: Vec<ChartData<'_>> = mark_indices
         .iter()
         .filter_map(|&mi| {
             let m = marks.get(mi)?;
             let batch = m.batch.as_ref()?;
-            let renderer = find_renderer(renderers, m.kind)?;
+            let renderer: &dyn MarkRenderer = if m.kind == MarkKind::Raster {
+                &raster
+            } else {
+                find_renderer(renderers, m.kind)?
+            };
             Some(ChartData {
                 batch,
                 channel_map: &m.channels,
@@ -438,15 +455,73 @@ mod tests {
         let layout = ChartLayout::new(400.0, 300.0);
 
         let (with_legend, _) =
-            render_plot_scene(&marks, &renderers, &[0], &layout, true);
+            render_plot_scene(&marks, &renderers, &[0], &layout, true, SequentialScheme::default());
         let (without_legend, _) =
-            render_plot_scene(&marks, &renderers, &[0], &layout, false);
+            render_plot_scene(&marks, &renderers, &[0], &layout, false, SequentialScheme::default());
         assert!(
             count_scene_paths(&with_legend) > count_scene_paths(&without_legend),
             "the inline gradient legend adds paths when draw_inline_legend is true \
              ({} with vs {} without)",
             count_scene_paths(&with_legend),
             count_scene_paths(&without_legend),
+        );
+    }
+
+    /// fww_ac06 (card 0016): the live rebuild honours the plot's declared
+    /// colorScheme. Driving the Entity-free `render_plot_scene` seam for a
+    /// raster mark with `SequentialScheme::Blues` yields a Fill Sequential
+    /// whose stops are the blues ramp — matching the headless first render —
+    /// while the default stays viridis. Render-only: the scheme rides
+    /// `LivePlot` (like `draw_inline_legend`), touching no SQL or plan-hash.
+    #[test]
+    fn fww_ac06_live_rebuild_uses_declared_scheme() {
+        use arrow::array::Float64Array;
+        use arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x_bin", DataType::Float64, false),
+            Field::new("y_bin", DataType::Float64, false),
+            Field::new("__bf_count", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![0.0, 1.0])),
+                Arc::new(Float64Array::from(vec![0.0, 1.0])),
+                Arc::new(Float64Array::from(vec![2.0, 9.0])),
+            ],
+        )
+        .unwrap();
+        let mut channels = ChannelMap::new();
+        channels.insert(Channel::X, "x_bin".to_string());
+        channels.insert(Channel::Y, "y_bin".to_string());
+        let marks = vec![MarkInput {
+            batch: Some(batch),
+            channels,
+            kind: MarkKind::Raster,
+        }];
+        let renderers = default_renderers();
+        let layout = ChartLayout::new(400.0, 300.0);
+
+        let stops_for = |scheme: SequentialScheme| {
+            let (_, scales) =
+                render_plot_scene(&marks, &renderers, &[0], &layout, true, scheme);
+            match scales.get(Channel::Fill) {
+                Some(Scale::Sequential { stops, .. }) => stops.clone(),
+                other => panic!("expected a Fill Sequential, got {other:?}"),
+            }
+        };
+
+        assert_eq!(
+            stops_for(SequentialScheme::Blues),
+            SequentialScheme::Blues.stops(),
+            "a blues plot rebuilds with the blues ramp, not the registry default"
+        );
+        assert_eq!(
+            stops_for(SequentialScheme::default()),
+            SequentialScheme::Viridis.stops(),
+            "the default scheme remains viridis"
         );
     }
 
