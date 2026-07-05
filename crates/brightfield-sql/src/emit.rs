@@ -892,6 +892,9 @@ plot:
         assert!(emitted.sql.contains("COUNT(*)"));
         assert!(emitted.sql.contains("IS NOT NULL"));
         assert!(emitted.sql.contains("GROUP BY 1"));
+        // Deterministic row order — GROUP BY output order is unspecified, and
+        // draw order must not jitter between renders.
+        assert!(emitted.sql.contains("ORDER BY \"weight\" ASC"));
     }
 
     #[test]
@@ -916,6 +919,8 @@ plot:
         assert!(emitted.sql.contains("0.5"));
         assert!(emitted.sql.contains("16"));
         assert!(emitted.sql.contains("GROUP BY 1, 2"));
+        // Deterministic row order: x centre, then y centre.
+        assert!(emitted.sql.contains("ORDER BY \"weight\" ASC, \"height\" ASC"));
     }
 
     #[test]

@@ -11,7 +11,7 @@ use brightfield_spec::ast::{Mark, MarkData, ParamNode, SelectionNode, SpecValue,
 use brightfield_spec::vocab::MarkKind;
 
 use crate::error::EmitError;
-use crate::ir::{Predicate, QueryPlan, SelectionResolution};
+use crate::ir::{Predicate, QueryPlan, SelectionResolution, SortDir};
 
 /// Context available during lowering — spec-level data sources, params, selections.
 #[derive(Debug)]
@@ -338,15 +338,22 @@ fn build_density_1d(table: &str, col: &str, bins: i64) -> QueryPlan {
     // literally named `count`. The renderer reads it as `DENSITY_COUNT_COL`.
     let count_expr = "CAST(COUNT(*) AS DOUBLE) AS __bf_count".to_string();
 
-    QueryPlan::Aggregation {
-        input: Box::new(QueryPlan::Filter {
-            input: Box::new(QueryPlan::Source {
-                table: table.to_string(),
+    // ORDER BY the bucket centre: GROUP BY output order is unspecified in
+    // DuckDB, and the density/raster renderers draw in row order — a different
+    // draw order blends anti-aliased cell edges differently, so unordered rows
+    // make repeated renders differ at the byte level.
+    QueryPlan::Order {
+        input: Box::new(QueryPlan::Aggregation {
+            input: Box::new(QueryPlan::Filter {
+                input: Box::new(QueryPlan::Source {
+                    table: table.to_string(),
+                }),
+                predicate: Predicate::Expr(format!("\"{col}\" IS NOT NULL")),
             }),
-            predicate: Predicate::Expr(format!("\"{col}\" IS NOT NULL")),
+            group_by: vec![centre_expr],
+            aggregates: vec![count_expr],
         }),
-        group_by: vec![centre_expr],
-        aggregates: vec![count_expr],
+        keys: vec![(format!("\"{col}\""), SortDir::Asc)],
     }
 }
 
@@ -358,17 +365,24 @@ fn build_density_2d(table: &str, x_col: &str, y_col: &str, bins: i64) -> QueryPl
     // Reserved occupancy alias — see build_density_1d.
     let count_expr = "CAST(COUNT(*) AS DOUBLE) AS __bf_count".to_string();
 
-    QueryPlan::Aggregation {
-        input: Box::new(QueryPlan::Filter {
-            input: Box::new(QueryPlan::Source {
-                table: table.to_string(),
+    // Deterministic row order (x centre, then y centre) — see build_density_1d.
+    QueryPlan::Order {
+        input: Box::new(QueryPlan::Aggregation {
+            input: Box::new(QueryPlan::Filter {
+                input: Box::new(QueryPlan::Source {
+                    table: table.to_string(),
+                }),
+                predicate: Predicate::Expr(format!(
+                    "\"{x_col}\" IS NOT NULL AND \"{y_col}\" IS NOT NULL"
+                )),
             }),
-            predicate: Predicate::Expr(format!(
-                "\"{x_col}\" IS NOT NULL AND \"{y_col}\" IS NOT NULL"
-            )),
+            group_by: vec![x_centre, y_centre],
+            aggregates: vec![count_expr],
         }),
-        group_by: vec![x_centre, y_centre],
-        aggregates: vec![count_expr],
+        keys: vec![
+            (format!("\"{x_col}\""), SortDir::Asc),
+            (format!("\"{y_col}\""), SortDir::Asc),
+        ],
     }
 }
 
@@ -784,7 +798,13 @@ mod tests {
         }
         .lower(&mark, &ctx)
         .expect("lowers");
-        match plan {
+        // Outermost node orders by the bucket centre — GROUP BY row order is
+        // unspecified, and draw order must be deterministic (raster AA edges).
+        let QueryPlan::Order { input, keys } = plan else {
+            panic!("expected Order-wrapped Aggregation");
+        };
+        assert_eq!(keys, vec![("\"weight\"".to_string(), SortDir::Asc)]);
+        match *input {
             QueryPlan::Aggregation {
                 group_by,
                 aggregates,
@@ -822,7 +842,18 @@ mod tests {
         }
         .lower(&mark, &ctx)
         .expect("lowers");
-        match plan {
+        // Deterministic draw order: x centre, then y centre.
+        let QueryPlan::Order { input, keys } = plan else {
+            panic!("expected Order-wrapped Aggregation");
+        };
+        assert_eq!(
+            keys,
+            vec![
+                ("\"weight\"".to_string(), SortDir::Asc),
+                ("\"height\"".to_string(), SortDir::Asc),
+            ]
+        );
+        match *input {
             QueryPlan::Aggregation { group_by, .. } => {
                 assert_eq!(group_by.len(), 2);
                 // Each axis's bucket CENTRE (note `0.5`, not an index) is aliased
