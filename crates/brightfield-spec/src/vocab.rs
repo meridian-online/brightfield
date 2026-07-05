@@ -109,7 +109,12 @@ vocab_enum! {
         BarY => ("barY", Implemented),
         BarX => ("barX", Implemented),
         // Cells
-        Cell => ("cell", Unimplemented),
+        // cell v1 wired end-to-end (card 0008 density marks, 2026-07-06):
+        // pre-aggregated categorical x × categorical y with a numeric fill
+        // through a Sequential ramp (Utf8 fill keeps the Colour path).
+        // cellX/cellY and the self-aggregating fill: count form stay
+        // Unimplemented (deferred with hexbin).
+        Cell => ("cell", Implemented),
         CellX => ("cellX", Unimplemented),
         CellY => ("cellY", Unimplemented),
         // Dots / circles
@@ -149,8 +154,13 @@ vocab_enum! {
         DensityX => ("densityX", Implemented),
         DensityY => ("densityY", Implemented),
         DenseLine => ("denseLine", Unimplemented),
-        Heatmap => ("heatmap", Unimplemented),
-        Contour => ("contour", Unimplemented),
+        // heatmap/contour wired end-to-end (card 0008 density marks,
+        // 2026-07-06): both ride the 2D density lowerer's binned grid —
+        // heatmap ramps the KDE-smoothed field per cell, contour traces
+        // marching-squares iso-lines over it (thresholds = iso-level count,
+        // shielded from the SQL bin count at lowerer registration).
+        Heatmap => ("heatmap", Implemented),
+        Contour => ("contour", Implemented),
         // Binned 2D count heatmap — filled cells coloured (by alpha) per bin
         // count, reusing the 2D density binning. (card 0008 mark breadth)
         Raster => ("raster", Implemented),
@@ -411,6 +421,36 @@ mod tests {
     #[test]
     fn scs_ac09_legend_color_channel_stays_implemented() {
         assert_eq!(LegendChannel::Color.status(), ImplStatus::Implemented);
+    }
+
+    /// dmk_ac05 (card 0008, density marks). Heatmap, Contour, and Cell are
+    /// promoted to Implemented — heatmap/contour ride the 2D density lowerer's
+    /// grid (KDE ramp / marching-squares iso-lines), cell v1 is the
+    /// pre-aggregated Band×Band value matrix. The deliberately RE-STAGED marks
+    /// stay Unimplemented: hexbin/hexgrid (new axial SQL, pixel-space binWidth,
+    /// hex-lattice geometry — own follow-up spec), cellX/cellY, and denseLine.
+    #[test]
+    fn dmk_ac05_density_mark_promotions_and_non_promotions() {
+        for promoted in [MarkKind::Heatmap, MarkKind::Contour, MarkKind::Cell] {
+            assert_eq!(
+                promoted.status(),
+                ImplStatus::Implemented,
+                "{promoted:?} is wired end-to-end (card 0008 density marks) — promoted"
+            );
+        }
+        for staged_out in [
+            MarkKind::Hexbin,
+            MarkKind::Hexgrid,
+            MarkKind::CellX,
+            MarkKind::CellY,
+            MarkKind::DenseLine,
+        ] {
+            assert_eq!(
+                staged_out.status(),
+                ImplStatus::Unimplemented,
+                "{staged_out:?} is re-staged to a follow-up — it must NOT ride this promotion"
+            );
+        }
     }
 
     /// fww_ac05 (card 0016, framed window). `ComponentKind::Legend` is

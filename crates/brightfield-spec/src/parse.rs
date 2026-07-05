@@ -1512,11 +1512,13 @@ plot:
 
     #[test]
     fn dfspec_ac08_unimplemented_mark_warns_with_stub() {
-        // `cell` is a genuinely-unimplemented mark (no renderer/lowerer), so it
-        // still warns. (dot/line/bar are now Implemented and no longer warn.)
+        // `voronoi` is a genuinely-unimplemented mark (no renderer/lowerer), so
+        // it still warns. (cell was this test's stub until card 0008's density
+        // marks promoted it — the swap keeps exactly one always-unimplemented
+        // stand-in exercising the warning path.)
         let src = r#"
 plot:
-  - mark: cell
+  - mark: voronoi
     x: a
     y: b
 "#;
@@ -1524,7 +1526,7 @@ plot:
         assert!(out
             .warnings
             .iter()
-            .any(|w| matches!(w, ParseWarning::Unimplemented { name, .. } if name == "cell")));
+            .any(|w| matches!(w, ParseWarning::Unimplemented { name, .. } if name == "voronoi")));
     }
 
     #[test]
