@@ -4,8 +4,9 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-# Floor set by vello 0.9 (rust-version 1.88); kurbo/peniko/skrifa need 1.85.
-rust-version = "1.88"
+# Floor set by gpui at zed pin 1d217ee (std::hint::cold_path, stable since
+# 1.95 — zed's own rust-toolchain.toml pins 1.95.0); vello 0.9 needs 1.88.
+rust-version = "1.95"
 license = "MIT"
 repository = "https://github.com/meridian-online/brightfield"
 
