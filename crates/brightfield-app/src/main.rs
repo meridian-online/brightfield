@@ -16,7 +16,9 @@ use brightfield_engine::{Engine, Session};
 use brightfield_render::channel::{Channel, ChannelMap};
 use brightfield_render::layout::ChartLayout;
 use brightfield_render::legend::{colour_legend_size, render_colour_legend_at};
-use brightfield_render::mark::{default_renderers, find_renderer, MarkRenderer, RasterRenderer};
+use brightfield_render::mark::{
+    default_renderers, find_renderer, HeatmapRenderer, MarkRenderer, RasterRenderer,
+};
 use brightfield_render::scale::{Scale, ScaleSet, SequentialScheme};
 use brightfield_render::scene::{build_multi_mark_scene, compose_dashboard, ChartData};
 use brightfield_spec::analysis::analyse_spec;
@@ -153,6 +155,18 @@ fn raster_scheme(color_scheme: Option<&brightfield_spec::ast::SpecValue>) -> Seq
             SequentialScheme::default()
         }),
         _ => SequentialScheme::default(),
+    }
+}
+
+/// Literal numeric mark attribute (e.g. `bandwidth: 15`), skipping params —
+/// read at assembly time so a mark-level attribute reaches its per-mark
+/// renderer override (card 0008, density marks).
+fn mark_attr_f64(mark: &brightfield_spec::ast::Mark, key: &str) -> Option<f64> {
+    use brightfield_spec::ast::{SpecValue, ValueOrParamRef};
+    match mark.options.get(key)? {
+        ValueOrParamRef::Value(SpecValue::Float(f)) => Some(*f),
+        ValueOrParamRef::Value(SpecValue::Integer(i)) => Some(*i as f64),
+        _ => None,
     }
 }
 
@@ -548,18 +562,26 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             .map(|(_, node)| raster_scheme(node.attributes.get("colorScheme")))
             .unwrap_or_default();
 
-        // Owned per-mark renderer overrides. A raster mark uses a scheme-configured
-        // RasterRenderer (built here so the plot's colorScheme is honoured); every
-        // other mark borrows the shared registry. Declared before `chart_data` so
-        // the boxes outlive the references into them.
-        let raster_boxes: Vec<Option<Box<dyn MarkRenderer + Send + Sync>>> = group
+        // Owned per-mark renderer overrides. Raster and heatmap marks use
+        // scheme-configured renderers (built here so the plot's colorScheme —
+        // and the mark's own `bandwidth` attribute — are honoured); every
+        // other mark borrows the shared registry. Declared before `chart_data`
+        // so the boxes outlive the references into them.
+        let mark_boxes: Vec<Option<Box<dyn MarkRenderer + Send + Sync>>> = group
             .mark_indices
             .iter()
             .map(|&mi| {
-                let is_raster =
-                    mark_inputs.get(mi).is_some_and(|m| m.kind == MarkKind::Raster);
-                is_raster
-                    .then(|| Box::new(RasterRenderer { scheme }) as Box<dyn MarkRenderer + Send + Sync>)
+                let kind = mark_inputs.get(mi)?.kind;
+                match kind {
+                    MarkKind::Raster => Some(
+                        Box::new(RasterRenderer { scheme }) as Box<dyn MarkRenderer + Send + Sync>
+                    ),
+                    MarkKind::Heatmap => Some(Box::new(HeatmapRenderer {
+                        scheme,
+                        bandwidth: marks.get(mi).and_then(|mk| mark_attr_f64(mk, "bandwidth")),
+                    }) as Box<dyn MarkRenderer + Send + Sync>),
+                    _ => None,
+                }
             })
             .collect();
 
@@ -567,7 +589,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
         for (j, &mi) in group.mark_indices.iter().enumerate() {
             let Some(m) = mark_inputs.get(mi) else { continue };
             let Some(batch) = m.batch.as_ref() else { continue };
-            let renderer: &dyn MarkRenderer = if let Some(b) = &raster_boxes[j] {
+            let renderer: &dyn MarkRenderer = if let Some(b) = &mark_boxes[j] {
                 b.as_ref()
             } else {
                 match find_renderer(&registry, m.kind) {
@@ -1380,6 +1402,63 @@ colorScheme: {color_scheme}
             SequentialScheme::Viridis,
             "an unknown scheme warns and falls back to viridis"
         );
+    }
+
+    // dmk_ac02 (card 0008, density marks): a heatmap plot's colorScheme reaches
+    // the rendered Fill ramp through the REAL assembly seam — build_everything
+    // resolves the plot's scheme, builds the per-mark HeatmapRenderer override,
+    // and threads it through augment_scales — and the same scheme rides
+    // LivePlotMeta.scheme, the field the coordinator threads into live rebuilds
+    // (the raster 0016 threading, mirrored).
+    #[test]
+    fn dmk_ac02_heatmap_colorscheme_consumed_end_to_end() {
+        use brightfield_render::scale::{Scale, SequentialScheme};
+
+        const SRC: &str = r#"
+data:
+  points:
+    - { x: 1, y: 1 }
+    - { x: 2, y: 2 }
+    - { x: 3, y: 3 }
+plot:
+  - mark: heatmap
+    data: { from: points }
+    x: x
+    y: y
+colorScheme: blues
+"#;
+        let dir = std::env::temp_dir().join(format!("bf-dmk-ac02-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("heatmap-blues.yaml");
+        std::fs::write(&path, SRC).unwrap();
+
+        let (_dashboard, live) =
+            super::build_everything(path.to_str().unwrap()).expect("pipeline runs");
+        // The heatmap plot's post-assembly Fill scale is the blues ramp,
+        // zero-anchored on the smoothed density domain.
+        let fill = live.plots[0]
+            .scales
+            .get(Channel::Fill)
+            .expect("heatmap plot has a Fill scale");
+        match fill {
+            Scale::Sequential { domain_min, stops, .. } => {
+                assert_eq!(
+                    stops,
+                    &SequentialScheme::Blues.stops(),
+                    "colorScheme: blues must reach the rendered Fill ramp (not the viridis default)"
+                );
+                assert!((domain_min - 0.0).abs() < f64::EPSILON, "zero-anchored");
+            }
+            other => panic!("expected a blues Fill Sequential, got {other:?}"),
+        }
+        // The live-path threading seam: the resolved scheme rides LivePlotMeta.
+        assert_eq!(
+            live.plots[0].scheme,
+            SequentialScheme::Blues,
+            "the declared scheme rides LivePlotMeta into the live rebuild path"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

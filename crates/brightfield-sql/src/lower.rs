@@ -434,6 +434,15 @@ pub fn default_lowerers() -> Vec<(MarkKind, Box<dyn MarkLower>)> {
                 kind: DensityLowerKind::TwoD,
             }),
         ),
+        // Heatmap reuses the same 2D density binning; the renderer smooths the
+        // reconstructed grid (kde_2d) and ramps EVERY cell — raster's smoothed
+        // sibling. Zero new SQL (card 0008, density marks).
+        (
+            MarkKind::Heatmap,
+            Box::new(DensityLowerer {
+                kind: DensityLowerKind::TwoD,
+            }),
+        ),
     ]
 }
 
@@ -609,7 +618,8 @@ mod tests {
         assert!(kinds.contains(&MarkKind::DensityY));
         assert!(kinds.contains(&MarkKind::Density));
         assert!(kinds.contains(&MarkKind::Raster));
-        assert_eq!(kinds.len(), 18);
+        assert!(kinds.contains(&MarkKind::Heatmap));
+        assert_eq!(kinds.len(), 19);
     }
 
     #[test]

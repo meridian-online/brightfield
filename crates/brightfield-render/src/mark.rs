@@ -1617,6 +1617,165 @@ impl MarkRenderer for RasterRenderer {
 }
 
 // ---------------------------------------------------------------------------
+// HeatmapRenderer (heatmap — KDE-smoothed density ramp)
+// ---------------------------------------------------------------------------
+
+/// Renders the KDE-smoothed 2D density field as ramp-filled grid cells — the
+/// smoothed sibling of raster (card 0008, density marks). Raster ramps the raw
+/// `__bf_count` of each OCCUPIED bin; heatmap ramps the [`build_kde_grid`]
+/// field over EVERY grid cell, so the plot reads as a continuous density
+/// surface rather than discrete count tiles. Both register against the same
+/// 2D density lowerer.
+///
+/// The ramp is the Fill [`Scale::Sequential`] this mark's
+/// [`Self::augment_scales`] builds from the density domain (zero-anchored
+/// `[0, max_density]`); `scheme` selects its colours and `bandwidth` (the
+/// mark's attribute, in data units) overrides Silverman's rule on both axes.
+/// If the Fill scale is somehow absent, `render` falls back to
+/// alpha-on-steelblue like the density mark.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HeatmapRenderer {
+    /// The continuous colour scheme (default viridis).
+    pub scheme: SequentialScheme,
+    /// Explicit KDE bandwidth in data units (both axes); Silverman per axis
+    /// when absent.
+    pub bandwidth: Option<f64>,
+}
+
+impl MarkRenderer for HeatmapRenderer {
+    fn render(
+        &self,
+        scene: &mut Scene,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        scales: &ScaleSet,
+        _highlight: Option<&HighlightState>,
+    ) {
+        let (Some(x_col), Some(y_col)) =
+            (channel_map.get(Channel::X), channel_map.get(Channel::Y))
+        else {
+            return;
+        };
+        let (Some(x_scale), Some(y_scale)) =
+            (scales.get(Channel::X), scales.get(Channel::Y))
+        else {
+            return;
+        };
+        let Some(grid) = build_kde_grid(batch, x_col, y_col, self.bandwidth) else {
+            return;
+        };
+
+        // Prefer the Fill Sequential ramp (built by augment_scales); a missing /
+        // non-Sequential Fill scale falls back to alpha-on-steelblue.
+        let fill_ramp = match scales.get(Channel::Fill) {
+            Some(scale @ Scale::Sequential { .. }) => Some(scale),
+            _ => None,
+        };
+        let [cr, cg, cb, _] = DEFAULT_COLOUR.components;
+        let (rows, cols) = (grid.rows(), grid.cols());
+        for r in 0..rows {
+            for c in 0..cols {
+                let value = grid.density[r * cols + c];
+                // Cell spans its centre ± half a bin, mapped to pixels.
+                let cx = grid.x_centres[c];
+                let cy = grid.y_centres[r];
+                let xa = x_scale.map_f64(cx - grid.dx / 2.0);
+                let xb = x_scale.map_f64(cx + grid.dx / 2.0);
+                let ya = y_scale.map_f64(cy - grid.dy / 2.0);
+                let yb = y_scale.map_f64(cy + grid.dy / 2.0);
+                let (left, right) = (xa.min(xb), xa.max(xb));
+                let (top, bottom) = (ya.min(yb), ya.max(yb));
+                if !(left.is_finite()
+                    && right.is_finite()
+                    && top.is_finite()
+                    && bottom.is_finite())
+                {
+                    continue;
+                }
+                let colour = match fill_ramp {
+                    // Sample the ramp in ITS OWN domain (which may be a union of
+                    // co-rendered marks' domains). No occupancy floor here — the
+                    // smoothed field is continuous, so the ramp's low end IS the
+                    // zero-density background.
+                    Some(ramp) => Color::new(ramp.map_continuous(value)),
+                    None => {
+                        let t = (value / grid.max_density).clamp(0.0, 1.0) as f32;
+                        Color::new([cr, cg, cb, t])
+                    }
+                };
+                let cell = kurbo::Rect::new(left, top, right, bottom);
+                scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &cell);
+            }
+        }
+    }
+
+    /// Widen the linear x/y domains by half a bin so the outermost cells fit
+    /// inside the plot area, and build the density → colour ramp under
+    /// [`Channel::Fill`] (zero-anchored `[0, max_density]`) so the legend
+    /// plumbing picks it up. Merge-not-clobber mirrors
+    /// [`RasterRenderer::augment_scales`]: a co-rendered Sequential unions its
+    /// domain (keeping the first's stops); a sibling's categorical Colour Fill
+    /// survives untouched.
+    fn augment_scales(
+        &self,
+        scales: &mut ScaleSet,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        x_range: (f64, f64),
+        y_range: (f64, f64),
+    ) {
+        let (Some(x_col), Some(y_col)) =
+            (channel_map.get(Channel::X), channel_map.get(Channel::Y))
+        else {
+            return;
+        };
+        let Some(grid) = build_kde_grid(batch, x_col, y_col, self.bandwidth) else {
+            return;
+        };
+
+        if let (Some(&x_lo), Some(&x_hi)) = (grid.x_centres.first(), grid.x_centres.last()) {
+            merge_linear_scale(
+                scales,
+                Channel::X,
+                x_lo - grid.dx / 2.0,
+                x_hi + grid.dx / 2.0,
+                x_range,
+            );
+        }
+        if let (Some(&y_lo), Some(&y_hi)) = (grid.y_centres.first(), grid.y_centres.last()) {
+            merge_linear_scale(
+                scales,
+                Channel::Y,
+                y_lo - grid.dy / 2.0,
+                y_hi + grid.dy / 2.0,
+                y_range,
+            );
+        }
+
+        let merged = match scales.get(Channel::Fill) {
+            Some(Scale::Sequential {
+                domain_min,
+                domain_max,
+                stops,
+            }) => Some(Scale::Sequential {
+                domain_min: domain_min.min(0.0),
+                domain_max: domain_max.max(grid.max_density),
+                stops: stops.clone(),
+            }),
+            Some(_) => None, // a sibling's categorical Fill scale wins
+            None => Some(Scale::Sequential {
+                domain_min: 0.0,
+                domain_max: grid.max_density,
+                stops: self.scheme.stops(),
+            }),
+        };
+        if let Some(scale) = merged {
+            scales.insert(Channel::Fill, scale);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // RegressionRenderer (regressionY / regressionX)
 // ---------------------------------------------------------------------------
 
@@ -1961,6 +2120,7 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
     ));
     v.push((MarkKind::Density, Box::new(Density2DRenderer)));
     v.push((MarkKind::Raster, Box::new(RasterRenderer::default())));
+    v.push((MarkKind::Heatmap, Box::new(HeatmapRenderer::default())));
     v.push((MarkKind::RegressionY, Box::new(RegressionRenderer::default())));
     v.push((MarkKind::RegressionX, Box::new(RegressionRenderer::default())));
     v
@@ -3027,6 +3187,182 @@ mod tests {
         assert_eq!(scales.get(Channel::Y).unwrap().domain_max(), Some(2.5));
     }
 
+    /// The shared 3×3 density-lowerer fixture for the heatmap probes: a hot
+    /// centre so the smoothed field has clearly distinct cell values.
+    fn heatmap_batch() -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x_bin", DataType::Float64, false),
+            Field::new("y_bin", DataType::Float64, false),
+            Field::new(DENSITY_COUNT_COL, DataType::Float64, false),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![
+                    0.0, 1.0, 2.0, 0.0, 1.0, 2.0, 0.0, 1.0, 2.0,
+                ])),
+                Arc::new(Float64Array::from(vec![
+                    0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0,
+                ])),
+                Arc::new(Float64Array::from(vec![
+                    1.0, 4.0, 1.0, 4.0, 16.0, 4.0, 1.0, 4.0, 1.0,
+                ])),
+            ],
+        )
+        .unwrap()
+    }
+
+    // dmk_ac02: every KDE grid cell is coloured through the Fill Sequential ramp
+    // (density → map_continuous) — the colours ACTUALLY ENCODED into the scene
+    // are the ramp samples of the smoothed field (probed via draw_data, the #36
+    // precedent), cells with different densities encode different colours, and
+    // with no Fill scale the render falls back to alpha-on-steelblue.
+    #[test]
+    fn dmk_ac02_heatmap_colours_cells_through_ramp() {
+        let batch = heatmap_batch();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x_bin".to_string());
+        cm.insert(Channel::Y, "y_bin".to_string());
+        let renderer = HeatmapRenderer::default();
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        renderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+
+        // Expected ramp samples over the smoothed field, exactly as render maps.
+        let grid = build_kde_grid(&batch, "x_bin", "y_bin", None).expect("grid builds");
+        let ramp = scales.get(Channel::Fill).expect("fill ramp built");
+        let expected: std::collections::HashSet<u32> = grid
+            .density
+            .iter()
+            .map(|v| packed(ramp.map_continuous(*v)))
+            .collect();
+        let centre = packed(ramp.map_continuous(grid.density[1 * 3 + 1]));
+        let corner = packed(ramp.map_continuous(grid.density[0]));
+        assert_ne!(centre, corner, "distinct densities encode distinct ramp colours");
+
+        let mut scene = Scene::new();
+        renderer.render(&mut scene, &batch, &cm, &scales, None);
+        assert_eq!(
+            count_scene_paths(&scene),
+            9,
+            "heatmap fills EVERY grid cell (9 on a 3×3), not just occupied bins"
+        );
+        let drawn: std::collections::HashSet<u32> =
+            scene.encoding().draw_data.iter().copied().collect();
+        assert_eq!(
+            drawn, expected,
+            "the cell fills are the ramp samples of the smoothed field"
+        );
+
+        // Fallback: no Fill scale → steelblue with density-proportional alpha.
+        let mut no_fill = ScaleSet::new();
+        no_fill.insert(Channel::X, scales.get(Channel::X).unwrap().clone());
+        no_fill.insert(Channel::Y, scales.get(Channel::Y).unwrap().clone());
+        let mut scene2 = Scene::new();
+        renderer.render(&mut scene2, &batch, &cm, &no_fill, None);
+        let [cr, cg, cb, _] = DEFAULT_COLOUR.components;
+        let fallback_expected: std::collections::HashSet<u32> = grid
+            .density
+            .iter()
+            .map(|v| packed([cr, cg, cb, (v / grid.max_density).clamp(0.0, 1.0) as f32]))
+            .collect();
+        let fallback: std::collections::HashSet<u32> =
+            scene2.encoding().draw_data.iter().copied().collect();
+        assert_eq!(
+            fallback, fallback_expected,
+            "fallback keeps the steelblue hue with density-proportional alpha"
+        );
+    }
+
+    // dmk_ac02: augment_scales builds a Fill Sequential zero-anchored at
+    // [0, max_density] with the scheme's stops, widens x/y by half a bin to the
+    // grid extent, and merges rather than clobbers (a sibling's categorical
+    // Colour Fill survives) — mirroring raster's augment_scales contract.
+    #[test]
+    fn dmk_ac02_heatmap_augment_scales_builds_zero_anchored_fill() {
+        let batch = heatmap_batch();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x_bin".to_string());
+        cm.insert(Channel::Y, "y_bin".to_string());
+        let renderer = HeatmapRenderer {
+            scheme: SequentialScheme::Blues,
+            bandwidth: None,
+        };
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        renderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+
+        let grid = build_kde_grid(&batch, "x_bin", "y_bin", None).expect("grid builds");
+        match scales.get(Channel::Fill) {
+            Some(Scale::Sequential { domain_min, domain_max, stops }) => {
+                assert!((domain_min - 0.0).abs() < f64::EPSILON, "domain zero-anchored");
+                assert!(
+                    (domain_max - grid.max_density).abs() < f64::EPSILON,
+                    "domain_max == max smoothed density"
+                );
+                assert_eq!(stops, &SequentialScheme::Blues.stops(), "stops match the scheme");
+            }
+            other => panic!("expected a Fill Sequential scale, got {other:?}"),
+        }
+        // x/y widened by half a bin past the outermost centres (0..2, pitch 1).
+        assert_eq!(scales.get(Channel::X).unwrap().domain_min(), Some(-0.5));
+        assert_eq!(scales.get(Channel::X).unwrap().domain_max(), Some(2.5));
+        assert_eq!(scales.get(Channel::Y).unwrap().domain_min(), Some(-0.5));
+        assert_eq!(scales.get(Channel::Y).unwrap().domain_max(), Some(2.5));
+
+        // A sibling mark's categorical Colour Fill is left untouched.
+        let mut with_colour = ScaleSet::new();
+        with_colour.insert(
+            Channel::Fill,
+            Scale::Colour {
+                categories: vec!["a".to_string(), "b".to_string()],
+                palette: vec![[0.1, 0.2, 0.3, 1.0], [0.4, 0.5, 0.6, 1.0]],
+            },
+        );
+        renderer.augment_scales(&mut with_colour, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        match with_colour.get(Channel::Fill) {
+            Some(Scale::Colour { categories, .. }) => assert_eq!(categories, &["a", "b"]),
+            other => panic!("categorical Fill must survive a heatmap augment_scales, got {other:?}"),
+        }
+    }
+
+    // dmk_ac02: the mark's `bandwidth` attribute reaches kde_2d through the
+    // renderer — an explicit bandwidth renders a DIFFERENT field than the
+    // Silverman fallback, and exactly the field build_kde_grid produces for it.
+    #[test]
+    fn dmk_ac02_heatmap_bandwidth_attr_reaches_kde() {
+        let batch = heatmap_batch();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x_bin".to_string());
+        cm.insert(Channel::Y, "y_bin".to_string());
+
+        let render_with = |renderer: &HeatmapRenderer| {
+            let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+            renderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+            let mut scene = Scene::new();
+            renderer.render(&mut scene, &batch, &cm, &scales, None);
+            let drawn: std::collections::HashSet<u32> =
+                scene.encoding().draw_data.iter().copied().collect();
+            (drawn, scales)
+        };
+
+        let explicit = HeatmapRenderer { scheme: SequentialScheme::default(), bandwidth: Some(0.5) };
+        let (drawn_explicit, scales_explicit) = render_with(&explicit);
+        let (drawn_silverman, _) = render_with(&HeatmapRenderer::default());
+        assert_ne!(
+            drawn_explicit, drawn_silverman,
+            "an explicit bandwidth changes the rendered field vs the Silverman fallback"
+        );
+
+        // The explicit render equals the ramp samples of build_kde_grid(Some(0.5)).
+        let grid = build_kde_grid(&batch, "x_bin", "y_bin", Some(0.5)).expect("grid builds");
+        let ramp = scales_explicit.get(Channel::Fill).expect("fill ramp built");
+        let expected: std::collections::HashSet<u32> = grid
+            .density
+            .iter()
+            .map(|v| packed(ramp.map_continuous(*v)))
+            .collect();
+        assert_eq!(drawn_explicit, expected, "bandwidth threads through to the drawn field");
+    }
+
     #[test]
     fn gomb_ac05_regression_renders_line_and_ci_band() {
         // Anscombe Quartet I (the canonical OLS dataset).
@@ -3125,8 +3461,9 @@ mod tests {
         assert!(find_renderer(&registry, MarkKind::DensityY).is_some());
         assert!(find_renderer(&registry, MarkKind::RegressionX).is_some());
         assert!(find_renderer(&registry, MarkKind::RegressionY).is_some());
+        // Heatmap is registered as of card 0008's density-marks instalment.
+        assert!(find_renderer(&registry, MarkKind::Heatmap).is_some());
         // Unimplemented kinds should return None (no silent fallback).
-        assert!(find_renderer(&registry, MarkKind::Heatmap).is_none());
         assert!(find_renderer(&registry, MarkKind::Hexbin).is_none());
     }
 
