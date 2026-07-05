@@ -406,6 +406,11 @@ pub fn default_lowerers() -> Vec<(MarkKind, Box<dyn MarkLower>)> {
         (MarkKind::Rect, Box::new(SimpleLowerer)),
         (MarkKind::RectX, Box::new(SimpleLowerer)),
         (MarkKind::RectY, Box::new(SimpleLowerer)),
+        // Cell v1 is pass-through over PRE-AGGREGATED rows — one row per
+        // (x category, y category) pair with a numeric fill column. The
+        // self-aggregating form (fill: count/avg → CellLowerer) is deferred
+        // with hexbin (card 0008, density marks).
+        (MarkKind::Cell, Box::new(SimpleLowerer)),
         (MarkKind::RegressionY, Box::new(RegressionLowerer)),
         (MarkKind::RegressionX, Box::new(RegressionLowerer)),
         (
@@ -619,7 +624,8 @@ mod tests {
         assert!(kinds.contains(&MarkKind::Density));
         assert!(kinds.contains(&MarkKind::Raster));
         assert!(kinds.contains(&MarkKind::Heatmap));
-        assert_eq!(kinds.len(), 19);
+        assert!(kinds.contains(&MarkKind::Cell));
+        assert_eq!(kinds.len(), 20);
     }
 
     #[test]

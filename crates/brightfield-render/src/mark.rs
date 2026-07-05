@@ -1776,6 +1776,141 @@ impl MarkRenderer for HeatmapRenderer {
 }
 
 // ---------------------------------------------------------------------------
+// CellRenderer (cell — categorical × categorical value grid)
+// ---------------------------------------------------------------------------
+
+/// Renders one filled rect per (x category, y category) pair — a
+/// calendar-style value matrix (card 0008, density marks). Cell v1 is
+/// PRE-AGGREGATED: one row per pair, with a numeric `fill:` column carrying
+/// the cell's value. Both axes ride the existing per-channel Band inference;
+/// each rect is centred via `map_category` and sized via `band_width`.
+///
+/// A NUMERIC fill maps through the Fill [`Scale::Sequential`] built in
+/// [`Self::augment_scales`] — generic column inference types a numeric fill
+/// Linear, so the ramp must be built here. A Utf8 fill keeps the existing
+/// categorical Colour path (`resolve_colour`) untouched. Self-aggregating
+/// `fill: count`/`avg` (a CellLowerer) is deferred with hexbin.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CellRenderer {
+    /// The continuous colour scheme for numeric fills (default viridis).
+    pub scheme: SequentialScheme,
+}
+
+impl MarkRenderer for CellRenderer {
+    fn render(
+        &self,
+        scene: &mut Scene,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        scales: &ScaleSet,
+        _highlight: Option<&HighlightState>,
+    ) {
+        let (Some(x_col), Some(y_col)) =
+            (channel_map.get(Channel::X), channel_map.get(Channel::Y))
+        else {
+            return;
+        };
+        let (Some(x_scale), Some(y_scale)) =
+            (scales.get(Channel::X), scales.get(Channel::Y))
+        else {
+            return;
+        };
+        // Cell v1 is categorical × categorical: both axes must be Band scales
+        // with string categories. band_width is None on non-Band scales, so a
+        // numeric axis degrades to rendering nothing rather than misplacing.
+        let (Some(x_strs), Some(y_strs)) =
+            (column_as_string(batch, x_col), column_as_string(batch, y_col))
+        else {
+            return;
+        };
+        let (Some(bw), Some(bh)) = (x_scale.band_width(), y_scale.band_width()) else {
+            return;
+        };
+
+        // Numeric fill values (None for a Utf8 / absent fill — those take the
+        // categorical resolve_colour path below).
+        let fill_vals = channel_map
+            .get(Channel::Fill)
+            .and_then(|c| column_as_f64(batch, c));
+        let fill_ramp = match scales.get(Channel::Fill) {
+            Some(scale @ Scale::Sequential { .. }) => Some(scale),
+            _ => None,
+        };
+
+        for i in 0..batch.num_rows() {
+            let (Some(xc), Some(yc)) = (
+                x_strs[i].as_deref(),
+                y_strs[i].as_deref(),
+            ) else {
+                continue;
+            };
+            let (Some(cx), Some(cy)) = (x_scale.map_category(xc), y_scale.map_category(yc))
+            else {
+                continue;
+            };
+            let colour = match (&fill_ramp, fill_vals.as_ref().and_then(|v| v[i])) {
+                (Some(ramp), Some(value)) => Color::new(ramp.map_continuous(value)),
+                _ => resolve_colour(scales, channel_map, batch, i),
+            };
+            let cell = kurbo::Rect::new(cx - bw / 2.0, cy - bh / 2.0, cx + bw / 2.0, cy + bh / 2.0);
+            scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &cell);
+        }
+    }
+
+    /// Build the numeric-fill → colour ramp under [`Channel::Fill`]. Generic
+    /// column inference types a numeric fill Linear (the recon's trap), so a
+    /// non-colour Fill scale is REPLACED with a Sequential anchored per the v1
+    /// rule — `[0, max]` when `min >= 0`, else `[min, max]`. A co-rendered
+    /// Sequential unions its domain (keeping the first's stops, mirroring
+    /// raster); a categorical Colour Fill (Utf8 fill, or a sibling's swatches)
+    /// is left untouched.
+    fn augment_scales(
+        &self,
+        scales: &mut ScaleSet,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        _x_range: (f64, f64),
+        _y_range: (f64, f64),
+    ) {
+        let Some(fill_col) = channel_map.get(Channel::Fill) else {
+            return;
+        };
+        // A Utf8 fill reads as None here, leaving the Colour path untouched.
+        let Some(vals) = column_as_f64(batch, fill_col) else {
+            return;
+        };
+        let lo = vals.iter().flatten().cloned().fold(f64::INFINITY, f64::min);
+        let hi = vals.iter().flatten().cloned().fold(f64::NEG_INFINITY, f64::max);
+        if !(lo.is_finite() && hi.is_finite()) {
+            return;
+        }
+        let (d0, d1) = if lo >= 0.0 { (0.0, hi) } else { (lo, hi) };
+
+        let merged = match scales.get(Channel::Fill) {
+            Some(Scale::Sequential {
+                domain_min,
+                domain_max,
+                stops,
+            }) => Some(Scale::Sequential {
+                domain_min: domain_min.min(d0),
+                domain_max: domain_max.max(d1),
+                stops: stops.clone(),
+            }),
+            Some(Scale::Colour { .. }) => None, // categorical fill wins
+            // Replace the inferred Linear (or synthesise from scratch).
+            _ => Some(Scale::Sequential {
+                domain_min: d0,
+                domain_max: d1,
+                stops: self.scheme.stops(),
+            }),
+        };
+        if let Some(scale) = merged {
+            scales.insert(Channel::Fill, scale);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // RegressionRenderer (regressionY / regressionX)
 // ---------------------------------------------------------------------------
 
@@ -2121,6 +2256,7 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
     v.push((MarkKind::Density, Box::new(Density2DRenderer)));
     v.push((MarkKind::Raster, Box::new(RasterRenderer::default())));
     v.push((MarkKind::Heatmap, Box::new(HeatmapRenderer::default())));
+    v.push((MarkKind::Cell, Box::new(CellRenderer::default())));
     v.push((MarkKind::RegressionY, Box::new(RegressionRenderer::default())));
     v.push((MarkKind::RegressionX, Box::new(RegressionRenderer::default())));
     v
@@ -3361,6 +3497,187 @@ mod tests {
             .map(|v| packed(ramp.map_continuous(*v)))
             .collect();
         assert_eq!(drawn_explicit, expected, "bandwidth threads through to the drawn field");
+    }
+
+    /// Pre-aggregated cell fixture: 2 days × 2 slots with a numeric value and a
+    /// categorical grade per pair.
+    fn cell_batch() -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("day", DataType::Utf8, false),
+            Field::new("slot", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+            Field::new("grade", DataType::Utf8, false),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["Mon", "Mon", "Tue", "Tue"])),
+                Arc::new(StringArray::from(vec!["am", "pm", "am", "pm"])),
+                Arc::new(Float64Array::from(vec![1.0, 4.0, 2.0, 8.0])),
+                Arc::new(StringArray::from(vec!["a", "b", "a", "b"])),
+            ],
+        )
+        .unwrap()
+    }
+
+    // dmk_ac03: one rect per occupied (x category, y category) pair, positioned
+    // on the two Band scales, with distinct numeric fill values encoding
+    // distinct ramp colours (probed via draw_data per the #36 precedent).
+    #[test]
+    fn dmk_ac03_cell_renders_rect_per_category_pair() {
+        let batch = cell_batch();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "slot".to_string());
+        cm.insert(Channel::Y, "day".to_string());
+        cm.insert(Channel::Fill, "value".to_string());
+        let renderer = CellRenderer::default();
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        renderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        assert!(
+            matches!(scales.get(Channel::X), Some(Scale::Band { .. }))
+                && matches!(scales.get(Channel::Y), Some(Scale::Band { .. })),
+            "cell rides the existing per-channel Band inference on both axes"
+        );
+
+        let mut scene = Scene::new();
+        renderer.render(&mut scene, &batch, &cm, &scales, None);
+        assert_eq!(
+            count_scene_paths(&scene),
+            4,
+            "one rect per occupied category pair"
+        );
+        let ramp = scales.get(Channel::Fill).expect("fill ramp built");
+        let expected: std::collections::HashSet<u32> = [1.0, 4.0, 2.0, 8.0]
+            .iter()
+            .map(|v| packed(ramp.map_continuous(*v)))
+            .collect();
+        assert_eq!(expected.len(), 4, "the four values encode four distinct colours");
+        let drawn: std::collections::HashSet<u32> =
+            scene.encoding().draw_data.iter().copied().collect();
+        assert_eq!(drawn, expected, "cell fills are the ramp samples of the values");
+    }
+
+    // dmk_ac03: augment_scales anchors the Fill Sequential domain per the v1
+    // rule — [0, max] when min >= 0, else [min, max] — REPLACING the Linear a
+    // numeric fill otherwise infers (the trap), unioning with a co-rendered
+    // Sequential, and leaving a categorical Colour fill untouched.
+    #[test]
+    fn dmk_ac03_cell_augment_scales_anchors_sequential_domain() {
+        let batch = cell_batch();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "slot".to_string());
+        cm.insert(Channel::Y, "day".to_string());
+        cm.insert(Channel::Fill, "value".to_string());
+        let renderer = CellRenderer { scheme: SequentialScheme::Blues };
+
+        // min >= 0 (values 1..8): the inferred Linear is replaced by a
+        // zero-anchored Sequential with the scheme's stops.
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        assert!(
+            matches!(scales.get(Channel::Fill), Some(Scale::Linear { .. })),
+            "precondition: generic inference types the numeric fill Linear"
+        );
+        renderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        match scales.get(Channel::Fill) {
+            Some(Scale::Sequential { domain_min, domain_max, stops }) => {
+                assert!((domain_min - 0.0).abs() < f64::EPSILON, "min >= 0 anchors at zero");
+                assert!((domain_max - 8.0).abs() < f64::EPSILON);
+                assert_eq!(stops, &SequentialScheme::Blues.stops(), "stops match the scheme");
+            }
+            other => panic!("expected a Fill Sequential, got {other:?}"),
+        }
+
+        // min < 0: the domain is [min, max], not forced through zero.
+        let neg_schema = Arc::new(Schema::new(vec![
+            Field::new("day", DataType::Utf8, false),
+            Field::new("slot", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+        ]));
+        let neg = RecordBatch::try_new(
+            neg_schema,
+            vec![
+                Arc::new(StringArray::from(vec!["Mon", "Tue"])),
+                Arc::new(StringArray::from(vec!["am", "pm"])),
+                Arc::new(Float64Array::from(vec![-3.0, 5.0])),
+            ],
+        )
+        .unwrap();
+        let mut neg_scales = infer_scales(&neg, &cm, (40.0, 600.0), (450.0, 20.0));
+        renderer.augment_scales(&mut neg_scales, &neg, &cm, (40.0, 600.0), (450.0, 20.0));
+        match neg_scales.get(Channel::Fill) {
+            Some(Scale::Sequential { domain_min, domain_max, .. }) => {
+                assert!((domain_min - (-3.0)).abs() < f64::EPSILON, "min < 0 keeps the data min");
+                assert!((domain_max - 5.0).abs() < f64::EPSILON);
+            }
+            other => panic!("expected a Fill Sequential, got {other:?}"),
+        }
+
+        // A co-rendered Sequential unions (keeping the first's stops); a
+        // categorical Colour fill survives untouched.
+        let mut union = ScaleSet::new();
+        union.insert(
+            Channel::Fill,
+            Scale::Sequential {
+                domain_min: 0.0,
+                domain_max: 100.0,
+                stops: SequentialScheme::Viridis.stops(),
+            },
+        );
+        renderer.augment_scales(&mut union, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        match union.get(Channel::Fill) {
+            Some(Scale::Sequential { domain_max, stops, .. }) => {
+                assert_eq!(*domain_max, 100.0, "union keeps the wider domain");
+                assert_eq!(stops, &SequentialScheme::Viridis.stops(), "first scale's stops win");
+            }
+            other => panic!("expected a unioned Sequential, got {other:?}"),
+        }
+        let mut colour = ScaleSet::new();
+        colour.insert(
+            Channel::Fill,
+            Scale::Colour {
+                categories: vec!["a".to_string()],
+                palette: vec![[0.1, 0.2, 0.3, 1.0]],
+            },
+        );
+        renderer.augment_scales(&mut colour, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        assert!(
+            matches!(colour.get(Channel::Fill), Some(Scale::Colour { .. })),
+            "a categorical Colour fill wins over the numeric ramp"
+        );
+    }
+
+    // dmk_ac03: a Utf8 fill keeps the existing categorical Colour behaviour —
+    // augment_scales leaves the inferred Colour scale alone and the rects draw
+    // in palette colours through resolve_colour, exactly as before.
+    #[test]
+    fn dmk_ac03_cell_utf8_fill_keeps_colour_path() {
+        let batch = cell_batch();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "slot".to_string());
+        cm.insert(Channel::Y, "day".to_string());
+        cm.insert(Channel::Fill, "grade".to_string());
+        let renderer = CellRenderer::default();
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        renderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+
+        let (cat_a, cat_b) = match scales.get(Channel::Fill) {
+            Some(scale @ Scale::Colour { .. }) => (
+                scale.map_colour("a").expect("category a"),
+                scale.map_colour("b").expect("category b"),
+            ),
+            other => panic!("Utf8 fill must keep the categorical Colour scale, got {other:?}"),
+        };
+
+        let mut scene = Scene::new();
+        renderer.render(&mut scene, &batch, &cm, &scales, None);
+        assert_eq!(count_scene_paths(&scene), 4, "one rect per category pair");
+        let drawn: std::collections::HashSet<u32> =
+            scene.encoding().draw_data.iter().copied().collect();
+        assert_eq!(
+            drawn,
+            std::collections::HashSet::from([packed(cat_a), packed(cat_b)]),
+            "cells draw in the categorical palette colours"
+        );
     }
 
     #[test]

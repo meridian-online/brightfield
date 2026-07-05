@@ -17,7 +17,7 @@ use brightfield_render::channel::{Channel, ChannelMap};
 use brightfield_render::layout::ChartLayout;
 use brightfield_render::legend::{colour_legend_size, render_colour_legend_at};
 use brightfield_render::mark::{
-    default_renderers, find_renderer, HeatmapRenderer, MarkRenderer, RasterRenderer,
+    default_renderers, find_renderer, CellRenderer, HeatmapRenderer, MarkRenderer, RasterRenderer,
 };
 use brightfield_render::scale::{Scale, ScaleSet, SequentialScheme};
 use brightfield_render::scene::{build_multi_mark_scene, compose_dashboard, ChartData};
@@ -580,6 +580,9 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
                         scheme,
                         bandwidth: marks.get(mi).and_then(|mk| mark_attr_f64(mk, "bandwidth")),
                     }) as Box<dyn MarkRenderer + Send + Sync>),
+                    MarkKind::Cell => Some(
+                        Box::new(CellRenderer { scheme }) as Box<dyn MarkRenderer + Send + Sync>
+                    ),
                     _ => None,
                 }
             })
@@ -1457,6 +1460,56 @@ colorScheme: blues
             SequentialScheme::Blues,
             "the declared scheme rides LivePlotMeta into the live rebuild path"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // dmk_ac03 (card 0008, density marks): a cell plot's colorScheme reaches the
+    // numeric-fill Sequential through the same per-mark assembly seam — DuckDB
+    // executes the pass-through query, augment_scales replaces the inferred
+    // Linear with the anchored blues ramp.
+    #[test]
+    fn dmk_ac03_cell_colorscheme_consumed_end_to_end() {
+        use brightfield_render::scale::{Scale, SequentialScheme};
+
+        const SRC: &str = r#"
+data:
+  grid:
+    - { day: Mon, slot: am, value: 1 }
+    - { day: Mon, slot: pm, value: 4 }
+    - { day: Tue, slot: am, value: 2 }
+    - { day: Tue, slot: pm, value: 8 }
+plot:
+  - mark: cell
+    data: { from: grid }
+    x: slot
+    y: day
+    fill: value
+colorScheme: blues
+"#;
+        let dir = std::env::temp_dir().join(format!("bf-dmk-ac03-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cell-blues.yaml");
+        std::fs::write(&path, SRC).unwrap();
+
+        let (_dashboard, live) =
+            super::build_everything(path.to_str().unwrap()).expect("pipeline runs");
+        let fill = live.plots[0]
+            .scales
+            .get(Channel::Fill)
+            .expect("cell plot has a Fill scale");
+        match fill {
+            Scale::Sequential { domain_min, domain_max, stops } => {
+                assert_eq!(
+                    stops,
+                    &SequentialScheme::Blues.stops(),
+                    "colorScheme: blues must reach the cell's numeric-fill ramp"
+                );
+                assert!((domain_min - 0.0).abs() < f64::EPSILON, "min >= 0 anchors at zero");
+                assert!((domain_max - 8.0).abs() < f64::EPSILON);
+            }
+            other => panic!("expected a blues Fill Sequential, got {other:?}"),
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }
