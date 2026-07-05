@@ -64,6 +64,40 @@ fn swatch_legend_size(colour_scale: &Scale) -> Option<(f64, f64)> {
     Some((width, height))
 }
 
+/// The clickable entry rects of a categorical swatch legend whose panel
+/// top-left is at `(box_x, box_y)` — one rect per category, in category
+/// order. Row `i` sits at `LEGEND_PADDING + i * ENTRY_SPACING` below the
+/// panel top, is `SWATCH_SIZE` tall, and spans the swatch plus the gap and
+/// the label's measured extent, so clicking the category text also hits.
+///
+/// Pure geometry mirroring [`render_swatch_legend_at`]'s layout from the
+/// same private constants, so the hit-boxes cannot drift from the drawing.
+/// Empty for a non-`Colour` (or empty) scale. Card 0009 (legend
+/// click-to-filter), lcf ac-02.
+#[must_use]
+pub fn swatch_entry_rects(box_x: f64, box_y: f64, colour_scale: &Scale) -> Vec<Rect> {
+    let categories = match colour_scale {
+        Scale::Colour { categories, .. } => categories,
+        _ => return Vec::new(),
+    };
+    let legend_x = box_x + LEGEND_PADDING;
+    let legend_y_start = box_y + LEGEND_PADDING;
+    categories
+        .iter()
+        .enumerate()
+        .map(|(i, cat)| {
+            let y = legend_y_start + i as f64 * ENTRY_SPACING;
+            let label_w = measure_width(cat, LABEL_SIZE);
+            Rect::new(
+                legend_x,
+                y,
+                legend_x + SWATCH_SIZE + LEGEND_LABEL_GAP + label_w,
+                y + SWATCH_SIZE,
+            )
+        })
+        .collect()
+}
+
 /// The pixel size `(width, height)` of the gradient bar for a continuous
 /// [`Scale::Sequential`], sized to hold the bar plus its min/mid/max tick labels;
 /// `None` for any other scale.
@@ -440,5 +474,48 @@ mod tests {
         let mut scene3 = Scene::new();
         render_colour_legend_at(&mut scene3, 40.0, 40.0, &sequential_scale());
         assert!(scene3.encoding().path_tags.len() > 0, "dispatch draws the bar");
+    }
+
+    // --- lcf_ac02 (card 0009): swatch entry hit-geometry ---
+
+    /// lcf_ac02: `swatch_entry_rects` yields one rect per category at exactly
+    /// the positions the layout constants place the drawn swatches — row i at
+    /// padding + i*ENTRY_SPACING, SWATCH_SIZE tall, spanning swatch + gap +
+    /// label extent — and is empty for Sequential/Band scales.
+    #[test]
+    fn lcf_ac02_swatch_entry_rects_match_rendered_layout() {
+        let scale = colour_scale_3(); // categories "a", "bb", "ccc"
+        let (box_x, box_y) = (640.0, 40.0);
+        let rects = swatch_entry_rects(box_x, box_y, &scale);
+        assert_eq!(rects.len(), 3, "one rect per category");
+
+        for (i, (rect, cat)) in rects.iter().zip(["a", "bb", "ccc"]).enumerate() {
+            // Same arithmetic as render_swatch_legend_at: the row origin.
+            let x0 = box_x + LEGEND_PADDING;
+            let y0 = box_y + LEGEND_PADDING + i as f64 * ENTRY_SPACING;
+            assert_eq!((rect.x0, rect.y0), (x0, y0), "entry {i} origin");
+            assert_eq!(rect.height(), SWATCH_SIZE, "entry {i} is swatch-height");
+            assert_eq!(
+                rect.width(),
+                SWATCH_SIZE + LEGEND_LABEL_GAP + measure_width(cat, LABEL_SIZE),
+                "entry {i} spans swatch + gap + label extent"
+            );
+        }
+        // Wider label → wider clickable rect (the label extent is included).
+        assert!(rects[2].width() > rects[0].width(), "\"ccc\" entry wider than \"a\"");
+
+        // Rows are ENTRY_SPACING apart, so consecutive rects never overlap
+        // (SWATCH_SIZE < ENTRY_SPACING) — a click resolves to at most one entry.
+        assert!(rects[0].y1 < rects[1].y0, "rows are disjoint");
+
+        // Non-Colour scales have no discrete entries: empty.
+        assert!(swatch_entry_rects(0.0, 0.0, &sequential_scale()).is_empty());
+        let band = Scale::Band {
+            categories: vec!["a".into()],
+            range_start: 0.0,
+            range_end: 10.0,
+            padding: 0.1,
+        };
+        assert!(swatch_entry_rects(0.0, 0.0, &band).is_empty());
     }
 }
