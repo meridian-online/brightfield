@@ -137,8 +137,20 @@ impl SavePolicy {
     }
 
     /// The debounce timer polled at `now_ms` with the current serialised
-    /// state: write when due AND changed; otherwise nothing.
-    pub fn timer_fired(&mut self, now_ms: u64, state_json: &str) -> SaveAction {
+    /// state: write when due AND changed AND `persistable`; otherwise
+    /// nothing.
+    ///
+    /// `persistable` is the layout-persistable bit AT FIRE TIME (the shell
+    /// re-reads `layout_persistable(mode)` when the timer lands, not when
+    /// the save was scheduled): a `p` press during the debounce window
+    /// otherwise dumps the presentation collapse over the saved authoring
+    /// arrangement. A suppressed fire leaves the deadline armed — the
+    /// change is still pending, and a later poll back in authoring mode
+    /// (or the quit flush) writes it.
+    pub fn timer_fired(&mut self, now_ms: u64, state_json: &str, persistable: bool) -> SaveAction {
+        if !persistable {
+            return SaveAction::Nothing;
+        }
         match self.due_at_ms {
             Some(due) if now_ms >= due => {
                 self.due_at_ms = None;
@@ -295,34 +307,64 @@ mod tests {
         let mut policy = SavePolicy::default();
 
         // Nothing pending → the timer does nothing.
-        assert_eq!(policy.timer_fired(0, "{a}"), SaveAction::Nothing);
+        assert_eq!(policy.timer_fired(0, "{a}", true), SaveAction::Nothing);
 
         // A change schedules; polling before the window elapses is a no-op.
         policy.layout_changed(1_000);
-        assert_eq!(policy.timer_fired(1_000 + SAVE_DEBOUNCE_MS - 1, "{a}"), SaveAction::Nothing);
+        assert_eq!(
+            policy.timer_fired(1_000 + SAVE_DEBOUNCE_MS - 1, "{a}", true),
+            SaveAction::Nothing
+        );
 
         // A second change during the window pushes the deadline out.
         policy.layout_changed(2_000);
         assert_eq!(
-            policy.timer_fired(1_000 + SAVE_DEBOUNCE_MS, "{a}"),
+            policy.timer_fired(1_000 + SAVE_DEBOUNCE_MS, "{a}", true),
             SaveAction::Nothing,
             "the earlier deadline was superseded"
         );
 
         // Once due, the changed state writes…
         assert_eq!(
-            policy.timer_fired(2_000 + SAVE_DEBOUNCE_MS, "{a}"),
+            policy.timer_fired(2_000 + SAVE_DEBOUNCE_MS, "{a}", true),
             SaveAction::Write("{a}".to_string())
         );
         // …and an identical state at the next due point is skipped.
         policy.layout_changed(50_000);
-        assert_eq!(policy.timer_fired(50_000 + SAVE_DEBOUNCE_MS, "{a}"), SaveAction::Nothing);
+        assert_eq!(
+            policy.timer_fired(50_000 + SAVE_DEBOUNCE_MS, "{a}", true),
+            SaveAction::Nothing
+        );
 
         // Quit flushes a pending change immediately (no debounce wait)…
         policy.layout_changed(100_000);
         assert_eq!(policy.quit("{b}"), SaveAction::Write("{b}".to_string()));
         // …and a clean quit writes nothing.
         assert_eq!(policy.quit("{b}"), SaveAction::Nothing);
+    }
+
+    /// aws_ac03 (presentation suppression at FIRE time): a debounce timer
+    /// that lands while presenting writes NOTHING — pressing `p` inside the
+    /// 10s window must not dump the collapsed presentation docks over the
+    /// saved authoring arrangement. The deadline stays armed, so the same
+    /// pending change still writes once the timer is polled back in
+    /// authoring mode (and the quit flush in authoring covers a quit that
+    /// arrives first).
+    #[test]
+    fn aws_ac03_timer_fired_while_presenting_writes_nothing() {
+        let mut policy = SavePolicy::default();
+        policy.layout_changed(1_000);
+        let due = 1_000 + SAVE_DEBOUNCE_MS;
+
+        // Timer fires while presenting → suppressed, nothing written.
+        assert_eq!(policy.timer_fired(due, "{collapsed}", false), SaveAction::Nothing);
+
+        // The deadline survived the suppression: polled again in authoring
+        // mode, the (authoring) state writes.
+        assert_eq!(
+            policy.timer_fired(due + 1, "{authoring}", true),
+            SaveAction::Write("{authoring}".to_string())
+        );
     }
 
     /// aws_ac03 (path selection): the env override wins and the fallbacks
