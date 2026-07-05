@@ -24,17 +24,21 @@ Artefacts live in `orbit/cards/`, `orbit/specs/`, and `orbit/decisions/`.
 
 ## Current Sprint
 
-goal: "Live reactivity — param widgets re-execute downstream queries and cross-filtered selections propagate across views, turning the static first-render into an interactive dashboard"
+goal: "Frame the canvas — a workspace shell hosts the spec-derived canvas (title strip, window legends with swatch and gradient variants, presentation toggle), bringing the live window to parity with the headless PNG"
 
 cards:
-  - 0005: "Reactive parameters with input widgets" (v2 — wire the param coordinator to live execution)
-  - 0006: "Cross-filtered selections across linked views"
+  - 0016: "Workspace shell — the framed window"
 
 ## Previously Shipped
 
 - "First end-to-end render" — cards 0001 + 0004. Spec → SQL → DuckDB → GPU render → native GPUI window. Shipped at 7cb7005 (2026-04-29).
+- "Live reactivity" — cards 0005 + 0006 + 0014. Param widgets drive queries (slider #25), cross-filtered brush + point selections propagate across views (#27–#31). Shipped 2026-07-04.
+- "MIT-clean shipping floor" — LICENSE + clean-room GPL stub patch + cargo-deny CI gate (#34); Linebender stack bump to vello 0.9/wgpu 29 (#35). Shipped 2026-07-05.
+- Mark breadth instalments (card 0008, ongoing): density/regression (#21/#23), raster (#32), rect family (#28), sequential colour scale → true heatmaps (#36).
 
 ## Upcoming Sprint Candidates
 
-- "Mark coverage breadth" — card 0008 (grammar of graphics mark library). Expand beyond dot/line/bar/density/regression to areaY, rect, text, rule, and the specialised marks (geo, hexbin, contour, raster).
-- "Harden the render" — fold in the findings from `orbit/cards/memos/2026-04-29-first-render-followups.md`: literal channel values, vocab/runtime alignment, execution-conformance test layer, window/chart sizing.
+- "Legend click-to-filter" — card 0009's interactor scenario: `legend: color as: $sel` filters linked views. Prereqs shipped: hosted legend (card 0016), typed categorical predicates (#31), CrossfilterCoordinator dispatch.
+- "Continuous slider drag" — card 0015 (PR #26, planning-only). Needs `/orb:design`: throttle vs debounce, query cancellation, async boundary.
+- "Keyboard grammar" — VisiData-inspired command log + surfaces + scope-prefix keys (`orbit/cards/memos/2026-07-04-visidata-keyboard-grammar.md`). Needs `/orb:discovery`.
+- Remaining card 0008 marks: hexbin, contour, heatmap/cell (sequential scale now available), geo.
