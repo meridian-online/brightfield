@@ -54,7 +54,8 @@ pub fn compute_ticks(scale: &Scale, target_count: usize) -> Vec<Tick> {
             range_start,
             range_end,
         } => compute_time_ticks(*domain_min_us, *domain_max_us, *range_start, *range_end, target_count),
-        Scale::Colour { .. } => Vec::new(), // Colour scales don't have axis ticks.
+        // Colour ramps (categorical or sequential) have no positional axis ticks.
+        Scale::Colour { .. } | Scale::Sequential { .. } => Vec::new(),
     }
 }
 
@@ -169,7 +170,7 @@ fn nice_step(span: f64, target_count: usize) -> f64 {
 }
 
 /// Format a number for tick labels.
-fn format_number(value: f64) -> String {
+pub(crate) fn format_number(value: f64) -> String {
     if (value - value.round()).abs() < 1e-9 {
         format!("{}", value.round() as i64)
     } else {

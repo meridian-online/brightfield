@@ -1,12 +1,10 @@
-# Raster mark (card 0008 mark breadth): a binned 2D COUNT heatmap. Points are
-# binned into a grid (reusing the 2D density binning); each occupied cell is a
-# filled rectangle coloured by how many points fall in it through a sequential
-# colour ramp. With no `colorScheme`, the default is viridis (dark purple → bright
-# yellow): the two blobs read as bright ramp-high cores over a dark, sparse
-# background. See raster-blues.yaml for a single-hue variant and
-# raster-legend.yaml for the standalone gradient legend.
+# Raster mark with a single-hue colour scheme (card 0008 sequential colour scale).
+# Same two-blob data as raster.yaml, but `colorScheme: blues` maps count through
+# the ColorBrewer Blues ramp (near-white → navy): the dense blob cores read as
+# deep blue, the sparse background as pale blue. Demonstrates that a spec picks a
+# scheme by its Mosaic-portable lowercase name.
 #
-#   BRIGHTFIELD_DUMP_PNG=raster.png cargo run -p brightfield-app -- examples/raster.yaml
+#   BRIGHTFIELD_DUMP_PNG=raster-blues.png cargo run -p brightfield-app -- examples/raster-blues.yaml
 data:
   points:
     - { x: 2.658, y: 3.952 }
@@ -515,5 +513,6 @@ plot:
     x: x
     y: y
     bins: 20
+colorScheme: blues
 width: 520
 height: 420

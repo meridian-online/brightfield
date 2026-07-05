@@ -67,6 +67,11 @@ pub struct LivePlot {
     pub bindings: Vec<BrushBinding>,
     /// Data scales for inverting a pixel brush back to data coordinates.
     pub scales: ScaleSet,
+    /// Whether this plot draws its own inline (top-right) colour legend. `false`
+    /// when a standalone `legend: color for:` node has relocated it — resolved at
+    /// the app layer and carried here so a live re-render honours the same
+    /// suppression instead of resurrecting the inline legend.
+    pub draw_inline_legend: bool,
     /// Reactive state entity — the scene we swap when this plot is re-filtered.
     pub state: Entity<ChartState>,
 }
@@ -281,33 +286,52 @@ impl CrossfilterCoordinator {
         // later `self.plots[..].scales = …` write.
         let mark_indices = self.plots[plot_index].mark_indices.clone();
         let layout = self.plots[plot_index].layout.clone();
+        let draw_inline_legend = self.plots[plot_index].draw_inline_legend;
 
-        let chart_data: Vec<ChartData<'_>> = mark_indices
-            .iter()
-            .filter_map(|&mi| {
-                let m = self.marks.get(mi)?;
-                let batch = m.batch.as_ref()?;
-                let renderer = find_renderer(&self.renderers, m.kind)?;
-                Some(ChartData {
-                    batch,
-                    channel_map: &m.channels,
-                    renderer,
-                    layout: layout.clone(),
-                    view_extent: None,
-                    highlight: None,
-                })
-            })
-            .collect();
-        let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
-        // A cross-filter re-render keeps the plot's inline legend; standalone-
-        // legend suppression is resolved at the app layer, not here.
-        let (scene, scales) = build_multi_mark_scene(&refs, true);
-        drop(refs);
-        drop(chart_data);
-
+        let (scene, scales) = render_plot_scene(
+            &self.marks,
+            &self.renderers,
+            &mark_indices,
+            &layout,
+            draw_inline_legend,
+        );
         self.plots[plot_index].scales = scales;
         scene
     }
+}
+
+/// Rebuild one plot's scene from its marks, independent of any `self`/`Entity`
+/// state so it is unit-testable headlessly. `draw_inline_legend` mirrors the
+/// app's first-render suppression (a standalone `legend: color for:` relocates
+/// the inline legend), so a live re-render honours the same choice rather than
+/// resurrecting the inline legend — which now matters because every raster plot
+/// carries a Fill (Sequential) scale and would otherwise grow a gradient bar
+/// after the first brush.
+fn render_plot_scene(
+    marks: &[MarkInput],
+    renderers: &[(MarkKind, Box<dyn MarkRenderer + Send + Sync>)],
+    mark_indices: &[usize],
+    layout: &ChartLayout,
+    draw_inline_legend: bool,
+) -> (Scene, ScaleSet) {
+    let chart_data: Vec<ChartData<'_>> = mark_indices
+        .iter()
+        .filter_map(|&mi| {
+            let m = marks.get(mi)?;
+            let batch = m.batch.as_ref()?;
+            let renderer = find_renderer(renderers, m.kind)?;
+            Some(ChartData {
+                batch,
+                channel_map: &m.channels,
+                renderer,
+                layout: *layout,
+                view_extent: None,
+                highlight: None,
+            })
+        })
+        .collect();
+    let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
+    build_multi_mark_scene(&refs, draw_inline_legend)
 }
 
 /// Invert a pixel-space brush (two corners in element-local logical pixels) into
@@ -371,6 +395,59 @@ mod tests {
         // y: pixel 60 → (60-300)/(0-300)*50 = 40; pixel 240 → 10. Normalised lo..hi.
         assert!((rect.y0 - 10.0).abs() < 1e-9, "y0 = {}", rect.y0);
         assert!((rect.y1 - 40.0).abs() < 1e-9, "y1 = {}", rect.y1);
+    }
+
+    /// Regression (review finding): a live plot re-render honours the app's
+    /// inline-legend suppression instead of hardcoding it on. `render_plot_scene`
+    /// (the Entity-free core `build_plot_scene` calls) draws the inline gradient
+    /// legend for a raster plot when `draw_inline_legend` is true, and omits it
+    /// when false — so a suppressed raster plot doesn't grow a gradient bar after
+    /// the first brush.
+    #[test]
+    fn render_plot_scene_honours_inline_legend_suppression() {
+        use arrow::array::Float64Array;
+        use arrow::datatypes::{DataType, Field, Schema};
+        use brightfield_render::mark::count_scene_paths;
+        use std::sync::Arc;
+
+        // A minimal raster batch (x_bin, y_bin, __bf_count); its augment_scales
+        // builds a Fill Sequential, so the inline legend is a gradient bar.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x_bin", DataType::Float64, false),
+            Field::new("y_bin", DataType::Float64, false),
+            Field::new("__bf_count", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![0.0, 1.0, 2.0])),
+                Arc::new(Float64Array::from(vec![0.0, 1.0, 2.0])),
+                Arc::new(Float64Array::from(vec![1.0, 5.0, 9.0])),
+            ],
+        )
+        .unwrap();
+        let mut channels = ChannelMap::new();
+        channels.insert(Channel::X, "x_bin".to_string());
+        channels.insert(Channel::Y, "y_bin".to_string());
+        let marks = vec![MarkInput {
+            batch: Some(batch),
+            channels,
+            kind: MarkKind::Raster,
+        }];
+        let renderers = default_renderers();
+        let layout = ChartLayout::new(400.0, 300.0);
+
+        let (with_legend, _) =
+            render_plot_scene(&marks, &renderers, &[0], &layout, true);
+        let (without_legend, _) =
+            render_plot_scene(&marks, &renderers, &[0], &layout, false);
+        assert!(
+            count_scene_paths(&with_legend) > count_scene_paths(&without_legend),
+            "the inline gradient legend adds paths when draw_inline_legend is true \
+             ({} with vs {} without)",
+            count_scene_paths(&with_legend),
+            count_scene_paths(&without_legend),
+        );
     }
 
     /// A categorical (Band) axis can't invert; that axis falls back to pixels

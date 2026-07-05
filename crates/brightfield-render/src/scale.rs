@@ -41,6 +41,15 @@ pub enum Scale {
         categories: Vec<String>,
         palette: Vec<[f32; 4]>,
     },
+    /// Sequential colour scale: maps a numeric magnitude to an interpolated
+    /// colour ramp. `stops` are evenly-spaced RGBA control points (low → high);
+    /// [`Scale::map_continuous`] normalises a value into `[0, 1]` and
+    /// piecewise-lerps between the bracketing pair.
+    Sequential {
+        domain_min: f64,
+        domain_max: f64,
+        stops: Vec<[f32; 4]>,
+    },
 }
 
 impl Scale {
@@ -74,6 +83,48 @@ impl Scale {
             }
             _ => value, // Band/Colour scales don't use f64 mapping.
         }
+    }
+
+    /// Map a numeric value to an interpolated ramp colour (Sequential scales).
+    ///
+    /// Clamps `value` into the domain, normalises to `t ∈ [0, 1]`, and lerps
+    /// per-channel between the two `stops` bracketing `t·(n-1)`. Endpoints return
+    /// the first/last stop exactly; a degenerate (`domain_min == domain_max`)
+    /// domain returns the top stop (mirroring how `map_f64` collapses a zero-span
+    /// linear domain). Returns opaque black for a non-Sequential scale — callers
+    /// only invoke this on the Fill Sequential scale.
+    pub fn map_continuous(&self, value: f64) -> [f32; 4] {
+        let Self::Sequential {
+            domain_min,
+            domain_max,
+            stops,
+        } = self
+        else {
+            return [0.0, 0.0, 0.0, 1.0];
+        };
+        let Some(&top) = stops.last() else {
+            return [0.0, 0.0, 0.0, 1.0];
+        };
+        let span = domain_max - domain_min;
+        if span.abs() < f64::EPSILON {
+            return top;
+        }
+        let t = ((value - domain_min) / span).clamp(0.0, 1.0);
+        let n = stops.len();
+        if n == 1 {
+            return stops[0];
+        }
+        let scaled = t * (n - 1) as f64;
+        let i = (scaled.floor() as usize).min(n - 2);
+        let frac = (scaled - i as f64) as f32;
+        let a = stops[i];
+        let b = stops[i + 1];
+        [
+            a[0] + (b[0] - a[0]) * frac,
+            a[1] + (b[1] - a[1]) * frac,
+            a[2] + (b[2] - a[2]) * frac,
+            a[3] + (b[3] - a[3]) * frac,
+        ]
     }
 
     /// Map a pixel position back to a data value (inverse of `map_f64`).
@@ -110,7 +161,7 @@ impl Scale {
                 let domain_span = (*domain_max_us - *domain_min_us) as f64;
                 Some(*domain_min_us as f64 + t * domain_span)
             }
-            Self::Band { .. } | Self::Colour { .. } => None,
+            Self::Band { .. } | Self::Colour { .. } | Self::Sequential { .. } => None,
         }
     }
 
@@ -169,20 +220,24 @@ impl Scale {
         }
     }
 
-    /// Domain min for linear/time scales.
+    /// Domain min for linear/time/sequential scales. A Sequential's extent feeds
+    /// the gradient-legend min tick label.
     pub fn domain_min(&self) -> Option<f64> {
         match self {
             Self::Linear { domain_min, .. } => Some(*domain_min),
             Self::Time { domain_min_us, .. } => Some(*domain_min_us as f64),
+            Self::Sequential { domain_min, .. } => Some(*domain_min),
             _ => None,
         }
     }
 
-    /// Domain max for linear/time scales.
+    /// Domain max for linear/time/sequential scales. A Sequential's extent feeds
+    /// the gradient-legend max tick label.
     pub fn domain_max(&self) -> Option<f64> {
         match self {
             Self::Linear { domain_max, .. } => Some(*domain_max),
             Self::Time { domain_max_us, .. } => Some(*domain_max_us as f64),
+            Self::Sequential { domain_max, .. } => Some(*domain_max),
             _ => None,
         }
     }
@@ -193,7 +248,8 @@ impl Scale {
             Self::Linear { range_start, .. }
             | Self::Band { range_start, .. }
             | Self::Time { range_start, .. } => *range_start,
-            Self::Colour { .. } => 0.0,
+            // Colour ramps carry no positional pixel range.
+            Self::Colour { .. } | Self::Sequential { .. } => 0.0,
         }
     }
 
@@ -203,7 +259,8 @@ impl Scale {
             Self::Linear { range_end, .. }
             | Self::Band { range_end, .. }
             | Self::Time { range_end, .. } => *range_end,
-            Self::Colour { .. } => 0.0,
+            // Colour ramps carry no positional pixel range.
+            Self::Colour { .. } | Self::Sequential { .. } => 0.0,
         }
     }
 }
@@ -244,6 +301,102 @@ impl ScaleSet {
         self.scales.get(&channel)
     }
 }
+
+/// A built-in continuous colour scheme. Wire names are lowercase and
+/// Mosaic-aligned, so a `colorScheme:` value stays portable across renderers.
+///
+/// The default is [`SequentialScheme::Viridis`] — a deliberate divergence from
+/// Mosaic/Plot's `turbo` quantitative default. Viridis is perceptually uniform
+/// and colourblind-safe; `turbo` stays available by name (see `deviations.yaml`
+/// DEV-0003).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SequentialScheme {
+    /// Perceptually-uniform, colourblind-safe (matplotlib/ggplot default).
+    #[default]
+    Viridis,
+    /// Single-hue light → dark sequential (ColorBrewer Blues) — the classic
+    /// count map, light-anchored.
+    Blues,
+    /// Mosaic/Plot's declared quantitative default — a rainbow map, included for
+    /// spec fidelity.
+    Turbo,
+}
+
+impl SequentialScheme {
+    /// The lowercase, Mosaic-aligned wire name.
+    #[must_use]
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Viridis => "viridis",
+            Self::Blues => "blues",
+            Self::Turbo => "turbo",
+        }
+    }
+
+    /// Parse a wire name (case-exact). `None` for an unrecognised scheme — the
+    /// caller warns and falls back to the default.
+    #[must_use]
+    pub fn from_wire(name: &str) -> Option<Self> {
+        match name {
+            "viridis" => Some(Self::Viridis),
+            "blues" => Some(Self::Blues),
+            "turbo" => Some(Self::Turbo),
+            _ => None,
+        }
+    }
+
+    /// Evenly-spaced RGBA control points (low → high), interpolated by
+    /// [`Scale::map_continuous`]. Nine hand-transcribed points per scheme — enough
+    /// to read as the intended ramp; a full 256-entry LUT is a later refinement.
+    #[must_use]
+    pub fn stops(self) -> Vec<[f32; 4]> {
+        match self {
+            Self::Viridis => VIRIDIS_STOPS.to_vec(),
+            Self::Blues => BLUES_STOPS.to_vec(),
+            Self::Turbo => TURBO_STOPS.to_vec(),
+        }
+    }
+}
+
+/// Viridis control points (matplotlib, 9-class), dark purple → bright yellow.
+const VIRIDIS_STOPS: &[[f32; 4]] = &[
+    [0.267, 0.004, 0.329, 1.0], // #440154
+    [0.278, 0.176, 0.482, 1.0], // #472d7b
+    [0.231, 0.322, 0.545, 1.0], // #3b528b
+    [0.173, 0.447, 0.557, 1.0], // #2c728e
+    [0.129, 0.569, 0.549, 1.0], // #21918c
+    [0.157, 0.682, 0.502, 1.0], // #28ae80
+    [0.369, 0.788, 0.384, 1.0], // #5ec962
+    [0.678, 0.863, 0.188, 1.0], // #addc30
+    [0.992, 0.906, 0.145, 1.0], // #fde725
+];
+
+/// Blues control points (ColorBrewer sequential, 9-class), near-white → navy.
+const BLUES_STOPS: &[[f32; 4]] = &[
+    [0.969, 0.984, 1.000, 1.0], // #f7fbff
+    [0.871, 0.922, 0.969, 1.0], // #deebf7
+    [0.776, 0.859, 0.937, 1.0], // #c6dbef
+    [0.620, 0.792, 0.882, 1.0], // #9ecae1
+    [0.420, 0.682, 0.839, 1.0], // #6baed6
+    [0.259, 0.573, 0.776, 1.0], // #4292c6
+    [0.129, 0.443, 0.710, 1.0], // #2171b5
+    [0.031, 0.3176, 0.612, 1.0], // #08519c
+    [0.031, 0.188, 0.420, 1.0], // #08306b
+];
+
+/// Turbo control points (Google turbo, 9-sample), purple → blue → green →
+/// yellow → dark red.
+const TURBO_STOPS: &[[f32; 4]] = &[
+    [0.190, 0.072, 0.232, 1.0], // #30123b
+    [0.246, 0.395, 0.832, 1.0], // #3f65d4
+    [0.239, 0.657, 0.985, 1.0], // #3ea8fb
+    [0.180, 0.902, 0.769, 1.0], // #2ee6c4
+    [0.427, 0.988, 0.475, 1.0], // #6dfc79
+    [0.760, 0.965, 0.235, 1.0], // #c2f63c
+    [0.973, 0.798, 0.155, 1.0], // #f8cc28
+    [0.960, 0.446, 0.104, 1.0], // #f5721a
+    [0.480, 0.016, 0.011, 1.0], // #7a0403
+];
 
 /// Default colour palette — Observable Plot's categorical10.
 const CATEGORICAL_PALETTE: &[[f32; 4]] = &[
@@ -550,6 +703,37 @@ fn union_scales(scales: &[Scale], range_start: f64, range_end: f64) -> Option<Sc
                     domain_max_us: max,
                     range_start,
                     range_end,
+                })
+            }
+        }
+        Scale::Sequential { stops, .. } => {
+            // Union the ramp extents by min-of-mins / max-of-maxes, keeping the
+            // first scale's stops (co-rendered rasters share one scheme).
+            let stops = stops.clone();
+            let mut min = f64::INFINITY;
+            let mut max = f64::NEG_INFINITY;
+            for s in scales {
+                if let Scale::Sequential {
+                    domain_min,
+                    domain_max,
+                    ..
+                } = s
+                {
+                    if *domain_min < min {
+                        min = *domain_min;
+                    }
+                    if *domain_max > max {
+                        max = *domain_max;
+                    }
+                }
+            }
+            if min.is_infinite() {
+                None
+            } else {
+                Some(Scale::Sequential {
+                    domain_min: min,
+                    domain_max: max,
+                    stops,
                 })
             }
         }
@@ -1183,5 +1367,128 @@ mod tests {
             matches!(set2.get(Channel::X).unwrap(), Scale::Band { .. }),
             "non-linear scale must not be overwritten by merge_linear_scale"
         );
+    }
+
+    // --- scs_ac01: Scale::Sequential + map_continuous ---
+
+    #[test]
+    fn scs_ac01_map_continuous_interpolates_and_clamps() {
+        let black = [0.0, 0.0, 0.0, 1.0];
+        let white = [1.0, 1.0, 1.0, 1.0];
+        let scale = Scale::Sequential {
+            domain_min: 0.0,
+            domain_max: 10.0,
+            stops: vec![black, white],
+        };
+
+        // Endpoints return the first/last stop exactly.
+        assert_eq!(scale.map_continuous(0.0), black);
+        assert_eq!(scale.map_continuous(10.0), white);
+
+        // Midpoint of a 2-stop ramp is the channel-wise average.
+        let mid = scale.map_continuous(5.0);
+        for c in 0..3 {
+            assert!((mid[c] - 0.5).abs() < 1e-6, "channel {c} mid = {}", mid[c]);
+        }
+
+        // Out-of-domain values clamp to the endpoints.
+        assert_eq!(scale.map_continuous(-5.0), black);
+        assert_eq!(scale.map_continuous(42.0), white);
+
+        // A degenerate (min == max) domain returns the top stop.
+        let degenerate = Scale::Sequential {
+            domain_min: 3.0,
+            domain_max: 3.0,
+            stops: vec![black, white],
+        };
+        assert_eq!(degenerate.map_continuous(3.0), white);
+    }
+
+    #[test]
+    fn scs_ac01_map_continuous_locates_correct_bracket() {
+        // Three stops over [0, 2]: red, green, blue. A value at t=0.75 sits in the
+        // second segment (green → blue) three-quarters along.
+        let scale = Scale::Sequential {
+            domain_min: 0.0,
+            domain_max: 2.0,
+            stops: vec![
+                [1.0, 0.0, 0.0, 1.0],
+                [0.0, 1.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0, 1.0],
+            ],
+        };
+        let c = scale.map_continuous(1.5); // t = 0.75 → seg 1, frac 0.5
+        assert!((c[0] - 0.0).abs() < 1e-6);
+        assert!((c[1] - 0.5).abs() < 1e-6, "green = {}", c[1]);
+        assert!((c[2] - 0.5).abs() < 1e-6, "blue = {}", c[2]);
+    }
+
+    // --- scs_ac02: SequentialScheme ---
+
+    #[test]
+    fn scs_ac02_scheme_stops_and_wire_roundtrip() {
+        for scheme in [
+            SequentialScheme::Viridis,
+            SequentialScheme::Blues,
+            SequentialScheme::Turbo,
+        ] {
+            let stops = scheme.stops();
+            assert!(stops.len() >= 5, "{scheme:?} has >= 5 stops");
+            for s in &stops {
+                for &c in s {
+                    assert!((0.0..=1.0).contains(&c), "{scheme:?} component {c} in range");
+                }
+            }
+            assert_eq!(
+                SequentialScheme::from_wire(scheme.wire_name()),
+                Some(scheme),
+                "{scheme:?} round-trips through its wire name"
+            );
+        }
+        // Unknown / wrong-case names yield None; the caller warns + defaults.
+        assert_eq!(SequentialScheme::from_wire("magma"), None);
+        assert_eq!(SequentialScheme::from_wire("Viridis"), None);
+        // The default scheme is viridis.
+        assert_eq!(SequentialScheme::default(), SequentialScheme::Viridis);
+    }
+
+    // --- scs_ac03: adding Sequential leaves every exhaustive match decided ---
+
+    #[test]
+    fn scs_ac03_sequential_match_arms_decided() {
+        let stops = SequentialScheme::Viridis.stops();
+        let a = Scale::Sequential {
+            domain_min: 0.0,
+            domain_max: 10.0,
+            stops: stops.clone(),
+        };
+        let b = Scale::Sequential {
+            domain_min: 0.0,
+            domain_max: 25.0,
+            stops: stops.clone(),
+        };
+
+        // union_scales unions by min-of-mins / max-of-maxes.
+        let unioned = union_scales(&[a.clone(), b], 0.0, 0.0).expect("union yields a scale");
+        match unioned {
+            Scale::Sequential {
+                domain_min,
+                domain_max,
+                ..
+            } => {
+                assert!((domain_min - 0.0).abs() < f64::EPSILON);
+                assert!((domain_max - 25.0).abs() < f64::EPSILON);
+            }
+            other => panic!("expected Sequential, got {other:?}"),
+        }
+
+        // compute_ticks returns no positional ticks; domain_max reads the extent.
+        assert!(crate::axis::compute_ticks(&a, 5).is_empty());
+        assert_eq!(a.domain_min(), Some(0.0));
+        assert_eq!(a.domain_max(), Some(10.0));
+        // A colour ramp has no positional pixel range and cannot invert.
+        assert_eq!(a.range_start(), 0.0);
+        assert_eq!(a.range_end(), 0.0);
+        assert!(a.inverse_f64(5.0).is_none());
     }
 }

@@ -13,7 +13,7 @@ use vello::Scene;
 
 use crate::channel::{Channel, ChannelMap};
 use crate::kde::{kde_1d_weighted, kde_2d, silverman_1d_weighted, silverman_2d_per_axis};
-use crate::scale::{merge_linear_scale, Scale, ScaleSet};
+use crate::scale::{merge_linear_scale, Scale, ScaleSet, SequentialScheme};
 use crate::text::{draw_text, TextAnchor};
 
 /// Highlight state for per-row dim/emphasis rendering.
@@ -174,7 +174,8 @@ fn resolve_position(
         Scale::Band { .. } => {
             value_str.and_then(|s| scale.map_category(s))
         }
-        Scale::Colour { .. } => None,
+        // Colour ramps (categorical or sequential) don't position on an axis.
+        Scale::Colour { .. } | Scale::Sequential { .. } => None,
     }
 }
 
@@ -1312,9 +1313,12 @@ impl MarkRenderer for Density2DRenderer {
 // RasterRenderer (raster — binned 2D count heatmap)
 // ---------------------------------------------------------------------------
 
-/// Minimum cell alpha, so every OCCUPIED bin (count ≥ 1) is visible rather than
-/// fading to invisible near the low end of the count range.
-const RASTER_MIN_ALPHA: f32 = 0.25;
+/// Minimum ramp position for an OCCUPIED bin (count ≥ 1), so the sparsest cells
+/// stay visibly tinted rather than washing out to the low end of a light-anchored
+/// scheme (blues starts near-white). Replaces the former `RASTER_MIN_ALPHA` — the
+/// same visibility guarantee, expressed as a floor on ramp position `t` (the
+/// domain is zero-anchored, so an occupied cell already sits above `t = 0`).
+const RASTER_MIN_T: f64 = 0.15;
 
 /// Sorted unique values from a nullable column, de-duplicated within a tolerance.
 fn sorted_unique(vals: &[Option<f64>]) -> Vec<f64> {
@@ -1371,12 +1375,18 @@ fn bin_step(centres: &[f64]) -> Option<f64> {
 }
 
 /// Renders a 2D count heatmap. The density lowerer emits `(x_centre, y_centre,
-/// count)` for each OCCUPIED bin; this draws one filled cell per bin with alpha
-/// proportional to the raw count — a single-hue density map, no KDE smoothing.
+/// count)` for each OCCUPIED bin; this draws one filled cell per bin coloured by
+/// its raw count through a sequential colour ramp — a true count → gradient
+/// heatmap, no KDE smoothing.
 ///
-/// A sequential colour ramp (count → gradient) is a follow-up: [`Scale`] has no
-/// continuous-colour form, so alpha-on-one-hue is the encoding today.
-pub struct RasterRenderer;
+/// The ramp is the Fill [`Scale::Sequential`] this mark's [`Self::augment_scales`]
+/// builds from the count domain; `scheme` selects its colours. If the Fill scale
+/// is somehow absent, `render` falls back to the legacy alpha-on-steelblue path.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RasterRenderer {
+    /// The continuous colour scheme (default viridis).
+    pub scheme: SequentialScheme,
+}
 
 impl MarkRenderer for RasterRenderer {
     fn render(
@@ -1418,6 +1428,14 @@ impl MarkRenderer for RasterRenderer {
             return;
         }
 
+        // Prefer the Fill Sequential ramp (built by augment_scales). Its domain is
+        // zero-anchored [0, max_count]; each occupied cell samples the ramp at its
+        // count, floored at RASTER_MIN_T so the sparsest cells stay visible. A
+        // missing / non-Sequential Fill scale falls back to alpha-on-steelblue.
+        let fill_ramp = match scales.get(Channel::Fill) {
+            Some(scale @ Scale::Sequential { .. }) => Some(scale),
+            _ => None,
+        };
         let [cr, cg, cb, _] = DEFAULT_COLOUR.components;
         for i in 0..batch.num_rows() {
             let (Some(cx), Some(cy), Some(count)) = (x_vals[i], y_vals[i], count_vals[i]) else {
@@ -1436,23 +1454,34 @@ impl MarkRenderer for RasterRenderer {
             if !(left.is_finite() && right.is_finite() && top.is_finite() && bottom.is_finite()) {
                 continue;
             }
-            // Alpha encodes count, floored so every occupied cell is visible.
-            let t = (count / max_count).clamp(0.0, 1.0) as f32;
-            let alpha = RASTER_MIN_ALPHA + (1.0 - RASTER_MIN_ALPHA) * t;
+            let colour = match fill_ramp {
+                Some(ramp) => {
+                    // Sample the ramp in ITS OWN domain — which may be a union of
+                    // several co-rendered rasters' counts, not this batch's local
+                    // max — flooring the position at RASTER_MIN_T so the sparsest
+                    // occupied cell stays visible; the ramp colour carries full
+                    // alpha. Rounding through the local max_count would break both
+                    // the colour and the floor whenever the two domains differ.
+                    let dmax = ramp.domain_max().filter(|d| *d > 0.0).unwrap_or(max_count);
+                    let pos = (count / dmax).clamp(0.0, 1.0).max(RASTER_MIN_T);
+                    Color::new(ramp.map_continuous(pos * dmax))
+                }
+                None => {
+                    // Legacy fallback: single-hue with count-proportional alpha,
+                    // floored at RASTER_MIN_T so every occupied cell is visible.
+                    let t = (count / max_count).clamp(0.0, 1.0).max(RASTER_MIN_T) as f32;
+                    Color::new([cr, cg, cb, t])
+                }
+            };
             let cell = kurbo::Rect::new(left, top, right, bottom);
-            scene.fill(
-                Fill::NonZero,
-                Affine::IDENTITY,
-                Color::new([cr, cg, cb, alpha]),
-                None,
-                &cell,
-            );
+            scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &cell);
         }
     }
 
     /// Widen the linear x/y domains by half a bin so the outermost cells (which
     /// extend ±half a bin past their centres) fit inside the plot area rather
-    /// than overflowing into the axis margins.
+    /// than overflowing into the axis margins, and build the count → colour ramp
+    /// under [`Channel::Fill`] so the legend plumbing picks it up.
     fn augment_scales(
         &self,
         scales: &mut ScaleSet,
@@ -1473,6 +1502,45 @@ impl MarkRenderer for RasterRenderer {
                 (bin_step(&centres), centres.first(), centres.last())
             {
                 merge_linear_scale(scales, channel, lo - step / 2.0, hi + step / 2.0, range);
+            }
+        }
+
+        // Count → colour ramp under Fill, zero-anchored at [0, max_count] so an
+        // occupied cell (count ≥ 1) maps above the ramp's low end. Generic column
+        // inference can't build this — the count lives in the reserved
+        // `__bf_count` column, not the mark's channel map.
+        //
+        // Merge rather than clobber: build_multi_mark_scene runs every mark's
+        // augment_scales against one shared ScaleSet, so blind-inserting would
+        // (a) destroy a sibling mark's categorical Colour Fill (a layered
+        // `dot fill:<category>` + raster would lose its swatches), and (b) let a
+        // second raster overwrite the first's domain. A co-rendered raster unions
+        // its zero-anchored domain (keeping the first's stops, per union_scales);
+        // a non-Sequential Fill is left untouched — render falls back to the
+        // legacy path for it, so the layered plot degrades gracefully.
+        if let Some(counts) = column_as_f64(batch, DENSITY_COUNT_COL) {
+            let max_count = counts.iter().flatten().cloned().fold(0.0_f64, f64::max);
+            if max_count > 0.0 {
+                let merged = match scales.get(Channel::Fill) {
+                    Some(Scale::Sequential {
+                        domain_min,
+                        domain_max,
+                        stops,
+                    }) => Some(Scale::Sequential {
+                        domain_min: domain_min.min(0.0),
+                        domain_max: domain_max.max(max_count),
+                        stops: stops.clone(),
+                    }),
+                    Some(_) => None, // a sibling's categorical Fill scale wins
+                    None => Some(Scale::Sequential {
+                        domain_min: 0.0,
+                        domain_max: max_count,
+                        stops: self.scheme.stops(),
+                    }),
+                };
+                if let Some(scale) = merged {
+                    scales.insert(Channel::Fill, scale);
+                }
             }
         }
     }
@@ -1822,7 +1890,7 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
         Box::new(Density1DRenderer { axis: DensityAxis::Y }),
     ));
     v.push((MarkKind::Density, Box::new(Density2DRenderer)));
-    v.push((MarkKind::Raster, Box::new(RasterRenderer)));
+    v.push((MarkKind::Raster, Box::new(RasterRenderer::default())));
     v.push((MarkKind::RegressionY, Box::new(RegressionRenderer::default())));
     v.push((MarkKind::RegressionX, Box::new(RegressionRenderer::default())));
     v
@@ -2538,14 +2606,201 @@ mod tests {
         let mut cm = ChannelMap::new();
         cm.insert(Channel::X, "x_bin".to_string());
         cm.insert(Channel::Y, "y_bin".to_string());
-        let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        RasterRenderer::default().augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
 
         let mut scene = Scene::new();
-        RasterRenderer.render(&mut scene, &batch, &cm, &scales, None);
+        RasterRenderer::default().render(&mut scene, &batch, &cm, &scales, None);
         assert!(
             count_scene_paths(&scene) >= 9,
             "raster on a 3×3 grid must emit ≥9 filled cells, got {}",
             count_scene_paths(&scene)
+        );
+    }
+
+    /// Pack a peniko colour exactly as vello encodes a solid fill into
+    /// `draw_data` (premultiplied little-endian RGBA8), so a test can compare a
+    /// rendered fill against an expected colour byte-for-byte.
+    fn packed(colour: [f32; 4]) -> u32 {
+        Color::new(colour).premultiply().to_rgba8().to_u32()
+    }
+
+    // scs_ac05: each occupied cell is coloured through the Fill Sequential ramp
+    // (count → map_continuous) at full alpha, so the colours ACTUALLY ENCODED into
+    // the scene are the ramp samples — probed via draw_data, not re-derived from
+    // the Scale. With no Fill scale it falls back to the legacy alpha path.
+    #[test]
+    fn scs_ac05_raster_colours_cells_through_ramp() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x_bin", DataType::Float64, false),
+            Field::new("y_bin", DataType::Float64, false),
+            Field::new(DENSITY_COUNT_COL, DataType::Float64, false),
+        ]));
+        // Two occupied bins on a diagonal (so each axis has ≥2 distinct centres
+        // for the bin-pitch recovery) with very different counts (1 vs 100).
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![0.0, 1.0])),
+                Arc::new(Float64Array::from(vec![0.0, 1.0])),
+                Arc::new(Float64Array::from(vec![1.0, 100.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x_bin".to_string());
+        cm.insert(Channel::Y, "y_bin".to_string());
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        RasterRenderer::default().augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+
+        // Expected ramp samples, computed the way render does: floor the position
+        // at RASTER_MIN_T in the ramp's own domain, then map_continuous.
+        let ramp = scales.get(Channel::Fill).expect("fill ramp built");
+        let dmax = ramp.domain_max().expect("sequential has a domain max");
+        let sample = |count: f64| {
+            let pos = (count / dmax).clamp(0.0, 1.0).max(RASTER_MIN_T);
+            ramp.map_continuous(pos * dmax)
+        };
+        let expect_low = sample(1.0);
+        let expect_high = sample(100.0);
+        // Both ramp samples carry full alpha (byte 255) and DIFFER in RGB.
+        assert_eq!(expect_low[3], 1.0, "ramp colours are full-alpha");
+        assert_eq!(expect_high[3], 1.0, "ramp colours are full-alpha");
+        assert!(expect_low != expect_high, "ramp maps the two counts to distinct colours");
+
+        // Probe the colours ACTUALLY encoded into the scene: exactly the two cell
+        // fills, and they equal the expected ramp samples byte-for-byte.
+        let mut scene = Scene::new();
+        RasterRenderer::default().render(&mut scene, &batch, &cm, &scales, None);
+        let drawn: std::collections::HashSet<u32> =
+            scene.encoding().draw_data.iter().copied().collect();
+        assert_eq!(
+            drawn,
+            std::collections::HashSet::from([packed(expect_low), packed(expect_high)]),
+            "the two cell fills are the ramp samples, not a constant hue or the fallback"
+        );
+
+        // Fallback: with the Fill scale removed, cells render through the legacy
+        // steelblue path — same hue, count-proportional (floored) alpha.
+        let mut no_fill = ScaleSet::new();
+        no_fill.insert(Channel::X, scales.get(Channel::X).unwrap().clone());
+        no_fill.insert(Channel::Y, scales.get(Channel::Y).unwrap().clone());
+        let mut scene2 = Scene::new();
+        RasterRenderer::default().render(&mut scene2, &batch, &cm, &no_fill, None);
+        let [cr, cg, cb, _] = DEFAULT_COLOUR.components;
+        let alpha_low = (1.0_f64 / 100.0).clamp(0.0, 1.0).max(RASTER_MIN_T) as f32;
+        let fallback: std::collections::HashSet<u32> =
+            scene2.encoding().draw_data.iter().copied().collect();
+        assert_eq!(
+            fallback,
+            std::collections::HashSet::from([packed([cr, cg, cb, alpha_low]), packed([cr, cg, cb, 1.0])]),
+            "fallback keeps the steelblue hue with count-proportional alpha"
+        );
+    }
+
+    // Regression (review finding, major): a raster's augment_scales MERGES into the
+    // shared Fill scale instead of clobbering it — a sibling's categorical Colour
+    // survives, and two rasters union their zero-anchored domains.
+    #[test]
+    fn raster_augment_scales_merges_fill_not_clobber() {
+        let make = |counts: Vec<f64>| {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("x_bin", DataType::Float64, false),
+                Field::new("y_bin", DataType::Float64, false),
+                Field::new(DENSITY_COUNT_COL, DataType::Float64, false),
+            ]));
+            RecordBatch::try_new(
+                schema,
+                vec![
+                    Arc::new(Float64Array::from(vec![0.0, 1.0])),
+                    Arc::new(Float64Array::from(vec![0.0, 1.0])),
+                    Arc::new(Float64Array::from(counts)),
+                ],
+            )
+            .unwrap()
+        };
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x_bin".to_string());
+        cm.insert(Channel::Y, "y_bin".to_string());
+
+        // (a) A sibling mark's categorical Colour Fill is left untouched.
+        let mut scales = ScaleSet::new();
+        scales.insert(
+            Channel::Fill,
+            Scale::Colour {
+                categories: vec!["a".to_string(), "b".to_string()],
+                palette: vec![[0.1, 0.2, 0.3, 1.0], [0.4, 0.5, 0.6, 1.0]],
+            },
+        );
+        RasterRenderer::default().augment_scales(&mut scales, &make(vec![1.0, 9.0]), &cm, (0.0, 100.0), (100.0, 0.0));
+        match scales.get(Channel::Fill) {
+            Some(Scale::Colour { categories, .. }) => assert_eq!(categories, &["a", "b"]),
+            other => panic!("categorical Fill must survive a raster augment_scales, got {other:?}"),
+        }
+
+        // (b) Two rasters union their zero-anchored domains (maxes 10 and 100).
+        let mut scales = ScaleSet::new();
+        RasterRenderer::default().augment_scales(&mut scales, &make(vec![3.0, 10.0]), &cm, (0.0, 100.0), (100.0, 0.0));
+        RasterRenderer::default().augment_scales(&mut scales, &make(vec![50.0, 100.0]), &cm, (0.0, 100.0), (100.0, 0.0));
+        match scales.get(Channel::Fill) {
+            Some(Scale::Sequential { domain_min, domain_max, .. }) => {
+                assert!((domain_min - 0.0).abs() < f64::EPSILON, "zero-anchored");
+                assert!((domain_max - 100.0).abs() < f64::EPSILON, "union to the larger max");
+            }
+            other => panic!("expected a unioned Sequential Fill, got {other:?}"),
+        }
+    }
+
+    // Regression (review finding): render samples the ramp position in the Fill
+    // ramp's OWN domain, not the local batch max — so the RASTER_MIN_T floor and
+    // the colours hold when a smaller raster shares a larger unioned domain.
+    #[test]
+    fn raster_render_samples_against_shared_ramp_domain() {
+        let make = |counts: Vec<f64>| {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("x_bin", DataType::Float64, false),
+                Field::new("y_bin", DataType::Float64, false),
+                Field::new(DENSITY_COUNT_COL, DataType::Float64, false),
+            ]));
+            RecordBatch::try_new(
+                schema,
+                vec![
+                    Arc::new(Float64Array::from(vec![0.0, 1.0])),
+                    Arc::new(Float64Array::from(vec![0.0, 1.0])),
+                    Arc::new(Float64Array::from(counts)),
+                ],
+            )
+            .unwrap()
+        };
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x_bin".to_string());
+        cm.insert(Channel::Y, "y_bin".to_string());
+
+        // Shared domain [0, 100] from a large raster; render the SMALL raster
+        // (local max 40) against it.
+        let big = make(vec![50.0, 100.0]);
+        let small = make(vec![1.0, 40.0]);
+        let mut scales = infer_scales(&small, &cm, (40.0, 600.0), (450.0, 20.0));
+        RasterRenderer::default().augment_scales(&mut scales, &big, &cm, (40.0, 600.0), (450.0, 20.0));
+        RasterRenderer::default().augment_scales(&mut scales, &small, &cm, (40.0, 600.0), (450.0, 20.0));
+        let ramp = scales.get(Channel::Fill).expect("shared ramp");
+        assert_eq!(ramp.domain_max(), Some(100.0), "domain unioned to 100");
+
+        // The small raster's count-1 cell floors at RASTER_MIN_T in the SHARED
+        // domain → sample 0.15·100 = 15, NOT the local-max 0.15·40 = 6; its
+        // count-40 cell samples 40 (0.4·100). Both against the shared domain.
+        let mut scene = Scene::new();
+        RasterRenderer::default().render(&mut scene, &small, &cm, &scales, None);
+        let expect_floor = ramp.map_continuous(RASTER_MIN_T * 100.0);
+        let expect_hi = ramp.map_continuous(40.0);
+        // Guard against a domain that would collapse the two cells to one colour.
+        assert!(expect_floor != expect_hi, "the two cells are distinct under the shared domain");
+        let drawn: std::collections::HashSet<u32> =
+            scene.encoding().draw_data.iter().copied().collect();
+        assert_eq!(
+            drawn,
+            std::collections::HashSet::from([packed(expect_floor), packed(expect_hi)]),
+            "floor + colours sample against the shared domain, not the local max"
         );
     }
 
@@ -2572,7 +2827,7 @@ mod tests {
         cm.insert(Channel::X, "x_bin".to_string());
         cm.insert(Channel::Y, "y_bin".to_string());
         let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
-        RasterRenderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        RasterRenderer::default().augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
 
         match scales.get(Channel::X) {
             Some(Scale::Linear { domain_min, domain_max, .. }) => {
@@ -2581,6 +2836,45 @@ mod tests {
             }
             other => panic!("expected a widened linear x scale, got {other:?}"),
         }
+    }
+
+    // scs_ac04: augment_scales builds a Fill Sequential zero-anchored at
+    // [0, max_count] with the scheme's stops, alongside the x/y half-bin widening.
+    #[test]
+    fn scs_ac04_raster_augment_scales_builds_fill_sequential() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x_bin", DataType::Float64, false),
+            Field::new("y_bin", DataType::Float64, false),
+            Field::new(DENSITY_COUNT_COL, DataType::Float64, false),
+        ]));
+        // Centres 0,1,2 on both axes; counts up to 7 → domain [0, 7].
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![0.0, 1.0, 2.0])),
+                Arc::new(Float64Array::from(vec![0.0, 1.0, 2.0])),
+                Arc::new(Float64Array::from(vec![3.0, 7.0, 1.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x_bin".to_string());
+        cm.insert(Channel::Y, "y_bin".to_string());
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        let renderer = RasterRenderer { scheme: SequentialScheme::Blues };
+        renderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+
+        match scales.get(Channel::Fill) {
+            Some(Scale::Sequential { domain_min, domain_max, stops }) => {
+                assert!((domain_min - 0.0).abs() < f64::EPSILON, "domain zero-anchored");
+                assert!((domain_max - 7.0).abs() < f64::EPSILON, "domain_max == max count");
+                assert_eq!(stops, &SequentialScheme::Blues.stops(), "stops match the scheme");
+            }
+            other => panic!("expected a Fill Sequential scale, got {other:?}"),
+        }
+        // The x/y half-bin widening still holds.
+        assert_eq!(scales.get(Channel::X).unwrap().domain_min(), Some(-0.5));
+        assert_eq!(scales.get(Channel::Y).unwrap().domain_max(), Some(2.5));
     }
 
     #[test]
