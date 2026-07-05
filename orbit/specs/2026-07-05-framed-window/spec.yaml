@@ -26,7 +26,7 @@ acceptance_criteria:
   - id: ac-01
     ac_type: code
     description: "A pure window-size function computes framed window size = dashboard bbox + chrome extents (header height + content padding), and presentation mode does not change the window size (only the canvas mount origin). The function has no gpui types in its signature beyond plain dimensions."
-    verification: "fww_ac01 in brightfield-ui: framed size for a WxH dashboard equals W+2*pad x H+header+2*pad (whatever the chosen constants); with presentation on, window size is unchanged while the canvas origin re-centres in the full window. verifies: capability"
+    verification: "fww_ac01 in brightfield-ui: framed size for a WxH dashboard equals W+2*pad x H+header+2*pad (whatever the chosen constants); with presentation on, window size is unchanged while the canvas origin re-centres in the full window. verifies: capability [Correction 2026-07-05: the re-centre assertion verifies canvas_origin as a geometry oracle in the test module; the live re-centre is WorkspaceView's flex layout, eyeballed at ac-11. verifies: stand-in (real thing is the flex layout), accepted because the GPUI render tree cannot run headless]"
   - id: ac-02
     ac_type: code
     description: "Title resolution is a pure function: Some(meta.title) wins; a spec without meta.title resolves to the spec file's stem; the same resolved string feeds both the native titlebar (set_title) and the header strip."
@@ -42,7 +42,7 @@ acceptance_criteria:
   - id: ac-05
     ac_type: code
     description: "The window hosts legends: for a spec with standalone legend: nodes, the live path builds LegendPlacements via the existing resolve_legends and mounts one display-only LegendElement child per placement at its placed_legends rect. ComponentKind::Legend is promoted to Implemented; preflight on a legend: color spec reports no Unimplemented component."
-    verification: "fww_ac05: the vocab guard test asserts ComponentKind::Legend == Implemented; a conformance fixture with legend: color preflights clean; a unit test over the view-model (not the GPUI tree) asserts one legend child descriptor per resolved placement with the placement's rect. verifies: capability (placement/vocab); visible hosting is ac-10's stand-in"
+    verification: "fww_ac05: the vocab guard test asserts ComponentKind::Legend == Implemented; a conformance fixture with legend: color preflights clean; a unit test over the view-model (not the GPUI tree) asserts one legend child descriptor per resolved placement with the placement's rect. verifies: capability (placement/vocab); visible hosting is ac-10's stand-in [Correction 2026-07-05: 'preflights clean' means clean at the legend surface — no Legend-identity entry (and, post-review, channel-aware: legend: symbol/opacity still report Unimplemented); the bare plot:/hconcat: layout entries remain DEV-0001 scaffolding, out of scope.]"
   - id: ac-06
     ac_type: code
     description: "colorScheme reaches the live path: the live rebuild constructs the raster renderer with the mark's declared scheme (default viridis, unknown warns + defaults), so live window cells and the hosted gradient legend match the headless PNG for colorScheme: blues."
@@ -101,6 +101,8 @@ deferred:
   - "Opacity/symbol legend channels; #30's residuals (legend-followed-by-sibling overlap, dropped-legend blank slot)."
   - "Keyboard grammar beyond `p` (scope prefixes, palette, command log) — keyboard-grammar discovery card."
   - "Presentation-mode variants (window-shrink-to-canvas, fullscreen)."
+  - "Hosted-legend live refresh: a gesture-driven re-execution that changes a plot's scale domains leaves the hosted LegendElement showing the launch-time snapshot (inline legends redraw per rebuild; hosted ones need shared mutable scale plumbing) — deferred to the legend click-to-filter card, which restructures legend plumbing anyway."
+  - "Hot-reload hot-swap of legends/title/coordinator render-meta: v1 tightens the reload gate to 'restart to apply' on any legend/title/scheme change (no silent divergence); in-place hot-swap is a follow-up."
 
 ambiguity_score: 0.08
 ambiguity_notes: >
