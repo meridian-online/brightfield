@@ -1423,9 +1423,11 @@ colorScheme: {color_scheme}
     // dmk_ac02 (card 0008, density marks): a heatmap plot's colorScheme reaches
     // the rendered Fill ramp through the REAL assembly seam — build_everything
     // resolves the plot's scheme, builds the per-mark HeatmapRenderer override,
-    // and threads it through augment_scales — and the same scheme rides
-    // LivePlotMeta.scheme, the field the coordinator threads into live rebuilds
-    // (the raster 0016 threading, mirrored).
+    // and threads it through augment_scales — and the same scheme is THREADED
+    // into LivePlotMeta.scheme. Threading only: render_plot_scene consumes the
+    // scheme for Raster alone, so a live rebuild does NOT yet apply it to a
+    // heatmap (the live renderer-config seam, recorded as deferred in the
+    // density-marks spec).
     #[test]
     fn dmk_ac02_heatmap_colorscheme_consumed_end_to_end() {
         use brightfield_render::scale::{Scale, SequentialScheme};
@@ -1467,11 +1469,14 @@ colorScheme: blues
             }
             other => panic!("expected a blues Fill Sequential, got {other:?}"),
         }
-        // The live-path threading seam: the resolved scheme rides LivePlotMeta.
+        // The live-path THREADING seam: the resolved scheme is carried on
+        // LivePlotMeta. Threading is all this pins — render_plot_scene does not
+        // yet consume it for heatmap (deferred: live renderer-config seam).
         assert_eq!(
             live.plots[0].scheme,
             SequentialScheme::Blues,
-            "the declared scheme rides LivePlotMeta into the live rebuild path"
+            "the declared scheme is threaded into LivePlotMeta (live consumption \
+             for heatmap is deferred — render_plot_scene scheme-configures raster only)"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1480,7 +1485,9 @@ colorScheme: blues
     // dmk_ac03 (card 0008, density marks): a cell plot's colorScheme reaches the
     // numeric-fill Sequential through the same per-mark assembly seam — DuckDB
     // executes the pass-through query, augment_scales replaces the inferred
-    // Linear with the anchored blues ramp.
+    // Linear with the anchored blues ramp. First-render/headless only: a live
+    // rebuild renders cell through the registry default (deferred: live
+    // renderer-config seam, recorded in the density-marks spec).
     #[test]
     fn dmk_ac03_cell_colorscheme_consumed_end_to_end() {
         use brightfield_render::scale::{Scale, SequentialScheme};
@@ -1523,6 +1530,55 @@ colorScheme: blues
             }
             other => panic!("expected a blues Fill Sequential, got {other:?}"),
         }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // dmk_ac04 (card 0008, density marks): the contour mark's `thresholds`
+    // attribute reaches the per-mark ContourRenderer override through the REAL
+    // assembly seam (build_everything's mark_boxes), pinning the override wiring
+    // end-to-end: 5 iso-levels stroke strictly more scene paths than 2 over the
+    // same data. If the attr never reached the renderer, both builds would draw
+    // the registry default level count and the two path counts would tie. (The
+    // SQL half of the shield — thresholds NOT changing the emitted bin count —
+    // is pinned in brightfield-sql's dmk_ac04 regression test.)
+    #[test]
+    fn dmk_ac04_contour_thresholds_override_reaches_renderer_end_to_end() {
+        use brightfield_render::mark::count_scene_paths;
+
+        let dir = std::env::temp_dir().join(format!("bf-dmk-ac04-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let build = |thresholds: usize, file: &str| {
+            // The dmk_ac04 unimodal fixture as raw points — corners 1, edges 4,
+            // centre 16 — so equiwidth binning reconstructs the 3x3 histogram.
+            let mut rows = String::new();
+            for (x, y, n) in [
+                (1, 1, 1), (2, 1, 4), (3, 1, 1),
+                (1, 2, 4), (2, 2, 16), (3, 2, 4),
+                (1, 3, 1), (2, 3, 4), (3, 3, 1),
+            ] {
+                for _ in 0..n {
+                    rows.push_str(&format!("    - {{ x: {x}, y: {y} }}\n"));
+                }
+            }
+            let src = format!(
+                "data:\n  points:\n{rows}plot:\n  - mark: contour\n    data: {{ from: points }}\n    x: x\n    y: y\n    thresholds: {thresholds}\n"
+            );
+            let path = dir.join(file);
+            std::fs::write(&path, src).unwrap();
+            let (dashboard, _live) =
+                super::build_everything(path.to_str().unwrap()).expect("pipeline runs");
+            count_scene_paths(&dashboard.plots[0].scene)
+        };
+
+        let (two, five) = (build(2, "contour-2.yaml"), build(5, "contour-5.yaml"));
+        assert!(
+            five > two,
+            "thresholds: 5 must stroke more iso-lines than thresholds: 2 through \
+             the per-mark override seam (got {five} vs {two}) — a tie means the \
+             attr never reached the ContourRenderer"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

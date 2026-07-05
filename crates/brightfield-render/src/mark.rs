@@ -1665,6 +1665,18 @@ impl MarkRenderer for HeatmapRenderer {
             return;
         };
 
+        // Draw pitch per axis, recovered as the GCD of the centre gaps
+        // (`bin_step`) rather than `grid.dx`/`grid.dy` (the first adjacent
+        // gap): when interior bins are unoccupied the grid's own pitch
+        // over-estimates the bin width, so cells would over-cover the empty
+        // bins between occupied centres. The KDE lattice itself stays
+        // gap-naive (recorded as deferred with the hexbin follow-up — fixing
+        // it changes the shipped density field, which the byte-gate forbids);
+        // this only sizes the DRAWN cells truthfully. Gap-free lattices are
+        // unaffected: the GCD equals the adjacent gap.
+        let draw_dx = bin_step(&grid.x_centres).unwrap_or(grid.dx);
+        let draw_dy = bin_step(&grid.y_centres).unwrap_or(grid.dy);
+
         // Prefer the Fill Sequential ramp (built by augment_scales); a missing /
         // non-Sequential Fill scale falls back to alpha-on-steelblue.
         let fill_ramp = match scales.get(Channel::Fill) {
@@ -1679,10 +1691,10 @@ impl MarkRenderer for HeatmapRenderer {
                 // Cell spans its centre ± half a bin, mapped to pixels.
                 let cx = grid.x_centres[c];
                 let cy = grid.y_centres[r];
-                let xa = x_scale.map_f64(cx - grid.dx / 2.0);
-                let xb = x_scale.map_f64(cx + grid.dx / 2.0);
-                let ya = y_scale.map_f64(cy - grid.dy / 2.0);
-                let yb = y_scale.map_f64(cy + grid.dy / 2.0);
+                let xa = x_scale.map_f64(cx - draw_dx / 2.0);
+                let xb = x_scale.map_f64(cx + draw_dx / 2.0);
+                let ya = y_scale.map_f64(cy - draw_dy / 2.0);
+                let yb = y_scale.map_f64(cy + draw_dy / 2.0);
                 let (left, right) = (xa.min(xb), xa.max(xb));
                 let (top, bottom) = (ya.min(yb), ya.max(yb));
                 if !(left.is_finite()
@@ -1733,12 +1745,18 @@ impl MarkRenderer for HeatmapRenderer {
             return;
         };
 
+        // Same per-axis DRAW pitch as `render` (bin_step GCD, not the grid's
+        // gap-naive first adjacent gap) so the half-bin widening matches the
+        // cells actually drawn.
+        let draw_dx = bin_step(&grid.x_centres).unwrap_or(grid.dx);
+        let draw_dy = bin_step(&grid.y_centres).unwrap_or(grid.dy);
+
         if let (Some(&x_lo), Some(&x_hi)) = (grid.x_centres.first(), grid.x_centres.last()) {
             merge_linear_scale(
                 scales,
                 Channel::X,
-                x_lo - grid.dx / 2.0,
-                x_hi + grid.dx / 2.0,
+                x_lo - draw_dx / 2.0,
+                x_hi + draw_dx / 2.0,
                 x_range,
             );
         }
@@ -1746,8 +1764,8 @@ impl MarkRenderer for HeatmapRenderer {
             merge_linear_scale(
                 scales,
                 Channel::Y,
-                y_lo - grid.dy / 2.0,
-                y_hi + grid.dy / 2.0,
+                y_lo - draw_dy / 2.0,
+                y_hi + draw_dy / 2.0,
                 y_range,
             );
         }
@@ -3434,10 +3452,26 @@ mod tests {
     // (density → map_continuous) — the colours ACTUALLY ENCODED into the scene
     // are the ramp samples of the smoothed field (probed via draw_data, the #36
     // precedent), cells with different densities encode different colours, and
-    // with no Fill scale the render falls back to alpha-on-steelblue.
+    // with no Fill scale the render falls back to alpha-on-steelblue. Driven by
+    // the dmk_ac01 fixture — 8 SCRAMBLED rows with cell (2, 2) OMITTED — so the
+    // "every cell" claim is falsifiable: an occupied-bins-only regression draws
+    // 8 cells and misses the unoccupied cell's smoothed colour.
     #[test]
     fn dmk_ac02_heatmap_colours_cells_through_ramp() {
-        let batch = heatmap_batch();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x_bin", DataType::Float64, false),
+            Field::new("y_bin", DataType::Float64, false),
+            Field::new(DENSITY_COUNT_COL, DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![1.0, 0.0, 2.0, 0.0, 1.0, 2.0, 1.0, 0.0])),
+                Arc::new(Float64Array::from(vec![1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 2.0, 2.0])),
+                Arc::new(Float64Array::from(vec![16.0, 1.0, 1.0, 4.0, 4.0, 4.0, 4.0, 1.0])),
+            ],
+        )
+        .unwrap();
         let mut cm = ChannelMap::new();
         cm.insert(Channel::X, "x_bin".to_string());
         cm.insert(Channel::Y, "y_bin".to_string());
@@ -3456,19 +3490,33 @@ mod tests {
         let centre = packed(ramp.map_continuous(grid.density[1 * 3 + 1]));
         let corner = packed(ramp.map_continuous(grid.density[0]));
         assert_ne!(centre, corner, "distinct densities encode distinct ramp colours");
+        // The UNOCCUPIED bin (2, 2): zero count, but the smoothed field is
+        // positive there, so its ramp colour must be drawn like any other cell.
+        let unoccupied_density = grid.density[2 * 3 + 2];
+        assert!(
+            unoccupied_density > 0.0,
+            "the smoothed field is positive at the unoccupied bin"
+        );
+        let unoccupied = packed(ramp.map_continuous(unoccupied_density));
 
         let mut scene = Scene::new();
         renderer.render(&mut scene, &batch, &cm, &scales, None);
         assert_eq!(
             count_scene_paths(&scene),
             9,
-            "heatmap fills EVERY grid cell (9 on a 3×3), not just occupied bins"
+            "heatmap fills EVERY grid cell (9 on a 3×3 with only 8 occupied bins), \
+             not just occupied bins"
         );
         let drawn: std::collections::HashSet<u32> =
             scene.encoding().draw_data.iter().copied().collect();
         assert_eq!(
             drawn, expected,
             "the cell fills are the ramp samples of the smoothed field"
+        );
+        assert!(
+            drawn.contains(&unoccupied),
+            "the unoccupied bin's smoothed ramp colour is drawn — an \
+             occupied-bins-only regression fails here"
         );
 
         // Fallback: no Fill scale → steelblue with density-proportional alpha.
@@ -3579,6 +3627,81 @@ mod tests {
             .map(|v| packed(ramp.map_continuous(*v)))
             .collect();
         assert_eq!(drawn_explicit, expected, "bandwidth threads through to the drawn field");
+    }
+
+    // Adversarial-review follow-up (mirrors raster_bin_step_recovers_pitch_from_
+    // sparse_centres): when interior bins are unoccupied, the KDE grid's own
+    // pitch (first adjacent gap) over-estimates the bin width — x centres
+    // {0.5, 15.5, 16.5} have a TRUE pitch of 1 (the GCD of the gaps {15, 1})
+    // but grid.dx reads 15 — so the heatmap must DRAW cells at the recovered
+    // pitch instead of smearing them across the empty bins. The smoothed
+    // lattice itself stays gap-naive (recorded as deferred with the hexbin
+    // follow-up; fixing it byte-changes the shipped density examples).
+    #[test]
+    fn heatmap_gapped_centres_cells_drawn_at_recovered_pitch() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x_bin", DataType::Float64, false),
+            Field::new("y_bin", DataType::Float64, false),
+            Field::new(DENSITY_COUNT_COL, DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![0.5, 15.5, 16.5, 0.5])),
+                Arc::new(Float64Array::from(vec![0.5, 1.5, 0.5, 1.5])),
+                Arc::new(Float64Array::from(vec![1.0, 4.0, 2.0, 3.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x_bin".to_string());
+        cm.insert(Channel::Y, "y_bin".to_string());
+
+        let grid = build_kde_grid(&batch, "x_bin", "y_bin", None).expect("grid builds");
+        assert_eq!(grid.dx, 15.0, "the grid's naive pitch reads the 15-wide gap");
+        assert_eq!(bin_step(&grid.x_centres), Some(1.0), "bin_step recovers the true pitch");
+
+        // Identity scales (domain == pixel range), so drawn coordinates ARE data
+        // units and the encoded f32 coordinate stream can be read back directly.
+        let identity = |hi: f64| Scale::Linear {
+            domain_min: 0.0,
+            domain_max: hi,
+            range_start: 0.0,
+            range_end: hi,
+        };
+        let mut scales = ScaleSet::new();
+        scales.insert(Channel::X, identity(20.0));
+        scales.insert(Channel::Y, identity(20.0));
+        let mut scene = Scene::new();
+        HeatmapRenderer::default().render(&mut scene, &batch, &cm, &scales, None);
+        // path_data is the packed f32 coordinate stream (vello 0.9 stores it as
+        // u32 bit patterns); quantise to quarter-units for exact set membership.
+        let coords: std::collections::HashSet<i64> = scene
+            .encoding()
+            .path_data
+            .iter()
+            .map(|w| (f32::from_bits(*w) as f64 * 4.0).round() as i64)
+            .collect();
+        let has = |v: f64| coords.contains(&((v * 4.0).round() as i64));
+        // Every cell spans its centre ± half the RECOVERED pitch: the first cell
+        // (centre 0.5) has edges 0 and 1, the gapped cells keep 1-wide edges too.
+        assert!(has(0.0) && has(1.0), "first cell drawn at the recovered pitch 1");
+        assert!(has(15.0) && has(17.0), "sparse cells drawn at the recovered pitch 1");
+        // The gap-naive width (grid.dx = 15) would smear the first cell to
+        // 0.5 ± 7.5 and the last to 16.5 ± 7.5.
+        assert!(
+            !has(-7.0) && !has(8.0) && !has(24.0),
+            "no cell is smeared across the unoccupied bins"
+        );
+
+        // augment_scales widens the axes by half the SAME recovered pitch, so
+        // the domain hugs the drawn cells: x [0, 17], y [0, 2].
+        let mut aug = ScaleSet::new();
+        HeatmapRenderer::default().augment_scales(&mut aug, &batch, &cm, (0.0, 20.0), (0.0, 20.0));
+        assert_eq!(aug.get(Channel::X).unwrap().domain_min(), Some(0.0));
+        assert_eq!(aug.get(Channel::X).unwrap().domain_max(), Some(17.0));
+        assert_eq!(aug.get(Channel::Y).unwrap().domain_min(), Some(0.0));
+        assert_eq!(aug.get(Channel::Y).unwrap().domain_max(), Some(2.0));
     }
 
     // dmk_ac04: the renderer strokes one path per chained iso-line, and the

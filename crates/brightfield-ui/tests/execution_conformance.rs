@@ -336,3 +336,86 @@ plot:
 "#,
     );
 }
+
+// The four ramp-fill / grid marks below share density's lowering substrate
+// (raster/heatmap/contour ride DensityLowerer{TwoD}; cell is pass-through) but
+// each renders through its own renderer — so each gets its own end-to-end
+// probe: real spec → DuckDB → renderer, no mocked batches.
+
+#[test]
+fn raster_renders_geometry() {
+    // Same two-axis binned substrate as density, drawn as one filled cell per
+    // occupied bin through the count ramp.
+    assert_renders(
+        "raster",
+        r#"
+data:
+  t: [{ a: 1, b: 2 }, { a: 2, b: 3 }, { a: 3, b: 2 }, { a: 2, b: 4 }, { a: 1, b: 3 }, { a: 3, b: 4 }]
+plot:
+  - mark: raster
+    data: { from: t }
+    x: a
+    y: b
+"#,
+    );
+}
+
+#[test]
+fn heatmap_renders_geometry() {
+    // The KDE-smoothed sibling of raster: every grid cell filled through the
+    // density ramp (HeatmapRenderer::augment_scales builds the Fill Sequential).
+    assert_renders(
+        "heatmap",
+        r#"
+data:
+  t: [{ a: 1, b: 2 }, { a: 2, b: 3 }, { a: 3, b: 2 }, { a: 2, b: 4 }, { a: 1, b: 3 }, { a: 3, b: 4 }]
+plot:
+  - mark: heatmap
+    data: { from: t }
+    x: a
+    y: b
+"#,
+    );
+}
+
+#[test]
+fn contour_renders_geometry() {
+    // Marching squares over the same reconstructed KDE grid. `thresholds` on a
+    // contour mark is the ISO-LEVEL count — the lowerer-registration shield must
+    // keep it out of the density SQL's bin count, so this also fails if the
+    // shield regresses into emitting a degenerate 5-bucket grid.
+    assert_renders(
+        "contour",
+        r#"
+data:
+  t: [{ a: 1, b: 2 }, { a: 2, b: 3 }, { a: 3, b: 2 }, { a: 2, b: 4 }, { a: 1, b: 3 }, { a: 3, b: 4 }, { a: 2, b: 3 }, { a: 2, b: 3 }]
+plot:
+  - mark: contour
+    data: { from: t }
+    x: a
+    y: b
+    thresholds: 5
+"#,
+    );
+}
+
+#[test]
+fn cell_renders_geometry() {
+    // Pre-aggregated categorical × categorical grid with a numeric fill: Band
+    // scales on both axes, one rect per pair, fill ramped through the Sequential
+    // that CellRenderer::augment_scales builds (a numeric fill would otherwise
+    // infer Linear — the trap the density-marks recon called out).
+    assert_renders(
+        "cell",
+        r#"
+data:
+  t: [{ day: Mon, slot: am, v: 1 }, { day: Mon, slot: pm, v: 4 }, { day: Tue, slot: am, v: 2 }, { day: Tue, slot: pm, v: 8 }]
+plot:
+  - mark: cell
+    data: { from: t }
+    x: slot
+    y: day
+    fill: v
+"#,
+    );
+}
