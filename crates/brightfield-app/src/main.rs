@@ -17,7 +17,8 @@ use brightfield_render::channel::{Channel, ChannelMap};
 use brightfield_render::layout::ChartLayout;
 use brightfield_render::legend::{colour_legend_size, render_colour_legend_at};
 use brightfield_render::mark::{
-    default_renderers, find_renderer, CellRenderer, HeatmapRenderer, MarkRenderer, RasterRenderer,
+    default_renderers, find_renderer, CellRenderer, ContourRenderer, HeatmapRenderer,
+    MarkRenderer, RasterRenderer,
 };
 use brightfield_render::scale::{Scale, ScaleSet, SequentialScheme};
 use brightfield_render::scene::{build_multi_mark_scene, compose_dashboard, ChartData};
@@ -562,9 +563,10 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             .map(|(_, node)| raster_scheme(node.attributes.get("colorScheme")))
             .unwrap_or_default();
 
-        // Owned per-mark renderer overrides. Raster and heatmap marks use
-        // scheme-configured renderers (built here so the plot's colorScheme —
-        // and the mark's own `bandwidth` attribute — are honoured); every
+        // Owned per-mark renderer overrides. The ramp-fill marks (raster,
+        // heatmap, cell) use scheme-configured renderers, and heatmap/contour
+        // carry their mark-level attributes (bandwidth, thresholds) — built
+        // here so plot colorScheme and mark attrs reach the render; every
         // other mark borrows the shared registry. Declared before `chart_data`
         // so the boxes outlive the references into them.
         let mark_boxes: Vec<Option<Box<dyn MarkRenderer + Send + Sync>>> = group
@@ -583,6 +585,17 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
                     MarkKind::Cell => Some(
                         Box::new(CellRenderer { scheme }) as Box<dyn MarkRenderer + Send + Sync>
                     ),
+                    MarkKind::Contour => Some(Box::new(ContourRenderer {
+                        // `thresholds` on contour is the iso-level count
+                        // (renderer-side; the lowerer registration shields it
+                        // from the SQL bin count).
+                        thresholds: marks
+                            .get(mi)
+                            .and_then(|mk| mark_attr_f64(mk, "thresholds"))
+                            .filter(|t| *t >= 1.0)
+                            .map(|t| t as usize),
+                        bandwidth: marks.get(mi).and_then(|mk| mark_attr_f64(mk, "bandwidth")),
+                    }) as Box<dyn MarkRenderer + Send + Sync>),
                     _ => None,
                 }
             })

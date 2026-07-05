@@ -1911,6 +1911,87 @@ impl MarkRenderer for CellRenderer {
 }
 
 // ---------------------------------------------------------------------------
+// ContourRenderer (contour — iso-lines over the shared KDE grid)
+// ---------------------------------------------------------------------------
+
+/// Default iso-level count when the mark declares no `thresholds` (Mosaic's
+/// d3-contour-backed fixtures default to ~10 levels).
+const DEFAULT_CONTOUR_LEVELS: usize = 10;
+
+/// Renders density iso-lines: marching squares over the same
+/// [`build_kde_grid`] field the heatmap shades, at N evenly-spaced levels
+/// (card 0008, density marks).
+///
+/// `thresholds` here is the ISO-LEVEL COUNT (Mosaic semantics) — the lowerer
+/// registration shields it from the density lowerer's bin-count read, so it
+/// never changes the SQL; `bins` still sizes the grid. `bandwidth` overrides
+/// Silverman like the heatmap. Stroke is the literal steelblue default v1
+/// (per-level ramp strokes are deferred).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ContourRenderer {
+    /// Number of iso-levels (`thresholds:` attr); `DEFAULT_CONTOUR_LEVELS`
+    /// when absent.
+    pub thresholds: Option<usize>,
+    /// Explicit KDE bandwidth in data units (both axes); Silverman per axis
+    /// when absent.
+    pub bandwidth: Option<f64>,
+}
+
+impl MarkRenderer for ContourRenderer {
+    fn render(
+        &self,
+        scene: &mut Scene,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        scales: &ScaleSet,
+        _highlight: Option<&HighlightState>,
+    ) {
+        let (Some(x_col), Some(y_col)) =
+            (channel_map.get(Channel::X), channel_map.get(Channel::Y))
+        else {
+            return;
+        };
+        let (Some(x_scale), Some(y_scale)) =
+            (scales.get(Channel::X), scales.get(Channel::Y))
+        else {
+            return;
+        };
+        let Some(grid) = build_kde_grid(batch, x_col, y_col, self.bandwidth) else {
+            return;
+        };
+
+        let levels = crate::contour::iso_levels(
+            grid.max_density,
+            self.thresholds.unwrap_or(DEFAULT_CONTOUR_LEVELS),
+        );
+        let stroke = kurbo::Stroke::new(LINE_STROKE_WIDTH);
+        for level in levels {
+            let lines = crate::contour::contour_polylines(
+                &grid.density,
+                grid.rows(),
+                grid.cols(),
+                &grid.x_centres,
+                &grid.y_centres,
+                level,
+            );
+            for line in lines {
+                let mut points = line
+                    .iter()
+                    .map(|(x, y)| (x_scale.map_f64(*x), y_scale.map_f64(*y)))
+                    .filter(|(px, py)| px.is_finite() && py.is_finite());
+                let Some(first) = points.next() else { continue };
+                let mut path = BezPath::new();
+                path.move_to(first);
+                for p in points {
+                    path.line_to(p);
+                }
+                scene.stroke(&stroke, Affine::IDENTITY, DEFAULT_COLOUR, None, &path);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // RegressionRenderer (regressionY / regressionX)
 // ---------------------------------------------------------------------------
 
@@ -2257,6 +2338,7 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
     v.push((MarkKind::Raster, Box::new(RasterRenderer::default())));
     v.push((MarkKind::Heatmap, Box::new(HeatmapRenderer::default())));
     v.push((MarkKind::Cell, Box::new(CellRenderer::default())));
+    v.push((MarkKind::Contour, Box::new(ContourRenderer::default())));
     v.push((MarkKind::RegressionY, Box::new(RegressionRenderer::default())));
     v.push((MarkKind::RegressionX, Box::new(RegressionRenderer::default())));
     v
@@ -3497,6 +3579,58 @@ mod tests {
             .map(|v| packed(ramp.map_continuous(*v)))
             .collect();
         assert_eq!(drawn_explicit, expected, "bandwidth threads through to the drawn field");
+    }
+
+    // dmk_ac04: the renderer strokes one path per chained iso-line, and the
+    // `thresholds` attr drives the LEVEL count — 5 levels stroke strictly more
+    // iso-lines than 2 over the same grid, and the stroked path count equals a
+    // replay of contour_polylines over the same shared KDE grid at the same
+    // levels (the SQL-side half of the shield lives in brightfield-sql's
+    // dmk_ac04 regression test).
+    #[test]
+    fn dmk_ac04_contour_iso_line_count_follows_thresholds() {
+        let batch = heatmap_batch();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x_bin".to_string());
+        cm.insert(Channel::Y, "y_bin".to_string());
+        let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+
+        let paths_at = |thresholds: usize| {
+            let renderer = ContourRenderer {
+                thresholds: Some(thresholds),
+                bandwidth: None,
+            };
+            let mut scene = Scene::new();
+            renderer.render(&mut scene, &batch, &cm, &scales, None);
+            count_scene_paths(&scene)
+        };
+
+        // Expected per-level line counts, replayed over the same grid.
+        let grid = build_kde_grid(&batch, "x_bin", "y_bin", None).expect("grid builds");
+        let expected_at = |thresholds: usize| -> usize {
+            crate::contour::iso_levels(grid.max_density, thresholds)
+                .iter()
+                .map(|level| {
+                    crate::contour::contour_polylines(
+                        &grid.density,
+                        grid.rows(),
+                        grid.cols(),
+                        &grid.x_centres,
+                        &grid.y_centres,
+                        *level,
+                    )
+                    .len()
+                })
+                .sum()
+        };
+
+        let (two, five) = (paths_at(2), paths_at(5));
+        assert_eq!(two, expected_at(2), "one stroked path per chained iso-line");
+        assert_eq!(five, expected_at(5), "one stroked path per chained iso-line");
+        assert!(
+            five > two && two >= 2,
+            "thresholds drives the iso-line count ({two} at 2 vs {five} at 5)"
+        );
     }
 
     /// Pre-aggregated cell fixture: 2 days × 2 slots with a numeric value and a
