@@ -258,7 +258,17 @@ fn collect_subscribers(component: &Component, path: &str, graph: &mut Subscriber
             }
         }
         Component::Legend(l) => {
-            for v in l.options.values() {
+            for (k, v) in &l.options {
+                // `as: $sel` on a legend is a selection PRODUCER binding
+                // (card 0009, legend click-to-filter), not a subscription —
+                // registering it here wired the legend backwards, making
+                // `$sel` look consumed by the very legend that writes it.
+                // Producer bindings surface via [`build_legend_bindings`];
+                // any other param ref in a legend option keeps its
+                // subscriber semantics.
+                if k == "as" {
+                    continue;
+                }
                 if let ValueOrParamRef::Param(pr) = v {
                     graph
                         .entry(pr.0.clone())
@@ -1182,6 +1192,110 @@ fn option_string(mark: &Mark, key: &str) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Legend producer bindings (card 0009, lcf ac-01)
+// ---------------------------------------------------------------------------
+
+/// A legend's producer binding to a selection — one entry per standalone
+/// `legend: color` node carrying `as: $sel`, resolved to its `for:` plot.
+///
+/// The legend is a selection PRODUCER (clicking a swatch dispatches
+/// `column = 'category'`), so its contributor identity is the `for:` plot's
+/// node path: string-equal to `compile_selection`'s per-mark `self_source`,
+/// which gives self-exclusion by construction — the legend's own source plot
+/// never filters itself, keeping its launch-time colour scale valid.
+///
+/// Built by [`build_legend_bindings`] during [`analyse_spec`]. Legends
+/// without `as:`, non-`color` channels, and unresolvable `for:` targets
+/// yield no binding (they stay display-only).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegendBinding {
+    /// Component path of the legend node (e.g. `root/hconcat[1]`).
+    pub legend_path: ComponentPath,
+    /// Node path of the `for:` plot (e.g. `root/hconcat[0]`) — the
+    /// contributor identity used for crossfilter self-exclusion.
+    pub plot_path: ComponentPath,
+    /// Selection name the legend writes to (`as: $sel` → `"sel"`).
+    pub selection: String,
+    /// The colour column category predicates compare against, resolved from
+    /// the `for:` plot's first mark's `fill:` (else `stroke:`) channel.
+    pub colour_column: String,
+}
+
+/// The colour column of a plot's FIRST mark child: its `fill:` channel,
+/// falling back to `stroke:` (fill takes precedence, mirroring the app
+/// resolver's `colour_scale_of`). String-valued options only — a literal or
+/// param-bound colour channel is not a data column, so no binding forms.
+fn plot_colour_column(plot: &crate::ast::PlotNode) -> Option<String> {
+    for item in &plot.items {
+        if let Component::Mark(m) = item {
+            return option_string(m, "fill").or_else(|| option_string(m, "stroke"));
+        }
+    }
+    None
+}
+
+/// Walk the spec and build the legend producer bindings (card 0009).
+///
+/// `for:`-resolution mirrors the app's legend resolver (`resolve_legends`):
+/// an explicit `for: <name>` must match a colour-encoded plot's `name`
+/// attribute (last-wins on a duplicate name, matching the resolver); an
+/// absent `for:` falls back to the dashboard's sole colour-encoded plot; a
+/// non-literal `for:` (a param) never binds. "Colour-encoded" here means the
+/// plot's first mark carries a string `fill:`/`stroke:` column — the static
+/// mirror of the resolver's live colour-scale check.
+pub fn build_legend_bindings(spec: &Spec) -> Vec<LegendBinding> {
+    use crate::layout::{collect_legend_nodes, collect_plot_nodes};
+    use crate::vocab::LegendChannel;
+
+    // Every colour-encoded plot: (node path, colour column) — plus a
+    // name-keyed view for `for:` lookup.
+    let plots = collect_plot_nodes(spec);
+    let mut colour_plots: Vec<(String, String)> = Vec::new();
+    let mut by_name: HashMap<String, (String, String)> = HashMap::new();
+    for (path, node) in &plots {
+        let Some(column) = plot_colour_column(node) else {
+            continue;
+        };
+        colour_plots.push((path.clone(), column.clone()));
+        if let Some(SpecValue::String(name)) = node.attributes.get("name") {
+            by_name.insert(name.clone(), (path.clone(), column));
+        }
+    }
+    // The dashboard's sole colour-encoded plot — the `for:`-absent fallback.
+    let sole = match colour_plots.as_slice() {
+        [only] => Some(only.clone()),
+        _ => None,
+    };
+
+    let mut bindings = Vec::new();
+    for (legend_path, node) in collect_legend_nodes(spec) {
+        // Hit-testing is scoped to categorical colour legends; opacity and
+        // symbol are channel-gated (Unimplemented) and never bind.
+        if node.channel != LegendChannel::Color {
+            continue;
+        }
+        let Some(ValueOrParamRef::Param(selection)) = node.options.get("as") else {
+            continue; // no `as:` — display-only, exactly as card 0016 shipped
+        };
+        let resolved = match node.options.get("for") {
+            Some(ValueOrParamRef::Value(SpecValue::String(name))) => by_name.get(name).cloned(),
+            None => sole.clone(),
+            Some(_) => None,
+        };
+        let Some((plot_path, colour_column)) = resolved else {
+            continue;
+        };
+        bindings.push(LegendBinding {
+            legend_path: ComponentPath(legend_path),
+            plot_path: ComponentPath(plot_path),
+            selection: selection.0.clone(),
+            colour_column,
+        });
+    }
+    bindings
+}
+
+// ---------------------------------------------------------------------------
 // SpecAnalysis (ac-09, extended with cfs fields)
 // ---------------------------------------------------------------------------
 
@@ -1202,6 +1316,10 @@ pub struct SpecAnalysis {
     /// `interactor_bindings` to brush-compatible kinds and pairing each with
     /// resolved channel columns. Card 0006 v3 (cfs3) ac-05.
     pub brushable_bindings: Vec<BrushableBinding>,
+    /// Legend producer bindings — one per standalone `legend: color` node
+    /// bound `as:` a selection, resolved to its `for:` plot. Card 0009
+    /// (legend click-to-filter) lcf ac-01.
+    pub legend_bindings: Vec<LegendBinding>,
     /// Diagnostics discovered during analysis.
     pub warnings: Vec<ParseWarning>,
 }
@@ -1245,6 +1363,9 @@ pub fn analyse_spec(spec: &Spec) -> Result<SpecAnalysis, ParseError> {
     // filtered to brush-compatible kinds, paired with parent plot channels.
     let brushable_bindings = build_brushable_bindings(spec);
 
+    // Legend producer bindings (card 0009, lcf ac-01).
+    let legend_bindings = build_legend_bindings(spec);
+
     Ok(SpecAnalysis {
         subscriber_graph,
         dependency_edges,
@@ -1252,6 +1373,7 @@ pub fn analyse_spec(spec: &Spec) -> Result<SpecAnalysis, ParseError> {
         selection_subscribers,
         interactor_bindings,
         brushable_bindings,
+        legend_bindings,
         warnings,
     })
 }
@@ -1281,6 +1403,7 @@ mod tests {
             selection_subscribers: SelectionSubscriberGraph::new(),
             interactor_bindings: Vec::new(),
             brushable_bindings: Vec::new(),
+            legend_bindings: Vec::new(),
             warnings: Vec::new(),
         }
     }
@@ -2186,6 +2309,163 @@ plot:
                 (BrushKind::PointY, Some("speed"), Some("delay")),
             ],
             "toggleX→PointX and toggleY→PointY, each carrying the plot's channels"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Legend producer bindings — card 0009 (legend click-to-filter), lcf ac-01
+    // -----------------------------------------------------------------------
+
+    /// Two plots sharing a categorical column, with the legend bound
+    /// `as: $sel for: scatter` — the lcf_ac01 fixture.
+    const LEGEND_BINDING_SPEC: &str = r#"
+params:
+  sel: { select: crossfilter }
+data:
+  t:
+    - { x: 1, y: 3, species: adelie }
+    - { x: 2, y: 5, species: gentoo }
+hconcat:
+  - plot:
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+      fill: species
+    name: scatter
+  - legend: color
+    for: scatter
+    as: $sel
+  - plot:
+    - mark: dot
+      data: { from: t, filterBy: $sel }
+      x: x
+      y: y
+"#;
+
+    /// lcf_ac01: analysing a `legend: color as: $sel for: scatter` spec yields
+    /// a LegendBinding whose contributor is the `for:` plot's NODE path (the
+    /// self-exclusion identity), whose colour column comes from that plot's
+    /// first mark's fill channel, and whose legend path locates the node.
+    #[test]
+    fn lcf_ac01_legend_as_binding_resolves_producer_fields() {
+        let out = parse_spec(LEGEND_BINDING_SPEC, Format::Yaml).expect("parses");
+        let analysis = analyse_spec(&out.spec).expect("analysis succeeds");
+
+        assert_eq!(
+            analysis.legend_bindings.len(),
+            1,
+            "exactly one bound legend: {:?}",
+            analysis.legend_bindings
+        );
+        let b = &analysis.legend_bindings[0];
+        assert_eq!(b.selection, "sel", "`as: $sel` names the selection");
+        assert_eq!(
+            b.plot_path.0, "root/hconcat[0]",
+            "contributor = the for:-plot's node path (compile_selection's self_source)"
+        );
+        assert_eq!(
+            b.colour_column, "species",
+            "colour column from the for:-plot's first mark's fill channel"
+        );
+        assert_eq!(b.legend_path.0, "root/hconcat[1]", "the legend node's own path");
+    }
+
+    /// lcf_ac01 (the backwards-wiring trap, pinned): the legend's `as:` is a
+    /// producer binding, so the legend must NOT appear in `$sel`'s subscriber
+    /// graph — only marks subscribe (via filterBy). Before the fix the
+    /// analysis arm registered `as: $sel` as a legend subscription.
+    #[test]
+    fn lcf_ac01_legend_is_not_a_subscriber_of_its_selection() {
+        let out = parse_spec(LEGEND_BINDING_SPEC, Format::Yaml).expect("parses");
+        let analysis = analyse_spec(&out.spec).expect("analysis succeeds");
+
+        let subs = analysis
+            .subscriber_graph
+            .get("sel")
+            .expect("$sel is in the graph (the downstream mark subscribes)");
+        assert!(
+            !subs.is_empty() && subs.iter().all(|p| p.0.contains("/mark[")),
+            "subscribers of $sel are marks only, never the producing legend: {subs:?}"
+        );
+        assert!(
+            subs.iter().all(|p| !p.0.contains("/legend")),
+            "regression: `as:` must not wire the legend as a subscriber: {subs:?}"
+        );
+    }
+
+    /// lcf_ac01 (for:-resolution matches resolve_legends semantics): with
+    /// `for:` absent, the legend binds to the dashboard's SOLE colour-encoded
+    /// plot; with two colour-encoded plots the fallback is ambiguous and no
+    /// binding forms. A legend without `as:` never binds (display-only).
+    #[test]
+    fn lcf_ac01_sole_colour_plot_fallback_and_display_only() {
+        // for:-absent + one colour-encoded plot → binds to it.
+        let sole = r#"
+params:
+  sel: { select: crossfilter }
+hconcat:
+  - plot:
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+      fill: grp
+  - legend: color
+    as: $sel
+"#;
+        let out = parse_spec(sole, Format::Yaml).expect("parses");
+        let analysis = analyse_spec(&out.spec).expect("analysis succeeds");
+        assert_eq!(analysis.legend_bindings.len(), 1, "sole-colour-plot fallback binds");
+        assert_eq!(analysis.legend_bindings[0].plot_path.0, "root/hconcat[0]");
+        assert_eq!(analysis.legend_bindings[0].colour_column, "grp");
+
+        // for:-absent + TWO colour-encoded plots → ambiguous, no binding.
+        let ambiguous = r#"
+params:
+  sel: { select: crossfilter }
+hconcat:
+  - plot:
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+      fill: grp
+  - plot:
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+      fill: other
+  - legend: color
+    as: $sel
+"#;
+        let out = parse_spec(ambiguous, Format::Yaml).expect("parses");
+        let analysis = analyse_spec(&out.spec).expect("analysis succeeds");
+        assert!(
+            analysis.legend_bindings.is_empty(),
+            "two colour plots + no for: is ambiguous — no binding: {:?}",
+            analysis.legend_bindings
+        );
+
+        // No `as:` → display-only, no binding (0016 behaviour preserved).
+        let display_only = r#"
+hconcat:
+  - plot:
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+      fill: grp
+    name: scatter
+  - legend: color
+    for: scatter
+"#;
+        let out = parse_spec(display_only, Format::Yaml).expect("parses");
+        let analysis = analyse_spec(&out.spec).expect("analysis succeeds");
+        assert!(
+            analysis.legend_bindings.is_empty(),
+            "a display-only legend (no as:) yields no binding"
         );
     }
 }

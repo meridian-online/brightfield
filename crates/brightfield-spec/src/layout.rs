@@ -1114,7 +1114,12 @@ hconcat:
         assert_eq!(tree.rect().height, 200.0);
     }
 
-    // ac-11: legend as: bindings in subscriber graph (verify existing behaviour)
+    // ac-11 — REVISED (card 0009, lcf ac-01): `as:` on a legend is a selection
+    // PRODUCER binding (clicking a swatch WRITES the selection), so the
+    // corpus legends with `as: $toggle` / `as: $interval` must NOT appear in
+    // the subscriber graph. The original ac-11 pinned the backwards wiring
+    // (legend-as-subscriber); the fixed analysis arm skips the `as:` key and
+    // surfaces the binding via `legend_bindings` instead.
     #[test]
     fn mvdc_ac11_legend_subscriber_graph() {
         use std::path::PathBuf;
@@ -1128,18 +1133,15 @@ hconcat:
 
         let graph = crate::analysis::build_subscriber_graph(&out.spec);
 
-        // The legends.yaml spec has params: toggle and interval.
-        // Legends with `as: $toggle` and `as: $interval` should appear as subscribers.
-        let toggle_subs = graph.get("toggle").expect("toggle param in graph");
-        assert!(
-            toggle_subs.iter().any(|cp| cp.0.contains("legend")),
-            "toggle should have at least one legend subscriber, got: {toggle_subs:?}"
-        );
-        let interval_subs = graph.get("interval").expect("interval param in graph");
-        assert!(
-            interval_subs.iter().any(|cp| cp.0.contains("legend")),
-            "interval should have at least one legend subscriber, got: {interval_subs:?}"
-        );
+        // The params stay in the graph (declared params are seeded), but no
+        // legend subscribes to the selection it produces.
+        for param in ["toggle", "interval"] {
+            let subs = graph.get(param).expect("declared param in graph");
+            assert!(
+                subs.iter().all(|cp| !cp.0.contains("legend")),
+                "`as: ${param}` is a producer binding — no legend subscriber, got: {subs:?}"
+            );
+        }
     }
 
     // ac-13: vendored corpus specs with composition
