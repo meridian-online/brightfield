@@ -1,0 +1,31 @@
+# Framed window (card 0016): a spec-declared `meta.title` resolves into BOTH
+# the native macOS titlebar and the workspace header strip, the dashboard
+# mounts in a padded content area below the header, and the standalone legend
+# is hosted in the window at its layout rect — exactly as the headless PNG
+# composites it. Press `p` to toggle presentation mode (chrome hides, canvas
+# re-centres, window size unchanged).
+#
+#   cargo run -p brightfield-app -- examples/framed.yaml
+#   BRIGHTFIELD_DUMP_PNG=framed.png cargo run -p brightfield-app -- examples/framed.yaml
+meta:
+  title: Quarterly Species Mix
+data:
+  t:
+    - { x: 1, y: 3, grp: alpha }
+    - { x: 2, y: 5, grp: beta }
+    - { x: 3, y: 4, grp: gamma }
+    - { x: 4, y: 6, grp: alpha }
+    - { x: 5, y: 5, grp: beta }
+    - { x: 6, y: 2, grp: gamma }
+hconcat:
+  - plot:
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+      fill: grp
+    name: scatter
+    width: 380
+    height: 300
+  - legend: color
+    for: scatter

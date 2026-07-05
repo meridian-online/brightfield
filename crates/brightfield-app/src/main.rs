@@ -81,23 +81,45 @@ struct SliderPlacement {
 
 /// A standalone `legend:` node's placement (multi-view inc 6): its dashboard rect
 /// and the colour scale it displays, resolved from the plot its `for:` names. The
-/// headless/PNG path draws it into the composite; hosting it as a window element
-/// is a follow-up (see the legends/spacers memo).
+/// headless/PNG path draws it into the composite; the window hosts it as a
+/// display-only `LegendElement` at the same rect (card 0016).
 struct LegendPlacement {
     rect: Rect,
     scale: Scale,
 }
 
 /// A rendered dashboard: the bounding-box dimensions, one scene per plot, the
-/// placed slider widgets, and the standalone legends. The headless/PNG path
-/// composites these; the window hosts one element per plot + one per slider
-/// (legend window-hosting is a follow-up).
+/// placed slider widgets, the standalone legends, and the spec's declared
+/// `meta.title` (if any — the window title resolver consumes it). The
+/// headless/PNG path composites these; the window hosts one element per plot +
+/// one per slider + one per legend.
 struct Dashboard {
     width: u32,
     height: u32,
     plots: Vec<PlotRender>,
     sliders: Vec<SliderPlacement>,
     legends: Vec<LegendPlacement>,
+    meta_title: Option<String>,
+}
+
+/// Map each resolved [`LegendPlacement`] to its hosted window descriptor —
+/// one display-only [`brightfield_ui::PlacedLegend`] per placement, at the
+/// placement's rect (card 0016). The live path and the fww_ac05 view-model
+/// test share this single mapping.
+#[cfg(any(target_os = "macos", test))]
+fn placed_legend_views(legends: &[LegendPlacement]) -> Vec<brightfield_ui::PlacedLegend> {
+    legends
+        .iter()
+        .map(|l| {
+            brightfield_ui::PlacedLegend::new(
+                l.rect.x,
+                l.rect.y,
+                l.rect.width,
+                l.rect.height,
+                l.scale.clone(),
+            )
+        })
+        .collect()
 }
 
 /// The colour (fill/stroke) scale of a plot's [`ScaleSet`], if it has one — the
@@ -277,6 +299,10 @@ struct LivePlotMeta {
     /// standalone `legend:` node relocated it) — carried to the coordinator so a
     /// live re-render keeps the same suppression.
     draw_inline_legend: bool,
+    /// The plot's resolved `colorScheme` (default viridis) — carried to the
+    /// coordinator so a live rebuild constructs the same scheme-configured
+    /// raster renderer the first render used (card 0016).
+    scheme: SequentialScheme,
 }
 
 /// Thin wrapper for the headless/PNG path and the hot-reload watcher: runs the
@@ -522,6 +548,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             bindings,
             scales,
             draw_inline_legend,
+            scheme,
         });
     }
 
@@ -581,6 +608,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             plots,
             sliders,
             legends,
+            meta_title: parsed.spec.meta.as_ref().and_then(|m| m.title.clone()),
         },
         LiveParts {
             session,
@@ -775,20 +803,22 @@ fn main() {
         return;
     }
 
-    // Open a native GPUI window: one ChartElement per plot, positioned per the
+    // Open a native GPUI window: a WorkspaceView (header strip + padded content
+    // area — card 0016) hosting one ChartElement per plot, positioned per the
     // layout, each with its own ChartState (so interaction is per-plot).
     #[cfg(target_os = "macos")]
     {
         use gpui::AppContext;
+        use gpui::Focusable as _;
         use std::rc::Rc;
 
         let renderer = brightfield_ui::VelloRenderer::new();
         let app = gpui::Application::with_platform(Rc::new(gpui_macos::MacPlatform::new(false)));
         let spec_path = spec_path.to_string();
-        // `legends`: the standalone colour legends render in the headless/PNG
-        // composite; hosting them as window elements is a follow-up (see the
-        // legends/spacers memo), so the window path ignores them for now.
-        let Dashboard { width, height, plots, sliders, legends: _ } = dashboard;
+        let Dashboard { width, height, plots, sliders, legends, meta_title } = dashboard;
+        // The dashboard's display title — the ONE resolver call feeding both
+        // the native titlebar and the WorkspaceView header strip below.
+        let title = brightfield_ui::resolve_title(meta_title.as_deref(), &spec_path);
         let LiveParts {
             session,
             marks,
@@ -819,6 +849,7 @@ fn main() {
                     bindings: meta.bindings,
                     scales: meta.scales,
                     draw_inline_legend: meta.draw_inline_legend,
+                    scheme: meta.scheme,
                     state: w.state.clone(),
                 })
                 .collect();
@@ -858,14 +889,24 @@ fn main() {
                 })
                 .collect();
 
-            // Size the window's content to the dashboard instead of
-            // WindowOptions::default() (which opened a huge window with the chart
-            // in a corner and a black void around it). `window_bounds` is the
-            // CONTENT rect — the macOS titlebar is added above it — so use the
-            // exact dashboard size. The window is resizable; ChartView fills it
-            // with a white background and centres the plots, so enlarging shows a
-            // clean margin rather than a void (chart-scaling reflow is inc 6).
-            let window_size = gpui::size(gpui::px(width as f32), gpui::px(height as f32));
+            // One display-only legend descriptor per resolved placement, hosted
+            // at its layout rect beside the plots (card 0016).
+            let placed_legends = placed_legend_views(&legends);
+
+            // The workspace key bindings, declared as data: bare `p` toggles
+            // presentation mode inside the workspace key context (card 0016 —
+            // Brightfield's first GPUI action).
+            cx.bind_keys(brightfield_ui::workspace_key_bindings());
+
+            // Size the window's content to the dashboard plus the shell chrome
+            // (header strip + content padding — card 0016). `window_bounds` is
+            // the CONTENT rect — the macOS titlebar is added above it. The
+            // window is resizable; WorkspaceView fills it with a white
+            // background and centres the canvas, so enlarging shows a clean
+            // margin rather than a void (chart-scaling reflow is inc 6).
+            let (win_w, win_h) =
+                brightfield_ui::framed_window_size(f64::from(width), f64::from(height));
+            let window_size = gpui::size(gpui::px(win_w as f32), gpui::px(win_h as f32));
             let window_opts = gpui::WindowOptions {
                 window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::centered(
                     None,
@@ -873,23 +914,35 @@ fn main() {
                     cx,
                 ))),
                 titlebar: Some(gpui::TitlebarOptions {
-                    title: Some("Brightfield".into()),
+                    // The resolved dashboard title (document-app convention);
+                    // the header strip shows the same string.
+                    title: Some(title.clone().into()),
                     ..Default::default()
                 }),
                 ..Default::default()
             };
-            let _window = cx
+            let window = cx
                 .open_window(window_opts, move |_window, cx| {
-                    cx.new(|_| {
+                    let chart_view = cx.new(|_| {
                         brightfield_ui::ChartView::new(
                             f64::from(width),
                             f64::from(height),
                             charts,
                             placed_sliders,
+                            placed_legends,
                         )
-                    })
+                    });
+                    cx.new(|cx| brightfield_ui::WorkspaceView::new(title, chart_view, cx))
                 })
                 .expect("failed to open window");
+
+            // Focus the workspace root so the canvas-scoped `p` binding
+            // receives key dispatch from the first keypress.
+            window
+                .update(cx, |view, window, cx| {
+                    window.focus(&view.focus_handle(cx), cx);
+                })
+                .expect("focus workspace root");
 
             // Hot-reload: swap each plot's scene when the spec changes on disk.
             spawn_spec_watcher(cx, watched, spec_path);
@@ -1034,6 +1087,7 @@ hconcat:
             bindings: vec![],
             scales,
             draw_inline_legend: true,
+            scheme: SequentialScheme::default(),
         };
         let placements = super::resolve_legends(&spec, std::slice::from_ref(&meta));
         assert_eq!(placements.len(), 1, "one standalone legend resolves");
@@ -1149,6 +1203,92 @@ colorScheme: blues
         }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // fww_ac05 (card 0016): the view-model mapping hosts one display-only
+    // legend child per resolved placement, at the placement's rect — asserted
+    // over the descriptor list (no GPUI tree), through the same
+    // `placed_legend_views` the live window path calls.
+    #[test]
+    fn fww_ac05_one_legend_child_per_placement_at_its_rect() {
+        use brightfield_render::scale::Scale;
+        use brightfield_spec::layout::Rect;
+
+        let placements = vec![
+            super::LegendPlacement {
+                rect: Rect::new(400.0, 20.0, 90.0, 66.0),
+                scale: Scale::Colour {
+                    categories: vec!["a".into(), "b".into()],
+                    palette: vec![[0.3, 0.4, 0.6, 1.0], [0.9, 0.5, 0.1, 1.0]],
+                },
+            },
+            super::LegendPlacement {
+                rect: Rect::new(400.0, 120.0, 60.0, 108.0),
+                scale: Scale::Sequential {
+                    domain_min: 0.0,
+                    domain_max: 9.0,
+                    stops: brightfield_render::scale::SequentialScheme::Viridis.stops(),
+                },
+            },
+        ];
+
+        let views = super::placed_legend_views(&placements);
+        assert_eq!(views.len(), placements.len(), "one child per placement");
+        for (view, placement) in views.iter().zip(&placements) {
+            assert_eq!(view.x, placement.rect.x);
+            assert_eq!(view.y, placement.rect.y);
+            assert_eq!(view.width, placement.rect.width);
+            assert_eq!(view.height, placement.rect.height);
+        }
+        assert!(
+            matches!(views[0].scale, Scale::Colour { .. })
+                && matches!(views[1].scale, Scale::Sequential { .. }),
+            "each child carries its placement's scale"
+        );
+    }
+
+    // fww_ac06 (card 0016): colorScheme reaches the LIVE path — build_everything
+    // resolves the plot's declared scheme into LivePlotMeta, the field the
+    // coordinator threads into every live rebuild. Unknown schemes fall back to
+    // viridis (warning path). Render-only: no SQL / plan-hash involvement.
+    #[test]
+    fn fww_ac06_live_plot_meta_carries_declared_scheme() {
+        use brightfield_render::scale::SequentialScheme;
+
+        let build = |color_scheme: &str, file: &str| {
+            let src = format!(
+                r#"
+data:
+  points:
+    - {{ x: 1, y: 1 }}
+    - {{ x: 2, y: 2 }}
+plot:
+  - mark: raster
+    data: {{ from: points }}
+    x: x
+    y: y
+colorScheme: {color_scheme}
+"#
+            );
+            let dir = std::env::temp_dir().join(format!("bf-fww-ac06-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join(file);
+            std::fs::write(&path, src).unwrap();
+            let (_dashboard, live) =
+                super::build_everything(path.to_str().unwrap()).expect("pipeline runs");
+            live.plots[0].scheme
+        };
+
+        assert_eq!(
+            build("blues", "blues.yaml"),
+            SequentialScheme::Blues,
+            "the declared scheme rides LivePlotMeta into the live rebuild path"
+        );
+        assert_eq!(
+            build("notascheme", "unknown.yaml"),
+            SequentialScheme::Viridis,
+            "an unknown scheme warns and falls back to viridis"
+        );
     }
 
     #[test]

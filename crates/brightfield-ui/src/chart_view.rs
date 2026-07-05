@@ -10,7 +10,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use gpui::{div, px, rgb, Context, Entity, IntoElement, ParentElement, Render, Styled, Window};
+use gpui::{div, px, Context, Entity, IntoElement, ParentElement, Render, Styled, Window};
 
 use brightfield_engine::error::EngineError;
 use brightfield_engine::RecordBatch;
@@ -30,6 +30,7 @@ use crate::chart_element::ChartElement;
 use crate::chart_state::ChartState;
 use crate::crossfilter::CrossfilterCoordinator;
 use crate::interaction::InteractionState;
+use crate::legend_element::{LegendElement, PlacedLegend};
 use crate::slider::SliderBinding;
 use crate::slider_element::{SliderElement, SliderWidget};
 
@@ -73,10 +74,11 @@ pub struct PlacedSlider {
     pub coordinator: Option<Rc<RefCell<CrossfilterCoordinator>>>,
 }
 
-/// GPUI render component for a dashboard: hosts one [`ChartElement`] per plot and
-/// one [`SliderElement`] per slider, each absolutely positioned at its layout
-/// rect, in a container sized to the dashboard's bounding box. A single-plot spec
-/// is just a one-plot dashboard.
+/// GPUI render component for a dashboard: hosts one [`ChartElement`] per plot,
+/// one [`SliderElement`] per slider, and one display-only [`LegendElement`] per
+/// standalone legend, each absolutely positioned at its layout rect, in a
+/// container sized to the dashboard's bounding box. A single-plot spec is just
+/// a one-plot dashboard.
 pub struct ChartView {
     /// Dashboard width in pixels.
     width: f64,
@@ -86,71 +88,86 @@ pub struct ChartView {
     charts: Vec<PlacedChart>,
     /// The positioned slider widgets (card 0005).
     sliders: Vec<PlacedSlider>,
+    /// The positioned standalone legends (card 0016) — display-only, so they
+    /// live outside the chart/slider coordinator index spaces.
+    legends: Vec<PlacedLegend>,
 }
 
 impl ChartView {
-    /// Create a dashboard view of the given size hosting the positioned plots and
-    /// slider widgets.
+    /// Create a dashboard view of the given size hosting the positioned plots,
+    /// slider widgets, and standalone legends.
     pub fn new(
         width: f64,
         height: f64,
         charts: Vec<PlacedChart>,
         sliders: Vec<PlacedSlider>,
+        legends: Vec<PlacedLegend>,
     ) -> Self {
         Self {
             width,
             height,
             charts,
             sliders,
+            legends,
         }
     }
 }
 
 impl Render for ChartView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        // Fill the window with a white background and centre the dashboard, so a
-        // resized (larger) window shows a clean margin rather than the black void
-        // of the unpainted backing layer. The inner container is the dashboard's
-        // fixed size, with each plot absolutely positioned at its rect; each
-        // ChartElement reads its own ChartState and wires its own mouse events,
-        // so plots don't share interaction.
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The container is the dashboard's fixed size, with each plot absolutely
+        // positioned at its rect; each ChartElement reads its own ChartState and
+        // wires its own mouse events, so plots don't share interaction. (The
+        // white window background + centring moved up to WorkspaceView — card
+        // 0016 — so the dashboard canvas is exactly the spec-derived surface.)
+        //
+        // Legends rasterise through the shared Vello renderer the plots already
+        // hold; a dashboard always renders at least one plot, so the first
+        // chart's renderer serves the (sibling) legends.
+        let legend_renderer = self
+            .charts
+            .first()
+            .map(|c| c.state.read(cx).renderer().clone());
         div()
-            .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(rgb(0xffffff))
-            .child(
+            .relative()
+            .w(px(self.width as f32))
+            .h(px(self.height as f32))
+            .children(self.charts.iter().enumerate().map(|(i, c)| {
                 div()
-                    .relative()
-                    .w(px(self.width as f32))
-                    .h(px(self.height as f32))
-                    .children(self.charts.iter().enumerate().map(|(i, c)| {
-                        div()
-                            .absolute()
-                            .left(px(c.x as f32))
-                            .top(px(c.y as f32))
-                            .w(px(c.width as f32))
-                            .h(px(c.height as f32))
-                            .child(ChartElement::new(c.state.clone(), i, c.coordinator.clone()))
-                    }))
-                    .children(self.sliders.iter().enumerate().map(|(i, s)| {
-                        div()
-                            .absolute()
-                            .left(px(s.x as f32))
-                            .top(px(s.y as f32))
-                            .w(px(s.width as f32))
-                            .h(px(s.height as f32))
-                            .child(SliderElement::new(
-                                s.state.clone(),
-                                s.binding.clone(),
-                                s.width,
-                                s.height,
-                                i,
-                                s.coordinator.clone(),
-                            ))
-                    })),
-            )
+                    .absolute()
+                    .left(px(c.x as f32))
+                    .top(px(c.y as f32))
+                    .w(px(c.width as f32))
+                    .h(px(c.height as f32))
+                    .child(ChartElement::new(c.state.clone(), i, c.coordinator.clone()))
+            }))
+            .children(self.sliders.iter().enumerate().map(|(i, s)| {
+                div()
+                    .absolute()
+                    .left(px(s.x as f32))
+                    .top(px(s.y as f32))
+                    .w(px(s.width as f32))
+                    .h(px(s.height as f32))
+                    .child(SliderElement::new(
+                        s.state.clone(),
+                        s.binding.clone(),
+                        s.width,
+                        s.height,
+                        i,
+                        s.coordinator.clone(),
+                    ))
+            }))
+            .children(legend_renderer.into_iter().flat_map(|renderer| {
+                self.legends.iter().enumerate().map(move |(i, l)| {
+                    div()
+                        .absolute()
+                        .left(px(l.x as f32))
+                        .top(px(l.y as f32))
+                        .w(px(l.width as f32))
+                        .h(px(l.height as f32))
+                        .child(LegendElement::new(l, i, renderer.clone()))
+                })
+            }))
     }
 }
 
