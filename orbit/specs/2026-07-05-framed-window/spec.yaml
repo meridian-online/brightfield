@@ -73,10 +73,16 @@ gate:
   description: >
     cargo test --workspace green (no regressions in render/app/conformance
     suites, including the chart/slider interaction tests — index spaces
-    untouched); every pre-existing example PNG byte-identical to main;
-    brightfield-render diff limited to vocab.rs (legend.rs read-only,
-    no gpui dependency); brightfield-spec diff empty; no SQL, plan_hash,
-    or query-cache changes.
+    untouched); every pre-existing example PNG byte-identical to main
+    (except the three raster-family examples, whose pre-existing render
+    nondeterminism is documented under deferred — verified by diffing two
+    pristine renders of unmodified main); brightfield-render diff EMPTY
+    (legend.rs read-only, no gpui dependency); brightfield-spec diff
+    limited to vocab.rs — registry + guard test only, no parser/AST
+    changes. [Correction 2026-07-05: the original text placed vocab.rs in
+    brightfield-render; ComponentKind lives in brightfield-spec/src/vocab.rs,
+    making "spec diff empty" and ac-05's promotion mutually unsatisfiable
+    as drafted.] No SQL, plan_hash, or query-cache changes.
 
 implementation_notes:
   - "chart_view.rs:117-122 currently owns the white bg + centring — that decor moves up to the new workspace_view.rs; ChartView keeps only the fixed-size relative canvas with absolutely-positioned children."
@@ -88,6 +94,7 @@ implementation_notes:
   - "Tabletop contract (values/halt/kill/escalation): orbit/specs/2026-07-05-framed-window/tabletop.md — read before starting."
 
 deferred:
+  - "Raster render determinism: the 3 raster examples (raster, raster-blues, raster-legend) are flaky as byte-baselines — DuckDB GROUP BY row-order jitter varies the draw order of anti-aliased cell edges (~0.1-0.2% of pixels). Verified pre-existing: two pristine renders of unmodified main differ. Fix wants a deterministic ORDER BY in the density/raster lowerer SQL — separate chore, prohibited inside this spec's no-SQL gate."
   - "Legend hit-testing + click-to-filter (as: $sel) — next card; prereqs all land here + #31."
   - "Resize reflow (ChartState::set_dimensions stays dead; resize keeps showing margin)."
   - "Docks/panels/tabs/editor + layout persistence — gpui-component DockArea at the editor milestone, at a tag."
