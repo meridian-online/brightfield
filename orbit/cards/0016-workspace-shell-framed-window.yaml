@@ -1,0 +1,48 @@
+feature: "Workspace shell — the framed window"
+as_a: "analytics author viewing a dashboard in the native app"
+i_want: "the app window to frame my spec-derived canvas — a title, my legends, and authoring chrome I can hide"
+so_that: "the live window shows everything the published output shows, and I can preview exactly what a consumer will see"
+
+scenarios:
+  - name: "The canvas is framed, not bare"
+    given: "any example spec opened in the app"
+    when: "the window renders"
+    then: "the dashboard appears in a padded content area beneath a thin header strip — not an edge-to-edge canvas with only the OS titlebar for chrome"
+    source_lines: "memos/2026-07-04-framing-the-canvas.md: 'New WorkspaceView in brightfield-ui as window root, mounting the existing ChartView in a padded content area.'"
+
+  - name: "The dashboard announces its title"
+    given: "a spec declaring a top-level title: attribute"
+    when: "the window opens"
+    then: "the header strip shows that title; a spec without one shows its filename instead"
+    source_lines: "memos/2026-07-04-framing-the-canvas.md: 'dashboard title (spec filename or new title: attribute) in a thin header strip'"
+
+  - name: "Legends live in the window, not just the PNG"
+    given: "a spec with a standalone legend: color node — categorical or sequential"
+    when: "viewed in the live window"
+    then: "the legend renders at its laid-out position exactly as in the headless PNG: swatches for a categorical scale, the gradient bar for a sequential ramp"
+    source_lines: "memos/2026-07-04-framing-the-canvas.md: 'a LegendElement sibling in ChartView at the placed_legends rect, painting what render_colour_legend_at/colour_legend_size already produce for the composite'"
+
+  - name: "The window fits the frame"
+    given: "a dashboard of any composition — plots, sliders, legends, spacers"
+    when: "the window opens"
+    then: "it is sized to the dashboard's extent plus the chrome around it; nothing is clipped and chrome never overlaps the canvas"
+    source_lines: "memos/2026-07-04-framing-the-canvas.md: 'Window size formula = dashboard bbox (which already folds legend + slider rects) + chrome extents.'"
+
+  - name: "Presentation mode previews the consumer view"
+    given: "the framed window"
+    when: "I toggle presentation mode"
+    then: "the shell chrome disappears, leaving only the spec-derived canvas — plots, spec-declared widgets, legends; toggling again restores the chrome, and headless PNG output is identical either way"
+    source_lines: "memos/2026-07-04-framing-the-canvas.md: 'Presentation toggle — one action hiding header/rail... enforces the author/consumer seam from day one.'"
+
+goal: "Every example spec opens as a framed window — title strip, window-hosted legends (categorical swatches and the sequential gradient bar), working presentation toggle — with ComponentKind::Legend promoted to Implemented and every headless PNG byte-identical to before."
+
+maturity: "planned"
+
+specs: []
+
+references:
+  - "orbit/cards/memos/2026-07-04-framing-the-canvas.md: the source memo — three-layer framing model, Option A (minimal hand-rolled shell), spec↔shell ownership rule"
+  - "orbit/cards/memos/2026-07-05-rust-ui-field-scan.md: semantic-layer rule — shell logic framework-free (command registry as data, surface model as plain state machine, views as translation shims)"
+  - "Zed workspace layout: concepts only — its workspace/ui crates are GPL-3.0; gpui itself is Apache-2.0"
+  - "gpui-component (Apache-2.0): DockArea/Panel system — the adoption trigger is the in-app spec editor milestone; keep WorkspaceView thin so a DockArea can replace it without touching ChartView"
+  - "Tableau: legends are cards inside the composition — they publish with the dashboard, never the shell"
