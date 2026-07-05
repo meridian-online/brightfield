@@ -26,6 +26,10 @@ allow = [
   # the MPL-covered files' source stays available (it is: crates.io). Flag any
   # new MPL entrant in review rather than blocking the build.
   "MPL-2.0",
+  # 0BSD (BSD Zero Clause) is OSI-approved and maximally permissive — public-
+  # domain-equivalent, no attribution clause. Entrant: enum-iterator +
+  # enum-iterator-derive, via gpui-component (card 0017; approved 2026-07-06).
+  "0BSD",
 ]
 
 # Zed-tree crates whose manifests omit a license field. The zed repo licenses
