@@ -30,7 +30,7 @@ allow = [
 
 # Zed-tree crates whose manifests omit a license field. The zed repo licenses
 # its non-GPL crates Apache-2.0 (each of these sits alongside LICENSE-APACHE in
-# the tree; verified at pin 14f0a254).
+# the tree; verified at pin 1d217ee).
 [[licenses.clarify]]
 crate = "gpui_util"
 expression = "Apache-2.0"
