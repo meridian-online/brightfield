@@ -235,6 +235,37 @@ pub enum ParseWarning {
         /// The param name.
         name: String,
     },
+
+    /// A legend's `as:` references a param name that is not declared in
+    /// `params:`. The legend stays display-only (card 0009) — unlike
+    /// interactors, a legend producer binding requires a declared selection
+    /// because its self-exclusion contract depends on the declared
+    /// resolution.
+    LegendBindingMissing {
+        /// The undeclared param name.
+        name: String,
+    },
+
+    /// A legend's `as:` references a param that is declared as a
+    /// `ParamNode::Value`, not a `ParamNode::Selection`. The legend stays
+    /// display-only (card 0009).
+    LegendBindingNonSelection {
+        /// The param name.
+        name: String,
+    },
+
+    /// A legend's `as:` references a selection whose resolution is not
+    /// `crossfilter`. Only crossfilter resolution self-excludes the
+    /// contributor's own plot (`compile_selection`), so any other resolution
+    /// would let the legend filter its own `for:` plot and invalidate the
+    /// launch-time colour-scale snapshot; the legend stays display-only
+    /// (card 0009).
+    LegendBindingNonCrossfilter {
+        /// The param name.
+        name: String,
+        /// The declared resolution's wire name (e.g. `single`).
+        resolution: String,
+    },
 }
 
 /// Result of a successful parse.

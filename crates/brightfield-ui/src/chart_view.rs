@@ -75,10 +75,10 @@ pub struct PlacedSlider {
 }
 
 /// GPUI render component for a dashboard: hosts one [`ChartElement`] per plot,
-/// one [`SliderElement`] per slider, and one display-only [`LegendElement`] per
-/// standalone legend, each absolutely positioned at its layout rect, in a
-/// container sized to the dashboard's bounding box. A single-plot spec is just
-/// a one-plot dashboard.
+/// one [`SliderElement`] per slider, and one [`LegendElement`] per standalone
+/// legend (display-only unless bound to a selection — card 0009), each
+/// absolutely positioned at its layout rect, in a container sized to the
+/// dashboard's bounding box. A single-plot spec is just a one-plot dashboard.
 pub struct ChartView {
     /// Dashboard width in pixels.
     width: f64,
@@ -88,8 +88,10 @@ pub struct ChartView {
     charts: Vec<PlacedChart>,
     /// The positioned slider widgets (card 0005).
     sliders: Vec<PlacedSlider>,
-    /// The positioned standalone legends (card 0016) — display-only, so they
-    /// live outside the chart/slider coordinator index spaces.
+    /// The positioned standalone legends (card 0016). Display-only unless a
+    /// placement carries a selection binding (card 0009), in which case it
+    /// indexes the coordinator's OWN legend-binding space — distinct from the
+    /// chart/slider index spaces.
     legends: Vec<PlacedLegend>,
 }
 

@@ -35,6 +35,7 @@ maturity: "active"
 
 specs:
   - "orbit/specs/2026-04-22-multi-view-dashboard-composition/spec.yaml"
+  - "orbit/specs/2026-07-05-legend-click-filter/spec.yaml"
 
 references:
   - "brightfield-brief.md"

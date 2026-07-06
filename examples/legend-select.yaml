@@ -1,0 +1,46 @@
+# Legend click-to-filter (card 0009): the standalone legend is BOUND to a
+# selection — `as: $sel` — turning it into a producer. Clicking a species
+# swatch in the live window dispatches `species = '…'` and filters the right
+# plot to that species; clicking the same swatch again clears; clicking a
+# different swatch switches; clicking the empty legend panel clears. The
+# legend's contributor is its `for:` plot (scatter), so self-exclusion keeps
+# the left plot unfiltered and its colour scale stable.
+#
+# Window-gated (the click needs the macOS app). Headless resting render:
+#   BRIGHTFIELD_DUMP_PNG=legend-select.png cargo run -p brightfield-app -- examples/legend-select.yaml
+params:
+  sel: { select: crossfilter }
+data:
+  penguins:
+    - { flipper: 181, mass: 3750, species: adelie }
+    - { flipper: 186, mass: 3800, species: adelie }
+    - { flipper: 195, mass: 3250, species: adelie }
+    - { flipper: 193, mass: 3450, species: chinstrap }
+    - { flipper: 198, mass: 3775, species: chinstrap }
+    - { flipper: 201, mass: 4050, species: chinstrap }
+    - { flipper: 211, mass: 4500, species: gentoo }
+    - { flipper: 215, mass: 5100, species: gentoo }
+    - { flipper: 219, mass: 5250, species: gentoo }
+    - { flipper: 222, mass: 5700, species: gentoo }
+hconcat:
+  - plot:
+    - mark: dot
+      data: { from: penguins }
+      x: flipper
+      y: mass
+      fill: species
+    name: scatter
+    width: 340
+    height: 300
+  - legend: color
+    for: scatter
+    as: $sel
+  - plot:
+    # Detail view: filtered by the legend's selection. Clicking the gentoo
+    # swatch reduces this plot to gentoo's 4 dots; toggle-off restores all 10.
+    - mark: dot
+      data: { from: penguins, filterBy: $sel }
+      x: flipper
+      y: mass
+    width: 340
+    height: 300

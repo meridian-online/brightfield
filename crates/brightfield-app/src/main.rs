@@ -21,7 +21,8 @@ use brightfield_render::scale::{Scale, ScaleSet, SequentialScheme};
 use brightfield_render::scene::{build_multi_mark_scene, compose_dashboard, ChartData};
 use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::layout::{
-    collect_plot_nodes, placed_input_nodes, placed_legend_nodes, placed_plots, Rect,
+    collect_legend_nodes, collect_plot_nodes, placed_input_nodes, placed_legend_nodes,
+    placed_legends, placed_plots, Rect,
 };
 use brightfield_spec::parse_spec_path;
 use brightfield_spec::vocab::{InputKind, LegendChannel, MarkKind};
@@ -79,11 +80,16 @@ struct SliderPlacement {
     value: f64,
 }
 
-/// A standalone `legend:` node's placement (multi-view inc 6): its dashboard rect
-/// and the colour scale it displays, resolved from the plot its `for:` names. The
-/// headless/PNG path draws it into the composite; the window hosts it as a
-/// display-only `LegendElement` at the same rect (card 0016).
+/// A standalone `legend:` node's placement (multi-view inc 6): its component
+/// path, its dashboard rect, and the colour scale it displays, resolved from
+/// the plot its `for:` names. The headless/PNG path draws it into the
+/// composite; the window hosts it as a `LegendElement` at the same rect (card
+/// 0016) — display-only unless the node is bound `as:` a selection, in which
+/// case `path` joins it to its analysis [`LegendBinding`] (card 0009).
+///
+/// [`LegendBinding`]: brightfield_spec::analysis::LegendBinding
 struct LegendPlacement {
+    path: String,
     rect: Rect,
     scale: Scale,
 }
@@ -103,21 +109,44 @@ struct Dashboard {
 }
 
 /// Map each resolved [`LegendPlacement`] to its hosted window descriptor —
-/// one display-only [`brightfield_ui::PlacedLegend`] per placement, at the
-/// placement's rect (card 0016). The live path and the fww_ac05 view-model
-/// test share this single mapping.
+/// one [`brightfield_ui::PlacedLegend`] per placement, at the placement's
+/// rect (card 0016). The live path and the fww_ac05/lcf_ac05 view-model
+/// tests share this single mapping.
+///
+/// A placement whose node carries a producer binding (card 0009) — matched
+/// by legend path against `bindings`, categorical [`Scale::Colour`] only —
+/// is additionally wired to `coordinator` at its binding index, so a swatch
+/// click commits through `commit_legend_click`. Sequential (gradient) and
+/// unbound legends stay display-only, exactly as 0016 shipped.
 #[cfg(any(target_os = "macos", test))]
-fn placed_legend_views(legends: &[LegendPlacement]) -> Vec<brightfield_ui::PlacedLegend> {
+fn placed_legend_views(
+    legends: &[LegendPlacement],
+    bindings: &[brightfield_spec::analysis::LegendBinding],
+    coordinator: Option<&std::rc::Rc<std::cell::RefCell<brightfield_ui::CrossfilterCoordinator>>>,
+) -> Vec<brightfield_ui::PlacedLegend> {
     legends
         .iter()
         .map(|l| {
-            brightfield_ui::PlacedLegend::new(
+            let placed = brightfield_ui::PlacedLegend::new(
                 l.rect.x,
                 l.rect.y,
                 l.rect.width,
                 l.rect.height,
                 l.scale.clone(),
-            )
+            );
+            let bound = coordinator.and_then(|coord| {
+                if !matches!(l.scale, Scale::Colour { .. }) {
+                    return None;
+                }
+                bindings
+                    .iter()
+                    .position(|b| b.legend_path.0 == l.path)
+                    .map(|index| (index, coord.clone()))
+            });
+            match bound {
+                Some((index, coord)) => placed.with_binding(index, coord),
+                None => placed,
+            }
         })
         .collect()
 }
@@ -217,7 +246,14 @@ fn resolve_legends(spec: &brightfield_spec::ast::Spec, live_plots: &[LivePlotMet
     };
 
     let mut out = Vec::new();
-    for (rect, node) in placed_legend_nodes(spec, Rect::new(0.0, 0.0, 0.0, 0.0)) {
+    // The placed-rect ↔ AST-node join, path retained: the placement's path is
+    // what joins a bound legend to its analysis LegendBinding (card 0009).
+    let nodes = collect_legend_nodes(spec);
+    for placed in placed_legends(spec, Rect::new(0.0, 0.0, 0.0, 0.0)) {
+        let Some((_, node)) = nodes.iter().find(|(path, _)| path == &placed.path) else {
+            continue;
+        };
+        let rect = placed.rect;
         if node.channel != LegendChannel::Color {
             eprintln!(
                 "warning: standalone legend channel {:?} is unimplemented — skipping",
@@ -257,12 +293,74 @@ fn resolve_legends(spec: &brightfield_spec::ast::Spec, live_plots: &[LivePlotMet
             // concat can still overlap it — single-pass layout can't reflow.
             let (w, h) = colour_legend_size(&scale).unwrap_or((rect.width, rect.height));
             out.push(LegendPlacement {
+                path: placed.path,
                 rect: Rect::new(rect.x, rect.y, w, h),
                 scale,
             });
         }
     }
     out
+}
+
+/// Reconcile the analysis-side legend producer bindings against the LIVE
+/// legend placements (card 0009 F4, interim until the two population counts
+/// unify). `build_legend_bindings` counts colour-encoded plots by STRING
+/// `fill:`/`stroke:` option, while [`resolve_legends`] counts by live
+/// Colour/Sequential scale — the populations diverge (a numeric fill counts
+/// statically but infers Linear; a raster plot counts live via its Sequential
+/// Fill but has no fill option), so their sole-plot fallbacks can disagree.
+///
+/// (a) A binding whose legend has NO placement is discarded — a phantom
+/// binding would hold the coordinator open with no clickable surface.
+/// (b) A PLACED legend carrying `as:` with no surviving binding gets a
+/// diagnostic — its clicks would silently do nothing.
+///
+/// Returns the surviving bindings plus human-readable diagnostics (the caller
+/// eprintlns them); pure so both halves are headlessly testable.
+fn reconcile_legend_bindings(
+    spec: &brightfield_spec::ast::Spec,
+    placements: &[LegendPlacement],
+    bindings: Vec<brightfield_spec::analysis::LegendBinding>,
+) -> (Vec<brightfield_spec::analysis::LegendBinding>, Vec<String>) {
+    use brightfield_spec::ast::ValueOrParamRef;
+
+    let placed: HashSet<&str> = placements.iter().map(|l| l.path.as_str()).collect();
+    let (retained, orphaned): (Vec<_>, Vec<_>) = bindings
+        .into_iter()
+        .partition(|b| placed.contains(b.legend_path.0.as_str()));
+
+    let mut diagnostics: Vec<String> = orphaned
+        .iter()
+        .map(|b| {
+            format!(
+                "legend binding `as: ${}` at {} has no hosted legend — discarding \
+                 (the legend did not resolve to a colour scale, so its clicks would \
+                 have no surface)",
+                b.selection, b.legend_path.0
+            )
+        })
+        .collect();
+
+    let nodes = collect_legend_nodes(spec);
+    for l in placements {
+        if retained.iter().any(|b| b.legend_path.0 == l.path) {
+            continue;
+        }
+        let carries_as = nodes
+            .iter()
+            .find(|(path, _)| path == &l.path)
+            .is_some_and(|(_, node)| {
+                matches!(node.options.get("as"), Some(ValueOrParamRef::Param(_)))
+            });
+        if carries_as {
+            diagnostics.push(format!(
+                "legend at {} carries `as:` but no selection binding matched — \
+                 clicks on it will not filter",
+                l.path
+            ));
+        }
+    }
+    (retained, diagnostics)
 }
 
 /// Coerce a scalar `SpecValue` (a param default) to `f64` for a slider's resting
@@ -286,6 +384,9 @@ struct LiveParts {
     marks: Vec<MarkInput>,
     /// Per plot, aligned 1:1 with `Dashboard.plots`.
     plots: Vec<LivePlotMeta>,
+    /// Legend producer bindings (card 0009), in analysis order — the
+    /// coordinator's legend index space; placements join by legend path.
+    legend_bindings: Vec<brightfield_spec::analysis::LegendBinding>,
 }
 
 /// Per-plot live metadata captured during rendering, joined to its `ChartState`
@@ -308,11 +409,13 @@ struct LivePlotMeta {
 
 /// The launch-fixed chrome + render metadata the hot-reload gate compares
 /// against each rebuilt spec. The watcher can hot-swap plot scenes, but the
-/// window's chrome (titlebar/header title), its hosted legends, and the
-/// coordinator's per-plot render metadata (colorScheme, inline-legend
-/// suppression) are all captured at launch — a rebuild that changes any of
-/// them must fall back to "restart to apply" rather than silently reloading
-/// with stale chrome or reverting on the next gesture-driven re-render.
+/// window's chrome (titlebar/header title), its hosted legends, the legend
+/// selection bindings (a bound legend's click wiring — `as:`/`for:` — is
+/// captured into the coordinator at launch), and the coordinator's per-plot
+/// render metadata (colorScheme, inline-legend suppression) are all captured
+/// at launch — a rebuild that changes any of them must fall back to "restart
+/// to apply" rather than silently reloading with stale chrome, stale click
+/// wiring, or reverting on the next gesture-driven re-render.
 #[cfg(any(target_os = "macos", test))]
 #[derive(Debug, PartialEq)]
 struct ChromeSnapshot {
@@ -321,6 +424,12 @@ struct ChromeSnapshot {
     /// Per hosted legend, in document order: layout rect plus a cheap
     /// structural key of the displayed scale (its `Debug` form).
     legends: Vec<(f64, f64, f64, f64, String)>,
+    /// Per legend producer binding (card 0009), in analysis order: the click
+    /// wiring keys (legend path, `for:`-plot path, selection name, colour
+    /// column). An `as:`/`for:`-only edit changes these WITHOUT moving any
+    /// legend rect or scale, so the gate needs them explicitly — otherwise a
+    /// hot swap would keep the launch-time coordinator's stale click wiring.
+    legend_bindings: Vec<(String, String, String, String)>,
     /// Per plot, in dashboard order: path, resolved colour scheme, and
     /// whether the plot draws its own inline legend.
     plot_render_meta: Vec<(String, SequentialScheme, bool)>,
@@ -329,7 +438,12 @@ struct ChromeSnapshot {
 #[cfg(any(target_os = "macos", test))]
 impl ChromeSnapshot {
     /// Snapshot the chrome-relevant slice of a built dashboard.
-    fn capture(title: String, legends: &[LegendPlacement], plots: &[LivePlotMeta]) -> Self {
+    fn capture(
+        title: String,
+        legends: &[LegendPlacement],
+        bindings: &[brightfield_spec::analysis::LegendBinding],
+        plots: &[LivePlotMeta],
+    ) -> Self {
         Self {
             title,
             legends: legends
@@ -341,6 +455,17 @@ impl ChromeSnapshot {
                         l.rect.width,
                         l.rect.height,
                         format!("{:?}", l.scale),
+                    )
+                })
+                .collect(),
+            legend_bindings: bindings
+                .iter()
+                .map(|b| {
+                    (
+                        b.legend_path.0.clone(),
+                        b.plot_path.0.clone(),
+                        b.selection.clone(),
+                        b.colour_column.clone(),
                     )
                 })
                 .collect(),
@@ -363,6 +488,9 @@ fn chrome_divergence(launch: &ChromeSnapshot, rebuilt: &ChromeSnapshot) -> Optio
     if launch.legends != rebuilt.legends {
         return Some("legend placement/scale");
     }
+    if launch.legend_bindings != rebuilt.legend_bindings {
+        return Some("legend selection binding (as:/for:)");
+    }
     if launch.plot_render_meta != rebuilt.plot_render_meta {
         return Some("per-plot render metadata (colorScheme/inline legend)");
     }
@@ -382,7 +510,12 @@ fn chrome_divergence(launch: &ChromeSnapshot, rebuilt: &ChromeSnapshot) -> Optio
 fn run_pipeline(spec_path: &str) -> Result<(Dashboard, ChromeSnapshot), String> {
     build_everything(spec_path).map(|(dashboard, live)| {
         let title = brightfield_ui::resolve_title(dashboard.meta_title.as_deref(), spec_path);
-        let chrome = ChromeSnapshot::capture(title, &dashboard.legends, &live.plots);
+        let chrome = ChromeSnapshot::capture(
+            title,
+            &dashboard.legends,
+            &live.legend_bindings,
+            &live.plots,
+        );
         (dashboard, chrome)
     })
 }
@@ -421,6 +554,9 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
         .iter()
         .map(|bb| (bb.parent_plot.0.clone(), BrushBinding::from(bb)))
         .collect();
+    // Legend producer bindings (card 0009), kept for the window path — a
+    // bound legend's swatch click dispatches through the coordinator.
+    let legend_bindings = analysis.legend_bindings.clone();
 
     // 3. Load into engine (creates DuckDB views).
     let engine = Engine::new();
@@ -655,6 +791,15 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
     // moved into `LiveParts` (it borrows the per-plot scales).
     let legends = resolve_legends(&parsed.spec, &live_plots);
 
+    // Reconcile the producer bindings against the live placements (card 0009
+    // F4): drop phantom bindings with no hosted legend, and diagnose placed
+    // `as:` legends whose clicks would be dead.
+    let (legend_bindings, legend_binding_diags) =
+        reconcile_legend_bindings(&parsed.spec, &legends, legend_bindings);
+    for d in &legend_binding_diags {
+        eprintln!("warning: {d}");
+    }
+
     // Fold slider + legend rects into the dashboard size so a widget beside/below
     // the plots reserves its space (the window is the bounding box).
     let width = placed
@@ -684,6 +829,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             session,
             marks: mark_inputs,
             plots: live_plots,
+            legend_bindings,
         },
     ))
 }
@@ -908,13 +1054,15 @@ fn main() {
             session,
             marks,
             plots: live_plots_meta,
+            legend_bindings,
         } = live;
         // Launch-time chrome snapshot for the hot-reload gate: the title,
-        // hosted legends, and per-plot render metadata are fixed at launch,
-        // so the watcher refuses to hot-swap when a rebuild diverges on any
-        // of them ("restart to apply" — same contract as a layout change).
+        // hosted legends, legend selection bindings (click wiring), and
+        // per-plot render metadata are fixed at launch, so the watcher
+        // refuses to hot-swap when a rebuild diverges on any of them
+        // ("restart to apply" — same contract as a layout change).
         let launch_chrome =
-            ChromeSnapshot::capture(title.clone(), &legends, &live_plots_meta);
+            ChromeSnapshot::capture(title.clone(), &legends, &legend_bindings, &live_plots_meta);
         app.run(move |cx| {
             // One ChartState per plot; the watcher tracks each by its stable
             // path + geometry for hot-reload.
@@ -949,8 +1097,18 @@ fn main() {
             // matches its binding.
             let slider_bindings: Vec<SliderBinding> =
                 sliders.iter().map(|s| s.binding.clone()).collect();
-            let coordinator =
-                CrossfilterCoordinator::new(session, marks, live_plots, slider_bindings);
+            // Coordinator legend bindings (card 0009), in analysis order — the
+            // same slice `placed_legend_views` positions against, so a hosted
+            // legend's index matches its binding.
+            let legend_select_bindings: Vec<brightfield_ui::LegendSelectBinding> =
+                legend_bindings.iter().map(Into::into).collect();
+            let coordinator = CrossfilterCoordinator::new(
+                session,
+                marks,
+                live_plots,
+                slider_bindings,
+                legend_select_bindings,
+            );
 
             // One placed chart per plot, each wired to the shared coordinator.
             let charts: Vec<brightfield_ui::PlacedChart> = watched
@@ -980,9 +1138,12 @@ fn main() {
                 })
                 .collect();
 
-            // One display-only legend descriptor per resolved placement, hosted
-            // at its layout rect beside the plots (card 0016).
-            let placed_legends = placed_legend_views(&legends);
+            // One hosted legend descriptor per resolved placement, at its
+            // layout rect beside the plots (card 0016) — a bound categorical
+            // legend additionally carries the coordinator + its binding index,
+            // arming click-to-filter (card 0009); the rest stay display-only.
+            let hosted_legends =
+                placed_legend_views(&legends, &legend_bindings, coordinator.as_ref());
 
             // The workspace key bindings, declared as data: bare `p` toggles
             // presentation mode inside the workspace key context (card 0016 —
@@ -1020,7 +1181,7 @@ fn main() {
                             f64::from(height),
                             charts,
                             placed_sliders,
-                            placed_legends,
+                            hosted_legends,
                         )
                     });
                     cx.new(|cx| brightfield_ui::WorkspaceView::new(title, chart_view, cx))
@@ -1307,6 +1468,7 @@ colorScheme: blues
 
         let placements = vec![
             super::LegendPlacement {
+                path: "root/hconcat[1]".into(),
                 rect: Rect::new(400.0, 20.0, 90.0, 66.0),
                 scale: Scale::Colour {
                     categories: vec!["a".into(), "b".into()],
@@ -1314,6 +1476,7 @@ colorScheme: blues
                 },
             },
             super::LegendPlacement {
+                path: "root/hconcat[2]".into(),
                 rect: Rect::new(400.0, 120.0, 60.0, 108.0),
                 scale: Scale::Sequential {
                     domain_min: 0.0,
@@ -1323,19 +1486,107 @@ colorScheme: blues
             },
         ];
 
-        let views = super::placed_legend_views(&placements);
+        let views = super::placed_legend_views(&placements, &[], None);
         assert_eq!(views.len(), placements.len(), "one child per placement");
         for (view, placement) in views.iter().zip(&placements) {
             assert_eq!(view.x, placement.rect.x);
             assert_eq!(view.y, placement.rect.y);
             assert_eq!(view.width, placement.rect.width);
             assert_eq!(view.height, placement.rect.height);
+            assert!(view.binding.is_none(), "no bindings, no coordinator: display-only");
         }
         assert!(
             matches!(views[0].scale, Scale::Colour { .. })
                 && matches!(views[1].scale, Scale::Sequential { .. }),
             "each child carries its placement's scale"
         );
+    }
+
+    // lcf_ac05 (card 0009): the view-model mapping arms click-to-filter ONLY
+    // for a bound categorical legend — it carries the coordinator + its
+    // binding index (positioned by legend path against the analysis binding
+    // list) — while Sequential and unbound placements stay display-only.
+    #[test]
+    fn lcf_ac05_only_bound_colour_legends_carry_coordinator_and_index() {
+        use brightfield_render::scale::Scale;
+        use brightfield_spec::analysis::{ComponentPath, LegendBinding};
+        use brightfield_spec::layout::Rect;
+        use brightfield_ui::{CrossfilterCoordinator, LegendSelectBinding, MarkInput};
+        use brightfield_engine::Engine;
+        use brightfield_spec::analysis::analyse_spec;
+
+        // A real (legend-only) coordinator over a minimal live session.
+        let yaml = r#"
+params:
+  sel: { select: crossfilter }
+data:
+  t:
+    - { x: 1, y: 2, g: a }
+plot:
+  - mark: dot
+    data: { from: t, filterBy: $sel }
+    x: x
+    y: y
+    fill: g
+"#;
+        let parsed = parse_spec(yaml, Format::Yaml).expect("parse");
+        let analysis = analyse_spec(&parsed.spec).expect("analyse");
+        let session = Engine::new()
+            .load_spec(parsed.spec, analysis, None)
+            .expect("load")
+            .session;
+        let ui_binding = LegendSelectBinding {
+            selection_name: "sel".into(),
+            contributor: ComponentPath("root".into()),
+            column: "g".into(),
+        };
+        let coordinator =
+            CrossfilterCoordinator::new(session, Vec::<MarkInput>::new(), vec![], vec![], vec![ui_binding])
+                .expect("legend-only liveness (lcf_ac03) keeps the coordinator");
+
+        let colour = Scale::Colour {
+            categories: vec!["a".into()],
+            palette: vec![[0.3, 0.4, 0.6, 1.0]],
+        };
+        let placements = vec![
+            // Bound categorical legend (path matches the binding below).
+            super::LegendPlacement {
+                path: "root/hconcat[1]".into(),
+                rect: Rect::new(400.0, 20.0, 90.0, 30.0),
+                scale: colour.clone(),
+            },
+            // Sequential legend — never clickable, even if a path matched.
+            super::LegendPlacement {
+                path: "root/hconcat[2]".into(),
+                rect: Rect::new(400.0, 80.0, 60.0, 108.0),
+                scale: Scale::Sequential {
+                    domain_min: 0.0,
+                    domain_max: 9.0,
+                    stops: brightfield_render::scale::SequentialScheme::Viridis.stops(),
+                },
+            },
+            // Unbound categorical legend (no binding carries its path).
+            super::LegendPlacement {
+                path: "root/hconcat[3]".into(),
+                rect: Rect::new(400.0, 200.0, 90.0, 30.0),
+                scale: colour,
+            },
+        ];
+        let bindings = vec![LegendBinding {
+            legend_path: ComponentPath("root/hconcat[1]".into()),
+            plot_path: ComponentPath("root/hconcat[0]".into()),
+            selection: "sel".into(),
+            colour_column: "g".into(),
+        }];
+
+        let views = super::placed_legend_views(&placements, &bindings, Some(&coordinator));
+        assert_eq!(views.len(), 3);
+        match &views[0].binding {
+            Some((index, _)) => assert_eq!(*index, 0, "bound legend carries its binding index"),
+            None => panic!("the bound categorical legend must carry the coordinator"),
+        }
+        assert!(views[1].binding.is_none(), "Sequential legends stay display-only");
+        assert!(views[2].binding.is_none(), "unbound legends stay display-only");
     }
 
     // fww_ac06 (card 0016): colorScheme reaches the LIVE path — build_everything
@@ -1429,6 +1680,12 @@ colorScheme: {color_scheme}
             |title: &str, scheme: SequentialScheme, inline: bool| super::ChromeSnapshot {
                 title: title.to_string(),
                 legends: vec![(10.0, 20.0, 120.0, 24.0, "Colour".to_string())],
+                legend_bindings: vec![(
+                    "root/hconcat[1]".to_string(),
+                    "root/hconcat[0]".to_string(),
+                    "sel".to_string(),
+                    "species".to_string(),
+                )],
                 plot_render_meta: vec![("/plot/0".to_string(), scheme, inline)],
             };
         let launch = snapshot("framed", SequentialScheme::Blues, true);
@@ -1472,14 +1729,35 @@ colorScheme: {color_scheme}
             super::chrome_divergence(&launch, &recoloured),
             Some("legend placement/scale")
         );
+
+        // Binding-only divergence (card 0009 F7): an `as:`/`for:`-only edit
+        // moves NO rect and changes NO scale — the legend still sits at the
+        // same place drawing the same swatches — but its click wiring
+        // (selection name here; equally plot path or colour column) differs,
+        // so a hot swap would dispatch through the stale launch bindings.
+        let mut rebound = snapshot("framed", SequentialScheme::Blues, true);
+        rebound.legend_bindings[0].2 = "other".to_string();
+        assert_eq!(
+            super::chrome_divergence(&launch, &rebound),
+            Some("legend selection binding (as:/for:)")
+        );
+        // Removing the binding altogether (as: deleted) equally gates.
+        let mut unbound = snapshot("framed", SequentialScheme::Blues, true);
+        unbound.legend_bindings.clear();
+        assert_eq!(
+            super::chrome_divergence(&launch, &unbound),
+            Some("legend selection binding (as:/for:)")
+        );
     }
 
     /// Card 0016 review (F2): `ChromeSnapshot::capture` maps the launch parts
     /// into the gate's comparison keys — rect + scale Debug key per legend,
+    /// the click-wiring key tuple per legend binding (card 0009 F7), and
     /// path + scheme + inline flag per plot.
     #[test]
     fn reload_gate_snapshot_captures_comparison_keys() {
         use brightfield_render::scale::{Scale, ScaleSet, SequentialScheme};
+        use brightfield_spec::analysis::{ComponentPath, LegendBinding};
         use brightfield_spec::layout::Rect;
 
         let scale = Scale::Colour {
@@ -1487,8 +1765,15 @@ colorScheme: {color_scheme}
             palette: vec![[0.3, 0.4, 0.6, 1.0]],
         };
         let legend = super::LegendPlacement {
+            path: "root/hconcat[1]".to_string(),
             rect: Rect::new(1.0, 2.0, 3.0, 4.0),
             scale: scale.clone(),
+        };
+        let binding = LegendBinding {
+            legend_path: ComponentPath("root/hconcat[1]".to_string()),
+            plot_path: ComponentPath("root/hconcat[0]".to_string()),
+            selection: "sel".to_string(),
+            colour_column: "species".to_string(),
         };
         let meta = super::LivePlotMeta {
             path: "/plot/0".to_string(),
@@ -1500,16 +1785,182 @@ colorScheme: {color_scheme}
             scheme: SequentialScheme::Blues,
         };
 
-        let snap = super::ChromeSnapshot::capture("framed".to_string(), &[legend], &[meta]);
+        let snap = super::ChromeSnapshot::capture(
+            "framed".to_string(),
+            &[legend],
+            &[binding],
+            &[meta],
+        );
         assert_eq!(snap.title, "framed");
         assert_eq!(
             snap.legends,
             vec![(1.0, 2.0, 3.0, 4.0, format!("{scale:?}"))]
         );
         assert_eq!(
+            snap.legend_bindings,
+            vec![(
+                "root/hconcat[1]".to_string(),
+                "root/hconcat[0]".to_string(),
+                "sel".to_string(),
+                "species".to_string(),
+            )],
+            "the click-wiring keys ride the snapshot (card 0009 F7)"
+        );
+        assert_eq!(
             snap.plot_render_meta,
             vec![("/plot/0".to_string(), SequentialScheme::Blues, false)]
         );
+    }
+
+    /// Card 0009 F4a (static/live divergence, phantom binding): a dot plot
+    /// with a string `fill:` plus a raster plot. `build_legend_bindings`
+    /// counts colour plots by string fill option (dot only → sole → binding
+    /// forms), but `resolve_legends` counts by LIVE scale (dot Colour AND
+    /// raster Sequential → two → no sole → the bare legend gets NO
+    /// placement). The reconcile must discard the phantom binding — else it
+    /// holds the coordinator open with no clickable surface — and liveness
+    /// must follow the placements.
+    #[test]
+    fn lcf_f4_orphan_binding_discarded_and_liveness_follows_placements() {
+        use brightfield_ui::{CrossfilterCoordinator, LegendSelectBinding};
+
+        const SRC: &str = r#"
+params:
+  sel: { select: crossfilter }
+data:
+  t:
+    - { x: 1, y: 2, g: a }
+    - { x: 2, y: 3, g: b }
+    - { x: 3, y: 4, g: a }
+hconcat:
+  - plot:
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+      fill: g
+  - plot:
+    - mark: raster
+      data: { from: t }
+      x: x
+      y: y
+  - legend: color
+    as: $sel
+"#;
+        let dir = std::env::temp_dir().join(format!("bf-lcf-f4a-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("dot-raster.yaml");
+        std::fs::write(&path, SRC).unwrap();
+
+        let (dashboard, live) =
+            super::build_everything(path.to_str().unwrap()).expect("pipeline runs");
+
+        // The static analysis DID produce a binding (the divergence premise)…
+        let parsed = parse_spec(SRC, Format::Yaml).expect("parse");
+        let analysis = analyse_spec(&parsed.spec).expect("analyse");
+        assert_eq!(
+            analysis.legend_bindings.len(),
+            1,
+            "premise: the static sole-fallback binds (string-fill population = 1)"
+        );
+        // …but the live placements skipped the legend (live population = 2),
+        // so the reconcile discards the phantom and diagnoses it.
+        assert!(
+            dashboard.legends.is_empty(),
+            "premise: two live colour scales → the bare legend gets no placement"
+        );
+        assert!(
+            live.legend_bindings.is_empty(),
+            "the phantom binding is discarded (card 0009 F4a)"
+        );
+        let (retained, diags) = super::reconcile_legend_bindings(
+            &parsed.spec,
+            &dashboard.legends,
+            analysis.legend_bindings,
+        );
+        assert!(retained.is_empty());
+        assert!(
+            diags.iter().any(|d| d.contains("no hosted legend")),
+            "the discard is diagnosed: {diags:?}"
+        );
+
+        // Coordinator liveness follows the placements: with the phantom gone
+        // (and no brushes/sliders) the dashboard is not live.
+        let legend_select: Vec<LegendSelectBinding> =
+            live.legend_bindings.iter().map(Into::into).collect();
+        assert!(
+            CrossfilterCoordinator::new(live.session, live.marks, vec![], vec![], legend_select)
+                .is_none(),
+            "no placement → no binding → no coordinator"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Card 0009 F4b (static/live divergence, dead clicks diagnosed): two
+    /// plots whose `fill:` options are BOTH strings (one names a numeric
+    /// column) — the static population is 2 (ambiguous, no binding) while
+    /// the live population is 1 (the numeric fill infers Linear, not
+    /// Colour), so the bare legend IS placed but carries `as:` with no
+    /// binding. The reconcile diagnoses the dead clicks.
+    #[test]
+    fn lcf_f4_placed_as_legend_without_binding_is_diagnosed() {
+        const SRC: &str = r#"
+params:
+  sel: { select: crossfilter }
+data:
+  t:
+    - { x: 1, y: 2, g: a, n: 5 }
+    - { x: 2, y: 3, g: b, n: 7 }
+hconcat:
+  - plot:
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+      fill: g
+  - plot:
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+      fill: n
+  - legend: color
+    as: $sel
+"#;
+        let dir = std::env::temp_dir().join(format!("bf-lcf-f4b-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("numeric-fill.yaml");
+        std::fs::write(&path, SRC).unwrap();
+
+        let (dashboard, live) =
+            super::build_everything(path.to_str().unwrap()).expect("pipeline runs");
+
+        let parsed = parse_spec(SRC, Format::Yaml).expect("parse");
+        let analysis = analyse_spec(&parsed.spec).expect("analyse");
+        assert!(
+            analysis.legend_bindings.is_empty(),
+            "premise: two string-fill plots → static sole-fallback is ambiguous"
+        );
+        assert_eq!(
+            dashboard.legends.len(),
+            1,
+            "premise: one live Colour scale → the bare legend IS placed"
+        );
+        assert!(live.legend_bindings.is_empty());
+
+        let (retained, diags) = super::reconcile_legend_bindings(
+            &parsed.spec,
+            &dashboard.legends,
+            analysis.legend_bindings,
+        );
+        assert!(retained.is_empty());
+        assert!(
+            diags.iter().any(|d| d.contains("clicks on it will not filter")),
+            "the placed-but-unbound `as:` legend is diagnosed (card 0009 F4b): {diags:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
