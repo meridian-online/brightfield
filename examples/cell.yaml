@@ -1,0 +1,47 @@
+# Cell mark (card 0008 density marks): a calendar-style value matrix. Each row
+# of the pre-aggregated day x hour table becomes one Band x Band cell coloured
+# by its numeric `fill:` value through a sequential ramp (viridis default) -
+# the classic "activity by weekday and hour" grid. A categorical fill would
+# instead take the ordinary swatch Colour path.
+#
+#   BRIGHTFIELD_DUMP_PNG=cell.png cargo run -p brightfield-app -- examples/cell.yaml
+data:
+  activity:
+    - { day: Mon, hour: "08", value: 3 }
+    - { day: Mon, hour: "10", value: 7 }
+    - { day: Mon, hour: "12", value: 12 }
+    - { day: Mon, hour: "14", value: 9 }
+    - { day: Mon, hour: "16", value: 6 }
+    - { day: Mon, hour: "18", value: 2 }
+    - { day: Tue, hour: "08", value: 4 }
+    - { day: Tue, hour: "10", value: 9 }
+    - { day: Tue, hour: "12", value: 14 }
+    - { day: Tue, hour: "14", value: 11 }
+    - { day: Tue, hour: "16", value: 7 }
+    - { day: Tue, hour: "18", value: 3 }
+    - { day: Wed, hour: "08", value: 5 }
+    - { day: Wed, hour: "10", value: 11 }
+    - { day: Wed, hour: "12", value: 16 }
+    - { day: Wed, hour: "14", value: 13 }
+    - { day: Wed, hour: "16", value: 8 }
+    - { day: Wed, hour: "18", value: 4 }
+    - { day: Thu, hour: "08", value: 4 }
+    - { day: Thu, hour: "10", value: 10 }
+    - { day: Thu, hour: "12", value: 15 }
+    - { day: Thu, hour: "14", value: 12 }
+    - { day: Thu, hour: "16", value: 9 }
+    - { day: Thu, hour: "18", value: 5 }
+    - { day: Fri, hour: "08", value: 2 }
+    - { day: Fri, hour: "10", value: 6 }
+    - { day: Fri, hour: "12", value: 10 }
+    - { day: Fri, hour: "14", value: 7 }
+    - { day: Fri, hour: "16", value: 4 }
+    - { day: Fri, hour: "18", value: 1 }
+plot:
+  - mark: cell
+    data: { from: activity }
+    x: hour
+    y: day
+    fill: value
+width: 560
+height: 360

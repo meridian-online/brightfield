@@ -386,6 +386,26 @@ fn build_density_2d(table: &str, x_col: &str, y_col: &str, bins: i64) -> QueryPl
     }
 }
 
+/// Contour's lowerer: `DensityLowerer { TwoD }` behind an attribute shield.
+///
+/// On a contour mark `thresholds` counts ISO-LEVELS (Mosaic semantics,
+/// consumed by the renderer); `DensityLowerer` reads `thresholds` as its SQL
+/// BIN count. The shield strips `thresholds` from the option bag before
+/// delegating, so the collision can never reach the emitted SQL — `bins`
+/// stays available to size the grid. This is a registration-layer concern
+/// only; the parser is untouched (card 0008, density marks).
+pub struct ContourAttrShield {
+    inner: DensityLowerer,
+}
+
+impl MarkLower for ContourAttrShield {
+    fn lower(&self, mark: &Mark, ctx: &LowerCtx<'_>) -> Result<QueryPlan, EmitError> {
+        let mut shielded = mark.clone();
+        shielded.options.shift_remove("thresholds");
+        self.inner.lower(&shielded, ctx)
+    }
+}
+
 /// Build the registry of mark lowerers.
 ///
 /// Registers SimpleLowerer for Dot, Line, BarX, BarY; the statistical-mark
@@ -406,6 +426,11 @@ pub fn default_lowerers() -> Vec<(MarkKind, Box<dyn MarkLower>)> {
         (MarkKind::Rect, Box::new(SimpleLowerer)),
         (MarkKind::RectX, Box::new(SimpleLowerer)),
         (MarkKind::RectY, Box::new(SimpleLowerer)),
+        // Cell v1 is pass-through over PRE-AGGREGATED rows — one row per
+        // (x category, y category) pair with a numeric fill column. The
+        // self-aggregating form (fill: count/avg → CellLowerer) is deferred
+        // with hexbin (card 0008, density marks).
+        (MarkKind::Cell, Box::new(SimpleLowerer)),
         (MarkKind::RegressionY, Box::new(RegressionLowerer)),
         (MarkKind::RegressionX, Box::new(RegressionLowerer)),
         (
@@ -432,6 +457,25 @@ pub fn default_lowerers() -> Vec<(MarkKind, Box<dyn MarkLower>)> {
             MarkKind::Raster,
             Box::new(DensityLowerer {
                 kind: DensityLowerKind::TwoD,
+            }),
+        ),
+        // Heatmap reuses the same 2D density binning; the renderer smooths the
+        // reconstructed grid (kde_2d) and ramps EVERY cell — raster's smoothed
+        // sibling. Zero new SQL (card 0008, density marks).
+        (
+            MarkKind::Heatmap,
+            Box::new(DensityLowerer {
+                kind: DensityLowerKind::TwoD,
+            }),
+        ),
+        // Contour rides the same binning behind the thresholds attr-shield —
+        // see ContourAttrShield.
+        (
+            MarkKind::Contour,
+            Box::new(ContourAttrShield {
+                inner: DensityLowerer {
+                    kind: DensityLowerKind::TwoD,
+                },
             }),
         ),
     ]
@@ -609,7 +653,10 @@ mod tests {
         assert!(kinds.contains(&MarkKind::DensityY));
         assert!(kinds.contains(&MarkKind::Density));
         assert!(kinds.contains(&MarkKind::Raster));
-        assert_eq!(kinds.len(), 18);
+        assert!(kinds.contains(&MarkKind::Heatmap));
+        assert!(kinds.contains(&MarkKind::Cell));
+        assert!(kinds.contains(&MarkKind::Contour));
+        assert_eq!(kinds.len(), 21);
     }
 
     #[test]
@@ -867,6 +914,91 @@ mod tests {
             }
             other => panic!("expected 2D Aggregation, got {other:?}"),
         }
+    }
+
+    // dmk_ac04 (card 0008, density marks): the contour attr-shield keeps
+    // `thresholds` (ISO-LEVEL count on a contour mark) out of the density
+    // lowerer's BIN-count read — the emitted bucket count stays at the default
+    // 100 — while `bins` still sizes the grid, and a plain density mark keeps
+    // reading `thresholds` as bins.
+    #[test]
+    fn dmk_ac04_contour_attr_shield_keeps_thresholds_out_of_sql() {
+        let ctx = make_ctx();
+        let registry = default_lowerers();
+        let group_by_of = |plan: QueryPlan| -> Vec<String> {
+            let QueryPlan::Order { input, .. } = plan else {
+                panic!("expected Order-wrapped Aggregation");
+            };
+            match *input {
+                QueryPlan::Aggregation { group_by, .. } => group_by,
+                other => panic!("expected Aggregation, got {other:?}"),
+            }
+        };
+
+        // Contour with thresholds: 12 → bucket count stays the default 100.
+        let contour = make_mark_with_options(
+            MarkKind::Contour,
+            vec![
+                ("x", SpecValue::String("weight".to_string())),
+                ("y", SpecValue::String("height".to_string())),
+                ("thresholds", SpecValue::Integer(12)),
+            ],
+        );
+        let shielded = group_by_of(
+            find_lowerer(MarkKind::Contour, &registry)
+                .lower(&contour, &ctx)
+                .expect("lowers"),
+        );
+        assert!(
+            shielded[0].contains("* 100") && shielded[1].contains("* 100"),
+            "shielded contour bins at the default 100, got {shielded:?}"
+        );
+        assert!(
+            !shielded[0].contains("12") && !shielded[1].contains("12"),
+            "thresholds must not reach the contour SQL, got {shielded:?}"
+        );
+
+        // The shield leaves the original mark untouched (it clones).
+        assert!(contour.options.contains_key("thresholds"));
+
+        // `bins` still sizes the contour grid.
+        let contour_bins = make_mark_with_options(
+            MarkKind::Contour,
+            vec![
+                ("x", SpecValue::String("weight".to_string())),
+                ("y", SpecValue::String("height".to_string())),
+                ("bins", SpecValue::Integer(20)),
+                ("thresholds", SpecValue::Integer(12)),
+            ],
+        );
+        let with_bins = group_by_of(
+            find_lowerer(MarkKind::Contour, &registry)
+                .lower(&contour_bins, &ctx)
+                .expect("lowers"),
+        );
+        assert!(
+            with_bins[0].contains("* 20"),
+            "bins still sizes the contour grid, got {with_bins:?}"
+        );
+
+        // A density mark's thresholds still reads as its bin count.
+        let density = make_mark_with_options(
+            MarkKind::Density,
+            vec![
+                ("x", SpecValue::String("weight".to_string())),
+                ("y", SpecValue::String("height".to_string())),
+                ("thresholds", SpecValue::Integer(12)),
+            ],
+        );
+        let unshielded = group_by_of(
+            find_lowerer(MarkKind::Density, &registry)
+                .lower(&density, &ctx)
+                .expect("lowers"),
+        );
+        assert!(
+            unshielded[0].contains("* 12"),
+            "density keeps thresholds-as-bins, got {unshielded:?}"
+        );
     }
 
     #[test]

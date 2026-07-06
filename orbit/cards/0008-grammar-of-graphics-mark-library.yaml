@@ -26,6 +26,8 @@ maturity: "planned"
 
 specs:
   - orbit/specs/2026-04-28-statistical-marks/spec.yaml
+  - orbit/specs/2026-07-05-sequential-colour-scale/spec.yaml
+  - orbit/specs/2026-07-06-density-marks/spec.yaml
 
 references:
   - "brightfield-brief.md"

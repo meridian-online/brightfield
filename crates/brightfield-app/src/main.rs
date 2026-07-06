@@ -16,7 +16,10 @@ use brightfield_engine::{Engine, Session};
 use brightfield_render::channel::{Channel, ChannelMap};
 use brightfield_render::layout::ChartLayout;
 use brightfield_render::legend::{colour_legend_size, render_colour_legend_at};
-use brightfield_render::mark::{default_renderers, find_renderer, MarkRenderer, RasterRenderer};
+use brightfield_render::mark::{
+    default_renderers, find_renderer, CellRenderer, ContourRenderer, HeatmapRenderer,
+    MarkRenderer, RasterRenderer,
+};
 use brightfield_render::scale::{Scale, ScaleSet, SequentialScheme};
 use brightfield_render::scene::{build_multi_mark_scene, compose_dashboard, ChartData};
 use brightfield_spec::analysis::analyse_spec;
@@ -182,6 +185,18 @@ fn raster_scheme(color_scheme: Option<&brightfield_spec::ast::SpecValue>) -> Seq
             SequentialScheme::default()
         }),
         _ => SequentialScheme::default(),
+    }
+}
+
+/// Literal numeric mark attribute (e.g. `bandwidth: 15`), skipping params —
+/// read at assembly time so a mark-level attribute reaches its per-mark
+/// renderer override (card 0008, density marks).
+fn mark_attr_f64(mark: &brightfield_spec::ast::Mark, key: &str) -> Option<f64> {
+    use brightfield_spec::ast::{SpecValue, ValueOrParamRef};
+    match mark.options.get(key)? {
+        ValueOrParamRef::Value(SpecValue::Float(f)) => Some(*f),
+        ValueOrParamRef::Value(SpecValue::Integer(i)) => Some(*i as f64),
+        _ => None,
     }
 }
 
@@ -684,18 +699,41 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             .map(|(_, node)| raster_scheme(node.attributes.get("colorScheme")))
             .unwrap_or_default();
 
-        // Owned per-mark renderer overrides. A raster mark uses a scheme-configured
-        // RasterRenderer (built here so the plot's colorScheme is honoured); every
-        // other mark borrows the shared registry. Declared before `chart_data` so
-        // the boxes outlive the references into them.
-        let raster_boxes: Vec<Option<Box<dyn MarkRenderer + Send + Sync>>> = group
+        // Owned per-mark renderer overrides. The ramp-fill marks (raster,
+        // heatmap, cell) use scheme-configured renderers, and heatmap/contour
+        // carry their mark-level attributes (bandwidth, thresholds) — built
+        // here so plot colorScheme and mark attrs reach the render; every
+        // other mark borrows the shared registry. Declared before `chart_data`
+        // so the boxes outlive the references into them.
+        let mark_boxes: Vec<Option<Box<dyn MarkRenderer + Send + Sync>>> = group
             .mark_indices
             .iter()
             .map(|&mi| {
-                let is_raster =
-                    mark_inputs.get(mi).is_some_and(|m| m.kind == MarkKind::Raster);
-                is_raster
-                    .then(|| Box::new(RasterRenderer { scheme }) as Box<dyn MarkRenderer + Send + Sync>)
+                let kind = mark_inputs.get(mi)?.kind;
+                match kind {
+                    MarkKind::Raster => Some(
+                        Box::new(RasterRenderer { scheme }) as Box<dyn MarkRenderer + Send + Sync>
+                    ),
+                    MarkKind::Heatmap => Some(Box::new(HeatmapRenderer {
+                        scheme,
+                        bandwidth: marks.get(mi).and_then(|mk| mark_attr_f64(mk, "bandwidth")),
+                    }) as Box<dyn MarkRenderer + Send + Sync>),
+                    MarkKind::Cell => Some(
+                        Box::new(CellRenderer { scheme }) as Box<dyn MarkRenderer + Send + Sync>
+                    ),
+                    MarkKind::Contour => Some(Box::new(ContourRenderer {
+                        // `thresholds` on contour is the iso-level count
+                        // (renderer-side; the lowerer registration shields it
+                        // from the SQL bin count).
+                        thresholds: marks
+                            .get(mi)
+                            .and_then(|mk| mark_attr_f64(mk, "thresholds"))
+                            .filter(|t| *t >= 1.0)
+                            .map(|t| t as usize),
+                        bandwidth: marks.get(mi).and_then(|mk| mark_attr_f64(mk, "bandwidth")),
+                    }) as Box<dyn MarkRenderer + Send + Sync>),
+                    _ => None,
+                }
             })
             .collect();
 
@@ -703,7 +741,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
         for (j, &mi) in group.mark_indices.iter().enumerate() {
             let Some(m) = mark_inputs.get(mi) else { continue };
             let Some(batch) = m.batch.as_ref() else { continue };
-            let renderer: &dyn MarkRenderer = if let Some(b) = &raster_boxes[j] {
+            let renderer: &dyn MarkRenderer = if let Some(b) = &mark_boxes[j] {
                 b.as_ref()
             } else {
                 match find_renderer(&registry, m.kind) {
@@ -1631,6 +1669,169 @@ colorScheme: {color_scheme}
             SequentialScheme::Viridis,
             "an unknown scheme warns and falls back to viridis"
         );
+    }
+
+    // dmk_ac02 (card 0008, density marks): a heatmap plot's colorScheme reaches
+    // the rendered Fill ramp through the REAL assembly seam — build_everything
+    // resolves the plot's scheme, builds the per-mark HeatmapRenderer override,
+    // and threads it through augment_scales — and the same scheme is THREADED
+    // into LivePlotMeta.scheme. Threading only: render_plot_scene consumes the
+    // scheme for Raster alone, so a live rebuild does NOT yet apply it to a
+    // heatmap (the live renderer-config seam, recorded as deferred in the
+    // density-marks spec).
+    #[test]
+    fn dmk_ac02_heatmap_colorscheme_consumed_end_to_end() {
+        use brightfield_render::scale::{Scale, SequentialScheme};
+
+        const SRC: &str = r#"
+data:
+  points:
+    - { x: 1, y: 1 }
+    - { x: 2, y: 2 }
+    - { x: 3, y: 3 }
+plot:
+  - mark: heatmap
+    data: { from: points }
+    x: x
+    y: y
+colorScheme: blues
+"#;
+        let dir = std::env::temp_dir().join(format!("bf-dmk-ac02-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("heatmap-blues.yaml");
+        std::fs::write(&path, SRC).unwrap();
+
+        let (_dashboard, live) =
+            super::build_everything(path.to_str().unwrap()).expect("pipeline runs");
+        // The heatmap plot's post-assembly Fill scale is the blues ramp,
+        // zero-anchored on the smoothed density domain.
+        let fill = live.plots[0]
+            .scales
+            .get(Channel::Fill)
+            .expect("heatmap plot has a Fill scale");
+        match fill {
+            Scale::Sequential { domain_min, stops, .. } => {
+                assert_eq!(
+                    stops,
+                    &SequentialScheme::Blues.stops(),
+                    "colorScheme: blues must reach the rendered Fill ramp (not the viridis default)"
+                );
+                assert!((domain_min - 0.0).abs() < f64::EPSILON, "zero-anchored");
+            }
+            other => panic!("expected a blues Fill Sequential, got {other:?}"),
+        }
+        // The live-path THREADING seam: the resolved scheme is carried on
+        // LivePlotMeta. Threading is all this pins — render_plot_scene does not
+        // yet consume it for heatmap (deferred: live renderer-config seam).
+        assert_eq!(
+            live.plots[0].scheme,
+            SequentialScheme::Blues,
+            "the declared scheme is threaded into LivePlotMeta (live consumption \
+             for heatmap is deferred — render_plot_scene scheme-configures raster only)"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // dmk_ac03 (card 0008, density marks): a cell plot's colorScheme reaches the
+    // numeric-fill Sequential through the same per-mark assembly seam — DuckDB
+    // executes the pass-through query, augment_scales replaces the inferred
+    // Linear with the anchored blues ramp. First-render/headless only: a live
+    // rebuild renders cell through the registry default (deferred: live
+    // renderer-config seam, recorded in the density-marks spec).
+    #[test]
+    fn dmk_ac03_cell_colorscheme_consumed_end_to_end() {
+        use brightfield_render::scale::{Scale, SequentialScheme};
+
+        const SRC: &str = r#"
+data:
+  grid:
+    - { day: Mon, slot: am, value: 1 }
+    - { day: Mon, slot: pm, value: 4 }
+    - { day: Tue, slot: am, value: 2 }
+    - { day: Tue, slot: pm, value: 8 }
+plot:
+  - mark: cell
+    data: { from: grid }
+    x: slot
+    y: day
+    fill: value
+colorScheme: blues
+"#;
+        let dir = std::env::temp_dir().join(format!("bf-dmk-ac03-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cell-blues.yaml");
+        std::fs::write(&path, SRC).unwrap();
+
+        let (_dashboard, live) =
+            super::build_everything(path.to_str().unwrap()).expect("pipeline runs");
+        let fill = live.plots[0]
+            .scales
+            .get(Channel::Fill)
+            .expect("cell plot has a Fill scale");
+        match fill {
+            Scale::Sequential { domain_min, domain_max, stops } => {
+                assert_eq!(
+                    stops,
+                    &SequentialScheme::Blues.stops(),
+                    "colorScheme: blues must reach the cell's numeric-fill ramp"
+                );
+                assert!((domain_min - 0.0).abs() < f64::EPSILON, "min >= 0 anchors at zero");
+                assert!((domain_max - 8.0).abs() < f64::EPSILON);
+            }
+            other => panic!("expected a blues Fill Sequential, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // dmk_ac04 (card 0008, density marks): the contour mark's `thresholds`
+    // attribute reaches the per-mark ContourRenderer override through the REAL
+    // assembly seam (build_everything's mark_boxes), pinning the override wiring
+    // end-to-end: 5 iso-levels stroke strictly more scene paths than 2 over the
+    // same data. If the attr never reached the renderer, both builds would draw
+    // the registry default level count and the two path counts would tie. (The
+    // SQL half of the shield — thresholds NOT changing the emitted bin count —
+    // is pinned in brightfield-sql's dmk_ac04 regression test.)
+    #[test]
+    fn dmk_ac04_contour_thresholds_override_reaches_renderer_end_to_end() {
+        use brightfield_render::mark::count_scene_paths;
+
+        let dir = std::env::temp_dir().join(format!("bf-dmk-ac04-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let build = |thresholds: usize, file: &str| {
+            // The dmk_ac04 unimodal fixture as raw points — corners 1, edges 4,
+            // centre 16 — so equiwidth binning reconstructs the 3x3 histogram.
+            let mut rows = String::new();
+            for (x, y, n) in [
+                (1, 1, 1), (2, 1, 4), (3, 1, 1),
+                (1, 2, 4), (2, 2, 16), (3, 2, 4),
+                (1, 3, 1), (2, 3, 4), (3, 3, 1),
+            ] {
+                for _ in 0..n {
+                    rows.push_str(&format!("    - {{ x: {x}, y: {y} }}\n"));
+                }
+            }
+            let src = format!(
+                "data:\n  points:\n{rows}plot:\n  - mark: contour\n    data: {{ from: points }}\n    x: x\n    y: y\n    thresholds: {thresholds}\n"
+            );
+            let path = dir.join(file);
+            std::fs::write(&path, src).unwrap();
+            let (dashboard, _live) =
+                super::build_everything(path.to_str().unwrap()).expect("pipeline runs");
+            count_scene_paths(&dashboard.plots[0].scene)
+        };
+
+        let (two, five) = (build(2, "contour-2.yaml"), build(5, "contour-5.yaml"));
+        assert!(
+            five > two,
+            "thresholds: 5 must stroke more iso-lines than thresholds: 2 through \
+             the per-mark override seam (got {five} vs {two}) — a tie means the \
+             attr never reached the ContourRenderer"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

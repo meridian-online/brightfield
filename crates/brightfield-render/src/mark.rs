@@ -1177,14 +1177,156 @@ impl MarkRenderer for Density1DRenderer {
 }
 
 // ---------------------------------------------------------------------------
+// Shared KDE grid (density / heatmap / contour)
+// ---------------------------------------------------------------------------
+
+/// A reconstructed, KDE-smoothed 2D grid — the shared substrate of the
+/// `density`, `heatmap`, and `contour` renderers (card 0008, density marks).
+///
+/// The density lowerer emits one `(x centre, y centre, __bf_count)` row per
+/// OCCUPIED bin; [`build_kde_grid`] reconstructs the dense rectangular
+/// histogram from those rows, picks bandwidths, and runs [`kde_2d`]. Each
+/// consumer then draws the smoothed field its own way: density as
+/// alpha-encoded circles, heatmap as ramp-filled cells, contour as iso-lines.
+pub(crate) struct KdeGrid {
+    /// Sorted unique x bin centres (grid columns), in data units.
+    pub x_centres: Vec<f64>,
+    /// Sorted unique y bin centres (grid rows), in data units.
+    pub y_centres: Vec<f64>,
+    /// Column pitch — `x_centres[1] - x_centres[0]` (> 0).
+    pub dx: f64,
+    /// Row pitch — `y_centres[1] - y_centres[0]` (> 0).
+    pub dy: f64,
+    /// Row-major smoothed density: cell `(row, col)` — row indexing
+    /// `y_centres`, col indexing `x_centres` — is `density[row * cols + col]`.
+    pub density: Vec<f64>,
+    /// Maximum density value over the grid (> 0).
+    pub max_density: f64,
+}
+
+impl KdeGrid {
+    /// Number of grid rows (y bin centres).
+    pub fn rows(&self) -> usize {
+        self.y_centres.len()
+    }
+
+    /// Number of grid columns (x bin centres).
+    pub fn cols(&self) -> usize {
+        self.x_centres.len()
+    }
+}
+
+/// Reconstruct the 2D histogram from a density-lowerer batch and smooth it
+/// with [`kde_2d`] — extracted verbatim from `Density2DRenderer::render` so
+/// heatmap and contour ride the identical grid (behaviour-identity is pinned
+/// by the byte-identical density example PNGs and `dmk_ac01`).
+///
+/// `bandwidth`, when present (the mark's `bandwidth:` attribute, in data
+/// units), is applied to both axes; otherwise Silverman's rule runs per axis
+/// over the reconstructed samples. Returns `None` whenever the inline path
+/// would have early-returned: a missing/non-numeric column, fewer than two
+/// distinct centres on either axis, a non-positive pitch or bandwidth, or an
+/// all-zero smoothed field.
+pub(crate) fn build_kde_grid(
+    batch: &RecordBatch,
+    x_col: &str,
+    y_col: &str,
+    bandwidth: Option<f64>,
+) -> Option<KdeGrid> {
+    let x_vals = column_as_f64(batch, x_col)?;
+    let y_vals = column_as_f64(batch, y_col)?;
+    let count_vals = column_as_f64(batch, DENSITY_COUNT_COL)?;
+
+    // Collect unique bin centres on each axis (sorted).
+    let mut x_centres: Vec<f64> = Vec::new();
+    let mut y_centres: Vec<f64> = Vec::new();
+    let mut tuples: Vec<(f64, f64, u32)> = Vec::new();
+    for i in 0..batch.num_rows() {
+        if let (Some(xv), Some(yv), Some(c)) = (x_vals[i], y_vals[i], count_vals[i]) {
+            tuples.push((xv, yv, c.max(0.0).round() as u32));
+            if !x_centres.iter().any(|v| (*v - xv).abs() < 1e-9) {
+                x_centres.push(xv);
+            }
+            if !y_centres.iter().any(|v| (*v - yv).abs() < 1e-9) {
+                y_centres.push(yv);
+            }
+        }
+    }
+    x_centres.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    y_centres.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    let cols = x_centres.len();
+    let rows = y_centres.len();
+    if cols < 2 || rows < 2 {
+        return None;
+    }
+    let dx = x_centres[1] - x_centres[0];
+    let dy = y_centres[1] - y_centres[0];
+    if dx <= 0.0 || dy <= 0.0 {
+        return None;
+    }
+
+    // Build flat row-major histogram.
+    let mut bins = vec![0u32; rows * cols];
+    for (xv, yv, c) in &tuples {
+        let cx = x_centres
+            .iter()
+            .position(|v| (*v - xv).abs() < 1e-9)
+            .unwrap();
+        let cy = y_centres
+            .iter()
+            .position(|v| (*v - yv).abs() < 1e-9)
+            .unwrap();
+        bins[cy * cols + cx] = *c;
+    }
+
+    // Bandwidth: the mark's explicit attribute on both axes, else Silverman
+    // from the reconstructed (x, y) samples.
+    let (h_x, h_y) = match bandwidth {
+        Some(h) => (h, h),
+        None => {
+            let mut xs_samples: Vec<f64> = Vec::new();
+            let mut ys_samples: Vec<f64> = Vec::new();
+            for r in 0..rows {
+                for c in 0..cols {
+                    for _ in 0..bins[r * cols + c] {
+                        xs_samples.push(x_centres[c]);
+                        ys_samples.push(y_centres[r]);
+                    }
+                }
+            }
+            silverman_2d_per_axis(&xs_samples, &ys_samples)
+        }
+    };
+    if h_x <= 0.0 || h_y <= 0.0 {
+        return None;
+    }
+
+    let density = kde_2d(&bins, (rows, cols), (h_x, h_y), (dx, dy));
+    let max_density = density.iter().cloned().fold(0.0_f64, f64::max);
+    if max_density <= 0.0 {
+        return None;
+    }
+
+    Some(KdeGrid {
+        x_centres,
+        y_centres,
+        dx,
+        dy,
+        density,
+        max_density,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Density2DRenderer (density with both x and y bins)
 // ---------------------------------------------------------------------------
 
 /// Renders 2D density as a grid of circles whose alpha encodes density value.
 ///
 /// The lowerer emits `(x_bin, y_bin, count)`; this renderer reconstructs the
-/// rectangular histogram, runs `kde_2d`, and draws a circle per cell with
-/// alpha proportional to normalised density.
+/// rectangular histogram via the shared [`build_kde_grid`] helper and draws a
+/// circle per cell with alpha proportional to normalised density.
 pub struct Density2DRenderer;
 
 impl MarkRenderer for Density2DRenderer {
@@ -1213,93 +1355,21 @@ impl MarkRenderer for Density2DRenderer {
             None => return,
         };
 
-        let x_vals = match column_as_f64(batch, x_col) {
-            Some(v) => v,
-            None => return,
-        };
-        let y_vals = match column_as_f64(batch, y_col) {
-            Some(v) => v,
-            None => return,
-        };
-        let count_vals = match column_as_f64(batch, DENSITY_COUNT_COL) {
-            Some(v) => v,
+        let grid = match build_kde_grid(batch, x_col, y_col, None) {
+            Some(g) => g,
             None => return,
         };
 
-        // Collect unique bin centres on each axis (sorted).
-        let mut x_centres: Vec<f64> = Vec::new();
-        let mut y_centres: Vec<f64> = Vec::new();
-        let mut tuples: Vec<(f64, f64, u32)> = Vec::new();
-        for i in 0..batch.num_rows() {
-            if let (Some(xv), Some(yv), Some(c)) = (x_vals[i], y_vals[i], count_vals[i]) {
-                tuples.push((xv, yv, c.max(0.0).round() as u32));
-                if !x_centres.iter().any(|v| (*v - xv).abs() < 1e-9) {
-                    x_centres.push(xv);
-                }
-                if !y_centres.iter().any(|v| (*v - yv).abs() < 1e-9) {
-                    y_centres.push(yv);
-                }
-            }
-        }
-        x_centres.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        y_centres.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-
-        let cols = x_centres.len();
-        let rows = y_centres.len();
-        if cols < 2 || rows < 2 {
-            return;
-        }
-        let dx = x_centres[1] - x_centres[0];
-        let dy = y_centres[1] - y_centres[0];
-        if dx <= 0.0 || dy <= 0.0 {
-            return;
-        }
-
-        // Build flat row-major histogram.
-        let mut bins = vec![0u32; rows * cols];
-        for (xv, yv, c) in &tuples {
-            let cx = x_centres
-                .iter()
-                .position(|v| (*v - xv).abs() < 1e-9)
-                .unwrap();
-            let cy = y_centres
-                .iter()
-                .position(|v| (*v - yv).abs() < 1e-9)
-                .unwrap();
-            bins[cy * cols + cx] = *c;
-        }
-
-        // Bandwidth from reconstructed (x, y) samples.
-        let mut xs_samples: Vec<f64> = Vec::new();
-        let mut ys_samples: Vec<f64> = Vec::new();
-        for r in 0..rows {
-            for c in 0..cols {
-                for _ in 0..bins[r * cols + c] {
-                    xs_samples.push(x_centres[c]);
-                    ys_samples.push(y_centres[r]);
-                }
-            }
-        }
-        let (h_x, h_y) = silverman_2d_per_axis(&xs_samples, &ys_samples);
-        if h_x <= 0.0 || h_y <= 0.0 {
-            return;
-        }
-
-        let density = kde_2d(&bins, (rows, cols), (h_x, h_y), (dx, dy));
-        let max_density = density.iter().cloned().fold(0.0_f64, f64::max);
-        if max_density <= 0.0 {
-            return;
-        }
-
+        let (rows, cols) = (grid.rows(), grid.cols());
         let radius = DOT_RADIUS.max(2.0);
         for r in 0..rows {
             for c in 0..cols {
-                let normalised = density[r * cols + c] / max_density;
+                let normalised = grid.density[r * cols + c] / grid.max_density;
                 if normalised <= 0.01 {
                     continue;
                 }
-                let px = x_scale.map_f64(x_centres[c]);
-                let py = y_scale.map_f64(y_centres[r]);
+                let px = x_scale.map_f64(grid.x_centres[c]);
+                let py = y_scale.map_f64(grid.y_centres[r]);
                 let [cr, cg, cb, _ca] = DEFAULT_COLOUR.components;
                 let colour = Color::new([cr, cg, cb, normalised as f32]);
                 let circle = Circle::new((px, py), radius);
@@ -1541,6 +1611,399 @@ impl MarkRenderer for RasterRenderer {
                 if let Some(scale) = merged {
                     scales.insert(Channel::Fill, scale);
                 }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HeatmapRenderer (heatmap — KDE-smoothed density ramp)
+// ---------------------------------------------------------------------------
+
+/// Renders the KDE-smoothed 2D density field as ramp-filled grid cells — the
+/// smoothed sibling of raster (card 0008, density marks). Raster ramps the raw
+/// `__bf_count` of each OCCUPIED bin; heatmap ramps the [`build_kde_grid`]
+/// field over EVERY grid cell, so the plot reads as a continuous density
+/// surface rather than discrete count tiles. Both register against the same
+/// 2D density lowerer.
+///
+/// The ramp is the Fill [`Scale::Sequential`] this mark's
+/// [`Self::augment_scales`] builds from the density domain (zero-anchored
+/// `[0, max_density]`); `scheme` selects its colours and `bandwidth` (the
+/// mark's attribute, in data units) overrides Silverman's rule on both axes.
+/// If the Fill scale is somehow absent, `render` falls back to
+/// alpha-on-steelblue like the density mark.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HeatmapRenderer {
+    /// The continuous colour scheme (default viridis).
+    pub scheme: SequentialScheme,
+    /// Explicit KDE bandwidth in data units (both axes); Silverman per axis
+    /// when absent.
+    pub bandwidth: Option<f64>,
+}
+
+impl MarkRenderer for HeatmapRenderer {
+    fn render(
+        &self,
+        scene: &mut Scene,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        scales: &ScaleSet,
+        _highlight: Option<&HighlightState>,
+    ) {
+        let (Some(x_col), Some(y_col)) =
+            (channel_map.get(Channel::X), channel_map.get(Channel::Y))
+        else {
+            return;
+        };
+        let (Some(x_scale), Some(y_scale)) =
+            (scales.get(Channel::X), scales.get(Channel::Y))
+        else {
+            return;
+        };
+        let Some(grid) = build_kde_grid(batch, x_col, y_col, self.bandwidth) else {
+            return;
+        };
+
+        // Draw pitch per axis, recovered as the GCD of the centre gaps
+        // (`bin_step`) rather than `grid.dx`/`grid.dy` (the first adjacent
+        // gap): when interior bins are unoccupied the grid's own pitch
+        // over-estimates the bin width, so cells would over-cover the empty
+        // bins between occupied centres. The KDE lattice itself stays
+        // gap-naive (recorded as deferred with the hexbin follow-up — fixing
+        // it changes the shipped density field, which the byte-gate forbids);
+        // this only sizes the DRAWN cells truthfully. Gap-free lattices are
+        // unaffected: the GCD equals the adjacent gap.
+        let draw_dx = bin_step(&grid.x_centres).unwrap_or(grid.dx);
+        let draw_dy = bin_step(&grid.y_centres).unwrap_or(grid.dy);
+
+        // Prefer the Fill Sequential ramp (built by augment_scales); a missing /
+        // non-Sequential Fill scale falls back to alpha-on-steelblue.
+        let fill_ramp = match scales.get(Channel::Fill) {
+            Some(scale @ Scale::Sequential { .. }) => Some(scale),
+            _ => None,
+        };
+        let [cr, cg, cb, _] = DEFAULT_COLOUR.components;
+        let (rows, cols) = (grid.rows(), grid.cols());
+        for r in 0..rows {
+            for c in 0..cols {
+                let value = grid.density[r * cols + c];
+                // Cell spans its centre ± half a bin, mapped to pixels.
+                let cx = grid.x_centres[c];
+                let cy = grid.y_centres[r];
+                let xa = x_scale.map_f64(cx - draw_dx / 2.0);
+                let xb = x_scale.map_f64(cx + draw_dx / 2.0);
+                let ya = y_scale.map_f64(cy - draw_dy / 2.0);
+                let yb = y_scale.map_f64(cy + draw_dy / 2.0);
+                let (left, right) = (xa.min(xb), xa.max(xb));
+                let (top, bottom) = (ya.min(yb), ya.max(yb));
+                if !(left.is_finite()
+                    && right.is_finite()
+                    && top.is_finite()
+                    && bottom.is_finite())
+                {
+                    continue;
+                }
+                let colour = match fill_ramp {
+                    // Sample the ramp in ITS OWN domain (which may be a union of
+                    // co-rendered marks' domains). No occupancy floor here — the
+                    // smoothed field is continuous, so the ramp's low end IS the
+                    // zero-density background.
+                    Some(ramp) => Color::new(ramp.map_continuous(value)),
+                    None => {
+                        let t = (value / grid.max_density).clamp(0.0, 1.0) as f32;
+                        Color::new([cr, cg, cb, t])
+                    }
+                };
+                let cell = kurbo::Rect::new(left, top, right, bottom);
+                scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &cell);
+            }
+        }
+    }
+
+    /// Widen the linear x/y domains by half a bin so the outermost cells fit
+    /// inside the plot area, and build the density → colour ramp under
+    /// [`Channel::Fill`] (zero-anchored `[0, max_density]`) so the legend
+    /// plumbing picks it up. Merge-not-clobber mirrors
+    /// [`RasterRenderer::augment_scales`]: a co-rendered Sequential unions its
+    /// domain (keeping the first's stops); a sibling's categorical Colour Fill
+    /// survives untouched.
+    fn augment_scales(
+        &self,
+        scales: &mut ScaleSet,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        x_range: (f64, f64),
+        y_range: (f64, f64),
+    ) {
+        let (Some(x_col), Some(y_col)) =
+            (channel_map.get(Channel::X), channel_map.get(Channel::Y))
+        else {
+            return;
+        };
+        let Some(grid) = build_kde_grid(batch, x_col, y_col, self.bandwidth) else {
+            return;
+        };
+
+        // Same per-axis DRAW pitch as `render` (bin_step GCD, not the grid's
+        // gap-naive first adjacent gap) so the half-bin widening matches the
+        // cells actually drawn.
+        let draw_dx = bin_step(&grid.x_centres).unwrap_or(grid.dx);
+        let draw_dy = bin_step(&grid.y_centres).unwrap_or(grid.dy);
+
+        if let (Some(&x_lo), Some(&x_hi)) = (grid.x_centres.first(), grid.x_centres.last()) {
+            merge_linear_scale(
+                scales,
+                Channel::X,
+                x_lo - draw_dx / 2.0,
+                x_hi + draw_dx / 2.0,
+                x_range,
+            );
+        }
+        if let (Some(&y_lo), Some(&y_hi)) = (grid.y_centres.first(), grid.y_centres.last()) {
+            merge_linear_scale(
+                scales,
+                Channel::Y,
+                y_lo - draw_dy / 2.0,
+                y_hi + draw_dy / 2.0,
+                y_range,
+            );
+        }
+
+        let merged = match scales.get(Channel::Fill) {
+            Some(Scale::Sequential {
+                domain_min,
+                domain_max,
+                stops,
+            }) => Some(Scale::Sequential {
+                domain_min: domain_min.min(0.0),
+                domain_max: domain_max.max(grid.max_density),
+                stops: stops.clone(),
+            }),
+            Some(_) => None, // a sibling's categorical Fill scale wins
+            None => Some(Scale::Sequential {
+                domain_min: 0.0,
+                domain_max: grid.max_density,
+                stops: self.scheme.stops(),
+            }),
+        };
+        if let Some(scale) = merged {
+            scales.insert(Channel::Fill, scale);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CellRenderer (cell — categorical × categorical value grid)
+// ---------------------------------------------------------------------------
+
+/// Renders one filled rect per (x category, y category) pair — a
+/// calendar-style value matrix (card 0008, density marks). Cell v1 is
+/// PRE-AGGREGATED: one row per pair, with a numeric `fill:` column carrying
+/// the cell's value. Both axes ride the existing per-channel Band inference;
+/// each rect is centred via `map_category` and sized via `band_width`.
+///
+/// A NUMERIC fill maps through the Fill [`Scale::Sequential`] built in
+/// [`Self::augment_scales`] — generic column inference types a numeric fill
+/// Linear, so the ramp must be built here. A Utf8 fill keeps the existing
+/// categorical Colour path (`resolve_colour`) untouched. Self-aggregating
+/// `fill: count`/`avg` (a CellLowerer) is deferred with hexbin.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CellRenderer {
+    /// The continuous colour scheme for numeric fills (default viridis).
+    pub scheme: SequentialScheme,
+}
+
+impl MarkRenderer for CellRenderer {
+    fn render(
+        &self,
+        scene: &mut Scene,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        scales: &ScaleSet,
+        _highlight: Option<&HighlightState>,
+    ) {
+        let (Some(x_col), Some(y_col)) =
+            (channel_map.get(Channel::X), channel_map.get(Channel::Y))
+        else {
+            return;
+        };
+        let (Some(x_scale), Some(y_scale)) =
+            (scales.get(Channel::X), scales.get(Channel::Y))
+        else {
+            return;
+        };
+        // Cell v1 is categorical × categorical: both axes must be Band scales
+        // with string categories. band_width is None on non-Band scales, so a
+        // numeric axis degrades to rendering nothing rather than misplacing.
+        let (Some(x_strs), Some(y_strs)) =
+            (column_as_string(batch, x_col), column_as_string(batch, y_col))
+        else {
+            return;
+        };
+        let (Some(bw), Some(bh)) = (x_scale.band_width(), y_scale.band_width()) else {
+            return;
+        };
+
+        // Numeric fill values (None for a Utf8 / absent fill — those take the
+        // categorical resolve_colour path below).
+        let fill_vals = channel_map
+            .get(Channel::Fill)
+            .and_then(|c| column_as_f64(batch, c));
+        let fill_ramp = match scales.get(Channel::Fill) {
+            Some(scale @ Scale::Sequential { .. }) => Some(scale),
+            _ => None,
+        };
+
+        for i in 0..batch.num_rows() {
+            let (Some(xc), Some(yc)) = (
+                x_strs[i].as_deref(),
+                y_strs[i].as_deref(),
+            ) else {
+                continue;
+            };
+            let (Some(cx), Some(cy)) = (x_scale.map_category(xc), y_scale.map_category(yc))
+            else {
+                continue;
+            };
+            let colour = match (&fill_ramp, fill_vals.as_ref().and_then(|v| v[i])) {
+                (Some(ramp), Some(value)) => Color::new(ramp.map_continuous(value)),
+                _ => resolve_colour(scales, channel_map, batch, i),
+            };
+            let cell = kurbo::Rect::new(cx - bw / 2.0, cy - bh / 2.0, cx + bw / 2.0, cy + bh / 2.0);
+            scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &cell);
+        }
+    }
+
+    /// Build the numeric-fill → colour ramp under [`Channel::Fill`]. Generic
+    /// column inference types a numeric fill Linear (the recon's trap), so a
+    /// non-colour Fill scale is REPLACED with a Sequential anchored per the v1
+    /// rule — `[0, max]` when `min >= 0`, else `[min, max]`. A co-rendered
+    /// Sequential unions its domain (keeping the first's stops, mirroring
+    /// raster); a categorical Colour Fill (Utf8 fill, or a sibling's swatches)
+    /// is left untouched.
+    fn augment_scales(
+        &self,
+        scales: &mut ScaleSet,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        _x_range: (f64, f64),
+        _y_range: (f64, f64),
+    ) {
+        let Some(fill_col) = channel_map.get(Channel::Fill) else {
+            return;
+        };
+        // A Utf8 fill reads as None here, leaving the Colour path untouched.
+        let Some(vals) = column_as_f64(batch, fill_col) else {
+            return;
+        };
+        let lo = vals.iter().flatten().cloned().fold(f64::INFINITY, f64::min);
+        let hi = vals.iter().flatten().cloned().fold(f64::NEG_INFINITY, f64::max);
+        if !(lo.is_finite() && hi.is_finite()) {
+            return;
+        }
+        let (d0, d1) = if lo >= 0.0 { (0.0, hi) } else { (lo, hi) };
+
+        let merged = match scales.get(Channel::Fill) {
+            Some(Scale::Sequential {
+                domain_min,
+                domain_max,
+                stops,
+            }) => Some(Scale::Sequential {
+                domain_min: domain_min.min(d0),
+                domain_max: domain_max.max(d1),
+                stops: stops.clone(),
+            }),
+            Some(Scale::Colour { .. }) => None, // categorical fill wins
+            // Replace the inferred Linear (or synthesise from scratch).
+            _ => Some(Scale::Sequential {
+                domain_min: d0,
+                domain_max: d1,
+                stops: self.scheme.stops(),
+            }),
+        };
+        if let Some(scale) = merged {
+            scales.insert(Channel::Fill, scale);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ContourRenderer (contour — iso-lines over the shared KDE grid)
+// ---------------------------------------------------------------------------
+
+/// Default iso-level count when the mark declares no `thresholds` (Mosaic's
+/// d3-contour-backed fixtures default to ~10 levels).
+const DEFAULT_CONTOUR_LEVELS: usize = 10;
+
+/// Renders density iso-lines: marching squares over the same
+/// [`build_kde_grid`] field the heatmap shades, at N evenly-spaced levels
+/// (card 0008, density marks).
+///
+/// `thresholds` here is the ISO-LEVEL COUNT (Mosaic semantics) — the lowerer
+/// registration shields it from the density lowerer's bin-count read, so it
+/// never changes the SQL; `bins` still sizes the grid. `bandwidth` overrides
+/// Silverman like the heatmap. Stroke is the literal steelblue default v1
+/// (per-level ramp strokes are deferred).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ContourRenderer {
+    /// Number of iso-levels (`thresholds:` attr); `DEFAULT_CONTOUR_LEVELS`
+    /// when absent.
+    pub thresholds: Option<usize>,
+    /// Explicit KDE bandwidth in data units (both axes); Silverman per axis
+    /// when absent.
+    pub bandwidth: Option<f64>,
+}
+
+impl MarkRenderer for ContourRenderer {
+    fn render(
+        &self,
+        scene: &mut Scene,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        scales: &ScaleSet,
+        _highlight: Option<&HighlightState>,
+    ) {
+        let (Some(x_col), Some(y_col)) =
+            (channel_map.get(Channel::X), channel_map.get(Channel::Y))
+        else {
+            return;
+        };
+        let (Some(x_scale), Some(y_scale)) =
+            (scales.get(Channel::X), scales.get(Channel::Y))
+        else {
+            return;
+        };
+        let Some(grid) = build_kde_grid(batch, x_col, y_col, self.bandwidth) else {
+            return;
+        };
+
+        let levels = crate::contour::iso_levels(
+            grid.max_density,
+            self.thresholds.unwrap_or(DEFAULT_CONTOUR_LEVELS),
+        );
+        let stroke = kurbo::Stroke::new(LINE_STROKE_WIDTH);
+        for level in levels {
+            let lines = crate::contour::contour_polylines(
+                &grid.density,
+                grid.rows(),
+                grid.cols(),
+                &grid.x_centres,
+                &grid.y_centres,
+                level,
+            );
+            for line in lines {
+                let mut points = line
+                    .iter()
+                    .map(|(x, y)| (x_scale.map_f64(*x), y_scale.map_f64(*y)))
+                    .filter(|(px, py)| px.is_finite() && py.is_finite());
+                let Some(first) = points.next() else { continue };
+                let mut path = BezPath::new();
+                path.move_to(first);
+                for p in points {
+                    path.line_to(p);
+                }
+                scene.stroke(&stroke, Affine::IDENTITY, DEFAULT_COLOUR, None, &path);
             }
         }
     }
@@ -1891,6 +2354,9 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
     ));
     v.push((MarkKind::Density, Box::new(Density2DRenderer)));
     v.push((MarkKind::Raster, Box::new(RasterRenderer::default())));
+    v.push((MarkKind::Heatmap, Box::new(HeatmapRenderer::default())));
+    v.push((MarkKind::Cell, Box::new(CellRenderer::default())));
+    v.push((MarkKind::Contour, Box::new(ContourRenderer::default())));
     v.push((MarkKind::RegressionY, Box::new(RegressionRenderer::default())));
     v.push((MarkKind::RegressionX, Box::new(RegressionRenderer::default())));
     v
@@ -2569,6 +3035,86 @@ mod tests {
         );
     }
 
+    // dmk_ac01 (card 0008, density marks): the shared KDE-grid helper reproduces
+    // exactly the values the inline Density2D path produced — same histogram
+    // reconstruction (row order and gaps included), same Silverman bandwidths,
+    // same kde_2d call — pinned by replaying the inline formula over the fixture
+    // and asserting bitwise equality. (The byte-identical density example PNGs
+    // are the end-to-end gate; this pins the seam headlessly.)
+    #[test]
+    fn dmk_ac01_kde_grid_helper_matches_inline_path() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x_bin", DataType::Float64, false),
+            Field::new("y_bin", DataType::Float64, false),
+            Field::new(DENSITY_COUNT_COL, DataType::Float64, false),
+        ]));
+        // 3×3 grid with a hot centre, deliberately in SCRAMBLED row order so the
+        // helper's centre-sorting + position mapping is exercised, with one cell
+        // (2, 0) omitted so an unoccupied bin stays zero in the histogram.
+        let xs = vec![1.0, 0.0, 2.0, 0.0, 1.0, 2.0, 1.0, 0.0];
+        let ys = vec![1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 2.0, 2.0];
+        let counts = vec![16.0, 1.0, 1.0, 4.0, 4.0, 4.0, 4.0, 1.0];
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(xs)),
+                Arc::new(Float64Array::from(ys)),
+                Arc::new(Float64Array::from(counts)),
+            ],
+        )
+        .unwrap();
+
+        let grid = build_kde_grid(&batch, "x_bin", "y_bin", None).expect("grid builds");
+        assert_eq!(grid.x_centres, vec![0.0, 1.0, 2.0], "x centres sorted");
+        assert_eq!(grid.y_centres, vec![0.0, 1.0, 2.0], "y centres sorted");
+        assert_eq!(grid.dx, 1.0);
+        assert_eq!(grid.dy, 1.0);
+        assert_eq!((grid.rows(), grid.cols()), (3, 3));
+
+        // Replay the inline path's formula: dense row-major histogram (row = y),
+        // Silverman per-axis over the expanded samples, kde_2d.
+        #[rustfmt::skip]
+        let bins: Vec<u32> = vec![
+            1, 4, 1,  // y = 0
+            4, 16, 4, // y = 1
+            1, 4, 0,  // y = 2 — (2, 2) unoccupied
+        ];
+        let mut xs_samples: Vec<f64> = Vec::new();
+        let mut ys_samples: Vec<f64> = Vec::new();
+        for r in 0..3 {
+            for c in 0..3 {
+                for _ in 0..bins[r * 3 + c] {
+                    xs_samples.push(c as f64);
+                    ys_samples.push(r as f64);
+                }
+            }
+        }
+        let (h_x, h_y) = silverman_2d_per_axis(&xs_samples, &ys_samples);
+        let expected = kde_2d(&bins, (3, 3), (h_x, h_y), (1.0, 1.0));
+        assert_eq!(
+            grid.density, expected,
+            "helper grid must be bitwise-identical to the inline path's kde_2d output"
+        );
+        let expected_max = expected.iter().cloned().fold(0.0_f64, f64::max);
+        assert_eq!(grid.max_density, expected_max);
+
+        // An explicit bandwidth overrides Silverman on both axes.
+        let with_bw = build_kde_grid(&batch, "x_bin", "y_bin", Some(0.5)).expect("grid builds");
+        assert_eq!(
+            with_bw.density,
+            kde_2d(&bins, (3, 3), (0.5, 0.5), (1.0, 1.0)),
+            "explicit bandwidth reaches kde_2d on both axes"
+        );
+        assert!(
+            with_bw.density != grid.density,
+            "the explicit bandwidth actually changes the field"
+        );
+
+        // Degenerate inputs return None exactly where the inline path returned.
+        assert!(build_kde_grid(&batch, "missing", "y_bin", None).is_none());
+        assert!(build_kde_grid(&batch, "x_bin", "y_bin", Some(0.0)).is_none());
+    }
+
     // bin_step recovers the true pitch as the GCD of the gaps, even when NO two
     // occupied bins are adjacent (the min-gap-only approach would over-estimate).
     #[test]
@@ -2877,6 +3423,520 @@ mod tests {
         assert_eq!(scales.get(Channel::Y).unwrap().domain_max(), Some(2.5));
     }
 
+    /// The shared 3×3 density-lowerer fixture for the heatmap probes: a hot
+    /// centre so the smoothed field has clearly distinct cell values.
+    fn heatmap_batch() -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x_bin", DataType::Float64, false),
+            Field::new("y_bin", DataType::Float64, false),
+            Field::new(DENSITY_COUNT_COL, DataType::Float64, false),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![
+                    0.0, 1.0, 2.0, 0.0, 1.0, 2.0, 0.0, 1.0, 2.0,
+                ])),
+                Arc::new(Float64Array::from(vec![
+                    0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0,
+                ])),
+                Arc::new(Float64Array::from(vec![
+                    1.0, 4.0, 1.0, 4.0, 16.0, 4.0, 1.0, 4.0, 1.0,
+                ])),
+            ],
+        )
+        .unwrap()
+    }
+
+    // dmk_ac02: every KDE grid cell is coloured through the Fill Sequential ramp
+    // (density → map_continuous) — the colours ACTUALLY ENCODED into the scene
+    // are the ramp samples of the smoothed field (probed via draw_data, the #36
+    // precedent), cells with different densities encode different colours, and
+    // with no Fill scale the render falls back to alpha-on-steelblue. Driven by
+    // the dmk_ac01 fixture — 8 SCRAMBLED rows with cell (2, 2) OMITTED — so the
+    // "every cell" claim is falsifiable: an occupied-bins-only regression draws
+    // 8 cells and misses the unoccupied cell's smoothed colour.
+    #[test]
+    fn dmk_ac02_heatmap_colours_cells_through_ramp() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x_bin", DataType::Float64, false),
+            Field::new("y_bin", DataType::Float64, false),
+            Field::new(DENSITY_COUNT_COL, DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![1.0, 0.0, 2.0, 0.0, 1.0, 2.0, 1.0, 0.0])),
+                Arc::new(Float64Array::from(vec![1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 2.0, 2.0])),
+                Arc::new(Float64Array::from(vec![16.0, 1.0, 1.0, 4.0, 4.0, 4.0, 4.0, 1.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x_bin".to_string());
+        cm.insert(Channel::Y, "y_bin".to_string());
+        let renderer = HeatmapRenderer::default();
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        renderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+
+        // Expected ramp samples over the smoothed field, exactly as render maps.
+        let grid = build_kde_grid(&batch, "x_bin", "y_bin", None).expect("grid builds");
+        let ramp = scales.get(Channel::Fill).expect("fill ramp built");
+        let expected: std::collections::HashSet<u32> = grid
+            .density
+            .iter()
+            .map(|v| packed(ramp.map_continuous(*v)))
+            .collect();
+        let centre = packed(ramp.map_continuous(grid.density[1 * 3 + 1]));
+        let corner = packed(ramp.map_continuous(grid.density[0]));
+        assert_ne!(centre, corner, "distinct densities encode distinct ramp colours");
+        // The UNOCCUPIED bin (2, 2): zero count, but the smoothed field is
+        // positive there, so its ramp colour must be drawn like any other cell.
+        let unoccupied_density = grid.density[2 * 3 + 2];
+        assert!(
+            unoccupied_density > 0.0,
+            "the smoothed field is positive at the unoccupied bin"
+        );
+        let unoccupied = packed(ramp.map_continuous(unoccupied_density));
+
+        let mut scene = Scene::new();
+        renderer.render(&mut scene, &batch, &cm, &scales, None);
+        assert_eq!(
+            count_scene_paths(&scene),
+            9,
+            "heatmap fills EVERY grid cell (9 on a 3×3 with only 8 occupied bins), \
+             not just occupied bins"
+        );
+        let drawn: std::collections::HashSet<u32> =
+            scene.encoding().draw_data.iter().copied().collect();
+        assert_eq!(
+            drawn, expected,
+            "the cell fills are the ramp samples of the smoothed field"
+        );
+        assert!(
+            drawn.contains(&unoccupied),
+            "the unoccupied bin's smoothed ramp colour is drawn — an \
+             occupied-bins-only regression fails here"
+        );
+
+        // Fallback: no Fill scale → steelblue with density-proportional alpha.
+        let mut no_fill = ScaleSet::new();
+        no_fill.insert(Channel::X, scales.get(Channel::X).unwrap().clone());
+        no_fill.insert(Channel::Y, scales.get(Channel::Y).unwrap().clone());
+        let mut scene2 = Scene::new();
+        renderer.render(&mut scene2, &batch, &cm, &no_fill, None);
+        let [cr, cg, cb, _] = DEFAULT_COLOUR.components;
+        let fallback_expected: std::collections::HashSet<u32> = grid
+            .density
+            .iter()
+            .map(|v| packed([cr, cg, cb, (v / grid.max_density).clamp(0.0, 1.0) as f32]))
+            .collect();
+        let fallback: std::collections::HashSet<u32> =
+            scene2.encoding().draw_data.iter().copied().collect();
+        assert_eq!(
+            fallback, fallback_expected,
+            "fallback keeps the steelblue hue with density-proportional alpha"
+        );
+    }
+
+    // dmk_ac02: augment_scales builds a Fill Sequential zero-anchored at
+    // [0, max_density] with the scheme's stops, widens x/y by half a bin to the
+    // grid extent, and merges rather than clobbers (a sibling's categorical
+    // Colour Fill survives) — mirroring raster's augment_scales contract.
+    #[test]
+    fn dmk_ac02_heatmap_augment_scales_builds_zero_anchored_fill() {
+        let batch = heatmap_batch();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x_bin".to_string());
+        cm.insert(Channel::Y, "y_bin".to_string());
+        let renderer = HeatmapRenderer {
+            scheme: SequentialScheme::Blues,
+            bandwidth: None,
+        };
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        renderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+
+        let grid = build_kde_grid(&batch, "x_bin", "y_bin", None).expect("grid builds");
+        match scales.get(Channel::Fill) {
+            Some(Scale::Sequential { domain_min, domain_max, stops }) => {
+                assert!((domain_min - 0.0).abs() < f64::EPSILON, "domain zero-anchored");
+                assert!(
+                    (domain_max - grid.max_density).abs() < f64::EPSILON,
+                    "domain_max == max smoothed density"
+                );
+                assert_eq!(stops, &SequentialScheme::Blues.stops(), "stops match the scheme");
+            }
+            other => panic!("expected a Fill Sequential scale, got {other:?}"),
+        }
+        // x/y widened by half a bin past the outermost centres (0..2, pitch 1).
+        assert_eq!(scales.get(Channel::X).unwrap().domain_min(), Some(-0.5));
+        assert_eq!(scales.get(Channel::X).unwrap().domain_max(), Some(2.5));
+        assert_eq!(scales.get(Channel::Y).unwrap().domain_min(), Some(-0.5));
+        assert_eq!(scales.get(Channel::Y).unwrap().domain_max(), Some(2.5));
+
+        // A sibling mark's categorical Colour Fill is left untouched.
+        let mut with_colour = ScaleSet::new();
+        with_colour.insert(
+            Channel::Fill,
+            Scale::Colour {
+                categories: vec!["a".to_string(), "b".to_string()],
+                palette: vec![[0.1, 0.2, 0.3, 1.0], [0.4, 0.5, 0.6, 1.0]],
+            },
+        );
+        renderer.augment_scales(&mut with_colour, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        match with_colour.get(Channel::Fill) {
+            Some(Scale::Colour { categories, .. }) => assert_eq!(categories, &["a", "b"]),
+            other => panic!("categorical Fill must survive a heatmap augment_scales, got {other:?}"),
+        }
+    }
+
+    // dmk_ac02: the mark's `bandwidth` attribute reaches kde_2d through the
+    // renderer — an explicit bandwidth renders a DIFFERENT field than the
+    // Silverman fallback, and exactly the field build_kde_grid produces for it.
+    #[test]
+    fn dmk_ac02_heatmap_bandwidth_attr_reaches_kde() {
+        let batch = heatmap_batch();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x_bin".to_string());
+        cm.insert(Channel::Y, "y_bin".to_string());
+
+        let render_with = |renderer: &HeatmapRenderer| {
+            let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+            renderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+            let mut scene = Scene::new();
+            renderer.render(&mut scene, &batch, &cm, &scales, None);
+            let drawn: std::collections::HashSet<u32> =
+                scene.encoding().draw_data.iter().copied().collect();
+            (drawn, scales)
+        };
+
+        let explicit = HeatmapRenderer { scheme: SequentialScheme::default(), bandwidth: Some(0.5) };
+        let (drawn_explicit, scales_explicit) = render_with(&explicit);
+        let (drawn_silverman, _) = render_with(&HeatmapRenderer::default());
+        assert_ne!(
+            drawn_explicit, drawn_silverman,
+            "an explicit bandwidth changes the rendered field vs the Silverman fallback"
+        );
+
+        // The explicit render equals the ramp samples of build_kde_grid(Some(0.5)).
+        let grid = build_kde_grid(&batch, "x_bin", "y_bin", Some(0.5)).expect("grid builds");
+        let ramp = scales_explicit.get(Channel::Fill).expect("fill ramp built");
+        let expected: std::collections::HashSet<u32> = grid
+            .density
+            .iter()
+            .map(|v| packed(ramp.map_continuous(*v)))
+            .collect();
+        assert_eq!(drawn_explicit, expected, "bandwidth threads through to the drawn field");
+    }
+
+    // Adversarial-review follow-up (mirrors raster_bin_step_recovers_pitch_from_
+    // sparse_centres): when interior bins are unoccupied, the KDE grid's own
+    // pitch (first adjacent gap) over-estimates the bin width — x centres
+    // {0.5, 15.5, 16.5} have a TRUE pitch of 1 (the GCD of the gaps {15, 1})
+    // but grid.dx reads 15 — so the heatmap must DRAW cells at the recovered
+    // pitch instead of smearing them across the empty bins. The smoothed
+    // lattice itself stays gap-naive (recorded as deferred with the hexbin
+    // follow-up; fixing it byte-changes the shipped density examples).
+    #[test]
+    fn heatmap_gapped_centres_cells_drawn_at_recovered_pitch() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x_bin", DataType::Float64, false),
+            Field::new("y_bin", DataType::Float64, false),
+            Field::new(DENSITY_COUNT_COL, DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![0.5, 15.5, 16.5, 0.5])),
+                Arc::new(Float64Array::from(vec![0.5, 1.5, 0.5, 1.5])),
+                Arc::new(Float64Array::from(vec![1.0, 4.0, 2.0, 3.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x_bin".to_string());
+        cm.insert(Channel::Y, "y_bin".to_string());
+
+        let grid = build_kde_grid(&batch, "x_bin", "y_bin", None).expect("grid builds");
+        assert_eq!(grid.dx, 15.0, "the grid's naive pitch reads the 15-wide gap");
+        assert_eq!(bin_step(&grid.x_centres), Some(1.0), "bin_step recovers the true pitch");
+
+        // Identity scales (domain == pixel range), so drawn coordinates ARE data
+        // units and the encoded f32 coordinate stream can be read back directly.
+        let identity = |hi: f64| Scale::Linear {
+            domain_min: 0.0,
+            domain_max: hi,
+            range_start: 0.0,
+            range_end: hi,
+        };
+        let mut scales = ScaleSet::new();
+        scales.insert(Channel::X, identity(20.0));
+        scales.insert(Channel::Y, identity(20.0));
+        let mut scene = Scene::new();
+        HeatmapRenderer::default().render(&mut scene, &batch, &cm, &scales, None);
+        // path_data is the packed f32 coordinate stream (vello 0.9 stores it as
+        // u32 bit patterns); quantise to quarter-units for exact set membership.
+        let coords: std::collections::HashSet<i64> = scene
+            .encoding()
+            .path_data
+            .iter()
+            .map(|w| (f32::from_bits(*w) as f64 * 4.0).round() as i64)
+            .collect();
+        let has = |v: f64| coords.contains(&((v * 4.0).round() as i64));
+        // Every cell spans its centre ± half the RECOVERED pitch: the first cell
+        // (centre 0.5) has edges 0 and 1, the gapped cells keep 1-wide edges too.
+        assert!(has(0.0) && has(1.0), "first cell drawn at the recovered pitch 1");
+        assert!(has(15.0) && has(17.0), "sparse cells drawn at the recovered pitch 1");
+        // The gap-naive width (grid.dx = 15) would smear the first cell to
+        // 0.5 ± 7.5 and the last to 16.5 ± 7.5.
+        assert!(
+            !has(-7.0) && !has(8.0) && !has(24.0),
+            "no cell is smeared across the unoccupied bins"
+        );
+
+        // augment_scales widens the axes by half the SAME recovered pitch, so
+        // the domain hugs the drawn cells: x [0, 17], y [0, 2].
+        let mut aug = ScaleSet::new();
+        HeatmapRenderer::default().augment_scales(&mut aug, &batch, &cm, (0.0, 20.0), (0.0, 20.0));
+        assert_eq!(aug.get(Channel::X).unwrap().domain_min(), Some(0.0));
+        assert_eq!(aug.get(Channel::X).unwrap().domain_max(), Some(17.0));
+        assert_eq!(aug.get(Channel::Y).unwrap().domain_min(), Some(0.0));
+        assert_eq!(aug.get(Channel::Y).unwrap().domain_max(), Some(2.0));
+    }
+
+    // dmk_ac04: the renderer strokes one path per chained iso-line, and the
+    // `thresholds` attr drives the LEVEL count — 5 levels stroke strictly more
+    // iso-lines than 2 over the same grid, and the stroked path count equals a
+    // replay of contour_polylines over the same shared KDE grid at the same
+    // levels (the SQL-side half of the shield lives in brightfield-sql's
+    // dmk_ac04 regression test).
+    #[test]
+    fn dmk_ac04_contour_iso_line_count_follows_thresholds() {
+        let batch = heatmap_batch();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x_bin".to_string());
+        cm.insert(Channel::Y, "y_bin".to_string());
+        let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+
+        let paths_at = |thresholds: usize| {
+            let renderer = ContourRenderer {
+                thresholds: Some(thresholds),
+                bandwidth: None,
+            };
+            let mut scene = Scene::new();
+            renderer.render(&mut scene, &batch, &cm, &scales, None);
+            count_scene_paths(&scene)
+        };
+
+        // Expected per-level line counts, replayed over the same grid.
+        let grid = build_kde_grid(&batch, "x_bin", "y_bin", None).expect("grid builds");
+        let expected_at = |thresholds: usize| -> usize {
+            crate::contour::iso_levels(grid.max_density, thresholds)
+                .iter()
+                .map(|level| {
+                    crate::contour::contour_polylines(
+                        &grid.density,
+                        grid.rows(),
+                        grid.cols(),
+                        &grid.x_centres,
+                        &grid.y_centres,
+                        *level,
+                    )
+                    .len()
+                })
+                .sum()
+        };
+
+        let (two, five) = (paths_at(2), paths_at(5));
+        assert_eq!(two, expected_at(2), "one stroked path per chained iso-line");
+        assert_eq!(five, expected_at(5), "one stroked path per chained iso-line");
+        assert!(
+            five > two && two >= 2,
+            "thresholds drives the iso-line count ({two} at 2 vs {five} at 5)"
+        );
+    }
+
+    /// Pre-aggregated cell fixture: 2 days × 2 slots with a numeric value and a
+    /// categorical grade per pair.
+    fn cell_batch() -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("day", DataType::Utf8, false),
+            Field::new("slot", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+            Field::new("grade", DataType::Utf8, false),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["Mon", "Mon", "Tue", "Tue"])),
+                Arc::new(StringArray::from(vec!["am", "pm", "am", "pm"])),
+                Arc::new(Float64Array::from(vec![1.0, 4.0, 2.0, 8.0])),
+                Arc::new(StringArray::from(vec!["a", "b", "a", "b"])),
+            ],
+        )
+        .unwrap()
+    }
+
+    // dmk_ac03: one rect per occupied (x category, y category) pair, positioned
+    // on the two Band scales, with distinct numeric fill values encoding
+    // distinct ramp colours (probed via draw_data per the #36 precedent).
+    #[test]
+    fn dmk_ac03_cell_renders_rect_per_category_pair() {
+        let batch = cell_batch();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "slot".to_string());
+        cm.insert(Channel::Y, "day".to_string());
+        cm.insert(Channel::Fill, "value".to_string());
+        let renderer = CellRenderer::default();
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        renderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        assert!(
+            matches!(scales.get(Channel::X), Some(Scale::Band { .. }))
+                && matches!(scales.get(Channel::Y), Some(Scale::Band { .. })),
+            "cell rides the existing per-channel Band inference on both axes"
+        );
+
+        let mut scene = Scene::new();
+        renderer.render(&mut scene, &batch, &cm, &scales, None);
+        assert_eq!(
+            count_scene_paths(&scene),
+            4,
+            "one rect per occupied category pair"
+        );
+        let ramp = scales.get(Channel::Fill).expect("fill ramp built");
+        let expected: std::collections::HashSet<u32> = [1.0, 4.0, 2.0, 8.0]
+            .iter()
+            .map(|v| packed(ramp.map_continuous(*v)))
+            .collect();
+        assert_eq!(expected.len(), 4, "the four values encode four distinct colours");
+        let drawn: std::collections::HashSet<u32> =
+            scene.encoding().draw_data.iter().copied().collect();
+        assert_eq!(drawn, expected, "cell fills are the ramp samples of the values");
+    }
+
+    // dmk_ac03: augment_scales anchors the Fill Sequential domain per the v1
+    // rule — [0, max] when min >= 0, else [min, max] — REPLACING the Linear a
+    // numeric fill otherwise infers (the trap), unioning with a co-rendered
+    // Sequential, and leaving a categorical Colour fill untouched.
+    #[test]
+    fn dmk_ac03_cell_augment_scales_anchors_sequential_domain() {
+        let batch = cell_batch();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "slot".to_string());
+        cm.insert(Channel::Y, "day".to_string());
+        cm.insert(Channel::Fill, "value".to_string());
+        let renderer = CellRenderer { scheme: SequentialScheme::Blues };
+
+        // min >= 0 (values 1..8): the inferred Linear is replaced by a
+        // zero-anchored Sequential with the scheme's stops.
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        assert!(
+            matches!(scales.get(Channel::Fill), Some(Scale::Linear { .. })),
+            "precondition: generic inference types the numeric fill Linear"
+        );
+        renderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        match scales.get(Channel::Fill) {
+            Some(Scale::Sequential { domain_min, domain_max, stops }) => {
+                assert!((domain_min - 0.0).abs() < f64::EPSILON, "min >= 0 anchors at zero");
+                assert!((domain_max - 8.0).abs() < f64::EPSILON);
+                assert_eq!(stops, &SequentialScheme::Blues.stops(), "stops match the scheme");
+            }
+            other => panic!("expected a Fill Sequential, got {other:?}"),
+        }
+
+        // min < 0: the domain is [min, max], not forced through zero.
+        let neg_schema = Arc::new(Schema::new(vec![
+            Field::new("day", DataType::Utf8, false),
+            Field::new("slot", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+        ]));
+        let neg = RecordBatch::try_new(
+            neg_schema,
+            vec![
+                Arc::new(StringArray::from(vec!["Mon", "Tue"])),
+                Arc::new(StringArray::from(vec!["am", "pm"])),
+                Arc::new(Float64Array::from(vec![-3.0, 5.0])),
+            ],
+        )
+        .unwrap();
+        let mut neg_scales = infer_scales(&neg, &cm, (40.0, 600.0), (450.0, 20.0));
+        renderer.augment_scales(&mut neg_scales, &neg, &cm, (40.0, 600.0), (450.0, 20.0));
+        match neg_scales.get(Channel::Fill) {
+            Some(Scale::Sequential { domain_min, domain_max, .. }) => {
+                assert!((domain_min - (-3.0)).abs() < f64::EPSILON, "min < 0 keeps the data min");
+                assert!((domain_max - 5.0).abs() < f64::EPSILON);
+            }
+            other => panic!("expected a Fill Sequential, got {other:?}"),
+        }
+
+        // A co-rendered Sequential unions (keeping the first's stops); a
+        // categorical Colour fill survives untouched.
+        let mut union = ScaleSet::new();
+        union.insert(
+            Channel::Fill,
+            Scale::Sequential {
+                domain_min: 0.0,
+                domain_max: 100.0,
+                stops: SequentialScheme::Viridis.stops(),
+            },
+        );
+        renderer.augment_scales(&mut union, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        match union.get(Channel::Fill) {
+            Some(Scale::Sequential { domain_max, stops, .. }) => {
+                assert_eq!(*domain_max, 100.0, "union keeps the wider domain");
+                assert_eq!(stops, &SequentialScheme::Viridis.stops(), "first scale's stops win");
+            }
+            other => panic!("expected a unioned Sequential, got {other:?}"),
+        }
+        let mut colour = ScaleSet::new();
+        colour.insert(
+            Channel::Fill,
+            Scale::Colour {
+                categories: vec!["a".to_string()],
+                palette: vec![[0.1, 0.2, 0.3, 1.0]],
+            },
+        );
+        renderer.augment_scales(&mut colour, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        assert!(
+            matches!(colour.get(Channel::Fill), Some(Scale::Colour { .. })),
+            "a categorical Colour fill wins over the numeric ramp"
+        );
+    }
+
+    // dmk_ac03: a Utf8 fill keeps the existing categorical Colour behaviour —
+    // augment_scales leaves the inferred Colour scale alone and the rects draw
+    // in palette colours through resolve_colour, exactly as before.
+    #[test]
+    fn dmk_ac03_cell_utf8_fill_keeps_colour_path() {
+        let batch = cell_batch();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "slot".to_string());
+        cm.insert(Channel::Y, "day".to_string());
+        cm.insert(Channel::Fill, "grade".to_string());
+        let renderer = CellRenderer::default();
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        renderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+
+        let (cat_a, cat_b) = match scales.get(Channel::Fill) {
+            Some(scale @ Scale::Colour { .. }) => (
+                scale.map_colour("a").expect("category a"),
+                scale.map_colour("b").expect("category b"),
+            ),
+            other => panic!("Utf8 fill must keep the categorical Colour scale, got {other:?}"),
+        };
+
+        let mut scene = Scene::new();
+        renderer.render(&mut scene, &batch, &cm, &scales, None);
+        assert_eq!(count_scene_paths(&scene), 4, "one rect per category pair");
+        let drawn: std::collections::HashSet<u32> =
+            scene.encoding().draw_data.iter().copied().collect();
+        assert_eq!(
+            drawn,
+            std::collections::HashSet::from([packed(cat_a), packed(cat_b)]),
+            "cells draw in the categorical palette colours"
+        );
+    }
+
     #[test]
     fn gomb_ac05_regression_renders_line_and_ci_band() {
         // Anscombe Quartet I (the canonical OLS dataset).
@@ -2975,8 +4035,9 @@ mod tests {
         assert!(find_renderer(&registry, MarkKind::DensityY).is_some());
         assert!(find_renderer(&registry, MarkKind::RegressionX).is_some());
         assert!(find_renderer(&registry, MarkKind::RegressionY).is_some());
+        // Heatmap is registered as of card 0008's density-marks instalment.
+        assert!(find_renderer(&registry, MarkKind::Heatmap).is_some());
         // Unimplemented kinds should return None (no silent fallback).
-        assert!(find_renderer(&registry, MarkKind::Heatmap).is_none());
         assert!(find_renderer(&registry, MarkKind::Hexbin).is_none());
     }
 
