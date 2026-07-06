@@ -1,0 +1,106 @@
+goal: >
+  Card 0017 v1: the app becomes a docked authoring workspace built on
+  gpui-component (git-pinned at b7e63cc2, matching our zed rev 1d217ee from
+  #40): a DockArea hosts the untouched chart canvas as a locked center panel,
+  a tree-sitter YAML editor panel whose cmd-s writes the spec file so the
+  EXISTING mtime watcher re-renders (zero reload-machinery change), and a
+  sidebar skeleton listing sources + columns; rejected reloads surface as
+  in-workspace notifications; dock layout persists to a shell-owned config
+  JSON; presentation mode (bare `p`, canvas-scoped) hides all authoring panels
+  via panel visibility. The vello render path, PNG dump path, and reload
+  machinery change zero lines; all new logic is framework-free per the
+  semantic-layer rule (Hugh's masonry watch). Contract + recon errata:
+  tabletop.md alongside this spec.
+
+constraints:
+  - "Untouched cores: brightfield-render, brightfield-sql, brightfield-engine diffs EMPTY; chart_element.rs/slider_element.rs/legend_element.rs/chart_view.rs render+interaction logic unchanged (a thin Panel wrapper AROUND ChartView is new code, not a change to it); the mtime watcher + run_pipeline reload path unchanged except the notification tap."
+  - "Entrypoint stays Application::with_platform(gpui_macos::MacPlatform) + .with_assets(their icon assets). Migrating to gpui_platform::application() is an ESCALATION with evidence, never a silent swap."
+  - "gpui-component pinned by exact commit (b7e63cc2), features = [tree-sitter-yaml]; no webview/gpui_web/reqwest in the native lock; cargo deny check licenses green — extending deny.toml's allow-list is Hugh-visible, surface it, don't slip it in."
+  - "Save-driven editing only: cmd-s writes the buffer to the spec path atomically (temp+rename); no on-change re-render; no LSP."
+  - "PresentationMode stays gpui-free and source-of-truth; presentation = editor+sidebar visible()==false + docks collapsed. The 0016 window-size-invariant is superseded (DockArea owns layout; framed_window_size = initial size only; fww_ac01's oracle revised to match — recorded in tabletop.md, the shipped 0016 spec is not edited)."
+  - "Bare `p` stays canvas-context-scoped; when the editor has focus, `p` is text input — accepted v1 behaviour, deferred to the keyboard-grammar card. No new global chords."
+  - "Dock state (DockAreaState JSON, versioned) is shell-owned, saved under the user config dir; never serialised into or derived from the Mosaic spec. Canvas panel is NOT persisted — rebuilt fresh from live pipeline state each boot."
+  - "HALT GATE: any pre-existing example PNG byte-diff → halt, revert. The BRIGHTFIELD_DUMP_PNG path must never construct a DockArea (pinned by aws_ac01)."
+
+acceptance_criteria:
+  - id: ac-01
+    ac_type: code
+    description: "The dependency lands and the app boots through gpui_component::init + Root::new with icon assets, keeping the gpui_macos entrypoint; the headless dump path provably never constructs a DockArea; full workspace suite green; every pre-existing example PNG byte-identical."
+    verification: "aws_ac01: a unit/preflight test pins that the dump-mode code path returns before any workspace/dock construction (module boundary or cfg seam); the byte-compare harness passes; cargo deny check licenses green with the new tree. verifies: capability (boot seam + gate); the visible workspace is ac-08's stand-in"
+  - id: ac-02
+    ac_type: code
+    description: "BrightfieldCanvas panel: a thin Panel impl (panel_name stable, closable(false), title from the resolved dashboard title) wrapping the existing ChartView entity; chart brush/point/slider/legend-click interactions behave identically inside the panel (existing integration suites stay green unchanged)."
+    verification: "aws_ac02: the panel is a shim — a test asserts it holds the ChartView entity and delegates render without transforming events; all existing crossfilter/point-select/slider/legend integration tests pass unmodified. verifies: capability (shim + suites); in-dock behaviour is ac-08's stand-in"
+  - id: ac-03
+    ac_type: code
+    description: "DockArea root with persistence: center canvas + right editor + left sidebar; layout serialises (DockAreaState with version) to a config-dir JSON, saved debounced on LayoutChanged and flushed on quit; canvas excluded from persistence; missing/corrupt/version-mismatched state falls back to the default layout."
+    verification: "aws_ac03: framework-free round-trip tests on the persistence module — serialise/deserialise, corrupt-JSON fallback decision, version-mismatch decision, canvas-exclusion; the save-trigger policy (debounce + quit-flush) unit-tested as a pure decision fn. verifies: capability; drag-and-restore is ac-08's stand-in. [correction 2026-07-06] The debounce trigger set is observation-based, not LayoutChanged-only: upstream's Dock::resize never emits LayoutChanged (bare notify) and a bare center DockItem::tab sits outside their subscribe_item (it assumes StackPanel parents), so the shell additionally observes the left/right/bottom dock entities and the center TabPanel, funnelling into the same SavePolicy (skip-if-unchanged + debounce absorb notify-storms during drags). The policy's timer also re-checks layout_persistable AT FIRE TIME (a p press inside the debounce window must not persist the presentation collapse; suppressed fires keep the deadline armed for the authoring quit-flush). Note: their restore path rebuilds the layout as a split-based shape rather than the exact saved tree — restored arrangements are equivalent, not structurally identical."
+  - id: ac-04
+    ac_type: code
+    description: "YAML editor panel: code_editor('yaml') with line numbers seeded from the spec file; a SaveSpec action bound to cmd-s in the editor context writes the buffer atomically (temp+rename) to the spec path — the existing watcher then re-renders with no reload-machinery change."
+    verification: "aws_ac04: the save handler is a pure fn (buffer, path) -> atomic write, unit-tested incl. the temp+rename property and unchanged-buffer no-op; a test pins that no reload/watcher source changed (diff-scope assertion in review); the binding is data (action + keymap entry). verifies: capability; typing/highlight/save-rerender loop is ac-08's stand-in. [correction 2026-07-06] cmd-s now routes through a framework-free decide_save guard closing the two-writer race: an external on-disk change warns (save again to overwrite, two-step confirm); a failed boot seed passes through as None (never an empty string) and an unseeded editor refuses to save (empty-seed truncation guard); the atomic write canonicalises through symlinks and preserves the destination's permission bits (hard-link divergence documented as the technique's inherent tradeoff). The watcher gains a SECOND sanctioned tap beside the notification tap: on an observed mtime change a PRISTINE buffer (buffer == last synced text) reseeds from disk; dirty buffers are untouched and reload control flow is unchanged."
+  - id: ac-05
+    ac_type: code
+    description: "Reload feedback: when the watcher rejects a reload (parse error, or the ChromeSnapshot 'restart to apply' gate), the reason surfaces as a workspace notification via the Root layer, in addition to stderr; successful reloads stay quiet."
+    verification: "aws_ac05: the watcher's outcome enum -> notification decision is a framework-free fn with unit tests (reject-parse, reject-chrome, success); the notification call site taps the existing outcome without altering reload control flow. verifies: capability (routing decision); the visible toast is ac-08's stand-in"
+  - id: ac-06
+    ac_type: code
+    description: "Sidebar skeleton: a left panel listing each data source and its column names, derived headlessly (spec AST + already-available schema); no stats, no DuckDB round-trips beyond what the pipeline already ran."
+    verification: "aws_ac06: the derivation fn (spec + schema -> Vec<SourceListing>) is framework-free and unit-tested on a multi-source spec; the panel renders the listing as a shim. verifies: capability (derivation); the visible panel is ac-08's stand-in"
+  - id: ac-07
+    ac_type: code
+    description: "Presentation mode over panels: PresentationMode (unchanged, gpui-free) now maps to editor+sidebar visible()==false + collapsed docks with the canvas remaining; the mapping is a pure function of (mode, panel role); toggling cannot affect headless PNG output."
+    verification: "aws_ac07: the mode->visibility mapping unit-tested for both modes and all three panel roles; the layout-invariance guarantee re-pinned (PNG path independent of shell state, per ac-01's seam test). verifies: capability; the visible hide/restore is ac-08's stand-in"
+  - id: ac-08
+    ac_type: manual
+    description: "Workspace eyeball: open examples/framed.yaml — canvas centered with editor right and sidebar left; drag the editor to the bottom, quit, relaunch, arrangement restored; edit a mark colour in the editor, cmd-s, canvas re-renders; introduce a YAML error, cmd-s, a notification explains the rejection; press p with canvas focused — chrome vanishes, dashboard remains; p restores."
+    verification: "cargo run -p brightfield-app -- examples/framed.yaml; eyeballed. verifies: stand-in (real thing is the workspace in the macOS app), accepted because the GPUI render tree cannot run headless"
+
+gate:
+  id: ac-09
+  description: >
+    cargo test --workspace green (all existing suites unmodified and passing);
+    every pre-existing example PNG byte-identical (raster trio exempt until the
+    determinism chore merges); brightfield-render/-sql/-engine diffs empty;
+    render/interaction element sources unchanged; cargo deny check licenses
+    green; all new logic modules import no gpui (semantic-layer checkpoint:
+    could this file's logic run headless?).
+    [correction 2026-07-06] "all existing suites unmodified" stands in
+    tension with constraint 5, which promised the fww_ac01 oracle revision
+    ("the fww_ac01 oracle revised to match"). This correction carves out
+    that ONE sanctioned revision: brightfield-ui/src/workspace.rs's module
+    header + framed_window_size/resolve_title docs redocumented as the
+    INITIAL-size formula, fww_ac01 revised accordingly, and the historical
+    canvas_origin test-module oracle deleted (its live counterpart is the
+    CanvasPanel/DockArea centring, ac-08's eyeball). Every other
+    pre-existing suite stays unmodified. Also revised under this gate's own
+    terms: the vacuous repeated-call purity probe
+    (aws_ac07_mapping_is_a_pure_function_of_mode_and_role) is deleted in
+    favour of a behavioural pin — dump_seam.rs runs the dump binary twice
+    on a non-raster example and asserts byte-identical PNGs.
+
+implementation_notes:
+  - "Recon (their repo @ b7e63cc2, relayed 2026-07-06): Panel trait dock/panel.rs:54 (panel_name required; title :69, closable :92, visible :106, dump :156; register_panel :356); DockArea story/examples/dock.rs (DockArea::new dock.rs:69; DockItem mod.rs:78/193-216/326/339; set_center mod.rs:626, set_left/bottom/right :633/:657/:687; DockPlacement dock/dock.rs:29); persistence DockAreaState state.rs:14 (version), dump/load + DockEvent::LayoutChanged dock.rs:85, 10s debounce :189, on_app_quit :92; editor InputState::code_editor state.rs:589, yaml grammar behind tree-sitter-yaml feature (highlighter/languages.rs:401, '\"yaml\"|\"yml\"' :250), value() :1202, set_value :784, InputEvent :123; Root::new root.rs:96, push_notification root.rs:400; theme init via gpui_component::init lib.rs:107 (ThemeMode::Light default), cx.theme() panics unset; assets = 99 SVGs, no fonts; Input keymap CONTEXT='Input' state.rs:130-189."
+  - "Ours: entrypoint main.rs:~1050 (with_platform); watcher spawn ~:862 POLL=300ms ~:868, rejected-reload eprintln ~:911 — numbers drift with the click-filter merge, re-verify; WorkspaceView absorbs into the DockArea-hosting root; workspace.rs stays framework-free (PresentationMode/resolve_title/framed_window_size-as-initial-size); white bg currently in WorkspaceView — the dock takes over background painting, keep the canvas panel bg white."
+  - "MERGE-TRAIN NOTE: this branch forks main @ 7ae2b1f; PR #41 (click-to-filter, ui/app churn) and the raster determinism chore land first — rebase onto main after they merge, before opening this PR."
+  - "Tabletop contract incl. recon errata (the pin premise was stale — #40 already landed): tabletop.md alongside this spec. Read before starting."
+
+deferred:
+  - "WorkspaceView prune (brightfield-ui/src/workspace_view.rs): superseded as the window root by the DockArea shell; TogglePresentation, workspace_key_bindings, and WORKSPACE_KEY_CONTEXT remain live, the view itself awaits removal. [recorded 2026-07-06]"
+  - "Upstream a two-line DockEvent patch to gpui-component — emit LayoutChanged on Dock::done_resizing and subscribe bare DockItem::Tabs centers in subscribe_item — as the principled alternative to the app-side observe workaround in ac-03's trigger-set correction. [recorded 2026-07-06]"
+  - "DuckDB column profiling in the sidebar (count/min/max/distinct/nulls) — the card's next increment."
+  - "LSP/completions/diagnostics in the editor; on-change live re-render (save-driven v1)."
+  - "Focus-cycling keys, cmd-p alias, editor-focused bare-letter handling — keyboard-grammar card."
+  - "Their TitleBar (client-side titlebar) on macOS; tiles/floating panels; canvas panel persistence."
+  - "Command log as spec-edit stream (VisiData memo) — rides this editor seam once it exists."
+
+ambiguity_score: 0.12
+ambiguity_notes: >
+  Closed space: two recons + Hugh's greenlight fixed every fork (dep shape,
+  entrypoint retention, panel set, save-driven editing, presentation-as-
+  visibility, persistence location/versioning, p-key scoping). Residual
+  implementer freedom: exact config-dir path helper, notification wording,
+  default dock sizes, whether the sidebar derivation reads schema from
+  LiveParts or the executed batches — none contractual. Flagged to Hugh
+  rather than locked: the p-key-in-editor v1 behaviour and the superseded
+  0016 window-size invariant.

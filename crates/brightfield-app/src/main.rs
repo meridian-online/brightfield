@@ -7,6 +7,20 @@
 //! which needs full Xcode + Metal compiler). Without it, the pipeline runs
 //! headlessly and prints a summary.
 
+mod boot;
+#[cfg(any(target_os = "macos", test))]
+mod dock_state_file;
+#[cfg(any(target_os = "macos", test))]
+mod reload_feedback;
+#[cfg(any(target_os = "macos", test))]
+mod shell;
+#[cfg(any(target_os = "macos", test))]
+mod shell_model;
+#[cfg(any(target_os = "macos", test))]
+mod sidebar_model;
+#[cfg(any(target_os = "macos", test))]
+mod spec_save;
+
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::Path;
@@ -902,8 +916,11 @@ fn spawn_spec_watcher(
     watched: Vec<WatchedPlot>,
     spec_path: String,
     launch_chrome: ChromeSnapshot,
+    workspace_window: gpui::WindowHandle<gpui_component::Root>,
+    editor: Option<gpui::Entity<shell::EditorPanel>>,
 ) {
     const POLL: std::time::Duration = std::time::Duration::from_millis(300);
+    use reload_feedback::{reload_notification, ReloadOutcome};
 
     cx.spawn(async move |cx: &mut gpui::AsyncApp| {
         let mut last = file_mtime(&spec_path);
@@ -914,6 +931,22 @@ fn spawn_spec_watcher(
                 continue;
             }
             last = now;
+
+            // A PRISTINE editor buffer follows the file it mirrors: adopt
+            // the changed contents before the reload runs (the decision is
+            // spec_save::should_reseed — a dirty buffer is left alone and
+            // our own save's echo is a no-op). A tap only: no reload branch
+            // below is entered, skipped, or reordered by this.
+            if let Some(editor) = editor.as_ref() {
+                if let Ok(contents) = std::fs::read_to_string(&spec_path) {
+                    let editor = editor.clone();
+                    let _ = workspace_window.update(cx, |_root, window, cx| {
+                        editor.update(cx, |editor, cx| {
+                            editor.reseed_from_disk(&contents, window, cx);
+                        });
+                    });
+                }
+            }
 
             // Re-run the (blocking) pipeline off the main thread (Dashboard is
             // Send). catch_unwind contains a panicking pipeline (a degenerate
@@ -947,6 +980,16 @@ fn spawn_spec_watcher(
                         });
                     if !same_layout {
                         eprintln!("reload skipped: dashboard layout changed; restart to apply");
+                        if let Some((severity, message)) =
+                            reload_notification(&ReloadOutcome::LayoutChanged)
+                        {
+                            shell::notify_reload_rejection(
+                                &workspace_window,
+                                cx,
+                                severity,
+                                message,
+                            );
+                        }
                         continue;
                     }
                     // The chrome (title, hosted legends) and the coordinator's
@@ -957,6 +1000,16 @@ fn spawn_spec_watcher(
                     // colorScheme would snap back to the launch scheme).
                     if let Some(what) = chrome_divergence(&launch_chrome, &rebuilt_chrome) {
                         eprintln!("reload skipped: {what} changed; restart to apply");
+                        if let Some((severity, message)) =
+                            reload_notification(&ReloadOutcome::ChromeDiverged(what))
+                        {
+                            shell::notify_reload_rejection(
+                                &workspace_window,
+                                cx,
+                                severity,
+                                message,
+                            );
+                        }
                         continue;
                     }
                     // Swap each plot's new scene into its state (matched by path),
@@ -975,9 +1028,22 @@ fn spawn_spec_watcher(
                         app.refresh_windows();
                     });
                     eprintln!("reloaded {spec_path}");
+                    // The routing decision is total: Applied maps to NO
+                    // notification — successful reloads stay quiet
+                    // (aws_ac05), through the same fn the rejections use.
+                    if let Some((severity, message)) =
+                        reload_notification(&ReloadOutcome::Applied)
+                    {
+                        shell::notify_reload_rejection(&workspace_window, cx, severity, message);
+                    }
                 }
                 Err(e) => {
                     eprintln!("reload skipped (keeping last good chart): {e}");
+                    if let Some((severity, message)) =
+                        reload_notification(&ReloadOutcome::PipelineFailed(&e))
+                    {
+                        shell::notify_reload_rejection(&workspace_window, cx, severity, message);
+                    }
                 }
             }
         }
@@ -1009,8 +1075,13 @@ fn main() {
     );
 
     // Debug path: composite the per-plot scenes and dump a PNG instead of
-    // opening a window. Triggered by `BRIGHTFIELD_DUMP_PNG=<path>`.
-    if let Ok(dump_path) = env::var("BRIGHTFIELD_DUMP_PNG") {
+    // opening a window. Triggered by `BRIGHTFIELD_DUMP_PNG=<path>`. The
+    // decision is the `boot` module's seam (aws_ac01): this arm RETURNS
+    // before the workspace shell (DockArea/panels/editor) is reachable, so
+    // shell state can never move a pixel in a dumped PNG.
+    if let boot::BootMode::HeadlessDump(dump_path) =
+        boot::boot_mode(env::var("BRIGHTFIELD_DUMP_PNG").ok())
+    {
         // Optional supersampling for HiDPI verification: BRIGHTFIELD_DUMP_SCALE=2
         // renders at device resolution via the same scale-the-scene path the
         // window uses for crisp Retina output.
@@ -1072,9 +1143,10 @@ fn main() {
         return;
     }
 
-    // Open a native GPUI window: a WorkspaceView (header strip + padded content
-    // area — card 0016) hosting one ChartElement per plot, positioned per the
-    // layout, each with its own ChartState (so interaction is per-plot).
+    // Open a native GPUI window: the docked authoring workspace (card 0017) —
+    // a DockArea hosting the canvas panel (one ChartElement per plot,
+    // positioned per the layout, each with its own ChartState so interaction
+    // is per-plot), the YAML spec editor, and the data sidebar.
     #[cfg(target_os = "macos")]
     {
         use gpui::AppContext;
@@ -1082,11 +1154,15 @@ fn main() {
         use std::rc::Rc;
 
         let renderer = brightfield_ui::VelloRenderer::new();
-        let app = gpui::Application::with_platform(Rc::new(gpui_macos::MacPlatform::new(false)));
+        // The entrypoint keeps gpui_macos (the 0017 locked pick — migrating
+        // to gpui_platform is an escalation, never a silent swap) and gains
+        // gpui-component's bundled icon assets (aws_ac01).
+        let app = gpui::Application::with_platform(Rc::new(gpui_macos::MacPlatform::new(false)))
+            .with_assets(gpui_component_assets::Assets);
         let spec_path = spec_path.to_string();
         let Dashboard { width, height, plots, sliders, legends, meta_title } = dashboard;
         // The dashboard's display title — the ONE resolver call feeding both
-        // the native titlebar and the WorkspaceView header strip below.
+        // the native titlebar and the canvas panel's tab title below.
         let title = brightfield_ui::resolve_title(meta_title.as_deref(), &spec_path);
         let LiveParts {
             session,
@@ -1094,6 +1170,38 @@ fn main() {
             plots: live_plots_meta,
             legend_bindings,
         } = live;
+        // Workspace shell inputs (card 0017), computed before `marks` moves
+        // into the coordinator: the editor buffer seed (the spec file's
+        // text) and the sidebar derivation (spec AST + the column names of
+        // the batches the pipeline ALREADY executed — no new DuckDB
+        // queries, aws_ac06). A failed seed read is passed through as None
+        // — NOT an empty string, which the editor could later "save" over
+        // the real file (the empty-seed truncation guard): an unseeded
+        // editor refuses cmd-s until a pristine reseed lands.
+        let editor_seed: Option<String> = match std::fs::read_to_string(&spec_path) {
+            Ok(text) => Some(text),
+            Err(e) => {
+                eprintln!(
+                    "spec editor: failed to read {spec_path} for the editor seed ({e}); \
+                     the editor opens empty and will refuse to save until the file is readable"
+                );
+                None
+            }
+        };
+        let mark_schema_columns: Vec<Vec<String>> = marks
+            .iter()
+            .map(|m| {
+                m.batch
+                    .as_ref()
+                    .map(|b| b.schema().fields().iter().map(|f| f.name().clone()).collect())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let sidebar_listings: Vec<sidebar_model::SourceListing> = parse_spec_path(&spec_path)
+            .map(|parsed| {
+                sidebar_model::derive_source_listings(&parsed.spec, &mark_schema_columns)
+            })
+            .unwrap_or_default();
         // Launch-time chrome snapshot for the hot-reload gate: the title,
         // hosted legends, legend selection bindings (click wiring), and
         // per-plot render metadata are fixed at launch, so the watcher
@@ -1102,6 +1210,10 @@ fn main() {
         let launch_chrome =
             ChromeSnapshot::capture(title.clone(), &legends, &legend_bindings, &live_plots_meta);
         app.run(move |cx| {
+            // gpui-component globals — theme, dock/input/root registries —
+            // before any of its views exist (aws_ac01).
+            gpui_component::init(cx);
+
             // One ChartState per plot; the watcher tracks each by its stable
             // path + geometry for hot-reload.
             let mut watched: Vec<WatchedPlot> = Vec::with_capacity(plots.len());
@@ -1185,17 +1297,29 @@ fn main() {
 
             // The workspace key bindings, declared as data: bare `p` toggles
             // presentation mode inside the workspace key context (card 0016 —
-            // Brightfield's first GPUI action).
+            // Brightfield's first GPUI action; the binding is unchanged, its
+            // handler now lives on the canvas panel), plus cmd-s → SaveSpec
+            // scoped to the editor context (card 0017).
             cx.bind_keys(brightfield_ui::workspace_key_bindings());
+            cx.bind_keys(shell::editor_key_bindings());
 
-            // Size the window's content to the dashboard plus the shell chrome
-            // (header strip + content padding — card 0016). `window_bounds` is
-            // the CONTENT rect — the macOS titlebar is added above it. The
-            // window is resizable; WorkspaceView fills it with a white
-            // background and centres the canvas, so enlarging shows a clean
-            // margin rather than a void (chart-scaling reflow is inc 6).
+            // Size the initial window to the dashboard plus the 0016 chrome
+            // margins and the default authoring dock widths (card 0017).
+            // `window_bounds` is the CONTENT rect — the macOS titlebar is
+            // added above it. Initial size ONLY: DockArea owns layout from
+            // here (the 0016 toggle-resize invariant is superseded; recorded
+            // in the 0017 tabletop).
             let (win_w, win_h) =
-                brightfield_ui::framed_window_size(f64::from(width), f64::from(height));
+                shell_model::initial_window_size(f64::from(width), f64::from(height));
+            // Clamp to the primary display's visible bounds (menu bar/dock
+            // excluded): a dashboard plus both dock widths can exceed a
+            // laptop display, and centring an oversized content rect would
+            // push the titlebar off-screen. No display info → unclamped.
+            let display_size = cx
+                .primary_display()
+                .map(|d| d.visible_bounds().size)
+                .map(|s| (f64::from(s.width), f64::from(s.height)));
+            let (win_w, win_h) = shell_model::clamp_to_display((win_w, win_h), display_size);
             let window_size = gpui::size(gpui::px(win_w as f32), gpui::px(win_h as f32));
             let window_opts = gpui::WindowOptions {
                 window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::centered(
@@ -1205,14 +1329,25 @@ fn main() {
                 ))),
                 titlebar: Some(gpui::TitlebarOptions {
                     // The resolved dashboard title (document-app convention);
-                    // the header strip shows the same string.
+                    // the canvas panel's title shows the same string.
                     title: Some(title.clone().into()),
                     ..Default::default()
                 }),
                 ..Default::default()
             };
+            // The canvas panel entity, captured out of the window closure so
+            // boot focus lands on it (bare `p` from the first keypress) —
+            // and the editor panel, captured for the watcher's pristine
+            // reseed tap below.
+            let canvas_slot: Rc<std::cell::RefCell<Option<gpui::Entity<shell::CanvasPanel>>>> =
+                Rc::new(std::cell::RefCell::new(None));
+            let canvas_capture = canvas_slot.clone();
+            let editor_slot: Rc<std::cell::RefCell<Option<gpui::Entity<shell::EditorPanel>>>> =
+                Rc::new(std::cell::RefCell::new(None));
+            let editor_capture = editor_slot.clone();
+            let spec_path_for_editor = spec_path.clone();
             let window = cx
-                .open_window(window_opts, move |_window, cx| {
+                .open_window(window_opts, move |window, cx| {
                     let chart_view = cx.new(|_| {
                         brightfield_ui::ChartView::new(
                             f64::from(width),
@@ -1222,20 +1357,55 @@ fn main() {
                             hosted_legends,
                         )
                     });
-                    cx.new(|cx| brightfield_ui::WorkspaceView::new(title, chart_view, cx))
+                    // The docked workspace shell (card 0017): shared
+                    // presentation state, the three panels, the DockArea
+                    // root, all wrapped in gpui-component's Root (the
+                    // notification/dialog layers live there).
+                    let presentation = cx.new(|_| shell::PresentationState {
+                        mode: brightfield_ui::PresentationMode::default(),
+                    });
+                    let canvas = cx.new(|cx| {
+                        shell::CanvasPanel::new(chart_view, title, presentation.clone(), cx)
+                    });
+                    *canvas_capture.borrow_mut() = Some(canvas.clone());
+                    let editor = cx.new(|cx| {
+                        shell::EditorPanel::new(
+                            std::path::PathBuf::from(&spec_path_for_editor),
+                            editor_seed.as_deref(),
+                            presentation.clone(),
+                            window,
+                            cx,
+                        )
+                    });
+                    *editor_capture.borrow_mut() = Some(editor.clone());
+                    let sidebar = cx.new(|cx| {
+                        shell::SidebarPanel::new(sidebar_listings, presentation.clone(), cx)
+                    });
+                    let workspace = cx.new(|cx| {
+                        shell::WorkspaceRoot::new(canvas, editor, sidebar, presentation, window, cx)
+                    });
+                    cx.new(|cx| gpui_component::Root::new(workspace, window, cx))
                 })
                 .expect("failed to open window");
 
-            // Focus the workspace root so the canvas-scoped `p` binding
+            // Focus the canvas panel so the canvas-scoped `p` binding
             // receives key dispatch from the first keypress.
             window
-                .update(cx, |view, window, cx| {
-                    window.focus(&view.focus_handle(cx), cx);
+                .update(cx, |_root, window, cx| {
+                    if let Some(canvas) = canvas_slot.borrow().as_ref() {
+                        window.focus(&canvas.focus_handle(cx), cx);
+                    }
                 })
-                .expect("focus workspace root");
+                .expect("focus canvas panel");
 
-            // Hot-reload: swap each plot's scene when the spec changes on disk.
-            spawn_spec_watcher(cx, watched, spec_path, launch_chrome);
+            // Hot-reload: swap each plot's scene when the spec changes on
+            // disk; rejections additionally surface as workspace
+            // notifications (aws_ac05's tap — same outcomes, same stderr),
+            // and a PRISTINE editor buffer reseeds from the changed file
+            // (the watcher's second sanctioned tap — reload control flow
+            // untouched).
+            let editor = editor_slot.borrow().clone();
+            spawn_spec_watcher(cx, watched, spec_path, launch_chrome, window, editor);
         });
     }
 

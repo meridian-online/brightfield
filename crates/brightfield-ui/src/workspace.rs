@@ -1,19 +1,22 @@
-//! Workspace shell model (card 0016) — the gpui-free half of the framed window.
+//! Workspace shell model (card 0016) — the gpui-free half of the window shell.
 //!
 //! Everything here is plain state and arithmetic so it runs headlessly (the
 //! semantic-layer rule: state machines and size formulas are framework-free;
-//! `workspace_view.rs` is the thin GPUI translation shim over this module).
-//! No gpui import may enter this file.
+//! the GPUI views are thin translation shims over this module). No gpui
+//! import may enter this file.
 //!
 //! - [`PresentationMode`] — the authoring/presentation state machine the
-//!   `TogglePresentation` action flips.
-//! - [`framed_window_size`] — dashboard bbox + chrome extents. The formula is
-//!   mode-independent by construction: toggling presentation never resizes the
-//!   window, only re-centres the canvas — and the LIVE re-centre is
-//!   `WorkspaceView`'s flex layout; the test module keeps a `canvas_origin`
-//!   geometry oracle mirroring it for the fww_ac01 assertion.
-//! - [`resolve_title`] — `meta.title` wins, spec filename stem falls back. The
-//!   single resolver feeding both the native titlebar and the header strip.
+//!   `TogglePresentation` action flips (hosted by the 0017 canvas panel).
+//! - [`framed_window_size`] — dashboard bbox + chrome extents: the INITIAL
+//!   window-size formula. The 0016 "window never resizes on toggle"
+//!   invariant this formula once anchored is SUPERSEDED by card 0017
+//!   (recorded in the 0017 tabletop, not by editing the shipped 0016 spec):
+//!   the DockArea owns layout once the window is open, and the app's
+//!   `shell_model::initial_window_size` adds the default dock widths on top
+//!   of this formula. fww_ac01's oracle is revised to match.
+//! - [`resolve_title`] — `meta.title` wins, spec filename stem falls back.
+//!   The single resolver feeding both the native titlebar and the canvas
+//!   panel's tab title.
 
 use std::path::Path;
 
@@ -63,10 +66,14 @@ impl PresentationMode {
 /// Framed window content size for a dashboard bounding box: the canvas plus
 /// the chrome extents (header strip above, content padding on every side).
 ///
-/// Deliberately takes no [`PresentationMode`]: the window keeps its size when
-/// presentation toggles (the locked pick) — only the canvas mount moves, and
-/// that movement is `WorkspaceView`'s flex centring (items_center /
-/// justify_center reclaiming the hidden chrome's space), not a function here.
+/// INITIAL size only (card 0017): the docked workspace feeds this through
+/// the app's `shell_model::initial_window_size` (adding the default dock
+/// widths) to choose the first-boot window size — once open, the DockArea
+/// owns layout and the user owns the window size. The 0016 "toggling
+/// presentation never resizes the window" invariant this formula once
+/// anchored is superseded (recorded in the 0017 tabletop). The formula
+/// still takes no [`PresentationMode`], which now guarantees only that the
+/// initial size is mode-independent.
 #[must_use]
 pub fn framed_window_size(dashboard_width: f64, dashboard_height: f64) -> (f64, f64) {
     (
@@ -77,8 +84,8 @@ pub fn framed_window_size(dashboard_width: f64, dashboard_height: f64) -> (f64, 
 
 /// The dashboard's display title: `meta.title` when declared (and non-blank),
 /// else the spec file's stem (`examples/framed.yaml` → `framed`). This single
-/// resolver feeds BOTH the native titlebar and the shell header strip, so the
-/// two can never disagree.
+/// resolver feeds BOTH the native titlebar and the canvas panel's tab title,
+/// so the two can never disagree.
 #[must_use]
 pub fn resolve_title(meta_title: Option<&str>, spec_path: &str) -> String {
     if let Some(title) = meta_title {
@@ -96,71 +103,30 @@ pub fn resolve_title(meta_title: Option<&str>, spec_path: &str) -> String {
 mod tests {
     use super::*;
 
-    /// Geometry oracle for the re-centre assertion below: where the dashboard
-    /// canvas mounts inside a window of `window` size in each mode — centred
-    /// in the padded content area below the header (authoring), or centred in
-    /// the full window (presentation). The LIVE re-centre is `WorkspaceView`'s
-    /// flex layout (items_center/justify_center reclaiming the hidden
-    /// chrome's space, eyeballed at ac-11); this mirror has no production
-    /// caller and exists so fww_ac01 can assert the geometry headlessly.
-    fn canvas_origin(
-        mode: PresentationMode,
-        window: (f64, f64),
-        dashboard: (f64, f64),
-    ) -> (f64, f64) {
-        let (win_w, win_h) = window;
-        let (dash_w, dash_h) = dashboard;
-        match mode {
-            PresentationMode::Authoring => {
-                let content_w = (win_w - 2.0 * CONTENT_PADDING).max(0.0);
-                let content_h = (win_h - HEADER_HEIGHT - 2.0 * CONTENT_PADDING).max(0.0);
-                (
-                    CONTENT_PADDING + (content_w - dash_w) / 2.0,
-                    HEADER_HEIGHT + CONTENT_PADDING + (content_h - dash_h) / 2.0,
-                )
-            }
-            PresentationMode::Presentation => ((win_w - dash_w) / 2.0, (win_h - dash_h) / 2.0),
-        }
-    }
-
-    /// fww_ac01: framed window size = dashboard bbox + chrome extents, and the
-    /// formula is presentation-independent — toggling only moves the canvas
-    /// mount origin (re-centred in the full window), never the window size.
-    /// The origin here is the test-module `canvas_origin` oracle above — a
-    /// stand-in for `WorkspaceView`'s flex re-centre (ac-11's eyeball).
+    /// fww_ac01 (revised for card 0017 — the ONE sanctioned oracle revision
+    /// the 0017 tabletop records): framed window size = dashboard bbox +
+    /// chrome extents, as the INITIAL window-size formula. The formula
+    /// takes no `PresentationMode`, which now pins only that the
+    /// first-boot size is mode-independent — the 0016 "window never
+    /// resizes on toggle" invariant is superseded (the DockArea owns
+    /// layout once the window is open, and the app's aws_ac03 tests pin
+    /// the dock widths added on top). The historical `canvas_origin`
+    /// re-centre oracle that mirrored `WorkspaceView`'s flex layout is
+    /// deleted with the invariant it asserted; the live counterpart is
+    /// the 0017 CanvasPanel's flex centring inside the DockArea
+    /// (ac-08's eyeball).
     #[test]
-    fn fww_ac01_window_size_adds_chrome_and_toggle_recentres() {
+    fn fww_ac01_initial_window_size_adds_chrome_extents() {
         let (dash_w, dash_h) = (800.0, 600.0);
         let (win_w, win_h) = framed_window_size(dash_w, dash_h);
         assert_eq!(win_w, dash_w + 2.0 * CONTENT_PADDING);
         assert_eq!(win_h, dash_h + HEADER_HEIGHT + 2.0 * CONTENT_PADDING);
-
-        // The size function takes no mode — the window CANNOT resize on toggle.
-        // The canvas origin is what moves: exact-fit content area in authoring…
-        let authoring =
-            canvas_origin(PresentationMode::Authoring, (win_w, win_h), (dash_w, dash_h));
-        assert_eq!(authoring, (CONTENT_PADDING, HEADER_HEIGHT + CONTENT_PADDING));
-
-        // …and centred in the FULL (unchanged) window in presentation, so the
-        // canvas reclaims half the header's freed space vertically.
-        let presentation =
-            canvas_origin(PresentationMode::Presentation, (win_w, win_h), (dash_w, dash_h));
-        assert_eq!(
-            presentation,
-            (
-                CONTENT_PADDING,
-                (HEADER_HEIGHT + 2.0 * CONTENT_PADDING) / 2.0
-            )
-        );
-        assert!(
-            presentation.1 < authoring.1,
-            "hiding the header must float the canvas upward into the freed space"
-        );
     }
 
     /// fww_ac02: title resolution — `meta.title` wins; a spec without one
-    /// resolves to its filename stem. (Both the native titlebar and the header
-    /// strip consume this one resolver — see main.rs, one call site each.)
+    /// resolves to its filename stem. (Both the native titlebar and the
+    /// canvas panel's tab title consume this one resolver — see main.rs,
+    /// one call site.)
     #[test]
     fn fww_ac02_title_meta_wins_filename_falls_back() {
         assert_eq!(
