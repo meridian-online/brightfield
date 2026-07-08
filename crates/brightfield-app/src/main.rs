@@ -1036,6 +1036,11 @@ fn spawn_spec_watcher(
                     {
                         shell::notify_reload_rejection(&workspace_window, cx, severity, message);
                     }
+                    // Recovery is self-cleaning: a successful reload clears
+                    // the sticky error a prior rejection left up.
+                    if reload_feedback::clears_errors(&ReloadOutcome::Applied) {
+                        shell::clear_reload_error(&workspace_window, cx);
+                    }
                 }
                 Err(e) => {
                     eprintln!("reload skipped (keeping last good chart): {e}");

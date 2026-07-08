@@ -54,6 +54,25 @@ pub fn reload_notification(outcome: &ReloadOutcome<'_>) -> Option<(Severity, Str
     }
 }
 
+/// Whether a notification at this severity persists until dismissed or
+/// superseded. Errors block the author's edit loop — a transient toast is
+/// missed whenever the save came from an external editor (the window isn't
+/// frontmost), leaving only the unchanged canvas as evidence. Warnings are
+/// informational and may auto-hide.
+#[must_use]
+pub fn sticky(severity: Severity) -> bool {
+    matches!(severity, Severity::Error)
+}
+
+/// Whether this outcome clears an outstanding sticky reload error: a
+/// successful reload means the file is good again, and a stale error toast
+/// would misreport the recovered state. Rejections don't clear — the error
+/// path replaces the toast instead, so exactly one is live at a time.
+#[must_use]
+pub fn clears_errors(outcome: &ReloadOutcome<'_>) -> bool {
+    matches!(outcome, ReloadOutcome::Applied)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,5 +114,25 @@ mod tests {
     #[test]
     fn aws_ac05_successful_reload_stays_quiet() {
         assert_eq!(reload_notification(&ReloadOutcome::Applied), None);
+    }
+
+    /// aws_ac05 correction 2026-07-08: error notifications persist until
+    /// the author resolves them (a transient toast was missed in product
+    /// use); restart-to-apply warnings stay transient.
+    #[test]
+    fn aws_ac05_errors_are_sticky_warnings_transient() {
+        assert!(sticky(Severity::Error));
+        assert!(!sticky(Severity::Warning));
+    }
+
+    /// aws_ac05 correction 2026-07-08: recovery is self-cleaning — only a
+    /// successful reload clears the outstanding error; rejections replace
+    /// it (one live toast), and warnings never touch it.
+    #[test]
+    fn aws_ac05_only_a_successful_reload_clears_the_error() {
+        assert!(clears_errors(&ReloadOutcome::Applied));
+        assert!(!clears_errors(&ReloadOutcome::PipelineFailed("parse error")));
+        assert!(!clears_errors(&ReloadOutcome::LayoutChanged));
+        assert!(!clears_errors(&ReloadOutcome::ChromeDiverged("title")));
     }
 }

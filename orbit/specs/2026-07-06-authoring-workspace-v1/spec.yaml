@@ -42,7 +42,7 @@ acceptance_criteria:
   - id: ac-05
     ac_type: code
     description: "Reload feedback: when the watcher rejects a reload (parse error, or the ChromeSnapshot 'restart to apply' gate), the reason surfaces as a workspace notification via the Root layer, in addition to stderr; successful reloads stay quiet."
-    verification: "aws_ac05: the watcher's outcome enum -> notification decision is a framework-free fn with unit tests (reject-parse, reject-chrome, success); the notification call site taps the existing outcome without altering reload control flow. verifies: capability (routing decision); the visible toast is ac-08's stand-in"
+    verification: "aws_ac05: the watcher's outcome enum -> notification decision is a framework-free fn with unit tests (reject-parse, reject-chrome, success); the notification call site taps the existing outcome without altering reload control flow. verifies: capability (routing decision); the visible toast is ac-08's stand-in [Correction 2026-07-08: transient error toasts proved insufficient in product use — a parse-error rejection was missed because the save came from an external editor and the toast auto-hid before the window was frontmost. Errors are now sticky (autohide off), replace rather than stack across repeated bad saves, and are cleared by the next successful reload; restart-to-apply warnings stay transient. Decisions (sticky/clears_errors) live in reload_feedback, unit-tested.]"
   - id: ac-06
     ac_type: code
     description: "Sidebar skeleton: a left panel listing each data source and its column names, derived headlessly (spec AST + already-available schema); no stats, no DuckDB round-trips beyond what the pipeline already ran."

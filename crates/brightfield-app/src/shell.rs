@@ -38,7 +38,7 @@ use brightfield_ui::{ChartView, PresentationMode, TogglePresentation, WORKSPACE_
 use crate::dock_state_file::{
     self, LoadDecision, SaveAction, SavePolicy, DOCK_STATE_VERSION, SAVE_DEBOUNCE_MS,
 };
-use crate::reload_feedback::Severity;
+use crate::reload_feedback::{self, Severity};
 use crate::shell_model::{
     docks_open, layout_persistable, panel_visible, PanelRole, CANVAS_PANEL_NAME,
     EDITOR_DOCK_WIDTH, EDITOR_PANEL_NAME, SIDEBAR_DOCK_WIDTH, SIDEBAR_PANEL_NAME,
@@ -753,9 +753,17 @@ impl Render for WorkspaceRoot {
 // Reload-rejection notifications (aws_ac05)
 // ---------------------------------------------------------------------------
 
+/// Marker id for the reload-error notification: exactly one is live at a
+/// time — a new rejection replaces it, a successful reload removes it
+/// (`clear_reload_error`).
+struct ReloadErrorTag;
+
 /// Route a reload rejection to the workspace notification layer (the
 /// watcher's tap). The severity/message pair comes from the framework-free
-/// `reload_feedback` decision; a closed window is a silent no-op.
+/// `reload_feedback` decision; a closed window is a silent no-op. Errors
+/// are sticky (`reload_feedback::sticky`) — a transient toast is missed
+/// whenever the save came from an external editor — and replace rather
+/// than stack across repeated bad saves.
 pub fn notify_reload_rejection(
     window: &gpui::WindowHandle<Root>,
     cx: &mut gpui::AsyncApp,
@@ -764,10 +772,24 @@ pub fn notify_reload_rejection(
 ) {
     let _ = window.update(cx, |root, window, cx| {
         let note = match severity {
-            Severity::Error => Notification::error(message.clone()),
+            Severity::Error => {
+                root.remove_notification::<ReloadErrorTag>(window, cx);
+                Notification::error(message.clone())
+                    .id::<ReloadErrorTag>()
+                    .autohide(!reload_feedback::sticky(severity))
+            }
             Severity::Warning => Notification::warning(message.clone()),
         };
         root.push_notification(note, window, cx);
+    });
+}
+
+/// Clear the outstanding sticky reload error after a successful reload
+/// (`reload_feedback::clears_errors` decided) — the file is good again and
+/// a stale error toast would misreport it. Closed window: silent no-op.
+pub fn clear_reload_error(window: &gpui::WindowHandle<Root>, cx: &mut gpui::AsyncApp) {
+    let _ = window.update(cx, |root, window, cx| {
+        root.remove_notification::<ReloadErrorTag>(window, cx);
     });
 }
 
