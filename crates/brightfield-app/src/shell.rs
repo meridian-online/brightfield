@@ -741,11 +741,24 @@ impl WorkspaceRoot {
 }
 
 impl Render for WorkspaceRoot {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Pushing into Root's notification/dialog/sheet lists draws NOTHING
+        // unless the window's root view mounts the corresponding layers as
+        // trailing children (gpui-component's workspace pattern — see their
+        // story dock example). Without these, every push_notification —
+        // reload rejections, editor save conflicts — and the dock
+        // version-mismatch dialog are silently invisible.
+        let sheet_layer = Root::render_sheet_layer(window, cx);
+        let dialog_layer = Root::render_dialog_layer(window, cx);
+        let notification_layer = Root::render_notification_layer(window, cx);
         div()
+            .relative()
             .size_full()
             .bg(cx.theme().background)
             .child(self.dock_area.clone())
+            .children(sheet_layer)
+            .children(dialog_layer)
+            .children(notification_layer)
     }
 }
 
