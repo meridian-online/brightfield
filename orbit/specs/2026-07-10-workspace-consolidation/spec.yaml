@@ -1,0 +1,45 @@
+goal: >
+  Workspace consolidation (card 0017): (1) prune the dead WorkspaceView — the
+  card-0016 window root the DockArea superseded in #45 — keeping the live
+  pieces that share its file (TogglePresentation, the workspace key context,
+  the `p` binding); (2) add the missing bottom dock so panel drag-to-bottom
+  works (Hugh's last open walkthrough step): seed it closed with a new Log
+  panel carrying reload-feedback history, backfill restored layouts that lack
+  it, and remove/rebuild it across presentation mode so the consumer preview
+  stays chrome-free. Contract and recon corrections: tabletop-note.md
+  alongside this spec.
+
+constraints:
+  - "Headless byte-identity gate (halt condition): all 27 example PNGs byte-identical to the scratchpad/cfr-baselines set (== main 5167a31, verified twice). Shell-only round; exemption-free, as since #42."
+  - "gpui-component stays unforked at pin b7e63cc2: only its public API (set_bottom_dock / remove_bottom_dock / has_dock / dump / DockState::to_dock / PanelState::to_item / register_panel). Needing a fork or patch is a halt, not a workaround."
+  - "Semantic-layer rule (standing, card 0017): every decision added this round — log entry model and cap, panel-visibility role, backfill decision, presentation dock action — lives in gpui-free code (shell_model.rs, dock_state_file.rs, a new log model module); gpui files only host entities, paint, and API calls."
+  - "DOCK_STATE_VERSION unchanged: older saved layouts are backfilled (bottom dock appended post-restore), never discarded. Layouts that already contain a bottom dock restore exactly as saved."
+  - "Log panel is closable=false in v1 (anchors the dock: an emptied bottom dock lingers as a dead strip, and a moved-in panel that becomes the dock's last panel would stop being draggable). Revisit when a second bottom-dock citizen exists."
+  - "Prune is deletion, not relocation of behaviour: TogglePresentation, WORKSPACE_KEY_CONTEXT, workspace_key_bindings and their binding test survive verbatim (module renamed workspace_view.rs -> workspace_actions.rs); no app-crate behaviour change. workspace.rs (PresentationMode, framed_window_size, resolve_title) is untouched."
+  - "Sanctioned churn: presentation-exit rebuilds the bottom Dock entity, so the save-observer wiring (shell.rs observe_in on edge docks) must re-attach to the new entity — extract and reuse the wiring rather than duplicating it."
+
+acceptance_criteria:
+  - id: wsc-ac01
+    ac_type: code
+    description: "WorkspaceView prune: the WorkspaceView struct, its Render/Focusable impls, and its lib.rs export are deleted; workspace_view.rs is renamed workspace_actions.rs keeping TogglePresentation, WORKSPACE_KEY_CONTEXT, workspace_key_bindings, and the fww_ac07 binding test; shell.rs/main.rs consumers compile against the crate-root re-exports unchanged; the stale 'moved up to WorkspaceView' comment in chart_view.rs points at CanvasPanel."
+    verification: "wsc_ac01: cargo test --workspace green with zero remaining references to the WorkspaceView type (grep gate: 'WorkspaceView' appears only in historical doc comments/spec artefacts, never as a code identifier); fww_ac07 still passes. verifies: capability"
+  - id: wsc-ac02
+    ac_type: code
+    description: "Log panel + framework-free log model: a new gpui-free module owns LogEntry {severity, message} plus an append-only, capacity-capped model (newest first, cap ~200, never cleared by reload recovery — history, unlike notifications); LogPanel implements Panel (panel_name registered via register_panel; closable=false; zoomable None; visible() = panel_visible(mode, PanelRole::Log)); every reload-feedback outcome that reaches a push_notification call site in shell.rs is also appended to the log with the same severity and message."
+    verification: "wsc_ac02: unit — model append/cap/order/no-clear-on-recovery; panel_visible(Log) true in authoring, false in presentation; a shell-level test drives the reload-feedback path and asserts the log received the same message the notification did. verifies: capability"
+  - id: wsc-ac03
+    ac_type: code
+    description: "Seed + backfill: default_layout seeds the bottom dock closed with the Log panel; a restore of a saved layout that lacks a bottom dock (every pre-round install) backfills the same closed Log dock post-load; a saved layout that has a bottom dock restores as saved (no double dock, no forced state). The backfill decision is a pure function in gpui-free code."
+    verification: "wsc_ac03: gpui-entity tests against WorkspaceRoot (aws_ac03 precedent): fresh boot => has_dock(Bottom) with the dock closed; boot restoring a pre-round layout JSON => has_dock(Bottom) backfilled; boot restoring a layout JSON that includes a bottom dock => restored, not duplicated. Pure backfill decision unit-tested. verifies: capability"
+  - id: wsc-ac04
+    ac_type: code
+    description: "Presentation round trip: entering presentation removes the bottom dock entirely (remove_bottom_dock — no 29px collapsed strip; the consumer preview renders zero bottom-dock chrome) after stashing enough state to rebuild it; exiting presentation rebuilds it faithfully — contents (including panels the user moved in), size, and open/closed state all preserved for BOTH the closed-before and open-before cases; the layout-save observer fires for changes to the rebuilt dock entity; the existing layout_persistable guard already covers the removed-dock window (no presentation-shaped layout is ever persisted)."
+    verification: "wsc_ac04: gpui-entity test — toggle presentation on a WorkspaceRoot whose bottom dock is (a) closed and (b) open with a second panel moved in; assert dock absent during presentation, then present-and-equal (contents, size, open bit) after exit; assert a post-round-trip dock change still schedules a save. verifies: capability"
+  - id: wsc-ac05
+    ac_type: manual
+    description: "Interaction feel (Hugh, in-app): the bottom strip shows a Log tab; dragging the editor tab onto it docks the editor at the bottom (the walkthrough step that was blocked); dragging it back restores it; `p` hides every trace of the bottom dock and returns it intact; a broken-then-fixed spec edit shows the same messages in the Log panel that the toasts showed; restarting the app preserves the bottom-dock arrangement."
+    verification: "wsc_ac05: Hugh's product check in the macOS app, checkout ON the PR branch and pre-built (the 2026-07-10 eyeball-handoff lesson). verifies: stand-in (real thing is the in-app gesture), accepted because the walkthrough loop closes it same-week — it is his last open walkthrough step."
+  - id: wsc-ac06
+    ac_type: gate
+    description: "Ship gate: full workspace suite green (set -o pipefail; match cargo 1.95's condensed summary line; explicit exit check), and EVERY example PNG byte-identical to scratchpad/cfr-baselines — shell work is byte-neutral on the headless path by construction."
+    verification: "wsc_ac06: cargo test --workspace; 27/27 PNG sweep. Any diff = halt condition, not an exemption. verifies: capability"
