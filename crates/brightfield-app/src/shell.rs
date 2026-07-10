@@ -773,15 +773,20 @@ impl WorkspaceRoot {
         };
         if !restored {
             Self::default_layout(&dock_area, &canvas, &editor, &sidebar, &log, window, cx);
-        } else if bottom_dock_needs_backfill(
-            dock_area.read(cx).has_dock(DockPlacement::Bottom),
-        ) {
-            // Backfill (wsc_ac03): every pre-round saved layout lacks a
-            // bottom dock — append the same closed Log dock the default
-            // layout seeds, without touching the restored arrangement.
-            // DOCK_STATE_VERSION is unchanged on purpose: a version bump
-            // would discard the author's layout to add one dock.
-            Self::seed_bottom_dock(&dock_area, &log, window, cx);
+        } else {
+            // Normalise (wsc_ac03 correction, review F1): pre-round saves
+            // serialised bare-Tabs dock roots, which this pin's drag
+            // machinery treats as locked — re-root them under StackPanels,
+            // preserving the author's arrangement.
+            Self::normalise_dock_roots(&dock_area, window, cx);
+            if bottom_dock_needs_backfill(dock_area.read(cx).has_dock(DockPlacement::Bottom)) {
+                // Backfill (wsc_ac03): every pre-round saved layout lacks a
+                // bottom dock — append the same closed Log dock the default
+                // layout seeds, without touching the restored arrangement.
+                // DOCK_STATE_VERSION is unchanged on purpose: a version bump
+                // would discard the author's layout to add one dock.
+                Self::seed_bottom_dock(&dock_area, &log, window, cx);
+            }
         }
 
         // Debounced save on layout changes…
@@ -796,33 +801,41 @@ impl WorkspaceRoot {
         )
         .detach();
 
-        // `LayoutChanged` alone has blind spots in their tree: `Dock::resize`
-        // ends in a bare notify (no DockEvent), and a bare center
-        // `DockItem::tab` is skipped by their `subscribe_item` (it assumes
-        // StackPanel parents) — so dock widths and center tab changes would
+        // `LayoutChanged` alone has a blind spot in their tree: `Dock::resize`
+        // ends in a bare notify (no DockEvent), so dock widths would
         // otherwise persist only via the quit flush, and a crash would lose
-        // them. Observe the dock entities and the center TabPanel directly,
-        // funnelling into the same debounced policy: skip-if-unchanged +
-        // debounce absorb the notify-storm a drag produces. (A split center
-        // — the restored-layout shape — IS covered by their subscription.)
-        let (edge_docks, center_tabs) = {
+        // them. Observe the dock entities and the center's root view
+        // directly, funnelling into the same debounced policy:
+        // skip-if-unchanged + debounce absorb the notify-storm a drag
+        // produces. (The historical bare-Tabs blind spot — their
+        // `subscribe_item` skipping tab-only items — is healed by
+        // stack-rooting every dock item (review F1/F2); these direct
+        // observers stay as belt-and-braces for the resize case.)
+        let (edge_docks, center_tabs, center_stack) = {
             let area = dock_area.read(cx);
             let edge_docks: Vec<_> = [area.left_dock(), area.right_dock(), area.bottom_dock()]
                 .into_iter()
                 .flatten()
                 .cloned()
                 .collect();
-            let center_tabs = match area.center() {
-                DockItem::Tabs { view, .. } => Some(view.clone()),
-                _ => None,
+            let (center_tabs, center_stack) = match area.center() {
+                DockItem::Tabs { view, .. } => (Some(view.clone()), None),
+                DockItem::Split { view, .. } => (None, Some(view.clone())),
+                _ => (None, None),
             };
-            (edge_docks, center_tabs)
+            (edge_docks, center_tabs, center_stack)
         };
         for dock in edge_docks {
             Self::observe_dock_for_saves(&dock, window, cx);
         }
         if let Some(tabs) = center_tabs {
             cx.observe_in(&tabs, window, |this: &mut Self, _, window, cx| {
+                this.schedule_save(window, cx);
+            })
+            .detach();
+        }
+        if let Some(stack) = center_stack {
+            cx.observe_in(&stack, window, |this: &mut Self, _, window, cx| {
                 this.schedule_save(window, cx);
             })
             .detach();
@@ -868,8 +881,26 @@ impl WorkspaceRoot {
         }
     }
 
+    /// A stack-rooted single-panel dock item (wsc_ac03 correction, review
+    /// F1): at pin b7e63cc2 the entire drag machinery gates on TabPanels
+    /// having a StackPanel parent — their `is_locked` returns true for a
+    /// bare-Tabs root, killing droppable AND draggable, so a bare
+    /// `DockItem::tab` dock renders no drop targets and can never source a
+    /// drag. Upstream's own dock example v_split-wraps every dock item;
+    /// this mirrors it.
+    fn stack_rooted_tab<P: Panel>(
+        panel: &Entity<P>,
+        weak: &WeakEntity<DockArea>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> DockItem {
+        let tab = DockItem::tab(panel.clone(), weak, window, cx);
+        DockItem::v_split(vec![tab], weak, window, cx)
+    }
+
     /// Center canvas + left sidebar + right editor at their default sizes,
-    /// plus the closed bottom Log dock (wsc_ac03).
+    /// plus the closed bottom Log dock (wsc_ac03). Every item is
+    /// stack-rooted (see [`Self::stack_rooted_tab`]).
     fn default_layout(
         dock_area: &Entity<DockArea>,
         canvas: &Entity<CanvasPanel>,
@@ -880,9 +911,9 @@ impl WorkspaceRoot {
         cx: &mut Context<Self>,
     ) {
         let weak = dock_area.downgrade();
-        let center = DockItem::tab(canvas.clone(), &weak, window, cx);
-        let left = DockItem::tab(sidebar.clone(), &weak, window, cx);
-        let right = DockItem::tab(editor.clone(), &weak, window, cx);
+        let center = Self::stack_rooted_tab(canvas, &weak, window, cx);
+        let left = Self::stack_rooted_tab(sidebar, &weak, window, cx);
+        let right = Self::stack_rooted_tab(editor, &weak, window, cx);
         dock_area.update(cx, |area, cx| {
             area.set_center(center, window, cx);
             area.set_left_dock(left, Some(px(SIDEBAR_DOCK_WIDTH as f32)), true, window, cx);
@@ -894,7 +925,8 @@ impl WorkspaceRoot {
     /// Seed the bottom dock CLOSED with the Log panel: the 29px strip is
     /// the drop/expand affordance (their drag UI only lands on existing
     /// dock surfaces — seeding is the only way drag-to-bottom can work),
-    /// and closed doesn't re-carve the author's current layout.
+    /// and closed doesn't re-carve the author's current layout. Stack-rooted
+    /// so the strip's TabPanel is a real drop target (review F1).
     fn seed_bottom_dock(
         dock_area: &Entity<DockArea>,
         log: &Entity<LogPanel>,
@@ -902,10 +934,68 @@ impl WorkspaceRoot {
         cx: &mut Context<Self>,
     ) {
         let weak = dock_area.downgrade();
-        let bottom = DockItem::tab(log.clone(), &weak, window, cx);
+        let bottom = Self::stack_rooted_tab(log, &weak, window, cx);
         dock_area.update(cx, |area, cx| {
             area.set_bottom_dock(bottom, Some(px(BOTTOM_DOCK_HEIGHT as f32)), false, window, cx);
         });
+    }
+
+    /// Re-root any restored dock item whose root is bare `Tabs` under a
+    /// StackPanel (wsc_ac03 correction, review F1): every pre-round save
+    /// serialised bare-Tabs roots, which this pin's drag machinery treats
+    /// as locked (no drop targets, no drag sources) and whose panel events
+    /// their `subscribe_item` never wires into the save chain (review F2).
+    /// Size, open bit, and panel placement are preserved — "restores as
+    /// saved" means the author's arrangement, not the serialised tree
+    /// shape. The first save after a normalising boot legitimately writes
+    /// the new shape. Runs BEFORE the observer wiring, so the observers
+    /// attach to the re-set Dock entities.
+    fn normalise_dock_roots(
+        dock_area: &Entity<DockArea>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let weak = dock_area.downgrade();
+
+        // Center: wrapping also brings it under their subscribe_item save
+        // coverage (Split arms are subscribed; bare Tabs are skipped).
+        if matches!(dock_area.read(cx).center(), DockItem::Tabs { .. }) {
+            let tabs = dock_area.read(cx).center().clone();
+            let item = DockItem::v_split(vec![tabs], &weak, window, cx);
+            dock_area.update(cx, |area, cx| area.set_center(item, window, cx));
+        }
+
+        for placement in [DockPlacement::Left, DockPlacement::Right, DockPlacement::Bottom] {
+            let dock = {
+                let area = dock_area.read(cx);
+                match placement {
+                    DockPlacement::Left => area.left_dock().cloned(),
+                    DockPlacement::Right => area.right_dock().cloned(),
+                    DockPlacement::Bottom => area.bottom_dock().cloned(),
+                    DockPlacement::Center => None,
+                }
+            };
+            let Some(dock) = dock else { continue };
+            let (bare, size, open, tabs) = {
+                let dock = dock.read(cx);
+                (
+                    matches!(dock.panel(), DockItem::Tabs { .. }),
+                    dock.size(),
+                    dock.is_open(),
+                    dock.panel().clone(),
+                )
+            };
+            if !bare {
+                continue;
+            }
+            let item = DockItem::v_split(vec![tabs], &weak, window, cx);
+            dock_area.update(cx, |area, cx| match placement {
+                DockPlacement::Left => area.set_left_dock(item, Some(size), open, window, cx),
+                DockPlacement::Right => area.set_right_dock(item, Some(size), open, window, cx),
+                DockPlacement::Bottom => area.set_bottom_dock(item, Some(size), open, window, cx),
+                DockPlacement::Center => {}
+            });
+        }
     }
 
     /// Funnel a dock entity's bare notifies (resize et al.) into the
@@ -951,7 +1041,19 @@ impl WorkspaceRoot {
                 let Some(stash) = self.bottom_stash.take() else {
                     return; // Nothing stashed — only Remove ever removes it.
                 };
-                let item = stash.panel.to_item(self.dock_area.downgrade(), window, cx);
+                let weak = self.dock_area.downgrade();
+                let item = stash.panel.to_item(weak.clone(), window, cx);
+                // The stash dumps the dock's stack ROOT (a StackPanel
+                // PanelState), so to_item's Stack arm rebuilds it
+                // stack-rooted. Belt-and-braces (review F1c): should the
+                // rebuild ever collapse to bare Tabs, re-wrap it — a
+                // bare-Tabs dock is locked at this pin.
+                let item = match item {
+                    DockItem::Tabs { .. } => {
+                        DockItem::v_split(vec![item], &weak, window, cx)
+                    }
+                    other => other,
+                };
                 self.dock_area.update(cx, |area, cx| {
                     area.set_bottom_dock(item, Some(stash.size), stash.open, window, cx);
                     cx.notify();
@@ -1443,25 +1545,98 @@ mod tests {
         })
     }
 
+    /// The leaf panel names under a dumped panel tree, in tab order. Reads
+    /// the DUMP (live TabPanel/StackPanel state) rather than the DockItem
+    /// snapshot: their `DockItem::add_panel` Split arm updates only the
+    /// live view, so snapshots go stale after panel moves.
+    fn dump_leaf_names(state: &gpui_component::dock::PanelState) -> Vec<String> {
+        if state.children.is_empty() {
+            return match state.info {
+                gpui_component::dock::PanelInfo::Panel(_) => vec![state.panel_name.clone()],
+                _ => Vec::new(), // an emptied TabPanel/StackPanel node
+            };
+        }
+        state.children.iter().flat_map(dump_leaf_names).collect()
+    }
+
+    /// The dock entity at `placement`, if any.
+    fn dock_at(
+        cx: &mut TestAppContext,
+        workspace: &Entity<WorkspaceRoot>,
+        placement: DockPlacement,
+    ) -> Option<Entity<Dock>> {
+        cx.update(|cx| {
+            let area = workspace.read(cx).dock_area().read(cx);
+            match placement {
+                DockPlacement::Left => area.left_dock().cloned(),
+                DockPlacement::Right => area.right_dock().cloned(),
+                DockPlacement::Bottom => area.bottom_dock().cloned(),
+                DockPlacement::Center => None,
+            }
+        })
+    }
+
+    /// The panel names hosted by the dock at `placement`, in tab order.
+    fn dock_panel_names(
+        cx: &mut TestAppContext,
+        workspace: &Entity<WorkspaceRoot>,
+        placement: DockPlacement,
+    ) -> Vec<String> {
+        let dock = dock_at(cx, workspace, placement).expect("dock present");
+        cx.update(|cx| dump_leaf_names(&dock.read(cx).panel().view().dump(cx)))
+    }
+
     /// The panel names hosted by the bottom dock's tab set, in tab order.
     fn bottom_dock_panel_names(
         cx: &mut TestAppContext,
         workspace: &Entity<WorkspaceRoot>,
     ) -> Vec<String> {
+        dock_panel_names(cx, workspace, DockPlacement::Bottom)
+    }
+
+    /// Whether the dock at `placement` has a stack-rooted item — the
+    /// droppability-relevant shape (review F1: a bare-Tabs root is locked:
+    /// no drop targets, no drag sources).
+    fn dock_root_is_stack_rooted(
+        cx: &mut TestAppContext,
+        workspace: &Entity<WorkspaceRoot>,
+        placement: DockPlacement,
+    ) -> bool {
+        let dock = dock_at(cx, workspace, placement).expect("dock present");
+        cx.update(|cx| matches!(dock.read(cx).panel(), DockItem::Split { .. }))
+    }
+
+    /// Whether the center item is stack-rooted.
+    fn center_is_stack_rooted(cx: &mut TestAppContext, workspace: &Entity<WorkspaceRoot>) -> bool {
         cx.update(|cx| {
-            let area = workspace.read(cx).dock_area().read(cx);
-            let dock = area.bottom_dock().expect("bottom dock present").read(cx);
-            match dock.panel() {
-                DockItem::Tabs { items, .. } => {
-                    items.iter().map(|p| p.panel_name(cx).to_string()).collect()
-                }
-                _ => panic!("expected a tabs item in the bottom dock"),
-            }
+            matches!(
+                workspace.read(cx).dock_area().read(cx).center(),
+                DockItem::Split { .. }
+            )
         })
     }
 
+    /// Every dock root (left/right/bottom) AND the center are stack-rooted.
+    fn assert_all_roots_stack_rooted(cx: &mut TestAppContext, workspace: &Entity<WorkspaceRoot>) {
+        for placement in [DockPlacement::Left, DockPlacement::Right, DockPlacement::Bottom] {
+            assert!(
+                dock_root_is_stack_rooted(cx, workspace, placement),
+                "{placement:?} dock root must be stack-rooted (bare Tabs are locked at this pin)"
+            );
+        }
+        assert!(
+            center_is_stack_rooted(cx, workspace),
+            "center must be stack-rooted (their subscribe_item skips bare Tabs)"
+        );
+    }
+
     /// A pre-round saved layout (DOCK_STATE_VERSION, canvas center, sidebar
-    /// left, editor right — NO bottom dock), in their serde shape.
+    /// left, editor right — NO bottom dock), in their serde shape with the
+    /// BARE-Tabs dock roots every pre-round save serialised. The
+    /// observables are deliberately NON-default (left 250px and CLOSED,
+    /// right 300px) so "restored, not defaulted" is falsifiable — the
+    /// original fixture's default-valued observables made that assertion
+    /// tautological (review F3).
     fn saved_layout_without_bottom() -> serde_json::Value {
         serde_json::json!({
             "version": DOCK_STATE_VERSION,
@@ -1481,8 +1656,8 @@ mod tests {
                     "info": { "tabs": { "active_index": 0 } }
                 },
                 "placement": "left",
-                "size": 220.0,
-                "open": true
+                "size": 250.0,
+                "open": false
             },
             "right_dock": {
                 "panel": {
@@ -1493,14 +1668,16 @@ mod tests {
                     "info": { "tabs": { "active_index": 0 } }
                 },
                 "placement": "right",
-                "size": 380.0,
+                "size": 300.0,
                 "open": true
             }
         })
     }
 
     /// wsc_ac03 (fresh boot): no saved layout → the default layout seeds
-    /// the bottom dock CLOSED with the Log panel at the default height.
+    /// the bottom dock CLOSED with the Log panel at the default height,
+    /// and every dock item is stack-rooted (review F1: bare-Tabs roots
+    /// render no drop targets and cannot source drags at this pin).
     #[gpui::test]
     fn wsc_ac03_fresh_boot_seeds_closed_bottom_log_dock(cx: &mut TestAppContext) {
         let shell = build_shell(cx, None);
@@ -1514,24 +1691,43 @@ mod tests {
             vec![LOG_PANEL_NAME.to_string()],
             "the Log panel anchors it"
         );
+        assert_all_roots_stack_rooted(cx, &shell.workspace);
     }
 
-    /// wsc_ac03 (backfill): restoring a pre-round layout (no bottom dock —
-    /// every pre-round install) appends the same closed Log dock post-load,
-    /// leaving the restored arrangement intact. DOCK_STATE_VERSION is
+    /// wsc_ac03 (backfill + normalise): restoring a pre-round layout (no
+    /// bottom dock, bare-Tabs roots, NON-default sizes/open bits) appends
+    /// the same closed Log dock post-load and re-roots every dock under a
+    /// StackPanel, while the author's arrangement — a 300px right dock, a
+    /// 250px CLOSED left dock — survives exactly. DOCK_STATE_VERSION is
     /// unchanged — the layout restores, it is not discarded.
     #[gpui::test]
     fn wsc_ac03_pre_round_layout_is_backfilled_with_closed_bottom_dock(cx: &mut TestAppContext) {
         let raw = serde_json::to_string_pretty(&saved_layout_without_bottom()).unwrap();
         let shell = build_shell(cx, Some(raw));
 
-        // The restored arrangement survived (right dock at its saved width)…
+        // The restored arrangement survived, at values default_layout could
+        // not have produced (review F3): right 300px (default 380), left
+        // 250px and CLOSED (default 220, open).
         cx.update(|cx| {
             let area = shell.workspace.read(cx).dock_area().read(cx);
             let right = area.right_dock().expect("restored right dock").read(cx);
-            assert_eq!(right.size(), px(380.0), "restored, not defaulted");
+            assert_eq!(right.size(), px(300.0), "right width restored, not defaulted");
+            assert!(right.is_open(), "right open bit restored");
+            let left = area.left_dock().expect("restored left dock").read(cx);
+            assert_eq!(left.size(), px(250.0), "left width restored, not defaulted");
+            assert!(!left.is_open(), "left CLOSED bit restored, not forced open");
         });
-        // …and the bottom dock was backfilled, closed, with the Log panel.
+        assert_eq!(
+            dock_panel_names(cx, &shell.workspace, DockPlacement::Right),
+            vec![EDITOR_PANEL_NAME.to_string()],
+            "editor stayed in the right dock through normalisation"
+        );
+        assert_eq!(
+            dock_panel_names(cx, &shell.workspace, DockPlacement::Left),
+            vec![SIDEBAR_PANEL_NAME.to_string()],
+            "sidebar stayed in the left dock through normalisation"
+        );
+        // …the bottom dock was backfilled, closed, with the Log panel…
         let (has, open, size) = bottom_dock_state(cx, &shell.workspace);
         assert!(has, "backfilled bottom dock");
         assert_eq!(open, Some(false), "backfilled CLOSED");
@@ -1540,11 +1736,15 @@ mod tests {
             bottom_dock_panel_names(cx, &shell.workspace),
             vec![LOG_PANEL_NAME.to_string()]
         );
+        // …and every restored bare-Tabs root was normalised (review F1).
+        assert_all_roots_stack_rooted(cx, &shell.workspace);
     }
 
     /// wsc_ac03 (already present): a saved layout that carries a bottom
     /// dock restores exactly as saved — its open state and size are kept,
-    /// and no second dock (or forced state) is introduced.
+    /// and no second dock (or forced state) is introduced. Its bare-Tabs
+    /// root is normalised to the stack-rooted shape (arrangement, not tree
+    /// shape, is what "as saved" pins).
     #[gpui::test]
     fn wsc_ac03_saved_bottom_dock_restores_as_saved(cx: &mut TestAppContext) {
         let mut layout = saved_layout_without_bottom();
@@ -1572,6 +1772,7 @@ mod tests {
             vec![LOG_PANEL_NAME.to_string()],
             "one Log panel — no double dock, no duplicate seed"
         );
+        assert_all_roots_stack_rooted(cx, &shell.workspace);
     }
 
     /// wsc_ac04 (closed-before): entering presentation removes the bottom
@@ -1594,6 +1795,10 @@ mod tests {
         assert_eq!(
             bottom_dock_panel_names(cx, &shell.workspace),
             vec![LOG_PANEL_NAME.to_string()]
+        );
+        assert!(
+            dock_root_is_stack_rooted(cx, &shell.workspace, DockPlacement::Bottom),
+            "the rebuild round-trips the stack-rooted shape (review F1c)"
         );
     }
 
@@ -1650,9 +1855,13 @@ mod tests {
             vec![LOG_PANEL_NAME.to_string(), EDITOR_PANEL_NAME.to_string()],
             "contents preserved, including the moved-in editor"
         );
+        assert!(
+            dock_root_is_stack_rooted(cx, &shell.workspace, DockPlacement::Bottom),
+            "the rebuild round-trips the stack-rooted shape (review F1c)"
+        );
 
         // The save observer re-attached to the NEW dock entity: an isolated
-        // post-round-trip change reaches the debounced save policy.
+        // post-round-trip Dock-entity change (resize) reaches the policy.
         shell.workspace.update(cx, |workspace, _| workspace.reset_save_probe());
         shell
             .window
@@ -1672,7 +1881,44 @@ mod tests {
         cx.update(|cx| {
             assert!(
                 shell.workspace.read(cx).save_pending(),
-                "a change to the rebuilt dock still schedules a save"
+                "a resize of the rebuilt dock still schedules a save"
+            );
+        });
+
+        // And a PANEL-TREE change (review F2, the ac-04 correction):
+        // removing a panel from the rebuilt dock's TabPanel must reach the
+        // policy through their StackPanel-mediated PanelEvent → DockEvent
+        // chain — wiring that only exists because the rebuild is
+        // stack-rooted (their subscribe_item skips bare-Tabs items, and
+        // nothing else observes the TabPanel). Resize alone no longer
+        // counts: it rides the direct dock-entity observer above.
+        shell.workspace.update(cx, |workspace, _| workspace.reset_save_probe());
+        shell
+            .window
+            .update(cx, |_root, window, cx| {
+                let bottom = shell
+                    .workspace
+                    .read(cx)
+                    .dock_area()
+                    .read(cx)
+                    .bottom_dock()
+                    .expect("rebuilt dock")
+                    .clone();
+                bottom.update(cx, |dock, cx| {
+                    dock.remove_panel(std::sync::Arc::new(shell.editor.clone()), window, cx);
+                });
+            })
+            .expect("panel-tree change on rebuilt dock");
+        cx.run_until_parked();
+        assert_eq!(
+            bottom_dock_panel_names(cx, &shell.workspace),
+            vec![LOG_PANEL_NAME.to_string()],
+            "the panel-tree change landed"
+        );
+        cx.update(|cx| {
+            assert!(
+                shell.workspace.read(cx).save_pending(),
+                "a panel-tree change to the rebuilt dock schedules a save (F2)"
             );
         });
     }

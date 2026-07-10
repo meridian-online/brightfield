@@ -102,11 +102,24 @@ pub fn bottom_dock_action(mode: PresentationMode) -> BottomDockAction {
     }
 }
 
-/// Whether the authoring docks (left/right/bottom rails) are open under
-/// `mode`: presentation collapses them so the canvas runs full-bleed.
+/// Whether the authoring docks' LEFT/RIGHT rails are open under `mode`:
+/// presentation collapses them so the canvas runs full-bleed. The BOTTOM
+/// dock is deliberately NOT covered by this mapping — its closed form
+/// still paints a 29px title-bar strip, so presentation removes it
+/// entirely instead; see [`bottom_dock_action`] (review F6 correction).
 #[must_use]
 pub fn docks_open(mode: PresentationMode) -> bool {
     mode.chrome_visible()
+}
+
+/// Whether a dock that a menu-move just emptied of visible panels should
+/// close (wsc_ac07): an emptied dock's stack renders a hollow area (their
+/// TabPanel warns it is "visually empty and undroppable" once its last
+/// panel leaves), so the shell collapses it rather than leaving dead
+/// chrome. Pure so the shell executes, never decides.
+#[must_use]
+pub fn dock_closes_when_emptied(remaining_visible_panels: usize) -> bool {
+    remaining_visible_panels == 0
 }
 
 /// Whether layout events should reach the persistence policy under `mode`:
@@ -225,6 +238,15 @@ mod tests {
         let mut mode = PresentationMode::Presentation;
         mode.toggle();
         assert_eq!(bottom_dock_action(mode), BottomDockAction::Rebuild);
+    }
+
+    /// wsc_ac07 (emptied-dock decision): a menu-move that empties its
+    /// source dock closes it; any remaining visible panel keeps it open.
+    #[test]
+    fn wsc_ac07_emptied_source_dock_closes() {
+        assert!(dock_closes_when_emptied(0), "hollow docks collapse");
+        assert!(!dock_closes_when_emptied(1), "an occupied dock stays");
+        assert!(!dock_closes_when_emptied(3));
     }
 
     /// aws_ac03 (presentation guard): layout events persist only while
