@@ -2010,6 +2010,222 @@ impl MarkRenderer for ContourRenderer {
 }
 
 // ---------------------------------------------------------------------------
+// HexbinRenderer (hexbin — pointy-top hexagonal density bins)
+// ---------------------------------------------------------------------------
+
+/// Reserved in-band geometry columns the hexbin lowerer emits (constant per
+/// row): the hexagon half-width and half-height in DATA units. The six
+/// pointy-top vertices are reconstructed from these, so the hex is regular on
+/// screen by construction and survives live rebuilds (no bin-step recovery).
+/// Must match `brightfield-sql`'s `HEX_DX_COL` / `HEX_DY_COL`.
+const HEX_DX_COL: &str = "__bf_hex_dx";
+const HEX_DY_COL: &str = "__bf_hex_dy";
+
+/// Renders one pointy-top hexagon per row (Mosaic's flagship at-scale mark).
+/// The hexbin lowerer has already binned in pixel space and emitted, per hex,
+/// the centre in DATA units (aliased to the x/y channel columns), the aggregate
+/// (`__bf_count` for count, the source column for avg), and the constant hex
+/// half-extents `__bf_hex_dx`/`__bf_hex_dy`. This maps each centre through the
+/// shared scales and draws the six vertices from the half-extents.
+///
+/// A count fill ramps the configured Sequential scheme zero-anchored `[0,max]`
+/// (with the [`RASTER_MIN_T`] visibility floor so the sparsest hex stays
+/// visible); an avg fill follows the cell anchoring rule. The scheme rides
+/// `MarkInput::renderer_override` (live-rebuild parity — the cfr seam). A
+/// missing / non-Sequential Fill scale falls back to alpha-on-steelblue.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HexbinRenderer {
+    /// The continuous colour scheme (default viridis).
+    pub scheme: SequentialScheme,
+}
+
+impl HexbinRenderer {
+    /// The six pointy-top vertices (in DATA units) of the hex centred at
+    /// `(cx, cy)` with half-width `dx` and half-height `dy`, top vertex first.
+    fn hex_vertices(cx: f64, cy: f64, dx: f64, dy: f64) -> [(f64, f64); 6] {
+        [
+            (cx, cy + dy),
+            (cx + dx, cy + dy / 2.0),
+            (cx + dx, cy - dy / 2.0),
+            (cx, cy - dy),
+            (cx - dx, cy - dy / 2.0),
+            (cx - dx, cy + dy / 2.0),
+        ]
+    }
+}
+
+impl MarkRenderer for HexbinRenderer {
+    fn render(
+        &self,
+        scene: &mut Scene,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        scales: &ScaleSet,
+        _highlight: Option<&HighlightState>,
+    ) {
+        let (Some(x_col), Some(y_col)) =
+            (channel_map.get(Channel::X), channel_map.get(Channel::Y))
+        else {
+            return;
+        };
+        let (Some(x_scale), Some(y_scale)) =
+            (scales.get(Channel::X), scales.get(Channel::Y))
+        else {
+            return;
+        };
+        let (Some(x_vals), Some(y_vals), Some(dx_vals), Some(dy_vals)) = (
+            column_as_f64(batch, x_col),
+            column_as_f64(batch, y_col),
+            column_as_f64(batch, HEX_DX_COL),
+            column_as_f64(batch, HEX_DY_COL),
+        ) else {
+            return;
+        };
+
+        // Fill values + whether this is a count fill (zero-anchored, floored).
+        let fill_col = channel_map.get(Channel::Fill);
+        let is_count = fill_col == Some(DENSITY_COUNT_COL);
+        let fill_vals = fill_col.and_then(|c| column_as_f64(batch, c));
+        let max_fill = fill_vals
+            .as_ref()
+            .map(|v| v.iter().flatten().cloned().fold(0.0_f64, f64::max))
+            .unwrap_or(0.0);
+        let fill_ramp = match scales.get(Channel::Fill) {
+            Some(scale @ Scale::Sequential { .. }) => Some(scale),
+            _ => None,
+        };
+        let [cr, cg, cb, _] = DEFAULT_COLOUR.components;
+
+        for i in 0..batch.num_rows() {
+            let (Some(cx), Some(cy), Some(dx), Some(dy)) =
+                (x_vals[i], y_vals[i], dx_vals[i], dy_vals[i])
+            else {
+                continue;
+            };
+            let verts = Self::hex_vertices(cx, cy, dx, dy);
+            let mut mapped = verts
+                .iter()
+                .map(|(vx, vy)| (x_scale.map_f64(*vx), y_scale.map_f64(*vy)));
+            let Some(first) = mapped.next() else { continue };
+            if !(first.0.is_finite() && first.1.is_finite()) {
+                continue;
+            }
+            let mut path = BezPath::new();
+            path.move_to(first);
+            let mut ok = true;
+            for p in mapped {
+                if !(p.0.is_finite() && p.1.is_finite()) {
+                    ok = false;
+                    break;
+                }
+                path.line_to(p);
+            }
+            if !ok {
+                continue;
+            }
+            path.close_path();
+
+            let value = fill_vals.as_ref().and_then(|v| v[i]);
+            let colour = match (fill_ramp, value) {
+                (Some(ramp), Some(v)) => {
+                    let dmax = ramp.domain_max().filter(|d| *d > 0.0).unwrap_or(max_fill.max(1.0));
+                    if is_count {
+                        // Zero-anchored count ramp, floored so the sparsest hex
+                        // stays visible (raster's RASTER_MIN_T precedent).
+                        let pos = (v / dmax).clamp(0.0, 1.0).max(RASTER_MIN_T);
+                        Color::new(ramp.map_continuous(pos * dmax))
+                    } else {
+                        Color::new(ramp.map_continuous(v))
+                    }
+                }
+                // Fallback: single-hue with fill-proportional alpha.
+                (None, Some(v)) if max_fill > 0.0 => {
+                    let t = (v / max_fill).clamp(0.0, 1.0).max(RASTER_MIN_T) as f32;
+                    Color::new([cr, cg, cb, t])
+                }
+                _ => DEFAULT_COLOUR,
+            };
+            scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &path);
+        }
+    }
+
+    /// Widen the linear x/y domains by half a hex so the outermost hexes fit
+    /// inside the plot area, and build the fill → colour ramp under
+    /// [`Channel::Fill`]. A count fill is zero-anchored `[0, max]`; an avg fill
+    /// follows the cell rule (`[0, max]` when `min >= 0`, else `[min, max]`).
+    /// Merge-not-clobber mirrors raster/cell: a co-rendered Sequential unions
+    /// its domain (keeping the first's stops); a sibling's categorical Colour
+    /// Fill survives untouched.
+    fn augment_scales(
+        &self,
+        scales: &mut ScaleSet,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        x_range: (f64, f64),
+        y_range: (f64, f64),
+    ) {
+        // Half-hex widening from the constant in-band half-extents.
+        let dx = column_as_f64(batch, HEX_DX_COL)
+            .and_then(|v| v.into_iter().flatten().next());
+        let dy = column_as_f64(batch, HEX_DY_COL)
+            .and_then(|v| v.into_iter().flatten().next());
+        for (channel, range, half) in [
+            (Channel::X, x_range, dx),
+            (Channel::Y, y_range, dy),
+        ] {
+            let (Some(col), Some(half)) = (channel_map.get(channel), half) else {
+                continue;
+            };
+            let Some(vals) = column_as_f64(batch, col) else {
+                continue;
+            };
+            let lo = vals.iter().flatten().cloned().fold(f64::INFINITY, f64::min);
+            let hi = vals.iter().flatten().cloned().fold(f64::NEG_INFINITY, f64::max);
+            if lo.is_finite() && hi.is_finite() {
+                merge_linear_scale(scales, channel, lo - half, hi + half, range);
+            }
+        }
+
+        // Fill → colour ramp. Count is zero-anchored; avg follows the cell rule.
+        let Some(fill_col) = channel_map.get(Channel::Fill) else {
+            return;
+        };
+        let Some(vals) = column_as_f64(batch, fill_col) else {
+            return;
+        };
+        let lo = vals.iter().flatten().cloned().fold(f64::INFINITY, f64::min);
+        let hi = vals.iter().flatten().cloned().fold(f64::NEG_INFINITY, f64::max);
+        if !(lo.is_finite() && hi.is_finite()) {
+            return;
+        }
+        let is_count = fill_col == DENSITY_COUNT_COL;
+        // Count: [0, max] (counts are ≥ 0). Avg: [0, max] iff min ≥ 0 else [min, max].
+        let (d0, d1) = if is_count || lo >= 0.0 { (0.0, hi) } else { (lo, hi) };
+
+        let merged = match scales.get(Channel::Fill) {
+            Some(Scale::Sequential {
+                domain_min,
+                domain_max,
+                stops,
+            }) => Some(Scale::Sequential {
+                domain_min: domain_min.min(d0),
+                domain_max: domain_max.max(d1),
+                stops: stops.clone(),
+            }),
+            Some(Scale::Colour { .. }) => None, // categorical fill wins
+            _ => Some(Scale::Sequential {
+                domain_min: d0,
+                domain_max: d1,
+                stops: self.scheme.stops(),
+            }),
+        };
+        if let Some(scale) = merged {
+            scales.insert(Channel::Fill, scale);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // RegressionRenderer (regressionY / regressionX)
 // ---------------------------------------------------------------------------
 
@@ -2357,6 +2573,7 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
     v.push((MarkKind::Heatmap, Box::new(HeatmapRenderer::default())));
     v.push((MarkKind::Cell, Box::new(CellRenderer::default())));
     v.push((MarkKind::Contour, Box::new(ContourRenderer::default())));
+    v.push((MarkKind::Hexbin, Box::new(HexbinRenderer::default())));
     v.push((MarkKind::RegressionY, Box::new(RegressionRenderer::default())));
     v.push((MarkKind::RegressionX, Box::new(RegressionRenderer::default())));
     v
@@ -2383,6 +2600,7 @@ pub fn configured_renderer(
         MarkKind::Raster => Some(Box::new(RasterRenderer { scheme })),
         MarkKind::Heatmap => Some(Box::new(HeatmapRenderer { scheme, bandwidth })),
         MarkKind::Cell => Some(Box::new(CellRenderer { scheme })),
+        MarkKind::Hexbin => Some(Box::new(HexbinRenderer { scheme })),
         MarkKind::Contour => Some(Box::new(ContourRenderer {
             thresholds,
             bandwidth,
@@ -3273,6 +3491,174 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // hex_ac03 — HexbinRenderer scene probes + augment_scales
+    // -----------------------------------------------------------------------
+
+    /// A hexbin batch: two hexes, `(x, y)` centres, a fill column, and the
+    /// constant in-band half-extents `__bf_hex_dx`/`__bf_hex_dy`.
+    fn hexbin_batch(fill_col: &str, fills: Vec<f64>) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+            Field::new(fill_col, DataType::Float64, false),
+            Field::new(HEX_DX_COL, DataType::Float64, false),
+            Field::new(HEX_DY_COL, DataType::Float64, false),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![0.0, 10.0])),
+                Arc::new(Float64Array::from(vec![0.0, 10.0])),
+                Arc::new(Float64Array::from(fills)),
+                Arc::new(Float64Array::from(vec![2.0, 2.0])),
+                Arc::new(Float64Array::from(vec![2.0, 2.0])),
+            ],
+        )
+        .unwrap()
+    }
+
+    fn hexbin_cm(fill_col: &str) -> ChannelMap {
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        cm.insert(Channel::Fill, fill_col.to_string());
+        cm
+    }
+
+    /// hex_ac03: a COUNT fill ramps through the zero-anchored Sequential (with
+    /// the RASTER_MIN_T floor), and the colours ACTUALLY encoded into the scene
+    /// are those ramp samples — probed via draw_data, not re-derived. One filled
+    /// hexagon per row.
+    #[test]
+    fn hex_ac03_count_fills_ramp_through_sequential() {
+        let batch = hexbin_batch(DENSITY_COUNT_COL, vec![1.0, 100.0]);
+        let cm = hexbin_cm(DENSITY_COUNT_COL);
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        HexbinRenderer::default().augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+
+        let ramp = scales.get(Channel::Fill).expect("count ramp built");
+        assert_eq!(ramp.domain_max(), Some(100.0), "count ramp zero-anchored [0,max]");
+        let dmax = ramp.domain_max().unwrap();
+        let sample = |count: f64| {
+            let pos = (count / dmax).clamp(0.0, 1.0).max(RASTER_MIN_T);
+            ramp.map_continuous(pos * dmax)
+        };
+
+        let mut scene = Scene::new();
+        HexbinRenderer::default().render(&mut scene, &batch, &cm, &scales, None);
+        assert_eq!(count_scene_paths(&scene), 2, "one hexagon fill per row");
+        let drawn: std::collections::HashSet<u32> =
+            scene.encoding().draw_data.iter().copied().collect();
+        assert_eq!(
+            drawn,
+            std::collections::HashSet::from([packed(sample(1.0)), packed(sample(100.0))]),
+            "hex fills are the zero-anchored ramp samples"
+        );
+    }
+
+    /// hex_ac03: an AVG fill follows the cell anchoring rule and maps through
+    /// the ramp WITHOUT the count floor.
+    #[test]
+    fn hex_ac03_avg_fills_follow_cell_anchoring() {
+        let batch = hexbin_batch("v", vec![15.0, 100.0]);
+        let cm = hexbin_cm("v");
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        HexbinRenderer::default().augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        let ramp = scales.get(Channel::Fill).expect("avg ramp built");
+        // min ≥ 0 ⇒ [0, max].
+        assert_eq!(ramp.domain_max(), Some(100.0));
+        let mut scene = Scene::new();
+        HexbinRenderer::default().render(&mut scene, &batch, &cm, &scales, None);
+        let drawn: std::collections::HashSet<u32> =
+            scene.encoding().draw_data.iter().copied().collect();
+        // No RASTER_MIN_T floor for avg — direct map_continuous.
+        assert_eq!(
+            drawn,
+            std::collections::HashSet::from([
+                packed(ramp.map_continuous(15.0)),
+                packed(ramp.map_continuous(100.0)),
+            ]),
+        );
+    }
+
+    /// hex_ac03: augment_scales widens x/y by half a hex (the constant in-band
+    /// half-extents) and applies the cell anchoring rule for a signed avg fill.
+    #[test]
+    fn hex_ac03_augment_scales_widens_and_anchors() {
+        // Signed avg fill ([-5, 10]) exercises the [min, max] branch.
+        let batch = hexbin_batch("v", vec![-5.0, 10.0]);
+        let cm = hexbin_cm("v");
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        HexbinRenderer::default().augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+
+        // x/y centres [0,10] widened by dx=dy=2 → [-2, 12].
+        let x = scales.get(Channel::X).unwrap();
+        assert!((x.domain_min().unwrap() - (-2.0)).abs() < 1e-9, "x widened lo");
+        assert!((x.domain_max().unwrap() - 12.0).abs() < 1e-9, "x widened hi");
+        let y = scales.get(Channel::Y).unwrap();
+        assert!((y.domain_min().unwrap() - (-2.0)).abs() < 1e-9);
+        assert!((y.domain_max().unwrap() - 12.0).abs() < 1e-9);
+
+        // Signed avg ⇒ [min, max], not zero-anchored.
+        let fill = scales.get(Channel::Fill).unwrap();
+        assert_eq!(fill.domain_max(), Some(10.0));
+        match fill {
+            Scale::Sequential { domain_min, .. } => assert!((domain_min - (-5.0)).abs() < 1e-9),
+            other => panic!("expected Sequential fill, got {other:?}"),
+        }
+    }
+
+    /// hex_ac03: augment_scales MERGES the Fill scale — a sibling's categorical
+    /// Colour Fill survives untouched (merge-not-clobber, raster/cell precedent).
+    #[test]
+    fn hex_ac03_augment_scales_merges_not_clobber() {
+        let batch = hexbin_batch(DENSITY_COUNT_COL, vec![1.0, 100.0]);
+        let cm = hexbin_cm(DENSITY_COUNT_COL);
+        let mut scales = ScaleSet::new();
+        scales.insert(
+            Channel::Fill,
+            Scale::Colour {
+                categories: vec!["a".to_string(), "b".to_string()],
+                palette: vec![[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
+            },
+        );
+        HexbinRenderer::default().augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        assert!(
+            matches!(scales.get(Channel::Fill), Some(Scale::Colour { .. })),
+            "a sibling's categorical Colour fill must survive"
+        );
+    }
+
+    /// hex_ac03: the configured renderer (the cfr `renderer_override` seam)
+    /// draws a rebuild byte-identically — the same override renderer is used for
+    /// the first render and every live rebuild, so output is stable.
+    #[test]
+    fn hex_ac03_configured_renderer_rebuild_parity() {
+        let batch = hexbin_batch(DENSITY_COUNT_COL, vec![1.0, 100.0]);
+        let cm = hexbin_cm(DENSITY_COUNT_COL);
+        let renderer =
+            configured_renderer(MarkKind::Hexbin, SequentialScheme::Turbo, None, None)
+                .expect("hexbin has a configured renderer");
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        renderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+
+        let mut a = Scene::new();
+        renderer.render(&mut a, &batch, &cm, &scales, None);
+        let mut b = Scene::new();
+        renderer.render(&mut b, &batch, &cm, &scales, None);
+        let da: Vec<u32> = a.encoding().draw_data.iter().copied().collect();
+        let db: Vec<u32> = b.encoding().draw_data.iter().copied().collect();
+        assert_eq!(da, db, "the override renderer draws the rebuild identically");
+        // Turbo scheme actually rides through (distinct from the viridis default).
+        let mut viridis_scene = Scene::new();
+        let mut vscales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        HexbinRenderer::default().augment_scales(&mut vscales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        HexbinRenderer::default().render(&mut viridis_scene, &batch, &cm, &vscales, None);
+        let dv: Vec<u32> = viridis_scene.encoding().draw_data.iter().copied().collect();
+        assert_ne!(da, dv, "the configured scheme (turbo) differs from the viridis default");
+    }
+
     // Regression (review finding, major): a raster's augment_scales MERGES into the
     // shared Fill scale instead of clobbering it — a sibling's categorical Colour
     // survives, and two rasters union their zero-anchored domains.
@@ -4066,8 +4452,10 @@ mod tests {
         assert!(find_renderer(&registry, MarkKind::RegressionY).is_some());
         // Heatmap is registered as of card 0008's density-marks instalment.
         assert!(find_renderer(&registry, MarkKind::Heatmap).is_some());
+        // Hexbin is registered as of the hexbin follow-up.
+        assert!(find_renderer(&registry, MarkKind::Hexbin).is_some());
         // Unimplemented kinds should return None (no silent fallback).
-        assert!(find_renderer(&registry, MarkKind::Hexbin).is_none());
+        assert!(find_renderer(&registry, MarkKind::Geo).is_none());
     }
 
     #[test]
