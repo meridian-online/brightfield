@@ -32,7 +32,7 @@ pub mod slider;
 pub mod slider_element;
 pub mod vello_renderer;
 pub mod workspace;
-pub mod workspace_view;
+pub mod workspace_actions;
 
 pub use brush::{brush_rect_to_predicate, BrushKind, ChannelColumns};
 pub use chart_element::ChartElement;
@@ -49,6 +49,4 @@ pub use vello_renderer::VelloRenderer;
 pub use workspace::{
     framed_window_size, resolve_title, PresentationMode, CONTENT_PADDING, HEADER_HEIGHT,
 };
-pub use workspace_view::{
-    workspace_key_bindings, TogglePresentation, WorkspaceView, WORKSPACE_KEY_CONTEXT,
-};
+pub use workspace_actions::{workspace_key_bindings, TogglePresentation, WORKSPACE_KEY_CONTEXT};

@@ -120,8 +120,9 @@ impl Render for ChartView {
         // The container is the dashboard's fixed size, with each plot absolutely
         // positioned at its rect; each ChartElement reads its own ChartState and
         // wires its own mouse events, so plots don't share interaction. (The
-        // white window background + centring moved up to WorkspaceView — card
-        // 0016 — so the dashboard canvas is exactly the spec-derived surface.)
+        // white window background + centring moved up to the app crate's
+        // CanvasPanel — card 0017's DockArea shell — so the dashboard canvas
+        // is exactly the spec-derived surface.)
         //
         // Legends rasterise through the shared Vello renderer the plots already
         // hold; a dashboard always renders at least one plot, so the first
