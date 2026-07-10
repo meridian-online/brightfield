@@ -28,6 +28,7 @@ specs:
   - orbit/specs/2026-04-28-statistical-marks/spec.yaml
   - orbit/specs/2026-07-05-sequential-colour-scale/spec.yaml
   - orbit/specs/2026-07-06-density-marks/spec.yaml
+  - orbit/specs/2026-07-10-crossfilter-render-fidelity/spec.yaml
 
 references:
   - "brightfield-brief.md"

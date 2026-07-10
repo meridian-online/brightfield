@@ -35,6 +35,7 @@ maturity: "planned"
 
 specs:
   - "orbit/specs/2026-07-06-authoring-workspace-v1/spec.yaml"
+  - "orbit/specs/2026-07-10-crossfilter-render-fidelity/spec.yaml"
 
 references:
   - "gpui-component main @ b7e63cc2 (Apache-2.0; pins zed rev 1d217ee; docks mature, tree-sitter + LSP editor, DataTable virtualized both axes) — adopt via git pin at a chosen commit; the tag route is dead until zed ships the post-split gpui crates.io release (recon 2026-07-05)"
