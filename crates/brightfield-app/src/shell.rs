@@ -23,11 +23,12 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     actions, div, px, rgb, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement, IntoElement, KeyBinding, MouseButton, ParentElement, Render,
-    SharedString, Styled, Task, WeakEntity, Window,
+    Focusable, InteractiveElement, IntoElement, KeyBinding, MouseButton, ParentElement, Pixels,
+    Render, SharedString, Styled, Task, WeakEntity, Window,
 };
 use gpui_component::dock::{
-    register_panel, DockArea, DockAreaState, DockEvent, DockItem, Panel, PanelControl, PanelEvent,
+    register_panel, Dock, DockArea, DockAreaState, DockEvent, DockItem, DockPlacement, Panel,
+    PanelControl, PanelEvent, PanelState,
 };
 use gpui_component::input::{Input, InputState};
 use gpui_component::notification::Notification;
@@ -38,10 +39,12 @@ use brightfield_ui::{ChartView, PresentationMode, TogglePresentation, WORKSPACE_
 use crate::dock_state_file::{
     self, LoadDecision, SaveAction, SavePolicy, DOCK_STATE_VERSION, SAVE_DEBOUNCE_MS,
 };
+use crate::log_model::FeedbackLog;
 use crate::reload_feedback::{self, Severity};
 use crate::shell_model::{
-    docks_open, layout_persistable, panel_visible, PanelRole, CANVAS_PANEL_NAME,
-    EDITOR_DOCK_WIDTH, EDITOR_PANEL_NAME, SIDEBAR_DOCK_WIDTH, SIDEBAR_PANEL_NAME,
+    bottom_dock_action, bottom_dock_needs_backfill, docks_open, layout_persistable, panel_visible,
+    BottomDockAction, PanelRole, BOTTOM_DOCK_HEIGHT, CANVAS_PANEL_NAME, EDITOR_DOCK_WIDTH,
+    EDITOR_PANEL_NAME, LOG_PANEL_NAME, SIDEBAR_DOCK_WIDTH, SIDEBAR_PANEL_NAME,
 };
 use crate::sidebar_model::SourceListing;
 use crate::spec_save;
@@ -134,7 +137,11 @@ impl CanvasPanel {
     /// `TogglePresentation` handler (bare `p`, canvas-scoped — the binding
     /// is card 0016's, unchanged): flip the shared mode, then apply the
     /// framework-free dock mapping — panels re-read `visible()` on the
-    /// repaint, docks collapse/reopen (aws_ac07).
+    /// repaint, the left/right docks collapse/reopen (aws_ac07). The BOTTOM
+    /// dock is not touched here: its closed form still paints a 29px strip,
+    /// so `WorkspaceRoot` (observing the shared mode) removes and rebuilds
+    /// it instead (wsc_ac04) — and the stash it takes must see the dock's
+    /// open bit exactly as the author left it.
     fn toggle_presentation(
         &mut self,
         _: &TogglePresentation,
@@ -148,7 +155,7 @@ impl CanvasPanel {
         let open = docks_open(self.presentation.read(cx).mode);
         if let Some(dock_area) = self.dock_area.as_ref().and_then(WeakEntity::upgrade) {
             dock_area.update(cx, |area, cx| {
-                let docks: Vec<_> = [area.left_dock(), area.right_dock(), area.bottom_dock()]
+                let docks: Vec<_> = [area.left_dock(), area.right_dock()]
                     .into_iter()
                     .flatten()
                     .cloned()
@@ -239,6 +246,10 @@ pub struct EditorPanel {
     tab_title: SharedString,
     /// Shared presentation state (visibility mapping input).
     presentation: Entity<PresentationState>,
+    /// The feedback log: every save outcome that surfaces as a workspace
+    /// notification is also appended here (wsc_ac02 — the Log panel is the
+    /// toasts' persistent sibling).
+    log: Entity<FeedbackLog>,
     /// The file text the buffer was last synced with (the boot seed, a
     /// successful save, or a pristine reseed). `None` = the boot read
     /// failed and no reseed has landed — save refuses (truncation guard).
@@ -256,6 +267,7 @@ impl EditorPanel {
         spec_path: PathBuf,
         seed: Option<&str>,
         presentation: Entity<PresentationState>,
+        log: Entity<FeedbackLog>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -274,9 +286,19 @@ impl EditorPanel {
             spec_path,
             tab_title: tab_title.into(),
             presentation,
+            log,
             last_synced: seed.map(str::to_string),
             conflict_pending: false,
         }
+    }
+
+    /// Append a save outcome to the feedback log with the SAME severity +
+    /// message pair the workspace notification carries (wsc_ac02).
+    fn log_feedback(&self, severity: Severity, message: &str, cx: &mut Context<Self>) {
+        self.log.update(cx, |log, cx| {
+            log.append(severity, message);
+            cx.notify();
+        });
     }
 
     /// `SaveSpec` handler (cmd-s, editor context): `decide_save` first,
@@ -308,6 +330,7 @@ impl EditorPanel {
                     self.spec_path.display()
                 );
                 eprintln!("{message}");
+                self.log_feedback(Severity::Error, &message, cx);
                 Root::update(window, cx, |root, window, cx| {
                     root.push_notification(Notification::error(message.clone()), window, cx);
                 });
@@ -317,6 +340,7 @@ impl EditorPanel {
                 let message =
                     "Spec changed on disk since it was loaded — save again to overwrite".to_string();
                 eprintln!("Save deferred: {message}");
+                self.log_feedback(Severity::Warning, &message, cx);
                 Root::update(window, cx, |root, window, cx| {
                     root.push_notification(Notification::warning(message.clone()), window, cx);
                 });
@@ -329,6 +353,7 @@ impl EditorPanel {
                     Err(e) => {
                         let message = format!("Save failed: {e}");
                         eprintln!("{message}");
+                        self.log_feedback(Severity::Error, &message, cx);
                         Root::update(window, cx, |root, window, cx| {
                             root.push_notification(Notification::error(message.clone()), window, cx);
                         });
@@ -501,14 +526,135 @@ impl Render for SidebarPanel {
 }
 
 // ---------------------------------------------------------------------------
+// Log panel (wsc_ac02)
+// ---------------------------------------------------------------------------
+
+/// The bottom-dock feedback log: renders the framework-free [`FeedbackLog`]
+/// as simple text rows, newest at top. Permanent (closable=false) in v1 —
+/// it anchors the bottom dock: an emptied dock lingers as a dead strip, and
+/// a panel moved into an otherwise-empty dock would become its last panel
+/// and stop being draggable. Revisit when a second bottom-dock citizen
+/// exists.
+pub struct LogPanel {
+    /// The shared feedback history (EditorPanel saves and the reload
+    /// watcher both append to it).
+    log: Entity<FeedbackLog>,
+    /// Shared presentation state (visibility mapping input).
+    presentation: Entity<PresentationState>,
+    focus_handle: FocusHandle,
+}
+
+impl LogPanel {
+    /// Host the shared feedback `log`.
+    pub fn new(
+        log: Entity<FeedbackLog>,
+        presentation: Entity<PresentationState>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self {
+            log,
+            presentation,
+            focus_handle: cx.focus_handle(),
+        }
+    }
+
+    /// The hosted log (shim assertion surface, wsc_ac02).
+    #[cfg(test)]
+    pub fn log(&self) -> &Entity<FeedbackLog> {
+        &self.log
+    }
+}
+
+impl EventEmitter<PanelEvent> for LogPanel {}
+
+impl Focusable for LogPanel {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Panel for LogPanel {
+    fn panel_name(&self) -> &'static str {
+        LOG_PANEL_NAME
+    }
+
+    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        SharedString::from("Log")
+    }
+
+    fn closable(&self, _cx: &App) -> bool {
+        // v1: the permanent tab is the dock's anchor (see the type doc).
+        false
+    }
+
+    fn zoomable(&self, _cx: &App) -> Option<PanelControl> {
+        None
+    }
+
+    fn visible(&self, cx: &App) -> bool {
+        panel_visible(self.presentation.read(cx).mode, PanelRole::Log)
+    }
+}
+
+impl Render for LogPanel {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Minimal by design (wsc_ac02): text rows, newest at top, no scroll
+        // machinery. Severity is the row's colour cue.
+        let danger = cx.theme().danger;
+        let warning = cx.theme().warning;
+        let muted = cx.theme().muted_foreground;
+        let foreground = cx.theme().foreground;
+        let entries = self.log.read(cx).entries().to_vec();
+        let list = div().size_full().p_3().text_size(px(12.0)).overflow_hidden();
+        if entries.is_empty() {
+            return list.child(
+                div()
+                    .text_color(muted)
+                    .child(SharedString::from("(no reload or save feedback yet)")),
+            );
+        }
+        list.children(entries.into_iter().map(move |entry| {
+            let (tag, tag_color) = match entry.severity {
+                Severity::Error => ("error", danger),
+                Severity::Warning => ("warning", warning),
+            };
+            div()
+                .flex()
+                .gap_2()
+                .child(div().text_color(tag_color).child(SharedString::from(tag)))
+                .child(
+                    div()
+                        .text_color(foreground)
+                        .child(SharedString::from(entry.message)),
+                )
+        }))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Workspace root (aws_ac03)
 // ---------------------------------------------------------------------------
 
+/// The bottom dock's rebuild state, stashed while presentation mode has the
+/// dock removed (wsc_ac04): the dumped panel tree (their save format — the
+/// registered factories resolve it back to live entities), the dock height,
+/// and the open bit. Everything `set_bottom_dock` needs to rebuild the dock
+/// exactly as the author left it — closed-before stays closed, open-before
+/// stays open, moved-in panels come back.
+struct BottomDockStash {
+    /// The dock's panel tree, dumped via the public `PanelView::dump` path.
+    panel: PanelState,
+    /// The dock's height (its open size; the closed strip doesn't change it).
+    size: Pixels,
+    /// Whether the dock was open when presentation was entered.
+    open: bool,
+}
+
 /// The window root under gpui-component's `Root`: hosts the `DockArea`
-/// (center canvas + right editor + left sidebar) and owns layout
-/// persistence — versioned JSON in the user config dir, saved debounced on
-/// `LayoutChanged` and flushed on quit, canvas excluded, every fallback
-/// decided by the framework-free `dock_state_file` module.
+/// (center canvas + right editor + left sidebar + bottom log) and owns
+/// layout persistence — versioned JSON in the user config dir, saved
+/// debounced on `LayoutChanged` and flushed on quit, canvas excluded, every
+/// fallback decided by the framework-free `dock_state_file` module.
 pub struct WorkspaceRoot {
     dock_area: Entity<DockArea>,
     presentation: Entity<PresentationState>,
@@ -519,20 +665,53 @@ pub struct WorkspaceRoot {
     policy: SavePolicy,
     /// Millisecond clock origin for the policy.
     boot: Instant,
+    /// The bottom dock's rebuild state while presentation has it removed
+    /// (`None` whenever the dock is present).
+    bottom_stash: Option<BottomDockStash>,
     /// The pending debounced save, if any (dropped saves are superseded —
     /// latest change wins, matching the policy's deadline).
     _save_task: Option<Task<()>>,
 }
 
 impl WorkspaceRoot {
-    /// Assemble the dock over the three panels, restoring the saved layout
+    /// Assemble the dock over the four panels, restoring the saved layout
     /// when usable (missing/corrupt/version-mismatch → default), and wire
     /// the save triggers.
     pub fn new(
         canvas: Entity<CanvasPanel>,
         editor: Entity<EditorPanel>,
         sidebar: Entity<SidebarPanel>,
+        log: Entity<LogPanel>,
         presentation: Entity<PresentationState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let state_path = dock_state_file::dock_state_path(
+            std::env::var("BRIGHTFIELD_CONFIG_DIR").ok().as_deref(),
+            std::env::var("XDG_CONFIG_HOME").ok().as_deref(),
+            std::env::var("HOME").ok().as_deref(),
+        );
+        let raw = state_path
+            .as_deref()
+            .and_then(dock_state_file::read_state_file);
+        Self::with_saved_layout(
+            canvas, editor, sidebar, log, presentation, state_path, raw, window, cx,
+        )
+    }
+
+    /// [`WorkspaceRoot::new`] with the persistence inputs injected: the
+    /// layout file location (`None` = persistence off) and the raw saved
+    /// layout JSON (`None` = fresh boot). `new` supplies the real env/file;
+    /// the wsc_ac03/ac04 tests supply fixtures.
+    #[allow(clippy::too_many_arguments)]
+    fn with_saved_layout(
+        canvas: Entity<CanvasPanel>,
+        editor: Entity<EditorPanel>,
+        sidebar: Entity<SidebarPanel>,
+        log: Entity<LogPanel>,
+        presentation: Entity<PresentationState>,
+        state_path: Option<PathBuf>,
+        raw: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -557,19 +736,14 @@ impl WorkspaceRoot {
             let sidebar = sidebar.clone();
             move |_, _, _, _, _| Box::new(sidebar.clone())
         });
-
-        let state_path = dock_state_file::dock_state_path(
-            std::env::var("BRIGHTFIELD_CONFIG_DIR").ok().as_deref(),
-            std::env::var("XDG_CONFIG_HOME").ok().as_deref(),
-            std::env::var("HOME").ok().as_deref(),
-        );
+        register_panel(cx, LOG_PANEL_NAME, {
+            let log = log.clone();
+            move |_, _, _, _, _| Box::new(log.clone())
+        });
 
         // Restore the saved arrangement, or build the default layout. Every
         // "is this state usable?" decision is dock_state_file's; a restore
         // that fails INSIDE the dock (their loader) falls back the same way.
-        let raw = state_path
-            .as_deref()
-            .and_then(dock_state_file::read_state_file);
         let restored = match dock_state_file::decide_load(raw.as_deref(), DOCK_STATE_VERSION) {
             LoadDecision::Restore(value) => match serde_json::from_value::<DockAreaState>(value) {
                 Ok(state) => {
@@ -592,7 +766,16 @@ impl WorkspaceRoot {
             }
         };
         if !restored {
-            Self::default_layout(&dock_area, &canvas, &editor, &sidebar, window, cx);
+            Self::default_layout(&dock_area, &canvas, &editor, &sidebar, &log, window, cx);
+        } else if bottom_dock_needs_backfill(
+            dock_area.read(cx).has_dock(DockPlacement::Bottom),
+        ) {
+            // Backfill (wsc_ac03): every pre-round saved layout lacks a
+            // bottom dock — append the same closed Log dock the default
+            // layout seeds, without touching the restored arrangement.
+            // DOCK_STATE_VERSION is unchanged on purpose: a version bump
+            // would discard the author's layout to add one dock.
+            Self::seed_bottom_dock(&dock_area, &log, window, cx);
         }
 
         // Debounced save on layout changes…
@@ -630,10 +813,7 @@ impl WorkspaceRoot {
             (edge_docks, center_tabs)
         };
         for dock in edge_docks {
-            cx.observe_in(&dock, window, |this: &mut Self, _, window, cx| {
-                this.schedule_save(window, cx);
-            })
-            .detach();
+            Self::observe_dock_for_saves(&dock, window, cx);
         }
         if let Some(tabs) = center_tabs {
             cx.observe_in(&tabs, window, |this: &mut Self, _, window, cx| {
@@ -641,6 +821,16 @@ impl WorkspaceRoot {
             })
             .detach();
         }
+
+        // The presentation round trip for the BOTTOM dock (wsc_ac04): the
+        // canvas's `p` handler flips the shared mode and collapses the
+        // left/right rails; this observer executes the framework-free
+        // bottom-dock action — remove entirely on enter (a closed bottom
+        // dock still paints a 29px strip), rebuild from the stash on exit.
+        cx.observe_in(&presentation, window, |this: &mut Self, _, window, cx| {
+            this.sync_bottom_dock_to_mode(window, cx);
+        })
+        .detach();
 
         // …and a flush on quit (pending debounce or not).
         cx.on_app_quit(|this: &mut Self, cx| {
@@ -667,16 +857,19 @@ impl WorkspaceRoot {
             state_path,
             policy: SavePolicy::default(),
             boot: Instant::now(),
+            bottom_stash: None,
             _save_task: None,
         }
     }
 
-    /// Center canvas + left sidebar + right editor at their default sizes.
+    /// Center canvas + left sidebar + right editor at their default sizes,
+    /// plus the closed bottom Log dock (wsc_ac03).
     fn default_layout(
         dock_area: &Entity<DockArea>,
         canvas: &Entity<CanvasPanel>,
         editor: &Entity<EditorPanel>,
         sidebar: &Entity<SidebarPanel>,
+        log: &Entity<LogPanel>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -689,6 +882,100 @@ impl WorkspaceRoot {
             area.set_left_dock(left, Some(px(SIDEBAR_DOCK_WIDTH as f32)), true, window, cx);
             area.set_right_dock(right, Some(px(EDITOR_DOCK_WIDTH as f32)), true, window, cx);
         });
+        Self::seed_bottom_dock(dock_area, log, window, cx);
+    }
+
+    /// Seed the bottom dock CLOSED with the Log panel: the 29px strip is
+    /// the drop/expand affordance (their drag UI only lands on existing
+    /// dock surfaces — seeding is the only way drag-to-bottom can work),
+    /// and closed doesn't re-carve the author's current layout.
+    fn seed_bottom_dock(
+        dock_area: &Entity<DockArea>,
+        log: &Entity<LogPanel>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let weak = dock_area.downgrade();
+        let bottom = DockItem::tab(log.clone(), &weak, window, cx);
+        dock_area.update(cx, |area, cx| {
+            area.set_bottom_dock(bottom, Some(px(BOTTOM_DOCK_HEIGHT as f32)), false, window, cx);
+        });
+    }
+
+    /// Funnel a dock entity's bare notifies (resize et al.) into the
+    /// debounced save policy. Extracted because presentation-exit rebuilds
+    /// the bottom Dock ENTITY (`set_bottom_dock` creates a new one), and
+    /// the rebuilt dock must be re-observed — the spec's sanctioned churn.
+    fn observe_dock_for_saves(dock: &Entity<Dock>, window: &mut Window, cx: &mut Context<Self>) {
+        cx.observe_in(dock, window, |this: &mut Self, _, window, cx| {
+            this.schedule_save(window, cx);
+        })
+        .detach();
+    }
+
+    /// Execute the framework-free bottom-dock action for the current mode
+    /// (wsc_ac04): presentation removes the dock after stashing its rebuild
+    /// state; authoring rebuilds it from the stash — contents, size, and
+    /// open bit exactly as the author left them — and re-attaches the save
+    /// observer to the new Dock entity.
+    fn sync_bottom_dock_to_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match bottom_dock_action(self.presentation.read(cx).mode) {
+            BottomDockAction::Remove => {
+                let Some(dock) = self.dock_area.read(cx).bottom_dock().cloned() else {
+                    return; // Already removed (repeated notify) — stash stands.
+                };
+                let stash = {
+                    let dock = dock.read(cx);
+                    BottomDockStash {
+                        panel: dock.panel().view().dump(cx),
+                        size: dock.size(),
+                        open: dock.is_open(),
+                    }
+                };
+                self.bottom_stash = Some(stash);
+                self.dock_area.update(cx, |area, cx| {
+                    area.remove_bottom_dock(window, cx);
+                    cx.notify();
+                });
+            }
+            BottomDockAction::Rebuild => {
+                if self.dock_area.read(cx).has_dock(DockPlacement::Bottom) {
+                    return; // Present already (boot, repeated notify).
+                }
+                let Some(stash) = self.bottom_stash.take() else {
+                    return; // Nothing stashed — only Remove ever removes it.
+                };
+                let item = stash.panel.to_item(self.dock_area.downgrade(), window, cx);
+                self.dock_area.update(cx, |area, cx| {
+                    area.set_bottom_dock(item, Some(stash.size), stash.open, window, cx);
+                    cx.notify();
+                });
+                if let Some(dock) = self.dock_area.read(cx).bottom_dock().cloned() {
+                    Self::observe_dock_for_saves(&dock, window, cx);
+                }
+            }
+        }
+    }
+
+    /// The hosted dock area (assertion surface, wsc_ac03/ac04).
+    #[cfg(test)]
+    pub fn dock_area(&self) -> &Entity<DockArea> {
+        &self.dock_area
+    }
+
+    /// Whether a debounced save is armed (assertion surface, wsc_ac04 —
+    /// proves a change to the REBUILT dock entity still reaches the save
+    /// policy through the re-attached observer).
+    #[cfg(test)]
+    pub fn save_pending(&self) -> bool {
+        self.policy.pending()
+    }
+
+    /// Reset the save policy so `save_pending` isolates the next change
+    /// (the rebuild itself legitimately schedules saves).
+    #[cfg(test)]
+    pub fn reset_save_probe(&mut self) {
+        self.policy = SavePolicy::default();
     }
 
     /// The dock state as the persisted JSON: dumped, canvas-stripped,
@@ -776,14 +1063,21 @@ struct ReloadErrorTag;
 /// `reload_feedback` decision; a closed window is a silent no-op. Errors
 /// are sticky (`reload_feedback::sticky`) — a transient toast is missed
 /// whenever the save came from an external editor — and replace rather
-/// than stack across repeated bad saves.
+/// than stack across repeated bad saves. The same pair is appended to the
+/// feedback `log` (wsc_ac02): the Log panel keeps the history the toasts
+/// lose.
 pub fn notify_reload_rejection(
     window: &gpui::WindowHandle<Root>,
     cx: &mut gpui::AsyncApp,
     severity: Severity,
     message: String,
+    log: &gpui::Entity<FeedbackLog>,
 ) {
     let _ = window.update(cx, |root, window, cx| {
+        log.update(cx, |log, cx| {
+            log.append(severity, message.clone());
+            cx.notify();
+        });
         let note = match severity {
             Severity::Error => {
                 root.remove_notification::<ReloadErrorTag>(window, cx);
@@ -886,6 +1180,135 @@ mod tests {
         });
     }
 
+    /// wsc_ac02 (shim): the Log panel carries the stable panel name, hosts
+    /// the SAME FeedbackLog entity, is permanent (closable=false — it
+    /// anchors the bottom dock), never zoomable, and follows the authoring
+    /// chrome: visible while authoring, hidden under presentation.
+    #[gpui::test]
+    fn wsc_ac02_log_panel_is_a_permanent_shim_over_the_feedback_log(cx: &mut TestAppContext) {
+        let (feedback_log, presentation, panel) = cx.update(|cx| {
+            let feedback_log = cx.new(|_| FeedbackLog::default());
+            let presentation = cx.new(|_| PresentationState {
+                mode: PresentationMode::default(),
+            });
+            let panel =
+                cx.new(|cx| LogPanel::new(feedback_log.clone(), presentation.clone(), cx));
+            (feedback_log, presentation, panel)
+        });
+
+        cx.update(|cx| {
+            let p = panel.read(cx);
+            assert_eq!(p.panel_name(), LOG_PANEL_NAME, "stable serialisation name");
+            assert!(!p.closable(cx), "permanent in v1 — the dock's anchor");
+            assert!(p.zoomable(cx).is_none(), "never zoomable");
+            assert_eq!(
+                p.log().entity_id(),
+                feedback_log.entity_id(),
+                "the panel renders the SAME log entity the taps append to"
+            );
+            assert!(p.visible(cx), "visible while authoring");
+        });
+        cx.update(|cx| {
+            presentation.update(cx, |state, _| state.mode = PresentationMode::Presentation);
+        });
+        cx.update(|cx| {
+            assert!(!panel.read(cx).visible(cx), "hidden under presentation");
+        });
+    }
+
+    /// wsc_ac02 (reload-feedback tap): driving the SAME path the watcher
+    /// uses — `notify_reload_rejection` — lands the identical severity +
+    /// message pair in the feedback log that the notification carried
+    /// (both come from the one reload_feedback decision).
+    #[gpui::test]
+    fn wsc_ac02_reload_rejection_reaches_the_log_with_the_notification_message(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_component::init);
+        let (feedback_log, presentation) = cx.update(|cx| {
+            let feedback_log = cx.new(|_| FeedbackLog::default());
+            let presentation = cx.new(|_| PresentationState {
+                mode: PresentationMode::default(),
+            });
+            (feedback_log, presentation)
+        });
+        let panel_log = feedback_log.clone();
+        let window: gpui::WindowHandle<Root> = cx.add_window(move |window, cx| {
+            let panel = cx.new(|cx| LogPanel::new(panel_log.clone(), presentation.clone(), cx));
+            Root::new(panel, window, cx)
+        });
+        cx.run_until_parked();
+
+        let (severity, message) = reload_feedback::reload_notification(
+            &reload_feedback::ReloadOutcome::PipelineFailed("mapping values are not allowed"),
+        )
+        .expect("rejections surface");
+        let mut async_cx = cx.to_async();
+        notify_reload_rejection(&window, &mut async_cx, severity, message.clone(), &feedback_log);
+        cx.run_until_parked();
+
+        cx.update(|cx| {
+            let log = feedback_log.read(cx);
+            assert_eq!(log.entries().len(), 1, "one outcome, one entry");
+            assert_eq!(log.entries()[0].severity, severity, "same severity");
+            assert_eq!(log.entries()[0].message, message, "same message, verbatim");
+        });
+    }
+
+    /// wsc_ac02 (editor-save tap): a refused save (unseeded editor) appends
+    /// the notification's exact message to the log at error severity.
+    #[gpui::test]
+    fn wsc_ac02_editor_save_refusal_reaches_the_log(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (feedback_log, presentation) = cx.update(|cx| {
+            let feedback_log = cx.new(|_| FeedbackLog::default());
+            let presentation = cx.new(|_| PresentationState {
+                mode: PresentationMode::default(),
+            });
+            (feedback_log, presentation)
+        });
+        let editor_slot: std::rc::Rc<std::cell::RefCell<Option<Entity<EditorPanel>>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+        let slot = editor_slot.clone();
+        let log_for_editor = feedback_log.clone();
+        let window: gpui::WindowHandle<Root> = cx.add_window(move |window, cx| {
+            let editor = cx.new(|cx| {
+                EditorPanel::new(
+                    PathBuf::from("/nonexistent/brightfield-test-spec.yaml"),
+                    None, // Boot read failed: saving must refuse (truncation guard).
+                    presentation.clone(),
+                    log_for_editor.clone(),
+                    window,
+                    cx,
+                )
+            });
+            *slot.borrow_mut() = Some(editor.clone());
+            Root::new(editor, window, cx)
+        });
+        cx.run_until_parked();
+
+        let editor = editor_slot.borrow().clone().expect("editor built");
+        // Drive the save from window scope WITHOUT a lease on Root (the
+        // handler itself calls Root::update, as the real action dispatch
+        // does).
+        cx.update_window(window.into(), |_, window, cx| {
+            editor.update(cx, |editor, cx| editor.save(&SaveSpec, window, cx));
+        })
+        .expect("drive cmd-s");
+        cx.run_until_parked();
+
+        cx.update(|cx| {
+            let log = feedback_log.read(cx);
+            assert_eq!(log.entries().len(), 1, "the refusal was logged");
+            assert_eq!(log.entries()[0].severity, Severity::Error);
+            assert!(
+                log.entries()[0].message.contains("Save refused"),
+                "the notification's message, verbatim: {}",
+                log.entries()[0].message
+            );
+        });
+    }
+
     /// aws_ac04 (binding data): the editor keymap is one binding — cmd-s →
     /// SaveSpec — scoped to the editor context, mirroring fww_ac07's shape
     /// for the workspace `p` binding.
@@ -909,5 +1332,342 @@ mod tests {
             binding.predicate().is_some(),
             "the binding is editor-scoped, not global"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // wsc_ac03/ac04 — bottom dock seed/backfill + presentation round trip,
+    // against the real WorkspaceRoot in a test window (aws_ac03 precedent).
+    // -----------------------------------------------------------------------
+
+    struct TestShell {
+        window: gpui::WindowHandle<Root>,
+        workspace: Entity<WorkspaceRoot>,
+        presentation: Entity<PresentationState>,
+        editor: Entity<EditorPanel>,
+    }
+
+    /// Assemble the full four-panel WorkspaceRoot in a test window, with the
+    /// persistence inputs injected (`raw` = the saved layout JSON; state
+    /// path off so no file I/O races other tests).
+    fn build_shell(cx: &mut TestAppContext, raw: Option<String>) -> TestShell {
+        cx.update(gpui_component::init);
+        let (feedback_log, presentation) = cx.update(|cx| {
+            let feedback_log = cx.new(|_| FeedbackLog::default());
+            let presentation = cx.new(|_| PresentationState {
+                mode: PresentationMode::default(),
+            });
+            (feedback_log, presentation)
+        });
+        let slots: std::rc::Rc<
+            std::cell::RefCell<Option<(Entity<WorkspaceRoot>, Entity<EditorPanel>)>>,
+        > = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let slot = slots.clone();
+        let presentation_in = presentation.clone();
+        let window: gpui::WindowHandle<Root> = cx.add_window(move |window, cx| {
+            let chart =
+                cx.new(|_| ChartView::new(320.0, 240.0, Vec::new(), Vec::new(), Vec::new()));
+            let canvas =
+                cx.new(|cx| CanvasPanel::new(chart, "Test", presentation_in.clone(), cx));
+            let editor = cx.new(|cx| {
+                EditorPanel::new(
+                    PathBuf::from("/tmp/brightfield-wsc-test-spec.yaml"),
+                    Some(""),
+                    presentation_in.clone(),
+                    feedback_log.clone(),
+                    window,
+                    cx,
+                )
+            });
+            let sidebar = cx.new(|cx| SidebarPanel::new(Vec::new(), presentation_in.clone(), cx));
+            let log_panel =
+                cx.new(|cx| LogPanel::new(feedback_log.clone(), presentation_in.clone(), cx));
+            let workspace = cx.new(|cx| {
+                WorkspaceRoot::with_saved_layout(
+                    canvas,
+                    editor.clone(),
+                    sidebar,
+                    log_panel,
+                    presentation_in.clone(),
+                    None,
+                    raw,
+                    window,
+                    cx,
+                )
+            });
+            *slot.borrow_mut() = Some((workspace.clone(), editor));
+            Root::new(workspace, window, cx)
+        });
+        cx.run_until_parked();
+        let (workspace, editor) = slots.borrow().clone().expect("workspace built");
+        TestShell {
+            window,
+            workspace,
+            presentation,
+            editor,
+        }
+    }
+
+    /// Flip the shared presentation mode (the same entity notify the canvas
+    /// `p` handler produces) and flush the observers.
+    fn toggle_presentation_mode(
+        cx: &mut TestAppContext,
+        presentation: &Entity<PresentationState>,
+    ) {
+        presentation.update(cx, |state, cx| {
+            state.mode.toggle();
+            cx.notify();
+        });
+        cx.run_until_parked();
+    }
+
+    /// (has_bottom_dock, is_open, size) of the workspace's bottom dock.
+    fn bottom_dock_state(
+        cx: &mut TestAppContext,
+        workspace: &Entity<WorkspaceRoot>,
+    ) -> (bool, Option<bool>, Option<gpui::Pixels>) {
+        cx.update(|cx| {
+            let area = workspace.read(cx).dock_area().read(cx);
+            match area.bottom_dock() {
+                Some(dock) => {
+                    let dock = dock.read(cx);
+                    (true, Some(dock.is_open()), Some(dock.size()))
+                }
+                None => (false, None, None),
+            }
+        })
+    }
+
+    /// The panel names hosted by the bottom dock's tab set, in tab order.
+    fn bottom_dock_panel_names(
+        cx: &mut TestAppContext,
+        workspace: &Entity<WorkspaceRoot>,
+    ) -> Vec<String> {
+        cx.update(|cx| {
+            let area = workspace.read(cx).dock_area().read(cx);
+            let dock = area.bottom_dock().expect("bottom dock present").read(cx);
+            match dock.panel() {
+                DockItem::Tabs { items, .. } => {
+                    items.iter().map(|p| p.panel_name(cx).to_string()).collect()
+                }
+                _ => panic!("expected a tabs item in the bottom dock"),
+            }
+        })
+    }
+
+    /// A pre-round saved layout (DOCK_STATE_VERSION, canvas center, sidebar
+    /// left, editor right — NO bottom dock), in their serde shape.
+    fn saved_layout_without_bottom() -> serde_json::Value {
+        serde_json::json!({
+            "version": DOCK_STATE_VERSION,
+            "center": {
+                "panel_name": "TabPanel",
+                "children": [
+                    { "panel_name": CANVAS_PANEL_NAME, "children": [], "info": { "panel": null } }
+                ],
+                "info": { "tabs": { "active_index": 0 } }
+            },
+            "left_dock": {
+                "panel": {
+                    "panel_name": "TabPanel",
+                    "children": [
+                        { "panel_name": SIDEBAR_PANEL_NAME, "children": [], "info": { "panel": null } }
+                    ],
+                    "info": { "tabs": { "active_index": 0 } }
+                },
+                "placement": "left",
+                "size": 220.0,
+                "open": true
+            },
+            "right_dock": {
+                "panel": {
+                    "panel_name": "TabPanel",
+                    "children": [
+                        { "panel_name": EDITOR_PANEL_NAME, "children": [], "info": { "panel": null } }
+                    ],
+                    "info": { "tabs": { "active_index": 0 } }
+                },
+                "placement": "right",
+                "size": 380.0,
+                "open": true
+            }
+        })
+    }
+
+    /// wsc_ac03 (fresh boot): no saved layout → the default layout seeds
+    /// the bottom dock CLOSED with the Log panel at the default height.
+    #[gpui::test]
+    fn wsc_ac03_fresh_boot_seeds_closed_bottom_log_dock(cx: &mut TestAppContext) {
+        let shell = build_shell(cx, None);
+
+        let (has, open, size) = bottom_dock_state(cx, &shell.workspace);
+        assert!(has, "fresh boot has a bottom dock");
+        assert_eq!(open, Some(false), "seeded CLOSED — the strip is the affordance");
+        assert_eq!(size, Some(px(BOTTOM_DOCK_HEIGHT as f32)), "default open height");
+        assert_eq!(
+            bottom_dock_panel_names(cx, &shell.workspace),
+            vec![LOG_PANEL_NAME.to_string()],
+            "the Log panel anchors it"
+        );
+    }
+
+    /// wsc_ac03 (backfill): restoring a pre-round layout (no bottom dock —
+    /// every pre-round install) appends the same closed Log dock post-load,
+    /// leaving the restored arrangement intact. DOCK_STATE_VERSION is
+    /// unchanged — the layout restores, it is not discarded.
+    #[gpui::test]
+    fn wsc_ac03_pre_round_layout_is_backfilled_with_closed_bottom_dock(cx: &mut TestAppContext) {
+        let raw = serde_json::to_string_pretty(&saved_layout_without_bottom()).unwrap();
+        let shell = build_shell(cx, Some(raw));
+
+        // The restored arrangement survived (right dock at its saved width)…
+        cx.update(|cx| {
+            let area = shell.workspace.read(cx).dock_area().read(cx);
+            let right = area.right_dock().expect("restored right dock").read(cx);
+            assert_eq!(right.size(), px(380.0), "restored, not defaulted");
+        });
+        // …and the bottom dock was backfilled, closed, with the Log panel.
+        let (has, open, size) = bottom_dock_state(cx, &shell.workspace);
+        assert!(has, "backfilled bottom dock");
+        assert_eq!(open, Some(false), "backfilled CLOSED");
+        assert_eq!(size, Some(px(BOTTOM_DOCK_HEIGHT as f32)));
+        assert_eq!(
+            bottom_dock_panel_names(cx, &shell.workspace),
+            vec![LOG_PANEL_NAME.to_string()]
+        );
+    }
+
+    /// wsc_ac03 (already present): a saved layout that carries a bottom
+    /// dock restores exactly as saved — its open state and size are kept,
+    /// and no second dock (or forced state) is introduced.
+    #[gpui::test]
+    fn wsc_ac03_saved_bottom_dock_restores_as_saved(cx: &mut TestAppContext) {
+        let mut layout = saved_layout_without_bottom();
+        layout["bottom_dock"] = serde_json::json!({
+            "panel": {
+                "panel_name": "TabPanel",
+                "children": [
+                    { "panel_name": LOG_PANEL_NAME, "children": [], "info": { "panel": null } }
+                ],
+                "info": { "tabs": { "active_index": 0 } }
+            },
+            "placement": "bottom",
+            "size": 240.0,
+            "open": true
+        });
+        let raw = serde_json::to_string_pretty(&layout).unwrap();
+        let shell = build_shell(cx, Some(raw));
+
+        let (has, open, size) = bottom_dock_state(cx, &shell.workspace);
+        assert!(has);
+        assert_eq!(open, Some(true), "saved OPEN state kept — not forced closed");
+        assert_eq!(size, Some(px(240.0)), "saved height kept — not the default");
+        assert_eq!(
+            bottom_dock_panel_names(cx, &shell.workspace),
+            vec![LOG_PANEL_NAME.to_string()],
+            "one Log panel — no double dock, no duplicate seed"
+        );
+    }
+
+    /// wsc_ac04 (closed-before): entering presentation removes the bottom
+    /// dock ENTIRELY (no 29px strip — there is no dock to paint one);
+    /// exiting rebuilds it closed at the same size with the Log panel.
+    #[gpui::test]
+    fn wsc_ac04_round_trip_preserves_a_closed_bottom_dock(cx: &mut TestAppContext) {
+        let shell = build_shell(cx, None);
+        assert_eq!(bottom_dock_state(cx, &shell.workspace).1, Some(false));
+
+        toggle_presentation_mode(cx, &shell.presentation);
+        let (has, _, _) = bottom_dock_state(cx, &shell.workspace);
+        assert!(!has, "presentation renders ZERO bottom-dock chrome");
+
+        toggle_presentation_mode(cx, &shell.presentation);
+        let (has, open, size) = bottom_dock_state(cx, &shell.workspace);
+        assert!(has, "rebuilt on exit");
+        assert_eq!(open, Some(false), "closed-before stays closed");
+        assert_eq!(size, Some(px(BOTTOM_DOCK_HEIGHT as f32)), "size preserved");
+        assert_eq!(
+            bottom_dock_panel_names(cx, &shell.workspace),
+            vec![LOG_PANEL_NAME.to_string()]
+        );
+    }
+
+    /// wsc_ac04 (open-before, moved-in panel): a bottom dock the author
+    /// opened, resized, and moved the editor into comes back exactly —
+    /// open, same size, both panels — and a change to the REBUILT dock
+    /// entity still schedules a layout save (the observer re-attached).
+    #[gpui::test]
+    fn wsc_ac04_round_trip_preserves_open_dock_with_moved_in_panel(cx: &mut TestAppContext) {
+        let shell = build_shell(cx, None);
+
+        // Author's arrangement: open the dock, resize it, move the editor
+        // in (remove from its source dock first, as a drag would).
+        shell
+            .window
+            .update(cx, |_root, window, cx| {
+                let (right, bottom) = {
+                    let area = shell.workspace.read(cx).dock_area().read(cx);
+                    (
+                        area.right_dock().expect("right dock").clone(),
+                        area.bottom_dock().expect("bottom dock").clone(),
+                    )
+                };
+                right.update(cx, |dock, cx| {
+                    dock.remove_panel(std::sync::Arc::new(shell.editor.clone()), window, cx);
+                });
+                bottom.update(cx, |dock, cx| {
+                    dock.set_open(true, window, cx);
+                    dock.set_size(px(240.0), window, cx);
+                    dock.add_panel(std::sync::Arc::new(shell.editor.clone()), window, cx);
+                });
+            })
+            .expect("arrange bottom dock");
+        cx.run_until_parked();
+        assert_eq!(
+            bottom_dock_panel_names(cx, &shell.workspace),
+            vec![LOG_PANEL_NAME.to_string(), EDITOR_PANEL_NAME.to_string()],
+            "editor moved into the bottom dock"
+        );
+
+        toggle_presentation_mode(cx, &shell.presentation);
+        assert!(
+            !bottom_dock_state(cx, &shell.workspace).0,
+            "presentation removes the dock, moved-in panel and all"
+        );
+
+        toggle_presentation_mode(cx, &shell.presentation);
+        let (has, open, size) = bottom_dock_state(cx, &shell.workspace);
+        assert!(has, "rebuilt on exit");
+        assert_eq!(open, Some(true), "open-before stays open");
+        assert_eq!(size, Some(px(240.0)), "author's size preserved");
+        assert_eq!(
+            bottom_dock_panel_names(cx, &shell.workspace),
+            vec![LOG_PANEL_NAME.to_string(), EDITOR_PANEL_NAME.to_string()],
+            "contents preserved, including the moved-in editor"
+        );
+
+        // The save observer re-attached to the NEW dock entity: an isolated
+        // post-round-trip change reaches the debounced save policy.
+        shell.workspace.update(cx, |workspace, _| workspace.reset_save_probe());
+        shell
+            .window
+            .update(cx, |_root, window, cx| {
+                let bottom = shell
+                    .workspace
+                    .read(cx)
+                    .dock_area()
+                    .read(cx)
+                    .bottom_dock()
+                    .expect("rebuilt dock")
+                    .clone();
+                bottom.update(cx, |dock, cx| dock.set_size(px(300.0), window, cx));
+            })
+            .expect("resize rebuilt dock");
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(
+                shell.workspace.read(cx).save_pending(),
+                "a change to the rebuilt dock still schedules a save"
+            );
+        });
     }
 }

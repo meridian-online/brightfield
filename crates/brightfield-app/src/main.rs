@@ -11,6 +11,8 @@ mod boot;
 #[cfg(any(target_os = "macos", test))]
 mod dock_state_file;
 #[cfg(any(target_os = "macos", test))]
+mod log_model;
+#[cfg(any(target_os = "macos", test))]
 mod reload_feedback;
 #[cfg(any(target_os = "macos", test))]
 mod shell;
@@ -907,6 +909,7 @@ fn spawn_spec_watcher(
     launch_chrome: ChromeSnapshot,
     workspace_window: gpui::WindowHandle<gpui_component::Root>,
     editor: Option<gpui::Entity<shell::EditorPanel>>,
+    feedback_log: gpui::Entity<log_model::FeedbackLog>,
 ) {
     const POLL: std::time::Duration = std::time::Duration::from_millis(300);
     use reload_feedback::{reload_notification, ReloadOutcome};
@@ -977,6 +980,7 @@ fn spawn_spec_watcher(
                                 cx,
                                 severity,
                                 message,
+                                &feedback_log,
                             );
                         }
                         continue;
@@ -997,6 +1001,7 @@ fn spawn_spec_watcher(
                                 cx,
                                 severity,
                                 message,
+                                &feedback_log,
                             );
                         }
                         continue;
@@ -1023,7 +1028,13 @@ fn spawn_spec_watcher(
                     if let Some((severity, message)) =
                         reload_notification(&ReloadOutcome::Applied)
                     {
-                        shell::notify_reload_rejection(&workspace_window, cx, severity, message);
+                        shell::notify_reload_rejection(
+                            &workspace_window,
+                            cx,
+                            severity,
+                            message,
+                            &feedback_log,
+                        );
                     }
                     // Recovery is self-cleaning: a successful reload clears
                     // the sticky error a prior rejection left up.
@@ -1036,7 +1047,13 @@ fn spawn_spec_watcher(
                     if let Some((severity, message)) =
                         reload_notification(&ReloadOutcome::PipelineFailed(&e))
                     {
-                        shell::notify_reload_rejection(&workspace_window, cx, severity, message);
+                        shell::notify_reload_rejection(
+                            &workspace_window,
+                            cx,
+                            severity,
+                            message,
+                            &feedback_log,
+                        );
                     }
                 }
             }
@@ -1208,6 +1225,12 @@ fn main() {
             // before any of its views exist (aws_ac01).
             gpui_component::init(cx);
 
+            // The shared feedback log (card 0017, wsc_ac02): the editor's
+            // save outcomes and the watcher's reload rejections append to
+            // it; the bottom-dock Log panel renders it. History — reload
+            // recovery clears the sticky error toast, never this.
+            let feedback_log = cx.new(|_| log_model::FeedbackLog::default());
+
             // One ChartState per plot; the watcher tracks each by its stable
             // path + geometry for hot-reload.
             let mut watched: Vec<WatchedPlot> = Vec::with_capacity(plots.len());
@@ -1343,6 +1366,7 @@ fn main() {
                 Rc::new(std::cell::RefCell::new(None));
             let editor_capture = editor_slot.clone();
             let spec_path_for_editor = spec_path.clone();
+            let feedback_log_for_editor = feedback_log.clone();
             let window = cx
                 .open_window(window_opts, move |window, cx| {
                     let chart_view = cx.new(|_| {
@@ -1370,6 +1394,7 @@ fn main() {
                             std::path::PathBuf::from(&spec_path_for_editor),
                             editor_seed.as_deref(),
                             presentation.clone(),
+                            feedback_log_for_editor.clone(),
                             window,
                             cx,
                         )
@@ -1378,8 +1403,25 @@ fn main() {
                     let sidebar = cx.new(|cx| {
                         shell::SidebarPanel::new(sidebar_listings, presentation.clone(), cx)
                     });
+                    // The bottom-dock Log panel over the shared feedback
+                    // log (wsc_ac02).
+                    let log = cx.new(|cx| {
+                        shell::LogPanel::new(
+                            feedback_log_for_editor.clone(),
+                            presentation.clone(),
+                            cx,
+                        )
+                    });
                     let workspace = cx.new(|cx| {
-                        shell::WorkspaceRoot::new(canvas, editor, sidebar, presentation, window, cx)
+                        shell::WorkspaceRoot::new(
+                            canvas,
+                            editor,
+                            sidebar,
+                            log,
+                            presentation,
+                            window,
+                            cx,
+                        )
                     });
                     cx.new(|cx| gpui_component::Root::new(workspace, window, cx))
                 })
@@ -1402,7 +1444,15 @@ fn main() {
             // (the watcher's second sanctioned tap — reload control flow
             // untouched).
             let editor = editor_slot.borrow().clone();
-            spawn_spec_watcher(cx, watched, spec_path, launch_chrome, window, editor);
+            spawn_spec_watcher(
+                cx,
+                watched,
+                spec_path,
+                launch_chrome,
+                window,
+                editor,
+                feedback_log,
+            );
         });
     }
 
