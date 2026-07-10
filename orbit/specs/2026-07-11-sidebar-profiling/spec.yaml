@@ -1,0 +1,52 @@
+goal: >
+  Sidebar profiling (card 0017's next increment): replace the launch-frozen
+  column-name approximation with real DuckDB-computed per-column profiles —
+  type, count, min/max (type-gated), approx distinct, nulls — for every data
+  source, computed on the launch session before the window opens and refreshed
+  from the watcher's throwaway session on successful hot reload (the sidebar
+  un-freezes as a side effect). Chrome-only: every example PNG byte-identical,
+  no exemptions. Contract and threading rationale: tabletop-note.md alongside
+  this spec.
+
+constraints:
+  - "The coordinator's live Session is never borrowed for profiling (non-Send, UI-thread-pinned, gesture-path only). Profiles come from the launch session (pre-window, synchronous) and the watcher's throwaway session (background executor, already Send-safe by dropping before return)."
+  - "Semantic-layer rule: profile computation lives in brightfield-engine (gpui-free by construction); profile types + display formatting live in the gpui-free model layer (sidebar_model.rs or a profile_model.rs sibling with the no-gpui-import header); shell.rs stays a rendering shim."
+  - "One aggregate pass per source (count/nulls/approx_count_distinct/type-gated min-max for all columns in a single SELECT over the view); no sampling v1; approx not exact distinct. Queries go through the existing conn.prepare/query_arrow path; no new dependencies."
+  - "Per-source failure isolation: a source whose DESCRIBE or aggregate fails yields a failed-profile variant with the reason — other sources profile normally, the sidebar never blanks, and the failure appends to the shared FeedbackLog at Severity::Warning WITHOUT a toast."
+  - "The __bf_* internal-column filter holds (sidebar_model::is_internal_column precedent)."
+  - "PNG byte-identity gate: every example PNG byte-identical, zero exemptions — this round has no sanctioned visual change. A diff is a halt."
+  - "Parallel-round hygiene: branch from main @ 2bf2d03; engine changes purely additive (new methods + tests, no existing-signature changes) so the hexbin round rebases trivially in either order."
+  - "Never cargo fmt --all; suite runs with set -o pipefail + explicit exit check; cargo 1.95 condensed summary line."
+
+acceptance_criteria:
+  - id: sbp-ac01
+    ac_type: code
+    description: "Engine profiling: a new gpui-free Session method (e.g. profile_sources()) returns, per data source in spec declaration order, the view's columns from DESCRIBE with DuckDB type names, plus per-column stats from one aggregate pass — non-null count, null count, approx_count_distinct, and min/max only for numeric/temporal types; source row count once per source; __bf_* columns filtered; unconsumed sources profile like any other (the upgrade over the batch-derived approximation); attached-database sources (.duckdb/.db ATTACH kind) return an unsupported-variant without querying; a failing source returns a failed-variant carrying the error string, isolated from its siblings."
+    verification: "sbp_ac01: engine tests (dex_ac03/msv_ac01 shape) over inline fixtures — mixed types incl. nulls and a temporal column, a failure fixture (vanished file), an attached-db fixture asserting the unsupported variant, declaration-order and __bf_ filter assertions. verifies: capability"
+  - id: sbp-ac02
+    ac_type: code
+    description: "Model layer: pure profile types (source profile with row count + per-column name/type/stats or failed/unsupported variants) and pure formatting — the stat line strings the panel will render (thousands-separated counts, trimmed float min-max, 'distinct'/'nulls' labels), the muted fallback rows ('(profile unavailable: reason)', '(attached database — not profiled)'), and a displayed-column cap with a '(+N more)' tail. No gpui import enters the file (semantic-layer header)."
+    verification: "sbp_ac02: pure unit tests — formatting matrix (ints/floats/dates/strings, zero rows, all-null column), cap boundary, fallback rows. verifies: capability"
+  - id: sbp-ac03
+    ac_type: code
+    description: "Panel: SidebarPanel renders profiles — per source a header row (name + row count), then per column name, muted type, and the model-formatted stat line; content scrolls (wide/tall sources usable); the presentation toggle behaviour and tab title are unchanged; the existing empty-state placeholder survives for the zero-source spec."
+    verification: "sbp_ac03: gpui-entity tests (wsc/aws shape — cx.new + #[cfg(test)] accessor): fixture profiles in, rendered-state assertions incl. failed/unsupported rows and presentation flip. verifies: capability"
+  - id: sbp-ac04
+    ac_type: code
+    description: "Launch + hot-reload threading: launch profiles computed from the launch session in the build path before the window opens and handed to SidebarPanel::new; the watcher gains the sidebar entity (like editor/feedback_log) and on a successful reload computes profiles on its throwaway session off-thread, carrying them across the existing Send return boundary, then updates the panel (a spec edit adding/removing a source is reflected — the frozen-at-launch gap closes); a reload whose profiling fails still swaps scenes and logs the Warning."
+    verification: "sbp_ac04: engine+model integration for the profile hand-off type (Send assertion); a shell test on the panel update path (set-profiles + notify); the watcher tap mirrors the editor-reseed tap — exercised via the existing reload/watcher test seam if present, else a headless integration probe; escalate rather than improvise if the watcher seam resists testing. verifies: capability"
+  - id: sbp-ac05
+    ac_type: manual
+    description: "Hugh's in-app look: open the sidebar on a multi-source example — typed, profiled columns; hot-reload the spec adding a source — the sidebar picks it up; break a source path — muted failure row in the sidebar plus a Warning entry in the bottom Log dock, no toast storm."
+    verification: "sbp_ac05: in-app ack. verifies: stand-in (real thing is Hugh's eyeball), accepted because the in-app confirm loop is established and closes same-week."
+  - id: sbp-ac06
+    ac_type: gate
+    description: "Ship gate: full workspace suite green (pipefail, condensed 1.95 summary, explicit exit); every example PNG byte-identical to the current baselines — zero exemptions; vendored corpus sweep unaffected."
+    verification: "sbp_ac06: cargo test --workspace; full PNG sweep vs baselines expecting IDENTICAL across the board. verifies: capability"
+
+deferred:
+  - "Attached-database (.duckdb/.db ATTACH) introspection — needs table-qualified DESCRIBE against the attached catalog."
+  - "Collapsible source groups, column search/filter, histograms/sparklines, virtualized List/DataTable — the MotherDuck-explorer maturity tier; flat + scroll + cap is v1."
+  - "Sampling / LIMIT strategies for pathologically large or expensive query-type sources — revisit with evidence."
+  - "Selection-aware profiles (stats over the current crossfilter state) — coordinator-coupled, its own design round."
+  - "Live-session background querying — deliberately not created here; rides the recorded coordinator-refresh chore if it ever lands."
