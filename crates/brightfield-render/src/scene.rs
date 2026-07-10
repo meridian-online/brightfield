@@ -209,8 +209,6 @@ pub fn build_multi_mark_scene(
     }
 
     let layout = &entries[0].layout;
-    let mut scene = Scene::new();
-    render_background(&mut scene, layout);
 
     // Collect (batch, channel_map) pairs for multi-scale inference.
     let pairs: Vec<(&RecordBatch, &ChannelMap)> = entries
@@ -264,6 +262,25 @@ pub fn build_multi_mark_scene(
         }
     }
 
+    let scene = draw_multi_mark_scene(entries, draw_inline_legend, &scales);
+    (scene, scales)
+}
+
+/// Draw a multi-mark plot's background, grid, marks, axes, and inline legend
+/// against an ALREADY-RESOLVED `scales`. The shared drawing half of
+/// [`build_multi_mark_scene`] (which infers `scales` first) and
+/// [`build_multi_mark_scene_pinned`] (which is handed a launch-pinned set), so
+/// both render byte-identical geometry from the same scale set. Callers
+/// guarantee `entries` is non-empty.
+fn draw_multi_mark_scene(
+    entries: &[&ChartData<'_>],
+    draw_inline_legend: bool,
+    scales: &ScaleSet,
+) -> Scene {
+    let layout = &entries[0].layout;
+    let mut scene = Scene::new();
+    render_background(&mut scene, layout);
+
     // Grid lines (behind marks).
     if let Some(x_scale) = scales.get(Channel::X) {
         let x_ticks = compute_ticks(x_scale, 5);
@@ -282,7 +299,7 @@ pub fn build_multi_mark_scene(
             &mut scene,
             entry.batch,
             entry.channel_map,
-            &scales,
+            scales,
             entry.highlight,
         );
     }
@@ -305,7 +322,29 @@ pub fn build_multi_mark_scene(
         }
     }
 
-    (scene, scales)
+    scene
+}
+
+/// Launch-pinned sibling of [`build_multi_mark_scene`]: draws the grid, marks,
+/// axes, and inline legend against the CALLER-SUPPLIED `scales` instead of
+/// inferring them from `entries`. Runs NONE of inference / `augment_scales` /
+/// zero-baseline / view-extent — the pinned set already went through all of
+/// those when it was inferred at launch.
+///
+/// The cross-filter coordinator captures each plot's launch `ScaleSet` and
+/// rebuilds every gesture (brush, point click, slider, legend click) through
+/// this, so axes, colour assignments, and ramp anchoring hold still while only
+/// the data moves — a live gesture reads as FILTERING, not redrawing (card
+/// 0006 render fidelity). Returns an empty scene for empty `entries`.
+pub fn build_multi_mark_scene_pinned(
+    entries: &[&ChartData<'_>],
+    draw_inline_legend: bool,
+    scales: &ScaleSet,
+) -> Scene {
+    if entries.is_empty() {
+        return Scene::new();
+    }
+    draw_multi_mark_scene(entries, draw_inline_legend, scales)
 }
 
 /// Compose pre-rendered plot scenes into one dashboard scene.

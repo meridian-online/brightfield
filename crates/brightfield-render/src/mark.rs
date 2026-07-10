@@ -2362,6 +2362,35 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
     v
 }
 
+/// Build the scheme/attribute-configured renderer for a ramp-fill or contour
+/// mark, or `None` for a mark that renders through the shared registry
+/// ([`default_renderers`]) unchanged.
+///
+/// The ONE construction site both the app's first render and the cross-filter
+/// coordinator's live rebuild dispatch through (card 0006 renderer seam):
+/// raster/heatmap/cell carry the plot's `colorScheme`, heatmap/contour carry
+/// the mark's `bandwidth`, and contour carries its iso-level `thresholds`. A
+/// mark rebuilt through the same configured renderer its first render used
+/// keeps its scheme, bandwidth, and thresholds across every gesture. The match
+/// must stay identical to the app-assembly resolution that feeds it.
+pub fn configured_renderer(
+    kind: MarkKind,
+    scheme: SequentialScheme,
+    bandwidth: Option<f64>,
+    thresholds: Option<usize>,
+) -> Option<Box<dyn MarkRenderer + Send + Sync>> {
+    match kind {
+        MarkKind::Raster => Some(Box::new(RasterRenderer { scheme })),
+        MarkKind::Heatmap => Some(Box::new(HeatmapRenderer { scheme, bandwidth })),
+        MarkKind::Cell => Some(Box::new(CellRenderer { scheme })),
+        MarkKind::Contour => Some(Box::new(ContourRenderer {
+            thresholds,
+            bandwidth,
+        })),
+        _ => None,
+    }
+}
+
 /// Look up a renderer for a mark kind.
 ///
 /// Returns `None` for kinds with no registered renderer — caller should
