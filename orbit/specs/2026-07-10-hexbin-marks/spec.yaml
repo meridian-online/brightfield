@@ -1,0 +1,65 @@
+goal: >
+  The staged density-marks follow-up (card 0008): hexbin — Mosaic's flagship
+  at-scale mark — with true self-aggregation (fill: {count:} / {avg: col}) and
+  pixel-space binWidth; hexgrid as its decorative lattice sibling; the
+  self-aggregating cell (CellLowerer) sharing the new aggregate-typed
+  channels; the ~12-test placeholder swap dance (hexbin/hexgrid promote,
+  negative tests re-point to geo); and the deferred gap-naive KDE lattice fix
+  riding the geometry work as its own sanctioned-re-baseline slice. Contract,
+  recon deltas, and staging rationale: tabletop-note.md alongside this spec.
+
+constraints:
+  - "No new dependencies; hex binning in plain DuckDB SQL (arithmetic only — the bundled libduckdb lacks width_bucket; density-lowerer precedent). Cube-round correctness proven against a hand-computed fixture."
+  - "Determinism: every new lowerer ORDER BYs its emitted centres (the #42 jitter class); double-render byte-equality is part of the AC evidence."
+  - "Reserved-column convention: aggregate occupancy stays __bf_count; hex geometry travels in-band as __bf_hex_dx/__bf_hex_dy (constant per row) — geometry survives live rebuilds by construction, no bin_step GCD recovery for hexes."
+  - "Scale conventions: zero-anchored Sequential fill for counts and merge-not-clobber augment_scales (raster precedent, mark.rs:1591-1615); [0,max] iff min>=0 else [min,max] for avg fills (cell precedent, mark.rs:1905)."
+  - "Byte-identity gate: every pre-existing example PNG byte-identical EXCEPT the lattice slice's sanctioned set (density.png verified-moves; heatmap.png/contour.png may move), each re-baseline carrying before/after gallery evidence for Hugh. A diff outside that set is a halt. If the lattice slice ships as its own PR, the hexbin PR's gate is fully exemption-free."
+  - "Vendored 54-spec corpus parses cleanly after aggregate channels land; mark-types.yaml preflight expectations update only where hexbin/hexgrid promotion makes them honestly cleaner."
+  - "cellX/cellY, denseLine stay Unimplemented; parse.rs dfspec_ac08 keeps voronoi. The placeholder swap target for the ~12 re-pointed negative tests is geo."
+  - "Sanctioned churn: msv_ac01's lowerer-count assertion bumps with the new registrations; the dmk_ac05 vocab guard re-pins (Hexbin/Hexgrid -> Implemented; Geo/CellX/CellY/DenseLine pinned Unimplemented)."
+  - "Never cargo fmt --all; suite runs with set -o pipefail + explicit exit check; cargo 1.95 condensed summary line."
+
+acceptance_criteria:
+  - id: hex-ac01
+    ac_type: code
+    description: "Aggregate-typed channels: fill: {count:} and fill: {avg: col} parse into a typed aggregate channel form on Mark channels (shared by hexbin and cell); plain column/literal/param channels are untouched; an unknown aggregate name degrades with a parse warning naming it (not a silent column lookup). The vendored flights-hexbin.yaml, wnba-shots.yaml, and mark-types.yaml hexbin blocks parse cleanly (r: {count:} and binWidth: $binWidth parse and are recorded-deferred at execution, not parse errors)."
+    verification: "hex_ac01: parser units over the three corpus mark blocks + degenerate forms; corpus sweep green. verifies: capability"
+  - id: hex-ac02
+    ac_type: code
+    description: "HexbinLowerer: a new lowerer (registered peer of Density, lower.rs default_lowerers) emitting pointy-top hex binning fully in SQL — normalise x/y into plot-pixel space (static plot pixel extent at emit time x SQL-side min/max extents), axial transform + cube-round at binWidth px (default 20, Mosaic's default; the exact binWidth->hex-size mapping verified against Mosaic's hexbin implementation and pinned in a code comment + test), GROUP BY hex centre; emits centres in DATA units aliased to the x/y channel columns, the aggregate (__bf_count for count; the avg aliased for avg), and constant __bf_hex_dx/__bf_hex_dy geometry columns; deterministic ORDER BY. binWidth is literal-only v1 ($param threading recorded-deferred). Cube-round correctness proven against a hand-computed fixture including boundary points."
+    verification: "hex_ac02: SQL-probe units (emitted SQL shape) + DuckDB execution against the fixture (centres, counts, avg values, dx/dy constants, row order). verifies: capability"
+  - id: hex-ac03
+    ac_type: code
+    description: "HexbinRenderer: draws one pointy-top hex polygon per row — centre mapped through the shared scales, vertices from the in-band __bf_hex_dx/__bf_hex_dy half-extents (regular on screen by construction); count fills ramp through the configured Sequential scheme zero-anchored [0,max]; avg fills follow the cell anchoring rule; augment_scales widens x/y by half a hex and installs/merges the Fill Sequential (merge-not-clobber); the configured scheme rides MarkInput.renderer_override (live-rebuild parity by construction — the cfr seam)."
+    verification: "hex_ac03: scene probes (packed-RGBA sampling per the #36 precedent) for count and avg fixtures; augment_scales unit matrix; a live-rebuild probe asserting the same override renderer draws the rebuild. verifies: capability"
+  - id: hex-ac04
+    ac_type: code
+    description: "hexgrid: a decorative pointy-top hex mesh across the plot area at binWidth px (default matching hexbin), fixed light stroke v1 (stroke/strokeOpacity attrs recorded-deferred on the literal-colour substrate); requires no data source (the dataless-mark pathway this establishes is minimal and named); draws in spec order so a sibling hexbin overlays it exactly on-lattice (same binWidth => same centres)."
+    verification: "hex_ac04: scene probe — mesh line count/positions for a known plot extent + binWidth; lattice alignment probe (hexgrid centres == hexbin centres for the same binWidth); dataless spec renders headlessly without a data block. verifies: capability"
+  - id: hex-ac05
+    ac_type: code
+    description: "Self-aggregating cell: a CellLowerer handles aggregate-typed fill on Band x Band categorical axes ({count:} and {avg: col}) — GROUP BY the two category columns, aggregate aliased so the existing CellRenderer numeric-fill path renders unchanged; the shipped pre-aggregated cell path is untouched (cell.png byte-identical); cellX/cellY stay Unimplemented."
+    verification: "hex_ac05: lowerer SQL + DuckDB execution units; cell.png byte-identity; an example-level probe of a count-cell fixture. verifies: capability"
+  - id: hex-ac06
+    ac_type: code
+    description: "Vocab + the swap dance: Hexbin and Hexgrid promote to Implemented; the negative-test census re-points to geo keeping every assertion shape (engine lib.rs x6: dex_ac02/dex_ac04/dex_ac05/rpw2_ac04/rpw3_ac07/cfs2_ac07; sql emit.rs dfir_ac08; conformance support.rs preflight; app main.rs msv_ac05); the dmk_ac05 guard re-pins per constraints; conformance corpus green with mark-types.yaml expectations honestly updated."
+    verification: "hex_ac06: the re-pointed tests pass asserting geo; vocab guard passes; conformance sweep green; grep gate — no negative test still names hexbin/hexgrid. verifies: capability"
+  - id: hex-ac07
+    ac_type: code
+    description: "KDE lattice fix (own slice; may ship as its own PR): build_kde_grid emits a dense first..last lattice at the bin_step pitch — unoccupied interior bins present with zero mass — so kde_2d smooths over true geometry and contour gains true gap geometry; density.png re-baselines (verified-moves), heatmap.png/contour.png re-baseline only if they move, every re-baseline with before/after gallery evidence; all other examples byte-identical; whether contour also gains half-bin augment_scales widening here or stays deferred is decided in-slice and recorded."
+    verification: "hex_ac07: grid-shape units (dense lattice, gap bins zero); the sanctioned PNG set re-baselined with gallery; the rest of the sweep byte-identical. verifies: capability"
+  - id: hex-ac08
+    ac_type: manual
+    description: "Hugh's gallery: the new examples/hexbin.yaml (hexbin + hexgrid overlay on the shared two-blob cloud, the raster/heatmap sibling — directly comparable) PNG, plus the lattice before/after pairs. In-app look at the hexbin example."
+    verification: "hex_ac08: gallery ack. verifies: stand-in (real thing is Hugh's eyeball), accepted because the PNG gallery loop is established and closes same-week."
+  - id: hex-ac09
+    ac_type: gate
+    description: "Ship gate: full workspace suite green (pipefail, condensed 1.95 summary, explicit exit); double-render determinism on the new example; PNG sweep per the byte-identity constraint."
+    verification: "hex_ac09: cargo test --workspace; determinism double-render cmp; full PNG sweep. verifies: capability"
+
+deferred:
+  - "r: {count:} size encoding (wnba-shots) — needs a radius/size scale channel that does not exist; parses, recorded."
+  - "binWidth: $binWidth param threading (wnba-shots) — opt_f64 is literal-only; param-driven bin size into lowerer SQL + renderer geometry is its own increment."
+  - "hexgrid stroke/strokeOpacity styling — waits on the literal-colour substrate (contour shares this)."
+  - "Contour augment_scales half-bin widening (pre-existing gap: contour inherits the trait no-op) — unless hex-ac07 resolves it in-slice."
+  - "sum/min/max aggregate channels beyond count/avg — only if they fall out free of hex-ac01's form."
