@@ -2226,6 +2226,154 @@ impl MarkRenderer for HexbinRenderer {
 }
 
 // ---------------------------------------------------------------------------
+// HexgridRenderer (hexgrid — decorative dataless hex mesh)
+// ---------------------------------------------------------------------------
+
+/// Default `binWidth` (pixels) — matches the hexbin default so a sibling
+/// overlays on-lattice.
+const DEFAULT_HEX_BIN_WIDTH: f64 = 20.0;
+
+/// Fixed light stroke for the hexgrid mesh (v1 — `stroke`/`strokeOpacity`
+/// attrs are deferred on the literal-colour substrate, the contour precedent).
+const HEXGRID_STROKE: Color = Color::new([0.72, 0.72, 0.72, 1.0]);
+const HEXGRID_STROKE_WIDTH: f64 = 0.75;
+
+/// Renders a decorative pointy-top hex MESH across the plot area at `binWidth`
+/// px — the dataless sibling of hexbin. It draws from the plot-area pixel rect
+/// (recovered from the x/y scales' pixel ranges) and `binWidth`, ignoring the
+/// (singleton) batch. Same `binWidth` ⇒ same hex size/pitch as a sibling
+/// hexbin, so the hexbin overlays it on-lattice. Draws in spec order (before a
+/// later hexbin). Requires no data source: [`Self::augment_scales`] synthesises
+/// unit x/y scales when none exist so a hexgrid-only spec still positions the
+/// mesh.
+#[derive(Debug, Clone, Copy)]
+pub struct HexgridRenderer {
+    /// Hex `binWidth` in pixels (horizontal centre spacing).
+    pub bin_width: f64,
+}
+
+impl Default for HexgridRenderer {
+    fn default() -> Self {
+        Self {
+            bin_width: DEFAULT_HEX_BIN_WIDTH,
+        }
+    }
+}
+
+/// The pixel range `(start, end)` a scale maps onto, for the positional scales.
+fn scale_pixel_range(scale: &Scale) -> Option<(f64, f64)> {
+    match scale {
+        Scale::Linear { range_start, range_end, .. }
+        | Scale::Time { range_start, range_end, .. }
+        | Scale::Band { range_start, range_end, .. } => Some((*range_start, *range_end)),
+        _ => None,
+    }
+}
+
+impl HexgridRenderer {
+    /// Pointy-top hex centres (pixel space) covering the rect `[x0,x1]×[y0,y1]`
+    /// at `bin_width`, with a one-cell margin so the clip trims cleanly. Rows are
+    /// `dy = 1.5·size` apart (`size = bin_width/√3`), odd rows offset by half a
+    /// horizontal step (`dx = bin_width`) — the d3-hexbin / Observable Plot mesh.
+    fn lattice_centres(x0: f64, x1: f64, y0: f64, y1: f64, bin_width: f64) -> Vec<(f64, f64)> {
+        let sqrt3 = 1.732_050_807_568_877_2_f64;
+        let size = bin_width / sqrt3;
+        let dx = bin_width;
+        let dy = 1.5 * size;
+        if !(dx > 0.0 && dy > 0.0) {
+            return Vec::new();
+        }
+        let (lo_x, hi_x) = (x0.min(x1), x0.max(x1));
+        let (lo_y, hi_y) = (y0.min(y1), y0.max(y1));
+        let mut out = Vec::new();
+        let j_max = ((hi_y - lo_y) / dy).ceil() as i64 + 1;
+        let i_max = ((hi_x - lo_x) / dx).ceil() as i64 + 1;
+        for j in -1..=j_max {
+            let cy = lo_y + (j as f64) * dy;
+            let offset = if j.rem_euclid(2) == 1 { dx / 2.0 } else { 0.0 };
+            for i in -1..=i_max {
+                let cx = lo_x + offset + (i as f64) * dx;
+                out.push((cx, cy));
+            }
+        }
+        out
+    }
+}
+
+impl MarkRenderer for HexgridRenderer {
+    fn render(
+        &self,
+        scene: &mut Scene,
+        _batch: &RecordBatch,
+        _channel_map: &ChannelMap,
+        scales: &ScaleSet,
+        _highlight: Option<&HighlightState>,
+    ) {
+        let (Some(x_scale), Some(y_scale)) =
+            (scales.get(Channel::X), scales.get(Channel::Y))
+        else {
+            return;
+        };
+        let (Some((x0, x1)), Some((y0, y1))) =
+            (scale_pixel_range(x_scale), scale_pixel_range(y_scale))
+        else {
+            return;
+        };
+
+        let sqrt3 = 1.732_050_807_568_877_2_f64;
+        let size = self.bin_width / sqrt3;
+        let (dx, dy) = (self.bin_width / 2.0, size); // half-width, half-height
+        let stroke = kurbo::Stroke::new(HEXGRID_STROKE_WIDTH);
+        for (cx, cy) in Self::lattice_centres(x0, x1, y0, y1, self.bin_width) {
+            let verts = HexbinRenderer::hex_vertices(cx, cy, dx, dy);
+            let mut path = BezPath::new();
+            path.move_to(verts[0]);
+            for v in &verts[1..] {
+                path.line_to(*v);
+            }
+            path.close_path();
+            scene.stroke(&stroke, Affine::IDENTITY, HEXGRID_STROKE, None, &path);
+        }
+    }
+
+    /// Synthesise unit x/y linear scales when none exist, so a DATALESS
+    /// hexgrid-only spec still has a plot-area pixel rect to draw the mesh in.
+    /// When a sibling mark (e.g. hexbin) has already established data-driven x/y
+    /// scales, this is a no-op — the mesh rides those, so it stays on-lattice.
+    fn augment_scales(
+        &self,
+        scales: &mut ScaleSet,
+        _batch: &RecordBatch,
+        _channel_map: &ChannelMap,
+        x_range: (f64, f64),
+        y_range: (f64, f64),
+    ) {
+        if scales.get(Channel::X).is_none() {
+            scales.insert(
+                Channel::X,
+                Scale::Linear {
+                    domain_min: 0.0,
+                    domain_max: 1.0,
+                    range_start: x_range.0,
+                    range_end: x_range.1,
+                },
+            );
+        }
+        if scales.get(Channel::Y).is_none() {
+            scales.insert(
+                Channel::Y,
+                Scale::Linear {
+                    domain_min: 0.0,
+                    domain_max: 1.0,
+                    range_start: y_range.0,
+                    range_end: y_range.1,
+                },
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // RegressionRenderer (regressionY / regressionX)
 // ---------------------------------------------------------------------------
 
@@ -2574,6 +2722,7 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
     v.push((MarkKind::Cell, Box::new(CellRenderer::default())));
     v.push((MarkKind::Contour, Box::new(ContourRenderer::default())));
     v.push((MarkKind::Hexbin, Box::new(HexbinRenderer::default())));
+    v.push((MarkKind::Hexgrid, Box::new(HexgridRenderer::default())));
     v.push((MarkKind::RegressionY, Box::new(RegressionRenderer::default())));
     v.push((MarkKind::RegressionX, Box::new(RegressionRenderer::default())));
     v
@@ -2585,22 +2734,27 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
 ///
 /// The ONE construction site both the app's first render and the cross-filter
 /// coordinator's live rebuild dispatch through (card 0006 renderer seam):
-/// raster/heatmap/cell carry the plot's `colorScheme`, heatmap/contour carry
-/// the mark's `bandwidth`, and contour carries its iso-level `thresholds`. A
-/// mark rebuilt through the same configured renderer its first render used
-/// keeps its scheme, bandwidth, and thresholds across every gesture. The match
-/// must stay identical to the app-assembly resolution that feeds it.
+/// raster/heatmap/cell/hexbin carry the plot's `colorScheme`, heatmap/contour
+/// carry the mark's `bandwidth`, contour carries its iso-level `thresholds`, and
+/// hexgrid carries its `binWidth`. A mark rebuilt through the same configured
+/// renderer its first render used keeps its scheme, bandwidth, thresholds, and
+/// binWidth across every gesture. The match must stay identical to the
+/// app-assembly resolution that feeds it.
 pub fn configured_renderer(
     kind: MarkKind,
     scheme: SequentialScheme,
     bandwidth: Option<f64>,
     thresholds: Option<usize>,
+    bin_width: Option<f64>,
 ) -> Option<Box<dyn MarkRenderer + Send + Sync>> {
     match kind {
         MarkKind::Raster => Some(Box::new(RasterRenderer { scheme })),
         MarkKind::Heatmap => Some(Box::new(HeatmapRenderer { scheme, bandwidth })),
         MarkKind::Cell => Some(Box::new(CellRenderer { scheme })),
         MarkKind::Hexbin => Some(Box::new(HexbinRenderer { scheme })),
+        MarkKind::Hexgrid => Some(Box::new(HexgridRenderer {
+            bin_width: bin_width.unwrap_or(DEFAULT_HEX_BIN_WIDTH),
+        })),
         MarkKind::Contour => Some(Box::new(ContourRenderer {
             thresholds,
             bandwidth,
@@ -3638,7 +3792,7 @@ mod tests {
         let batch = hexbin_batch(DENSITY_COUNT_COL, vec![1.0, 100.0]);
         let cm = hexbin_cm(DENSITY_COUNT_COL);
         let renderer =
-            configured_renderer(MarkKind::Hexbin, SequentialScheme::Turbo, None, None)
+            configured_renderer(MarkKind::Hexbin, SequentialScheme::Turbo, None, None, None)
                 .expect("hexbin has a configured renderer");
         let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
         renderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
@@ -3657,6 +3811,104 @@ mod tests {
         HexbinRenderer::default().render(&mut viridis_scene, &batch, &cm, &vscales, None);
         let dv: Vec<u32> = viridis_scene.encoding().draw_data.iter().copied().collect();
         assert_ne!(da, dv, "the configured scheme (turbo) differs from the viridis default");
+    }
+
+    // -----------------------------------------------------------------------
+    // hex_ac04 — HexgridRenderer (dataless mesh) + lattice alignment
+    // -----------------------------------------------------------------------
+
+    /// A singleton batch, as the hexgrid lowerer emits (one row, no positional
+    /// columns) — the renderer draws from the plot extent, not this batch.
+    fn hexgrid_batch() -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "__bf_hexgrid",
+            DataType::Int64,
+            false,
+        )]));
+        RecordBatch::try_new(schema, vec![Arc::new(arrow::array::Int64Array::from(vec![1]))])
+            .unwrap()
+    }
+
+    /// A ScaleSet with linear x/y scales over a known plot-area pixel rect.
+    fn plot_scales(x: (f64, f64), y: (f64, f64)) -> ScaleSet {
+        let mut s = ScaleSet::new();
+        s.insert(Channel::X, Scale::Linear { domain_min: 0.0, domain_max: 1.0, range_start: x.0, range_end: x.1 });
+        s.insert(Channel::Y, Scale::Linear { domain_min: 0.0, domain_max: 1.0, range_start: y.0, range_end: y.1 });
+        s
+    }
+
+    /// hex_ac04: the mesh covers the plot rect with the right hex count for a
+    /// known extent + binWidth (one stroked outline per lattice centre).
+    #[test]
+    fn hex_ac04_hexgrid_mesh_covers_plot_extent() {
+        let renderer = HexgridRenderer { bin_width: 20.0 };
+        // Plot rect 200×150 px (x range 40..240, y range 170..20).
+        let scales = plot_scales((40.0, 240.0), (170.0, 20.0));
+        let expected_centres =
+            HexgridRenderer::lattice_centres(40.0, 240.0, 170.0, 20.0, 20.0).len();
+        assert!(expected_centres > 0, "lattice must cover the rect");
+
+        let mut scene = Scene::new();
+        renderer.render(&mut scene, &hexgrid_batch(), &ChannelMap::new(), &scales, None);
+        assert_eq!(
+            count_scene_paths(&scene),
+            expected_centres,
+            "one stroked hex outline per lattice centre"
+        );
+    }
+
+    /// hex_ac04: the mesh honours binWidth — the row/column pitch equals the
+    /// d3-hexbin / Observable Plot spacing (dx = binWidth, dy = binWidth·√3/2),
+    /// which is EXACTLY the hexbin lowerer's hex size — so a sibling hexbin
+    /// overlays on-lattice for the same binWidth.
+    #[test]
+    fn hex_ac04_lattice_pitch_matches_hexbin_geometry() {
+        let bw = 24.0;
+        let centres = HexgridRenderer::lattice_centres(0.0, 100.0, 0.0, 100.0, bw);
+        // Horizontal pitch on a single row == binWidth.
+        let sqrt3 = 1.732_050_807_568_877_2_f64;
+        let dy = 1.5 * (bw / sqrt3);
+        // Find two centres on the same row (same y) and assert dx == bw.
+        let y0 = centres[0].1;
+        let mut row: Vec<f64> = centres.iter().filter(|(_, y)| (y - y0).abs() < 1e-9).map(|(x, _)| *x).collect();
+        row.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert!((row[1] - row[0] - bw).abs() < 1e-9, "horizontal pitch == binWidth");
+        // Vertical pitch between rows == binWidth·√3/2.
+        let mut ys: Vec<f64> = centres.iter().map(|(_, y)| *y).collect();
+        ys.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        ys.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+        assert!((ys[1] - ys[0] - dy).abs() < 1e-9, "row pitch == binWidth·√3/2");
+    }
+
+    /// hex_ac04: a DATALESS hexgrid renders headlessly with NO data-driven
+    /// scales — augment_scales synthesises the unit x/y scales from the plot
+    /// ranges, and render then produces mesh geometry.
+    #[test]
+    fn hex_ac04_dataless_hexgrid_renders_headlessly() {
+        let renderer = HexgridRenderer::default();
+        let batch = hexgrid_batch();
+        let cm = ChannelMap::new();
+        // No x/y scales to begin with (no data columns).
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        assert!(scales.get(Channel::X).is_none(), "no data-driven x scale");
+        renderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        assert!(scales.get(Channel::X).is_some(), "unit x scale synthesised");
+        let mut scene = Scene::new();
+        renderer.render(&mut scene, &batch, &cm, &scales, None);
+        assert!(count_scene_paths(&scene) > 0, "dataless mesh still renders");
+    }
+
+    /// hex_ac04: augment_scales does NOT clobber a sibling's data-driven scale
+    /// (so a hexgrid + hexbin plot keeps the hexbin's real domain and the mesh
+    /// rides it).
+    #[test]
+    fn hex_ac04_hexgrid_augment_preserves_existing_scales() {
+        let renderer = HexgridRenderer::default();
+        let mut scales = ScaleSet::new();
+        scales.insert(Channel::X, Scale::Linear { domain_min: 5.0, domain_max: 50.0, range_start: 40.0, range_end: 600.0 });
+        renderer.augment_scales(&mut scales, &hexgrid_batch(), &ChannelMap::new(), (40.0, 600.0), (450.0, 20.0));
+        // The existing x scale's data domain survives (not reset to [0,1]).
+        assert_eq!(scales.get(Channel::X).unwrap().domain_max(), Some(50.0));
     }
 
     // Regression (review finding, major): a raster's augment_scales MERGES into the

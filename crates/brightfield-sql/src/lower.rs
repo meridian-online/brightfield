@@ -624,6 +624,22 @@ fn build_hexbin_plan(
     }
 }
 
+/// Lowerer for the hexgrid mark — a decorative, DATALESS hex mesh drawn from
+/// the plot extent (not from data). It emits a trivial single-row query
+/// (`SELECT 1`) so the mark still produces a batch and is not skipped
+/// downstream; the renderer draws the mesh from the plot-area pixel rect and
+/// `binWidth`, ignoring the batch content. This is the minimal named
+/// dataless-mark pathway.
+pub struct HexgridLowerer;
+
+impl MarkLower for HexgridLowerer {
+    fn lower(&self, _mark: &Mark, _ctx: &LowerCtx<'_>) -> Result<QueryPlan, EmitError> {
+        Ok(QueryPlan::Singleton {
+            columns: vec!["1 AS __bf_hexgrid".to_string()],
+        })
+    }
+}
+
 /// The SQL aggregate expression for a hexbin/cell fill aggregate. `count` folds
 /// to the reserved `__bf_count`; a column aggregate aliases to its source
 /// column so the fill channel reads it.
@@ -723,6 +739,8 @@ pub fn default_lowerers() -> Vec<(MarkKind, Box<dyn MarkLower>)> {
         // Hexbin — Mosaic's flagship at-scale mark, pixel-space hex binning
         // fully in SQL (card 0008 hexbin follow-up).
         (MarkKind::Hexbin, Box::new(HexbinLowerer)),
+        // Hexgrid — decorative dataless mesh; emits a singleton row.
+        (MarkKind::Hexgrid, Box::new(HexgridLowerer)),
     ]
 }
 
@@ -904,7 +922,8 @@ mod tests {
         assert!(kinds.contains(&MarkKind::Cell));
         assert!(kinds.contains(&MarkKind::Contour));
         assert!(kinds.contains(&MarkKind::Hexbin));
-        assert_eq!(kinds.len(), 22);
+        assert!(kinds.contains(&MarkKind::Hexgrid));
+        assert_eq!(kinds.len(), 23);
     }
 
     #[test]
@@ -1359,6 +1378,22 @@ mod tests {
         let mut m = hexbin_mark();
         m.data = None;
         assert!(HexbinLowerer.lower(&m, &ctx).is_err());
+    }
+
+    #[test]
+    fn hex_ac04_hexgrid_lowers_to_singleton_row() {
+        let mark = Mark {
+            kind: MarkKind::Hexgrid,
+            status: brightfield_spec::vocab::ImplStatus::Implemented,
+            data: None, // DATALESS
+            options: IndexMap::new(),
+        };
+        let plan = HexgridLowerer.lower(&mark, &make_ctx()).expect("dataless lowers");
+        assert!(matches!(plan, QueryPlan::Singleton { .. }));
+        let mut bindings = Vec::new();
+        let sql = crate::render::render_query(&plan, &mut bindings);
+        // One-row query, no FROM — the mark still produces a batch.
+        assert_eq!(sql, "SELECT 1 AS __bf_hexgrid");
     }
 
     #[test]

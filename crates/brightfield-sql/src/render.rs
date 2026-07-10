@@ -182,6 +182,9 @@ pub fn render_query(plan: &QueryPlan, bindings: &mut Vec<Binding>) -> String {
         QueryPlan::Source { table } => {
             format!("SELECT * FROM \"{table}\"")
         }
+        QueryPlan::Singleton { columns } => {
+            format!("SELECT {}", columns.join(", "))
+        }
         QueryPlan::Filter { input, predicate } => {
             let inner = render_query(input, bindings);
             let pred_sql = render_predicate(predicate, bindings);

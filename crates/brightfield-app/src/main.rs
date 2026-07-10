@@ -738,8 +738,11 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
                 .and_then(|mk| mark_attr_f64(mk, "thresholds"))
                 .filter(|t| *t >= 1.0)
                 .map(|t| t as usize);
+            // hexgrid's binWidth sizes its mesh (matching a sibling hexbin).
+            let bin_width = marks.get(mi).and_then(|mk| mark_attr_f64(mk, "binWidth"));
             if let Some(m) = mark_inputs.get_mut(mi) {
-                m.renderer_override = configured_renderer(kind, scheme, bandwidth, thresholds);
+                m.renderer_override =
+                    configured_renderer(kind, scheme, bandwidth, thresholds, bin_width);
             }
         }
 
