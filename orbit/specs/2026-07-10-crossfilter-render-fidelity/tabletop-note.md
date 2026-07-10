@@ -76,6 +76,27 @@ card 0009 F1a/F1b lesson).
   (contract: `contributor_predicate` already exists; this round adds no
   engine API).
 
+**[Addendum 2026-07-10 — fix round: the first trigger FIRED.]** The
+"[imagined — recon found none]" recon above was wrong on two counts, both
+surfaced in adversarial review, both resolved by generalising pure pinning to
+a **launch-anchored, widen-only** fold (`scale::anchor_scales`) rather than by
+a per-mark exemption:
+- **Launch batches are NOT a superset of every filtered batch.** A slider that
+  WIDENS its query produces data outside the launch domain (F1); pure pinning
+  would clip the new point against the plot edge. Fix: continuous channels
+  union the fresh domain into launch (widen-only) — a subset still folds to
+  exactly launch (pixel-identical), a superset widens to admit the new data.
+  (cfr_f1_superset_widens_scales_and_admits_new_point.)
+- **A mark CAN synthesise a scale the launch batch never produced** — exactly
+  the case the trigger imagined absent. A cross-filtered raster whose batch is
+  `None` at launch has no Fill ramp; when a selection absorbs data, the fresh
+  inference produces one. Fix: a channel absent at launch is ADOPTED from fresh
+  (not pinned away). (cfr_f2_absorbed_raster_adopts_configured_ramp.)
+  The anchor also keeps categorical Fill launch-wins and never narrows a
+  domain, so "the frame of reference holds still" survives while widening
+  gestures and late-arriving marks are handled correctly. The SECOND trigger
+  (engine-crate change) did not fire — no engine API was added.
+
 ## Kill conditions
 
 - If launch-pinned scales are judged wrong-in-product by Hugh's eyeball

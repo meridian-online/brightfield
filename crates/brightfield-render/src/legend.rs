@@ -562,8 +562,9 @@ mod tests {
 
     /// cfr_ac06: a bound categorical legend with an active selection draws the
     /// selected entry at full strength and dims every other swatch and label —
-    /// changing the encoded COLOURS but not the geometry. With no selection the
-    /// output is byte-identical to the public `render_colour_legend_at`.
+    /// changing the encoded COLOURS but not the geometry. The `None` path is
+    /// checked against independently-computed packed colours (not against the
+    /// delegating `render_colour_legend_at`, which would be circular).
     #[test]
     fn cfr_ac06_selected_state_dims_others_without_moving_geometry() {
         let scale = colour_scale_3(); // "a", "bb", "ccc"
@@ -572,22 +573,65 @@ mod tests {
         render_colour_legend_at_selected(&mut none, 40.0, 40.0, &scale, None);
         let mut selected = Scene::new();
         render_colour_legend_at_selected(&mut selected, 40.0, 40.0, &scale, Some(1));
-        let mut delegated = Scene::new();
-        render_colour_legend_at(&mut delegated, 40.0, 40.0, &scale);
+        // --- Non-delegating oracle (F5) ---
+        // `render_colour_legend_at`'s `None` path merely forwards here, so
+        // comparing the two would be circular and prove nothing. Instead compute
+        // the packed colours vello encodes into `draw_data` independently and
+        // assert their presence / absence, so a regression in the dim arithmetic
+        // (or a stray dim leaking onto the `None` path) is actually caught.
+        let pack = |c: Color| c.premultiply().to_rgba8().to_u32();
+        let palette = match &scale {
+            Scale::Colour { palette, .. } => palette.clone(),
+            _ => unreachable!("colour_scale_3 is a Colour scale"),
+        };
+        let none_data = &none.encoding().draw_data;
 
-        // The `None` form is byte-identical to the public delegating entry point
-        // (geometry AND colours), so every existing caller is unaffected.
-        assert_eq!(none.encoding().draw_data, delegated.encoding().draw_data);
-        assert_eq!(none.encoding().path_data, delegated.encoding().path_data);
+        // No selection: every swatch and the shared label colour appear at FULL
+        // strength, and no 0.35-dimmed variant is anywhere in the buffer.
+        for c in &palette {
+            assert!(
+                none_data.contains(&pack(Color::new(*c))),
+                "None draws swatch {c:?} at full strength"
+            );
+            assert!(
+                !none_data.contains(&pack(Color::new(*c).multiply_alpha(UNSELECTED_ENTRY_ALPHA))),
+                "None never encodes a dimmed swatch"
+            );
+        }
+        assert!(
+            none_data.contains(&pack(LABEL_COLOUR)),
+            "None draws labels at full strength"
+        );
+        assert!(
+            !none_data.contains(&pack(LABEL_COLOUR.multiply_alpha(UNSELECTED_ENTRY_ALPHA))),
+            "None never encodes a dimmed label"
+        );
 
-        // Selecting dims the other entries — the encoded colours differ...
+        // Selecting entry 1 ("bb"): it stays full while entries 0 and 2 dim to
+        // 0.35, and the dimmed label colour now appears (it never did with None).
+        let sel_data = &selected.encoding().draw_data;
+        assert!(
+            sel_data.contains(&pack(Color::new(palette[1]))),
+            "the selected swatch keeps full strength"
+        );
+        for i in [0usize, 2] {
+            assert!(
+                sel_data
+                    .contains(&pack(Color::new(palette[i]).multiply_alpha(UNSELECTED_ENTRY_ALPHA))),
+                "non-selected swatch {i} dims to {UNSELECTED_ENTRY_ALPHA}"
+            );
+        }
+        assert!(
+            sel_data.contains(&pack(LABEL_COLOUR.multiply_alpha(UNSELECTED_ENTRY_ALPHA))),
+            "non-selected labels dim to {UNSELECTED_ENTRY_ALPHA}"
+        );
+
+        // Dimming changes colour only — the geometry is untouched: same shape
+        // count, same coordinates, so panel size and entry rects hold still.
         assert_ne!(
-            none.encoding().draw_data,
-            selected.encoding().draw_data,
+            *none_data, *sel_data,
             "an active selection changes the entry colours (dimmed swatches + labels)"
         );
-        // ...but the geometry is untouched: same shape count, same coordinates,
-        // so panel size and entry rects are unchanged under selection.
         assert_eq!(
             none.encoding().n_paths,
             selected.encoding().n_paths,

@@ -302,6 +302,105 @@ impl ScaleSet {
     }
 }
 
+/// Anchor a freshly-inferred scale set to a launch reference, widen-only (card
+/// 0006 launch-anchored scales). Each rebuild infers `fresh` from the current
+/// batches and folds it against the immutable `launch` set so the frame of
+/// reference holds still while only the data moves — but a gesture that
+/// REWRITES the query (a slider changing a `$param`, not a subset filter) can
+/// surface rows outside the launch domain, which a hard pin would clip into
+/// invisibility, so the anchor widens rather than pins.
+///
+/// Per channel:
+/// - present in BOTH, continuous (Linear / Time / Sequential): the launch
+///   domain UNIONed with the fresh domain (`min` of mins, `max` of maxes), on
+///   the launch range/stops. A subset batch (`fresh ⊆ launch`) yields exactly
+///   `launch`, so an ordinary filter gesture stays pixel-identical to a hard
+///   pin; a query-rewrite gesture widens to keep the new rows on-plot.
+/// - present in BOTH, categorical (Band / Colour) or a scale-kind mismatch:
+///   `launch` wins (category positions and colours never churn under a gesture;
+///   a param-introduced new category renders as the existing missing-category
+///   behaviour — v1 scope).
+/// - only in `launch`: `launch`. Only in `fresh`: `fresh` — the case of a mark
+///   whose batch was empty at launch (so it contributed no scales) and arrived
+///   later, e.g. a raster whose `colorScheme` Fill ramp would otherwise never
+///   appear.
+#[must_use]
+pub fn anchor_scales(launch: &ScaleSet, fresh: ScaleSet) -> ScaleSet {
+    let mut anchored = ScaleSet::new();
+    for &ch in Channel::all() {
+        let scale = match (launch.get(ch), fresh.get(ch)) {
+            (Some(l), Some(f)) => anchor_scale(l, f),
+            (Some(l), None) => l.clone(),
+            (None, Some(f)) => f.clone(),
+            (None, None) => continue,
+        };
+        anchored.insert(ch, scale);
+    }
+    anchored
+}
+
+/// Fold one channel's `fresh` scale into its `launch` scale per the widen-only
+/// rule (see [`anchor_scales`]). Continuous scales widen the launch domain to
+/// include fresh; categorical scales and any kind mismatch keep launch.
+fn anchor_scale(launch: &Scale, fresh: &Scale) -> Scale {
+    match (launch, fresh) {
+        (
+            Scale::Linear {
+                domain_min: lmin,
+                domain_max: lmax,
+                range_start,
+                range_end,
+            },
+            Scale::Linear {
+                domain_min: fmin,
+                domain_max: fmax,
+                ..
+            },
+        ) => Scale::Linear {
+            domain_min: lmin.min(*fmin),
+            domain_max: lmax.max(*fmax),
+            range_start: *range_start,
+            range_end: *range_end,
+        },
+        (
+            Scale::Time {
+                domain_min_us: lmin,
+                domain_max_us: lmax,
+                range_start,
+                range_end,
+            },
+            Scale::Time {
+                domain_min_us: fmin,
+                domain_max_us: fmax,
+                ..
+            },
+        ) => Scale::Time {
+            domain_min_us: (*lmin).min(*fmin),
+            domain_max_us: (*lmax).max(*fmax),
+            range_start: *range_start,
+            range_end: *range_end,
+        },
+        (
+            Scale::Sequential {
+                domain_min: lmin,
+                domain_max: lmax,
+                stops,
+            },
+            Scale::Sequential {
+                domain_min: fmin,
+                domain_max: fmax,
+                ..
+            },
+        ) => Scale::Sequential {
+            domain_min: lmin.min(*fmin),
+            domain_max: lmax.max(*fmax),
+            stops: stops.clone(),
+        },
+        // Categorical (Band / Colour) or a scale-kind mismatch: launch wins.
+        (l, _) => l.clone(),
+    }
+}
+
 /// A built-in continuous colour scheme. Wire names are lowercase and
 /// Mosaic-aligned, so a `colorScheme:` value stays portable across renderers.
 ///
@@ -1490,5 +1589,106 @@ mod tests {
         assert_eq!(a.range_start(), 0.0);
         assert_eq!(a.range_end(), 0.0);
         assert!(a.inverse_f64(5.0).is_none());
+    }
+
+    // --- cfr_ac01/F1: anchor_scales widen-only matrix ---
+
+    fn linear(min: f64, max: f64) -> Scale {
+        Scale::Linear {
+            domain_min: min,
+            domain_max: max,
+            range_start: 0.0,
+            range_end: 400.0,
+        }
+    }
+
+    /// cfr_ac01 (launch-anchored, widen-only): the pure anchor fold. A SUBSET
+    /// fresh domain yields exactly launch (an ordinary filter gesture is
+    /// pixel-identical to a hard pin); a SUPERSET fresh domain widens the launch
+    /// domain to include it (a query-rewrite gesture keeps new rows on-plot);
+    /// a categorical channel keeps launch (no colour/position churn); a channel
+    /// present only in fresh (a late-arriving mark) is adopted; only-in-launch
+    /// is kept.
+    #[test]
+    fn cfr_ac01_anchor_scales_is_widen_only() {
+        // Subset fresh → launch exactly (byte-for-byte the launch domain).
+        let mut launch = ScaleSet::new();
+        launch.insert(Channel::X, linear(0.0, 100.0));
+        let mut subset = ScaleSet::new();
+        subset.insert(Channel::X, linear(25.0, 75.0));
+        let a = anchor_scales(&launch, subset);
+        assert_eq!(a.get(Channel::X).unwrap().domain_min(), Some(0.0));
+        assert_eq!(a.get(Channel::X).unwrap().domain_max(), Some(100.0));
+
+        // Superset fresh (query rewrite surfaced rows below/above launch) →
+        // widened union, so the new rows aren't clipped.
+        let mut superset = ScaleSet::new();
+        superset.insert(Channel::X, linear(-10.0, 130.0));
+        let a = anchor_scales(&launch, superset);
+        assert_eq!(a.get(Channel::X).unwrap().domain_min(), Some(-10.0));
+        assert_eq!(a.get(Channel::X).unwrap().domain_max(), Some(130.0));
+
+        // One-sided widening keeps the untouched bound at launch.
+        let mut below = ScaleSet::new();
+        below.insert(Channel::X, linear(-5.0, 40.0));
+        let a = anchor_scales(&launch, below);
+        assert_eq!(a.get(Channel::X).unwrap().domain_min(), Some(-5.0));
+        assert_eq!(a.get(Channel::X).unwrap().domain_max(), Some(100.0), "upper bound stays launch");
+
+        // Sequential widens domain but keeps the LAUNCH ramp stops (colours
+        // never re-anchor — the F3 regression class).
+        let mut lseq = ScaleSet::new();
+        lseq.insert(
+            Channel::Fill,
+            Scale::Sequential { domain_min: 0.0, domain_max: 100.0, stops: SequentialScheme::Blues.stops() },
+        );
+        let mut fseq = ScaleSet::new();
+        fseq.insert(
+            Channel::Fill,
+            Scale::Sequential { domain_min: 0.0, domain_max: 40.0, stops: SequentialScheme::Viridis.stops() },
+        );
+        match anchor_scales(&lseq, fseq).get(Channel::Fill) {
+            Some(Scale::Sequential { domain_min, domain_max, stops }) => {
+                assert_eq!((*domain_min, *domain_max), (0.0, 100.0), "subset density → launch domain");
+                assert_eq!(*stops, SequentialScheme::Blues.stops(), "launch stops, not fresh's");
+            }
+            other => panic!("expected Sequential, got {other:?}"),
+        }
+
+        // Categorical: launch wins (category order/colours pinned) even when
+        // fresh drops a category.
+        let mut lcat = ScaleSet::new();
+        lcat.insert(
+            Channel::Fill,
+            Scale::Colour {
+                categories: vec!["a".into(), "b".into(), "c".into()],
+                palette: CATEGORICAL_PALETTE.to_vec(),
+            },
+        );
+        let mut fcat = ScaleSet::new();
+        fcat.insert(
+            Channel::Fill,
+            Scale::Colour { categories: vec!["c".into()], palette: CATEGORICAL_PALETTE.to_vec() },
+        );
+        match anchor_scales(&lcat, fcat).get(Channel::Fill) {
+            Some(Scale::Colour { categories, .. }) => {
+                assert_eq!(categories.len(), 3, "launch categories pinned");
+                assert_eq!(categories[2], "c");
+            }
+            other => panic!("expected Colour, got {other:?}"),
+        }
+
+        // Channel only in fresh (a mark whose batch was empty at launch) is
+        // adopted; channel only in launch is kept.
+        let mut launch_y = ScaleSet::new();
+        launch_y.insert(Channel::Y, linear(0.0, 10.0));
+        let mut fresh_fill = ScaleSet::new();
+        fresh_fill.insert(
+            Channel::Fill,
+            Scale::Sequential { domain_min: 0.0, domain_max: 9.0, stops: SequentialScheme::Blues.stops() },
+        );
+        let a = anchor_scales(&launch_y, fresh_fill);
+        assert!(a.get(Channel::Y).is_some(), "only-in-launch kept");
+        assert!(a.get(Channel::Fill).is_some(), "only-in-fresh adopted (F2: late raster ramp)");
     }
 }

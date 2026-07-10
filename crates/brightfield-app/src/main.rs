@@ -184,10 +184,11 @@ fn colour_scale_of(scales: &ScaleSet) -> Option<Scale> {
 
 /// Resolve a raster plot's colour scheme from its `colorScheme` attribute,
 /// defaulting to viridis and warning on an unrecognised name. `colorScheme` is a
-/// plot-level attribute (Mosaic's colour scale is plot-scoped); the resolved
-/// scheme drives the first render and rides [`LivePlotMeta::scheme`] to the live
-/// cross-filter path, so a rebuild constructs the same scheme-configured raster
-/// renderer (card 0016, ac-06).
+/// plot-level attribute (Mosaic's colour scale is plot-scoped). The resolved
+/// scheme is baked into each mark's `MarkInput::renderer_override`
+/// (`configured_renderer`) at assembly, which is what carries scheme fidelity to
+/// the live rebuild; it is ALSO recorded in [`LivePlotMeta::scheme`] for the
+/// hot-reload chrome gate only (card 0016).
 fn raster_scheme(color_scheme: Option<&brightfield_spec::ast::SpecValue>) -> SequentialScheme {
     use brightfield_spec::ast::SpecValue;
     match color_scheme {
@@ -427,9 +428,12 @@ struct LivePlotMeta {
     /// standalone `legend:` node relocated it) — carried to the coordinator so a
     /// live re-render keeps the same suppression.
     draw_inline_legend: bool,
-    /// The plot's resolved `colorScheme` (default viridis) — carried to the
-    /// coordinator so a live rebuild constructs the same scheme-configured
-    /// raster renderer the first render used (card 0016).
+    /// The plot's resolved `colorScheme` (default viridis), for the hot-reload
+    /// chrome gate ONLY (feeds `ChromeSnapshot::plot_render_meta`): a rebuild
+    /// that changes a plot's scheme must fall back to "restart to apply", since
+    /// the watcher never rebuilds the coordinator and a gesture would otherwise
+    /// re-run the old scheme. Live-rebuild scheme fidelity does NOT ride this
+    /// field — it rides each mark's `MarkInput::renderer_override`.
     scheme: SequentialScheme,
 }
 
@@ -1226,7 +1230,11 @@ fn main() {
                     mark_indices: meta.mark_indices,
                     layout: meta.layout,
                     bindings: meta.bindings,
-                    scales: meta.scales,
+                    // Displayed and launch scales start equal (the launch
+                    // inference); a rebuild folds a fresh inference against
+                    // launch_scales and updates `scales` (widen-only).
+                    scales: meta.scales.clone(),
+                    launch_scales: meta.scales,
                     draw_inline_legend: meta.draw_inline_legend,
                     state: w.state.clone(),
                 })
