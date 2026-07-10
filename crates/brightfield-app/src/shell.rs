@@ -3,10 +3,10 @@
 //!
 //! Views here are deliberately thin (semantic-layer rule): every decision —
 //! panel visibility, save timing, load fallback, atomic writes, sidebar
-//! contents, notification routing, the log model, the bottom-dock backfill
-//! and presentation action — lives in the framework-free modules
+//! profile formatting, notification routing, the log model, the bottom-dock
+//! backfill and presentation action — lives in the framework-free modules
 //! (`shell_model`, `dock_state_file`, `spec_save`, `reload_feedback`,
-//! `sidebar_model`, `log_model`); this file only executes them against
+//! `profile_model`, `log_model`); this file only executes them against
 //! gpui-component's `DockArea`/`Panel`/`Root` machinery.
 //!
 //! - [`CanvasPanel`] — a Panel shim AROUND the untouched [`ChartView`]
@@ -15,7 +15,8 @@
 //! - [`EditorPanel`] — `InputState::code_editor("yaml")`; cmd-s dispatches
 //!   [`SaveSpec`], whose handler is `spec_save::save_spec_atomic` — the
 //!   existing mtime watcher does everything else (aws_ac04).
-//! - [`SidebarPanel`] — renders the derived [`SourceListing`]s (aws_ac06).
+//! - [`SidebarPanel`] — renders the engine's per-source column profiles,
+//!   formatted by [`profile_model`] (card 0017 sidebar profiling).
 //! - [`LogPanel`] — the bottom-dock reload/save feedback history over the
 //!   gpui-free [`FeedbackLog`] (wsc_ac02).
 //! - [`WorkspaceRoot`] — hosts the `DockArea` (center canvas, right editor,
@@ -31,7 +32,7 @@ use std::time::{Duration, Instant};
 use gpui::{
     actions, div, px, rgb, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement, IntoElement, KeyBinding, MouseButton, ParentElement, Pixels,
-    Render, SharedString, Styled, Task, WeakEntity, Window,
+    Render, SharedString, StatefulInteractiveElement, Styled, Task, WeakEntity, Window,
 };
 use gpui_component::dock::{
     register_panel, Dock, DockArea, DockAreaState, DockEvent, DockItem, DockPlacement, Panel,
@@ -55,7 +56,7 @@ use crate::shell_model::{
     CANVAS_PANEL_NAME, EDITOR_DOCK_WIDTH, EDITOR_PANEL_NAME, LOG_PANEL_NAME, SIDEBAR_DOCK_WIDTH,
     SIDEBAR_PANEL_NAME,
 };
-use crate::sidebar_model::SourceListing;
+use crate::profile_model::{self, ProfileOutcome, SourceProfile};
 use crate::spec_save;
 
 actions!(
@@ -470,34 +471,45 @@ impl Render for EditorPanel {
 // Sidebar panel (aws_ac06)
 // ---------------------------------------------------------------------------
 
-/// The left-dock data sidebar skeleton: sources + column names, derived
-/// headlessly by `sidebar_model` before the window opened. Display-only.
+/// The left-dock Data sidebar: real DuckDB-computed per-source column profiles
+/// (card 0017). Profiles are computed OFF the UI thread — on the launch
+/// session before the window opens, and refreshed from the watcher's throwaway
+/// session on hot reload — and handed here as pure data; this panel only lays
+/// out the strings [`profile_model`] formatted. Display-only.
 pub struct SidebarPanel {
-    /// The derived listings (one per `data:` source, declaration order).
-    listings: Vec<SourceListing>,
+    /// One profile per `data:` source, declaration order.
+    profiles: Vec<SourceProfile>,
     /// Shared presentation state (visibility mapping input).
     presentation: Entity<PresentationState>,
     focus_handle: FocusHandle,
 }
 
 impl SidebarPanel {
-    /// Host the derived `listings`.
+    /// Host the computed `profiles`.
     pub fn new(
-        listings: Vec<SourceListing>,
+        profiles: Vec<SourceProfile>,
         presentation: Entity<PresentationState>,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
-            listings,
+            profiles,
             presentation,
             focus_handle: cx.focus_handle(),
         }
     }
 
-    /// The hosted listings (shim assertion surface, aws_ac06).
+    /// Replace the hosted profiles and repaint — the hot-reload refresh tap
+    /// (the watcher hands fresh profiles computed on its throwaway session,
+    /// closing the frozen-at-launch gap).
+    pub fn set_profiles(&mut self, profiles: Vec<SourceProfile>, cx: &mut Context<Self>) {
+        self.profiles = profiles;
+        cx.notify();
+    }
+
+    /// The hosted profiles (shim assertion surface, sbp_ac03).
     #[cfg(test)]
-    pub fn listings(&self) -> &[SourceListing] {
-        &self.listings
+    pub fn profiles(&self) -> &[SourceProfile] {
+        &self.profiles
     }
 }
 
@@ -547,28 +559,82 @@ impl Render for SidebarPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let foreground = cx.theme().foreground;
+        // Scrolls so a tall (many-column) or wide (long-name) source stays
+        // usable; the flat name + type + stat-line layout is v1 (collapse /
+        // search / histograms are deferred). A zero-source spec renders an
+        // empty container — the existing empty state.
         div()
+            .id("sidebar-scroll")
             .size_full()
+            .overflow_y_scroll()
             .p_3()
             .text_size(px(12.0))
-            .children(self.listings.iter().map(|source| {
-                let mut block = div()
-                    .mb_3()
-                    .child(div().text_color(foreground).child(SharedString::from(source.name.clone())));
-                if source.columns.is_empty() {
-                    block = block.child(
+            .children(self.profiles.iter().map(|source| {
+                // Header: source name, plus the row count for profiled sources.
+                let mut header = div().flex().gap_2().child(
+                    div()
+                        .text_color(foreground)
+                        .child(SharedString::from(source.name.clone())),
+                );
+                if let ProfileOutcome::Profiled { row_count, .. } = &source.outcome {
+                    header = header.child(
                         div()
-                            .pl_2()
                             .text_color(muted)
-                            .child(SharedString::from("(no columns known)")),
+                            .child(SharedString::from(profile_model::row_count_label(*row_count))),
                     );
-                } else {
-                    block = block.children(source.columns.iter().map(|column| {
-                        div()
-                            .pl_2()
-                            .text_color(muted)
-                            .child(SharedString::from(column.clone()))
-                    }));
+                }
+                let mut block = div().mb_3().child(header);
+                match &source.outcome {
+                    ProfileOutcome::Profiled { columns, .. } => {
+                        // Per column: name (foreground), muted type, muted
+                        // stat line — capped with a "(+N more)" tail.
+                        let (shown, more) = profile_model::column_cap(columns.len());
+                        block = block.children(columns.iter().take(shown).map(|col| {
+                            div()
+                                .pl_2()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .text_color(foreground)
+                                                .child(SharedString::from(col.name.clone())),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_color(muted)
+                                                .child(SharedString::from(col.type_name.clone())),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .text_color(muted)
+                                        .child(SharedString::from(profile_model::stat_line(col))),
+                                )
+                        }));
+                        if let Some(tail) = more {
+                            block = block.child(
+                                div().pl_2().text_color(muted).child(SharedString::from(tail)),
+                            );
+                        }
+                    }
+                    ProfileOutcome::Unsupported => {
+                        block = block.child(
+                            div()
+                                .pl_2()
+                                .text_color(muted)
+                                .child(SharedString::from(profile_model::UNSUPPORTED_ROW)),
+                        );
+                    }
+                    ProfileOutcome::Failed(reason) => {
+                        block = block.child(
+                            div()
+                                .pl_2()
+                                .text_color(muted)
+                                .child(SharedString::from(profile_model::unavailable_row(reason))),
+                        );
+                    }
                 }
                 block
             }))
@@ -1497,34 +1563,105 @@ mod tests {
         });
     }
 
-    /// aws_ac06 (shim): the sidebar panel hosts the derived listings
-    /// verbatim and hides under presentation per the mapping.
+    /// sbp_ac03 (shim): the sidebar panel hosts the computed profiles
+    /// verbatim — profiled/failed/unsupported alike — the set-profiles refresh
+    /// tap replaces them, and it hides under presentation per the mapping.
     #[gpui::test]
-    fn aws_ac06_sidebar_panel_hosts_listings_and_hides_in_presentation(cx: &mut TestAppContext) {
-        let listings = vec![SourceListing {
-            name: "flights".to_string(),
-            columns: vec!["delay".to_string(), "distance".to_string()],
-        }];
+    fn sbp_ac03_sidebar_panel_hosts_profiles_and_hides_in_presentation(cx: &mut TestAppContext) {
+        use profile_model::ColumnProfile;
+
+        let profiles = vec![
+            SourceProfile {
+                name: "flights".to_string(),
+                outcome: ProfileOutcome::Profiled {
+                    row_count: 231_083,
+                    columns: vec![
+                        ColumnProfile {
+                            name: "delay".to_string(),
+                            type_name: "INTEGER".to_string(),
+                            non_null: 231_080,
+                            nulls: 3,
+                            distinct: 1_400,
+                            min: Some("-99".to_string()),
+                            max: Some("1439".to_string()),
+                        },
+                        ColumnProfile {
+                            name: "origin".to_string(),
+                            type_name: "VARCHAR".to_string(),
+                            non_null: 231_083,
+                            nulls: 0,
+                            distinct: 322,
+                            min: None,
+                            max: None,
+                        },
+                    ],
+                },
+            },
+            SourceProfile {
+                name: "warehouse".to_string(),
+                outcome: ProfileOutcome::Unsupported,
+            },
+            SourceProfile {
+                name: "broken".to_string(),
+                outcome: ProfileOutcome::Failed("IO Error: No files found".to_string()),
+            },
+        ];
         let (presentation, panel) = cx.update(|cx| {
             let presentation = cx.new(|_| PresentationState {
                 mode: PresentationMode::default(),
             });
             let panel =
-                cx.new(|cx| SidebarPanel::new(listings.clone(), presentation.clone(), cx));
+                cx.new(|cx| SidebarPanel::new(profiles.clone(), presentation.clone(), cx));
             (presentation, panel)
         });
 
         cx.update(|cx| {
             let p = panel.read(cx);
             assert_eq!(p.panel_name(), SIDEBAR_PANEL_NAME);
-            assert_eq!(p.listings(), &listings[..], "hosts the derivation verbatim");
+            assert_eq!(p.profiles(), &profiles[..], "hosts the profiles verbatim");
+            // The failed and unsupported variants ride through as rows.
+            assert!(matches!(p.profiles()[1].outcome, ProfileOutcome::Unsupported));
+            assert!(matches!(p.profiles()[2].outcome, ProfileOutcome::Failed(_)));
             assert!(p.visible(cx));
         });
+
+        // The refresh tap swaps in a fresh set (the hot-reload path).
+        let refreshed = vec![SourceProfile {
+            name: "only".to_string(),
+            outcome: ProfileOutcome::Profiled {
+                row_count: 1,
+                columns: vec![],
+            },
+        }];
+        cx.update(|cx| {
+            panel.update(cx, |p, cx| p.set_profiles(refreshed.clone(), cx));
+        });
+        cx.update(|cx| {
+            assert_eq!(panel.read(cx).profiles(), &refreshed[..], "refresh replaced the set");
+        });
+
         cx.update(|cx| {
             presentation.update(cx, |state, _| state.mode = PresentationMode::Presentation);
         });
         cx.update(|cx| {
             assert!(!panel.read(cx).visible(cx), "authoring panels hide");
+        });
+    }
+
+    /// sbp_ac03 (empty state): a zero-source spec renders without panicking —
+    /// the existing empty-state placeholder survives.
+    #[gpui::test]
+    fn sbp_ac03_sidebar_panel_handles_zero_sources(cx: &mut TestAppContext) {
+        let (_presentation, panel) = cx.update(|cx| {
+            let presentation = cx.new(|_| PresentationState {
+                mode: PresentationMode::default(),
+            });
+            let panel = cx.new(|cx| SidebarPanel::new(Vec::new(), presentation.clone(), cx));
+            (presentation, panel)
+        });
+        cx.update(|cx| {
+            assert!(panel.read(cx).profiles().is_empty(), "no sources hosted");
+            assert!(panel.read(cx).visible(cx));
         });
     }
 
