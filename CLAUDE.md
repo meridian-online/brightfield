@@ -24,10 +24,10 @@ Artefacts live in `orbit/cards/`, `orbit/specs/`, and `orbit/decisions/`.
 
 ## Current Sprint
 
-goal: "Consolidate the workspace — close the live renderer-config seam (per-mark scheme/bandwidth/thresholds through live rebuilds), prune the dead WorkspaceView, and land the hexbin follow-up spec; keyboard-grammar discovery when Hugh is ready"
+goal: "Consolidate the workspace — prune the dead WorkspaceView, land the hexbin follow-up spec, add the missing bottom dock; axis-inset round (edge-point trim — re-baselines every example PNG, needs a before/after gallery); keyboard-grammar discovery when Hugh is ready"
 
 cards:
-  - 0017: "Authoring workspace" (renderer-config seam + WorkspaceView prune follow-ups)
+  - 0017: "Authoring workspace" (WorkspaceView prune + bottom dock follow-ups)
   - 0008: "Grammar of graphics mark library" (hexbin + hexgrid + self-aggregating cell)
 
 ## Previously Shipped
@@ -38,6 +38,7 @@ cards:
 - "Frame the canvas" — card 0016. WorkspaceView shell (title strip, presentation toggle via first GPUI action), window-hosted legends (swatch + gradient), live-path colorScheme. Shipped at 29fb46f (#38, 2026-07-05).
 - Mark breadth instalments (card 0008, ongoing): density/regression (#21/#23), raster (#32), rect family (#28), sequential colour scale → true heatmaps (#36).
 - "Accelerate to the authoring workspace" — three concurrent tracks, shipped 2026-07-06 at 1d1b9f4: legend click-to-filter (#41, card 0009), raster determinism (#42), the density mark family heatmap/cell/contour (#43, card 0008), and the DockArea authoring workspace with YAML editor + sidebar on gpui-component (#45, card 0017; supersedes #44).
+- "Cross-filter render fidelity" — cards 0006/0008/0009/0017. Launch-anchored widen-only scales (gestures read as filtering: axes/colours hold still, query-widening data stays visible), legend selected-state (dim non-active swatches from the engine slot), live renderer-config seam (per-mark scheme/bandwidth/thresholds survive rebuilds via MarkInput.renderer_override). Shipped at 5167a31 (#50, 2026-07-10); in-app confirmed by Hugh (axes static, dimming visible).
 
 ## Upcoming Sprint Candidates
 
@@ -45,4 +46,4 @@ cards:
 - "Sidebar profiling" — card 0017's next increment: DuckDB column profiles (count/min/max/distinct/nulls) in the sidebar.
 - "Continuous slider drag" — card 0015 (PR #26, planning-only). Needs tabletop: throttle vs debounce, query cancellation, async boundary.
 - Remaining card 0008 marks: hexbin/hexgrid (follow-up spec staged; owns the placeholder swap dance), geo.
-- Chores: RegressionLowerer stroke-group ORDER BY (jitter class from #42); upstream the gpui-component DockEvent two-liner; re-evaluate crates.io gpui when zed ships the post-split release.
+- Chores: RegressionLowerer stroke-group ORDER BY (jitter class from #42); upstream the gpui-component DockEvent two-liner; re-evaluate crates.io gpui when zed ships the post-split release; coordinator refresh on hot reload (watcher swaps scenes only — recorded in the 2026-07-10 crossfilter-render-fidelity tabletop note); legend multi-select toggle (Mosaic's shift-click union semantics; ours is single-select v1).
