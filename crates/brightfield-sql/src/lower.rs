@@ -624,6 +624,59 @@ fn build_hexbin_plan(
     }
 }
 
+/// Lowerer for the cell mark, handling BOTH the pre-aggregated path and the
+/// self-aggregating form. When `fill` is a self-aggregating channel
+/// (`{count:}` / `{avg: col}`) on Band × Band categorical axes, it GROUP BYs
+/// the two category columns and aggregates (aliased so the existing
+/// `CellRenderer` numeric-fill path renders it unchanged). Otherwise it
+/// delegates to [`SimpleLowerer`] — the shipped pre-aggregated cell path stays
+/// byte-for-byte identical. cellX/cellY remain Unimplemented.
+pub struct CellLowerer;
+
+impl MarkLower for CellLowerer {
+    fn lower(&self, mark: &Mark, ctx: &LowerCtx<'_>) -> Result<QueryPlan, EmitError> {
+        let Some(agg) = opt_aggregate(&mark.options, "fill") else {
+            // Pre-aggregated cell — unchanged (cell.png byte-identical).
+            return SimpleLowerer.lower(mark, ctx);
+        };
+        let source = match &mark.data {
+            Some(MarkData::From { source, .. }) => source.clone(),
+            _ => {
+                return Err(EmitError::UnsupportedMark {
+                    kind: "cell (self-aggregating requires data: { from: ... })".to_string(),
+                })
+            }
+        };
+        let x_col = opt_string(&mark.options, "x").ok_or_else(|| EmitError::UnsupportedMark {
+            kind: "cell (missing x)".to_string(),
+        })?;
+        let y_col = opt_string(&mark.options, "y").ok_or_else(|| EmitError::UnsupportedMark {
+            kind: "cell (missing y)".to_string(),
+        })?;
+
+        let filtered = QueryPlan::Filter {
+            input: Box::new(QueryPlan::Source { table: source }),
+            predicate: Predicate::Expr(format!(
+                "\"{x_col}\" IS NOT NULL AND \"{y_col}\" IS NOT NULL"
+            )),
+        };
+        // GROUP BY the two category columns; aggregate aliased (count →
+        // __bf_count, column aggregate → its source column) — the same
+        // convention as hexbin, so the renderer's numeric-fill path reads it.
+        Ok(QueryPlan::Order {
+            input: Box::new(QueryPlan::Aggregation {
+                input: Box::new(filtered),
+                group_by: vec![format!("\"{x_col}\""), format!("\"{y_col}\"")],
+                aggregates: vec![hex_aggregate_expr(&agg)],
+            }),
+            keys: vec![
+                (format!("\"{x_col}\""), SortDir::Asc),
+                (format!("\"{y_col}\""), SortDir::Asc),
+            ],
+        })
+    }
+}
+
 /// Lowerer for the hexgrid mark — a decorative, DATALESS hex mesh drawn from
 /// the plot extent (not from data). It emits a trivial single-row query
 /// (`SELECT 1`) so the mark still produces a batch and is not skipped
@@ -684,11 +737,11 @@ pub fn default_lowerers() -> Vec<(MarkKind, Box<dyn MarkLower>)> {
         (MarkKind::Rect, Box::new(SimpleLowerer)),
         (MarkKind::RectX, Box::new(SimpleLowerer)),
         (MarkKind::RectY, Box::new(SimpleLowerer)),
-        // Cell v1 is pass-through over PRE-AGGREGATED rows — one row per
-        // (x category, y category) pair with a numeric fill column. The
-        // self-aggregating form (fill: count/avg → CellLowerer) is deferred
-        // with hexbin (card 0008, density marks).
-        (MarkKind::Cell, Box::new(SimpleLowerer)),
+        // Cell handles BOTH the pre-aggregated path (pass-through via
+        // SimpleLowerer — one row per (x category, y category) pair with a
+        // numeric fill column) AND the self-aggregating form (fill: {count:}/
+        // {avg: col} → GROUP BY the two categories). See CellLowerer.
+        (MarkKind::Cell, Box::new(CellLowerer)),
         (MarkKind::RegressionY, Box::new(RegressionLowerer)),
         (MarkKind::RegressionX, Box::new(RegressionLowerer)),
         (
@@ -1378,6 +1431,66 @@ mod tests {
         let mut m = hexbin_mark();
         m.data = None;
         assert!(HexbinLowerer.lower(&m, &ctx).is_err());
+    }
+
+    fn cell_mark(fill: Option<ValueOrParamRef<SpecValue>>) -> Mark {
+        let mut options: IndexMap<String, ValueOrParamRef<SpecValue>> = IndexMap::new();
+        options.insert("x".into(), ValueOrParamRef::Value(SpecValue::String("day".into())));
+        options.insert("y".into(), ValueOrParamRef::Value(SpecValue::String("hour".into())));
+        if let Some(f) = fill {
+            options.insert("fill".into(), f);
+        }
+        Mark {
+            kind: MarkKind::Cell,
+            status: brightfield_spec::vocab::ImplStatus::Implemented,
+            data: Some(MarkData::From {
+                source: "events".into(),
+                filter_by: None,
+                extras: IndexMap::new(),
+            }),
+            options,
+        }
+    }
+
+    #[test]
+    fn hex_ac05_cell_self_aggregating_count_groups_by_categories() {
+        let mark = cell_mark(Some(ValueOrParamRef::Value(SpecValue::Aggregate {
+            func: AggregateFunc::Count,
+            column: None,
+        })));
+        let plan = CellLowerer.lower(&mark, &make_ctx()).expect("lowers");
+        let QueryPlan::Order { input, keys } = plan else {
+            panic!("expected Order-wrapped Aggregation");
+        };
+        assert_eq!(keys.len(), 2, "deterministic order over both categories");
+        let QueryPlan::Aggregation { group_by, aggregates, .. } = *input else {
+            panic!("expected Aggregation");
+        };
+        assert_eq!(group_by, vec!["\"day\"".to_string(), "\"hour\"".to_string()]);
+        assert!(aggregates[0].contains("COUNT(*)") && aggregates[0].contains("__bf_count"));
+    }
+
+    #[test]
+    fn hex_ac05_cell_self_aggregating_avg_aliases_column() {
+        let mark = cell_mark(Some(ValueOrParamRef::Value(SpecValue::Aggregate {
+            func: AggregateFunc::Avg,
+            column: Some("value".into()),
+        })));
+        let plan = CellLowerer.lower(&mark, &make_ctx()).expect("lowers");
+        let mut bindings = Vec::new();
+        let sql = crate::render::render_query(&plan, &mut bindings);
+        assert!(sql.contains("avg(\"value\")") && sql.contains("AS \"value\""), "{sql}");
+        assert!(sql.contains("GROUP BY 1, 2"), "{sql}");
+    }
+
+    #[test]
+    fn hex_ac05_cell_pre_aggregated_path_unchanged() {
+        // A cell with NO aggregate fill delegates to SimpleLowerer — the shipped
+        // pre-aggregated path, byte-identical (cell.png gate).
+        let mark = cell_mark(Some(ValueOrParamRef::Value(SpecValue::String("v".into()))));
+        let plan = CellLowerer.lower(&mark, &make_ctx()).expect("lowers");
+        // SimpleLowerer produces a bare Source (no GROUP BY).
+        assert_eq!(plan, QueryPlan::Source { table: "events".to_string() });
     }
 
     #[test]

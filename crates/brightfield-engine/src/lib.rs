@@ -1565,6 +1565,36 @@ height: 150
         assert!(batches[0].schema().index_of("__bf_count").is_err());
     }
 
+    /// hex_ac05: a self-aggregating `cell` with `fill: {count:}` GROUP BYs the
+    /// two categorical axes and counts per (x, y) pair, executed against DuckDB.
+    #[test]
+    fn hex_ac05_self_aggregating_count_cell_executes() {
+        let yaml = r#"
+data:
+  events:
+    - { xg: a, yg: p }
+    - { xg: a, yg: p }
+    - { xg: a, yg: q }
+    - { xg: b, yg: p }
+plot:
+  - mark: cell
+    data: { from: events }
+    x: xg
+    y: yg
+    fill: { count: }
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+        let batches = session.execute_mark(0).expect("self-aggregating cell executes");
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows, 3, "three distinct (x, y) cells");
+        let mut counts = column_as_f64_vec(&batches, "__bf_count");
+        counts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_eq!(counts, vec![1.0, 1.0, 2.0], "(a,p)=2, others 1");
+        assert!((counts.iter().sum::<f64>() - 4.0).abs() < 1e-9);
+    }
+
     /// pefr ac-05 (THE PROBE): a scalar param bound to a positional channel
     /// changes the mark's batch output when the param changes. Before card 0014
     /// this returned byte-identical output (in fact no `y`/`k` column at all).
