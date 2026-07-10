@@ -8,12 +8,14 @@
 //! Neither upstream crate depends on this one.
 
 pub mod error;
+pub mod profile;
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 // Re-export duckdb's Arrow types so consumers don't need a separate arrow dep.
 pub use duckdb::arrow::record_batch::RecordBatch;
+pub use profile::{ColumnProfile, ProfileOutcome, SourceProfile};
 pub use brightfield_sql::ir::Predicate as SqlPredicate;
 use duckdb::Connection;
 
@@ -37,13 +39,20 @@ pub fn concat_batches(batches: Vec<RecordBatch>) -> Option<RecordBatch> {
     }
 }
 
+/// Escape a DuckDB identifier for use inside a double-quoted name: doubling
+/// any embedded double-quote. Source/column names reach the profiling queries
+/// verbatim from the spec, so quote them defensively.
+fn escape_ident(name: &str) -> String {
+    name.replace('"', "\"\"")
+}
+
 use brightfield_spec::analysis::{ComponentPath, SpecAnalysis};
 use brightfield_spec::ast::{Component, Spec, SpecValue};
 use brightfield_spec::parse::ParseWarning;
 use brightfield_spec::vocab::MarkKind;
 
 use brightfield_sql::binding::{Binding, EmittedQuery, ParamValues};
-use brightfield_sql::emit::{emit_query, emit_query_with_passes, emit_sources};
+use brightfield_sql::emit::{emit_query, emit_query_with_passes, emit_sources, SourceKindTag};
 use brightfield_sql::ir::Predicate;
 use brightfield_sql::navigation_filter_pass::NavigationFilterPass;
 use brightfield_sql::passes::Pass;
@@ -825,6 +834,177 @@ impl Session {
         Ok(arrow.collect())
     }
 
+    /// Profile every `data:` source for the Data sidebar — the real
+    /// DuckDB-computed upgrade over the launch-frozen column-name
+    /// approximation (card 0017).
+    ///
+    /// Returns one [`SourceProfile`] per source in spec declaration order.
+    /// For each queryable view: the columns from DESCRIBE with DuckDB type
+    /// names (internal `__bf_*` columns filtered), plus per-column stats from
+    /// ONE aggregate pass over the view — non-null count, null count,
+    /// `approx_count_distinct`, and min/max for numeric/temporal types only —
+    /// and the source row count once. Attached-database sources
+    /// (`.duckdb`/`.db` ATTACH) return [`ProfileOutcome::Unsupported`] without
+    /// querying; a source whose DESCRIBE or aggregate fails returns
+    /// [`ProfileOutcome::Failed`] carrying the reason, isolated from its
+    /// siblings (the sidebar never blanks).
+    ///
+    /// Read-only and non-`&mut`: it neither disturbs the mark caches nor the
+    /// param/selection state, so it is safe to run on the launch session
+    /// before the window opens and on the watcher's throwaway session. It is
+    /// NEVER run on the coordinator's live session (UI-thread-pinned).
+    #[must_use]
+    pub fn profile_sources(&self) -> Vec<SourceProfile> {
+        // Classify each source by re-running the pure DDL emitter: its output
+        // is one statement per `spec.data` entry, in the SAME order, tagged by
+        // dispatch arm — a `DuckDb` tag is the `.duckdb`/`.db` ATTACH kind. We
+        // only need the tag (base_dir irrelevant: profiling queries views the
+        // live connection already created by name), so pass `None`. If
+        // emission somehow errs (it can't — load already succeeded), fall back
+        // to querying every source (an attach source then Fails, never
+        // panics).
+        let kinds: Vec<Option<SourceKindTag>> = emit_sources(&self.spec, None)
+            .map(|out| out.statements.iter().map(|s| Some(s.source_kind)).collect())
+            .unwrap_or_else(|_| self.spec.data.keys().map(|_| None).collect());
+
+        self.spec
+            .data
+            .keys()
+            .enumerate()
+            .map(|(i, name)| {
+                let outcome = if matches!(kinds.get(i), Some(Some(SourceKindTag::DuckDb))) {
+                    ProfileOutcome::Unsupported
+                } else {
+                    self.profile_one_source(name)
+                };
+                SourceProfile {
+                    name: name.clone(),
+                    outcome,
+                }
+            })
+            .collect()
+    }
+
+    /// DESCRIBE + one aggregate pass for a single queryable view. Any DuckDB
+    /// error (e.g. a source whose backing file vanished) becomes a
+    /// [`ProfileOutcome::Failed`] so one bad source never takes the sidebar
+    /// down with it.
+    fn profile_one_source(&self, name: &str) -> ProfileOutcome {
+        let columns = match self.describe_columns(name) {
+            Ok(c) => c,
+            Err(e) => return ProfileOutcome::Failed(e),
+        };
+        match self.aggregate_source(name, &columns) {
+            Ok(outcome) => outcome,
+            Err(e) => ProfileOutcome::Failed(e),
+        }
+    }
+
+    /// The view's `(column_name, column_type)` pairs from DESCRIBE, internal
+    /// `__bf_*` columns filtered out.
+    fn describe_columns(&self, name: &str) -> Result<Vec<(String, String)>, String> {
+        let sql = format!("DESCRIBE \"{}\"", escape_ident(name));
+        let batches = self.query_arrow_raw(&sql).map_err(|e| e.to_string())?;
+        let mut columns = Vec::new();
+        for batch in &batches {
+            // DESCRIBE's schema is fixed: column_name, column_type, null, ...
+            let names = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<duckdb::arrow::array::StringArray>();
+            let types = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<duckdb::arrow::array::StringArray>();
+            if let (Some(names), Some(types)) = (names, types) {
+                for row in 0..batch.num_rows() {
+                    let col = names.value(row);
+                    if profile::is_internal_column(col) {
+                        continue;
+                    }
+                    columns.push((col.to_string(), types.value(row).to_string()));
+                }
+            }
+        }
+        Ok(columns)
+    }
+
+    /// One aggregate SELECT over the view: `count(*)` plus, per column,
+    /// non-null count + `approx_count_distinct` (+ min/max for gated types).
+    /// Every count is cast to BIGINT and every bound to VARCHAR so the result
+    /// is uniformly `Int64`/`Utf8` to read.
+    fn aggregate_source(
+        &self,
+        name: &str,
+        columns: &[(String, String)],
+    ) -> Result<ProfileOutcome, String> {
+        let mut selects: Vec<String> = vec!["CAST(count(*) AS BIGINT)".to_string()];
+        // Per column: whether it contributed min/max cells (drives read back).
+        let mut gated: Vec<bool> = Vec::with_capacity(columns.len());
+        for (col, ty) in columns {
+            let q = escape_ident(col);
+            selects.push(format!("CAST(count(\"{q}\") AS BIGINT)"));
+            selects.push(format!("CAST(approx_count_distinct(\"{q}\") AS BIGINT)"));
+            let g = profile::is_min_max_type(ty);
+            if g {
+                selects.push(format!("CAST(min(\"{q}\") AS VARCHAR)"));
+                selects.push(format!("CAST(max(\"{q}\") AS VARCHAR)"));
+            }
+            gated.push(g);
+        }
+        let sql = format!(
+            "SELECT {} FROM \"{}\"",
+            selects.join(", "),
+            escape_ident(name)
+        );
+        let batches = self.query_arrow_raw(&sql).map_err(|e| e.to_string())?;
+        let batch = batches
+            .into_iter()
+            .find(|b| b.num_rows() > 0)
+            .ok_or_else(|| "aggregate returned no rows".to_string())?;
+
+        let row_count = profile::read_count(&batch, 0);
+        let mut out = Vec::with_capacity(columns.len());
+        let mut idx = 1usize;
+        for ((col, ty), &g) in columns.iter().zip(gated.iter()) {
+            let non_null = profile::read_count(&batch, idx);
+            idx += 1;
+            let distinct = profile::read_count(&batch, idx);
+            idx += 1;
+            let (min, max) = if g {
+                let min = profile::read_text(&batch, idx);
+                idx += 1;
+                let max = profile::read_text(&batch, idx);
+                idx += 1;
+                (min, max)
+            } else {
+                (None, None)
+            };
+            out.push(ColumnProfile {
+                name: col.clone(),
+                type_name: ty.clone(),
+                non_null,
+                nulls: row_count.saturating_sub(non_null),
+                distinct,
+                min,
+                max,
+            });
+        }
+        Ok(ProfileOutcome::Profiled {
+            row_count,
+            columns: out,
+        })
+    }
+
+    /// Run a raw read-only query and collect its Arrow batches — the profiling
+    /// counterpart to the mark path's cached `execute_emitted`, deliberately
+    /// bypassing every cache so it never perturbs mark execution counts.
+    fn query_arrow_raw(&self, sql: &str) -> Result<Vec<RecordBatch>, duckdb::Error> {
+        let mut stmt = self.conn.prepare(sql)?;
+        let arrow = stmt.query_arrow(duckdb::params![])?;
+        Ok(arrow.collect())
+    }
+
     /// Look up the wire name of the mark at a given depth-first index.
     fn mark_kind_at(&self, index: usize) -> String {
         for (_, &(idx, kind)) in &self.mark_index_map {
@@ -1087,6 +1267,214 @@ plot:
             }
             other => panic!("expected DdlFailed, got: {other:?}"),
         }
+    }
+
+    // --- sbp ac-01: Session::profile_sources ---
+
+    /// A unique path in the OS temp dir for a fixture file, keyed by pid +
+    /// nanos so parallel test runs never collide.
+    fn temp_fixture_path(suffix: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("bf_profile_{}_{}_{}", std::process::id(), nanos, suffix))
+    }
+
+    fn profiled_columns(outcome: &ProfileOutcome) -> &[ColumnProfile] {
+        match outcome {
+            ProfileOutcome::Profiled { columns, .. } => columns,
+            other => panic!("expected Profiled, got {other:?}"),
+        }
+    }
+
+    /// sbp_ac01 (mixed types, nulls, gating, __bf_ filter): a source with an
+    /// int, a float with a null, a varchar, a date, and an internal
+    /// `__bf_*` column profiles to typed, gated stats — min/max only for the
+    /// numeric/temporal columns, the internal column filtered out.
+    #[test]
+    fn sbp_ac01_profiles_mixed_types_nulls_and_gating() {
+        let yaml = r#"
+data:
+  t: "SELECT * FROM (VALUES (1, 1.5, 'a', DATE '2020-01-01', 10), (2, NULL, 'b', DATE '2020-06-01', 20)) AS v(i, f, s, d, __bf_secret)"
+plot:
+  - mark: dot
+    data: { from: t }
+    x: i
+    y: i
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let session = Engine::new().load_spec(spec, analysis, None).unwrap().session;
+        let profiles = session.profile_sources();
+
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].name, "t");
+        let cols = profiled_columns(&profiles[0].outcome);
+        // The internal __bf_secret is filtered; declaration order otherwise.
+        assert_eq!(
+            cols.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            vec!["i", "f", "s", "d"],
+            "internal __bf_ column filtered, order preserved"
+        );
+        let ProfileOutcome::Profiled { row_count, .. } = &profiles[0].outcome else {
+            unreachable!()
+        };
+        assert_eq!(*row_count, 2);
+
+        // Integer column: gated, full range.
+        let i = &cols[0];
+        assert_eq!(i.non_null, 2);
+        assert_eq!(i.nulls, 0);
+        assert_eq!(i.distinct, 2);
+        assert_eq!(i.min.as_deref(), Some("1"));
+        assert_eq!(i.max.as_deref(), Some("2"));
+
+        // Float column with one null: gated, one non-null value.
+        let f = &cols[1];
+        assert_eq!(f.non_null, 1);
+        assert_eq!(f.nulls, 1);
+        assert!(f.min.is_some() && f.max.is_some(), "numeric bounds present");
+
+        // Varchar column: NOT gated — no min/max.
+        let s = &cols[2];
+        assert_eq!(s.type_name.to_ascii_uppercase(), "VARCHAR");
+        assert_eq!(s.nulls, 0);
+        assert_eq!(s.min, None, "varchar min/max gated off");
+        assert_eq!(s.max, None);
+
+        // Date column: gated (temporal), DuckDB-rendered bounds.
+        let d = &cols[3];
+        assert_eq!(d.min.as_deref(), Some("2020-01-01"));
+        assert_eq!(d.max.as_deref(), Some("2020-06-01"));
+    }
+
+    /// sbp_ac01 (declaration order + unconsumed): profiles come back in
+    /// `data:` order, and a source no mark consumes is profiled just like any
+    /// other — the upgrade over the batch-derived approximation, which listed
+    /// it empty.
+    #[test]
+    fn sbp_ac01_declaration_order_and_unconsumed_source() {
+        let yaml = r#"
+data:
+  used:
+    - { a: 1 }
+    - { a: 2 }
+  unused:
+    - { b: 10 }
+    - { b: 20 }
+    - { b: 30 }
+plot:
+  - mark: dot
+    data: { from: used }
+    x: a
+    y: a
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let session = Engine::new().load_spec(spec, analysis, None).unwrap().session;
+        let profiles = session.profile_sources();
+
+        assert_eq!(
+            profiles.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+            vec!["used", "unused"],
+            "declaration order"
+        );
+        // The unconsumed source profiles fully (row count + its column).
+        let unused = profiled_columns(&profiles[1].outcome);
+        assert_eq!(unused.len(), 1);
+        assert_eq!(unused[0].name, "b");
+        assert_eq!(unused[0].non_null, 3);
+        let ProfileOutcome::Profiled { row_count, .. } = &profiles[1].outcome else {
+            unreachable!()
+        };
+        assert_eq!(*row_count, 3);
+    }
+
+    /// sbp_ac01 (attached DB unsupported): a `.duckdb` ATTACH source returns
+    /// the Unsupported variant WITHOUT being queried, while a sibling view
+    /// profiles normally.
+    #[test]
+    fn sbp_ac01_attached_db_is_unsupported() {
+        // A real on-disk DuckDB the spec can ATTACH read-only.
+        let db_path = temp_fixture_path("attach.duckdb");
+        {
+            let c = Connection::open(&db_path).expect("create fixture db");
+            c.execute_batch("CREATE TABLE tt(a INTEGER); INSERT INTO tt VALUES (1), (2);")
+                .expect("seed fixture db");
+        }
+        let yaml = format!(
+            r#"
+data:
+  base:
+    - {{ x: 1 }}
+  mydb: {{ file: "{}" }}
+plot:
+  - mark: dot
+    data: {{ from: base }}
+    x: x
+    y: x
+"#,
+            db_path.display()
+        );
+        let (spec, analysis) = parse_and_analyse(&yaml);
+        let session = Engine::new().load_spec(spec, analysis, None).unwrap().session;
+        let profiles = session.profile_sources();
+        let _ = std::fs::remove_file(&db_path);
+
+        let mydb = profiles.iter().find(|p| p.name == "mydb").expect("mydb profiled");
+        assert_eq!(
+            mydb.outcome,
+            ProfileOutcome::Unsupported,
+            "attached DB is not profiled"
+        );
+        let base = profiles.iter().find(|p| p.name == "base").expect("base profiled");
+        assert!(
+            matches!(base.outcome, ProfileOutcome::Profiled { .. }),
+            "sibling view still profiles: {:?}",
+            base.outcome
+        );
+    }
+
+    /// sbp_ac01 (failure isolation): a source whose backing file vanishes
+    /// after load returns a Failed variant carrying the reason, while a
+    /// sibling inline source profiles normally — the sidebar never blanks.
+    #[test]
+    fn sbp_ac01_failing_source_is_isolated() {
+        let csv_path = temp_fixture_path("gone.csv");
+        std::fs::write(&csv_path, "x\n1\n2\n").expect("write fixture csv");
+        let yaml = format!(
+            r#"
+data:
+  gone: {{ file: "{}" }}
+  ok:
+    - {{ y: 1 }}
+plot:
+  - mark: dot
+    data: {{ from: ok }}
+    x: y
+    y: y
+"#,
+            csv_path.display()
+        );
+        let (spec, analysis) = parse_and_analyse(&yaml);
+        // The view binds the CSV at load (auto_detect sniffs the header).
+        let session = Engine::new().load_spec(spec, analysis, None).unwrap().session;
+        // Now the file vanishes: profiling the view must fail gracefully.
+        std::fs::remove_file(&csv_path).expect("remove fixture csv");
+        let profiles = session.profile_sources();
+
+        let gone = profiles.iter().find(|p| p.name == "gone").expect("gone listed");
+        match &gone.outcome {
+            ProfileOutcome::Failed(reason) => {
+                assert!(!reason.is_empty(), "failure carries a reason");
+            }
+            other => panic!("expected Failed for the vanished source, got {other:?}"),
+        }
+        let ok = profiles.iter().find(|p| p.name == "ok").expect("ok listed");
+        assert!(
+            matches!(ok.outcome, ProfileOutcome::Profiled { .. }),
+            "the sibling profiles normally: {:?}",
+            ok.outcome
+        );
     }
 
     // --- ac-09: Session drop and re-create ---
