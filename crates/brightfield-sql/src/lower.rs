@@ -7,7 +7,9 @@
 
 use indexmap::IndexMap;
 
-use brightfield_spec::ast::{Mark, MarkData, ParamNode, SelectionNode, SpecValue, ValueOrParamRef};
+use brightfield_spec::ast::{
+    AggregateFunc, Mark, MarkData, ParamNode, SelectionNode, SpecValue, ValueOrParamRef,
+};
 use brightfield_spec::vocab::MarkKind;
 
 use crate::error::EmitError;
@@ -20,6 +22,14 @@ pub struct LowerCtx<'a> {
     pub data_sources: &'a IndexMap<String, brightfield_spec::ast::DataSource>,
     /// All named params from the spec.
     pub params: &'a IndexMap<String, ParamNode>,
+    /// The mark's enclosing plot AREA in pixels `(width, height)` — the plot's
+    /// declared `width`/`height` minus the Observable-default margins — computed
+    /// at emit time from the spec. `HexbinLowerer` needs it to bin in
+    /// **pixel space** (Mosaic's `binWidth` is a pixel quantity, so hexes look
+    /// regular on screen). `None` when the mark has no enclosing plot (rare) —
+    /// the lowerer then falls back to the default plot area. Other lowerers
+    /// ignore it.
+    pub plot_px: Option<(f64, f64)>,
 }
 
 /// Trait for per-mark AST → IR lowering.
@@ -406,6 +416,238 @@ impl MarkLower for ContourAttrShield {
     }
 }
 
+/// Reserved geometry columns the hexbin lowerer emits (constant per row): the
+/// hexagon half-width and half-height in DATA units. The renderer reconstructs
+/// the six pointy-top vertices from these, so the hex is regular on screen by
+/// construction and survives live rebuilds without a bin-step recovery. Must
+/// match `brightfield-render`'s `HEX_DX_COL` / `HEX_DY_COL`.
+const HEX_DX_COL: &str = "__bf_hex_dx";
+const HEX_DY_COL: &str = "__bf_hex_dy";
+
+/// Reserved count column (shared with the density lowerers) — a `fill: {count:}`
+/// hexbin aggregates into this. Must match `DENSITY_COUNT_COL` in the renderer.
+const HEX_COUNT_COL: &str = "__bf_count";
+
+/// Default `binWidth` in pixels — Mosaic's hexbin default.
+const DEFAULT_BIN_WIDTH: f64 = 20.0;
+
+/// Fallback plot AREA (pixels) when the lower context carries no plot extent
+/// (a mark outside any plot). Mosaic default plot 640×400 minus the default
+/// margins (60 horizontal, 50 vertical) — see `brightfield-sql::emit`.
+const FALLBACK_PLOT_PX: (f64, f64) = (640.0 - 60.0, 400.0 - 50.0);
+
+/// Lowerer for the hexbin mark — Mosaic's flagship at-scale mark.
+///
+/// Hexbin is SELF-AGGREGATING: the `fill: {count:}` / `fill: {avg: col}`
+/// channel carries the aggregate. `binWidth` is a PIXEL quantity (default 20),
+/// so binning happens in **pixel space** (hexes look regular on screen, as
+/// d3-hexbin / Observable Plot draw them): each point's `(x, y)` is normalised
+/// into the plot's pixel extent (a static emit-time size × SQL-side min/max
+/// extents), transformed to axial hex coordinates and **cube-rounded** to the
+/// nearest pointy-top hex at hex size `r = binWidth / √3` (so the horizontal
+/// centre spacing equals `binWidth` — verified against Observable Plot's
+/// `hexbin`: `dx = binWidth`, `dy = binWidth·√3/2`, `r = binWidth/√3`).
+///
+/// The lowerer GROUP BYs the hex cell and emits, per hex, the centre in DATA
+/// units (aliased to the x/y channel columns, so it flows through the ordinary
+/// positional scales), the aggregate (`__bf_count` for count, the source column
+/// for avg), and the constant hex half-extents `__bf_hex_dx`/`__bf_hex_dy` in
+/// data units. Deterministic `ORDER BY` on the emitted centres (the #42 jitter
+/// class). All arithmetic — no `width_bucket` (absent from the bundled
+/// libduckdb; the density-lowerer precedent).
+///
+/// `binWidth` is literal-only in v1 (`binWidth: $param` threading is deferred).
+pub struct HexbinLowerer;
+
+impl MarkLower for HexbinLowerer {
+    fn lower(&self, mark: &Mark, ctx: &LowerCtx<'_>) -> Result<QueryPlan, EmitError> {
+        let source = match &mark.data {
+            Some(MarkData::From { source, .. }) => source.clone(),
+            _ => {
+                return Err(EmitError::UnsupportedMark {
+                    kind: "hexbin (requires data: { from: ... })".to_string(),
+                })
+            }
+        };
+        let x_col = opt_string(&mark.options, "x").ok_or_else(|| EmitError::UnsupportedMark {
+            kind: "hexbin (missing x)".to_string(),
+        })?;
+        let y_col = opt_string(&mark.options, "y").ok_or_else(|| EmitError::UnsupportedMark {
+            kind: "hexbin (missing y)".to_string(),
+        })?;
+        let bin_width = opt_f64(&mark.options, "binWidth").unwrap_or(DEFAULT_BIN_WIDTH);
+        let (plot_w, plot_h) = ctx.plot_px.unwrap_or(FALLBACK_PLOT_PX);
+        // Default aggregate is count (Mosaic's hexbin default fill).
+        let agg = opt_aggregate(&mark.options, "fill").unwrap_or((AggregateFunc::Count, None));
+
+        Ok(build_hexbin_plan(
+            &source, x_col, y_col, bin_width, plot_w, plot_h, &agg,
+        ))
+    }
+}
+
+/// Read a self-aggregating channel (`SpecValue::Aggregate`) at `key`.
+fn opt_aggregate(
+    options: &IndexMap<String, ValueOrParamRef<SpecValue>>,
+    key: &str,
+) -> Option<(AggregateFunc, Option<String>)> {
+    match options.get(key)? {
+        ValueOrParamRef::Value(SpecValue::Aggregate { func, column }) => {
+            Some((*func, column.clone()))
+        }
+        _ => None,
+    }
+}
+
+/// Build the hexbin QueryPlan. See [`HexbinLowerer`] for the geometry.
+#[allow(clippy::too_many_arguments)]
+fn build_hexbin_plan(
+    table: &str,
+    x_col: &str,
+    y_col: &str,
+    bin_width: f64,
+    plot_w: f64,
+    plot_h: f64,
+    agg: &(AggregateFunc, Option<String>),
+) -> QueryPlan {
+    // √3 and the hex size. size = binWidth/√3 makes the horizontal centre
+    // spacing exactly binWidth (Observable Plot parity). (`f64::consts::SQRT_3`
+    // is still unstable at the 1.95 floor, so the literal is pinned here.)
+    let sqrt3 = 1.732_050_807_568_877_2_f64;
+    let size = bin_width / sqrt3;
+
+    // Raw-table extents as correlated scalar subqueries (density precedent).
+    let xmin = format!("(SELECT min(\"{x_col}\") FROM \"{table}\")");
+    let xmax = format!("(SELECT max(\"{x_col}\") FROM \"{table}\")");
+    let ymin = format!("(SELECT min(\"{y_col}\") FROM \"{table}\")");
+    let ymax = format!("(SELECT max(\"{y_col}\") FROM \"{table}\")");
+    // nullif guards the degenerate all-equal axis (span 0 → NULL → no divide-by-0).
+    let xspan = format!("nullif({xmax} - {xmin}, 0)");
+    let yspan = format!("nullif({ymax} - {ymin}, 0)");
+
+    // Point → pixel space over the plot AREA.
+    let px = format!("((\"{x_col}\" - {xmin}) / {xspan} * {plot_w})");
+    let py = format!("((\"{y_col}\" - {ymin}) / {yspan} * {plot_h})");
+
+    // Pixel → axial (pointy-top), hex size `size`.
+    let qf = format!("(({frac} * {px} - {third} * {py}) / {size})",
+        frac = sqrt3 / 3.0, third = 1.0 / 3.0);
+    let rf = format!("(({twothirds} * {py}) / {size})", twothirds = 2.0 / 3.0);
+
+    let filtered = QueryPlan::Filter {
+        input: Box::new(QueryPlan::Source { table: table.to_string() }),
+        predicate: Predicate::Expr(format!(
+            "\"{x_col}\" IS NOT NULL AND \"{y_col}\" IS NOT NULL"
+        )),
+    };
+    // Layer 1: fractional axial coordinates.
+    let axial = QueryPlan::Projection {
+        input: Box::new(filtered),
+        columns: vec![
+            "*".to_string(),
+            format!("{qf} AS __bf_qf"),
+            format!("{rf} AS __bf_rf"),
+        ],
+    };
+    // Layer 2: the three cube-rounded integer coordinates (x=q, z=r, y=-q-r).
+    let rounded = QueryPlan::Projection {
+        input: Box::new(axial),
+        columns: vec![
+            "*".to_string(),
+            "round(__bf_qf) AS __bf_rx".to_string(),
+            "round(-__bf_qf - __bf_rf) AS __bf_ry".to_string(),
+            "round(__bf_rf) AS __bf_rz".to_string(),
+        ],
+    };
+    // Layer 3: cube-round resolution → final axial (q, r). The component with
+    // the largest rounding error is recomputed from the other two.
+    let xd = "abs(__bf_rx - __bf_qf)";
+    let yd = "abs(__bf_ry - (-__bf_qf - __bf_rf))";
+    let zd = "abs(__bf_rz - __bf_rf)";
+    let q_expr = format!(
+        "CASE WHEN {xd} > {yd} AND {xd} > {zd} THEN (-__bf_ry - __bf_rz) ELSE __bf_rx END"
+    );
+    let r_expr = format!(
+        "CASE WHEN {xd} > {yd} AND {xd} > {zd} THEN __bf_rz \
+         WHEN {yd} > {zd} THEN __bf_rz ELSE (-__bf_rx - __bf_ry) END"
+    );
+    let hexed = QueryPlan::Projection {
+        input: Box::new(rounded),
+        columns: vec![
+            "*".to_string(),
+            format!("{q_expr} AS __bf_q"),
+            format!("{r_expr} AS __bf_r"),
+        ],
+    };
+
+    // Hex centre in pixel space, then back to data units (inverse of px/py).
+    let cx_px = format!("({size} * ({sqrt3} * __bf_q + {half_sqrt3} * __bf_r))",
+        half_sqrt3 = sqrt3 / 2.0);
+    let cy_px = format!("({size} * ({onehalf} * __bf_r))", onehalf = 1.5);
+    let cx_data = format!("({xmin} + {cx_px} / {plot_w} * ({xmax} - {xmin}))");
+    let cy_data = format!("({ymin} + {cy_px} / {plot_h} * ({ymax} - {ymin}))");
+
+    // Constant hex half-extents in data units: half-width = binWidth/2 px,
+    // half-height = size px, each scaled by the axis's data-per-pixel ratio.
+    let dx_data = format!(
+        "CAST({half_bw} / {plot_w} * ({xmax} - {xmin}) AS DOUBLE)",
+        half_bw = bin_width / 2.0
+    );
+    let dy_data = format!(
+        "CAST({size} / {plot_h} * ({ymax} - {ymin}) AS DOUBLE)"
+    );
+
+    // The aggregate: count → reserved column; column-taking aggregates → the
+    // source column aliased to itself (so the fill channel reads it).
+    let agg_expr = hex_aggregate_expr(agg);
+
+    let aggregation = QueryPlan::Aggregation {
+        input: Box::new(hexed),
+        group_by: vec![
+            format!("CAST({cx_data} AS DOUBLE) AS \"{x_col}\""),
+            format!("CAST({cy_data} AS DOUBLE) AS \"{y_col}\""),
+        ],
+        aggregates: vec![
+            agg_expr,
+            format!("{dx_data} AS {HEX_DX_COL}"),
+            format!("{dy_data} AS {HEX_DY_COL}"),
+        ],
+    };
+
+    // Deterministic draw order (x centre, then y centre) — the #42 jitter class.
+    QueryPlan::Order {
+        input: Box::new(aggregation),
+        keys: vec![
+            (format!("\"{x_col}\""), SortDir::Asc),
+            (format!("\"{y_col}\""), SortDir::Asc),
+        ],
+    }
+}
+
+/// The SQL aggregate expression for a hexbin/cell fill aggregate. `count` folds
+/// to the reserved `__bf_count`; a column aggregate aliases to its source
+/// column so the fill channel reads it.
+fn hex_aggregate_expr(agg: &(AggregateFunc, Option<String>)) -> String {
+    match agg {
+        (AggregateFunc::Count, _) => {
+            format!("CAST(COUNT(*) AS DOUBLE) AS {HEX_COUNT_COL}")
+        }
+        (func, Some(col)) => {
+            let sql_fn = match func {
+                AggregateFunc::Sum => "sum",
+                AggregateFunc::Avg => "avg",
+                AggregateFunc::Min => "min",
+                AggregateFunc::Max => "max",
+                AggregateFunc::Count => unreachable!(),
+            };
+            format!("CAST({sql_fn}(\"{col}\") AS DOUBLE) AS \"{col}\"")
+        }
+        // A column-taking aggregate with no column — degrade to count so the
+        // query is still valid (the parser should have caught this).
+        (_, None) => format!("CAST(COUNT(*) AS DOUBLE) AS {HEX_COUNT_COL}"),
+    }
+}
+
 /// Build the registry of mark lowerers.
 ///
 /// Registers SimpleLowerer for Dot, Line, BarX, BarY; the statistical-mark
@@ -478,6 +720,9 @@ pub fn default_lowerers() -> Vec<(MarkKind, Box<dyn MarkLower>)> {
                 },
             }),
         ),
+        // Hexbin — Mosaic's flagship at-scale mark, pixel-space hex binning
+        // fully in SQL (card 0008 hexbin follow-up).
+        (MarkKind::Hexbin, Box::new(HexbinLowerer)),
     ]
 }
 
@@ -561,6 +806,7 @@ mod tests {
         LowerCtx {
             data_sources,
             params,
+            plot_px: None,
         }
     }
 
@@ -579,9 +825,10 @@ mod tests {
     #[test]
     fn dfir_ac03_find_lowerer_falls_back_to_default() {
         let registry = default_lowerers();
-        // Hexbin is not registered — should fall back to DefaultLowerer
-        let lowerer = find_lowerer(MarkKind::Hexbin, &registry);
-        let mark = make_mark(MarkKind::Hexbin);
+        // Geo is not registered — should fall back to DefaultLowerer.
+        // (Hexbin now has a lowerer; geo stays the always-unimplemented stand-in.)
+        let lowerer = find_lowerer(MarkKind::Geo, &registry);
+        let mark = make_mark(MarkKind::Geo);
         let ctx = make_ctx();
         let result = lowerer.lower(&mark, &ctx);
         assert!(matches!(result, Err(EmitError::UnsupportedMark { .. })));
@@ -656,7 +903,8 @@ mod tests {
         assert!(kinds.contains(&MarkKind::Heatmap));
         assert!(kinds.contains(&MarkKind::Cell));
         assert!(kinds.contains(&MarkKind::Contour));
-        assert_eq!(kinds.len(), 21);
+        assert!(kinds.contains(&MarkKind::Hexbin));
+        assert_eq!(kinds.len(), 22);
     }
 
     #[test]
@@ -1010,6 +1258,107 @@ mod tests {
         assert!(kinds.contains(&MarkKind::Density));
         assert!(kinds.contains(&MarkKind::DensityX));
         assert!(kinds.contains(&MarkKind::DensityY));
+    }
+
+    // -----------------------------------------------------------------------
+    // hex_ac02 — HexbinLowerer SQL shape
+    // -----------------------------------------------------------------------
+
+    fn hexbin_mark() -> Mark {
+        let mut options: IndexMap<String, ValueOrParamRef<SpecValue>> = IndexMap::new();
+        options.insert("x".into(), ValueOrParamRef::Value(SpecValue::String("time".into())));
+        options.insert("y".into(), ValueOrParamRef::Value(SpecValue::String("delay".into())));
+        options.insert(
+            "fill".into(),
+            ValueOrParamRef::Value(SpecValue::Aggregate {
+                func: AggregateFunc::Count,
+                column: None,
+            }),
+        );
+        options.insert("binWidth".into(), ValueOrParamRef::Value(SpecValue::Integer(20)));
+        Mark {
+            kind: MarkKind::Hexbin,
+            status: brightfield_spec::vocab::ImplStatus::Implemented,
+            data: Some(MarkData::From {
+                source: "flights".into(),
+                filter_by: None,
+                extras: IndexMap::new(),
+            }),
+            options,
+        }
+    }
+
+    #[test]
+    fn hex_ac02_hexbin_lowers_to_ordered_aggregation() {
+        let plan = HexbinLowerer.lower(&hexbin_mark(), &make_ctx()).expect("lowers");
+        // Outermost is Order on the emitted centres (x then y) — determinism.
+        let QueryPlan::Order { input, keys } = plan else {
+            panic!("expected Order-wrapped Aggregation");
+        };
+        assert_eq!(
+            keys,
+            vec![
+                ("\"time\"".to_string(), SortDir::Asc),
+                ("\"delay\"".to_string(), SortDir::Asc),
+            ]
+        );
+        let QueryPlan::Aggregation { group_by, aggregates, .. } = *input else {
+            panic!("expected Aggregation under Order");
+        };
+        // Centres are emitted in DATA units aliased to the x/y channel columns.
+        assert!(group_by[0].contains("AS \"time\""), "{group_by:?}");
+        assert!(group_by[1].contains("AS \"delay\""), "{group_by:?}");
+        // Count → reserved column; constant hex half-extents travel in-band.
+        assert!(aggregates.iter().any(|a| a.contains("COUNT(*)") && a.contains("__bf_count")));
+        assert!(aggregates.iter().any(|a| a.contains("__bf_hex_dx")));
+        assert!(aggregates.iter().any(|a| a.contains("__bf_hex_dy")));
+    }
+
+    #[test]
+    fn hex_ac02_hexbin_sql_has_axial_and_cube_round() {
+        let plan = HexbinLowerer.lower(&hexbin_mark(), &make_ctx()).expect("lowers");
+        let mut bindings = Vec::new();
+        let sql = crate::render::render_query(&plan, &mut bindings);
+        // Axial transform (pixel → hex) and the three cube-round coordinates.
+        assert!(sql.contains("__bf_qf") && sql.contains("__bf_rf"), "{sql}");
+        assert!(sql.contains("round("), "{sql}");
+        assert!(sql.contains("__bf_rx") && sql.contains("__bf_ry") && sql.contains("__bf_rz"));
+        // Cube-round resolution CASE.
+        assert!(sql.contains("CASE WHEN"), "{sql}");
+        // Pixel-space binning reads the plot extent (fallback 580×350 area).
+        assert!(sql.contains("580") || sql.contains("350"), "plot px extent absent: {sql}");
+        // Extents via correlated subqueries over the raw table.
+        assert!(sql.contains("SELECT min(\"time\") FROM \"flights\""), "{sql}");
+    }
+
+    #[test]
+    fn hex_ac02_hexbin_avg_aliases_to_source_column() {
+        let mut mark = hexbin_mark();
+        mark.options.insert(
+            "fill".into(),
+            ValueOrParamRef::Value(SpecValue::Aggregate {
+                func: AggregateFunc::Avg,
+                column: Some("score".into()),
+            }),
+        );
+        let plan = HexbinLowerer.lower(&mark, &make_ctx()).expect("lowers");
+        let mut bindings = Vec::new();
+        let sql = crate::render::render_query(&plan, &mut bindings);
+        assert!(sql.contains("avg(\"score\")") && sql.contains("AS \"score\""), "{sql}");
+        assert!(!sql.contains("__bf_count"), "avg fill must not emit count: {sql}");
+    }
+
+    #[test]
+    fn hex_ac02_hexbin_requires_x_y_and_data() {
+        let ctx = make_ctx();
+        // Missing y.
+        let mut m = hexbin_mark();
+        m.options.shift_remove("y");
+        assert!(HexbinLowerer.lower(&m, &ctx).is_err());
+        // Missing data source.
+        let mut m = hexbin_mark();
+        m.data = None;
+        assert!(HexbinLowerer.lower(&m, &ctx).is_err());
     }
 
     #[test]

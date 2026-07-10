@@ -950,12 +950,12 @@ mod tests {
     fn dex_ac02_engine_error_emit_failed() {
         let err = EngineError::EmitFailed {
             cause: EmitError::UnsupportedMark {
-                kind: "hexbin".to_string(),
+                kind: "geo".to_string(),
             },
         };
         let msg = format!("{err}");
         assert!(msg.contains("emit failed"), "got: {msg}");
-        assert!(msg.contains("hexbin"), "got: {msg}");
+        assert!(msg.contains("geo"), "got: {msg}");
     }
 
     // --- ac-03: Engine::new() and load_spec ---
@@ -991,7 +991,7 @@ data:
   t:
     - { x: 1 }
 plot:
-  - mark: hexbin
+  - mark: geo
     data: { from: t }
 "#;
         let (spec, analysis) = parse_and_analyse(yaml);
@@ -1011,7 +1011,7 @@ plot:
     // --- ac-05: execute_all with partial failure ---
     #[test]
     fn dex_ac05_execute_all_partial_failure() {
-        // Mix a supported mark (dot with data.from) and an unsupported mark (hexbin)
+        // Mix a supported mark (dot with data.from) and an unsupported mark (geo)
         let yaml = r#"
 data:
   t:
@@ -1019,7 +1019,7 @@ data:
 plot:
   - mark: dot
     data: { from: t }
-  - mark: hexbin
+  - mark: geo
     data: { from: t }
 "#;
         let (spec, analysis) = parse_and_analyse(yaml);
@@ -1030,8 +1030,8 @@ plot:
         assert_eq!(results.len(), 2);
         // dot with data.from succeeds via SimpleLowerer
         assert!(results[0].is_ok(), "dot with data.from should succeed");
-        // hexbin is unsupported
-        assert!(results[1].is_err(), "hexbin should be unsupported");
+        // geo is unsupported
+        assert!(results[1].is_err(), "geo should be unsupported");
     }
 
     // --- msv ac-01: SimpleLowerer end-to-end via Session ---
@@ -1423,6 +1423,148 @@ plot:
         out
     }
 
+    /// hex_ac02 (THE FIXTURE): the HexbinLowerer's pixel-space cube-round SQL
+    /// executed against DuckDB, proven against a HAND-COMPUTED fixture.
+    ///
+    /// Plot 160×150 ⇒ area 100×100 (margins 60×50); data extents [0,100]² ⇒
+    /// data units == pixels. binWidth 20 ⇒ hex size = 20/√3, horizontal centre
+    /// spacing = 20. By hand (pointy-top, size = 20/√3):
+    ///   (0,0)→hex(0,0) centre (0,0);  (100,0)→hex(5,0) centre (100,0);
+    ///   (0,100)→hex(-3,6) centre (0, 9·size≈103.923);
+    ///   (100,100)→hex(2,6) centre (100, 103.923);
+    ///   (20,0)×2 → hex(1,0) centre (20,0), count 2.
+    /// The BOUNDARY point (10,0) sits EXACTLY between hex(0,0) and hex(1,0)
+    /// (qf = 0.5). DuckDB's `round()` is round-HALF-TO-EVEN (banker's), so
+    /// 0.5→0 and it deterministically joins hex(0,0) — the tie-break is
+    /// well-defined either way (the two centres are equidistant), pinned here.
+    /// So hex(0,0) has count 2.
+    /// dx = binWidth/2 = 10 (data units); dy = size ≈ 11.547. Row order is
+    /// x-centre then y-centre (determinism).
+    #[test]
+    fn hex_ac02_hexbin_cube_round_fixture_executes() {
+        let yaml = r#"
+data:
+  pts:
+    - { x: 0, y: 0 }
+    - { x: 100, y: 0 }
+    - { x: 0, y: 100 }
+    - { x: 100, y: 100 }
+    - { x: 20, y: 0 }
+    - { x: 20, y: 0 }
+    - { x: 10, y: 0 }
+plot:
+  - mark: hexbin
+    data: { from: pts }
+    x: x
+    y: y
+    fill: { count: }
+    binWidth: 20
+width: 160
+height: 150
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+        let batches = session.execute_mark(0).expect("hexbin executes");
+
+        let xs = column_as_f64_vec(&batches, "x");
+        let ys = column_as_f64_vec(&batches, "y");
+        let counts = column_as_f64_vec(&batches, "__bf_count");
+        let dxs = column_as_f64_vec(&batches, "__bf_hex_dx");
+        let dys = column_as_f64_vec(&batches, "__bf_hex_dy");
+
+        let size = 20.0 / 1.732_050_807_568_877_2_f64;
+        let cy_edge = size * 9.0; // ≈ 103.923
+        let expected: Vec<(f64, f64, f64)> = vec![
+            (0.0, 0.0, 2.0), // (0,0) + boundary (10,0) via banker's rounding
+            (0.0, cy_edge, 1.0),
+            (20.0, 0.0, 2.0),
+            (100.0, 0.0, 1.0),
+            (100.0, cy_edge, 1.0),
+        ];
+        assert_eq!(xs.len(), expected.len(), "5 distinct hex bins");
+        for (i, (ex, ey, ec)) in expected.iter().enumerate() {
+            assert!((xs[i] - ex).abs() < 1e-6, "row {i} x: {} != {ex}", xs[i]);
+            assert!((ys[i] - ey).abs() < 1e-6, "row {i} y: {} != {ey}", ys[i]);
+            assert!((counts[i] - ec).abs() < 1e-9, "row {i} count: {} != {ec}", counts[i]);
+        }
+        // Total occupancy == input rows.
+        assert!((counts.iter().sum::<f64>() - 7.0).abs() < 1e-9);
+        // Constant in-band hex half-extents (data units).
+        for d in &dxs {
+            assert!((d - 10.0).abs() < 1e-6, "dx == binWidth/2 == 10, got {d}");
+        }
+        for d in &dys {
+            assert!((d - size).abs() < 1e-6, "dy == size, got {d}");
+        }
+    }
+
+    /// hex_ac02: double-render byte-equality (the #42 determinism class) — the
+    /// hexbin SQL orders its emitted centres, so two executions match exactly.
+    #[test]
+    fn hex_ac02_hexbin_double_render_deterministic() {
+        let yaml = r#"
+data:
+  pts:
+    - { x: 1, y: 2 }
+    - { x: 3, y: 5 }
+    - { x: 4, y: 1 }
+    - { x: 2, y: 4 }
+    - { x: 5, y: 3 }
+plot:
+  - mark: hexbin
+    data: { from: pts }
+    x: x
+    y: y
+    fill: { count: }
+    binWidth: 15
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+        let a = session.execute_mark(0).expect("first");
+        let b = session.execute_mark(0).expect("second");
+        assert_eq!(column_as_f64_vec(&a, "x"), column_as_f64_vec(&b, "x"));
+        assert_eq!(column_as_f64_vec(&a, "y"), column_as_f64_vec(&b, "y"));
+        assert_eq!(
+            column_as_f64_vec(&a, "__bf_count"),
+            column_as_f64_vec(&b, "__bf_count")
+        );
+    }
+
+    /// hex_ac02: a `fill: {avg: col}` hexbin aggregates the column per hex,
+    /// aliased to the source column so the renderer's numeric-fill path reads it.
+    #[test]
+    fn hex_ac02_hexbin_avg_executes() {
+        // Two points in the same hex (near origin) with values 10 and 20 ⇒ avg
+        // 15; one far point (its own hex) with value 100.
+        let yaml = r#"
+data:
+  pts:
+    - { x: 0, y: 0, v: 10 }
+    - { x: 1, y: 0, v: 20 }
+    - { x: 100, y: 100, v: 100 }
+plot:
+  - mark: hexbin
+    data: { from: pts }
+    x: x
+    y: y
+    fill: { avg: v }
+    binWidth: 20
+width: 160
+height: 150
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+        let batches = session.execute_mark(0).expect("hexbin avg executes");
+        let avgs = column_as_f64_vec(&batches, "v");
+        assert!(avgs.iter().any(|a| (a - 15.0).abs() < 1e-9), "avg 15 hex: {avgs:?}");
+        assert!(avgs.iter().any(|a| (a - 100.0).abs() < 1e-9), "avg 100 hex: {avgs:?}");
+        // No count column when the fill is an avg aggregate.
+        assert!(batches[0].schema().index_of("__bf_count").is_err());
+    }
+
     /// pefr ac-05 (THE PROBE): a scalar param bound to a positional channel
     /// changes the mark's batch output when the param changes. Before card 0014
     /// this returned byte-identical output (in fact no `y`/`k` column at all).
@@ -1732,7 +1874,7 @@ data:
 plot:
   - mark: dot
     data: { from: t }
-  - mark: hexbin
+  - mark: geo
     data: { from: t }
 "#;
         let (spec, analysis) = parse_and_analyse(yaml);
@@ -1744,7 +1886,7 @@ plot:
         assert!(ok_result.is_ok(), "mark 0 should succeed via SimpleLowerer");
         assert!(!ok_result.unwrap().is_empty());
 
-        // Mark 1 fails via execute_mark (hexbin is unsupported).
+        // Mark 1 fails via execute_mark (geo is unsupported).
         let err_result = session.execute_mark(1);
         assert!(err_result.is_err(), "mark 1 should fail (unsupported)");
         assert!(matches!(
@@ -2057,8 +2199,8 @@ plot:
     #[test]
     fn rpw2_ac04_partial_failure_mixed_ok_err() {
         // Two marks subscribe to "brush" via filterBy. Dot is supported by
-        // SimpleLowerer (Ok), hexbin is not (Err). Each mark is dispatched
-        // independently — hexbin's failure must not prevent dot from succeeding.
+        // SimpleLowerer (Ok), geo is not (Err). Each mark is dispatched
+        // independently — geo's failure must not prevent dot from succeeding.
         let yaml = r#"
 params:
   brush:
@@ -2072,7 +2214,7 @@ plot:
     data: { from: t, filterBy: $brush }
     x: x
     y: y
-  - mark: hexbin
+  - mark: geo
     data: { from: t, filterBy: $brush }
     x: x
     y: y
@@ -2095,7 +2237,7 @@ plot:
         let ok_count = results.iter().filter(|(_, r)| r.is_ok()).count();
         let err_count = results.iter().filter(|(_, r)| r.is_err()).count();
         assert_eq!(ok_count, 1, "dot should succeed via SimpleLowerer");
-        assert_eq!(err_count, 1, "hexbin should fail (UnsupportedMark)");
+        assert_eq!(err_count, 1, "geo should fail (UnsupportedMark)");
 
         // The successful mark should have returned data (2 rows from inline source).
         let (_, ok_result) = results.iter().find(|(_, r)| r.is_ok()).unwrap();
@@ -2638,7 +2780,7 @@ plot:
     /// rpw3 ac-08: partial failure — strengthens v2 rpw2_ac04 by naming the
     /// EngineError discriminant, the lowerer registration scheme, and the
     /// param_state assertion. Two marks subscribe to $brush via the same
-    /// edge (data.filterBy): one dot (registered lowerer → Ok) and one hexbin
+    /// edge (data.filterBy): one dot (registered lowerer → Ok) and one geo
     /// (no registered lowerer → Err with EmitFailed { cause: UnsupportedMark }).
     /// The walk continues across mixed Ok/Err and updates param_state.
     #[test]
@@ -2655,7 +2797,7 @@ plot:
     data: { from: t, filterBy: $brush }
     x: x
     y: y
-  - mark: hexbin
+  - mark: geo
     data: { from: t, filterBy: $brush }
     x: x
     y: y
@@ -2673,18 +2815,18 @@ plot:
             "both marks must be dispatched; got {results:?}"
         );
 
-        // (b) dot mark Ok with non-empty batches; (c) hexbin mark Err with the
+        // (b) dot mark Ok with non-empty batches; (c) geo mark Err with the
         // EmitFailed { cause: UnsupportedMark } discriminant.
         let dot_idx = 0usize;
-        let hexbin_idx = 1usize;
+        let geo_idx = 1usize;
         let dot_result = results
             .iter()
             .find(|(i, _)| *i == dot_idx)
             .expect("dot at index 0 in results");
-        let hexbin_result = results
+        let geo_result = results
             .iter()
-            .find(|(i, _)| *i == hexbin_idx)
-            .expect("hexbin at index 1 in results");
+            .find(|(i, _)| *i == geo_idx)
+            .expect("geo at index 1 in results");
 
         let dot_batches = dot_result
             .1
@@ -2696,16 +2838,16 @@ plot:
             "dot must return 2 rows from inline data (no contributor → no filter); got {dot_rows}"
         );
 
-        match &hexbin_result.1 {
+        match &geo_result.1 {
             Err(EngineError::EmitFailed { cause }) => {
                 let msg = format!("{cause:?}");
                 assert!(
                     msg.contains("Unsupported"),
-                    "hexbin Err cause must indicate UnsupportedMark; got {msg}"
+                    "geo Err cause must indicate UnsupportedMark; got {msg}"
                 );
             }
             other => panic!(
-                "hexbin must produce Err(EngineError::EmitFailed {{ cause: UnsupportedMark }}); got {other:?}"
+                "geo must produce Err(EngineError::EmitFailed {{ cause: UnsupportedMark }}); got {other:?}"
             ),
         }
 
@@ -3164,7 +3306,7 @@ plot:
     }
 
     /// cfs2_ac08: partial failure. Two subscribers — one supported (dot)
-    /// and one unsupported (hexbin). One Ok + one Err; selection_state
+    /// and one unsupported (geo). One Ok + one Err; selection_state
     /// updated regardless. Mirrors rpw2_ac04.
     #[test]
     fn cfs2_ac08_partial_failure() {
@@ -3181,7 +3323,7 @@ plot:
     data: { from: t, filterBy: $brush }
     x: x
     y: y
-  - mark: hexbin
+  - mark: geo
     data: { from: t, filterBy: $brush }
     x: x
     y: y
@@ -3208,7 +3350,7 @@ plot:
         let ok_count = results.iter().filter(|(_, r)| r.is_ok()).count();
         let err_count = results.iter().filter(|(_, r)| r.is_err()).count();
         assert_eq!(ok_count, 1, "dot succeeds via SimpleLowerer");
-        assert_eq!(err_count, 1, "hexbin fails (UnsupportedMark)");
+        assert_eq!(err_count, 1, "geo fails (UnsupportedMark)");
 
         // selection_state updated regardless of partial failure.
         assert!(session.current_selections().contains_key("brush"));
