@@ -136,6 +136,15 @@ impl SavePolicy {
         self.due_at_ms = Some(now_ms + SAVE_DEBOUNCE_MS);
     }
 
+    /// Whether a debounced save is armed and not yet fired — the probe the
+    /// shell tests use to assert a dock change reached the policy
+    /// (wsc_ac04's rebuilt-dock observer wiring).
+    #[cfg(test)]
+    #[must_use]
+    pub fn pending(&self) -> bool {
+        self.due_at_ms.is_some()
+    }
+
     /// The debounce timer polled at `now_ms` with the current serialised
     /// state: write when due AND changed AND `persistable`; otherwise
     /// nothing.

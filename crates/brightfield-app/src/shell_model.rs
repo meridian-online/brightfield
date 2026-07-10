@@ -24,11 +24,20 @@ pub const EDITOR_PANEL_NAME: &str = "BrightfieldSpecEditor";
 /// The data-sources sidebar panel's stable serialisation name.
 pub const SIDEBAR_PANEL_NAME: &str = "BrightfieldSidebar";
 
+/// The reload/save feedback Log panel's stable serialisation name.
+pub const LOG_PANEL_NAME: &str = "BrightfieldLog";
+
 /// Default width of the left (sidebar) dock, in logical pixels.
 pub const SIDEBAR_DOCK_WIDTH: f64 = 220.0;
 
 /// Default width of the right (editor) dock, in logical pixels.
 pub const EDITOR_DOCK_WIDTH: f64 = 380.0;
+
+/// Default height of the bottom (log) dock when opened, in logical pixels.
+/// The dock is seeded CLOSED (a 29px strip advertises the drop/expand
+/// affordance without re-carving the author's layout); this is the height
+/// it opens to.
+pub const BOTTOM_DOCK_HEIGHT: f64 = 180.0;
 
 /// The role a panel plays in the workspace — the input (with the mode) to
 /// the presentation-visibility mapping.
@@ -40,6 +49,8 @@ pub enum PanelRole {
     Editor,
     /// The data-sources sidebar (left dock).
     Sidebar,
+    /// The reload/save feedback log (bottom dock).
+    Log,
 }
 
 /// Whether a panel of `role` reports `visible()` under `mode` (aws_ac07).
@@ -51,15 +62,64 @@ pub enum PanelRole {
 pub fn panel_visible(mode: PresentationMode, role: PanelRole) -> bool {
     match role {
         PanelRole::Canvas => true,
-        PanelRole::Editor | PanelRole::Sidebar => mode.chrome_visible(),
+        PanelRole::Editor | PanelRole::Sidebar | PanelRole::Log => mode.chrome_visible(),
     }
 }
 
-/// Whether the authoring docks (left/right/bottom rails) are open under
-/// `mode`: presentation collapses them so the canvas runs full-bleed.
+/// Whether a just-loaded layout needs the bottom Log dock appended
+/// (wsc_ac03's backfill decision): every pre-round saved layout lacks a
+/// bottom dock and gets the same closed Log dock the default layout seeds;
+/// a layout that already carries one restores exactly as saved — no double
+/// dock, no forced state. Pure so the shell executes, never decides.
+#[must_use]
+pub fn bottom_dock_needs_backfill(has_bottom_dock: bool) -> bool {
+    !has_bottom_dock
+}
+
+/// What the shell does with the BOTTOM dock when the presentation mode
+/// changes (wsc_ac04). Unlike the left/right rails — whose closed form is
+/// invisible, so `set_open(false)` suffices — a closed bottom dock still
+/// renders a 29px title-bar strip, which would break presentation's
+/// consumer-preview promise. It must be removed entirely, then rebuilt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BottomDockAction {
+    /// Entering presentation: stash the dock's rebuild state, then remove
+    /// the dock — zero bottom-dock chrome remains.
+    Remove,
+    /// Back in authoring: rebuild the dock from the stash — contents, size,
+    /// and open/closed state exactly as the author left them.
+    Rebuild,
+}
+
+/// The bottom-dock action for `mode` — the pure half of the presentation
+/// round trip; the GPUI shell executes it against the DockArea.
+#[must_use]
+pub fn bottom_dock_action(mode: PresentationMode) -> BottomDockAction {
+    if mode.chrome_visible() {
+        BottomDockAction::Rebuild
+    } else {
+        BottomDockAction::Remove
+    }
+}
+
+/// Whether the authoring docks' LEFT/RIGHT rails are open under `mode`:
+/// presentation collapses them so the canvas runs full-bleed. The BOTTOM
+/// dock is deliberately NOT covered by this mapping — its closed form
+/// still paints a 29px title-bar strip, so presentation removes it
+/// entirely instead; see [`bottom_dock_action`] (review F6 correction).
 #[must_use]
 pub fn docks_open(mode: PresentationMode) -> bool {
     mode.chrome_visible()
+}
+
+/// Whether a dock that a menu-move just emptied of visible panels should
+/// close (wsc_ac07): an emptied dock's stack renders a hollow area (their
+/// TabPanel warns it is "visually empty and undroppable" once its last
+/// panel leaves), so the shell collapses it rather than leaving dead
+/// chrome. Pure so the shell executes, never decides.
+#[must_use]
+pub fn dock_closes_when_emptied(remaining_visible_panels: usize) -> bool {
+    remaining_visible_panels == 0
 }
 
 /// Whether layout events should reach the persistence policy under `mode`:
@@ -139,6 +199,54 @@ mod tests {
         let mut mode = presentation;
         mode.toggle();
         assert!(panel_visible(mode, Editor) && docks_open(mode));
+    }
+
+    /// wsc_ac02 (visibility role): the Log panel follows the authoring
+    /// chrome — visible while authoring, hidden under presentation (where
+    /// the whole bottom dock is removed anyway; the mapping is belt and
+    /// braces for the panel's own `visible()`).
+    #[test]
+    fn wsc_ac02_log_panel_visible_in_authoring_hidden_in_presentation() {
+        assert!(panel_visible(PresentationMode::Authoring, PanelRole::Log));
+        assert!(!panel_visible(PresentationMode::Presentation, PanelRole::Log));
+    }
+
+    /// wsc_ac03 (backfill decision): a restored layout without a bottom
+    /// dock gets one backfilled; a layout that already carries one is left
+    /// exactly as saved.
+    #[test]
+    fn wsc_ac03_backfill_only_when_bottom_dock_missing() {
+        assert!(bottom_dock_needs_backfill(false), "pre-round layouts backfill");
+        assert!(!bottom_dock_needs_backfill(true), "saved bottom dock restores as-is");
+    }
+
+    /// wsc_ac04 (presentation dock action): presentation removes the bottom
+    /// dock (its closed form still paints a 29px strip — set_open is not
+    /// enough); authoring rebuilds it from the stash. Toggle symmetry rides
+    /// PresentationMode's tested machine.
+    #[test]
+    fn wsc_ac04_presentation_removes_bottom_dock_authoring_rebuilds() {
+        assert_eq!(
+            bottom_dock_action(PresentationMode::Presentation),
+            BottomDockAction::Remove
+        );
+        assert_eq!(
+            bottom_dock_action(PresentationMode::Authoring),
+            BottomDockAction::Rebuild
+        );
+
+        let mut mode = PresentationMode::Presentation;
+        mode.toggle();
+        assert_eq!(bottom_dock_action(mode), BottomDockAction::Rebuild);
+    }
+
+    /// wsc_ac07 (emptied-dock decision): a menu-move that empties its
+    /// source dock closes it; any remaining visible panel keeps it open.
+    #[test]
+    fn wsc_ac07_emptied_source_dock_closes() {
+        assert!(dock_closes_when_emptied(0), "hollow docks collapse");
+        assert!(!dock_closes_when_emptied(1), "an occupied dock stays");
+        assert!(!dock_closes_when_emptied(3));
     }
 
     /// aws_ac03 (presentation guard): layout events persist only while
