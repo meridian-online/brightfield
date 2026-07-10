@@ -138,15 +138,41 @@ pub fn render_colour_legend(
 /// [`Scale::Sequential`] draws a gradient bar. No-op for any other scale.
 ///
 /// This is the single entry point both the inline and standalone paths call so
-/// the swatch/bar choice lives in one place.
+/// the swatch/bar choice lives in one place. Delegates to
+/// [`render_colour_legend_at_selected`] with no active selection, so its output
+/// is byte-identical to the pre-selected-state renderer.
 pub fn render_colour_legend_at(
     scene: &mut Scene,
     box_x: f64,
     box_y: f64,
     colour_scale: &Scale,
 ) {
+    render_colour_legend_at_selected(scene, box_x, box_y, colour_scale, None);
+}
+
+/// Alpha multiplier applied to every legend entry that is NOT the selected one,
+/// when a selection is active — dims the others so the active category reads as
+/// highlighted (card 0006, cfr_ac06). Applies to the swatch AND its label only;
+/// the panel, border, entry rects, and sizes are untouched.
+const UNSELECTED_ENTRY_ALPHA: f32 = 0.35;
+
+/// Render a colour legend at `(box_x, box_y)` with an optional selected entry
+/// (card 0006 selected-state). `selected` is the index of the categorical entry
+/// drawn at full strength while every OTHER swatch and label dims to
+/// [`UNSELECTED_ENTRY_ALPHA`]; `None` draws every entry at full strength —
+/// byte-identical to the pre-selection output, since the `None` path multiplies
+/// no alpha. Panel geometry, entry rects, and sizes are untouched (selected
+/// state is colour/alpha only). Sequential (gradient) legends have no discrete
+/// entries and ignore `selected`.
+pub fn render_colour_legend_at_selected(
+    scene: &mut Scene,
+    box_x: f64,
+    box_y: f64,
+    colour_scale: &Scale,
+    selected: Option<usize>,
+) {
     match colour_scale {
-        Scale::Colour { .. } => render_swatch_legend_at(scene, box_x, box_y, colour_scale),
+        Scale::Colour { .. } => render_swatch_legend_at(scene, box_x, box_y, colour_scale, selected),
         Scale::Sequential { .. } => render_sequential_legend_at(scene, box_x, box_y, colour_scale),
         _ => {}
     }
@@ -154,12 +180,16 @@ pub fn render_colour_legend_at(
 
 /// Render a categorical swatch legend with its panel's top-left corner at
 /// `(box_x, box_y)`. Each entry is a coloured swatch and its category label.
-/// No-op for a non-colour or empty scale.
+/// No-op for a non-colour or empty scale. When `selected` is `Some(i)`, entry
+/// `i` draws at full strength and every other swatch and label dims to
+/// [`UNSELECTED_ENTRY_ALPHA`]; `None` draws every entry at full strength (no
+/// alpha arithmetic, so the output matches the pre-selected-state renderer).
 fn render_swatch_legend_at(
     scene: &mut Scene,
     box_x: f64,
     box_y: f64,
     colour_scale: &Scale,
+    selected: Option<usize>,
 ) {
     let (categories, palette) = match colour_scale {
         Scale::Colour {
@@ -200,15 +230,24 @@ fn render_swatch_legend_at(
     for (i, (cat, colour)) in categories.iter().zip(palette.iter().cycle()).enumerate() {
         let y = legend_y_start + i as f64 * ENTRY_SPACING;
 
+        // Dim every entry that is not the selected one, when a selection is
+        // active. With no selection (`None`) nothing dims, so the swatch and
+        // label colours are untouched — byte-identical to the plain renderer.
+        let dim = matches!(selected, Some(sel) if sel != i);
+        let swatch_colour = if dim {
+            Color::new(*colour).multiply_alpha(UNSELECTED_ENTRY_ALPHA)
+        } else {
+            Color::new(*colour)
+        };
+        let label_colour = if dim {
+            LABEL_COLOUR.multiply_alpha(UNSELECTED_ENTRY_ALPHA)
+        } else {
+            LABEL_COLOUR
+        };
+
         // Colour swatch.
         let swatch = Rect::new(legend_x, y, legend_x + SWATCH_SIZE, y + SWATCH_SIZE);
-        scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            Color::new(*colour),
-            None,
-            &swatch,
-        );
+        scene.fill(Fill::NonZero, Affine::IDENTITY, swatch_colour, None, &swatch);
 
         // Entry label, vertically centred on the swatch.
         draw_text(
@@ -217,7 +256,7 @@ fn render_swatch_legend_at(
             legend_x + SWATCH_SIZE + LEGEND_LABEL_GAP,
             y + SWATCH_SIZE * 0.5 + f64::from(LABEL_SIZE) / 3.0,
             LABEL_SIZE,
-            LABEL_COLOUR,
+            label_colour,
             TextAnchor::Start,
         );
     }
@@ -517,5 +556,59 @@ mod tests {
             padding: 0.1,
         };
         assert!(swatch_entry_rects(0.0, 0.0, &band).is_empty());
+    }
+
+    // --- cfr_ac06 (card 0006): selected-state rendering ---
+
+    /// cfr_ac06: a bound categorical legend with an active selection draws the
+    /// selected entry at full strength and dims every other swatch and label —
+    /// changing the encoded COLOURS but not the geometry. With no selection the
+    /// output is byte-identical to the public `render_colour_legend_at`.
+    #[test]
+    fn cfr_ac06_selected_state_dims_others_without_moving_geometry() {
+        let scale = colour_scale_3(); // "a", "bb", "ccc"
+
+        let mut none = Scene::new();
+        render_colour_legend_at_selected(&mut none, 40.0, 40.0, &scale, None);
+        let mut selected = Scene::new();
+        render_colour_legend_at_selected(&mut selected, 40.0, 40.0, &scale, Some(1));
+        let mut delegated = Scene::new();
+        render_colour_legend_at(&mut delegated, 40.0, 40.0, &scale);
+
+        // The `None` form is byte-identical to the public delegating entry point
+        // (geometry AND colours), so every existing caller is unaffected.
+        assert_eq!(none.encoding().draw_data, delegated.encoding().draw_data);
+        assert_eq!(none.encoding().path_data, delegated.encoding().path_data);
+
+        // Selecting dims the other entries — the encoded colours differ...
+        assert_ne!(
+            none.encoding().draw_data,
+            selected.encoding().draw_data,
+            "an active selection changes the entry colours (dimmed swatches + labels)"
+        );
+        // ...but the geometry is untouched: same shape count, same coordinates,
+        // so panel size and entry rects are unchanged under selection.
+        assert_eq!(
+            none.encoding().n_paths,
+            selected.encoding().n_paths,
+            "dimming changes colour only, not the number of drawn shapes"
+        );
+        assert_eq!(
+            none.encoding().path_data,
+            selected.encoding().path_data,
+            "panel / swatch / entry-rect geometry is unchanged under selection"
+        );
+
+        // A Sequential legend has no discrete entries — `selected` is inert and
+        // its output matches the plain gradient bar.
+        let mut seq_none = Scene::new();
+        render_colour_legend_at_selected(&mut seq_none, 40.0, 40.0, &sequential_scale(), None);
+        let mut seq_sel = Scene::new();
+        render_colour_legend_at_selected(&mut seq_sel, 40.0, 40.0, &sequential_scale(), Some(0));
+        assert_eq!(
+            seq_none.encoding().draw_data,
+            seq_sel.encoding().draw_data,
+            "a gradient legend ignores selection"
+        );
     }
 }

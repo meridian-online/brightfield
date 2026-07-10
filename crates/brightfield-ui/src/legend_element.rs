@@ -149,11 +149,28 @@ fn legend_raster_geometry(width: f64, height: f64, scale_factor: f64) -> (u32, u
 }
 
 /// A cached device-resolution rasterisation of a legend scene (mirrors
-/// `chart_state::BaseRaster`).
+/// `chart_state::BaseRaster`). The `selected` category is part of the cache key
+/// (card 0006 selected-state): a bound categorical legend re-rasterises when the
+/// active category changes, but a static (unbound / Sequential) legend keeps
+/// `None` and so never re-runs Vello for a gesture elsewhere.
 struct LegendRaster {
     dev_w: u32,
     dev_h: u32,
+    selected: Option<String>,
     image: Arc<RenderImage>,
+}
+
+/// Whether a cached legend raster is still valid for the requested device size
+/// AND selected category. A pure predicate so the cache key — dims *and*
+/// selected-state — is unit-testable without a window (card 0006, cfr_ac06).
+fn raster_cache_hit(
+    cached_dims: (u32, u32),
+    cached_selected: &Option<String>,
+    dev_w: u32,
+    dev_h: u32,
+    selected: &Option<String>,
+) -> bool {
+    cached_dims == (dev_w, dev_h) && cached_selected == selected
 }
 
 /// GPUI element that paints one standalone legend. Created fresh each frame by
@@ -320,6 +337,20 @@ impl Element for LegendElement {
         if self.width <= 0.0 || self.height <= 0.0 {
             return;
         }
+
+        // The active category for a bound categorical legend, read from the
+        // engine each paint (card 0006 selected-state) so the swatch dimming
+        // tracks the contributor slot — no new invalidation plumbing: the same
+        // gesture that changes the slot already triggers this repaint, and the
+        // borrow is free because commits release theirs before the refresh. An
+        // unbound or Sequential legend stays `None` (zero behaviour change).
+        let selected: Option<String> = match (&self.binding, &self.scale) {
+            (Some((legend_index, coordinator)), Scale::Colour { categories, .. }) => coordinator
+                .borrow()
+                .legend_selected_category(*legend_index, categories),
+            _ => None,
+        };
+
         // Match chart_state::base_image: render at the ceiled device size and
         // scale the scene to fill it, so the legend stays crisp on HiDPI —
         // padded by the border's overhang so the 0.5px edge stroke isn't
@@ -332,13 +363,13 @@ impl Element for LegendElement {
             let cache = self.cache.borrow();
             cache
                 .as_ref()
-                .filter(|c| c.dev_w == dev_w && c.dev_h == dev_h)
+                .filter(|c| raster_cache_hit((c.dev_w, c.dev_h), &c.selected, dev_w, dev_h, &selected))
                 .map(|c| c.image.clone())
         };
         let image = match cached {
             Some(image) => image,
             None => {
-                let Some((scene, _)) = build_legend_scene(&self.scale) else {
+                let Some((scene, _)) = build_legend_scene(&self.scale, selected.as_deref()) else {
                     return; // non-colour scale: nothing to paint
                 };
                 let scale_x = f64::from(dev_w - 2 * pad_dev) / self.width;
@@ -373,6 +404,7 @@ impl Element for LegendElement {
                 *self.cache.borrow_mut() = Some(LegendRaster {
                     dev_w,
                     dev_h,
+                    selected: selected.clone(),
                     image: image.clone(),
                 });
                 image
@@ -396,11 +428,35 @@ impl Element for LegendElement {
 
 #[cfg(test)]
 mod tests {
-    use super::{legend_click_decision, legend_raster_geometry, swatch_hit_category};
+    use super::{
+        legend_click_decision, legend_raster_geometry, raster_cache_hit, swatch_hit_category,
+    };
     use brightfield_render::legend::swatch_entry_rects;
     use brightfield_render::scale::Scale;
     use kurbo::Point;
     use std::cell::Cell;
+
+    /// cfr_ac06 (cache key): a bound categorical legend's raster cache keys on
+    /// the selected category as well as the device dims, so a gesture that
+    /// changes the slot repaints the legend on the refresh it already triggers.
+    /// Same dims + same selection hits; a different (or newly-present) selection
+    /// misses; a static legend (`None` both) always hits regardless of the slot.
+    #[test]
+    fn cfr_ac06_raster_cache_keys_on_dims_and_selected() {
+        let g = Some("gentoo".to_string());
+        let a = Some("adelie".to_string());
+
+        // Same dims + same selection → hit.
+        assert!(raster_cache_hit((100, 40), &g, 100, 40, &g));
+        // Same dims + different selection → miss.
+        assert!(!raster_cache_hit((100, 40), &g, 100, 40, &a));
+        // No selection either side (unbound / Sequential) → hit.
+        assert!(raster_cache_hit((100, 40), &None, 100, 40, &None));
+        // A selection where there was none → miss.
+        assert!(!raster_cache_hit((100, 40), &None, 100, 40, &g));
+        // Different dims → miss regardless of selection.
+        assert!(!raster_cache_hit((100, 40), &g, 200, 40, &g));
+    }
 
     /// fww_ac04 (post-review, sub-pixel border parity): the raster buffer is
     /// padded by the panel border's 0.25 logical-px overhang, ceiled to whole

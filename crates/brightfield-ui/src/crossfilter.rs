@@ -422,6 +422,41 @@ impl CrossfilterCoordinator {
         Some(to_rebuild)
     }
 
+    /// The bound legend's currently-selected category, for the hosted
+    /// [`crate::legend_element::LegendElement`] to dim the others (card 0006
+    /// selected-state). Derived per call from the engine's contributor slot —
+    /// NO stored mirror (the card 0009 F1 lesson): for each candidate category
+    /// it builds the exact point predicate a swatch click dispatches and
+    /// compares it against `Session::contributor_predicate`, returning the
+    /// matching category.
+    ///
+    /// `None` when the slot is empty, holds a brush or any predicate matching
+    /// no candidate (the F1a scenario, now for display state), or the legend
+    /// index is unknown — so a gesture that replaces or clears the slot behind
+    /// the legend's back is observed directly, exactly as the toggle decision
+    /// reads it.
+    #[must_use]
+    pub fn legend_selected_category(
+        &self,
+        legend_index: usize,
+        categories: &[String],
+    ) -> Option<String> {
+        let binding = self.legend_bindings.get(legend_index)?;
+        let current = self
+            .session
+            .contributor_predicate(&binding.selection_name, &binding.contributor.0)?;
+        categories
+            .iter()
+            .find(|cat| {
+                let predicate = point_predicate(
+                    &binding.column,
+                    &SelectionValue::Text((*cat).clone()).literal(),
+                );
+                current == &predicate
+            })
+            .cloned()
+    }
+
     /// Fold re-execution results into the per-mark batch store, recording which
     /// plots need their scene rebuilt. A failed mark keeps its previous batch.
     fn absorb(
@@ -1399,5 +1434,69 @@ hconcat:
         assert!(slot_expr(&c).unwrap().contains("'gentoo'"));
         assert_eq!(rows(&c), 3);
         assert_ne!(rows(&c), baseline);
+    }
+
+    /// cfr_ac05 (selected-category lookup): `legend_selected_category` reads the
+    /// bound legend's active category from the engine's contributor slot per
+    /// call — never a UI mirror. Select → Some; switch → the new category;
+    /// toggle off → None; a brush replacing the slot → None (the F1a scenario,
+    /// now for display state); an external clear → None. Unknown index → None.
+    #[test]
+    fn cfr_ac05_legend_selected_category_reads_the_engine_slot() {
+        use brightfield_sql::ir::Predicate;
+
+        let coord = legend_toggle_coordinator();
+        let mut c = coord.borrow_mut();
+        let categories: Vec<String> = ["adelie", "gentoo", "chinstrap"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        // Empty slot → None.
+        assert_eq!(c.legend_selected_category(0, &categories), None);
+
+        // Select gentoo → Some(gentoo).
+        assert!(c.apply_legend_click(0, Some("gentoo")).is_some());
+        assert_eq!(
+            c.legend_selected_category(0, &categories).as_deref(),
+            Some("gentoo")
+        );
+
+        // Switch to adelie → the new category.
+        assert!(c.apply_legend_click(0, Some("adelie")).is_some());
+        assert_eq!(
+            c.legend_selected_category(0, &categories).as_deref(),
+            Some("adelie")
+        );
+
+        // Toggle adelie off → None.
+        assert!(c.apply_legend_click(0, Some("adelie")).is_some());
+        assert_eq!(c.legend_selected_category(0, &categories), None);
+
+        // A brush REPLACES the slot with a non-category predicate → None (the
+        // display state must not claim a category the slot no longer holds).
+        assert!(c.apply_legend_click(0, Some("gentoo")).is_some());
+        let contributor = c.legend_bindings[0].contributor.clone();
+        let _ = c
+            .session
+            .dispatch("sel", contributor, Predicate::Expr("x >= 1".to_string()));
+        assert_eq!(
+            c.legend_selected_category(0, &categories),
+            None,
+            "a brush in the slot matches no candidate category"
+        );
+
+        // An external clear empties the slot behind the legend's back → None.
+        assert!(c.apply_legend_click(0, Some("chinstrap")).is_some());
+        assert_eq!(
+            c.legend_selected_category(0, &categories).as_deref(),
+            Some("chinstrap")
+        );
+        let contributor = c.legend_bindings[0].contributor.clone();
+        let _ = c.session.clear("sel", contributor);
+        assert_eq!(c.legend_selected_category(0, &categories), None);
+
+        // Unknown legend index → None.
+        assert_eq!(c.legend_selected_category(9, &categories), None);
     }
 }
