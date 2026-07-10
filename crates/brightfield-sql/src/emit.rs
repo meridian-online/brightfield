@@ -241,6 +241,15 @@ pub(crate) fn spec_value_to_sql_literal(val: &SpecValue) -> String {
             }
             out
         }
+        // An aggregate channel transform reaching a kwarg/literal position is
+        // degenerate (aggregates belong on mark channels, consumed by the
+        // hexbin / cell lowerers, not in data-source kwargs). Render the SQL
+        // aggregate call so the output is at least valid SQL rather than a
+        // panic. `count` with no column becomes `count(*)`.
+        SpecValue::Aggregate { func, column } => match column {
+            Some(col) => format!("{}(\"{}\")", func.wire_name(), col),
+            None => format!("{}(*)", func.wire_name()),
+        },
     }
 }
 
