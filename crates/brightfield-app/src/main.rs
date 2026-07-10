@@ -30,10 +30,7 @@ use brightfield_engine::{Engine, Session};
 use brightfield_render::channel::{Channel, ChannelMap};
 use brightfield_render::layout::ChartLayout;
 use brightfield_render::legend::{colour_legend_size, render_colour_legend_at};
-use brightfield_render::mark::{
-    default_renderers, find_renderer, CellRenderer, ContourRenderer, HeatmapRenderer,
-    MarkRenderer, RasterRenderer,
-};
+use brightfield_render::mark::{configured_renderer, default_renderers, find_renderer, MarkRenderer};
 use brightfield_render::scale::{Scale, ScaleSet, SequentialScheme};
 use brightfield_render::scene::{build_multi_mark_scene, compose_dashboard, ChartData};
 use brightfield_spec::analysis::analyse_spec;
@@ -42,7 +39,7 @@ use brightfield_spec::layout::{
     placed_legends, placed_plots, Rect,
 };
 use brightfield_spec::parse_spec_path;
-use brightfield_spec::vocab::{InputKind, LegendChannel, MarkKind};
+use brightfield_spec::vocab::{InputKind, LegendChannel};
 use brightfield_sql::{collect_marks, collect_plot_groups};
 use brightfield_ui::chart_view::BrushBinding;
 use brightfield_ui::{CrossfilterCoordinator, LivePlot, MarkInput, SliderBinding};
@@ -187,10 +184,11 @@ fn colour_scale_of(scales: &ScaleSet) -> Option<Scale> {
 
 /// Resolve a raster plot's colour scheme from its `colorScheme` attribute,
 /// defaulting to viridis and warning on an unrecognised name. `colorScheme` is a
-/// plot-level attribute (Mosaic's colour scale is plot-scoped); the resolved
-/// scheme drives the first render and rides [`LivePlotMeta::scheme`] to the live
-/// cross-filter path, so a rebuild constructs the same scheme-configured raster
-/// renderer (card 0016, ac-06).
+/// plot-level attribute (Mosaic's colour scale is plot-scoped). The resolved
+/// scheme is baked into each mark's `MarkInput::renderer_override`
+/// (`configured_renderer`) at assembly, which is what carries scheme fidelity to
+/// the live rebuild; it is ALSO recorded in [`LivePlotMeta::scheme`] for the
+/// hot-reload chrome gate only (card 0016).
 fn raster_scheme(color_scheme: Option<&brightfield_spec::ast::SpecValue>) -> SequentialScheme {
     use brightfield_spec::ast::SpecValue;
     match color_scheme {
@@ -430,9 +428,12 @@ struct LivePlotMeta {
     /// standalone `legend:` node relocated it) — carried to the coordinator so a
     /// live re-render keeps the same suppression.
     draw_inline_legend: bool,
-    /// The plot's resolved `colorScheme` (default viridis) — carried to the
-    /// coordinator so a live rebuild constructs the same scheme-configured
-    /// raster renderer the first render used (card 0016).
+    /// The plot's resolved `colorScheme` (default viridis), for the hot-reload
+    /// chrome gate ONLY (feeds `ChromeSnapshot::plot_render_meta`): a rebuild
+    /// that changes a plot's scheme must fall back to "restart to apply", since
+    /// the watcher never rebuilds the coordinator and a gesture would otherwise
+    /// re-run the old scheme. Live-rebuild scheme fidelity does NOT ride this
+    /// field — it rides each mark's `MarkInput::renderer_override`.
     scheme: SequentialScheme,
 }
 
@@ -655,6 +656,9 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             batch,
             channels: ChannelMap::from_mark(mark),
             kind: mark.kind,
+            // Populated once per mark below, when its owning plot's colorScheme
+            // is resolved (a mark belongs to exactly one plot).
+            renderer_override: None,
         });
     }
 
@@ -713,58 +717,43 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             .map(|(_, node)| raster_scheme(node.attributes.get("colorScheme")))
             .unwrap_or_default();
 
-        // Owned per-mark renderer overrides. The ramp-fill marks (raster,
-        // heatmap, cell) use scheme-configured renderers, and heatmap/contour
-        // carry their mark-level attributes (bandwidth, thresholds) — built
-        // here so plot colorScheme and mark attrs reach the render; every
-        // other mark borrows the shared registry. Declared before `chart_data`
-        // so the boxes outlive the references into them.
-        let mark_boxes: Vec<Option<Box<dyn MarkRenderer + Send + Sync>>> = group
-            .mark_indices
-            .iter()
-            .map(|&mi| {
-                let kind = mark_inputs.get(mi)?.kind;
-                match kind {
-                    MarkKind::Raster => Some(
-                        Box::new(RasterRenderer { scheme }) as Box<dyn MarkRenderer + Send + Sync>
-                    ),
-                    MarkKind::Heatmap => Some(Box::new(HeatmapRenderer {
-                        scheme,
-                        bandwidth: marks.get(mi).and_then(|mk| mark_attr_f64(mk, "bandwidth")),
-                    }) as Box<dyn MarkRenderer + Send + Sync>),
-                    MarkKind::Cell => Some(
-                        Box::new(CellRenderer { scheme }) as Box<dyn MarkRenderer + Send + Sync>
-                    ),
-                    MarkKind::Contour => Some(Box::new(ContourRenderer {
-                        // `thresholds` on contour is the iso-level count
-                        // (renderer-side; the lowerer registration shields it
-                        // from the SQL bin count).
-                        thresholds: marks
-                            .get(mi)
-                            .and_then(|mk| mark_attr_f64(mk, "thresholds"))
-                            .filter(|t| *t >= 1.0)
-                            .map(|t| t as usize),
-                        bandwidth: marks.get(mi).and_then(|mk| mark_attr_f64(mk, "bandwidth")),
-                    }) as Box<dyn MarkRenderer + Send + Sync>),
-                    _ => None,
-                }
-            })
-            .collect();
+        // Populate each of this plot's marks' `renderer_override` ONCE, from
+        // the plot's colorScheme plus the mark's attributes (`configured_renderer`
+        // owns the raster/heatmap/cell scheme + heatmap/contour bandwidth +
+        // contour thresholds match). This same override then drives BOTH the
+        // first render below and every live cross-filter rebuild (it rides
+        // `MarkInput` into the coordinator), so a mark renders identically each
+        // time — one construction site, no drift. `thresholds` on contour is the
+        // iso-level count (renderer-side; the lowerer registration shields it
+        // from the SQL bin count).
+        for &mi in &group.mark_indices {
+            let Some(kind) = mark_inputs.get(mi).map(|m| m.kind) else {
+                continue;
+            };
+            let bandwidth = marks.get(mi).and_then(|mk| mark_attr_f64(mk, "bandwidth"));
+            let thresholds = marks
+                .get(mi)
+                .and_then(|mk| mark_attr_f64(mk, "thresholds"))
+                .filter(|t| *t >= 1.0)
+                .map(|t| t as usize);
+            if let Some(m) = mark_inputs.get_mut(mi) {
+                m.renderer_override = configured_renderer(kind, scheme, bandwidth, thresholds);
+            }
+        }
 
         let mut chart_data: Vec<ChartData<'_>> = Vec::new();
-        for (j, &mi) in group.mark_indices.iter().enumerate() {
+        for &mi in &group.mark_indices {
             let Some(m) = mark_inputs.get(mi) else { continue };
             let Some(batch) = m.batch.as_ref() else { continue };
-            let renderer: &dyn MarkRenderer = if let Some(b) = &mark_boxes[j] {
-                b.as_ref()
-            } else {
-                match find_renderer(&registry, m.kind) {
+            let renderer: &dyn MarkRenderer = match m.renderer_override.as_deref() {
+                Some(r) => r,
+                None => match find_renderer(&registry, m.kind) {
                     Some(r) => r,
                     None => {
                         eprintln!("warning: no renderer for mark kind {:?} — skipping", m.kind);
                         continue;
                     }
-                }
+                },
             };
             chart_data.push(ChartData {
                 batch,
@@ -1241,9 +1230,12 @@ fn main() {
                     mark_indices: meta.mark_indices,
                     layout: meta.layout,
                     bindings: meta.bindings,
-                    scales: meta.scales,
+                    // Displayed and launch scales start equal (the launch
+                    // inference); a rebuild folds a fresh inference against
+                    // launch_scales and updates `scales` (widen-only).
+                    scales: meta.scales.clone(),
+                    launch_scales: meta.scales,
                     draw_inline_legend: meta.draw_inline_legend,
-                    scheme: meta.scheme,
                     state: w.state.clone(),
                 })
                 .collect();

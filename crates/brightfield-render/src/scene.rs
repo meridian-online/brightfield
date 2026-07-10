@@ -207,10 +207,21 @@ pub fn build_multi_mark_scene(
     if entries.is_empty() {
         return (Scene::new(), ScaleSet::new());
     }
+    let scales = infer_multi_mark_scales(entries);
+    let scene = draw_multi_mark_scene(entries, draw_inline_legend, &scales);
+    (scene, scales)
+}
 
+/// Infer the shared scale set for a multi-mark plot: `infer_scales_multi` to
+/// union column domains, then each mark's `augment_scales` (regression extents,
+/// 1D-density perpendicular axis, the density-family Fill Sequential and half-bin
+/// widening), then the zero-baseline anchor, then the first entry's view extent.
+/// The inference half of [`build_multi_mark_scene`], extracted so a live rebuild
+/// can re-infer FRESH scales from the current batches and fold them against the
+/// launch set via [`crate::scale::anchor_scales`]. Callers guarantee `entries`
+/// is non-empty.
+fn infer_multi_mark_scales(entries: &[&ChartData<'_>]) -> ScaleSet {
     let layout = &entries[0].layout;
-    let mut scene = Scene::new();
-    render_background(&mut scene, layout);
 
     // Collect (batch, channel_map) pairs for multi-scale inference.
     let pairs: Vec<(&RecordBatch, &ChannelMap)> = entries
@@ -264,6 +275,24 @@ pub fn build_multi_mark_scene(
         }
     }
 
+    scales
+}
+
+/// Draw a multi-mark plot's background, grid, marks, axes, and inline legend
+/// against an ALREADY-RESOLVED `scales`. The shared drawing half of
+/// [`build_multi_mark_scene`] (which infers `scales` first) and
+/// [`build_multi_mark_scene_anchored`] (which folds a fresh inference against a
+/// launch set), so both render byte-identical geometry from the same scale set.
+/// Callers guarantee `entries` is non-empty.
+fn draw_multi_mark_scene(
+    entries: &[&ChartData<'_>],
+    draw_inline_legend: bool,
+    scales: &ScaleSet,
+) -> Scene {
+    let layout = &entries[0].layout;
+    let mut scene = Scene::new();
+    render_background(&mut scene, layout);
+
     // Grid lines (behind marks).
     if let Some(x_scale) = scales.get(Channel::X) {
         let x_ticks = compute_ticks(x_scale, 5);
@@ -282,7 +311,7 @@ pub fn build_multi_mark_scene(
             &mut scene,
             entry.batch,
             entry.channel_map,
-            &scales,
+            scales,
             entry.highlight,
         );
     }
@@ -305,7 +334,35 @@ pub fn build_multi_mark_scene(
         }
     }
 
-    (scene, scales)
+    scene
+}
+
+/// Launch-anchored sibling of [`build_multi_mark_scene`]: infers FRESH scales
+/// from the current `entries`, folds them against the immutable `launch` set via
+/// [`crate::scale::anchor_scales`] (widen-only), and draws against the result —
+/// returning the scene AND the anchored scales it rendered against (the caller
+/// stores them as the plot's displayed set so brush/click inversion matches what
+/// is on screen).
+///
+/// The cross-filter coordinator rebuilds every gesture (brush, point click,
+/// slider, legend click) through this. A subset filter yields exactly `launch`,
+/// so axes, colour assignments, and ramp anchoring hold still — a gesture reads
+/// as FILTERING, not redrawing. A gesture that REWRITES the query (a slider
+/// changing a `$param`) can surface rows outside the launch domain; the anchor
+/// widens to keep them on-plot instead of clipping them into invisibility.
+/// Returns `(empty scene, launch.clone())` for empty `entries`.
+pub fn build_multi_mark_scene_anchored(
+    entries: &[&ChartData<'_>],
+    draw_inline_legend: bool,
+    launch: &ScaleSet,
+) -> (Scene, ScaleSet) {
+    if entries.is_empty() {
+        return (Scene::new(), launch.clone());
+    }
+    let fresh = infer_multi_mark_scales(entries);
+    let anchored = crate::scale::anchor_scales(launch, fresh);
+    let scene = draw_multi_mark_scene(entries, draw_inline_legend, &anchored);
+    (scene, anchored)
 }
 
 /// Compose pre-rendered plot scenes into one dashboard scene.

@@ -1,0 +1,57 @@
+goal: >
+  Cross-filter render fidelity: make a live gesture read as FILTERING, not
+  redrawing. Three items in one coordinator territory. (1) Launch-pinned
+  scales — subscriber rebuilds render against the ScaleSet captured when the
+  coordinator was built instead of re-inferring from the filtered batch, so
+  axes, colour assignments, and ramp anchoring hold still while the data
+  moves; applies to every gesture (brush, point click, slider, legend click).
+  (2) Legend selected-state — a bound categorical legend shows which category
+  is active by dimming the non-selected entries, derived from the engine's
+  contributor slot each paint. (3) The live renderer-config seam — every mark
+  rebuilds through the same configured renderer its first render used
+  (scheme, bandwidth, thresholds), deleting render_plot_scene's Raster-only
+  special case and closing the dmk_ac02 + 0016 raster-scheme corrections.
+  Contract and staging rationale: tabletop-note.md alongside this spec.
+
+constraints:
+  - "Headless byte-identity gate (halt condition): every pre-existing example PNG renders byte-identical to main. The headless path renders launch state (inferring scale path, no selection, first-render renderers), so all three items must be byte-neutral there. Exemption-free, as since #42."
+  - "No engine-crate change: Session::contributor_predicate (read-only, exists) is the sole engine surface the legend state derives from. Needing more is an escalation, not a workaround."
+  - "brightfield-render/src/legend.rs stays additive: the selected-state variant is a new fn (or a new Option parameter threaded such that the None form is provably byte-identical); existing callers' output must not change. Panel geometry, entry rects, and sizes are untouched — selected-state is colour/alpha only."
+  - "Semantic-layer rule: every decision added this round (pinned-scale selection, selected-category lookup, dim rendering, renderer-override dispatch) lives in gpui-free code (crossfilter.rs data half, legend_scene.rs, brightfield-render); gpui files only host caching and paint."
+  - "The hot-reload chrome gate (ChromeSnapshot / chrome_divergence) is unchanged. The coordinator-staleness-on-reload gap is recorded in the tabletop note as a named follow-up, not touched here."
+  - "LivePlot.scheme and render_plot_scene's scheme parameter are DELETED once the per-mark renderer override lands (LivePlotMeta.scheme stays — it feeds the chrome gate). Sanctioned churn: fww_ac06 and render_plot_scene tests rework onto the override seam, keeping their assertions; MarkInput struct literals across tests gain the new field."
+  - "Scale pinning covers the ENTIRE launch ScaleSet — positional AND Fill/Colour (design call, rationale in tabletop-note Trade-offs). LivePlot.scales becomes immutable after construction: build_plot_scene stops writing it, and brush inversion keeps reading it (inversion and rendering stay consistent by construction)."
+
+acceptance_criteria:
+  - id: ac-01
+    ac_type: code
+    description: "Launch-pinned scales: a subscriber rebuild renders grid, marks, axes, and inline legend against the plot's stored launch ScaleSet — no re-inference, no augment_scales, no zero-baseline pass (the pinned set already went through all of those at launch). build_plot_scene no longer overwrites LivePlot.scales; the render crate gains a pinned-scales scene entry point sharing its drawing half with build_multi_mark_scene. [Correction 2026-07-10 (F1): the model shipped is launch-ANCHORED widen-only, not literally pinned. A rebuild infers fresh scales, then folds them against the launch set — continuous channels union (widen-only, keeping the launch range), categorical launch-wins, launch-absent channels adopted from fresh. A subset filter folds to exactly launch (pixel-identical, so 'pinned' held for the subset case this AC describes), while a superset (a slider that WIDENS the query) widens the domain to admit the new data instead of clipping it. The render entry point is build_multi_mark_scene_anchored (was named _pinned) and returns the anchored ScaleSet build_plot_scene stores as LivePlot.scales for brush inversion.]"
+    verification: "cfr_ac01: unit — after apply_legend_click (and apply_slider) filters a subscriber, the plot's stored ScaleSet compares equal to its pre-gesture value; the rebuilt scene's encoding equals a scene built directly from the launch scales over the filtered batch, and differs from the old re-inferring build (proving the axes would have jumped). [Correction 2026-07-10 (F1): the 'equals a scene built from the launch scales over the filtered batch' oracle is the launch-pinned reconstruction, which is exact only for a SUBSET (where anchoring folds to launch). cfr_ac01 tests the subset directly (anchored domain_max == launch, anchored scene differs from the re-inferring build); the superset half — a widen that admits a new point inside the plot rather than clipping it, then a byte-identical round-trip — is cfr_f1_superset_widens_scales_and_admits_new_point.] verifies: capability"
+  - id: ac-02
+    ac_type: code
+    description: "All-channel pinning: colour stays a stable frame of reference under filtering. A categorical scatter filtered to one species still encodes that species' launch palette colour (not a re-inferred single-category palette); a Sequential-fill mark keeps its launch domain anchoring (no ramp re-anchoring to the filtered max). Records the dissolution of the 0016-deferred hosted-legend-refresh item: the static hosted legend is now honest because the scale it displays no longer drifts. [Correction 2026-07-10 (F2): under the launch-anchored fold, categorical Fill is launch-wins and Sequential Fill is widen-only — both hold this AC for the subset/filter case. The new sub-case: a channel ABSENT at launch (a cross-filtered raster whose batch is None until a selection absorbs data, so launch has no Fill ramp at all) is ADOPTED from fresh inference on rebuild, so the raster renders through its configured scheme's ramp rather than the legacy alpha-on-steelblue fallback. Covered by cfr_f2_absorbed_raster_adopts_configured_ramp.]"
+    verification: "cfr_ac02: scene probe — filtered rebuild of a fill:species dot plot encodes the launch colour for the surviving category (packed-RGBA sampling per the #36 precedent); a heatmap rebuild's Fill Sequential compares equal to the launch scale. [Correction 2026-07-10 (F3): cfr_ac02 additionally probes the heatmap cell COLOURS, not just the Fill domain equality — a filtered heatmap's anchored cells differ byte-for-byte from cells re-anchored to the filtered max, which catches an in-renderer local-max regression that a domain-only check would miss.] verifies: capability"
+  - id: ac-03
+    ac_type: code
+    description: "Round-trip identity (the crown invariant): a gesture sequence that returns the engine to unfiltered state — select a category, then toggle it off — rebuilds a scene whose encoding is identical to the launch scene, for BOTH a plain dot plot and a scheme+bandwidth-configured heatmap. This single invariant catches any residual re-inference (item 1) and any renderer-config loss (item 3)."
+    verification: "cfr_ac03: integration test over a real session (LEGEND_TOGGLE_SPEC-style fixture + a blues/bandwidth heatmap fixture): capture launch scene encoding, select, toggle off, rebuild, assert encoding equality. verifies: capability"
+  - id: ac-04
+    ac_type: code
+    description: "Live renderer-config seam: MarkInput carries the mark's configured renderer (Option<Box<dyn MarkRenderer + Send + Sync>>, built ONCE during app assembly from plot colorScheme + mark attrs — raster/heatmap/cell scheme, heatmap/contour bandwidth, contour thresholds); the first render and every live rebuild dispatch through it, falling back to the registry for unconfigured marks. render_plot_scene's Raster-only special case, its scheme parameter, and LivePlot.scheme are deleted. Closes the dmk_ac02 correction (heatmap/cell scheme + bandwidth + thresholds live losses) and the 0016 raster-scheme corner via one seam."
+    verification: "cfr_ac04: unit — a blues heatmap MarkInput rebuilds with blues stops and its declared bandwidth (probe the Fill scale and the cell geometry, which Silverman-vs-explicit bandwidth visibly changes); a contour override keeps its threshold count; a dot mark (no override) still renders via the registry. The reworked fww_ac06 asserts raster scheme survival through the same seam. verifies: capability"
+  - id: ac-05
+    ac_type: code
+    description: "Selected-category lookup: the coordinator exposes the bound legend's currently-selected category, derived per call by comparing Session::contributor_predicate against each candidate category's point predicate — no stored mirror. None when the slot is empty, holds a brush, or holds a predicate matching no candidate."
+    verification: "cfr_ac05: unit against a real session — select gentoo => Some(gentoo); switch to adelie => Some(adelie); toggle off => None; a brush replacing the slot => None (the F1a scenario, now for display state); an external clear => None. verifies: capability"
+  - id: ac-06
+    ac_type: code
+    description: "Selected-state rendering: a bound categorical legend with an active selection draws the selected entry at full strength and every other entry (swatch AND label) dimmed to 0.35 alpha; with no selection all entries draw at full strength, byte-identical to today's output. Geometry unchanged (same panel size, same entry rects). The LegendElement raster cache key includes the selected category, so any gesture that changes the slot (legend click, brush replacing it, external clear) repaints the legend on the window refresh the gesture already triggers — no new invalidation plumbing."
+    verification: "cfr_ac06: scene probe — the selected-state scene differs from the no-selection scene; the None form's encoding equals the pre-change render_colour_legend_at output; entry rects unchanged under selection. Cache unit test: same dims + different selected category = miss, same selected = hit. Unbound and Sequential legends: no behaviour change. verifies: capability"
+  - id: ac-07
+    ac_type: manual
+    description: "Interaction feel (Hugh, in-app): on the legend-select example, clicking a swatch filters the subscriber WITHOUT its axes moving, dims the other swatches, and a second click restores everything; brushing the crossfilter example holds the subscriber's axes; a non-viridis heatmap keeps its scheme and bandwidth across a gesture. The PR holds for this eyeball."
+    verification: "cfr_ac07: Hugh's product check in the macOS app. verifies: capability (the headless scene assertions in ac-01..06 are the stand-in: verifies: stand-in (real thing is the in-app gesture), accepted because the walkthrough loop closes it same-week)"
+  - id: ac-08
+    ac_type: gate
+    description: "Ship gate: full workspace suite green (pipefail; match cargo 1.95's condensed summary line), and EVERY example PNG byte-identical to pre-change baselines — the refactors and the None/selected=absent forms are all byte-neutral on the headless path."
+    verification: "cfr_ac08: cargo test --workspace (set -o pipefail, explicit exit check); PNG sweep against the scratchpad baselines (23 examples incl. the deterministic raster trio). Any diff = halt condition, not an exemption. verifies: capability"

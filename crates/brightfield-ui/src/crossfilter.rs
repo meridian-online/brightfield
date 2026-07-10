@@ -30,10 +30,10 @@ use brightfield_engine::error::EngineError;
 use brightfield_engine::{concat_batches, RecordBatch, Session};
 use brightfield_render::channel::{Channel, ChannelMap};
 use brightfield_render::layout::ChartLayout;
-use brightfield_render::mark::{default_renderers, find_renderer, MarkRenderer, RasterRenderer};
+use brightfield_render::mark::{default_renderers, find_renderer, MarkRenderer};
 use brightfield_render::nearest::SelectionValue;
-use brightfield_render::scale::{Scale, ScaleSet, SequentialScheme};
-use brightfield_render::scene::{build_multi_mark_scene, ChartData};
+use brightfield_render::scale::{Scale, ScaleSet};
+use brightfield_render::scene::{build_multi_mark_scene_anchored, ChartData};
 use brightfield_spec::analysis::{ComponentPath, LegendBinding};
 use brightfield_spec::vocab::MarkKind;
 
@@ -55,6 +55,15 @@ pub struct MarkInput {
     pub channels: ChannelMap,
     /// Mark kind (selects the renderer).
     pub kind: MarkKind,
+    /// The mark's scheme/attribute-configured renderer, built ONCE during app
+    /// assembly (`configured_renderer` from the owning plot's `colorScheme`
+    /// plus the mark's `bandwidth`/`thresholds`), or `None` for a mark that
+    /// renders through the shared registry. The SAME override the first render
+    /// used drives every live rebuild, so a heatmap/cell/raster keeps its
+    /// scheme and a heatmap/contour keeps its bandwidth/thresholds across a
+    /// gesture (card 0006 renderer seam). Render-only: no SQL / plan-hash
+    /// involvement.
+    pub renderer_override: Option<Box<dyn MarkRenderer + Send + Sync>>,
 }
 
 /// One plot in the live dashboard: its identity, the marks it owns, its layout,
@@ -68,19 +77,24 @@ pub struct LivePlot {
     pub layout: ChartLayout,
     /// Brush bindings this plot contributes (its `intervalX/Y/XY` interactors).
     pub bindings: Vec<BrushBinding>,
-    /// Data scales for inverting a pixel brush back to data coordinates.
+    /// The plot's DISPLAYED ScaleSet — the launch-anchored scales the last
+    /// rebuild rendered against. `build_plot_scene` re-infers fresh scales each
+    /// gesture and folds them against `launch_scales` (widen-only), storing the
+    /// result here; pixel-brush and click inversion read it, so inversion always
+    /// matches what is on screen. At launch state (and under any subset filter)
+    /// it equals `launch_scales` exactly (card 0006 render fidelity).
     pub scales: ScaleSet,
+    /// The plot's LAUNCH ScaleSet, captured when the coordinator was built and
+    /// immutable thereafter — the widen-only anchor every rebuild folds the
+    /// fresh inference against, so axes / colours / ramp anchoring hold still
+    /// while a query-rewrite gesture can still widen the domain to keep new rows
+    /// on-plot (F1). Never re-inferred: "launch" means "pinned at window launch".
+    pub launch_scales: ScaleSet,
     /// Whether this plot draws its own inline (top-right) colour legend. `false`
     /// when a standalone `legend: color for:` node has relocated it — resolved at
     /// the app layer and carried here so a live re-render honours the same
     /// suppression instead of resurrecting the inline legend.
     pub draw_inline_legend: bool,
-    /// The plot's declared `colorScheme` (default viridis), applied to its
-    /// raster marks — resolved at the app layer (like `draw_inline_legend`) and
-    /// carried here so a live rebuild constructs the same scheme-configured
-    /// `RasterRenderer` the first render used (card 0016, closing #36's
-    /// live-path parity gap). Render-only: no SQL / plan-hash involvement.
-    pub scheme: SequentialScheme,
     /// Reactive state entity — the scene we swap when this plot is re-filtered.
     pub state: Entity<ChartState>,
 }
@@ -415,6 +429,41 @@ impl CrossfilterCoordinator {
         Some(to_rebuild)
     }
 
+    /// The bound legend's currently-selected category, for the hosted
+    /// [`crate::legend_element::LegendElement`] to dim the others (card 0006
+    /// selected-state). Derived per call from the engine's contributor slot —
+    /// NO stored mirror (the card 0009 F1 lesson): for each candidate category
+    /// it builds the exact point predicate a swatch click dispatches and
+    /// compares it against `Session::contributor_predicate`, returning the
+    /// matching category.
+    ///
+    /// `None` when the slot is empty, holds a brush or any predicate matching
+    /// no candidate (the F1a scenario, now for display state), or the legend
+    /// index is unknown — so a gesture that replaces or clears the slot behind
+    /// the legend's back is observed directly, exactly as the toggle decision
+    /// reads it.
+    #[must_use]
+    pub fn legend_selected_category(
+        &self,
+        legend_index: usize,
+        categories: &[String],
+    ) -> Option<String> {
+        let binding = self.legend_bindings.get(legend_index)?;
+        let current = self
+            .session
+            .contributor_predicate(&binding.selection_name, &binding.contributor.0)?;
+        categories
+            .iter()
+            .find(|cat| {
+                let predicate = point_predicate(
+                    &binding.column,
+                    &SelectionValue::Text((*cat).clone()).literal(),
+                );
+                current == &predicate
+            })
+            .cloned()
+    }
+
     /// Fold re-execution results into the per-mark batch store, recording which
     /// plots need their scene rebuilt. A failed mark keeps its previous batch.
     fn absorb(
@@ -437,59 +486,76 @@ impl CrossfilterCoordinator {
         }
     }
 
-    /// Rebuild one plot's scene from the current batches of all its marks, and
-    /// refresh the plot's stored `scales` to the freshly inferred ones so a
-    /// subsequent brush on this plot inverts against the data it now shows.
+    /// Rebuild one plot's scene from the current batches of all its marks,
+    /// rendered against LAUNCH-ANCHORED scales: a fresh inference over the
+    /// current batches folded (widen-only) against the immutable launch set, so
+    /// the frame of reference holds still under a filter yet widens to keep
+    /// query-rewrite rows on-plot (card 0006 render fidelity, F1/F2). Stores the
+    /// anchored set as the plot's displayed `scales` so a subsequent brush/click
+    /// inverts against exactly what was drawn.
     fn build_plot_scene(&mut self, plot_index: usize) -> Scene {
         // Own the inputs up front so no `self.plots` borrow is held across the
         // later `self.plots[..].scales = …` write.
         let mark_indices = self.plots[plot_index].mark_indices.clone();
         let layout = self.plots[plot_index].layout.clone();
         let draw_inline_legend = self.plots[plot_index].draw_inline_legend;
-        let scheme = self.plots[plot_index].scheme;
+        let launch = self.plots[plot_index].launch_scales.clone();
 
-        let (scene, scales) = render_plot_scene(
+        let (scene, anchored) = render_plot_scene(
             &self.marks,
             &self.renderers,
             &mark_indices,
             &layout,
             draw_inline_legend,
-            scheme,
+            &launch,
         );
-        self.plots[plot_index].scales = scales;
+        self.plots[plot_index].scales = anchored;
         scene
     }
 }
 
-/// Rebuild one plot's scene from its marks, independent of any `self`/`Entity`
-/// state so it is unit-testable headlessly. `draw_inline_legend` mirrors the
-/// app's first-render suppression (a standalone `legend: color for:` relocates
-/// the inline legend), so a live re-render honours the same choice rather than
-/// resurrecting the inline legend — which now matters because every raster plot
-/// carries a Fill (Sequential) scale and would otherwise grow a gradient bar
-/// after the first brush. `scheme` likewise mirrors the plot's resolved
-/// `colorScheme`: a raster mark renders through a scheme-configured
-/// [`RasterRenderer`] (matching the headless first render) instead of the
-/// registry's viridis default (card 0016).
+/// Rebuild one plot's scene from its marks, launch-anchored, independent of any
+/// `self`/`Entity` state so it is unit-testable headlessly. Returns the scene
+/// AND the anchored scales it rendered against (the caller stores them as the
+/// plot's displayed set).
+///
+/// Renders through [`build_multi_mark_scene_anchored`]: a FRESH inference over
+/// the current batches, folded (widen-only) against the passed `launch` set. A
+/// subset filter yields exactly `launch` — axes, colour assignments, and ramp
+/// anchoring hold still — while a query-rewrite gesture (a slider changing a
+/// `$param`) widens the domain to keep new rows on-plot instead of clipping
+/// them (F1), and a mark whose batch arrived after launch contributes its
+/// scales via the fresh inference (F2).
+///
+/// Each mark dispatches to its own `renderer_override` (the scheme/attribute-
+/// configured renderer its FIRST render used — raster/heatmap/cell scheme,
+/// heatmap/contour bandwidth, contour thresholds), falling back to the shared
+/// registry for an unconfigured mark. This is the single renderer-config seam
+/// the first render and every live rebuild share (card 0006), closing the
+/// heatmap/cell/contour and raster live-scheme losses in one place.
+///
+/// `draw_inline_legend` mirrors the app's first-render suppression (a
+/// standalone `legend: color for:` relocates the inline legend), so a live
+/// re-render honours the same choice rather than resurrecting the inline
+/// legend — which matters because every raster plot carries a Fill (Sequential)
+/// scale and would otherwise grow a gradient bar after the first gesture.
 fn render_plot_scene(
     marks: &[MarkInput],
     renderers: &[(MarkKind, Box<dyn MarkRenderer + Send + Sync>)],
     mark_indices: &[usize],
     layout: &ChartLayout,
     draw_inline_legend: bool,
-    scheme: SequentialScheme,
+    launch: &ScaleSet,
 ) -> (Scene, ScaleSet) {
-    let raster = RasterRenderer { scheme };
     let chart_data: Vec<ChartData<'_>> = mark_indices
         .iter()
         .filter_map(|&mi| {
             let m = marks.get(mi)?;
             let batch = m.batch.as_ref()?;
-            let renderer: &dyn MarkRenderer = if m.kind == MarkKind::Raster {
-                &raster
-            } else {
-                find_renderer(renderers, m.kind)?
-            };
+            let renderer: &dyn MarkRenderer = m
+                .renderer_override
+                .as_deref()
+                .or_else(|| find_renderer(renderers, m.kind))?;
             Some(ChartData {
                 batch,
                 channel_map: &m.channels,
@@ -501,7 +567,7 @@ fn render_plot_scene(
         })
         .collect();
     let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
-    build_multi_mark_scene(&refs, draw_inline_legend)
+    build_multi_mark_scene_anchored(&refs, draw_inline_legend, launch)
 }
 
 /// Invert a pixel-space brush (two corners in element-local logical pixels) into
@@ -528,6 +594,85 @@ fn invert_axis(scale: Option<&Scale>, a: f64, b: f64) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use brightfield_render::mark::configured_renderer;
+    use brightfield_render::scale::{anchor_scales, SequentialScheme};
+    use brightfield_render::scene::build_multi_mark_scene;
+
+    /// Build the launch `ScaleSet` the app captures at startup: infer over the
+    /// given marks' batches through the SAME inferring multi-mark path
+    /// `build_everything` uses, so a pinned rebuild renders against exactly what
+    /// the first render saw. Mirrors `render_plot_scene`'s renderer dispatch
+    /// (mark override, else registry) so the augmenting renderer matches too.
+    fn launch_scales(
+        marks: &[MarkInput],
+        renderers: &[(MarkKind, Box<dyn MarkRenderer + Send + Sync>)],
+        mark_indices: &[usize],
+        layout: &ChartLayout,
+    ) -> ScaleSet {
+        let chart_data: Vec<ChartData<'_>> = mark_indices
+            .iter()
+            .filter_map(|&mi| {
+                let m = marks.get(mi)?;
+                let batch = m.batch.as_ref()?;
+                let renderer: &dyn MarkRenderer = m
+                    .renderer_override
+                    .as_deref()
+                    .or_else(|| find_renderer(renderers, m.kind))?;
+                Some(ChartData {
+                    batch,
+                    channel_map: &m.channels,
+                    renderer,
+                    layout: *layout,
+                    view_extent: None,
+                    highlight: None,
+                })
+            })
+            .collect();
+        let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
+        build_multi_mark_scene(&refs, true).1
+    }
+
+    /// The scene the OLD re-inferring rebuild produced: infer scales fresh from
+    /// the current batches AND render against them (no launch anchor). The
+    /// stand-in for the pre-fix behaviour a launch-anchored rebuild must differ
+    /// from once the batch is a strict subset of launch.
+    fn reinferred_scene(
+        marks: &[MarkInput],
+        renderers: &[(MarkKind, Box<dyn MarkRenderer + Send + Sync>)],
+        mark_indices: &[usize],
+        layout: &ChartLayout,
+    ) -> Scene {
+        let chart_data: Vec<ChartData<'_>> = mark_indices
+            .iter()
+            .filter_map(|&mi| {
+                let m = marks.get(mi)?;
+                let batch = m.batch.as_ref()?;
+                let renderer: &dyn MarkRenderer = m
+                    .renderer_override
+                    .as_deref()
+                    .or_else(|| find_renderer(renderers, m.kind))?;
+                Some(ChartData {
+                    batch,
+                    channel_map: &m.channels,
+                    renderer,
+                    layout: *layout,
+                    view_extent: None,
+                    highlight: None,
+                })
+            })
+            .collect();
+        let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
+        build_multi_mark_scene(&refs, true).0
+    }
+
+    /// A fingerprint of a scene's geometry (`path_data`: the packed coordinates
+    /// of every dot / line / tick) and colours (`draw_data`: every fill / stroke
+    /// paint). Two scenes with equal fingerprints are pixel-identical; a
+    /// re-fitted axis moves `path_data`, a re-anchored ramp moves `draw_data`.
+    fn scene_bytes(scene: &Scene) -> (Vec<u32>, Vec<u32>) {
+        let e = scene.encoding();
+        (e.path_data.clone(), e.draw_data.clone())
+    }
 
     /// A pixel brush inverts to the right data range through a linear scale,
     /// including the y-axis flip (screen y grows downward, data y upward).
@@ -567,21 +712,14 @@ mod tests {
         assert!((rect.y1 - 40.0).abs() < 1e-9, "y1 = {}", rect.y1);
     }
 
-    /// Regression (review finding): a live plot re-render honours the app's
-    /// inline-legend suppression instead of hardcoding it on. `render_plot_scene`
-    /// (the Entity-free core `build_plot_scene` calls) draws the inline gradient
-    /// legend for a raster plot when `draw_inline_legend` is true, and omits it
-    /// when false — so a suppressed raster plot doesn't grow a gradient bar after
-    /// the first brush.
-    #[test]
-    fn render_plot_scene_honours_inline_legend_suppression() {
+    /// A 3×3 binned grid `(x_bin, y_bin, __bf_count)` with a central peak — the
+    /// shape a density lowerer emits, consumed by raster (raw counts) and
+    /// heatmap / contour (KDE-smoothed). ≥2 distinct centres per axis so the
+    /// KDE grid builds.
+    fn grid_batch() -> (RecordBatch, ChannelMap) {
         use arrow::array::Float64Array;
         use arrow::datatypes::{DataType, Field, Schema};
-        use brightfield_render::mark::count_scene_paths;
         use std::sync::Arc;
-
-        // A minimal raster batch (x_bin, y_bin, __bf_count); its augment_scales
-        // builds a Fill Sequential, so the inline legend is a gradient bar.
         let schema = Arc::new(Schema::new(vec![
             Field::new("x_bin", DataType::Float64, false),
             Field::new("y_bin", DataType::Float64, false),
@@ -590,27 +728,53 @@ mod tests {
         let batch = RecordBatch::try_new(
             schema,
             vec![
-                Arc::new(Float64Array::from(vec![0.0, 1.0, 2.0])),
-                Arc::new(Float64Array::from(vec![0.0, 1.0, 2.0])),
-                Arc::new(Float64Array::from(vec![1.0, 5.0, 9.0])),
+                Arc::new(Float64Array::from(vec![
+                    0.0, 1.0, 2.0, 0.0, 1.0, 2.0, 0.0, 1.0, 2.0,
+                ])),
+                Arc::new(Float64Array::from(vec![
+                    0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0,
+                ])),
+                Arc::new(Float64Array::from(vec![
+                    1.0, 2.0, 1.0, 2.0, 9.0, 2.0, 1.0, 2.0, 1.0,
+                ])),
             ],
         )
         .unwrap();
         let mut channels = ChannelMap::new();
         channels.insert(Channel::X, "x_bin".to_string());
         channels.insert(Channel::Y, "y_bin".to_string());
+        (batch, channels)
+    }
+
+    /// Regression (review finding): a live plot re-render honours the app's
+    /// inline-legend suppression instead of hardcoding it on. `render_plot_scene`
+    /// (the Entity-free core `build_plot_scene` calls) draws the inline gradient
+    /// legend for a raster plot when `draw_inline_legend` is true, and omits it
+    /// when false — so a suppressed raster plot doesn't grow a gradient bar after
+    /// the first brush.
+    #[test]
+    fn render_plot_scene_honours_inline_legend_suppression() {
+        use brightfield_render::mark::count_scene_paths;
+
+        // A raster batch whose augment_scales builds a Fill Sequential, so the
+        // inline legend is a gradient bar.
+        let (batch, channels) = grid_batch();
         let marks = vec![MarkInput {
             batch: Some(batch),
             channels,
             kind: MarkKind::Raster,
+            renderer_override: None,
         }];
         let renderers = default_renderers();
         let layout = ChartLayout::new(400.0, 300.0);
+        // The launch scales (inferred once) carry the Fill Sequential; both
+        // rebuilds anchor a fresh inference of the same batch against them (a
+        // no-op — anchored == launch).
+        let launch = launch_scales(&marks, &renderers, &[0], &layout);
 
-        let (with_legend, _) =
-            render_plot_scene(&marks, &renderers, &[0], &layout, true, SequentialScheme::default());
+        let (with_legend, _) = render_plot_scene(&marks, &renderers, &[0], &layout, true, &launch);
         let (without_legend, _) =
-            render_plot_scene(&marks, &renderers, &[0], &layout, false, SequentialScheme::default());
+            render_plot_scene(&marks, &renderers, &[0], &layout, false, &launch);
         assert!(
             count_scene_paths(&with_legend) > count_scene_paths(&without_legend),
             "the inline gradient legend adds paths when draw_inline_legend is true \
@@ -620,47 +784,27 @@ mod tests {
         );
     }
 
-    /// fww_ac06 (card 0016): the live rebuild honours the plot's declared
-    /// colorScheme. Driving the Entity-free `render_plot_scene` seam for a
-    /// raster mark with `SequentialScheme::Blues` yields a Fill Sequential
-    /// whose stops are the blues ramp — matching the headless first render —
-    /// while the default stays viridis. Render-only: the scheme rides
-    /// `LivePlot` (like `draw_inline_legend`), touching no SQL or plan-hash.
+    /// fww_ac06 (card 0016, reworked onto the renderer-override seam): the live
+    /// rebuild keeps the plot's declared colorScheme because the scheme now rides
+    /// the mark's `renderer_override` (`configured_renderer`) — the SAME seam the
+    /// first render uses — not a deleted `LivePlot.scheme` field. A raster mark
+    /// whose override is the blues renderer yields a launch Fill Sequential with
+    /// the blues ramp (its `augment_scales` carries the scheme); the default
+    /// override stays viridis. Render-only: no SQL / plan-hash.
     #[test]
     fn fww_ac06_live_rebuild_uses_declared_scheme() {
-        use arrow::array::Float64Array;
-        use arrow::datatypes::{DataType, Field, Schema};
-        use std::sync::Arc;
-
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("x_bin", DataType::Float64, false),
-            Field::new("y_bin", DataType::Float64, false),
-            Field::new("__bf_count", DataType::Float64, false),
-        ]));
-        let batch = RecordBatch::try_new(
-            schema,
-            vec![
-                Arc::new(Float64Array::from(vec![0.0, 1.0])),
-                Arc::new(Float64Array::from(vec![0.0, 1.0])),
-                Arc::new(Float64Array::from(vec![2.0, 9.0])),
-            ],
-        )
-        .unwrap();
-        let mut channels = ChannelMap::new();
-        channels.insert(Channel::X, "x_bin".to_string());
-        channels.insert(Channel::Y, "y_bin".to_string());
-        let marks = vec![MarkInput {
-            batch: Some(batch),
-            channels,
-            kind: MarkKind::Raster,
-        }];
+        let (batch, channels) = grid_batch();
         let renderers = default_renderers();
         let layout = ChartLayout::new(400.0, 300.0);
 
         let stops_for = |scheme: SequentialScheme| {
-            let (_, scales) =
-                render_plot_scene(&marks, &renderers, &[0], &layout, true, scheme);
-            match scales.get(Channel::Fill) {
+            let marks = vec![MarkInput {
+                batch: Some(batch.clone()),
+                channels: channels.clone(),
+                kind: MarkKind::Raster,
+                renderer_override: configured_renderer(MarkKind::Raster, scheme, None, None),
+            }];
+            match launch_scales(&marks, &renderers, &[0], &layout).get(Channel::Fill) {
                 Some(Scale::Sequential { stops, .. }) => stops.clone(),
                 other => panic!("expected a Fill Sequential, got {other:?}"),
             }
@@ -669,12 +813,611 @@ mod tests {
         assert_eq!(
             stops_for(SequentialScheme::Blues),
             SequentialScheme::Blues.stops(),
-            "a blues plot rebuilds with the blues ramp, not the registry default"
+            "a blues raster rebuilds with the blues ramp through its override, not the default"
         );
         assert_eq!(
             stops_for(SequentialScheme::default()),
             SequentialScheme::Viridis.stops(),
-            "the default scheme remains viridis"
+            "the default override stays viridis"
+        );
+    }
+
+    /// cfr_ac01 (launch-anchored scales): after a legend click FILTERS the
+    /// subscriber to a subset, the rebuild anchors its fresh inference against
+    /// the launch scales widen-only — so a subset yields exactly the launch
+    /// domain and the axes hold still, instead of shrinking to the filtered
+    /// batch. The anchored rebuild differs from the old re-inferring build (the
+    /// axes would have jumped), and the anchored scales it stores equal launch.
+    #[test]
+    fn cfr_ac01_rebuild_anchors_to_launch_not_reinferred() {
+        let coord = legend_toggle_coordinator();
+        let mut c = coord.borrow_mut();
+        let layout = ChartLayout::new(360.0, 300.0);
+
+        // Subscriber = mark 1 (the `filterBy: $sel` dot plot). Its launch scales
+        // span the full batch (x in 1..6).
+        let launch = launch_scales(&c.marks, &c.renderers, &[1], &layout);
+        let launch_x = launch.get(Channel::X).and_then(|s| s.domain_max()).unwrap();
+
+        // Filter to gentoo → 3 of 6 rows (x in 3..5), a strict subset.
+        assert!(c.apply_legend_click(0, Some("gentoo")).is_some());
+        assert_eq!(c.marks[1].batch.as_ref().unwrap().num_rows(), 3);
+
+        // Re-inferring over the now-filtered batch yields a NARROWER x-domain —
+        // exactly the axis jump anchoring suppresses.
+        let reinferred = launch_scales(&c.marks, &c.renderers, &[1], &layout);
+        let reinferred_x = reinferred.get(Channel::X).and_then(|s| s.domain_max()).unwrap();
+        assert!(
+            reinferred_x < launch_x,
+            "re-inference would shrink the x-domain: {reinferred_x} < {launch_x}"
+        );
+
+        // The launch-anchored rebuild: a subset folds to exactly launch, so the
+        // stored (displayed) scales equal launch and the scene differs from the
+        // old re-inferring build.
+        let (anchored_scene, anchored) =
+            render_plot_scene(&c.marks, &c.renderers, &[1], &layout, true, &launch);
+        assert_eq!(
+            anchored.get(Channel::X).and_then(|s| s.domain_max()),
+            Some(launch_x),
+            "a subset filter anchors back to exactly the launch domain"
+        );
+        // The old behaviour rendered against the re-inferred (shrunk) scales —
+        // a visibly different scene (axes + point positions moved).
+        let reinferred_scene = reinferred_scene(&c.marks, &c.renderers, &[1], &layout);
+        assert_ne!(
+            scene_bytes(&anchored_scene),
+            scene_bytes(&reinferred_scene),
+            "anchored vs re-inferred rebuilds differ — the axes would have jumped"
+        );
+    }
+
+    /// cfr_ac02 (all-channel pinning — colour): a `fill:species` scatter
+    /// filtered to one species still encodes that species' LAUNCH palette
+    /// colour, not the palette[0] a single-category re-inference would assign.
+    /// Categorical Fill rides the same launch-pinned `ScaleSet` as x/y.
+    #[test]
+    fn cfr_ac02_filtered_fill_keeps_launch_colour() {
+        use arrow::array::{Float64Array, StringArray};
+        use arrow::datatypes::{DataType, Field, Schema};
+        use peniko::Color;
+        use std::sync::Arc;
+
+        fn packed(c: [f32; 4]) -> u32 {
+            Color::new(c).premultiply().to_rgba8().to_u32()
+        }
+
+        // Categories are inferred in first-appearance order, so "gentoo" (last)
+        // lands at palette index 2 — distinct from the palette[0] it would get
+        // alone.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+            Field::new("species", DataType::Utf8, false),
+        ]));
+        let full = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0, 4.0])),
+                Arc::new(Float64Array::from(vec![10.0, 20.0, 30.0, 40.0])),
+                Arc::new(StringArray::from(vec!["adelie", "chinstrap", "gentoo", "gentoo"])),
+            ],
+        )
+        .unwrap();
+        let filtered = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![3.0, 4.0])),
+                Arc::new(Float64Array::from(vec![30.0, 40.0])),
+                Arc::new(StringArray::from(vec!["gentoo", "gentoo"])),
+            ],
+        )
+        .unwrap();
+        let mut channels = ChannelMap::new();
+        channels.insert(Channel::X, "x".to_string());
+        channels.insert(Channel::Y, "y".to_string());
+        channels.insert(Channel::Fill, "species".to_string());
+
+        let renderers = default_renderers();
+        let layout = ChartLayout::new(360.0, 300.0);
+
+        let full_marks = vec![MarkInput {
+            batch: Some(full),
+            channels: channels.clone(),
+            kind: MarkKind::Dot,
+            renderer_override: None,
+        }];
+        let launch = launch_scales(&full_marks, &renderers, &[0], &layout);
+
+        // The launch colour for gentoo (index 2) differs from the colour a
+        // filtered-batch re-inference would give it (index 0).
+        let filtered_marks = vec![MarkInput {
+            batch: Some(filtered),
+            channels,
+            kind: MarkKind::Dot,
+            renderer_override: None,
+        }];
+        let reinferred = launch_scales(&filtered_marks, &renderers, &[0], &layout);
+        let launch_gentoo = launch.get(Channel::Fill).unwrap().map_colour("gentoo").unwrap();
+        let reinferred_gentoo = reinferred.get(Channel::Fill).unwrap().map_colour("gentoo").unwrap();
+        assert_ne!(
+            launch_gentoo, reinferred_gentoo,
+            "re-inference recolours gentoo (palette[2] launch vs palette[0] alone)"
+        );
+
+        // The anchored rebuild of the filtered batch encodes the LAUNCH gentoo
+        // colour — not the re-inferred one. Rendered WITHOUT the inline legend
+        // so the colour probe sees only the dots: the swatch legend would draw
+        // every category (including adelie at palette[0] == reinferred_gentoo),
+        // masking whether a dot was recoloured.
+        let (anchored_scene, _) =
+            render_plot_scene(&filtered_marks, &renderers, &[0], &layout, false, &launch);
+        let drawn: std::collections::HashSet<u32> =
+            anchored_scene.encoding().draw_data.iter().copied().collect();
+        assert!(
+            drawn.contains(&packed(launch_gentoo)),
+            "the filtered dots keep the launch palette colour for gentoo"
+        );
+        assert!(
+            !drawn.contains(&packed(reinferred_gentoo)),
+            "the filtered dots are NOT recoloured to the re-inferred single-category colour"
+        );
+
+        // --- F3: the promised heatmap-Sequential clause. A heatmap rebuilt over
+        // a FILTERED batch keeps the LAUNCH ramp domain, so its cell colours do
+        // not re-anchor to the filtered max. A regression that re-anchored the
+        // Sequential (or mapped cells against the local grid.max_density) would
+        // pass every other test and the PNG gate; this catches it. ---
+        let (hbatch, hchannels) = grid_batch();
+        // A filtered heatmap batch: same bins, smaller counts → a smaller KDE
+        // max, so a re-anchor would brighten every cell.
+        let hfiltered = {
+            use arrow::array::Float64Array;
+            use arrow::datatypes::{DataType, Field, Schema};
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("x_bin", DataType::Float64, false),
+                Field::new("y_bin", DataType::Float64, false),
+                Field::new("__bf_count", DataType::Float64, false),
+            ]));
+            RecordBatch::try_new(
+                schema,
+                vec![
+                    Arc::new(Float64Array::from(vec![
+                        0.0, 1.0, 2.0, 0.0, 1.0, 2.0, 0.0, 1.0, 2.0,
+                    ])),
+                    Arc::new(Float64Array::from(vec![
+                        0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0,
+                    ])),
+                    Arc::new(Float64Array::from(vec![
+                        1.0, 1.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0,
+                    ])),
+                ],
+            )
+            .unwrap()
+        };
+        let hmark = |batch: RecordBatch| {
+            vec![MarkInput {
+                batch: Some(batch),
+                channels: hchannels.clone(),
+                kind: MarkKind::Heatmap,
+                renderer_override: configured_renderer(
+                    MarkKind::Heatmap,
+                    SequentialScheme::default(),
+                    None,
+                    None,
+                ),
+            }]
+        };
+        let hlaunch_marks = hmark(hbatch);
+        let hlaunch = launch_scales(&hlaunch_marks, &renderers, &[0], &layout);
+        let launch_fill_max = match hlaunch.get(Channel::Fill) {
+            Some(Scale::Sequential { domain_max, .. }) => *domain_max,
+            other => panic!("expected a launch Fill Sequential, got {other:?}"),
+        };
+
+        let hfiltered_marks = hmark(hfiltered);
+        // Fresh (re-inferred) Fill over the filtered batch has a SMALLER max.
+        let hreinferred = launch_scales(&hfiltered_marks, &renderers, &[0], &layout);
+        let reinferred_fill_max = match hreinferred.get(Channel::Fill) {
+            Some(Scale::Sequential { domain_max, .. }) => *domain_max,
+            other => panic!("expected a re-inferred Fill Sequential, got {other:?}"),
+        };
+        assert!(
+            reinferred_fill_max < launch_fill_max,
+            "the filtered heatmap has a smaller density max ({reinferred_fill_max} < {launch_fill_max})"
+        );
+
+        // The anchored rebuild pins the Fill Sequential to the LAUNCH domain...
+        let (hanchored_scene, hanchored) =
+            render_plot_scene(&hfiltered_marks, &renderers, &[0], &layout, false, &hlaunch);
+        match hanchored.get(Channel::Fill) {
+            Some(Scale::Sequential { domain_max, .. }) => assert_eq!(
+                *domain_max, launch_fill_max,
+                "the heatmap's rebuilt Fill Sequential anchors to the launch domain, not the filtered max"
+            ),
+            other => panic!("expected an anchored Fill Sequential, got {other:?}"),
+        }
+        // ...and the ENCODED cell colours reflect it: rendering the SAME filtered
+        // field against the re-inferred (filtered-max) scales gives provably
+        // different colours, so a re-anchor would be visible.
+        let hreinferred_scene = reinferred_scene(&hfiltered_marks, &renderers, &[0], &layout);
+        assert_ne!(
+            scene_bytes(&hanchored_scene),
+            scene_bytes(&hreinferred_scene),
+            "launch-anchored cell colours differ from re-anchored ones (filtered max would brighten cells)"
+        );
+    }
+
+    /// cfr_ac03 (round-trip identity — the crown invariant): a gesture sequence
+    /// that returns the engine to unfiltered state rebuilds a scene byte-identical
+    /// to launch. Any residual re-inference (item 1) or renderer-config loss
+    /// (item 3) would break the equality. Checked for BOTH a plain dot plot
+    /// (via a real legend toggle) and a blues + bandwidth heatmap (via a
+    /// batch-swap round-trip through its configured override).
+    #[test]
+    fn cfr_ac03_round_trip_returns_to_launch_scene() {
+        // --- Dot plot: real session, select then toggle off. ---
+        {
+            let coord = legend_toggle_coordinator();
+            let mut c = coord.borrow_mut();
+            let layout = ChartLayout::new(360.0, 300.0);
+            let launch = launch_scales(&c.marks, &c.renderers, &[1], &layout);
+            let (launch_scene, _) =
+                render_plot_scene(&c.marks, &c.renderers, &[1], &layout, true, &launch);
+
+            assert!(c.apply_legend_click(0, Some("gentoo")).is_some());
+            assert_eq!(c.marks[1].batch.as_ref().unwrap().num_rows(), 3);
+            // Toggle the same category off → back to the full 6-row result.
+            assert!(c.apply_legend_click(0, Some("gentoo")).is_some());
+            assert_eq!(c.marks[1].batch.as_ref().unwrap().num_rows(), 6);
+
+            let (rebuilt, _) = render_plot_scene(&c.marks, &c.renderers, &[1], &layout, true, &launch);
+            assert_eq!(
+                scene_bytes(&rebuilt),
+                scene_bytes(&launch_scene),
+                "dot round-trip returns to a byte-identical launch scene"
+            );
+        }
+
+        // --- Blues + bandwidth heatmap: batch-swap round-trip. ---
+        {
+            let (full, channels) = grid_batch();
+            let renderers = default_renderers();
+            let layout = ChartLayout::new(400.0, 300.0);
+            // A filtered subset (drop the peak row) stands in for a gesture.
+            let filtered = full.slice(0, 6);
+
+            let override_of = || configured_renderer(MarkKind::Heatmap, SequentialScheme::Blues, Some(0.8), None);
+            let marks_for = |batch: RecordBatch| {
+                vec![MarkInput {
+                    batch: Some(batch),
+                    channels: channels.clone(),
+                    kind: MarkKind::Heatmap,
+                    renderer_override: override_of(),
+                }]
+            };
+
+            let launch_marks = marks_for(full.clone());
+            let launch = launch_scales(&launch_marks, &renderers, &[0], &layout);
+            let (launch_scene, _) =
+                render_plot_scene(&launch_marks, &renderers, &[0], &layout, true, &launch);
+
+            // Filter (rebuild launch-anchored, same override).
+            let filtered_marks = marks_for(filtered);
+            let (filtered_scene, _) =
+                render_plot_scene(&filtered_marks, &renderers, &[0], &layout, true, &launch);
+            assert_ne!(
+                scene_bytes(&filtered_scene),
+                scene_bytes(&launch_scene),
+                "the filter visibly changes the heatmap"
+            );
+
+            // Return to the full batch → byte-identical to launch (scheme,
+            // bandwidth, and scales all held; a subset anchors back to launch).
+            let restored_marks = marks_for(full);
+            let (restored_scene, _) =
+                render_plot_scene(&restored_marks, &renderers, &[0], &layout, true, &launch);
+            assert_eq!(
+                scene_bytes(&restored_scene),
+                scene_bytes(&launch_scene),
+                "heatmap round-trip returns to a byte-identical launch scene"
+            );
+        }
+    }
+
+    /// cfr_ac04 (live renderer-config seam): a mark rebuilds through its
+    /// `renderer_override` — the SAME configured renderer its first render used.
+    /// A blues heatmap keeps blues stops; explicit bandwidth changes the render
+    /// vs Silverman; contour keeps its thresholds (more levels ⇒ more iso-line
+    /// paths); a dot mark with no override still renders through the registry.
+    #[test]
+    fn cfr_ac04_live_rebuild_uses_configured_renderer() {
+        use brightfield_render::mark::count_scene_paths;
+
+        let (batch, channels) = grid_batch();
+        let renderers = default_renderers();
+        let layout = ChartLayout::new(400.0, 300.0);
+
+        // (a) Blues heatmap → launch Fill Sequential carries the blues ramp.
+        let blues = vec![MarkInput {
+            batch: Some(batch.clone()),
+            channels: channels.clone(),
+            kind: MarkKind::Heatmap,
+            renderer_override: configured_renderer(
+                MarkKind::Heatmap,
+                SequentialScheme::Blues,
+                None,
+                None,
+            ),
+        }];
+        match launch_scales(&blues, &renderers, &[0], &layout).get(Channel::Fill) {
+            Some(Scale::Sequential { stops, .. }) => {
+                assert_eq!(*stops, SequentialScheme::Blues.stops(), "heatmap keeps blues stops")
+            }
+            other => panic!("expected a Fill Sequential, got {other:?}"),
+        }
+
+        // (b) Explicit bandwidth renders differently from Silverman (its
+        // default). Both renders share ONE fixed ScaleSet — the widen-only
+        // union of each bandwidth's fresh scales — so the Fill ramp domain is
+        // held constant and the ONLY thing that varies between the two renders
+        // is the KDE bandwidth carried by `renderer_override`. A mental revert
+        // that dropped the override plumbing (both marks falling back to the
+        // registry's default Silverman renderer) would collapse these to
+        // identical bytes; anchoring both against `fixed` proves the difference
+        // is the override, not a re-inferred scale.
+        let marks_bw = |bandwidth: Option<f64>| {
+            vec![MarkInput {
+                batch: Some(batch.clone()),
+                channels: channels.clone(),
+                kind: MarkKind::Heatmap,
+                renderer_override: configured_renderer(
+                    MarkKind::Heatmap,
+                    SequentialScheme::default(),
+                    bandwidth,
+                    None,
+                ),
+            }]
+        };
+        let l1 = launch_scales(&marks_bw(Some(2.0)), &renderers, &[0], &layout);
+        let l2 = launch_scales(&marks_bw(None), &renderers, &[0], &layout);
+        let fixed = anchor_scales(&l1, l2);
+        assert_ne!(
+            scene_bytes(
+                &render_plot_scene(&marks_bw(Some(2.0)), &renderers, &[0], &layout, true, &fixed).0
+            ),
+            scene_bytes(
+                &render_plot_scene(&marks_bw(None), &renderers, &[0], &layout, true, &fixed).0
+            ),
+            "an explicit bandwidth changes the heatmap vs Silverman's rule"
+        );
+
+        // (c) Contour keeps its threshold count: more iso-levels ⇒ more paths.
+        let render_contour = |thresholds: Option<usize>| {
+            let marks = vec![MarkInput {
+                batch: Some(batch.clone()),
+                channels: channels.clone(),
+                kind: MarkKind::Contour,
+                renderer_override: configured_renderer(
+                    MarkKind::Contour,
+                    SequentialScheme::default(),
+                    None,
+                    thresholds,
+                ),
+            }];
+            let scales = launch_scales(&marks, &renderers, &[0], &layout);
+            count_scene_paths(&render_plot_scene(&marks, &renderers, &[0], &layout, true, &scales).0)
+        };
+        assert!(
+            render_contour(Some(8)) > render_contour(Some(2)),
+            "more contour thresholds draw more iso-line paths"
+        );
+
+        // (d) A dot mark with no override renders through the registry.
+        let dot = vec![MarkInput {
+            batch: Some(batch.clone()),
+            channels: channels.clone(),
+            kind: MarkKind::Dot,
+            renderer_override: None,
+        }];
+        let scales = launch_scales(&dot, &renderers, &[0], &layout);
+        assert!(
+            count_scene_paths(
+                &render_plot_scene(&dot, &renderers, &[0], &layout, true, &scales).0
+            ) > 0,
+            "an unconfigured dot mark still renders via the registry"
+        );
+    }
+
+    /// F1 (widen-only, the SUPERSET half of cfr_ac01): a slider that WIDENS the
+    /// query swaps in a batch whose domain is a strict superset of launch. The
+    /// launch-anchored rebuild must WIDEN to admit the new point — the opposite
+    /// failure mode from cfr_ac01's subset (which clips back to launch). A
+    /// launch-PINNED rebuild (the F1 bug) would leave the domain at launch and
+    /// the new point would render past the plot edge. Proof is at the scale the
+    /// renderer actually encodes with: the new point maps INSIDE the plot under
+    /// the anchored scale but PAST the right edge under the (pinned) launch
+    /// scale, and a round-trip back to the launch batch is byte-identical.
+    #[test]
+    fn cfr_f1_superset_widens_scales_and_admits_new_point() {
+        use arrow::array::Float64Array;
+        use arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        let dot_batch = |xs: Vec<f64>, ys: Vec<f64>| {
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(Float64Array::from(xs)),
+                    Arc::new(Float64Array::from(ys)),
+                ],
+            )
+            .unwrap()
+        };
+        let mut channels = ChannelMap::new();
+        channels.insert(Channel::X, "x".to_string());
+        channels.insert(Channel::Y, "y".to_string());
+        let dot_marks = |batch: RecordBatch| {
+            vec![MarkInput {
+                batch: Some(batch),
+                channels: channels.clone(),
+                kind: MarkKind::Dot,
+                renderer_override: None,
+            }]
+        };
+
+        let renderers = default_renderers();
+        let layout = ChartLayout::new(400.0, 300.0);
+
+        // Launch: three points spanning x 0..2. A far-away new point (x = 10)
+        // sits well outside launch, so nice-number padding can't blur subset
+        // from superset.
+        let launch_marks = dot_marks(dot_batch(vec![0.0, 1.0, 2.0], vec![0.0, 1.0, 2.0]));
+        let launch = launch_scales(&launch_marks, &renderers, &[0], &layout);
+        let (launch_scene, _) =
+            render_plot_scene(&launch_marks, &renderers, &[0], &layout, true, &launch);
+        let launch_x = launch.get(Channel::X).cloned().expect("launch has an x scale");
+        let launch_x_max = launch_x.domain_max().expect("linear x has a domain max");
+        assert!(launch_x_max < 10.0, "the new point is outside the launch domain");
+
+        // Slider widens → superset batch adds the point at x = 10.
+        let superset_marks = dot_marks(dot_batch(
+            vec![0.0, 1.0, 2.0, 10.0],
+            vec![0.0, 1.0, 2.0, 10.0],
+        ));
+        let (superset_scene, anchored) =
+            render_plot_scene(&superset_marks, &renderers, &[0], &layout, true, &launch);
+        let anchored_x = anchored.get(Channel::X).cloned().expect("anchored has an x scale");
+
+        // The domain WIDENED to include the new point (a pinned rebuild would
+        // have left it at launch_x_max).
+        assert!(
+            anchored_x.domain_max().unwrap() > launch_x_max,
+            "a superset batch widens the x-domain past launch ({:?} > {launch_x_max})",
+            anchored_x.domain_max()
+        );
+        // ...and the rebuilt scene visibly differs from the launch render.
+        assert_ne!(
+            scene_bytes(&superset_scene),
+            scene_bytes(&launch_scene),
+            "the widened rebuild is a different scene from launch"
+        );
+
+        // The load-bearing claim: the new point lands INSIDE the plot under the
+        // anchored scale, but PAST the right edge under the launch scale (the
+        // pinned counterfactual that would clip it). x range is left..right.
+        let (left, right) = (anchored_x.range_start(), anchored_x.range_end());
+        let placed = anchored_x.map_f64(10.0);
+        assert!(
+            placed >= left.min(right) - 1e-6 && placed <= left.max(right) + 1e-6,
+            "under the anchored scale the new point lands inside the plot ({placed} in {left}..{right})"
+        );
+        assert!(
+            launch_x.map_f64(10.0) > launch_x.range_end() + 1e-6,
+            "under the (pinned) launch scale the new point would render past the plot edge"
+        );
+
+        // Round-trip: slider back to the launch batch → byte-identical to launch.
+        let (restored_scene, _) =
+            render_plot_scene(&launch_marks, &renderers, &[0], &layout, true, &launch);
+        assert_eq!(
+            scene_bytes(&restored_scene),
+            scene_bytes(&launch_scene),
+            "returning to the launch batch rebuilds the byte-identical launch scene"
+        );
+    }
+
+    /// F2 (fresh-only channels are ADOPTED): a two-mark plot whose raster overlay
+    /// is empty (batch `None`) at launch. Because the raster contributes nothing,
+    /// the launch `ScaleSet` has NO `Fill` channel. When a selection absorbs data
+    /// into the raster, the rebuild must ADOPT the raster's freshly-inferred Fill
+    /// ramp — rendering its cells through the configured scheme. A launch-pinned
+    /// rebuild (the F2 bug) would keep the Fill-less launch scales, and the raster
+    /// would fall back to the legacy alpha-on-steelblue path instead of the ramp.
+    #[test]
+    fn cfr_f2_absorbed_raster_adopts_configured_ramp() {
+        use peniko::Color;
+
+        fn packed(c: [f32; 4]) -> u32 {
+            Color::new(c).premultiply().to_rgba8().to_u32()
+        }
+
+        let renderers = default_renderers();
+        let layout = ChartLayout::new(400.0, 300.0);
+        let (grid, grid_channels) = grid_batch();
+
+        // Base layer (mark 0): a plain dot layer over the grid's x/y so the plot
+        // has x/y scales at launch — but NO Fill channel, so launch has no ramp.
+        let base = MarkInput {
+            batch: Some(grid.clone()),
+            channels: {
+                let mut ch = ChannelMap::new();
+                ch.insert(Channel::X, "x_bin".to_string());
+                ch.insert(Channel::Y, "y_bin".to_string());
+                ch
+            },
+            kind: MarkKind::Dot,
+            renderer_override: None,
+        };
+        // Overlay (mark 1): a blues raster, EMPTY at launch.
+        let mut marks = vec![
+            base,
+            MarkInput {
+                batch: None,
+                channels: grid_channels.clone(),
+                kind: MarkKind::Raster,
+                renderer_override: configured_renderer(
+                    MarkKind::Raster,
+                    SequentialScheme::Blues,
+                    None,
+                    None,
+                ),
+            },
+        ];
+
+        // Launch over both marks: the empty raster is skipped, so there is no
+        // Fill scale to pin.
+        let launch = launch_scales(&marks, &renderers, &[0, 1], &layout);
+        assert!(
+            launch.get(Channel::Fill).is_none(),
+            "with the raster empty at launch there is no Fill ramp to anchor"
+        );
+
+        // Absorb: the selection populates the raster's batch.
+        marks[1].batch = Some(grid);
+
+        // Rebuild adopts the raster's fresh Fill ramp (the blues scheme).
+        let (_, anchored) = render_plot_scene(&marks, &renderers, &[0, 1], &layout, false, &launch);
+        match anchored.get(Channel::Fill) {
+            Some(Scale::Sequential { stops, .. }) => assert_eq!(
+                *stops,
+                SequentialScheme::Blues.stops(),
+                "the absorbed raster adopts its configured blues ramp"
+            ),
+            other => panic!("expected an adopted Fill Sequential, got {other:?}"),
+        }
+
+        // The raster's cells render THROUGH that ramp, not the steelblue fallback.
+        // Probe the raster in isolation (mark 1 only) so the base layer's
+        // steelblue dots can't be mistaken for a fallback cell. The peak cell
+        // (count 9 == the ramp's domain max) samples the ramp's top stop; the
+        // fallback would have painted it full-alpha steelblue (DEFAULT_COLOUR).
+        let (raster_scene, _) =
+            render_plot_scene(&marks, &renderers, &[1], &layout, false, &launch);
+        let drawn: std::collections::HashSet<u32> =
+            raster_scene.encoding().draw_data.iter().copied().collect();
+        let blues_top = *SequentialScheme::Blues.stops().last().unwrap();
+        assert!(
+            drawn.contains(&packed(blues_top)),
+            "the peak cell is coloured through the blues ramp's top stop"
+        );
+        assert!(
+            !drawn.contains(&packed([0.306, 0.475, 0.655, 1.0])),
+            "no cell falls back to full-alpha steelblue — the ramp path was taken"
         );
     }
 
@@ -743,6 +1486,7 @@ plot:
                 batch: r.ok().and_then(concat_batches),
                 channels: ChannelMap::from_mark(marks_ast[i]),
                 kind: marks_ast[i].kind,
+                renderer_override: None,
             })
             .collect();
 
@@ -815,6 +1559,7 @@ plot:
                 batch: r.ok().and_then(concat_batches),
                 channels: ChannelMap::from_mark(marks_ast[i]),
                 kind: marks_ast[i].kind,
+                renderer_override: None,
             })
             .collect();
 
@@ -898,6 +1643,7 @@ hconcat:
                 batch: r.ok().and_then(concat_batches),
                 channels: ChannelMap::from_mark(marks_ast[i]),
                 kind: marks_ast[i].kind,
+                renderer_override: None,
             })
             .collect();
 
@@ -1042,5 +1788,69 @@ hconcat:
         assert!(slot_expr(&c).unwrap().contains("'gentoo'"));
         assert_eq!(rows(&c), 3);
         assert_ne!(rows(&c), baseline);
+    }
+
+    /// cfr_ac05 (selected-category lookup): `legend_selected_category` reads the
+    /// bound legend's active category from the engine's contributor slot per
+    /// call — never a UI mirror. Select → Some; switch → the new category;
+    /// toggle off → None; a brush replacing the slot → None (the F1a scenario,
+    /// now for display state); an external clear → None. Unknown index → None.
+    #[test]
+    fn cfr_ac05_legend_selected_category_reads_the_engine_slot() {
+        use brightfield_sql::ir::Predicate;
+
+        let coord = legend_toggle_coordinator();
+        let mut c = coord.borrow_mut();
+        let categories: Vec<String> = ["adelie", "gentoo", "chinstrap"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        // Empty slot → None.
+        assert_eq!(c.legend_selected_category(0, &categories), None);
+
+        // Select gentoo → Some(gentoo).
+        assert!(c.apply_legend_click(0, Some("gentoo")).is_some());
+        assert_eq!(
+            c.legend_selected_category(0, &categories).as_deref(),
+            Some("gentoo")
+        );
+
+        // Switch to adelie → the new category.
+        assert!(c.apply_legend_click(0, Some("adelie")).is_some());
+        assert_eq!(
+            c.legend_selected_category(0, &categories).as_deref(),
+            Some("adelie")
+        );
+
+        // Toggle adelie off → None.
+        assert!(c.apply_legend_click(0, Some("adelie")).is_some());
+        assert_eq!(c.legend_selected_category(0, &categories), None);
+
+        // A brush REPLACES the slot with a non-category predicate → None (the
+        // display state must not claim a category the slot no longer holds).
+        assert!(c.apply_legend_click(0, Some("gentoo")).is_some());
+        let contributor = c.legend_bindings[0].contributor.clone();
+        let _ = c
+            .session
+            .dispatch("sel", contributor, Predicate::Expr("x >= 1".to_string()));
+        assert_eq!(
+            c.legend_selected_category(0, &categories),
+            None,
+            "a brush in the slot matches no candidate category"
+        );
+
+        // An external clear empties the slot behind the legend's back → None.
+        assert!(c.apply_legend_click(0, Some("chinstrap")).is_some());
+        assert_eq!(
+            c.legend_selected_category(0, &categories).as_deref(),
+            Some("chinstrap")
+        );
+        let contributor = c.legend_bindings[0].contributor.clone();
+        let _ = c.session.clear("sel", contributor);
+        assert_eq!(c.legend_selected_category(0, &categories), None);
+
+        // Unknown legend index → None.
+        assert_eq!(c.legend_selected_category(9, &categories), None);
     }
 }
