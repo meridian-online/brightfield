@@ -1603,10 +1603,14 @@ mod tests {
         });
     }
 
-    /// wsc_ac02 (editor-save tap): a refused save (unseeded editor) appends
-    /// the notification's exact message to the log at error severity.
-    #[gpui::test]
-    fn wsc_ac02_editor_save_refusal_reaches_the_log(cx: &mut TestAppContext) {
+    /// A Root window hosting an EditorPanel over `spec_path` seeded with
+    /// `seed`, plus the shared feedback log — the harness for the
+    /// editor-save tap tests (wsc_ac02, review F5).
+    fn build_editor_shell(
+        cx: &mut TestAppContext,
+        spec_path: PathBuf,
+        seed: Option<&str>,
+    ) -> (gpui::WindowHandle<Root>, Entity<EditorPanel>, Entity<FeedbackLog>) {
         cx.update(gpui_component::init);
         let (feedback_log, presentation) = cx.update(|cx| {
             let feedback_log = cx.new(|_| FeedbackLog::default());
@@ -1619,11 +1623,12 @@ mod tests {
             std::rc::Rc::new(std::cell::RefCell::new(None));
         let slot = editor_slot.clone();
         let log_for_editor = feedback_log.clone();
+        let seed = seed.map(str::to_string);
         let window: gpui::WindowHandle<Root> = cx.add_window(move |window, cx| {
             let editor = cx.new(|cx| {
                 EditorPanel::new(
-                    PathBuf::from("/nonexistent/brightfield-test-spec.yaml"),
-                    None, // Boot read failed: saving must refuse (truncation guard).
+                    spec_path,
+                    seed.as_deref(),
                     presentation.clone(),
                     log_for_editor.clone(),
                     window,
@@ -1634,16 +1639,32 @@ mod tests {
             Root::new(editor, window, cx)
         });
         cx.run_until_parked();
-
         let editor = editor_slot.borrow().clone().expect("editor built");
-        // Drive the save from window scope WITHOUT a lease on Root (the
-        // handler itself calls Root::update, as the real action dispatch
-        // does).
+        (window, editor, feedback_log)
+    }
+
+    /// Drive cmd-s from window scope WITHOUT a lease on Root (the handler
+    /// itself calls Root::update, as the real action dispatch does).
+    fn drive_save(cx: &mut TestAppContext, window: gpui::WindowHandle<Root>, editor: &Entity<EditorPanel>) {
+        let editor = editor.clone();
         cx.update_window(window.into(), |_, window, cx| {
             editor.update(cx, |editor, cx| editor.save(&SaveSpec, window, cx));
         })
         .expect("drive cmd-s");
         cx.run_until_parked();
+    }
+
+    /// wsc_ac02 (editor-save tap, refusal arm): a refused save (unseeded
+    /// editor) appends the notification's exact message to the log at
+    /// error severity.
+    #[gpui::test]
+    fn wsc_ac02_editor_save_refusal_reaches_the_log(cx: &mut TestAppContext) {
+        let (window, editor, feedback_log) = build_editor_shell(
+            cx,
+            PathBuf::from("/nonexistent/brightfield-test-spec.yaml"),
+            None, // Boot read failed: saving must refuse (truncation guard).
+        );
+        drive_save(cx, window, &editor);
 
         cx.update(|cx| {
             let log = feedback_log.read(cx);
@@ -1654,6 +1675,158 @@ mod tests {
                 "the notification's message, verbatim: {}",
                 log.entries()[0].message
             );
+        });
+    }
+
+    /// wsc_ac02 (editor-save tap, conflict arm — review F5): an external
+    /// change on disk under a dirty buffer defers the save with a warning,
+    /// and the log receives the same warning message the toast carried.
+    #[gpui::test]
+    fn wsc_ac02_editor_save_conflict_reaches_the_log(cx: &mut TestAppContext) {
+        let dir = std::env::temp_dir().join(format!("bf-wsc-conflict-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let path = dir.join("spec.yaml");
+        std::fs::write(&path, "original: 1\n").expect("seed file");
+
+        let (window, editor, feedback_log) =
+            build_editor_shell(cx, path.clone(), Some("original: 1\n"));
+
+        // The author edits the buffer…
+        cx.update_window(window.into(), |_, window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.state.update(cx, |state, cx| {
+                    state.set_value("edited: 2\n".to_string(), window, cx);
+                });
+            });
+        })
+        .expect("dirty the buffer");
+        // …while the file changes externally under it.
+        std::fs::write(&path, "external: 3\n").expect("external change");
+
+        drive_save(cx, window, &editor);
+
+        cx.update(|cx| {
+            let log = feedback_log.read(cx);
+            assert_eq!(log.entries().len(), 1, "the conflict was logged");
+            assert_eq!(log.entries()[0].severity, Severity::Warning, "warning, like the toast");
+            assert_eq!(
+                log.entries()[0].message,
+                "Spec changed on disk since it was loaded — save again to overwrite",
+                "the toast's message, verbatim"
+            );
+        });
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("file intact"),
+            "external: 3\n",
+            "the deferred save wrote nothing"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// wsc_ac02 (editor-save tap, write-failure arm — review F5): a save
+    /// whose atomic write fails (the spec path is a DIRECTORY, so the
+    /// final rename cannot land) logs the same "Save failed" error the
+    /// toast carried.
+    #[gpui::test]
+    fn wsc_ac02_editor_save_write_failure_reaches_the_log(cx: &mut TestAppContext) {
+        let dir = std::env::temp_dir().join(format!("bf-wsc-writeerr-{}", std::process::id()));
+        let spec_as_dir = dir.join("spec.yaml");
+        std::fs::create_dir_all(&spec_as_dir).expect("dir standing where the file should be");
+
+        // Seeded (so the save is not refused) with a buffer that differs
+        // (so it is not Unchanged); the unreadable "file" routes decide_save
+        // to Write, whose atomic rename then fails against the directory.
+        let (window, editor, feedback_log) =
+            build_editor_shell(cx, spec_as_dir.clone(), Some("original: 1\n"));
+        cx.update_window(window.into(), |_, window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.state.update(cx, |state, cx| {
+                    state.set_value("edited: 2\n".to_string(), window, cx);
+                });
+            });
+        })
+        .expect("dirty the buffer");
+
+        drive_save(cx, window, &editor);
+
+        cx.update(|cx| {
+            let log = feedback_log.read(cx);
+            assert_eq!(log.entries().len(), 1, "the write failure was logged");
+            assert_eq!(log.entries()[0].severity, Severity::Error, "error, like the toast");
+            assert!(
+                log.entries()[0].message.starts_with("Save failed: "),
+                "the toast's message shape: {}",
+                log.entries()[0].message
+            );
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// wsc_ac02 (no-clear-on-recovery, review F4): recovery clears the
+    /// sticky error NOTIFICATION but never the log — driven through the
+    /// same notify_reload_rejection + clear_reload_error pair the
+    /// watcher's rejection and recovery arms use.
+    #[gpui::test]
+    fn wsc_ac02_recovery_clears_the_notification_not_the_log(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (feedback_log, presentation) = cx.update(|cx| {
+            let feedback_log = cx.new(|_| FeedbackLog::default());
+            let presentation = cx.new(|_| PresentationState {
+                mode: PresentationMode::default(),
+            });
+            (feedback_log, presentation)
+        });
+        let panel_log = feedback_log.clone();
+        let window: gpui::WindowHandle<Root> = cx.add_window(move |window, cx| {
+            let panel = cx.new(|cx| LogPanel::new(panel_log.clone(), presentation.clone(), cx));
+            Root::new(panel, window, cx)
+        });
+        cx.run_until_parked();
+
+        // A rejection: notification pushed (sticky error) + log entry.
+        let (severity, message) = reload_feedback::reload_notification(
+            &reload_feedback::ReloadOutcome::PipelineFailed("boom"),
+        )
+        .expect("rejections surface");
+        let mut async_cx = cx.to_async();
+        notify_reload_rejection(&window, &mut async_cx, severity, message.clone(), &feedback_log);
+        cx.run_until_parked();
+
+        let notifications = window
+            .update(cx, |root, _, _| root.notification.clone())
+            .expect("read notification list");
+        cx.update(|cx| {
+            assert_eq!(
+                notifications.read(cx).notifications().len(),
+                1,
+                "the rejection raised a notification"
+            );
+            assert_eq!(feedback_log.read(cx).entries().len(), 1, "and a log entry");
+        });
+
+        // The recovery arm (a successful reload): main.rs consults
+        // clears_errors(Applied) and calls clear_reload_error.
+        assert!(reload_feedback::clears_errors(&reload_feedback::ReloadOutcome::Applied));
+        let mut async_cx = cx.to_async();
+        clear_reload_error(&window, &mut async_cx);
+        // Their dismissal is animated: the entry leaves the list 0.15s
+        // after the close — advance the test clock past it.
+        cx.executor().advance_clock(Duration::from_millis(200));
+        cx.run_until_parked();
+
+        cx.update(|cx| {
+            assert_eq!(
+                notifications.read(cx).notifications().len(),
+                0,
+                "recovery cleared the sticky error toast"
+            );
+            let log = feedback_log.read(cx);
+            assert_eq!(
+                log.entries().len(),
+                1,
+                "the log is history — recovery never clears it"
+            );
+            assert_eq!(log.entries()[0].message, message, "entry intact, verbatim");
         });
     }
 

@@ -57,7 +57,6 @@ impl FeedbackLog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reload_feedback::{clears_errors, ReloadOutcome};
 
     /// wsc_ac02 (append + order): appends land newest-first with the exact
     /// severity + message pair they were given.
@@ -105,23 +104,10 @@ mod tests {
         );
     }
 
-    /// wsc_ac02 (no-clear-on-recovery): a successful reload clears the
-    /// sticky error NOTIFICATION (reload_feedback::clears_errors) but the
-    /// log keeps its history — the model exposes no clearing path, so the
-    /// entries survive the same recovery verbatim.
-    #[test]
-    fn wsc_ac02_recovery_clears_notifications_not_the_log() {
-        let mut log = FeedbackLog::default();
-        log.append(Severity::Error, "Reload skipped (keeping last good chart): boom");
-
-        // The recovery outcome that clears the notification layer…
-        assert!(clears_errors(&ReloadOutcome::Applied));
-
-        // …has no counterpart here: history is retained in full.
-        assert_eq!(log.entries().len(), 1);
-        assert_eq!(
-            log.entries()[0].message,
-            "Reload skipped (keeping last good chart): boom"
-        );
-    }
+    // The no-clear-on-recovery property is pinned at the SHELL level
+    // (shell.rs's wsc_ac02_recovery_clears_the_notification_not_the_log,
+    // review F4): it drives the real notify_reload_rejection +
+    // clear_reload_error pair and asserts the notification cleared while
+    // the log retained its entry. The model side of the guarantee is
+    // structural — FeedbackLog deliberately exposes NO clearing API.
 }
