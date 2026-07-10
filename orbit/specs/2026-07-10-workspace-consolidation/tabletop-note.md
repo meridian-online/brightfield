@@ -113,3 +113,32 @@ pieces that happen to share its file (TogglePresentation, the `p` binding).
 shell_model.rs, dock_state_file.rs, + new log model/panel). Tripwire: if the
 presentation round-trip fights the entity/observer wiring past mid-round,
 surface rather than burrow.
+
+## Fix-round addendum (2026-07-10, after the 3-lens review: 6 raised / 6 confirmed / 0 refuted)
+
+The recon section above got the load-bearing claim only HALF right, and the
+escalation class it belongs to fired again (a recon claim falsified by
+review, as in the crossfilter round's F1):
+
+- **"Seeding is the only path" was necessary but NOT sufficient.** At pin
+  b7e63cc2 every drag/drop gate in their TabPanel (`droppable`, `draggable`)
+  requires a StackPanel parent (`is_locked` is true for a bare-Tabs root —
+  the state upstream's own dock example never creates, because it v_split-
+  wraps every dock item). A bare `DockItem::tab` bottom dock renders NO drop
+  targets, and single-panel docks cannot source drags at all (`is_last_panel`
+  — their guard against dragging a dock empty). Fix: stack-root every dock
+  item (seed, default, backfill, restore-normalise, presentation rebuild),
+  and add a menu-move affordance (public `add_panel(placement)`) as the
+  bootstrap — after which two-panel docks have genuine drag-source tabs.
+  Stack-rooting also heals review F2 for free: StackPanel::insert_panel is
+  what subscribes TabPanel PanelEvents into the DockEvent save chain.
+- **Open observation for the eyeball:** Hugh's 2026-07-10 walkthrough note
+  said "left/center drops work" on a main build this analysis says could not
+  source a drag. Two line-precise verifications of the code chain stand
+  against one recollected product note; wsc-ac05's retest settles it, and
+  the discrepancy is recorded in the AC rather than silently dropped.
+- Remaining confirmed findings: F3 tautological backfill fixture (defaults
+  indistinguishable from a default-layout fallback), F4 vacuous
+  no-clear-on-recovery test, F5 untested conflict/write-failure log taps,
+  F6 stale `docks_open` contract doc claiming the bottom rail. All owned by
+  dated spec corrections + the fix round.
