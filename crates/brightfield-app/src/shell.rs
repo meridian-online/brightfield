@@ -3,10 +3,11 @@
 //!
 //! Views here are deliberately thin (semantic-layer rule): every decision —
 //! panel visibility, save timing, load fallback, atomic writes, sidebar
-//! contents, notification routing — lives in the framework-free modules
+//! contents, notification routing, the log model, the bottom-dock backfill
+//! and presentation action — lives in the framework-free modules
 //! (`shell_model`, `dock_state_file`, `spec_save`, `reload_feedback`,
-//! `sidebar_model`); this file only executes them against gpui-component's
-//! `DockArea`/`Panel`/`Root` machinery.
+//! `sidebar_model`, `log_model`); this file only executes them against
+//! gpui-component's `DockArea`/`Panel`/`Root` machinery.
 //!
 //! - [`CanvasPanel`] — a Panel shim AROUND the untouched [`ChartView`]
 //!   entity (aws_ac02): white canvas surface, workspace key context (bare
@@ -15,8 +16,13 @@
 //!   [`SaveSpec`], whose handler is `spec_save::save_spec_atomic` — the
 //!   existing mtime watcher does everything else (aws_ac04).
 //! - [`SidebarPanel`] — renders the derived [`SourceListing`]s (aws_ac06).
+//! - [`LogPanel`] — the bottom-dock reload/save feedback history over the
+//!   gpui-free [`FeedbackLog`] (wsc_ac02).
 //! - [`WorkspaceRoot`] — hosts the `DockArea` (center canvas, right editor,
-//!   left sidebar), loads/saves the versioned layout JSON (aws_ac03).
+//!   left sidebar, bottom log), loads/saves the versioned layout JSON
+//!   (aws_ac03), backfills pre-round layouts with the closed Log dock
+//!   (wsc_ac03), and removes/rebuilds the bottom dock across presentation
+//!   mode (wsc_ac04).
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
