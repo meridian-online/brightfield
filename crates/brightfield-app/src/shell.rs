@@ -25,6 +25,7 @@
 //!   mode (wsc_ac04).
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -34,9 +35,10 @@ use gpui::{
 };
 use gpui_component::dock::{
     register_panel, Dock, DockArea, DockAreaState, DockEvent, DockItem, DockPlacement, Panel,
-    PanelControl, PanelEvent, PanelState,
+    PanelControl, PanelEvent, PanelState, PanelView,
 };
 use gpui_component::input::{Input, InputState};
+use gpui_component::menu::PopupMenu;
 use gpui_component::notification::Notification;
 use gpui_component::{ActiveTheme as _, Root};
 
@@ -48,14 +50,29 @@ use crate::dock_state_file::{
 use crate::log_model::FeedbackLog;
 use crate::reload_feedback::{self, Severity};
 use crate::shell_model::{
-    bottom_dock_action, bottom_dock_needs_backfill, docks_open, layout_persistable, panel_visible,
-    BottomDockAction, PanelRole, BOTTOM_DOCK_HEIGHT, CANVAS_PANEL_NAME, EDITOR_DOCK_WIDTH,
-    EDITOR_PANEL_NAME, LOG_PANEL_NAME, SIDEBAR_DOCK_WIDTH, SIDEBAR_PANEL_NAME,
+    bottom_dock_action, bottom_dock_needs_backfill, dock_closes_when_emptied, docks_open,
+    layout_persistable, panel_visible, BottomDockAction, PanelRole, BOTTOM_DOCK_HEIGHT,
+    CANVAS_PANEL_NAME, EDITOR_DOCK_WIDTH, EDITOR_PANEL_NAME, LOG_PANEL_NAME, SIDEBAR_DOCK_WIDTH,
+    SIDEBAR_PANEL_NAME,
 };
 use crate::sidebar_model::SourceListing;
 use crate::spec_save;
 
-actions!(brightfield, [SaveSpec]);
+actions!(
+    brightfield,
+    [
+        SaveSpec,
+        // wsc_ac07 menu-move actions: at pin b7e63cc2 a dock's ONLY panel
+        // can never start a drag (is_last_panel), so the dropdown menu is
+        // the bootstrap that first pairs panels up — after which real
+        // drags work. Dispatched by the panels' tab menus; handled on the
+        // WorkspaceRoot render root (every dispatch path bubbles there).
+        DockEditorAtBottom,
+        DockEditorAtRight,
+        DockSidebarAtBottom,
+        DockSidebarAtLeft
+    ]
+);
 
 /// Key context of the spec editor panel — the scope the cmd-s binding
 /// dispatches in (nested above the Input's own context, so the binding
@@ -417,6 +434,21 @@ impl Panel for EditorPanel {
     fn visible(&self, cx: &App) -> bool {
         panel_visible(self.presentation.read(cx).mode, PanelRole::Editor)
     }
+
+    /// Dock-placement moves (wsc_ac07): the menu is the bootstrap gesture —
+    /// a dock's only panel can never start a drag at this pin, so without
+    /// these items the editor could never reach the bottom dock. Both items
+    /// always show (the panel cannot cheaply know its current dock); the
+    /// handler is idempotent — re-landing where the panel already lives.
+    fn dropdown_menu(
+        &mut self,
+        this: PopupMenu,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> PopupMenu {
+        this.menu("Dock at Bottom", Box::new(DockEditorAtBottom))
+            .menu("Dock at Right", Box::new(DockEditorAtRight))
+    }
 }
 
 impl Render for EditorPanel {
@@ -496,6 +528,18 @@ impl Panel for SidebarPanel {
 
     fn visible(&self, cx: &App) -> bool {
         panel_visible(self.presentation.read(cx).mode, PanelRole::Sidebar)
+    }
+
+    /// Dock-placement moves (wsc_ac07) — see [`EditorPanel::dropdown_menu`];
+    /// the sidebar's return move is its home left dock.
+    fn dropdown_menu(
+        &mut self,
+        this: PopupMenu,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> PopupMenu {
+        this.menu("Dock at Bottom", Box::new(DockSidebarAtBottom))
+            .menu("Dock at Left", Box::new(DockSidebarAtLeft))
     }
 }
 
@@ -664,6 +708,11 @@ struct BottomDockStash {
 pub struct WorkspaceRoot {
     dock_area: Entity<DockArea>,
     presentation: Entity<PresentationState>,
+    /// The movable panels (wsc_ac07): the menu-move action handlers resolve
+    /// a dispatched action to the entity to move. The canvas is the fixed
+    /// centre and the Log panel anchors the bottom dock — neither moves.
+    editor_panel: Entity<EditorPanel>,
+    sidebar_panel: Entity<SidebarPanel>,
     /// Layout file location (`None` = no config dir; persistence off).
     state_path: Option<PathBuf>,
     /// The framework-free save policy (debounce + quit-flush + skip-if-
@@ -873,6 +922,8 @@ impl WorkspaceRoot {
         Self {
             dock_area,
             presentation,
+            editor_panel: editor,
+            sidebar_panel: sidebar,
             state_path,
             policy: SavePolicy::default(),
             boot: Instant::now(),
@@ -1065,6 +1116,188 @@ impl WorkspaceRoot {
         }
     }
 
+    /// The dock entity at `placement`, if the area has one.
+    fn dock_entity(&self, placement: DockPlacement, cx: &App) -> Option<Entity<Dock>> {
+        let area = self.dock_area.read(cx);
+        match placement {
+            DockPlacement::Left => area.left_dock().cloned(),
+            DockPlacement::Right => area.right_dock().cloned(),
+            DockPlacement::Bottom => area.bottom_dock().cloned(),
+            DockPlacement::Center => None,
+        }
+    }
+
+    /// Leaf panels in a DUMPED panel tree. The dump reads the live
+    /// TabPanel/StackPanel state — their `DockItem` items vecs are
+    /// construction-time snapshots that go stale once panels move (an
+    /// emptied TabPanel removes itself only from the live StackPanel).
+    /// Panels only ever live inside TabPanels in a dock tree, so the count
+    /// is the tab count of every Tabs node. (An EMPTIED StackPanel dumps
+    /// with a default `Panel(Null)` info — a childless-leaf heuristic
+    /// would miscount it as one panel.)
+    fn dumped_panel_count(state: &PanelState) -> usize {
+        match state.info {
+            gpui_component::dock::PanelInfo::Tabs { .. } => state.children.len(),
+            _ => state.children.iter().map(Self::dumped_panel_count).sum(),
+        }
+    }
+
+    /// Live panel count of a dock (via the dump; see `dumped_panel_count`).
+    /// All our panels report `visible()` in authoring mode, the only mode
+    /// the move menus are reachable in, so leaf count == visible count.
+    fn dock_panel_count(dock: &Entity<Dock>, cx: &App) -> usize {
+        Self::dumped_panel_count(&dock.read(cx).panel().view().dump(cx))
+    }
+
+    /// Move `panel` to the dock at `destination` (wsc_ac07 — the menu-move
+    /// bootstrap): at this pin their drag UI cannot reach a single-panel
+    /// dock's tab (`is_last_panel` blocks the drag source), so the tab
+    /// menu drives the same public machinery a drop would land on. The
+    /// handler is idempotent: moving a panel to the dock it already
+    /// occupies re-lands it there.
+    ///
+    /// Steps: detach from every dock; land at the destination (opened — a
+    /// panel moved behind a closed dock's strip would land invisibly);
+    /// close any other edge dock the move emptied (pure decision:
+    /// `dock_closes_when_emptied` — an emptied stack renders a hollow
+    /// area).
+    pub fn move_panel_to_dock(
+        &mut self,
+        panel: Arc<dyn PanelView>,
+        destination: DockPlacement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.dock_area.update(cx, |area, cx| {
+            area.remove_panel_from_all_docks(panel.clone(), window, cx);
+        });
+
+        match self.dock_entity(destination, cx) {
+            Some(dock) if Self::dock_panel_count(&dock, cx) > 0 => {
+                // A live TabPanel exists: join it as a tab (their add
+                // path; our docks host exactly one TabPanel, so the
+                // Split snapshot's first Tabs is the live one).
+                dock.update(cx, |dock, cx| {
+                    dock.add_panel(panel.clone(), window, cx);
+                    dock.set_open(true, window, cx);
+                });
+            }
+            Some(dock) => {
+                // The destination was emptied by an earlier move: its
+                // live stack has no TabPanel, and their
+                // `DockItem::add_panel` would land the panel in the
+                // DETACHED TabPanel still in the stale Split snapshot.
+                // Rebuild the dock stack-rooted at its current size, and
+                // re-attach the save observer to the new Dock entity.
+                let size = dock.read(cx).size();
+                Self::set_edge_dock(
+                    &self.dock_area,
+                    destination,
+                    panel.clone(),
+                    Some(size),
+                    window,
+                    cx,
+                );
+            }
+            None => {
+                // No dock at the destination (not reachable from our
+                // shell's invariants, but total): create it stack-rooted.
+                Self::set_edge_dock(&self.dock_area, destination, panel.clone(), None, window, cx);
+            }
+        }
+
+        for placement in [DockPlacement::Left, DockPlacement::Right, DockPlacement::Bottom] {
+            if placement == destination {
+                continue;
+            }
+            let Some(dock) = self.dock_entity(placement, cx) else {
+                continue;
+            };
+            if dock_closes_when_emptied(Self::dock_panel_count(&dock, cx)) {
+                dock.update(cx, |dock, cx| dock.set_open(false, window, cx));
+            }
+        }
+        cx.notify();
+    }
+
+    /// (Re)build the edge dock at `placement` as a stack-rooted single-tab
+    /// dock holding `panel`, opened. `set_*_dock` creates a NEW Dock
+    /// entity, so the save observer is re-attached (the same sanctioned
+    /// churn as the presentation rebuild).
+    fn set_edge_dock(
+        dock_area: &Entity<DockArea>,
+        placement: DockPlacement,
+        panel: Arc<dyn PanelView>,
+        size: Option<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let weak = dock_area.downgrade();
+        let tab = DockItem::tabs(vec![panel], &weak, window, cx);
+        let item = DockItem::v_split(vec![tab], &weak, window, cx);
+        dock_area.update(cx, |area, cx| match placement {
+            DockPlacement::Left => area.set_left_dock(item, size, true, window, cx),
+            DockPlacement::Right => area.set_right_dock(item, size, true, window, cx),
+            DockPlacement::Bottom => area.set_bottom_dock(item, size, true, window, cx),
+            DockPlacement::Center => {}
+        });
+        let dock = {
+            let area = dock_area.read(cx);
+            match placement {
+                DockPlacement::Left => area.left_dock().cloned(),
+                DockPlacement::Right => area.right_dock().cloned(),
+                DockPlacement::Bottom => area.bottom_dock().cloned(),
+                DockPlacement::Center => None,
+            }
+        };
+        if let Some(dock) = dock {
+            Self::observe_dock_for_saves(&dock, window, cx);
+        }
+    }
+
+    /// wsc_ac07 action handlers — registered on the render root, which is
+    /// an ancestor of every dispatch path in the window (the tab menus
+    /// dispatch from wherever focus sits when the item is clicked).
+    fn on_dock_editor_at_bottom(
+        &mut self,
+        _: &DockEditorAtBottom,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let panel: Arc<dyn PanelView> = Arc::new(self.editor_panel.clone());
+        self.move_panel_to_dock(panel, DockPlacement::Bottom, window, cx);
+    }
+
+    fn on_dock_editor_at_right(
+        &mut self,
+        _: &DockEditorAtRight,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let panel: Arc<dyn PanelView> = Arc::new(self.editor_panel.clone());
+        self.move_panel_to_dock(panel, DockPlacement::Right, window, cx);
+    }
+
+    fn on_dock_sidebar_at_bottom(
+        &mut self,
+        _: &DockSidebarAtBottom,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let panel: Arc<dyn PanelView> = Arc::new(self.sidebar_panel.clone());
+        self.move_panel_to_dock(panel, DockPlacement::Bottom, window, cx);
+    }
+
+    fn on_dock_sidebar_at_left(
+        &mut self,
+        _: &DockSidebarAtLeft,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let panel: Arc<dyn PanelView> = Arc::new(self.sidebar_panel.clone());
+        self.move_panel_to_dock(panel, DockPlacement::Left, window, cx);
+    }
+
     /// The hosted dock area (assertion surface, wsc_ac03/ac04).
     #[cfg(test)]
     pub fn dock_area(&self) -> &Entity<DockArea> {
@@ -1150,6 +1383,13 @@ impl Render for WorkspaceRoot {
             .relative()
             .size_full()
             .bg(cx.theme().background)
+            // wsc_ac07 menu-move actions: this root div is an ancestor of
+            // every dispatch path in the window, so the tab-menu actions
+            // land here regardless of where focus sat at click time.
+            .on_action(cx.listener(Self::on_dock_editor_at_bottom))
+            .on_action(cx.listener(Self::on_dock_editor_at_right))
+            .on_action(cx.listener(Self::on_dock_sidebar_at_bottom))
+            .on_action(cx.listener(Self::on_dock_sidebar_at_left))
             .child(self.dock_area.clone())
             .children(sheet_layer)
             .children(dialog_layer)
@@ -1548,15 +1788,19 @@ mod tests {
     /// The leaf panel names under a dumped panel tree, in tab order. Reads
     /// the DUMP (live TabPanel/StackPanel state) rather than the DockItem
     /// snapshot: their `DockItem::add_panel` Split arm updates only the
-    /// live view, so snapshots go stale after panel moves.
+    /// live view, so snapshots go stale after panel moves. Panels only
+    /// ever live inside TabPanels, so leaves are the children of Tabs
+    /// nodes (an emptied StackPanel dumps with a default Panel(Null) info
+    /// — a childless-leaf heuristic would misread it as a panel).
     fn dump_leaf_names(state: &gpui_component::dock::PanelState) -> Vec<String> {
-        if state.children.is_empty() {
-            return match state.info {
-                gpui_component::dock::PanelInfo::Panel(_) => vec![state.panel_name.clone()],
-                _ => Vec::new(), // an emptied TabPanel/StackPanel node
-            };
+        match state.info {
+            gpui_component::dock::PanelInfo::Tabs { .. } => state
+                .children
+                .iter()
+                .map(|child| child.panel_name.clone())
+                .collect(),
+            _ => state.children.iter().flat_map(dump_leaf_names).collect(),
         }
-        state.children.iter().flat_map(dump_leaf_names).collect()
     }
 
     /// The dock entity at `placement`, if any.
@@ -1921,5 +2165,100 @@ mod tests {
                 "a panel-tree change to the rebuilt dock schedules a save (F2)"
             );
         });
+    }
+
+    /// Drive the wsc_ac07 move handler (the body of the menu actions)
+    /// without a lease on Root, as the real dispatch would.
+    fn move_panel(
+        cx: &mut TestAppContext,
+        shell: &TestShell,
+        panel: std::sync::Arc<dyn gpui_component::dock::PanelView>,
+        destination: DockPlacement,
+    ) {
+        cx.update_window(shell.window.into(), |_, window, cx| {
+            shell.workspace.update(cx, |workspace, cx| {
+                workspace.move_panel_to_dock(panel, destination, window, cx);
+            });
+        })
+        .expect("drive menu move");
+        cx.run_until_parked();
+    }
+
+    /// wsc_ac07 (menu-move handler): the bootstrap that makes the drag
+    /// gestures reachable — moving the editor to the bottom dock joins the
+    /// Log panel's tab set (two tabs = real drag sources) and closes the
+    /// emptied right dock; moving it back restores an open, stack-rooted
+    /// right dock at its previous width and leaves the Log alone below.
+    #[gpui::test]
+    fn wsc_ac07_menu_move_editor_to_bottom_and_back(cx: &mut TestAppContext) {
+        let shell = build_shell(cx, None);
+        let editor: std::sync::Arc<dyn gpui_component::dock::PanelView> =
+            std::sync::Arc::new(shell.editor.clone());
+
+        // "Dock at Bottom": the editor joins the Log tab set, the
+        // destination opens, and the emptied source dock closes.
+        move_panel(cx, &shell, editor.clone(), DockPlacement::Bottom);
+        assert_eq!(
+            bottom_dock_panel_names(cx, &shell.workspace),
+            vec![LOG_PANEL_NAME.to_string(), EDITOR_PANEL_NAME.to_string()],
+            "editor docked at the bottom beside the Log"
+        );
+        assert_eq!(
+            bottom_dock_state(cx, &shell.workspace).1,
+            Some(true),
+            "the destination dock opened (a move behind the closed strip would be invisible)"
+        );
+        let right = dock_at(cx, &shell.workspace, DockPlacement::Right).expect("right dock");
+        cx.update(|cx| {
+            assert!(
+                !right.read(cx).is_open(),
+                "the emptied source dock closed (wsc_ac07's pure decision)"
+            );
+        });
+        assert!(
+            dock_panel_names(cx, &shell.workspace, DockPlacement::Right).is_empty(),
+            "the editor left the right dock"
+        );
+
+        // Idempotent: repeating the move re-lands the editor in place.
+        move_panel(cx, &shell, editor.clone(), DockPlacement::Bottom);
+        assert_eq!(
+            bottom_dock_panel_names(cx, &shell.workspace),
+            vec![LOG_PANEL_NAME.to_string(), EDITOR_PANEL_NAME.to_string()],
+            "repeating the move is a no-op, not a duplicate"
+        );
+
+        // "Dock at Right": the return move rebuilds the emptied right dock
+        // stack-rooted at its previous width, opened; the Log stays below.
+        move_panel(cx, &shell, editor, DockPlacement::Right);
+        assert_eq!(
+            dock_panel_names(cx, &shell.workspace, DockPlacement::Right),
+            vec![EDITOR_PANEL_NAME.to_string()],
+            "editor restored to the right dock"
+        );
+        let right = dock_at(cx, &shell.workspace, DockPlacement::Right).expect("right dock");
+        cx.update(|cx| {
+            let right = right.read(cx);
+            assert!(right.is_open(), "the rebuilt right dock is open");
+            assert_eq!(
+                right.size(),
+                px(EDITOR_DOCK_WIDTH as f32),
+                "the dock kept its width across the round trip"
+            );
+        });
+        assert!(
+            dock_root_is_stack_rooted(cx, &shell.workspace, DockPlacement::Right),
+            "the rebuilt dock is stack-rooted (a bare-Tabs rebuild would be locked)"
+        );
+        assert_eq!(
+            bottom_dock_panel_names(cx, &shell.workspace),
+            vec![LOG_PANEL_NAME.to_string()],
+            "the Log remains the bottom dock's anchor"
+        );
+        assert_eq!(
+            bottom_dock_state(cx, &shell.workspace).1,
+            Some(true),
+            "the bottom dock was not emptied, so it stays open"
+        );
     }
 }
