@@ -24,11 +24,11 @@ Artefacts live in `orbit/cards/`, `orbit/specs/`, and `orbit/decisions/`.
 
 ## Current Sprint
 
-goal: "Consolidate the workspace — prune the dead WorkspaceView, land the hexbin follow-up spec, add the missing bottom dock; axis-inset round (edge-point trim — re-baselines every example PNG, needs a before/after gallery); keyboard-grammar discovery when Hugh is ready"
+goal: "Finish the consolidation: implement the landed hexbin spec (hexbin + hexgrid + self-aggregating cell, orbit/specs/2026-07-10-hexbin-marks/); axis-inset round (edge-point trim — re-baselines every example PNG, needs a before/after gallery); keyboard-grammar discovery when Hugh is ready"
 
 cards:
-  - 0017: "Authoring workspace" (WorkspaceView prune + bottom dock follow-ups)
   - 0008: "Grammar of graphics mark library" (hexbin + hexgrid + self-aggregating cell)
+  - 0017: "Authoring workspace" (next increment: sidebar profiling)
 
 ## Previously Shipped
 
@@ -39,6 +39,7 @@ cards:
 - Mark breadth instalments (card 0008, ongoing): density/regression (#21/#23), raster (#32), rect family (#28), sequential colour scale → true heatmaps (#36).
 - "Accelerate to the authoring workspace" — three concurrent tracks, shipped 2026-07-06 at 1d1b9f4: legend click-to-filter (#41, card 0009), raster determinism (#42), the density mark family heatmap/cell/contour (#43, card 0008), and the DockArea authoring workspace with YAML editor + sidebar on gpui-component (#45, card 0017; supersedes #44).
 - "Cross-filter render fidelity" — cards 0006/0008/0009/0017. Launch-anchored widen-only scales (gestures read as filtering: axes/colours hold still, query-widening data stays visible), legend selected-state (dim non-active swatches from the engine slot), live renderer-config seam (per-mark scheme/bandwidth/thresholds survive rebuilds via MarkInput.renderer_override). Shipped at 5167a31 (#50, 2026-07-10); in-app confirmed by Hugh (axes static, dimming visible).
+- "Workspace consolidation" — card 0017. WorkspaceView pruned (the `p` action lives on in workspace_actions.rs); bottom Log dock (reload/save feedback history, seeded closed, old layouts backfilled); presentation removes/rebuilds the bottom dock (no 29px strip in consumer preview); stack-rooted dock items (at gpui-component pin b7e63cc2 the whole drag machinery gates on StackPanel parents — bare tabs are locked); "Dock at Bottom" menu-move bootstrap (a dock's only panel can never start a drag). Shipped at 00f617f (#52, 2026-07-11); in-app confirmed by Hugh (menu-move, bootstrap-then-drag, `p` round trip, log entry). Hexbin follow-up spec landed alongside (#51, planning-only — orbit/specs/2026-07-10-hexbin-marks/).
 
 ## Upcoming Sprint Candidates
 
