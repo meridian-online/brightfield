@@ -31,7 +31,7 @@ vello = "0.9"
 image = "0.25"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-gpui_macos = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", package = "gpui_macos", features = ["runtime_shaders"] }
+gpui_macos = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", package = "gpui_macos", features = ["runtime_shaders", "font-kit"] }
 
 [dev-dependencies]
 # TestAppContext for the panel-shim tests (aws_ac02/ac06) — entities without
