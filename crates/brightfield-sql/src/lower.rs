@@ -122,14 +122,29 @@ fn project_param_channels(mark: &Mark, base: QueryPlan) -> QueryPlan {
 /// (NOT quoted — quoting would turn the WHERE into a constant-string no-op that
 /// silently passes every row).
 fn apply_data_filter(extras: &IndexMap<String, SpecValue>, plan: QueryPlan) -> QueryPlan {
-    let predicate = match extras.get("filter") {
-        Some(expr @ SpecValue::Expression(_)) => crate::emit::spec_value_to_sql_literal(expr),
-        Some(SpecValue::String(s)) => s.clone(),
-        _ => return plan,
-    };
-    QueryPlan::Filter {
-        input: Box::new(plan),
-        predicate: Predicate::Expr(predicate),
+    match data_filter_sql(extras) {
+        Some(predicate) => QueryPlan::Filter {
+            input: Box::new(plan),
+            predicate: Predicate::Expr(predicate),
+        },
+        None => plan,
+    }
+}
+
+/// The raw SQL predicate text of a `data: { from, filter: "..." }` clause, or
+/// `None` when there is no filter. A `$param` filter is an `Expression`
+/// (rendered with the `$name` preserved for emit-time interpolation); a
+/// param-free filter is a plain `String` used verbatim. The self-binning marks
+/// (hexbin / self-aggregating cell) need this text — not just the plan wrapper
+/// [`apply_data_filter`] returns — so they can push it into their extent
+/// subqueries as well as the row WHERE.
+fn data_filter_sql(extras: &IndexMap<String, SpecValue>) -> Option<String> {
+    match extras.get("filter") {
+        Some(expr @ SpecValue::Expression(_)) => {
+            Some(crate::emit::spec_value_to_sql_literal(expr))
+        }
+        Some(SpecValue::String(s)) => Some(s.clone()),
+        _ => None,
     }
 }
 
@@ -461,8 +476,10 @@ pub struct HexbinLowerer;
 
 impl MarkLower for HexbinLowerer {
     fn lower(&self, mark: &Mark, ctx: &LowerCtx<'_>) -> Result<QueryPlan, EmitError> {
-        let source = match &mark.data {
-            Some(MarkData::From { source, .. }) => source.clone(),
+        let (source, filter) = match &mark.data {
+            Some(MarkData::From { source, extras, .. }) => {
+                (source.clone(), data_filter_sql(extras))
+            }
             _ => {
                 return Err(EmitError::UnsupportedMark {
                     kind: "hexbin (requires data: { from: ... })".to_string(),
@@ -481,7 +498,14 @@ impl MarkLower for HexbinLowerer {
         let agg = opt_aggregate(&mark.options, "fill").unwrap_or((AggregateFunc::Count, None));
 
         Ok(build_hexbin_plan(
-            &source, x_col, y_col, bin_width, plot_w, plot_h, &agg,
+            &source,
+            x_col,
+            y_col,
+            bin_width,
+            plot_w,
+            plot_h,
+            &agg,
+            filter.as_deref(),
         ))
     }
 }
@@ -509,6 +533,7 @@ fn build_hexbin_plan(
     plot_w: f64,
     plot_h: f64,
     agg: &(AggregateFunc, Option<String>),
+    filter: Option<&str>,
 ) -> QueryPlan {
     // √3 and the hex size. size = binWidth/√3 makes the horizontal centre
     // spacing exactly binWidth (Observable Plot parity). (`f64::consts::SQRT_3`
@@ -516,28 +541,49 @@ fn build_hexbin_plan(
     let sqrt3 = 1.732_050_807_568_877_2_f64;
     let size = bin_width / sqrt3;
 
-    // Raw-table extents as correlated scalar subqueries (density precedent).
-    let xmin = format!("(SELECT min(\"{x_col}\") FROM \"{table}\")");
-    let xmax = format!("(SELECT max(\"{x_col}\") FROM \"{table}\")");
-    let ymin = format!("(SELECT min(\"{y_col}\") FROM \"{table}\")");
-    let ymax = format!("(SELECT max(\"{y_col}\") FROM \"{table}\")");
-    // nullif guards the degenerate all-equal axis (span 0 → NULL → no divide-by-0).
-    let xspan = format!("nullif({xmax} - {xmin}, 0)");
-    let yspan = format!("nullif({ymax} - {ymin}, 0)");
+    // The data filter (`data: { filter }`) must scope BOTH the binned rows and
+    // the extent subqueries — binning over the unfiltered extent would shift
+    // every centre and let filtered-out rows widen the plot (F4). Push it into
+    // the extent WHERE and AND it into the row predicate.
+    let extent_where = filter
+        .map(|f| format!(" WHERE ({f})"))
+        .unwrap_or_default();
 
-    // Point → pixel space over the plot AREA.
-    let px = format!("((\"{x_col}\" - {xmin}) / {xspan} * {plot_w})");
-    let py = format!("((\"{y_col}\" - {ymin}) / {yspan} * {plot_h})");
+    // Raw-table extents as correlated scalar subqueries (density precedent).
+    let xmin = format!("(SELECT min(\"{x_col}\") FROM \"{table}\"{extent_where})");
+    let xmax = format!("(SELECT max(\"{x_col}\") FROM \"{table}\"{extent_where})");
+    let ymin = format!("(SELECT min(\"{y_col}\") FROM \"{table}\"{extent_where})");
+    let ymax = format!("(SELECT max(\"{y_col}\") FROM \"{table}\"{extent_where})");
+
+    // Point → pixel space over the plot AREA. A DEGENERATE axis (constant value
+    // / single row → span 0) maps every point to the plot MIDPOINT rather than
+    // NULL (d3's degenerate-domain → range-midpoint): binning then still yields
+    // real centres — one hex, or one line of hexes when the other axis varies —
+    // instead of the whole mark vanishing on a NULL centre (F3; the density
+    // lowerer's graceful precedent).
+    let half_w = plot_w / 2.0;
+    let half_h = plot_h / 2.0;
+    let px = format!(
+        "(CASE WHEN ({xmax} - {xmin}) = 0 THEN {half_w} \
+         ELSE (\"{x_col}\" - {xmin}) / ({xmax} - {xmin}) * {plot_w} END)"
+    );
+    let py = format!(
+        "(CASE WHEN ({ymax} - {ymin}) = 0 THEN {half_h} \
+         ELSE (\"{y_col}\" - {ymin}) / ({ymax} - {ymin}) * {plot_h} END)"
+    );
 
     // Pixel → axial (pointy-top), hex size `size`.
     let qf = format!("(({frac} * {px} - {third} * {py}) / {size})",
         frac = sqrt3 / 3.0, third = 1.0 / 3.0);
     let rf = format!("(({twothirds} * {py}) / {size})", twothirds = 2.0 / 3.0);
 
+    let row_filter = filter
+        .map(|f| format!(" AND ({f})"))
+        .unwrap_or_default();
     let filtered = QueryPlan::Filter {
         input: Box::new(QueryPlan::Source { table: table.to_string() }),
         predicate: Predicate::Expr(format!(
-            "\"{x_col}\" IS NOT NULL AND \"{y_col}\" IS NOT NULL"
+            "\"{x_col}\" IS NOT NULL AND \"{y_col}\" IS NOT NULL{row_filter}"
         )),
     };
     // Layer 1: fractional axial coordinates.
@@ -639,8 +685,10 @@ impl MarkLower for CellLowerer {
             // Pre-aggregated cell — unchanged (cell.png byte-identical).
             return SimpleLowerer.lower(mark, ctx);
         };
-        let source = match &mark.data {
-            Some(MarkData::From { source, .. }) => source.clone(),
+        let (source, filter) = match &mark.data {
+            Some(MarkData::From { source, extras, .. }) => {
+                (source.clone(), data_filter_sql(extras))
+            }
             _ => {
                 return Err(EmitError::UnsupportedMark {
                     kind: "cell (self-aggregating requires data: { from: ... })".to_string(),
@@ -654,10 +702,16 @@ impl MarkLower for CellLowerer {
             kind: "cell (missing y)".to_string(),
         })?;
 
+        // The data filter scopes the aggregated rows (F4). Cell GROUP BYs the
+        // category columns — no pixel extents to scope, so the row WHERE is the
+        // only place it applies.
+        let row_filter = filter
+            .map(|f| format!(" AND ({f})"))
+            .unwrap_or_default();
         let filtered = QueryPlan::Filter {
             input: Box::new(QueryPlan::Source { table: source }),
             predicate: Predicate::Expr(format!(
-                "\"{x_col}\" IS NOT NULL AND \"{y_col}\" IS NOT NULL"
+                "\"{x_col}\" IS NOT NULL AND \"{y_col}\" IS NOT NULL{row_filter}"
             )),
         };
         // GROUP BY the two category columns; aggregate aliased (count →
@@ -1433,6 +1487,50 @@ mod tests {
         assert!(HexbinLowerer.lower(&m, &ctx).is_err());
     }
 
+    /// F3 (review): a degenerate axis maps to the plot MIDPOINT, not NULL —
+    /// `nullif` is gone, replaced by a CASE that yields `plot/2` (fallback
+    /// 580×350 → 290 / 175) when the span is 0, so binning still emits real
+    /// centres instead of the whole mark vanishing on a NULL centre.
+    #[test]
+    fn f3_hexbin_degenerate_axis_maps_to_plot_midpoint() {
+        let plan = HexbinLowerer.lower(&hexbin_mark(), &make_ctx()).expect("lowers");
+        let mut bindings = Vec::new();
+        let sql = crate::render::render_query(&plan, &mut bindings);
+        assert!(!sql.contains("nullif"), "degenerate axis must not NULL the pixel: {sql}");
+        assert!(
+            sql.contains("= 0 THEN 290") && sql.contains("= 0 THEN 175"),
+            "degenerate-axis midpoint mapping absent: {sql}"
+        );
+    }
+
+    /// F4 (review): a `data: { filter }` scopes BOTH the binned rows AND the
+    /// extent subqueries — otherwise binning over the unfiltered extent shifts
+    /// every centre and filtered-out rows still widen the plot.
+    #[test]
+    fn f4_hexbin_data_filter_reaches_rows_and_extents() {
+        let mut mark = hexbin_mark();
+        if let Some(MarkData::From { extras, .. }) = &mut mark.data {
+            extras.insert("filter".into(), SpecValue::String("delay > 10".into()));
+        }
+        let plan = HexbinLowerer.lower(&mark, &make_ctx()).expect("lowers");
+        let mut bindings = Vec::new();
+        let sql = crate::render::render_query(&plan, &mut bindings);
+        // Every extent subquery (min/max on each axis) is scoped by the filter —
+        // no bare `... FROM "flights")` extent survives.
+        for agg in ["min(\"time\")", "max(\"time\")", "min(\"delay\")", "max(\"delay\")"] {
+            assert!(
+                sql.contains(&format!("{agg} FROM \"flights\" WHERE (delay > 10)")),
+                "extent {agg} not filtered: {sql}"
+            );
+            assert!(
+                !sql.contains(&format!("{agg} FROM \"flights\")")),
+                "extent {agg} has an unfiltered form: {sql}"
+            );
+        }
+        // The binned rows are filtered too (ANDed onto the NULL guard).
+        assert!(sql.contains("AND (delay > 10)"), "row filter absent: {sql}");
+    }
+
     fn cell_mark(fill: Option<ValueOrParamRef<SpecValue>>) -> Mark {
         let mut options: IndexMap<String, ValueOrParamRef<SpecValue>> = IndexMap::new();
         options.insert("x".into(), ValueOrParamRef::Value(SpecValue::String("day".into())));
@@ -1481,6 +1579,25 @@ mod tests {
         let sql = crate::render::render_query(&plan, &mut bindings);
         assert!(sql.contains("avg(\"value\")") && sql.contains("AS \"value\""), "{sql}");
         assert!(sql.contains("GROUP BY 1, 2"), "{sql}");
+    }
+
+    /// F4 (review): a self-aggregating cell honours `data: { filter }` — the
+    /// predicate is ANDed onto the row NULL-guard so aggregated counts exclude
+    /// filtered rows. (Cell has no pixel extents, so the row WHERE is the only
+    /// site.)
+    #[test]
+    fn f4_cell_self_aggregating_honours_data_filter() {
+        let mut mark = cell_mark(Some(ValueOrParamRef::Value(SpecValue::Aggregate {
+            func: AggregateFunc::Count,
+            column: None,
+        })));
+        if let Some(MarkData::From { extras, .. }) = &mut mark.data {
+            extras.insert("filter".into(), SpecValue::String("value > 5".into()));
+        }
+        let plan = CellLowerer.lower(&mark, &make_ctx()).expect("lowers");
+        let mut bindings = Vec::new();
+        let sql = crate::render::render_query(&plan, &mut bindings);
+        assert!(sql.contains("AND (value > 5)"), "cell row filter absent: {sql}");
     }
 
     #[test]

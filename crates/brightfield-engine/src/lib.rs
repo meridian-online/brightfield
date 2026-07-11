@@ -1595,6 +1595,142 @@ plot:
         assert!((counts.iter().sum::<f64>() - 4.0).abs() < 1e-9);
     }
 
+    /// F3 (review): a DEGENERATE x axis (every point shares an x value) bins to
+    /// real centres at the constant x — a vertical line of hexes — instead of a
+    /// NULL centre that the renderer skips (blank mark). Before the fix,
+    /// `nullif(span,0)` made px NULL and cube-round coupled q/r so BOTH centres
+    /// went NULL even though y varied.
+    #[test]
+    fn f3_hexbin_constant_x_axis_still_bins() {
+        let yaml = r#"
+data:
+  pts:
+    - { x: 5, y: 0 }
+    - { x: 5, y: 20 }
+    - { x: 5, y: 40 }
+    - { x: 5, y: 60 }
+plot:
+  - mark: hexbin
+    data: { from: pts }
+    x: x
+    y: y
+    fill: { count: }
+    binWidth: 20
+width: 160
+height: 150
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+        let batches = session.execute_mark(0).expect("degenerate-x hexbin executes");
+        let xs = column_as_f64_vec(&batches, "x");
+        let ys = column_as_f64_vec(&batches, "y");
+        let counts = column_as_f64_vec(&batches, "__bf_count");
+        assert!(!xs.is_empty(), "degenerate x must still emit hexes, not a blank mark");
+        // Every centre collapses to the constant x (non-NULL); y still varies.
+        assert!(xs.iter().all(|x| (x - 5.0).abs() < 1e-9), "x centres == constant 5: {xs:?}");
+        assert!(ys.iter().all(|y| y.is_finite()), "y centres are real, not NULL: {ys:?}");
+        assert!((counts.iter().sum::<f64>() - 4.0).abs() < 1e-9, "all 4 rows binned");
+    }
+
+    /// F3 (review): a SINGLE-ROW source (both axes degenerate) bins to one hex at
+    /// the plot midpoint mapping — one real centre, not NULL.
+    #[test]
+    fn f3_hexbin_single_row_still_bins() {
+        let yaml = r#"
+data:
+  pts:
+    - { x: 5, y: 7 }
+plot:
+  - mark: hexbin
+    data: { from: pts }
+    x: x
+    y: y
+    fill: { count: }
+    binWidth: 20
+width: 160
+height: 150
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+        let batches = session.execute_mark(0).expect("single-row hexbin executes");
+        let xs = column_as_f64_vec(&batches, "x");
+        let ys = column_as_f64_vec(&batches, "y");
+        let counts = column_as_f64_vec(&batches, "__bf_count");
+        assert_eq!(xs.len(), 1, "one hex for one row");
+        assert!((xs[0] - 5.0).abs() < 1e-9 && (ys[0] - 7.0).abs() < 1e-9, "centre at the point");
+        assert!((counts[0] - 1.0).abs() < 1e-9, "count 1");
+    }
+
+    /// F4 (review): a hexbin honours `data: { filter }` — filtered-out rows are
+    /// excluded from BOTH the aggregated counts and the binning extent. Two of
+    /// five points fail `y > 10`; they must not appear as a hex near their (0, *)
+    /// location, and the total count is 3, not 5.
+    #[test]
+    fn f4_hexbin_data_filter_excludes_rows() {
+        let yaml = r#"
+data:
+  pts:
+    - { x: 0, y: 0 }
+    - { x: 0, y: 5 }
+    - { x: 50, y: 50 }
+    - { x: 50, y: 50 }
+    - { x: 100, y: 100 }
+plot:
+  - mark: hexbin
+    data: { from: pts, filter: "y > 10" }
+    x: x
+    y: y
+    fill: { count: }
+    binWidth: 20
+width: 160
+height: 150
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+        let batches = session.execute_mark(0).expect("filtered hexbin executes");
+        let xs = column_as_f64_vec(&batches, "x");
+        let counts = column_as_f64_vec(&batches, "__bf_count");
+        assert!(
+            (counts.iter().sum::<f64>() - 3.0).abs() < 1e-9,
+            "only the 3 rows passing y > 10 are counted, got {:?}",
+            counts.iter().sum::<f64>()
+        );
+        // The filtered-out (0, *) rows leave no hex behind: the extent is [50,100],
+        // so every centre sits well away from x = 0.
+        assert!(xs.iter().all(|x| *x >= 40.0), "no hex from the filtered (0,*) rows: {xs:?}");
+    }
+
+    /// F4 (review): a self-aggregating cell honours `data: { filter }` — filtered
+    /// rows are excluded from the grouped counts.
+    #[test]
+    fn f4_self_aggregating_cell_data_filter_excludes_rows() {
+        let yaml = r#"
+data:
+  events:
+    - { xg: a, yg: p, v: 1 }
+    - { xg: a, yg: p, v: 5 }
+    - { xg: a, yg: p, v: 8 }
+    - { xg: b, yg: q, v: 1 }
+plot:
+  - mark: cell
+    data: { from: events, filter: "v > 2" }
+    x: xg
+    y: yg
+    fill: { count: }
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+        let batches = session.execute_mark(0).expect("filtered cell executes");
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        let counts = column_as_f64_vec(&batches, "__bf_count");
+        assert_eq!(total_rows, 1, "only (a,p) survives v > 2 — (b,q) is fully filtered");
+        assert_eq!(counts, vec![2.0], "(a,p) counts the two rows with v > 2");
+    }
+
     /// pefr ac-05 (THE PROBE): a scalar param bound to a positional channel
     /// changes the mark's batch output when the param changes. Before card 0014
     /// this returned byte-identical output (in fact no `y`/`k` column at all).
