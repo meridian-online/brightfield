@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-11
 **Interviewer:** Claude (Opus 4.8, ultracode)
-**Card:** none yet — candidate card 0018 ("keyboard grammar + surfaces"); seed memo `orbit/cards/memos/2026-07-04-visidata-keyboard-grammar.md`
+**Card:** orbit/cards/0018-keyboard-grammar.yaml (formalised 2026-07-11); seed memo `orbit/cards/memos/2026-07-04-visidata-keyboard-grammar.md`
 **Mode:** discovery
 **Companions:** `keymap-research.md` (scored candidate digest), `keymap-candidate.html` (cheat-sheet artifact), `keymap-research-raw.json` (full 12-agent output)
 

@@ -1,0 +1,53 @@
+feature: "Keyboard grammar — selection-first keyboard-first authoring"
+as_a: "analytics author who lives in the keyboard, building dashboards at editor speed"
+i_want: "a coherent keyboard grammar over the workspace — move focus through the dashboard's structure, act on the focused node with a terse bare verb, and find any command by meaning — without reaching for the mouse"
+so_that: "authoring is as fast and learnable as a modal editor: the common moves are single keys, everything is discoverable, and nothing is hidden behind a menu"
+
+scenarios:
+  - name: "Move focus through the dashboard by keyboard"
+    given: "a multi-view dashboard open, focus on the canvas at launch"
+    when: "I walk the structure with h/l (out/in) and j/k (across siblings)"
+    then: "focus moves through the ComponentPath tree (dashboard → concat → plot, floored at the view); an always-visible focus ring and breadcrumb track where focus sits"
+
+  - name: "A bare verb acts on the focused node (selection-first)"
+    given: "focus on a particular view"
+    when: "I press a bare, argumentless verb key"
+    then: "it acts on the focused node; a verb that is not meaningful at the focused altitude rejects with a human-readable reason — never a silent no-op, never a surprise target"
+
+  - name: "Find any command by meaning"
+    given: "the workspace, at any focus"
+    when: "I open the Space palette and type what I want (e.g. \"recolour\")"
+    then: "candidates are fuzzy-matched by meaning, each row shows its bound key, and running one performs the verb; commands not yet available are shown greyed with the reason they are reserved"
+
+  - name: "Jump focus and self-teach"
+    given: "a dashboard with several named components, and a keymap I am still learning"
+    when: "I press `/` to fuzzy-jump focus to a component by name, or `?` to open help"
+    then: "`/` moves focus to the chosen node; `?` shows every verb grouped by scope with its bound key — discoverability never lengthens the expert's single-key path"
+
+  - name: "Preview a colour scheme without committing"
+    given: "focus on a view with a sequential-scheme mark (heatmap, hexbin, raster…)"
+    when: "I cycle the colour scheme by keyboard"
+    then: "the ramp advances live with an honest previewing-vs-saved affordance and nothing is written to the spec or any file — a transient preview, reversible by cycling on"
+
+  - name: "The keymap is derived, not hand-picked"
+    given: "any bound key in the shipped grammar"
+    when: "I ask why that key maps to that verb"
+    then: "it traces to a recorded frequency/mnemonic/convention score with a motor-cost note — the keys are defended by research, not chosen by taste"
+
+  - name: "Prove it mouse-free, and leave the render untouched"
+    given: "the keyboard grammar wired into the workspace"
+    when: "I drive the navigate → find → act → preview → present → edit → save loop with zero mouse"
+    then: "the whole loop works from the keyboard; all new surfaces are authoring chrome only, so every example's headless PNG stays byte-identical and presentation mode hides them"
+
+goal: "A selection-first keyboard grammar where scope is where focus sits on the ComponentPath tree and a bare argumentless verb acts on the focused node, with a fuzzy palette carrying discoverability so single keys stay terse and the keymap is derived-and-scored rather than hand-authored. v1 (spec 2026-07-11, IN FLIGHT) ships the keyboard-COMPLETE slice — focus model + h/l/j/k nav, focus-jump (/), Space palette, help (?), Esc clear, presentation (p), save/reload, and a transient c=cycle-colour-scheme — riding the shipped GPUI dispatch substrate and the #45 editor seam, framework-free semantic layer, headless-tested + macOS-eyeball. Deferred to follow-up increments: the cross-filter/authoring verbs (f/gf/t + the g-prefix wiring, which-key, pending-prefix) that need a keyboard data-target, and the structural verbs (m/a/e/d/undo) that need the command log."
+
+maturity: "emerging"
+
+specs:
+  - orbit/specs/2026-07-11-keyboard-grammar/spec.yaml
+
+references:
+  - "orbit/cards/memos/2026-07-04-visidata-keyboard-grammar.md: the seed — VisiData-inspired command log + surfaces + scope-prefix keys; rides the editor seam once it exists (#45)"
+  - "orbit/cards/memos/2026-07-05-rust-ui-field-scan.md: semantic-layer rule as STANDING CONSTRAINT — command registry as data, focus/scope/palette/ladder as plain state machines, views as translation shims (could this run headless? yes)"
+  - "orbit/specs/2026-07-11-keyboard-grammar/keymap-research.md: the scored keymap candidate + methodology + 38-verb frequency model — provenance for every bound key"
+  - "~/github/saulpw/visidata: local VisiData source studied for the addCommand/bindkey longname decoupling and the s/gs scope-impurity lesson"

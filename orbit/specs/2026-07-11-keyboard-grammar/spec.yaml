@@ -456,4 +456,4 @@ metadata:
     tightenings — ac-07 is a PROJECTION not a conformance proof (ac-09/ac-12 reworded); ac-17 says
     'focus-toggle chord' not cmd-Enter; cross-platform verification recorded out-of-v1-scope — and the
     input/state.rs :168->:169 off-by-one fixed. review: orbit/specs/2026-07-11-keyboard-grammar/review-spec-2026-07-11.md"
-  card: "candidate 0018 (keyboard grammar + surfaces) — not yet formalised; run /orb:card to create it"
+  card: "orbit/cards/0018-keyboard-grammar.yaml"
