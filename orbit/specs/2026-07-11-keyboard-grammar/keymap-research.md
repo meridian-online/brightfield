@@ -1,8 +1,19 @@
 # Keymap ergonomics research — digest
 
-Derived by a 12-agent workflow (study → synthesize → 3× adversarial critique → reconcile). Full
-output in `keymap-research-raw.json`; visual cheat-sheet in `keymap-candidate.html`
-(artifact: https://claude.ai/code/artifact/8a9181d3-36e8-4bd0-903b-c80a8d6157e7).
+Derived by a 12-agent workflow (study → synthesize → 3× adversarial critique → reconcile). Visual
+cheat-sheet in `keymap-candidate.html` (artifact:
+https://claude.ai/code/artifact/8a9181d3-36e8-4bd0-903b-c80a8d6157e7). Full workflow output lives in
+the session transcript, not the repo.
+
+> **v1 scope note (added after the /orb:spec adversarial review).** The candidate below is the full
+> scored design and stays the source of truth for *bindings and rationale*. But the review found the
+> cross-filter verbs `f` / `g f` / `t` have **no keyboard predicate source** on shipped code
+> (`propagate_selection` needs a pointer-derived `Predicate`), so **v1 DEFERS `f` / `g f` / `t`** — and
+> with them the `g`-prefix wiring, which-key, and pending-prefix handling (their first live use ships
+> with the deferred keyboard data-target). The **mark-altitude floor is CUT** (v1 focus = dashboard→view).
+> `c` = set-colour-scheme becomes **`c` = cycle-colour-scheme** on the focused view's sequential-scheme
+> marks (transient). The `g`-broadcast *mechanism* stays implemented + unit-tested in the resolver. See
+> `spec.yaml` (v1.1) for the ratified v1 boundary.
 
 Objective Hugh set: **balance frequency + mnemonic + convention, show the conflicts.** A 4th
 motor-cost lens (KLM base × carpalx-style ergonomic multiplier) is folded into each score's conflict

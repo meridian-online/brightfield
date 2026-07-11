@@ -197,3 +197,10 @@ scored**, not hand-authored. The felt outcome: keyboard-first authoring you can 
 **Next step:** `/orb:spec` to crystallise this into a structured specification (or `/orb:card` first
 to formalise card 0018). The scope-axis decision (selection-first) is the load-bearing input; the
 scored candidate keymap in `keymap-research.md` is the design substrate.
+
+> **Post-discovery update (2026-07-11, /orb:spec + adversarial review).** The spec's code-verified
+> review reshaped the v1 boundary from what this interview recorded: `f` / `g f` / `t` are **deferred**
+> (no keyboard predicate source on shipped code — a keyboard filter has nothing to filter *by* without
+> the deferred data-target), the **mark-altitude floor is cut** (dashboard→view only), and `c` becomes
+> a transient **cycle-colour-scheme** on sequential marks. The selection-first / g-broadcast / z-dropped
+> decisions stand. `spec.yaml` (v1.1) is the ratified v1 scope; this interview remains the discovery record.

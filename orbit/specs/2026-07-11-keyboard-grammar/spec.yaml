@@ -1,0 +1,406 @@
+goal: >
+  Ship the first, self-contained, keyboard-COMPLETE increment of a VisiData-grade keyboard-first
+  authoring experience: a SELECTION-FIRST keyboard grammar where scope is where focus sits on the
+  ComponentPath tree, a bare argumentless verb acts on the focused node, and a fuzzy Space palette
+  carries discoverability so single keys stay terse. v1 wires only verbs that are keyboard-complete on
+  the SHIPPED substrate (navigation, palette, clear-selection, presentation, save/reload, and a
+  transient colour-scheme cycle); the cross-filter/authoring verbs that need a keyboard data-target or
+  the command log are DEFERRED but taught (reserved-and-visible in the palette). The keymap is DERIVED
+  AND SCORED, not hand-authored. The felt outcome: keyboard-first navigation + command-finding you can
+  prove mouse-free.
+
+# Intent contract (user-voice, from interview.md):
+#   "I'm not in the best position to pick individual keys to commands. I want them to be intuitive and
+#    ergonomic." — Hugh. Success is not that the author chose the keys, but that the design DERIVED and
+#   DEFENDED them: every bound key traces to a recorded score, not to taste.
+#
+# Revised v1.1 after the adversarial spec-review (workflow, 3 lenses, code-verified at the pins). The
+# review's BLOCKER reshaped scope: the runtime cross-filter verbs (f / g f / t) have no keyboard
+# predicate source on shipped code — propagate_selection requires a caller-supplied Predicate, and
+# every Predicate producer is pointer-derived (brush rect / clicked point). A keyboard `f` has nothing
+# to filter BY without the DEFERRED mark/category focus. Decision (Hugh): ship the keyboard-complete
+# slice, defer f / g f / t (and, consequently, the g-prefix WIRING, which-key, and pending-prefix
+# handling — their first live use ships with cross-filter). Mark-altitude focus floor CUT (a mark is
+# not an addressable GPUI element; nothing in v1 distinguishes a mark from its view).
+
+constraints:
+  - "Framework-free semantic layer (standing rule, rust-ui-field-scan): the command registry, focus
+     state machine, path<->plot(+rect) resolver, scope resolver, palette filter, Esc-ladder decision, and
+     dispatch-resolution table live as gpui-free data / plain state machines. The registry holds a
+     framework-free BindingSpec (keystroke-descriptor data, e.g. Vec<String>), NOT gpui::KeyBinding;
+     gpui::KeyBinding is constructed only in the GPUI adapter from that data. Every semantic-layer file
+     must answer 'could this run headless?' with yes; views stay shims."
+  - "Rides the existing GPUI dispatch substrate: actions! + remappable keymap-as-DATA fed to
+     cx.bind_keys + named string key-contexts; every action carries a global longname (workspace_actions.rs;
+     shell.rs). The shipped keymap-as-data vec is the SINGLE binding source; the dispatch-resolution
+     table (ac-07) is a projection of it, not a parallel mirror. No new dispatch framework."
+  - "The focus model is a MANDATORY greenfield build. Canvas focus is claimed only by on_mouse_down
+     (shell.rs:242) + a one-time LAUNCH focus that targets the CANVAS (main.rs:1525) — so at cold launch
+     bare verbs are already live and the FIRST focus-toggle goes canvas->editor. The render/interaction
+     layer carries NO ComponentPath today (PlacedChart holds x/y/w/h/state/coordinator; ChartState holds
+     scene/interaction/nav — chart_view.rs:40, chart_state.rs:28): this card must give PlacedChart a
+     ComponentPath and build a gpui-free path<->plot(+rect) resolver, seeded at assembly, through which
+     BOTH verb-targeting and focus-ring geometry route. Per-node focus targets render as DESCENDANTS of
+     the single BrightfieldWorkspace key-context div (move an inner focus ring; do NOT give each node its
+     own context), or bare verbs go dead when focus lands on a node."
+  - "Focus is floored at the VIEW/PLOT altitude in v1 (dashboard -> concat -> plot; NO mark descent). A
+     mark is a layer composited inside one ChartElement, not an addressable element, so a mark-level ring
+     would be visually indistinguishable from the view ring and no v1 verb distinguishes them."
+  - "Bindings that must fire regardless of focus (the palette twin cmd-shift-p, the focus toggle, and
+     save/reload-from-anywhere) bind context=None with handlers on WorkspaceRoot — the shared ancestor
+     where dispatch bubbles (shell.rs:70). BrightfieldWorkspace (canvas) and BrightfieldEditor are
+     SIBLING panels; a WORKSPACE-only palette binding is unreachable from the editor and would strand the
+     spine. cmd-s is currently editor-scoped (shell.rs:90); re-bind context=None to save from anywhere
+     (audit the native menu accelerators for clashes across macOS/Linux/Windows)."
+  - "The focus-toggle chord must be genuinely absent from gpui-component's Input binding set. cmd-Enter
+     is NOT free — Input binds `secondary-enter` (= cmd-Enter on macOS / ctrl-Enter elsewhere,
+     input/state.rs:168). Either pick a chord Input does not claim (from an audited list) or bind NoAction
+     on `secondary-enter` in the Input context; the toggle handler must NOT call cx.propagate() and must
+     be registered after gpui_component::init (else Input wins or PressEnter also fires)."
+  - "Overlays (palette; which-key when it lands) anchor OUTSIDE the WORKSPACE key-context subtree
+     (Root/deferred) because the canvas div carries the WORKSPACE key-context with no key handler, so a
+     descendant overlay would bubble into the workspace context and let bare verbs fire underneath it.
+     (NB shell.rs:230 documents mouse-, not key-, propagation.)"
+  - "Editor-focus collision safety: while the BrightfieldEditor context is focused, NO workspace-scoped
+     bare verb resolves — a bare letter reaches gpui-component's Input as text (typing `p`/`c` into the
+     YAML buffer must not toggle presentation / recolour). Only context=None bindings fire from the editor."
+  - "PNG-byte gate holds: every new surface/overlay is chrome-only; the headless PNG output of all
+     examples is byte-identical to pre-card baselines."
+  - "Presentation mode: every new surface (palette entry, breadcrumb/focus-ring) declares its
+     presentation-mode visibility via a gpui-free predicate mirroring the shell's panel_visible
+     (shell_model.rs:62); presentation shows zero authoring chrome and never affects headless PNG."
+  - "Verification split by project convention: the framework-free semantic layer is headless-unit-tested
+     (verifies: capability); the live GPUI keyboard/focus wiring is macOS-eyeball verified (verifies:
+     stand-in) because keyboard interaction is not headless-testable. ac_type: code + 'verifies: stand-in'
+     means 'live-wiring, eyeball-verified', distinct from the unit-tested ac-01..08. See memories
+     brightfield-window-verification / brightfield-pr-testing-preference."
+  - "DEFERRED, out of this card (reserved-and-visible in the palette, greyed with a reason): (A) needs a
+     keyboard data-target — filter-view (f), cross-filter-all (g f), toggle-point-select (t), set-param;
+     and CONSEQUENTLY the g-prefix WIRING, the which-key overlay, and pending-prefix handling, whose
+     first live use ships with these. (B) needs the command log — change-mark-type (m), add-mark (a),
+     set-channel (e), remove-mark (d), undo. The g-broadcast MECHANISM is still implemented and
+     unit-tested in the scope resolver this card (ac-03); it simply has no bound key in v1."
+  - "The ONLY durable-looking authoring verb in v1 is `c` = cycle-colour-scheme, and it is TRANSIENT: it
+     acts on the focused VIEW's sequential-scheme marks only (raster/heatmap/cell/hexbin/hexgrid/contour —
+     configured_renderer is None for dot/bar/line/area, mark.rs:2959), swaps renderer_override -> re-scenes
+     from the plot's cached RecordBatches -> set_scene + notify, cycles deterministically to the next
+     scheme, and writes NOTHING to the spec or any file. Persisting a scheme waits for the command-log card."
+  - "Do not reassign shipped/convention-locked fixed points: bare `p` (toggle-presentation,
+     workspace_actions.rs:22), cmd-s (save), Esc (clear, per the escape-key memo), Space (palette), Enter
+     (dive), `?` (help). The keymap designs AROUND these."
+
+acceptance_criteria:
+  # ---- semantic layer (gpui-free, headless-unit-tested) ----
+  - id: ac-01
+    ac_type: code
+    description: >
+      A gpui-free COMMAND REGISTRY exists as data: every verb is an entry with a stable kebab-case
+      longname, framework-free binding_specs (keystroke descriptors, NOT gpui::KeyBinding), a
+      scope_applicability set (altitudes dashboard|view at which it is meaningful — no mark in v1), what
+      it `drives`, a status (built|preview|reserved), a help line, and — for bound keys — its
+      frequency/mnemonic/convention scores. Reserved entries carry a reason bucket
+      (needs-command-log {change-mark-type, add-mark, set-channel, remove-mark, undo} or
+      needs-keyboard-target {filter-view, cross-filter-all, toggle-point-select, set-param}). The palette
+      corpus, the keymap-as-data vec, and the help sheet are each PRODUCED by a function that takes this
+      registry as its sole verb-metadata input.
+    verification: >
+      Unit tests: enumerate the registry; assert fields well-formed (longnames unique, kebab-case);
+      assert the two named reserved vocab sets are present with their reason buckets; assert a committed
+      snapshot of longnames (stability); assert the palette/keymap/help producers each take only the
+      registry. verifies: capability
+  - id: ac-02
+    ac_type: code
+    description: >
+      A gpui-free FOCUS STATE MACHINE over ComponentPath supports dive (to a child), pop (to the parent),
+      and next/prev sibling, floored at the VIEW/PLOT altitude (dashboard -> concat -> plot; no mark
+      descent). Pop never rises above root; dive is a no-op at a plot. A gpui-free path<->plot(+rect)
+      RESOLVER (PlacedChart gains a ComponentPath, seeded at assembly) maps a focused path to its plot and
+      screen rect, and is the single seam both verb-targeting and focus-ring geometry use.
+    verification: >
+      Unit tests over a vconcat fixture (multiple plots): dive/pop/sibling land on expected paths; dive at
+      a plot and pop at root are defined no-ops; the resolver returns the right plot+rect per path; a
+      single-plot degenerate fixture leaves sibling-nav a defined no-op and the breadcrumb sensible.
+      verifies: capability
+  - id: ac-03
+    ac_type: code
+    description: >
+      A gpui-free SCOPE RESOLVER maps (verb, focused_path, g_prefix?) to a resolved target. Bare = the
+      focused node. `g` resolves to the SINGLE root ComponentPath (never a one-level walk) and is legal
+      ONLY for runtime verbs; a structural/spec-edit verb under `g` is rejected. A bare verb whose
+      scope_applicability excludes the focused altitude returns a STRUCTURED rejection with a
+      human-readable reason (never a silent no-op, never an auto-walk); a bare RESERVED verb returns the
+      same-shaped rejection carrying its reason bucket ("needs command log" / "needs a filter target").
+      g-resolution is implemented and tested even though no g-key is wired in v1.
+    verification: >
+      Unit tests: bare clear-selection at a view -> the focused plot path; g -> the single root path (the
+      cross-filter fan-out to all plots is a downstream/deferred EFFECT, not the resolved target); g on a
+      structural verb -> rejected; a bare verb off its altitude -> rejected-with-reason; a bare reserved
+      verb -> rejection carrying its bucket. verifies: capability
+  - id: ac-04
+    ac_type: code
+    description: >
+      Bare-key applicability and palette applicability are the SAME predicate: the verbs a bare key fires
+      at a focused altitude equal the verbs the palette enables there; an off-altitude verb rejects
+      identically whether reached by key or palette.
+    verification: >
+      A unit test asserts one shared scope_applicability predicate governs both the bare-key resolver
+      (ac-03) and the palette candidate set (ac-05) for every verb at every altitude. verifies: capability
+  - id: ac-05
+    ac_type: code
+    description: >
+      A gpui-free PALETTE FILTER fuzzy-matches a query over each verb's longname AND help text, filters/
+      ranks candidates by the focused altitude via scope_applicability, ranks by frequency tier then a
+      per-session recency counter when the query is empty (deliberate v1 simplification of the research's
+      per-user counter), and INCLUDES reserved verbs flagged with their reason bucket (not hidden).
+    verification: >
+      Unit tests over the registry: query "colour" ranks cycle-colour-scheme; at a view altitude the
+      candidate set equals the scope_applicability-eligible verbs; empty query orders by frequency then
+      recency; reserved verbs appear flagged with their bucket. verifies: capability
+  - id: ac-06
+    ac_type: code
+    description: >
+      A gpui-free ESC PRECEDENCE decision resolves in strict order: dismiss an open overlay > cancel a
+      pending prefix > clear the focused view's selection. It does NOT auto-pop the focus surface (pop is
+      h/q). Cancelling a pending prefix relies on GPUI's replay-on-non-match (a key that does not extend
+      the prefix resolves it before the 1s timer), NOT window.clear_pending_keystrokes (which is
+      pub(crate) at our pin and uncallable). The cancel-pending rung is inert in v1 (no g-sequences wired)
+      but the decision is tested.
+    verification: >
+      A unit test drives the ladder decision across states (overlay-open, prefix-pending, selection-
+      present, idle) and asserts the resolved action at each. verifies: capability
+  - id: ac-07
+    ac_type: code
+    description: >
+      A gpui-free DISPATCH-RESOLUTION table is DERIVED FROM (a projection of) the same keymap-as-data vec
+      main feeds to cx.bind_keys — not a hand-maintained mirror. It encodes and is tested for: context=None
+      bindings (palette twin, focus toggle, save/reload) resolve from BOTH the workspace and editor
+      contexts; while the EDITOR context is focused NO workspace-scoped bare verb resolves (the letter
+      reaches Input); no bare verb resolves while an overlay is open; a plot-focused node resolves a bare
+      verb (focus targets are descendants of the one workspace context); the chosen focus-toggle chord is
+      not shadowed by Input's binding set.
+    verification: >
+      Unit tests over the projection assert it equals the shipped binding vec and hold each invariant
+      above (both-context resolution; editor-suppresses-workspace-bare; no-bare-under-overlay; plot-focus
+      resolves bare; toggle chord unshadowed). verifies: capability
+  # ---- provenance (doc) ----
+  - id: ac-08
+    ac_type: doc
+    description: >
+      Every BOUND key traces to a recorded frequency/mnemonic/convention score (+ motor-cost note) in
+      keymap-research.md — no key is bound by taste. The ratified decisions (selection-first; g =
+      dashboard-broadcast mechanism; z dropped; view-altitude floor; f/gf/t deferred) are recorded there.
+    verification: >
+      A doc check: every bound longname in the shipped registry appears with a score row in
+      keymap-research.md (mechanical cross-ref of longnames); a short manual doc review confirms the
+      recorded scope-model decisions match the shipped resolver. verifies: capability (score cross-ref);
+      the scope-model match is a manual doc review.
+  # ---- live GPUI wiring (macOS-eyeball) ----
+  - id: ac-09
+    ac_type: code
+    description: >
+      A global (context=None on WorkspaceRoot) focus-toggle chord — genuinely unclaimed by Input, or
+      Input's `secondary-enter` NoAction-overridden — moves focus editor<->canvas; the handler does not
+      propagate and is registered after gpui_component::init. At cold launch focus is on the canvas (bare
+      verbs already live); the first toggle goes canvas->editor.
+    verification: >
+      Manual macOS eyeball: from the canvas, bare verbs act immediately at launch; press the toggle, type
+      in the editor; press again, confirm a bare verb acts on the canvas. verifies: stand-in (real thing
+      is live GPUI focus dispatch), accepted because focus routing is not headless-testable; the
+      resolution invariants beneath it are capability-verified by ac-07.
+  - id: ac-10
+    ac_type: code
+    description: >
+      Navigation keys are wired: `l`/`Enter` dive, `h`/`q` pop, `j`/`k` (Tab/shift-Tab alternates) move
+      across sibling views; the focus ring (drawn via the ac-02 path->rect resolver) + breadcrumb track
+      the focused plot, and dive stops at the view.
+    verification: >
+      Manual macOS eyeball: walk a multi-view example with h/l/j/k; confirm the focus ring + breadcrumb
+      track it and dive halts at the view. verifies: stand-in (real thing is the live focus ring),
+      accepted because interactive navigation is not headless-testable; transitions + path->rect are
+      capability-verified by ac-02.
+  - id: ac-11
+    ac_type: code
+    description: >
+      The keyboard-COMPLETE runtime verbs are wired: `Esc` runs the precedence ladder (clears the focused
+      view's selection via the shipped Session::clear_selection), and `cmd-r` reloads with a dirty-buffer
+      guard (bare `r` is NOT bound — reloading over unsaved editor edits is guarded). The cross-filter
+      verbs f / g f / t are NOT wired this card (deferred; reserved-visible per ac-05/ac-12).
+    verification: >
+      Manual macOS eyeball: brush a selection with the mouse, press Esc, confirm it clears; edit the
+      buffer, press cmd-r, confirm the dirty-buffer guard prompts/blocks. verifies: stand-in (real thing
+      is live dispatch), accepted because keyboard dispatch is not headless-testable; the clear effect is
+      shipped and the ladder is capability-verified by ac-06.
+  - id: ac-12
+    ac_type: code
+    description: >
+      The Space palette (bare Space in workspace context; cmd-shift-p as the global twin on WorkspaceRoot)
+      opens anchored OUTSIDE the workspace subtree, fuzzy-finds a verb by meaning, shows its bound key
+      inline per row, and runs the selected verb. Reserved verbs appear greyed with their reason bucket.
+      No bare canvas verb fires while the palette is open.
+    verification: >
+      Manual macOS eyeball: open the palette, type a meaning ("recolour"), confirm the row shows its key
+      and running it works; confirm reserved verbs are greyed with a reason; confirm bare keys do nothing
+      while it is open. verifies: stand-in (real thing is the live overlay), accepted because it is a GPUI
+      surface; the no-bare-under-overlay invariant is capability-verified by ac-07.
+  - id: ac-13
+    ac_type: code
+    description: >
+      `c` = cycle-colour-scheme acts on the focused VIEW's sequential-scheme marks
+      (raster/heatmap/cell/hexbin/hexgrid/contour): it deterministically advances to the next scheme,
+      swaps renderer_override, re-scenes the plot from its cached RecordBatches, and set_scene + notifies —
+      a TRANSIENT preview with an honest "previewing vs saved" affordance that writes NOTHING to the spec
+      or any file. On a view with no sequential-scheme mark it is a defined no-op-with-reason.
+    verification: >
+      Manual macOS eyeball on a heatmap/hexbin example: `c` cycles the ramp and shows the previewing
+      affordance; plus a capability assertion that the scheme-resolve/apply path (extracted gpui-free
+      where possible) performs no spec/file write, and a named static check that no write call sits on the
+      `c` path. verifies: stand-in for the visual (GPUI/vello render), capability for the no-write property.
+  - id: ac-14
+    ac_type: code
+    description: >
+      An always-visible breadcrumb + focus ring show the current ComponentPath altitude and the focused
+      node. (The pending-prefix and resolved-g-target readouts are built into the breadcrumb model but are
+      only exercised live once g-keys land with the deferred cross-filter verbs.)
+    verification: >
+      Manual macOS eyeball: the breadcrumb tracks altitude and names the focused view as focus moves.
+      verifies: stand-in (real thing is the live status strip), accepted because it is a GPUI surface; the
+      path/altitude computation is capability-verified by ac-02/ac-03.
+  # ---- gates ----
+  - id: ac-15
+    ac_type: gate
+    description: >
+      Every example PNG is byte-identical to its pre-card baseline: the grammar, palette, breadcrumb and
+      focus ring are chrome-only and never alter headless render output.
+    verification: >
+      scripts/compare-example-pngs.sh reports all examples identical. verifies: capability
+  - id: ac-16
+    ac_type: code
+    description: >
+      Presentation mode (`p`) hides all new authoring chrome (palette entry, breadcrumb/focus-ring) via a
+      gpui-free visibility predicate mirroring shell_model.rs panel_visible, and presentation state never
+      affects headless PNG.
+    verification: >
+      A unit test asserts the new-chrome visibility predicate returns hidden in presentation mode
+      (capability); manual macOS eyeball confirms the chrome is gone in preview; the ac-15 byte gate
+      proves headless is unaffected. verifies: stand-in for the visual, capability for the predicate +
+      headless-invariance.
+  # ---- sign-off ----
+  - id: ac-17
+    ac_type: doc
+    description: >
+      A recorded KEYBOARD-ONLY WALKTHROUGH is the sign-off artifact: from a cold (canvas-focused) launch,
+      with zero mouse — h/l/j/k to a target view -> Space palette find + run a verb -> Esc clear -> `c`
+      cycle a colour scheme on a sequential-scheme view -> `p` presentation -> cmd-Enter to the editor ->
+      cmd-s save. Brush/cross-filter pointer gestures remain data interactions and are out of scope for
+      the mouse-free claim (as are the deferred f/gf/t verbs).
+    verification: >
+      Hugh records (or watches) a mouse-free screencast covering the loop above; the recording is the
+      acceptance artifact and doubles as the living demo. verifies: stand-in (real thing is a human
+      authoring mouse-free), accepted because mouse-free-ness is a human-observable property.
+
+implementation_notes:
+  - "Keystroke->longname decoupling + keymap-as-data are the precondition: never branch on keys inside a
+     handler; the registry holds framework-free binding_specs and the GPUI adapter builds gpui::KeyBinding
+     from them (VisiData settings.py:359 addCommand vs :394 bindkey; Brightfield already carries longnames)."
+  - "The path<->plot(+rect) resolver is the load-bearing new seam: PlacedChart (chart_view.rs:40) gains a
+     ComponentPath; the resolver (gpui-free) is seeded at assembly from the analysis layer's paths
+     (analysis.rs:95, parent_plot :112) and drives BOTH verb-targeting and focus-ring geometry. Without it,
+     targeting a focused plot's ChartState and drawing the ring at the right rect are unspecified."
+  - "Focus targets render as DESCENDANTS of the single BrightfieldWorkspace key-context div (one inner
+     focus ring moves), or bare verbs go dead when focus lands on a node (ac-07 invariant)."
+  - "cmd-Enter is NOT free: Input binds secondary-enter (input/state.rs:168). Pick a chord Input does not
+     claim, or NoAction-override secondary-enter in the Input context; handler must not propagate and must
+     bind after gpui_component::init. Audit the native OwnedMenu for cmd-s/cmd-r accelerator clashes when
+     re-binding them global."
+  - "Esc cancel-pending uses GPUI replay-on-non-match, NOT window.clear_pending_keystrokes (pub(crate) at
+     zed 1d217ee, window.rs:4935). has_pending_keystrokes() is the public read the breadcrumb can use for a
+     pending-prefix readout when g-keys land."
+  - "`c` recolour is a real (if small) build: swap MarkInput.renderer_override (crossfilter.rs:58) -> rebuild
+     the focused plot's scene from cached RecordBatches -> set_scene + notify. configured_renderer
+     (mark.rs:2959) returns Some only for the sequential family; scope `c` to those marks and make bare-c a
+     deterministic cycle-to-next-scheme."
+  - "The scored candidate keymap + methodology + 38-verb frequency model live in keymap-research.md;
+     keymap-candidate.html is the cheat-sheet. The published candidate still shows f/gf/t/g-prefix as v1 —
+     it PRE-DATES this review; keymap-research.md is the source of truth and should note the deferral."
+  - "Follow-up card #1 (the bigger reason f/gf/t defer): the keyboard DATA-TARGET — a way to name a
+     filter predicate without a pointer (e.g. focus a legend/axis category, riding #41 legend-click-filter's
+     category->predicate path) so bare f has something to filter by. Ships the g-prefix wiring + which-key +
+     pending-prefix handling with it."
+  - "Follow-up card #2: the command log — a SpecEdit enum in brightfield-spec (apply(&mut Spec), the
+     missing AST mutation API) + reserialise via the existing impl Serialize for Spec + append-only log.
+     VisiData warnings: STABLE spec-node identity (never positional), TYPED edits (never execstr),
+     append-only-with-undo-cursor (VisiData deletes the row — a category error here), log the gesture's
+     SEMANTIC result not raw pixels. AST->YAML reserialise is idempotent but not text-preserving (no source
+     spans on nodes) — the text-fidelity fork is the log card's to resolve. Unlocks m/a/e/d + undo."
+  - "Escape-clear precedent exists at the runtime layer (Session::clear_selection / SelectionDispatcher::
+     clear / commit_brush_clear), reachable today only by mouse — Esc is the natural first keyboard verb and
+     its target already exists (escape-key memo)."
+
+ontology_schema:
+  name: "VerbEntry"
+  description: >
+    One row of the gpui-free command registry — the single source of truth for the palette corpus, the
+    keymap-as-data vec, and the help sheet. Selection-first: a verb is argumentless and acts on the
+    focused node. Framework-free by construction (no gpui types).
+  fields:
+    - name: "longname"
+      type: "String"
+      description: "Stable kebab-case canonical name, e.g. cycle-colour-scheme, focus-next-sibling, clear-selection."
+    - name: "binding_specs"
+      type: "Vec<BindingSpec>"
+      description: "Framework-free keystroke descriptors (e.g. keystroke strings) the GPUI adapter turns into gpui::KeyBinding. Empty for reserved (palette-only) verbs. NOT gpui::KeyBinding — that would break the framework-free rule."
+    - name: "scope_applicability"
+      type: "Vec<Altitude>"
+      description: "The altitudes {dashboard, view} at which the verb is meaningful (no mark in v1). The SAME predicate governs bare-key resolution and palette candidacy (ac-04)."
+    - name: "drives"
+      type: "enum"
+      description: "runtime-dispatch | navigation | presentation | palette-meta | colour-preview | reserved."
+    - name: "status"
+      type: "enum"
+      description: "built (wired this card) | preview (c=cycle-colour-scheme, transient) | reserved (shown greyed, unbound)."
+    - name: "reserved_reason"
+      type: "Option<enum>"
+      description: "For reserved verbs: needs-command-log {m,a,e,d,undo} | needs-keyboard-target {f,gf,t,set-param}. None for active verbs."
+    - name: "help"
+      type: "String"
+      description: "One-line description; part of the palette fuzzy corpus alongside the longname."
+    - name: "scores"
+      type: "Option<{ frequency: u8, mnemonic: u8, convention: u8, motor_note: String }>"
+      description: "Provenance for a bound key (ac-08): the recorded scores + motor note from keymap-research.md. Present for every bound key; None for reserved."
+
+evaluation_principles:
+  - principle: "Keyboard-first provable — the mouse-free navigate + palette + clear + recolour loop actually works end to end (ac-17)."
+    weight: 0.25
+  - principle: "Framework-free purity — registry/focus/path-resolver/scope/palette/ladder/resolution are gpui-free and headless-tested; views are shims."
+    weight: 0.2
+  - principle: "Buildable-on-shipped-code honesty — every wired verb is keyboard-complete without a deferred build; deferred verbs are taught, not faked."
+    weight: 0.2
+  - principle: "Discoverability without lengthening the expert path — the palette + breadcrumb + help teach the terse keys; nothing forces the palette."
+    weight: 0.1
+  - principle: "Safety — selection-first see-then-commit; no silent no-ops (off-altitude + reserved reject with a reason); the editor never eats a bare verb."
+    weight: 0.15
+  - principle: "Byte-identity — all new chrome leaves headless render output unchanged."
+    weight: 0.1
+
+exit_conditions:
+  - "ac-01..08 + ac-15 green (semantic-layer unit tests incl. path<->plot resolver + editor-suppression + resolution-table-is-a-projection, provenance doc check, PNG byte gate)."
+  - "ac-09..14 + ac-16 eyeball-confirmed by Hugh in the macOS app (live wiring)."
+  - "ac-17 recorded: a mouse-free keyboard-only walkthrough screencast is attached."
+  - "No durable spec mutation shipped (only c=cycle-colour-scheme transient preview); f/gf/t + spec-edit verbs reserved-and-visible; no g-key wired."
+
+memories_considered:
+  - key: brightfield-window-verification
+    disposition: adopted
+    reason: "The verification split (headless semantic-layer unit tests vs macOS-eyeball for the live GPUI keyboard wiring) is the direct application of the headless-PNG-vs-eyeball loop; the walkthrough screencast (ac-17) is the eyeball sign-off artifact."
+  - key: brightfield-pr-testing-preference
+    disposition: adopted
+    reason: "The card ships on a branch/PR for Hugh to product-test the live grammar in the app before merge; the manual ACs (ac-09..14,16) are his in-app checks."
+
+metadata:
+  version: "1.1"
+  test_prefix: "kbg"
+  timestamp: "2026-07-11T00:00:00Z"
+  ambiguity_score: 0.07
+  interview_ref: "orbit/specs/2026-07-11-keyboard-grammar/interview.md"
+  review_ref: "adversarial spec-review (workflow, 3 lenses, code-verified at pins) — reshaped scope: f/gf/t deferred (no keyboard predicate source), mark floor cut, cmd-Enter/clear-pending/c-scope corrected"
+  card: "candidate 0018 (keyboard grammar + surfaces) — not yet formalised; run /orb:card to create it"
