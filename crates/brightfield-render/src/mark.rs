@@ -2349,6 +2349,18 @@ fn linear_parts(scale: &Scale) -> Option<(f64, f64, f64, f64)> {
 /// lowerer bit-for-bit — and map each centre back to data. The mesh is then
 /// drawn through the SAME scales as the hexes, so they land together. See the
 /// `hex_ac04` alignment probe.
+///
+/// The exactness holds on the FRESH / static-scale path (a plot's initial
+/// build, and any rebuild that re-derives the scales from the re-executed
+/// batch). It relies on the widened domain matching the batch the mesh is drawn
+/// against. Under the live ANCHORED path (`anchor_scales`'s widen-only union,
+/// which holds the launch domain while data widens) a rebuild whose binning
+/// EXTENT changed while the held domain did not would make the reconstruction
+/// invert a stale domain and the mesh drift (~9.6px measured). That is
+/// unreachable today — selection cross-filters wrap in an outer `Filter` and do
+/// NOT re-bin, `binWidth` is literal-only, and no example composes a
+/// param-driven `data.filter` on a hexbin — so it is a documented limit, not a
+/// regression; revisit if binWidth/extent ever become param-driven.
 struct SiblingLattice {
     bin_width: f64,
     /// Raw data extent (un-widened) the lowerer binned over.
@@ -2415,6 +2427,17 @@ impl HexgridRenderer {
     /// to the plot-corner pixel mesh — when there is no sibling to align to: the
     /// scales are the synthesised unit `[0,1]` scales of a DATALESS standalone
     /// hexgrid, are non-linear, or the geometry is degenerate.
+    ///
+    /// KNOWN v1 LIMIT: the trigger is "linear, non-unit, non-degenerate scales",
+    /// NOT "a hexbin sibling exists" — the renderer has no cross-mark visibility.
+    /// So a hexgrid co-plotted with a NON-hexbin mark (a dot/scatter) that
+    /// established a plain data domain would reconstruct a spurious hex lattice
+    /// from THAT mark's (un-hex-widened) domain instead of the plot-corner mesh.
+    /// The mesh would still be a plausible hex grid, just not the plot-corner
+    /// one. Distinguishing a hexbin-widened domain from any other needs a
+    /// cross-mark seam we deliberately do not build here; the ratified use is
+    /// hexgrid + hexbin, where this is correct. Revisit if hexgrid-over-non-
+    /// hexbin becomes a supported composition.
     fn sibling_lattice(&self, x_scale: &Scale, y_scale: &Scale) -> Option<SiblingLattice> {
         let (x0d, x1d, rsx, rex) = linear_parts(x_scale)?;
         let (y0d, y1d, rsy, rey) = linear_parts(y_scale)?;
@@ -4146,12 +4169,20 @@ mod tests {
     /// a mesh centre — in PIXELS, tolerance 1e-6. This is the probe whose absence
     /// let the pitch/phase drift ship; the earlier mesh-only pitch self-check
     /// never touched hexbin output.
-    #[test]
-    fn hex_ac04_lattice_pitch_matches_hexbin_geometry() {
-        let (w, h, b) = (460.0_f64, 370.0_f64, 20.0_f64);
+    /// The probe body: build a faithful hexbin batch for `(w, h, binWidth, raw
+    /// extent)`, run it through the real render pipeline, and assert every hexbin
+    /// centre coincides with a mesh centre in pixels (1e-6).
+    fn assert_hexbin_mesh_coincides(
+        w: f64,
+        h: f64,
+        b: f64,
+        raw_x0: f64,
+        raw_x1: f64,
+        raw_y0: f64,
+        raw_y1: f64,
+    ) {
         let x_range = (40.0, 40.0 + w);
         let y_range = (20.0 + h, 20.0); // inverted, as the render pipeline builds it
-        let (raw_x0, raw_x1, raw_y0, raw_y1) = (0.0, 9.2, 0.0, 7.4);
         let (centres, dx_data, dy_data) =
             lowerer_hex_centres(w, h, b, raw_x0, raw_x1, raw_y0, raw_y1);
         assert!(centres.len() > 20, "enough occupied hexes to probe");
@@ -4196,7 +4227,9 @@ mod tests {
         let x_scale = scales.get(Channel::X).unwrap();
         let y_scale = scales.get(Channel::Y).unwrap();
 
-        // Mesh centres in pixels, via the same reconstruction render uses.
+        // Mesh centres in pixels, via the same reconstruction render uses — with
+        // the SAME binWidth the hexbin was binned at (so a binWidth-plumbing bug
+        // would surface).
         let hexgrid = HexgridRenderer { bin_width: b };
         let lat = hexgrid
             .sibling_lattice(x_scale, y_scale)
@@ -4219,8 +4252,20 @@ mod tests {
         }
         assert!(
             worst < 1e-6,
-            "every hexbin centre must sit on a mesh centre; worst offset {worst} px"
+            "every hexbin centre must sit on a mesh centre (w={w}, h={h}, binWidth={b}); \
+             worst offset {worst} px"
         );
+    }
+
+    #[test]
+    fn hex_ac04_lattice_pitch_matches_hexbin_geometry() {
+        // (a) Default binWidth, ISOTROPIC data-per-pixel (both axes ≈ 0.02).
+        assert_hexbin_mesh_coincides(460.0, 370.0, 20.0, 0.0, 9.2, 0.0, 7.4);
+        // (b) NON-default binWidth (30) on an ANISOTROPIC domain: x maps
+        // 50 units over 500 px (0.10/px), y maps 6 units over 300 px (0.02/px) —
+        // a 5× axis-ratio difference. This exercises binWidth plumbing and
+        // independent per-axis scaling; a bug in either would break 1e-6.
+        assert_hexbin_mesh_coincides(500.0, 300.0, 30.0, 0.0, 50.0, 0.0, 6.0);
     }
 
     /// hex_ac04: a DATALESS hexgrid renders headlessly with NO data-driven

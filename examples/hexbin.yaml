@@ -4,10 +4,11 @@
 # points that fall in it and `fill: { count: }` colours it by that count through
 # the Blues ramp (zero-anchored) - so the blobs read as two hot hex clusters.
 # A `hexgrid` sibling draws the full decorative lattice first; at the same
-# binWidth the hexbin then overlays it EXACTLY on-lattice (the mesh reconstructs
-# the hexbin lattice from the shared scales), so empty cells show as the faint
-# mesh and occupied cells as filled hexes. Compare raster.yaml (square-bin count)
-# and heatmap.yaml (KDE-smoothed) for the same picture.
+# binWidth the hexbin then overlays it on-lattice — the mesh reconstructs the
+# hexbin lattice from the shared scales, so this static render's filled hexes sit
+# in their mesh cells. Empty cells show as the faint mesh, occupied cells as
+# filled hexes. Compare raster.yaml (square-bin count) and heatmap.yaml
+# (KDE-smoothed) for the same picture.
 #
 #   BRIGHTFIELD_DUMP_PNG=hexbin.png cargo run -p brightfield-app -- examples/hexbin.yaml
 data:
