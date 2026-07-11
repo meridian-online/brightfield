@@ -11,6 +11,7 @@ pub mod axis;
 pub mod channel;
 pub mod contour;
 pub mod grid;
+pub mod inset;
 pub mod kde;
 pub mod layout;
 pub mod legend;

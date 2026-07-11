@@ -30,7 +30,7 @@ use std::process;
 
 use brightfield_engine::{Engine, Session, SourceProfile};
 use brightfield_render::channel::{Channel, ChannelMap};
-use brightfield_render::layout::ChartLayout;
+use brightfield_render::layout::{ChartLayout, Insets};
 use brightfield_render::legend::{colour_legend_size, render_colour_legend_at};
 use brightfield_render::mark::{configured_renderer, default_renderers, find_renderer, MarkRenderer};
 use brightfield_render::scale::{Scale, ScaleSet, SequentialScheme};
@@ -85,6 +85,10 @@ struct PlotRender {
     width: u32,
     height: u32,
     scene: vello::Scene,
+    /// Resolved per-side range insets (card 0008 axis-inset round), carried to
+    /// each plot's `ChartState` so its interaction geometry matches the inset
+    /// scale range the scene was drawn against.
+    insets: Insets,
 }
 
 /// A slider widget's placement (card 0005): its dashboard rect, the param binding
@@ -462,9 +466,14 @@ struct ChromeSnapshot {
     /// legend rect or scale, so the gate needs them explicitly — otherwise a
     /// hot swap would keep the launch-time coordinator's stale click wiring.
     legend_bindings: Vec<(String, String, String, String)>,
-    /// Per plot, in dashboard order: path, resolved colour scheme, and
-    /// whether the plot draws its own inline legend.
-    plot_render_meta: Vec<(String, SequentialScheme, bool)>,
+    /// Per plot, in dashboard order: path, resolved colour scheme, whether the
+    /// plot draws its own inline legend, and the resolved range insets (card
+    /// 0008 axis-inset). Insets are launch-fixed in the coordinator's
+    /// `LivePlot.layout`, so an edit that changes them — an explicit `inset:`
+    /// attribute OR a data change that flips the default (e.g. a value axis
+    /// crossing zero) — would hot-swap the scene once, then revert on the next
+    /// gesture; gating it here forces "restart to apply", exactly as `scheme`.
+    plot_render_meta: Vec<(String, SequentialScheme, bool, Insets)>,
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -503,7 +512,7 @@ impl ChromeSnapshot {
                 .collect(),
             plot_render_meta: plots
                 .iter()
-                .map(|p| (p.path.clone(), p.scheme, p.draw_inline_legend))
+                .map(|p| (p.path.clone(), p.scheme, p.draw_inline_legend, p.layout.insets()))
                 .collect(),
         }
     }
@@ -524,7 +533,7 @@ fn chrome_divergence(launch: &ChromeSnapshot, rebuilt: &ChromeSnapshot) -> Optio
         return Some("legend selection binding (as:/for:)");
     }
     if launch.plot_render_meta != rebuilt.plot_render_meta {
-        return Some("per-plot render metadata (colorScheme/inline legend)");
+        return Some("per-plot render metadata (colorScheme/inline legend/inset)");
     }
     None
 }
@@ -777,6 +786,36 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
         if chart_data.is_empty() {
             continue;
         }
+
+        // Axis inset (card 0008 axis-inset round): resolve the plot's Mosaic
+        // inset attributes (most-specific-wins) and overlay the continuous-end
+        // default (zero-baseline ends stay flush), then pull the positional
+        // scale ranges inward so an edge mark renders whole inside the frame
+        // clip. Range-side only — domains and the frame clip are untouched.
+        // Resolved once here, where the plot's dims, attributes, renderers and
+        // batches all meet, then carried identically by the render layout (this
+        // scene + every live rebuild via `LivePlotMeta.layout`) and each plot's
+        // `ChartState` interaction layout (via `PlotRender.insets`).
+        let explicit_insets = plot_nodes
+            .iter()
+            .find(|(path, _)| *path == plot.path)
+            .map(|(_, node)| brightfield_spec::layout::resolve_plot_insets(node))
+            .unwrap_or_default();
+        let inset_entries: Vec<_> = chart_data
+            .iter()
+            .map(|d| (d.batch, d.channel_map, d.renderer))
+            .collect();
+        let insets = brightfield_render::inset::resolve_insets_for_marks(
+            explicit_insets,
+            &inset_entries,
+            brightfield_render::inset::DEFAULT_SCALE_INSET,
+        );
+        drop(inset_entries);
+        let layout = ChartLayout::with_insets(plot.rect.width, plot.rect.height, insets);
+        for d in &mut chart_data {
+            d.layout = layout.clone();
+        }
+
         let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
         let draw_inline_legend = !legend_suppressed.contains(&plot.path);
         let (scene, scales) = build_multi_mark_scene(&refs, draw_inline_legend);
@@ -797,6 +836,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             width: plot.rect.width.ceil() as u32,
             height: plot.rect.height.ceil() as u32,
             scene,
+            insets,
         });
         live_plots.push(LivePlotMeta {
             path: plot.path.clone(),
@@ -1279,9 +1319,14 @@ fn main() {
             let mut watched: Vec<WatchedPlot> = Vec::with_capacity(plots.len());
             for p in plots {
                 let (x, y, w, h) = (p.x, p.y, f64::from(p.width), f64::from(p.height));
+                let insets = p.insets;
                 let state = cx.new(|_| {
                     brightfield_ui::ChartState::new(p.scene, p.width, p.height, renderer.clone())
                 });
+                // Carry the plot's resolved range insets into its interaction
+                // layout so brush inversion / hit-testing match the inset scale
+                // range the scene was drawn against (card 0008 axis-inset).
+                state.update(cx, |s, _| s.set_insets(insets));
                 watched.push(WatchedPlot { path: p.path, x, y, width: w, height: h, state });
             }
 
@@ -2196,6 +2241,7 @@ colorScheme: blues
     /// instead of silently hot-swapping stale chrome.
     #[test]
     fn reload_gate_blocks_chrome_and_render_meta_divergence() {
+        use brightfield_render::layout::Insets;
         use brightfield_render::scale::SequentialScheme;
 
         let snapshot =
@@ -2208,7 +2254,7 @@ colorScheme: blues
                     "sel".to_string(),
                     "species".to_string(),
                 )],
-                plot_render_meta: vec![("/plot/0".to_string(), scheme, inline)],
+                plot_render_meta: vec![("/plot/0".to_string(), scheme, inline, Insets::default())],
             };
         let launch = snapshot("framed", SequentialScheme::Blues, true);
 
@@ -2230,13 +2276,28 @@ colorScheme: blues
                 &launch,
                 &snapshot("framed", SequentialScheme::Viridis, true)
             ),
-            Some("per-plot render metadata (colorScheme/inline legend)")
+            Some("per-plot render metadata (colorScheme/inline legend/inset)")
         );
         // Inline-legend suppression flip (a standalone legend gained/lost its
         // `for:` target).
         assert_eq!(
             super::chrome_divergence(&launch, &snapshot("framed", SequentialScheme::Blues, false)),
-            Some("per-plot render metadata (colorScheme/inline legend)")
+            Some("per-plot render metadata (colorScheme/inline legend/inset)")
+        );
+        // Inset edit (or a data-driven default flip): launch-fixed in the
+        // coordinator, so without the gate the swap renders the new inset once
+        // then reverts on the next gesture — gated exactly like colorScheme
+        // (card 0008 axis-inset).
+        let mut insetted = snapshot("framed", SequentialScheme::Blues, true);
+        insetted.plot_render_meta[0].3 = Insets {
+            left: 8.0,
+            right: 8.0,
+            top: 8.0,
+            bottom: 8.0,
+        };
+        assert_eq!(
+            super::chrome_divergence(&launch, &insetted),
+            Some("per-plot render metadata (colorScheme/inline legend/inset)")
         );
         // Hosted-legend rect or scale change.
         let mut moved = snapshot("framed", SequentialScheme::Blues, true);
@@ -2278,6 +2339,7 @@ colorScheme: blues
     /// path + scheme + inline flag per plot.
     #[test]
     fn reload_gate_snapshot_captures_comparison_keys() {
+        use brightfield_render::layout::Insets;
         use brightfield_render::scale::{Scale, ScaleSet, SequentialScheme};
         use brightfield_spec::analysis::{ComponentPath, LegendBinding};
         use brightfield_spec::layout::Rect;
@@ -2330,7 +2392,12 @@ colorScheme: blues
         );
         assert_eq!(
             snap.plot_render_meta,
-            vec![("/plot/0".to_string(), SequentialScheme::Blues, false)]
+            vec![(
+                "/plot/0".to_string(),
+                SequentialScheme::Blues,
+                false,
+                Insets::default()
+            )]
         );
     }
 

@@ -294,6 +294,17 @@ pub enum ParseWarning {
         /// The declared resolution's wire name (e.g. `single`).
         resolution: String,
     },
+
+    /// A plot-level inset attribute (`inset`, `xInset`, `yInset`,
+    /// `xInsetLeft`/`xInsetRight`/`yInsetTop`/`yInsetBottom`) carried a value
+    /// that is neither a literal number nor a `$param` reference. The attribute
+    /// degrades to absent for range insetting (the axis falls back to its
+    /// default inset), and this names it so an author sees the typo rather than
+    /// silently losing the inset (card 0008 axis-inset round).
+    NonNumericInset {
+        /// The offending attribute key.
+        attribute: String,
+    },
 }
 
 /// Result of a successful parse.
@@ -764,13 +775,38 @@ impl Walker {
         for item in seq {
             plot_items.push(self.walk_component(item)?);
         }
+        // Plot-level inset attributes (card 0008 axis-inset round). Distinct
+        // from the mark-level `inset*` names in the attribute allowlist — these
+        // resolve into positional-scale range insets.
+        const PLOT_INSET_KEYS: [&str; 7] = [
+            "inset",
+            "xInset",
+            "yInset",
+            "xInsetLeft",
+            "xInsetRight",
+            "yInsetTop",
+            "yInsetBottom",
+        ];
         let mut attributes = IndexMap::new();
         for (k, val) in parent {
             let key = k.as_str().unwrap_or("").to_string();
             if key == "plot" {
                 continue;
             }
-            attributes.insert(key, self.spec_value(val));
+            let value = self.spec_value(val);
+            // A non-numeric inset value degrades to "absent" for range
+            // insetting; name it so the author sees the typo. A lifted `$param`
+            // is an intentional (recorded) deferral, not a typo — don't warn.
+            if PLOT_INSET_KEYS.contains(&key.as_str())
+                && !matches!(
+                    value,
+                    SpecValue::Integer(_) | SpecValue::Float(_) | SpecValue::Param(_)
+                )
+            {
+                self.warnings
+                    .push(ParseWarning::NonNumericInset { attribute: key.clone() });
+            }
+            attributes.insert(key, value);
         }
         Ok(PlotNode {
             items: plot_items,
@@ -1836,6 +1872,44 @@ plot:
         assert_eq!(matches.len(), 1, "expected one UnknownOption warning for meta.credit; got {:?}", out.warnings);
         // Typed accessor still filled.
         assert_eq!(out.spec.meta.as_ref().unwrap().title.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn axi_ac01_nonnumeric_plot_inset_warns_but_param_defers() {
+        // A non-numeric plot inset degrades to absent AND names itself (not a
+        // silent drop) — the axi-ac01 "malformed" case.
+        let bad = "data:\n  t:\n    - { x: 1, y: 2 }\nplot:\n  - { mark: dot, data: { from: t }, x: x, y: y }\ninset: nope\n";
+        let out = parse_spec(bad, Format::Yaml).expect("parses despite a bad inset");
+        let n = out
+            .warnings
+            .iter()
+            .filter(|w| matches!(w, ParseWarning::NonNumericInset { attribute } if attribute == "inset"))
+            .count();
+        assert_eq!(n, 1, "one NonNumericInset naming `inset`; got {:?}", out.warnings);
+
+        // Numeric inset: silent.
+        let good = "data:\n  t:\n    - { x: 1, y: 2 }\nplot:\n  - { mark: dot, data: { from: t }, x: x, y: y }\ninset: 5\n";
+        let out2 = parse_spec(good, Format::Yaml).expect("parses");
+        assert!(
+            !out2
+                .warnings
+                .iter()
+                .any(|w| matches!(w, ParseWarning::NonNumericInset { .. })),
+            "a numeric inset must not warn; got {:?}",
+            out2.warnings
+        );
+
+        // A lifted $param is a recorded deferral, not a typo — no warning.
+        let param = "params:\n  pad: 5\ndata:\n  t:\n    - { x: 1, y: 2 }\nplot:\n  - { mark: dot, data: { from: t }, x: x, y: y }\nxInset: $pad\n";
+        let out3 = parse_spec(param, Format::Yaml).expect("parses");
+        assert!(
+            !out3
+                .warnings
+                .iter()
+                .any(|w| matches!(w, ParseWarning::NonNumericInset { .. })),
+            "a $param inset defers silently; got {:?}",
+            out3.warnings
+        );
     }
 
     /// ac-07: unknown keys on mark option bags are accepted silently
