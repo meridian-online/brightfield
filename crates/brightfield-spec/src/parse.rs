@@ -168,6 +168,15 @@ pub const LIFT_SURFACE_FIELDS: &[&str] = &[
 /// mistaken for an aggregate. Pinned to what the vendored corpus exercises.
 pub const AGGREGATE_CHANNEL_FIELDS: &[&str] = &["fill", "r"];
 
+/// Single-key channel-map keys that are recognised Mosaic channel TRANSFORMS,
+/// not aggregates — so a `{sql: 'POW(10, mag)'}` expression channel (the
+/// vendored region-tests / earthquakes corpus uses `r: {sql: …}`) is left to
+/// ordinary lifting instead of being mistaken for a typo'd aggregate and
+/// warned about. Aggregates (`count`/`avg`/…) are matched by
+/// [`AggregateFunc::from_wire`]; anything else on this list is a transform we
+/// carry as a plain object; only a genuinely unknown key warns.
+const CHANNEL_TRANSFORM_KEYS: &[&str] = &["sql"];
+
 /// Wire format of the source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -1072,6 +1081,12 @@ impl Walker {
         }
         let (k, inner) = m.iter().next()?;
         let key = k.as_str()?;
+        // A recognised channel transform (e.g. `{sql: …}`) is not an aggregate
+        // and not a typo — defer to ordinary lifting (stored as a plain object),
+        // no warning.
+        if CHANNEL_TRANSFORM_KEYS.contains(&key) {
+            return None;
+        }
         match AggregateFunc::from_wire(key) {
             Some(func) => {
                 // `{count:}` carries a null value → no column; `{avg: col}`
@@ -2010,6 +2025,33 @@ plot:
                 .unwrap_or_else(|e| panic!("read {path}: {e}"));
             parse_spec(&src, Format::Yaml)
                 .unwrap_or_else(|e| panic!("corpus {name} failed to parse: {e}"));
+        }
+    }
+
+    /// F2 (review): a Mosaic `{sql: …}` channel-transform expression is NOT a
+    /// typo'd aggregate — the vendored specs that carry `r: {sql: 'POW(10, mag)'}`
+    /// must parse with ZERO `UnknownAggregate` warnings (the warning is
+    /// author-facing via the app's stderr).
+    #[test]
+    fn f2_sql_channel_expression_emits_no_unknown_aggregate_warning() {
+        for name in ["region-tests", "earthquakes-feed", "earthquakes-globe"] {
+            let path = format!(
+                "{}/vendor/mosaic-specs/yaml/{name}.yaml",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            let src = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {path}: {e}"));
+            let out = parse_spec(&src, Format::Yaml)
+                .unwrap_or_else(|e| panic!("corpus {name} failed to parse: {e}"));
+            let unknown: Vec<_> = out
+                .warnings
+                .iter()
+                .filter(|w| matches!(w, ParseWarning::UnknownAggregate { .. }))
+                .collect();
+            assert!(
+                unknown.is_empty(),
+                "corpus {name}: sql channel transform must not warn, got {unknown:?}"
+            );
         }
     }
 
