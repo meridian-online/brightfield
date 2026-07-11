@@ -9,6 +9,7 @@
 //!   → scale.inverse_f64(local_px) → data_value
 //! ```
 
+use brightfield_render::layout::Insets;
 use kurbo::{Point, Rect};
 
 /// Default margins (left, top, right, bottom) in pixels.
@@ -35,10 +36,16 @@ pub struct ChartLayout {
     pub margin_right: f64,
     /// Bottom margin in pixels (space for x-axis labels).
     pub margin_bottom: f64,
+    /// Per-side range insets (card 0008 axis-inset round), carried identically
+    /// to the render `ChartLayout` so hit-testing and brush inversion use the
+    /// same inset pixels as the rendered scale range. Applied inside
+    /// [`ChartLayout::plot_area`]; a cross-model agreement test pins render
+    /// `x_range`/`y_range` equal to this plot area for the same dims + insets.
+    pub insets: Insets,
 }
 
 impl ChartLayout {
-    /// Create a layout with default margins.
+    /// Create a layout with default margins and no insets.
     pub fn new(width: f64, height: f64) -> Self {
         Self {
             width,
@@ -47,10 +54,11 @@ impl ChartLayout {
             margin_top: DEFAULT_MARGIN_TOP,
             margin_right: DEFAULT_MARGIN_RIGHT,
             margin_bottom: DEFAULT_MARGIN_BOTTOM,
+            insets: Insets::default(),
         }
     }
 
-    /// Create a layout with custom margins.
+    /// Create a layout with custom margins and no insets.
     pub fn with_margins(
         width: f64,
         height: f64,
@@ -66,19 +74,41 @@ impl ChartLayout {
             margin_top: top,
             margin_right: right,
             margin_bottom: bottom,
+            insets: Insets::default(),
         }
     }
 
-    /// The plot area rectangle (inside margins).
+    /// Create a layout with default margins and the given range insets.
+    pub fn with_insets(width: f64, height: f64, insets: Insets) -> Self {
+        Self {
+            width,
+            height,
+            margin_left: DEFAULT_MARGIN_LEFT,
+            margin_top: DEFAULT_MARGIN_TOP,
+            margin_right: DEFAULT_MARGIN_RIGHT,
+            margin_bottom: DEFAULT_MARGIN_BOTTOM,
+            insets,
+        }
+    }
+
+    /// The per-side range insets carried by this layout.
+    pub fn insets(&self) -> Insets {
+        self.insets
+    }
+
+    /// The plot area rectangle (inside margins, pulled inward by the range
+    /// insets).
     ///
     /// Returns `(x0, y0, x1, y1)` where (x0, y0) is the top-left and
-    /// (x1, y1) is the bottom-right of the plot area.
+    /// (x1, y1) is the bottom-right. The insets match the render layout's
+    /// `x_range`/`y_range` so pointer→data inversion lands on the same geometry
+    /// the marks were drawn against.
     pub fn plot_area(&self) -> Rect {
         Rect::new(
-            self.margin_left,
-            self.margin_top,
-            self.width - self.margin_right,
-            self.height - self.margin_bottom,
+            self.margin_left + self.insets.left,
+            self.margin_top + self.insets.top,
+            self.width - self.margin_right - self.insets.right,
+            self.height - self.margin_bottom - self.insets.bottom,
         )
     }
 
@@ -125,6 +155,7 @@ impl ChartLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use brightfield_render::layout::ChartLayout as RenderLayout;
     use kurbo::Point;
 
     // --- gmr_ac08: Coordinate mapping pipeline ---
@@ -198,6 +229,85 @@ mod tests {
         let layout = ChartLayout::new(640.0, 480.0);
         let result = layout.local_to_normalised(Point::new(10.0, 200.0));
         assert!(result.is_none());
+    }
+
+    // --- axi_ac03: interaction parity under insets ---
+
+    #[test]
+    fn axi_ac03_plot_area_pulls_inward_by_insets() {
+        let insets = Insets {
+            left: 5.0,
+            right: 7.0,
+            top: 3.0,
+            bottom: 9.0,
+        };
+        let layout = ChartLayout::with_insets(640.0, 480.0, insets);
+        let area = layout.plot_area();
+        assert!((area.x0 - 45.0).abs() < f64::EPSILON); // 40 + 5
+        assert!((area.y0 - 23.0).abs() < f64::EPSILON); // 20 + 3
+        assert!((area.x1 - 613.0).abs() < f64::EPSILON); // 620 - 7
+        assert!((area.y1 - 441.0).abs() < f64::EPSILON); // 450 - 9
+        assert_eq!(layout.insets(), insets);
+    }
+
+    #[test]
+    fn axi_ac03_cross_model_agreement() {
+        // The load-bearing pin: render x_range()/y_range() must equal the ui
+        // plot-area-derived ranges for the same dims + insets, so the two
+        // duplicated layout models can never agree-by-luck for insets. y_range
+        // is inverted: render (start, end) == (plot_area.y1, plot_area.y0).
+        let insets = Insets {
+            left: 5.0,
+            right: 7.0,
+            top: 3.0,
+            bottom: 9.0,
+        };
+        let render = RenderLayout::with_insets(640.0, 480.0, insets);
+        let ui = ChartLayout::with_insets(640.0, 480.0, insets);
+        let area = ui.plot_area();
+        let (rx0, rx1) = render.x_range();
+        let (ry0, ry1) = render.y_range();
+        assert!((rx0 - area.x0).abs() < f64::EPSILON);
+        assert!((rx1 - area.x1).abs() < f64::EPSILON);
+        assert!((ry0 - area.y1).abs() < f64::EPSILON);
+        assert!((ry1 - area.y0).abs() < f64::EPSILON);
+        assert_eq!(render.insets(), ui.insets());
+    }
+
+    #[test]
+    fn axi_ac03_inversion_round_trips_at_inset_ends() {
+        // A pixel at the inset range end inverts to the domain end — the brush
+        // edge lands on the domain bound, not a sliver past it.
+        use brightfield_render::scale::Scale;
+        let insets = Insets {
+            left: 5.0,
+            right: 5.0,
+            top: 5.0,
+            bottom: 5.0,
+        };
+        let ui = ChartLayout::with_insets(640.0, 480.0, insets);
+        let area = ui.plot_area();
+        let scale = Scale::Linear {
+            domain_min: 0.0,
+            domain_max: 100.0,
+            range_start: area.x0,
+            range_end: area.x1,
+        };
+        let v_hi = scale.inverse_f64(area.x1).expect("linear is invertible");
+        assert!((v_hi - 100.0).abs() < 1e-9);
+        let v_lo = scale.inverse_f64(area.x0).expect("linear is invertible");
+        assert!((v_lo - 0.0).abs() < 1e-9);
+
+        // The un-inset frame edge must invert PAST the domain max — proof the 5px
+        // inset actually pulled the range end inward. With zero insets the frame
+        // edge is the range end and would invert to exactly 100.0, so this
+        // assertion fails if insets no-op.
+        let frame_x_end = 640.0 - DEFAULT_MARGIN_RIGHT; // 620, pre-inset edge
+        let v_frame = scale.inverse_f64(frame_x_end).expect("linear is invertible");
+        assert!(
+            v_frame > 100.0,
+            "un-inset frame edge {frame_x_end} inverts to {v_frame}, must be past domain max"
+        );
     }
 
     #[test]

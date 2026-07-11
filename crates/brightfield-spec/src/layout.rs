@@ -204,6 +204,54 @@ fn plot_height(plot: &PlotNode) -> f64 {
         .unwrap_or(DEFAULT_PLOT_HEIGHT)
 }
 
+/// A plot's four per-side insets resolved from its Mosaic inset attributes.
+///
+/// `None` = the attribute is absent for that side, so the caller applies its
+/// own default; `Some(v)` = an explicit value that overrides the default —
+/// including an explicit `Some(0.0)`, the Mosaic-exact opt-out. Values are
+/// literal-only: a `$param` reference or any non-numeric value resolves to
+/// `None` here (a truly non-numeric value also earns a
+/// [`crate::parse::ParseWarning::NonNumericInset`]; a lifted `$param` is a
+/// recorded deferral, matching hexbin's literal-only `binWidth`).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SideInsets {
+    /// Left (x range start) inset in pixels.
+    pub left: Option<f64>,
+    /// Right (x range end) inset in pixels.
+    pub right: Option<f64>,
+    /// Top (y range end — screen y grows downward) inset in pixels.
+    pub top: Option<f64>,
+    /// Bottom (y range start) inset in pixels.
+    pub bottom: Option<f64>,
+}
+
+/// Resolve a plot's four per-side insets from its attributes with Observable
+/// Plot most-specific-wins precedence, per side:
+/// `left = xInsetLeft ?? xInset ?? inset` (and symmetrically `right`, `top`,
+/// `bottom`). Only literal numeric attributes (`Integer`/`Float`) are read;
+/// anything else — including a lifted `$param` — is treated as absent for that
+/// key and falls through to the next-most-specific one. This is the single
+/// gpui-free primitive both layout models' insets derive from.
+#[must_use]
+pub fn resolve_plot_insets(plot: &PlotNode) -> SideInsets {
+    let num = |key: &str| -> Option<f64> {
+        plot.attributes.get(key).and_then(|v| match v {
+            SpecValue::Integer(n) => Some(*n as f64),
+            SpecValue::Float(f) => Some(*f),
+            _ => None,
+        })
+    };
+    let global = num("inset");
+    let x_axis = num("xInset");
+    let y_axis = num("yInset");
+    SideInsets {
+        left: num("xInsetLeft").or(x_axis).or(global),
+        right: num("xInsetRight").or(x_axis).or(global),
+        top: num("yInsetTop").or(y_axis).or(global),
+        bottom: num("yInsetBottom").or(y_axis).or(global),
+    }
+}
+
 fn layout_plot(plot: &PlotNode, x: f64, y: f64) -> LayoutNode {
     let w = plot_width(plot);
     let h = plot_height(plot);
@@ -1177,5 +1225,92 @@ hconcat:
             tested += 1;
         }
         assert!(tested > 0, "no composition specs found in corpus");
+    }
+
+    // --- axi_ac01: plot inset attribute resolution (most-specific-wins) ---
+
+    fn plot_with(attrs: &[(&str, SpecValue)]) -> PlotNode {
+        let mut attributes = IndexMap::new();
+        for (k, v) in attrs {
+            attributes.insert((*k).to_string(), v.clone());
+        }
+        PlotNode {
+            items: vec![],
+            attributes,
+        }
+    }
+
+    #[test]
+    fn axi_ac01_global_inset_sets_all_four_sides() {
+        let p = plot_with(&[("inset", SpecValue::Integer(5))]);
+        assert_eq!(
+            resolve_plot_insets(&p),
+            SideInsets {
+                left: Some(5.0),
+                right: Some(5.0),
+                top: Some(5.0),
+                bottom: Some(5.0),
+            }
+        );
+    }
+
+    #[test]
+    fn axi_ac01_per_axis_overrides_global() {
+        // xInset governs left+right; yInset governs top+bottom; global fills gaps.
+        let p = plot_with(&[
+            ("inset", SpecValue::Integer(2)),
+            ("xInset", SpecValue::Float(8.0)),
+        ]);
+        assert_eq!(
+            resolve_plot_insets(&p),
+            SideInsets {
+                left: Some(8.0),
+                right: Some(8.0),
+                top: Some(2.0),
+                bottom: Some(2.0),
+            }
+        );
+    }
+
+    #[test]
+    fn axi_ac01_per_side_is_most_specific() {
+        // Per-side beats per-axis beats global, independently on each side.
+        let p = plot_with(&[
+            ("inset", SpecValue::Integer(1)),
+            ("xInset", SpecValue::Integer(4)),
+            ("xInsetLeft", SpecValue::Integer(10)),
+            ("yInsetTop", SpecValue::Integer(7)),
+        ]);
+        assert_eq!(
+            resolve_plot_insets(&p),
+            SideInsets {
+                left: Some(10.0),  // xInsetLeft
+                right: Some(4.0),  // xInset
+                top: Some(7.0),    // yInsetTop
+                bottom: Some(1.0), // global inset
+            }
+        );
+    }
+
+    #[test]
+    fn axi_ac01_explicit_zero_is_preserved_not_dropped() {
+        // Explicit 0 is Some(0.0) — the Mosaic-exact opt-out — not "absent".
+        let p = plot_with(&[("xInsetRight", SpecValue::Integer(0))]);
+        let got = resolve_plot_insets(&p);
+        assert_eq!(got.right, Some(0.0));
+        assert_eq!(got.left, None, "unspecified side stays absent (default applies)");
+    }
+
+    #[test]
+    fn axi_ac01_absent_is_none_and_nonnumeric_falls_through() {
+        // No inset attrs at all → all None. A non-numeric per-side value degrades
+        // to absent for that key and falls through to the next-most-specific.
+        assert_eq!(resolve_plot_insets(&plot_with(&[])), SideInsets::default());
+        let p = plot_with(&[
+            ("xInset", SpecValue::Integer(6)),
+            ("xInsetLeft", SpecValue::String("nope".into())),
+        ]);
+        // xInsetLeft is non-numeric → falls through to xInset(6).
+        assert_eq!(resolve_plot_insets(&p).left, Some(6.0));
     }
 }

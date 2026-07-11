@@ -839,6 +839,65 @@ fn union_scales(scales: &[Scale], range_start: f64, range_end: f64) -> Option<Sc
     }
 }
 
+/// The kind of a positional axis, classified from its bound columns' Arrow
+/// types WITHOUT building scales — a datatype peek mirroring
+/// [`infer_column_scale`]'s arms. Used to decide the default axis inset (card
+/// 0008 axis-inset round) before ranges are fed to scale inference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AxisClass {
+    /// A linear or time scale (numeric / timestamp column). Gets the default
+    /// inset on non-zero-baseline ends.
+    Continuous,
+    /// A band scale (`Utf8` column). Gets no default inset (band `padding`
+    /// already owns categorical edge spacing); explicit insets still apply.
+    Band,
+}
+
+/// Classify a positional axis (the `X`/`X1`/`X2` or `Y`/`Y1`/`Y2` family) as
+/// continuous or band by peeking the bound columns' Arrow `DataType` across all
+/// mark entries — no value scan, no scale built. `Continuous` wins over `Band`
+/// if any mark binds a numeric/time column to the axis (a mixed axis is
+/// continuous). Returns `None` when no mark binds a column to the axis: an
+/// augment-only axis (regression/1-D density perpendicular) or an absent one —
+/// no default inset is applied there (conservative: never floats a baseline we
+/// can't see).
+pub fn positional_axis_class(
+    entries: &[(&RecordBatch, &ChannelMap)],
+    axis: Channel,
+) -> Option<AxisClass> {
+    let family: &[Channel] = match axis {
+        Channel::X => &[Channel::X, Channel::X1, Channel::X2],
+        Channel::Y => &[Channel::Y, Channel::Y1, Channel::Y2],
+        _ => return None,
+    };
+    let mut saw_continuous = false;
+    let mut saw_band = false;
+    for (batch, cm) in entries {
+        for ch in family {
+            let Some(col_name) = cm.get(*ch) else { continue };
+            let Ok(idx) = batch.schema().index_of(col_name) else {
+                continue;
+            };
+            match batch.column(idx).data_type() {
+                DataType::Utf8 => saw_band = true,
+                DataType::Float64
+                | DataType::Int64
+                | DataType::Int32
+                | DataType::Int16
+                | DataType::Timestamp(TimeUnit::Microsecond, _) => saw_continuous = true,
+                _ => {}
+            }
+        }
+    }
+    if saw_continuous {
+        Some(AxisClass::Continuous)
+    } else if saw_band {
+        Some(AxisClass::Band)
+    } else {
+        None
+    }
+}
+
 fn infer_column_scale(
     col: &dyn Array,
     range_start: f64,
@@ -1690,5 +1749,113 @@ mod tests {
         let a = anchor_scales(&launch_y, fresh_fill);
         assert!(a.get(Channel::Y).is_some(), "only-in-launch kept");
         assert!(a.get(Channel::Fill).is_some(), "only-in-fresh adopted (F2: late raster ramp)");
+    }
+
+    // --- axi_ac04: a launch-baked inset survives every anchored rebuild ---
+
+    #[test]
+    fn axi_ac04_inset_survives_anchored_rebuild() {
+        // Launch range carries a nonzero inset (45..615, not the un-inset
+        // 40..620). anchor_scale copies the launch range verbatim, so the inset
+        // rides through every widen-only fold.
+        let inset_launch = |min, max| Scale::Linear {
+            domain_min: min,
+            domain_max: max,
+            range_start: 45.0,
+            range_end: 615.0,
+        };
+        let mut launch = ScaleSet::new();
+        launch.insert(Channel::X, inset_launch(0.0, 100.0));
+
+        // A widening gesture (superset domain) folds in; range stays launch.
+        let mut fresh = ScaleSet::new();
+        fresh.insert(Channel::X, linear(-10.0, 130.0)); // linear() ranges 0..400
+        match anchor_scales(&launch, fresh).get(Channel::X) {
+            Some(Scale::Linear {
+                domain_min,
+                domain_max,
+                range_start,
+                range_end,
+            }) => {
+                assert_eq!((*domain_min, *domain_max), (-10.0, 130.0), "domain widened");
+                assert_eq!(
+                    (*range_start, *range_end),
+                    (45.0, 615.0),
+                    "launch range (inset baked in) preserved verbatim"
+                );
+            }
+            other => panic!("expected Linear, got {other:?}"),
+        }
+
+        // A subset (filter) gesture is byte-identical to launch, inset included.
+        let mut subset = ScaleSet::new();
+        subset.insert(Channel::X, linear(25.0, 75.0));
+        if let Some(Scale::Linear {
+            range_start,
+            range_end,
+            ..
+        }) = anchor_scales(&launch, subset).get(Channel::X)
+        {
+            assert_eq!(
+                (*range_start, *range_end),
+                (45.0, 615.0),
+                "subset rebuild is inset-identical"
+            );
+        } else {
+            panic!("expected Linear");
+        }
+    }
+
+    // --- axi_ac02: positional_axis_class datatype peek ---
+
+    #[test]
+    fn axi_positional_axis_class_peeks_datatypes() {
+        let num = make_numeric_batch();
+        let mut ncm = ChannelMap::new();
+        ncm.insert(Channel::X, "x".into());
+        ncm.insert(Channel::Y, "y".into());
+        let np = [(&num, &ncm)];
+        assert_eq!(
+            positional_axis_class(&np, Channel::X),
+            Some(AxisClass::Continuous)
+        );
+        assert_eq!(
+            positional_axis_class(&np, Channel::Y),
+            Some(AxisClass::Continuous)
+        );
+
+        let cat = make_categorical_batch();
+        let mut ccm = ChannelMap::new();
+        ccm.insert(Channel::X, "category".into());
+        ccm.insert(Channel::Y, "value".into());
+        let cp = [(&cat, &ccm)];
+        assert_eq!(positional_axis_class(&cp, Channel::X), Some(AxisClass::Band));
+        assert_eq!(
+            positional_axis_class(&cp, Channel::Y),
+            Some(AxisClass::Continuous)
+        );
+
+        // No binding on an axis → None (augment-only / absent — no default).
+        let mut only_x = ChannelMap::new();
+        only_x.insert(Channel::X, "x".into());
+        let op = [(&num, &only_x)];
+        assert_eq!(positional_axis_class(&op, Channel::Y), None);
+
+        // Mixed: one mark bands x, another binds x numeric → Continuous wins.
+        let mixed = [(&cat, &ccm), (&num, &ncm)];
+        assert_eq!(
+            positional_axis_class(&mixed, Channel::X),
+            Some(AxisClass::Continuous)
+        );
+
+        // Time (Timestamp) axis classifies Continuous — the AC's "linear/time".
+        let tim = make_time_batch();
+        let mut tcm = ChannelMap::new();
+        tcm.insert(Channel::X, "ts".into());
+        let tp = [(&tim, &tcm)];
+        assert_eq!(
+            positional_axis_class(&tp, Channel::X),
+            Some(AxisClass::Continuous)
+        );
     }
 }

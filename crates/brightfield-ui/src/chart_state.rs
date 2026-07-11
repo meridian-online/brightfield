@@ -18,6 +18,7 @@ use vello::Scene;
 use crate::chart_layout::ChartLayout;
 use crate::interaction::{InteractionState, NavigationState};
 use crate::vello_renderer::VelloRenderer;
+use brightfield_render::layout::Insets;
 use brightfield_render::transition::Transition;
 
 /// Reactive chart state, wrapped in `gpui::Entity` for notifications.
@@ -39,8 +40,12 @@ pub struct ChartState {
     height: u32,
     /// Shared VelloRenderer for GPU rendering.
     renderer: Arc<Mutex<VelloRenderer>>,
-    /// Layout with coordinate mapping (derived from width/height).
+    /// Layout with coordinate mapping (derived from width/height + insets).
     layout: ChartLayout,
+    /// Per-side range insets (card 0008 axis-inset round), stored so a resize
+    /// (`set_dimensions`) rebuilds the layout without dropping them. Set once at
+    /// launch from the plot's resolved insets via [`ChartState::set_insets`].
+    insets: Insets,
     /// Cached device-resolution raster of the current scene (without the
     /// interaction overlay), reused while the scene and target dimensions are
     /// unchanged so hovering/brushing don't re-run Vello. Interior-mutable
@@ -68,6 +73,7 @@ impl ChartState {
             height,
             renderer,
             layout: ChartLayout::new(width as f64, height as f64),
+            insets: Insets::default(),
             base_cache: RefCell::new(None),
         }
     }
@@ -177,13 +183,24 @@ impl ChartState {
         self.height
     }
 
-    /// Update the chart dimensions (e.g. on window resize).
+    /// Update the chart dimensions (e.g. on window resize). Preserves the
+    /// resolved range insets so a resize doesn't silently drop them.
     pub fn set_dimensions(&mut self, width: u32, height: u32) {
         self.width = width;
         self.height = height;
-        self.layout = ChartLayout::new(width as f64, height as f64);
+        self.layout = ChartLayout::with_insets(width as f64, height as f64, self.insets);
         // Dimensions changed — invalidate the cached raster.
         *self.base_cache.borrow_mut() = None;
+    }
+
+    /// Set the resolved per-side range insets (card 0008 axis-inset round) and
+    /// rebuild the layout so hit-testing and brush inversion use the same inset
+    /// pixels as the rendered scale range. The scene raster is unaffected (it
+    /// was drawn render-side with the insets already baked in), so the base
+    /// cache is left intact.
+    pub fn set_insets(&mut self, insets: Insets) {
+        self.insets = insets;
+        self.layout = ChartLayout::with_insets(self.width as f64, self.height as f64, insets);
     }
 
     /// Access the shared VelloRenderer.
