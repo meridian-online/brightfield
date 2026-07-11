@@ -287,7 +287,10 @@ impl CrossfilterCoordinator {
             Some(p) => p.bindings.clone(),
             None => return false,
         };
-        self.clear_bindings(&bindings, cx)
+        let filter = self.clear_bindings(&bindings, cx);
+        // Also drop the persistent selection rectangle on the brushed plot itself.
+        let overlay = self.clear_selection_overlay(plot_path, cx);
+        filter || overlay
     }
 
     /// Clear EVERY plot's selection (Esc at the dashboard altitude — card 0018,
@@ -295,7 +298,32 @@ impl CrossfilterCoordinator {
     pub fn clear_all(&mut self, cx: &mut App) -> bool {
         let bindings: Vec<BrushBinding> =
             self.plots.iter().flat_map(|p| p.bindings.clone()).collect();
-        self.clear_bindings(&bindings, cx)
+        let filter = self.clear_bindings(&bindings, cx);
+        let paths: Vec<String> = self.plots.iter().map(|p| p.path.clone()).collect();
+        let mut overlay = false;
+        for path in &paths {
+            if self.clear_selection_overlay(path, cx) {
+                overlay = true;
+            }
+        }
+        filter || overlay
+    }
+
+    /// Drop the persistent `Selected` rectangle on the plot at `plot_path` (the
+    /// visual half of Esc-clear — the filter half is [`Self::clear_bindings`]).
+    fn clear_selection_overlay(&mut self, plot_path: &str, cx: &mut App) -> bool {
+        let Some(p) = self.plots.iter().find(|p| p.path == plot_path) else {
+            return false;
+        };
+        let state = p.state.clone();
+        let mut cleared = false;
+        state.update(cx, |s, c| {
+            if s.clear_persistent_selection() {
+                cleared = true;
+                c.notify();
+            }
+        });
+        cleared
     }
 
     /// Retract `bindings`' contributions, absorb the re-execution, and rebuild the

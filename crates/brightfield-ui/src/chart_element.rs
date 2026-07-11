@@ -255,6 +255,23 @@ fn paint_overlay(window: &mut Window, bounds: Bounds<Pixels>, interaction: &Inte
             q.border_style = BorderStyle::Solid;
             window.paint_quad(q);
         }
+        InteractionState::Selected { start, current } => {
+            // A committed selection persists after release — grey, so it reads as
+            // settled vs the active blue drag (Mosaic / Vega-Lite fidelity).
+            let x0 = start.x.min(current.x);
+            let y0 = start.y.min(current.y);
+            let w = (start.x.max(current.x) - x0) as f32;
+            let h = (start.y.max(current.y) - y0) as f32;
+            let rect = Bounds {
+                origin: point(ox + px(x0 as f32), oy + px(y0 as f32)),
+                size: size(px(w), px(h)),
+            };
+            let mut q = fill(rect, rgba(0.5, 0.5, 0.5, 0.18));
+            q.border_widths = (1.5).into();
+            q.border_color = rgba(0.42, 0.42, 0.42, 0.6);
+            q.border_style = BorderStyle::Solid;
+            window.paint_quad(q);
+        }
         InteractionState::Hovering { point: p, .. } => {
             let d = (HOVER_RADIUS * 2.0) as f32;
             let rect = Bounds {

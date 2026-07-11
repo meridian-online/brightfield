@@ -273,6 +273,10 @@ impl ChartState {
                     false
                 }
             }
+            // A persisted selection stays put while merely moving/hovering over it;
+            // it is replaced only by a new brush (pointer_down) or cleared (Esc /
+            // click). Suppresses the hover marker on a selected plot.
+            InteractionState::Selected { .. } => false,
         }
     }
 
@@ -283,11 +287,30 @@ impl ChartState {
         Point::new(p.x.clamp(area.x0, area.x1), p.y.clamp(area.y0, area.y1))
     }
 
-    /// Pointer released. Ends an active brush, returning to idle. Returns `true`
-    /// when a brush was in progress. Selection dispatch (re-query) is handled
-    /// separately by the app shell via `commit_brush_release`.
+    /// Pointer released. A DRAG commits to a persistent `Selected` rectangle
+    /// (Mosaic / Vega-Lite fidelity — the selection stays drawn until cleared); a
+    /// click (zero-area) returns to idle. Returns `true` when a brush was in
+    /// progress. Selection dispatch (re-query) is handled separately by the app
+    /// shell via `commit_brush`.
     pub fn pointer_up(&mut self) -> bool {
-        if matches!(self.interaction, InteractionState::Brushing { .. }) {
+        let (start, current) = match &self.interaction {
+            InteractionState::Brushing { start, current } => (*start, *current),
+            _ => return false,
+        };
+        let is_drag = (start.x - current.x).abs() >= crate::chart_view::ZERO_AREA_EPSILON
+            || (start.y - current.y).abs() >= crate::chart_view::ZERO_AREA_EPSILON;
+        self.interaction = if is_drag {
+            InteractionState::Selected { start, current }
+        } else {
+            InteractionState::Idle
+        };
+        true
+    }
+
+    /// Drop a persistent `Selected` rectangle (Esc / cross-filter clear). Returns
+    /// `true` if a committed selection overlay was cleared.
+    pub fn clear_persistent_selection(&mut self) -> bool {
+        if matches!(self.interaction, InteractionState::Selected { .. }) {
             self.interaction = InteractionState::Idle;
             true
         } else {
@@ -416,5 +439,34 @@ mod tests {
 
         // pointer_up on an already-idle state is a no-op.
         assert!(!state.pointer_up());
+    }
+
+    #[cfg(feature = "gpu-tests")]
+    #[test]
+    fn pointer_up_persists_a_drag_and_a_click_stays_idle() {
+        let renderer = VelloRenderer::new();
+        let mut state = ChartState::new(Scene::new(), 640, 480, renderer);
+
+        // A drag commits to a persistent Selected rectangle (Mosaic fidelity).
+        state.pointer_down(Point::new(120.0, 120.0), Point::new(0.0, 0.0));
+        state.pointer_move(Point::new(280.0, 300.0), Point::new(0.0, 0.0), true);
+        assert!(state.pointer_up());
+        assert!(
+            matches!(state.interaction(), InteractionState::Selected { .. }),
+            "a drag persists as a committed selection"
+        );
+
+        // Esc / cross-filter clear drops the committed selection.
+        assert!(state.clear_persistent_selection());
+        assert!(matches!(state.interaction(), InteractionState::Idle));
+        assert!(!state.clear_persistent_selection(), "nothing left to clear");
+
+        // A zero-area click inside the plot does NOT persist.
+        state.pointer_down(Point::new(300.0, 200.0), Point::new(0.0, 0.0));
+        assert!(state.pointer_up());
+        assert!(
+            matches!(state.interaction(), InteractionState::Idle),
+            "a click clears rather than persisting"
+        );
     }
 }

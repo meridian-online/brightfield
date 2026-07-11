@@ -34,6 +34,16 @@ pub enum InteractionState {
         /// Resolved nearest data point (if within max distance).
         nearest: Option<NearestHit>,
     },
+    /// A committed interval selection that PERSISTS after the drag releases
+    /// (Mosaic / Vega-Lite fidelity): the rectangle stays drawn until Esc, a
+    /// click, or a new brush clears it. Same chart-local coordinates as
+    /// `Brushing`; the dispatched data predicate rides the coordinator.
+    Selected {
+        /// Start corner of the committed brush, in chart coordinates.
+        start: Point,
+        /// Opposite corner, in chart coordinates.
+        current: Point,
+    },
 }
 
 /// Brush overlay colour (semi-transparent blue).
@@ -41,6 +51,13 @@ const BRUSH_COLOUR: Color = Color::new([0.306, 0.475, 0.655, 0.251]);
 
 /// Brush border colour.
 const BRUSH_BORDER_COLOUR: Color = Color::new([0.306, 0.475, 0.655, 0.753]);
+
+/// Committed-selection fill — semi-transparent grey, distinct from the active
+/// blue drag so a persisted selection reads as settled (Vega-Lite convention).
+const SELECTED_COLOUR: Color = Color::new([0.5, 0.5, 0.5, 0.18]);
+
+/// Committed-selection border.
+const SELECTED_BORDER_COLOUR: Color = Color::new([0.42, 0.42, 0.42, 0.6]);
 
 /// Hover highlight radius.
 const HOVER_RADIUS: f64 = 8.0;
@@ -100,6 +117,17 @@ impl InteractionState {
                 // Border stroke.
                 let stroke = kurbo::Stroke::new(1.5);
                 scene.stroke(&stroke, Affine::IDENTITY, BRUSH_BORDER_COLOUR, None, &rect);
+            }
+            Self::Selected { start, current } => {
+                let rect = Rect::new(
+                    start.x.min(current.x),
+                    start.y.min(current.y),
+                    start.x.max(current.x),
+                    start.y.max(current.y),
+                );
+                scene.fill(Fill::NonZero, Affine::IDENTITY, SELECTED_COLOUR, None, &rect);
+                let stroke = kurbo::Stroke::new(1.5);
+                scene.stroke(&stroke, Affine::IDENTITY, SELECTED_BORDER_COLOUR, None, &rect);
             }
             Self::Hovering { point, .. } => {
                 let circle = kurbo::Circle::new(*point, HOVER_RADIUS);
