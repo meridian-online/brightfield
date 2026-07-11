@@ -1,0 +1,18 @@
+[package]
+name = "brightfield-keys"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Framework-free semantic layer for the selection-first keyboard grammar (card 0018) — command registry, focus state machine, scope resolver, palette filter, Esc ladder, and dispatch-resolution projection. No GPUI: could this run headless? yes."
+
+[dependencies]
+brightfield-spec = { path = "../brightfield-spec" }
+
+[lib]
+name = "brightfield_keys"
+path = "src/lib.rs"
+
+[lints]
+workspace = true

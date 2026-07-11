@@ -865,6 +865,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "brightfield-keys"
+version = "0.1.0"
+dependencies = [
+ "brightfield-spec",
+]
+
+[[package]]
 name = "brightfield-render"
 version = "0.1.0"
 dependencies = [
