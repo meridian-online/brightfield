@@ -132,6 +132,13 @@ impl ChartView {
     pub fn set_focus_ring(&mut self, ring: Option<Rect>) {
         self.focus_ring = ring;
     }
+
+    /// The shared cross-filter coordinator (all plots hold the same `Rc`), if this
+    /// dashboard cross-filters — the seam a keyboard runtime verb (Esc clear)
+    /// drives, without threading the coordinator through the panel (card 0018).
+    pub fn coordinator(&self) -> Option<Rc<RefCell<CrossfilterCoordinator>>> {
+        self.charts.first().and_then(|c| c.coordinator.clone())
+    }
 }
 
 impl Render for ChartView {

@@ -62,7 +62,8 @@ use crate::shell_model::{
     SIDEBAR_DOCK_WIDTH, SIDEBAR_PANEL_NAME,
 };
 use crate::keymap::{
-    DiveIn, FocusJump, FocusNextSibling, FocusPrevSibling, OpenHelp, PopOut, ToggleFocus,
+    ClearSelection, DiveIn, FocusJump, FocusNextSibling, FocusPrevSibling, OpenHelp, PopOut,
+    ToggleFocus,
 };
 use crate::profile_model::{self, ProfileOutcome, SourceProfile};
 use crate::spec_save;
@@ -246,6 +247,27 @@ impl CanvasPanel {
         }
     }
 
+    /// `ClearSelection` handler (Esc — card 0018, ac-11). Overlays are dismissed
+    /// on `WorkspaceRoot` (they capture focus), so a canvas Esc is the Esc
+    /// ladder's terminal rung: clear the focused view's selection, or every view's
+    /// at the dashboard altitude. A no-op (nothing selected) skips the refresh.
+    fn clear_selection(&mut self, _: &ClearSelection, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(coord) = self.chart_view.read(cx).coordinator() else {
+            return;
+        };
+        let target = self
+            .focus_state
+            .as_ref()
+            .map(|s| (s.altitude(&self.focus_tree), s.path(&self.focus_tree).0.clone()));
+        let cleared = match target {
+            Some((Altitude::View, path)) => coord.borrow_mut().clear_plot(&path, cx),
+            _ => coord.borrow_mut().clear_all(cx),
+        };
+        if cleared {
+            window.refresh();
+        }
+    }
+
     /// Wire the hosting dock area (called once the `DockArea` exists).
     pub fn set_dock_area(&mut self, dock_area: WeakEntity<DockArea>) {
         self.dock_area = Some(dock_area);
@@ -354,6 +376,7 @@ impl Render for CanvasPanel {
             .on_action(cx.listener(Self::pop_out))
             .on_action(cx.listener(Self::focus_next_sibling))
             .on_action(cx.listener(Self::focus_prev_sibling))
+            .on_action(cx.listener(Self::clear_selection))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _event, window, cx| {

@@ -278,6 +278,49 @@ impl CrossfilterCoordinator {
         true
     }
 
+    /// Clear the selection contributed by the plot at `plot_path` (keyboard Esc —
+    /// card 0018, ac-11): retract each of its brush/point bindings, re-execute
+    /// subscribers back toward unfiltered, and rebuild the affected scenes.
+    /// Returns `true` if anything was actually cleared (caller then refreshes).
+    pub fn clear_plot(&mut self, plot_path: &str, cx: &mut App) -> bool {
+        let bindings = match self.plots.iter().find(|p| p.path == plot_path) {
+            Some(p) => p.bindings.clone(),
+            None => return false,
+        };
+        self.clear_bindings(&bindings, cx)
+    }
+
+    /// Clear EVERY plot's selection (Esc at the dashboard altitude — card 0018,
+    /// ac-11). Returns `true` if anything was cleared.
+    pub fn clear_all(&mut self, cx: &mut App) -> bool {
+        let bindings: Vec<BrushBinding> =
+            self.plots.iter().flat_map(|p| p.bindings.clone()).collect();
+        self.clear_bindings(&bindings, cx)
+    }
+
+    /// Retract `bindings`' contributions, absorb the re-execution, and rebuild the
+    /// affected scenes — the shared tail of [`Self::clear_plot`] / [`Self::clear_all`].
+    fn clear_bindings(&mut self, bindings: &[BrushBinding], cx: &mut App) -> bool {
+        let mut to_rebuild: HashSet<usize> = HashSet::new();
+        let mut cleared = false;
+        for b in bindings {
+            let results = self.session.clear(&b.selection_name, b.contributor.clone());
+            if !results.is_empty() {
+                cleared = true;
+            }
+            self.absorb(results, &mut to_rebuild);
+        }
+        for pi in to_rebuild {
+            let scene = self.build_plot_scene(pi);
+            let state = self.plots[pi].state.clone();
+            state.update(cx, |s, c| {
+                s.set_scene(scene);
+                c.notify();
+            });
+        }
+        cleared
+    }
+
     /// Commit a slider release (card 0005): dispatch the param value into the
     /// engine, then rebuild and swap the scenes of every plot whose marks
     /// re-executed. Mid-drag (`Dragging`) and `Idle` states are no-ops — only a
