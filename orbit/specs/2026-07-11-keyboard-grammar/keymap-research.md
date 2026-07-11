@@ -18,6 +18,40 @@ the session transcript, not the repo.
 > they were scored v1 here but neither built nor deferred in the spec. See `spec.yaml` (v1.2) for the
 > ratified v1 boundary.
 
+## v1 shipped-binding provenance (ac-08)
+
+Every key bound in the shipped registry (`brightfield-keys`) traces to a row here — no key is bound by
+taste. The mechanical cross-ref `brightfield_keys::registry()` bound-longnames ↔ this table is asserted
+by the `kbg_ac08_*` provenance test; scores mirror `VerbEntry.scores` (frequency / mnemonic / convention,
+1–5, with a motor-cost note).
+
+| longname | key(s) | freq / mnem / conv | motor note |
+|----------|--------|--------------------|------------|
+| `dive-in` | `l` · `enter` | 5 / 4 / 5 | home-row `l` = right/in (ranger, miller-columns) |
+| `pop-out` | `h` · `q` | 5 / 4 / 5 | home-row `h` = left/out (ranger, miller-columns) |
+| `focus-next-sibling` | `j` · `tab` | 5 / 4 / 5 | home-row `j` = down/next (vim) |
+| `focus-prev-sibling` | `k` · `shift-tab` | 5 / 4 / 5 | home-row `k` = up/prev (vim) |
+| `toggle-focus` | `cmd-e` | 3 / 3 / 3 | cmd-e = editor swap; free of gpui-component Input's chord set |
+| `focus-jump` | `/` | 3 / 4 / 5 | `/` = search/jump (vim, less) — jumps focus to a component |
+| `open-palette` | `space` · `cmd-shift-p` | 5 / 5 / 5 | space = palette (helix, which-key); cmd-shift-p global twin (VS Code) |
+| `open-help` | `?` | 2 / 4 / 5 | `?` = help (near-universal convention) |
+| `clear-selection` | `escape` | 4 / 4 / 5 | esc = cancel/clear (universal); terminal rung of the Esc ladder |
+| `reload-spec` | `cmd-r` | 2 / 4 / 4 | cmd-r = reload (browser); bare `r` NOT bound (dirty-guard) |
+| `toggle-presentation` | `p` | 2 / 3 / 3 | `p` = present (shipped fixed point, card 0016) |
+| `save-spec` | `cmd-s` | 3 / 5 / 5 | cmd-s = save (universal; shipped, editor-scoped) |
+| `cycle-colour-scheme` | `c` | 3 / 5 / 3 | `c` = colour (mnemonic); view-scoped, transient preview |
+
+Reserved verbs are deliberately unscored (no key yet), shown greyed in the palette until their keys land:
+needs-keyboard-target (`filter-view`, `cross-filter-all`, `toggle-point-select`, `set-param`) and
+needs-command-log (`change-mark-type`, `add-mark`, `set-channel`, `remove-mark`, `undo`).
+
+Recorded scope-model decisions (manual-review half of ac-08): selection-first (scope = focused node);
+`g` = dashboard-broadcast mechanism, runtime verbs only, always resolves to root; `z` dropped;
+view-altitude floor (no mark descent); `f`/`g f`/`t` deferred. These match the shipped resolver in
+`brightfield-keys` (`scope.rs`, `focus.rs`).
+
+---
+
 Objective Hugh set: **balance frequency + mnemonic + convention, show the conflicts.** A 4th
 motor-cost lens (KLM base × carpalx-style ergonomic multiplier) is folded into each score's conflict
 note rather than collapsed into one scalar (so the three named axes stay visible).
