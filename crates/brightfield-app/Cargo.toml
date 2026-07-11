@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 brightfield-spec = { path = "../brightfield-spec" }
+brightfield-keys = { path = "../brightfield-keys" }
 brightfield-sql = { path = "../brightfield-sql" }
 brightfield-engine = { path = "../brightfield-engine" }
 brightfield-render = { path = "../brightfield-render" }

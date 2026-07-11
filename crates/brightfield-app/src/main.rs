@@ -11,6 +11,8 @@ mod boot;
 #[cfg(any(target_os = "macos", test))]
 mod dock_state_file;
 #[cfg(any(target_os = "macos", test))]
+mod keymap;
+#[cfg(any(target_os = "macos", test))]
 mod log_model;
 #[cfg(any(target_os = "macos", test))]
 mod reload_feedback;
@@ -1403,13 +1405,15 @@ fn main() {
             let hosted_legends =
                 placed_legend_views(&legends, &legend_bindings, coordinator.as_ref());
 
-            // The workspace key bindings, declared as data: bare `p` toggles
-            // presentation mode inside the workspace key context (card 0016 —
-            // Brightfield's first GPUI action; the binding is unchanged, its
-            // handler now lives on the canvas panel), plus cmd-s → SaveSpec
-            // scoped to the editor context (card 0017).
+            // The keyboard grammar, declared as data. The shipped fixed points
+            // keep their original binding sites — bare `p` → TogglePresentation
+            // (card 0016) and cmd-s → SaveSpec (card 0017) — untouched. The new
+            // grammar verbs (card 0018) are sourced from the gpui-free registry
+            // (ac-01/ac-07); their union with the two fixed points is exactly the
+            // registry keymap. Each binding carries its own context predicate.
             cx.bind_keys(brightfield_ui::workspace_key_bindings());
             cx.bind_keys(shell::editor_key_bindings());
+            cx.bind_keys(keymap::grammar_key_bindings());
 
             // Size the initial window to the dashboard plus the 0016 chrome
             // margins and the default authoring dock widths (card 0017).

@@ -828,6 +828,7 @@ version = "0.1.0"
 dependencies = [
  "arrow",
  "brightfield-engine",
+ "brightfield-keys",
  "brightfield-render",
  "brightfield-spec",
  "brightfield-sql",
