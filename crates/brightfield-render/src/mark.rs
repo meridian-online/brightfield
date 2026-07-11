@@ -1684,15 +1684,13 @@ impl MarkRenderer for HeatmapRenderer {
             return;
         };
 
-        // Draw pitch per axis, recovered as the GCD of the centre gaps
-        // (`bin_step`) rather than `grid.dx`/`grid.dy` (the first adjacent
-        // gap): when interior bins are unoccupied the grid's own pitch
-        // over-estimates the bin width, so cells would over-cover the empty
-        // bins between occupied centres. The KDE lattice itself stays
-        // gap-naive (recorded as deferred with the hexbin follow-up — fixing
-        // it changes the shipped density field, which the byte-gate forbids);
-        // this only sizes the DRAWN cells truthfully. Gap-free lattices are
-        // unaffected: the GCD equals the adjacent gap.
+        // Draw pitch per axis. Since hex-ac07 the KDE lattice is DENSE (a
+        // `first..last` run at the recovered `bin_step` pitch, interior gap bins
+        // materialised), so `grid.dx`/`grid.dy` already ARE the true uniform
+        // pitch. The `bin_step` recompute below is therefore a no-op on that
+        // uniform lattice — kept only as a defensive belt (its GCD equals the
+        // adjacent gap on any uniform run) so a future caller passing a
+        // non-uniform grid still sizes the drawn cells truthfully.
         let draw_dx = bin_step(&grid.x_centres).unwrap_or(grid.dx);
         let draw_dy = bin_step(&grid.y_centres).unwrap_or(grid.dy);
 
@@ -1764,9 +1762,9 @@ impl MarkRenderer for HeatmapRenderer {
             return;
         };
 
-        // Same per-axis DRAW pitch as `render` (bin_step GCD, not the grid's
-        // gap-naive first adjacent gap) so the half-bin widening matches the
-        // cells actually drawn.
+        // Same per-axis DRAW pitch as `render`. On hex-ac07's dense lattice this
+        // equals `grid.dx`/`grid.dy` (a no-op recompute); kept in lockstep with
+        // `render` so the half-bin widening matches the cells actually drawn.
         let draw_dx = bin_step(&grid.x_centres).unwrap_or(grid.dx);
         let draw_dy = bin_step(&grid.y_centres).unwrap_or(grid.dy);
 
