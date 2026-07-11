@@ -31,8 +31,9 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     actions, div, px, rgb, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement, IntoElement, KeyBinding, MouseButton, ParentElement, Pixels,
-    Render, SharedString, StatefulInteractiveElement, Styled, Task, WeakEntity, Window,
+    Focusable, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, MouseButton,
+    ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement, Styled, Task,
+    WeakEntity, Window,
 };
 use gpui_component::dock::{
     register_panel, Dock, DockArea, DockAreaState, DockEvent, DockItem, DockPlacement, Panel,
@@ -44,7 +45,10 @@ use gpui_component::notification::Notification;
 use gpui_component::{ActiveTheme as _, Root};
 
 use brightfield_ui::{ChartView, PresentationMode, TogglePresentation, WORKSPACE_KEY_CONTEXT};
-use brightfield_keys::{FocusState, FocusTree};
+use brightfield_keys::{
+    focus_jump_candidates, help_sheet, registry, Altitude, FocusState, FocusTree, JumpCandidate,
+};
+use brightfield_spec::analysis::ComponentPath;
 
 use crate::dock_state_file::{
     self, LoadDecision, SaveAction, SavePolicy, DOCK_STATE_VERSION, SAVE_DEBOUNCE_MS,
@@ -57,7 +61,9 @@ use crate::shell_model::{
     BOTTOM_DOCK_HEIGHT, CANVAS_PANEL_NAME, EDITOR_DOCK_WIDTH, EDITOR_PANEL_NAME, LOG_PANEL_NAME,
     SIDEBAR_DOCK_WIDTH, SIDEBAR_PANEL_NAME,
 };
-use crate::keymap::{DiveIn, FocusNextSibling, FocusPrevSibling, PopOut, ToggleFocus};
+use crate::keymap::{
+    DiveIn, FocusJump, FocusNextSibling, FocusPrevSibling, OpenHelp, PopOut, ToggleFocus,
+};
 use crate::profile_model::{self, ProfileOutcome, SourceProfile};
 use crate::spec_save;
 
@@ -179,6 +185,21 @@ impl CanvasPanel {
             cx.notify();
         });
         cx.notify();
+    }
+
+    /// Focus-jump candidates (ac-18): the focus tree's nodes ranked against a
+    /// fuzzy `query` over their paths. The `/` overlay (on `WorkspaceRoot`) reads
+    /// this; the data stays with the tree owner.
+    pub fn jump_candidates(&self, query: &str) -> Vec<JumpCandidate> {
+        focus_jump_candidates(&self.focus_tree, query)
+    }
+
+    /// Move focus to `path` (ac-18): the overlay's chosen jump target. No-op if
+    /// the path is not in the tree.
+    pub fn jump_focus_to(&mut self, path: &ComponentPath, cx: &mut Context<Self>) {
+        if self.focus_state.as_mut().is_some_and(|s| s.jump_to(&self.focus_tree, path)) {
+            self.apply_focus(cx);
+        }
     }
 
     /// The breadcrumb text for the focused node — `"<altitude> · <path>"` — or
@@ -881,6 +902,19 @@ struct BottomDockStash {
 /// layout persistence — versioned JSON in the user config dir, saved
 /// debounced on `LayoutChanged` and flushed on quit, canvas excluded, every
 /// fallback decided by the framework-free `dock_state_file` module.
+/// Which grammar overlay is open over the workspace (card 0018). Rendered by
+/// [`WorkspaceRoot`] as a trailing child OUTSIDE the workspace key-context, so no
+/// bare verb fires underneath it; the open overlay captures focus.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Overlay {
+    /// No overlay.
+    Closed,
+    /// The `?` help sheet (static, read-only — ac-19).
+    Help,
+    /// The `/` focus-jump finder (fuzzy query + selection — ac-18).
+    Jump,
+}
+
 pub struct WorkspaceRoot {
     dock_area: Entity<DockArea>,
     presentation: Entity<PresentationState>,
@@ -891,8 +925,16 @@ pub struct WorkspaceRoot {
     sidebar_panel: Entity<SidebarPanel>,
     /// The canvas panel — held so the global focus-toggle (cmd-e) can move focus
     /// to it (it is not otherwise reachable from a root-level handler; card 0018,
-    /// ac-09).
+    /// ac-09) and so the `/` overlay can drive its focus jump.
     canvas: Entity<CanvasPanel>,
+    /// Which grammar overlay is open (card 0018, ac-18/19).
+    overlay: Overlay,
+    /// The focus handle the open overlay captures — so bare canvas verbs do not
+    /// fire underneath it (ac-07's no-bare-under-overlay invariant, live).
+    overlay_focus: FocusHandle,
+    /// The `/` focus-jump query and selected row.
+    jump_query: String,
+    jump_selected: usize,
     /// Layout file location (`None` = no config dir; persistence off).
     state_path: Option<PathBuf>,
     /// The framework-free save policy (debounce + quit-flush + skip-if-
@@ -1077,6 +1119,12 @@ impl WorkspaceRoot {
         // dock still paints a 29px strip), rebuild from the stash on exit.
         cx.observe_in(&presentation, window, |this: &mut Self, _, window, cx| {
             this.sync_bottom_dock_to_mode(window, cx);
+            // Presentation hides authoring chrome — dismiss any open overlay (ac-16).
+            if !grammar_chrome_visible(this.presentation.read(cx).mode) && this.overlay != Overlay::Closed
+            {
+                this.overlay = Overlay::Closed;
+                cx.notify();
+            }
         })
         .detach();
 
@@ -1105,6 +1153,10 @@ impl WorkspaceRoot {
             editor_panel: editor,
             sidebar_panel: sidebar,
             canvas,
+            overlay: Overlay::Closed,
+            overlay_focus: cx.focus_handle(),
+            jump_query: String::new(),
+            jump_selected: 0,
             state_path,
             policy: SavePolicy::default(),
             boot: Instant::now(),
@@ -1127,6 +1179,187 @@ impl WorkspaceRoot {
             window.focus(&canvas, cx);
         }
         cx.notify();
+    }
+
+    /// Whether authoring chrome — and thus overlays — may show (ac-16).
+    fn overlays_allowed(&self, cx: &App) -> bool {
+        grammar_chrome_visible(self.presentation.read(cx).mode)
+    }
+
+    /// `OpenHelp` handler (`?`, ac-19): open the help sheet. No-op in presentation.
+    fn on_open_help(&mut self, _: &OpenHelp, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.overlays_allowed(cx) {
+            return;
+        }
+        self.overlay = Overlay::Help;
+        window.focus(&self.overlay_focus, cx);
+        cx.notify();
+    }
+
+    /// `FocusJump` handler (`/`, ac-18): open the focus-jump finder. No-op in
+    /// presentation.
+    fn on_focus_jump(&mut self, _: &FocusJump, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.overlays_allowed(cx) {
+            return;
+        }
+        self.overlay = Overlay::Jump;
+        self.jump_query.clear();
+        self.jump_selected = 0;
+        window.focus(&self.overlay_focus, cx);
+        cx.notify();
+    }
+
+    /// Close any open overlay and return focus to the canvas (the live
+    /// realisation of the Esc ladder's dismiss-overlay rung, ac-06).
+    fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.overlay = Overlay::Closed;
+        window.focus(&Focusable::focus_handle(&self.canvas, cx), cx);
+        cx.notify();
+    }
+
+    /// Run the selected focus-jump candidate: move canvas focus there, then close.
+    fn run_jump(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let target = self
+            .canvas
+            .read(cx)
+            .jump_candidates(&self.jump_query)
+            .get(self.jump_selected)
+            .map(|c| c.path.clone());
+        if let Some(path) = target {
+            self.canvas.update(cx, |c, cx| c.jump_focus_to(&path, cx));
+        }
+        self.close_overlay(window, cx);
+    }
+
+    /// Key handling for the focused overlay: Esc dismisses (ac-06), and — for the
+    /// `/` finder — up/down move the selection, Enter runs it, and printable keys
+    /// edit the query. Bare canvas verbs cannot fire here (the overlay holds
+    /// focus, ac-07).
+    fn on_overlay_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let key = event.keystroke.key.as_str();
+        match self.overlay {
+            Overlay::Closed => {}
+            Overlay::Help => {
+                if key == "escape" {
+                    self.close_overlay(window, cx);
+                }
+            }
+            Overlay::Jump => match key {
+                "escape" => self.close_overlay(window, cx),
+                "enter" => self.run_jump(window, cx),
+                "up" => {
+                    self.jump_selected = self.jump_selected.saturating_sub(1);
+                    cx.notify();
+                }
+                "down" => {
+                    let n = self.canvas.read(cx).jump_candidates(&self.jump_query).len();
+                    self.jump_selected = (self.jump_selected + 1).min(n.saturating_sub(1));
+                    cx.notify();
+                }
+                "backspace" => {
+                    self.jump_query.pop();
+                    self.jump_selected = 0;
+                    cx.notify();
+                }
+                "space" => {
+                    self.jump_query.push(' ');
+                    self.jump_selected = 0;
+                    cx.notify();
+                }
+                k if k.chars().count() == 1 => {
+                    if let Some(c) = k.chars().next().filter(|c| !c.is_control()) {
+                        self.jump_query.push(c);
+                        self.jump_selected = 0;
+                        cx.notify();
+                    }
+                }
+                _ => {}
+            },
+        }
+    }
+
+    /// The help overlay body (ac-19): every verb grouped by scope, with its bound
+    /// key(s), one-line help, and a reserved flag.
+    fn help_overlay_body(&self) -> gpui::Div {
+        let reg = registry();
+        let sheet = help_sheet(&reg);
+        let mut sections = div().flex().flex_col().gap_3();
+        for altitude in [Altitude::Dashboard, Altitude::View] {
+            let rows: Vec<_> = sheet.iter().filter(|r| r.altitudes.contains(&altitude)).collect();
+            let mut section = div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(div().text_size(px(11.0)).text_color(rgb(0x8a93a6)).child(altitude.label().to_uppercase()));
+            for r in rows {
+                let keys = if r.keys.is_empty() { "—".to_string() } else { r.keys.join(" / ") };
+                let mut line = format!("{keys}   {}", r.help);
+                if let Some(reason) = r.reserved_reason {
+                    line.push_str(&format!("   · reserved: {}", reason.reason()));
+                }
+                let colour = if r.reserved_reason.is_some() { rgb(0x6b7280) } else { rgb(0xd7dae0) };
+                section = section.child(div().text_size(px(13.0)).text_color(colour).child(line));
+            }
+            sections = sections.child(section);
+        }
+        div()
+            .w(px(560.0))
+            .max_h(px(620.0))
+            .overflow_hidden()
+            .p_4()
+            .rounded(px(8.0))
+            .bg(rgb(0x161a22))
+            .border_1()
+            .border_color(rgb(0x2b3242))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(div().text_size(px(15.0)).text_color(rgb(0xf0f2f6)).child("Keyboard grammar — help  (Esc to close)"))
+            .child(sections)
+    }
+
+    /// The focus-jump overlay body (ac-18): a query line + the ranked candidate
+    /// paths, the selected row highlighted.
+    fn jump_overlay_body(&self, cx: &App) -> gpui::Div {
+        let candidates = self.canvas.read(cx).jump_candidates(&self.jump_query);
+        let mut list = div().flex().flex_col().gap_0();
+        for (i, c) in candidates.iter().take(12).enumerate() {
+            let selected = i == self.jump_selected;
+            let marker = if c.is_plot { "▪" } else { "▸" };
+            list = list.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .rounded(px(4.0))
+                    .bg(if selected { rgb(0x2f6feb) } else { rgb(0x161a22) })
+                    .text_size(px(13.0))
+                    .text_color(if selected { rgb(0xffffff) } else { rgb(0xd7dae0) })
+                    .child(format!("{marker}  {}", c.path.0)),
+            );
+        }
+        div()
+            .w(px(480.0))
+            .max_h(px(420.0))
+            .overflow_hidden()
+            .p_3()
+            .rounded(px(8.0))
+            .bg(rgb(0x161a22))
+            .border_1()
+            .border_color(rgb(0x2b3242))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .rounded(px(4.0))
+                    .bg(rgb(0x0e1017))
+                    .text_size(px(14.0))
+                    .text_color(rgb(0xf0f2f6))
+                    .child(format!("/ {}", self.jump_query)),
+            )
+            .child(list)
     }
 
     /// A stack-rooted single-panel dock item (wsc_ac03 correction, review
@@ -1576,6 +1809,27 @@ impl Render for WorkspaceRoot {
         let sheet_layer = Root::render_sheet_layer(window, cx);
         let dialog_layer = Root::render_dialog_layer(window, cx);
         let notification_layer = Root::render_notification_layer(window, cx);
+        // The grammar overlay (card 0018, ac-18/19): a focus-capturing modal
+        // OUTSIDE the workspace key-context, so no bare verb fires underneath it.
+        let overlay_body = match self.overlay {
+            Overlay::Closed => None,
+            Overlay::Help => Some(self.help_overlay_body()),
+            Overlay::Jump => Some(self.jump_overlay_body(cx)),
+        };
+        let overlay = overlay_body.map(|body| {
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(gpui::rgba(0x0a0d1466))
+                .track_focus(&self.overlay_focus)
+                .on_key_down(cx.listener(Self::on_overlay_key))
+                .child(body)
+        });
         div()
             .relative()
             .size_full()
@@ -1587,12 +1841,16 @@ impl Render for WorkspaceRoot {
             .on_action(cx.listener(Self::on_dock_editor_at_right))
             .on_action(cx.listener(Self::on_dock_sidebar_at_bottom))
             .on_action(cx.listener(Self::on_dock_sidebar_at_left))
-            // The global focus toggle (cmd-e) lands here too (card 0018, ac-09).
+            // The global focus toggle (cmd-e) + the overlay openers (?, /) land
+            // here too — bubbling from the focused canvas (card 0018, ac-09/18/19).
             .on_action(cx.listener(Self::on_toggle_focus))
+            .on_action(cx.listener(Self::on_open_help))
+            .on_action(cx.listener(Self::on_focus_jump))
             .child(self.dock_area.clone())
             .children(sheet_layer)
             .children(dialog_layer)
             .children(notification_layer)
+            .children(overlay)
     }
 }
 
