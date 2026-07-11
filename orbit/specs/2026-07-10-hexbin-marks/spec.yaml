@@ -51,7 +51,7 @@ acceptance_criteria:
   - id: hex-ac08
     ac_type: manual
     description: "Hugh's gallery: the new examples/hexbin.yaml (hexbin + hexgrid overlay on the shared two-blob cloud, the raster/heatmap sibling — directly comparable) PNG, plus the lattice before/after pairs. In-app look at the hexbin example."
-    verification: "hex_ac08: gallery ack. verifies: stand-in (real thing is Hugh's eyeball), accepted because the PNG gallery loop is established and closes same-week."
+    verification: "hex_ac08: gallery ack. verifies: stand-in (real thing is Hugh's eyeball), accepted because the PNG gallery loop is established and closes same-week. [Confirmed 2026-07-11: Hugh in-app — hexbin.yaml renders the mesh + overlay with filled hexes concentric in their cells to the edges, Blues ramp + legend, both clusters; density.yaml shows the dense continuous lattice. The 3x misaligned-vs-fixed crop pair and the full gallery (hexbin, density before/after, heatmap/raster identity witnesses) reviewed in-chat.]"
   - id: hex-ac09
     ac_type: gate
     description: "Ship gate: full workspace suite green (pipefail, condensed 1.95 summary, explicit exit); double-render determinism on the new example; PNG sweep per the byte-identity constraint."
