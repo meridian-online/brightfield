@@ -91,10 +91,10 @@ mod tests {
 
     #[test]
     fn dfconf_identity_status_flows_through() {
-        // MarkKind::Hexbin is genuinely Unimplemented (no renderer/lowerer), so it
-        // proves Unimplemented status flows through ComponentIdentity. (Line is
-        // now Implemented and renders end-to-end.)
-        let id = ComponentIdentity::Mark(MarkKind::Hexbin);
+        // MarkKind::Geo is genuinely Unimplemented (no renderer/lowerer), so it
+        // proves Unimplemented status flows through ComponentIdentity. (Hexbin is
+        // now Implemented and renders end-to-end — the swap stand-in is geo.)
+        let id = ComponentIdentity::Mark(MarkKind::Geo);
         assert_eq!(id.status(), brightfield_spec::ImplStatus::Unimplemented);
     }
 

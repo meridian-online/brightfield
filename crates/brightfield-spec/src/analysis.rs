@@ -61,7 +61,8 @@ impl ParamDeclaredType {
                 SpecValue::Bool(_) => ParamDeclaredType::ScalarBool,
                 SpecValue::Array(_) => ParamDeclaredType::Array,
                 SpecValue::Object(_) | SpecValue::Null
-                | SpecValue::Param(_) | SpecValue::Expression(_) => ParamDeclaredType::ScalarString,
+                | SpecValue::Param(_) | SpecValue::Expression(_)
+                | SpecValue::Aggregate { .. } => ParamDeclaredType::ScalarString,
             },
             ParamNode::Selection(_) => ParamDeclaredType::Selection,
         }

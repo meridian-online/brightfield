@@ -18,9 +18,9 @@ use serde::{Serialize, Serializer};
 use serde::ser::{SerializeMap, SerializeSeq};
 
 use crate::ast::{
-    Component, ConcatNode, Config, DataSource, DataSourceKind, Input, Interactor, LegendNode,
-    Mark, MarkData, Meta, ParamNode, ParamRef, PlotDefaults, PlotNode, SelectionNode, SpaceNode,
-    Spec, SpecValue, ValueOrParamRef,
+    AggregateFunc, Component, ConcatNode, Config, DataSource, DataSourceKind, Input, Interactor,
+    LegendNode, Mark, MarkData, Meta, ParamNode, ParamRef, PlotDefaults, PlotNode, SelectionNode,
+    SpaceNode, Spec, SpecValue, ValueOrParamRef,
 };
 use crate::error::{NameSurface, ParseError, SourceSpan};
 use crate::expr;
@@ -161,6 +161,22 @@ pub const LIFT_SURFACE_FIELDS: &[&str] = &[
     "symbolRange",
 ];
 
+/// Mark channel fields that may carry a self-aggregating transform
+/// (`fill: {count:}`, `fill: {avg: col}`, `r: {count:}`). Scoped to the
+/// encoding channels the hexbin / self-aggregating-cell corpus uses, so a
+/// single-key map at, say, `x: {bin: t}` (a positional bin transform) is not
+/// mistaken for an aggregate. Pinned to what the vendored corpus exercises.
+pub const AGGREGATE_CHANNEL_FIELDS: &[&str] = &["fill", "r"];
+
+/// Single-key channel-map keys that are recognised Mosaic channel TRANSFORMS,
+/// not aggregates — so a `{sql: 'POW(10, mag)'}` expression channel (the
+/// vendored region-tests / earthquakes corpus uses `r: {sql: …}`) is left to
+/// ordinary lifting instead of being mistaken for a typo'd aggregate and
+/// warned about. Aggregates (`count`/`avg`/…) are matched by
+/// [`AggregateFunc::from_wire`]; anything else on this list is a transform we
+/// carry as a plain object; only a genuinely unknown key warns.
+const CHANNEL_TRANSFORM_KEYS: &[&str] = &["sql"];
+
 /// Wire format of the source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -251,6 +267,18 @@ pub enum ParseWarning {
     /// display-only (card 0009).
     LegendBindingNonSelection {
         /// The param name.
+        name: String,
+    },
+
+    /// A mark channel carried a single-key aggregate-shaped map (`fill: {X:}`)
+    /// whose key `X` is not a recognised aggregate function. The channel
+    /// degrades — it is left as a plain object, NOT read as a column named `X`
+    /// (no silent column lookup) — and this names the offending key so an
+    /// author sees the typo (card 0008 hexbin / self-aggregating cell).
+    UnknownAggregate {
+        /// The channel field the map appeared on (e.g. `fill`).
+        field: String,
+        /// The unrecognised aggregate key.
         name: String,
     },
 
@@ -846,6 +874,10 @@ impl Walker {
                 data = Some(self.walk_mark_data(val)?);
                 continue;
             }
+            if let Some(lifted) = self.maybe_aggregate_channel(&key, val) {
+                options.insert(key.clone(), lifted);
+                continue;
+            }
             options.insert(key.clone(), self.lift_field(&key, val));
         }
         Ok(Mark {
@@ -1015,6 +1047,66 @@ impl Walker {
             filter_by,
             options,
         })
+    }
+
+    /// Lift a self-aggregating channel transform (`fill: {count:}`,
+    /// `fill: {avg: col}`, `r: {count:}`) at a mark channel position into a
+    /// typed [`SpecValue::Aggregate`]. Returns `None` when the field is not an
+    /// aggregate-capable channel or the value is not a single-key map — the
+    /// caller then falls back to ordinary lifting, so plain column / literal /
+    /// param channels are untouched.
+    ///
+    /// A single-key map on an aggregate channel whose key is NOT a recognised
+    /// aggregate degrades: it warns ([`ParseWarning::UnknownAggregate`]) and is
+    /// kept as a plain object (which the renderer's channel extraction ignores),
+    /// so it is never silently read as a column named after the key.
+    fn maybe_aggregate_channel(
+        &mut self,
+        field: &str,
+        v: &serde_yaml::Value,
+    ) -> Option<ValueOrParamRef<SpecValue>> {
+        if !AGGREGATE_CHANNEL_FIELDS.contains(&field) {
+            return None;
+        }
+        // A `{param: name}` / `{selection: name}` shorthand is a param lift, not
+        // an aggregate — defer to ordinary lifting.
+        if maybe_lift(v).is_some() {
+            return None;
+        }
+        let serde_yaml::Value::Mapping(m) = v else {
+            return None;
+        };
+        if m.len() != 1 {
+            return None;
+        }
+        let (k, inner) = m.iter().next()?;
+        let key = k.as_str()?;
+        // A recognised channel transform (e.g. `{sql: …}`) is not an aggregate
+        // and not a typo — defer to ordinary lifting (stored as a plain object),
+        // no warning.
+        if CHANNEL_TRANSFORM_KEYS.contains(&key) {
+            return None;
+        }
+        match AggregateFunc::from_wire(key) {
+            Some(func) => {
+                // `{count:}` carries a null value → no column; `{avg: col}`
+                // carries the source column name. A non-string, non-null inner
+                // (e.g. a nested object) leaves the column `None`.
+                let column = match inner {
+                    serde_yaml::Value::Null => None,
+                    other => other.as_str().map(str::to_string),
+                };
+                Some(ValueOrParamRef::Value(SpecValue::Aggregate { func, column }))
+            }
+            None => {
+                self.warnings.push(ParseWarning::UnknownAggregate {
+                    field: field.to_string(),
+                    name: key.to_string(),
+                });
+                // Degrade to a plain object — never a column lookup.
+                Some(ValueOrParamRef::Value(self.spec_value(v)))
+            }
+        }
     }
 
     /// Produce a [`ValueOrParamRef`] for a field value. If the field name is
@@ -1346,6 +1438,17 @@ impl Serialize for SerSpecValue<'_> {
             }
             SpecValue::Param(r) => s.serialize_str(&r.to_wire()),
             SpecValue::Expression(e) => s.serialize_str(&e.to_wire()),
+            // Re-serialise the aggregate transform to its single-key map form:
+            // `{count: null}` / `{avg: "col"}`, so parse → serialise → parse is
+            // idempotent (dfspec_ac11).
+            SpecValue::Aggregate { func, column } => {
+                let mut map = s.serialize_map(Some(1))?;
+                match column {
+                    Some(col) => map.serialize_entry(func.wire_name(), col)?,
+                    None => map.serialize_entry(func.wire_name(), &())?,
+                }
+                map.end()
+            }
         }
     }
 }
@@ -1780,6 +1883,186 @@ plot:
                 out.warnings
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // hex_ac01 — self-aggregating channel transforms (fill/r {count:}/{avg:})
+    // -----------------------------------------------------------------------
+
+    use crate::ast::AggregateFunc;
+
+    fn mark_channel(src: &str, channel: &str) -> ValueOrParamRef<SpecValue> {
+        let out = parse_spec(src, Format::Yaml).expect("parses");
+        let m = match out.spec.root.expect("root") {
+            Component::Mark(m) => m,
+            other => panic!("expected mark, got {other:?}"),
+        };
+        m.options.get(channel).expect("channel present").clone()
+    }
+
+    /// hex_ac01: `fill: {count:}` (flights-hexbin / mark-types) parses to a
+    /// typed count aggregate with no source column.
+    #[test]
+    fn hex_ac01_fill_count_parses_to_aggregate() {
+        let entry = mark_channel("mark: hexbin\nfill: { count: }\n", "fill");
+        assert_eq!(
+            entry,
+            ValueOrParamRef::Value(SpecValue::Aggregate {
+                func: AggregateFunc::Count,
+                column: None,
+            })
+        );
+    }
+
+    /// hex_ac01: `fill: {avg: score_value}` (wnba-shots) parses to a typed avg
+    /// aggregate carrying its source column.
+    #[test]
+    fn hex_ac01_fill_avg_parses_to_aggregate_with_column() {
+        let entry = mark_channel("mark: hexbin\nfill: { avg: score_value }\n", "fill");
+        assert_eq!(
+            entry,
+            ValueOrParamRef::Value(SpecValue::Aggregate {
+                func: AggregateFunc::Avg,
+                column: Some("score_value".to_string()),
+            })
+        );
+    }
+
+    /// hex_ac01: `r: {count:}` (wnba-shots) parses to an aggregate on the r
+    /// channel — recorded, deferred at execution, NOT a parse error.
+    #[test]
+    fn hex_ac01_r_count_parses_to_aggregate() {
+        let out = parse_spec("mark: hexbin\nr: { count: }\n", Format::Yaml).expect("parses");
+        let m = match out.spec.root.unwrap() {
+            Component::Mark(m) => m,
+            _ => panic!("mark"),
+        };
+        assert_eq!(
+            m.options.get("r"),
+            Some(&ValueOrParamRef::Value(SpecValue::Aggregate {
+                func: AggregateFunc::Count,
+                column: None,
+            }))
+        );
+        assert!(
+            !out.warnings
+                .iter()
+                .any(|w| matches!(w, ParseWarning::UnknownAggregate { .. })),
+            "count is a recognised aggregate — no warning"
+        );
+    }
+
+    /// hex_ac01: `mean` is an accepted alias for `avg`.
+    #[test]
+    fn hex_ac01_mean_aliases_avg() {
+        let entry = mark_channel("mark: hexbin\nfill: { mean: v }\n", "fill");
+        assert_eq!(
+            entry,
+            ValueOrParamRef::Value(SpecValue::Aggregate {
+                func: AggregateFunc::Avg,
+                column: Some("v".to_string()),
+            })
+        );
+    }
+
+    /// hex_ac01: an UNKNOWN aggregate name warns (naming it) and degrades to a
+    /// plain object — never a silent column lookup for a column named after the
+    /// key. The renderer's channel extraction ignores the object.
+    #[test]
+    fn hex_ac01_unknown_aggregate_warns_and_degrades() {
+        let out =
+            parse_spec("mark: hexbin\nfill: { stdev: v }\n", Format::Yaml).expect("parses");
+        assert!(
+            out.warnings.iter().any(|w| matches!(
+                w,
+                ParseWarning::UnknownAggregate { field, name }
+                    if field == "fill" && name == "stdev"
+            )),
+            "expected UnknownAggregate for fill.stdev, got {:?}",
+            out.warnings
+        );
+        let m = match out.spec.root.unwrap() {
+            Component::Mark(m) => m,
+            _ => panic!("mark"),
+        };
+        // Degraded to an object, NOT an aggregate and NOT a column ref.
+        assert!(matches!(
+            m.options.get("fill"),
+            Some(ValueOrParamRef::Value(SpecValue::Object(_)))
+        ));
+    }
+
+    /// hex_ac01: plain column/literal/param fill channels are untouched by
+    /// aggregate detection.
+    #[test]
+    fn hex_ac01_plain_fill_channels_untouched() {
+        // String column.
+        assert_eq!(
+            mark_channel("mark: dot\nfill: species\n", "fill"),
+            ValueOrParamRef::Value(SpecValue::String("species".to_string()))
+        );
+        // Literal colour.
+        assert_eq!(
+            mark_channel("mark: dot\nfill: steelblue\n", "fill"),
+            ValueOrParamRef::Value(SpecValue::String("steelblue".to_string()))
+        );
+        // Param ref still lifts to the outer Param wrapper.
+        assert!(mark_channel("mark: dot\nfill: $c\n", "fill").is_param());
+        // `{param: c}` shorthand at fill still lifts to a ParamRef, not an aggregate.
+        assert!(mark_channel("mark: dot\nfill: { param: c }\n", "fill").is_param());
+    }
+
+    /// hex_ac01: the three vendored corpus specs with aggregate channels parse
+    /// cleanly (no error) after the aggregate form lands.
+    #[test]
+    fn hex_ac01_vendored_hexbin_corpus_parses() {
+        for name in ["flights-hexbin", "wnba-shots", "mark-types"] {
+            let path = format!(
+                "{}/vendor/mosaic-specs/yaml/{name}.yaml",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            let src = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {path}: {e}"));
+            parse_spec(&src, Format::Yaml)
+                .unwrap_or_else(|e| panic!("corpus {name} failed to parse: {e}"));
+        }
+    }
+
+    /// F2 (review): a Mosaic `{sql: …}` channel-transform expression is NOT a
+    /// typo'd aggregate — the vendored specs that carry `r: {sql: 'POW(10, mag)'}`
+    /// must parse with ZERO `UnknownAggregate` warnings (the warning is
+    /// author-facing via the app's stderr).
+    #[test]
+    fn f2_sql_channel_expression_emits_no_unknown_aggregate_warning() {
+        for name in ["region-tests", "earthquakes-feed", "earthquakes-globe"] {
+            let path = format!(
+                "{}/vendor/mosaic-specs/yaml/{name}.yaml",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            let src = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {path}: {e}"));
+            let out = parse_spec(&src, Format::Yaml)
+                .unwrap_or_else(|e| panic!("corpus {name} failed to parse: {e}"));
+            let unknown: Vec<_> = out
+                .warnings
+                .iter()
+                .filter(|w| matches!(w, ParseWarning::UnknownAggregate { .. }))
+                .collect();
+            assert!(
+                unknown.is_empty(),
+                "corpus {name}: sql channel transform must not warn, got {unknown:?}"
+            );
+        }
+    }
+
+    /// hex_ac01: an aggregate channel round-trips through serialise → parse.
+    #[test]
+    fn hex_ac01_aggregate_channel_round_trips() {
+        let src = "mark: hexbin\nfill: { avg: score_value }\nr: { count: }\n";
+        let a = parse_spec(src, Format::Yaml).expect("first parse");
+        let serialised = serde_yaml::to_string(&a.spec).expect("serialise");
+        let b = parse_spec(&serialised, Format::Yaml).expect("second parse");
+        assert_eq!(a.spec, b.spec, "serialised:\n{serialised}");
     }
 
     /// ac-14 case (c) — post-D2: a `meta:` unknown field is not a

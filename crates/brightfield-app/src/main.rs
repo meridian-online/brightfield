@@ -743,8 +743,11 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
                 .and_then(|mk| mark_attr_f64(mk, "thresholds"))
                 .filter(|t| *t >= 1.0)
                 .map(|t| t as usize);
+            // hexgrid's binWidth sizes its mesh (matching a sibling hexbin).
+            let bin_width = marks.get(mi).and_then(|mk| mark_attr_f64(mk, "binWidth"));
             if let Some(m) = mark_inputs.get_mut(mi) {
-                m.renderer_override = configured_renderer(kind, scheme, bandwidth, thresholds);
+                m.renderer_override =
+                    configured_renderer(kind, scheme, bandwidth, thresholds, bin_width);
             }
         }
 
@@ -2484,7 +2487,8 @@ hconcat:
 
     #[test]
     fn msv_ac05_graceful_failure_skips_invalid_mark() {
-        // Spec with one valid mark (dot, data.from) and one invalid (hexbin, unsupported).
+        // Spec with one valid mark (dot, data.from) and one invalid (geo,
+        // unsupported — the swap stand-in now that hexbin is wired).
         let yaml = r#"
 data:
   t:
@@ -2495,7 +2499,7 @@ plot:
     data: { from: t }
     x: x
     y: y
-  - mark: hexbin
+  - mark: geo
     data: { from: t }
 "#;
         let parsed = parse_spec(yaml, Format::Yaml).expect("parse failed");
@@ -2507,7 +2511,7 @@ plot:
             .expect("load_spec failed");
         let mut session = load.session;
 
-        // Execute all marks — dot should succeed, hexbin should fail.
+        // Execute all marks — dot should succeed, geo should fail.
         let results = session.execute_all();
 
         let mut successful = Vec::new();
@@ -2525,7 +2529,7 @@ plot:
             }
         }
 
-        // Exactly one mark skipped (hexbin), one succeeded (dot).
+        // Exactly one mark skipped (geo), one succeeded (dot).
         assert_eq!(skipped, 1, "expected 1 skipped mark");
         assert_eq!(successful.len(), 1, "expected 1 successful mark");
 

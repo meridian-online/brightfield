@@ -6,7 +6,13 @@
 
 use std::collections::HashMap;
 
-use brightfield_spec::ast::{Mark, SpecValue, ValueOrParamRef};
+use brightfield_spec::ast::{AggregateFunc, Mark, SpecValue, ValueOrParamRef};
+
+/// Reserved output column the density / hexbin / cell lowerers alias their
+/// per-group occupancy count to. Must match `brightfield-sql`'s `__bf_count`
+/// alias and `brightfield-render::mark::DENSITY_COUNT_COL`; a `fill: {count:}`
+/// channel is read from this column, not a user column.
+const AGGREGATE_COUNT_COL: &str = "__bf_count";
 
 /// Visual encoding channels recognised by the rendering pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -143,6 +149,24 @@ impl ChannelMap {
                     }
                     ValueOrParamRef::Value(SpecValue::Float(f)) => {
                         cm.insert_literal(*ch, *f);
+                    }
+                    // A self-aggregating channel (`fill: {count:}` / `{avg:
+                    // col}`) maps to the column the lowerer emits: the reserved
+                    // count column for `count`, or the source column for the
+                    // column-taking aggregates (aliased to itself in SQL). The
+                    // renderer then reads it like any numeric fill column.
+                    ValueOrParamRef::Value(SpecValue::Aggregate { func, column }) => {
+                        let col = match func {
+                            AggregateFunc::Count => AGGREGATE_COUNT_COL.to_string(),
+                            AggregateFunc::Sum
+                            | AggregateFunc::Avg
+                            | AggregateFunc::Min
+                            | AggregateFunc::Max => match column {
+                                Some(c) => c.clone(),
+                                None => continue,
+                            },
+                        };
+                        cm.insert(*ch, col);
                     }
                     ValueOrParamRef::Param(param_ref) => {
                         // A positional channel bound to a `$param` is projected

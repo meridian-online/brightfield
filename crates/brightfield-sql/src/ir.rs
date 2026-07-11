@@ -95,6 +95,15 @@ pub enum QueryPlan {
         table: String,
     },
 
+    /// A constant single-row select with no `FROM` — the minimal named
+    /// dataless-mark pathway (hexgrid). Renders `SELECT <columns>`, yielding one
+    /// row so a decorative mark that draws from the plot extent (not data) still
+    /// produces a batch and is not skipped downstream.
+    Singleton {
+        /// Column expressions (e.g. `"1 AS __bf_hexgrid"`).
+        columns: Vec<String>,
+    },
+
     /// `WHERE` clause with a predicate tree.
     Filter {
         input: Box<QueryPlan>,

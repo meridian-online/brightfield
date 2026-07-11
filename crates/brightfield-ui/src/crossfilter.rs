@@ -802,7 +802,7 @@ mod tests {
                 batch: Some(batch.clone()),
                 channels: channels.clone(),
                 kind: MarkKind::Raster,
-                renderer_override: configured_renderer(MarkKind::Raster, scheme, None, None),
+                renderer_override: configured_renderer(MarkKind::Raster, scheme, None, None, None),
             }];
             match launch_scales(&marks, &renderers, &[0], &layout).get(Channel::Fill) {
                 Some(Scale::Sequential { stops, .. }) => stops.clone(),
@@ -1005,6 +1005,7 @@ mod tests {
                     SequentialScheme::default(),
                     None,
                     None,
+                None,
                 ),
             }]
         };
@@ -1087,7 +1088,7 @@ mod tests {
             // A filtered subset (drop the peak row) stands in for a gesture.
             let filtered = full.slice(0, 6);
 
-            let override_of = || configured_renderer(MarkKind::Heatmap, SequentialScheme::Blues, Some(0.8), None);
+            let override_of = || configured_renderer(MarkKind::Heatmap, SequentialScheme::Blues, Some(0.8), None, None);
             let marks_for = |batch: RecordBatch| {
                 vec![MarkInput {
                     batch: Some(batch),
@@ -1148,6 +1149,7 @@ mod tests {
                 SequentialScheme::Blues,
                 None,
                 None,
+            None,
             ),
         }];
         match launch_scales(&blues, &renderers, &[0], &layout).get(Channel::Fill) {
@@ -1176,6 +1178,7 @@ mod tests {
                     SequentialScheme::default(),
                     bandwidth,
                     None,
+                None,
                 ),
             }]
         };
@@ -1203,6 +1206,7 @@ mod tests {
                     SequentialScheme::default(),
                     None,
                     thresholds,
+                None,
                 ),
             }];
             let scales = launch_scales(&marks, &renderers, &[0], &layout);
@@ -1375,6 +1379,7 @@ mod tests {
                     SequentialScheme::Blues,
                     None,
                     None,
+                None,
                 ),
             },
         ];

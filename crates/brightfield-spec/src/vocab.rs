@@ -164,9 +164,11 @@ vocab_enum! {
         // Binned 2D count heatmap — filled cells coloured (by alpha) per bin
         // count, reusing the 2D density binning. (card 0008 mark breadth)
         Raster => ("raster", Implemented),
-        // Hex
-        Hexbin => ("hexbin", Unimplemented),
-        Hexgrid => ("hexgrid", Unimplemented),
+        // Hex — hexbin (pixel-space cube-round binning, self-aggregating fill)
+        // and hexgrid (decorative dataless mesh) wired end-to-end (card 0008
+        // hexbin follow-up).
+        Hexbin => ("hexbin", Implemented),
+        Hexgrid => ("hexgrid", Implemented),
         // Waffle
         WaffleX => ("waffleX", Unimplemented),
         WaffleY => ("waffleY", Unimplemented),
@@ -423,32 +425,37 @@ mod tests {
         assert_eq!(LegendChannel::Color.status(), ImplStatus::Implemented);
     }
 
-    /// dmk_ac05 (card 0008, density marks). Heatmap, Contour, and Cell are
-    /// promoted to Implemented — heatmap/contour ride the 2D density lowerer's
-    /// grid (KDE ramp / marching-squares iso-lines), cell v1 is the
-    /// pre-aggregated Band×Band value matrix. The deliberately RE-STAGED marks
-    /// stay Unimplemented: hexbin/hexgrid (new axial SQL, pixel-space binWidth,
-    /// hex-lattice geometry — own follow-up spec), cellX/cellY, and denseLine.
+    /// dmk_ac05 (card 0008) — RE-PINNED by the hexbin follow-up. Heatmap,
+    /// Contour, Cell (density marks) plus Hexbin and Hexgrid are Implemented:
+    /// hexbin is pixel-space cube-round binning with a self-aggregating fill,
+    /// hexgrid the decorative dataless mesh. The still-deferred marks stay
+    /// Unimplemented: cellX/cellY, denseLine, and geo (the always-unimplemented
+    /// swap stand-in).
     #[test]
     fn dmk_ac05_density_mark_promotions_and_non_promotions() {
-        for promoted in [MarkKind::Heatmap, MarkKind::Contour, MarkKind::Cell] {
+        for promoted in [
+            MarkKind::Heatmap,
+            MarkKind::Contour,
+            MarkKind::Cell,
+            MarkKind::Hexbin,
+            MarkKind::Hexgrid,
+        ] {
             assert_eq!(
                 promoted.status(),
                 ImplStatus::Implemented,
-                "{promoted:?} is wired end-to-end (card 0008 density marks) — promoted"
+                "{promoted:?} is wired end-to-end (card 0008) — promoted"
             );
         }
         for staged_out in [
-            MarkKind::Hexbin,
-            MarkKind::Hexgrid,
             MarkKind::CellX,
             MarkKind::CellY,
             MarkKind::DenseLine,
+            MarkKind::Geo,
         ] {
             assert_eq!(
                 staged_out.status(),
                 ImplStatus::Unimplemented,
-                "{staged_out:?} is re-staged to a follow-up — it must NOT ride this promotion"
+                "{staged_out:?} stays deferred — it must NOT ride this promotion"
             );
         }
     }

@@ -1188,14 +1188,19 @@ impl MarkRenderer for Density1DRenderer {
 /// histogram from those rows, picks bandwidths, and runs [`kde_2d`]. Each
 /// consumer then draws the smoothed field its own way: density as
 /// alpha-encoded circles, heatmap as ramp-filled cells, contour as iso-lines.
+///
+/// The lattice is DENSE: the centres run `first..last` at the recovered bin
+/// pitch (the GCD of the occupied-centre gaps, via [`bin_step`]), so unoccupied
+/// interior bins are materialised with zero mass. kde_2d then smooths over the
+/// true geometry — a sparse axis is not collapsed to adjacency (hex-ac07).
 pub(crate) struct KdeGrid {
-    /// Sorted unique x bin centres (grid columns), in data units.
+    /// Dense x bin centres (grid columns), `first..last` at pitch `dx`.
     pub x_centres: Vec<f64>,
-    /// Sorted unique y bin centres (grid rows), in data units.
+    /// Dense y bin centres (grid rows), `first..last` at pitch `dy`.
     pub y_centres: Vec<f64>,
-    /// Column pitch — `x_centres[1] - x_centres[0]` (> 0).
+    /// Column pitch — the recovered bin step, uniform across `x_centres` (> 0).
     pub dx: f64,
-    /// Row pitch — `y_centres[1] - y_centres[0]` (> 0).
+    /// Row pitch — the recovered bin step, uniform across `y_centres` (> 0).
     pub dy: f64,
     /// Row-major smoothed density: cell `(row, col)` — row indexing
     /// `y_centres`, col indexing `x_centres` — is `density[row * cols + col]`.
@@ -1237,47 +1242,61 @@ pub(crate) fn build_kde_grid(
     let y_vals = column_as_f64(batch, y_col)?;
     let count_vals = column_as_f64(batch, DENSITY_COUNT_COL)?;
 
-    // Collect unique bin centres on each axis (sorted).
-    let mut x_centres: Vec<f64> = Vec::new();
-    let mut y_centres: Vec<f64> = Vec::new();
+    // Collect the OCCUPIED bin centres on each axis (sorted) + the (x, y, count)
+    // tuples the lowerer emitted (only occupied bins survive its GROUP BY).
+    let mut x_occ: Vec<f64> = Vec::new();
+    let mut y_occ: Vec<f64> = Vec::new();
     let mut tuples: Vec<(f64, f64, u32)> = Vec::new();
     for i in 0..batch.num_rows() {
         if let (Some(xv), Some(yv), Some(c)) = (x_vals[i], y_vals[i], count_vals[i]) {
             tuples.push((xv, yv, c.max(0.0).round() as u32));
-            if !x_centres.iter().any(|v| (*v - xv).abs() < 1e-9) {
-                x_centres.push(xv);
+            if !x_occ.iter().any(|v| (*v - xv).abs() < 1e-9) {
+                x_occ.push(xv);
             }
-            if !y_centres.iter().any(|v| (*v - yv).abs() < 1e-9) {
-                y_centres.push(yv);
+            if !y_occ.iter().any(|v| (*v - yv).abs() < 1e-9) {
+                y_occ.push(yv);
             }
         }
     }
-    x_centres.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    y_centres.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    x_occ.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    y_occ.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
-    let cols = x_centres.len();
-    let rows = y_centres.len();
-    if cols < 2 || rows < 2 {
+    if x_occ.len() < 2 || y_occ.len() < 2 {
         return None;
     }
-    let dx = x_centres[1] - x_centres[0];
-    let dy = y_centres[1] - y_centres[0];
+    // Recover the TRUE bin pitch (GCD of the occupied-centre gaps, not the first
+    // adjacent gap), then build a DENSE first..last lattice at that pitch —
+    // unoccupied interior bins are materialised with zero mass. This makes
+    // kde_2d smooth over the real geometry (gaps are gaps, not collapsed to
+    // adjacency) and gives contour true gap geometry. Before this fix the grid
+    // held only the occupied centres, so a sparse axis read as densely packed
+    // (hex-ac07; the deliberate density-family re-baseline).
+    let dx = bin_step(&x_occ)?;
+    let dy = bin_step(&y_occ)?;
     if dx <= 0.0 || dy <= 0.0 {
         return None;
     }
+    let dense_lattice = |occ: &[f64], step: f64| -> Vec<f64> {
+        let (lo, hi) = (occ[0], occ[occ.len() - 1]);
+        let n = ((hi - lo) / step).round() as usize + 1;
+        (0..n).map(|i| lo + (i as f64) * step).collect()
+    };
+    let x_centres = dense_lattice(&x_occ, dx);
+    let y_centres = dense_lattice(&y_occ, dy);
 
-    // Build flat row-major histogram.
+    let cols = x_centres.len();
+    let rows = y_centres.len();
+
+    // Build the flat row-major histogram over the DENSE lattice: each occupied
+    // bin maps to its lattice index (round the offset by the pitch); every other
+    // dense cell keeps zero.
     let mut bins = vec![0u32; rows * cols];
     for (xv, yv, c) in &tuples {
-        let cx = x_centres
-            .iter()
-            .position(|v| (*v - xv).abs() < 1e-9)
-            .unwrap();
-        let cy = y_centres
-            .iter()
-            .position(|v| (*v - yv).abs() < 1e-9)
-            .unwrap();
-        bins[cy * cols + cx] = *c;
+        let cx = ((xv - x_centres[0]) / dx).round() as usize;
+        let cy = ((yv - y_centres[0]) / dy).round() as usize;
+        if cx < cols && cy < rows {
+            bins[cy * cols + cx] = *c;
+        }
     }
 
     // Bandwidth: the mark's explicit attribute on both axes, else Silverman
@@ -1665,15 +1684,13 @@ impl MarkRenderer for HeatmapRenderer {
             return;
         };
 
-        // Draw pitch per axis, recovered as the GCD of the centre gaps
-        // (`bin_step`) rather than `grid.dx`/`grid.dy` (the first adjacent
-        // gap): when interior bins are unoccupied the grid's own pitch
-        // over-estimates the bin width, so cells would over-cover the empty
-        // bins between occupied centres. The KDE lattice itself stays
-        // gap-naive (recorded as deferred with the hexbin follow-up — fixing
-        // it changes the shipped density field, which the byte-gate forbids);
-        // this only sizes the DRAWN cells truthfully. Gap-free lattices are
-        // unaffected: the GCD equals the adjacent gap.
+        // Draw pitch per axis. Since hex-ac07 the KDE lattice is DENSE (a
+        // `first..last` run at the recovered `bin_step` pitch, interior gap bins
+        // materialised), so `grid.dx`/`grid.dy` already ARE the true uniform
+        // pitch. The `bin_step` recompute below is therefore a no-op on that
+        // uniform lattice — kept only as a defensive belt (its GCD equals the
+        // adjacent gap on any uniform run) so a future caller passing a
+        // non-uniform grid still sizes the drawn cells truthfully.
         let draw_dx = bin_step(&grid.x_centres).unwrap_or(grid.dx);
         let draw_dy = bin_step(&grid.y_centres).unwrap_or(grid.dy);
 
@@ -1745,9 +1762,9 @@ impl MarkRenderer for HeatmapRenderer {
             return;
         };
 
-        // Same per-axis DRAW pitch as `render` (bin_step GCD, not the grid's
-        // gap-naive first adjacent gap) so the half-bin widening matches the
-        // cells actually drawn.
+        // Same per-axis DRAW pitch as `render`. On hex-ac07's dense lattice this
+        // equals `grid.dx`/`grid.dy` (a no-op recompute); kept in lockstep with
+        // `render` so the half-bin widening matches the cells actually drawn.
         let draw_dx = bin_step(&grid.x_centres).unwrap_or(grid.dx);
         let draw_dy = bin_step(&grid.y_centres).unwrap_or(grid.dy);
 
@@ -2005,6 +2022,569 @@ impl MarkRenderer for ContourRenderer {
                 }
                 scene.stroke(&stroke, Affine::IDENTITY, DEFAULT_COLOUR, None, &path);
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HexbinRenderer (hexbin — pointy-top hexagonal density bins)
+// ---------------------------------------------------------------------------
+
+/// Reserved in-band geometry columns the hexbin lowerer emits (constant per
+/// row): the hexagon half-width and half-height in DATA units. The six
+/// pointy-top vertices are reconstructed from these, so the hex is regular on
+/// screen by construction and survives live rebuilds (no bin-step recovery).
+/// Must match `brightfield-sql`'s `HEX_DX_COL` / `HEX_DY_COL`.
+const HEX_DX_COL: &str = "__bf_hex_dx";
+const HEX_DY_COL: &str = "__bf_hex_dy";
+
+/// Reserved RAW-extent columns (constant per row): the raw table min/max of the
+/// x/y channels the lowerer binned over. `augment_scales` widens the positional
+/// scales from THESE (raw-anchored domain), so the widened domain encodes the
+/// exact raw pixel→data pitch and a sibling hexgrid reconstructs the lattice
+/// exactly. Must match `brightfield-sql`'s `HEX_X0_COL` … `HEX_Y1_COL`.
+const HEX_X0_COL: &str = "__bf_hex_x0";
+const HEX_X1_COL: &str = "__bf_hex_x1";
+const HEX_Y0_COL: &str = "__bf_hex_y0";
+const HEX_Y1_COL: &str = "__bf_hex_y1";
+
+/// Renders one pointy-top hexagon per row (Mosaic's flagship at-scale mark).
+/// The hexbin lowerer has already binned in pixel space and emitted, per hex,
+/// the centre in DATA units (aliased to the x/y channel columns), the aggregate
+/// (`__bf_count` for count, the source column for avg), and the constant hex
+/// half-extents `__bf_hex_dx`/`__bf_hex_dy`. This maps each centre through the
+/// shared scales and draws the six vertices from the half-extents.
+///
+/// A count fill ramps the configured Sequential scheme zero-anchored `[0,max]`
+/// (with the [`RASTER_MIN_T`] visibility floor so the sparsest hex stays
+/// visible); an avg fill follows the cell anchoring rule. The scheme rides
+/// `MarkInput::renderer_override` (live-rebuild parity — the cfr seam). A
+/// missing / non-Sequential Fill scale falls back to alpha-on-steelblue.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HexbinRenderer {
+    /// The continuous colour scheme (default viridis).
+    pub scheme: SequentialScheme,
+}
+
+impl HexbinRenderer {
+    /// The six pointy-top vertices (in DATA units) of the hex centred at
+    /// `(cx, cy)` with half-width `dx` and half-height `dy`, top vertex first.
+    fn hex_vertices(cx: f64, cy: f64, dx: f64, dy: f64) -> [(f64, f64); 6] {
+        [
+            (cx, cy + dy),
+            (cx + dx, cy + dy / 2.0),
+            (cx + dx, cy - dy / 2.0),
+            (cx, cy - dy),
+            (cx - dx, cy - dy / 2.0),
+            (cx - dx, cy + dy / 2.0),
+        ]
+    }
+}
+
+impl MarkRenderer for HexbinRenderer {
+    fn render(
+        &self,
+        scene: &mut Scene,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        scales: &ScaleSet,
+        _highlight: Option<&HighlightState>,
+    ) {
+        let (Some(x_col), Some(y_col)) =
+            (channel_map.get(Channel::X), channel_map.get(Channel::Y))
+        else {
+            return;
+        };
+        let (Some(x_scale), Some(y_scale)) =
+            (scales.get(Channel::X), scales.get(Channel::Y))
+        else {
+            return;
+        };
+        let (Some(x_vals), Some(y_vals), Some(dx_vals), Some(dy_vals)) = (
+            column_as_f64(batch, x_col),
+            column_as_f64(batch, y_col),
+            column_as_f64(batch, HEX_DX_COL),
+            column_as_f64(batch, HEX_DY_COL),
+        ) else {
+            return;
+        };
+
+        // Fill values + whether this is a count fill (zero-anchored, floored).
+        let fill_col = channel_map.get(Channel::Fill);
+        let is_count = fill_col == Some(DENSITY_COUNT_COL);
+        let fill_vals = fill_col.and_then(|c| column_as_f64(batch, c));
+        let max_fill = fill_vals
+            .as_ref()
+            .map(|v| v.iter().flatten().cloned().fold(0.0_f64, f64::max))
+            .unwrap_or(0.0);
+        let fill_ramp = match scales.get(Channel::Fill) {
+            Some(scale @ Scale::Sequential { .. }) => Some(scale),
+            _ => None,
+        };
+        let [cr, cg, cb, _] = DEFAULT_COLOUR.components;
+
+        for i in 0..batch.num_rows() {
+            let (Some(cx), Some(cy), Some(dx), Some(dy)) =
+                (x_vals[i], y_vals[i], dx_vals[i], dy_vals[i])
+            else {
+                continue;
+            };
+            let verts = Self::hex_vertices(cx, cy, dx, dy);
+            let mut mapped = verts
+                .iter()
+                .map(|(vx, vy)| (x_scale.map_f64(*vx), y_scale.map_f64(*vy)));
+            let Some(first) = mapped.next() else { continue };
+            if !(first.0.is_finite() && first.1.is_finite()) {
+                continue;
+            }
+            let mut path = BezPath::new();
+            path.move_to(first);
+            let mut ok = true;
+            for p in mapped {
+                if !(p.0.is_finite() && p.1.is_finite()) {
+                    ok = false;
+                    break;
+                }
+                path.line_to(p);
+            }
+            if !ok {
+                continue;
+            }
+            path.close_path();
+
+            let value = fill_vals.as_ref().and_then(|v| v[i]);
+            let colour = match (fill_ramp, value) {
+                (Some(ramp), Some(v)) => {
+                    let dmax = ramp.domain_max().filter(|d| *d > 0.0).unwrap_or(max_fill.max(1.0));
+                    if is_count {
+                        // Zero-anchored count ramp, floored so the sparsest hex
+                        // stays visible (raster's RASTER_MIN_T precedent).
+                        let pos = (v / dmax).clamp(0.0, 1.0).max(RASTER_MIN_T);
+                        Color::new(ramp.map_continuous(pos * dmax))
+                    } else {
+                        Color::new(ramp.map_continuous(v))
+                    }
+                }
+                // Fallback: single-hue with fill-proportional alpha.
+                (None, Some(v)) if max_fill > 0.0 => {
+                    let t = (v / max_fill).clamp(0.0, 1.0).max(RASTER_MIN_T) as f32;
+                    Color::new([cr, cg, cb, t])
+                }
+                _ => DEFAULT_COLOUR,
+            };
+            scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &path);
+        }
+    }
+
+    /// Widen the linear x/y domains by half a hex so the outermost hexes fit
+    /// inside the plot area, and build the fill → colour ramp under
+    /// [`Channel::Fill`]. A count fill is zero-anchored `[0, max]`; an avg fill
+    /// follows the cell rule (`[0, max]` when `min >= 0`, else `[min, max]`).
+    /// Merge-not-clobber mirrors raster/cell: a co-rendered Sequential unions
+    /// its domain (keeping the first's stops); a sibling's categorical Colour
+    /// Fill survives untouched.
+    fn augment_scales(
+        &self,
+        scales: &mut ScaleSet,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        x_range: (f64, f64),
+        y_range: (f64, f64),
+    ) {
+        // Widen each positional scale by one constant half-hex, RAW-ANCHORED:
+        // domain = [raw_min - dx, raw_max + dx], where raw_min/raw_max are the
+        // lowerer's binning extent carried in-band (__bf_hex_x0/x1/y0/y1) and dx
+        // is the constant half-extent (__bf_hex_dx/dy).
+        //
+        // Raw-anchored — NOT the occupied-centre span — is the contract: it
+        // makes the widened domain encode the exact raw pixel→data pitch
+        // (span = raw_span·(W+binWidth)/W), which a sibling HexgridRenderer
+        // inverts to place its mesh EXACTLY on the hexbin lattice. The
+        // occupied-centre span loses that pitch (max_centre - min_centre ≠ raw
+        // span, off by up to a hex from quantisation), so the mesh would drift
+        // and accumulate multi-pixel error across the lattice — the bug the
+        // hex_ac04 alignment probe now guards. It also matches every other
+        // mark's domain = data extent, and Plot/d3-hexbin (which don't extend
+        // the domain for hex overhang at all). The one cost is up to a half-hex
+        // clip on the outermost edge hex; bins represent data inside the raw
+        // extent, so that is honest. Falls back to the centre-column span only
+        // when the raw-extent columns are absent (a non-hexbin batch).
+        let first = |c| column_as_f64(batch, c).and_then(|v| v.into_iter().flatten().next());
+        let dx = first(HEX_DX_COL);
+        let dy = first(HEX_DY_COL);
+        for (channel, range, half, lo_col, hi_col) in [
+            (Channel::X, x_range, dx, HEX_X0_COL, HEX_X1_COL),
+            (Channel::Y, y_range, dy, HEX_Y0_COL, HEX_Y1_COL),
+        ] {
+            let Some(half) = half else { continue };
+            let (lo, hi) = match (first(lo_col), first(hi_col)) {
+                (Some(a), Some(b)) => (a, b),
+                _ => {
+                    // Fallback: occupied-centre span from the channel column.
+                    let Some(col) = channel_map.get(channel) else { continue };
+                    let Some(vals) = column_as_f64(batch, col) else { continue };
+                    let lo = vals.iter().flatten().cloned().fold(f64::INFINITY, f64::min);
+                    let hi = vals.iter().flatten().cloned().fold(f64::NEG_INFINITY, f64::max);
+                    (lo, hi)
+                }
+            };
+            if lo.is_finite() && hi.is_finite() {
+                merge_linear_scale(scales, channel, lo - half, hi + half, range);
+            }
+        }
+
+        // Fill → colour ramp. Count is zero-anchored; avg follows the cell rule.
+        let Some(fill_col) = channel_map.get(Channel::Fill) else {
+            return;
+        };
+        let Some(vals) = column_as_f64(batch, fill_col) else {
+            return;
+        };
+        let lo = vals.iter().flatten().cloned().fold(f64::INFINITY, f64::min);
+        let hi = vals.iter().flatten().cloned().fold(f64::NEG_INFINITY, f64::max);
+        if !(lo.is_finite() && hi.is_finite()) {
+            return;
+        }
+        let is_count = fill_col == DENSITY_COUNT_COL;
+        // Count: [0, max] (counts are ≥ 0). Avg: [0, max] iff min ≥ 0 else [min, max].
+        let (d0, d1) = if is_count || lo >= 0.0 { (0.0, hi) } else { (lo, hi) };
+
+        let merged = match scales.get(Channel::Fill) {
+            Some(Scale::Sequential {
+                domain_min,
+                domain_max,
+                stops,
+            }) => Some(Scale::Sequential {
+                domain_min: domain_min.min(d0),
+                domain_max: domain_max.max(d1),
+                stops: stops.clone(),
+            }),
+            Some(Scale::Colour { .. }) => None, // categorical fill wins
+            _ => Some(Scale::Sequential {
+                domain_min: d0,
+                domain_max: d1,
+                stops: self.scheme.stops(),
+            }),
+        };
+        if let Some(scale) = merged {
+            scales.insert(Channel::Fill, scale);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HexgridRenderer (hexgrid — decorative dataless hex mesh)
+// ---------------------------------------------------------------------------
+
+/// Default `binWidth` (pixels) — matches the hexbin default so a sibling
+/// overlays on-lattice.
+const DEFAULT_HEX_BIN_WIDTH: f64 = 20.0;
+
+/// Fixed light stroke for the hexgrid mesh (v1 — `stroke`/`strokeOpacity`
+/// attrs are deferred on the literal-colour substrate, the contour precedent).
+const HEXGRID_STROKE: Color = Color::new([0.72, 0.72, 0.72, 1.0]);
+const HEXGRID_STROKE_WIDTH: f64 = 0.75;
+
+/// Renders a decorative pointy-top hex MESH across the plot area at `binWidth`
+/// px — the dataless sibling of hexbin. Ignoring the (singleton) batch, it draws
+/// in spec order (before a later hexbin) in one of two modes:
+///
+/// - **Sibling** — when a hexbin has established RAW-anchored widened data
+///   scales, the mesh is the hexbin lattice reconstructed from those scales and
+///   drawn through them ([`Self::sibling_lattice`]), so the hexbin overlays it
+///   EXACTLY on-lattice (same pitch and phase, not merely the same `binWidth`).
+///   Drawing the mesh in raw pixel space at `binWidth` would drift, because the
+///   hexbin's centres travel through the half-hex-widened scales.
+/// - **Standalone** — a dataless hexgrid-only spec has no widening to invert:
+///   [`Self::augment_scales`] synthesises unit x/y scales and the mesh is the
+///   plot-corner pixel lattice at `binWidth`.
+#[derive(Debug, Clone, Copy)]
+pub struct HexgridRenderer {
+    /// Hex `binWidth` in pixels (horizontal centre spacing).
+    pub bin_width: f64,
+}
+
+impl Default for HexgridRenderer {
+    fn default() -> Self {
+        Self {
+            bin_width: DEFAULT_HEX_BIN_WIDTH,
+        }
+    }
+}
+
+/// The pixel range `(start, end)` a scale maps onto, for the positional scales.
+fn scale_pixel_range(scale: &Scale) -> Option<(f64, f64)> {
+    match scale {
+        Scale::Linear { range_start, range_end, .. }
+        | Scale::Time { range_start, range_end, .. }
+        | Scale::Band { range_start, range_end, .. } => Some((*range_start, *range_end)),
+        _ => None,
+    }
+}
+
+/// `(domain_min, domain_max, range_start, range_end)` of a linear scale — the
+/// hexbin-widened positional scales the hexgrid rides. `None` for any other
+/// scale kind (the hexgrid then falls back to its plot-corner pixel mesh).
+fn linear_parts(scale: &Scale) -> Option<(f64, f64, f64, f64)> {
+    match scale {
+        Scale::Linear { domain_min, domain_max, range_start, range_end } => {
+            Some((*domain_min, *domain_max, *range_start, *range_end))
+        }
+        _ => None,
+    }
+}
+
+/// The hexbin lattice recovered in DATA units from a pair of hexbin-WIDENED
+/// positional scales, so a sibling hexgrid mesh coincides with the hexbin's
+/// hexes exactly rather than drifting in pitch and phase.
+///
+/// The hexbin lowerer bins in RAW plot-pixel space (`px = (x-xmin)/xspan·W`),
+/// anchoring hex (0,0) at data `(xmin, ymin)`, then `augment_scales` widens the
+/// domain by one constant half-hex per axis, RAW-anchored: `[xmin - dx,
+/// xmax + dx]`. That widening is exact and invertible — given the widened
+/// domain, the pixel range `W`/`H`, and `binWidth`, we recover the raw data
+/// extent `[xmin, xmax]` the lowerer binned over (bit-exact because the domain
+/// is anchored on that extent, NOT on quantised occupied centres), regenerate
+/// the raw-pixel lattice anchored at (0,0) — so the row stagger matches the
+/// lowerer bit-for-bit — and map each centre back to data. The mesh is then
+/// drawn through the SAME scales as the hexes, so they land together. See the
+/// `hex_ac04` alignment probe.
+///
+/// The exactness holds on the FRESH / static-scale path (a plot's initial
+/// build, and any rebuild that re-derives the scales from the re-executed
+/// batch). It relies on the widened domain matching the batch the mesh is drawn
+/// against. Under the live ANCHORED path (`anchor_scales`'s widen-only union,
+/// which holds the launch domain while data widens) a rebuild whose binning
+/// EXTENT changed while the held domain did not would make the reconstruction
+/// invert a stale domain and the mesh drift (~9.6px measured). That is
+/// unreachable today — selection cross-filters wrap in an outer `Filter` and do
+/// NOT re-bin, `binWidth` is literal-only, and no example composes a
+/// param-driven `data.filter` on a hexbin — so it is a documented limit, not a
+/// regression; revisit if binWidth/extent ever become param-driven.
+struct SiblingLattice {
+    bin_width: f64,
+    /// Raw data extent (un-widened) the lowerer binned over.
+    xmin_raw: f64,
+    xspan_raw: f64,
+    ymin_raw: f64,
+    yspan_raw: f64,
+    /// Raw plot pixel extent (the scale range magnitude, unchanged by widening).
+    w: f64,
+    h: f64,
+    /// Constant hex half-extents in data units (equal to the lowerer's emitted
+    /// `__bf_hex_dx`/`__bf_hex_dy`).
+    dx_data: f64,
+    dy_data: f64,
+}
+
+impl SiblingLattice {
+    /// Hex centres in DATA units, over the raw plot rect (with the one-cell
+    /// margin `lattice_centres` adds), ready to map through the shared scales.
+    fn data_centres(&self) -> Vec<(f64, f64)> {
+        HexgridRenderer::lattice_centres(0.0, self.w, 0.0, self.h, self.bin_width)
+            .into_iter()
+            .map(|(px, py)| {
+                (
+                    self.xmin_raw + px * self.xspan_raw / self.w,
+                    self.ymin_raw + py * self.yspan_raw / self.h,
+                )
+            })
+            .collect()
+    }
+}
+
+impl HexgridRenderer {
+    /// Pointy-top hex centres (pixel space) covering the rect `[x0,x1]×[y0,y1]`
+    /// at `bin_width`, with a one-cell margin so the clip trims cleanly. Rows are
+    /// `dy = 1.5·size` apart (`size = bin_width/√3`), odd rows offset by half a
+    /// horizontal step (`dx = bin_width`) — the d3-hexbin / Observable Plot mesh.
+    fn lattice_centres(x0: f64, x1: f64, y0: f64, y1: f64, bin_width: f64) -> Vec<(f64, f64)> {
+        let sqrt3 = 1.732_050_807_568_877_2_f64;
+        let size = bin_width / sqrt3;
+        let dx = bin_width;
+        let dy = 1.5 * size;
+        if !(dx > 0.0 && dy > 0.0) {
+            return Vec::new();
+        }
+        let (lo_x, hi_x) = (x0.min(x1), x0.max(x1));
+        let (lo_y, hi_y) = (y0.min(y1), y0.max(y1));
+        let mut out = Vec::new();
+        let j_max = ((hi_y - lo_y) / dy).ceil() as i64 + 1;
+        let i_max = ((hi_x - lo_x) / dx).ceil() as i64 + 1;
+        for j in -1..=j_max {
+            let cy = lo_y + (j as f64) * dy;
+            let offset = if j.rem_euclid(2) == 1 { dx / 2.0 } else { 0.0 };
+            for i in -1..=i_max {
+                let cx = lo_x + offset + (i as f64) * dx;
+                out.push((cx, cy));
+            }
+        }
+        out
+    }
+
+    /// Recover the sibling-hexbin lattice from the RAW-anchored widened scales,
+    /// so the mesh rides the hexbin's exact hexes. Returns `None` — falling back
+    /// to the plot-corner pixel mesh — when there is no sibling to align to: the
+    /// scales are the synthesised unit `[0,1]` scales of a DATALESS standalone
+    /// hexgrid, are non-linear, or the geometry is degenerate.
+    ///
+    /// KNOWN v1 LIMIT: the trigger is "linear, non-unit, non-degenerate scales",
+    /// NOT "a hexbin sibling exists" — the renderer has no cross-mark visibility.
+    /// So a hexgrid co-plotted with a NON-hexbin mark (a dot/scatter) that
+    /// established a plain data domain would reconstruct a spurious hex lattice
+    /// from THAT mark's (un-hex-widened) domain instead of the plot-corner mesh.
+    /// The mesh would still be a plausible hex grid, just not the plot-corner
+    /// one. Distinguishing a hexbin-widened domain from any other needs a
+    /// cross-mark seam we deliberately do not build here; the ratified use is
+    /// hexgrid + hexbin, where this is correct. Revisit if hexgrid-over-non-
+    /// hexbin becomes a supported composition.
+    fn sibling_lattice(&self, x_scale: &Scale, y_scale: &Scale) -> Option<SiblingLattice> {
+        let (x0d, x1d, rsx, rex) = linear_parts(x_scale)?;
+        let (y0d, y1d, rsy, rey) = linear_parts(y_scale)?;
+        // A dataless standalone hexgrid: augment_scales wrote the exact unit
+        // scales below, so bit-exact equality against its own constants is the
+        // signal (a hexbin-widened data domain is never exactly [0,1]). Keep the
+        // plot-corner pixel mesh — there is no widening to invert.
+        let is_unit = |lo: f64, hi: f64| lo == 0.0 && hi == 1.0;
+        if is_unit(x0d, x1d) && is_unit(y0d, y1d) {
+            return None;
+        }
+        let b = self.bin_width;
+        if !(b > 0.0) {
+            return None;
+        }
+        let sqrt3 = 1.732_050_807_568_877_2_f64;
+        let size = b / sqrt3;
+        let w = (rex - rsx).abs();
+        let h = (rey - rsy).abs();
+        let span_x = x1d - x0d;
+        let span_y = y1d - y0d;
+        if !(w > 0.0 && h > 0.0 && span_x > 0.0 && span_y > 0.0) {
+            return None;
+        }
+        // Un-widen: augment added one half-hex (data units) per side, RAW-
+        // anchored — `widened_span = raw_span + 2·half`, half = (px_half/plot)·
+        // raw_span (half-width binWidth/2 px on x, half-height size px on y).
+        // Solving for the raw span/half recovers the lowerer's raw affine
+        // exactly; the recovered `dx_data`/`dy_data` equal its emitted
+        // `__bf_hex_dx`/`_dy`, and `xmin_raw`/`ymin_raw` its raw `min`.
+        let dx_data = (b / 2.0) * span_x / (w + b);
+        let dy_data = size * span_y / (h + 2.0 * size);
+        Some(SiblingLattice {
+            bin_width: b,
+            xmin_raw: x0d + dx_data,
+            xspan_raw: span_x - 2.0 * dx_data,
+            ymin_raw: y0d + dy_data,
+            yspan_raw: span_y - 2.0 * dy_data,
+            w,
+            h,
+            dx_data,
+            dy_data,
+        })
+    }
+}
+
+impl MarkRenderer for HexgridRenderer {
+    fn render(
+        &self,
+        scene: &mut Scene,
+        _batch: &RecordBatch,
+        _channel_map: &ChannelMap,
+        scales: &ScaleSet,
+        _highlight: Option<&HighlightState>,
+    ) {
+        let (Some(x_scale), Some(y_scale)) =
+            (scales.get(Channel::X), scales.get(Channel::Y))
+        else {
+            return;
+        };
+        let stroke = kurbo::Stroke::new(HEXGRID_STROKE_WIDTH);
+
+        if let Some(lat) = self.sibling_lattice(x_scale, y_scale) {
+            // Sibling hexbin: draw the mesh in DATA units and map through the
+            // shared (widened) scales, so it coincides with the hexbin's hexes.
+            for (cx, cy) in lat.data_centres() {
+                let verts = HexbinRenderer::hex_vertices(cx, cy, lat.dx_data, lat.dy_data);
+                let mut mapped = verts
+                    .iter()
+                    .map(|(vx, vy)| (x_scale.map_f64(*vx), y_scale.map_f64(*vy)));
+                let Some(first) = mapped.next() else { continue };
+                if !(first.0.is_finite() && first.1.is_finite()) {
+                    continue;
+                }
+                let mut path = BezPath::new();
+                path.move_to(first);
+                let mut ok = true;
+                for p in mapped {
+                    if !(p.0.is_finite() && p.1.is_finite()) {
+                        ok = false;
+                        break;
+                    }
+                    path.line_to(p);
+                }
+                if ok {
+                    path.close_path();
+                    scene.stroke(&stroke, Affine::IDENTITY, HEXGRID_STROKE, None, &path);
+                }
+            }
+            return;
+        }
+
+        // Standalone (dataless) hexgrid: plot-corner pixel mesh at binWidth.
+        let (Some((x0, x1)), Some((y0, y1))) =
+            (scale_pixel_range(x_scale), scale_pixel_range(y_scale))
+        else {
+            return;
+        };
+        let sqrt3 = 1.732_050_807_568_877_2_f64;
+        let size = self.bin_width / sqrt3;
+        let (dx, dy) = (self.bin_width / 2.0, size); // half-width, half-height
+        for (cx, cy) in Self::lattice_centres(x0, x1, y0, y1, self.bin_width) {
+            let verts = HexbinRenderer::hex_vertices(cx, cy, dx, dy);
+            let mut path = BezPath::new();
+            path.move_to(verts[0]);
+            for v in &verts[1..] {
+                path.line_to(*v);
+            }
+            path.close_path();
+            scene.stroke(&stroke, Affine::IDENTITY, HEXGRID_STROKE, None, &path);
+        }
+    }
+
+    /// Synthesise unit x/y linear scales when none exist, so a DATALESS
+    /// hexgrid-only spec still has a plot-area pixel rect to draw the mesh in.
+    /// When a sibling mark (e.g. hexbin) has already established data-driven x/y
+    /// scales, this is a no-op — `render` then reconstructs the mesh from those
+    /// scales ([`Self::sibling_lattice`]) so it stays exactly on-lattice.
+    fn augment_scales(
+        &self,
+        scales: &mut ScaleSet,
+        _batch: &RecordBatch,
+        _channel_map: &ChannelMap,
+        x_range: (f64, f64),
+        y_range: (f64, f64),
+    ) {
+        if scales.get(Channel::X).is_none() {
+            scales.insert(
+                Channel::X,
+                Scale::Linear {
+                    domain_min: 0.0,
+                    domain_max: 1.0,
+                    range_start: x_range.0,
+                    range_end: x_range.1,
+                },
+            );
+        }
+        if scales.get(Channel::Y).is_none() {
+            scales.insert(
+                Channel::Y,
+                Scale::Linear {
+                    domain_min: 0.0,
+                    domain_max: 1.0,
+                    range_start: y_range.0,
+                    range_end: y_range.1,
+                },
+            );
         }
     }
 }
@@ -2357,6 +2937,8 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
     v.push((MarkKind::Heatmap, Box::new(HeatmapRenderer::default())));
     v.push((MarkKind::Cell, Box::new(CellRenderer::default())));
     v.push((MarkKind::Contour, Box::new(ContourRenderer::default())));
+    v.push((MarkKind::Hexbin, Box::new(HexbinRenderer::default())));
+    v.push((MarkKind::Hexgrid, Box::new(HexgridRenderer::default())));
     v.push((MarkKind::RegressionY, Box::new(RegressionRenderer::default())));
     v.push((MarkKind::RegressionX, Box::new(RegressionRenderer::default())));
     v
@@ -2368,21 +2950,27 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
 ///
 /// The ONE construction site both the app's first render and the cross-filter
 /// coordinator's live rebuild dispatch through (card 0006 renderer seam):
-/// raster/heatmap/cell carry the plot's `colorScheme`, heatmap/contour carry
-/// the mark's `bandwidth`, and contour carries its iso-level `thresholds`. A
-/// mark rebuilt through the same configured renderer its first render used
-/// keeps its scheme, bandwidth, and thresholds across every gesture. The match
-/// must stay identical to the app-assembly resolution that feeds it.
+/// raster/heatmap/cell/hexbin carry the plot's `colorScheme`, heatmap/contour
+/// carry the mark's `bandwidth`, contour carries its iso-level `thresholds`, and
+/// hexgrid carries its `binWidth`. A mark rebuilt through the same configured
+/// renderer its first render used keeps its scheme, bandwidth, thresholds, and
+/// binWidth across every gesture. The match must stay identical to the
+/// app-assembly resolution that feeds it.
 pub fn configured_renderer(
     kind: MarkKind,
     scheme: SequentialScheme,
     bandwidth: Option<f64>,
     thresholds: Option<usize>,
+    bin_width: Option<f64>,
 ) -> Option<Box<dyn MarkRenderer + Send + Sync>> {
     match kind {
         MarkKind::Raster => Some(Box::new(RasterRenderer { scheme })),
         MarkKind::Heatmap => Some(Box::new(HeatmapRenderer { scheme, bandwidth })),
         MarkKind::Cell => Some(Box::new(CellRenderer { scheme })),
+        MarkKind::Hexbin => Some(Box::new(HexbinRenderer { scheme })),
+        MarkKind::Hexgrid => Some(Box::new(HexgridRenderer {
+            bin_width: bin_width.unwrap_or(DEFAULT_HEX_BIN_WIDTH),
+        })),
         MarkKind::Contour => Some(Box::new(ContourRenderer {
             thresholds,
             bandwidth,
@@ -3144,6 +3732,60 @@ mod tests {
         assert!(build_kde_grid(&batch, "x_bin", "y_bin", Some(0.0)).is_none());
     }
 
+    // hex-ac07: build_kde_grid materialises a DENSE first..last lattice at the
+    // recovered pitch, so unoccupied INTERIOR bins are present (zero mass) and
+    // kde_2d smooths over the true geometry. A contiguous grid is unchanged
+    // (the byte-identity guard for the shipped heatmap/contour examples); a
+    // gapped axis densifies to fill the interior.
+    #[test]
+    fn hex_ac07_build_kde_grid_dense_lattice_fills_interior_gaps() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x_bin", DataType::Float64, false),
+            Field::new("y_bin", DataType::Float64, false),
+            Field::new(DENSITY_COUNT_COL, DataType::Float64, false),
+        ]));
+        let make = |xs: Vec<f64>, ys: Vec<f64>, cs: Vec<f64>| {
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(Float64Array::from(xs)) as _,
+                    Arc::new(Float64Array::from(ys)) as _,
+                    Arc::new(Float64Array::from(cs)) as _,
+                ],
+            )
+            .unwrap()
+        };
+
+        // Contiguous 2×2 grid — the dense lattice equals the occupied lattice, so
+        // nothing moves (this is why cell-dense examples stay byte-identical).
+        let dense = make(
+            vec![0.0, 1.0, 0.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![1.0, 2.0, 3.0, 4.0],
+        );
+        let g = build_kde_grid(&dense, "x_bin", "y_bin", None).expect("grid builds");
+        assert_eq!(g.x_centres, vec![0.0, 1.0], "contiguous x lattice unchanged");
+        assert_eq!(g.y_centres, vec![0.0, 1.0], "contiguous y lattice unchanged");
+
+        // Gapped x axis: bins occupied at 0, 1, 4 (interior 2 and 3 empty). The
+        // pitch recovers to 1 and the lattice fills 0..4 — five columns, the two
+        // interior gap bins materialised with zero raw mass.
+        let gapped = make(
+            vec![0.0, 1.0, 4.0, 0.0, 1.0, 4.0],
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        );
+        let g = build_kde_grid(&gapped, "x_bin", "y_bin", None).expect("grid builds");
+        assert_eq!(g.dx, 1.0, "recovered pitch is the GCD of the gaps 1 and 3");
+        assert_eq!(
+            g.x_centres,
+            vec![0.0, 1.0, 2.0, 3.0, 4.0],
+            "dense first..last lattice materialises the interior gap bins"
+        );
+        assert_eq!(g.cols(), 5, "five columns span the gapped axis");
+        assert_eq!(g.rows(), 2, "the ungapped y axis is untouched");
+    }
+
     // bin_step recovers the true pitch as the GCD of the gaps, even when NO two
     // occupied bins are adjacent (the min-gap-only approach would over-estimate).
     #[test]
@@ -3271,6 +3913,390 @@ mod tests {
             std::collections::HashSet::from([packed([cr, cg, cb, alpha_low]), packed([cr, cg, cb, 1.0])]),
             "fallback keeps the steelblue hue with count-proportional alpha"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // hex_ac03 — HexbinRenderer scene probes + augment_scales
+    // -----------------------------------------------------------------------
+
+    /// A hexbin batch: two hexes, `(x, y)` centres, a fill column, and the
+    /// constant in-band half-extents `__bf_hex_dx`/`__bf_hex_dy`.
+    fn hexbin_batch(fill_col: &str, fills: Vec<f64>) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+            Field::new(fill_col, DataType::Float64, false),
+            Field::new(HEX_DX_COL, DataType::Float64, false),
+            Field::new(HEX_DY_COL, DataType::Float64, false),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![0.0, 10.0])),
+                Arc::new(Float64Array::from(vec![0.0, 10.0])),
+                Arc::new(Float64Array::from(fills)),
+                Arc::new(Float64Array::from(vec![2.0, 2.0])),
+                Arc::new(Float64Array::from(vec![2.0, 2.0])),
+            ],
+        )
+        .unwrap()
+    }
+
+    fn hexbin_cm(fill_col: &str) -> ChannelMap {
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        cm.insert(Channel::Fill, fill_col.to_string());
+        cm
+    }
+
+    /// hex_ac03: a COUNT fill ramps through the zero-anchored Sequential (with
+    /// the RASTER_MIN_T floor), and the colours ACTUALLY encoded into the scene
+    /// are those ramp samples — probed via draw_data, not re-derived. One filled
+    /// hexagon per row.
+    #[test]
+    fn hex_ac03_count_fills_ramp_through_sequential() {
+        let batch = hexbin_batch(DENSITY_COUNT_COL, vec![1.0, 100.0]);
+        let cm = hexbin_cm(DENSITY_COUNT_COL);
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        HexbinRenderer::default().augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+
+        let ramp = scales.get(Channel::Fill).expect("count ramp built");
+        assert_eq!(ramp.domain_max(), Some(100.0), "count ramp zero-anchored [0,max]");
+        let dmax = ramp.domain_max().unwrap();
+        let sample = |count: f64| {
+            let pos = (count / dmax).clamp(0.0, 1.0).max(RASTER_MIN_T);
+            ramp.map_continuous(pos * dmax)
+        };
+
+        let mut scene = Scene::new();
+        HexbinRenderer::default().render(&mut scene, &batch, &cm, &scales, None);
+        assert_eq!(count_scene_paths(&scene), 2, "one hexagon fill per row");
+        let drawn: std::collections::HashSet<u32> =
+            scene.encoding().draw_data.iter().copied().collect();
+        assert_eq!(
+            drawn,
+            std::collections::HashSet::from([packed(sample(1.0)), packed(sample(100.0))]),
+            "hex fills are the zero-anchored ramp samples"
+        );
+    }
+
+    /// hex_ac03: an AVG fill follows the cell anchoring rule and maps through
+    /// the ramp WITHOUT the count floor.
+    #[test]
+    fn hex_ac03_avg_fills_follow_cell_anchoring() {
+        let batch = hexbin_batch("v", vec![15.0, 100.0]);
+        let cm = hexbin_cm("v");
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        HexbinRenderer::default().augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        let ramp = scales.get(Channel::Fill).expect("avg ramp built");
+        // min ≥ 0 ⇒ [0, max].
+        assert_eq!(ramp.domain_max(), Some(100.0));
+        let mut scene = Scene::new();
+        HexbinRenderer::default().render(&mut scene, &batch, &cm, &scales, None);
+        let drawn: std::collections::HashSet<u32> =
+            scene.encoding().draw_data.iter().copied().collect();
+        // No RASTER_MIN_T floor for avg — direct map_continuous.
+        assert_eq!(
+            drawn,
+            std::collections::HashSet::from([
+                packed(ramp.map_continuous(15.0)),
+                packed(ramp.map_continuous(100.0)),
+            ]),
+        );
+    }
+
+    /// hex_ac03: augment_scales widens x/y by half a hex (the constant in-band
+    /// half-extents) and applies the cell anchoring rule for a signed avg fill.
+    #[test]
+    fn hex_ac03_augment_scales_widens_and_anchors() {
+        // Signed avg fill ([-5, 10]) exercises the [min, max] branch.
+        let batch = hexbin_batch("v", vec![-5.0, 10.0]);
+        let cm = hexbin_cm("v");
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        HexbinRenderer::default().augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+
+        // x/y centres [0,10] widened by dx=dy=2 → [-2, 12].
+        let x = scales.get(Channel::X).unwrap();
+        assert!((x.domain_min().unwrap() - (-2.0)).abs() < 1e-9, "x widened lo");
+        assert!((x.domain_max().unwrap() - 12.0).abs() < 1e-9, "x widened hi");
+        let y = scales.get(Channel::Y).unwrap();
+        assert!((y.domain_min().unwrap() - (-2.0)).abs() < 1e-9);
+        assert!((y.domain_max().unwrap() - 12.0).abs() < 1e-9);
+
+        // Signed avg ⇒ [min, max], not zero-anchored.
+        let fill = scales.get(Channel::Fill).unwrap();
+        assert_eq!(fill.domain_max(), Some(10.0));
+        match fill {
+            Scale::Sequential { domain_min, .. } => assert!((domain_min - (-5.0)).abs() < 1e-9),
+            other => panic!("expected Sequential fill, got {other:?}"),
+        }
+    }
+
+    /// hex_ac03: augment_scales MERGES the Fill scale — a sibling's categorical
+    /// Colour Fill survives untouched (merge-not-clobber, raster/cell precedent).
+    #[test]
+    fn hex_ac03_augment_scales_merges_not_clobber() {
+        let batch = hexbin_batch(DENSITY_COUNT_COL, vec![1.0, 100.0]);
+        let cm = hexbin_cm(DENSITY_COUNT_COL);
+        let mut scales = ScaleSet::new();
+        scales.insert(
+            Channel::Fill,
+            Scale::Colour {
+                categories: vec!["a".to_string(), "b".to_string()],
+                palette: vec![[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
+            },
+        );
+        HexbinRenderer::default().augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        assert!(
+            matches!(scales.get(Channel::Fill), Some(Scale::Colour { .. })),
+            "a sibling's categorical Colour fill must survive"
+        );
+    }
+
+    /// hex_ac03: the configured renderer (the cfr `renderer_override` seam)
+    /// draws a rebuild byte-identically — the same override renderer is used for
+    /// the first render and every live rebuild, so output is stable.
+    #[test]
+    fn hex_ac03_configured_renderer_rebuild_parity() {
+        let batch = hexbin_batch(DENSITY_COUNT_COL, vec![1.0, 100.0]);
+        let cm = hexbin_cm(DENSITY_COUNT_COL);
+        let renderer =
+            configured_renderer(MarkKind::Hexbin, SequentialScheme::Turbo, None, None, None)
+                .expect("hexbin has a configured renderer");
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        renderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+
+        let mut a = Scene::new();
+        renderer.render(&mut a, &batch, &cm, &scales, None);
+        let mut b = Scene::new();
+        renderer.render(&mut b, &batch, &cm, &scales, None);
+        let da: Vec<u32> = a.encoding().draw_data.iter().copied().collect();
+        let db: Vec<u32> = b.encoding().draw_data.iter().copied().collect();
+        assert_eq!(da, db, "the override renderer draws the rebuild identically");
+        // Turbo scheme actually rides through (distinct from the viridis default).
+        let mut viridis_scene = Scene::new();
+        let mut vscales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        HexbinRenderer::default().augment_scales(&mut vscales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        HexbinRenderer::default().render(&mut viridis_scene, &batch, &cm, &vscales, None);
+        let dv: Vec<u32> = viridis_scene.encoding().draw_data.iter().copied().collect();
+        assert_ne!(da, dv, "the configured scheme (turbo) differs from the viridis default");
+    }
+
+    // -----------------------------------------------------------------------
+    // hex_ac04 — HexgridRenderer (dataless mesh) + lattice alignment
+    // -----------------------------------------------------------------------
+
+    /// A singleton batch, as the hexgrid lowerer emits (one row, no positional
+    /// columns) — the renderer draws from the plot extent, not this batch.
+    fn hexgrid_batch() -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "__bf_hexgrid",
+            DataType::Int64,
+            false,
+        )]));
+        RecordBatch::try_new(schema, vec![Arc::new(arrow::array::Int64Array::from(vec![1]))])
+            .unwrap()
+    }
+
+    /// A ScaleSet with linear x/y scales over a known plot-area pixel rect.
+    fn plot_scales(x: (f64, f64), y: (f64, f64)) -> ScaleSet {
+        let mut s = ScaleSet::new();
+        s.insert(Channel::X, Scale::Linear { domain_min: 0.0, domain_max: 1.0, range_start: x.0, range_end: x.1 });
+        s.insert(Channel::Y, Scale::Linear { domain_min: 0.0, domain_max: 1.0, range_start: y.0, range_end: y.1 });
+        s
+    }
+
+    /// hex_ac04: the mesh covers the plot rect with the right hex count for a
+    /// known extent + binWidth (one stroked outline per lattice centre).
+    #[test]
+    fn hex_ac04_hexgrid_mesh_covers_plot_extent() {
+        let renderer = HexgridRenderer { bin_width: 20.0 };
+        // Plot rect 200×150 px (x range 40..240, y range 170..20).
+        let scales = plot_scales((40.0, 240.0), (170.0, 20.0));
+        let expected_centres =
+            HexgridRenderer::lattice_centres(40.0, 240.0, 170.0, 20.0, 20.0).len();
+        assert!(expected_centres > 0, "lattice must cover the rect");
+
+        let mut scene = Scene::new();
+        renderer.render(&mut scene, &hexgrid_batch(), &ChannelMap::new(), &scales, None);
+        assert_eq!(
+            count_scene_paths(&scene),
+            expected_centres,
+            "one stroked hex outline per lattice centre"
+        );
+    }
+
+    /// Faithfully replicate the hexbin lowerer's lattice: for a plot pixel
+    /// extent `W×H`, `binWidth` `b`, and raw data extent, the hex `(q, r)` centre
+    /// in DATA units and the constant half-extents — the exact expressions from
+    /// `build_hexbin_plan`. Returns the occupied centres (those whose data centre
+    /// falls in the extent) plus `(dx_data, dy_data)`.
+    fn lowerer_hex_centres(
+        w: f64,
+        h: f64,
+        b: f64,
+        xmin: f64,
+        xmax: f64,
+        ymin: f64,
+        ymax: f64,
+    ) -> (Vec<(f64, f64)>, f64, f64) {
+        let sqrt3 = 1.732_050_807_568_877_2_f64;
+        let size = b / sqrt3;
+        let dx_data = (b / 2.0) / w * (xmax - xmin);
+        let dy_data = size / h * (ymax - ymin);
+        let mut out = Vec::new();
+        for r in -40..=40 {
+            for q in -40..=40 {
+                let cx_px = size * (sqrt3 * q as f64 + (sqrt3 / 2.0) * r as f64);
+                let cy_px = size * 1.5 * r as f64;
+                let cx = xmin + cx_px / w * (xmax - xmin);
+                let cy = ymin + cy_px / h * (ymax - ymin);
+                if cx >= xmin && cx <= xmax && cy >= ymin && cy <= ymax {
+                    out.push((cx, cy));
+                }
+            }
+        }
+        (out, dx_data, dy_data)
+    }
+
+    /// hex_ac04 (F1 alignment probe — the reinstated one). A sibling hexbin
+    /// overlays the hexgrid mesh EXACTLY on-lattice. Map a faithful hexbin
+    /// batch's centres through the REAL render pipeline (`infer_scales` +
+    /// `HexbinRenderer::augment_scales`, which now widens RAW-anchored from the
+    /// in-band `__bf_hex_x0/x1/y0/y1` extent), then generate the `HexgridRenderer`
+    /// mesh at the same `binWidth` and assert every hexbin centre coincides with
+    /// a mesh centre — in PIXELS, tolerance 1e-6. This is the probe whose absence
+    /// let the pitch/phase drift ship; the earlier mesh-only pitch self-check
+    /// never touched hexbin output.
+    /// The probe body: build a faithful hexbin batch for `(w, h, binWidth, raw
+    /// extent)`, run it through the real render pipeline, and assert every hexbin
+    /// centre coincides with a mesh centre in pixels (1e-6).
+    fn assert_hexbin_mesh_coincides(
+        w: f64,
+        h: f64,
+        b: f64,
+        raw_x0: f64,
+        raw_x1: f64,
+        raw_y0: f64,
+        raw_y1: f64,
+    ) {
+        let x_range = (40.0, 40.0 + w);
+        let y_range = (20.0 + h, 20.0); // inverted, as the render pipeline builds it
+        let (centres, dx_data, dy_data) =
+            lowerer_hex_centres(w, h, b, raw_x0, raw_x1, raw_y0, raw_y1);
+        assert!(centres.len() > 20, "enough occupied hexes to probe");
+
+        // Build the hexbin batch exactly as the lowerer emits it — INCLUDING the
+        // raw-extent columns augment_scales widens from.
+        let f = |v: Vec<f64>| Arc::new(Float64Array::from(v)) as arrow::array::ArrayRef;
+        let n = centres.len();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+            Field::new(HEX_DX_COL, DataType::Float64, false),
+            Field::new(HEX_DY_COL, DataType::Float64, false),
+            Field::new(HEX_X0_COL, DataType::Float64, false),
+            Field::new(HEX_X1_COL, DataType::Float64, false),
+            Field::new(HEX_Y0_COL, DataType::Float64, false),
+            Field::new(HEX_Y1_COL, DataType::Float64, false),
+            Field::new(DENSITY_COUNT_COL, DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                f(centres.iter().map(|c| c.0).collect()),
+                f(centres.iter().map(|c| c.1).collect()),
+                f(vec![dx_data; n]),
+                f(vec![dy_data; n]),
+                f(vec![raw_x0; n]),
+                f(vec![raw_x1; n]),
+                f(vec![raw_y0; n]),
+                f(vec![raw_y1; n]),
+                f(vec![1.0; n]),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        cm.insert(Channel::Fill, DENSITY_COUNT_COL.to_string());
+
+        let mut scales = infer_scales(&batch, &cm, x_range, y_range);
+        HexbinRenderer::default().augment_scales(&mut scales, &batch, &cm, x_range, y_range);
+        let x_scale = scales.get(Channel::X).unwrap();
+        let y_scale = scales.get(Channel::Y).unwrap();
+
+        // Mesh centres in pixels, via the same reconstruction render uses — with
+        // the SAME binWidth the hexbin was binned at (so a binWidth-plumbing bug
+        // would surface).
+        let hexgrid = HexgridRenderer { bin_width: b };
+        let lat = hexgrid
+            .sibling_lattice(x_scale, y_scale)
+            .expect("a widened data scale yields the sibling lattice");
+        let mesh_px: Vec<(f64, f64)> = lat
+            .data_centres()
+            .into_iter()
+            .map(|(cx, cy)| (x_scale.map_f64(cx), y_scale.map_f64(cy)))
+            .collect();
+
+        // Every hexbin centre (in pixels) must coincide with a mesh centre.
+        let mut worst = 0.0_f64;
+        for (cx, cy) in &centres {
+            let (hx, hy) = (x_scale.map_f64(*cx), y_scale.map_f64(*cy));
+            let nearest = mesh_px
+                .iter()
+                .map(|(mx, my)| ((mx - hx).powi(2) + (my - hy).powi(2)).sqrt())
+                .fold(f64::INFINITY, f64::min);
+            worst = worst.max(nearest);
+        }
+        assert!(
+            worst < 1e-6,
+            "every hexbin centre must sit on a mesh centre (w={w}, h={h}, binWidth={b}); \
+             worst offset {worst} px"
+        );
+    }
+
+    #[test]
+    fn hex_ac04_lattice_pitch_matches_hexbin_geometry() {
+        // (a) Default binWidth, ISOTROPIC data-per-pixel (both axes ≈ 0.02).
+        assert_hexbin_mesh_coincides(460.0, 370.0, 20.0, 0.0, 9.2, 0.0, 7.4);
+        // (b) NON-default binWidth (30) on an ANISOTROPIC domain: x maps
+        // 50 units over 500 px (0.10/px), y maps 6 units over 300 px (0.02/px) —
+        // a 5× axis-ratio difference. This exercises binWidth plumbing and
+        // independent per-axis scaling; a bug in either would break 1e-6.
+        assert_hexbin_mesh_coincides(500.0, 300.0, 30.0, 0.0, 50.0, 0.0, 6.0);
+    }
+
+    /// hex_ac04: a DATALESS hexgrid renders headlessly with NO data-driven
+    /// scales — augment_scales synthesises the unit x/y scales from the plot
+    /// ranges, and render then produces mesh geometry.
+    #[test]
+    fn hex_ac04_dataless_hexgrid_renders_headlessly() {
+        let renderer = HexgridRenderer::default();
+        let batch = hexgrid_batch();
+        let cm = ChannelMap::new();
+        // No x/y scales to begin with (no data columns).
+        let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        assert!(scales.get(Channel::X).is_none(), "no data-driven x scale");
+        renderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        assert!(scales.get(Channel::X).is_some(), "unit x scale synthesised");
+        let mut scene = Scene::new();
+        renderer.render(&mut scene, &batch, &cm, &scales, None);
+        assert!(count_scene_paths(&scene) > 0, "dataless mesh still renders");
+    }
+
+    /// hex_ac04: augment_scales does NOT clobber a sibling's data-driven scale
+    /// (so a hexgrid + hexbin plot keeps the hexbin's real domain and the mesh
+    /// rides it).
+    #[test]
+    fn hex_ac04_hexgrid_augment_preserves_existing_scales() {
+        let renderer = HexgridRenderer::default();
+        let mut scales = ScaleSet::new();
+        scales.insert(Channel::X, Scale::Linear { domain_min: 5.0, domain_max: 50.0, range_start: 40.0, range_end: 600.0 });
+        renderer.augment_scales(&mut scales, &hexgrid_batch(), &ChannelMap::new(), (40.0, 600.0), (450.0, 20.0));
+        // The existing x scale's data domain survives (not reset to [0,1]).
+        assert_eq!(scales.get(Channel::X).unwrap().domain_max(), Some(50.0));
     }
 
     // Regression (review finding, major): a raster's augment_scales MERGES into the
@@ -3658,14 +4684,13 @@ mod tests {
         assert_eq!(drawn_explicit, expected, "bandwidth threads through to the drawn field");
     }
 
-    // Adversarial-review follow-up (mirrors raster_bin_step_recovers_pitch_from_
-    // sparse_centres): when interior bins are unoccupied, the KDE grid's own
-    // pitch (first adjacent gap) over-estimates the bin width — x centres
-    // {0.5, 15.5, 16.5} have a TRUE pitch of 1 (the GCD of the gaps {15, 1})
-    // but grid.dx reads 15 — so the heatmap must DRAW cells at the recovered
-    // pitch instead of smearing them across the empty bins. The smoothed
-    // lattice itself stays gap-naive (recorded as deferred with the hexbin
-    // follow-up; fixing it byte-changes the shipped density examples).
+    // hex-ac07: build_kde_grid materialises a DENSE first..last lattice at the
+    // recovered pitch — unoccupied interior bins carry zero mass. x centres
+    // {0.5, 15.5, 16.5} have a TRUE pitch of 1 (the GCD of the gaps {15, 1}),
+    // so the grid now spans {0.5, 1.5, ..., 16.5} (17 columns) at grid.dx == 1
+    // rather than the old three-column grid whose naive first-gap pitch read 15.
+    // The draw already recovered the pitch; the fix moves the SMOOTHED lattice
+    // onto the same true geometry (the deliberate density-family re-baseline).
     #[test]
     fn heatmap_gapped_centres_cells_drawn_at_recovered_pitch() {
         let schema = Arc::new(Schema::new(vec![
@@ -3687,8 +4712,9 @@ mod tests {
         cm.insert(Channel::Y, "y_bin".to_string());
 
         let grid = build_kde_grid(&batch, "x_bin", "y_bin", None).expect("grid builds");
-        assert_eq!(grid.dx, 15.0, "the grid's naive pitch reads the 15-wide gap");
-        assert_eq!(bin_step(&grid.x_centres), Some(1.0), "bin_step recovers the true pitch");
+        assert_eq!(grid.dx, 1.0, "the dense lattice carries the recovered pitch 1");
+        assert_eq!(grid.x_centres.len(), 17, "dense first..last lattice materialises the gap bins");
+        assert_eq!(bin_step(&grid.x_centres), Some(1.0), "the dense lattice is uniform at the true pitch");
 
         // Identity scales (domain == pixel range), so drawn coordinates ARE data
         // units and the encoded f32 coordinate stream can be read back directly.
@@ -3712,15 +4738,18 @@ mod tests {
             .map(|w| (f32::from_bits(*w) as f64 * 4.0).round() as i64)
             .collect();
         let has = |v: f64| coords.contains(&((v * 4.0).round() as i64));
-        // Every cell spans its centre ± half the RECOVERED pitch: the first cell
-        // (centre 0.5) has edges 0 and 1, the gapped cells keep 1-wide edges too.
+        // Every cell spans its centre ± half the recovered pitch: the first cell
+        // (centre 0.5) has edges 0 and 1, the sparse cells keep 1-wide edges too.
         assert!(has(0.0) && has(1.0), "first cell drawn at the recovered pitch 1");
         assert!(has(15.0) && has(17.0), "sparse cells drawn at the recovered pitch 1");
-        // The gap-naive width (grid.dx = 15) would smear the first cell to
-        // 0.5 ± 7.5 and the last to 16.5 ± 7.5.
+        // The dense lattice tiles the whole span at unit pitch: interior gap bins
+        // are materialised (zero mass) and drawn, so an interior edge like 8.0
+        // is a genuine cell boundary now — but nothing spills past the [0, 17]
+        // lattice bounds (the old gap-naive smear reached 0.5 ± 7.5 → -7 and 8).
+        assert!(has(8.0), "interior gap bins are materialised in the dense lattice");
         assert!(
-            !has(-7.0) && !has(8.0) && !has(24.0),
-            "no cell is smeared across the unoccupied bins"
+            !has(-7.0) && !has(24.0),
+            "no cell spills past the dense lattice bounds"
         );
 
         // augment_scales widens the axes by half the SAME recovered pitch, so
@@ -4066,8 +5095,10 @@ mod tests {
         assert!(find_renderer(&registry, MarkKind::RegressionY).is_some());
         // Heatmap is registered as of card 0008's density-marks instalment.
         assert!(find_renderer(&registry, MarkKind::Heatmap).is_some());
+        // Hexbin is registered as of the hexbin follow-up.
+        assert!(find_renderer(&registry, MarkKind::Hexbin).is_some());
         // Unimplemented kinds should return None (no silent fallback).
-        assert!(find_renderer(&registry, MarkKind::Hexbin).is_none());
+        assert!(find_renderer(&registry, MarkKind::Geo).is_none());
     }
 
     #[test]

@@ -398,12 +398,62 @@ impl ExpressionNode {
     }
 }
 
+/// A self-aggregating channel transform — the typed form of a channel value
+/// like `fill: {count:}` or `fill: {avg: score_value}` (card 0008 hexbin /
+/// self-aggregating cell). Mosaic marks such as hexbin carry the aggregate on
+/// the channel itself; the lowerer turns it into a `GROUP BY` with the matching
+/// SQL aggregate. Distinct from a plain column/literal/param channel — parsing
+/// lifts a recognised single-key aggregate map to this form so a downstream
+/// lowerer can dispatch on it and the renderer reads the aggregated column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AggregateFunc {
+    /// `{count:}` — row count per group (no source column).
+    Count,
+    /// `{sum: col}`.
+    Sum,
+    /// `{avg: col}` (also spelled `{mean: col}`).
+    Avg,
+    /// `{min: col}`.
+    Min,
+    /// `{max: col}`.
+    Max,
+}
+
+impl AggregateFunc {
+    /// Look up by wire key. `mean` is an accepted alias for `avg`. Returns
+    /// `None` for names outside the recognised aggregate set (the caller warns).
+    #[must_use]
+    pub fn from_wire(wire: &str) -> Option<Self> {
+        match wire {
+            "count" => Some(Self::Count),
+            "sum" => Some(Self::Sum),
+            "avg" | "mean" => Some(Self::Avg),
+            "min" => Some(Self::Min),
+            "max" => Some(Self::Max),
+            _ => None,
+        }
+    }
+
+    /// Canonical wire key (as it re-serialises). `Avg` canonicalises to `avg`.
+    #[must_use]
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Count => "count",
+            Self::Sum => "sum",
+            Self::Avg => "avg",
+            Self::Min => "min",
+            Self::Max => "max",
+        }
+    }
+}
+
 /// A generic spec value — the building block of options bags and inline data.
 ///
-/// This is analogous to `serde_json::Value` plus two parser-lifted variants:
-/// `Param` for `$param` references found at non-outermost positions, and
-/// `Expression` for tokenised SQL strings. `ValueOrParamRef<SpecValue>` is
-/// used at outer option-slot positions.
+/// This is analogous to `serde_json::Value` plus parser-lifted variants:
+/// `Param` for `$param` references found at non-outermost positions,
+/// `Expression` for tokenised SQL strings, and `Aggregate` for a
+/// self-aggregating channel transform (`{count:}` / `{avg: col}`).
+/// `ValueOrParamRef<SpecValue>` is used at outer option-slot positions.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SpecValue {
     /// YAML/JSON null.
@@ -424,6 +474,16 @@ pub enum SpecValue {
     Param(ParamRef),
     /// Tokenised SQL expression.
     Expression(ExpressionNode),
+    /// A self-aggregating channel transform lifted from a recognised single-key
+    /// aggregate map at a mark channel position (`{count:}`, `{avg: col}`).
+    /// `column` is `None` for `count` (no source column) and `Some(col)` for
+    /// the column-taking aggregates.
+    Aggregate {
+        /// The aggregate function.
+        func: AggregateFunc,
+        /// The source column (`None` for `count`).
+        column: Option<String>,
+    },
 }
 
 impl SpecValue {

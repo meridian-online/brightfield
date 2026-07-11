@@ -241,6 +241,91 @@ pub(crate) fn spec_value_to_sql_literal(val: &SpecValue) -> String {
             }
             out
         }
+        // An aggregate channel transform reaching a kwarg/literal position is
+        // degenerate (aggregates belong on mark channels, consumed by the
+        // hexbin / cell lowerers, not in data-source kwargs). Render the SQL
+        // aggregate call so the output is at least valid SQL rather than a
+        // panic. `count` with no column becomes `count(*)`.
+        SpecValue::Aggregate { func, column } => match column {
+            Some(col) => format!("{}(\"{}\")", func.wire_name(), col),
+            None => format!("{}(*)", func.wire_name()),
+        },
+    }
+}
+
+// Observable-Plot default plot margins, pinned to
+// `brightfield_render::layout::Margins::default()` (top 20, right 20, bottom
+// 30, left 40). Duplicated here because brightfield-sql does not depend on
+// brightfield-render; the pixel-space hexbin lowerer needs the plot AREA
+// (declared size minus margins) to match the renderer's data→pixel mapping so
+// hexes are regular on screen. render's `gpu_layout_defaults_match_observable_plot`
+// guards these values on its side.
+const PLOT_MARGIN_X: f64 = 40.0 + 20.0;
+const PLOT_MARGIN_Y: f64 = 20.0 + 30.0;
+
+/// The pixel AREA (`width`, `height`) of the plot enclosing the mark at
+/// `mark_index` — its declared `width`/`height` (or Mosaic defaults) minus the
+/// default margins. This is the "static plot pixel extent at emit time" the
+/// hexbin lowerer bins in. `None` when the mark is not inside a plot.
+fn enclosing_plot_area_px(spec: &Spec, mark_index: usize) -> Option<(f64, f64)> {
+    let dims = collect_mark_plot_dims(spec);
+    let (w, h) = *dims.get(mark_index)?;
+    Some(((w - PLOT_MARGIN_X).max(1.0), (h - PLOT_MARGIN_Y).max(1.0)))
+}
+
+/// Declared plot `(width, height)` for each mark, in depth-first mark order —
+/// mirroring [`collect_marks`]. A mark inside a plot inherits that plot's
+/// declared size (or the Mosaic defaults); a mark with no enclosing plot gets
+/// the defaults.
+fn collect_mark_plot_dims(spec: &Spec) -> Vec<(f64, f64)> {
+    let mut out = Vec::new();
+    if let Some(root) = &spec.root {
+        collect_mark_plot_dims_in(root, None, &mut out);
+    }
+    out
+}
+
+fn collect_mark_plot_dims_in(
+    component: &Component,
+    current: Option<(f64, f64)>,
+    out: &mut Vec<(f64, f64)>,
+) {
+    use brightfield_spec::ast::PlotNode;
+    use brightfield_spec::layout::{DEFAULT_PLOT_HEIGHT, DEFAULT_PLOT_WIDTH};
+
+    fn plot_dim(node: &PlotNode, key: &str, default: f64) -> f64 {
+        node.attributes
+            .get(key)
+            .and_then(|v| match v {
+                SpecValue::Integer(n) => Some(*n as f64),
+                SpecValue::Float(f) => Some(*f),
+                _ => None,
+            })
+            .unwrap_or(default)
+    }
+
+    match component {
+        Component::Plot(plot) => {
+            let dims = (
+                plot_dim(plot, "width", DEFAULT_PLOT_WIDTH),
+                plot_dim(plot, "height", DEFAULT_PLOT_HEIGHT),
+            );
+            for item in &plot.items {
+                collect_mark_plot_dims_in(item, Some(dims), out);
+            }
+        }
+        Component::HConcat(concat) | Component::VConcat(concat) => {
+            for item in &concat.items {
+                collect_mark_plot_dims_in(item, current, out);
+            }
+        }
+        Component::Mark(_) => {
+            out.push(current.unwrap_or((
+                brightfield_spec::layout::DEFAULT_PLOT_WIDTH,
+                brightfield_spec::layout::DEFAULT_PLOT_HEIGHT,
+            )));
+        }
+        _ => {}
     }
 }
 
@@ -470,6 +555,7 @@ pub fn emit_query_with_passes(
     let ctx = LowerCtx {
         data_sources: &spec.data,
         params: &spec.params,
+        plot_px: enclosing_plot_area_px(spec, mark_index),
     };
 
     let lowerer = find_lowerer(mark.kind, &lowerers);
@@ -801,13 +887,14 @@ mod query_tests {
 
     #[test]
     fn dfir_ac08_emit_query_unsupported_mark() {
-        // Use a mark kind that SimpleLowerer is NOT registered for
-        let src = "plot:\n  - mark: hexbin\n    data: { from: flights }\ndata:\n  flights: { file: flights.parquet }\n";
+        // Use a mark kind that has no lowerer (geo stays the unimplemented
+        // stand-in now that hexbin is wired — the placeholder swap dance).
+        let src = "plot:\n  - mark: geo\n    data: { from: flights }\ndata:\n  flights: { file: flights.parquet }\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
         let result = emit_query(&spec, 0, None, None);
         assert!(result.is_err());
         match result.unwrap_err() {
-            EmitError::UnsupportedMark { kind } => assert_eq!(kind, "hexbin"),
+            EmitError::UnsupportedMark { kind } => assert_eq!(kind, "geo"),
             other => panic!("expected UnsupportedMark, got {other:?}"),
         }
     }
