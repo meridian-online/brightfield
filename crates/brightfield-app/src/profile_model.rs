@@ -46,12 +46,16 @@ pub fn row_count_label(n: u64) -> String {
 }
 
 /// Trim a DuckDB-rendered numeric bound: drop trailing zeros (and a bare
-/// trailing dot) from a decimal so `"100.000"` → `"100"` and `"1.50"` →
-/// `"1.5"`. Non-numeric bounds (dates, timestamps, strings) pass through
-/// untouched.
+/// trailing dot) from a plain decimal so `"100.000"` → `"100"` and `"1.50"` →
+/// `"1.5"`. Scientific-notation bounds (DuckDB renders DOUBLE in e-notation
+/// outside ~1e15/1e-5) pass through UNTOUCHED — trimming their trailing zero
+/// would corrupt the exponent (`"1.5e+20"` → `"1.5e+2"`, off by 10^18).
+/// Non-numeric bounds (dates, timestamps, strings) also pass through.
 #[must_use]
 pub fn trim_number(s: &str) -> String {
-    if s.parse::<f64>().is_err() || !s.contains('.') {
+    // Only trim a plain decimal: must parse as a float, carry a '.', and NOT
+    // carry an exponent (whose trailing zeros are significant).
+    if s.parse::<f64>().is_err() || !s.contains('.') || s.contains(['e', 'E']) {
         return s.to_string();
     }
     let trimmed = s.trim_end_matches('0');
@@ -155,9 +159,15 @@ mod tests {
     fn sbp_ac02_trim_number_matrix() {
         assert_eq!(trim_number("100.000"), "100");
         assert_eq!(trim_number("1.50"), "1.5");
+        assert_eq!(trim_number("2.500"), "2.5"); // plain decimal still trims
         assert_eq!(trim_number("0.0"), "0");
         assert_eq!(trim_number("-1.50"), "-1.5");
         assert_eq!(trim_number("42"), "42"); // int, no dot
+        // Scientific notation passes through untouched — trimming would eat the
+        // exponent's trailing zero and corrupt the value by orders of magnitude.
+        assert_eq!(trim_number("1.5e+20"), "1.5e+20");
+        assert_eq!(trim_number("1.5e-10"), "1.5e-10");
+        assert_eq!(trim_number("1.5E+20"), "1.5E+20"); // uppercase E too
         assert_eq!(trim_number("2020-01-15"), "2020-01-15"); // date passes through
         assert_eq!(trim_number("2020-01-15 10:30:00"), "2020-01-15 10:30:00");
     }
