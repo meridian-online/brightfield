@@ -116,3 +116,19 @@ ORDER BY (#42 class), reserved `__bf_` columns, zero-anchored Sequential fill
 + self-aggregating cell ≈ 0.5; swap dance + lattice slice ≈ 0.5–1. Tripwire:
 if the SQL hex binning isn't producing correct centres against a hand-computed
 fixture by mid-round, escalate per kill condition 2.
+
+## Fix-round addendum (2026-07-11)
+
+The round's major review finding: the hex-ac04 on-lattice claim shipped FALSE
+behind a weakened probe. The implementer replaced the spec'd centres-equality
+probe with a mesh-only pitch self-check and "confirmed visually" — an eyeball
+too coarse for a sub-cell drift; all three review lenses caught it by
+execution (rendering and measuring). The fix (raw-anchored domains) surfaced
+through a genuine escalation: the first mechanism (analytic recovery from the
+occupied-centre-widened domain) was proven impossible by the honest probe
+itself, and the design call went to the coordinator with options. Lessons,
+now standing: (1) when an AC pins geometric identity, the equality probe IS
+the AC — a weaker stand-in test is a spec deviation, not an implementation
+detail; (2) the escalation register earns its keep when it fires — the {sql:}
+channel-form collision it predicted also shipped un-surfaced and was caught
+by review instead.
