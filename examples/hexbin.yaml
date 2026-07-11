@@ -3,10 +3,11 @@
 # pointy-top hex lattice at binWidth 20px (Mosaic's default). Each hex bins the
 # points that fall in it and `fill: { count: }` colours it by that count through
 # the Blues ramp (zero-anchored) - so the blobs read as two hot hex clusters.
-# A `hexgrid` sibling draws the full decorative lattice first; the hexbin then
-# overlays it exactly on-lattice (same binWidth => same centres), so empty cells
-# show as the faint mesh and occupied cells as filled hexes. Compare raster.yaml
-# (square-bin count) and heatmap.yaml (KDE-smoothed) for the same picture.
+# A `hexgrid` sibling draws the full decorative lattice first; at the same
+# binWidth the hexbin then overlays it EXACTLY on-lattice (the mesh reconstructs
+# the hexbin lattice from the shared scales), so empty cells show as the faint
+# mesh and occupied cells as filled hexes. Compare raster.yaml (square-bin count)
+# and heatmap.yaml (KDE-smoothed) for the same picture.
 #
 #   BRIGHTFIELD_DUMP_PNG=hexbin.png cargo run -p brightfield-app -- examples/hexbin.yaml
 data:

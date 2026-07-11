@@ -439,6 +439,17 @@ impl MarkLower for ContourAttrShield {
 const HEX_DX_COL: &str = "__bf_hex_dx";
 const HEX_DY_COL: &str = "__bf_hex_dy";
 
+/// Reserved RAW-extent columns (constant per row): the raw table `min`/`max` of
+/// the x/y channels — the extent the lowerer binned in pixel space over. The
+/// renderer widens the positional scales from THESE (raw-anchored domain), not
+/// the occupied-centre span, so the widened domain encodes the exact raw
+/// pixel→data pitch and a sibling hexgrid can reconstruct the lattice exactly.
+/// Must match `brightfield-render`'s `HEX_X0_COL` … `HEX_Y1_COL`.
+const HEX_X0_COL: &str = "__bf_hex_x0";
+const HEX_X1_COL: &str = "__bf_hex_x1";
+const HEX_Y0_COL: &str = "__bf_hex_y0";
+const HEX_Y1_COL: &str = "__bf_hex_y1";
+
 /// Reserved count column (shared with the density lowerers) — a `fill: {count:}`
 /// hexbin aggregates into this. Must match `DENSITY_COUNT_COL` in the renderer.
 const HEX_COUNT_COL: &str = "__bf_count";
@@ -657,6 +668,12 @@ fn build_hexbin_plan(
             agg_expr,
             format!("{dx_data} AS {HEX_DX_COL}"),
             format!("{dy_data} AS {HEX_DY_COL}"),
+            // Raw extent (constant per group) so the renderer widens the scales
+            // RAW-anchored — the exactness the hexgrid reconstruction rides on.
+            format!("CAST({xmin} AS DOUBLE) AS {HEX_X0_COL}"),
+            format!("CAST({xmax} AS DOUBLE) AS {HEX_X1_COL}"),
+            format!("CAST({ymin} AS DOUBLE) AS {HEX_Y0_COL}"),
+            format!("CAST({ymax} AS DOUBLE) AS {HEX_Y1_COL}"),
         ],
     };
 
