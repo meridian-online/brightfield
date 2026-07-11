@@ -22,7 +22,7 @@ scenarios:
     then: "the mark draws from its data source using brightfield's native GPU renderer"
     source_lines: "brightfield-brief.md: 'Specialised: geo (GeoJSON), hexbin, contour, raster/heatmap'"
 
-maturity: "planned"
+maturity: "emerging"
 
 specs:
   - orbit/specs/2026-04-28-statistical-marks/spec.yaml
@@ -30,6 +30,7 @@ specs:
   - orbit/specs/2026-07-06-density-marks/spec.yaml
   - orbit/specs/2026-07-10-crossfilter-render-fidelity/spec.yaml
   - orbit/specs/2026-07-10-hexbin-marks/spec.yaml
+  - orbit/specs/2026-07-11-axis-inset/spec.yaml
 
 references:
   - "brightfield-brief.md"

@@ -29,14 +29,15 @@ scenarios:
     when: "I toggle presentation mode (p)"
     then: "all authoring panels hide, leaving the spec-derived canvas; headless PNG output is identical either way"
 
-goal: "gpui-component adopted at a pinned main commit (zed rev 1d217ee): DockArea absorbs WorkspaceView's shell (DONE — WorkspaceView deleted #52), an editor panel edits the live spec with save-to-re-render (DONE), panels dock and persist including the bottom dock (DONE — stack-rooted items + menu-move bootstrap, #52), a sidebar skeleton shows DuckDB column profiles (skeleton DONE; profiles are the next increment) — vello chart path untouched, every headless PNG byte-identical."
+goal: "gpui-component adopted at a pinned main commit (zed rev 1d217ee): DockArea absorbs WorkspaceView's shell (DONE — WorkspaceView deleted #52), an editor panel edits the live spec with save-to-re-render (DONE), panels dock and persist including the bottom dock (DONE — stack-rooted items + menu-move bootstrap, #52), the sidebar shows DuckDB column profiles (DONE — type/count/min-max/distinct/nulls per source incl. unconsumed, refreshed on hot reload, #53) — vello chart path untouched, every headless PNG byte-identical. All carded scenarios closed; future increments (profile explorer maturity: collapse/search/histograms; selection-aware profiles) are new design rounds."
 
-maturity: "emerging"
+maturity: "established"
 
 specs:
   - "orbit/specs/2026-07-06-authoring-workspace-v1/spec.yaml"
   - "orbit/specs/2026-07-10-crossfilter-render-fidelity/spec.yaml"
   - "orbit/specs/2026-07-10-workspace-consolidation/spec.yaml"
+  - "orbit/specs/2026-07-11-sidebar-profiling/spec.yaml"
 
 references:
   - "gpui-component main @ b7e63cc2 (Apache-2.0; pins zed rev 1d217ee; docks mature, tree-sitter + LSP editor, DataTable virtualized both axes) — adopt via git pin at a chosen commit; the tag route is dead until zed ships the post-split gpui crates.io release (recon 2026-07-05)"
