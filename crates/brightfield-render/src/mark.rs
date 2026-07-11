@@ -1188,14 +1188,19 @@ impl MarkRenderer for Density1DRenderer {
 /// histogram from those rows, picks bandwidths, and runs [`kde_2d`]. Each
 /// consumer then draws the smoothed field its own way: density as
 /// alpha-encoded circles, heatmap as ramp-filled cells, contour as iso-lines.
+///
+/// The lattice is DENSE: the centres run `first..last` at the recovered bin
+/// pitch (the GCD of the occupied-centre gaps, via [`bin_step`]), so unoccupied
+/// interior bins are materialised with zero mass. kde_2d then smooths over the
+/// true geometry — a sparse axis is not collapsed to adjacency (hex-ac07).
 pub(crate) struct KdeGrid {
-    /// Sorted unique x bin centres (grid columns), in data units.
+    /// Dense x bin centres (grid columns), `first..last` at pitch `dx`.
     pub x_centres: Vec<f64>,
-    /// Sorted unique y bin centres (grid rows), in data units.
+    /// Dense y bin centres (grid rows), `first..last` at pitch `dy`.
     pub y_centres: Vec<f64>,
-    /// Column pitch — `x_centres[1] - x_centres[0]` (> 0).
+    /// Column pitch — the recovered bin step, uniform across `x_centres` (> 0).
     pub dx: f64,
-    /// Row pitch — `y_centres[1] - y_centres[0]` (> 0).
+    /// Row pitch — the recovered bin step, uniform across `y_centres` (> 0).
     pub dy: f64,
     /// Row-major smoothed density: cell `(row, col)` — row indexing
     /// `y_centres`, col indexing `x_centres` — is `density[row * cols + col]`.
@@ -1237,47 +1242,61 @@ pub(crate) fn build_kde_grid(
     let y_vals = column_as_f64(batch, y_col)?;
     let count_vals = column_as_f64(batch, DENSITY_COUNT_COL)?;
 
-    // Collect unique bin centres on each axis (sorted).
-    let mut x_centres: Vec<f64> = Vec::new();
-    let mut y_centres: Vec<f64> = Vec::new();
+    // Collect the OCCUPIED bin centres on each axis (sorted) + the (x, y, count)
+    // tuples the lowerer emitted (only occupied bins survive its GROUP BY).
+    let mut x_occ: Vec<f64> = Vec::new();
+    let mut y_occ: Vec<f64> = Vec::new();
     let mut tuples: Vec<(f64, f64, u32)> = Vec::new();
     for i in 0..batch.num_rows() {
         if let (Some(xv), Some(yv), Some(c)) = (x_vals[i], y_vals[i], count_vals[i]) {
             tuples.push((xv, yv, c.max(0.0).round() as u32));
-            if !x_centres.iter().any(|v| (*v - xv).abs() < 1e-9) {
-                x_centres.push(xv);
+            if !x_occ.iter().any(|v| (*v - xv).abs() < 1e-9) {
+                x_occ.push(xv);
             }
-            if !y_centres.iter().any(|v| (*v - yv).abs() < 1e-9) {
-                y_centres.push(yv);
+            if !y_occ.iter().any(|v| (*v - yv).abs() < 1e-9) {
+                y_occ.push(yv);
             }
         }
     }
-    x_centres.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    y_centres.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    x_occ.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    y_occ.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
-    let cols = x_centres.len();
-    let rows = y_centres.len();
-    if cols < 2 || rows < 2 {
+    if x_occ.len() < 2 || y_occ.len() < 2 {
         return None;
     }
-    let dx = x_centres[1] - x_centres[0];
-    let dy = y_centres[1] - y_centres[0];
+    // Recover the TRUE bin pitch (GCD of the occupied-centre gaps, not the first
+    // adjacent gap), then build a DENSE first..last lattice at that pitch —
+    // unoccupied interior bins are materialised with zero mass. This makes
+    // kde_2d smooth over the real geometry (gaps are gaps, not collapsed to
+    // adjacency) and gives contour true gap geometry. Before this fix the grid
+    // held only the occupied centres, so a sparse axis read as densely packed
+    // (hex-ac07; the deliberate density-family re-baseline).
+    let dx = bin_step(&x_occ)?;
+    let dy = bin_step(&y_occ)?;
     if dx <= 0.0 || dy <= 0.0 {
         return None;
     }
+    let dense_lattice = |occ: &[f64], step: f64| -> Vec<f64> {
+        let (lo, hi) = (occ[0], occ[occ.len() - 1]);
+        let n = ((hi - lo) / step).round() as usize + 1;
+        (0..n).map(|i| lo + (i as f64) * step).collect()
+    };
+    let x_centres = dense_lattice(&x_occ, dx);
+    let y_centres = dense_lattice(&y_occ, dy);
 
-    // Build flat row-major histogram.
+    let cols = x_centres.len();
+    let rows = y_centres.len();
+
+    // Build the flat row-major histogram over the DENSE lattice: each occupied
+    // bin maps to its lattice index (round the offset by the pitch); every other
+    // dense cell keeps zero.
     let mut bins = vec![0u32; rows * cols];
     for (xv, yv, c) in &tuples {
-        let cx = x_centres
-            .iter()
-            .position(|v| (*v - xv).abs() < 1e-9)
-            .unwrap();
-        let cy = y_centres
-            .iter()
-            .position(|v| (*v - yv).abs() < 1e-9)
-            .unwrap();
-        bins[cy * cols + cx] = *c;
+        let cx = ((xv - x_centres[0]) / dx).round() as usize;
+        let cy = ((yv - y_centres[0]) / dy).round() as usize;
+        if cx < cols && cy < rows {
+            bins[cy * cols + cx] = *c;
+        }
     }
 
     // Bandwidth: the mark's explicit attribute on both axes, else Silverman
@@ -3516,6 +3535,60 @@ mod tests {
         assert!(build_kde_grid(&batch, "x_bin", "y_bin", Some(0.0)).is_none());
     }
 
+    // hex-ac07: build_kde_grid materialises a DENSE first..last lattice at the
+    // recovered pitch, so unoccupied INTERIOR bins are present (zero mass) and
+    // kde_2d smooths over the true geometry. A contiguous grid is unchanged
+    // (the byte-identity guard for the shipped heatmap/contour examples); a
+    // gapped axis densifies to fill the interior.
+    #[test]
+    fn hex_ac07_build_kde_grid_dense_lattice_fills_interior_gaps() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x_bin", DataType::Float64, false),
+            Field::new("y_bin", DataType::Float64, false),
+            Field::new(DENSITY_COUNT_COL, DataType::Float64, false),
+        ]));
+        let make = |xs: Vec<f64>, ys: Vec<f64>, cs: Vec<f64>| {
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(Float64Array::from(xs)) as _,
+                    Arc::new(Float64Array::from(ys)) as _,
+                    Arc::new(Float64Array::from(cs)) as _,
+                ],
+            )
+            .unwrap()
+        };
+
+        // Contiguous 2×2 grid — the dense lattice equals the occupied lattice, so
+        // nothing moves (this is why cell-dense examples stay byte-identical).
+        let dense = make(
+            vec![0.0, 1.0, 0.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![1.0, 2.0, 3.0, 4.0],
+        );
+        let g = build_kde_grid(&dense, "x_bin", "y_bin", None).expect("grid builds");
+        assert_eq!(g.x_centres, vec![0.0, 1.0], "contiguous x lattice unchanged");
+        assert_eq!(g.y_centres, vec![0.0, 1.0], "contiguous y lattice unchanged");
+
+        // Gapped x axis: bins occupied at 0, 1, 4 (interior 2 and 3 empty). The
+        // pitch recovers to 1 and the lattice fills 0..4 — five columns, the two
+        // interior gap bins materialised with zero raw mass.
+        let gapped = make(
+            vec![0.0, 1.0, 4.0, 0.0, 1.0, 4.0],
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        );
+        let g = build_kde_grid(&gapped, "x_bin", "y_bin", None).expect("grid builds");
+        assert_eq!(g.dx, 1.0, "recovered pitch is the GCD of the gaps 1 and 3");
+        assert_eq!(
+            g.x_centres,
+            vec![0.0, 1.0, 2.0, 3.0, 4.0],
+            "dense first..last lattice materialises the interior gap bins"
+        );
+        assert_eq!(g.cols(), 5, "five columns span the gapped axis");
+        assert_eq!(g.rows(), 2, "the ungapped y axis is untouched");
+    }
+
     // bin_step recovers the true pitch as the GCD of the gaps, even when NO two
     // occupied bins are adjacent (the min-gap-only approach would over-estimate).
     #[test]
@@ -4296,14 +4369,13 @@ mod tests {
         assert_eq!(drawn_explicit, expected, "bandwidth threads through to the drawn field");
     }
 
-    // Adversarial-review follow-up (mirrors raster_bin_step_recovers_pitch_from_
-    // sparse_centres): when interior bins are unoccupied, the KDE grid's own
-    // pitch (first adjacent gap) over-estimates the bin width — x centres
-    // {0.5, 15.5, 16.5} have a TRUE pitch of 1 (the GCD of the gaps {15, 1})
-    // but grid.dx reads 15 — so the heatmap must DRAW cells at the recovered
-    // pitch instead of smearing them across the empty bins. The smoothed
-    // lattice itself stays gap-naive (recorded as deferred with the hexbin
-    // follow-up; fixing it byte-changes the shipped density examples).
+    // hex-ac07: build_kde_grid materialises a DENSE first..last lattice at the
+    // recovered pitch — unoccupied interior bins carry zero mass. x centres
+    // {0.5, 15.5, 16.5} have a TRUE pitch of 1 (the GCD of the gaps {15, 1}),
+    // so the grid now spans {0.5, 1.5, ..., 16.5} (17 columns) at grid.dx == 1
+    // rather than the old three-column grid whose naive first-gap pitch read 15.
+    // The draw already recovered the pitch; the fix moves the SMOOTHED lattice
+    // onto the same true geometry (the deliberate density-family re-baseline).
     #[test]
     fn heatmap_gapped_centres_cells_drawn_at_recovered_pitch() {
         let schema = Arc::new(Schema::new(vec![
@@ -4325,8 +4397,9 @@ mod tests {
         cm.insert(Channel::Y, "y_bin".to_string());
 
         let grid = build_kde_grid(&batch, "x_bin", "y_bin", None).expect("grid builds");
-        assert_eq!(grid.dx, 15.0, "the grid's naive pitch reads the 15-wide gap");
-        assert_eq!(bin_step(&grid.x_centres), Some(1.0), "bin_step recovers the true pitch");
+        assert_eq!(grid.dx, 1.0, "the dense lattice carries the recovered pitch 1");
+        assert_eq!(grid.x_centres.len(), 17, "dense first..last lattice materialises the gap bins");
+        assert_eq!(bin_step(&grid.x_centres), Some(1.0), "the dense lattice is uniform at the true pitch");
 
         // Identity scales (domain == pixel range), so drawn coordinates ARE data
         // units and the encoded f32 coordinate stream can be read back directly.
@@ -4350,15 +4423,18 @@ mod tests {
             .map(|w| (f32::from_bits(*w) as f64 * 4.0).round() as i64)
             .collect();
         let has = |v: f64| coords.contains(&((v * 4.0).round() as i64));
-        // Every cell spans its centre ± half the RECOVERED pitch: the first cell
-        // (centre 0.5) has edges 0 and 1, the gapped cells keep 1-wide edges too.
+        // Every cell spans its centre ± half the recovered pitch: the first cell
+        // (centre 0.5) has edges 0 and 1, the sparse cells keep 1-wide edges too.
         assert!(has(0.0) && has(1.0), "first cell drawn at the recovered pitch 1");
         assert!(has(15.0) && has(17.0), "sparse cells drawn at the recovered pitch 1");
-        // The gap-naive width (grid.dx = 15) would smear the first cell to
-        // 0.5 ± 7.5 and the last to 16.5 ± 7.5.
+        // The dense lattice tiles the whole span at unit pitch: interior gap bins
+        // are materialised (zero mass) and drawn, so an interior edge like 8.0
+        // is a genuine cell boundary now — but nothing spills past the [0, 17]
+        // lattice bounds (the old gap-naive smear reached 0.5 ± 7.5 → -7 and 8).
+        assert!(has(8.0), "interior gap bins are materialised in the dense lattice");
         assert!(
-            !has(-7.0) && !has(8.0) && !has(24.0),
-            "no cell is smeared across the unoccupied bins"
+            !has(-7.0) && !has(24.0),
+            "no cell spills past the dense lattice bounds"
         );
 
         // augment_scales widens the axes by half the SAME recovered pitch, so
