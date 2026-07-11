@@ -66,6 +66,17 @@ pub fn panel_visible(mode: PresentationMode, role: PanelRole) -> bool {
     }
 }
 
+/// Whether card 0018's keyboard-grammar chrome (the breadcrumb + focus ring) is
+/// visible under `mode` (ac-16). Mirrors [`panel_visible`]'s shape for chrome
+/// that is NOT a dock panel: presentation hides all authoring chrome; authoring
+/// shows it. A pure function of `mode` — the canvas reads it, never decides. The
+/// ac-15 byte gate is unaffected either way (this chrome never reaches the
+/// headless render path).
+#[must_use]
+pub fn grammar_chrome_visible(mode: PresentationMode) -> bool {
+    mode.chrome_visible()
+}
+
 /// Whether a just-loaded layout needs the bottom Log dock appended
 /// (wsc_ac03's backfill decision): every pre-round saved layout lacks a
 /// bottom dock and gets the same closed Log dock the default layout seeds;
@@ -209,6 +220,14 @@ mod tests {
     fn wsc_ac02_log_panel_visible_in_authoring_hidden_in_presentation() {
         assert!(panel_visible(PresentationMode::Authoring, PanelRole::Log));
         assert!(!panel_visible(PresentationMode::Presentation, PanelRole::Log));
+    }
+
+    /// kbg_ac16: the keyboard-grammar chrome (breadcrumb + focus ring) follows
+    /// the authoring chrome — shown while authoring, hidden under presentation.
+    #[test]
+    fn kbg_ac16_grammar_chrome_hidden_in_presentation() {
+        assert!(grammar_chrome_visible(PresentationMode::Authoring), "shown while authoring");
+        assert!(!grammar_chrome_visible(PresentationMode::Presentation), "hidden in presentation");
     }
 
     /// wsc_ac03 (backfill decision): a restored layout without a bottom

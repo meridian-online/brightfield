@@ -10,7 +10,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use gpui::{div, px, Context, Entity, IntoElement, ParentElement, Render, Styled, Window};
+use gpui::{div, px, rgb, Context, Entity, IntoElement, ParentElement, Render, Styled, Window};
 
 use brightfield_engine::error::EngineError;
 use brightfield_engine::RecordBatch;
@@ -22,6 +22,7 @@ use brightfield_render::nearest::{
 use brightfield_render::scale::Scale;
 use brightfield_render::scale::ScaleSet;
 use brightfield_spec::analysis::{BrushableBinding, ComponentPath};
+use brightfield_spec::layout::Rect;
 
 use crate::brush::{
     brush_rect_to_predicate, point_to_predicate, BrushKind, ChannelColumns, SelectionDispatcher,
@@ -46,6 +47,10 @@ pub struct PlacedChart {
     pub width: f64,
     /// Plot height in pixels.
     pub height: f64,
+    /// The plot's ComponentPath (plot-node path, e.g. `root/hconcat[0]`) — the
+    /// focus / verb-target identity, matching the coordinator's `LivePlot.path`
+    /// (card 0018).
+    pub path: ComponentPath,
     /// The plot's reactive chart state.
     pub state: Entity<ChartState>,
     /// Shared cross-filter coordinator, if this dashboard cross-filters. When
@@ -93,6 +98,12 @@ pub struct ChartView {
     /// indexes the coordinator's OWN legend-binding space — distinct from the
     /// chart/slider index spaces.
     legends: Vec<PlacedLegend>,
+    /// The focus ring rect (dashboard pixels), drawn over the focused node when
+    /// keyboard focus is active and authoring chrome is visible (card 0018). The
+    /// owning `CanvasPanel` sets it from the focus state machine and clears it in
+    /// presentation mode. Purely visual — chart interaction rides window-level
+    /// mouse handlers, so the ring never intercepts events.
+    focus_ring: Option<Rect>,
 }
 
 impl ChartView {
@@ -111,7 +122,15 @@ impl ChartView {
             charts,
             sliders,
             legends,
+            focus_ring: None,
         }
+    }
+
+    /// Set (or clear) the focus ring rect. The `CanvasPanel` calls this from the
+    /// focus state machine after a nav move, and clears it (`None`) in
+    /// presentation mode; the caller notifies to repaint (card 0018).
+    pub fn set_focus_ring(&mut self, ring: Option<Rect>) {
+        self.focus_ring = ring;
     }
 }
 
@@ -170,6 +189,21 @@ impl Render for ChartView {
                         .h(px(l.height as f32))
                         .child(LegendElement::new(l, i, renderer.clone()))
                 })
+            }))
+            // The keyboard focus ring (card 0018): a border-only overlay at the
+            // focused node's rect. `None` when focus is inactive or presentation
+            // hides authoring chrome. Non-interactive — brush/hover ride
+            // window-level mouse handlers, so the ring never intercepts events.
+            .children(self.focus_ring.map(|r| {
+                div()
+                    .absolute()
+                    .left(px(r.x as f32))
+                    .top(px(r.y as f32))
+                    .w(px(r.width as f32))
+                    .h(px(r.height as f32))
+                    .border_2()
+                    .border_color(rgb(0x2f6feb))
+                    .rounded(px(3.0))
             }))
     }
 }

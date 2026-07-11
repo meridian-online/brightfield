@@ -128,6 +128,11 @@ struct Dashboard {
     sliders: Vec<SliderPlacement>,
     legends: Vec<LegendPlacement>,
     meta_title: Option<String>,
+    /// The keyboard-focus tree over the dashboard's ComponentPath structure
+    /// (card 0018). Built from the spec at assembly; consumed by the canvas
+    /// panel. Only read in the windowed (macOS) arm.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    focus_tree: brightfield_keys::FocusTree,
 }
 
 /// Map each resolved [`LegendPlacement`] to its hosted window descriptor —
@@ -917,6 +922,9 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             sliders,
             legends,
             meta_title: parsed.spec.meta.as_ref().and_then(|m| m.title.clone()),
+            // The keyboard-focus tree over the dashboard structure (card 0018),
+            // built with the same layout walk (and path scheme) as `placed_plots`.
+            focus_tree: brightfield_keys::FocusTree::from_spec(&parsed.spec),
         },
         LiveParts {
             session,
@@ -1248,7 +1256,7 @@ fn main() {
         let app = gpui::Application::with_platform(Rc::new(gpui_macos::MacPlatform::new(false)))
             .with_assets(gpui_component_assets::Assets);
         let spec_path = spec_path.to_string();
-        let Dashboard { width, height, plots, sliders, legends, meta_title } = dashboard;
+        let Dashboard { width, height, plots, sliders, legends, meta_title, focus_tree } = dashboard;
         // The dashboard's display title — the ONE resolver call feeding both
         // the native titlebar and the canvas panel's tab title below.
         let title = brightfield_ui::resolve_title(meta_title.as_deref(), &spec_path);
@@ -1378,6 +1386,7 @@ fn main() {
                     y: w.y,
                     width: w.width,
                     height: w.height,
+                    path: brightfield_spec::analysis::ComponentPath(w.path.clone()),
                     state: w.state.clone(),
                     coordinator: coordinator.clone(),
                 })
@@ -1484,7 +1493,7 @@ fn main() {
                         mode: brightfield_ui::PresentationMode::default(),
                     });
                     let canvas = cx.new(|cx| {
-                        shell::CanvasPanel::new(chart_view, title, presentation.clone(), cx)
+                        shell::CanvasPanel::new(chart_view, title, presentation.clone(), focus_tree, cx)
                     });
                     *canvas_capture.borrow_mut() = Some(canvas.clone());
                     let editor = cx.new(|cx| {

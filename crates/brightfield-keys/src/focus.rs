@@ -66,6 +66,14 @@ pub struct FocusTree {
 }
 
 impl FocusTree {
+    /// An empty focus tree (no navigable structure). `FocusState::new` returns
+    /// `None`, so every nav op is a defined no-op — for a spec with no plots, or
+    /// a shim/test that needs a tree value.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self { nodes: Vec::new(), index: HashMap::new(), root: None }
+    }
+
     /// Build the focus tree from a spec (uses the same layout walk + path scheme
     /// as `placed_plots`, so plot paths join to the runtime coordinator).
     #[must_use]

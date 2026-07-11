@@ -44,6 +44,7 @@ use gpui_component::notification::Notification;
 use gpui_component::{ActiveTheme as _, Root};
 
 use brightfield_ui::{ChartView, PresentationMode, TogglePresentation, WORKSPACE_KEY_CONTEXT};
+use brightfield_keys::{FocusState, FocusTree};
 
 use crate::dock_state_file::{
     self, LoadDecision, SaveAction, SavePolicy, DOCK_STATE_VERSION, SAVE_DEBOUNCE_MS,
@@ -52,10 +53,11 @@ use crate::log_model::FeedbackLog;
 use crate::reload_feedback::{self, Severity};
 use crate::shell_model::{
     bottom_dock_action, bottom_dock_needs_backfill, dock_closes_when_emptied, docks_open,
-    layout_persistable, panel_visible, BottomDockAction, PanelRole, BOTTOM_DOCK_HEIGHT,
-    CANVAS_PANEL_NAME, EDITOR_DOCK_WIDTH, EDITOR_PANEL_NAME, LOG_PANEL_NAME, SIDEBAR_DOCK_WIDTH,
-    SIDEBAR_PANEL_NAME,
+    grammar_chrome_visible, layout_persistable, panel_visible, BottomDockAction, PanelRole,
+    BOTTOM_DOCK_HEIGHT, CANVAS_PANEL_NAME, EDITOR_DOCK_WIDTH, EDITOR_PANEL_NAME, LOG_PANEL_NAME,
+    SIDEBAR_DOCK_WIDTH, SIDEBAR_PANEL_NAME,
 };
+use crate::keymap::{DiveIn, FocusNextSibling, FocusPrevSibling, PopOut, ToggleFocus};
 use crate::profile_model::{self, ProfileOutcome, SourceProfile};
 use crate::spec_save;
 
@@ -122,22 +124,104 @@ pub struct CanvasPanel {
     dock_area: Option<WeakEntity<DockArea>>,
     /// Focus handle: the workspace key context dispatches from here.
     focus_handle: FocusHandle,
+    /// Focus tree over the dashboard's ComponentPath structure, seeded at
+    /// assembly — the nav state machine + focus-ring geometry (card 0018, ac-02).
+    focus_tree: FocusTree,
+    /// Where keyboard focus sits (the bare-verb / focus-ring target); `None` when
+    /// the dashboard has no navigable structure.
+    focus_state: Option<FocusState>,
 }
 
 impl CanvasPanel {
-    /// Wrap `chart_view` under the resolved dashboard `title`.
+    /// Wrap `chart_view` under the resolved dashboard `title`, over `focus_tree`
+    /// (the dashboard's navigable structure). Focus starts at the root; the
+    /// initial focus ring is seeded on the wrapped view.
     pub fn new(
         chart_view: Entity<ChartView>,
         title: impl Into<SharedString>,
         presentation: Entity<PresentationState>,
+        focus_tree: FocusTree,
         cx: &mut Context<Self>,
     ) -> Self {
+        let focus_state = FocusState::new(&focus_tree);
+        // Seed the initial focus ring around the focused (root) node.
+        if let Some(rect) = focus_state.and_then(|s| focus_tree.rect_of(s.path(&focus_tree))) {
+            chart_view.update(cx, |cv, cx| {
+                cv.set_focus_ring(Some(rect));
+                cx.notify();
+            });
+        }
         Self {
             chart_view,
             title: title.into(),
             presentation,
             dock_area: None,
             focus_handle: cx.focus_handle(),
+            focus_tree,
+            focus_state,
+        }
+    }
+
+    /// Recompute the focus ring from the focus state and push it to the wrapped
+    /// view (cleared in presentation mode), then repaint the breadcrumb. The
+    /// single point every nav move and the presentation toggle route through
+    /// (card 0018, ac-10/ac-14/ac-16).
+    fn apply_focus(&mut self, cx: &mut Context<Self>) {
+        let ring = if grammar_chrome_visible(self.presentation.read(cx).mode) {
+            self.focus_state
+                .as_ref()
+                .and_then(|s| self.focus_tree.rect_of(s.path(&self.focus_tree)))
+        } else {
+            None
+        };
+        self.chart_view.update(cx, |cv, cx| {
+            cv.set_focus_ring(ring);
+            cx.notify();
+        });
+        cx.notify();
+    }
+
+    /// The breadcrumb text for the focused node — `"<altitude> · <path>"` — or
+    /// `None` when there is no navigable structure (card 0018, ac-14).
+    fn breadcrumb_text(&self) -> Option<SharedString> {
+        let state = self.focus_state.as_ref()?;
+        let altitude = state.altitude(&self.focus_tree);
+        let path = state.path(&self.focus_tree);
+        Some(format!("{} · {}", altitude.label(), path.0).into())
+    }
+
+    /// Dispatch a nav move (`DiveIn`/`PopOut`/sibling) and refresh focus chrome.
+    fn dive_in(&mut self, _: &DiveIn, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.focus_state.as_mut().is_some_and(|s| s.dive(&self.focus_tree)) {
+            self.apply_focus(cx);
+        }
+    }
+
+    fn pop_out(&mut self, _: &PopOut, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.focus_state.as_mut().is_some_and(|s| s.pop(&self.focus_tree)) {
+            self.apply_focus(cx);
+        }
+    }
+
+    fn focus_next_sibling(
+        &mut self,
+        _: &FocusNextSibling,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.focus_state.as_mut().is_some_and(|s| s.next_sibling(&self.focus_tree)) {
+            self.apply_focus(cx);
+        }
+    }
+
+    fn focus_prev_sibling(
+        &mut self,
+        _: &FocusPrevSibling,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.focus_state.as_mut().is_some_and(|s| s.prev_sibling(&self.focus_tree)) {
+            self.apply_focus(cx);
         }
     }
 
@@ -189,6 +273,8 @@ impl CanvasPanel {
                 }
             });
         }
+        // Show/hide the focus ring + breadcrumb with the authoring chrome (ac-16).
+        self.apply_focus(cx);
         cx.notify();
     }
 }
@@ -230,12 +316,23 @@ impl Render for CanvasPanel {
         // listener ONLY claims focus for the `p` binding — it does not
         // stop propagation, so every chart element handler below sees the
         // exact events it always did.
+        // The breadcrumb (card 0018, ac-14): an absolute top-left readout of the
+        // focused altitude + path, hidden under presentation (ac-16). Absolute so
+        // it never disturbs the centred canvas layout.
+        let breadcrumb = grammar_chrome_visible(self.presentation.read(cx).mode)
+            .then(|| self.breadcrumb_text())
+            .flatten();
         div()
+            .relative()
             .size_full()
             .bg(rgb(0xffffff))
             .key_context(WORKSPACE_KEY_CONTEXT)
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::toggle_presentation))
+            .on_action(cx.listener(Self::dive_in))
+            .on_action(cx.listener(Self::pop_out))
+            .on_action(cx.listener(Self::focus_next_sibling))
+            .on_action(cx.listener(Self::focus_prev_sibling))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _event, window, cx| {
@@ -246,6 +343,19 @@ impl Render for CanvasPanel {
             .items_center()
             .justify_center()
             .child(self.chart_view.clone())
+            .children(breadcrumb.map(|text| {
+                div()
+                    .absolute()
+                    .left(px(8.0))
+                    .top(px(8.0))
+                    .px_2()
+                    .py_1()
+                    .rounded(px(4.0))
+                    .bg(rgb(0x1f2430))
+                    .text_color(rgb(0xd7dae0))
+                    .text_size(px(12.0))
+                    .child(text)
+            }))
     }
 }
 
@@ -779,6 +889,10 @@ pub struct WorkspaceRoot {
     /// centre and the Log panel anchors the bottom dock — neither moves.
     editor_panel: Entity<EditorPanel>,
     sidebar_panel: Entity<SidebarPanel>,
+    /// The canvas panel — held so the global focus-toggle (cmd-e) can move focus
+    /// to it (it is not otherwise reachable from a root-level handler; card 0018,
+    /// ac-09).
+    canvas: Entity<CanvasPanel>,
     /// Layout file location (`None` = no config dir; persistence off).
     state_path: Option<PathBuf>,
     /// The framework-free save policy (debounce + quit-flush + skip-if-
@@ -990,12 +1104,29 @@ impl WorkspaceRoot {
             presentation,
             editor_panel: editor,
             sidebar_panel: sidebar,
+            canvas,
             state_path,
             policy: SavePolicy::default(),
             boot: Instant::now(),
             bottom_stash: None,
             _save_task: None,
         }
+    }
+
+    /// `ToggleFocus` handler (cmd-e, global — card 0018, ac-09): move focus
+    /// between the canvas and the editor. Registered on the render root, which is
+    /// an ancestor of every dispatch path, so it fires regardless of focus.
+    fn on_toggle_focus(&mut self, _: &ToggleFocus, window: &mut Window, cx: &mut Context<Self>) {
+        // Entity implements both PanelView::focus_handle and Focusable::focus_handle;
+        // the focus target is the Focusable one.
+        let canvas = Focusable::focus_handle(&self.canvas, cx);
+        if canvas.is_focused(window) {
+            let editor = Focusable::focus_handle(&self.editor_panel, cx);
+            window.focus(&editor, cx);
+        } else {
+            window.focus(&canvas, cx);
+        }
+        cx.notify();
     }
 
     /// A stack-rooted single-panel dock item (wsc_ac03 correction, review
@@ -1456,6 +1587,8 @@ impl Render for WorkspaceRoot {
             .on_action(cx.listener(Self::on_dock_editor_at_right))
             .on_action(cx.listener(Self::on_dock_sidebar_at_bottom))
             .on_action(cx.listener(Self::on_dock_sidebar_at_left))
+            // The global focus toggle (cmd-e) lands here too (card 0018, ac-09).
+            .on_action(cx.listener(Self::on_toggle_focus))
             .child(self.dock_area.clone())
             .children(sheet_layer)
             .children(dialog_layer)
@@ -1534,7 +1667,7 @@ mod tests {
                 mode: PresentationMode::default(),
             });
             let panel = cx.new(|cx| {
-                CanvasPanel::new(chart.clone(), "Flight Delays", presentation.clone(), cx)
+                CanvasPanel::new(chart.clone(), "Flight Delays", presentation.clone(), FocusTree::empty(), cx)
             });
             (chart, presentation, panel)
         });
@@ -2025,7 +2158,7 @@ mod tests {
             let chart =
                 cx.new(|_| ChartView::new(320.0, 240.0, Vec::new(), Vec::new(), Vec::new()));
             let canvas =
-                cx.new(|cx| CanvasPanel::new(chart, "Test", presentation_in.clone(), cx));
+                cx.new(|cx| CanvasPanel::new(chart, "Test", presentation_in.clone(), FocusTree::empty(), cx));
             let editor = cx.new(|cx| {
                 EditorPanel::new(
                     PathBuf::from("/tmp/brightfield-wsc-test-spec.yaml"),
