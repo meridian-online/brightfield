@@ -12,8 +12,11 @@ the session transcript, not the repo.
 > with them the `g`-prefix wiring, which-key, and pending-prefix handling (their first live use ships
 > with the deferred keyboard data-target). The **mark-altitude floor is CUT** (v1 focus = dashboard→view).
 > `c` = set-colour-scheme becomes **`c` = cycle-colour-scheme** on the focused view's sequential-scheme
-> marks (transient). The `g`-broadcast *mechanism* stays implemented + unit-tested in the resolver. See
-> `spec.yaml` (v1.1) for the ratified v1 boundary.
+> marks (transient). The `g`-broadcast *mechanism* stays implemented + unit-tested in the resolver.
+> A second pass (`/orb:review-spec`) then **confirmed `/` (focus-jump = jump-to-component, per row
+> below) and `?` (help overlay) stay in v1** — wired as spec ac-18/ac-19, resolving a scope gap where
+> they were scored v1 here but neither built nor deferred in the spec. See `spec.yaml` (v1.2) for the
+> ratified v1 boundary.
 
 Objective Hugh set: **balance frequency + mnemonic + convention, show the conflicts.** A 4th
 motor-cost lens (KLM base × carpalx-style ergonomic multiplier) is folded into each score's conflict

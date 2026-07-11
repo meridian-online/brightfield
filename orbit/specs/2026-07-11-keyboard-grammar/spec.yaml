@@ -3,8 +3,8 @@ goal: >
   authoring experience: a SELECTION-FIRST keyboard grammar where scope is where focus sits on the
   ComponentPath tree, a bare argumentless verb acts on the focused node, and a fuzzy Space palette
   carries discoverability so single keys stay terse. v1 wires only verbs that are keyboard-complete on
-  the SHIPPED substrate (navigation, palette, clear-selection, presentation, save/reload, and a
-  transient colour-scheme cycle); the cross-filter/authoring verbs that need a keyboard data-target or
+  the SHIPPED substrate (navigation, focus-jump, palette, help, clear-selection, presentation,
+  save/reload, and a transient colour-scheme cycle); the cross-filter/authoring verbs that need a keyboard data-target or
   the command log are DEFERRED but taught (reserved-and-visible in the palette). The keymap is DERIVED
   AND SCORED, not hand-authored. The felt outcome: keyboard-first navigation + command-finding you can
   prove mouse-free.
@@ -54,7 +54,7 @@ constraints:
      (audit the native menu accelerators for clashes across macOS/Linux/Windows)."
   - "The focus-toggle chord must be genuinely absent from gpui-component's Input binding set. cmd-Enter
      is NOT free — Input binds `secondary-enter` (= cmd-Enter on macOS / ctrl-Enter elsewhere,
-     input/state.rs:168). Either pick a chord Input does not claim (from an audited list) or bind NoAction
+     input/state.rs:169). Either pick a chord Input does not claim (from an audited list) or bind NoAction
      on `secondary-enter` in the Input context; the toggle handler must NOT call cx.propagate() and must
      be registered after gpui_component::init (else Input wins or PressEnter also fires)."
   - "Overlays (palette; which-key when it lands) anchor OUTSIDE the WORKSPACE key-context subtree
@@ -74,6 +74,11 @@ constraints:
      stand-in) because keyboard interaction is not headless-testable. ac_type: code + 'verifies: stand-in'
      means 'live-wiring, eyeball-verified', distinct from the unit-tested ac-01..08. See memories
      brightfield-window-verification / brightfield-pr-testing-preference."
+  - "Cross-platform scope (v1): all live verification is macOS-eyeball, per project convention. Linux/
+     Windows keyboard behaviour, the per-platform focus-toggle modifier (secondary-enter = cmd-Enter on
+     macOS / ctrl-Enter elsewhere), and the native-menu accelerator audit for the global cmd-s/cmd-r rebind
+     are explicitly OUT OF v1 verification scope and tracked for the consumer-delivery follow-up — recorded
+     here so the gap is a decision, not a silent regression surfacing at delivery time."
   - "DEFERRED, out of this card (reserved-and-visible in the palette, greyed with a reason): (A) needs a
      keyboard data-target — filter-view (f), cross-filter-all (g f), toggle-point-select (t), set-param;
      and CONSEQUENTLY the g-prefix WIRING, the which-key overlay, and pending-prefix handling, whose
@@ -85,9 +90,13 @@ constraints:
      configured_renderer is None for dot/bar/line/area, mark.rs:2959), swaps renderer_override -> re-scenes
      from the plot's cached RecordBatches -> set_scene + notify, cycles deterministically to the next
      scheme, and writes NOTHING to the spec or any file. Persisting a scheme waits for the command-log card."
-  - "Do not reassign shipped/convention-locked fixed points: bare `p` (toggle-presentation,
-     workspace_actions.rs:22), cmd-s (save), Esc (clear, per the escape-key memo), Space (palette), Enter
-     (dive), `?` (help). The keymap designs AROUND these."
+  - "Do not reassign these convention-locked keys — the keymap designs AROUND them, never rebinding a key
+     to a different verb. SHIPPED and untouched: bare `p` (toggle-presentation, workspace_actions.rs:22),
+     cmd-s (save), Esc (clear, per the escape-key memo). CONVENTION-LOCKED and DELIVERED this card at their
+     expected meaning (the key is honoured, and v1 builds the surface behind it): Space (palette, ac-12),
+     Enter (dive, ac-10), `?` (help overlay, ac-19), `/` (focus-jump, ac-18). No help or search surface
+     ships today; `?`/`/` are convention-locked so the grammar wires them to their expected verbs, not to
+     anything else."
 
 acceptance_criteria:
   # ---- semantic layer (gpui-free, headless-unit-tested) ----
@@ -205,8 +214,10 @@ acceptance_criteria:
     verification: >
       Manual macOS eyeball: from the canvas, bare verbs act immediately at launch; press the toggle, type
       in the editor; press again, confirm a bare verb acts on the canvas. verifies: stand-in (real thing
-      is live GPUI focus dispatch), accepted because focus routing is not headless-testable; the
-      resolution invariants beneath it are capability-verified by ac-07.
+      is live GPUI focus dispatch), accepted because focus routing is not headless-testable. ac-07 proves
+      the dispatch table is a faithful PROJECTION of the shipped binding vec and internally consistent
+      (context=None resolves from both contexts); GPUI's live CONFORMANCE to that projection is what this
+      eyeball check verifies — the headless test does not prove the runtime semantics.
   - id: ac-10
     ac_type: code
     description: >
@@ -241,7 +252,8 @@ acceptance_criteria:
       Manual macOS eyeball: open the palette, type a meaning ("recolour"), confirm the row shows its key
       and running it works; confirm reserved verbs are greyed with a reason; confirm bare keys do nothing
       while it is open. verifies: stand-in (real thing is the live overlay), accepted because it is a GPUI
-      surface; the no-bare-under-overlay invariant is capability-verified by ac-07.
+      surface; ac-07 proves the no-bare-under-overlay rule holds in the keymap PROJECTION and this eyeball
+      check verifies GPUI honours it live (the headless test does not prove the runtime overlay semantics).
   - id: ac-13
     ac_type: code
     description: >
@@ -289,14 +301,47 @@ acceptance_criteria:
     ac_type: doc
     description: >
       A recorded KEYBOARD-ONLY WALKTHROUGH is the sign-off artifact: from a cold (canvas-focused) launch,
-      with zero mouse — h/l/j/k to a target view -> Space palette find + run a verb -> Esc clear -> `c`
-      cycle a colour scheme on a sequential-scheme view -> `p` presentation -> cmd-Enter to the editor ->
-      cmd-s save. Brush/cross-filter pointer gestures remain data interactions and are out of scope for
-      the mouse-free claim (as are the deferred f/gf/t verbs).
+      with zero mouse — h/l/j/k to a target view -> `/` focus-jump to a named view -> Space palette find +
+      run a verb -> `?` help overlay (then Esc to dismiss) -> Esc clear -> `c` cycle a colour scheme on a
+      sequential-scheme view -> `p` presentation -> the focus-toggle chord to the editor -> cmd-s save.
+      Brush/cross-filter pointer gestures remain data interactions and are out of scope for the mouse-free
+      claim (as are the deferred f/gf/t verbs).
     verification: >
       Hugh records (or watches) a mouse-free screencast covering the loop above; the recording is the
       acceptance artifact and doubles as the living demo. verifies: stand-in (real thing is a human
       authoring mouse-free), accepted because mouse-free-ness is a human-observable property.
+  # ---- Finding-1 fold (/orb:review-spec): the help + focus-jump surfaces the research spine scored v1 ----
+  # (numbered ac-18/ac-19 to keep every prior ac-NN reference stable; both are live-wiring, grouped with ac-09..14.)
+  - id: ac-18
+    ac_type: code
+    description: >
+      FOCUS-JUMP (`/`): a gpui-free PATH-FUZZY-MATCH ranks ComponentPath nodes by a query over their
+      labels (reuses the ac-05 fuzzy matcher, applied to path labels rather than verb longnames); live,
+      bare `/` in the workspace context opens an overlay anchored OUTSIDE the workspace subtree, and
+      choosing a match moves focus to that path via the ac-02 state machine (respecting the view floor).
+      Distinct from the Space palette BY DESIGN — the palette finds VERBS to run; `/` finds NODES to focus
+      — so the two overlaps are complementary, not redundant. No bare canvas verb fires while it is open
+      (the same overlay invariant the palette holds, ac-07).
+    verification: >
+      Unit tests: the path-fuzzy-match ranks a vconcat fixture's nodes by query and returns only focusable
+      paths at/above the view floor (capability). Manual macOS eyeball: press `/`, type a view's name,
+      confirm focus jumps there and the ring/breadcrumb follow, and that bare keys are inert while it is
+      open. verifies: capability for the path match; stand-in (real thing is the live overlay + focus move)
+      for the wiring, accepted because it is a GPUI surface.
+  - id: ac-19
+    ac_type: code
+    description: >
+      HELP OVERLAY (`?`): bare `?` opens a help overlay that renders the registry-PRODUCED help sheet
+      (ac-01) — every verb grouped by scope with its bound key and one-line help, reserved verbs flagged
+      with their reason bucket — anchored OUTSIDE the workspace subtree and dismissed by Esc (the overlay
+      rung of ac-06). It is discoverability layer-3, the always-available cheat-sheet the palette research
+      leans on. Read-only: opening or closing help writes nothing, fires no verb, and leaves no bare verb
+      resolvable underneath it.
+    verification: >
+      Manual macOS eyeball: `?` opens the sheet showing keys + help grouped by scope with reserved verbs
+      flagged; Esc dismisses it; no bare verb fires underneath. verifies: stand-in (real thing is the live
+      overlay), accepted because it is a GPUI surface; the sheet CONTENT (registry -> help sheet) is
+      capability-verified by ac-01.
 
 implementation_notes:
   - "Keystroke->longname decoupling + keymap-as-data are the precondition: never branch on keys inside a
@@ -308,7 +353,7 @@ implementation_notes:
      targeting a focused plot's ChartState and drawing the ring at the right rect are unspecified."
   - "Focus targets render as DESCENDANTS of the single BrightfieldWorkspace key-context div (one inner
      focus ring moves), or bare verbs go dead when focus lands on a node (ac-07 invariant)."
-  - "cmd-Enter is NOT free: Input binds secondary-enter (input/state.rs:168). Pick a chord Input does not
+  - "cmd-Enter is NOT free: Input binds secondary-enter (input/state.rs:169). Pick a chord Input does not
      claim, or NoAction-override secondary-enter in the Input context; handler must not propagate and must
      bind after gpui_component::init. Audit the native OwnedMenu for cmd-s/cmd-r accelerator clashes when
      re-binding them global."
@@ -383,8 +428,8 @@ evaluation_principles:
     weight: 0.1
 
 exit_conditions:
-  - "ac-01..08 + ac-15 green (semantic-layer unit tests incl. path<->plot resolver + editor-suppression + resolution-table-is-a-projection, provenance doc check, PNG byte gate)."
-  - "ac-09..14 + ac-16 eyeball-confirmed by Hugh in the macOS app (live wiring)."
+  - "ac-01..08 + ac-15 + ac-18's path-fuzzy-match green (semantic-layer unit tests incl. path<->plot resolver + path-fuzzy-match + editor-suppression + resolution-table-is-a-projection, provenance doc check, PNG byte gate)."
+  - "ac-09..14 + ac-16 + ac-18/ac-19 (focus-jump `/`, help overlay `?`) eyeball-confirmed by Hugh in the macOS app (live wiring)."
   - "ac-17 recorded: a mouse-free keyboard-only walkthrough screencast is attached."
   - "No durable spec mutation shipped (only c=cycle-colour-scheme transient preview); f/gf/t + spec-edit verbs reserved-and-visible; no g-key wired."
 
@@ -397,10 +442,18 @@ memories_considered:
     reason: "The card ships on a branch/PR for Hugh to product-test the live grammar in the app before merge; the manual ACs (ac-09..14,16) are his in-app checks."
 
 metadata:
-  version: "1.1"
+  version: "1.2"
   test_prefix: "kbg"
   timestamp: "2026-07-11T00:00:00Z"
   ambiguity_score: 0.07
   interview_ref: "orbit/specs/2026-07-11-keyboard-grammar/interview.md"
-  review_ref: "adversarial spec-review (workflow, 3 lenses, code-verified at pins) — reshaped scope: f/gf/t deferred (no keyboard predicate source), mark floor cut, cmd-Enter/clear-pending/c-scope corrected"
+  review_ref: >
+    (1) adversarial spec-review (workflow, 3 lenses, code-verified at pins) — reshaped scope: f/gf/t
+    deferred (no keyboard predicate source), mark floor cut, cmd-Enter/clear-pending/c-scope corrected.
+    (2) /orb:review-spec (fresh session, re-verified every pin true) — REQUEST_CHANGES on the `/`+`?`
+    scope gap, resolved by building both (Hugh's call): ac-18 focus-jump (`/` finds NODES), ac-19 help
+    overlay (`?`), `?` moved from a phantom 'fixed point' to a delivered surface. Plus 3 wording
+    tightenings — ac-07 is a PROJECTION not a conformance proof (ac-09/ac-12 reworded); ac-17 says
+    'focus-toggle chord' not cmd-Enter; cross-platform verification recorded out-of-v1-scope — and the
+    input/state.rs :168->:169 off-by-one fixed. review: orbit/specs/2026-07-11-keyboard-grammar/review-spec-2026-07-11.md"
   card: "candidate 0018 (keyboard grammar + surfaces) — not yet formalised; run /orb:card to create it"
