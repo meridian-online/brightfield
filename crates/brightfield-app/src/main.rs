@@ -17,9 +17,9 @@ mod reload_feedback;
 #[cfg(any(target_os = "macos", test))]
 mod shell;
 #[cfg(any(target_os = "macos", test))]
-mod shell_model;
+mod profile_model;
 #[cfg(any(target_os = "macos", test))]
-mod sidebar_model;
+mod shell_model;
 #[cfg(any(target_os = "macos", test))]
 mod spec_save;
 
@@ -28,7 +28,7 @@ use std::env;
 use std::path::Path;
 use std::process;
 
-use brightfield_engine::{Engine, Session};
+use brightfield_engine::{Engine, Session, SourceProfile};
 use brightfield_render::channel::{Channel, ChannelMap};
 use brightfield_render::layout::ChartLayout;
 use brightfield_render::legend::{colour_legend_size, render_colour_legend_at};
@@ -539,7 +539,7 @@ fn chrome_divergence(launch: &ChromeSnapshot, rebuilt: &ChromeSnapshot) -> Optio
 /// the hot-reload watcher keeps the last good chart when a mid-edit save is
 /// momentarily invalid.
 #[cfg(any(target_os = "macos", test))]
-fn run_pipeline(spec_path: &str) -> Result<(Dashboard, ChromeSnapshot), String> {
+fn run_pipeline(spec_path: &str) -> Result<(Dashboard, ChromeSnapshot, Vec<SourceProfile>), String> {
     build_everything(spec_path).map(|(dashboard, live)| {
         let title = brightfield_ui::resolve_title(dashboard.meta_title.as_deref(), spec_path);
         let chrome = ChromeSnapshot::capture(
@@ -548,7 +548,12 @@ fn run_pipeline(spec_path: &str) -> Result<(Dashboard, ChromeSnapshot), String> 
             &live.legend_bindings,
             &live.plots,
         );
-        (dashboard, chrome)
+        // Sidebar profiles from the throwaway session BEFORE it drops (card
+        // 0017): pure data, so it crosses the watcher's Send return boundary
+        // where the non-Send Session cannot. The Session is created, profiled,
+        // and dropped entirely on the background executor — never handed out.
+        let profiles = live.session.profile_sources();
+        (dashboard, chrome, profiles)
     })
 }
 
@@ -902,6 +907,7 @@ struct WatchedPlot {
 }
 
 #[cfg(target_os = "macos")]
+#[allow(clippy::too_many_arguments)]
 fn spawn_spec_watcher(
     cx: &mut gpui::App,
     watched: Vec<WatchedPlot>,
@@ -909,6 +915,7 @@ fn spawn_spec_watcher(
     launch_chrome: ChromeSnapshot,
     workspace_window: gpui::WindowHandle<gpui_component::Root>,
     editor: Option<gpui::Entity<shell::EditorPanel>>,
+    sidebar: Option<gpui::Entity<shell::SidebarPanel>>,
     feedback_log: gpui::Entity<log_model::FeedbackLog>,
 ) {
     const POLL: std::time::Duration = std::time::Duration::from_millis(300);
@@ -954,7 +961,7 @@ fn spawn_spec_watcher(
                 .await;
 
             match built {
-                Ok((dashboard, rebuilt_chrome)) => {
+                Ok((dashboard, rebuilt_chrome, rebuilt_profiles)) => {
                     // Only a data/visual change is hot-swappable: the window's
                     // plot layout is fixed at launch, so require exactly the same
                     // plots (by stable path) at the same geometry. Any structural
@@ -1020,6 +1027,31 @@ fn spawn_spec_watcher(
                             }
                         }
                         app.refresh_windows();
+                    });
+                    // Refresh the Data sidebar with the profiles computed on
+                    // the throwaway session (sbp_ac04): the frozen-at-launch
+                    // gap closes — a spec edit adding/removing a source is now
+                    // reflected. Per-source profiling failures already folded
+                    // into a Failed variant (the sidebar shows a muted row);
+                    // surface each in the Log dock at Warning, no toast.
+                    cx.update(|app| {
+                        if let Some(sidebar) = sidebar.as_ref() {
+                            sidebar.update(app, |panel, cx| {
+                                panel.set_profiles(rebuilt_profiles.clone(), cx);
+                            });
+                        }
+                        for profile in &rebuilt_profiles {
+                            if let brightfield_engine::ProfileOutcome::Failed(reason) =
+                                &profile.outcome
+                            {
+                                feedback_log.update(app, |log, _| {
+                                    log.append(
+                                        reload_feedback::Severity::Warning,
+                                        profile_model::profile_warning(&profile.name, reason),
+                                    );
+                                });
+                            }
+                        }
                     });
                     eprintln!("reloaded {spec_path}");
                     // The routing decision is total: Applied maps to NO
@@ -1199,20 +1231,14 @@ fn main() {
                 None
             }
         };
-        let mark_schema_columns: Vec<Vec<String>> = marks
-            .iter()
-            .map(|m| {
-                m.batch
-                    .as_ref()
-                    .map(|b| b.schema().fields().iter().map(|f| f.name().clone()).collect())
-                    .unwrap_or_default()
-            })
-            .collect();
-        let sidebar_listings: Vec<sidebar_model::SourceListing> = parse_spec_path(&spec_path)
-            .map(|parsed| {
-                sidebar_model::derive_source_listings(&parsed.spec, &mark_schema_columns)
-            })
-            .unwrap_or_default();
+        // Real per-source column profiles for the Data sidebar (card 0017),
+        // the upgrade over the launch-frozen column-name approximation:
+        // computed synchronously on the launch session BEFORE the window opens
+        // (launch already runs every mark query; this adds one scan per
+        // source). Read-only and non-&mut, so it runs here while `session` is
+        // still owned — before it moves into the coordinator, whose live
+        // session must never be borrowed for profiling.
+        let sidebar_profiles: Vec<SourceProfile> = session.profile_sources();
         // Launch-time chrome snapshot for the hot-reload gate: the title,
         // hosted legends, legend selection bindings (click wiring), and
         // per-plot render metadata are fixed at launch, so the watcher
@@ -1230,6 +1256,20 @@ fn main() {
             // it; the bottom-dock Log panel renders it. History — reload
             // recovery clears the sticky error toast, never this.
             let feedback_log = cx.new(|_| log_model::FeedbackLog::default());
+
+            // A source whose launch profiling failed surfaces in the Log dock
+            // at Warning (no toast — the sidebar already shows a muted row for
+            // it); the same routing the watcher uses on reload (sbp_ac04).
+            for profile in &sidebar_profiles {
+                if let brightfield_engine::ProfileOutcome::Failed(reason) = &profile.outcome {
+                    feedback_log.update(cx, |log, _| {
+                        log.append(
+                            reload_feedback::Severity::Warning,
+                            profile_model::profile_warning(&profile.name, reason),
+                        );
+                    });
+                }
+            }
 
             // One ChartState per plot; the watcher tracks each by its stable
             // path + geometry for hot-reload.
@@ -1365,6 +1405,12 @@ fn main() {
             let editor_slot: Rc<std::cell::RefCell<Option<gpui::Entity<shell::EditorPanel>>>> =
                 Rc::new(std::cell::RefCell::new(None));
             let editor_capture = editor_slot.clone();
+            // The sidebar panel, captured out of the window closure for the
+            // watcher's profile-refresh tap (sbp_ac04) — like the editor
+            // reseed tap.
+            let sidebar_slot: Rc<std::cell::RefCell<Option<gpui::Entity<shell::SidebarPanel>>>> =
+                Rc::new(std::cell::RefCell::new(None));
+            let sidebar_capture = sidebar_slot.clone();
             let spec_path_for_editor = spec_path.clone();
             let feedback_log_for_editor = feedback_log.clone();
             let window = cx
@@ -1401,8 +1447,9 @@ fn main() {
                     });
                     *editor_capture.borrow_mut() = Some(editor.clone());
                     let sidebar = cx.new(|cx| {
-                        shell::SidebarPanel::new(sidebar_listings, presentation.clone(), cx)
+                        shell::SidebarPanel::new(sidebar_profiles, presentation.clone(), cx)
                     });
+                    *sidebar_capture.borrow_mut() = Some(sidebar.clone());
                     // The bottom-dock Log panel over the shared feedback
                     // log (wsc_ac02).
                     let log = cx.new(|cx| {
@@ -1444,6 +1491,7 @@ fn main() {
             // (the watcher's second sanctioned tap — reload control flow
             // untouched).
             let editor = editor_slot.borrow().clone();
+            let sidebar = sidebar_slot.borrow().clone();
             spawn_spec_watcher(
                 cx,
                 watched,
@@ -1451,6 +1499,7 @@ fn main() {
                 launch_chrome,
                 window,
                 editor,
+                sidebar,
                 feedback_log,
             );
         });
@@ -2084,6 +2133,58 @@ colorScheme: blues
         // If run_pipeline still exited, this test process would die here.
         let missing = super::run_pipeline("/nonexistent/brightfield/spec.yaml");
         assert!(missing.is_err(), "missing spec should return Err, not exit");
+    }
+
+    /// sbp_ac04 (hand-off is Send): the profile set the watcher carries back
+    /// from its throwaway session must cross the background→main boundary — so
+    /// the whole `run_pipeline` return tuple, profiles included, must be Send.
+    /// (The non-Send `Session` never crosses; only this data does.)
+    #[test]
+    fn sbp_ac04_profile_handoff_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<Vec<super::SourceProfile>>();
+        assert_send::<(super::Dashboard, super::ChromeSnapshot, Vec<super::SourceProfile>)>();
+    }
+
+    /// sbp_ac04 (hand-off carries real profiles): `run_pipeline` — the exact
+    /// fn the watcher runs on the background executor — computes and returns
+    /// per-source profiles from its throwaway session, so the sidebar refresh
+    /// has real data to apply. A headless probe of the hand-off; the live
+    /// mtime-watcher loop is confirmed in-app (sbp_ac05).
+    #[test]
+    fn sbp_ac04_run_pipeline_returns_source_profiles() {
+        use brightfield_engine::ProfileOutcome;
+        let dir = std::env::temp_dir().join(format!(
+            "bf_sbp_ac04_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let spec_path = dir.join("spec.yaml");
+        std::fs::write(
+            &spec_path,
+            "data:\n  t:\n    - { x: 1, y: 10 }\n    - { x: 2, y: 20 }\n    - { x: 3, y: 30 }\nplot:\n  - mark: dot\n    data: { from: t }\n    x: x\n    y: y\n",
+        )
+        .unwrap();
+
+        let (_, _, profiles) =
+            super::run_pipeline(spec_path.to_str().unwrap()).expect("pipeline ok");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let t = profiles.iter().find(|p| p.name == "t").expect("source t profiled");
+        match &t.outcome {
+            ProfileOutcome::Profiled { row_count, columns } => {
+                assert_eq!(*row_count, 3);
+                assert_eq!(
+                    columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+                    vec!["x", "y"]
+                );
+            }
+            other => panic!("expected Profiled, got {other:?}"),
+        }
     }
 
     /// Card 0016 review (F2): the hot-reload chrome gate is a pure comparison —
