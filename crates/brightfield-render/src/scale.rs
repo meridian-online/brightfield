@@ -432,6 +432,18 @@ impl SequentialScheme {
         }
     }
 
+    /// The next scheme in the transient colour-cycle (card 0018, ac-13):
+    /// Viridis → Blues → Turbo → Viridis. The single source of truth for the
+    /// cycle order.
+    #[must_use]
+    pub fn next(self) -> Self {
+        match self {
+            Self::Viridis => Self::Blues,
+            Self::Blues => Self::Turbo,
+            Self::Turbo => Self::Viridis,
+        }
+    }
+
     /// Parse a wire name (case-exact). `None` for an unrecognised scheme — the
     /// caller warns and falls back to the default.
     #[must_use]
@@ -1608,6 +1620,23 @@ mod tests {
         assert_eq!(SequentialScheme::from_wire("Viridis"), None);
         // The default scheme is viridis.
         assert_eq!(SequentialScheme::default(), SequentialScheme::Viridis);
+    }
+
+    #[test]
+    fn scs_ac02_next_cycles_viridis_blues_turbo() {
+        // The transient colour-cycle order (card 0018, ac-13), wrapping back to
+        // the start after three presses.
+        assert_eq!(SequentialScheme::Viridis.next(), SequentialScheme::Blues);
+        assert_eq!(SequentialScheme::Blues.next(), SequentialScheme::Turbo);
+        assert_eq!(SequentialScheme::Turbo.next(), SequentialScheme::Viridis);
+        // Three cycles from any start return to it.
+        for start in [
+            SequentialScheme::Viridis,
+            SequentialScheme::Blues,
+            SequentialScheme::Turbo,
+        ] {
+            assert_eq!(start.next().next().next(), start, "{start:?} cycles in 3");
+        }
     }
 
     // --- scs_ac03: adding Sequential leaves every exhaustive match decided ---

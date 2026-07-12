@@ -30,9 +30,11 @@ use brightfield_engine::error::EngineError;
 use brightfield_engine::{concat_batches, RecordBatch, Session};
 use brightfield_render::channel::{Channel, ChannelMap};
 use brightfield_render::layout::ChartLayout;
-use brightfield_render::mark::{default_renderers, find_renderer, MarkRenderer};
+use brightfield_render::mark::{
+    configured_renderer, default_renderers, find_renderer, MarkRenderer,
+};
 use brightfield_render::nearest::SelectionValue;
-use brightfield_render::scale::{Scale, ScaleSet};
+use brightfield_render::scale::{Scale, ScaleSet, SequentialScheme};
 use brightfield_render::scene::{build_multi_mark_scene_anchored, ChartData};
 use brightfield_spec::analysis::{ComponentPath, LegendBinding};
 use brightfield_spec::vocab::MarkKind;
@@ -64,6 +66,17 @@ pub struct MarkInput {
     /// gesture (card 0006 renderer seam). Render-only: no SQL / plan-hash
     /// involvement.
     pub renderer_override: Option<Box<dyn MarkRenderer + Send + Sync>>,
+    /// Retained render-config inputs, parallel to `renderer_override`: the
+    /// heatmap/contour KDE bandwidth, contour iso-level count, and hexgrid bin
+    /// width computed once at app assembly. `cycle_scheme` (card 0018, ac-13)
+    /// rebuilds the override through `configured_renderer` with these, so a
+    /// transient colour cycle re-colours WITHOUT reshaping the density surface,
+    /// iso-lines, or hex mesh. `None` for a mark that carries none.
+    pub bandwidth: Option<f64>,
+    /// Contour iso-level count (see `bandwidth`).
+    pub thresholds: Option<usize>,
+    /// Hexgrid bin width (see `bandwidth`).
+    pub bin_width: Option<f64>,
 }
 
 /// One plot in the live dashboard: its identity, the marks it owns, its layout,
@@ -90,6 +103,15 @@ pub struct LivePlot {
     /// while a query-rewrite gesture can still widen the domain to keep new rows
     /// on-plot (F1). Never re-inferred: "launch" means "pinned at window launch".
     pub launch_scales: ScaleSet,
+    /// The plot's CURRENT sequential colour scheme — the transient colour-cycle's
+    /// running state (card 0018, ac-13). Seeded from the launch scheme; `c`
+    /// advances it and `cycle_scheme` recolours `launch_scales`' Fill ramp
+    /// accordingly. "Transient" = never written to the spec — NOT "reverts on
+    /// reload": a hot reload swaps in a fresh scene but never rebuilds the
+    /// coordinator (the known coordinator-staleness-on-reload limitation), so a
+    /// cycled scheme persists here in-session until restart. `launch_scales` stays
+    /// the widen-only render anchor.
+    pub scheme: SequentialScheme,
     /// Whether this plot draws its own inline (top-right) colour legend. `false`
     /// when a standalone `legend: color for:` node has relocated it — resolved at
     /// the app layer and carried here so a live re-render honours the same
@@ -156,9 +178,13 @@ impl CrossfilterCoordinator {
     /// Build a coordinator from the live engine session and the per-mark /
     /// per-plot / slider / legend metadata assembled at startup. Returns `None`
     /// when there is nothing live to drive — no plot has a brush binding AND
-    /// there are no sliders AND no bound legends — so the window skips the
-    /// wiring entirely and behaves as before. A dashboard whose only
-    /// interactive surface is a bound legend stays live (card 0009).
+    /// there are no sliders AND no bound legends AND no plot carries a sequential
+    /// Fill ramp — so the window skips the wiring entirely and behaves as before.
+    /// A dashboard whose only interactive surface is a bound legend (card 0009),
+    /// or whose only live surface is a sequential colour scale (the `c`
+    /// colour-cycle, card 0018), stays live. Keeping the coordinator for an
+    /// otherwise-static sequential dashboard costs only the retained non-Send
+    /// Session in the window (the dump/watcher paths never build it).
     pub fn new(
         session: Session,
         marks: Vec<MarkInput>,
@@ -166,10 +192,14 @@ impl CrossfilterCoordinator {
         slider_bindings: Vec<SliderBinding>,
         legend_bindings: Vec<LegendSelectBinding>,
     ) -> Option<Rc<RefCell<Self>>> {
-        if plots.iter().all(|p| p.bindings.is_empty())
-            && slider_bindings.is_empty()
-            && legend_bindings.is_empty()
-        {
+        let any_brush = plots.iter().any(|p| !p.bindings.is_empty());
+        let any_sequential_fill = plots.iter().any(|p| has_sequential_fill(&p.launch_scales));
+        if !coordinator_has_live_surface(
+            any_brush,
+            !slider_bindings.is_empty(),
+            !legend_bindings.is_empty(),
+            any_sequential_fill,
+        ) {
             return None;
         }
         let mut mark_to_plot = HashMap::new();
@@ -347,6 +377,54 @@ impl CrossfilterCoordinator {
             });
         }
         cleared
+    }
+
+    /// Cycle the focused plot's sequential colour scheme, transiently (card 0018,
+    /// ac-13). Advances the plot's running `scheme`, rebuilds each of its marks'
+    /// `renderer_override` through `configured_renderer` RETAINING bandwidth /
+    /// thresholds / bin_width (so a mere colour cycle never reshapes a KDE
+    /// surface, contour iso-lines, or a hex mesh), then — the load-bearing step —
+    /// recolours the plot's LAUNCH Fill ramp: `anchor_scale` copies launch stops
+    /// (scale.rs), so rewriting them is what actually moves the on-screen ramp; a
+    /// renderer_override swap alone is inert. Finally re-renders that one plot's
+    /// scene. No spec write (never durable to disk). A hot reload swaps a fresh
+    /// scene but does NOT rebuild the coordinator, so the cycled scheme persists
+    /// here until restart (the known coordinator-staleness-on-reload limitation).
+    ///
+    /// Returns `true` when the plot was cycled (the caller then refreshes the
+    /// window); `false` for an unknown path, or a plot with no sequential Fill
+    /// (a categorical/no-Fill plot has nothing to cycle — a clean no-op).
+    pub fn cycle_scheme(&mut self, plot_path: &str, cx: &mut App) -> bool {
+        let Some(pi) = self.plots.iter().position(|p| p.path == plot_path) else {
+            return false;
+        };
+        if !has_sequential_fill(&self.plots[pi].launch_scales) {
+            return false;
+        }
+        let next = self.plots[pi].scheme.next();
+        self.plots[pi].scheme = next;
+
+        // Rebuild each mark's override through the NEW scheme, retaining its
+        // render-config attrs so only the colour changes (a mark whose kind has
+        // no configured renderer — e.g. a dot overlay — keeps its override).
+        for mi in self.plots[pi].mark_indices.clone() {
+            if let Some(m) = self.marks.get_mut(mi) {
+                if let Some(r) = recolour_override(m, next) {
+                    m.renderer_override = Some(r);
+                }
+            }
+        }
+
+        // Load-bearing: recolour the launch Fill ramp (see the doc comment).
+        recolour_fill(&mut self.plots[pi].launch_scales, next.stops());
+
+        let scene = self.build_plot_scene(pi);
+        let state = self.plots[pi].state.clone();
+        state.update(cx, |s, c| {
+            s.set_scene(scene);
+            c.notify();
+        });
+        true
     }
 
     /// Commit a slider release (card 0005): dispatch the param value into the
@@ -641,6 +719,64 @@ fn render_plot_scene(
     build_multi_mark_scene_anchored(&refs, draw_inline_legend, launch)
 }
 
+/// Whether a coordinator has any live-driving surface — a brush, a slider, a
+/// bound legend, OR a sequential Fill ramp (the `c` colour-cycle, card 0018,
+/// ac-13). `new` returns `None` when none hold. Factored out (over booleans, not
+/// `LivePlot`s) so the gate — including the sequential-Fill relaxation that keeps
+/// an otherwise-static heatmap dashboard live — is headlessly testable without a
+/// window (a `LivePlot` holds a gpui `Entity`).
+fn coordinator_has_live_surface(
+    any_brush: bool,
+    any_slider: bool,
+    any_legend: bool,
+    any_sequential_fill: bool,
+) -> bool {
+    any_brush || any_slider || any_legend || any_sequential_fill
+}
+
+/// Whether a `ScaleSet`'s Fill channel is a `Scale::Sequential` ramp — the signal
+/// that a plot is colour-cyclable (card 0018, ac-13). Pinned to Channel::Fill +
+/// the Sequential variant, and shared by both `new`'s live-surface gate and
+/// `cycle_scheme`'s guard so the two can't drift.
+fn has_sequential_fill(scales: &ScaleSet) -> bool {
+    matches!(scales.get(Channel::Fill), Some(Scale::Sequential { .. }))
+}
+
+/// Rebuild a mark's renderer through `scheme`, THREADING the mark's own retained
+/// render-config attrs (bandwidth / thresholds / bin_width) — the exact per-mark
+/// rebuild `cycle_scheme` performs, so a colour cycle re-colours WITHOUT reshaping
+/// the KDE surface, contour iso-lines, or hex mesh (card 0018, ac-13). Extracted
+/// so the attr threading is headlessly testable (`cycle_scheme` itself needs a
+/// window).
+fn recolour_override(
+    m: &MarkInput,
+    scheme: SequentialScheme,
+) -> Option<Box<dyn MarkRenderer + Send + Sync>> {
+    configured_renderer(m.kind, scheme, m.bandwidth, m.thresholds, m.bin_width)
+}
+
+/// Swap a `ScaleSet`'s Fill ramp stops in place, preserving its domain (card
+/// 0018, ac-13). Returns `true` when a `Scale::Sequential` Fill was present and
+/// recoloured; `false` for a categorical or absent Fill. The load-bearing half
+/// of a colour cycle: `anchor_scale` copies LAUNCH stops (scale.rs), so
+/// rewriting the launch Fill stops is what actually moves the on-screen ramp.
+fn recolour_fill(scales: &mut ScaleSet, stops: Vec<[f32; 4]>) -> bool {
+    if let Some(Scale::Sequential { domain_min, domain_max, .. }) = scales.get(Channel::Fill) {
+        let (domain_min, domain_max) = (*domain_min, *domain_max);
+        scales.insert(
+            Channel::Fill,
+            Scale::Sequential {
+                domain_min,
+                domain_max,
+                stops,
+            },
+        );
+        true
+    } else {
+        false
+    }
+}
+
 /// Invert a pixel-space brush (two corners in element-local logical pixels) into
 /// a data-coordinate [`Rect`] using a plot's scales. Each axis is inverted
 /// independently via [`Scale::inverse_f64`]; a categorical/missing scale (where
@@ -835,6 +971,9 @@ mod tests {
             channels,
             kind: MarkKind::Raster,
             renderer_override: None,
+            bandwidth: None,
+            thresholds: None,
+            bin_width: None,
         }];
         let renderers = default_renderers();
         let layout = ChartLayout::new(400.0, 300.0);
@@ -874,6 +1013,9 @@ mod tests {
                 channels: channels.clone(),
                 kind: MarkKind::Raster,
                 renderer_override: configured_renderer(MarkKind::Raster, scheme, None, None, None),
+                bandwidth: None,
+                thresholds: None,
+                bin_width: None,
             }];
             match launch_scales(&marks, &renderers, &[0], &layout).get(Channel::Fill) {
                 Some(Scale::Sequential { stops, .. }) => stops.clone(),
@@ -890,6 +1032,180 @@ mod tests {
             stops_for(SequentialScheme::default()),
             SequentialScheme::Viridis.stops(),
             "the default override stays viridis"
+        );
+    }
+
+    /// kbg_ac13 (recolour is load-bearing): rewriting the LAUNCH Fill stops moves
+    /// the anchored ramp; a renderer_override-only scheme swap does NOT (anchor_scale
+    /// copies launch stops). The mechanic `cycle_scheme` relies on — mirrors
+    /// fww_ac06's launch-Fill-stops probe.
+    #[test]
+    fn kbg_ac13_recolour_launch_stops_moves_the_anchored_ramp() {
+        let (batch, channels) = grid_batch();
+        let renderers = default_renderers();
+        let layout = ChartLayout::new(400.0, 300.0);
+
+        // A viridis raster: launch Fill carries the viridis ramp.
+        let viridis_marks = vec![MarkInput {
+            batch: Some(batch.clone()),
+            channels: channels.clone(),
+            kind: MarkKind::Raster,
+            renderer_override: configured_renderer(
+                MarkKind::Raster,
+                SequentialScheme::Viridis,
+                None,
+                None,
+                None,
+            ),
+            bandwidth: None,
+            thresholds: None,
+            bin_width: None,
+        }];
+        let mut launch = launch_scales(&viridis_marks, &renderers, &[0], &layout);
+        match launch.get(Channel::Fill) {
+            Some(Scale::Sequential { stops, .. }) => {
+                assert_eq!(*stops, SequentialScheme::Viridis.stops(), "launch starts viridis")
+            }
+            other => panic!("expected a launch Fill Sequential, got {other:?}"),
+        }
+
+        // A blues renderer_override, rebuilt against the STILL-viridis launch.
+        let blues_override_marks = vec![MarkInput {
+            batch: Some(batch.clone()),
+            channels: channels.clone(),
+            kind: MarkKind::Raster,
+            renderer_override: configured_renderer(
+                MarkKind::Raster,
+                SequentialScheme::Blues,
+                None,
+                None,
+                None,
+            ),
+            bandwidth: None,
+            thresholds: None,
+            bin_width: None,
+        }];
+
+        // Negative: the override swap alone is inert — anchor_scale copies launch
+        // stops, so the anchored ramp stays viridis.
+        let (_, override_only) =
+            render_plot_scene(&blues_override_marks, &renderers, &[0], &layout, false, &launch);
+        match override_only.get(Channel::Fill) {
+            Some(Scale::Sequential { stops, .. }) => assert_eq!(
+                *stops,
+                SequentialScheme::Viridis.stops(),
+                "a renderer_override-only swap does NOT move the anchored ramp"
+            ),
+            other => panic!("expected an anchored Fill Sequential, got {other:?}"),
+        }
+
+        // Positive: recolour the launch Fill stops → the anchored rebuild renders
+        // the blues ramp (the load-bearing step cycle_scheme performs).
+        assert!(recolour_fill(&mut launch, SequentialScheme::Blues.stops()));
+        let (_, anchored) =
+            render_plot_scene(&blues_override_marks, &renderers, &[0], &layout, false, &launch);
+        match anchored.get(Channel::Fill) {
+            Some(Scale::Sequential { stops, .. }) => assert_eq!(
+                *stops,
+                SequentialScheme::Blues.stops(),
+                "recolouring the launch stops moves the anchored ramp"
+            ),
+            other => panic!("expected an anchored Fill Sequential, got {other:?}"),
+        }
+    }
+
+    /// kbg_ac13 (None-gate relaxation): the relaxation has two parts and both are
+    /// pinned here — (1) `has_sequential_fill` detects a colour-cyclable plot from
+    /// its launch Fill being a `Scale::Sequential` (so a wrong-channel or
+    /// wrong-variant regression makes `c` inert on the heatmap dashboards it
+    /// targets), and (2) `coordinator_has_live_surface` OR-folds that flag so `new`
+    /// keeps the coordinator alive for an otherwise-static sequential dashboard.
+    /// (`new` itself can't run headlessly — a `LivePlot` holds a gpui `Entity`.)
+    #[test]
+    fn kbg_ac13_sequential_fill_keeps_the_coordinator_live() {
+        // (1) Detection over real ScaleSets: a Sequential Fill is seen; an empty
+        // set and a categorical (non-Sequential) Fill are not.
+        let mut seq = ScaleSet::new();
+        seq.insert(
+            Channel::Fill,
+            Scale::Sequential {
+                domain_min: 0.0,
+                domain_max: 1.0,
+                stops: SequentialScheme::Viridis.stops(),
+            },
+        );
+        assert!(has_sequential_fill(&seq), "a Sequential Fill is cyclable");
+        assert!(!has_sequential_fill(&ScaleSet::new()), "no Fill → not cyclable");
+        let mut categorical = ScaleSet::new();
+        categorical.insert(
+            Channel::Fill,
+            Scale::Colour { categories: vec!["a".into()], palette: vec![[0.0, 0.0, 0.0, 1.0]] },
+        );
+        assert!(
+            !has_sequential_fill(&categorical),
+            "a categorical Fill is not a Sequential ramp"
+        );
+        // And through real inference: a raster's launch Fill IS a Sequential ramp
+        // (pins the channel — probing Color instead would miss it).
+        let (batch, channels) = grid_batch();
+        let renderers = default_renderers();
+        let layout = ChartLayout::new(400.0, 300.0);
+        let raster = vec![MarkInput {
+            batch: Some(batch),
+            channels,
+            kind: MarkKind::Raster,
+            renderer_override: None,
+            bandwidth: None,
+            thresholds: None,
+            bin_width: None,
+        }];
+        assert!(has_sequential_fill(&launch_scales(&raster, &renderers, &[0], &layout)));
+        // (2) The gate OR-folds every driving surface, including sequential-Fill.
+        assert!(!coordinator_has_live_surface(false, false, false, false));
+        assert!(coordinator_has_live_surface(false, false, false, true));
+        assert!(coordinator_has_live_surface(true, false, false, false));
+        assert!(coordinator_has_live_surface(false, true, false, false));
+        assert!(coordinator_has_live_surface(false, false, true, false));
+    }
+
+    /// kbg_ac13 (attr retention): drives `recolour_override` — the EXACT per-mark
+    /// rebuild `cycle_scheme` performs — and proves it threads the mark's OWN
+    /// bandwidth into the new renderer, so a colour cycle can't reshape the KDE
+    /// surface. Both marks are rebuilt by `recolour_override` and anchored against
+    /// one fixed scale set, so the retained bandwidth is the only variable: a
+    /// regression that dropped the attrs (`configured_renderer(.., None, None,
+    /// None)`) would make these render-identical and fail the `assert_ne`.
+    #[test]
+    fn kbg_ac13_cycle_retains_bandwidth() {
+        let (batch, channels) = grid_batch();
+        let renderers = default_renderers();
+        let layout = ChartLayout::new(400.0, 300.0);
+        // A heatmap MarkInput carrying `bw`, with its override rebuilt by
+        // recolour_override through the NEXT scheme (exactly what cycle_scheme does).
+        let cycled = |bw: Option<f64>| {
+            let m = MarkInput {
+                batch: Some(batch.clone()),
+                channels: channels.clone(),
+                kind: MarkKind::Heatmap,
+                renderer_override: None,
+                bandwidth: bw,
+                thresholds: None,
+                bin_width: None,
+            };
+            let ovr = recolour_override(&m, SequentialScheme::Blues);
+            vec![MarkInput { renderer_override: ovr, ..m }]
+        };
+        // One fixed scale set (union of both bandwidths' inferences) so only the
+        // retained bandwidth varies.
+        let l1 = launch_scales(&cycled(Some(2.0)), &renderers, &[0], &layout);
+        let l2 = launch_scales(&cycled(None), &renderers, &[0], &layout);
+        let fixed = anchor_scales(&l1, l2);
+        let kept = render_plot_scene(&cycled(Some(2.0)), &renderers, &[0], &layout, false, &fixed).0;
+        let dropped = render_plot_scene(&cycled(None), &renderers, &[0], &layout, false, &fixed).0;
+        assert_ne!(
+            scene_bytes(&kept),
+            scene_bytes(&dropped),
+            "recolour_override threads the mark's own bandwidth; dropping it reshapes the KDE surface"
         );
     }
 
@@ -997,6 +1313,9 @@ mod tests {
             channels: channels.clone(),
             kind: MarkKind::Dot,
             renderer_override: None,
+            bandwidth: None,
+            thresholds: None,
+            bin_width: None,
         }];
         let launch = launch_scales(&full_marks, &renderers, &[0], &layout);
 
@@ -1007,6 +1326,9 @@ mod tests {
             channels,
             kind: MarkKind::Dot,
             renderer_override: None,
+            bandwidth: None,
+            thresholds: None,
+            bin_width: None,
         }];
         let reinferred = launch_scales(&filtered_marks, &renderers, &[0], &layout);
         let launch_gentoo = launch.get(Channel::Fill).unwrap().map_colour("gentoo").unwrap();
@@ -1078,6 +1400,9 @@ mod tests {
                     None,
                 None,
                 ),
+                bandwidth: None,
+                thresholds: None,
+                bin_width: None,
             }]
         };
         let hlaunch_marks = hmark(hbatch);
@@ -1166,6 +1491,9 @@ mod tests {
                     channels: channels.clone(),
                     kind: MarkKind::Heatmap,
                     renderer_override: override_of(),
+                    bandwidth: None,
+                    thresholds: None,
+                    bin_width: None,
                 }]
             };
 
@@ -1222,6 +1550,9 @@ mod tests {
                 None,
             None,
             ),
+            bandwidth: None,
+            thresholds: None,
+            bin_width: None,
         }];
         match launch_scales(&blues, &renderers, &[0], &layout).get(Channel::Fill) {
             Some(Scale::Sequential { stops, .. }) => {
@@ -1251,6 +1582,9 @@ mod tests {
                     None,
                 None,
                 ),
+                bandwidth: None,
+                thresholds: None,
+                bin_width: None,
             }]
         };
         let l1 = launch_scales(&marks_bw(Some(2.0)), &renderers, &[0], &layout);
@@ -1279,6 +1613,9 @@ mod tests {
                     thresholds,
                 None,
                 ),
+                bandwidth: None,
+                thresholds: None,
+                bin_width: None,
             }];
             let scales = launch_scales(&marks, &renderers, &[0], &layout);
             count_scene_paths(&render_plot_scene(&marks, &renderers, &[0], &layout, true, &scales).0)
@@ -1294,6 +1631,9 @@ mod tests {
             channels: channels.clone(),
             kind: MarkKind::Dot,
             renderer_override: None,
+            bandwidth: None,
+            thresholds: None,
+            bin_width: None,
         }];
         let scales = launch_scales(&dot, &renderers, &[0], &layout);
         assert!(
@@ -1342,6 +1682,9 @@ mod tests {
                 channels: channels.clone(),
                 kind: MarkKind::Dot,
                 renderer_override: None,
+                bandwidth: None,
+                thresholds: None,
+                bin_width: None,
             }]
         };
 
@@ -1437,6 +1780,9 @@ mod tests {
             },
             kind: MarkKind::Dot,
             renderer_override: None,
+            bandwidth: None,
+            thresholds: None,
+            bin_width: None,
         };
         // Overlay (mark 1): a blues raster, EMPTY at launch.
         let mut marks = vec![
@@ -1452,6 +1798,9 @@ mod tests {
                     None,
                 None,
                 ),
+                bandwidth: None,
+                thresholds: None,
+                bin_width: None,
             },
         ];
 
@@ -1563,6 +1912,9 @@ plot:
                 channels: ChannelMap::from_mark(marks_ast[i]),
                 kind: marks_ast[i].kind,
                 renderer_override: None,
+                bandwidth: None,
+                thresholds: None,
+                bin_width: None,
             })
             .collect();
 
@@ -1636,6 +1988,9 @@ plot:
                 channels: ChannelMap::from_mark(marks_ast[i]),
                 kind: marks_ast[i].kind,
                 renderer_override: None,
+                bandwidth: None,
+                thresholds: None,
+                bin_width: None,
             })
             .collect();
 
@@ -1720,6 +2075,9 @@ hconcat:
                 channels: ChannelMap::from_mark(marks_ast[i]),
                 kind: marks_ast[i].kind,
                 renderer_override: None,
+                bandwidth: None,
+                thresholds: None,
+                bin_width: None,
             })
             .collect();
 

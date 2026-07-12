@@ -682,6 +682,9 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             // Populated once per mark below, when its owning plot's colorScheme
             // is resolved (a mark belongs to exactly one plot).
             renderer_override: None,
+            bandwidth: None,
+            thresholds: None,
+            bin_width: None,
         });
     }
 
@@ -764,6 +767,13 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             if let Some(m) = mark_inputs.get_mut(mi) {
                 m.renderer_override =
                     configured_renderer(kind, scheme, bandwidth, thresholds, bin_width);
+                // Retain the render-config inputs so a live colour cycle can
+                // rebuild the override through the NEW scheme without losing the
+                // KDE bandwidth / contour thresholds / hexgrid binWidth (card
+                // 0018, ac-13). Inert on the first render and the dump path.
+                m.bandwidth = bandwidth;
+                m.thresholds = thresholds;
+                m.bin_width = bin_width;
             }
         }
 
@@ -943,6 +953,18 @@ fn file_mtime(path: &str) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
+/// Whether the watcher runs a reload pass this poll: the spec's mtime changed,
+/// OR a cmd-r force-reload was requested (card 0018, ac-11b). Pure so the poll
+/// gate is headlessly testable.
+#[cfg(any(target_os = "macos", test))]
+fn should_run_reload(
+    now: Option<std::time::SystemTime>,
+    last: Option<std::time::SystemTime>,
+    forced: bool,
+) -> bool {
+    forced || now != last
+}
+
 /// Spawn a background task that polls the spec file and swaps in a freshly
 /// rendered scene when it changes — turning the edit→see loop interactive
 /// without a restart. A save that fails to parse/execute keeps the last good
@@ -970,6 +992,7 @@ fn spawn_spec_watcher(
     editor: Option<gpui::Entity<shell::EditorPanel>>,
     sidebar: Option<gpui::Entity<shell::SidebarPanel>>,
     feedback_log: gpui::Entity<log_model::FeedbackLog>,
+    reload_trigger: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
     const POLL: std::time::Duration = std::time::Duration::from_millis(300);
     use reload_feedback::{reload_notification, ReloadOutcome};
@@ -979,7 +1002,12 @@ fn spawn_spec_watcher(
         loop {
             cx.background_executor().timer(POLL).await;
             let now = file_mtime(&spec_path);
-            if now == last {
+            // A cmd-r press flips the shared flag (ac-11b): consume it here so a
+            // forced pass runs the identical reload body below even when the
+            // mtime is unchanged. `last = now` still advances, so a forced pass
+            // with an unchanged file doesn't re-fire on the next tick.
+            let forced = reload_trigger.swap(false, std::sync::atomic::Ordering::AcqRel);
+            if !should_run_reload(now, last, forced) {
                 continue;
             }
             last = now;
@@ -1310,6 +1338,17 @@ fn main() {
             // recovery clears the sticky error toast, never this.
             let feedback_log = cx.new(|_| log_model::FeedbackLog::default());
 
+            // The shared force-reload flag (card 0018, ac-11b): the cmd-r
+            // handler on WorkspaceRoot flips it; the watcher consults it each
+            // poll and runs one identical reload pass when set — reusing the
+            // whole hot-reload path (dirty-safe reseed, panic-guarded pipeline,
+            // layout/chrome gates, scene swap, rejection routing) rather than
+            // reimplementing it. Created here so both the window closure (→
+            // WorkspaceRoot) and the watcher each get a clone, mirroring
+            // feedback_log / feedback_log_for_editor.
+            let reload_trigger =
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
             // A source whose launch profiling failed surfaces in the Log dock
             // at Warning (no toast — the sidebar already shows a muted row for
             // it); the same routing the watcher uses on reload (sbp_ac04).
@@ -1356,6 +1395,11 @@ fn main() {
                     // launch_scales and updates `scales` (widen-only).
                     scales: meta.scales.clone(),
                     launch_scales: meta.scales,
+                    // The launch scheme seeds the transient colour-cycle's
+                    // running state (card 0018, ac-13); LivePlotMeta already
+                    // carries it — this just stops dropping it. NOT the same as
+                    // LivePlotMeta.scheme's other role (the ChromeSnapshot gate).
+                    scheme: meta.scheme,
                     draw_inline_legend: meta.draw_inline_legend,
                     state: w.state.clone(),
                 })
@@ -1474,6 +1518,9 @@ fn main() {
             let sidebar_capture = sidebar_slot.clone();
             let spec_path_for_editor = spec_path.clone();
             let feedback_log_for_editor = feedback_log.clone();
+            // The workspace's clone of the force-reload flag (the watcher keeps
+            // the original), captured into the window closure below.
+            let reload_trigger_for_workspace = reload_trigger.clone();
             let window = cx
                 .open_window(window_opts, move |window, cx| {
                     let chart_view = cx.new(|_| {
@@ -1527,6 +1574,7 @@ fn main() {
                             sidebar,
                             log,
                             presentation,
+                            reload_trigger_for_workspace,
                             window,
                             cx,
                         )
@@ -1562,6 +1610,7 @@ fn main() {
                 editor,
                 sidebar,
                 feedback_log,
+                reload_trigger,
             );
         });
     }
@@ -1585,6 +1634,24 @@ mod tests {
     use brightfield_render::scene::{build_multi_mark_scene, ChartData};
     use brightfield_spec::analysis::analyse_spec;
     use brightfield_spec::{parse_spec, Format};
+
+    /// kbg_ac11b: the watcher's poll gate runs a reload when the mtime changed
+    /// OR a cmd-r force is pending — and skips only when neither holds.
+    #[test]
+    fn should_run_reload_gates_on_mtime_change_or_force() {
+        use std::time::{Duration, SystemTime};
+        let t0 = SystemTime::UNIX_EPOCH;
+        let t1 = t0 + Duration::from_secs(1);
+        // Unchanged mtime, no force → skip.
+        assert!(!super::should_run_reload(Some(t0), Some(t0), false));
+        // Changed mtime → run (the ordinary hot-reload path).
+        assert!(super::should_run_reload(Some(t1), Some(t0), false));
+        // Unchanged mtime but forced (cmd-r) → run.
+        assert!(super::should_run_reload(Some(t0), Some(t0), true));
+        // A missing file that stays missing, no force → skip; forced → run.
+        assert!(!super::should_run_reload(None, None, false));
+        assert!(super::should_run_reload(None, None, true));
+    }
 
     #[test]
     fn concat_result_batches_combines_chunks_not_truncates() {

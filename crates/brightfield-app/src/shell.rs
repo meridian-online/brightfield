@@ -26,6 +26,7 @@
 //!   mode (wsc_ac04).
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -46,7 +47,8 @@ use gpui_component::{ActiveTheme as _, Root};
 
 use brightfield_ui::{ChartView, PresentationMode, TogglePresentation, WORKSPACE_KEY_CONTEXT};
 use brightfield_keys::{
-    focus_jump_candidates, help_sheet, registry, Altitude, FocusState, FocusTree, JumpCandidate,
+    focus_jump_candidates, help_sheet, palette_filter, registry, Altitude, FocusState, FocusTree,
+    JumpCandidate, PaletteCandidate, RecencyCounter,
 };
 use brightfield_spec::analysis::ComponentPath;
 
@@ -62,8 +64,8 @@ use crate::shell_model::{
     SIDEBAR_DOCK_WIDTH, SIDEBAR_PANEL_NAME,
 };
 use crate::keymap::{
-    ClearSelection, DiveIn, FocusJump, FocusNextSibling, FocusPrevSibling, OpenHelp, PopOut,
-    ToggleFocus,
+    action_for_longname, ClearSelection, CycleColourScheme, DiveIn, FocusJump, FocusNextSibling,
+    FocusPrevSibling, OpenHelp, OpenPalette, PopOut, ReloadSpec, ToggleFocus,
 };
 use crate::profile_model::{self, ProfileOutcome, SourceProfile};
 use crate::spec_save;
@@ -195,6 +197,15 @@ impl CanvasPanel {
         focus_jump_candidates(&self.focus_tree, query)
     }
 
+    /// The focused altitude — the command palette's scope input (card 0018,
+    /// ac-12). `Dashboard` when the dashboard has no navigable structure.
+    pub fn current_altitude(&self) -> Altitude {
+        self.focus_state
+            .as_ref()
+            .map(|s| s.altitude(&self.focus_tree))
+            .unwrap_or(Altitude::Dashboard)
+    }
+
     /// Move focus to `path` (ac-18): the overlay's chosen jump target. No-op if
     /// the path is not in the tree.
     pub fn jump_focus_to(&mut self, path: &ComponentPath, cx: &mut Context<Self>) {
@@ -264,6 +275,34 @@ impl CanvasPanel {
             _ => coord.borrow_mut().clear_all(cx),
         };
         if cleared {
+            window.refresh();
+        }
+    }
+
+    /// `CycleColourScheme` handler (bare `c`, canvas-scoped — card 0018, ac-13):
+    /// cycle the FOCUSED VIEW's sequential colour scheme, transiently (no spec
+    /// write). View-scoped (registry scope = [View]): a clean no-op at the
+    /// dashboard altitude, unlike `clear_selection` which falls through to
+    /// clear_all. The coordinator recolours the plot's launch Fill ramp and
+    /// re-renders that one plot's scene; `window.refresh()` repaints.
+    fn cycle_colour_scheme(
+        &mut self,
+        _: &CycleColourScheme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(coord) = self.chart_view.read(cx).coordinator() else {
+            return;
+        };
+        let target = self
+            .focus_state
+            .as_ref()
+            .map(|s| (s.altitude(&self.focus_tree), s.path(&self.focus_tree).0.clone()));
+        let changed = match target {
+            Some((Altitude::View, path)) => coord.borrow_mut().cycle_scheme(&path, cx),
+            _ => false,
+        };
+        if changed {
             window.refresh();
         }
     }
@@ -377,6 +416,7 @@ impl Render for CanvasPanel {
             .on_action(cx.listener(Self::focus_next_sibling))
             .on_action(cx.listener(Self::focus_prev_sibling))
             .on_action(cx.listener(Self::clear_selection))
+            .on_action(cx.listener(Self::cycle_colour_scheme))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _event, window, cx| {
@@ -936,6 +976,23 @@ enum Overlay {
     Help,
     /// The `/` focus-jump finder (fuzzy query + selection — ac-18).
     Jump,
+    /// The command palette (space / cmd-shift-p — ac-12): fuzzy verb-finder that
+    /// dispatches the chosen verb against the refocused canvas.
+    Palette,
+}
+
+/// The command palette renders at most this many candidate rows; the down-arrow
+/// clamp, the highlight, and `run_palette` all agree on this window so a
+/// selection can't escape the visible rows (ac-12 review fix).
+const PALETTE_MAX_ROWS: usize = 12;
+
+/// Whether a palette candidate can be RUN from the palette (ac-12 review fix):
+/// enabled (not reserved) AND backed by an action reachable from the canvas-
+/// anchored dispatch. `save-spec` is enabled but its handler lives on the editor
+/// subtree — unreachable from the canvas — so it renders greyed (with its key
+/// shown) instead of silently no-opping on Enter.
+fn palette_runnable(c: &PaletteCandidate) -> bool {
+    c.enabled && action_for_longname(c.longname).is_some()
 }
 
 pub struct WorkspaceRoot {
@@ -958,6 +1015,15 @@ pub struct WorkspaceRoot {
     /// The `/` focus-jump query and selected row.
     jump_query: String,
     jump_selected: usize,
+    /// The command-palette query, selected row, and per-session recency (ac-12).
+    /// The recency lifts recently-run verbs under an empty query; it resets each
+    /// launch (the spec's sanctioned v1 simplification).
+    palette_query: String,
+    palette_selected: usize,
+    palette_recency: RecencyCounter,
+    /// Shared force-reload flag the cmd-r handler flips; the spec watcher polls
+    /// it and runs one identical reload pass when set (card 0018, ac-11b).
+    reload_trigger: Arc<AtomicBool>,
     /// Layout file location (`None` = no config dir; persistence off).
     state_path: Option<PathBuf>,
     /// The framework-free save policy (debounce + quit-flush + skip-if-
@@ -983,6 +1049,7 @@ impl WorkspaceRoot {
         sidebar: Entity<SidebarPanel>,
         log: Entity<LogPanel>,
         presentation: Entity<PresentationState>,
+        reload_trigger: Arc<AtomicBool>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -994,9 +1061,13 @@ impl WorkspaceRoot {
         let raw = state_path
             .as_deref()
             .and_then(dock_state_file::read_state_file);
-        Self::with_saved_layout(
+        // with_saved_layout defaults the trigger (its wsc_ac03/ac04 test caller
+        // never drives the watcher); the live wiring is injected here.
+        let mut this = Self::with_saved_layout(
             canvas, editor, sidebar, log, presentation, state_path, raw, window, cx,
-        )
+        );
+        this.reload_trigger = reload_trigger;
+        this
     }
 
     /// [`WorkspaceRoot::new`] with the persistence inputs injected: the
@@ -1180,6 +1251,11 @@ impl WorkspaceRoot {
             overlay_focus: cx.focus_handle(),
             jump_query: String::new(),
             jump_selected: 0,
+            palette_query: String::new(),
+            palette_selected: 0,
+            palette_recency: RecencyCounter::new(),
+            // Defaulted here; `new` injects the live trigger the watcher shares.
+            reload_trigger: Arc::new(AtomicBool::new(false)),
             state_path,
             policy: SavePolicy::default(),
             boot: Instant::now(),
@@ -1201,6 +1277,20 @@ impl WorkspaceRoot {
         } else {
             window.focus(&canvas, cx);
         }
+        cx.notify();
+    }
+
+    /// `ReloadSpec` handler (cmd-r, global — card 0018, ac-11b): flip the shared
+    /// force-reload flag; the watcher polls it and runs one identical reload pass
+    /// (dirty-safe reseed, panic-guarded pipeline, layout/chrome gates, scene
+    /// swap, rejection routing — all reused, not reimplemented). Registered on
+    /// the render root like `on_toggle_focus`, and deliberately NOT gated on
+    /// `overlays_allowed` — the watcher reloads in presentation mode too, and a
+    /// consumer-preview refresh is legitimate. A dirty editor buffer is preserved
+    /// by the watcher's `should_reseed` tap (standard revert-to-disk semantics),
+    /// and cmd-r only ever reads FROM disk, so it can never clobber the spec.
+    fn on_reload(&mut self, _: &ReloadSpec, _window: &mut Window, cx: &mut Context<Self>) {
+        self.reload_trigger.store(true, Ordering::Release);
         cx.notify();
     }
 
@@ -1232,6 +1322,19 @@ impl WorkspaceRoot {
         cx.notify();
     }
 
+    /// `OpenPalette` handler (space / cmd-shift-p — ac-12): open the command
+    /// palette. No-op in presentation. Mirrors `on_focus_jump`.
+    fn on_open_palette(&mut self, _: &OpenPalette, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.overlays_allowed(cx) {
+            return;
+        }
+        self.overlay = Overlay::Palette;
+        self.palette_query.clear();
+        self.palette_selected = 0;
+        window.focus(&self.overlay_focus, cx);
+        cx.notify();
+    }
+
     /// Close any open overlay and return focus to the canvas (the live
     /// realisation of the Esc ladder's dismiss-overlay rung, ac-06).
     fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1252,6 +1355,41 @@ impl WorkspaceRoot {
             self.canvas.update(cx, |c, cx| c.jump_focus_to(&path, cx));
         }
         self.close_overlay(window, cx);
+    }
+
+    /// Run the selected command-palette verb (ac-12). A reserved (greyed) row is
+    /// non-runnable and keeps the palette open; an empty result dismisses.
+    ///
+    /// CRITICAL ORDER: close the overlay FIRST — `close_overlay` refocuses the
+    /// canvas synchronously — THEN `dispatch_action`, which snapshots the focused
+    /// node at call time. A canvas-subtree verb (dive-in / clear-selection /
+    /// cycle-colour-scheme / toggle-presentation) dispatched while the overlay
+    /// still held focus would resolve against the overlay→root path and silently
+    /// no-op. So this INVERTS `run_jump` (which acts, then closes).
+    fn run_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let altitude = self.canvas.read(cx).current_altitude();
+        let reg = registry();
+        let selected = {
+            let cands = palette_filter(&reg, altitude, &self.palette_query, &self.palette_recency);
+            cands.get(self.palette_selected).cloned()
+        };
+        let Some(cand) = selected else {
+            self.close_overlay(window, cx);
+            return;
+        };
+        if !palette_runnable(&cand) {
+            // Reserved, or enabled-but-not-canvas-runnable (save-spec): greyed and
+            // non-runnable — leave the palette open rather than silently closing
+            // with no effect.
+            return;
+        }
+        let longname = cand.longname;
+        // Refocus the canvas BEFORE dispatch (the ordering note above).
+        self.close_overlay(window, cx);
+        if let Some(action) = action_for_longname(longname) {
+            window.dispatch_action(action, cx);
+        }
+        self.palette_recency.record(longname);
     }
 
     /// Key handling for the focused overlay: Esc dismisses (ac-06), and — for the
@@ -1293,6 +1431,45 @@ impl WorkspaceRoot {
                     if let Some(c) = k.chars().next().filter(|c| !c.is_control()) {
                         self.jump_query.push(c);
                         self.jump_selected = 0;
+                        cx.notify();
+                    }
+                }
+                _ => {}
+            },
+            Overlay::Palette => match key {
+                "escape" => self.close_overlay(window, cx),
+                "enter" => self.run_palette(window, cx),
+                "up" => {
+                    self.palette_selected = self.palette_selected.saturating_sub(1);
+                    cx.notify();
+                }
+                "down" => {
+                    let altitude = self.canvas.read(cx).current_altitude();
+                    let n = palette_filter(
+                        &registry(),
+                        altitude,
+                        &self.palette_query,
+                        &self.palette_recency,
+                    )
+                    .len();
+                    self.palette_selected =
+                        (self.palette_selected + 1).min(n.min(PALETTE_MAX_ROWS).saturating_sub(1));
+                    cx.notify();
+                }
+                "backspace" => {
+                    self.palette_query.pop();
+                    self.palette_selected = 0;
+                    cx.notify();
+                }
+                "space" => {
+                    self.palette_query.push(' ');
+                    self.palette_selected = 0;
+                    cx.notify();
+                }
+                k if k.chars().count() == 1 => {
+                    if let Some(c) = k.chars().next().filter(|c| !c.is_control()) {
+                        self.palette_query.push(c);
+                        self.palette_selected = 0;
                         cx.notify();
                     }
                 }
@@ -1381,6 +1558,69 @@ impl WorkspaceRoot {
                     .text_size(px(14.0))
                     .text_color(rgb(0xf0f2f6))
                     .child(format!("/ {}", self.jump_query)),
+            )
+            .child(list)
+    }
+
+    /// The command-palette overlay body (ac-12): a query line + the ranked verb
+    /// rows (longname, bound key inline, one-line help), the selected row
+    /// highlighted, reserved rows greyed with their bucket reason.
+    fn palette_overlay_body(&self, cx: &App) -> gpui::Div {
+        let altitude = self.canvas.read(cx).current_altitude();
+        let reg = registry();
+        let cands = palette_filter(&reg, altitude, &self.palette_query, &self.palette_recency);
+        let mut list = div().flex().flex_col().gap_0();
+        for (i, c) in cands.iter().take(PALETTE_MAX_ROWS).enumerate() {
+            let selected = i == self.palette_selected;
+            let runnable = palette_runnable(c);
+            let key = c.primary_key.map(|k| format!("  [{k}]")).unwrap_or_default();
+            let mut label = format!("{}{}   {}", c.longname, key, c.help);
+            if let Some(reason) = c.reserved_reason {
+                label.push_str(&format!("   · reserved: {}", reason.reason()));
+            } else if !runnable {
+                // Enabled but not runnable from here (save-spec): point at its key.
+                label.push_str("   · run with its key");
+            }
+            // Selected wins the highlight; an unselected non-runnable row is greyed.
+            let colour = if selected {
+                rgb(0xffffff)
+            } else if runnable {
+                rgb(0xd7dae0)
+            } else {
+                rgb(0x6b7280)
+            };
+            list = list.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .rounded(px(4.0))
+                    .bg(if selected { rgb(0x2f6feb) } else { rgb(0x161a22) })
+                    .text_size(px(13.0))
+                    .text_color(colour)
+                    .child(label),
+            );
+        }
+        div()
+            .w(px(520.0))
+            .max_h(px(460.0))
+            .overflow_hidden()
+            .p_3()
+            .rounded(px(8.0))
+            .bg(rgb(0x161a22))
+            .border_1()
+            .border_color(rgb(0x2b3242))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .rounded(px(4.0))
+                    .bg(rgb(0x0e1017))
+                    .text_size(px(14.0))
+                    .text_color(rgb(0xf0f2f6))
+                    .child(format!("> {}", self.palette_query)),
             )
             .child(list)
     }
@@ -1765,6 +2005,13 @@ impl WorkspaceRoot {
         self.policy.pending()
     }
 
+    /// Whether a cmd-r force-reload is pending on the shared flag (assertion
+    /// surface, ac-11b).
+    #[cfg(test)]
+    pub fn reload_requested(&self) -> bool {
+        self.reload_trigger.load(Ordering::Acquire)
+    }
+
     /// Reset the save policy so `save_pending` isolates the next change
     /// (the rebuild itself legitimately schedules saves).
     #[cfg(test)]
@@ -1838,6 +2085,7 @@ impl Render for WorkspaceRoot {
             Overlay::Closed => None,
             Overlay::Help => Some(self.help_overlay_body()),
             Overlay::Jump => Some(self.jump_overlay_body(cx)),
+            Overlay::Palette => Some(self.palette_overlay_body(cx)),
         };
         let overlay = overlay_body.map(|body| {
             div()
@@ -1869,6 +2117,9 @@ impl Render for WorkspaceRoot {
             .on_action(cx.listener(Self::on_toggle_focus))
             .on_action(cx.listener(Self::on_open_help))
             .on_action(cx.listener(Self::on_focus_jump))
+            .on_action(cx.listener(Self::on_open_palette))
+            // cmd-r (global, ungated): flips the shared force-reload flag.
+            .on_action(cx.listener(Self::on_reload))
             .child(self.dock_area.clone())
             .children(sheet_layer)
             .children(dialog_layer)
@@ -2477,6 +2728,28 @@ mod tests {
             presentation,
             editor,
         }
+    }
+
+    /// kbg_ac11b: cmd-r (`on_reload`) flips the shared force-reload flag the
+    /// watcher polls — the whole end-to-end reload is macOS-eyeball, but the
+    /// handler's flag flip is headless. Ungated by presentation by design.
+    #[gpui::test]
+    fn kbg_ac11b_cmd_r_flips_the_shared_reload_trigger(cx: &mut TestAppContext) {
+        let shell = build_shell(cx, None);
+        assert!(
+            !cx.update(|cx| shell.workspace.read(cx).reload_requested()),
+            "no force-reload pending at rest"
+        );
+        cx.update_window(shell.window.into(), |_, window, cx| {
+            shell
+                .workspace
+                .update(cx, |w, cx| w.on_reload(&ReloadSpec, window, cx));
+        })
+        .expect("drive cmd-r");
+        assert!(
+            cx.update(|cx| shell.workspace.read(cx).reload_requested()),
+            "cmd-r set the shared force-reload flag"
+        );
     }
 
     /// Flip the shared presentation mode (the same entity notify the canvas

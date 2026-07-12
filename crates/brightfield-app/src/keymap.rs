@@ -82,6 +82,36 @@ fn keybinding_for(bk: &BoundKey) -> Option<KeyBinding> {
     })
 }
 
+/// Build a runnable gpui [`gpui::Action`] for a verb's `longname` — the command
+/// palette's pick→run constructor (ac-12). Mirrors [`keybinding_for`]'s longname
+/// list, but boxes an action rather than a `KeyBinding`. `None` for anything the
+/// palette cannot RUN against the focused canvas: reserved (palette-visible,
+/// unbound) verbs, and `save-spec` — whose handler lives on the editor subtree,
+/// unreachable from a canvas-anchored `dispatch_action` (see
+/// `shell::WorkspaceRoot::run_palette`). A new registry longname missing an arm
+/// here is caught by the coverage test, exactly as `keybinding_for`'s is.
+#[must_use]
+pub fn action_for_longname(longname: &str) -> Option<Box<dyn gpui::Action>> {
+    let action: Box<dyn gpui::Action> = match longname {
+        "dive-in" => Box::new(DiveIn),
+        "pop-out" => Box::new(PopOut),
+        "focus-next-sibling" => Box::new(FocusNextSibling),
+        "focus-prev-sibling" => Box::new(FocusPrevSibling),
+        "toggle-focus" => Box::new(ToggleFocus),
+        "focus-jump" => Box::new(FocusJump),
+        "open-palette" => Box::new(OpenPalette),
+        "open-help" => Box::new(OpenHelp),
+        "clear-selection" => Box::new(ClearSelection),
+        "reload-spec" => Box::new(ReloadSpec),
+        "cycle-colour-scheme" => Box::new(CycleColourScheme),
+        "toggle-presentation" => Box::new(brightfield_ui::TogglePresentation),
+        // save-spec's handler is on the editor subtree (unreachable from a
+        // canvas-anchored dispatch); reserved verbs are unbound.
+        _ => return None,
+    };
+    Some(action)
+}
+
 /// The NEW grammar verbs as gpui bindings, sourced from the registry. `main` feeds
 /// this alongside the two shipped fixed-point binding vecs; the union is the
 /// registry keymap. Each binding carries its own context predicate.
@@ -117,6 +147,56 @@ mod tests {
             .count();
         assert_eq!(grammar_key_bindings().len(), want, "adapter dropped a new registry binding");
         assert_eq!(want, 16, "16 new grammar bindings (18 registry keys − p − cmd-s)");
+    }
+
+    #[test]
+    fn kbg_ac12_action_for_longname_covers_runnable_verbs_only() {
+        // Every runnable, canvas-reachable verb maps to its CORRECT action (a
+        // wrong arm — e.g. pop-out => DiveIn — fails, not just a missing one); the
+        // two non-runnable classes map to None: reserved (palette-visible, unbound)
+        // and save-spec (editor-subtree handler, unreachable from canvas dispatch).
+        let expected: &[(&str, &str)] = &[
+            ("dive-in", "brightfield::DiveIn"),
+            ("pop-out", "brightfield::PopOut"),
+            ("focus-next-sibling", "brightfield::FocusNextSibling"),
+            ("focus-prev-sibling", "brightfield::FocusPrevSibling"),
+            ("toggle-focus", "brightfield::ToggleFocus"),
+            ("focus-jump", "brightfield::FocusJump"),
+            ("open-palette", "brightfield::OpenPalette"),
+            ("open-help", "brightfield::OpenHelp"),
+            ("clear-selection", "brightfield::ClearSelection"),
+            ("reload-spec", "brightfield::ReloadSpec"),
+            ("cycle-colour-scheme", "brightfield::CycleColourScheme"),
+            ("toggle-presentation", "brightfield::TogglePresentation"),
+        ];
+        for &(longname, action_name) in expected {
+            assert_eq!(
+                action_for_longname(longname).unwrap().name(),
+                action_name,
+                "{longname} maps to the wrong action",
+            );
+        }
+        // Completeness/drift: every runnable registry verb is in the table above,
+        // and every non-runnable (reserved OR save-spec) maps to None.
+        let table: std::collections::HashSet<&str> = expected.iter().map(|(l, _)| *l).collect();
+        let reg = registry();
+        for v in &reg {
+            if v.is_reserved() || v.longname == "save-spec" {
+                assert!(
+                    action_for_longname(v.longname).is_none(),
+                    "{} must not be palette-runnable",
+                    v.longname
+                );
+            } else {
+                assert!(
+                    table.contains(v.longname),
+                    "runnable verb {} is missing from the expected-action table",
+                    v.longname
+                );
+            }
+        }
+        // A string that is not a registry verb → None.
+        assert!(action_for_longname("not-a-verb").is_none());
     }
 
     #[test]
