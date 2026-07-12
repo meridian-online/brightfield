@@ -274,12 +274,16 @@ vocab_enum! {
 
 vocab_enum! {
     /// Selection-resolution kinds as they appear under a `params.<name>:
-    /// { select: <resolution> }` declaration.
+    /// { select: <resolution> }` declaration. All four are implemented at the
+    /// SQL-emit layer — `compile_selection` (brightfield-sql) gives each a
+    /// distinct predicate combination (crossfilter self-excludes then ANDs,
+    /// intersect ANDs, union ORs, single keeps the most recent) and they are
+    /// runtime-tested (cfs2_ac06).
     pub enum SelectionResolution {
-        Crossfilter => ("crossfilter", Unimplemented),
-        Intersect => ("intersect", Unimplemented),
-        Single => ("single", Unimplemented),
-        Union => ("union", Unimplemented),
+        Crossfilter => ("crossfilter", Implemented),
+        Intersect => ("intersect", Implemented),
+        Single => ("single", Implemented),
+        Union => ("union", Implemented),
     }
 }
 

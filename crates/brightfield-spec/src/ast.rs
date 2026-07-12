@@ -178,7 +178,8 @@ pub enum ParamNode {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectionNode {
     /// The resolution type (`crossfilter | intersect | single | union`).
-    /// If `Unimplemented`, the selection was stubbed by the Option Z parser.
+    /// All four are implemented at the SQL-emit layer; an unrecognised name is
+    /// a hard `ParseError::UnknownName`, never a stub.
     pub select: SelectionResolution,
     /// Status of the resolution name in the vocabulary registry.
     pub status: ImplStatus,
