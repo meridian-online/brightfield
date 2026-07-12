@@ -33,7 +33,8 @@ goal: "Plots render their positional-axis titles (the field name from the encodi
 
 maturity: "emerging"
 
-specs: []
+specs:
+  - "orbit/specs/2026-07-12-axis-plot-titles/spec.yaml"
 
 references:
   - "In-app eyeball finding (2026-07-12, Hugh): cross-filter charts have no axis titles or plot titles — 'I can't see any labelled axes… I don't know which chart is which.' The motivating need."

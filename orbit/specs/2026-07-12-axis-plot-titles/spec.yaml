@@ -1,0 +1,100 @@
+goal: >
+  Axis and plot titles — the in-app finding "I can't see any labelled axes in
+  the cross-filter; I don't know which chart is which" closes. Each positional
+  axis renders its field-name title (the encoding's column name from the
+  ChannelMap by default; x below the tick labels, y rotated up the left margin),
+  overridable per axis via Mosaic's xLabel/yLabel (literal-only, most-specific
+  over the derived default; an explicit null or empty string suppresses), and
+  each plot renders an optional title from its `title` attribute above the frame.
+  Titles are DATA INK — they render in authoring, presentation, AND the headless
+  PNG dump — so the margins grow to fit them and every example PNG re-baselines
+  behind a before/after gallery (the axis-inset ceremony). The margin budget
+  composes with the axis-inset range pull without either clipping the other.
+
+constraints:
+  - "Titles ride a render arg + a LivePlot field, NOT ChartLayout: both layout models are #[derive(Copy)] and Strings break Copy. The resolved titles thread spec → assembly (main.rs, beside inset resolution) → build_multi_mark_scene via a titles arg (mirroring the existing draw_inline_legend flag) and LivePlot carries them for anchored rebuilds. ChartLayout stays Copy — it gains only the grown MARGINS (f64), never the title text."
+  - "Orthogonal to axis-inset, and must stay so: margins are the outer budget OUTSIDE the frame; insets pull the positional RANGE inward INSIDE the frame (DEFAULT_SCALE_INSET, card 0018/#55). The two never clip each other. inset.rs and brightfield-spec::layout::resolve_plot_insets are untouched; a titled plot still applies the 5px inset. The composition needs a new ChartLayout::with_margins_and_insets constructor — today with_margins forces Insets::default and with_insets forces Margins::default (layout.rs:73/85), so no constructor carries both."
+  - "Both layout models move together: render layout.rs (crossfilter.rs imports it) and ui chart_layout.rs (chart_state.rs imports it) each carry the grown margins, pinned by the cross-model agreement test — the axi-ac03 sibling — extended to feed matching margins so render x_range()/y_range() equal the ui plot-area ranges under grown-margins + insets together. Unification stays a recorded reserve."
+  - "Field name is read at the axis-draw sites from the ChannelMap already in scope (ChartData.channel_map, scene.rs; channel_map.get(Channel::X/Y) → column name, channel.rs:112) — no new plumbing to REACH the name. Derived titles are literal column names verbatim (Mosaic makes no attempt to humanise); no arrow synthesis, no prettification."
+  - "Fixed title-band margins, not measured: a title runs ALONG its axis (y rotated → length runs vertically down the plot height; x/plot-title horizontal → length runs along the plot width), so the dimension it consumes IN the margin is the font height (~TITLE_SIZE + pad), constant regardless of title length. A pathologically long title clips along-axis (never into a neighbour); measured-fit is a recorded deferral."
+  - "Hot-reload gated via ChromeSnapshot, like insets and colorScheme: a title/label/plot-title edit diverges the snapshot → 'restart to apply'; the watcher does not live-swap a re-titled/re-margined layout (it swaps scenes, never rebuilds the coordinator)."
+  - "Render-only: no SQL, no plan hash, no coordinator query change. The vendored corpus keeps parsing and sweeps green once xLabel/yLabel/title become consumed attributes (presidential-opinion, airline-travelers and the labelled corpus specs carry them today)."
+  - "Every example PNG re-baselines — expected, not a halt. A diff NOT explainable by added title ink + the fixed margin growth (mark colour shift, tick reflow beyond the margin move, anything else) IS a halt. Before set = examples dumped from main at branch point (post-axis-inset); the axis-inset after set is the current baseline."
+  - "Never cargo fmt --all; suite runs with set -o pipefail + explicit exit check; cargo 1.95 condensed summary line."
+
+acceptance_criteria:
+  - id: apt-ac01
+    ac_type: code
+    description: "Derived axis titles: a positional x/y channel bound to a column renders that column name as its axis title by default — x centred below the tick labels, y rotated up the left margin — resolved at the axis-draw sites from the ChannelMap already in scope, so a bare spec (no label attrs) already reads as a labelled chart. A channel with no positional binding (or an augment-only axis) gets no title. The resolution is a single gpui-free primitive (resolve_axis_titles) both layout/scene paths consume, mirroring resolve_plot_insets."
+    verification: "apt_ac01: resolve_axis_titles unit — absent label attr on a column-bound x/y → derived-field-name; unbound/augment-only → no title. A scene probe confirms the x/y column names appear as title ink at the expected band. verifies: capability"
+  - id: apt-ac02
+    ac_type: code
+    description: "Explicit override + suppress: xLabel / yLabel in PlotNode.attributes override the derived field name; an explicit null OR empty string suppresses that axis title (empty, no reserved band); a non-string value degrades to the derived default with a ParseWarning::NonStringLabel naming the attribute (not a silent drop); literal-only — a lifted $param is a recorded deferral, treated as absent. Most-specific-wins over the derived default, matching the axis-inset attr convention (explicit-null = the Mosaic-exact opt-out)."
+    verification: "apt_ac02: resolve_axis_titles unit matrix — string → Override(text); null/\"\" → Suppress; absent → Derive(field); number/bool → warn + Derive. verifies: capability"
+  - id: apt-ac03
+    ac_type: code
+    description: "Rotation primitive: a new draw_text_rotated renders a run bottom-to-top via Affine::translate((x,y)) * Affine::rotate(-PI/2) under the existing text pipeline; the y-axis title uses it, the x-axis title and the plot title use the horizontal draw_text. LABEL_SIZE/LABEL_COLOUR gain a TITLE_SIZE/TITLE_COLOUR sibling (title ink is distinct from tick-label ink); no change to draw_text's existing callers."
+    verification: "apt_ac03: a transform unit asserting draw_text_rotated composes translate∘rotate(-PI/2) (glyph run transform), and the y-axis render site calls it; draw_text's existing tick-label callers are byte-unchanged. verifies: capability"
+  - id: apt-ac04
+    ac_type: code
+    description: "Per-plot title: plot.attributes[\"title\"] (a literal string) renders above the plot frame, left-aligned at the frame's left edge (Observable Plot parity); absent → no title AND no reserved top-band growth; a non-string value → ParseWarning + no title. Independent of the window title (meta.title, card 0016) — a plot titles itself without affecting the workspace strip."
+    verification: "apt_ac04: resolve unit (string → Some, absent/non-string → None + warn) + a scene probe: title ink present at the top band iff declared, and the top margin grows iff present. verifies: capability"
+  - id: apt-ac05
+    ac_type: code
+    description: "Title-aware margins on BOTH models: the left margin grows by a fixed title band (TITLE_SIZE + pad) when a y-title is present, the bottom margin when an x-title is present, the top margin when a plot title is present — each independent, absent titles leave the Observable-default margin untouched. A new ChartLayout::with_margins_and_insets(width, height, margins, insets) composes custom margins with resolved insets (neither resets the other). The cross-model agreement test is extended so render x_range()/y_range() equal the ui plot-area-derived ranges under the SAME grown margins + insets."
+    verification: "apt_ac05: a margin-growth unit (present → grown by the band, absent → default) on both models + the extended agreement unit (render vs ui ranges equal under grown-margins + insets together). verifies: capability"
+  - id: apt-ac06
+    ac_type: code
+    description: "Orthogonal to axis-inset: inset.rs and brightfield-spec::layout::resolve_plot_insets are diff-clean; a titled plot still applies DEFAULT_SCALE_INSET on continuous ends; margins (outer) and insets (range pull) compose without clipping — an edge-value mark at a domain bound still renders whole (apt fixture preserves axi-ac05's guarantee) now inside the grown margins. The range derives as plot_bounds(grown margins) THEN the inset pull, in that order."
+    verification: "apt_ac06: a compose unit (grown margins + nonzero inset → range = inner-of(plot_bounds(grown margins)) pulled by the inset) + an inset.rs/resolve_plot_insets diff assertion (unchanged) + the edge-dot scene probe (axi-ac05 precedent) on a titled fixture. verifies: capability"
+  - id: apt-ac07
+    ac_type: code
+    description: "Hot-reload gated: a title / xLabel / yLabel / plot-title edit diverges the ChromeSnapshot → 'restart to apply' (like insets and colorScheme); the watcher does not live-swap a re-titled or re-margined layout. The resolved titles + grown margins are captured in the snapshot the divergence check reads."
+    verification: "apt_ac07: a chrome_divergence unit — a spec differing only by an xLabel (or a plot title) diverges the snapshot; an identical spec does not. verifies: capability"
+  - id: apt-ac08
+    ac_type: code
+    description: "Titles ride the render arg + LivePlot field, not ChartLayout: the resolved titles thread from the spec through assembly (main.rs, beside the inset resolution at build time) into build_multi_mark_scene via a titles arg (mirroring draw_inline_legend), and LivePlot carries them so an anchored rebuild re-emits the same titles; ChartLayout stays Copy (gains grown-margin f64s only, no String). LivePlotMeta carries the titles for the ChromeSnapshot gate."
+    verification: "apt_ac08: a build-path unit — the assembled scene for a titled plot carries the title ink, and an anchored (widen-only) rebuild re-emits it; ChartLayout has no String field (type-level / it still derives Copy). verifies: capability"
+  - id: apt-ac09
+    ac_type: manual
+    description: "Re-baseline + gallery: every examples/*.yaml re-dumped; PNGs that gain a positional axis title or plot title move (added title ink + the fixed margin growth) and a non-moving PNG is investigated; a before/after gallery covers every example, each diff title-explainable; the crossfilter example (the motivating case) now shows labelled axes distinguishing its two dot plots. Hugh's gallery ack is also the veto point for the title styling — size, colour, plot-title placement (left vs centred)."
+    verification: "apt_ac09: the sweep run against the before set reports all-DIFFERS-explained (or a justified no-move); gallery artifact delivered to Hugh, crossfilter legibility called out. verifies: stand-in (real thing is Hugh's eyeball over the before/after set + the crossfilter legibility check), accepted because the round's payload is visual and the gallery is the review artifact."
+  - id: apt-ac10
+    ac_type: gate
+    description: "Ship gate: full workspace suite green (pipefail, condensed 1.95 summary, explicit exit); double-render determinism unchanged; the vendored corpus parses and sweeps green with xLabel/yLabel/title now consumed; PNG sweep per apt-ac09."
+    verification: "apt_ac10: cargo test --workspace; determinism double-render cmp; corpus parse+sweep; full PNG sweep vs the before set with the all-moves-explained report. verifies: capability"
+
+implementation_notes:
+  - "Resolution: add resolve_axis_titles(plot: &PlotNode, channel_map: &ChannelMap) -> AxisTitles beside resolve_plot_insets in brightfield-spec::layout (the num()-style literal reader, but for strings + the null/empty suppress sentinel). Per axis: Override(String) | Suppress | Derive(field-name). Plot title: resolve_plot_title(plot) -> Option<String>. Non-string → ParseWarning (mirror NonNumericInset → NonStringLabel)."
+  - "Render sites: axis.rs render_x_axis (:182) / render_y_axis (:215) gain a resolved title arg; scene.rs build_chart_scene axes (:177-184) and draw_multi_mark_scene axes (:321-328) pass it, reading ChannelMap.get(Channel::X/Y) for the Derive case. text.rs: add draw_text_rotated near draw_text (:108-113 is the current Affine::translate line), + TITLE_SIZE/TITLE_COLOUR beside LABEL_SIZE (11.0)/LABEL_COLOUR."
+  - "Margins: render layout.rs Margins default top20/right20/bottom30/left40 (:49-59); add with_margins_and_insets (with_margins :73 and with_insets :85 each reset the other today). Compute grown margins from AxisTitles + plot-title presence at assembly. Mirror on ui chart_layout.rs; extend the axi_ac03 cross-model pin (chart_layout.rs:254) to feed matching margins. inset.rs axi_ac05 geometry proof (:451-500) is the edge-dot probe template for apt-ac06."
+  - "Assembly: main.rs resolves insets at :816-834 then build call :838 — resolve titles + grown margins right beside it, pass into build_multi_mark_scene. LivePlot (crossfilter.rs:84) gains a titles field like scheme; LivePlotMeta (main.rs:434) carries them for the ChromeSnapshot gate (main.rs:483/542). render_plot_scene (crossfilter.rs:691-719) re-emits them on anchored rebuild. draw_inline_legend is the exact precedent for a bool/Option threaded arg — titles follow that seam, not ChartLayout (Copy)."
+  - "Attribute source: xLabel/yLabel/title live in PlotNode.attributes (ast.rs:265), same bag as the inset attrs. Aggregate/derived channels (fill {count:} → __bf_count) are a fill-channel concern, not positional — positional x/y are usually plain columns, so the Derive default reads clean; a positional $param axis derives the param name (acceptable, override available)."
+
+ontology_schema:
+  name: "AxisTitles"
+  description: "A plot's resolved axis + plot titles, gpui-free, consumed by both layout/scene paths and captured in the ChromeSnapshot."
+  fields:
+    - name: "x"
+      type: "AxisTitle"
+      description: "Override(String) | Suppress | Derive — the x-axis title decision; Derive resolves to the ChannelMap x column name at the render site."
+    - name: "y"
+      type: "AxisTitle"
+      description: "Override(String) | Suppress | Derive — the y-axis title decision; the render site rotates it -PI/2."
+    - name: "plot"
+      type: "Option<String>"
+      description: "The per-plot title from plot.attributes[\"title\"]; None → no title and no reserved top band."
+
+deferred:
+  - "Measured title-fit margins — the fixed band clips a pathologically long title along-axis; content-measured margins are the follow-on (needs a text-metrics pass)."
+  - "xLabel/yLabel/title: $param threading — literal-only now, same substrate as inset/binWidth's recorded $param deferral."
+  - "Derived-title prettification / humanisation (snake_case → Title Case, aggregate-channel synthesis like {count:} → 'Count', directional arrows) — Mosaic makes no attempt; authors override by hand."
+  - "The wider Mosaic axis-attr surface (labelAngle, tickFormat, titleFontSize, titleAnchor) — v1 does derived field name + xLabel/yLabel override + plot title only."
+  - "Facet/concat shared-axis title dedup — each plot titles independently in v1."
+
+metadata:
+  version: "1.0"
+  test_prefix: "apt"
+  timestamp: "2026-07-12T00:00:00Z"
+  ambiguity_score: 0.12
+  interview_ref: "orbit/cards/0019-axis-plot-titles.yaml"
