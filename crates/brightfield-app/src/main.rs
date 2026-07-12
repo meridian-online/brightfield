@@ -32,7 +32,8 @@ use std::process;
 
 use brightfield_engine::{Engine, Session, SourceProfile};
 use brightfield_render::channel::{Channel, ChannelMap};
-use brightfield_render::layout::{ChartLayout, Insets};
+use brightfield_render::layout::{ChartLayout, Insets, Margins};
+use brightfield_render::title::ResolvedTitles;
 use brightfield_render::legend::{colour_legend_size, render_colour_legend_at};
 use brightfield_render::mark::{configured_renderer, default_renderers, find_renderer, MarkRenderer};
 use brightfield_render::scale::{Scale, ScaleSet, SequentialScheme};
@@ -91,6 +92,10 @@ struct PlotRender {
     /// each plot's `ChartState` so its interaction geometry matches the inset
     /// scale range the scene was drawn against.
     insets: Insets,
+    /// Title-grown margins (card 0019), carried to each plot's `ChartState` (via
+    /// `set_margins_and_insets`) so its interaction geometry matches the
+    /// grown-margin scene — and survives a window resize.
+    margins: Margins,
 }
 
 /// A slider widget's placement (card 0005): its dashboard rect, the param binding
@@ -448,6 +453,14 @@ struct LivePlotMeta {
     /// re-run the old scheme. Live-rebuild scheme fidelity does NOT ride this
     /// field — it rides each mark's `MarkInput::renderer_override`.
     scheme: SequentialScheme,
+    /// The plot's resolved axis + plot titles (card 0019). Carried to the
+    /// coordinator's `LivePlot.titles` so a live rebuild re-emits them, and into
+    /// the `ChromeSnapshot` gate so a title / xLabel / yLabel / plot-title edit
+    /// (which also regrows the margins) falls back to "restart to apply" — the
+    /// watcher never rebuilds the coordinator, so a gesture would otherwise
+    /// revert to the launch titles/margins. Grown margins are a pure function of
+    /// these, so gating the titles gates the margins too.
+    titles: ResolvedTitles,
 }
 
 /// The launch-fixed chrome + render metadata the hot-reload gate compares
@@ -480,7 +493,10 @@ struct ChromeSnapshot {
     /// attribute OR a data change that flips the default (e.g. a value axis
     /// crossing zero) — would hot-swap the scene once, then revert on the next
     /// gesture; gating it here forces "restart to apply", exactly as `scheme`.
-    plot_render_meta: Vec<(String, SequentialScheme, bool, Insets)>,
+    /// The resolved titles (card 0019) ride the same tuple — a title / label
+    /// edit regrows the launch margins, which the watcher can't hot-apply, so it
+    /// gates identically (grown margins are a pure function of the titles).
+    plot_render_meta: Vec<(String, SequentialScheme, bool, Insets, ResolvedTitles)>,
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -519,7 +535,15 @@ impl ChromeSnapshot {
                 .collect(),
             plot_render_meta: plots
                 .iter()
-                .map(|p| (p.path.clone(), p.scheme, p.draw_inline_legend, p.layout.insets()))
+                .map(|p| {
+                    (
+                        p.path.clone(),
+                        p.scheme,
+                        p.draw_inline_legend,
+                        p.layout.insets(),
+                        p.titles.clone(),
+                    )
+                })
                 .collect(),
         }
     }
@@ -540,7 +564,7 @@ fn chrome_divergence(launch: &ChromeSnapshot, rebuilt: &ChromeSnapshot) -> Optio
         return Some("legend selection binding (as:/for:)");
     }
     if launch.plot_render_meta != rebuilt.plot_render_meta {
-        return Some("per-plot render metadata (colorScheme/inline legend/inset)");
+        return Some("per-plot render metadata (colorScheme/inline legend/inset/titles)");
     }
     None
 }
@@ -828,14 +852,31 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             brightfield_render::inset::DEFAULT_SCALE_INSET,
         );
         drop(inset_entries);
-        let layout = ChartLayout::with_insets(plot.rect.width, plot.rect.height, insets);
+
+        // Axis + plot titles (card 0019): resolve the plot's title decisions
+        // (Override/Suppress/Derive) from its attributes, resolve DERIVE against
+        // the mark channel maps (first column-bound entry names the axis), then
+        // grow the margins to reserve a fixed band per present title. Titles are
+        // data ink — they ride the render arg + `LivePlot.titles`; the grown
+        // margins ride both layout models + each plot's `ChartState`.
+        let title_maps: Vec<&ChannelMap> = chart_data.iter().map(|d| d.channel_map).collect();
+        let titles = plot_nodes
+            .iter()
+            .find(|(path, _)| *path == plot.path)
+            .map(|(_, node)| brightfield_render::resolve_titles(node, &title_maps))
+            .unwrap_or_default();
+        drop(title_maps);
+        let margins = brightfield_render::grow_margins(Margins::default(), &titles);
+
+        let layout =
+            ChartLayout::with_margins_and_insets(plot.rect.width, plot.rect.height, margins, insets);
         for d in &mut chart_data {
             d.layout = layout.clone();
         }
 
         let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
         let draw_inline_legend = !legend_suppressed.contains(&plot.path);
-        let (scene, scales) = build_multi_mark_scene(&refs, draw_inline_legend);
+        let (scene, scales) = build_multi_mark_scene(&refs, draw_inline_legend, &titles);
         drop(refs);
         drop(chart_data);
 
@@ -854,6 +895,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             height: plot.rect.height.ceil() as u32,
             scene,
             insets,
+            margins,
         });
         live_plots.push(LivePlotMeta {
             path: plot.path.clone(),
@@ -863,6 +905,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             scales,
             draw_inline_legend,
             scheme,
+            titles,
         });
     }
 
@@ -1369,13 +1412,16 @@ fn main() {
             for p in plots {
                 let (x, y, w, h) = (p.x, p.y, f64::from(p.width), f64::from(p.height));
                 let insets = p.insets;
+                let margins = p.margins;
                 let state = cx.new(|_| {
                     brightfield_ui::ChartState::new(p.scene, p.width, p.height, renderer.clone())
                 });
-                // Carry the plot's resolved range insets into its interaction
-                // layout so brush inversion / hit-testing match the inset scale
-                // range the scene was drawn against (card 0008 axis-inset).
-                state.update(cx, |s, _| s.set_insets(insets));
+                // Carry the plot's resolved range insets AND title-grown margins
+                // into its interaction layout so brush inversion / hit-testing
+                // match the grown-margin + inset scale range the scene was drawn
+                // against (card 0008 axis-inset + card 0019 titles), and survive
+                // a window resize.
+                state.update(cx, |s, _| s.set_margins_and_insets(margins, insets));
                 watched.push(WatchedPlot { path: p.path, x, y, width: w, height: h, state });
             }
 
@@ -1401,6 +1447,9 @@ fn main() {
                     // LivePlotMeta.scheme's other role (the ChromeSnapshot gate).
                     scheme: meta.scheme,
                     draw_inline_legend: meta.draw_inline_legend,
+                    // Resolved axis + plot titles (card 0019) — a live rebuild
+                    // re-emits them so a gesture never drops the labels.
+                    titles: meta.titles,
                     state: w.state.clone(),
                 })
                 .collect();
@@ -1772,6 +1821,7 @@ hconcat:
             scales,
             draw_inline_legend: true,
             scheme: SequentialScheme::default(),
+            titles: brightfield_render::title::ResolvedTitles::default(),
         };
         let placements = super::resolve_legends(&spec, std::slice::from_ref(&meta));
         assert_eq!(placements.len(), 1, "one standalone legend resolves");
@@ -2334,7 +2384,13 @@ colorScheme: blues
                     "sel".to_string(),
                     "species".to_string(),
                 )],
-                plot_render_meta: vec![("/plot/0".to_string(), scheme, inline, Insets::default())],
+                plot_render_meta: vec![(
+                    "/plot/0".to_string(),
+                    scheme,
+                    inline,
+                    Insets::default(),
+                    brightfield_render::title::ResolvedTitles::default(),
+                )],
             };
         let launch = snapshot("framed", SequentialScheme::Blues, true);
 
@@ -2356,13 +2412,13 @@ colorScheme: blues
                 &launch,
                 &snapshot("framed", SequentialScheme::Viridis, true)
             ),
-            Some("per-plot render metadata (colorScheme/inline legend/inset)")
+            Some("per-plot render metadata (colorScheme/inline legend/inset/titles)")
         );
         // Inline-legend suppression flip (a standalone legend gained/lost its
         // `for:` target).
         assert_eq!(
             super::chrome_divergence(&launch, &snapshot("framed", SequentialScheme::Blues, false)),
-            Some("per-plot render metadata (colorScheme/inline legend/inset)")
+            Some("per-plot render metadata (colorScheme/inline legend/inset/titles)")
         );
         // Inset edit (or a data-driven default flip): launch-fixed in the
         // coordinator, so without the gate the swap renders the new inset once
@@ -2377,7 +2433,20 @@ colorScheme: blues
         };
         assert_eq!(
             super::chrome_divergence(&launch, &insetted),
-            Some("per-plot render metadata (colorScheme/inline legend/inset)")
+            Some("per-plot render metadata (colorScheme/inline legend/inset/titles)")
+        );
+        // apt-ac08: a title / xLabel / yLabel / plot-title edit regrows the
+        // launch margins, which the watcher can't hot-apply — gated exactly like
+        // inset (a gesture would otherwise revert to the launch titles/margins).
+        let mut retitled = snapshot("framed", SequentialScheme::Blues, true);
+        retitled.plot_render_meta[0].4 = brightfield_render::title::ResolvedTitles {
+            x: Some("temp".into()),
+            y: None,
+            plot: None,
+        };
+        assert_eq!(
+            super::chrome_divergence(&launch, &retitled),
+            Some("per-plot render metadata (colorScheme/inline legend/inset/titles)")
         );
         // Hosted-legend rect or scale change.
         let mut moved = snapshot("framed", SequentialScheme::Blues, true);
@@ -2447,6 +2516,7 @@ colorScheme: blues
             scales: ScaleSet::new(),
             draw_inline_legend: false,
             scheme: SequentialScheme::Blues,
+            titles: brightfield_render::title::ResolvedTitles::default(),
         };
 
         let snap = super::ChromeSnapshot::capture(
@@ -2476,7 +2546,8 @@ colorScheme: blues
                 "/plot/0".to_string(),
                 SequentialScheme::Blues,
                 false,
-                Insets::default()
+                Insets::default(),
+                brightfield_render::title::ResolvedTitles::default()
             )]
         );
     }
@@ -2704,7 +2775,8 @@ plot:
             highlight: None,
         }];
         let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
-        let (scene, scales) = build_multi_mark_scene(&refs, true);
+        let (scene, scales) =
+            build_multi_mark_scene(&refs, true, &brightfield_render::title::ResolvedTitles::default());
 
         // Scene should be non-empty (the valid dot mark rendered).
         let encoding = scene.encoding();

@@ -91,6 +91,32 @@ impl ChartLayout {
         }
     }
 
+    /// Create a layout composing custom (title-grown) margins with range insets
+    /// — the title-aware runtime path (card 0019). Mirrors the render
+    /// `ChartLayout::with_margins_and_insets`: the grown margins reserve the
+    /// title bands (outer budget) while the insets pull the positional range
+    /// inward. Both models fed the same values keep `plot_area` == render
+    /// `x_range`/`y_range`, so a titled plot's hit-testing matches its scene.
+    pub fn with_margins_and_insets(
+        width: f64,
+        height: f64,
+        left: f64,
+        top: f64,
+        right: f64,
+        bottom: f64,
+        insets: Insets,
+    ) -> Self {
+        Self {
+            width,
+            height,
+            margin_left: left,
+            margin_top: top,
+            margin_right: right,
+            margin_bottom: bottom,
+            insets,
+        }
+    }
+
     /// The per-side range insets carried by this layout.
     pub fn insets(&self) -> Insets {
         self.insets
@@ -275,6 +301,43 @@ mod tests {
     }
 
     #[test]
+    fn apt_ac05_cross_model_agreement_with_grown_title_margins() {
+        // The assembly glue: ONE ResolvedTitles → grow_margins → fed to BOTH
+        // layout models must still agree per-side (render x_range/y_range == ui
+        // plot_area) under per-side-DISTINCT grown margins + insets, so a titled
+        // plot's brush inversion / hit-testing matches its rendered scale ranges.
+        use brightfield_render::layout::{ChartLayout as RL, Margins};
+        use brightfield_render::{grow_margins, ResolvedTitles};
+
+        let titles = ResolvedTitles {
+            x: Some("x".into()),    // grows the bottom margin
+            y: Some("y".into()),    // grows the left margin
+            plot: Some("t".into()), // grows the top margin
+        };
+        let grown = grow_margins(Margins::default(), &titles);
+        // Per-side distinct: left/bottom/top all differ (right never grows).
+        assert!(grown.left != grown.bottom && grown.bottom != grown.top);
+        let insets = Insets {
+            left: 5.0,
+            right: 7.0,
+            top: 3.0,
+            bottom: 9.0,
+        };
+
+        let render = RL::with_margins_and_insets(640.0, 480.0, grown, insets);
+        let ui = ChartLayout::with_margins_and_insets(
+            640.0, 480.0, grown.left, grown.top, grown.right, grown.bottom, insets,
+        );
+        let area = ui.plot_area();
+        let (rx0, rx1) = render.x_range();
+        let (ry0, ry1) = render.y_range();
+        assert!((rx0 - area.x0).abs() < f64::EPSILON);
+        assert!((rx1 - area.x1).abs() < f64::EPSILON);
+        assert!((ry0 - area.y1).abs() < f64::EPSILON);
+        assert!((ry1 - area.y0).abs() < f64::EPSILON);
+    }
+
+    #[test]
     fn axi_ac03_inversion_round_trips_at_inset_ends() {
         // A pixel at the inset range end inverts to the domain end — the brush
         // edge lands on the domain bound, not a sliver past it.
@@ -308,6 +371,41 @@ mod tests {
             v_frame > 100.0,
             "un-inset frame edge {frame_x_end} inverts to {v_frame}, must be past domain max"
         );
+    }
+
+    #[test]
+    fn apt_ac06_titled_plot_area_inverts_on_the_grown_range() {
+        // The review HIGH, closed at the geometry level: with title-grown
+        // margins the ui plot_area IS the render scale range, so a brush edge /
+        // click at a plot-area bound inverts to the domain bound — hit-testing
+        // matches the titled scene, not a default-margin one.
+        use brightfield_render::layout::{ChartLayout as RL, Margins};
+        use brightfield_render::scale::Scale;
+        use brightfield_render::{grow_margins, ResolvedTitles};
+
+        let titles = ResolvedTitles {
+            x: Some("x".into()),
+            y: Some("y".into()),
+            plot: None,
+        };
+        let grown = grow_margins(Margins::default(), &titles);
+        let ui = ChartLayout::with_margins_and_insets(
+            640.0, 480.0, grown.left, grown.top, grown.right, grown.bottom, Insets::default(),
+        );
+        let render = RL::with_margins_and_insets(640.0, 480.0, grown, Insets::default());
+        let area = ui.plot_area();
+        let (rx0, rx1) = render.x_range();
+        let scale = Scale::Linear {
+            domain_min: 0.0,
+            domain_max: 100.0,
+            range_start: rx0,
+            range_end: rx1,
+        };
+        // The ui plot-area edges invert to the domain bounds on the grown range.
+        assert!((scale.inverse_f64(area.x0).unwrap() - 0.0).abs() < 1e-9);
+        assert!((scale.inverse_f64(area.x1).unwrap() - 100.0).abs() < 1e-9);
+        // The y-title grew the left margin, shifting the range start off default 40.
+        assert!(area.x0 > 40.0, "grown left margin moved the range start inward");
     }
 
     #[test]

@@ -91,9 +91,34 @@ impl ChartLayout {
         }
     }
 
+    /// Create a chart layout composing custom margins with range insets — the
+    /// title-aware path (card 0019). Neither resets the other: `with_margins`
+    /// forces `Insets::default` and `with_insets` forces `Margins::default`, so
+    /// a titled + inset plot needs this. Margins are the outer budget (grown to
+    /// fit axis / plot titles); insets pull the positional RANGE inward. Both
+    /// layout models carry the same resolved values.
+    pub fn with_margins_and_insets(
+        width: f64,
+        height: f64,
+        margins: Margins,
+        insets: Insets,
+    ) -> Self {
+        Self {
+            width,
+            height,
+            margins,
+            insets,
+        }
+    }
+
     /// The resolved per-side range insets carried by this layout.
     pub fn insets(&self) -> Insets {
         self.insets
+    }
+
+    /// The resolved margins carried by this layout (grown to fit titles).
+    pub fn margins(&self) -> Margins {
+        self.margins
     }
 
     /// The plot area x-start (left edge of the data region).

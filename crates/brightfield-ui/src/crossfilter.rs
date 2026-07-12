@@ -36,6 +36,7 @@ use brightfield_render::mark::{
 use brightfield_render::nearest::SelectionValue;
 use brightfield_render::scale::{Scale, ScaleSet, SequentialScheme};
 use brightfield_render::scene::{build_multi_mark_scene_anchored, ChartData};
+use brightfield_render::title::ResolvedTitles;
 use brightfield_spec::analysis::{ComponentPath, LegendBinding};
 use brightfield_spec::vocab::MarkKind;
 
@@ -117,6 +118,11 @@ pub struct LivePlot {
     /// the app layer and carried here so a live re-render honours the same
     /// suppression instead of resurrecting the inline legend.
     pub draw_inline_legend: bool,
+    /// The plot's resolved axis + plot titles (card 0019). Rides here — NOT the
+    /// `Copy` `ChartLayout` (Strings would break `Copy`) — so every launch-
+    /// anchored live rebuild re-emits the same titles the first render drew. The
+    /// grown title margins are baked into `layout` (and the `ChartState`).
+    pub titles: ResolvedTitles,
     /// Reactive state entity — the scene we swap when this plot is re-filtered.
     pub state: Entity<ChartState>,
 }
@@ -648,6 +654,7 @@ impl CrossfilterCoordinator {
         let mark_indices = self.plots[plot_index].mark_indices.clone();
         let layout = self.plots[plot_index].layout.clone();
         let draw_inline_legend = self.plots[plot_index].draw_inline_legend;
+        let titles = self.plots[plot_index].titles.clone();
         let launch = self.plots[plot_index].launch_scales.clone();
 
         let (scene, anchored) = render_plot_scene(
@@ -656,6 +663,7 @@ impl CrossfilterCoordinator {
             &mark_indices,
             &layout,
             draw_inline_legend,
+            &titles,
             &launch,
         );
         self.plots[plot_index].scales = anchored;
@@ -694,6 +702,7 @@ fn render_plot_scene(
     mark_indices: &[usize],
     layout: &ChartLayout,
     draw_inline_legend: bool,
+    titles: &ResolvedTitles,
     launch: &ScaleSet,
 ) -> (Scene, ScaleSet) {
     let chart_data: Vec<ChartData<'_>> = mark_indices
@@ -716,7 +725,7 @@ fn render_plot_scene(
         })
         .collect();
     let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
-    build_multi_mark_scene_anchored(&refs, draw_inline_legend, launch)
+    build_multi_mark_scene_anchored(&refs, draw_inline_legend, titles, launch)
 }
 
 /// Whether a coordinator has any live-driving surface — a brush, a slider, a
@@ -836,7 +845,7 @@ mod tests {
             })
             .collect();
         let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
-        build_multi_mark_scene(&refs, true).1
+        build_multi_mark_scene(&refs, true, &ResolvedTitles::default()).1
     }
 
     /// The scene the OLD re-inferring rebuild produced: infer scales fresh from
@@ -869,7 +878,7 @@ mod tests {
             })
             .collect();
         let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
-        build_multi_mark_scene(&refs, true).0
+        build_multi_mark_scene(&refs, true, &ResolvedTitles::default()).0
     }
 
     /// A fingerprint of a scene's geometry (`path_data`: the packed coordinates
@@ -982,9 +991,9 @@ mod tests {
         // no-op — anchored == launch).
         let launch = launch_scales(&marks, &renderers, &[0], &layout);
 
-        let (with_legend, _) = render_plot_scene(&marks, &renderers, &[0], &layout, true, &launch);
+        let (with_legend, _) = render_plot_scene(&marks, &renderers, &[0], &layout, true, &ResolvedTitles::default(), &launch);
         let (without_legend, _) =
-            render_plot_scene(&marks, &renderers, &[0], &layout, false, &launch);
+            render_plot_scene(&marks, &renderers, &[0], &layout, false, &ResolvedTitles::default(), &launch);
         assert!(
             count_scene_paths(&with_legend) > count_scene_paths(&without_legend),
             "the inline gradient legend adds paths when draw_inline_legend is true \
@@ -1089,7 +1098,7 @@ mod tests {
         // Negative: the override swap alone is inert — anchor_scale copies launch
         // stops, so the anchored ramp stays viridis.
         let (_, override_only) =
-            render_plot_scene(&blues_override_marks, &renderers, &[0], &layout, false, &launch);
+            render_plot_scene(&blues_override_marks, &renderers, &[0], &layout, false, &ResolvedTitles::default(), &launch);
         match override_only.get(Channel::Fill) {
             Some(Scale::Sequential { stops, .. }) => assert_eq!(
                 *stops,
@@ -1103,7 +1112,7 @@ mod tests {
         // the blues ramp (the load-bearing step cycle_scheme performs).
         assert!(recolour_fill(&mut launch, SequentialScheme::Blues.stops()));
         let (_, anchored) =
-            render_plot_scene(&blues_override_marks, &renderers, &[0], &layout, false, &launch);
+            render_plot_scene(&blues_override_marks, &renderers, &[0], &layout, false, &ResolvedTitles::default(), &launch);
         match anchored.get(Channel::Fill) {
             Some(Scale::Sequential { stops, .. }) => assert_eq!(
                 *stops,
@@ -1200,8 +1209,8 @@ mod tests {
         let l1 = launch_scales(&cycled(Some(2.0)), &renderers, &[0], &layout);
         let l2 = launch_scales(&cycled(None), &renderers, &[0], &layout);
         let fixed = anchor_scales(&l1, l2);
-        let kept = render_plot_scene(&cycled(Some(2.0)), &renderers, &[0], &layout, false, &fixed).0;
-        let dropped = render_plot_scene(&cycled(None), &renderers, &[0], &layout, false, &fixed).0;
+        let kept = render_plot_scene(&cycled(Some(2.0)), &renderers, &[0], &layout, false, &ResolvedTitles::default(), &fixed).0;
+        let dropped = render_plot_scene(&cycled(None), &renderers, &[0], &layout, false, &ResolvedTitles::default(), &fixed).0;
         assert_ne!(
             scene_bytes(&kept),
             scene_bytes(&dropped),
@@ -1243,7 +1252,7 @@ mod tests {
         // stored (displayed) scales equal launch and the scene differs from the
         // old re-inferring build.
         let (anchored_scene, anchored) =
-            render_plot_scene(&c.marks, &c.renderers, &[1], &layout, true, &launch);
+            render_plot_scene(&c.marks, &c.renderers, &[1], &layout, true, &ResolvedTitles::default(), &launch);
         assert_eq!(
             anchored.get(Channel::X).and_then(|s| s.domain_max()),
             Some(launch_x),
@@ -1344,7 +1353,7 @@ mod tests {
         // every category (including adelie at palette[0] == reinferred_gentoo),
         // masking whether a dot was recoloured.
         let (anchored_scene, _) =
-            render_plot_scene(&filtered_marks, &renderers, &[0], &layout, false, &launch);
+            render_plot_scene(&filtered_marks, &renderers, &[0], &layout, false, &ResolvedTitles::default(), &launch);
         let drawn: std::collections::HashSet<u32> =
             anchored_scene.encoding().draw_data.iter().copied().collect();
         assert!(
@@ -1426,7 +1435,7 @@ mod tests {
 
         // The anchored rebuild pins the Fill Sequential to the LAUNCH domain...
         let (hanchored_scene, hanchored) =
-            render_plot_scene(&hfiltered_marks, &renderers, &[0], &layout, false, &hlaunch);
+            render_plot_scene(&hfiltered_marks, &renderers, &[0], &layout, false, &ResolvedTitles::default(), &hlaunch);
         match hanchored.get(Channel::Fill) {
             Some(Scale::Sequential { domain_max, .. }) => assert_eq!(
                 *domain_max, launch_fill_max,
@@ -1460,7 +1469,7 @@ mod tests {
             let layout = ChartLayout::new(360.0, 300.0);
             let launch = launch_scales(&c.marks, &c.renderers, &[1], &layout);
             let (launch_scene, _) =
-                render_plot_scene(&c.marks, &c.renderers, &[1], &layout, true, &launch);
+                render_plot_scene(&c.marks, &c.renderers, &[1], &layout, true, &ResolvedTitles::default(), &launch);
 
             assert!(c.apply_legend_click(0, Some("gentoo")).is_some());
             assert_eq!(c.marks[1].batch.as_ref().unwrap().num_rows(), 3);
@@ -1468,7 +1477,7 @@ mod tests {
             assert!(c.apply_legend_click(0, Some("gentoo")).is_some());
             assert_eq!(c.marks[1].batch.as_ref().unwrap().num_rows(), 6);
 
-            let (rebuilt, _) = render_plot_scene(&c.marks, &c.renderers, &[1], &layout, true, &launch);
+            let (rebuilt, _) = render_plot_scene(&c.marks, &c.renderers, &[1], &layout, true, &ResolvedTitles::default(), &launch);
             assert_eq!(
                 scene_bytes(&rebuilt),
                 scene_bytes(&launch_scene),
@@ -1500,12 +1509,12 @@ mod tests {
             let launch_marks = marks_for(full.clone());
             let launch = launch_scales(&launch_marks, &renderers, &[0], &layout);
             let (launch_scene, _) =
-                render_plot_scene(&launch_marks, &renderers, &[0], &layout, true, &launch);
+                render_plot_scene(&launch_marks, &renderers, &[0], &layout, true, &ResolvedTitles::default(), &launch);
 
             // Filter (rebuild launch-anchored, same override).
             let filtered_marks = marks_for(filtered);
             let (filtered_scene, _) =
-                render_plot_scene(&filtered_marks, &renderers, &[0], &layout, true, &launch);
+                render_plot_scene(&filtered_marks, &renderers, &[0], &layout, true, &ResolvedTitles::default(), &launch);
             assert_ne!(
                 scene_bytes(&filtered_scene),
                 scene_bytes(&launch_scene),
@@ -1516,7 +1525,7 @@ mod tests {
             // bandwidth, and scales all held; a subset anchors back to launch).
             let restored_marks = marks_for(full);
             let (restored_scene, _) =
-                render_plot_scene(&restored_marks, &renderers, &[0], &layout, true, &launch);
+                render_plot_scene(&restored_marks, &renderers, &[0], &layout, true, &ResolvedTitles::default(), &launch);
             assert_eq!(
                 scene_bytes(&restored_scene),
                 scene_bytes(&launch_scene),
@@ -1592,10 +1601,10 @@ mod tests {
         let fixed = anchor_scales(&l1, l2);
         assert_ne!(
             scene_bytes(
-                &render_plot_scene(&marks_bw(Some(2.0)), &renderers, &[0], &layout, true, &fixed).0
+                &render_plot_scene(&marks_bw(Some(2.0)), &renderers, &[0], &layout, true, &ResolvedTitles::default(), &fixed).0
             ),
             scene_bytes(
-                &render_plot_scene(&marks_bw(None), &renderers, &[0], &layout, true, &fixed).0
+                &render_plot_scene(&marks_bw(None), &renderers, &[0], &layout, true, &ResolvedTitles::default(), &fixed).0
             ),
             "an explicit bandwidth changes the heatmap vs Silverman's rule"
         );
@@ -1618,7 +1627,7 @@ mod tests {
                 bin_width: None,
             }];
             let scales = launch_scales(&marks, &renderers, &[0], &layout);
-            count_scene_paths(&render_plot_scene(&marks, &renderers, &[0], &layout, true, &scales).0)
+            count_scene_paths(&render_plot_scene(&marks, &renderers, &[0], &layout, true, &ResolvedTitles::default(), &scales).0)
         };
         assert!(
             render_contour(Some(8)) > render_contour(Some(2)),
@@ -1638,7 +1647,7 @@ mod tests {
         let scales = launch_scales(&dot, &renderers, &[0], &layout);
         assert!(
             count_scene_paths(
-                &render_plot_scene(&dot, &renderers, &[0], &layout, true, &scales).0
+                &render_plot_scene(&dot, &renderers, &[0], &layout, true, &ResolvedTitles::default(), &scales).0
             ) > 0,
             "an unconfigured dot mark still renders via the registry"
         );
@@ -1697,7 +1706,7 @@ mod tests {
         let launch_marks = dot_marks(dot_batch(vec![0.0, 1.0, 2.0], vec![0.0, 1.0, 2.0]));
         let launch = launch_scales(&launch_marks, &renderers, &[0], &layout);
         let (launch_scene, _) =
-            render_plot_scene(&launch_marks, &renderers, &[0], &layout, true, &launch);
+            render_plot_scene(&launch_marks, &renderers, &[0], &layout, true, &ResolvedTitles::default(), &launch);
         let launch_x = launch.get(Channel::X).cloned().expect("launch has an x scale");
         let launch_x_max = launch_x.domain_max().expect("linear x has a domain max");
         assert!(launch_x_max < 10.0, "the new point is outside the launch domain");
@@ -1708,7 +1717,7 @@ mod tests {
             vec![0.0, 1.0, 2.0, 10.0],
         ));
         let (superset_scene, anchored) =
-            render_plot_scene(&superset_marks, &renderers, &[0], &layout, true, &launch);
+            render_plot_scene(&superset_marks, &renderers, &[0], &layout, true, &ResolvedTitles::default(), &launch);
         let anchored_x = anchored.get(Channel::X).cloned().expect("anchored has an x scale");
 
         // The domain WIDENED to include the new point (a pinned rebuild would
@@ -1741,7 +1750,7 @@ mod tests {
 
         // Round-trip: slider back to the launch batch → byte-identical to launch.
         let (restored_scene, _) =
-            render_plot_scene(&launch_marks, &renderers, &[0], &layout, true, &launch);
+            render_plot_scene(&launch_marks, &renderers, &[0], &layout, true, &ResolvedTitles::default(), &launch);
         assert_eq!(
             scene_bytes(&restored_scene),
             scene_bytes(&launch_scene),
@@ -1816,7 +1825,7 @@ mod tests {
         marks[1].batch = Some(grid);
 
         // Rebuild adopts the raster's fresh Fill ramp (the blues scheme).
-        let (_, anchored) = render_plot_scene(&marks, &renderers, &[0, 1], &layout, false, &launch);
+        let (_, anchored) = render_plot_scene(&marks, &renderers, &[0, 1], &layout, false, &ResolvedTitles::default(), &launch);
         match anchored.get(Channel::Fill) {
             Some(Scale::Sequential { stops, .. }) => assert_eq!(
                 *stops,
@@ -1832,7 +1841,7 @@ mod tests {
         // (count 9 == the ramp's domain max) samples the ramp's top stop; the
         // fallback would have painted it full-alpha steelblue (DEFAULT_COLOUR).
         let (raster_scene, _) =
-            render_plot_scene(&marks, &renderers, &[1], &layout, false, &launch);
+            render_plot_scene(&marks, &renderers, &[1], &layout, false, &ResolvedTitles::default(), &launch);
         let drawn: std::collections::HashSet<u32> =
             raster_scene.encoding().draw_data.iter().copied().collect();
         let blues_top = *SequentialScheme::Blues.stops().last().unwrap();

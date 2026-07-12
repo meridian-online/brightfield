@@ -20,6 +20,7 @@ pub mod nearest;
 pub mod scale;
 pub mod scene;
 pub mod text;
+pub mod title;
 pub mod tooltip;
 pub mod transition;
 
@@ -30,5 +31,6 @@ pub use mark::{HighlightState, MarkRenderer};
 pub use nearest::{find_nearest, NearestHit, NearestMode};
 pub use scale::{infer_scales_multi, Scale, ScaleSet, ViewExtent};
 pub use scene::{build_chart_scene, build_multi_mark_scene};
+pub use title::{grow_margins, resolve_titles, ResolvedTitles};
 pub use tooltip::TooltipContent;
 pub use transition::{Transition, TransitionState};

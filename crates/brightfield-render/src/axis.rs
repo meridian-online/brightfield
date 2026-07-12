@@ -9,7 +9,9 @@ use vello::Scene;
 
 use crate::layout::ChartLayout;
 use crate::scale::Scale;
-use crate::text::{draw_text, TextAnchor, LABEL_COLOUR, LABEL_SIZE};
+use crate::text::{
+    draw_text, draw_text_rotated, TextAnchor, LABEL_COLOUR, LABEL_SIZE, TITLE_COLOUR, TITLE_SIZE,
+};
 
 /// A computed tick mark with its position and label.
 #[derive(Debug, Clone)]
@@ -30,6 +32,42 @@ const AXIS_COLOUR: Color = Color::new([0.2, 0.2, 0.2, 1.0]);
 
 /// Tick mark length in pixels.
 const TICK_LENGTH: f64 = 5.0;
+
+/// Gap (px) between the tick-label band and an axis / plot title baseline.
+const TITLE_GAP: f64 = 4.0;
+
+/// The y-axis title baseline's x, measured from the plot's left window edge: it
+/// sits in the leftmost grown-margin band, left of the (right-aligned) tick
+/// labels. Fixed-band placement — a pathologically wide tick label is the
+/// recorded measured-fit deferral, not handled here.
+const Y_TITLE_X: f64 = 12.0;
+
+/// Baseline y for the x-axis title — below the tick-label band, inside the
+/// (grown) bottom margin. Exposed so the tick-clearance test can pin it.
+pub(crate) fn x_title_baseline(layout: &ChartLayout) -> f64 {
+    layout.plot_y_end() + TICK_LENGTH + f64::from(LABEL_SIZE) + f64::from(TITLE_SIZE) + TITLE_GAP
+}
+
+/// Baseline y for the plot title — above the frame, inside the (grown) top
+/// margin, never above the window top edge.
+pub(crate) fn plot_title_baseline(layout: &ChartLayout) -> f64 {
+    (layout.plot_y_start() - TITLE_GAP).max(f64::from(TITLE_SIZE))
+}
+
+/// Render a per-plot title above the frame, left-aligned at the frame's left
+/// edge (Observable Plot parity). Called only when the plot declares a title
+/// (so the top margin has grown to make room).
+pub fn render_plot_title(scene: &mut Scene, layout: &ChartLayout, title: &str) {
+    draw_text(
+        scene,
+        title,
+        layout.plot_x_start(),
+        plot_title_baseline(layout),
+        TITLE_SIZE,
+        TITLE_COLOUR,
+        TextAnchor::Start,
+    );
+}
 
 /// Compute ticks for a scale.
 ///
@@ -178,8 +216,9 @@ pub(crate) fn format_number(value: f64) -> String {
     }
 }
 
-/// Render the x-axis into the scene.
-pub fn render_x_axis(scene: &mut Scene, layout: &ChartLayout, ticks: &[Tick]) {
+/// Render the x-axis into the scene. `title`, when `Some`, is drawn centred
+/// below the tick-label band (the bottom margin has grown to make room).
+pub fn render_x_axis(scene: &mut Scene, layout: &ChartLayout, ticks: &[Tick], title: Option<&str>) {
     let y = layout.plot_y_end();
     let stroke = kurbo::Stroke::new(1.0);
 
@@ -209,10 +248,24 @@ pub fn render_x_axis(scene: &mut Scene, layout: &ChartLayout, ticks: &[Tick]) {
             TextAnchor::Middle,
         );
     }
+
+    // Axis title, centred below the tick-label band.
+    if let Some(title) = title {
+        draw_text(
+            scene,
+            title,
+            (layout.plot_x_start() + layout.plot_x_end()) / 2.0,
+            x_title_baseline(layout),
+            TITLE_SIZE,
+            TITLE_COLOUR,
+            TextAnchor::Middle,
+        );
+    }
 }
 
-/// Render the y-axis into the scene.
-pub fn render_y_axis(scene: &mut Scene, layout: &ChartLayout, ticks: &[Tick]) {
+/// Render the y-axis into the scene. `title`, when `Some`, is drawn rotated a
+/// quarter-turn up the (grown) left margin, left of the tick labels.
+pub fn render_y_axis(scene: &mut Scene, layout: &ChartLayout, ticks: &[Tick], title: Option<&str>) {
     let x = layout.plot_x_start();
     let stroke = kurbo::Stroke::new(1.0);
 
@@ -240,6 +293,19 @@ pub fn render_y_axis(scene: &mut Scene, layout: &ChartLayout, ticks: &[Tick]) {
             LABEL_SIZE,
             LABEL_COLOUR,
             TextAnchor::End,
+        );
+    }
+
+    // Axis title, rotated bottom-to-top and centred on the plot height.
+    if let Some(title) = title {
+        draw_text_rotated(
+            scene,
+            title,
+            Y_TITLE_X,
+            (layout.plot_y_start() + layout.plot_y_end()) / 2.0,
+            TITLE_SIZE,
+            TITLE_COLOUR,
+            TextAnchor::Middle,
         );
     }
 }
@@ -307,6 +373,63 @@ mod tests {
     }
 
     #[test]
+    fn apt_ac01_axis_titles_render_and_clear_tick_labels() {
+        use crate::layout::{Insets, Margins};
+        use crate::text::measure_width;
+
+        // Grown margins (left +band for a y-title, bottom +band for an x-title).
+        let margins = Margins {
+            left: 60.0,
+            right: 20.0,
+            bottom: 50.0,
+            top: 20.0,
+        };
+        let layout = ChartLayout::with_margins_and_insets(400.0, 300.0, margins, Insets::default());
+        let ticks = vec![
+            Tick { value: 10.0, label: "10".into(), position: layout.plot_y_end() },
+            Tick { value: 20.0, label: "20".into(), position: layout.plot_y_start() },
+        ];
+
+        // Drawing WITH a title adds ink over drawing without.
+        let mut with_t = Scene::new();
+        render_x_axis(&mut with_t, &layout, &ticks, Some("Arrival Delay"));
+        let mut no_t = Scene::new();
+        render_x_axis(&mut no_t, &layout, &ticks, None);
+        assert!(
+            with_t.encoding().draw_tags.len() > no_t.encoding().draw_tags.len(),
+            "an x-axis title adds ink"
+        );
+
+        // x-title top edge sits BELOW the x tick-label baseline (no overlap).
+        let tick_label_baseline = layout.plot_y_end() + TICK_LENGTH + f64::from(LABEL_SIZE);
+        assert!(
+            x_title_baseline(&layout) - f64::from(TITLE_SIZE) > tick_label_baseline,
+            "x-title top edge is below the tick labels"
+        );
+
+        // y-title right edge sits LEFT of the widest y tick label's left edge.
+        let widest = ticks
+            .iter()
+            .map(|t| measure_width(&t.label, LABEL_SIZE))
+            .fold(0.0_f64, f64::max);
+        let label_left = layout.plot_x_start() - TICK_LENGTH - 3.0 - widest;
+        assert!(
+            Y_TITLE_X + f64::from(TITLE_SIZE) < label_left,
+            "y-title right edge {} must be left of the widest y label at {label_left}",
+            Y_TITLE_X + f64::from(TITLE_SIZE),
+        );
+
+        let mut yt = Scene::new();
+        render_y_axis(&mut yt, &layout, &ticks, Some("Travelers"));
+        let mut yn = Scene::new();
+        render_y_axis(&mut yn, &layout, &ticks, None);
+        assert!(
+            yt.encoding().draw_tags.len() > yn.encoding().draw_tags.len(),
+            "a y-axis title adds ink"
+        );
+    }
+
+    #[test]
     fn gpu_ac06_render_x_axis_produces_scene_content() {
         let layout = ChartLayout::new(640.0, 480.0);
         let scale = Scale::Linear {
@@ -318,7 +441,7 @@ mod tests {
         let ticks = compute_ticks(&scale, 5);
 
         let mut scene = Scene::new();
-        render_x_axis(&mut scene, &layout, &ticks);
+        render_x_axis(&mut scene, &layout, &ticks, None);
 
         let encoding = scene.encoding();
         assert!(
@@ -339,7 +462,7 @@ mod tests {
         let ticks = compute_ticks(&scale, 5);
 
         let mut scene = Scene::new();
-        render_y_axis(&mut scene, &layout, &ticks);
+        render_y_axis(&mut scene, &layout, &ticks, None);
 
         let encoding = scene.encoding();
         assert!(

@@ -24,6 +24,13 @@ pub const LABEL_COLOUR: Color = Color::new([0.2, 0.2, 0.2, 1.0]);
 /// Default label size in pixels.
 pub const LABEL_SIZE: f32 = 11.0;
 
+/// Axis / plot title colour — slightly darker than tick labels so a title reads
+/// as a heading, not another tick label.
+pub const TITLE_COLOUR: Color = Color::new([0.1, 0.1, 0.1, 1.0]);
+
+/// Axis / plot title size in pixels (a touch larger than tick labels).
+pub const TITLE_SIZE: f32 = 12.0;
+
 /// Horizontal placement of a label relative to its anchor x.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextAnchor {
@@ -113,9 +120,93 @@ pub fn draw_text(
         .draw(Fill::NonZero, glyphs.into_iter());
 }
 
+/// Transform for text rotated a quarter-turn anticlockwise about the pivot
+/// (`x`, `y`): translate to the pivot, THEN rotate −90°. A glyph advancing along
+/// its local +x maps to DECREASING screen y at fixed screen x — so the run reads
+/// bottom-to-top, the y-axis title orientation. Factored out so the mapping is
+/// unit-testable without introspecting a Scene.
+fn quarter_turn_ccw(x: f64, y: f64) -> Affine {
+    Affine::translate((x, y)) * Affine::rotate(-std::f64::consts::FRAC_PI_2)
+}
+
+/// Draw `text` rotated a quarter-turn anticlockwise (reading bottom-to-top) with
+/// its baseline pivot at (`x`, `y`) — the y-axis title primitive. `anchor`
+/// places the run ALONG its own (now vertical) baseline: [`TextAnchor::Middle`]
+/// centres it on `y`. No-op for an empty string or an unparseable font.
+pub fn draw_text_rotated(
+    scene: &mut Scene,
+    text: &str,
+    x: f64,
+    y: f64,
+    size: f32,
+    colour: Color,
+    anchor: TextAnchor,
+) {
+    if text.is_empty() {
+        return;
+    }
+    let Ok(font_ref) = FontRef::new(FONT_DATA) else {
+        return;
+    };
+    let metrics = font_ref.glyph_metrics(Size::new(size), LocationRef::default());
+    let charmap = font_ref.charmap();
+
+    // Anchor offset along the (rotated) baseline — same rule as draw_text, but
+    // applied to the pen START so it rotates WITH the run rather than shifting
+    // screen x.
+    let measured = measure(&charmap, &metrics, text);
+    let start = match anchor {
+        TextAnchor::Start => 0.0_f32,
+        TextAnchor::Middle => (-measured / 2.0) as f32,
+        TextAnchor::End => (-measured) as f32,
+    };
+
+    let mut pen_x = start;
+    let glyphs: Vec<Glyph> = text
+        .chars()
+        .map(|c| {
+            let gid = charmap.map(c).unwrap_or_default();
+            let glyph = Glyph {
+                id: gid.to_u32(),
+                x: pen_x,
+                y: 0.0,
+            };
+            pen_x += metrics.advance_width(gid).unwrap_or(0.0);
+            glyph
+        })
+        .collect();
+
+    scene
+        .draw_glyphs(ui_font())
+        .font_size(size)
+        .transform(quarter_turn_ccw(x, y))
+        .brush(colour)
+        .draw(Fill::NonZero, glyphs.into_iter());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn apt_ac03_rotated_text_reads_bottom_to_top() {
+        // A point advancing +1 along the local run maps to 1px UP the screen
+        // (decreasing y) at a fixed x — the y-axis title orientation.
+        let t = quarter_turn_ccw(50.0, 200.0);
+        let base = t * kurbo::Point::new(0.0, 0.0);
+        let advanced = t * kurbo::Point::new(1.0, 0.0);
+        assert!((base.x - 50.0).abs() < 1e-9 && (base.y - 200.0).abs() < 1e-9);
+        assert!((advanced.x - 50.0).abs() < 1e-9, "screen x fixed along the run");
+        assert!((advanced.y - 199.0).abs() < 1e-9, "advancing the run moves UP the screen");
+
+        // Renders geometry; empty is a no-op (mirrors draw_text).
+        let mut s = Scene::new();
+        draw_text_rotated(&mut s, "kWh", 10.0, 100.0, TITLE_SIZE, TITLE_COLOUR, TextAnchor::Middle);
+        assert!(s.encoding().draw_tags.len() > 0, "rotated text adds geometry");
+        let mut e = Scene::new();
+        draw_text_rotated(&mut e, "", 0.0, 0.0, TITLE_SIZE, TITLE_COLOUR, TextAnchor::Start);
+        assert_eq!(e.encoding().draw_tags.len(), 0, "empty rotated text draws nothing");
+    }
 
     #[test]
     fn bundled_font_parses() {
