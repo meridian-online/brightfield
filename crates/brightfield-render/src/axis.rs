@@ -372,6 +372,52 @@ mod tests {
         }
     }
 
+    /// True if any glyph run in the scene carries a quarter-turn (±90°) rotation
+    /// — a rotation has a ~zero diagonal and ~±1 off-diagonal, whereas
+    /// horizontal text (tick labels, x-title, plot title) uses an
+    /// identity/translate run transform ([1,0,0,1]). Reads the public
+    /// `vello_encoding` glyph-run transform matrices, no GPU.
+    fn scene_has_quarter_turn(scene: &Scene) -> bool {
+        scene.encoding().resources.glyph_runs.iter().any(|r| {
+            let m = r.transform.matrix;
+            m[0].abs() < 1e-3 && m[3].abs() < 1e-3 && m[1].abs() > 0.5 && m[2].abs() > 0.5
+        })
+    }
+
+    #[test]
+    fn apt_ac03_render_y_axis_rotates_its_title_but_x_does_not() {
+        // Pins apt-ac03 AT THE RENDER SITE: render_y_axis must draw its title
+        // rotated (a draw_text_rotated → draw_text refactor would ship a
+        // horizontal, tick-colliding y-title otherwise). render_x_axis's title
+        // is horizontal; neither axis rotates without a title.
+        let layout = ChartLayout::new(400.0, 300.0);
+        let scale = Scale::Linear {
+            domain_min: 0.0,
+            domain_max: 100.0,
+            range_start: layout.plot_y_end(),
+            range_end: layout.plot_y_start(),
+        };
+        let ticks = compute_ticks(&scale, 5);
+
+        let mut y_titled = Scene::new();
+        render_y_axis(&mut y_titled, &layout, &ticks, Some("Travelers"));
+        assert!(
+            scene_has_quarter_turn(&y_titled),
+            "render_y_axis must rotate its title (bottom-to-top)"
+        );
+
+        let mut y_plain = Scene::new();
+        render_y_axis(&mut y_plain, &layout, &ticks, None);
+        assert!(!scene_has_quarter_turn(&y_plain), "no rotation without a y-title");
+
+        let mut x_titled = Scene::new();
+        render_x_axis(&mut x_titled, &layout, &ticks, Some("weight"));
+        assert!(
+            !scene_has_quarter_turn(&x_titled),
+            "the x-axis title is horizontal, not rotated"
+        );
+    }
+
     #[test]
     fn apt_ac01_axis_titles_render_and_clear_tick_labels() {
         use crate::layout::{Insets, Margins};

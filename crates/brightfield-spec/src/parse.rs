@@ -1949,11 +1949,16 @@ plot:
 
         // A string override, an explicit null (suppress), and a lifted $param
         // (recorded deferral) all pass silently — for xLabel/yLabel AND title.
+        // The `$p` cases exercise the `SpecValue::Param(_)` exclusion arm: a
+        // lifted param defers without a warning (they'd spuriously warn if the
+        // exclusion were dropped).
         for ok in [
             "yLabel: Travelers",
             "yLabel: null",
             "title: Weather",
             "title: null",
+            "xLabel: $p",
+            "title: $p",
         ] {
             let src = format!(
                 "params:\n  p: 1\ndata:\n  t:\n    - {{ x: 1, y: 2 }}\nplot:\n  - {{ mark: dot, data: {{ from: t }}, x: x, y: y }}\n{ok}\n"
@@ -1974,6 +1979,36 @@ plot:
                 .any(|w| matches!(w, ParseWarning::NonStringLabel { attribute } if attribute == "title")),
             "a boolean title warns naming `title`; got {:?}",
             obt.warnings
+        );
+    }
+
+    #[test]
+    fn apt_ac02_dollar_in_label_text_degrades_to_derive_round_trip() {
+        // A label whose text contains a bare `$ident` (a currency/unit literal
+        // like "Cost in $usd") is lifted to an Expression at parse time, so it
+        // can't be used verbatim — it warns NonStringLabel and the axis falls
+        // back to its derived field-name title. Same substrate as a lifted
+        // $param label (recorded deferral); pinned here as a parse→resolve round
+        // trip so the documented degrade can't silently change.
+        use crate::ast::Component;
+        use crate::layout::{resolve_axis_titles, AxisTitle};
+        let src = "data:\n  t:\n    - { x: 1, y: 2 }\nplot:\n  - { mark: dot, data: { from: t }, x: x, y: y }\nxLabel: Cost in $usd\n";
+        let out = parse_spec(src, Format::Yaml).expect("parses");
+        assert!(
+            out.warnings
+                .iter()
+                .any(|w| matches!(w, ParseWarning::NonStringLabel { attribute } if attribute == "xLabel")),
+            "a $-in-text label warns; got {:?}",
+            out.warnings
+        );
+        let plot = match out.spec.root {
+            Some(Component::Plot(p)) => p,
+            other => panic!("expected a plot root, got {other:?}"),
+        };
+        assert_eq!(
+            resolve_axis_titles(&plot).x,
+            AxisTitle::Derive,
+            "a $-in-text xLabel degrades to the derived title"
         );
     }
 
