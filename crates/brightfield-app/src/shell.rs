@@ -1392,6 +1392,35 @@ impl WorkspaceRoot {
         self.palette_recency.record(longname);
     }
 
+    /// Move the `/` jump selection down (`true`) or up. Bound to ↓/↑ AND
+    /// Ctrl-j/Ctrl-k (vim-style, matching the canvas's own h/j/k/l nav) — Ctrl so
+    /// bare j/k stay free to type into the fuzzy query (the fzf / Telescope way).
+    fn jump_nav(&mut self, down: bool, cx: &mut Context<Self>) {
+        if down {
+            let n = self.canvas.read(cx).jump_candidates(&self.jump_query).len();
+            self.jump_selected = (self.jump_selected + 1).min(n.saturating_sub(1));
+        } else {
+            self.jump_selected = self.jump_selected.saturating_sub(1);
+        }
+        cx.notify();
+    }
+
+    /// Move the command-palette selection within the rendered window, down
+    /// (`true`) or up — bound to ↓/↑ AND Ctrl-j/Ctrl-k (see [`Self::jump_nav`]).
+    fn palette_nav(&mut self, down: bool, cx: &mut Context<Self>) {
+        if down {
+            let altitude = self.canvas.read(cx).current_altitude();
+            let n =
+                palette_filter(&registry(), altitude, &self.palette_query, &self.palette_recency)
+                    .len();
+            self.palette_selected =
+                (self.palette_selected + 1).min(n.min(PALETTE_MAX_ROWS).saturating_sub(1));
+        } else {
+            self.palette_selected = self.palette_selected.saturating_sub(1);
+        }
+        cx.notify();
+    }
+
     /// Key handling for the focused overlay: Esc dismisses (ac-06), and — for the
     /// `/` finder — up/down move the selection, Enter runs it, and printable keys
     /// edit the query. Bare canvas verbs cannot fire here (the overlay holds
@@ -1408,15 +1437,10 @@ impl WorkspaceRoot {
             Overlay::Jump => match key {
                 "escape" => self.close_overlay(window, cx),
                 "enter" => self.run_jump(window, cx),
-                "up" => {
-                    self.jump_selected = self.jump_selected.saturating_sub(1);
-                    cx.notify();
-                }
-                "down" => {
-                    let n = self.canvas.read(cx).jump_candidates(&self.jump_query).len();
-                    self.jump_selected = (self.jump_selected + 1).min(n.saturating_sub(1));
-                    cx.notify();
-                }
+                "up" => self.jump_nav(false, cx),
+                "down" => self.jump_nav(true, cx),
+                "k" if event.keystroke.modifiers.control => self.jump_nav(false, cx),
+                "j" if event.keystroke.modifiers.control => self.jump_nav(true, cx),
                 "backspace" => {
                     self.jump_query.pop();
                     self.jump_selected = 0;
@@ -1439,23 +1463,10 @@ impl WorkspaceRoot {
             Overlay::Palette => match key {
                 "escape" => self.close_overlay(window, cx),
                 "enter" => self.run_palette(window, cx),
-                "up" => {
-                    self.palette_selected = self.palette_selected.saturating_sub(1);
-                    cx.notify();
-                }
-                "down" => {
-                    let altitude = self.canvas.read(cx).current_altitude();
-                    let n = palette_filter(
-                        &registry(),
-                        altitude,
-                        &self.palette_query,
-                        &self.palette_recency,
-                    )
-                    .len();
-                    self.palette_selected =
-                        (self.palette_selected + 1).min(n.min(PALETTE_MAX_ROWS).saturating_sub(1));
-                    cx.notify();
-                }
+                "up" => self.palette_nav(false, cx),
+                "down" => self.palette_nav(true, cx),
+                "k" if event.keystroke.modifiers.control => self.palette_nav(false, cx),
+                "j" if event.keystroke.modifiers.control => self.palette_nav(true, cx),
                 "backspace" => {
                     self.palette_query.pop();
                     self.palette_selected = 0;
