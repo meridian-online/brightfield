@@ -47,7 +47,7 @@ cards:
 
 ## Upcoming Sprint Candidates
 
-- "Interaction grammar (Altair gap-map)" — from `orbit/cards/memos/2026-07-12-altair-interaction-grammar-gaps.md`: conditional encoding (when/then/otherwise — the load-bearing gap, L, `/orb:discovery`-first), legend multi-select (union, S/M, extends 0009), input widgets menu/radio/checkbox (M, AST already models them, extends 0005/0017), draggable/resizable persisted brush (M, extends 0006).
+- "Interaction grammar (Altair gap-map)" — from `orbit/cards/memos/2026-07-12-altair-interaction-grammar-gaps.md`: conditional encoding (when/then/otherwise — the load-bearing gap, L, `/orb:discovery`-first), legend multi-select (union, S/M, extends 0009), input widgets menu/radio/checkbox (M, AST already models them, extends 0005/0017), draggable/resizable persisted brush (M, extends 0006). Plus the discoverability companion: interactive-legend affordance (card 0020 — a bound legend is visually identical to a static key; add pointer cursor + swatch hover on bound legends only; S, UI-only in legend_element.rs, extends 0009, scope with legend multi-select).
 - "Keyboard grammar follow-ons" — card 0018 deferred: the command log (the VisiData spine — a SpecEdit stream that unblocks structural verbs m/a/e/d/undo AND the cross-filter keyboard verbs f/gf/t via a keyboard data-target); ac-17 mouse-free screencast (Hugh records). Seed: `orbit/cards/memos/2026-07-04-visidata-keyboard-grammar.md`.
 - "Continuous slider drag" — card 0015 (PR #26, planning-only). Needs tabletop: throttle vs debounce, query cancellation, async boundary.
 - Remaining card 0008 mark: geo (now also the vocab's Unimplemented placeholder — promoting it re-points the negative-test census again).
