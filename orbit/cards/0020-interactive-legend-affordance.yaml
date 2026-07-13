@@ -83,7 +83,8 @@ design_decisions:  # /orb:design, 2026-07-13 (Hugh)
 #   4. legend_scene.rs:40 + render/legend.rs:167 — render_colour_legend_at_selected: Option<usize> → (a hovered hot-state) + (a selected SET), dim all non-members
 #   5. legend_element.rs:159  — raster cache key Option<String> → an ordered set (+ the hovered index)
 
-specs: []   # awaiting /orb:spec
+specs:
+  - "orbit/specs/2026-07-13-legend-interaction-fidelity/spec.yaml"   # /orb:spec + /orb:review-spec (v1.1) 2026-07-13
 
 references:
   - "In-app finding (2026-07-13, Hugh): product-testing dashboard.yaml on the axis-titles branch (card 0019), clicked its `fill: g` legend expecting a filter; nothing happened and there was no way to tell it wasn't wired. 'This may be tricky to know when [an interactive legend] is implemented.' The unbound inline legend is a static key BY DESIGN — card 0009 legend-click-to-filter is opt-in via `as:` — but nothing distinguishes it from a bound one."
