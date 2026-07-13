@@ -1,6 +1,8 @@
 //! Colour legend rendering — draws colour-to-value mapping swatches
 //! with labels when a mark encodes a data column as fill colour.
 
+use std::collections::BTreeSet;
+
 use kurbo::{Affine, Rect};
 use peniko::{Color, Fill};
 use vello::Scene;
@@ -147,7 +149,7 @@ pub fn render_colour_legend_at(
     box_y: f64,
     colour_scale: &Scale,
 ) {
-    render_colour_legend_at_selected(scene, box_x, box_y, colour_scale, None);
+    render_colour_legend_at_selected(scene, box_x, box_y, colour_scale, &BTreeSet::new(), None);
 }
 
 /// Alpha multiplier applied to every legend entry that is NOT the selected one,
@@ -155,6 +157,25 @@ pub fn render_colour_legend_at(
 /// highlighted (card 0006, cfr_ac06). Applies to the swatch AND its label only;
 /// the panel, border, entry rects, and sizes are untouched.
 const UNSELECTED_ENTRY_ALPHA: f32 = 0.35;
+
+/// Fraction by which a HOVERED legend entry is lightened toward white — the
+/// pre-click hover affordance for a bound legend (card 0020). Distinct from
+/// both full strength and the [`UNSELECTED_ENTRY_ALPHA`] dim, and colour-only,
+/// so the panel/entry geometry (and the cfr_ac06 path_data invariant) is
+/// untouched.
+const HOVER_LIGHTEN: f32 = 0.4;
+
+/// Lighten a legend entry colour toward white by [`HOVER_LIGHTEN`] for the
+/// hover hot-state, preserving alpha. Colour/alpha only — no new geometry.
+fn hover_emphasis(colour: Color) -> Color {
+    let [r, g, b, a] = colour.components;
+    Color::new([
+        r + (1.0 - r) * HOVER_LIGHTEN,
+        g + (1.0 - g) * HOVER_LIGHTEN,
+        b + (1.0 - b) * HOVER_LIGHTEN,
+        a,
+    ])
+}
 
 /// Render a colour legend at `(box_x, box_y)` with an optional selected entry
 /// (card 0006 selected-state). `selected` is the index of the categorical entry
@@ -169,10 +190,13 @@ pub fn render_colour_legend_at_selected(
     box_x: f64,
     box_y: f64,
     colour_scale: &Scale,
-    selected: Option<usize>,
+    selected: &BTreeSet<usize>,
+    hovered: Option<usize>,
 ) {
     match colour_scale {
-        Scale::Colour { .. } => render_swatch_legend_at(scene, box_x, box_y, colour_scale, selected),
+        Scale::Colour { .. } => {
+            render_swatch_legend_at(scene, box_x, box_y, colour_scale, selected, hovered)
+        }
         Scale::Sequential { .. } => render_sequential_legend_at(scene, box_x, box_y, colour_scale),
         _ => {}
     }
@@ -189,7 +213,8 @@ fn render_swatch_legend_at(
     box_x: f64,
     box_y: f64,
     colour_scale: &Scale,
-    selected: Option<usize>,
+    selected: &BTreeSet<usize>,
+    hovered: Option<usize>,
 ) {
     let (categories, palette) = match colour_scale {
         Scale::Colour {
@@ -230,16 +255,24 @@ fn render_swatch_legend_at(
     for (i, (cat, colour)) in categories.iter().zip(palette.iter().cycle()).enumerate() {
         let y = legend_y_start + i as f64 * ENTRY_SPACING;
 
-        // Dim every entry that is not the selected one, when a selection is
-        // active. With no selection (`None`) nothing dims, so the swatch and
-        // label colours are untouched — byte-identical to the plain renderer.
-        let dim = matches!(selected, Some(sel) if sel != i);
-        let swatch_colour = if dim {
+        // Emphasis precedence, colour/alpha only (no geometry change): the
+        // HOVERED entry brightens toward white (the card 0020 pre-click
+        // affordance); otherwise, when a selection is active, every NON-member
+        // dims to UNSELECTED_ENTRY_ALPHA; otherwise full strength. With no hover
+        // and an empty selection nothing changes — byte-identical to the plain
+        // renderer.
+        let dim = !selected.is_empty() && !selected.contains(&i);
+        let hot = hovered == Some(i);
+        let swatch_colour = if hot {
+            hover_emphasis(Color::new(*colour))
+        } else if dim {
             Color::new(*colour).multiply_alpha(UNSELECTED_ENTRY_ALPHA)
         } else {
             Color::new(*colour)
         };
-        let label_colour = if dim {
+        let label_colour = if hot {
+            hover_emphasis(LABEL_COLOUR)
+        } else if dim {
             LABEL_COLOUR.multiply_alpha(UNSELECTED_ENTRY_ALPHA)
         } else {
             LABEL_COLOUR
@@ -570,9 +603,10 @@ mod tests {
         let scale = colour_scale_3(); // "a", "bb", "ccc"
 
         let mut none = Scene::new();
-        render_colour_legend_at_selected(&mut none, 40.0, 40.0, &scale, None);
+        render_colour_legend_at_selected(&mut none, 40.0, 40.0, &scale, &BTreeSet::new(), None);
         let mut selected = Scene::new();
-        render_colour_legend_at_selected(&mut selected, 40.0, 40.0, &scale, Some(1));
+        let sel_set = BTreeSet::from([1usize]);
+        render_colour_legend_at_selected(&mut selected, 40.0, 40.0, &scale, &sel_set, None);
         // --- Non-delegating oracle (F5) ---
         // `render_colour_legend_at`'s `None` path merely forwards here, so
         // comparing the two would be circular and prove nothing. Instead compute
@@ -643,12 +677,52 @@ mod tests {
             "panel / swatch / entry-rect geometry is unchanged under selection"
         );
 
+        // Hover hot-state (card 0020): hovering entry 0 with NO selection active
+        // encodes a NEW emphasis colour — in neither the full-strength nor the
+        // 0.35-dim sets — and changes colour only, not geometry.
+        let mut hover = Scene::new();
+        render_colour_legend_at_selected(&mut hover, 40.0, 40.0, &scale, &BTreeSet::new(), Some(0));
+        let hover_data = &hover.encoding().draw_data;
+        let emphasis0 = pack(hover_emphasis(Color::new(palette[0])));
+        assert!(
+            hover_data.contains(&emphasis0),
+            "the hovered swatch encodes the lightened emphasis colour"
+        );
+        assert!(
+            !none_data.contains(&emphasis0),
+            "the emphasis colour never appears without hover"
+        );
+        assert!(
+            !hover_data
+                .contains(&pack(Color::new(palette[0]).multiply_alpha(UNSELECTED_ENTRY_ALPHA))),
+            "hover emphasis is distinct from the 0.35 dim"
+        );
+        assert_eq!(
+            none.encoding().path_data,
+            hover.encoding().path_data,
+            "hover changes colour only, not geometry"
+        );
+
         // A Sequential legend has no discrete entries — `selected` is inert and
         // its output matches the plain gradient bar.
         let mut seq_none = Scene::new();
-        render_colour_legend_at_selected(&mut seq_none, 40.0, 40.0, &sequential_scale(), None);
+        render_colour_legend_at_selected(
+            &mut seq_none,
+            40.0,
+            40.0,
+            &sequential_scale(),
+            &BTreeSet::new(),
+            None,
+        );
         let mut seq_sel = Scene::new();
-        render_colour_legend_at_selected(&mut seq_sel, 40.0, 40.0, &sequential_scale(), Some(0));
+        render_colour_legend_at_selected(
+            &mut seq_sel,
+            40.0,
+            40.0,
+            &sequential_scale(),
+            &BTreeSet::from([0usize]),
+            None,
+        );
         assert_eq!(
             seq_none.encoding().draw_data,
             seq_sel.encoding().draw_data,

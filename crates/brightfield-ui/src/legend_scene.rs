@@ -11,6 +11,8 @@
 //! No gpui import may enter this file (the semantic-layer rule — the GPUI
 //! wrapper lives in `legend_element.rs`).
 
+use std::collections::BTreeSet;
+
 use vello::Scene;
 
 use brightfield_render::legend::{
@@ -24,21 +26,37 @@ use brightfield_render::scale::Scale;
 /// and the content size `(width, height)` the size functions report, or
 /// `None` for a scale no legend renderer draws (non-colour scales).
 ///
-/// `selected` is the currently-active category of a bound categorical legend
-/// (card 0006 selected-state): its entry draws at full strength while the
-/// others dim. `None` — no selection, an unbound legend, or a Sequential
-/// legend — draws every entry at full strength, byte-identical to the plain
-/// renderer.
+/// `selected` is the set of currently-active categories of a bound categorical
+/// legend (card 0006 selected-state, extended to a multi-select union by card
+/// 0020): each member entry draws at full strength while the rest dim. `hovered`
+/// is the entry index under the pointer (the card 0020 pre-click hover
+/// affordance), lightened distinctly. An empty set + `None` hover — no
+/// selection, an unbound legend, or a Sequential legend — draws every entry at
+/// full strength, byte-identical to the plain renderer.
 #[must_use]
-pub fn build_legend_scene(scale: &Scale, selected: Option<&str>) -> Option<(Scene, (f64, f64))> {
+pub fn build_legend_scene(
+    scale: &Scale,
+    selected: &BTreeSet<String>,
+    hovered: Option<usize>,
+) -> Option<(Scene, (f64, f64))> {
     let mut scene = Scene::new();
     let size = match scale {
         Scale::Colour { categories, .. } => {
             let size = colour_legend_size(scale)?;
-            // Map the selected category to its entry index — `None` when there
-            // is no selection or it names no category in this legend.
-            let selected_index = selected.and_then(|s| categories.iter().position(|c| c == s));
-            render_colour_legend_at_selected(&mut scene, 0.0, 0.0, scale, selected_index);
+            // Map the selected category NAMES to their entry indices — names
+            // that appear in no category of this legend are dropped.
+            let selected_indices: BTreeSet<usize> = selected
+                .iter()
+                .filter_map(|s| categories.iter().position(|c| c == s))
+                .collect();
+            render_colour_legend_at_selected(
+                &mut scene,
+                0.0,
+                0.0,
+                scale,
+                &selected_indices,
+                hovered,
+            );
             size
         }
         Scale::Sequential { .. } => {
@@ -82,7 +100,8 @@ mod tests {
     #[test]
     fn fww_ac04_legend_scenes_swatches_vs_gradient_bar() {
         let (swatches, swatch_size) =
-            build_legend_scene(&categorical(), None).expect("categorical scale builds a scene");
+            build_legend_scene(&categorical(), &BTreeSet::new(), None)
+                .expect("categorical scale builds a scene");
         assert!(
             swatches.encoding().path_tags.len() > 0,
             "swatch legend draws content"
@@ -91,7 +110,8 @@ mod tests {
         assert_eq!(swatch_size, expected, "sized by colour_legend_size");
 
         let (bar, bar_size) =
-            build_legend_scene(&sequential(), None).expect("sequential scale builds a scene");
+            build_legend_scene(&sequential(), &BTreeSet::new(), None)
+                .expect("sequential scale builds a scene");
         assert!(bar.encoding().path_tags.len() > 0, "gradient bar draws content");
         let expected = sequential_legend_size(&sequential()).unwrap();
         assert_eq!(bar_size, expected, "sized by sequential_legend_size");
@@ -111,6 +131,9 @@ mod tests {
             range_start: 0.0,
             range_end: 1.0,
         };
-        assert!(build_legend_scene(&linear, None).is_none(), "no legend for a linear scale");
+        assert!(
+            build_legend_scene(&linear, &BTreeSet::new(), None).is_none(),
+            "no legend for a linear scale"
+        );
     }
 }

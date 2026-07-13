@@ -39,6 +39,7 @@ use brightfield_render::scene::{build_multi_mark_scene_anchored, ChartData};
 use brightfield_render::title::ResolvedTitles;
 use brightfield_spec::analysis::{ComponentPath, LegendBinding};
 use brightfield_spec::vocab::MarkKind;
+use brightfield_sql::ir::Predicate;
 
 use crate::brush::{point_predicate, SelectionDispatcher};
 use crate::chart_state::ChartState;
@@ -47,6 +48,36 @@ use crate::chart_view::{
 };
 use crate::interaction::InteractionState;
 use crate::slider::{commit_slider_release, SliderBinding, SliderState};
+
+/// Build the predicate for a legend's selected category set (card 0020 legend
+/// multi-select): a bare `Predicate::Expr` for a single category — byte-identical
+/// to a single-select point predicate, so it shares the statement cache — or a
+/// `Predicate::Or` of the per-category equalities for a union. `categories` MUST
+/// be non-empty and canonically ordered so identical sets emit identical SQL.
+fn legend_union_predicate(column: &str, categories: &[String]) -> Predicate {
+    let mut members: Vec<Predicate> = categories
+        .iter()
+        .map(|cat| point_predicate(column, &SelectionValue::Text(cat.clone()).literal()))
+        .collect();
+    if members.len() == 1 {
+        members.pop().expect("non-empty by contract")
+    } else {
+        Predicate::Or(members)
+    }
+}
+
+/// Decompose a contributor-slot predicate into the OR members to test for
+/// legend-category membership: an `Or` yields its members; anything else (a bare
+/// `Expr`, a brush `And`, `True`) is a single opaque member that matches no
+/// category point predicate — so a foreign slot contributes no selected
+/// categories (the F1 display rule), and the shift-toggle build reuses this so
+/// it can never fold a foreign predicate into the union.
+fn predicate_members(pred: &Predicate) -> Vec<&Predicate> {
+    match pred {
+        Predicate::Or(members) => members.iter().collect(),
+        other => vec![other],
+    }
+}
 
 /// Per-mark render inputs, kept mutable so a re-executed subscriber's batch can
 /// be swapped in before its plot's scene is rebuilt. `batch` is `None` for a
@@ -491,9 +522,18 @@ impl CrossfilterCoordinator {
         &mut self,
         legend_index: usize,
         hit: Option<&str>,
+        additive: bool,
+        categories: &[String],
         cx: &mut App,
     ) -> bool {
-        let to_rebuild = match self.apply_legend_click(legend_index, hit) {
+        // Shift-click (`additive`) toggles a category into/out of an OR'd union
+        // (card 0020); a plain click is the single-select replace/toggle.
+        let applied = if additive {
+            self.apply_legend_toggle(legend_index, hit, categories)
+        } else {
+            self.apply_legend_click(legend_index, hit)
+        };
+        let to_rebuild = match applied {
             Some(set) => set,
             None => return false,
         };
@@ -584,39 +624,96 @@ impl CrossfilterCoordinator {
         Some(to_rebuild)
     }
 
-    /// The bound legend's currently-selected category, for the hosted
-    /// [`crate::legend_element::LegendElement`] to dim the others (card 0006
-    /// selected-state). Derived per call from the engine's contributor slot —
-    /// NO stored mirror (the card 0009 F1 lesson): for each candidate category
-    /// it builds the exact point predicate a swatch click dispatches and
-    /// compares it against `Session::contributor_predicate`, returning the
-    /// matching category.
+    /// The additive (shift-click) half of a legend click (card 0020 legend
+    /// multi-select): toggle `hit`'s category into/out of an OR'd union built
+    /// from THIS legend's categories, reusing [`Self::legend_selected_categories`]
+    /// to derive the current member set — so a foreign predicate sharing the
+    /// slot (a brush, or a same-plot point selection) contributes nothing and a
+    /// shift-click starts a fresh set, and the built union can never disagree
+    /// with the displayed selected state. Removing the last member CLEARS the
+    /// contributor (never an empty `Or`, which would filter to zero rows); a
+    /// single-member set collapses to a bare `Expr` (single-select parity,
+    /// shared statement cache). A shift-click that hits no entry (`None`, a
+    /// gap/padding click) is a no-op that leaves the union untouched.
+    fn apply_legend_toggle(
+        &mut self,
+        legend_index: usize,
+        hit: Option<&str>,
+        categories: &[String],
+    ) -> Option<HashSet<usize>> {
+        let cat = hit?; // a miss (gap/padding click) leaves the union untouched
+        let binding = self.legend_bindings.get(legend_index)?.clone();
+
+        // Derive the current member categories from the live slot (dropping any
+        // foreign predicate), then toggle the clicked category in or out.
+        let mut members = self.legend_selected_categories(legend_index, categories);
+        if let Some(pos) = members.iter().position(|c| c == cat) {
+            members.remove(pos);
+        } else {
+            members.push(cat.to_string());
+        }
+
+        let results = if members.is_empty() {
+            // Last member removed: clear the contributor — never store Or([]).
+            self.session
+                .clear(&binding.selection_name, binding.contributor.clone())
+        } else {
+            // Canonical order → identical sets emit identical SQL; a single
+            // member collapses to a bare Expr (single-select parity).
+            members.sort();
+            let predicate = legend_union_predicate(&binding.column, &members);
+            self.session.dispatch(
+                &binding.selection_name,
+                binding.contributor.clone(),
+                predicate,
+            )
+        };
+        let mut to_rebuild: HashSet<usize> = HashSet::new();
+        self.absorb(results, &mut to_rebuild);
+        Some(to_rebuild)
+    }
+
+    /// The bound legend's currently-selected categories, for the hosted
+    /// [`crate::legend_element::LegendElement`] to dim the non-members (card
+    /// 0006 selected-state, extended to a multi-select union by card 0020).
+    /// Derived per call from the engine's contributor slot — NO stored mirror
+    /// (the card 0009 F1 lesson): the slot predicate is decomposed into its OR
+    /// members and every candidate category whose point predicate is a member is
+    /// returned, in `categories` order.
     ///
-    /// `None` when the slot is empty, holds a brush or any predicate matching
-    /// no candidate (the F1a scenario, now for display state), or the legend
-    /// index is unknown — so a gesture that replaces or clears the slot behind
-    /// the legend's back is observed directly, exactly as the toggle decision
-    /// reads it.
+    /// Empty when the slot is empty, holds a brush or any predicate matching no
+    /// candidate (the F1a scenario, now for display state), or the legend index
+    /// is unknown — so a gesture that replaces or clears the slot behind the
+    /// legend's back is observed directly, exactly as the toggle decision reads
+    /// it. The shift-toggle build reuses this so display and build cannot
+    /// disagree.
     #[must_use]
-    pub fn legend_selected_category(
+    pub fn legend_selected_categories(
         &self,
         legend_index: usize,
         categories: &[String],
-    ) -> Option<String> {
-        let binding = self.legend_bindings.get(legend_index)?;
-        let current = self
+    ) -> Vec<String> {
+        let Some(binding) = self.legend_bindings.get(legend_index) else {
+            return Vec::new();
+        };
+        let Some(current) = self
             .session
-            .contributor_predicate(&binding.selection_name, &binding.contributor.0)?;
+            .contributor_predicate(&binding.selection_name, &binding.contributor.0)
+        else {
+            return Vec::new();
+        };
+        let members = predicate_members(current);
         categories
             .iter()
-            .find(|cat| {
+            .filter(|cat| {
                 let predicate = point_predicate(
                     &binding.column,
                     &SelectionValue::Text((*cat).clone()).literal(),
                 );
-                current == &predicate
+                members.iter().any(|m| **m == predicate)
             })
             .cloned()
+            .collect()
     }
 
     /// Fold re-execution results into the per-mark batch store, recording which
@@ -2100,7 +2197,7 @@ hconcat:
         let b = &c.legend_bindings[0];
         c.session
             .contributor_predicate(&b.selection_name, &b.contributor.0)
-            .map(|p| format!("{p:?}"))
+            .map(|p| format!("{p}"))
     }
 
     /// lcf_ac03: the toggle state machine drives dispatch/clear through the
@@ -2160,8 +2257,6 @@ hconcat:
     /// the toggle.
     #[test]
     fn lcf_f1a_brush_replacing_the_slot_does_not_invert_the_toggle() {
-        use brightfield_sql::ir::Predicate;
-
         let coord = legend_toggle_coordinator();
         let mut c = coord.borrow_mut();
         let rows = |c: &CrossfilterCoordinator| {
@@ -2233,15 +2328,13 @@ hconcat:
         assert_ne!(rows(&c), baseline);
     }
 
-    /// cfr_ac05 (selected-category lookup): `legend_selected_category` reads the
-    /// bound legend's active category from the engine's contributor slot per
-    /// call — never a UI mirror. Select → Some; switch → the new category;
-    /// toggle off → None; a brush replacing the slot → None (the F1a scenario,
-    /// now for display state); an external clear → None. Unknown index → None.
+    /// cfr_ac05 (selected-category lookup): `legend_selected_categories` reads
+    /// the bound legend's active categories from the engine's contributor slot
+    /// per call — never a UI mirror. Select → one; switch → the new one; toggle
+    /// off → empty; a brush replacing the slot → empty (the F1a scenario, now
+    /// for display state); an external clear → empty. Unknown index → empty.
     #[test]
-    fn cfr_ac05_legend_selected_category_reads_the_engine_slot() {
-        use brightfield_sql::ir::Predicate;
-
+    fn cfr_ac05_legend_selected_categories_reads_the_engine_slot() {
         let coord = legend_toggle_coordinator();
         let mut c = coord.borrow_mut();
         let categories: Vec<String> = ["adelie", "gentoo", "chinstrap"]
@@ -2249,51 +2342,178 @@ hconcat:
             .map(|s| s.to_string())
             .collect();
 
-        // Empty slot → None.
-        assert_eq!(c.legend_selected_category(0, &categories), None);
+        // Empty slot → empty.
+        assert!(c.legend_selected_categories(0, &categories).is_empty());
 
-        // Select gentoo → Some(gentoo).
+        // Select gentoo → [gentoo].
         assert!(c.apply_legend_click(0, Some("gentoo")).is_some());
         assert_eq!(
-            c.legend_selected_category(0, &categories).as_deref(),
-            Some("gentoo")
+            c.legend_selected_categories(0, &categories),
+            vec!["gentoo".to_string()]
         );
 
-        // Switch to adelie → the new category.
+        // Switch to adelie → [adelie].
         assert!(c.apply_legend_click(0, Some("adelie")).is_some());
         assert_eq!(
-            c.legend_selected_category(0, &categories).as_deref(),
-            Some("adelie")
+            c.legend_selected_categories(0, &categories),
+            vec!["adelie".to_string()]
         );
 
-        // Toggle adelie off → None.
+        // Toggle adelie off → empty.
         assert!(c.apply_legend_click(0, Some("adelie")).is_some());
-        assert_eq!(c.legend_selected_category(0, &categories), None);
+        assert!(c.legend_selected_categories(0, &categories).is_empty());
 
-        // A brush REPLACES the slot with a non-category predicate → None (the
+        // A brush REPLACES the slot with a non-category predicate → empty (the
         // display state must not claim a category the slot no longer holds).
         assert!(c.apply_legend_click(0, Some("gentoo")).is_some());
         let contributor = c.legend_bindings[0].contributor.clone();
         let _ = c
             .session
             .dispatch("sel", contributor, Predicate::Expr("x >= 1".to_string()));
-        assert_eq!(
-            c.legend_selected_category(0, &categories),
-            None,
+        assert!(
+            c.legend_selected_categories(0, &categories).is_empty(),
             "a brush in the slot matches no candidate category"
         );
 
-        // An external clear empties the slot behind the legend's back → None.
+        // Re-select, then an external clear empties the slot → empty.
         assert!(c.apply_legend_click(0, Some("chinstrap")).is_some());
         assert_eq!(
-            c.legend_selected_category(0, &categories).as_deref(),
-            Some("chinstrap")
+            c.legend_selected_categories(0, &categories),
+            vec!["chinstrap".to_string()]
         );
         let contributor = c.legend_bindings[0].contributor.clone();
         let _ = c.session.clear("sel", contributor);
-        assert_eq!(c.legend_selected_category(0, &categories), None);
+        assert!(c.legend_selected_categories(0, &categories).is_empty());
 
-        // Unknown legend index → None.
-        assert_eq!(c.legend_selected_category(9, &categories), None);
+        // Unknown legend index → empty.
+        assert!(c.legend_selected_categories(9, &categories).is_empty());
+    }
+
+    /// lif_ac05 (card 0020 multi-select): a shift-click toggles a category into
+    /// an OR'd union built from THIS legend's categories, canonically sorted so
+    /// the same set emits the same SQL; a single member is a bare Expr; a second
+    /// shift-click on a member removes it. `slot_expr` is Display-formatted, so
+    /// the ' OR ' substring is the real SQL, not the Debug variant tag.
+    #[test]
+    fn lif_ac05_shift_click_builds_a_sorted_or_union() {
+        let coord = legend_toggle_coordinator();
+        let mut c = coord.borrow_mut();
+        let cats: Vec<String> = ["adelie", "gentoo", "chinstrap"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let rows =
+            |c: &CrossfilterCoordinator| c.marks[1].batch.as_ref().map_or(0, |b| b.num_rows());
+
+        // Shift-click gentoo → a bare Expr, 3 rows (single-select parity).
+        assert!(c.apply_legend_toggle(0, Some("gentoo"), &cats).is_some());
+        let s = slot_expr(&c).unwrap();
+        assert!(s.contains("'gentoo'") && !s.contains(" OR "), "one member is a bare Expr: {s}");
+        assert_eq!(rows(&c), 3);
+
+        // Shift-click adelie → the union of both → 5 rows (3 + 2).
+        assert!(c.apply_legend_toggle(0, Some("adelie"), &cats).is_some());
+        let s = slot_expr(&c).unwrap();
+        assert!(
+            s.contains(" OR ") && s.contains("'gentoo'") && s.contains("'adelie'"),
+            "the union ORs both categories: {s}"
+        );
+        assert_eq!(rows(&c), 5, "adelie u gentoo keeps 5 of 6 rows");
+        assert_eq!(
+            c.legend_selected_categories(0, &cats),
+            vec!["adelie".to_string(), "gentoo".to_string()],
+            "both categories read as selected, in category order"
+        );
+        let forward = slot_expr(&c).unwrap();
+
+        // Canonical order: the same set built in the other click order emits the
+        // SAME SQL (statement-cache stable).
+        assert!(c.apply_legend_toggle(0, Some("adelie"), &cats).is_some());
+        assert!(c.apply_legend_toggle(0, Some("gentoo"), &cats).is_some());
+        assert_eq!(slot_expr(&c), None, "removing both members clears the slot");
+        assert!(c.apply_legend_toggle(0, Some("adelie"), &cats).is_some());
+        assert!(c.apply_legend_toggle(0, Some("gentoo"), &cats).is_some());
+        assert_eq!(
+            slot_expr(&c).unwrap(),
+            forward,
+            "member order is canonical, independent of click order"
+        );
+        assert_eq!(rows(&c), 5);
+
+        // Remove one member → back to the other as a bare Expr.
+        assert!(c.apply_legend_toggle(0, Some("adelie"), &cats).is_some());
+        let s = slot_expr(&c).unwrap();
+        assert!(s.contains("'gentoo'") && !s.contains(" OR "), "back to a single member: {s}");
+        assert_eq!(rows(&c), 3);
+    }
+
+    /// lif_ac07 (card 0020): removing the LAST member of a union clears the
+    /// contributor — never an empty `Or` (which Displays FALSE -> zero rows) —
+    /// so the subscriber returns to its unfiltered baseline, not a blank plot.
+    #[test]
+    fn lif_ac07_shift_removing_the_last_member_clears() {
+        let coord = legend_toggle_coordinator();
+        let mut c = coord.borrow_mut();
+        let cats: Vec<String> = ["adelie", "gentoo", "chinstrap"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let rows =
+            |c: &CrossfilterCoordinator| c.marks[1].batch.as_ref().map_or(0, |b| b.num_rows());
+        let baseline = rows(&c);
+
+        assert!(c.apply_legend_toggle(0, Some("gentoo"), &cats).is_some());
+        assert_eq!(rows(&c), 3);
+        assert!(c.apply_legend_toggle(0, Some("gentoo"), &cats).is_some());
+        assert_eq!(slot_expr(&c), None, "the last member out clears the slot");
+        assert_eq!(rows(&c), baseline, "cleared, not an empty Or (which is zero rows)");
+        assert!(c.legend_selected_categories(0, &cats).is_empty());
+    }
+
+    /// lif_ac05 (card 0020): a shift-click never folds a FOREIGN predicate (a
+    /// same-plot point selection occupying the shared slot) into the union — it
+    /// starts a fresh set; and a shift-click that hits no entry (`None`) is a
+    /// no-op that leaves an active union untouched.
+    #[test]
+    fn lif_ac05_shift_ignores_a_foreign_slot_and_a_miss() {
+        let coord = legend_toggle_coordinator();
+        let mut c = coord.borrow_mut();
+        let cats: Vec<String> = ["adelie", "gentoo", "chinstrap"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let rows =
+            |c: &CrossfilterCoordinator| c.marks[1].batch.as_ref().map_or(0, |b| b.num_rows());
+
+        // A foreign point selection occupies the shared (selection, contributor)
+        // slot — a bare Expr that is NOT one of this legend's categories.
+        let contributor = c.legend_bindings[0].contributor.clone();
+        let _ = c
+            .session
+            .dispatch("sel", contributor, Predicate::Expr("x = 5".to_string()));
+
+        // Shift-click gentoo → the foreign Expr is dropped, a FRESH single member.
+        assert!(c.apply_legend_toggle(0, Some("gentoo"), &cats).is_some());
+        let s = slot_expr(&c).unwrap();
+        assert!(
+            s.contains("'gentoo'") && !s.contains("x = 5") && !s.contains(" OR "),
+            "a foreign slot is replaced, never folded into the Or: {s}"
+        );
+        assert_eq!(
+            c.legend_selected_categories(0, &cats),
+            vec!["gentoo".to_string()]
+        );
+
+        // Build a 2-member union, then a miss (hit=None) is a no-op.
+        assert!(c.apply_legend_toggle(0, Some("adelie"), &cats).is_some());
+        let before = slot_expr(&c).unwrap();
+        let before_rows = rows(&c);
+        assert_eq!(
+            c.apply_legend_toggle(0, None, &cats),
+            None,
+            "a shift-click resolving to no entry is a no-op"
+        );
+        assert_eq!(slot_expr(&c).unwrap(), before, "the union is untouched by a miss");
+        assert_eq!(rows(&c), before_rows);
     }
 }

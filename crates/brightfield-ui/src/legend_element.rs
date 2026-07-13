@@ -18,13 +18,14 @@
 //! legends never bind — they have no discrete entries.
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use gpui::{
-    px, App, Bounds, Corners, Element, ElementId, GlobalElementId, HitboxBehavior,
-    InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseUpEvent, Pixels,
-    RenderImage, Size, Style, Window,
+    px, App, Bounds, Corners, CursorStyle, Element, ElementId, GlobalElementId, HitboxBehavior,
+    InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, RenderImage, Size, Style, Window,
 };
 use kurbo::{Affine, Point};
 use vello::Scene;
@@ -61,6 +62,11 @@ pub struct PlacedLegend {
     /// recreation between the press and the release; a drag that starts on a
     /// plot and releases over the legend must not dispatch.
     pressed: Rc<Cell<bool>>,
+    /// Which swatch entry the pointer is over, `None` when off-panel or between
+    /// entries — the card 0020 pre-click hover hot-state. Lives on the placement
+    /// (not the per-frame element) so it survives element recreation, exactly
+    /// like `pressed`; only ever set for a bound categorical legend.
+    hovered_index: Rc<Cell<Option<usize>>>,
     /// Cached device-resolution raster, shared with the per-frame elements so
     /// hovering/toggling elsewhere never re-runs Vello for a static legend.
     cache: Rc<RefCell<Option<LegendRaster>>>,
@@ -78,6 +84,7 @@ impl PlacedLegend {
             scale,
             binding: None,
             pressed: Rc::new(Cell::new(false)),
+            hovered_index: Rc::new(Cell::new(None)),
             cache: Rc::new(RefCell::new(None)),
         }
     }
@@ -114,10 +121,22 @@ pub fn swatch_hit_category(local: Point, scale: &Scale) -> Option<String> {
         Scale::Colour { categories, .. } => categories,
         _ => return None,
     };
+    swatch_hit_index(local, scale).and_then(|i| categories.get(i).cloned())
+}
+
+/// The entry INDEX a pointer at `local` (element-local logical px) lands on —
+/// the `.position(contains)` pre-map of [`swatch_hit_category`], exposed so the
+/// card 0020 hover tracker and the click hit-test resolve the SAME entry (they
+/// can never target different swatches). `None` between/outside entries or for a
+/// non-Colour scale.
+#[must_use]
+pub fn swatch_hit_index(local: Point, scale: &Scale) -> Option<usize> {
+    if !matches!(scale, Scale::Colour { .. }) {
+        return None;
+    }
     swatch_entry_rects(0.0, 0.0, scale)
         .iter()
         .position(|r| r.contains(local))
-        .and_then(|i| categories.get(i).cloned())
 }
 
 /// The press/release decision for a bound legend's click (card 0009 F6):
@@ -149,28 +168,40 @@ fn legend_raster_geometry(width: f64, height: f64, scale_factor: f64) -> (u32, u
 }
 
 /// A cached device-resolution rasterisation of a legend scene (mirrors
-/// `chart_state::BaseRaster`). The `selected` category is part of the cache key
-/// (card 0006 selected-state): a bound categorical legend re-rasterises when the
-/// active category changes, but a static (unbound / Sequential) legend keeps
-/// `None` and so never re-runs Vello for a gesture elsewhere.
+/// `chart_state::BaseRaster`). The selected category SET and the hovered entry
+/// are part of the cache key (card 0006 selected-state + card 0020 hover): a
+/// bound categorical legend re-rasterises when the active set or the hovered
+/// swatch changes, but a static (unbound / Sequential) legend keeps an empty set
+/// and `None` hover, so it never re-runs Vello for a gesture elsewhere.
 struct LegendRaster {
     dev_w: u32,
     dev_h: u32,
-    selected: Option<String>,
+    selected: BTreeSet<String>,
+    hovered: Option<usize>,
     image: Arc<RenderImage>,
 }
 
-/// Whether a cached legend raster is still valid for the requested device size
-/// AND selected category. A pure predicate so the cache key — dims *and*
-/// selected-state — is unit-testable without a window (card 0006, cfr_ac06).
+/// Whether a cached legend raster is still valid for the requested device size,
+/// selected category SET, AND hovered entry. A pure predicate so the cache key
+/// is unit-testable without a window (card 0006 cfr_ac06, card 0020).
 fn raster_cache_hit(
     cached_dims: (u32, u32),
-    cached_selected: &Option<String>,
+    cached_selected: &BTreeSet<String>,
+    cached_hovered: Option<usize>,
     dev_w: u32,
     dev_h: u32,
-    selected: &Option<String>,
+    selected: &BTreeSet<String>,
+    hovered: Option<usize>,
 ) -> bool {
-    cached_dims == (dev_w, dev_h) && cached_selected == selected
+    cached_dims == (dev_w, dev_h) && cached_selected == selected && cached_hovered == hovered
+}
+
+/// Whether a legend arms its click / cursor / hover affordances: it must be
+/// BOUND (`binding_present`) AND categorical (`Scale::Colour`). Sequential and
+/// unbound legends stay display-only (lcf ac-05 / card 0020 affordance). A pure
+/// predicate so the gate is unit-testable without constructing an element.
+fn legend_is_clickable(binding_present: bool, scale: &Scale) -> bool {
+    binding_present && matches!(scale, Scale::Colour { .. })
 }
 
 /// GPUI element that paints one standalone legend. Created fresh each frame by
@@ -189,6 +220,9 @@ pub struct LegendElement {
     /// Shared press-origin flag (see [`PlacedLegend::pressed`]) — set on
     /// mouse-down, consumed by the mouse-up decision (card 0009 F6).
     pressed: Rc<Cell<bool>>,
+    /// Shared hover hot-state (see [`PlacedLegend::hovered_index`]) — set by the
+    /// mouse-move listener, read each paint to highlight the hovered swatch.
+    hovered_index: Rc<Cell<Option<usize>>>,
     cache: Rc<RefCell<Option<LegendRaster>>>,
     renderer: Arc<Mutex<VelloRenderer>>,
 }
@@ -205,6 +239,7 @@ impl LegendElement {
             id: ElementId::from(("brightfield-legend", index)),
             binding: placed.binding.clone(),
             pressed: placed.pressed.clone(),
+            hovered_index: placed.hovered_index.clone(),
             cache: placed.cache.clone(),
             renderer,
         }
@@ -214,7 +249,7 @@ impl LegendElement {
     /// Sequential (gradient) and unbound legends stay display-only — no
     /// hitbox, no listeners (lcf ac-05).
     fn is_clickable(&self) -> bool {
-        self.binding.is_some() && matches!(self.scale, Scale::Colour { .. })
+        legend_is_clickable(self.binding.is_some(), &self.scale)
     }
 }
 
@@ -322,10 +357,55 @@ impl Element for LegendElement {
                                 event.position.y.to_f64() - origin.y,
                             );
                             let hit = swatch_hit_category(local, &scale);
-                            let committed = coordinator
-                                .borrow_mut()
-                                .commit_legend_click(legend_index, hit.as_deref(), cx);
+                            let categories: &[String] = match &scale {
+                                Scale::Colour { categories, .. } => categories,
+                                _ => &[],
+                            };
+                            // Shift-click accumulates an OR'd union (card 0020);
+                            // a plain click is the single-select replace/toggle.
+                            let committed = coordinator.borrow_mut().commit_legend_click(
+                                legend_index,
+                                hit.as_deref(),
+                                event.modifiers.shift,
+                                categories,
+                                cx,
+                            );
                             if committed {
+                                window.refresh();
+                            }
+                        }
+                    }
+                });
+
+                // Pointer cursor over a bound legend (card 0020): the first
+                // CursorStyle in the app (reused later by the draggable-brush
+                // card). Reuses the whole-legend hitbox, so it shows over the
+                // panel INCLUDING inter-row gaps — a "this legend is live"
+                // signal. Paint-phase only (set_cursor_style debug_asserts it).
+                window.set_cursor_style(CursorStyle::PointingHand, hitbox);
+
+                // Hover hot-state tracker (card 0020): the swatch under the
+                // pointer, resolved via the SAME hit geometry as the click, and
+                // refreshed ONLY on a change so a mouse-move is not a repaint
+                // storm. Reset to None when the pointer leaves the panel.
+                window.on_mouse_event({
+                    let hovered = self.hovered_index.clone();
+                    let hitbox = hitbox.clone();
+                    let scale = self.scale.clone();
+                    let origin = Point::new(bounds.origin.x.to_f64(), bounds.origin.y.to_f64());
+                    move |event: &MouseMoveEvent, phase, window, _cx| {
+                        if phase.bubble() {
+                            let next = if hitbox.is_hovered(window) {
+                                let local = Point::new(
+                                    event.position.x.to_f64() - origin.x,
+                                    event.position.y.to_f64() - origin.y,
+                                );
+                                swatch_hit_index(local, &scale)
+                            } else {
+                                None
+                            };
+                            if hovered.get() != next {
+                                hovered.set(next);
                                 window.refresh();
                             }
                         }
@@ -344,12 +424,18 @@ impl Element for LegendElement {
         // gesture that changes the slot already triggers this repaint, and the
         // borrow is free because commits release theirs before the refresh. An
         // unbound or Sequential legend stays `None` (zero behaviour change).
-        let selected: Option<String> = match (&self.binding, &self.scale) {
+        let selected: BTreeSet<String> = match (&self.binding, &self.scale) {
             (Some((legend_index, coordinator)), Scale::Colour { categories, .. }) => coordinator
                 .borrow()
-                .legend_selected_category(*legend_index, categories),
-            _ => None,
+                .legend_selected_categories(*legend_index, categories)
+                .into_iter()
+                .collect(),
+            _ => BTreeSet::new(),
         };
+        // The swatch under the pointer (card 0020 hover), set by the move
+        // listener above; `None` for an unbound or Sequential legend (no
+        // listener ever sets it).
+        let hovered: Option<usize> = self.hovered_index.get();
 
         // Match chart_state::base_image: render at the ceiled device size and
         // scale the scene to fill it, so the legend stays crisp on HiDPI —
@@ -363,13 +449,23 @@ impl Element for LegendElement {
             let cache = self.cache.borrow();
             cache
                 .as_ref()
-                .filter(|c| raster_cache_hit((c.dev_w, c.dev_h), &c.selected, dev_w, dev_h, &selected))
+                .filter(|c| {
+                    raster_cache_hit(
+                        (c.dev_w, c.dev_h),
+                        &c.selected,
+                        c.hovered,
+                        dev_w,
+                        dev_h,
+                        &selected,
+                        hovered,
+                    )
+                })
                 .map(|c| c.image.clone())
         };
         let image = match cached {
             Some(image) => image,
             None => {
-                let Some((scene, _)) = build_legend_scene(&self.scale, selected.as_deref()) else {
+                let Some((scene, _)) = build_legend_scene(&self.scale, &selected, hovered) else {
                     return; // non-colour scale: nothing to paint
                 };
                 let scale_x = f64::from(dev_w - 2 * pad_dev) / self.width;
@@ -405,6 +501,7 @@ impl Element for LegendElement {
                     dev_w,
                     dev_h,
                     selected: selected.clone(),
+                    hovered,
                     image: image.clone(),
                 });
                 image
@@ -429,33 +526,97 @@ impl Element for LegendElement {
 #[cfg(test)]
 mod tests {
     use super::{
-        legend_click_decision, legend_raster_geometry, raster_cache_hit, swatch_hit_category,
+        legend_click_decision, legend_is_clickable, legend_raster_geometry, raster_cache_hit,
+        swatch_hit_category, swatch_hit_index,
     };
     use brightfield_render::legend::swatch_entry_rects;
     use brightfield_render::scale::Scale;
     use kurbo::Point;
     use std::cell::Cell;
+    use std::collections::BTreeSet;
 
-    /// cfr_ac06 (cache key): a bound categorical legend's raster cache keys on
-    /// the selected category as well as the device dims, so a gesture that
-    /// changes the slot repaints the legend on the refresh it already triggers.
-    /// Same dims + same selection hits; a different (or newly-present) selection
-    /// misses; a static legend (`None` both) always hits regardless of the slot.
+    fn set(items: &[&str]) -> BTreeSet<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// cfr_ac06 + lif-ac09 (cache key): a bound categorical legend's raster
+    /// cache keys on the selected category SET and the hovered entry as well as
+    /// the device dims, so any gesture that changes the slot, the union, or the
+    /// pointer swatch repaints on the refresh it already triggers. Same dims +
+    /// same set + same hover hits; a different set, a widened union, or a new
+    /// hover misses; a static legend (empty set, `None` hover) always hits.
     #[test]
-    fn cfr_ac06_raster_cache_keys_on_dims_and_selected() {
-        let g = Some("gentoo".to_string());
-        let a = Some("adelie".to_string());
+    fn cfr_ac06_raster_cache_keys_on_dims_selected_and_hover() {
+        let g = set(&["gentoo"]);
+        let a = set(&["adelie"]);
+        let ga = set(&["adelie", "gentoo"]);
+        let empty = BTreeSet::new();
 
-        // Same dims + same selection → hit.
-        assert!(raster_cache_hit((100, 40), &g, 100, 40, &g));
+        // Same dims + same selection + same hover → hit.
+        assert!(raster_cache_hit((100, 40), &g, None, 100, 40, &g, None));
         // Same dims + different selection → miss.
-        assert!(!raster_cache_hit((100, 40), &g, 100, 40, &a));
+        assert!(!raster_cache_hit((100, 40), &g, None, 100, 40, &a, None));
+        // A single member vs a two-member union → miss (multi-select re-raster).
+        assert!(!raster_cache_hit((100, 40), &g, None, 100, 40, &ga, None));
         // No selection either side (unbound / Sequential) → hit.
-        assert!(raster_cache_hit((100, 40), &None, 100, 40, &None));
+        assert!(raster_cache_hit((100, 40), &empty, None, 100, 40, &empty, None));
         // A selection where there was none → miss.
-        assert!(!raster_cache_hit((100, 40), &None, 100, 40, &g));
+        assert!(!raster_cache_hit((100, 40), &empty, None, 100, 40, &g, None));
         // Different dims → miss regardless of selection.
-        assert!(!raster_cache_hit((100, 40), &g, 200, 40, &g));
+        assert!(!raster_cache_hit((100, 40), &g, None, 200, 40, &g, None));
+        // Same dims + same selection but a NEW hovered swatch → miss: card 0020
+        // hover is part of the key, so a hover repaints without a slot change.
+        assert!(!raster_cache_hit((100, 40), &g, None, 100, 40, &g, Some(1)));
+        // Same hover both sides → hit.
+        assert!(raster_cache_hit((100, 40), &g, Some(1), 100, 40, &g, Some(1)));
+    }
+
+    /// lif-ac01 (affordance gate): the cursor / hover affordance arms ONLY for a
+    /// bound categorical legend — an unbound colour key and a bound Sequential
+    /// (gradient) legend both stay inert, so a static key never invites a click
+    /// it cannot honour.
+    #[test]
+    fn lif_ac01_only_a_bound_colour_legend_is_clickable() {
+        let colour = colour_scale();
+        let sequential = Scale::Sequential {
+            domain_min: 0.0,
+            domain_max: 1.0,
+            stops: vec![[0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0, 1.0]],
+        };
+        assert!(legend_is_clickable(true, &colour), "bound colour → clickable");
+        assert!(!legend_is_clickable(false, &colour), "unbound colour → inert");
+        assert!(!legend_is_clickable(true, &sequential), "bound sequential → inert");
+        assert!(!legend_is_clickable(false, &sequential), "unbound sequential → inert");
+    }
+
+    /// lif-ac02 (hover geometry): the hover tracker resolves the SAME entry as
+    /// the click hit-test — `swatch_hit_index` is the index pre-map of
+    /// `swatch_hit_category`, so a hover can never highlight a different swatch
+    /// than a click would select. Centres map to 0,1,2; a row gap and a
+    /// Sequential scale resolve to no entry.
+    #[test]
+    fn lif_ac02_swatch_hit_index_shares_click_geometry() {
+        let scale = colour_scale();
+        let rects = swatch_entry_rects(0.0, 0.0, &scale);
+        for (i, rect) in rects.iter().enumerate() {
+            assert_eq!(swatch_hit_index(rect.center(), &scale), Some(i));
+            // Index and category agree entry-for-entry.
+            assert_eq!(
+                swatch_hit_index(rect.center(), &scale),
+                swatch_hit_category(rect.center(), &scale)
+                    .and_then(|c| ["adelie", "gentoo", "chinstrap"].iter().position(|x| *x == c)),
+            );
+        }
+        // A gap between rows resolves to no entry.
+        let gap_y = (rects[0].y1 + rects[1].y0) / 2.0;
+        assert_eq!(swatch_hit_index(Point::new(rects[0].center().x, gap_y), &scale), None);
+        // A Sequential scale has no discrete entries.
+        let sequential = Scale::Sequential {
+            domain_min: 0.0,
+            domain_max: 1.0,
+            stops: vec![[0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0, 1.0]],
+        };
+        assert_eq!(swatch_hit_index(Point::new(10.0, 10.0), &sequential), None);
     }
 
     /// fww_ac04 (post-review, sub-pixel border parity): the raster buffer is
