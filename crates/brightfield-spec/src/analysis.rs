@@ -9,12 +9,12 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use indexmap::IndexMap;
 
 use crate::ast::{
-    Component, Input, Mark, ParamNode, Spec, SpecValue,
+    Component, Input, Interactor, Mark, ParamNode, ParamRef, Spec, SpecValue,
     ValueOrParamRef,
 };
 use crate::error::ParseError;
 use crate::parse::ParseWarning;
-use crate::vocab::{InputKind, InteractorKind};
+use crate::vocab::{InputKind, InteractorKind, MarkKind};
 
 // ---------------------------------------------------------------------------
 // Type enums (ac-08)
@@ -902,6 +902,11 @@ pub fn build_selection_subscriber_graph(spec: &Spec) -> SelectionSubscriberGraph
     let known_selections: HashSet<String> = graph.keys().cloned().collect();
     if let Some(root) = &spec.root {
         collect_selection_subscribers(root, "root", &known_selections, &mut graph);
+        // Card 0021: a `highlight, by: $sel` interactor makes its plot's
+        // honouring marks subscribers to `$sel` too — a selection change must
+        // re-query them (to re-project `__bf_selected`), not just the filterBy
+        // subscribers. Registered after the filterBy walk so both sets compose.
+        collect_highlight_subscribers(root, "root", &known_selections, &mut graph);
     }
 
     graph
@@ -1337,6 +1342,356 @@ pub fn build_legend_bindings(spec: &Spec, warnings: &mut Vec<ParseWarning>) -> V
 }
 
 // ---------------------------------------------------------------------------
+// Highlight interactor bindings (card 0021, conditional encoding)
+// ---------------------------------------------------------------------------
+
+/// Reserved output column carrying a highlight mark's per-row membership in its
+/// `by:` selection — the SQL emitter projects `(<pred>) AS __bf_selected` and the
+/// renderer reads the boolean back to dim non-matching rows (card 0021). The
+/// `__bf_` prefix follows the density/hexbin geometry convention so it can't
+/// collide with a user column. Defined here in the shared base crate because
+/// both `brightfield-sql` (writer) and `brightfield-render` (reader) reference it.
+pub const SELECTED_COLUMN: &str = "__bf_selected";
+
+/// The `otherwise` override surface a `highlight` interactor applies to the
+/// NON-matching (deemphasised) rows — the flat declarative fields from Mosaic's
+/// `Highlight.ts` (card 0021). Every field is optional; an all-`None` style
+/// means "use the default deemphasis" (opacity 0.2). `stroke`/`stroke_opacity`
+/// are MODELLED here for corpus fidelity but left unimplemented at the render
+/// site (no fill-vs-stroke discriminator, no driving fixture — see the spec's
+/// locked decisions).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct HighlightStyle {
+    /// Element opacity multiplier for deemphasised rows (Mosaic default 0.2).
+    pub opacity: Option<f64>,
+    /// Literal fill colour replacing the resolved colour (e.g. `#ccc`).
+    pub fill: Option<String>,
+    /// Fill alpha for deemphasised rows.
+    pub fill_opacity: Option<f64>,
+    /// Modelled, unimplemented in v1.
+    pub stroke: Option<String>,
+    /// Modelled, unimplemented in v1.
+    pub stroke_opacity: Option<f64>,
+}
+
+/// A `highlight` interactor's binding to the selection it CONSUMES — one entry
+/// per `(plot, highlight interactor)` pair carrying the selection name (from
+/// `by:`, unlike the `as:` PRODUCER bindings), the parent-plot identity, and the
+/// resolved `otherwise` style.
+///
+/// Built by [`build_highlight_bindings`] during [`analyse_spec`]. Unlike a
+/// brush/legend producer, a highlight interactor writes nothing — it re-styles
+/// its plot's marks per the live membership of `by:`. The membership is a
+/// per-row boolean the mark's query PROJECTS (`… AS __bf_selected`) rather than
+/// a WHERE that drops rows, so a highlight-bound mark keeps its FULL batch and
+/// DIMS (the ce-ac05 classification: highlight-not-filter).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HighlightBinding {
+    /// Component path of the highlight interactor
+    /// (e.g. `root/hconcat[0]/plot[3]/interactor[highlight]`).
+    pub interactor_path: ComponentPath,
+    /// The parent plot's NODE path (e.g. `root/hconcat[0]`) — the stable plot
+    /// identity `emit_query` uses as `self_source` for crossfilter
+    /// self-exclusion, equal to `plot_node_path` of the plot's marks.
+    pub parent_plot: ComponentPath,
+    /// The selection name `by:` names (`by: $brush` → `"brush"`) — a CONSUMER
+    /// reference, validated against declared + `as:`-bound selection names.
+    pub selection: String,
+    /// The `otherwise` deemphasis style applied to non-matching rows.
+    pub style: HighlightStyle,
+}
+
+/// Honouring mark families — the four whose renderer reads the highlight state
+/// (`apply_highlight`) and therefore dims. Every one lowers via `SimpleLowerer`
+/// (row-level `SELECT * FROM table`), so the `__bf_selected` membership
+/// projection over them evaluates against the full source table and is always
+/// SQL-safe (the ce-ac05 / ce-ac09 correctness anchor). The other 12 families
+/// stay highlight no-ops.
+pub fn mark_honours_highlight(kind: MarkKind) -> bool {
+    matches!(
+        kind,
+        MarkKind::Dot
+            | MarkKind::BarX
+            | MarkKind::BarY
+            | MarkKind::Rect
+            | MarkKind::RectX
+            | MarkKind::RectY
+            | MarkKind::Text
+    )
+}
+
+/// Mark kinds whose lowering AGGREGATES in SQL (GROUP BY / scalar aggregate),
+/// so a `SELECT *, (<pred>) AS __bf_selected` wrapper would evaluate the
+/// predicate against the grouped output — a non-group-key column reference would
+/// SQL-error. None of these is a honouring family, so guarding them out costs no
+/// visible dimming; it only prevents a runtime crash (ce-ac09). Kept
+/// deliberately conservative (Cell aggregates only under a self-aggregating
+/// fill, but is guarded unconditionally — it never dims regardless).
+fn mark_kind_aggregates(kind: MarkKind) -> bool {
+    matches!(
+        kind,
+        MarkKind::Density
+            | MarkKind::DensityX
+            | MarkKind::DensityY
+            | MarkKind::Heatmap
+            | MarkKind::Contour
+            | MarkKind::Raster
+            | MarkKind::Cell
+            | MarkKind::Hexbin
+            | MarkKind::RegressionX
+            | MarkKind::RegressionY
+    )
+}
+
+/// The selection a plot's `highlight` interactor CONSUMES (`by: $sel`), if the
+/// plot carries one and `by:` lifted to a `Param` ref. Pure structural scan of a
+/// plot's items — no validation (that happens in [`build_highlight_bindings`]).
+fn plot_highlight_by(items: &[Component]) -> Option<&ParamRef> {
+    for item in items {
+        if let Component::Interactor(i) = item {
+            if i.kind == InteractorKind::Highlight {
+                if let Some(ValueOrParamRef::Param(pr)) = i.options.get("by") {
+                    return Some(pr);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Extract a literal numeric option from an interactor's option bag.
+fn interactor_opt_f64(interactor: &Interactor, key: &str) -> Option<f64> {
+    match interactor.options.get(key)? {
+        ValueOrParamRef::Value(SpecValue::Float(f)) => Some(*f),
+        ValueOrParamRef::Value(SpecValue::Integer(i)) => Some(*i as f64),
+        _ => None,
+    }
+}
+
+/// Extract a literal string option from an interactor's option bag.
+fn interactor_opt_string(interactor: &Interactor, key: &str) -> Option<String> {
+    match interactor.options.get(key)? {
+        ValueOrParamRef::Value(SpecValue::String(s)) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+/// Resolve a `highlight` interactor's `otherwise` override style from its option
+/// bag: `opacity` / `fillOpacity` (numeric), `fill` / `stroke` (literal
+/// colour), `strokeOpacity` (numeric). Absent fields stay `None`; the render
+/// site applies the Mosaic default (opacity 0.2) when every field is `None`.
+fn resolve_highlight_style(interactor: &Interactor) -> HighlightStyle {
+    HighlightStyle {
+        opacity: interactor_opt_f64(interactor, "opacity"),
+        fill: interactor_opt_string(interactor, "fill"),
+        fill_opacity: interactor_opt_f64(interactor, "fillOpacity"),
+        stroke: interactor_opt_string(interactor, "stroke"),
+        stroke_opacity: interactor_opt_f64(interactor, "strokeOpacity"),
+    }
+}
+
+/// Walk the spec and build the highlight consumer bindings (card 0021).
+///
+/// One entry per `(Plot, highlight Interactor)` pair whose `by:` resolves to a
+/// known selection (declared in `params:` OR created by an `as:` binding),
+/// mirroring [`validate_filter_by_refs`]'s known-selection set. An unknown or
+/// value-param `by:` pushes a `HighlightBinding*` warning and forms no binding.
+/// A highlight on a plot whose data mark AGGREGATES in SQL pushes
+/// `HighlightOnAggregate` and forms no binding (ce-ac09 guard) — the row-level
+/// honouring families (dot/bar/rect/text) are unaffected.
+pub fn build_highlight_bindings(
+    spec: &Spec,
+    warnings: &mut Vec<ParseWarning>,
+) -> Vec<HighlightBinding> {
+    // Known selections: declared Selection params + `as:`-bound names — the same
+    // set filterBy validation trusts.
+    let mut known_selections: HashSet<String> = HashSet::new();
+    for (name, node) in &spec.params {
+        if matches!(node, ParamNode::Selection(_)) {
+            known_selections.insert(name.clone());
+        }
+    }
+    known_selections.extend(collect_as_bound_names(spec));
+
+    let mut bindings = Vec::new();
+    if let Some(root) = &spec.root {
+        collect_highlight_bindings(root, "root", spec, &known_selections, &mut bindings, warnings);
+    }
+    bindings
+}
+
+fn collect_highlight_bindings(
+    component: &Component,
+    path: &str,
+    spec: &Spec,
+    known_selections: &HashSet<String>,
+    bindings: &mut Vec<HighlightBinding>,
+    warnings: &mut Vec<ParseWarning>,
+) {
+    match component {
+        Component::Plot(p) => {
+            // The plot's node path is `path`; its items are `path/plot[i]`.
+            for (i, item) in p.items.iter().enumerate() {
+                let item_path = format!("{path}/plot[{i}]");
+                match item {
+                    Component::Interactor(intc)
+                        if intc.kind == InteractorKind::Highlight =>
+                    {
+                        let Some(ValueOrParamRef::Param(pr)) = intc.options.get("by") else {
+                            // A highlight with no `by:` selection has nothing to
+                            // dim against — inert, no binding (no warning: an
+                            // author may be mid-edit).
+                            continue;
+                        };
+                        // Validate the CONSUMER ref like filterBy: declared
+                        // selection or `as:`-bound, else warn + skip.
+                        if !known_selections.contains(&pr.0) {
+                            match spec.params.get(&pr.0) {
+                                Some(ParamNode::Value(_)) => {
+                                    warnings.push(ParseWarning::HighlightBindingNonSelection {
+                                        name: pr.0.clone(),
+                                    });
+                                }
+                                _ => {
+                                    warnings.push(ParseWarning::HighlightBindingMissing {
+                                        name: pr.0.clone(),
+                                    });
+                                }
+                            }
+                            continue;
+                        }
+                        // Aggregate guard (ce-ac09): a highlight on a plot whose
+                        // data mark aggregates in SQL would evaluate the
+                        // membership predicate against the grouped output. Warn
+                        // and skip — the honouring families never aggregate, so
+                        // this only fires on non-dimming density/cell/hexbin/…
+                        // marks and prevents a runtime SQL error.
+                        if let Some(agg_kind) = p.items.iter().find_map(|it| match it {
+                            Component::Mark(m) if mark_kind_aggregates(m.kind) => Some(m.kind),
+                            _ => None,
+                        }) {
+                            warnings.push(ParseWarning::HighlightOnAggregate {
+                                selection: pr.0.clone(),
+                                mark: agg_kind.wire_name().to_string(),
+                            });
+                            continue;
+                        }
+                        bindings.push(HighlightBinding {
+                            interactor_path: ComponentPath(format!(
+                                "{item_path}/interactor[{}]",
+                                intc.kind.wire_name()
+                            )),
+                            parent_plot: ComponentPath(path.to_string()),
+                            selection: pr.0.clone(),
+                            style: resolve_highlight_style(intc),
+                        });
+                    }
+                    Component::Plot(_) | Component::HConcat(_) | Component::VConcat(_) => {
+                        collect_highlight_bindings(
+                            item,
+                            &item_path,
+                            spec,
+                            known_selections,
+                            bindings,
+                            warnings,
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Component::HConcat(c) => {
+            for (i, item) in c.items.iter().enumerate() {
+                collect_highlight_bindings(
+                    item,
+                    &format!("{path}/hconcat[{i}]"),
+                    spec,
+                    known_selections,
+                    bindings,
+                    warnings,
+                );
+            }
+        }
+        Component::VConcat(c) => {
+            for (i, item) in c.items.iter().enumerate() {
+                collect_highlight_bindings(
+                    item,
+                    &format!("{path}/vconcat[{i}]"),
+                    spec,
+                    known_selections,
+                    bindings,
+                    warnings,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Register each highlight-bound plot's honouring marks as SUBSCRIBERS to the
+/// `by:` selection, so a change to that selection re-queries them (with the
+/// `__bf_selected` projection, via `emit_query`) — the same
+/// `propagate_selection` spine `filterBy` rides. Called by
+/// [`build_selection_subscriber_graph`] after the filterBy walk, so a mark that
+/// both `filterBy`-s one selection and highlights on another lands in both
+/// subscriber sets (ce-ac05: each binding resolved independently).
+///
+/// Only the honouring, row-level families are registered — an aggregate mark is
+/// already dropped upstream (no binding) and never dims. Mark paths match the
+/// engine's `mark_index_map` keys (`…/plot[i]/mark[kind]`).
+fn collect_highlight_subscribers(
+    component: &Component,
+    path: &str,
+    known_selections: &HashSet<String>,
+    graph: &mut SelectionSubscriberGraph,
+) {
+    match component {
+        Component::Plot(p) => {
+            let by = plot_highlight_by(&p.items)
+                .map(|pr| pr.0.clone())
+                .filter(|name| known_selections.contains(name));
+            for (i, item) in p.items.iter().enumerate() {
+                let item_path = format!("{path}/plot[{i}]");
+                match item {
+                    Component::Mark(m) if by.is_some() && mark_honours_highlight(m.kind) => {
+                        let sel = by.clone().expect("guarded by is_some");
+                        graph.entry(sel).or_default().push(ComponentPath(format!(
+                            "{item_path}/mark[{}]",
+                            m.kind.wire_name()
+                        )));
+                    }
+                    Component::Plot(_) | Component::HConcat(_) | Component::VConcat(_) => {
+                        collect_highlight_subscribers(item, &item_path, known_selections, graph);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Component::HConcat(c) => {
+            for (i, item) in c.items.iter().enumerate() {
+                collect_highlight_subscribers(
+                    item,
+                    &format!("{path}/hconcat[{i}]"),
+                    known_selections,
+                    graph,
+                );
+            }
+        }
+        Component::VConcat(c) => {
+            for (i, item) in c.items.iter().enumerate() {
+                collect_highlight_subscribers(
+                    item,
+                    &format!("{path}/vconcat[{i}]"),
+                    known_selections,
+                    graph,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SpecAnalysis (ac-09, extended with cfs fields)
 // ---------------------------------------------------------------------------
 
@@ -1361,6 +1716,10 @@ pub struct SpecAnalysis {
     /// bound `as:` a selection, resolved to its `for:` plot. Card 0009
     /// (legend click-to-filter) lcf ac-01.
     pub legend_bindings: Vec<LegendBinding>,
+    /// Highlight consumer bindings — one per `highlight, by: $sel` interactor,
+    /// carrying its parent plot, the consumed selection, and the `otherwise`
+    /// deemphasis style. Card 0021 (conditional encoding) ce-ac02.
+    pub highlight_bindings: Vec<HighlightBinding>,
     /// Diagnostics discovered during analysis.
     pub warnings: Vec<ParseWarning>,
 }
@@ -1454,6 +1813,11 @@ pub fn analyse_spec(spec: &Spec) -> Result<SpecAnalysis, ParseError> {
     // warnings for `as:` targets that fail the crossfilter precondition.
     let legend_bindings = build_legend_bindings(spec, &mut warnings);
 
+    // Highlight consumer bindings (card 0021, ce-ac02) — pushes
+    // HighlightBinding* / HighlightOnAggregate warnings for invalid `by:` refs
+    // and aggregate-mark guards.
+    let highlight_bindings = build_highlight_bindings(spec, &mut warnings);
+
     Ok(SpecAnalysis {
         subscriber_graph,
         dependency_edges,
@@ -1462,6 +1826,7 @@ pub fn analyse_spec(spec: &Spec) -> Result<SpecAnalysis, ParseError> {
         interactor_bindings,
         brushable_bindings,
         legend_bindings,
+        highlight_bindings,
         warnings,
     })
 }
@@ -1492,6 +1857,7 @@ mod tests {
             interactor_bindings: Vec::new(),
             brushable_bindings: Vec::new(),
             legend_bindings: Vec::new(),
+            highlight_bindings: Vec::new(),
             warnings: Vec::new(),
         }
     }
@@ -2834,6 +3200,132 @@ hconcat:
                 ParseWarning::DeadParam { name } if name == "unused"
             )),
             "a genuinely dead param still warns: {:?}",
+            analysis.warnings
+        );
+    }
+
+    // --- card 0021: highlight consumer bindings (ce-ac02) ---
+
+    /// ce-ac02: a `highlight, by: $sel, opacity:` builds one binding carrying the
+    /// parent-plot identity, the consumed selection, and the resolved style; and
+    /// the plot's honouring dot becomes a subscriber to `$sel`.
+    #[test]
+    fn ce_ac02_highlight_binding_and_subscriber() {
+        let yaml = r#"
+params:
+  brush: { select: single }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: a
+    y: b
+  - select: intervalXY
+    as: $brush
+  - select: highlight
+    by: $brush
+    opacity: 0.1
+"#;
+        let out = parse_spec(yaml, Format::Yaml).expect("parses");
+        let analysis = analyse_spec(&out.spec).expect("analysis ok");
+        assert_eq!(analysis.highlight_bindings.len(), 1);
+        let b = &analysis.highlight_bindings[0];
+        assert_eq!(b.selection, "brush");
+        assert_eq!(b.parent_plot.0, "root");
+        assert_eq!(b.style.opacity, Some(0.1));
+        // The dot honours highlight → it subscribes to `brush` (so a brush change
+        // re-queries it with the __bf_selected projection). ce-ac05.
+        let subs = analysis
+            .selection_subscribers
+            .get("brush")
+            .expect("brush selection subscribers");
+        assert!(
+            subs.iter().any(|p| p.0 == "root/plot[0]/mark[dot]"),
+            "highlight-bound dot must subscribe to its `by:` selection, got {subs:?}"
+        );
+    }
+
+    /// ce-ac02: `by:` a value param → `HighlightBindingNonSelection`, no binding.
+    #[test]
+    fn ce_ac02_highlight_by_value_param_warns_non_selection() {
+        let yaml = r#"
+params:
+  notasel: 5
+plot:
+  - mark: dot
+    data: { from: t }
+    x: a
+    y: b
+  - select: highlight
+    by: $notasel
+"#;
+        let out = parse_spec(yaml, Format::Yaml).expect("parses");
+        let analysis = analyse_spec(&out.spec).expect("analysis ok");
+        assert!(analysis.highlight_bindings.is_empty(), "no binding forms");
+        assert!(
+            analysis.warnings.iter().any(|w| matches!(
+                w,
+                ParseWarning::HighlightBindingNonSelection { name } if name == "notasel"
+            )),
+            "expected HighlightBindingNonSelection, got {:?}",
+            analysis.warnings
+        );
+    }
+
+    /// ce-ac02: `by:` an undeclared / unbound name → `HighlightBindingMissing`.
+    #[test]
+    fn ce_ac02_highlight_by_unknown_warns_missing() {
+        let yaml = r#"
+plot:
+  - mark: dot
+    data: { from: t }
+    x: a
+    y: b
+  - select: highlight
+    by: $ghost
+"#;
+        let out = parse_spec(yaml, Format::Yaml).expect("parses");
+        let analysis = analyse_spec(&out.spec).expect("analysis ok");
+        assert!(analysis.highlight_bindings.is_empty());
+        assert!(
+            analysis.warnings.iter().any(|w| matches!(
+                w,
+                ParseWarning::HighlightBindingMissing { name } if name == "ghost"
+            )),
+            "expected HighlightBindingMissing, got {:?}",
+            analysis.warnings
+        );
+    }
+
+    /// ce-ac09: a highlight on a plot whose mark AGGREGATES in SQL (a heatmap)
+    /// is guarded out — `HighlightOnAggregate`, no binding — so the membership
+    /// projection can't reference a dropped column and crash at runtime.
+    #[test]
+    fn ce_ac09_highlight_on_aggregate_mark_guarded() {
+        let yaml = r#"
+params:
+  brush: { select: single }
+plot:
+  - mark: heatmap
+    data: { from: t }
+    x: a
+    y: b
+  - select: intervalXY
+    as: $brush
+  - select: highlight
+    by: $brush
+"#;
+        let out = parse_spec(yaml, Format::Yaml).expect("parses");
+        let analysis = analyse_spec(&out.spec).expect("analysis ok");
+        assert!(
+            analysis.highlight_bindings.is_empty(),
+            "aggregate-mark highlight forms no binding"
+        );
+        assert!(
+            analysis.warnings.iter().any(|w| matches!(
+                w,
+                ParseWarning::HighlightOnAggregate { mark, .. } if mark == "heatmap"
+            )),
+            "expected HighlightOnAggregate, got {:?}",
             analysis.warnings
         );
     }

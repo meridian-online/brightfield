@@ -125,6 +125,10 @@ pub const LIFT_SURFACE_FIELDS: &[&str] = &[
     "ci",
     // Interactor/input
     "as",
+    // `by:` on a `highlight` interactor names the selection it CONSUMES
+    // (card 0021) — lifted to a `Param` ref symmetric with `as:`, so a
+    // downstream `HighlightBinding` reads it exactly like a producer's `as:`.
+    "by",
     "field",
     "fields",
     "column",
@@ -304,6 +308,38 @@ pub enum ParseWarning {
     NonNumericInset {
         /// The offending attribute key.
         attribute: String,
+    },
+
+    /// A `highlight` interactor's `by:` references a param name that is not
+    /// declared in `params:` and is not created by any `as:` binding. The
+    /// highlight stays inert (no binding forms) — like a legend producer, a
+    /// highlight consumer needs a real selection to dim against (card 0021).
+    HighlightBindingMissing {
+        /// The undeclared / unbound selection name.
+        name: String,
+    },
+
+    /// A `highlight` interactor's `by:` references a param that is declared as
+    /// a `ParamNode::Value`, not a `ParamNode::Selection` (and is not an
+    /// `as:`-bound selection). The highlight stays inert (card 0021).
+    HighlightBindingNonSelection {
+        /// The value-param name.
+        name: String,
+    },
+
+    /// A `highlight` interactor sits on a plot whose data mark AGGREGATES in
+    /// SQL (a density/heatmap/contour/raster/cell/hexbin/regression kind). The
+    /// per-row `__bf_selected` membership projection would evaluate against the
+    /// grouped output — a predicate over a non-group-key column would SQL-error
+    /// — so the highlight is guarded out (no binding, no projection) rather than
+    /// risking a runtime crash. A row-level mark (dot/bar/rect/text) is
+    /// unaffected: the projection there evaluates against the full source table
+    /// (card 0021, ce-ac09).
+    HighlightOnAggregate {
+        /// The `by:` selection name.
+        selection: String,
+        /// The aggregating mark kind's wire name (e.g. `heatmap`).
+        mark: String,
     },
 
     /// A plot-level axis-title / plot-title attribute (`xLabel`, `yLabel`,
@@ -2312,6 +2348,58 @@ plot:
             )),
             "expected UnknownOption warning for meta.bogus, got {:?}",
             out.warnings
+        );
+    }
+
+    /// ce-ac01 (card 0021): a `highlight` interactor's `by:` lifts to a `Param`
+    /// ref — symmetric with a producer's `as:` — while its literal `opacity`
+    /// override stays a plain value. No `Unimplemented` warning fires (Highlight
+    /// is already vocab `Implemented`).
+    #[test]
+    fn ce_ac01_highlight_by_lifts_to_param() {
+        let yaml = r#"
+params:
+  brush: { select: single }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: a
+    y: b
+  - select: intervalXY
+    as: $brush
+  - select: highlight
+    by: $brush
+    opacity: 0.1
+"#;
+        let out = parse_spec(yaml, Format::Yaml).expect("parses");
+        let Some(Component::Plot(plot)) = &out.spec.root else {
+            panic!("expected a plot root");
+        };
+        let hl = plot
+            .items
+            .iter()
+            .find_map(|it| match it {
+                Component::Interactor(i) if i.kind == InteractorKind::Highlight => Some(i),
+                _ => None,
+            })
+            .expect("highlight interactor present");
+        assert!(
+            matches!(hl.options.get("by"), Some(ValueOrParamRef::Param(pr)) if pr.0 == "brush"),
+            "`by:` must lift to a Param ref, got {:?}",
+            hl.options.get("by")
+        );
+        assert!(
+            matches!(
+                hl.options.get("opacity"),
+                Some(ValueOrParamRef::Value(SpecValue::Float(f))) if (*f - 0.1).abs() < 1e-9
+            ),
+            "literal opacity stays a plain value"
+        );
+        assert!(
+            !out.warnings
+                .iter()
+                .any(|w| matches!(w, ParseWarning::Unimplemented { .. })),
+            "highlight is Implemented — no Unimplemented warning"
         );
     }
 }

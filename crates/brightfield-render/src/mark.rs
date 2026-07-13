@@ -17,15 +17,103 @@ use crate::kde::{kde_1d_weighted, kde_2d, silverman_1d_weighted, silverman_2d_pe
 use crate::scale::{merge_linear_scale, Scale, ScaleSet, SequentialScheme};
 use crate::text::{draw_text, TextAnchor};
 
+/// The `otherwise` override a highlight applies to its NON-matching
+/// (deemphasised) rows — the flat Mosaic `Highlight` surface (card 0021). Every
+/// field is optional; an all-`None` style falls back to the Mosaic default
+/// (`opacity` 0.2). `opacity`/`fill_opacity` SCALE the resolved alpha; `fill`
+/// REPLACES the resolved RGB. `stroke`/`stroke_opacity` are modelled for corpus
+/// fidelity but unimplemented at the render site (no fill-vs-stroke
+/// discriminator, no driving fixture).
+#[derive(Clone, Debug, Default)]
+pub struct HighlightStyle {
+    /// Element-opacity multiplier for deemphasised rows (Mosaic default 0.2).
+    pub opacity: Option<f64>,
+    /// Literal fill colour replacing the resolved RGB (e.g. `#ccc`).
+    pub fill: Option<Color>,
+    /// Fill-alpha multiplier for deemphasised rows.
+    pub fill_opacity: Option<f64>,
+    /// Modelled, unimplemented in v1.
+    pub stroke: Option<Color>,
+    /// Modelled, unimplemented in v1.
+    pub stroke_opacity: Option<f64>,
+}
+
+/// Default deemphasis alpha multiplier when a highlight carries no override
+/// fields — Mosaic's `opacity` default for the non-matching set.
+const DEFAULT_DIMMED_ALPHA: f32 = 0.2;
+
 /// Highlight state for per-row dim/emphasis rendering.
 ///
-/// When active, rows where `predicate(row_index)` returns `true` render at
-/// full alpha; rows where it returns `false` render at `dimmed_alpha`.
+/// When active, rows where `predicate(row_index)` returns `true` render
+/// untouched (the SELECTED set keeps its normal appearance); rows where it
+/// returns `false` are deemphasised per `otherwise` — the Mosaic `highlight`
+/// semantics (card 0021).
 pub struct HighlightState {
-    /// Predicate: returns `true` for rows that should be fully opaque.
+    /// Predicate: returns `true` for rows that should render untouched.
     pub predicate: Box<dyn Fn(usize) -> bool + Send + Sync>,
-    /// Alpha multiplier for non-matching (dimmed) rows. Typically 0.15.
-    pub dimmed_alpha: f64,
+    /// The override applied to non-matching (deemphasised) rows.
+    pub otherwise: HighlightStyle,
+}
+
+/// Build a per-row [`HighlightState`] from a re-queried batch's reserved
+/// [`brightfield_spec::analysis::SELECTED_COLUMN`] boolean and the mark's
+/// resolved `otherwise` style (card 0021). Returns `None` when the batch carries
+/// no membership column — the at-rest / empty-selection case, so every row
+/// renders normally (ce-ac07) — or when that column is not a boolean array.
+///
+/// The membership booleans are copied into an owned `Vec` the predicate closure
+/// captures, so the returned state is self-contained (`Send + Sync + 'static`).
+/// A NULL membership (a predicate over a NULL column) reads as not-selected →
+/// deemphasised, matching Mosaic (only rows the predicate proves in stay lit).
+#[must_use]
+pub fn build_highlight_state(
+    batch: &RecordBatch,
+    style: &HighlightStyle,
+) -> Option<HighlightState> {
+    use arrow::array::BooleanArray;
+    let idx = batch
+        .schema()
+        .index_of(brightfield_spec::analysis::SELECTED_COLUMN)
+        .ok()?;
+    let col = batch.column(idx).as_any().downcast_ref::<BooleanArray>()?;
+    let selected: Vec<bool> = (0..col.len())
+        .map(|i| !col.is_null(i) && col.value(i))
+        .collect();
+    Some(HighlightState {
+        predicate: Box::new(move |row| selected.get(row).copied().unwrap_or(false)),
+        otherwise: style.clone(),
+    })
+}
+
+/// Parse a CSS hex colour (`#rgb`, `#rrggbb`, or `#rrggbbaa`) into a [`Color`].
+/// `None` for any other form (a named colour, `none`, or malformed hex) — the
+/// caller then leaves the resolved colour's RGB untouched. Alpha defaults to
+/// opaque when not given.
+#[must_use]
+pub fn parse_css_hex(s: &str) -> Option<Color> {
+    let hex = s.strip_prefix('#')?;
+    let to = |b: &[u8]| -> Option<f32> {
+        let s = std::str::from_utf8(b).ok()?;
+        Some(u8::from_str_radix(s, 16).ok()? as f32 / 255.0)
+    };
+    // A single hex nibble in `#rgb` expands to two identical nibbles (`c` → `cc`),
+    // i.e. the byte value `nibble * 17` (0x11).
+    let dup = |c: u8| -> Option<f32> {
+        let s = std::str::from_utf8(std::slice::from_ref(&c)).ok()?;
+        Some(u8::from_str_radix(s, 16).ok()? as f32 * 17.0 / 255.0)
+    };
+    let b = hex.as_bytes();
+    match b.len() {
+        3 => Some(Color::new([dup(b[0])?, dup(b[1])?, dup(b[2])?, 1.0])),
+        6 => Some(Color::new([to(&b[0..2])?, to(&b[2..4])?, to(&b[4..6])?, 1.0])),
+        8 => Some(Color::new([
+            to(&b[0..2])?,
+            to(&b[2..4])?,
+            to(&b[4..6])?,
+            to(&b[6..8])?,
+        ])),
+        _ => None,
+    }
 }
 
 /// Trait for per-mark-family rendering.
@@ -35,8 +123,8 @@ pub struct HighlightState {
 pub trait MarkRenderer {
     /// Render the mark into the given scene.
     ///
-    /// When `highlight` is `Some`, matching rows render at full alpha;
-    /// non-matching rows have their alpha multiplied by `dimmed_alpha`.
+    /// When `highlight` is `Some`, matching rows render untouched;
+    /// non-matching rows are deemphasised per the highlight's `otherwise` style.
     fn render(
         &self,
         scene: &mut Scene,
@@ -211,18 +299,53 @@ fn resolve_colour(
     DEFAULT_COLOUR
 }
 
-/// Apply highlight dimming to a colour.
+/// Apply a highlight's deemphasis to a resolved colour.
 ///
-/// If highlight is active and the predicate returns false for this row,
-/// multiply the colour's alpha by `dimmed_alpha`.
+/// If highlight is active and the predicate returns `false` for this row
+/// (non-matching), the `otherwise` override is applied: `fill` replaces the RGB,
+/// `opacity`/`fill_opacity` scale the alpha, and — when the style carries NO
+/// deemphasis field at all — the Mosaic default (alpha × 0.2) is used. A
+/// matching row (predicate `true`) and the no-highlight case are returned
+/// unchanged. (card 0021, ce-ac06)
 fn apply_highlight(colour: Color, row: usize, highlight: Option<&HighlightState>) -> Color {
     match highlight {
-        Some(hs) if !(hs.predicate)(row) => {
-            let [r, g, b, a] = colour.components;
-            Color::new([r, g, b, a * hs.dimmed_alpha as f32])
-        }
+        Some(hs) if !(hs.predicate)(row) => deemphasise(colour, &hs.otherwise),
         _ => colour,
     }
+}
+
+/// Resolve the deemphasised colour for a non-matching row per an `otherwise`
+/// style: `fill` replaces RGB; `opacity` and `fill_opacity` multiply the alpha;
+/// with no field set, the Mosaic default alpha × 0.2 applies.
+fn deemphasise(colour: Color, style: &HighlightStyle) -> Color {
+    let [r, g, b, a] = colour.components;
+    // fill replaces the RGB, keeping the resolved alpha as the starting point.
+    let (r, g, b) = match style.fill {
+        Some(f) => {
+            let [fr, fg, fb, _] = f.components;
+            (fr, fg, fb)
+        }
+        None => (r, g, b),
+    };
+    // opacity / fillOpacity scale the alpha (SVG semantics); if the author gave
+    // no deemphasis field at all, fall back to the Mosaic default multiplier.
+    let mut alpha = a;
+    let mut any = false;
+    if let Some(op) = style.opacity {
+        alpha *= op as f32;
+        any = true;
+    }
+    if let Some(fo) = style.fill_opacity {
+        alpha *= fo as f32;
+        any = true;
+    }
+    if style.fill.is_some() {
+        any = true;
+    }
+    if !any {
+        alpha *= DEFAULT_DIMMED_ALPHA;
+    }
+    Color::new([r, g, b, alpha])
 }
 
 // ---------------------------------------------------------------------------
@@ -3734,12 +3857,15 @@ mod tests {
     fn ifb_ac03_highlight_state_predicate() {
         let hs = HighlightState {
             predicate: Box::new(|row| row == 1),
-            dimmed_alpha: 0.15,
+            otherwise: HighlightStyle {
+                opacity: Some(0.15),
+                ..Default::default()
+            },
         };
         assert!(!(hs.predicate)(0), "row 0 should not match");
         assert!((hs.predicate)(1), "row 1 should match");
         assert!(!(hs.predicate)(2), "row 2 should not match");
-        assert!((hs.dimmed_alpha - 0.15).abs() < f64::EPSILON);
+        assert!((hs.otherwise.opacity.unwrap() - 0.15).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -3774,7 +3900,10 @@ mod tests {
 
         let hs = HighlightState {
             predicate: Box::new(|row| row == 1),
-            dimmed_alpha: 0.15,
+            otherwise: HighlightStyle {
+                opacity: Some(0.15),
+                ..Default::default()
+            },
         };
 
         let mut scene = Scene::new();
@@ -3811,7 +3940,7 @@ mod tests {
 
         let hs = HighlightState {
             predicate: Box::new(|row| row == 0),
-            dimmed_alpha: 0.2,
+            otherwise: HighlightStyle::default(),
         };
 
         let mut scene = Scene::new();
@@ -3822,6 +3951,148 @@ mod tests {
         assert!(
             encoding.path_tags.len() > 0,
             "bar scene with highlight should have content"
+        );
+    }
+
+    // --- card 0021: conditional encoding (highlight) ---
+
+    /// ce-ac06: an empty `otherwise` style deemphasises to the Mosaic default
+    /// alpha × 0.2; a matching row is untouched.
+    #[test]
+    fn ce_ac06_deemphasise_default_alpha() {
+        let base = Color::new([0.3, 0.5, 0.7, 1.0]);
+        let out = deemphasise(base, &HighlightStyle::default());
+        let [r, g, b, a] = out.components;
+        assert!((r - 0.3).abs() < 1e-6 && (g - 0.5).abs() < 1e-6 && (b - 0.7).abs() < 1e-6);
+        assert!((a - 0.2).abs() < 1e-6, "default deemphasis is alpha × 0.2");
+    }
+
+    /// ce-ac06: `opacity` scales the resolved alpha (splom's `opacity: 0.1`).
+    #[test]
+    fn ce_ac06_deemphasise_opacity_scales_alpha() {
+        let base = Color::new([0.3, 0.5, 0.7, 1.0]);
+        let style = HighlightStyle {
+            opacity: Some(0.1),
+            ..Default::default()
+        };
+        let a = deemphasise(base, &style).components[3];
+        assert!((a - 0.1).abs() < 1e-6);
+    }
+
+    /// ce-ac06: `fill` replaces the RGB and `fillOpacity` sets the alpha
+    /// (weather's `fill: '#ccc', fillOpacity: 0.2`).
+    #[test]
+    fn ce_ac06_deemphasise_fill_and_fill_opacity() {
+        let base = Color::new([0.3, 0.5, 0.7, 1.0]);
+        let ccc = parse_css_hex("#ccc").unwrap();
+        let style = HighlightStyle {
+            fill: Some(ccc),
+            fill_opacity: Some(0.2),
+            ..Default::default()
+        };
+        let out = deemphasise(base, &style);
+        let [r, g, b, a] = out.components;
+        assert!((r - 0.8).abs() < 1e-2 && (g - 0.8).abs() < 1e-2 && (b - 0.8).abs() < 1e-2, "#ccc grey");
+        assert!((a - 0.2).abs() < 1e-6, "fillOpacity sets alpha");
+    }
+
+    /// ce-ac06: a matching row (predicate true) is returned unchanged.
+    #[test]
+    fn ce_ac06_apply_highlight_matching_row_untouched() {
+        let base = Color::new([0.3, 0.5, 0.7, 1.0]);
+        let hs = HighlightState {
+            predicate: Box::new(|row| row == 0),
+            otherwise: HighlightStyle {
+                opacity: Some(0.1),
+                ..Default::default()
+            },
+        };
+        // Row 0 matches → untouched; row 1 does not → dimmed.
+        assert_eq!(apply_highlight(base, 0, Some(&hs)).components[3], 1.0);
+        assert!((apply_highlight(base, 1, Some(&hs)).components[3] - 0.1).abs() < 1e-6);
+        // No highlight → untouched.
+        assert_eq!(apply_highlight(base, 1, None).components[3], 1.0);
+    }
+
+    #[test]
+    fn ce_parse_css_hex_forms() {
+        assert_eq!(parse_css_hex("#000000").unwrap().components, [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(parse_css_hex("#ffffff").unwrap().components, [1.0, 1.0, 1.0, 1.0]);
+        // #ccc expands to #cccccc = 0xcc/255.
+        let g = 0xCC as f32 / 255.0;
+        assert_eq!(parse_css_hex("#ccc").unwrap().components, [g, g, g, 1.0]);
+        assert!(parse_css_hex("none").is_none());
+        assert!(parse_css_hex("#gg").is_none());
+    }
+
+    /// ce-ac10: `build_highlight_state` reads the reserved `__bf_selected`
+    /// boolean and drives a per-row dim — and the CI-covered end of the feature:
+    /// a scene rendered WITH a non-trivial membership differs (some rows dimmed)
+    /// from the same scene rendered without highlight.
+    #[test]
+    fn ce_ac10_membership_column_drives_dim() {
+        use arrow::array::BooleanArray;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+            Field::new(
+                brightfield_spec::analysis::SELECTED_COLUMN,
+                DataType::Boolean,
+                false,
+            ),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])),
+                Arc::new(Float64Array::from(vec![10.0, 20.0, 30.0])),
+                // Only row 0 is selected; rows 1 and 2 dim.
+                Arc::new(BooleanArray::from(vec![true, false, false])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+
+        let style = HighlightStyle {
+            opacity: Some(0.1),
+            ..Default::default()
+        };
+        let hs = build_highlight_state(&batch, &style).expect("membership column present");
+        assert!((hs.predicate)(0), "row 0 selected");
+        assert!(!(hs.predicate)(1), "row 1 not selected");
+
+        let draw_of = |highlight: Option<&HighlightState>| {
+            let mut scene = Scene::new();
+            DotRenderer.render(&mut scene, &batch, &cm, &scales, highlight);
+            scene.encoding().draw_data.clone()
+        };
+        // The dimmed scene's paint data must differ from the undimmed one.
+        assert_ne!(
+            draw_of(Some(&hs)),
+            draw_of(None),
+            "a non-trivial __bf_selected must visibly dim the non-matching rows"
+        );
+
+        // An all-true membership (empty-selection edge) leaves every row lit — a
+        // batch with no membership column yields no state at all (ce-ac07).
+        let no_col_schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        let no_col = RecordBatch::try_new(
+            no_col_schema,
+            vec![
+                Arc::new(Float64Array::from(vec![1.0])),
+                Arc::new(Float64Array::from(vec![10.0])),
+            ],
+        )
+        .unwrap();
+        assert!(
+            build_highlight_state(&no_col, &style).is_none(),
+            "no __bf_selected column → no highlight state (at-rest look)"
         );
     }
 

@@ -1050,7 +1050,10 @@ mod tests {
 
         let hs = crate::mark::HighlightState {
             predicate: Box::new(|row| row == 1),
-            dimmed_alpha: 0.15,
+            otherwise: crate::mark::HighlightStyle {
+                opacity: Some(0.15),
+                ..Default::default()
+            },
         };
 
         // With highlight

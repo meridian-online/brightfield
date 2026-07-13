@@ -1008,3 +1008,86 @@ fn lcf_ac04_legend_click_filters_downstream_via_real_session() {
         "species = 'O''Hara' selects exactly the quoted row"
     );
 }
+
+/// Card 0021 (ce-ac04/ce-ac08/ce-ac10) end-to-end: a highlight-bound plot's
+/// mark, on a brush, re-queries against a LIVE DuckDB Session and comes back
+/// with the reserved `__bf_selected` boolean — every source row present (dims,
+/// not filters) — its true/false pattern matching the brushed range.
+#[test]
+fn highlight_reexecute_projects_membership_boolean() {
+    use arrow::array::BooleanArray;
+    use brightfield_spec::analysis::{ComponentPath, SELECTED_COLUMN};
+
+    // One plot: brushes `$brush` (single) AND highlights on it. The dot honours
+    // highlight, so it subscribes to `$brush` and re-queries with the projection.
+    const SPEC: &str = r#"
+params:
+  brush: { select: single }
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+    - { x: 3, y: 30 }
+    - { x: 4, y: 40 }
+    - { x: 5, y: 50 }
+    - { x: 6, y: 60 }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: x
+    y: y
+  - select: intervalXY
+    as: $brush
+  - select: highlight
+    by: $brush
+"#;
+    let spec = parse_spec(SPEC, Format::Yaml).expect("parses").spec;
+    let analysis = analyse_spec(&spec).expect("analyses");
+
+    // The dot is registered as a highlight subscriber to `brush` (ce-ac05).
+    assert_eq!(analysis.highlight_bindings.len(), 1);
+    let subs = analysis.selection_subscribers.get("brush").expect("subs");
+    assert!(
+        subs.iter().any(|p| p.0 == "root/plot[0]/mark[dot]"),
+        "the honouring dot subscribes to its highlight selection"
+    );
+
+    let engine = Engine::new();
+    let mut session = engine.load_spec(spec, analysis, None).expect("loads").session;
+
+    // Baseline: no selection → no membership column (at-rest look, ce-ac07).
+    let baseline = session.execute_all();
+    let baseline_dot = baseline[0].as_ref().expect("dot executes");
+    assert_eq!(total_rows(baseline_dot), 6);
+    assert!(
+        baseline_dot[0].schema().index_of(SELECTED_COLUMN).is_err(),
+        "no __bf_selected at rest"
+    );
+
+    // Brush x∈[2.5,4.5], y∈[0,100] → the intervalXY predicate marks x∈{3,4}.
+    let predicate = brush_rect_to_predicate(
+        Rect::new(2.5, 0.0, 4.5, 100.0),
+        BrushKind::IntervalXY,
+        &brightfield_ui::brush::ChannelColumns::xy("x", "y"),
+    );
+    let results =
+        session.propagate_selection("brush", ComponentPath("root".into()), predicate);
+
+    // The dot (mark 0) re-executed: ALL 6 rows present (highlight dims, never
+    // filters), with a boolean membership column.
+    let (_, result) = results.iter().find(|(i, _)| *i == 0).expect("dot re-ran");
+    let batch = &result.as_ref().expect("dot re-executes ok")[0];
+    assert_eq!(batch.num_rows(), 6, "highlight keeps every row (dims, not filters)");
+    let idx = batch
+        .schema()
+        .index_of(SELECTED_COLUMN)
+        .expect("membership column projected");
+    let flags = batch
+        .column(idx)
+        .as_any()
+        .downcast_ref::<BooleanArray>()
+        .expect("__bf_selected is boolean");
+    // Exactly the two brushed rows (x ∈ {3,4}) are members; the rest are not.
+    let selected = (0..flags.len()).filter(|&i| flags.value(i)).count();
+    assert_eq!(selected, 2, "x∈[2.5,4.5] marks exactly rows x=3,4 as selected");
+}
