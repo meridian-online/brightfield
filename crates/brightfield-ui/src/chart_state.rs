@@ -18,7 +18,7 @@ use vello::Scene;
 use crate::chart_layout::ChartLayout;
 use crate::interaction::{InteractionState, NavigationState};
 use crate::vello_renderer::VelloRenderer;
-use brightfield_render::layout::Insets;
+use brightfield_render::layout::{Insets, Margins};
 use brightfield_render::transition::Transition;
 
 /// Reactive chart state, wrapped in `gpui::Entity` for notifications.
@@ -46,6 +46,12 @@ pub struct ChartState {
     /// (`set_dimensions`) rebuilds the layout without dropping them. Set once at
     /// launch from the plot's resolved insets via [`ChartState::set_insets`].
     insets: Insets,
+    /// Title-grown margins (card 0019 axis + plot titles), stored so a resize
+    /// rebuilds the layout without resetting them to `Margins::default` — a
+    /// titled plot's `plot_area` (hence brush inversion / point-click) must
+    /// match the grown-margin scene it was drawn against, not the default. Set
+    /// once at launch via [`ChartState::set_margins_and_insets`].
+    margins: Margins,
     /// Cached device-resolution raster of the current scene (without the
     /// interaction overlay), reused while the scene and target dimensions are
     /// unchanged so hovering/brushing don't re-run Vello. Interior-mutable
@@ -74,6 +80,7 @@ impl ChartState {
             renderer,
             layout: ChartLayout::new(width as f64, height as f64),
             insets: Insets::default(),
+            margins: Margins::default(),
             base_cache: RefCell::new(None),
         }
     }
@@ -183,24 +190,51 @@ impl ChartState {
         self.height
     }
 
+    /// Rebuild the coordinate-mapping layout from the current dimensions +
+    /// stored margins + insets. The single site that composes both budgets, so
+    /// every mutator (resize, insets, margins) preserves the other two.
+    fn rebuild_layout(&mut self) {
+        self.layout = ChartLayout::with_margins_and_insets(
+            self.width as f64,
+            self.height as f64,
+            self.margins.left,
+            self.margins.top,
+            self.margins.right,
+            self.margins.bottom,
+            self.insets,
+        );
+    }
+
     /// Update the chart dimensions (e.g. on window resize). Preserves the
-    /// resolved range insets so a resize doesn't silently drop them.
+    /// resolved range insets AND the title-grown margins so a resize doesn't
+    /// silently drop them (which would desync hit-testing from the rendered
+    /// scene on a titled plot).
     pub fn set_dimensions(&mut self, width: u32, height: u32) {
         self.width = width;
         self.height = height;
-        self.layout = ChartLayout::with_insets(width as f64, height as f64, self.insets);
+        self.rebuild_layout();
         // Dimensions changed — invalidate the cached raster.
         *self.base_cache.borrow_mut() = None;
     }
 
     /// Set the resolved per-side range insets (card 0008 axis-inset round) and
     /// rebuild the layout so hit-testing and brush inversion use the same inset
-    /// pixels as the rendered scale range. The scene raster is unaffected (it
-    /// was drawn render-side with the insets already baked in), so the base
-    /// cache is left intact.
+    /// pixels as the rendered scale range. Preserves the title-grown margins.
+    /// The scene raster is unaffected (it was drawn render-side with the insets
+    /// already baked in), so the base cache is left intact.
     pub fn set_insets(&mut self, insets: Insets) {
         self.insets = insets;
-        self.layout = ChartLayout::with_insets(self.width as f64, self.height as f64, insets);
+        self.rebuild_layout();
+    }
+
+    /// Set the title-grown margins AND the range insets together (card 0019),
+    /// rebuilding the layout so a titled plot's `plot_area` — driving brush
+    /// inversion and point-click hit-testing — matches the grown-margin scene it
+    /// was drawn against. The assembly thread; a later resize preserves both.
+    pub fn set_margins_and_insets(&mut self, margins: Margins, insets: Insets) {
+        self.margins = margins;
+        self.insets = insets;
+        self.rebuild_layout();
     }
 
     /// Access the shared VelloRenderer.
@@ -389,6 +423,34 @@ mod tests {
         assert_eq!(state.height(), 768);
         assert!((state.layout().width - 1024.0).abs() < f64::EPSILON);
         assert!((state.layout().height - 768.0).abs() < f64::EPSILON);
+    }
+
+    #[cfg(feature = "gpu-tests")]
+    #[test]
+    fn apt_ac06_resize_preserves_grown_title_margins() {
+        // The review HIGH: a resize must NOT reset title-grown margins to
+        // Margins::default (which would desync hit-testing from the titled
+        // scene). set_margins_and_insets stores them; set_dimensions preserves.
+        let mut state = ChartState::new(Scene::new(), 640, 480, VelloRenderer::new());
+        let grown = Margins {
+            left: 60.0,
+            top: 40.0,
+            right: 20.0,
+            bottom: 50.0,
+        };
+        state.set_margins_and_insets(grown, Insets::default());
+        assert!((state.layout().margin_left - 60.0).abs() < f64::EPSILON);
+
+        state.set_dimensions(1024, 768);
+        assert!(
+            (state.layout().margin_left - 60.0).abs() < f64::EPSILON,
+            "resize preserved the grown left margin"
+        );
+        assert!(
+            (state.layout().margin_bottom - 50.0).abs() < f64::EPSILON,
+            "resize preserved the grown bottom margin"
+        );
+        assert!((state.layout().width - 1024.0).abs() < f64::EPSILON);
     }
 
     #[cfg(feature = "gpu-tests")]

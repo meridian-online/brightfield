@@ -305,6 +305,16 @@ pub enum ParseWarning {
         /// The offending attribute key.
         attribute: String,
     },
+
+    /// A plot-level axis-title / plot-title attribute (`xLabel`, `yLabel`,
+    /// `title`) carried a value that is neither a string nor `null`/`$param`.
+    /// The label degrades — the axis falls back to its derived field-name title,
+    /// or the plot title is dropped — and this names it so an author sees the
+    /// typo rather than silently losing the label (card 0019 axis + plot titles).
+    NonStringLabel {
+        /// The offending attribute key.
+        attribute: String,
+    },
 }
 
 /// Result of a successful parse.
@@ -805,6 +815,18 @@ impl Walker {
             {
                 self.warnings
                     .push(ParseWarning::NonNumericInset { attribute: key.clone() });
+            }
+            // A plot-level axis / plot title attribute (card 0019). A valid
+            // label is a string (override), or `null` / `""` (suppress); a
+            // lifted `$param` is a recorded deferral. Anything else (number,
+            // boolean, …) degrades to the derived title — name it so the author
+            // sees the typo rather than silently losing the label.
+            const PLOT_LABEL_KEYS: [&str; 3] = ["xLabel", "yLabel", "title"];
+            if PLOT_LABEL_KEYS.contains(&key.as_str())
+                && !matches!(value, SpecValue::String(_) | SpecValue::Null | SpecValue::Param(_))
+            {
+                self.warnings
+                    .push(ParseWarning::NonStringLabel { attribute: key.clone() });
             }
             attributes.insert(key, value);
         }
@@ -1909,6 +1931,84 @@ plot:
                 .any(|w| matches!(w, ParseWarning::NonNumericInset { .. })),
             "a $param inset defers silently; got {:?}",
             out3.warnings
+        );
+    }
+
+    #[test]
+    fn apt_ac02_nonstring_label_warns_but_string_null_param_defer() {
+        // A number for an axis label degrades to the derived title AND names
+        // itself (card 0019) — mirroring the NonNumericInset parse-time check.
+        let bad = "data:\n  t:\n    - { x: 1, y: 2 }\nplot:\n  - { mark: dot, data: { from: t }, x: x, y: y }\nxLabel: 42\n";
+        let out = parse_spec(bad, Format::Yaml).expect("parses despite a bad label");
+        let n = out
+            .warnings
+            .iter()
+            .filter(|w| matches!(w, ParseWarning::NonStringLabel { attribute } if attribute == "xLabel"))
+            .count();
+        assert_eq!(n, 1, "one NonStringLabel naming `xLabel`; got {:?}", out.warnings);
+
+        // A string override, an explicit null (suppress), and a lifted $param
+        // (recorded deferral) all pass silently — for xLabel/yLabel AND title.
+        // The `$p` cases exercise the `SpecValue::Param(_)` exclusion arm: a
+        // lifted param defers without a warning (they'd spuriously warn if the
+        // exclusion were dropped).
+        for ok in [
+            "yLabel: Travelers",
+            "yLabel: null",
+            "title: Weather",
+            "title: null",
+            "xLabel: $p",
+            "title: $p",
+        ] {
+            let src = format!(
+                "params:\n  p: 1\ndata:\n  t:\n    - {{ x: 1, y: 2 }}\nplot:\n  - {{ mark: dot, data: {{ from: t }}, x: x, y: y }}\n{ok}\n"
+            );
+            let o = parse_spec(&src, Format::Yaml).expect("parses");
+            assert!(
+                !o.warnings.iter().any(|w| matches!(w, ParseWarning::NonStringLabel { .. })),
+                "`{ok}` must not warn; got {:?}",
+                o.warnings
+            );
+        }
+        // A boolean title degrades and warns, naming `title`.
+        let bt = "data:\n  t:\n    - { x: 1, y: 2 }\nplot:\n  - { mark: dot, data: { from: t }, x: x, y: y }\ntitle: true\n";
+        let obt = parse_spec(bt, Format::Yaml).expect("parses");
+        assert!(
+            obt.warnings
+                .iter()
+                .any(|w| matches!(w, ParseWarning::NonStringLabel { attribute } if attribute == "title")),
+            "a boolean title warns naming `title`; got {:?}",
+            obt.warnings
+        );
+    }
+
+    #[test]
+    fn apt_ac02_dollar_in_label_text_degrades_to_derive_round_trip() {
+        // A label whose text contains a bare `$ident` (a currency/unit literal
+        // like "Cost in $usd") is lifted to an Expression at parse time, so it
+        // can't be used verbatim — it warns NonStringLabel and the axis falls
+        // back to its derived field-name title. Same substrate as a lifted
+        // $param label (recorded deferral); pinned here as a parse→resolve round
+        // trip so the documented degrade can't silently change.
+        use crate::ast::Component;
+        use crate::layout::{resolve_axis_titles, AxisTitle};
+        let src = "data:\n  t:\n    - { x: 1, y: 2 }\nplot:\n  - { mark: dot, data: { from: t }, x: x, y: y }\nxLabel: Cost in $usd\n";
+        let out = parse_spec(src, Format::Yaml).expect("parses");
+        assert!(
+            out.warnings
+                .iter()
+                .any(|w| matches!(w, ParseWarning::NonStringLabel { attribute } if attribute == "xLabel")),
+            "a $-in-text label warns; got {:?}",
+            out.warnings
+        );
+        let plot = match out.spec.root {
+            Some(Component::Plot(p)) => p,
+            other => panic!("expected a plot root, got {other:?}"),
+        };
+        assert_eq!(
+            resolve_axis_titles(&plot).x,
+            AxisTitle::Derive,
+            "a $-in-text xLabel degrades to the derived title"
         );
     }
 

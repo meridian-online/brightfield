@@ -6,13 +6,14 @@ use kurbo::{Affine, Circle, Rect, RoundedRect};
 use peniko::{Color, Fill};
 use vello::Scene;
 
-use crate::axis::{compute_ticks, render_x_axis, render_y_axis};
+use crate::axis::{compute_ticks, render_plot_title, render_x_axis, render_y_axis};
 use crate::channel::{Channel, ChannelMap};
 use crate::grid::{render_x_grid, render_y_grid};
 use crate::layout::ChartLayout;
 use crate::legend::render_colour_legend;
 use crate::mark::{HighlightState, MarkRenderer};
 use crate::scale::{infer_scales, infer_scales_multi, Scale, ScaleSet, ViewExtent};
+use crate::title::ResolvedTitles;
 
 /// Opaque white chart background. Drawn first so grid, marks, axes and legend
 /// composite on top. Without it the scene renders onto transparency, which a
@@ -173,14 +174,15 @@ pub fn build_chart_scene(data: &ChartData<'_>) -> (Scene, ScaleSet) {
         .render(&mut scene, data.batch, data.channel_map, &scales, data.highlight);
     scene.pop_layer();
 
-    // Axes (on top of grid/marks).
+    // Axes (on top of grid/marks). The legacy single-mark path carries no
+    // titles — the titled path is the multi-mark builder below.
     if let Some(x_scale) = scales.get(Channel::X) {
         let x_ticks = compute_ticks(x_scale, 5);
-        render_x_axis(&mut scene, &data.layout, &x_ticks);
+        render_x_axis(&mut scene, &data.layout, &x_ticks, None);
     }
     if let Some(y_scale) = scales.get(Channel::Y) {
         let y_ticks = compute_ticks(y_scale, 5);
-        render_y_axis(&mut scene, &data.layout, &y_ticks);
+        render_y_axis(&mut scene, &data.layout, &y_ticks, None);
     }
 
     // Colour legend.
@@ -203,12 +205,13 @@ pub fn build_chart_scene(data: &ChartData<'_>) -> (Scene, ScaleSet) {
 pub fn build_multi_mark_scene(
     entries: &[&ChartData<'_>],
     draw_inline_legend: bool,
+    titles: &ResolvedTitles,
 ) -> (Scene, ScaleSet) {
     if entries.is_empty() {
         return (Scene::new(), ScaleSet::new());
     }
     let scales = infer_multi_mark_scales(entries);
-    let scene = draw_multi_mark_scene(entries, draw_inline_legend, &scales);
+    let scene = draw_multi_mark_scene(entries, draw_inline_legend, titles, &scales);
     (scene, scales)
 }
 
@@ -287,6 +290,7 @@ fn infer_multi_mark_scales(entries: &[&ChartData<'_>]) -> ScaleSet {
 fn draw_multi_mark_scene(
     entries: &[&ChartData<'_>],
     draw_inline_legend: bool,
+    titles: &ResolvedTitles,
     scales: &ScaleSet,
 ) -> Scene {
     let layout = &entries[0].layout;
@@ -317,14 +321,20 @@ fn draw_multi_mark_scene(
     }
     scene.pop_layer();
 
-    // Axes (on top of marks).
+    // Axes (on top of marks), each carrying its resolved title (Derive already
+    // resolved to a field name upstream; None = suppressed / underivable).
     if let Some(x_scale) = scales.get(Channel::X) {
         let x_ticks = compute_ticks(x_scale, 5);
-        render_x_axis(&mut scene, layout, &x_ticks);
+        render_x_axis(&mut scene, layout, &x_ticks, titles.x.as_deref());
     }
     if let Some(y_scale) = scales.get(Channel::Y) {
         let y_ticks = compute_ticks(y_scale, 5);
-        render_y_axis(&mut scene, layout, &y_ticks);
+        render_y_axis(&mut scene, layout, &y_ticks, titles.y.as_deref());
+    }
+
+    // Per-plot title, above the frame (the top margin has grown to make room).
+    if let Some(plot_title) = titles.plot.as_deref() {
+        render_plot_title(&mut scene, layout, plot_title);
     }
 
     // Colour legend — unless a standalone `legend:` node has relocated it.
@@ -354,6 +364,7 @@ fn draw_multi_mark_scene(
 pub fn build_multi_mark_scene_anchored(
     entries: &[&ChartData<'_>],
     draw_inline_legend: bool,
+    titles: &ResolvedTitles,
     launch: &ScaleSet,
 ) -> (Scene, ScaleSet) {
     if entries.is_empty() {
@@ -361,7 +372,7 @@ pub fn build_multi_mark_scene_anchored(
     }
     let fresh = infer_multi_mark_scales(entries);
     let anchored = crate::scale::anchor_scales(launch, fresh);
-    let scene = draw_multi_mark_scene(entries, draw_inline_legend, &anchored);
+    let scene = draw_multi_mark_scene(entries, draw_inline_legend, titles, &anchored);
     (scene, anchored)
 }
 
@@ -473,8 +484,9 @@ mod tests {
             view_extent: None,
             highlight: None,
         };
-        let (with_legend, _) = build_multi_mark_scene(&[&data], true);
-        let (without_legend, _) = build_multi_mark_scene(&[&data], false);
+        let (with_legend, _) = build_multi_mark_scene(&[&data], true, &ResolvedTitles::default());
+        let (without_legend, _) =
+            build_multi_mark_scene(&[&data], false, &ResolvedTitles::default());
         let (n_with, n_without) = (
             crate::mark::count_scene_paths(&with_legend),
             crate::mark::count_scene_paths(&without_legend),
@@ -521,8 +533,8 @@ mod tests {
         };
 
         // Each plot's scene is built independently, then composited.
-        let (s0, _) = build_multi_mark_scene(&[&d0], true);
-        let (s1, _) = build_multi_mark_scene(&[&d1], true);
+        let (s0, _) = build_multi_mark_scene(&[&d0], true, &ResolvedTitles::default());
+        let (s1, _) = build_multi_mark_scene(&[&d1], true, &ResolvedTitles::default());
 
         let two = compose_dashboard(600.0, 200.0, &[(0.0, 0.0, &s0), (300.0, 0.0, &s1)]);
         let one = compose_dashboard(600.0, 200.0, &[(0.0, 0.0, &s0)]);
@@ -859,7 +871,8 @@ mod tests {
             highlight: None,
         };
 
-        let (scene, scales) = build_multi_mark_scene(&[&data1, &data2], true);
+        let (scene, scales) =
+            build_multi_mark_scene(&[&data1, &data2], true, &ResolvedTitles::default());
 
         // Scene should be non-empty.
         let encoding = scene.encoding();
@@ -880,10 +893,60 @@ mod tests {
 
     #[test]
     fn msv_ac03_multi_mark_scene_empty_entries() {
-        let (scene, scales) = build_multi_mark_scene(&[], true);
+        let (scene, scales) = build_multi_mark_scene(&[], true, &ResolvedTitles::default());
         let encoding = scene.encoding();
         assert_eq!(encoding.path_tags.len(), 0, "empty entries => empty scene");
         assert!(scales.get(Channel::X).is_none());
+    }
+
+    #[test]
+    fn apt_ac08_titled_scene_carries_more_ink_and_anchored_reemits() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])),
+                Arc::new(Float64Array::from(vec![10.0, 20.0, 30.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        let dot = DotRenderer;
+        let data = ChartData {
+            batch: &batch,
+            channel_map: &cm,
+            renderer: &dot,
+            layout: ChartLayout::new(400.0, 300.0),
+            view_extent: None,
+            highlight: None,
+        };
+        let titles = ResolvedTitles {
+            x: Some("x".into()),
+            y: Some("y".into()),
+            plot: Some("Weather".into()),
+        };
+
+        // A titled scene carries strictly more glyph ink than an untitled one.
+        let (untitled, launch) = build_multi_mark_scene(&[&data], true, &ResolvedTitles::default());
+        let (titled, _) = build_multi_mark_scene(&[&data], true, &titles);
+        assert!(
+            titled.encoding().draw_tags.len() > untitled.encoding().draw_tags.len(),
+            "titles add glyph ink to the assembled scene"
+        );
+
+        // A widen-only anchored rebuild re-emits the same titles (apt-ac08 / apt-ac09).
+        let (anch_untitled, _) =
+            build_multi_mark_scene_anchored(&[&data], true, &ResolvedTitles::default(), &launch);
+        let (anch_titled, _) = build_multi_mark_scene_anchored(&[&data], true, &titles, &launch);
+        assert!(
+            anch_titled.encoding().draw_tags.len() > anch_untitled.encoding().draw_tags.len(),
+            "an anchored rebuild re-emits titles"
+        );
     }
 
     #[test]

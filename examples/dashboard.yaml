@@ -24,9 +24,11 @@ data:
 hconcat:
   - plot:
       - { mark: dot, data: { from: points }, x: x, y: y, fill: g }
+    title: Body measurements
     width: 360
     height: 300
   - plot:
       - { mark: barY, data: { from: fruit }, x: name, y: count }
+    title: Fruit stock
     width: 360
     height: 300

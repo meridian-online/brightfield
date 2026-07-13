@@ -1,0 +1,31 @@
+feature: "Interactive-legend affordance — show which legends you can click"
+as_a: "analytics author composing a dashboard (and, later, a dashboard consumer)"
+i_want: "a legend that filters on click to look clickable — visibly distinct from a legend that is only a colour key"
+so_that: "I can tell which legends are live without clicking each one to find out — a bound legend reads as interactive, a static key reads as inert"
+
+scenarios:
+  - name: "A bound legend signals it is clickable"
+    given: "a legend bound to a selection (a `legend: color … as: $sel` node — card 0009 legend-click-to-filter)"
+    when: "the pointer moves over its swatches"
+    then: "the legend shows a click affordance BEFORE any click — a pointer cursor over the legend and a hover highlight on the swatch under the pointer — so the author can see it is interactive"
+
+  - name: "A static colour key stays inert"
+    given: "an unbound legend — an inline `fill:` key, or a relocated `legend: color` with no `as:` (framed / legend-standalone / raster-legend), and every inline fill legend"
+    when: "the pointer moves over it"
+    then: "no affordance appears — no pointer cursor, no hover highlight — so a static key never falsely invites a click it can't honour"
+
+  - name: "The affordance is the only pre-click signal (the motivating gap)"
+    given: "the current build, in which a bound and an unbound legend render byte-identically"
+    when: "an author inspects a dashboard to find its interactive surfaces"
+    then: "today the sole cue that a legend is live is the card-0009 selected-state dimming, which appears only AFTER a click already landed; this card adds the missing pre-click cue so live legends are discoverable"
+
+goal: "A legend that filters on click (a bound `as:` legend, card 0009) is today visually indistinguishable from a static colour key — same swatches, same position, no cursor change, no hover state — so the only signal that a legend is interactive is the selected-state dimming that appears AFTER a click lands. An author (or a future consumer) has no way to discover a live legend short of clicking every one. Add the missing pre-click affordance to BOUND legends only: a pointer cursor over the legend plus a hover highlight on the swatch under the pointer, gated on whether that legend carries a selection binding. Small and UI-only — legend_element.rs already tracks hover state to resolve a click at mouse-up; this promotes that hover to a rendered hot-state and sets a CursorStyle when the legend is bound — with no spec-surface change. Belongs in the interaction-fidelity cluster as the discoverability companion to legend multi-select (Altair gap-map #2): both extend card 0009 and share the legend hover / hit-test path, so they likely want to land together."
+
+maturity: "emerging"
+
+references:
+  - "In-app finding (2026-07-13, Hugh): product-testing dashboard.yaml on the axis-titles branch (card 0019), clicked its `fill: g` legend expecting a filter; nothing happened and there was no way to tell it wasn't wired. 'This may be tricky to know when [an interactive legend] is implemented.' The unbound inline legend is a static key BY DESIGN — card 0009 legend-click-to-filter is opt-in via `as:` — but nothing distinguishes it from a bound one. Not a regression from titles; a standing affordance gap the titles test surfaced."
+  - "crates/brightfield-ui/src/legend_element.rs: the legend producer. `is_hovered(window)` is read only at mouse-up to resolve a click (legend_click_decision); there is no hover redraw (no hot-state render) and no CursorStyle set over the legend — so a bound legend has zero pre-click affordance. This is the file the fix touches."
+  - "examples/legend-select.yaml: the ONLY bound (interactive) legend example (`as: $sel`). Contrast examples/framed.yaml, legend-standalone.yaml, raster-legend.yaml (relocated static keys) and every inline `fill:` legend (dashboard / scatter / …) — all visually identical, none clickable. One live legend in the whole example set, indistinguishable from four static ones."
+  - "orbit/cards/memos/2026-07-12-altair-interaction-grammar-gaps.md (gap #2, legend multi-select — shift-click union): the companion legend card, also extending 0009. The affordance and the union-select want the same legend hover / hit-test machinery; scope them together."
+  - "Extends card 0009 (multi-view-dashboard-composition) — home of the legend producer and the selected-state dimming this affordance precedes."

@@ -269,7 +269,8 @@ fn crossfilter_brush_in_plot_a_filters_plot_b() {
         view_extent: None,
         highlight: None,
     };
-    let (scene, _scales) = build_multi_mark_scene(&[&chart_data], true);
+    let (scene, _scales) =
+        build_multi_mark_scene(&[&chart_data], true, &brightfield_render::ResolvedTitles::default());
     assert!(
         count_scene_paths(&scene) > 0,
         "rebuilt plot B scene draws the filtered marks"

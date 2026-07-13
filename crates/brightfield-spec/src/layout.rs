@@ -252,6 +252,79 @@ pub fn resolve_plot_insets(plot: &PlotNode) -> SideInsets {
     }
 }
 
+/// One axis title's resolved decision, from a plot's `xLabel` / `yLabel`
+/// attribute. Pure: the DERIVE case is turned into a concrete field name at the
+/// render site (which holds the channel map). This resolver only decides which
+/// of the three a plot asks for, mirroring [`resolve_plot_insets`]'s
+/// literal-only reading.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AxisTitle {
+    /// An explicit author string (`xLabel: Arrival Delay`) — used verbatim.
+    Override(String),
+    /// Explicitly suppressed (`xLabel: null` or `xLabel: ""`) — no title, no
+    /// reserved band. The Mosaic-exact opt-out.
+    Suppress,
+    /// No label attribute (or a `$param` / non-string value that degrades) —
+    /// derive the title from the encoding's column name at the render site.
+    Derive,
+}
+
+/// A plot's resolved axis + plot titles — the DECISIONS. The DERIVE field names
+/// and the margin growth resolve downstream (render/assembly). `x`/`y` are
+/// per-axis decisions; `plot` is the optional per-plot title text (`None` =
+/// absent, empty, null, or non-string).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AxisTitles {
+    /// The x-axis title decision.
+    pub x: AxisTitle,
+    /// The y-axis title decision.
+    pub y: AxisTitle,
+    /// The per-plot title text, if any.
+    pub plot: Option<String>,
+}
+
+/// Resolve one axis label attribute (`xLabel` / `yLabel`) into an [`AxisTitle`]
+/// decision. Literal-only, mirroring [`resolve_plot_insets`]:
+/// - a non-empty string → [`AxisTitle::Override`];
+/// - an explicit `null` or empty string → [`AxisTitle::Suppress`];
+/// - absent, a lifted `$param` (recorded deferral), or any other non-string
+///   value → [`AxisTitle::Derive`]. A truly non-string value (number/boolean)
+///   also earns a [`crate::parse::ParseWarning::NonStringLabel`] at PARSE time
+///   (in `walk_plot`, exactly like `NonNumericInset`) — never here.
+fn resolve_axis_label(plot: &PlotNode, key: &str) -> AxisTitle {
+    match plot.attributes.get(key) {
+        Some(SpecValue::String(s)) if !s.is_empty() => AxisTitle::Override(s.clone()),
+        Some(SpecValue::String(_)) | Some(SpecValue::Null) => AxisTitle::Suppress,
+        _ => AxisTitle::Derive,
+    }
+}
+
+/// Resolve a plot's optional per-plot title from its `title` attribute — a
+/// non-empty literal string, else `None` (absent, empty, null, or non-string).
+#[must_use]
+pub fn resolve_plot_title(plot: &PlotNode) -> Option<String> {
+    match plot.attributes.get("title") {
+        Some(SpecValue::String(s)) if !s.is_empty() => Some(s.clone()),
+        _ => None,
+    }
+}
+
+/// Resolve a plot's axis + plot titles from its attributes, with the axis-inset
+/// literal-only, most-specific convention. A PURE resolver: it returns the
+/// Override / Suppress / Derive decision per axis (the DERIVE field name is
+/// resolved at the render site from the channel map) plus the optional plot
+/// title, and emits NO warnings — the non-string `ParseWarning::NonStringLabel`
+/// is raised at parse time in `walk_plot`, exactly as `NonNumericInset` is. This
+/// is the single gpui-free primitive the render/scene path consumes.
+#[must_use]
+pub fn resolve_axis_titles(plot: &PlotNode) -> AxisTitles {
+    AxisTitles {
+        x: resolve_axis_label(plot, "xLabel"),
+        y: resolve_axis_label(plot, "yLabel"),
+        plot: resolve_plot_title(plot),
+    }
+}
+
 fn layout_plot(plot: &PlotNode, x: f64, y: f64) -> LayoutNode {
     let w = plot_width(plot);
     let h = plot_height(plot);
@@ -1312,5 +1385,56 @@ hconcat:
         ]);
         // xInsetLeft is non-numeric → falls through to xInset(6).
         assert_eq!(resolve_plot_insets(&p).left, Some(6.0));
+    }
+
+    #[test]
+    fn apt_ac02_resolve_axis_titles_override_suppress_derive() {
+        // Override: a non-empty string is used verbatim.
+        let p = plot_with(&[
+            ("xLabel", SpecValue::String("Arrival Delay".into())),
+            ("yLabel", SpecValue::Null),
+        ]);
+        let t = resolve_axis_titles(&p);
+        assert_eq!(t.x, AxisTitle::Override("Arrival Delay".into()));
+        assert_eq!(t.y, AxisTitle::Suppress, "explicit null suppresses");
+
+        // Empty string also suppresses (the card's wording; corpus uses null).
+        assert_eq!(
+            resolve_axis_titles(&plot_with(&[("xLabel", SpecValue::String(String::new()))])).x,
+            AxisTitle::Suppress,
+        );
+
+        // Absent → Derive; a $param → Derive (recorded deferral, treated absent);
+        // a number/boolean → Derive (the warning is a parse-time concern).
+        assert_eq!(resolve_axis_titles(&plot_with(&[])).x, AxisTitle::Derive);
+        assert_eq!(
+            resolve_axis_titles(&plot_with(&[("yLabel", SpecValue::Integer(42))])).y,
+            AxisTitle::Derive,
+            "a non-string label degrades to Derive here (no warning in the resolver)",
+        );
+        assert_eq!(
+            resolve_axis_titles(&plot_with(&[("xLabel", SpecValue::Param(crate::ast::ParamRef::new("p")))]))
+                .x,
+            AxisTitle::Derive,
+        );
+    }
+
+    #[test]
+    fn apt_ac04_resolve_plot_title_string_only() {
+        assert_eq!(
+            resolve_plot_title(&plot_with(&[("title", SpecValue::String("Weather".into()))])),
+            Some("Weather".to_string()),
+        );
+        // Absent, empty, null, and non-string all → None (no title, no band).
+        assert_eq!(resolve_plot_title(&plot_with(&[])), None);
+        assert_eq!(
+            resolve_plot_title(&plot_with(&[("title", SpecValue::String(String::new()))])),
+            None,
+        );
+        assert_eq!(resolve_plot_title(&plot_with(&[("title", SpecValue::Null)])), None);
+        assert_eq!(
+            resolve_plot_title(&plot_with(&[("title", SpecValue::Integer(3))])),
+            None,
+        );
     }
 }
