@@ -1,0 +1,78 @@
+# Conditional encoding v1 (Mosaic `highlight`) — spec (card 0021)
+# Authored 2026-07-13 from the parallel design workflow's conditional-encoding brief.
+# Scope locked by Hugh (recommended calls accepted): boolean-column re-query membership;
+# opacity+fill+fillOpacity overrides; empty-selection = all-normal; the 4 corpus mark families.
+# Discovery: orbit/cards/0021-conditional-encoding-highlight.yaml + memo (highlight-first, not
+# Altair condition — Mosaic-native).
+
+feature: "Conditional encoding v1 — emphasize a selection by muting the rest (Mosaic `highlight`)"
+as_a: "analytics author composing an interactive dashboard"
+i_want: "`select: highlight, by: $sel` to actually dim the non-matching marks when a selection is active, with optional opacity/fill overrides"
+so_that: "a brush or click visibly emphasizes its matches — the 'grey the rest' gesture — using portable Mosaic `highlight`"
+
+goal: >
+  Make the already-built-but-inert highlight render primitive work in production. HighlightState +
+  apply_highlight and ChartData.highlight routing already exist and are wired end-to-end; every
+  production site just passes `highlight: None` and the only Some is a unit test. So v1 is a
+  parse → analysis binding + coordinator wiring + a struct widening, NOT a new render primitive,
+  and NO vocab flip (Highlight is already Implemented → no negative-test census re-point). Three
+  gaps close: (1) PARSE the declarative interactor params (by / opacity / fill / fillOpacity) — the
+  overrides already lift; add `by` to the lift set. (2) BIND to production — a highlight-bound mark
+  stays a subscriber but its query PROJECTS a per-row boolean (`SELECT *, (<pred>) AS __bf_selected`)
+  instead of filtering rows; render_plot_scene builds a HighlightState from that column + the
+  binding style into ChartData.highlight; the mark is classified highlight-not-filter so its rows
+  dim rather than vanish. (3) GENERALISE the fixed alpha-dim into an opacity/fill `otherwise` style.
+  Membership evaluates IN-DB against the source table (so splom's cross-column brush works); empty
+  selection = all-normal (today's look). Highlight rides the existing propagate_selection →
+  re-query → absorb → re-scene spine — no new coordinator machinery.
+
+maturity: "emerging"
+
+decisions_locked:  # Hugh, 2026-07-13 (recommended calls accepted)
+  - "MEMBERSHIP — boolean-column re-query (Option A): compile_selection projects `(pred) AS __bf_selected` against the SOURCE table, reusing the existing subscriber/absorb/rebuild spine. Chosen over a client-side batch closure because the closure cannot see columns the panel didn't SELECT — it would silently fail splom's cross-column highlight (a bill_depth×body_mass panel dimming on a shared $brush over bill_length). Round-trip cost is the status quo the filter path already pays on brush RELEASE (continuous drag is deferred, card 0015)."
+  - "OVERRIDES — opacity + fill + fillOpacity implemented (corpus-covered: splom opacity 0.1, weather fill '#ccc'/fillOpacity 0.2); stroke + strokeOpacity are MODELLED in HighlightStyle but left unimplemented (no fixture; needs a fill-vs-stroke call-site discriminator not worth adding without a driving example)."
+  - "EMPTY — hardcode all-normal (== today's no-selection look, backward-compatible). The empty:\"none\" all-dim knob is deferred (a one-line change later)."
+  - "COVERAGE — the 4 honouring families (Dot, Bar, Rect, Text) read apply_highlight; the other 12 stay no-ops (a mechanical follow-on to file when a highlight example needs a heatmap/line/etc)."
+
+acceptance_criteria:
+  - id: ce-ac01
+    text: "walk_interactor lands `{select: highlight, by: $sel, opacity/fill/fillOpacity}` into Interactor.options (Highlight is already vocab Implemented → no Unimplemented guard, no vocab change). `by` is added to the lift set (LIFT_SURFACE_FIELDS) so it lifts to a Param ref symmetric with `as:`. opacity/fill/fillOpacity already lift."
+    verify: "unit"
+  - id: ce-ac02
+    text: "A new HighlightBinding{interactor_path, parent_plot, selection (sourced from `by:`, a CONSUMER unlike the `as:` producers), style: HighlightStyle} + build_highlight_bindings (mirroring build_brushable_bindings / build_legend_bindings), stored on SpecAnalysis and wired in analyse_spec. `by:` is validated against declared + as-bound selection names (like validate_filter_by_refs); an unknown/non-selection `by:` warns HighlightBindingMissing / HighlightBindingNonSelection (with their Display + code arms added everywhere the enum is exhaustively matched)."
+    verify: "unit"
+  - id: ce-ac03
+    text: "compile_selection gains a membership-projection variant emitting `SELECT *, (<pred>) AS __bf_selected` (a QueryPlan variant, off propagate_selection) instead of QueryPlan::Filter{WHERE}. The reserved __bf_ column convention (precedented by hexbin geometry) guards against user-column collision."
+    verify: "unit"
+  - id: ce-ac04
+    text: "A highlight-bound mark stays a subscriber to its `by:` selection but re-queries with the boolean projection (not row-filtered — it keeps its FULL batch and dims). render_plot_scene / main.rs build HighlightState{ predicate: row → batch[__bf_selected][row], otherwise: binding.style } into ChartData.highlight, replacing the hardcoded None at the two production sites (crossfilter.rs first-render + rebuild, main.rs first render). Rides the existing re-execute → absorb → to_rebuild → build_plot_scene spine, re-querying on brush RELEASE."
+    verify: "unit + in-app"
+  - id: ce-ac05
+    text: "Filter-vs-highlight classification (the one seam scoping flagged as not fully pinned): a highlight-bound mark must NOT be row-filtered by its `by:` selection — verify the subscriber-set determination and pin the exclusion so splom panels DIM (keep all points) rather than lose points. A mark that is BOTH filterBy and highlight-bound resolves per its explicit bindings."
+    verify: "unit + in-app"
+  - id: ce-ac06
+    text: "HighlightState widens to carry an `otherwise` style; apply_highlight is rewritten so predicate-FALSE rows resolve opacity (scales alpha, default 0.2 for Mosaic parity), fill (replaces the resolved colour) and fillOpacity, while predicate-TRUE rows are untouched. Only the 4 honouring call sites (Dot, Bar, Rect, Text) read it; the other 12 `_highlight` families stay no-ops."
+    verify: "unit"
+  - id: ce-ac07
+    text: "Empty selection = all-normal: an empty/absent `by:` selection projects TRUE (or omits __bf_selected → highlight None), so every row renders normally — byte-identical to the current no-selection look. The empty:\"none\" all-dim path is deferred."
+    verify: "unit"
+  - id: ce-ac08
+    text: "The vendored splom.yaml (dot, opacity 0.1) and weather.yaml (dot fill '#ccc'/fillOpacity 0.2 + barX) render their selection-driven emphasis: brushing/clicking dims the non-matching set. splom's cross-column membership works because the predicate evaluates against the source table (a panel highlights on a column it does not plot)."
+    verify: "in-app + unit fixture"
+  - id: ce-ac09
+    text: "Aggregate-mark guard: highlight on an aggregate mark whose predicate references a NON-group-key column is guarded out (a group-key predicate like weather = $click is fine; a non-group-key predicate would SQL-error) — surfaced as a ParseWarning, not a runtime crash."
+    verify: "unit"
+  - id: ce-ac10
+    text: "Interaction ink, not data ink: highlight is invisible at rest (empty = all-normal), so example PNG baselines DO NOT change (verify byte-identity). A headless test MUST drive an actual selection (project a non-trivial __bf_selected and assert the dimmed encoding) so the dim is CI-covered, not left entirely to the in-app eyeball. `cargo build` + `cargo test --workspace` green (NEVER `cargo fmt --all`)."
+    verify: "unit + PNG-identity"
+
+out_of_scope:
+  - "The general Altair `condition` grammar (when/then/otherwise on arbitrary channels — the load-bearing L gap) — v1 is Mosaic's fixed highlight interactor only"
+  - "empty:\"none\" all-dim knob; stroke/strokeOpacity overrides (modelled, unimplemented); highlight on the 12 non-honouring mark families"
+  - "continuous brush-drag highlight (rides card 0015); highlight where the predicate references a non-group-key column on an aggregate (guarded out, ce-ac09)"
+
+risks:
+  - "splom cross-column membership is the load-bearing correctness risk — only source-table evaluation (Option A) handles it; a client closure over the fetched batch silently shows nothing. Drives the mechanism."
+  - "Filter-vs-highlight subscriber classification (ce-ac05) is the one seam scoping did not fully pin — verify how the subscriber set is determined (filterBy-driven vs crossfilter-default) during impl."
+  - "The boolean-projection QueryPlan variant is the one genuinely new machine (sql/ir.rs + engine lib.rs); reserved __bf_selected must not collide with user columns."
+  - "Highlight is invisible at rest, so a headless test must drive a selection or the feature ships CI-untested (ce-ac10)."
