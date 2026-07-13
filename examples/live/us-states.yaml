@@ -15,6 +15,15 @@
 #      this directory and point `file:` at it, e.g.:
 #        curl -o us-counties-10m.json \
 #          https://cdn.jsdelivr.net/npm/us-atlas@3/counties-10m.json
+#      (git-ignored — never committed; each user supplies their own copy.)
+#
+# The mark filters to the CONTIGUOUS 48 (+ DC) by FIPS `id` so plain Albers fills
+# the frame. Without that filter the full atlas also carries Alaska, Hawaii and
+# five Pacific/Caribbean territories (American Samoa, Guam, N. Mariana, Puerto
+# Rico, US Virgin Islands) at ±145–170° longitude; Albers places them in their
+# true geographic position, which balloons the auto-fit extent and crushes the
+# lower 48 into a tiny corner. The albers-usa composite that insets AK/HI is a
+# stated v1 gap — until then, drop the `filter:` line to see everything in place.
 #
 # Run it in-app (a window, not the PNG dump):
 #   cargo run -p brightfield-app -- examples/live/us-states.yaml
@@ -23,11 +32,11 @@
 meta:
   title: U.S. States (Albers basemap)
   description: >
-    A stroked basemap of the U.S. states, projected with the US-tuned Albers
-    conic. Requires the DuckDB spatial extension (autoinstalled) and the atlas
-    data file — live-in-app only. Contiguous US is correct; Alaska and Hawaii
-    render in their true geographic position (the albers-usa composite that
-    insets them is deferred — a stated v1 gap).
+    A stroked basemap of the contiguous U.S. states, projected with the US-tuned
+    Albers conic. Requires the DuckDB spatial extension (autoinstalled) and the
+    atlas data file — live-in-app only. Filtered to the lower 48 (+ DC) so Albers
+    fills the frame; the albers-usa composite that insets Alaska and Hawaii is a
+    stated v1 gap.
 data:
   states:
     type: spatial
@@ -35,7 +44,11 @@ data:
     layer: states
 plot:
   - mark: geo
-    data: { from: states }
+    data:
+      from: states
+      # FIPS: contiguous 48 + DC are 01–56; drop Alaska (02) and Hawaii (15);
+      # every territory is 60+, excluded by the id < '57' bound.
+      filter: "id < '57' AND id NOT IN ('02', '15')"
     stroke: currentColor
     strokeWidth: 1
 projectionType: albers
