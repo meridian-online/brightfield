@@ -4,12 +4,12 @@
 use std::path::Path;
 
 use brightfield_spec::analysis::SELECTED_COLUMN;
-use brightfield_spec::ast::{DataSourceKind, ParamNode, Spec, SpecValue};
+use brightfield_spec::ast::{DataSourceKind, ParamNode, SelectionNode, Spec, SpecValue};
 use brightfield_spec::parse::ParseWarning;
 use indexmap::IndexMap;
 
 use brightfield_spec::ast::{Component, Mark, ValueOrParamRef};
-use brightfield_spec::vocab::InteractorKind;
+use brightfield_spec::vocab::{ImplStatus, InteractorKind, SelectionResolution};
 
 use crate::binding::{Binding, EmittedQuery, ParamValues};
 use crate::error::EmitError;
@@ -594,15 +594,34 @@ pub fn emit_query_with_passes(
     // `(<pred>) AS __bf_selected` OUTSIDE the (possibly filtered) plan instead of
     // filtering — the mark keeps its full batch and DIMS the non-matching rows
     // (ce-ac04/ce-ac05). Membership evaluates against the source table (so a
-    // splom panel highlights on a column it does not plot), reusing the same
-    // `compile_selection` + self-exclusion identity as filterBy. An empty
-    // selection compiles to `True` → no projection → the mark renders exactly as
-    // at rest (ce-ac07). An aggregate plan is guarded out (ce-ac09).
+    // splom panel highlights on a column it does not plot). An empty selection
+    // compiles to `True` → no projection → the mark renders exactly as at rest
+    // (ce-ac07). An aggregate plan is guarded out (ce-ac09).
+    //
+    // Two departures from the filterBy path above:
+    //   FIX A — the `by:` selection may be created ONLY by an `as:` binding and
+    //     never declared in `params:` (weather's `$range`), so it is absent from
+    //     `spec.params`. A declared Selection uses its resolution; an as-bound-only
+    //     name synthesises a default-resolution node. A declared VALUE param is not
+    //     a selection → skipped (analysis warns HighlightBindingNonSelection).
+    //   FIX B — highlight NEVER self-excludes (`HIGHLIGHT_NO_SELF_EXCLUDE`): the
+    //     brushed plot must dim its OWN rows.
+    // (The filterBy gate above shares FIX A's blind spot — an as-bound-only
+    // `filterBy` is likewise inert there — but that is a pre-existing card-0006
+    // limitation, out of this card's scope; left untouched deliberately.)
     let mark_highlight_by = collect_mark_highlight_by(spec);
     if let Some(Some(selection_name)) = mark_highlight_by.get(mark_index) {
-        if let Some(ParamNode::Selection(sel_node)) = spec.params.get(selection_name) {
+        let default_node = default_highlight_selection();
+        let sel_node = match spec.params.get(selection_name) {
+            Some(ParamNode::Selection(sel)) => Some(sel),
+            // A declared value param is not a selection — never projects.
+            Some(ParamNode::Value(_)) => None,
+            // As-bound-only (or unknown): synthesise a resolution. An unknown name
+            // simply has no live contributors → True → no projection.
+            None => Some(&default_node),
+        };
+        if let Some(sel_node) = sel_node {
             if !plan_aggregates(&plan) {
-                let self_source = brightfield_spec::analysis::plot_node_path(mark_path);
                 let contributors: &[(String, Predicate)] = selection_predicates
                     .and_then(|all| {
                         all.iter()
@@ -610,7 +629,8 @@ pub fn emit_query_with_passes(
                             .map(|(_, c)| c.as_slice())
                     })
                     .unwrap_or(&[]);
-                let predicate = compile_selection(sel_node, self_source, contributors);
+                let predicate =
+                    compile_selection(sel_node, HIGHLIGHT_NO_SELF_EXCLUDE, contributors);
                 if predicate != Predicate::True {
                     plan = QueryPlan::Projection {
                         input: Box::new(plan),
@@ -775,6 +795,33 @@ fn plot_highlight_by_name(items: &[Component]) -> Option<String> {
         }
     }
     None
+}
+
+/// A `self_source` that matches no real contributor path, so
+/// `compile_selection`'s crossfilter branch excludes NOTHING. Highlight passes
+/// this (unlike filterBy) because "brush a region, grey the rest" must dim the
+/// brushed plot's OWN rows too — a highlight-bound mark self-excluding its own
+/// plot's contribution would leave the brushed plot un-dimmed (card 0021, FIX B).
+/// Real contributor paths are component paths (`root`, `root/hconcat[0]`, …), so
+/// this NUL-prefixed sentinel can never collide.
+const HIGHLIGHT_NO_SELF_EXCLUDE: &str = "\u{0}__bf_highlight_no_self_exclude";
+
+/// The resolution synthesised for a highlight's `by:` selection that is created
+/// ONLY by an `as:` binding (never declared in `params:`) — e.g. weather's
+/// `$range`, which exists solely via `intervalX as: $range`. `compile_selection`
+/// still reads the live contributors; only the resolution needs a default.
+///
+/// `Single` matches every EXPLICIT resolution in the highlight corpus (splom's
+/// `$brush`, weather's `$click` are both `single`), never self-excludes, and —
+/// for a single-contributor brush (the corpus shape) — resolves identically to
+/// any other resolution. Multi-contributor as-bound highlights are a documented
+/// edge (they combine as "most recent" under `single`).
+fn default_highlight_selection() -> SelectionNode {
+    SelectionNode {
+        select: SelectionResolution::Single,
+        status: ImplStatus::Implemented,
+        options: IndexMap::new(),
+    }
 }
 
 /// Whether a plan AGGREGATES in SQL anywhere in its tree — a GROUP BY or scalar
@@ -1278,5 +1325,76 @@ plot:
             "aggregate plan is guarded out of the projection: {}",
             emitted.sql
         );
+    }
+
+    /// FIX A (ce-ac08): a `by:` selection created ONLY by an `as:` binding and
+    /// never declared in `params:` (weather's `$range` shape) still projects the
+    /// membership column — the emit gate must not require a `spec.params` entry.
+    #[test]
+    fn ce_ac08_asbound_only_selection_projects() {
+        let yaml = r#"
+plot:
+  - mark: dot
+    data: { from: t }
+    x: a
+    y: b
+  - select: intervalX
+    as: $range
+  - select: highlight
+    by: $range
+    fill: '#ccc'
+    fillOpacity: 0.2
+"#;
+        let spec = parse_spec(yaml, Format::Yaml).unwrap().spec;
+        assert!(
+            spec.params.get("range").is_none(),
+            "range is as-bound only — not in params"
+        );
+        let selections = vec![(
+            "range".to_string(),
+            vec![("root/other".to_string(), Predicate::Expr("a > 1".to_string()))],
+        )];
+        let emitted = emit_query(&spec, 0, None, Some(&selections)).expect("emit");
+        assert!(
+            emitted.sql.contains(SELECTED_COLUMN),
+            "an as-bound-only highlight selection still projects: {}",
+            emitted.sql
+        );
+        assert!(emitted.sql.contains("a > 1"));
+    }
+
+    /// FIX B (ce-ac05): highlight does NOT self-exclude — a plot that BRUSHES and
+    /// HIGHLIGHTS the same crossfilter selection must still dim its OWN rows. With
+    /// the mark's own plot as the contributor, the crossfilter self-exclusion that
+    /// is correct for filterBy would (wrongly) drop it to empty → no projection.
+    #[test]
+    fn ce_ac05_highlight_does_not_self_exclude() {
+        let yaml = r#"
+params:
+  sel: { select: crossfilter }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: a
+    y: b
+  - select: intervalX
+    as: $sel
+  - select: highlight
+    by: $sel
+"#;
+        let spec = parse_spec(yaml, Format::Yaml).unwrap().spec;
+        // Contributor == the mark's OWN plot node ("root") — the self-source that
+        // filterBy would exclude.
+        let selections = vec![(
+            "sel".to_string(),
+            vec![("root".to_string(), Predicate::Expr("a > 1".to_string()))],
+        )];
+        let emitted = emit_query(&spec, 0, None, Some(&selections)).expect("emit");
+        assert!(
+            emitted.sql.contains(SELECTED_COLUMN),
+            "highlight includes the mark's own plot contribution (no self-exclusion): {}",
+            emitted.sql
+        );
+        assert!(emitted.sql.contains("a > 1"));
     }
 }

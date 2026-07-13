@@ -365,7 +365,7 @@ fn crossfilter_brush_interval_xy_filters_downstream() {
 
     // Brush x∈[2.5,5.5] (would keep x=3,4,5 → 3 rows on its own) AND
     // y∈[15,45] (would keep y=20,30,40 → x=2,3,4 → 3 rows on its own).
-    // The intersection is x∈{3,4} = 2 rows: strictly fewer than either axis,
+    // The intersection is x∈{{3,4}} = 2 rows: strictly fewer than either axis,
     // so a dropped bound on either axis would show 3, not 2.
     let mut interaction = InteractionState::start_brush(Point::new(2.5, 15.0));
     interaction.update_brush(Point::new(5.5, 45.0));
@@ -1064,7 +1064,7 @@ plot:
         "no __bf_selected at rest"
     );
 
-    // Brush x∈[2.5,4.5], y∈[0,100] → the intervalXY predicate marks x∈{3,4}.
+    // Brush x∈[2.5,4.5], y∈[0,100] → the intervalXY predicate marks x∈{{3,4}}.
     let predicate = brush_rect_to_predicate(
         Rect::new(2.5, 0.0, 4.5, 100.0),
         BrushKind::IntervalXY,
@@ -1090,4 +1090,128 @@ plot:
     // Exactly the two brushed rows (x ∈ {3,4}) are members; the rest are not.
     let selected = (0..flags.len()).filter(|&i| flags.value(i)).count();
     assert_eq!(selected, 2, "x∈[2.5,4.5] marks exactly rows x=3,4 as selected");
+}
+
+/// FIX B end-to-end (card 0021): a single plot that BRUSHES and HIGHLIGHTS the
+/// same CROSSFILTER selection must grey its OWN rows on a brush. The mark's own
+/// plot is the contributor, so the crossfilter self-exclusion that is correct for
+/// filterBy would (wrongly) drop it to empty and the brushed plot would never dim
+/// — this asserts, against live DuckDB, that it does.
+#[test]
+fn highlight_same_plot_crossfilter_dims_itself() {
+    use arrow::array::BooleanArray;
+    use brightfield_spec::analysis::{ComponentPath, SELECTED_COLUMN};
+    use brightfield_sql::ir::Predicate;
+    const SPEC: &str = r#"
+params:
+  sel: { select: crossfilter }
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+    - { x: 3, y: 30 }
+    - { x: 4, y: 40 }
+    - { x: 5, y: 50 }
+    - { x: 6, y: 60 }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: x
+    y: y
+  - select: intervalX
+    as: $sel
+  - select: highlight
+    by: $sel
+"#;
+    let spec = parse_spec(SPEC, Format::Yaml).expect("parses").spec;
+    let analysis = analyse_spec(&spec).expect("analyses");
+    let engine = Engine::new();
+    let mut session = engine.load_spec(spec, analysis, None).expect("loads").session;
+
+    // The brush is contributed BY this plot ("root") — the same plot that
+    // highlights (the self-source filterBy would exclude).
+    let results = session.propagate_selection(
+        "sel",
+        ComponentPath("root".into()),
+        Predicate::Expr("x >= 3 AND x <= 4".to_string()),
+    );
+    let (_, r) = results.iter().find(|(i, _)| *i == 0).expect("dot re-ran");
+    let batch = &r.as_ref().expect("dot re-executes ok")[0];
+    assert_eq!(batch.num_rows(), 6, "highlight dims, never filters");
+    let idx = batch
+        .schema()
+        .index_of(SELECTED_COLUMN)
+        .expect("membership projected despite same-plot crossfilter contribution (FIX B)");
+    let flags = batch
+        .column(idx)
+        .as_any()
+        .downcast_ref::<BooleanArray>()
+        .expect("boolean");
+    let selected = (0..flags.len()).filter(|&i| flags.value(i)).count();
+    assert_eq!(selected, 2, "the brushed plot greys itself: x∈{{3,4}} stay lit");
+}
+
+/// FIX A end-to-end (card 0021): weather's `$range` shape — a highlight `by:` a
+/// selection created ONLY by `as:` (never declared in `params:`). The scatter
+/// must still project the membership boolean on a brush.
+#[test]
+fn highlight_asbound_only_selection_dims() {
+    use arrow::array::BooleanArray;
+    use brightfield_spec::analysis::{ComponentPath, SELECTED_COLUMN};
+    use brightfield_sql::ir::Predicate;
+    const SPEC: &str = r#"
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+    - { x: 3, y: 30 }
+    - { x: 4, y: 40 }
+    - { x: 5, y: 50 }
+    - { x: 6, y: 60 }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: x
+    y: y
+  - select: intervalX
+    as: $range
+  - select: highlight
+    by: $range
+    fill: '#ccc'
+    fillOpacity: 0.2
+"#;
+    let spec = parse_spec(SPEC, Format::Yaml).expect("parses").spec;
+    assert!(spec.params.get("range").is_none(), "range is as-bound only");
+    let analysis = analyse_spec(&spec).expect("analyses");
+    // The scatter dot is a highlight subscriber to the as-bound `$range`.
+    assert!(
+        analysis
+            .selection_subscribers
+            .get("range")
+            .map(|s| s.iter().any(|p| p.0 == "root/plot[0]/mark[dot]"))
+            .unwrap_or(false),
+        "as-bound selection has the dot as a highlight subscriber"
+    );
+    let engine = Engine::new();
+    let mut session = engine.load_spec(spec, analysis, None).expect("loads").session;
+
+    let results = session.propagate_selection(
+        "range",
+        ComponentPath("root".into()),
+        Predicate::Expr("x >= 3 AND x <= 4".to_string()),
+    );
+    let (_, r) = results.iter().find(|(i, _)| *i == 0).expect("dot re-ran");
+    let batch = &r.as_ref().expect("dot re-executes ok")[0];
+    assert_eq!(batch.num_rows(), 6, "dims, not filters");
+    let idx = batch
+        .schema()
+        .index_of(SELECTED_COLUMN)
+        .expect("as-bound highlight projects the membership column (FIX A)");
+    let flags = batch
+        .column(idx)
+        .as_any()
+        .downcast_ref::<BooleanArray>()
+        .expect("boolean");
+    let selected = (0..flags.len()).filter(|&i| flags.value(i)).count();
+    assert_eq!(selected, 2, "x∈{{3,4}} selected under the as-bound highlight");
 }

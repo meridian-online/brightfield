@@ -1560,20 +1560,32 @@ fn collect_highlight_bindings(
                             }
                             continue;
                         }
-                        // Aggregate guard (ce-ac09): a highlight on a plot whose
-                        // data mark aggregates in SQL would evaluate the
-                        // membership predicate against the grouped output. Warn
-                        // and skip — the honouring families never aggregate, so
-                        // this only fires on non-dimming density/cell/hexbin/…
-                        // marks and prevents a runtime SQL error.
-                        if let Some(agg_kind) = p.items.iter().find_map(|it| match it {
-                            Component::Mark(m) if mark_kind_aggregates(m.kind) => Some(m.kind),
-                            _ => None,
-                        }) {
-                            warnings.push(ParseWarning::HighlightOnAggregate {
-                                selection: pr.0.clone(),
-                                mark: agg_kind.wire_name().to_string(),
-                            });
+                        // Aggregate guard (ce-ac09) — PER MARK, matching emit's
+                        // per-plan `plan_aggregates` guard. An aggregating mark
+                        // (density/cell/hexbin/…) can't carry the membership
+                        // projection (it evaluates against grouped output), so it
+                        // is warned about and never dims. But it must NOT veto a
+                        // sibling honouring mark's highlight: warn per aggregate
+                        // mark, then form the binding IFF the plot has at least one
+                        // honouring (dimmable) mark. A honouring family never
+                        // aggregates (the two sets are disjoint), so the binding's
+                        // style only ever reaches a dimmable mark.
+                        for it in &p.items {
+                            if let Component::Mark(m) = it {
+                                if mark_kind_aggregates(m.kind) {
+                                    warnings.push(ParseWarning::HighlightOnAggregate {
+                                        selection: pr.0.clone(),
+                                        mark: m.kind.wire_name().to_string(),
+                                    });
+                                }
+                            }
+                        }
+                        let has_honouring = p.items.iter().any(|it| {
+                            matches!(it, Component::Mark(m) if mark_honours_highlight(m.kind))
+                        });
+                        if !has_honouring {
+                            // Nothing in this plot can dim → no binding (a bare
+                            // aggregate-only highlight is inert, already warned).
                             continue;
                         }
                         bindings.push(HighlightBinding {
@@ -1636,8 +1648,10 @@ fn collect_highlight_bindings(
 /// both `filterBy`-s one selection and highlights on another lands in both
 /// subscriber sets (ce-ac05: each binding resolved independently).
 ///
-/// Only the honouring, row-level families are registered — an aggregate mark is
-/// already dropped upstream (no binding) and never dims. Mark paths match the
+/// Only the honouring, row-level families are registered. A honouring family
+/// never aggregates (the two kind sets are disjoint), so an aggregate mark is
+/// never registered here — it can share a plot with a honouring mark (which is
+/// registered), but is itself guarded out per-mark at emit. Mark paths match the
 /// engine's `mark_index_map` keys (`…/plot[i]/mark[kind]`).
 fn collect_highlight_subscribers(
     component: &Component,
@@ -3327,6 +3341,54 @@ plot:
             )),
             "expected HighlightOnAggregate, got {:?}",
             analysis.warnings
+        );
+    }
+
+    /// FIX C (ce-ac09): a plot mixing a honouring dot with an aggregating heatmap
+    /// keeps the DOT's highlight (per-mark guard, matching emit) — the heatmap is
+    /// still warned but does not veto the dot. Only the dot subscribes.
+    #[test]
+    fn ce_ac09_mixed_plot_binds_honouring_mark_warns_aggregate() {
+        let yaml = r#"
+params:
+  brush: { select: single }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: a
+    y: b
+  - mark: heatmap
+    data: { from: t }
+    x: a
+    y: b
+  - select: intervalXY
+    as: $brush
+  - select: highlight
+    by: $brush
+"#;
+        let out = parse_spec(yaml, Format::Yaml).expect("parses");
+        let analysis = analyse_spec(&out.spec).expect("analysis ok");
+        assert_eq!(
+            analysis.highlight_bindings.len(),
+            1,
+            "the honouring dot keeps its highlight despite the heatmap sibling"
+        );
+        assert!(
+            analysis.warnings.iter().any(|w| matches!(
+                w,
+                ParseWarning::HighlightOnAggregate { mark, .. } if mark == "heatmap"
+            )),
+            "the heatmap is still flagged, got {:?}",
+            analysis.warnings
+        );
+        let subs = analysis.selection_subscribers.get("brush").expect("subs");
+        assert!(
+            subs.iter().any(|p| p.0 == "root/plot[0]/mark[dot]"),
+            "dot subscribes"
+        );
+        assert!(
+            !subs.iter().any(|p| p.0.contains("heatmap")),
+            "the aggregate heatmap is NOT a highlight subscriber"
         );
     }
 }
