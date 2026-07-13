@@ -1,9 +1,15 @@
-feature: "Interactive-legend affordance — show which legends you can click"
+feature: "Legend interaction fidelity — clickable legends look clickable, and select more than one"
 as_a: "analytics author composing a dashboard (and, later, a dashboard consumer)"
-i_want: "a legend that filters on click to look clickable — visibly distinct from a legend that is only a colour key"
-so_that: "I can tell which legends are live without clicking each one to find out — a bound legend reads as interactive, a static key reads as inert"
+i_want: "a legend bound to a selection to (a) show it is clickable before I click, and (b) let me build a multi-category filter by shift-clicking"
+so_that: "I can discover which legends are live without clicking each one, and filter to a SET of categories at once — matching the legend interaction Vega-Lite/Mosaic ship"
+
+# NOTE (2026-07-13): scope broadened by /orb:design from the original "interactive-legend
+# affordance" to fold in legend multi-select (Altair gap-map #2). Both extend card 0009 and
+# live in the same legend hover / hit-test / render-state path, so Hugh chose to ship them as
+# ONE card + one PR ("Legend interaction fidelity"). Filename kept as 0020; feature retitled.
 
 scenarios:
+  # ---- affordance (the original card 0020) ----
   - name: "A bound legend signals it is clickable"
     given: "a legend bound to a selection (a `legend: color … as: $sel` node — card 0009 legend-click-to-filter)"
     when: "the pointer moves over its swatches"
@@ -19,13 +25,74 @@ scenarios:
     when: "an author inspects a dashboard to find its interactive surfaces"
     then: "today the sole cue that a legend is live is the card-0009 selected-state dimming, which appears only AFTER a click already landed; this card adds the missing pre-click cue so live legends are discoverable"
 
-goal: "A legend that filters on click (a bound `as:` legend, card 0009) is today visually indistinguishable from a static colour key — same swatches, same position, no cursor change, no hover state — so the only signal that a legend is interactive is the selected-state dimming that appears AFTER a click lands. An author (or a future consumer) has no way to discover a live legend short of clicking every one. Add the missing pre-click affordance to BOUND legends only: a pointer cursor over the legend plus a hover highlight on the swatch under the pointer, gated on whether that legend carries a selection binding. Small and UI-only — legend_element.rs already tracks hover state to resolve a click at mouse-up; this promotes that hover to a rendered hot-state and sets a CursorStyle when the legend is bound — with no spec-surface change. Belongs in the interaction-fidelity cluster as the discoverability companion to legend multi-select (Altair gap-map #2): both extend card 0009 and share the legend hover / hit-test path, so they likely want to land together."
+  # ---- multi-select (Altair gap-map #2, folded in) ----
+  - name: "Shift-click accumulates a union filter"
+    given: "a bound legend with one category already selected"
+    when: "the author shift-clicks a second category"
+    then: "both categories now filter — an OR'd predicate — the two swatches read as selected and the rest dim; this is Vega-Lite `toggle: event.shiftKey` semantics"
 
-maturity: "emerging"
+  - name: "Plain click still single-selects (the common case is preserved)"
+    given: "a bound legend with a multi-category selection active"
+    when: "the author plain-clicks (no modifier) a category"
+    then: "the selection replaces with just that one category — today's single-select behaviour is untouched for a plain click"
+
+  - name: "Shift-click removes a member; emptying the set clears the filter"
+    given: "a bound legend with a category in the selected set"
+    when: "the author shift-clicks that already-selected category"
+    then: "it leaves the set (toggle off); shift-clicking the last remaining member empties the set and clears the contributor entirely, so the view returns to unfiltered"
+
+  - name: "Affordance and multi-select share one code path (why they are one card)"
+    given: "both behaviours extend card 0009's legend producer"
+    when: "implemented"
+    then: "they ride the SAME swatch hit-test (`swatch_hit_category`), the SAME `render_colour_legend_at_selected` signature (which grows a hovered hot-state AND a selected SET), the SAME raster cache key, and the SAME paint-time mouse handler — so shipping them apart would plumb legend render-state twice"
+
+goal: >
+  A legend that filters on click (a bound `as:` legend, card 0009) has two fidelity gaps against
+  Vega-Lite/Mosaic, and both live in the one legend hover / hit-test / render-state path — so they
+  ship as a single UI-only card. (1) AFFORDANCE: a bound legend is today byte-identical to a static
+  colour key — no cursor change, no hover state — so the only signal it is live is the selected-state
+  dim that appears AFTER a click. Add a pre-click cue to BOUND legends only: a PointingHand cursor over
+  the legend plus a hover highlight on the swatch under the pointer, gated on `is_clickable()` (binding
+  present AND Scale::Colour). (2) MULTI-SELECT: the legend is single-select v1 — a click replaces the
+  selected category. Add Vega-Lite `toggle: event.shiftKey` semantics — plain click replaces (single),
+  shift-click toggles a category into an OR'd union, shift-clicking the last member clears. The union
+  rides `Predicate::Or`, which `compile_selection` already emits and ORs across contributors, so
+  ENGINE, SQL, and SPEC are UNTOUCHED; the whole card is UI-crate-only (legend_element.rs,
+  crossfilter.rs, legend_scene.rs, render/legend.rs) with NO example-PNG re-baseline (headless renders
+  capture launch state — no selection, no hover — unlike the titles/inset data-ink cards). The selected
+  SET is DERIVED from the engine slot (the F1 lesson: membership-test candidates against the Or members),
+  never mirrored UI-side. This card also introduces the FIRST CursorStyle usage in the codebase — design
+  that cursor seam to be reused by the draggable-brush card, which needs the same move/resize cursors.
+
+maturity: "shaping"
+
+design_decisions:  # /orb:design, 2026-07-13 (Hugh)
+  - "SCOPE — one card + one PR ('Legend interaction fidelity'), folding the affordance and multi-select together. They share `swatch_hit_category`, the `render_colour_legend_at_selected` signature, and the raster cache key; separate PRs would plumb legend render-state twice."
+  - "CLICK MODEL — Vega-Lite default: plain click = single-select replace; shift-click = additive toggle into an OR'd set; shift-clicking the last selected member clears the contributor. Matches VL/Mosaic (`toggle: event.shiftKey`) and preserves today's plain-click behaviour for the common case."
+  - "SELECTED-SET RECOVERY — DERIVE from the engine slot (the F1 lesson), membership-testing candidates against the `Predicate::Or` members; NOT a UI-side mirror. Consistent with card 0009's derive-from-slot `legend_selected_category` (→ plural `_categories`)."
+  - "UNION LOCATION — inside the legend's single contributor predicate: carry `Predicate::Or([col='a', col='b', …])` instead of a lone `Expr`. `Predicate::Or` + `compile_selection` already exist and already OR, so no engine/SQL/spec change; sort the Or members canonically for statement-cache stability."
+  - "PRESENTATION MODE — the affordance shows in presentation/consumer mode too (bound legends stay interactive there)."
+  - "HOVER EMPHASIS — visually distinct from the 0.35-alpha selected-state dim (e.g. a subtle swatch outline/background, not an alpha bump); the exact treatment is an in-app eyeball detail, settled at impl time via Hugh's window-verification loop."
+  - "CURSOR SEAM — grep shows zero CursorStyle usage in the codebase today; this card adds the first. Design the seam so the draggable-brush card (which needs move/ew-/ns-/nwse-resize cursors) reuses it rather than re-introducing cursor plumbing."
+  - "NO PNG RE-BASELINE — headless dumps capture launch state (no selection, no hover), so unlike the titles/inset cards this needs no before/after gallery. Lower ceremony."
+
+# The five UI touch points (from the scoping investigation, 2026-07-13) — for the /orb:spec pass:
+#   1. legend_element.rs:315  — read `event.modifiers.shift`, thread an `additive` flag into commit_legend_click
+#   2. crossfilter.rs:535     — apply_legend_click: set-toggle math (add/remove member, re-dispatch the Or, clear on empty); plain click still replaces
+#   3. crossfilter.rs:601     — legend_selected_category → _categories (plural), membership-tested against the slot's Or members (derived, not mirrored)
+#   4. legend_scene.rs:40 + render/legend.rs:167 — render_colour_legend_at_selected: Option<usize> → (a hovered hot-state) + (a selected SET), dim all non-members
+#   5. legend_element.rs:159  — raster cache key Option<String> → an ordered set (+ the hovered index)
+
+specs:
+  - "orbit/specs/2026-07-13-legend-interaction-fidelity/spec.yaml"   # /orb:spec + /orb:review-spec (v1.1) 2026-07-13
 
 references:
-  - "In-app finding (2026-07-13, Hugh): product-testing dashboard.yaml on the axis-titles branch (card 0019), clicked its `fill: g` legend expecting a filter; nothing happened and there was no way to tell it wasn't wired. 'This may be tricky to know when [an interactive legend] is implemented.' The unbound inline legend is a static key BY DESIGN — card 0009 legend-click-to-filter is opt-in via `as:` — but nothing distinguishes it from a bound one. Not a regression from titles; a standing affordance gap the titles test surfaced."
-  - "crates/brightfield-ui/src/legend_element.rs: the legend producer. `is_hovered(window)` is read only at mouse-up to resolve a click (legend_click_decision); there is no hover redraw (no hot-state render) and no CursorStyle set over the legend — so a bound legend has zero pre-click affordance. This is the file the fix touches."
-  - "examples/legend-select.yaml: the ONLY bound (interactive) legend example (`as: $sel`). Contrast examples/framed.yaml, legend-standalone.yaml, raster-legend.yaml (relocated static keys) and every inline `fill:` legend (dashboard / scatter / …) — all visually identical, none clickable. One live legend in the whole example set, indistinguishable from four static ones."
-  - "orbit/cards/memos/2026-07-12-altair-interaction-grammar-gaps.md (gap #2, legend multi-select — shift-click union): the companion legend card, also extending 0009. The affordance and the union-select want the same legend hover / hit-test machinery; scope them together."
-  - "Extends card 0009 (multi-view-dashboard-composition) — home of the legend producer and the selected-state dimming this affordance precedes."
+  - "In-app finding (2026-07-13, Hugh): product-testing dashboard.yaml on the axis-titles branch (card 0019), clicked its `fill: g` legend expecting a filter; nothing happened and there was no way to tell it wasn't wired. 'This may be tricky to know when [an interactive legend] is implemented.' The unbound inline legend is a static key BY DESIGN — card 0009 legend-click-to-filter is opt-in via `as:` — but nothing distinguishes it from a bound one."
+  - "crates/brightfield-ui/src/legend_element.rs: the legend producer. `PlacedLegend.binding: Option<(usize, coordinator)>` (:57) marks a legend interactive; `is_clickable() = binding.is_some() && Scale::Colour` (:216) is the gate. `hitbox.is_hovered(window)` is read only at mouse-up to resolve a click (:318) — no hover redraw, no CursorStyle — so a bound legend has zero pre-click affordance. The mouse-up at :315 IGNORES `event.modifiers.shift` (available, unread) — the multi-select hook."
+  - "crates/brightfield-ui/src/crossfilter.rs: `apply_legend_click` (:535) runs the replace-or-toggle state machine on ONE `point_predicate` = `Predicate::Expr(\"col = 'cat'\")`; `legend_selected_category` (:601) derives selected-state from the slot (the F1 lesson). Both grow to sets."
+  - "crates/brightfield-sql/src/ir.rs:47 + lower.rs:888: `Predicate::Or(Vec<Predicate>)` already exists (Displays as `(a OR b OR c)`) and `compile_selection` already ORs across contributors — so legend union is an OR WITHIN the legend's single contributor, needing NO engine/SQL change."
+  - "crates/brightfield-render/src/legend.rs:167: `render_colour_legend_at_selected(selected: Option<usize>)` dims non-selected swatches to DIM_ALPHA — the re-raster-on-emphasis machinery both the hover hot-state and the selected-SET reuse; raster cache keys on `selected` (legend_element.rs:159)."
+  - "examples/legend-select.yaml: the ONLY bound (interactive) legend example (`as: $sel`). Contrast framed.yaml, legend-standalone.yaml, raster-legend.yaml (relocated static keys) and every inline `fill:` legend — all visually identical, none clickable."
+  - "orbit/cards/memos/2026-07-12-altair-interaction-grammar-gaps.md (gap #2, legend multi-select — shift-click union): the companion, folded into this card by the 2026-07-13 design pass."
+  - "Extends card 0009 (multi-view-dashboard-composition) — home of the legend producer and the selected-state dimming this affordance precedes and this multi-select generalises."
+  - "Scoping investigation (2026-07-13): 6-agent candidate study + synthesis ranked this the #1 do-next item (S+M combined, low risk, UI-only, no PNG re-baseline). Draggable-brush shares the new cursor seam; conditional-encoding is the eventual substrate but does not block this."
