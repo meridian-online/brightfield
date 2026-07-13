@@ -1,0 +1,76 @@
+# Geo mark v1 — spec (card 0008, last remaining mark)
+# Authored 2026-07-13 from the parallel design workflow's geo brief (9-agent scope+design).
+# Scope locked by Hugh: Equirectangular + US-tuned Albers (defer albers-usa composite);
+# ST_AsGeoJSON live-corpus path + one hermetic inline-data baselined example; polygon
+# basemap / choropleth as the primary deliverable.
+
+feature: "Geo mark — draw GeoJSON polygons as a projected basemap / choropleth"
+as_a: "analytics author composing a map-bearing dashboard"
+i_want: "a `mark: geo` that draws Polygon/MultiPolygon features from a spatial (or inline-GeoJSON) source, client-side-projected, as a filled choropleth or stroked basemap"
+so_that: "Brightfield renders the map specs in the Mosaic corpus (state/county basemaps, the unemployment choropleth) — the last card-0008 mark"
+
+goal: >
+  Promote MarkKind::Geo from its Unimplemented placeholder to a rendering mark. Geo is NOT an
+  aggregation mark: the SQL half is a near-clone of SimpleLowerer plus one projection
+  (ST_AsGeoJSON on a spatial geometry column, so the DuckDB GEOMETRY type crosses query_arrow as
+  VARCHAR); all the weight is render-side. A GeoRenderer parses the GeoJSON text (serde_json),
+  projects each vertex client-side (equirectangular or US-tuned Albers), aspect-fits the projected
+  bbox into two synthesized Scale::Linear (reusing merge/anchor/inverse verbatim), and draws one
+  BezPath per feature filled via the shipped colour path (categorical Fill or the sequential ramp
+  for a choropleth). A new defaulted suppresses_frame() trait method drops axes/gridlines for the
+  map. Additive: no existing example PNG re-baselines; one NEW geo example lands, baselined off
+  hermetic inline GeoJSON (no spatial extension / network), while real ST_Read corpus specs render
+  live in-app. Semantic split honoured: WHICH projection is a pure gpui-free resolver in layout.rs
+  (beside resolve_plot_insets / resolve_axis_titles); the forward MATH is render-side.
+
+maturity: "shaping"
+
+decisions_locked:  # Hugh, 2026-07-13
+  - "PROJECTION — Equirectangular + plain (US-tuned) Albers, client-side in Rust so projectionType round-trips. albers-usa's AK/HI composite insets, orthographic/rotation, mercator/equal-earth, sphere+graticule are DEFERRED (contiguous-US correct; AK/HI render in true geographic position — a stated fidelity gap, not silent)."
+  - "GEOMETRY + CI — ST_AsGeoJSON VARCHAR path (Mosaic-faithful, reuses the existing column_as_string reader) for live corpus rendering; the ONE PNG-baselined example uses inline GeoJSON text so the headless gate is hermetic (no spatial extension, no network). GeoLowerer applies ST_AsGeoJSON only to a SPATIAL-typed geometry column; an inline VARCHAR geom column passes through unwrapped — that is what makes the baseline hermetic."
+  - "PRIMARY — polygon basemap + choropleth (reuses the sequential ramp + a BezPath Fill primitive). Projected point overlays and the Point-geometry r channel are v2, once the basemap exists."
+  - "STATIC — geo is the sole, non-cross-filtered mark in its plot for v1 (its synthesized Linear X/Y get anchor-folded harmlessly for static geometry; guard against sharing a plot with a cartesian mark)."
+
+acceptance_criteria:
+  - id: geo-ac01
+    text: "`mark: geo` on a geometry source parses with NO ParseWarning::Unimplemented — MarkKind::Geo flips to Implemented (vocab.rs:191). Voronoi (vocab.rs:195, genuinely far off, NOT a geo sibling — avoid Sphere/Graticule) is elected the new always-unimplemented census stand-in; the exactly-6 test sites repoint to Voronoi (vocab.rs:191 + dmk_ac05 staged_out :453-462; lower.rs dfir_ac03 fixture; mark.rs:5101 find_renderer; conformance identity.rs:97-98; support.rs:221)."
+    verify: "unit"
+  - id: geo-ac02
+    text: "The engine issues `LOAD spatial;` (autoinstall) once at session bootstrap before the DDL loop (brightfield-engine/src/lib.rs), so a `type: spatial` ST_Read view executes. Gated so an inline-only (no-spatial) session is unaffected if LOAD fails offline — the failure is logged, not fatal, and the inline path still works."
+    verify: "unit + in-app"
+  - id: geo-ac03
+    text: "A new GeoLowerer (clone of SimpleLowerer: SELECT *, apply_data_filter, project_param_channels) wraps a SPATIAL geometry column in `ST_AsGeoJSON(<geom>) AS <geom>` (GEOMETRY → VARCHAR); an inline VARCHAR geom column passes through unwrapped. Registered as (MarkKind::Geo, GeoLowerer) in default_lowerers."
+    verify: "unit"
+  - id: geo-ac04
+    text: "Pure gpui-free resolvers in brightfield-spec::layout (beside resolve_plot_insets / resolve_axis_titles): resolve_projection(plot) → ResolvedProjection{Equirectangular | Albers} reading plot-level `projectionType` (default Equirectangular-with-fit; unknown/non-string value → a ParseWarning + default, no panic); resolve_geometry_column(mark) → the geometry channel column, default \"geom\". No AST/parse change beyond the vocab status flip."
+    verify: "unit"
+  - id: geo-ac05
+    text: "GeoRenderer parses GeoJSON Polygon/MultiPolygon (serde_json — NEW brightfield-render dep, already vendored via brightfield-spec so cargo-deny-clean) into rings of (lon,lat). Projection::project is pure forward math — equirectangular u=lon,v=-lat; Albers closed-form conic with fixed US standard parallels 29.5/45.5. augment_scales bboxes the PROJECTED coords, aspect-fits (shared px-per-degree k, centred) into two Scale::Linear over the passed x/y range."
+    verify: "unit"
+  - id: geo-ac06
+    text: "render draws one kurbo::BezPath per feature (move/line/close per ring, Fill::NonZero so holes subtract), filled via resolve_colour (categorical Fill, or the sequential ramp for a `fill: <col>` choropleth) and optionally stroked. The ResolvedProjection reaches GeoRenderer through the configured_renderer / renderer_override seam (mirroring HeatmapRenderer{scheme}), fixed at launch and ChromeSnapshot-gated like colorScheme."
+    verify: "unit + in-app"
+  - id: geo-ac07
+    text: "A defaulted `fn suppresses_frame(&self) -> bool { false }` on the MarkRenderer trait (mirrors zero_baseline_channel — zero impact on existing renderers); GeoRenderer returns true. scene.rs gates the grid, axis and single-mark frame blocks on `!entries.iter().any(|e| e.renderer.suppresses_frame())`, so a geo plot draws no axes/gridlines while every other plot is byte-unchanged."
+    verify: "unit + PNG-identity of existing examples"
+  - id: geo-ac08
+    text: "A choropleth (`fill: <numeric col>`) colours features through the shipped sequential ramp; a stroke-only geo yields a basemap outline; the map fills the frame aspect-correctly (equal px-per-degree on both axes, centred)."
+    verify: "in-app + baseline"
+  - id: geo-ac09
+    text: "Additive — every one of the 28 existing example PNGs is BYTE-IDENTICAL (geo touches no existing example). ONE new geo example lands, its PNG baselined off INLINE GeoJSON text (a `data:` source with a text geom column) so the headless dump needs no spatial extension / network. A real ST_Read corpus spec (e.g. a US state basemap) is added to examples but documented as live-in-app-only (not PNG-gated)."
+    verify: "PNG gate"
+  - id: geo-ac10
+    text: "Tests: a geo_renders_geometry conformance test added to brightfield-ui/tests/execution_conformance.rs (it is hard-coded per-mark, won't auto-trip); projection forward-math unit tests (equirect identity + a known Albers point); a suppresses_frame scene-composition test. `cargo build` + `cargo test --workspace` green (NEVER `cargo fmt --all`; clippy absent in the toolchain)."
+    verify: "unit"
+
+out_of_scope:
+  - "albers-usa composite (AK/HI insets) — the unemployment choropleth renders AK/HI in true geographic position, a stated gap"
+  - "orthographic globe + projectionRotate + reactive rotation; sphere + graticule companion marks; mercator/equal-earth/conic/azimuthal family"
+  - "projected point OVERLAYS (dot x/y through the projection) + Point-geometry r channel; centroidX/centroidY channels (ST_Centroid/ST_X/ST_Y)"
+  - "region interactor over geometry (geo interaction is a separate axis); WKB Binary geometry path (GeoJSON VARCHAR is the v1 contract); LineString/Point GeoJSON types (v1 Polygon/MultiPolygon only)"
+  - "projectionDomain/parallels/clip/inset attrs (v1 fits the data extent with fixed parameters); carrying ResolvedProjection through both ChartLayout models (not needed until geo interaction)"
+
+risks:
+  - "Offline spatial extension: `LOAD spatial` autoinstalls from the network; the bundled duckdb does not statically link it. The inline-GeoJSON baseline (geo-ac09) keeps CI hermetic; the LOAD-spatial-failure must degrade gracefully (geo-ac02) so an inline session still works offline."
+  - "Dense geometry (us-county-map = 3000+ MultiPolygons) re-parses each launch-anchored rebuild; scope geo as static (geo-ac10) and consider caching the parsed geometry if the hot path bites."
+  - "Census blast radius must be EXACT — verify Voronoi genuinely has no lowerer/renderer before electing it; keep dex_ac02 + geojson emit tests green (comment rewords only)."

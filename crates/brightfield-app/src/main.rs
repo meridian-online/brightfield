@@ -35,16 +35,18 @@ use brightfield_render::channel::{Channel, ChannelMap};
 use brightfield_render::layout::{ChartLayout, Insets, Margins};
 use brightfield_render::title::ResolvedTitles;
 use brightfield_render::legend::{colour_legend_size, render_colour_legend_at};
-use brightfield_render::mark::{configured_renderer, default_renderers, find_renderer, MarkRenderer};
+use brightfield_render::mark::{
+    configured_renderer, default_renderers, find_renderer, MarkRenderer, Projection,
+};
 use brightfield_render::scale::{Scale, ScaleSet, SequentialScheme};
 use brightfield_render::scene::{build_multi_mark_scene, compose_dashboard, ChartData};
 use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::layout::{
     collect_legend_nodes, collect_plot_nodes, placed_input_nodes, placed_legend_nodes,
-    placed_legends, placed_plots, Rect,
+    placed_legends, placed_plots, resolve_projection, Rect,
 };
 use brightfield_spec::parse_spec_path;
-use brightfield_spec::vocab::{InputKind, LegendChannel};
+use brightfield_spec::vocab::{InputKind, LegendChannel, MarkKind};
 use brightfield_sql::{collect_marks, collect_plot_groups};
 use brightfield_ui::chart_view::BrushBinding;
 use brightfield_ui::{CrossfilterCoordinator, LivePlot, MarkInput, SliderBinding};
@@ -761,10 +763,14 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
         let layout = ChartLayout::new(plot.rect.width, plot.rect.height);
 
         // The plot's colour scheme, applied to its raster marks.
-        let scheme = plot_nodes
-            .iter()
-            .find(|(path, _)| *path == plot.path)
+        let plot_node = plot_nodes.iter().find(|(path, _)| *path == plot.path);
+        let scheme = plot_node
             .map(|(_, node)| raster_scheme(node.attributes.get("colorScheme")))
+            .unwrap_or_default();
+        // The plot's map projection (card 0008 geo) — resolved once, carried to
+        // each geo mark's configured renderer, fixed at launch like colorScheme.
+        let projection = plot_node
+            .map(|(_, node)| Projection::from(resolve_projection(node)))
             .unwrap_or_default();
 
         // Populate each of this plot's marks' `renderer_override` ONCE, from
@@ -788,9 +794,17 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
                 .map(|t| t as usize);
             // hexgrid's binWidth sizes its mesh (matching a sibling hexbin).
             let bin_width = marks.get(mi).and_then(|mk| mark_attr_f64(mk, "binWidth"));
+            // Geo carries the plot's projection; other marks ignore it.
+            let mark_projection = (kind == MarkKind::Geo).then_some(projection);
             if let Some(m) = mark_inputs.get_mut(mi) {
-                m.renderer_override =
-                    configured_renderer(kind, scheme, bandwidth, thresholds, bin_width);
+                m.renderer_override = configured_renderer(
+                    kind,
+                    scheme,
+                    bandwidth,
+                    thresholds,
+                    bin_width,
+                    mark_projection,
+                );
                 // Retain the render-config inputs so a live colour cycle can
                 // rebuild the override through the NEW scheme without losing the
                 // KDE bandwidth / contour thresholds / hexgrid binWidth (card
@@ -2705,8 +2719,8 @@ hconcat:
 
     #[test]
     fn msv_ac05_graceful_failure_skips_invalid_mark() {
-        // Spec with one valid mark (dot, data.from) and one invalid (geo,
-        // unsupported — the swap stand-in now that hexbin is wired).
+        // Spec with one valid mark (dot, data.from) and one invalid (voronoi,
+        // unsupported — the swap stand-in now that geo is wired).
         let yaml = r#"
 data:
   t:
@@ -2717,7 +2731,7 @@ plot:
     data: { from: t }
     x: x
     y: y
-  - mark: geo
+  - mark: voronoi
     data: { from: t }
 "#;
         let parsed = parse_spec(yaml, Format::Yaml).expect("parse failed");
@@ -2729,7 +2743,7 @@ plot:
             .expect("load_spec failed");
         let mut session = load.session;
 
-        // Execute all marks — dot should succeed, geo should fail.
+        // Execute all marks — dot should succeed, voronoi should fail.
         let results = session.execute_all();
 
         let mut successful = Vec::new();
@@ -2747,7 +2761,7 @@ plot:
             }
         }
 
-        // Exactly one mark skipped (geo), one succeeded (dot).
+        // Exactly one mark skipped (voronoi), one succeeded (dot).
         assert_eq!(skipped, 1, "expected 1 skipped mark");
         assert_eq!(successful.len(), 1, "expected 1 successful mark");
 

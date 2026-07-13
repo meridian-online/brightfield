@@ -887,14 +887,14 @@ mod query_tests {
 
     #[test]
     fn dfir_ac08_emit_query_unsupported_mark() {
-        // Use a mark kind that has no lowerer (geo stays the unimplemented
-        // stand-in now that hexbin is wired — the placeholder swap dance).
-        let src = "plot:\n  - mark: geo\n    data: { from: flights }\ndata:\n  flights: { file: flights.parquet }\n";
+        // Use a mark kind that has no lowerer (voronoi is the unimplemented
+        // stand-in now that geo is wired — the placeholder swap dance).
+        let src = "plot:\n  - mark: voronoi\n    data: { from: flights }\ndata:\n  flights: { file: flights.parquet }\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
         let result = emit_query(&spec, 0, None, None);
         assert!(result.is_err());
         match result.unwrap_err() {
-            EmitError::UnsupportedMark { kind } => assert_eq!(kind, "geo"),
+            EmitError::UnsupportedMark { kind } => assert_eq!(kind, "voronoi"),
             other => panic!("expected UnsupportedMark, got {other:?}"),
         }
     }

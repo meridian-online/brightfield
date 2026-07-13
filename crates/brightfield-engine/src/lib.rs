@@ -100,6 +100,30 @@ impl Engine {
         let emit_output =
             emit_sources(&spec, base_dir).map_err(|e| EngineError::EmitFailed { cause: e })?;
 
+        // Load the DuckDB `spatial` extension once at bootstrap, BEFORE the DDL
+        // loop, so a `type: spatial` `ST_Read` view (the geo mark's live corpus
+        // path, card 0008) can execute. Gated to specs that ACTUALLY have a
+        // spatial source, so a non-geo dashboard never pays the load + first-run
+        // network autoinstall it wouldn't use. The bundled duckdb does not
+        // statically link spatial — it autoinstalls from the network on LOAD,
+        // which needs connectivity, so a failure here is NON-FATAL and merely
+        // logged: an inline-only (no-spatial) session — including the hermetic
+        // inline-GeoJSON geo example — still loads and runs offline. Only a spec
+        // that uses a spatial source then fails, at its own `ST_Read` DDL.
+        let needs_spatial = emit_output
+            .statements
+            .iter()
+            .any(|s| s.source_kind == SourceKindTag::Spatial);
+        if needs_spatial {
+            if let Err(e) = conn.execute_batch("INSTALL spatial; LOAD spatial;") {
+                eprintln!(
+                    "warning: DuckDB spatial extension unavailable (autoinstall \
+                     needs the network); `type: spatial` / ST_Read sources will \
+                     fail, but inline data still works: {e}"
+                );
+            }
+        }
+
         for ddl in &emit_output.statements {
             conn.execute_batch(&ddl.sql)
                 .map_err(|e| EngineError::DdlFailed {
@@ -1162,6 +1186,49 @@ plot:
         assert!(!rows.is_empty(), "expected rows from inline data");
     }
 
+    /// geo-ac02 + geo-ac03 (card 0008): an inline-GeoJSON geo spec loads and
+    /// executes with NO spatial extension / network — the `LOAD spatial` attempt
+    /// at bootstrap is non-fatal, and the inline VARCHAR `geom` column passes
+    /// through the GeoLowerer UNWRAPPED (no `ST_AsGeoJSON`), coming back as the
+    /// GeoJSON text the renderer parses. This is the hermetic path the inline
+    /// example baselines on.
+    #[test]
+    fn geo_ac02_ac03_inline_geojson_executes_offline_unwrapped() {
+        let yaml = r#"
+data:
+  areas:
+    - { id: a, geom: '{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,0]]]}' }
+    - { id: b, geom: '{"type":"Polygon","coordinates":[[[1,1],[2,1],[2,2],[1,1]]]}' }
+plot:
+  - mark: geo
+    data: { from: areas }
+    fill: id
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine
+            .load_spec(spec, analysis, None)
+            .expect("inline geo spec loads offline")
+            .session;
+        let batches = session.execute_mark(0).expect("geo mark executes");
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 2, "two inline features");
+        // The geom column round-trips as VARCHAR GeoJSON text — NOT ST_AsGeoJSON'd
+        // (that would need the spatial extension and error on a VARCHAR).
+        let geom = batches[0]
+            .column_by_name("geom")
+            .expect("geom column present");
+        let geoms = geom
+            .as_any()
+            .downcast_ref::<duckdb::arrow::array::StringArray>()
+            .expect("geom is VARCHAR (unwrapped)");
+        assert!(
+            geoms.value(0).contains("Polygon"),
+            "geom holds GeoJSON text: {}",
+            geoms.value(0)
+        );
+    }
+
     // --- ac-04: execute_mark ---
     #[test]
     fn dex_ac04_execute_mark_unsupported() {
@@ -1171,7 +1238,7 @@ data:
   t:
     - { x: 1 }
 plot:
-  - mark: geo
+  - mark: voronoi
     data: { from: t }
 "#;
         let (spec, analysis) = parse_and_analyse(yaml);
@@ -1191,7 +1258,7 @@ plot:
     // --- ac-05: execute_all with partial failure ---
     #[test]
     fn dex_ac05_execute_all_partial_failure() {
-        // Mix a supported mark (dot with data.from) and an unsupported mark (geo)
+        // Mix a supported mark (dot with data.from) and an unsupported mark (voronoi)
         let yaml = r#"
 data:
   t:
@@ -1199,7 +1266,7 @@ data:
 plot:
   - mark: dot
     data: { from: t }
-  - mark: geo
+  - mark: voronoi
     data: { from: t }
 "#;
         let (spec, analysis) = parse_and_analyse(yaml);
@@ -1210,8 +1277,8 @@ plot:
         assert_eq!(results.len(), 2);
         // dot with data.from succeeds via SimpleLowerer
         assert!(results[0].is_ok(), "dot with data.from should succeed");
-        // geo is unsupported
-        assert!(results[1].is_err(), "geo should be unsupported");
+        // voronoi is unsupported
+        assert!(results[1].is_err(), "voronoi should be unsupported");
     }
 
     // --- msv ac-01: SimpleLowerer end-to-end via Session ---
@@ -2428,7 +2495,7 @@ data:
 plot:
   - mark: dot
     data: { from: t }
-  - mark: geo
+  - mark: voronoi
     data: { from: t }
 "#;
         let (spec, analysis) = parse_and_analyse(yaml);
@@ -2440,7 +2507,7 @@ plot:
         assert!(ok_result.is_ok(), "mark 0 should succeed via SimpleLowerer");
         assert!(!ok_result.unwrap().is_empty());
 
-        // Mark 1 fails via execute_mark (geo is unsupported).
+        // Mark 1 fails via execute_mark (voronoi is unsupported).
         let err_result = session.execute_mark(1);
         assert!(err_result.is_err(), "mark 1 should fail (unsupported)");
         assert!(matches!(
@@ -2753,8 +2820,8 @@ plot:
     #[test]
     fn rpw2_ac04_partial_failure_mixed_ok_err() {
         // Two marks subscribe to "brush" via filterBy. Dot is supported by
-        // SimpleLowerer (Ok), geo is not (Err). Each mark is dispatched
-        // independently — geo's failure must not prevent dot from succeeding.
+        // SimpleLowerer (Ok), voronoi is not (Err). Each mark is dispatched
+        // independently — voronoi's failure must not prevent dot from succeeding.
         let yaml = r#"
 params:
   brush:
@@ -2768,7 +2835,7 @@ plot:
     data: { from: t, filterBy: $brush }
     x: x
     y: y
-  - mark: geo
+  - mark: voronoi
     data: { from: t, filterBy: $brush }
     x: x
     y: y
@@ -2791,7 +2858,7 @@ plot:
         let ok_count = results.iter().filter(|(_, r)| r.is_ok()).count();
         let err_count = results.iter().filter(|(_, r)| r.is_err()).count();
         assert_eq!(ok_count, 1, "dot should succeed via SimpleLowerer");
-        assert_eq!(err_count, 1, "geo should fail (UnsupportedMark)");
+        assert_eq!(err_count, 1, "voronoi should fail (UnsupportedMark)");
 
         // The successful mark should have returned data (2 rows from inline source).
         let (_, ok_result) = results.iter().find(|(_, r)| r.is_ok()).unwrap();
@@ -3334,7 +3401,7 @@ plot:
     /// rpw3 ac-08: partial failure — strengthens v2 rpw2_ac04 by naming the
     /// EngineError discriminant, the lowerer registration scheme, and the
     /// param_state assertion. Two marks subscribe to $brush via the same
-    /// edge (data.filterBy): one dot (registered lowerer → Ok) and one geo
+    /// edge (data.filterBy): one dot (registered lowerer → Ok) and one voronoi
     /// (no registered lowerer → Err with EmitFailed { cause: UnsupportedMark }).
     /// The walk continues across mixed Ok/Err and updates param_state.
     #[test]
@@ -3351,7 +3418,7 @@ plot:
     data: { from: t, filterBy: $brush }
     x: x
     y: y
-  - mark: geo
+  - mark: voronoi
     data: { from: t, filterBy: $brush }
     x: x
     y: y
@@ -3369,18 +3436,18 @@ plot:
             "both marks must be dispatched; got {results:?}"
         );
 
-        // (b) dot mark Ok with non-empty batches; (c) geo mark Err with the
+        // (b) dot mark Ok with non-empty batches; (c) voronoi mark Err with the
         // EmitFailed { cause: UnsupportedMark } discriminant.
         let dot_idx = 0usize;
-        let geo_idx = 1usize;
+        let voronoi_idx = 1usize;
         let dot_result = results
             .iter()
             .find(|(i, _)| *i == dot_idx)
             .expect("dot at index 0 in results");
-        let geo_result = results
+        let voronoi_result = results
             .iter()
-            .find(|(i, _)| *i == geo_idx)
-            .expect("geo at index 1 in results");
+            .find(|(i, _)| *i == voronoi_idx)
+            .expect("voronoi at index 1 in results");
 
         let dot_batches = dot_result
             .1
@@ -3392,16 +3459,16 @@ plot:
             "dot must return 2 rows from inline data (no contributor → no filter); got {dot_rows}"
         );
 
-        match &geo_result.1 {
+        match &voronoi_result.1 {
             Err(EngineError::EmitFailed { cause }) => {
                 let msg = format!("{cause:?}");
                 assert!(
                     msg.contains("Unsupported"),
-                    "geo Err cause must indicate UnsupportedMark; got {msg}"
+                    "voronoi Err cause must indicate UnsupportedMark; got {msg}"
                 );
             }
             other => panic!(
-                "geo must produce Err(EngineError::EmitFailed {{ cause: UnsupportedMark }}); got {other:?}"
+                "voronoi must produce Err(EngineError::EmitFailed {{ cause: UnsupportedMark }}); got {other:?}"
             ),
         }
 
@@ -3860,7 +3927,7 @@ plot:
     }
 
     /// cfs2_ac08: partial failure. Two subscribers — one supported (dot)
-    /// and one unsupported (geo). One Ok + one Err; selection_state
+    /// and one unsupported (voronoi). One Ok + one Err; selection_state
     /// updated regardless. Mirrors rpw2_ac04.
     #[test]
     fn cfs2_ac08_partial_failure() {
@@ -3877,7 +3944,7 @@ plot:
     data: { from: t, filterBy: $brush }
     x: x
     y: y
-  - mark: geo
+  - mark: voronoi
     data: { from: t, filterBy: $brush }
     x: x
     y: y
@@ -3904,7 +3971,7 @@ plot:
         let ok_count = results.iter().filter(|(_, r)| r.is_ok()).count();
         let err_count = results.iter().filter(|(_, r)| r.is_err()).count();
         assert_eq!(ok_count, 1, "dot succeeds via SimpleLowerer");
-        assert_eq!(err_count, 1, "geo fails (UnsupportedMark)");
+        assert_eq!(err_count, 1, "voronoi fails (UnsupportedMark)");
 
         // selection_state updated regardless of partial failure.
         assert!(session.current_selections().contains_key("brush"));

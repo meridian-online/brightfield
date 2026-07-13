@@ -75,6 +75,90 @@ impl MarkLower for SimpleLowerer {
     }
 }
 
+/// Lowerer for the geo mark — projected GeoJSON basemap / choropleth (card
+/// 0008, last mark).
+///
+/// Geo is NOT an aggregation mark: this is a near-clone of [`SimpleLowerer`]
+/// (`SELECT *`, [`apply_data_filter`], [`project_param_channels`]) with ONE
+/// projection. When the mark's source is a SPATIAL source (`type: spatial` →
+/// `ST_Read`, a DuckDB `GEOMETRY` column), the geometry column is wrapped in
+/// `ST_AsGeoJSON(...)` so the `GEOMETRY` crosses `query_arrow` as GeoJSON
+/// `VARCHAR` (the renderer parses it with serde_json). An INLINE source whose
+/// geom column is already `VARCHAR` GeoJSON text passes through unwrapped —
+/// `ST_AsGeoJSON` on a `VARCHAR` errors and would need the spatial extension
+/// anyway; that pass-through is exactly what lets the hermetic inline example
+/// baseline with no spatial extension / network.
+///
+/// The SOURCE geometry column is
+/// [`resolve_geometry_column`](brightfield_spec::layout::resolve_geometry_column)
+/// (default `geom`), but the OUTPUT is always aliased to the canonical
+/// [`DEFAULT_GEOMETRY_COLUMN`](brightfield_spec::layout::DEFAULT_GEOMETRY_COLUMN)
+/// (`geom`) — the reserved-column idiom the density / hexbin lowerers already
+/// use (`__bf_count`, `__bf_hex_*`). So the renderer reads one fixed column name
+/// and never depends on the author's `geometry:` choice: a `geometry: shape`
+/// mark still renders (its `shape` column is renamed to `geom`), and no
+/// launch-anchored rebuild or colour-cycle can blank it on a name mismatch. The
+/// default `geometry: geom` path keeps the byte-identical `* REPLACE` form.
+pub struct GeoLowerer;
+
+impl MarkLower for GeoLowerer {
+    fn lower(&self, mark: &Mark, ctx: &LowerCtx<'_>) -> Result<QueryPlan, EmitError> {
+        let (source, extras) = match &mark.data {
+            Some(MarkData::From { source, extras, .. }) => (source.clone(), extras),
+            Some(MarkData::Inline(_)) | None => {
+                return Err(EmitError::UnsupportedMark {
+                    kind: "geo (requires data: { from: ... })".to_string(),
+                })
+            }
+        };
+        let base = QueryPlan::Source {
+            table: source.clone(),
+        };
+        let filtered = apply_data_filter(extras, base);
+
+        let src = brightfield_spec::layout::resolve_geometry_column(mark);
+        let canon = brightfield_spec::layout::DEFAULT_GEOMETRY_COLUMN;
+
+        if source_is_spatial(ctx, &source) {
+            // GEOMETRY → GeoJSON VARCHAR, canonicalised to `geom`. The default
+            // column keeps the `* REPLACE` form (preserves order, byte-identical);
+            // a custom `geometry:` column is EXCLUDEd and re-added under `geom`.
+            let col = if src == canon {
+                format!("* REPLACE (ST_AsGeoJSON(\"{src}\") AS \"{canon}\")")
+            } else {
+                format!("* EXCLUDE (\"{src}\"), ST_AsGeoJSON(\"{src}\") AS \"{canon}\"")
+            };
+            Ok(QueryPlan::Projection {
+                input: Box::new(filtered),
+                columns: vec![col],
+            })
+        } else if src == canon {
+            // Inline VARCHAR GeoJSON, default column — pass through unwrapped,
+            // exactly like SimpleLowerer (byte-identical).
+            Ok(project_param_channels(mark, filtered))
+        } else {
+            // Inline VARCHAR GeoJSON under a custom `geometry:` column — rename it
+            // to the canonical `geom` so the renderer finds it (no ST_AsGeoJSON:
+            // it is already text).
+            Ok(QueryPlan::Projection {
+                input: Box::new(filtered),
+                columns: vec![format!("* EXCLUDE (\"{src}\"), \"{src}\" AS \"{canon}\"")],
+            })
+        }
+    }
+}
+
+/// Whether the named source is a `type: spatial` source (`ST_Read`, a DuckDB
+/// `GEOMETRY` column) — the same signal `brightfield_sql::source::emit_spatial`
+/// dispatches on. Checks the parsed [`DataSource`](brightfield_spec::ast::DataSource)
+/// `kind`/`extras`. A source absent from the map (rare) reads as non-spatial.
+fn source_is_spatial(ctx: &LowerCtx<'_>, source: &str) -> bool {
+    ctx.data_sources.get(source).is_some_and(|ds| {
+        matches!(&ds.kind, brightfield_spec::ast::DataSourceKind::Typed(t) if t == "spatial")
+            || matches!(ds.extras.get("type"), Some(SpecValue::String(t)) if t == "spatial")
+    })
+}
+
 /// Positional-channel option keys whose `$param` binding is projected into the
 /// query (card 0014, Decision 2). Kept in sync with brightfield-render's
 /// positional `Channel` set (x/y/x1/y1/x2/y2); non-positional channels
@@ -865,6 +949,9 @@ pub fn default_lowerers() -> Vec<(MarkKind, Box<dyn MarkLower>)> {
         (MarkKind::Hexbin, Box::new(HexbinLowerer)),
         // Hexgrid — decorative dataless mesh; emits a singleton row.
         (MarkKind::Hexgrid, Box::new(HexgridLowerer)),
+        // Geo — SimpleLowerer clone + ST_AsGeoJSON on a spatial geometry column
+        // (inline VARCHAR GeoJSON passes through). See GeoLowerer.
+        (MarkKind::Geo, Box::new(GeoLowerer)),
     ]
 }
 
@@ -967,13 +1054,160 @@ mod tests {
     #[test]
     fn dfir_ac03_find_lowerer_falls_back_to_default() {
         let registry = default_lowerers();
-        // Geo is not registered — should fall back to DefaultLowerer.
-        // (Hexbin now has a lowerer; geo stays the always-unimplemented stand-in.)
-        let lowerer = find_lowerer(MarkKind::Geo, &registry);
-        let mark = make_mark(MarkKind::Geo);
+        // Voronoi is not registered — should fall back to DefaultLowerer.
+        // (Geo now has a GeoLowerer; voronoi is the always-unimplemented stand-in.)
+        let lowerer = find_lowerer(MarkKind::Voronoi, &registry);
+        let mark = make_mark(MarkKind::Voronoi);
         let ctx = make_ctx();
         let result = lowerer.lower(&mark, &ctx);
         assert!(matches!(result, Err(EmitError::UnsupportedMark { .. })));
+    }
+
+    // --- geo-ac03 tests: GeoLowerer ---
+
+    /// A LowerCtx whose `data_sources` holds one named source (leaked for test
+    /// convenience, like `make_ctx`).
+    fn make_ctx_with_source(
+        name: &str,
+        ds: brightfield_spec::ast::DataSource,
+    ) -> LowerCtx<'static> {
+        let mut map: IndexMap<String, brightfield_spec::ast::DataSource> = IndexMap::new();
+        map.insert(name.to_string(), ds);
+        let data_sources = Box::leak(Box::new(map));
+        let params = Box::leak(Box::new(IndexMap::new()));
+        LowerCtx {
+            data_sources,
+            params,
+            plot_px: None,
+        }
+    }
+
+    fn geo_mark_from(source: &str, options: Vec<(&str, SpecValue)>) -> Mark {
+        let mut opts: IndexMap<String, ValueOrParamRef<SpecValue>> = IndexMap::new();
+        for (k, v) in options {
+            opts.insert(k.to_string(), ValueOrParamRef::Value(v));
+        }
+        Mark {
+            kind: MarkKind::Geo,
+            status: ImplStatus::Implemented,
+            data: Some(MarkData::From {
+                source: source.to_string(),
+                filter_by: None,
+                extras: IndexMap::new(),
+            }),
+            options: opts,
+        }
+    }
+
+    #[test]
+    fn geo_ac03_spatial_source_wraps_geometry_in_st_asgeojson() {
+        use brightfield_spec::ast::{DataSource, DataSourceKind};
+        // A `type: spatial` source (both kind + extras carry the type, as the
+        // parser records it) → the geom column is wrapped in ST_AsGeoJSON.
+        let mut extras = IndexMap::new();
+        extras.insert("type".to_string(), SpecValue::String("spatial".to_string()));
+        let ds = DataSource {
+            kind: DataSourceKind::File("us-states.json".to_string()),
+            extras,
+        };
+        let ctx = make_ctx_with_source("states", ds);
+        let mark = geo_mark_from("states", vec![]);
+        let plan = GeoLowerer.lower(&mark, &ctx).expect("lowers");
+        match plan {
+            QueryPlan::Projection { columns, .. } => {
+                assert_eq!(columns.len(), 1);
+                assert_eq!(columns[0], "* REPLACE (ST_AsGeoJSON(\"geom\") AS \"geom\")");
+            }
+            other => panic!("expected Projection wrapping ST_AsGeoJSON, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn geo_ac03_spatial_source_honours_geometry_channel() {
+        use brightfield_spec::ast::{DataSource, DataSourceKind};
+        let ds = DataSource {
+            kind: DataSourceKind::Typed("spatial".to_string()),
+            extras: {
+                let mut e = IndexMap::new();
+                e.insert("type".to_string(), SpecValue::String("spatial".to_string()));
+                e
+            },
+        };
+        let ctx = make_ctx_with_source("world", ds);
+        // A non-default `geometry:` channel reads the custom SOURCE column but
+        // canonicalises the OUTPUT to `geom`, so the renderer's fixed column name
+        // always matches (EXCLUDE the source, re-add it as geom).
+        let mark = geo_mark_from("world", vec![("geometry", SpecValue::String("shape".into()))]);
+        let plan = GeoLowerer.lower(&mark, &ctx).expect("lowers");
+        match plan {
+            QueryPlan::Projection { columns, .. } => {
+                assert_eq!(
+                    columns[0],
+                    "* EXCLUDE (\"shape\"), ST_AsGeoJSON(\"shape\") AS \"geom\""
+                );
+            }
+            other => panic!("expected Projection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn geo_ac03_inline_custom_geometry_column_renamed_to_canonical() {
+        use brightfield_spec::ast::{DataSource, DataSourceKind};
+        // An inline source under a custom `geometry: shape` column — no
+        // ST_AsGeoJSON (already text), but renamed to canonical `geom` so the
+        // renderer finds it.
+        let ds = DataSource {
+            kind: DataSourceKind::InlineRows(vec![]),
+            extras: IndexMap::new(),
+        };
+        let ctx = make_ctx_with_source("areas", ds);
+        let mark = geo_mark_from("areas", vec![("geometry", SpecValue::String("shape".into()))]);
+        let plan = GeoLowerer.lower(&mark, &ctx).expect("lowers");
+        match plan {
+            QueryPlan::Projection { columns, .. } => {
+                assert_eq!(columns[0], "* EXCLUDE (\"shape\"), \"shape\" AS \"geom\"");
+            }
+            other => panic!("expected Projection (custom inline rename), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn geo_ac03_inline_varchar_source_passes_through_unwrapped() {
+        use brightfield_spec::ast::{DataSource, DataSourceKind};
+        // An inline source (no `type: spatial`) — the geom column is already
+        // VARCHAR GeoJSON text, so it must PASS THROUGH (no ST_AsGeoJSON, which
+        // would error on a VARCHAR and need the spatial extension). This is what
+        // makes the hermetic inline baseline work with no spatial extension.
+        let ds = DataSource {
+            kind: DataSourceKind::InlineRows(vec![]),
+            extras: IndexMap::new(),
+        };
+        let ctx = make_ctx_with_source("areas", ds);
+        let mark = geo_mark_from("areas", vec![]);
+        let plan = GeoLowerer.lower(&mark, &ctx).expect("lowers");
+        // Pass-through with no filter / param channels is a bare Source — no
+        // ST_AsGeoJSON anywhere.
+        assert_eq!(
+            plan,
+            QueryPlan::Source {
+                table: "areas".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn geo_ac03_rejects_inline_mark_data() {
+        let ctx = make_ctx();
+        let mark = Mark {
+            kind: MarkKind::Geo,
+            status: ImplStatus::Implemented,
+            data: Some(MarkData::Inline(vec![])),
+            options: IndexMap::new(),
+        };
+        assert!(matches!(
+            GeoLowerer.lower(&mark, &ctx),
+            Err(EmitError::UnsupportedMark { .. })
+        ));
     }
 
     // --- AC-01 tests: SimpleLowerer ---
@@ -1047,7 +1281,8 @@ mod tests {
         assert!(kinds.contains(&MarkKind::Contour));
         assert!(kinds.contains(&MarkKind::Hexbin));
         assert!(kinds.contains(&MarkKind::Hexgrid));
-        assert_eq!(kinds.len(), 23);
+        assert!(kinds.contains(&MarkKind::Geo));
+        assert_eq!(kinds.len(), 24);
     }
 
     #[test]

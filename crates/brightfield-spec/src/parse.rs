@@ -315,6 +315,16 @@ pub enum ParseWarning {
         /// The offending attribute key.
         attribute: String,
     },
+
+    /// A plot-level `projectionType` carried a value that is not a supported
+    /// projection (v1: `equirectangular`, `albers`, `albers-usa`). The plot
+    /// degrades to the default equirectangular fit, and this names the value so
+    /// an author sees the unsupported projection rather than silently getting a
+    /// different map (card 0008 geo mark).
+    UnknownProjection {
+        /// The unrecognised projection value (or `<non-string>` for a non-string).
+        value: String,
+    },
 }
 
 /// Result of a successful parse.
@@ -827,6 +837,27 @@ impl Walker {
             {
                 self.warnings
                     .push(ParseWarning::NonStringLabel { attribute: key.clone() });
+            }
+            // A plot-level `projectionType` (card 0008 geo) that names a
+            // projection v1 can't render (or a non-string value) degrades to the
+            // default equirectangular fit — name it so the author sees the
+            // unsupported projection. A lifted `$param` is a recorded deferral.
+            if key == "projectionType" {
+                let unsupported = match &value {
+                    SpecValue::String(s) => {
+                        crate::layout::ResolvedProjection::from_wire(s).is_none()
+                    }
+                    SpecValue::Param(_) => false,
+                    _ => true,
+                };
+                if unsupported {
+                    let shown = match &value {
+                        SpecValue::String(s) => s.clone(),
+                        _ => "<non-string>".to_string(),
+                    };
+                    self.warnings
+                        .push(ParseWarning::UnknownProjection { value: shown });
+                }
             }
             attributes.insert(key, value);
         }
@@ -1980,6 +2011,34 @@ plot:
             "a boolean title warns naming `title`; got {:?}",
             obt.warnings
         );
+    }
+
+    #[test]
+    fn geo_ac04_unknown_projection_warns_but_supported_defer() {
+        // An unsupported projection degrades to the default equirectangular fit
+        // AND names itself (card 0008 geo) — mirroring the NonStringLabel check.
+        let bad = "data:\n  t:\n    - { x: 1, y: 2 }\nplot:\n  - { mark: dot, data: { from: t }, x: x, y: y }\nprojectionType: mercator\n";
+        let out = parse_spec(bad, Format::Yaml).expect("parses despite unsupported projection");
+        assert!(
+            out.warnings
+                .iter()
+                .any(|w| matches!(w, ParseWarning::UnknownProjection { value } if value == "mercator")),
+            "one UnknownProjection naming `mercator`; got {:?}",
+            out.warnings
+        );
+
+        // Supported projections and a lifted $param pass silently.
+        for ok in ["projectionType: albers", "projectionType: albers-usa", "projectionType: equirectangular", "projectionType: $p"] {
+            let src = format!(
+                "params:\n  p: 1\ndata:\n  t:\n    - {{ x: 1, y: 2 }}\nplot:\n  - {{ mark: dot, data: {{ from: t }}, x: x, y: y }}\n{ok}\n"
+            );
+            let o = parse_spec(&src, Format::Yaml).expect("parses");
+            assert!(
+                !o.warnings.iter().any(|w| matches!(w, ParseWarning::UnknownProjection { .. })),
+                "`{ok}` must not warn; got {:?}",
+                o.warnings
+            );
+        }
     }
 
     #[test]

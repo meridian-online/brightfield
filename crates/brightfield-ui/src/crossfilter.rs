@@ -858,7 +858,14 @@ fn recolour_override(
     m: &MarkInput,
     scheme: SequentialScheme,
 ) -> Option<Box<dyn MarkRenderer + Send + Sync>> {
-    configured_renderer(m.kind, scheme, m.bandwidth, m.thresholds, m.bin_width)
+    // Geo's projection is NOT retained here (v1): a colour cycle rebuilds a geo
+    // choropleth at the DEFAULT (equirectangular) projection. This is a narrow,
+    // documented limitation — geo is a STATIC sole-in-plot mark, and no shipped
+    // example hits it (the hermetic inline example is equirectangular; the live
+    // Albers example is a stroke-only basemap with no Sequential fill, so it is
+    // not colour-cyclable). Passing the resolved projection would need a
+    // `projection` field on MarkInput, deferred with geo interaction.
+    configured_renderer(m.kind, scheme, m.bandwidth, m.thresholds, m.bin_width, None)
 }
 
 /// Swap a `ScaleSet`'s Fill ramp stops in place, preserving its domain (card
@@ -1118,7 +1125,7 @@ mod tests {
                 batch: Some(batch.clone()),
                 channels: channels.clone(),
                 kind: MarkKind::Raster,
-                renderer_override: configured_renderer(MarkKind::Raster, scheme, None, None, None),
+                renderer_override: configured_renderer(MarkKind::Raster, scheme, None, None, None, None),
                 bandwidth: None,
                 thresholds: None,
                 bin_width: None,
@@ -1162,6 +1169,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             ),
             bandwidth: None,
             thresholds: None,
@@ -1183,6 +1191,7 @@ mod tests {
             renderer_override: configured_renderer(
                 MarkKind::Raster,
                 SequentialScheme::Blues,
+                None,
                 None,
                 None,
                 None,
@@ -1505,6 +1514,7 @@ mod tests {
                     None,
                     None,
                 None,
+                None,
                 ),
                 bandwidth: None,
                 thresholds: None,
@@ -1590,7 +1600,7 @@ mod tests {
             // A filtered subset (drop the peak row) stands in for a gesture.
             let filtered = full.slice(0, 6);
 
-            let override_of = || configured_renderer(MarkKind::Heatmap, SequentialScheme::Blues, Some(0.8), None, None);
+            let override_of = || configured_renderer(MarkKind::Heatmap, SequentialScheme::Blues, Some(0.8), None, None, None);
             let marks_for = |batch: RecordBatch| {
                 vec![MarkInput {
                     batch: Some(batch),
@@ -1655,6 +1665,7 @@ mod tests {
                 None,
                 None,
             None,
+            None,
             ),
             bandwidth: None,
             thresholds: None,
@@ -1687,6 +1698,7 @@ mod tests {
                     bandwidth,
                     None,
                 None,
+                None,
                 ),
                 bandwidth: None,
                 thresholds: None,
@@ -1717,6 +1729,7 @@ mod tests {
                     SequentialScheme::default(),
                     None,
                     thresholds,
+                None,
                 None,
                 ),
                 bandwidth: None,
@@ -1902,6 +1915,7 @@ mod tests {
                     SequentialScheme::Blues,
                     None,
                     None,
+                None,
                 None,
                 ),
                 bandwidth: None,

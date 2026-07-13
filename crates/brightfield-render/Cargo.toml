@@ -15,6 +15,9 @@ kurbo = "0.13"
 peniko = "0.6"
 skrifa = "0.42"
 indexmap = "2"
+# GeoJSON parsing for the geo mark (card 0008). Already vendored via
+# brightfield-spec, so cargo-deny stays clean.
+serde_json = "1"
 
 [dev-dependencies]
 vello = { version = "0.9", features = ["wgpu"] }

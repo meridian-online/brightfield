@@ -6,6 +6,7 @@
 use arrow::array::{Array, Float64Array, StringArray, TimestampMicrosecondArray};
 use arrow::datatypes::{DataType, TimeUnit};
 use arrow::record_batch::RecordBatch;
+use brightfield_spec::layout::DEFAULT_GEOMETRY_COLUMN;
 use brightfield_spec::vocab::MarkKind;
 use kurbo::{Affine, BezPath, Circle, Line, Rect};
 use peniko::{Color, Fill};
@@ -91,6 +92,16 @@ pub trait MarkRenderer {
         _x_range: (f64, f64),
         _y_range: (f64, f64),
     ) {
+    }
+
+    /// Whether this mark suppresses the plot frame — the grid, axes, and tick
+    /// labels. A geo/map mark projects its own coordinate space and reads as a
+    /// map, not a cartesian plot, so it draws no axes or gridlines. Defaults to
+    /// `false` (mirrors [`Self::zero_baseline_channel`]: zero impact on existing
+    /// renderers). The scene builders skip the frame when any entry returns
+    /// `true` (card 0008 geo mark).
+    fn suppresses_frame(&self) -> bool {
+        false
     }
 }
 
@@ -2893,6 +2904,351 @@ fn resolve_stroke_colour(
 }
 
 // ---------------------------------------------------------------------------
+// GeoRenderer (geo — projected GeoJSON basemap / choropleth, card 0008)
+// ---------------------------------------------------------------------------
+
+/// Client-side map projection forward math — the pure-math half of the geo
+/// semantic split. WHICH projection is a spec decision
+/// ([`brightfield_spec::layout::ResolvedProjection`], converted via `From`); the
+/// forward transform lives here.
+///
+/// Both projections output "math-convention" coordinates (`v` increasing
+/// NORTHWARD). The renderer feeds them through the plot's inverted Y
+/// [`Scale::Linear`] (`ChartLayout::y_range` is `(bottom, top)`), which supplies
+/// the screen flip so north renders up — so, unlike a scale-free d3 projection,
+/// there is NO `-lat` negation here (it would double-flip).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum Projection {
+    /// `u = lon`, `v = lat` — the identity plate carrée, aspect-fit by the geo
+    /// renderer. The default when `projectionType` is absent / unrecognised.
+    #[default]
+    Equirectangular,
+    /// US-tuned Albers equal-area conic (fixed standard parallels 29.5°N/45.5°N,
+    /// reference (−96°, 23°) — d3-geo's `geoAlbers` US defaults). Contiguous-US
+    /// correct; AK/HI render in true geographic position (the albers-usa
+    /// composite is deferred, a stated gap).
+    Albers,
+}
+
+impl From<brightfield_spec::layout::ResolvedProjection> for Projection {
+    fn from(p: brightfield_spec::layout::ResolvedProjection) -> Self {
+        use brightfield_spec::layout::ResolvedProjection as R;
+        match p {
+            R::Equirectangular => Self::Equirectangular,
+            R::Albers => Self::Albers,
+        }
+    }
+}
+
+impl Projection {
+    /// Project `(lon, lat)` in degrees to planar `(u, v)`, with `v` increasing
+    /// north. Pure — no allocation, no clipping.
+    #[must_use]
+    pub fn project(self, lon: f64, lat: f64) -> (f64, f64) {
+        match self {
+            Self::Equirectangular => (lon, lat),
+            Self::Albers => albers_forward(lon, lat),
+        }
+    }
+}
+
+/// US Albers equal-area conic forward. Standard parallels φ1=29.5°, φ2=45.5°,
+/// reference longitude λ0=−96°, reference latitude φ0=23°. Returns `(x, y)` with
+/// `y` increasing north (see [`Projection`]). Unit sphere — the geo renderer's
+/// aspect-fit rescales, so the absolute radius is immaterial.
+fn albers_forward(lon: f64, lat: f64) -> (f64, f64) {
+    let d2r = std::f64::consts::PI / 180.0;
+    let (phi1, phi2) = (29.5 * d2r, 45.5 * d2r);
+    let (lon0, lat0) = (-96.0 * d2r, 23.0 * d2r);
+    let lam = lon * d2r;
+    let phi = lat * d2r;
+    let n = (phi1.sin() + phi2.sin()) / 2.0;
+    // Degenerate n≈0 (parallels symmetric about the equator) — not our fixed US
+    // parallels, but keep the math total rather than dividing by zero.
+    if n.abs() < 1e-12 {
+        return (lam - lon0, phi - lat0);
+    }
+    let c = phi1.cos().powi(2) + 2.0 * n * phi1.sin();
+    let rho = (c - 2.0 * n * phi.sin()).max(0.0).sqrt() / n;
+    let rho0 = (c - 2.0 * n * lat0.sin()).max(0.0).sqrt() / n;
+    let theta = n * (lam - lon0);
+    (rho * theta.sin(), rho0 - rho * theta.cos())
+}
+
+/// Basemap outline colour + width for a stroke-only (no-fill) geo mark.
+const GEO_STROKE_COLOUR: Color = Color::new([0.15, 0.15, 0.15, 1.0]);
+const GEO_STROKE_WIDTH: f64 = 0.75;
+
+/// Renders the geo mark: projected GeoJSON Polygon/MultiPolygon features as a
+/// filled choropleth or stroked basemap (card 0008, the last card-0008 mark).
+///
+/// The geometry column is always the canonical [`DEFAULT_GEOMETRY_COLUMN`]
+/// (`geom`) — the `GeoLowerer` canonicalises the author's `geometry:` column to
+/// it (like the reserved `__bf_count` idiom), so the renderer reads one fixed
+/// name and never depends on the source column's name. It holds GeoJSON text
+/// (`ST_AsGeoJSON` for a spatial source; inline `VARCHAR` otherwise). Each
+/// vertex is projected client-side ([`Projection`]); [`Self::augment_scales`]
+/// bboxes the projected coordinates and aspect-fits them (equal px-per-unit,
+/// centred) into two synthesized [`Scale::Linear`]; [`Self::render`] maps each
+/// ring vertex through those scales and draws one [`BezPath`] per feature
+/// (`Fill::NonZero` so RFC-7946-wound holes subtract). A `fill:` channel fills
+/// each feature — a numeric fill through the sequential ramp (choropleth), else
+/// the categorical colour path; a mark with NO fill strokes a basemap outline.
+///
+/// v1 draws Polygon / MultiPolygon only (LineString / Point deferred). The
+/// projection reaches here through the `configured_renderer` / renderer_override
+/// seam, fixed at launch (like `colorScheme`). Geo is a STATIC, sole-in-plot
+/// mark (the `highlight` arg is ignored — no cross-filter dimming).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GeoRenderer {
+    /// The resolved projection (equirectangular default, or US Albers).
+    pub projection: Projection,
+    /// Sequential scheme for a numeric `fill:` choropleth (default viridis).
+    pub scheme: SequentialScheme,
+}
+
+impl GeoRenderer {
+    /// The projected bounding box `(u_min, u_max, v_min, v_max)` over every
+    /// vertex of every feature, or `None` when the geometry column is absent /
+    /// empty / unparseable (the caller then synthesizes no scales).
+    fn projected_bbox(&self, batch: &RecordBatch) -> Option<(f64, f64, f64, f64)> {
+        let geoms = column_as_string(batch, DEFAULT_GEOMETRY_COLUMN)?;
+        let (mut umin, mut umax) = (f64::INFINITY, f64::NEG_INFINITY);
+        let (mut vmin, mut vmax) = (f64::INFINITY, f64::NEG_INFINITY);
+        for geom in geoms.iter().flatten() {
+            for ring in parse_geojson_rings(geom) {
+                for (lon, lat) in ring {
+                    let (u, v) = self.projection.project(lon, lat);
+                    umin = umin.min(u);
+                    umax = umax.max(u);
+                    vmin = vmin.min(v);
+                    vmax = vmax.max(v);
+                }
+            }
+        }
+        (umin.is_finite() && umax.is_finite() && vmin.is_finite() && vmax.is_finite())
+            .then_some((umin, umax, vmin, vmax))
+    }
+}
+
+impl MarkRenderer for GeoRenderer {
+    fn render(
+        &self,
+        scene: &mut Scene,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        scales: &ScaleSet,
+        _highlight: Option<&HighlightState>,
+    ) {
+        let (Some(x_scale), Some(y_scale)) = (scales.get(Channel::X), scales.get(Channel::Y))
+        else {
+            return;
+        };
+        let Some(geoms) = column_as_string(batch, DEFAULT_GEOMETRY_COLUMN) else {
+            return;
+        };
+
+        // A `fill:` channel fills each feature (numeric → the ramp built by
+        // augment_scales; else the categorical colour path). No fill → a
+        // stroke-only basemap outline.
+        let has_fill = channel_map.get(Channel::Fill).is_some();
+        let fill_vals = channel_map
+            .get(Channel::Fill)
+            .and_then(|c| column_as_f64(batch, c));
+        let fill_ramp = match scales.get(Channel::Fill) {
+            Some(scale @ Scale::Sequential { .. }) => Some(scale),
+            _ => None,
+        };
+        let stroke = kurbo::Stroke::new(GEO_STROKE_WIDTH);
+
+        for (row, geom) in geoms.iter().enumerate() {
+            let Some(text) = geom.as_deref() else { continue };
+            let rings = parse_geojson_rings(text);
+            if rings.is_empty() {
+                continue;
+            }
+            let mut path = BezPath::new();
+            for ring in &rings {
+                let mut pts = ring.iter().map(|(lon, lat)| {
+                    let (u, v) = self.projection.project(*lon, *lat);
+                    (x_scale.map_f64(u), y_scale.map_f64(v))
+                });
+                if let Some((x0, y0)) = pts.next() {
+                    path.move_to((x0, y0));
+                    for (x, y) in pts {
+                        path.line_to((x, y));
+                    }
+                    path.close_path();
+                }
+            }
+            if has_fill {
+                let colour = match (&fill_ramp, fill_vals.as_ref().and_then(|v| v[row])) {
+                    (Some(ramp), Some(value)) => Color::new(ramp.map_continuous(value)),
+                    _ => resolve_colour(scales, channel_map, batch, row),
+                };
+                scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &path);
+            } else {
+                scene.stroke(&stroke, Affine::IDENTITY, GEO_STROKE_COLOUR, None, &path);
+            }
+        }
+    }
+
+    /// Aspect-fit the projected geometry into two synthesized [`Scale::Linear`]
+    /// (shared px-per-unit `k`, centred), and build the numeric-fill → colour
+    /// ramp for a choropleth. There is no inferable positional column (the geom
+    /// column is a string), so `merge_linear_scale` CREATES the x/y scales here.
+    fn augment_scales(
+        &self,
+        scales: &mut ScaleSet,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        x_range: (f64, f64),
+        y_range: (f64, f64),
+    ) {
+        if let Some(bbox) = self.projected_bbox(batch) {
+            let ((x0, x1), (y0, y1)) = aspect_fit_domains(bbox, x_range, y_range);
+            merge_linear_scale(scales, Channel::X, x0, x1, x_range);
+            merge_linear_scale(scales, Channel::Y, y0, y1, y_range);
+        }
+        build_geo_fill_ramp(scales, batch, channel_map, self.scheme);
+    }
+
+    /// Geo draws no cartesian frame — it projects its own coordinate space and
+    /// reads as a map. The scene builders skip grid + axes for it.
+    fn suppresses_frame(&self) -> bool {
+        true
+    }
+}
+
+/// Aspect-fit a projected bbox `(u0, u1, v0, v1)` into the plot pixel ranges,
+/// returning the centred `((x_dom_min, x_dom_max), (y_dom_min, y_dom_max))` two
+/// [`Scale::Linear`] domains that, mapped through `x_range` / `y_range`, give an
+/// EQUAL px-per-unit `k` on both axes (so the map is aspect-correct) and centre
+/// the data in the plot rect. `y_range` is `(bottom, top)` — inverted — so
+/// north (larger `v`) maps up. Degenerate spans are floored to avoid div-by-0.
+fn aspect_fit_domains(
+    bbox: (f64, f64, f64, f64),
+    x_range: (f64, f64),
+    y_range: (f64, f64),
+) -> ((f64, f64), (f64, f64)) {
+    let (u0, u1, v0, v1) = bbox;
+    let du = (u1 - u0).max(1e-9);
+    let dv = (v1 - v0).max(1e-9);
+    let wp = (x_range.1 - x_range.0).abs().max(1e-9);
+    let hp = (y_range.0 - y_range.1).abs().max(1e-9);
+    // Equal px-per-unit — the smaller of the two axis fits centres the map.
+    let k = (wp / du).min(hp / dv);
+    let span_x = wp / k;
+    let span_y = hp / k;
+    let ucx = (u0 + u1) / 2.0;
+    let vcx = (v0 + v1) / 2.0;
+    (
+        (ucx - span_x / 2.0, ucx + span_x / 2.0),
+        (vcx - span_y / 2.0, vcx + span_y / 2.0),
+    )
+}
+
+/// Build the numeric-fill → colour ramp under [`Channel::Fill`] for a geo
+/// choropleth (`fill: <numeric col>`), mirroring [`CellRenderer::augment_scales`]:
+/// a Utf8/absent fill reads as `None` and keeps the categorical colour path; a
+/// numeric fill REPLACES the inferred Linear with a [`Scale::Sequential`]
+/// anchored `[0, max]` when `min >= 0`, else `[min, max]`.
+fn build_geo_fill_ramp(
+    scales: &mut ScaleSet,
+    batch: &RecordBatch,
+    channel_map: &ChannelMap,
+    scheme: SequentialScheme,
+) {
+    let Some(fill_col) = channel_map.get(Channel::Fill) else {
+        return;
+    };
+    let Some(vals) = column_as_f64(batch, fill_col) else {
+        return; // Utf8 fill → categorical colour path, untouched.
+    };
+    let lo = vals.iter().flatten().cloned().fold(f64::INFINITY, f64::min);
+    let hi = vals
+        .iter()
+        .flatten()
+        .cloned()
+        .fold(f64::NEG_INFINITY, f64::max);
+    if !(lo.is_finite() && hi.is_finite()) {
+        return;
+    }
+    let (d0, d1) = if lo >= 0.0 { (0.0, hi) } else { (lo, hi) };
+    scales.insert(
+        Channel::Fill,
+        Scale::Sequential {
+            domain_min: d0,
+            domain_max: d1,
+            stops: scheme.stops(),
+        },
+    );
+}
+
+/// Parse one GeoJSON geometry string into a list of rings, each a `Vec` of
+/// `(lon, lat)`. A `Polygon` yields its rings; a `MultiPolygon` yields every
+/// sub-polygon's rings flattened (all drawn into one feature [`BezPath`]); a
+/// `Feature` is unwrapped to its geometry. Non-Polygon geometries
+/// (Point/LineString) and malformed JSON yield an empty list — the v1 contract
+/// is Polygon / MultiPolygon only.
+fn parse_geojson_rings(text: &str) -> Vec<Vec<(f64, f64)>> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return Vec::new();
+    };
+    let mut geom = &value;
+    if geom.get("type").and_then(|t| t.as_str()) == Some("Feature") {
+        match geom.get("geometry") {
+            Some(g) => geom = g,
+            None => return Vec::new(),
+        }
+    }
+    let ty = geom.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    let Some(coords) = geom.get("coordinates") else {
+        return Vec::new();
+    };
+    let mut rings = Vec::new();
+    match ty {
+        "Polygon" => collect_polygon_rings(coords, &mut rings),
+        "MultiPolygon" => {
+            if let Some(polys) = coords.as_array() {
+                for poly in polys {
+                    collect_polygon_rings(poly, &mut rings);
+                }
+            }
+        }
+        _ => {}
+    }
+    rings
+}
+
+/// Append each ring of a GeoJSON Polygon `coordinates` (an array of rings, each
+/// an array of `[lon, lat]` positions) to `out`. Rings with fewer than 2 points
+/// are dropped.
+fn collect_polygon_rings(coords: &serde_json::Value, out: &mut Vec<Vec<(f64, f64)>>) {
+    let Some(ring_arr) = coords.as_array() else {
+        return;
+    };
+    for ring in ring_arr {
+        let Some(points) = ring.as_array() else {
+            continue;
+        };
+        let mut r = Vec::with_capacity(points.len());
+        for p in points {
+            if let Some(pair) = p.as_array() {
+                if pair.len() >= 2 {
+                    if let (Some(lon), Some(lat)) = (pair[0].as_f64(), pair[1].as_f64()) {
+                        r.push((lon, lat));
+                    }
+                }
+            }
+        }
+        if r.len() >= 2 {
+            out.push(r);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Renderer registry
 // ---------------------------------------------------------------------------
 
@@ -2941,6 +3297,9 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
     v.push((MarkKind::Hexgrid, Box::new(HexgridRenderer::default())));
     v.push((MarkKind::RegressionY, Box::new(RegressionRenderer::default())));
     v.push((MarkKind::RegressionX, Box::new(RegressionRenderer::default())));
+    // Geo — projected GeoJSON basemap / choropleth. The default (equirectangular)
+    // projection; `configured_renderer` swaps in the plot's resolved projection.
+    v.push((MarkKind::Geo, Box::new(GeoRenderer::default())));
     v
 }
 
@@ -2951,17 +3310,19 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
 /// The ONE construction site both the app's first render and the cross-filter
 /// coordinator's live rebuild dispatch through (card 0006 renderer seam):
 /// raster/heatmap/cell/hexbin carry the plot's `colorScheme`, heatmap/contour
-/// carry the mark's `bandwidth`, contour carries its iso-level `thresholds`, and
-/// hexgrid carries its `binWidth`. A mark rebuilt through the same configured
-/// renderer its first render used keeps its scheme, bandwidth, thresholds, and
-/// binWidth across every gesture. The match must stay identical to the
-/// app-assembly resolution that feeds it.
+/// carry the mark's `bandwidth`, contour carries its iso-level `thresholds`,
+/// hexgrid carries its `binWidth`, and geo carries the plot's resolved
+/// `projection` (plus the `colorScheme` for a choropleth ramp). A mark rebuilt
+/// through the same configured renderer its first render used keeps its scheme,
+/// bandwidth, thresholds, binWidth, and projection across every gesture. The
+/// match must stay identical to the app-assembly resolution that feeds it.
 pub fn configured_renderer(
     kind: MarkKind,
     scheme: SequentialScheme,
     bandwidth: Option<f64>,
     thresholds: Option<usize>,
     bin_width: Option<f64>,
+    projection: Option<Projection>,
 ) -> Option<Box<dyn MarkRenderer + Send + Sync>> {
     match kind {
         MarkKind::Raster => Some(Box::new(RasterRenderer { scheme })),
@@ -2974,6 +3335,10 @@ pub fn configured_renderer(
         MarkKind::Contour => Some(Box::new(ContourRenderer {
             thresholds,
             bandwidth,
+        })),
+        MarkKind::Geo => Some(Box::new(GeoRenderer {
+            projection: projection.unwrap_or_default(),
+            scheme,
         })),
         _ => None,
     }
@@ -4062,7 +4427,7 @@ mod tests {
         let batch = hexbin_batch(DENSITY_COUNT_COL, vec![1.0, 100.0]);
         let cm = hexbin_cm(DENSITY_COUNT_COL);
         let renderer =
-            configured_renderer(MarkKind::Hexbin, SequentialScheme::Turbo, None, None, None)
+            configured_renderer(MarkKind::Hexbin, SequentialScheme::Turbo, None, None, None, None)
                 .expect("hexbin has a configured renderer");
         let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
         renderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
@@ -4081,6 +4446,137 @@ mod tests {
         HexbinRenderer::default().render(&mut viridis_scene, &batch, &cm, &vscales, None);
         let dv: Vec<u32> = viridis_scene.encoding().draw_data.iter().copied().collect();
         assert_ne!(da, dv, "the configured scheme (turbo) differs from the viridis default");
+    }
+
+    // -----------------------------------------------------------------------
+    // geo — GeoRenderer + Projection (card 0008, last mark)
+    // -----------------------------------------------------------------------
+
+    /// A one-square-polygon batch, optionally with a numeric `rate` fill column.
+    fn geo_batch(geoms: Vec<&str>, fill: Option<Vec<f64>>) -> RecordBatch {
+        let mut fields = vec![Field::new("geom", DataType::Utf8, true)];
+        let mut cols: Vec<Arc<dyn Array>> = vec![Arc::new(StringArray::from(geoms))];
+        if let Some(f) = fill {
+            fields.push(Field::new("rate", DataType::Float64, true));
+            cols.push(Arc::new(Float64Array::from(f)));
+        }
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), cols).unwrap()
+    }
+
+    const SQUARE: &str = r#"{"type":"Polygon","coordinates":[[[0,0],[10,0],[10,10],[0,10],[0,0]]]}"#;
+
+    #[test]
+    fn geo_ac05_projection_equirect_identity_and_albers_reference() {
+        // Equirectangular is the identity (u=lon, v=lat).
+        assert_eq!(Projection::Equirectangular.project(12.0, -34.0), (12.0, -34.0));
+
+        // Albers reference point (−96°, 23°) projects to ≈ (0, 0): λ=λ0 → θ=0 → x=0;
+        // φ=φ0 → ρ=ρ0 → y=0. (Structurally insensitive to the parallels on its
+        // own — the non-reference point below pins the conic constants.)
+        let (rx, ry) = Projection::Albers.project(-96.0, 23.0);
+        assert!(rx.abs() < 1e-9 && ry.abs() < 1e-9, "reference point ≈ origin: ({rx}, {ry})");
+
+        // A NON-reference point pins the standard-parallel / conic math. The
+        // expected value is computed INDEPENDENTLY by hand from the d3-geo
+        // conicEqualArea forward (parallels 29.5°/45.5°, reference −96°/23°),
+        // NOT by running `albers_forward`, so a regression in the constants (e.g.
+        // to 20°/60°) fails here. For (lon −80°, lat 40°):
+        //   n=0.6028370, C=1.3512237, ρ0=1.5562005, ρ=1.2591903, θ=0.1683544
+        //   x=ρ·sinθ=0.211010, y=ρ0−ρ·cosθ=0.314810.
+        let (ax, ay) = Projection::Albers.project(-80.0, 40.0);
+        assert!(
+            (ax - 0.211010).abs() < 1e-4 && (ay - 0.314810).abs() < 1e-4,
+            "albers(−80,40) must match the independent conic value (0.211010, 0.314810); got ({ax}, {ay})"
+        );
+
+        // North is up in math coords: a more-northern point has a LARGER v.
+        let (_, y_south) = Projection::Albers.project(-96.0, 30.0);
+        let (_, y_north) = Projection::Albers.project(-96.0, 45.0);
+        assert!(y_north > y_south, "albers v increases north: {y_north} !> {y_south}");
+
+        // ResolvedProjection → Projection conversion is faithful.
+        use brightfield_spec::layout::ResolvedProjection as R;
+        assert_eq!(Projection::from(R::Equirectangular), Projection::Equirectangular);
+        assert_eq!(Projection::from(R::Albers), Projection::Albers);
+    }
+
+    #[test]
+    fn geo_ac05_augment_scales_aspect_fits_and_suppresses_frame() {
+        let batch = geo_batch(vec![SQUARE], None);
+        let cm = ChannelMap::new(); // basemap — no fill channel
+        let renderer = GeoRenderer::default();
+        let (x_range, y_range) = ((40.0, 600.0), (450.0, 20.0));
+        let mut scales = infer_scales(&batch, &cm, x_range, y_range);
+        renderer.augment_scales(&mut scales, &batch, &cm, x_range, y_range);
+
+        // augment_scales CREATES the x/y linear scales (no inferable column).
+        let (
+            Some(Scale::Linear { domain_min: xd0, domain_max: xd1, range_start: xr0, range_end: xr1 }),
+            Some(Scale::Linear { domain_min: yd0, domain_max: yd1, range_start: yr0, range_end: yr1 }),
+        ) = (scales.get(Channel::X), scales.get(Channel::Y))
+        else {
+            panic!("geo augment_scales must synthesize linear x/y scales");
+        };
+        // Equal px-per-unit on both axes (aspect-correct): |slope_x| == |slope_y|.
+        let slope_x = (xr1 - xr0) / (xd1 - xd0);
+        let slope_y = (yr1 - yr0) / (yd1 - yd0);
+        assert!(
+            (slope_x.abs() - slope_y.abs()).abs() < 1e-6,
+            "equal px-per-unit: |{slope_x}| vs |{slope_y}|"
+        );
+        // Centred: the data centroid (5, 5) maps to the plot-rect centre.
+        let cx = scales.get(Channel::X).unwrap().map_f64(5.0);
+        let cy = scales.get(Channel::Y).unwrap().map_f64(5.0);
+        assert!((cx - (x_range.0 + x_range.1) / 2.0).abs() < 1e-6, "x centred: {cx}");
+        assert!((cy - (y_range.0 + y_range.1) / 2.0).abs() < 1e-6, "y centred: {cy}");
+
+        // Geo suppresses the cartesian frame.
+        assert!(renderer.suppresses_frame(), "geo drops grid + axes");
+
+        // A basemap (no fill) strokes each feature — non-empty scene.
+        let mut scene = Scene::new();
+        renderer.render(&mut scene, &batch, &cm, &scales, None);
+        assert!(count_scene_paths(&scene) > 0, "basemap strokes the polygon outline");
+    }
+
+    #[test]
+    fn geo_ac06_choropleth_builds_sequential_fill_ramp() {
+        let batch = geo_batch(vec![SQUARE, SQUARE], Some(vec![2.0, 8.0]));
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::Fill, "rate".to_string());
+        let renderer = GeoRenderer::default();
+        let (x_range, y_range) = ((40.0, 600.0), (450.0, 20.0));
+        let mut scales = infer_scales(&batch, &cm, x_range, y_range);
+        renderer.augment_scales(&mut scales, &batch, &cm, x_range, y_range);
+
+        // A numeric fill builds a Sequential ramp anchored [0, max] (min >= 0).
+        match scales.get(Channel::Fill) {
+            Some(Scale::Sequential { domain_min, domain_max, .. }) => {
+                assert_eq!(*domain_min, 0.0);
+                assert_eq!(*domain_max, 8.0);
+            }
+            other => panic!("expected a Sequential fill ramp, got {other:?}"),
+        }
+        // Render fills the features (does not early-return).
+        let mut scene = Scene::new();
+        renderer.render(&mut scene, &batch, &cm, &scales, None);
+        assert!(count_scene_paths(&scene) > 0, "choropleth fills the features");
+    }
+
+    #[test]
+    fn geo_multipolygon_and_malformed_geojson_are_handled() {
+        // MultiPolygon parses to multiple rings; malformed / non-polygon yields
+        // an empty ring set (the feature draws nothing, no panic).
+        let multi = r#"{"type":"MultiPolygon","coordinates":[[[[0,0],[1,0],[1,1],[0,0]]],[[[2,2],[3,2],[3,3],[2,2]]]]}"#;
+        assert_eq!(parse_geojson_rings(multi).len(), 2, "two sub-polygon rings");
+        assert!(parse_geojson_rings("not json").is_empty());
+        assert!(
+            parse_geojson_rings(r#"{"type":"Point","coordinates":[0,0]}"#).is_empty(),
+            "a Point is not a v1 geometry"
+        );
+        // A Feature is unwrapped to its geometry.
+        let feature = r#"{"type":"Feature","geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,0]]]},"properties":{}}"#;
+        assert_eq!(parse_geojson_rings(feature).len(), 1);
     }
 
     // -----------------------------------------------------------------------
@@ -5097,8 +5593,11 @@ mod tests {
         assert!(find_renderer(&registry, MarkKind::Heatmap).is_some());
         // Hexbin is registered as of the hexbin follow-up.
         assert!(find_renderer(&registry, MarkKind::Hexbin).is_some());
-        // Unimplemented kinds should return None (no silent fallback).
-        assert!(find_renderer(&registry, MarkKind::Geo).is_none());
+        // Geo is registered as of card 0008's geo mark.
+        assert!(find_renderer(&registry, MarkKind::Geo).is_some());
+        // Unimplemented kinds should return None (no silent fallback). Voronoi is
+        // the always-unimplemented census stand-in (geo's former role).
+        assert!(find_renderer(&registry, MarkKind::Voronoi).is_none());
     }
 
     #[test]

@@ -157,14 +157,19 @@ pub fn build_chart_scene(data: &ChartData<'_>) -> (Scene, ScaleSet) {
         }
     }
 
+    // A frame-suppressing mark (geo) drops the grid + axes (card 0008 geo).
+    let suppress_frame = data.renderer.suppresses_frame();
+
     // Grid lines (behind marks).
-    if let Some(x_scale) = scales.get(Channel::X) {
-        let x_ticks = compute_ticks(x_scale, 5);
-        render_x_grid(&mut scene, &data.layout, &x_ticks);
-    }
-    if let Some(y_scale) = scales.get(Channel::Y) {
-        let y_ticks = compute_ticks(y_scale, 5);
-        render_y_grid(&mut scene, &data.layout, &y_ticks);
+    if !suppress_frame {
+        if let Some(x_scale) = scales.get(Channel::X) {
+            let x_ticks = compute_ticks(x_scale, 5);
+            render_x_grid(&mut scene, &data.layout, &x_ticks);
+        }
+        if let Some(y_scale) = scales.get(Channel::Y) {
+            let y_ticks = compute_ticks(y_scale, 5);
+            render_y_grid(&mut scene, &data.layout, &y_ticks);
+        }
     }
 
     // Marks, clipped to the plot area so geometry can't spill onto axes/margins.
@@ -176,13 +181,15 @@ pub fn build_chart_scene(data: &ChartData<'_>) -> (Scene, ScaleSet) {
 
     // Axes (on top of grid/marks). The legacy single-mark path carries no
     // titles — the titled path is the multi-mark builder below.
-    if let Some(x_scale) = scales.get(Channel::X) {
-        let x_ticks = compute_ticks(x_scale, 5);
-        render_x_axis(&mut scene, &data.layout, &x_ticks, None);
-    }
-    if let Some(y_scale) = scales.get(Channel::Y) {
-        let y_ticks = compute_ticks(y_scale, 5);
-        render_y_axis(&mut scene, &data.layout, &y_ticks, None);
+    if !suppress_frame {
+        if let Some(x_scale) = scales.get(Channel::X) {
+            let x_ticks = compute_ticks(x_scale, 5);
+            render_x_axis(&mut scene, &data.layout, &x_ticks, None);
+        }
+        if let Some(y_scale) = scales.get(Channel::Y) {
+            let y_ticks = compute_ticks(y_scale, 5);
+            render_y_axis(&mut scene, &data.layout, &y_ticks, None);
+        }
     }
 
     // Colour legend.
@@ -297,14 +304,20 @@ fn draw_multi_mark_scene(
     let mut scene = Scene::new();
     render_background(&mut scene, layout);
 
+    // A frame-suppressing mark (geo — it projects its own coordinate space and
+    // reads as a map) drops the grid + axes for the whole plot (card 0008 geo).
+    let suppress_frame = entries.iter().any(|e| e.renderer.suppresses_frame());
+
     // Grid lines (behind marks).
-    if let Some(x_scale) = scales.get(Channel::X) {
-        let x_ticks = compute_ticks(x_scale, 5);
-        render_x_grid(&mut scene, layout, &x_ticks);
-    }
-    if let Some(y_scale) = scales.get(Channel::Y) {
-        let y_ticks = compute_ticks(y_scale, 5);
-        render_y_grid(&mut scene, layout, &y_ticks);
+    if !suppress_frame {
+        if let Some(x_scale) = scales.get(Channel::X) {
+            let x_ticks = compute_ticks(x_scale, 5);
+            render_x_grid(&mut scene, layout, &x_ticks);
+        }
+        if let Some(y_scale) = scales.get(Channel::Y) {
+            let y_ticks = compute_ticks(y_scale, 5);
+            render_y_grid(&mut scene, layout, &y_ticks);
+        }
     }
 
     // Render each mark layer, clipped to the plot area.
@@ -323,13 +336,15 @@ fn draw_multi_mark_scene(
 
     // Axes (on top of marks), each carrying its resolved title (Derive already
     // resolved to a field name upstream; None = suppressed / underivable).
-    if let Some(x_scale) = scales.get(Channel::X) {
-        let x_ticks = compute_ticks(x_scale, 5);
-        render_x_axis(&mut scene, layout, &x_ticks, titles.x.as_deref());
-    }
-    if let Some(y_scale) = scales.get(Channel::Y) {
-        let y_ticks = compute_ticks(y_scale, 5);
-        render_y_axis(&mut scene, layout, &y_ticks, titles.y.as_deref());
+    if !suppress_frame {
+        if let Some(x_scale) = scales.get(Channel::X) {
+            let x_ticks = compute_ticks(x_scale, 5);
+            render_x_axis(&mut scene, layout, &x_ticks, titles.x.as_deref());
+        }
+        if let Some(y_scale) = scales.get(Channel::Y) {
+            let y_ticks = compute_ticks(y_scale, 5);
+            render_y_axis(&mut scene, layout, &y_ticks, titles.y.as_deref());
+        }
     }
 
     // Per-plot title, above the frame (the top margin has grown to make room).
@@ -433,7 +448,7 @@ mod tests {
     use super::*;
     use crate::channel::{Channel, ChannelMap};
     use crate::layout::ChartLayout;
-    use crate::mark::{BarRenderer, DotRenderer, LineRenderer};
+    use crate::mark::{BarRenderer, DotRenderer, GeoRenderer, LineRenderer};
 
     // slw ac-10 (card 0005): render_slider draws exactly two shapes — the track
     // and the thumb — into the scene (headless proof the widget renders).
@@ -494,6 +509,68 @@ mod tests {
         assert!(
             n_with > n_without,
             "suppressing the inline legend must drop its swatch/panel fills: {n_with} !> {n_without}"
+        );
+    }
+
+    // geo-ac07: a frame-suppressing mark (geo) drops the grid + axes for the
+    // whole plot, so a geo basemap scene carries only the background + the
+    // projected feature outline — no grid/axis ink — while a cartesian plot's
+    // scene carries frame ink.
+    #[test]
+    fn geo_ac07_frame_suppressed_for_geo_plot() {
+        let square = r#"{"type":"Polygon","coordinates":[[[0,0],[10,0],[10,10],[0,10],[0,0]]]}"#;
+        let geo_schema = Arc::new(Schema::new(vec![Field::new("geom", DataType::Utf8, true)]));
+        let geo_batch =
+            RecordBatch::try_new(geo_schema, vec![Arc::new(StringArray::from(vec![square]))])
+                .unwrap();
+        let geo_cm = ChannelMap::new(); // basemap — no fill channel
+        let geo = GeoRenderer::default();
+        let geo_data = ChartData {
+            batch: &geo_batch,
+            channel_map: &geo_cm,
+            renderer: &geo,
+            layout: ChartLayout::new(400.0, 300.0),
+            view_extent: None,
+            highlight: None,
+        };
+        let (geo_scene, _) =
+            build_multi_mark_scene(&[&geo_data], true, &ResolvedTitles::default());
+        let geo_paths = crate::mark::count_scene_paths(&geo_scene);
+
+        // Contrast: the SAME plot rect + a single cartesian mark carries grid +
+        // two axis lines + tick ink — the frame the geo plot omits. A single dot
+        // (one circle) isolates the difference to the frame gating.
+        let xy_schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        let xy_batch = RecordBatch::try_new(
+            xy_schema,
+            vec![
+                Arc::new(Float64Array::from(vec![1.0])),
+                Arc::new(Float64Array::from(vec![10.0])),
+            ],
+        )
+        .unwrap();
+        let mut xy_cm = ChannelMap::new();
+        xy_cm.insert(Channel::X, "x".to_string());
+        xy_cm.insert(Channel::Y, "y".to_string());
+        let dot = DotRenderer;
+        let dot_data = ChartData {
+            batch: &xy_batch,
+            channel_map: &xy_cm,
+            renderer: &dot,
+            layout: ChartLayout::new(400.0, 300.0),
+            view_extent: None,
+            highlight: None,
+        };
+        let (dot_scene, _) =
+            build_multi_mark_scene(&[&dot_data], true, &ResolvedTitles::default());
+        // The geo plot (one outline, no frame) draws strictly fewer paths than a
+        // one-mark cartesian plot (one circle + grid + axes) — the frame gating.
+        assert!(
+            crate::mark::count_scene_paths(&dot_scene) > geo_paths,
+            "a framed cartesian plot carries grid + axis ink the geo plot omits"
         );
     }
 

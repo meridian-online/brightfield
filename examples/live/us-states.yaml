@@ -1,0 +1,56 @@
+# US state basemap — LIVE-IN-APP-ONLY geo example (card 0008).
+#
+# This is the real ST_Read corpus path: a `type: spatial` source loads a GeoJSON
+# file through DuckDB's `ST_Read`, the GeoLowerer wraps the GEOMETRY column in
+# `ST_AsGeoJSON`, and the GeoRenderer projects it with the US-tuned Albers conic
+# and strokes each state — a basemap outline, no fill, no axes.
+#
+# It is DELIBERATELY NOT in `examples/*.yaml` (this `examples/live/` subdir is not
+# globbed by scripts/compare-example-pngs.sh) and is NOT PNG-gated, because it
+# needs TWO things the hermetic CI can't assume:
+#   1. the DuckDB `spatial` extension — autoinstalled from the network on the
+#      `LOAD spatial` at engine bootstrap (offline, it degrades gracefully: this
+#      spec's ST_Read DDL then fails, but inline specs still run);
+#   2. the state-geometry data file. Download the Observable Plot US atlas to
+#      this directory and point `file:` at it, e.g.:
+#        curl -o us-counties-10m.json \
+#          https://cdn.jsdelivr.net/npm/us-atlas@3/counties-10m.json
+#      (git-ignored — never committed; each user supplies their own copy.)
+#
+# The mark filters to the CONTIGUOUS 48 (+ DC) by FIPS `id` so plain Albers fills
+# the frame. Without that filter the full atlas also carries Alaska, Hawaii and
+# five Pacific/Caribbean territories (American Samoa, Guam, N. Mariana, Puerto
+# Rico, US Virgin Islands) at ±145–170° longitude; Albers places them in their
+# true geographic position, which balloons the auto-fit extent and crushes the
+# lower 48 into a tiny corner. The albers-usa composite that insets AK/HI is a
+# stated v1 gap — until then, drop the `filter:` line to see everything in place.
+#
+# Run it in-app (a window, not the PNG dump):
+#   cargo run -p brightfield-app -- examples/live/us-states.yaml
+#
+# For the hermetic, offline, PNG-baselined geo demo see examples/geo.yaml.
+meta:
+  title: U.S. States (Albers basemap)
+  description: >
+    A stroked basemap of the contiguous U.S. states, projected with the US-tuned
+    Albers conic. Requires the DuckDB spatial extension (autoinstalled) and the
+    atlas data file — live-in-app only. Filtered to the lower 48 (+ DC) so Albers
+    fills the frame; the albers-usa composite that insets Alaska and Hawaii is a
+    stated v1 gap.
+data:
+  states:
+    type: spatial
+    file: us-counties-10m.json
+    layer: states
+plot:
+  - mark: geo
+    data:
+      from: states
+      # FIPS: contiguous 48 + DC are 01–56; drop Alaska (02) and Hawaii (15);
+      # every territory is 60+, excluded by the id < '57' bound.
+      filter: "id < '57' AND id NOT IN ('02', '15')"
+    stroke: currentColor
+    strokeWidth: 1
+projectionType: albers
+width: 720
+height: 450
