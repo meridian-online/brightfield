@@ -4,7 +4,9 @@
 //! [`LayoutNode`] trees with pixel-accurate coordinates using a simple box
 //! model: sequential stacking with fixed sizes, no flex negotiation.
 
-use crate::ast::{Component, ConcatNode, Input, PlotNode, Spec, SpaceNode, SpecValue};
+use crate::ast::{
+    Component, ConcatNode, Input, Mark, PlotNode, Spec, SpaceNode, SpecValue, ValueOrParamRef,
+};
 
 // ---------------------------------------------------------------------------
 // Rect
@@ -322,6 +324,73 @@ pub fn resolve_axis_titles(plot: &PlotNode) -> AxisTitles {
         x: resolve_axis_label(plot, "xLabel"),
         y: resolve_axis_label(plot, "yLabel"),
         plot: resolve_plot_title(plot),
+    }
+}
+
+/// The map projection a geo plot resolves to (card 0008 geo mark). Which
+/// projection is a PURE spec decision (this resolver, reading plot-level
+/// `projectionType`); the forward MATH lives render-side in
+/// `brightfield_render::mark::Projection`, converted from this.
+///
+/// v1 renders Equirectangular (the default fit) and a US-tuned Albers.
+/// `albers-usa`'s AK/HI composite insets are deferred — it maps to plain
+/// [`ResolvedProjection::Albers`] (contiguous-US correct; AK/HI render in true
+/// geographic position, a stated gap). Every other Mosaic projection name
+/// (mercator, orthographic, …) is unrecognised → default + a
+/// [`crate::parse::ParseWarning::UnknownProjection`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ResolvedProjection {
+    /// `u = lon`, `v = lat` (north-up supplied by the inverted Y scale). The
+    /// default when `projectionType` is absent or unrecognised.
+    #[default]
+    Equirectangular,
+    /// US-tuned Albers equal-area conic (fixed standard parallels 29.5°/45.5°).
+    Albers,
+}
+
+impl ResolvedProjection {
+    /// Recognise a `projectionType` wire value. `None` for an unsupported
+    /// projection (the caller defaults + warns). `albers-usa` maps to plain
+    /// `Albers` — the composite is deferred (a stated fidelity gap).
+    #[must_use]
+    pub fn from_wire(name: &str) -> Option<Self> {
+        match name {
+            "equirectangular" => Some(Self::Equirectangular),
+            "albers" | "albers-usa" => Some(Self::Albers),
+            _ => None,
+        }
+    }
+}
+
+/// Resolve a plot's map projection from its `projectionType` attribute — a PURE
+/// resolver beside [`resolve_plot_insets`] / [`resolve_axis_titles`]. Absent, a
+/// `$param`, or an unrecognised value → the default [`ResolvedProjection`]
+/// (equirectangular fit); the unrecognised-value warning is raised at PARSE time
+/// in `walk_plot` (like `NonNumericInset` / `NonStringLabel`), never here.
+#[must_use]
+pub fn resolve_projection(plot: &PlotNode) -> ResolvedProjection {
+    match plot.attributes.get("projectionType") {
+        Some(SpecValue::String(s)) => ResolvedProjection::from_wire(s).unwrap_or_default(),
+        _ => ResolvedProjection::default(),
+    }
+}
+
+/// The default geometry column a geo mark reads — the name `ST_Read` (and a
+/// spatial join) produces, and the name the [`GeoLowerer`] wraps in
+/// `ST_AsGeoJSON`.
+///
+/// [`GeoLowerer`]: (see brightfield-sql)
+pub const DEFAULT_GEOMETRY_COLUMN: &str = "geom";
+
+/// Resolve a geo mark's geometry column from its `geometry:` channel, default
+/// [`DEFAULT_GEOMETRY_COLUMN`] (`geom`). Literal-only, mirroring the other
+/// resolvers: a `$param` or non-string value falls back to the default. The
+/// lowerer reads this to decide which spatial column to wrap in `ST_AsGeoJSON`.
+#[must_use]
+pub fn resolve_geometry_column(mark: &Mark) -> String {
+    match mark.options.get("geometry") {
+        Some(ValueOrParamRef::Value(SpecValue::String(s))) if !s.is_empty() => s.clone(),
+        _ => DEFAULT_GEOMETRY_COLUMN.to_string(),
     }
 }
 
@@ -1416,6 +1485,81 @@ hconcat:
             resolve_axis_titles(&plot_with(&[("xLabel", SpecValue::Param(crate::ast::ParamRef::new("p")))]))
                 .x,
             AxisTitle::Derive,
+        );
+    }
+
+    #[test]
+    fn geo_ac04_resolve_projection_reads_projection_type() {
+        // Absent → default equirectangular.
+        assert_eq!(
+            resolve_projection(&plot_with(&[])),
+            ResolvedProjection::Equirectangular
+        );
+        // Recognised names.
+        assert_eq!(
+            resolve_projection(&plot_with(&[(
+                "projectionType",
+                SpecValue::String("equirectangular".into())
+            )])),
+            ResolvedProjection::Equirectangular
+        );
+        assert_eq!(
+            resolve_projection(&plot_with(&[(
+                "projectionType",
+                SpecValue::String("albers".into())
+            )])),
+            ResolvedProjection::Albers
+        );
+        // albers-usa → plain Albers (composite deferred, a stated gap).
+        assert_eq!(
+            resolve_projection(&plot_with(&[(
+                "projectionType",
+                SpecValue::String("albers-usa".into())
+            )])),
+            ResolvedProjection::Albers
+        );
+        // Unrecognised / non-string → default (no panic; the warning is parse-time).
+        assert_eq!(
+            resolve_projection(&plot_with(&[(
+                "projectionType",
+                SpecValue::String("mercator".into())
+            )])),
+            ResolvedProjection::Equirectangular
+        );
+        assert_eq!(
+            resolve_projection(&plot_with(&[("projectionType", SpecValue::Integer(3))])),
+            ResolvedProjection::Equirectangular
+        );
+    }
+
+    #[test]
+    fn geo_ac04_resolve_geometry_column_defaults_to_geom() {
+        use crate::ast::{Mark, ValueOrParamRef};
+        use crate::vocab::{ImplStatus, MarkKind};
+
+        let mark_with_geometry = |geom: Option<SpecValue>| {
+            let mut options: IndexMap<String, ValueOrParamRef<SpecValue>> = IndexMap::new();
+            if let Some(v) = geom {
+                options.insert("geometry".to_string(), ValueOrParamRef::Value(v));
+            }
+            Mark {
+                kind: MarkKind::Geo,
+                status: ImplStatus::Implemented,
+                data: None,
+                options,
+            }
+        };
+        // Absent → default "geom".
+        assert_eq!(resolve_geometry_column(&mark_with_geometry(None)), "geom");
+        // Explicit column name.
+        assert_eq!(
+            resolve_geometry_column(&mark_with_geometry(Some(SpecValue::String("shape".into())))),
+            "shape"
+        );
+        // Empty / non-string → default.
+        assert_eq!(
+            resolve_geometry_column(&mark_with_geometry(Some(SpecValue::String(String::new())))),
+            "geom"
         );
     }
 

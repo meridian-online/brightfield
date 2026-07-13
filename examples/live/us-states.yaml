@@ -1,0 +1,43 @@
+# US state basemap — LIVE-IN-APP-ONLY geo example (card 0008).
+#
+# This is the real ST_Read corpus path: a `type: spatial` source loads a GeoJSON
+# file through DuckDB's `ST_Read`, the GeoLowerer wraps the GEOMETRY column in
+# `ST_AsGeoJSON`, and the GeoRenderer projects it with the US-tuned Albers conic
+# and strokes each state — a basemap outline, no fill, no axes.
+#
+# It is DELIBERATELY NOT in `examples/*.yaml` (this `examples/live/` subdir is not
+# globbed by scripts/compare-example-pngs.sh) and is NOT PNG-gated, because it
+# needs TWO things the hermetic CI can't assume:
+#   1. the DuckDB `spatial` extension — autoinstalled from the network on the
+#      `LOAD spatial` at engine bootstrap (offline, it degrades gracefully: this
+#      spec's ST_Read DDL then fails, but inline specs still run);
+#   2. the state-geometry data file. Download the Observable Plot US atlas to
+#      this directory and point `file:` at it, e.g.:
+#        curl -o us-counties-10m.json \
+#          https://cdn.jsdelivr.net/npm/us-atlas@3/counties-10m.json
+#
+# Run it in-app (a window, not the PNG dump):
+#   cargo run -p brightfield-app -- examples/live/us-states.yaml
+#
+# For the hermetic, offline, PNG-baselined geo demo see examples/geo.yaml.
+meta:
+  title: U.S. States (Albers basemap)
+  description: >
+    A stroked basemap of the U.S. states, projected with the US-tuned Albers
+    conic. Requires the DuckDB spatial extension (autoinstalled) and the atlas
+    data file — live-in-app only. Contiguous US is correct; Alaska and Hawaii
+    render in their true geographic position (the albers-usa composite that
+    insets them is deferred — a stated v1 gap).
+data:
+  states:
+    type: spatial
+    file: us-counties-10m.json
+    layer: states
+plot:
+  - mark: geo
+    data: { from: states }
+    stroke: currentColor
+    strokeWidth: 1
+projectionType: albers
+width: 720
+height: 450

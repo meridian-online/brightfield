@@ -187,11 +187,17 @@ vocab_enum! {
         GridY => ("gridY", Unimplemented),
         GridFx => ("gridFx", Unimplemented),
         GridFy => ("gridFy", Unimplemented),
-        // Geo
-        Geo => ("geo", Unimplemented),
+        // Geo — projected GeoJSON basemap / choropleth (card 0008, last mark).
+        // GeoLowerer (near-clone of SimpleLowerer + ST_AsGeoJSON on a spatial
+        // geometry column) feeds a render-side GeoRenderer that projects each
+        // vertex client-side (equirectangular / US-tuned Albers) and draws one
+        // BezPath per feature. Sphere/graticule stay Unimplemented (deferred
+        // globe companions).
+        Geo => ("geo", Implemented),
         Sphere => ("sphere", Unimplemented),
         Graticule => ("graticule", Unimplemented),
-        // Voronoi / delaunay / hull
+        // Voronoi / delaunay / hull. Voronoi is the always-unimplemented census
+        // stand-in (geo's former role) — genuinely far off, no lowerer/renderer.
         Voronoi => ("voronoi", Unimplemented),
         VoronoiMesh => ("voronoiMesh", Unimplemented),
         DelaunayMesh => ("delaunayMesh", Unimplemented),
@@ -429,12 +435,12 @@ mod tests {
         assert_eq!(LegendChannel::Color.status(), ImplStatus::Implemented);
     }
 
-    /// dmk_ac05 (card 0008) — RE-PINNED by the hexbin follow-up. Heatmap,
-    /// Contour, Cell (density marks) plus Hexbin and Hexgrid are Implemented:
-    /// hexbin is pixel-space cube-round binning with a self-aggregating fill,
-    /// hexgrid the decorative dataless mesh. The still-deferred marks stay
-    /// Unimplemented: cellX/cellY, denseLine, and geo (the always-unimplemented
-    /// swap stand-in).
+    /// dmk_ac05 (card 0008) — RE-PINNED by the hexbin follow-up, then by geo.
+    /// Heatmap, Contour, Cell (density marks) plus Hexbin and Hexgrid are
+    /// Implemented: hexbin is pixel-space cube-round binning with a
+    /// self-aggregating fill, hexgrid the decorative dataless mesh. The
+    /// still-deferred marks stay Unimplemented: cellX/cellY, denseLine, and
+    /// Voronoi (the always-unimplemented swap stand-in — geo was promoted).
     #[test]
     fn dmk_ac05_density_mark_promotions_and_non_promotions() {
         for promoted in [
@@ -454,7 +460,7 @@ mod tests {
             MarkKind::CellX,
             MarkKind::CellY,
             MarkKind::DenseLine,
-            MarkKind::Geo,
+            MarkKind::Voronoi,
         ] {
             assert_eq!(
                 staged_out.status(),
@@ -462,6 +468,24 @@ mod tests {
                 "{staged_out:?} stays deferred — it must NOT ride this promotion"
             );
         }
+    }
+
+    /// geo-ac01 (card 0008, geo mark). `MarkKind::Geo` is promoted to
+    /// Implemented — it parses with no `ParseWarning::Unimplemented` and renders
+    /// end-to-end. `Voronoi` inherits geo's former role as the always-
+    /// unimplemented census stand-in (genuinely far off; no lowerer/renderer).
+    #[test]
+    fn geo_ac01_geo_implemented_voronoi_is_new_standin() {
+        assert_eq!(
+            MarkKind::Geo.status(),
+            ImplStatus::Implemented,
+            "geo renders end-to-end (card 0008) — promoted"
+        );
+        assert_eq!(
+            MarkKind::Voronoi.status(),
+            ImplStatus::Unimplemented,
+            "Voronoi is the new always-unimplemented census stand-in"
+        );
     }
 
     /// fww_ac05 (card 0016, framed window). `ComponentKind::Legend` is

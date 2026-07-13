@@ -419,3 +419,27 @@ plot:
 "#,
     );
 }
+
+#[test]
+fn geo_renders_geometry() {
+    // Full geo pipeline end-to-end (card 0008): the GeoLowerer passes the inline
+    // VARCHAR `geom` column through UNWRAPPED (no ST_AsGeoJSON, so no spatial
+    // extension needed), execution returns the GeoJSON text, and the GeoRenderer
+    // parses each Polygon, projects it (equirectangular), synthesizes its own
+    // x/y scales in `augment_scales` (there is no positional column) and fills a
+    // choropleth through the ramp — so the scene carries geometry. This is
+    // hard-coded per-mark, so promoting geo to Implemented won't auto-trip it.
+    assert_renders(
+        "geo",
+        r#"
+data:
+  regions:
+    - { id: 1, rate: 2, geom: '{"type":"Polygon","coordinates":[[[0,0],[10,0],[10,10],[0,10],[0,0]]]}' }
+    - { id: 2, rate: 8, geom: '{"type":"MultiPolygon","coordinates":[[[[10,0],[20,0],[20,10],[10,10],[10,0]]]]}' }
+plot:
+  - mark: geo
+    data: { from: regions }
+    fill: rate
+"#,
+    );
+}

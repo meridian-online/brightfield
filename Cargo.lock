@@ -881,6 +881,7 @@ dependencies = [
  "indexmap",
  "kurbo 0.13.1",
  "peniko",
+ "serde_json",
  "skrifa",
  "vello",
 ]
