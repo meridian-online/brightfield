@@ -97,24 +97,32 @@ impl Engine {
         let conn =
             Connection::open_in_memory().map_err(|e| EngineError::ConnectionFailed { cause: e })?;
 
-        // Load the DuckDB `spatial` extension once at bootstrap, BEFORE the DDL
-        // loop, so a `type: spatial` `ST_Read` view (the geo mark's live corpus
-        // path, card 0008) can execute. The bundled duckdb does not statically
-        // link spatial — it autoinstalls from the network on LOAD. That needs
-        // connectivity, so a failure here is NON-FATAL and merely logged: an
-        // inline-only (no-spatial) session — including the hermetic inline-GeoJSON
-        // geo example — still loads and runs offline. Only a spec that actually
-        // uses a spatial source then fails, at its own `ST_Read` DDL statement.
-        if let Err(e) = conn.execute_batch("INSTALL spatial; LOAD spatial;") {
-            eprintln!(
-                "warning: DuckDB spatial extension unavailable (autoinstall needs \
-                 the network); `type: spatial` / ST_Read sources will fail, but \
-                 inline data still works: {e}"
-            );
-        }
-
         let emit_output =
             emit_sources(&spec, base_dir).map_err(|e| EngineError::EmitFailed { cause: e })?;
+
+        // Load the DuckDB `spatial` extension once at bootstrap, BEFORE the DDL
+        // loop, so a `type: spatial` `ST_Read` view (the geo mark's live corpus
+        // path, card 0008) can execute. Gated to specs that ACTUALLY have a
+        // spatial source, so a non-geo dashboard never pays the load + first-run
+        // network autoinstall it wouldn't use. The bundled duckdb does not
+        // statically link spatial — it autoinstalls from the network on LOAD,
+        // which needs connectivity, so a failure here is NON-FATAL and merely
+        // logged: an inline-only (no-spatial) session — including the hermetic
+        // inline-GeoJSON geo example — still loads and runs offline. Only a spec
+        // that uses a spatial source then fails, at its own `ST_Read` DDL.
+        let needs_spatial = emit_output
+            .statements
+            .iter()
+            .any(|s| s.source_kind == SourceKindTag::Spatial);
+        if needs_spatial {
+            if let Err(e) = conn.execute_batch("INSTALL spatial; LOAD spatial;") {
+                eprintln!(
+                    "warning: DuckDB spatial extension unavailable (autoinstall \
+                     needs the network); `type: spatial` / ST_Read sources will \
+                     fail, but inline data still works: {e}"
+                );
+            }
+        }
 
         for ddl in &emit_output.statements {
             conn.execute_batch(&ddl.sql)

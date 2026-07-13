@@ -2982,7 +2982,10 @@ const GEO_STROKE_WIDTH: f64 = 0.75;
 /// Renders the geo mark: projected GeoJSON Polygon/MultiPolygon features as a
 /// filled choropleth or stroked basemap (card 0008, the last card-0008 mark).
 ///
-/// The geometry column ([`DEFAULT_GEOMETRY_COLUMN`], `geom`) holds GeoJSON text
+/// The geometry column is always the canonical [`DEFAULT_GEOMETRY_COLUMN`]
+/// (`geom`) — the `GeoLowerer` canonicalises the author's `geometry:` column to
+/// it (like the reserved `__bf_count` idiom), so the renderer reads one fixed
+/// name and never depends on the source column's name. It holds GeoJSON text
 /// (`ST_AsGeoJSON` for a spatial source; inline `VARCHAR` otherwise). Each
 /// vertex is projected client-side ([`Projection`]); [`Self::augment_scales`]
 /// bboxes the projected coordinates and aspect-fits them (equal px-per-unit,
@@ -4468,9 +4471,23 @@ mod tests {
         assert_eq!(Projection::Equirectangular.project(12.0, -34.0), (12.0, -34.0));
 
         // Albers reference point (−96°, 23°) projects to ≈ (0, 0): λ=λ0 → θ=0 → x=0;
-        // φ=φ0 → ρ=ρ0 → y=0.
+        // φ=φ0 → ρ=ρ0 → y=0. (Structurally insensitive to the parallels on its
+        // own — the non-reference point below pins the conic constants.)
         let (rx, ry) = Projection::Albers.project(-96.0, 23.0);
         assert!(rx.abs() < 1e-9 && ry.abs() < 1e-9, "reference point ≈ origin: ({rx}, {ry})");
+
+        // A NON-reference point pins the standard-parallel / conic math. The
+        // expected value is computed INDEPENDENTLY by hand from the d3-geo
+        // conicEqualArea forward (parallels 29.5°/45.5°, reference −96°/23°),
+        // NOT by running `albers_forward`, so a regression in the constants (e.g.
+        // to 20°/60°) fails here. For (lon −80°, lat 40°):
+        //   n=0.6028370, C=1.3512237, ρ0=1.5562005, ρ=1.2591903, θ=0.1683544
+        //   x=ρ·sinθ=0.211010, y=ρ0−ρ·cosθ=0.314810.
+        let (ax, ay) = Projection::Albers.project(-80.0, 40.0);
+        assert!(
+            (ax - 0.211010).abs() < 1e-4 && (ay - 0.314810).abs() < 1e-4,
+            "albers(−80,40) must match the independent conic value (0.211010, 0.314810); got ({ax}, {ay})"
+        );
 
         // North is up in math coords: a more-northern point has a LARGER v.
         let (_, y_south) = Projection::Albers.project(-96.0, 30.0);

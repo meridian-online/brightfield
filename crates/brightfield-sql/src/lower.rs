@@ -82,14 +82,23 @@ impl MarkLower for SimpleLowerer {
 /// (`SELECT *`, [`apply_data_filter`], [`project_param_channels`]) with ONE
 /// projection. When the mark's source is a SPATIAL source (`type: spatial` →
 /// `ST_Read`, a DuckDB `GEOMETRY` column), the geometry column is wrapped in
-/// `ST_AsGeoJSON(<geom>) AS <geom>` so the `GEOMETRY` crosses `query_arrow` as
-/// GeoJSON `VARCHAR` (the renderer parses it with serde_json). An INLINE source
-/// whose geom column is already `VARCHAR` GeoJSON text passes through unwrapped
-/// — `ST_AsGeoJSON` on a `VARCHAR` errors and would need the spatial extension
+/// `ST_AsGeoJSON(...)` so the `GEOMETRY` crosses `query_arrow` as GeoJSON
+/// `VARCHAR` (the renderer parses it with serde_json). An INLINE source whose
+/// geom column is already `VARCHAR` GeoJSON text passes through unwrapped —
+/// `ST_AsGeoJSON` on a `VARCHAR` errors and would need the spatial extension
 /// anyway; that pass-through is exactly what lets the hermetic inline example
-/// baseline with no spatial extension / network. The geometry column name is
+/// baseline with no spatial extension / network.
+///
+/// The SOURCE geometry column is
 /// [`resolve_geometry_column`](brightfield_spec::layout::resolve_geometry_column)
-/// (default `geom`), preserved so the renderer reads it under the same name.
+/// (default `geom`), but the OUTPUT is always aliased to the canonical
+/// [`DEFAULT_GEOMETRY_COLUMN`](brightfield_spec::layout::DEFAULT_GEOMETRY_COLUMN)
+/// (`geom`) — the reserved-column idiom the density / hexbin lowerers already
+/// use (`__bf_count`, `__bf_hex_*`). So the renderer reads one fixed column name
+/// and never depends on the author's `geometry:` choice: a `geometry: shape`
+/// mark still renders (its `shape` column is renamed to `geom`), and no
+/// launch-anchored rebuild or colour-cycle can blank it on a name mismatch. The
+/// default `geometry: geom` path keeps the byte-identical `* REPLACE` form.
 pub struct GeoLowerer;
 
 impl MarkLower for GeoLowerer {
@@ -107,19 +116,34 @@ impl MarkLower for GeoLowerer {
         };
         let filtered = apply_data_filter(extras, base);
 
+        let src = brightfield_spec::layout::resolve_geometry_column(mark);
+        let canon = brightfield_spec::layout::DEFAULT_GEOMETRY_COLUMN;
+
         if source_is_spatial(ctx, &source) {
-            // GEOMETRY → GeoJSON VARCHAR, preserving the column name so the
-            // renderer reads it under `resolve_geometry_column`. `* REPLACE`
-            // keeps every other column (a `fill:` choropleth column survives).
-            let geom = brightfield_spec::layout::resolve_geometry_column(mark);
+            // GEOMETRY → GeoJSON VARCHAR, canonicalised to `geom`. The default
+            // column keeps the `* REPLACE` form (preserves order, byte-identical);
+            // a custom `geometry:` column is EXCLUDEd and re-added under `geom`.
+            let col = if src == canon {
+                format!("* REPLACE (ST_AsGeoJSON(\"{src}\") AS \"{canon}\")")
+            } else {
+                format!("* EXCLUDE (\"{src}\"), ST_AsGeoJSON(\"{src}\") AS \"{canon}\"")
+            };
             Ok(QueryPlan::Projection {
                 input: Box::new(filtered),
-                columns: vec![format!("* REPLACE (ST_AsGeoJSON(\"{geom}\") AS \"{geom}\")")],
+                columns: vec![col],
             })
-        } else {
-            // Inline VARCHAR GeoJSON (hermetic) — pass through unwrapped, exactly
-            // like SimpleLowerer.
+        } else if src == canon {
+            // Inline VARCHAR GeoJSON, default column — pass through unwrapped,
+            // exactly like SimpleLowerer (byte-identical).
             Ok(project_param_channels(mark, filtered))
+        } else {
+            // Inline VARCHAR GeoJSON under a custom `geometry:` column — rename it
+            // to the canonical `geom` so the renderer finds it (no ST_AsGeoJSON:
+            // it is already text).
+            Ok(QueryPlan::Projection {
+                input: Box::new(filtered),
+                columns: vec![format!("* EXCLUDE (\"{src}\"), \"{src}\" AS \"{canon}\"")],
+            })
         }
     }
 }
@@ -1110,14 +1134,40 @@ mod tests {
             },
         };
         let ctx = make_ctx_with_source("world", ds);
-        // A non-default `geometry:` channel is wrapped under its own name.
+        // A non-default `geometry:` channel reads the custom SOURCE column but
+        // canonicalises the OUTPUT to `geom`, so the renderer's fixed column name
+        // always matches (EXCLUDE the source, re-add it as geom).
         let mark = geo_mark_from("world", vec![("geometry", SpecValue::String("shape".into()))]);
         let plan = GeoLowerer.lower(&mark, &ctx).expect("lowers");
         match plan {
             QueryPlan::Projection { columns, .. } => {
-                assert_eq!(columns[0], "* REPLACE (ST_AsGeoJSON(\"shape\") AS \"shape\")");
+                assert_eq!(
+                    columns[0],
+                    "* EXCLUDE (\"shape\"), ST_AsGeoJSON(\"shape\") AS \"geom\""
+                );
             }
             other => panic!("expected Projection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn geo_ac03_inline_custom_geometry_column_renamed_to_canonical() {
+        use brightfield_spec::ast::{DataSource, DataSourceKind};
+        // An inline source under a custom `geometry: shape` column — no
+        // ST_AsGeoJSON (already text), but renamed to canonical `geom` so the
+        // renderer finds it.
+        let ds = DataSource {
+            kind: DataSourceKind::InlineRows(vec![]),
+            extras: IndexMap::new(),
+        };
+        let ctx = make_ctx_with_source("areas", ds);
+        let mark = geo_mark_from("areas", vec![("geometry", SpecValue::String("shape".into()))]);
+        let plan = GeoLowerer.lower(&mark, &ctx).expect("lowers");
+        match plan {
+            QueryPlan::Projection { columns, .. } => {
+                assert_eq!(columns[0], "* EXCLUDE (\"shape\"), \"shape\" AS \"geom\"");
+            }
+            other => panic!("expected Projection (custom inline rename), got {other:?}"),
         }
     }
 
