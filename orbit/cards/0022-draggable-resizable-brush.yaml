@@ -1,0 +1,108 @@
+feature: "Draggable / resizable persisted brush (+ boundary-enclosure clamp chore)"
+as_a: "analytics author interrogating a cross-filtered dashboard"
+i_want: "to grab the committed brush rectangle and slide or resize it, so the linked views re-filter to the new range without redrawing the selection from scratch"
+so_that: "adjusting a cross-filter is a direct-manipulation nudge (drag the grey rect, or pull an edge) — the Mosaic / Vega-Lite persisted-brush gesture every interactive tool ships — instead of the discard-and-redraw the current committed brush forces"
+
+# Discovery / scope (2026-07-14): the persisted committed brush already exists
+# (InteractionState::Selected, interaction.rs:41-46) and renders grey after a
+# drag releases, but is COMPLETELY INERT to pointer motion — pointer_move returns
+# false for Selected (chart_state.rs:313), brush_rect() returns None for Selected
+# (interaction.rs:88-99), and pointer_down unconditionally start_brushes inside
+# the plot (chart_state.rs:262-263), so a press meant to GRAB the rect instead
+# wipes it and starts a zero-area brush. This card makes the committed rect
+# directly manipulable (translate + edge/corner resize) with a position-dependent
+# cursor via the card-0020 set_cursor_style seam (legend_element.rs:385, whose
+# comment already names "the draggable-brush card" as its reuser), re-dispatching
+# the cross-filter from the moved corners ON RELEASE (matching today's brush — no
+# live re-query during the drag; that stays deferred to card 0015). It also folds
+# the CLAUDE.md brush-clamp chore: a new ChartLayout::frame_area() (margins only,
+# no insets) so a brush CAN enclose a boundary dot whose 4px disc overflows the
+# 5px axis-inset band (card 0008 #55). This is the input-widget cluster's
+# draggable-brush half; the menu/radio/checkbox input widgets are a SEPARATE,
+# LATER card. Runs in parallel with card 0023 (keyboard command-log) in an
+# isolated worktree. Source: orbit/cards/memos/2026-07-12-altair-interaction-grammar-gaps.md.
+
+scenarios:
+  - name: "Drag the committed brush to a new range"
+    given: "a persisted grey Selected brush on a cross-filtering plot"
+    when: "the author presses inside the rectangle and drags it to a new position"
+    then: "the whole rectangle translates with the pointer (clamped to the plot frame), and on release the linked views re-filter to the moved range — the cross-filter is re-dispatched from the new corners, not the old"
+
+  - name: "Resize the committed brush by an edge or corner"
+    given: "a persisted grey Selected brush"
+    when: "the author grabs an edge (or a corner handle) and drags"
+    then: "only that edge/corner moves — the opposite side stays pinned — the rect never inverts when dragged past the opposite side, and on release the re-inverted range cross-filters the linked views"
+
+  - name: "The cursor tells you what a press will do"
+    given: "the pointer moving over a persisted Selected brush"
+    when: "it hovers the interior vs an edge vs a corner"
+    then: "the cursor changes per region (an open hand over the interior → will move / closed while dragging; a left-right or up-down resize cursor on an edge; a diagonal resize cursor on a corner) via the card-0020 window.set_cursor_style seam, so the affordance is visible before the press"
+
+  - name: "A grab press never wipes the selection"
+    given: "a persisted Selected brush and a press that lands ON the rectangle"
+    when: "pointer_down fires"
+    then: "the press is resolved as a GRAB (enter a move/resize sub-state preserving the rect) BEFORE the unconditional start_brush runs — a press ON the rect grabs it; a press OUTSIDE the rect but inside the plot still starts a fresh brush (replace)"
+
+  - name: "A brush can enclose a boundary dot (the clamp chore)"
+    given: "a dot sitting at a domain bound (its 4px disc overflows UP into the 5px axis-inset band, card 0008 #55) and an interval brush dragged to the plot edge"
+    when: "the brush is clamped"
+    then: "the clamp targets a new frame_area() (margins only, NO insets) instead of the inset-pulled plot_area, so the brush rectangle can visually enclose the boundary dot's circle — a GLOBAL change to boundary enclosure for every interval brush incl. crossfilter, needing Hugh's in-app eyeball"
+
+  - name: "Nothing touches the engine or SQL"
+    given: "the whole card confined to brightfield-ui"
+    when: "the PR is reviewed"
+    then: "a git diff over brightfield-spec / brightfield-sql / brightfield-engine is EMPTY; compile_selection / propagate_selection / invert_pixel_brush are byte-untouched — the move/resize re-dispatch reuses the existing selection substrate (precedent: the legend-interaction-fidelity empty-diff gate)"
+
+goal: >
+  Make the persisted committed brush (InteractionState::Selected) directly
+  manipulable so an author can drag it to a new range or resize it by an edge or
+  corner, re-dispatching the cross-filter from the moved corners ON RELEASE.
+  Three seams carry the work, all inside brightfield-ui: (1) a gpui-free hit-test
+  that classifies a pointer over the Selected rect into interior / edge / corner
+  regions (a handle tolerance band) plus the pure translate/resize transforms;
+  (2) the pointer wiring — pointer_down branches on a Selected-rect hit BEFORE the
+  unconditional start_brush (else a grab wipes the rect), pointer_move replaces
+  the Selected => false arm with move/resize through a clamp, and pointer_up
+  re-persists the moved Selected AND re-dispatches the cross-filter (synthesising
+  a Brushing from the new corners, since commit_brush reads only Brushing —
+  reusing invert_pixel_brush + commit_brush_release_multi unchanged); and (3) a
+  position-dependent cursor via the card-0020 window.set_cursor_style seam, chosen
+  per-paint from a tracked region cell mirroring the legend's hovered_index. The
+  card also folds the CLAUDE.md brush-clamp chore: a new ChartLayout::frame_area()
+  (margins only, no insets) recovers the full 5px inset band so a brush can
+  enclose a boundary dot. NO live re-query during the drag (release-only, matching
+  today's brush; continuous drag is card 0015). UI-only: no vocab, no engine, no
+  SQL; the overlay is GPUI quads over the cached raster (never in the vello Scene
+  the headless dumps rasterise), so every example PNG stays byte-identical.
+
+maturity: "emerging"
+
+design_decisions:  # /orb:discovery scope-lock, 2026-07-14 (Hugh — recommended calls accepted)
+  - "TRACK — this is the DRAGGABLE-BRUSH card. The menu / radio / checkbox input widgets are a SEPARATE, LATER card (not specced here). Built in parallel with card 0023 (keyboard command-log) in an isolated worktree."
+  - "SCOPE — make the persisted Selected brush rect BOTH draggable (translate the whole rect) AND resizable (grab an edge or a corner handle). Position-dependent cursor via the card-0020 window.set_cursor_style seam (legend_element.rs:385). On release, RE-DISPATCH the cross-filter from the moved/resized corners."
+  - "RE-QUERY ON RELEASE ONLY — matches today's brush (mouse-up → commit_brush). NO live throttled re-query during the drag; that stays deferred to card 0015 (continuous slider drag — the throttle/debounce + query-cancellation tabletop)."
+  - "CLAMP CHORE FOLDED — fix the CLAUDE.md brush-clamp finding via a new ChartLayout::frame_area() (margins only, NO insets) and clamp the brush to it, so a brush CAN enclose a boundary dot whose 4px disc (DOT_RADIUS, mark.rs:197) overflows the 5px axis-inset band (DEFAULT_SCALE_INSET, inset.rs:36). This is GLOBAL — it shifts boundary enclosure for EVERY interval brush incl. crossfilter — so it needs Hugh's in-app eyeball beyond the demo."
+  - "UI-ONLY — no vocab, no engine, no SQL. Diff confined to brightfield-ui; compile_selection / propagate_selection / invert_pixel_brush stay byte-untouched. An empty-git-diff machine gate over brightfield-spec / brightfield-sql / brightfield-engine is an AC (precedent: the legend-interaction-fidelity lif spec)."
+  - "WINDOW-RESIZE DRIFT — DOCUMENTED, not fixed in v1. A persisted Selected rect stores element-local PIXELS; a window resize (set_dimensions, chart_state.rs:212) re-derives margins/insets WITHOUT rescaling the rect, so an already-persisted brush drifts off its data range. Pre-existing; move/resize makes it more visible. Recorded as a known gap / deviation; a separately-scoped fix."
+
+open_questions:  # for /orb:design
+  - "handle tolerance band: ~4-6px for edge/corner hit-testing (interior = translate); tie-break corner-over-edge. Pick the exact px."
+  - "visible handles vs invisible-until-hover: draw corner/edge handles on the persisted grey rect (affordance) or keep it plain until hovered? Either way confirm at-rest PNG byte-identity holds — the overlay is GPUI-quad-only (chart_element.rs paint_overlay), never composited into the vello Scene the headless dumps rasterise, and dumps capture launch (Idle) state, so no example PNG should re-baseline."
+  - "per-plot only: each plot's ChartState owns its own interaction, so move/resize applies to the focused plot's Selected rect only (no cross-plot multi-brush move). Confirm."
+  - "example authoring: crossfilter.yaml already persists a brush, so the drag behaviour rides existing brushable plots — does a dedicated draggable-brush demo add value, or is it redundant? (Lean: ride crossfilter.yaml; no new PNG.)"
+  - "re-dispatch mechanism: widen commit_brush to derive corners from a move/resize end-state, OR synthesise a Brushing from the new corners at the caller (commit_brush reads only Brushing, crossfilter.rs:287-291). Pick one; both reuse invert_pixel_brush + commit_brush_release_multi."
+  - "fix vs document the window-resize drift (recommended: document — a separately-scoped bug)."
+
+specs: []   # v1.0 spec authored alongside (compressed design) — orbit/specs/2026-07-14-draggable-brush/
+
+references:
+  - "crates/brightfield-ui/src/interaction.rs:41-46 (InteractionState::Selected — the persisted committed rect) + :88-99 (brush_rect() returns None for Selected — a Selected-aware rect accessor is REQUIRED) + :121-131 (render_overlay Selected arm)."
+  - "crates/brightfield-ui/src/chart_state.rs:260-268 (pointer_down unconditionally start_brushes inside plot — the new Selected-hit grab branch must run FIRST) + :276-315 (pointer_move; :313 the Selected => false arm to replace with move/resize) + :319-321 (clamp_to_plot → plot_area, the chore's single edit point) + :329-342 (pointer_up commits a drag to Selected) + :346-353 (clear_persistent_selection) + :212-218 (set_dimensions — the pre-existing resize drift)."
+  - "crates/brightfield-ui/src/chart_element.rs:184-206 (mouse-up: reads the Brushing snapshot → commit_brush → then pointer_up persists Selected — the re-dispatch ordering seam) + :238-289 (paint_overlay draws the overlay as GPUI quads over the cached raster, never into the vello Scene — the PNG-identity guarantee + where handles would draw)."
+  - "crates/brightfield-ui/src/chart_layout.rs:132-139 (plot_area = margins + insets; NO frame_area exists today — the new margins-only method to add for the clamp chore)."
+  - "crates/brightfield-ui/src/crossfilter.rs:281-311 (commit_brush matches ONLY Brushing at :287-291, synthesising a data-space Brushing from the inverted rect at :305-309 — a move/resize ending in Selected re-dispatches only if it synthesises a Brushing) + :919 (invert_pixel_brush, reused) + :2250/:2312 (slot_expr via contributor_predicate + downstream rows() — the DATA-effect fixture the silent-no-op defence asserts against)."
+  - "crates/brightfield-ui/src/legend_element.rs:385 (window.set_cursor_style(CursorStyle::PointingHand, hitbox) — the card-0020 cursor seam, its comment at :381-384 naming THIS card as reuser) + :69/:225/:242 (hovered_index Rc<Cell<Option<usize>>> refresh-on-change tracker — the template for an Rc<Cell<BrushRegion>>) + :203/:251 (is_clickable gate) + :295 (prepaint hitbox)."
+  - "gpui platform.rs:1732 (CursorStyle: OpenHand/ClosedHand for move, ResizeLeftRight/ResizeUpDown for edges, ResizeUpLeftDownRight/ResizeUpRightDownLeft for corners — all present) + window.set_cursor_style is paint-phase-only (debug_asserts it) and binds ONE cursor to a WHOLE hitbox, so a position-dependent cursor picks per-paint from a tracked region, NOT the legend's single static bind."
+  - "crates/brightfield-render/src/inset.rs:36 (DEFAULT_SCALE_INSET = 5.0) + crates/brightfield-render/src/mark.rs:197 (DOT_RADIUS = 4.0) — the chore's boundary-overflow arithmetic; crates/brightfield-ui/src/chart_view.rs:239 (ZERO_AREA_EPSILON = 0.5, click-vs-drag)."
+  - "CLAUDE.md 'Upcoming Sprint Candidates' → Chores: 'brush clamp vs mark radius' — the finding this card folds (pad clamp by DOT_RADIUS / clamp to the frame rect so the rectangle can enclose boundary circles; general, affects crossfilter too, NOT a highlight regression)."
+  - "Extends card 0006 (cross-filtered selections — the persisted-brush substrate + the commit_brush re-dispatch path) and card 0020 (legend interaction fidelity — the window.set_cursor_style seam, built explicitly for this card to reuse). Source memo: orbit/cards/memos/2026-07-12-altair-interaction-grammar-gaps.md (the draggable/resizable persisted brush, ranked M)."

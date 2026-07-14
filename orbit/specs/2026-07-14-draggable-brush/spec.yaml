@@ -1,0 +1,427 @@
+goal: >
+  Draggable / resizable persisted brush — make the committed grey selection
+  rectangle directly manipulable so adjusting a cross-filter is a nudge, not a
+  discard-and-redraw. Today InteractionState::Selected renders after a drag but is
+  INERT: pointer_move returns false for it (chart_state.rs:313), brush_rect()
+  returns None for it (interaction.rs:88-99), and pointer_down unconditionally
+  start_brushes inside the plot (chart_state.rs:262-263) — so a press meant to grab
+  the rect wipes it. v1 wires: (1) a gpui-free hit-test classifying a pointer over
+  the Selected rect into interior / edge / corner regions (a handle tolerance band)
+  plus the pure translate + edge/corner-resize transforms; (2) the pointer wiring —
+  pointer_down branches on a Selected-rect hit BEFORE start_brush, pointer_move
+  replaces the Selected => false arm with move/resize through a clamp, pointer_up
+  re-persists the moved Selected AND re-dispatches the cross-filter from the new
+  corners; and (3) a position-dependent cursor via the card-0020 set_cursor_style
+  seam, chosen per-paint from a tracked region cell mirroring the legend's
+  hovered_index. Re-dispatch is RELEASE-ONLY (matching today's brush; continuous
+  drag is card 0015). The card also folds the CLAUDE.md brush-clamp chore: a new
+  ChartLayout::frame_area() (margins only, NO insets) so a brush can enclose a
+  boundary dot whose 4px disc overflows the 5px axis-inset band. UI-ONLY: no vocab,
+  no engine, no SQL; the cross-crate selection substrate — compile_selection (sql)
+  and propagate_selection / contributor_predicate (engine) — is byte-untouched under
+  the empty-diff machine gate (invert_pixel_brush + commit_brush_release_multi live
+  IN brightfield-ui and are reused in-place, signature-stable, but are NOT gate-
+  enforceable — see drb-ac11). The overlay is GPUI quads over the cached raster
+  (chart_element.rs paint_overlay), never composited into the vello Scene the
+  headless dumps rasterise, and dumps capture launch (Idle) state — so NO example
+  PNG re-baselines. The riskiest arm is the SILENT-NO-OP class (the card-0021 HIGH
+  the green tests hid): a moved/resized brush that ends in Selected updates the grey
+  overlay but NOT the cross-filter unless the re-dispatch synthesises a Brushing
+  (commit_brush reads only Brushing). v1.1 pins that synthesis as a PURE, headless
+  production fn (redispatch_brushing_from, drb-ac12) that the data-effect test
+  (drb-ac07) DRIVES end-to-end — with a negative control — so a dropped wire fails a
+  machine test, not only Hugh's eyeball.
+
+decisions_locked:  # /orb:discovery scope-lock, 2026-07-14 (Hugh — recommended calls accepted), verbatim-faithful
+  - "TRACK — this is the DRAGGABLE-BRUSH card; the menu / radio / checkbox input widgets are a SEPARATE, LATER card, NOT specced here. Built in parallel with card 0023 (keyboard command-log) in an isolated worktree."
+  - "SCOPE — make the persisted Selected brush rect BOTH draggable (translate the whole rect) AND resizable (grab an edge or a corner handle). Position-dependent cursor via the card-0020 window.set_cursor_style seam. On release, RE-DISPATCH the cross-filter from the moved/resized corners."
+  - "RE-QUERY ON RELEASE ONLY — matches today's brush. NO live throttled re-query during the drag; deferred to card 0015 (continuous slider drag — the throttle/debounce + query-cancellation tabletop)."
+  - "CLAMP CHORE FOLDED — fix via a new ChartLayout::frame_area() (margins only, NO insets) and clamp the brush to it, so a brush CAN enclose a boundary dot whose 4px disc (DOT_RADIUS) overflows the 5px axis-inset band (DEFAULT_SCALE_INSET). This is GLOBAL — it changes boundary enclosure for EVERY interval brush incl. crossfilter.yaml — so it needs Hugh's in-app eyeball beyond the demo."
+  - "UI-ONLY — no vocab, no engine, no SQL. Diff confined to brightfield-ui (brightfield-render also byte-identical by the quad-only handle design). The cross-crate selection substrate — compile_selection (sql), propagate_selection / contributor_predicate (engine) — stays byte-untouched; invert_pixel_brush + commit_brush_release_multi are brightfield-ui-internal and reused in-place. An empty-git-diff machine gate over brightfield-spec / brightfield-sql / brightfield-engine / brightfield-render is an AC (precedent: legend-interaction-fidelity)."
+  - "WINDOW-RESIZE DRIFT — DOCUMENTED, not fixed (a deviation). A persisted Selected rect stores element-local PIXELS; a window resize (set_dimensions, chart_state.rs:212) re-derives margins/insets WITHOUT rescaling the rect, so an already-persisted brush drifts off its data range. Pre-existing; move/resize makes it more visible; a separately-scoped fix."
+
+constraints:
+  - "UI-ONLY blast radius, machine-checkable. All edits live in crates/brightfield-ui/src/{interaction.rs, chart_state.rs, chart_layout.rs, chart_element.rs, crossfilter.rs}. brightfield-spec (ast/parse/analysis/vocab), brightfield-sql (ir/lower/emit/render — compile_selection, lower.rs:975), brightfield-engine (propagate_selection lib.rs:333 / contributor_predicate lib.rs:293), and brightfield-render are BYTE-UNTOUCHED and machine-gated EMPTY (drb-ac11). NOTE the honest boundary: invert_pixel_brush (crossfilter.rs:919) and commit_brush_release_multi (chart_view.rs:250) live IN brightfield-ui, so their byte-identity is NOT enforced by the empty-diff gate — they are REUSED IN-PLACE, signature-stable (no signature-breaking change), verified by the drb-ac07 data-effect test that exercises them unchanged, not by the diff gate."
+  - "Framework-free logic, thin gpui shim (standing rule). The region hit-test (BrushRegion classifier), the translate + resize transforms, the Selected-aware rect accessor, the pointer_down grab-vs-brush DECISION, AND the release re-dispatch synthesis (redispatch_brushing_from — the move/resize Selected end-state -> Option<pixel-space Brushing>) live as gpui-free / renderer-free functions on InteractionState (or free fns) — headless-unit-testable under the plain `#[cfg(test)]` module already in interaction.rs (which needs NO VelloRenderer, unlike ChartState's `#[cfg(all(test, feature = \"gpu-tests\"))]` tests). ChartState.pointer_{down,move,up} become thin shims that call the pure logic + clamp_to_frame; their CONSUMPTION of the resolver/transforms/synthesis is itself expressed as pure InteractionState state-transitions so it runs headless in the default gate (drb-ac13), not only behind the gpu-tests feature. Every logic file answers 'could this run headless?' with yes."
+  - "Grab-before-brush ordering (the wipe-the-rect risk). pointer_down MUST resolve a Selected-rect region hit BEFORE the unconditional start_brush (chart_state.rs:262-263) AND before the plot-contains gate (chart_state.rs:262 `if self.layout.contains(local)`). A press whose region != Outside enters a move/resize sub-state PRESERVING the rect — EVEN when the press sits in the rect's inset-band overhang ABOVE plot_area.y0 (the band frame_area now lets a boundary brush occupy, where contains() is false today); a press Outside the rect but inside the plot still start_brushes (replace). Region hit STRICTLY precedes plot-containment, so a boundary-edge/corner handle in the overhang is grabbable, not Ignored. The decision is a pure resolver (drb-ac05) so the ordering is unit-provable, not only eyeball."
+  - "Re-dispatch on RELEASE reads the moved corners, not the stale rect, via a PURE production fn — NOT the un-headless mouse-up closure. commit_brush matches ONLY Brushing (crossfilter.rs:287-291); a move/resize gesture ends in a Selected end-state, so the release MUST synthesise a Brushing from the NEW corners through `redispatch_brushing_from(end_state) -> Option<InteractionState::Brushing>` (a gpui-free free fn beside the transforms), then reuse invert_pixel_brush + commit_brush_release_multi unchanged. Either the mouse-up caller calls redispatch_brushing_from and forwards the Some(Brushing) to commit_brush, OR commit_brush is widened to accept the end-state and call redispatch_brushing_from internally — BOTH must DRIVE the pure fn; inlining the synthesis ONLY in the chart_element.rs mouse-up closure (un-headless-reachable) is FORBIDDEN. A zero-delta grab (a click on the rect, |delta| < ZERO_AREA_EPSILON) yields None — NO re-dispatch, selection intact (no redundant re-query). Tests assert the DATA effect (contributor_predicate / downstream rows) DRIVEN THROUGH redispatch_brushing_from, plus a negative control, NEVER the overlay rect (drb-ac07/ac12) — the silent-no-op defence."
+  - "Clamp targets the FRAME, not the inset plot area. The move/resize clamp (replacing clamp_to_plot's plot_area target) uses a new ChartLayout::frame_area() = (margin_left, margin_top, width-margin_right, height-margin_bottom) — margins ONLY, no insets — recovering the full inset band symmetrically. Self-contained in brightfield-ui, no cross-crate const export. plot_area() and its inset semantics are UNCHANGED (axis-inset card 0008 #55 range pull intact); only the clamp target moves. Boundary enclosure holds precisely when the per-side inset >= DOT_RADIUS: the 5px DEFAULT_SCALE_INSET clears the 4px DOT_RADIUS with 1px slack, but an explicit Mosaic inset in (0,4) or a 0-inset / zero-baseline end leaves the boundary disc still overflowing frame_area (outside the chore's guarantee — noted as a deviation). GLOBAL: every interval brush inherits the new clamp target; because frame_area extends past the inset range end, a boundary brush's dispatched interval bound can invert PAST the data domain by up to the inset band (row-invariant — no data lives there — but a literal predicate-value shift, flagged for Hugh's eyeball)."
+  - "Position-dependent cursor via the card-0020 seam. Reuse window.set_cursor_style(style, hitbox) over the chart element's existing prepaint hitbox (chart_element.rs), choosing the style per-paint from a tracked Rc<Cell<BrushRegion>> that mirrors the legend's hovered_index (legend_element.rs:69) — set in the mouse-move listener, refresh-on-CHANGE only (mirroring chart_element's `if changed { window.refresh() }`). set_cursor_style is paint-phase-only (debug_asserts it) and binds ONE cursor to the WHOLE hitbox, so the position-dependent behaviour comes from re-picking the style each paint, NOT from multiple hitboxes. NOT PointingHand (that is the legend's clickable cue): OpenHand/ClosedHand for move, ResizeLeftRight/ResizeUpDown for edges, ResizeUpLeftDownRight/ResizeUpRightDownLeft for corners (all present, gpui platform.rs:1732)."
+  - "Overlay is GPUI-quad-only → PNG byte-identity by construction. The Selected rect (and any resize handles) are painted as GPUI quads over the cached base raster in paint_overlay (chart_element.rs:238-289); they are NEVER composited into the vello Scene that build_chart_scene produces and the headless example dumps rasterise. Handle glyphs are GPUI quads too — NO brightfield-render edit is required, so brightfield-render stays byte-identical (drb-ac11 gates it). Combined with dumps capturing launch (Idle, nothing selected) state, this makes every example PNG byte-identical regardless of whether handles are drawn — a diff in ANY example PNG is a halt, not an expectation (drb-ac10)."
+  - "Per-plot isolation. Each plot's ChartState owns its own InteractionState; move/resize applies to the focused plot's Selected rect only. The window-level mouse-up listener already returns immediately for a non-gestured sibling (commit_brush's `_ => return false`, crossfilter.rs:289-290), so a release on one plot never re-dispatches another's — the drag/resize inherits that isolation."
+  - "Never `cargo fmt --all` (rustfmt-version skew churns the repo). Gate is `cargo build` + `cargo test --workspace` (NO --features: the ChartState pointer fixtures at chart_state.rs:468/484/508 are `#[cfg(all(test, feature = \"gpu-tests\"))]` and DO NOT run in this gate, and CI runs cargo-deny only — so the new pointer-shim wiring is machine-proven by the headless InteractionState state-transitions of drb-ac13, which run under the plain `#[cfg(test)]`, plus human review, NOT by the gpu-tests fixtures). clippy is not installed in the 1.95.0 toolchain. Live pointer/cursor interaction is macOS-eyeball verified (verifies: stand-in), per brightfield-window-verification / brightfield-pr-testing-preference."
+
+ontology_schema:
+  name: "BrushRegion"
+  description: >
+    The gpui-free classification of a pointer position relative to a persisted
+    Selected brush rectangle — the single source of truth for BOTH the cursor
+    style (paint-phase set_cursor_style) and the pointer_down grab decision + the
+    subsequent move/resize transform. Computed by a pure classifier
+    `brush_region(local: Point, rect: Rect, tol: f64) -> BrushRegion` with a handle
+    tolerance band; renderer-free, headless-unit-testable. Corner takes precedence
+    over Edge inside the overlap; Edge over Interior; anything beyond `tol` outside
+    the rect is Outside. Region hit is resolved BEFORE any plot-containment check,
+    so a handle in the rect's inset-band overhang (above plot_area.y0) still grabs.
+  variants:
+    - name: "Outside"
+      cursor: "(none — falls through to the plot's default; a press here is a fresh start_brush if inside the plot, and a click Outside the Selected rect but inside the plot CLEARS the persisted selection — the click-retract path, drb-ac05)"
+      on_grab: "not a grab — pointer_down start_brushes (replace), preserving today's behaviour."
+    - name: "Interior"
+      cursor: "OpenHand (hover) / ClosedHand (while dragging)"
+      on_grab: "TRANSLATE — the whole rect moves by the pointer delta, clamped to frame_area (size preserved until it hits the frame, then it slides). A zero-delta interior grab (a click on the rect) is INERT: selection intact, NO re-dispatch."
+    - name: "Edge { Left | Right | Top | Bottom }"
+      cursor: "ResizeLeftRight (Left/Right) / ResizeUpDown (Top/Bottom)"
+      on_grab: "RESIZE one side — that edge tracks the pointer (clamped to frame_area); the opposite edge stays pinned; corners normalise so the rect never inverts."
+    - name: "Corner { TopLeft | TopRight | BottomLeft | BottomRight }"
+      cursor: "ResizeUpLeftDownRight (TL/BR) / ResizeUpRightDownLeft (TR/BL)"
+      on_grab: "RESIZE two sides — the grabbed corner tracks the pointer (clamped to frame_area); the diagonally-opposite corner stays pinned; min/max normalisation keeps the rect non-inverted when dragged past the pinned corner."
+
+acceptance_criteria:
+  - id: drb-ac01
+    ac_type: code
+    description: >
+      BRUSH-REGION CLASSIFIER (gpui-free). A pure function classifies a local-space
+      pointer over a Selected rect into Outside / Interior / Edge{L,R,T,B} /
+      Corner{TL,TR,BL,BR} using a handle tolerance band (HANDLE_TOL, the ~4-6px
+      /orb:design picks). Corner-over-Edge and Edge-over-Interior precedence inside
+      the overlap; a point farther than HANDLE_TOL outside the rect is Outside.
+      Renderer-free — lives on InteractionState (or a free fn), so it runs under the
+      plain `#[cfg(test)]` module (no VelloRenderer, no gpu-tests feature).
+    verification: >
+      drb_ac01: unit — each corner (± within tol) → the matching Corner; each edge
+      midpoint within tol but away from a corner → the matching Edge; the rect
+      centre → Interior; a point > tol beyond every side → Outside; a point in a
+      corner's AND an edge's band resolves Corner (precedence). verifies: capability
+  - id: drb-ac02
+    ac_type: code
+    description: >
+      SELECTED-AWARE RECT ACCESSOR. A rect accessor returns Some(normalised Rect)
+      for InteractionState::Selected (today brush_rect() returns None for Selected —
+      interaction.rs:88-99 — so any hit-test keying off it silently never fires).
+      Brushing's existing Some(rect) semantics are UNCHANGED (the gpu_ac10 brush_rect
+      test still passes); Idle/Hovering still None. The classifier (drb-ac01) and the
+      pointer_down decision (drb-ac05) both read through this one accessor.
+    verification: >
+      drb_ac02: unit — a Selected{start,current} → Some(rect) with x0<x1, y0<y1
+      (min/max normalised, mirroring brush_rect); Brushing → Some(rect) unchanged
+      (gpu_ac10 regression); Idle, Hovering → None. verifies: capability + regression
+  - id: drb-ac03
+    ac_type: code
+    description: >
+      TRANSLATE TRANSFORM (gpui-free). Given an Interior grab origin and a pointer
+      delta, a pure transform moves ALL FOUR corners by the delta, then clamps the
+      whole rect inside a supplied frame Rect so the rect keeps its SIZE until it
+      hits the frame, then slides along it (clamp the translation, not each corner
+      independently — independent clamping would shrink the rect at the edge).
+    verification: >
+      drb_ac03: unit — a rect translated by (dx,dy) well inside the frame → all
+      corners shifted by exactly (dx,dy), size unchanged; a translation that would
+      push the rect past the frame edge → the rect butts against the frame with its
+      size PRESERVED (not shrunk); a zero delta → identity. verifies: capability
+  - id: drb-ac04
+    ac_type: code
+    description: >
+      RESIZE TRANSFORM (gpui-free). Given an Edge or Corner grab and a pointer
+      position (clamped to the frame), a pure transform moves only the grabbed
+      side(s); the opposite side/corner stays pinned; the result is re-normalised
+      (min/max) so the rect NEVER inverts when the pointer crosses past the pinned
+      side. An Edge grab moves one coordinate; a Corner grab moves two.
+    verification: >
+      drb_ac04: unit — a Right-edge grab dragged right widens x1 only (x0,y0,y1
+      fixed); a TopLeft-corner grab moves x0,y0 only (x1,y1 pinned); a Right-edge
+      grab dragged LEFT past x0 yields a normalised rect with x0<x1 (no inversion),
+      the pinned side still the old x0; a corner dragged past its diagonal opposite
+      normalises likewise. verifies: capability
+  - id: drb-ac05
+    ac_type: code
+    description: >
+      POINTER-DOWN GRAB-BEFORE-BRUSH DECISION (gpui-free). A pure resolver maps
+      (local, current interaction, plot-contains) → an action: Grab(region) when the
+      press hits a Selected rect (region != Outside) — RESOLVED BEFORE the
+      plot-contains check, so a press in the rect's inset-band overhang ABOVE
+      plot_area.y0 still Grabs, not Ignore; StartBrush when the press is Outside the
+      Selected rect but inside the plot (or when there is no Selected rect) — a
+      StartBrush over a persisted rect CLEARS/replaces it (the click-retract path);
+      Ignore only when Outside the rect AND outside the plot. The ChartState.pointer_down
+      shim consumes it and MUST resolve Grab BEFORE the unconditional start_brush AND
+      the contains() gate (chart_state.rs:262-263) — a grab press PRESERVES the rect,
+      never wiping it into a zero-area brush.
+    verification: >
+      drb_ac05: unit on the resolver — (a) a press inside a Selected rect → Grab(region)
+      (rect corners unchanged in the resulting sub-state); (b) a press inside a Selected
+      rect whose TOP EDGE lies ABOVE plot_area.y0 (in the inset band frame_area enables,
+      where contains() is false) → Grab(region), NOT Ignore — pinning that the Selected-rect
+      hit is resolved BEFORE the plot_area containment check; (c) a press inside the plot
+      but Outside the Selected rect → StartBrush (which clears/replaces the persisted rect);
+      (d) a press with no Selected rect inside the plot → StartBrush (today's behaviour);
+      (e) a press Outside the rect AND outside the plot → Ignore. Assert a Grab decision
+      carries the pre-press rect intact (the anti-wipe invariant). verifies: capability
+  - id: drb-ac06
+    ac_type: code
+    description: >
+      FRAME_AREA CLAMP CHORE. ChartLayout gains frame_area() = Rect(margin_left,
+      margin_top, width-margin_right, height-margin_bottom) — margins ONLY, no
+      insets. The brush move/resize/drag clamp targets frame_area (not the
+      inset-pulled plot_area, chart_layout.rs:132-139), recovering the full
+      DEFAULT_SCALE_INSET band so a boundary dot — centre at the inset range end,
+      4px DOT_RADIUS disc overflowing UP into the 5px inset band — sits INSIDE
+      frame_area and is enclosable. The enclosure guarantee holds precisely when the
+      per-side inset >= DOT_RADIUS (the 5px default clears the 4px radius with 1px
+      slack); a smaller explicit Mosaic inset in (0,4) or a 0-inset / zero-baseline
+      end leaves the disc overflowing frame_area (OUTSIDE the chore's guarantee — a
+      documented deviation, not a bug). plot_area() and the axis-inset range pull (card
+      0008 #55) are UNCHANGED. GLOBAL: every interval brush inherits it.
+    verification: >
+      drb_ac06: unit (chart_layout is renderer-free, plain `#[cfg(test)]`) — for
+      dims + insets, frame_area == plot_area grown by the per-side insets exactly
+      (frame.x0 == plot.x0 - insets.left, etc.); with the 5px default inset (>=
+      DOT_RADIUS), a point at the inset range end (plot_area.y0) minus DOT_RADIUS is
+      >= frame_area.y0 (the boundary disc fits — the guarantee holds at inset >=
+      DOT_RADIUS); zero-inset plot → frame_area == plot_area (and the boundary disc
+      does NOT fit — the conceded degenerate case). verifies: capability
+  - id: drb-ac07
+    ac_type: code
+    description: >
+      RE-DISPATCH ON RELEASE CHANGES THE DATA (the SILENT-NO-OP defence — the
+      card-0021 HIGH the green tests hid). On release of a move/resize, the cross-
+      filter is re-dispatched from the NEW corners by DRIVING the production
+      redispatch_brushing_from (drb-ac12) — which synthesises a pixel-space Brushing
+      from the moved/resized Selected end-state (commit_brush reads only Brushing,
+      crossfilter.rs:287-291) — then reusing invert_pixel_brush + commit_brush_release_multi
+      unchanged. The test asserts the DOWNSTREAM DATA EFFECT — the contributor predicate
+      AND the subscriber row count — driven from the TRANSFORM OUTPUT (not hand-picked
+      corners), NEVER the overlay rect: a move that only updated the grey overlay would
+      leave the predicate stale and FAIL here.
+    verification: >
+      drb_ac07: unit against a LIVE coordinator (the commit_brush / slot_expr fixture
+      pattern, crossfilter.rs:2250,2312) with an intervalX/XY binding — commit an
+      initial brush → record slot_expr P1 (via contributor_predicate) and subscriber
+      rows N1; then (a) produce a MOVED Selected end-state by applying the drb-ac03
+      translate (or drb-ac04 resize) transform — NOT hand-built corners — with a delta
+      that PROVABLY crosses a datum (so N2 != N1 is guaranteed, not incidental); (b) call
+      the PRODUCTION redispatch_brushing_from on that end-state, assert Some(Brushing)
+      whose corners DIFFER from the original, and feed ONLY that derived Brushing through
+      invert_pixel_brush → commit_brush_release_multi → assert slot_expr P2 != P1 and
+      subscriber rows N2 != N1; (c) NEGATIVE CONTROL — a Selected end-state routed through
+      the UNCHANGED release path (redispatch_brushing_from ABSENT, i.e. the raw Selected
+      fed straight to commit_brush_release_multi) dispatches NOTHING (empty aggregate,
+      chart_view.rs:290) — so the test FAILS if the synthesis wire is missing.
+      verifies: capability
+  - id: drb-ac08
+    ac_type: code
+    description: >
+      POSITION-DEPENDENT CURSOR (live wiring). Reuse window.set_cursor_style over the
+      chart element's existing prepaint hitbox, picking the style per-paint from a
+      tracked Rc<Cell<BrushRegion>> mirroring the legend's hovered_index: OpenHand
+      over Interior (ClosedHand while dragging), ResizeLeftRight/ResizeUpDown over
+      edges, ResizeUpLeftDownRight/ResizeUpRightDownLeft over corners; no cursor set
+      (default) when there is no Selected rect. The mouse-move listener updates the
+      region cell and window.refresh()es ONLY on change. NOT PointingHand (the
+      legend's cue). The classifier is unit-tested (drb-ac01); the platform cursor
+      has no headless harness in brightfield-ui, so the live glyph is Hugh's eyeball.
+    verification: >
+      drb_ac08: the region→style mapping is a pure fn, unit-asserted (Interior→
+      OpenHand, Left/Right→ResizeLeftRight, Top/Bottom→ResizeUpDown, TL/BR→
+      ResizeUpLeftDownRight, TR/BL→ResizeUpRightDownLeft) — capability; the actual
+      cursor-over-region glyph and its change-on-motion are Hugh's in-app eyeball.
+      verifies: capability (mapping) + stand-in (live cursor)
+  - id: drb-ac09
+    ac_type: code
+    description: >
+      LIVE DRAG + RESIZE + RE-QUERY ROUND TRIP (macOS eyeball). On a running
+      cross-filter dashboard: grab the grey Selected rect interior and translate it —
+      the linked views re-filter to the moved range on release; grab an edge and a
+      corner and resize — the range re-filters likewise; a grab press never wipes the
+      rect into a fresh zero-area brush; a click OUTSIDE the rect still clears it; the
+      boundary-enclosure clamp (drb-ac06) lets a brush enclose a dot at a domain bound.
+      Release-only (no re-query mid-drag).
+    verification: >
+      drb_ac09: Hugh in-app — drag the persisted rect, watch subscribers re-filter on
+      release; resize by edge and corner; confirm a press ON the rect grabs (never
+      wipes) and a click OUTSIDE clears; confirm a boundary dot is enclosable. verifies:
+      stand-in (live GPUI pointer dispatch + re-query), accepted because pointer
+      interaction is not headless-testable; the transforms/decision/re-dispatch/shim are
+      capability-verified by drb-ac03/04/05/07/12/13.
+  - id: drb-ac10
+    ac_type: gate
+    description: >
+      BYTE-IDENTICAL PNG, NO RE-BASELINE. The persisted rect and any resize handles
+      are GPUI quads over the cached raster (paint_overlay, chart_element.rs:238-289),
+      never composited into the vello Scene the headless example dumps rasterise, and
+      dumps capture launch (Idle) state — so every example PNG is byte-identical to
+      its pre-card baseline whether or not handles are drawn. No new example is
+      required (the drag rides crossfilter.yaml's persisted brush). A diff in ANY
+      example PNG is a HALT, not an expectation.
+    verification: >
+      drb_ac10: scripts/compare-example-pngs.sh reports every example byte-identical
+      vs a baseline captured from main (`cmp -s`; no committed goldens); a DIFFERS is
+      a halt. verifies: capability
+  - id: drb-ac11
+    ac_type: gate
+    description: >
+      UI-ONLY EMPTY-DIFF (blast-radius gate). A git diff over brightfield-spec /
+      brightfield-sql / brightfield-engine / brightfield-render is EMPTY at PR time:
+      no vocab, no engine, no SQL, no render change. The MACHINE-GATED byte-untouched
+      claim is scoped to the cross-crate substrate — compile_selection (sql/lower.rs:975)
+      and propagate_selection / contributor_predicate (engine/lib.rs:333,293) — plus
+      brightfield-render (the quad-only handle design keeps it untouched; gating render
+      is STRICTER than the lif-ac10 precedent, which legitimately edited render/legend.rs,
+      and is safe because this card draws handles as GPUI quads in brightfield-ui).
+      invert_pixel_brush + commit_brush_release_multi live IN brightfield-ui and are
+      reused in-place, signature-stable — they are NOT gate-enforceable (they cannot show
+      in a diff over the other crates); their reuse is verified by drb-ac07's data-effect
+      test, not this gate. All edits live in brightfield-ui.
+    verification: >
+      drb_ac11: `git diff --stat <base> -- crates/brightfield-spec crates/brightfield-sql
+      crates/brightfield-engine crates/brightfield-render` is EMPTY (the precedent lif-ac10
+      machine gate, extended by brightfield-render). A touched line in any of the four crates
+      is a halt. verifies: boundary
+  - id: drb-ac12
+    ac_type: code
+    description: >
+      RELEASE RE-DISPATCH RESOLVER (gpui-free) — the pure production entry point the
+      silent-no-op defence hangs on, mirroring drb-ac05's grab resolver. A free fn
+      `redispatch_brushing_from(end_state: &InteractionState) -> Option<InteractionState>`
+      (beside the transforms in interaction.rs, plain `#[cfg(test)]`, NO VelloRenderer)
+      maps a MOVED/RESIZED Selected end-state to Some(InteractionState::Brushing) carrying
+      the NEW pixel corners (for invert_pixel_brush to invert downstream), and to None for
+      (i) a non-Selected state, and (ii) a zero-delta grab — a click on the rect,
+      |delta| < ZERO_AREA_EPSILON — so a click never fires a redundant re-query. This is
+      the SOLE synthesis site; the mouse-up caller (or a widened commit_brush) DRIVES it
+      and never inlines the synthesis in the un-headless closure (constraint).
+    verification: >
+      drb_ac12: unit (interaction.rs plain `#[cfg(test)]`) — a Selected end-state moved by
+      the drb-ac03 translate → Some(Brushing) whose corners equal the moved corners and
+      DIFFER from the original; a Selected resized by drb-ac04 → Some(Brushing) with the
+      resized corners; a zero-delta (click-on-rect) Selected → None; Idle / Hovering /
+      Brushing → None. verifies: capability
+  - id: drb-ac13
+    ac_type: code
+    description: >
+      POINTER-SHIM HONOURS THE RESOLUTION (headless state-transition — the wipe/drop
+      regression net that runs in the DEFAULT gate). The pointer_{down,move,up} shims'
+      consumption of the resolver/transforms/synthesis is expressed as pure InteractionState
+      transitions so it is machine-proven under the plain `#[cfg(test)]` module, NOT only
+      behind the gpu-tests feature the default `cargo test --workspace` gate never enables.
+      A Grab resolution applied at pointer_down PRESERVES the rect (no wipe to zero-area);
+      a move/resize applied at pointer_move takes the new transform arm (not the old
+      Selected=>false); pointer_up on a moved sub-state yields the moved Selected end-state
+      (the input drb-ac07/ac12 re-dispatch from). This closes the machine-coverage gap that
+      the gpu-tests-gated pointer fixtures (chart_state.rs:468/484/508) leave open in the gate.
+    verification: >
+      drb_ac13: unit (plain `#[cfg(test)]`, no gpu-tests feature) — feeding a Grab
+      resolution through the pointer_down transition leaves the Selected rect corners
+      intact (anti-wipe, distinct from drb-ac05 which only asserts the resolver's ENUM
+      output); a move/resize through the pointer_move transition applies the drb-ac03/04
+      transform (rect changed, size/pins per the transform); a pointer_up transition on
+      the moved sub-state produces the moved Selected end-state. FALLBACK (recorded so the
+      seam is closed either way): if a transition genuinely cannot be expressed as a pure
+      InteractionState fn without a VelloRenderer, this AC is instead satisfied by running
+      the gpu-tests pointer fixtures with the gate stated as `cargo test --workspace
+      --features gpu-tests` — but the pure-fn route is preferred (it matches the
+      framework-free constraint and runs in the default gate). verifies: capability +
+      regression
+
+out_of_scope:
+  - "Live throttled / debounced re-query DURING the drag — release-only in v1; continuous drag with query-cancellation is card 0015 (needs the throttle-vs-debounce + async-boundary tabletop)."
+  - "The window-resize drift of a persisted Selected rect (element-local pixels not rescaled when set_dimensions re-derives margins/insets, chart_state.rs:212) — pre-existing; DOCUMENTED as a known gap (a deviation), not fixed here. Move/resize makes it more visible but does not introduce it."
+  - "Menu / radio / checkbox input widgets — a SEPARATE, LATER card (the other half of the interaction-grammar cluster)."
+  - "Any spec / vocab / SQL / engine / render change — a persisted brush is UI state; the grammar it dispatches through is unchanged (empty-diff gate, drb-ac11)."
+  - "Cross-plot / multi-brush simultaneous move — each plot's ChartState owns its interaction; move/resize is per focused plot only."
+  - "A dedicated draggable-brush example PNG — the behaviour rides existing brushable plots (crossfilter.yaml); adding one would be the only re-baseline and is avoided."
+  - "Enclosing a boundary disc under an explicit inset < DOT_RADIUS (or a 0-inset / zero-baseline end) — the frame_area enclosure guarantee is scoped to per-side inset >= DOT_RADIUS (satisfied by the 5px default); smaller self-inflicted insets fall outside the chore's guarantee (drb-ac06 deviation)."
+
+risks:
+  - "SILENT-NO-OP (the card-0021 HIGH the all-green corpus hid): a moved/resized brush that ends in Selected updates the grey overlay but NOT the cross-filter unless the re-dispatch synthesises a Brushing (commit_brush reads only Brushing). MITIGATION (v1.1, hardened): the synthesis is a PURE production fn redispatch_brushing_from (drb-ac12, mirroring drb-ac05's grab resolver); drb-ac07 DRIVES that production fn end-to-end — on a transform-produced moved end-state (not hand-built corners), asserting P2!=P1 / N2!=N1 through invert_pixel_brush → commit_brush_release_multi, WITH A NEGATIVE CONTROL (a raw Selected through the unchanged release path dispatches nothing). Inlining the synthesis only in the un-headless mouse-up closure is FORBIDDEN — so a dropped wire fails a machine test, not just Hugh's eyeball. (v1.0's drb-ac07 could pass by re-implementing the synthesis in the test; that hole is closed.)"
+  - "pointer_down unconditionally start_brushes inside the plot AND gates on contains()->plot_area (chart_state.rs:262-263) — the inset-band overhang a boundary Selected rect now occupies is OUTSIDE plot_area, so a naive plot-contains-first resolver would make a boundary handle un-grabbable (Ignore) AND a grab click could still wipe the rect. MITIGATION: the grab-vs-brush DECISION is a pure resolver (drb-ac05) that resolves the region hit BEFORE the plot-contains check (drb-ac05 case b), and the SHIM'S consumption of it is machine-proven headless (drb-ac13, anti-wipe) — so the ordering is unit-provable end-to-end, not only the resolver's enum output."
+  - "The clamp fix is GLOBAL — frame_area shifts boundary click/drag/enclosure for EVERY interval brush incl. crossfilter.yaml, not just a new demo; and it lets a boundary brush's dispatched interval bound invert PAST the data domain by up to the inset band (row-invariant but a literal predicate-value shift). MITIGATION: drb-ac06 pins the geometry AND scopes the enclosure guarantee to inset >= DOT_RADIUS; drb-ac09 + the deviations flag both the global reach and the predicate-value shift for Hugh's in-app eyeball beyond the unit test."
+  - "set_cursor_style binds ONE cursor to a WHOLE hitbox and is paint-phase-only (debug_asserts it). A position-dependent brush cursor needs per-paint region logic picked from a tracked cell, NOT the legend's single static bind. MITIGATION: constraint pins the Rc<Cell<BrushRegion>> + per-paint re-pick + refresh-on-change; drb-ac08 unit-tests the region→style mapping."
+  - "Window-resize drift (a persisted rect stores element-local pixels; a resize re-derives margins/insets without rescaling it). Pre-existing and OUT OF SCOPE, but move/resize makes it more visible — recorded as a deviation so it is a decision, not a silent regression surfacing later."
+  - "Signature-churn watch-item: threading the region + a move/resize sub-state through pointer_down/move/up + the mouse-up caller must not break the existing pointer fixtures (pointer_down_inside_starts_brush, pointer_up_persists_a_drag, chart_state.rs:468/484/508) — a missed arm silently drops drag or wipe-protection. NOTE those fixtures are `#[cfg(all(test, feature = \"gpu-tests\"))]` and DO NOT run in the default `cargo test --workspace` gate — so they are NOT the machine backstop; the headless InteractionState state-transitions of drb-ac13 (plain `#[cfg(test)]`) ARE, and every pointer path is additionally confirmed by human review. A missed arm fails drb-ac13, not only review."
+
+evaluation_principles:
+  - principle: "Direct manipulation works end to end — grab/translate/resize the persisted brush and the linked views re-filter to the moved range on release (drb-ac09), driven by capability-verified transforms + a pure re-dispatch resolver (drb-ac03/04/07/12) whose shim consumption is headless-proven (drb-ac13)."
+    weight: 0.25
+  - principle: "No silent no-op — the re-dispatch changes the DATA (predicate + rows), asserted downstream by DRIVING the production synthesis fn (redispatch_brushing_from) with a negative control, never the overlay; a grab never wipes the rect (drb-ac07/ac12/ac13)."
+    weight: 0.2
+  - principle: "Framework-free purity — region classifier, transforms, grab decision, re-dispatch synthesis, and frame_area are gpui-free / renderer-free and headless-unit-tested, and the pointer shim's consumption of them is a headless state-transition; ChartState is a shim."
+    weight: 0.2
+  - principle: "Blast-radius honesty — UI-only; the MACHINE-GATED empty diff covers spec/sql/engine/render (the cross-crate substrate compile_selection / propagate_selection / contributor_predicate is byte-untouched); invert_pixel_brush + commit_brush_release_multi are reused in-place within brightfield-ui, signature-stable (not gate-enforceable — verified by the data-effect test), not forked."
+    weight: 0.15
+  - principle: "Byte-identity — the overlay + handles are GPUI-quad-only (no render edit), so every example PNG is unchanged at rest (no re-baseline)."
+    weight: 0.1
+  - principle: "Chore-fold discipline — frame_area recovers boundary enclosure globally (for inset >= DOT_RADIUS) with plot_area / axis-inset semantics untouched, flagged for the in-app eyeball its global reach + the domain-overshoot predicate shift warrant."
+    weight: 0.1
+
+exit_conditions:
+  - "drb-ac01..07 + drb-ac10..13 green: the gpui-free logic (classifier, rect accessor, translate, resize, grab decision, frame_area, the release re-dispatch resolver, the pointer-shim transition) unit-tested; the silent-no-op defence (drb-ac07) green against a live coordinator, DRIVING the production redispatch_brushing_from with a negative control; PNG byte gate + empty-diff gate (incl. brightfield-render) pass."
+  - "drb-ac08 (cursor) + drb-ac09 (live drag/resize/re-query round trip) eyeball-confirmed by Hugh in the macOS app — including the GLOBAL clamp change on crossfilter.yaml (a boundary dot enclosable, click-outside still clears, axes/other brushes still sane)."
+  - "No spec/vocab/engine/SQL/render mutation shipped; the window-resize drift left documented as a known gap (deviation), not fixed."
+
+memories_considered:
+  - key: brightfield-window-verification
+    disposition: adopted
+    reason: "The verification split — headless unit tests for the gpui-free logic (classifier / transforms / grab decision / frame_area / the release re-dispatch resolver / the pointer-shim transition / the live-coordinator data-effect) vs macOS-eyeball for the live GPUI cursor + drag/resize/re-query wiring — is the direct application of the headless-vs-eyeball loop; drb-ac08/ac09 are the in-app sign-off, and the GLOBAL clamp change is explicitly eyeballed beyond its unit test."
+  - key: brightfield-pr-testing-preference
+    disposition: adopted
+    reason: "The card ships on a branch/PR for Hugh to product-test the live drag/resize + the global boundary-enclosure clamp in the app before merge; the manual ACs (drb-ac08/ac09) are his in-app checks — the clamp's global reach makes the pre-merge eyeball load-bearing, not optional."
+
+open_questions:
+  - "Handle tolerance band (HANDLE_TOL): ~4-6px for edge/corner hit-testing, interior = translate, corner-over-edge tie-break. Exact px is an /orb:design + in-app-feel call; the classifier (drb-ac01) is parameterised on it."
+  - "Visible handles vs invisible-until-hover: draw corner/edge handles on the persisted grey rect (affordance) or keep it plain until hovered? Either way PNG byte-identity holds (overlay is GPUI-quad-only, dumps capture Idle) — a visual-affordance call for Hugh, not a correctness fork."
+  - "RESOLVED (review v1.1): re-dispatch mechanism. The move/resize -> Brushing synthesis is the PURE production fn redispatch_brushing_from (drb-ac12), the SOLE synthesis site. The remaining impl latitude is only WHERE it is DRIVEN from: (a) the mouse-up caller calls redispatch_brushing_from then forwards Some(Brushing) to the byte-stable commit_brush, OR (b) commit_brush is widened to accept the end-state and call redispatch_brushing_from internally — pick the smaller diff. Inlining the synthesis logic ONLY in the un-headless chart_element.rs mouse-up closure is FORBIDDEN (it would put the card-0021 silent-no-op defence out of drb-ac07's headless reach)."
+
+metadata:
+  version: "1.1"
+  test_prefix: "drb"
+  timestamp: "2026-07-14T00:00:00Z"
+  card: "orbit/cards/0022-draggable-resizable-brush.yaml"
+  interview_ref: "orbit/cards/0022-draggable-resizable-brush.yaml (design-compressed: card scope-locked with Hugh 2026-07-14, spec authored alongside)"
+  review_ref: >
+    orbit/specs/2026-07-14-draggable-brush/review-spec-2026-07-14.md — /orb:review-spec
+    adversarial workflow: 6 lenses (testability, completeness, load-bearing-claim
+    correctness, scope-portability, plus edge / adversarial passes), each raw finding
+    independently re-verified as real-and-unaddressed vs already-covered against CURRENT
+    source (memos were stale; every cited file:line re-read). 9 findings survived: two
+    HIGH (testability + completeness) and one MEDIUM (load-bearing) all converging on the
+    drb-ac07 re-dispatch-synthesis seam (the flagship silent-no-op defence was toothless —
+    it could pass by re-implementing the synthesis in the test, never exercising the new
+    move/resize->Brushing production wiring); one MEDIUM on the drb-ac05 grab-resolver x
+    frame_area inset-band seam; one MEDIUM on the pointer-shim machine-coverage gap (the
+    named backstop fixtures are gpu-tests-gated and never run in the gate); four LOW
+    (click-to-clear semantic move, drb-ac06 inset>=DOT_RADIUS enclosure scoping + domain
+    overshoot, drb-ac11 byte-untouched over-claim, drb-ac11 render-crate coverage). Verdict
+    REQUEST_CHANGES -> folded to v1.1: new pure redispatch_brushing_from resolver (drb-ac12)
+    that drb-ac07 now DRIVES end-to-end with a negative control; a headless pointer-shim
+    transition AC (drb-ac13); drb-ac05 inset-band-overhang + click-to-clear cases; drb-ac06
+    enclosure scoped to inset>=DOT_RADIUS; drb-ac11 byte-untouched wording split (only the
+    cross-crate substrate is gate-enforceable) + brightfield-render added to the empty-diff
+    gate; open_question #3 RESOLVED (closure-only synthesis forbidden). AC ids drb-ac01..11
+    stable; drb-ac12/ac13 appended (the legend-review append pattern).
+  recon_ref: >
+    Code-verified against current source (memos were stale, re-verified for v1.1):
+    InteractionState::Selected interaction.rs:41-46; brush_rect None for Selected :88-99;
+    render_overlay :105; pointer_move Selected=>false chart_state.rs:313; pointer_down
+    contains()->start_brush :262-263; clamp_to_plot/plot_area :319-321 / chart_layout.rs:132-139,
+    contains :162-164 (no frame_area today, confirmed absent); pointer_up matches only Brushing
+    :329-342, clear_persistent_selection :346-353; commit_brush needs cx:&mut App + matches only
+    Brushing (`_ => return false`) crossfilter.rs:281-291, internal invert+synthesise+
+    commit_brush_release_multi :305-311, cx use :348; commit_brush_release_multi App-free, empty
+    for non-Brushing chart_view.rs:250-292 (:290 empty arm), ZERO_AREA_EPSILON :239;
+    invert_pixel_brush pub(crate) crossfilter.rs:919, plain #[cfg(test)] :934, slot_expr :2250,
+    lcf_ac03 :2264, lcf_f1a :2313; mouse-up commit-then-pointer_up chart_element.rs:184-206
+    (reads live interaction :195, calls commit_brush :196), GPUI-quad paint_overlay :238-289;
+    ChartState pointer fixtures #[cfg(all(test, feature="gpu-tests"))] chart_state.rs:369,
+    :468/:484/:508; Cargo gpu-tests=[] no default Cargo.toml:24; only CI = license.yml (cargo-deny,
+    no cargo test / --features); compile_selection sql/lower.rs:975, propagate_selection
+    engine/lib.rs:333, contributor_predicate :293; axi_ac03 frame-edge-inverts-past-domain
+    chart_layout.rs:341-373; DEFAULT_SCALE_INSET=5.0 inset.rs:36, DOT_RADIUS=4.0 mark.rs:197.
+  deviations:
+    - "GLOBAL clamp change: folding the chore moves the brush clamp target from the inset-pulled plot_area to a new margins-only frame_area, changing boundary enclosure for EVERY interval brush incl. crossfilter.yaml — not a purely-additive UI change. Requires Hugh's in-app eyeball beyond the unit test (drb-ac06 pins geometry; drb-ac09 eyeballs it)."
+    - "FRAME_AREA enclosure is CONDITIONAL: the boundary-disc-fits guarantee holds only where the per-side inset >= DOT_RADIUS (the 5px default clears the 4px radius with 1px slack). An explicit Mosaic inset in (0,4), or a 0-inset / zero-baseline end, leaves the disc still overflowing frame_area — outside the chore's guarantee, not a bug (a self-inflicted small inset). drb-ac06 states the condition; only the 5px-default case is machine-tested."
+    - "DOMAIN OVERSHOOT: clamping the brush to frame_area (past the inset range end) lets a boundary brush's re-dispatched interval bound invert PAST the data domain by up to the inset band. Row-invariant (no data lives beyond the bound — the same rows select) but a literal predicate-value shift on every boundary interval brush. Intended (a brush must reach past the inset range end to enclose a boundary disc); flagged for Hugh's global eyeball."
+    - "CLICK-TO-CLEAR SEMANTIC MOVE: grab-before-brush (drb-ac05) makes a press INSIDE the Selected rect a Grab, so clearing by click moves from click-ANYWHERE-in-plot (today) to click-OUTSIDE-the-rect (v1). A zero-delta interior grab (a click on the rect) is INERT (no re-dispatch, selection intact — drb-ac12 None); Esc-clear and click-outside-clear both survive. MORE Vega-Lite/Mosaic-faithful than click-anywhere-clears; flagged for Hugh's eyeball (drb-ac09 confirms click-outside still clears)."
+    - "EMPTY-DIFF GATE EXTENDED to brightfield-render (drb-ac11): STRICTER than the invoked lif-ac10 precedent (which legitimately edited render/legend.rs). Justified — this card draws handles as GPUI quads in brightfield-ui (paint_overlay), so render is genuinely untouched; the briefing named brightfield-render as the one plausible spillover crate, so gating it makes the quad-only handle decision machine-enforced. invert_pixel_brush + commit_brush_release_multi are brightfield-ui-internal and NOT diff-gate-enforceable; their signature-stable reuse is verified by drb-ac07, not the gate — the v1.0 goal/drb-ac11 over-claim (listing invert_pixel_brush among the gate-enforced byte-untouched fns) is corrected."
+    - "WINDOW-RESIZE DRIFT deferral: the pre-existing pixel-stored-rect drift (a resize re-derives margins/insets without rescaling a persisted Selected rect, chart_state.rs:212) is DOCUMENTED as a known gap, NOT fixed in v1; move/resize makes it more visible. A separately-scoped bug."
+    - "Design-compressed: card and v1.0 spec authored together (no separate /orb:design pass); the card's open_questions are folded into this spec's constraints/open_questions rather than resolved by a design interview."

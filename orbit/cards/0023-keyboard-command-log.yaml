@@ -1,0 +1,107 @@
+feature: "Keyboard command-log v1 — structural spec edits from the keyboard, transient live + opt-in commit (the SpecEdit spine)"
+as_a: "analytics author composing a dashboard from the keyboard"
+i_want: "the reserved m / a / e / d / undo verbs to actually change a mark's type, add a mark, bind a channel, remove a mark, and undo — applied live, then committed to the spec on a deliberate action"
+so_that: "I can author a visualisation mouse-free — see-then-commit — instead of dropping to the YAML editor for every structural change, closing card 0018's last deferred bucket"
+
+# Discovery / scope (2026-07-14). This is the card-0018 follow-on #2, named verbatim in the
+# keyboard-grammar spec's implementation_notes ("the command log — a SpecEdit enum in
+# brightfield-spec (apply(&mut Spec), the missing AST mutation API) ... Unlocks m/a/e/d + undo").
+# Card 0018 shipped the 5 verbs as VerbStatus::Reserved / ReservedReason::NeedsCommandLog with
+# EMPTY binding_specs (registry.rs:305-315): greyed palette rows, rejected by the scope resolver,
+# unbound. This card builds the substrate behind them. It runs in parallel with card 0022
+# (draggable brush) in an isolated worktree. Recon is code-verified against current source (the
+# design memos were stale): NO edit substrate exists anywhere (no SpecEdit type, no reducer, no undo
+# stack, no command log — grep-confirmed). The Spec IR is a total-Clone typed tree (ast.rs:23) whose
+# nodes carry NO byte-spans, so surgical text-preserving write-back needs a CST the repo lacks —
+# deferred. TRANSPORT is locked TRANSIENT + OPT-IN COMMIT: an edit applies live in-runtime (writes
+# nothing to disk), and a deliberate commit flushes the accumulated edits through the editor buffer.
+# The crucial recon finding: the shipped `c` colour-cycle (crossfilter.rs:442) is NOT a sufficient
+# transient template — it recolours cached batches and re-scenes, it never RE-QUERIES; a mark-type
+# or channel edit changes the SQL, so the transient apply must re-lower + re-execute the affected
+# plot's marks. Pinning that mechanism is the load-bearing feasibility question.
+
+scenarios:
+  - name: "Change a mark's type, live"
+    given: "focus is on a view whose mark is a `dot`, and `m` (change-mark-type) is now a bound verb"
+    when: "the author presses `m` and picks `bar`"
+    then: "the plot re-lowers, re-executes against the live session, and re-scenes as a bar chart in place — no disk write, an entry lands in the command log, and `undo` restores the dot"
+
+  - name: "Add a mark through the argument-prompt overlay"
+    given: "focus is on a view and `a` (add-mark) is bound; add-mark takes a mark KIND argument"
+    when: "the author presses `a`, the palette opens its new argument-prompt mode, and they pick `line`"
+    then: "a line mark is appended to the focused plot's AST and rendered live alongside the existing mark; the command log shows one uncommitted edit"
+
+  - name: "Bind a channel to a column"
+    given: "focus is on a view and `e` (set-channel) is bound; set-channel takes a channel + a column"
+    when: "the author presses `e`, picks `x`, then picks a column from the source profile"
+    then: "the mark's x encoding re-lowers to the new column, the plot re-queries and re-scenes, and undo reverts to the prior binding"
+
+  - name: "Remove a mark and undo"
+    given: "focus is on a multi-mark view and `d` (remove-mark) + `undo` are bound"
+    when: "the author presses `d`, then `undo`"
+    then: "the primary mark is dropped and the plot re-scenes without it; undo (a session snapshot pop) restores the removed mark exactly — a real render round-trip, not just a log rewind"
+
+  - name: "Commit the accumulated edits to disk"
+    given: "one or more transient edits are pending (the command log shows N uncommitted)"
+    when: "the author runs the explicit commit action"
+    then: "the working Spec re-serialises canonically into the editor buffer (via set_value), the two-writer-guarded save writes the file, and the mtime watcher reloads it — the buffer stays the single source of truth, no out-of-band write"
+
+  - name: "The staleness boundary on an interactive dashboard"
+    given: "a committed structural edit on a dashboard that ALSO cross-filters (a live coordinator)"
+    when: "the author brushes a plot after the reload"
+    then: "the next gesture may re-execute the launch marks and visually revert the edit — the documented coordinator-staleness boundary (same class as the accepted cycled-scheme-persists limitation); a static dashboard round-trips cleanly, and the transient pre-commit render is always correct"
+
+goal: >
+  Build the SpecEdit spine that closes card 0018's needs-command-log bucket: a gpui-free
+  SpecEdit enum + apply(&mut Spec) reducer in brightfield-spec (the missing AST mutation API,
+  walking the root Component tree by ComponentPath, IndexMap-ordered inserts) with a session
+  snapshot-undo stack (Clone the Spec — near-free, ast.rs:23). Flip all 5 reserved verbs
+  Reserved -> Built (change-mark-type / add-mark / set-channel / remove-mark / undo) with keymap
+  arms, a NEW palette argument-prompt overlay for the two argument-taking verbs, and a dedicated
+  CommandLog dock panel beside the existing FeedbackLog. Transport is TRANSIENT + OPT-IN COMMIT:
+  an applied edit mutates the working Spec and renders LIVE with no disk write (following the `c`
+  cycle's write-nothing discipline), then a deliberate commit flushes the accumulated edits through
+  the editor buffer -> canonical re-serialise -> two-writer-guarded save -> mtime watcher reload.
+  The load-bearing build is the TRANSIENT-APPLY MECHANISM: because a structural edit changes the
+  SQL (unlike `c`, which never re-queries), the live apply must re-analyse -> re-lower ->
+  re-execute the AFFECTED PLOT's marks against the coordinator's already-live session and re-scene
+  that plot. v1 confines edits to WITHIN a plot (gate-clean under same_layout) and documents the
+  coordinator-staleness boundary; the span-preserving CST, the coordinator-rebuild fix, the
+  replayable/serialisable log, and the needs-keyboard-target verbs (f/gf/t/set-param) are deferred.
+
+maturity: "emerging"
+
+design_decisions:  # Hugh, 2026-07-14 (recommended calls accepted)
+  - "CARD IDENTITY — this is the COMMAND-LOG card, card-0018 follow-on #2, unblocking the 5 NeedsCommandLog verbs (registry.rs:311-315). Runs in parallel with card 0022 (draggable brush) in an isolated worktree."
+  - "TRANSPORT — TRANSIENT + OPT-IN COMMIT. An applied structural edit (m/a/e/d) applies LIVE in-runtime (mutate the working Spec + re-render the affected plot, NO disk write by default — the `c` cycle's write-nothing discipline). A DELIBERATE, explicit commit flushes the accumulated edits through the editor buffer (set_value, shell.rs:595-596) -> save_spec_atomic (spec_save.rs:50) -> the mtime watcher reloads. The canonical re-serialise (parse.rs:1391, which reformats + drops comments) happens ONLY on that explicit commit — a documented, opt-in, visible deviation from today's byte-faithful buffer save."
+  - "BREADTH — ALL 5 verbs live in v1 (change-mark-type / add-mark / set-channel / remove-mark / undo), each flipped Reserved -> Built with keymap arms. add-mark <kind> and set-channel <channel,column> are ARGUMENT-taking, so v1 adds a NEW palette argument-prompt overlay mode (run_palette today only pick->runs a BARE action, shell.rs:1369)."
+  - "SURFACE — a dedicated CommandLog model + a SECOND bottom-dock panel, leaving FeedbackLog (log_model.rs:31, the rejection/diagnostics log) untouched; the second dock citizen also unlocks the dock-drag the shell.rs:846 doc anticipates."
+  - "UNDO — a session snapshot stack (Clone the Spec before each edit — total Clone, near-free). It does NOT step across a commit barrier (post-commit undo is a no-op-with-reason); it is NOT a replayable/serialisable log with stable node ids (positional addressing renumbers under add/remove, so a replay keyed to it would corrupt under the very verbs it supports)."
+  - "TRANSIENT MECHANISM — because a structural edit changes the SQL, the live apply is a per-affected-plot re-analyse -> re-lower -> re-execute against the coordinator's ALREADY-LIVE session (source views registered once at launch load_spec; no new Engine, no new views, no disk) -> re-scene that plot. `c` is explicitly NOT a sufficient template — it recolours cached batches and never re-queries. The impl must PROVE this reachable; the documented fallback is a full in-memory rebuild + swap-all-scenes (still transient)."
+  - "CONFINEMENT — v1 edits stay WITHIN an existing plot (mark add/remove/retype/rechannel) so they pass same_layout (main.rs:1166) and a commit->reload does not bounce to 'restart to apply'. An edit that would add/remove a whole plot, change geometry, or introduce a new chrome facet (a new colour legend, chrome_divergence main.rs:1197) is refused-with-reason at edit time — never silently applied then bounced."
+  - "DEFERRED — span-preserving CST text/comment-preserving write-back (the AST has no byte-spans); the coordinator live-rebuild fix under a durable reload; the replayable/serialisable log with stable ids; and the needs-keyboard-target verbs f/gf/t + set-param (a different substrate, its own card). Mark-altitude focus is still deferred (card 0018), so structural verbs target the focused plot's PRIMARY mark; multi-mark disambiguation waits for mark descent."
+
+open_questions:  # for /orb:design (the spec's decisions_locked then resolves these)
+  - "TRANSIENT-APPLY MECHANISM — confirm via an impl spike that a re-lowered mark query executes against the coordinator's already-registered live-session views without a full coordinator rebuild. The per-affected-plot re-lower is the honest candidate; the fallback is a full in-memory rebuild + swap-all-scenes. THE load-bearing feasibility question."
+  - "COMMIT GRANULARITY — one commit flushes ALL accumulated transient edits (recommended); expose an 'N uncommitted edits' affordance on the command-log panel."
+  - "UNDO ACROSS COMMIT — v1 undo spans the current uncommitted transient edits only and cannot step past a commit barrier (a no-op-with-reason). Confirm this keeps buffer and render in agreement (the render == last committed state minus pending transient edits)."
+  - "ARGUMENT OVERLAY SCOPE — add-mark takes a mark KIND (enumerable -> a pick-list reusing the palette fuzzy matcher); set-channel takes a CHANNEL (enumerable) + a COLUMN (from the source profile). Pin the input precisely; keep the collector gpui-free."
+  - "ARTIFACT — does v1 ship a runnable demo or is a keyboard-only authoring screencast (card-0018 ac-17 precedent) the acceptance artifact? A keyboard authoring loop is eyeball/screencast-verified."
+  - "MULTI-MARK TARGET — with focus floored at the view (no mark descent), does a structural verb on a multi-mark plot act on the first/primary mark (v1 simplification) or prompt for the mark via the overlay? Recommended: primary mark, document the limitation."
+
+specs: []   # spec authored in parallel: orbit/specs/2026-07-14-command-log/spec.yaml (v1.0)
+
+references:
+  - "orbit/cards/0018-keyboard-grammar.yaml + orbit/specs/2026-07-11-keyboard-grammar/spec.yaml: the card this DIRECTLY extends; implementation_notes names this follow-on ('the command log ... Unlocks m/a/e/d + undo') and its VisiData warnings (STABLE spec-node identity, TYPED edits, append-only-with-undo-cursor, log the SEMANTIC result)."
+  - "orbit/cards/memos/2026-07-04-visidata-keyboard-grammar.md: the VisiData command-log spine seed."
+  - "crates/brightfield-keys/src/registry.rs:305-315: the 5 NeedsCommandLog verbs = the SpecEdit vocab, pre-named + altitude-scoped (change-mark-type/add-mark/set-channel/remove-mark = View; undo = Dashboard+View). Flip each Reserved -> Built + drop reserved_reason; the frozen bucket test (registry.rs:455-471) + longname snapshot (registry.rs:487-516) update deliberately."
+  - "crates/brightfield-spec/src/ast.rs:23-38: Spec derives Debug/Clone/Default/PartialEq — total Clone (snapshot-undo near-free); data/params are order-preserving IndexMaps (:28,:30); nodes carry NO byte-spans (no CST for text-preserving write-back)."
+  - "crates/brightfield-spec/src/parse.rs:1391-1437: the canonical `impl Serialize for Spec` — reformats + drops comments, hardcoded block order meta/data/params/config/plotDefaults/root (:1414-1435); DataSourceKind Typed/Opaque re-emit via `extras` (:1486-1491), a round-trip loss risk. The re-serialise the COMMIT alone triggers."
+  - "crates/brightfield-spec/src/analysis.rs:95 (ComponentPath), :112 (parent_plot), :1098 (a mark's path segment is `mark[{kind.wire_name()}]`; a plot's children index positionally as `plot[{i}]`) — mark addressing is positional+kind-keyed, so a within-plot insert/remove renumbers later siblings."
+  - "crates/brightfield-engine/src/lib.rs:1061 build_mark_index_map: HashMap<path, (flat_index, kind)> — the reducer must NOT persist positional path strings across an add/remove edit (they renumber); it walks the live AST and snapshots the whole Spec for undo."
+  - "crates/brightfield-app/src/main.rs:638 build_everything (parse -> analyse_spec -> Engine::new/load_spec registers the source views + owns the session -> execute_all -> build MarkInput). same_layout (:1166) checks plot count + geometry NOT mark count; chrome_divergence (:1197) bounces a new colour facet; the watcher swaps scenes but NEVER rebuilds the coordinator (:1219 vs the coordinator built once :1538) — the staleness boundary."
+  - "crates/brightfield-ui/src/crossfilter.rs:201 CrossfilterCoordinator (holds session/marks/plots, NO Spec); :86-120 MarkInput (batch/channels/kind/renderer_override); :442 cycle_scheme — the `c` template that recolours cached batches and re-scenes but NEVER re-queries (why a structural edit needs the heavier re-lower path); build_plot_scene re-infers scales, so a changed kind/channel re-scenes correctly; :240 a static dashboard builds no coordinator."
+  - "crates/brightfield-app/src/shell.rs:590,595-596 reseed_from_disk/set_value (the fidelity-safe buffer bridge a COMMIT routes through); :527 the byte-faithful cmd-s buffer save (the deviation baseline); :288 cycle_colour_scheme (the transient handler template); :1369 run_palette (bare-action-only -> needs the argument-prompt mode); :994 palette_runnable (greys reserved rows); :846 the second-dock-citizen doc."
+  - "crates/brightfield-app/src/spec_save.rs:50 save_spec_atomic (the reusable atomic flush); :113 decide_save (the two-writer guard — a dirty editor buffer + a commit is a conflict the spec must surface, not clobber)."
+  - "crates/brightfield-app/src/keymap.rs:22 (actions!), :64 (keybinding_for), :94 (action_for_longname): the three arms each newly-Built verb needs; coverage tests kbg_ac01 (:141) + kbg_ac12 (:153) fail on a missing arm (compiler/test-enforced)."
+  - "crates/brightfield-app/src/log_model.rs:31 FeedbackLog: the append-only newest-first cap-200 Severity{Error,Warning} rejection log with NO clear/cursor API — left as the diagnostics log; the CommandLog is a NEW, distinct model."

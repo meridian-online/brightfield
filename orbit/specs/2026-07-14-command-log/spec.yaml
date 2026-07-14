@@ -1,0 +1,422 @@
+# Keyboard command-log v1 (the SpecEdit spine) — spec (card 0023)
+# Authored 2026-07-14. Card-0018 follow-on #2: builds the SpecEdit AST-mutation API the
+# keyboard-grammar spec named as the missing substrate behind the 5 NeedsCommandLog verbs
+# (m/a/e/d/undo). Scope LOCKED by Hugh (recommended calls accepted): transient + opt-in commit;
+# all 5 verbs live; snapshot-undo; a dedicated CommandLog dock panel + argument-prompt overlay.
+# Every pin below is code-verified against current source (design memos were stale). Runs in
+# parallel with card 0022 (draggable brush) in an isolated worktree.
+# Card: orbit/cards/0023-keyboard-command-log.yaml. Extends orbit/specs/2026-07-11-keyboard-grammar.
+#
+# v1.1 (2026-07-14) folds a 4-lens adversarial /orb:review-spec (testability / completeness /
+# load-bearing-correctness / scope-portability). 10 findings survived code-verified adjudication.
+# The biggest structural correction: the v1.0 transient-apply mechanism ("a new coordinator method
+# swaps that plot's MarkInputs") is UNREACHABLE as written — MarkInput is render-only (no SQL) and
+# the live Session has NO public seam to accept a re-lowered query; so v1.1 pins a net-new engine
+# deliverable (Session::reload_spec, clg-ac15) as the load-bearing seam, makes the transient apply a
+# DURABLE coordinator refresh (so a within-plot edit persists across gestures, correcting the
+# inverted revert claim), splits count-stable vs count-changing edits (clg-ac16), fixes the
+# clg-ac05 scene-fingerprint hole for ChangeMarkType, and replaces the false decide_save
+# dirty-buffer guard on commit with a pristine-buffer gate. See review_ref.
+
+feature: "Keyboard command-log v1 — structural spec edits from the keyboard, transient live + opt-in commit"
+as_a: "analytics author composing a dashboard from the keyboard"
+i_want: "the reserved m / a / e / d / undo verbs to change a mark's type, add a mark, bind a channel, remove a mark, and undo — applied live, then committed on a deliberate action"
+so_that: "I can author mouse-free with see-then-commit, closing card 0018's last deferred bucket"
+
+goal: >
+  Build the SpecEdit spine: a gpui-free SpecEdit enum + apply(&mut Spec) reducer in
+  brightfield-spec (walk the root Component tree by ComponentPath; IndexMap-ordered inserts) plus a
+  session snapshot-undo stack (Clone the Spec, near-free — ast.rs:23). Flip the 5 NeedsCommandLog
+  verbs Reserved -> Built with keymap arms, add a palette argument-prompt overlay for the two
+  argument-taking verbs, and add a dedicated CommandLog dock panel beside FeedbackLog. Transport is
+  TRANSIENT + OPT-IN COMMIT: an applied edit mutates the working Spec and renders live with NO disk
+  write; a deliberate commit re-serialises the working Spec canonically through the editor buffer ->
+  two-writer-guarded save -> mtime watcher reload. The load-bearing build is the transient-apply
+  mechanism — because a structural edit changes the SQL (unlike the `c` cycle, which recolours
+  cached batches and never re-queries), the live apply re-analyses -> re-lowers -> re-executes the
+  AFFECTED PLOT's marks against the coordinator's already-live session. That re-execution needs a
+  NET-NEW engine seam (Session::reload_spec, clg-ac15) because the live Session emits every mark
+  query from its OWN private spec and today exposes NO public path to swap it or to run an
+  externally-lowered query (MarkInput is render-only). The transient apply is a DURABLE coordinator
+  refresh (swap marks + reset the affected plot's launch anchor + rebuild the flat-index maps + re-
+  scene), so a within-plot edit persists across later brush/slider/legend gestures — the `c`-cycle
+  discipline. v1 confines edits to WITHIN a plot (gate-clean under same_layout) and documents the
+  residual coordinator-staleness boundary (an EXTERNAL disk edit arriving via the watcher, not the
+  command log, still bounces). The span-preserving CST, the watcher-driven coordinator rebuild, the
+  replayable log, and the needs-keyboard-target verbs (f/gf/t/set-param) are deferred.
+
+maturity: "emerging"
+
+decisions_locked:  # Hugh, 2026-07-14 (recommended calls accepted); mechanism pins hardened in v1.1 review
+  - "TRANSPORT — transient + opt-in commit. An applied structural edit (m/a/e/d) mutates the WORKING Spec and re-renders the affected plot LIVE with NO disk write (the `c` cycle's write-nothing discipline). A DELIBERATE commit flushes ALL accumulated edits through the editor buffer via set_value (shell.rs:595-596) -> save_spec_atomic (spec_save.rs:50) -> the 300ms mtime watcher reloads. The canonical re-serialise (parse.rs:1391) fires ONLY on that commit."
+  - "BREADTH — all 5 verbs live: change-mark-type (m), add-mark (a), set-channel (e), remove-mark (d), undo. undo is a snapshot-stack pop, NOT a SpecEdit variant; the reducer models the 4 structural edits. add-mark <kind> and set-channel <channel,column> are argument-taking -> a new palette argument-prompt overlay mode."
+  - >-
+    TRANSIENT MECHANISM (v1.1, HARDENED — was under-specified/unreachable in v1.0) — the app hands
+    the mutated working Spec (+ its re-analysis) to a NET-NEW public engine seam Session::reload_spec
+    (clg-ac15) that swaps the session's PRIVATE spec/analysis/mark_index_map IN PLACE while REUSING
+    the already-registered connection + source views (no new Engine, no new DuckDB views, no disk).
+    The existing execute_mark then re-emits the NEW SQL from the swapped spec. A NEW coordinator
+    method drives that: (1) session.reload_spec(mutated_spec, re-analysis); (2) re-execute the
+    affected plot's marks -> fresh batches; (3) for a COUNT-CHANGING edit rebuild the coordinator's
+    flat-index maps (marks / mark_to_plot / every LivePlot.mark_indices) so no gesture routes to the
+    wrong plot (clg-ac16); (4) RESET the affected plot's launch anchor to the re-lowered fresh
+    inference (so build_plot_scene renders a CLEAN axis, not a widen-only UNION against the stale
+    launch domain — anchor_scale, scale.rs:360); (5) build_plot_scene -> set_scene + notify. This is
+    a DURABLE coordinator mutation (like `c`, crossfilter.rs:456-464): the edit PERSISTS across
+    later gestures. Strictly heavier than `c` (it re-queries). Why NOT "swap MarkInputs" alone:
+    MarkInput is render-only ("no SQL / plan-hash involvement", crossfilter.rs:99-100), so swapping
+    it cannot change what SQL runs — the render half is necessary but not sufficient.
+  - >-
+    TRANSIENT FALLBACK (v1.1 — re-scoped; the v1.0 build_everything framing was unreachable) — if
+    the per-plot reload_spec path proves infeasible, the fallback is a FULL in-memory rebuild on the
+    MUTATED IN-MEMORY Spec via a NEW build_from_spec(spec, base_dir) extraction that both
+    build_everything (the disk path, main.rs:638) and this fallback call — because build_everything
+    today takes a DISK PATH (parse_spec_path) and cannot accept an in-memory Spec. This fallback is a
+    FRESH session by construction (new Connection::open_in_memory, re-registered views, selection/
+    param state reset) — it is NOT "the already-live session / no new views"; still transient (no
+    disk write) via swap-all-scenes like the watcher (main.rs:1219). The primary reload_spec path is
+    preferred precisely because it reuses the live session and preserves selection/param state.
+  - "UNDO — a session snapshot stack (Clone the Spec before each edit). It spans the current uncommitted transient edits only and does NOT step past a commit barrier (post-commit undo = no-op-with-reason). NOT a replayable/serialisable log with stable ids."
+  - "CONFINEMENT — v1 edits stay WITHIN an existing plot (mark add/remove/retype/rechannel), which passes same_layout (main.rs:1166-1175, checks plot count + geometry, NOT mark count) so a commit->reload does not bounce to 'restart to apply'. An edit that would add/remove a whole plot, change geometry, or introduce a new chrome facet (chrome_divergence, main.rs:1197 — e.g. a mark that adds a colour encoding needing a new legend) is refused-with-reason at edit time, never silently applied then bounced. The edit-time gate-classifier is pinned AGAINST the real reload gate by an agreement test (clg-ac11)."
+  - "TARGETING — mark targeting is by focused-plot + ordinal, NOT the kind-keyed ComponentPath string (analysis.rs:1098 mark[{kind}], build_mark_index_map lib.rs:1061). Focus is floored at the view (mark descent still deferred, card 0018), so a structural verb acts on the focused plot's PRIMARY (first) mark; multi-mark disambiguation is deferred."
+  - "SURFACE — a dedicated CommandLog model + a second bottom-dock panel; FeedbackLog (log_model.rs:31) stays the rejection/diagnostics log. The second dock citizen also unlocks the dock-drag (shell.rs:846)."
+
+constraints:
+  - "Framework-free reducer (standing rule, mirrors brightfield-keys / spec_save): SpecEdit + apply(&mut Spec, &SpecEdit) + the snapshot-undo stack + the gate-classifier live as gpui-free data / plain functions in brightfield-spec. Every semantic-layer file answers 'could this run headless?' with yes; the app layer is the shim that drives it and re-renders. No gpui type crosses the reducer boundary."
+  - "Snapshot undo = Clone the whole Spec before each edit (ast.rs:23, total Clone). Restore is a Spec replace + a transient re-render; PartialEq (ast.rs:23) makes round-trip byte-equality unit-testable. A commit sets a barrier the undo stack cannot cross."
+  - >-
+    Transient render path is per-affected-plot re-lower against the LIVE session, NOT the `c`
+    recolour path. `c` (crossfilter.rs:442) swaps renderer_override + re-scenes from CACHED batches
+    and never re-queries; a mark-type/channel edit changes the SELECT, so the affected plot's marks
+    must re-lower (analyse_spec + lower on the mutated Spec) and re-execute against the coordinator's
+    session. But the session emits every query from its PRIVATE self.spec (lib.rs:396/488/521/573)
+    with NO public setter, and MarkInput is render-only (crossfilter.rs:99-100) — so a bare "swap
+    MarkInputs" cannot change the SQL. The SQL change is carried by the NEW Session::reload_spec seam
+    (clg-ac15): it swaps the private spec/analysis/mark_index_map and reuses the connection/views, so
+    the existing execute_mark re-emits the new SQL. Do NOT rebuild the whole coordinator per
+    keystroke; do NOT write disk.
+  - >-
+    build_plot_scene folds a FRESH inference WIDEN-ONLY against the plot's launch_scales
+    (anchor_scale unions domains: Linear domain = lmin.min(fmin)/lmax.max(fmax), scale.rs:360). A
+    structural channel/kind rebind is neither a subset nor a param-widen, so folding against the
+    STALE launch domain would show a UNIONED axis (colB's domain OR'd with colA's). The transient
+    apply therefore RESETS the affected plot's launch anchor to the re-lowered fresh inference BEFORE
+    build_plot_scene, so the preview axis is clean — matching what a commit->reload's fresh
+    build_everything would compute. (v1.0 mis-stated this as "build_plot_scene re-infers scales, so a
+    changed kind/channel re-scenes correctly".)
+  - >-
+    The coordinator holds no Spec (crossfilter.rs:201: session/marks/plots only). The command log
+    therefore holds the WORKING Spec at the app/shell layer (the reducer target + the snapshot
+    stack). The transient apply is a DURABLE coordinator refresh: session.reload_spec (clg-ac15)
+    swaps the private spec so execute_mark re-emits the new SQL; the new coordinator method re-
+    executes the affected marks, installs the fresh MarkInputs into coordinator.marks, resets the
+    plot's launch anchor, rebuilds the flat-index maps for a count-changing edit (clg-ac16), and re-
+    scenes. Because it durably mutates coordinator.marks + launch_scales (like `c`), the edit
+    PERSISTS across later gestures.
+  - >-
+    Count-stable vs count-changing split (v1.1). ChangeMarkType and SetChannel are count-STABLE: an
+    in-place MarkInput swap on coordinator.marks[mi] is sound. AddMark and RemoveMark change the mark
+    COUNT, which shifts the coordinator's flat mark-index space that the whole live path depends on
+    (coordinator.marks: Vec, mark_to_plot: HashMap<flatIdx,plotIdx> crossfilter.rs:218/250-254, each
+    LivePlot.mark_indices :128) AND the engine session's own flat mark_index_map (lib.rs:182) + its
+    selection subscriber wiring (:363). A count-changing edit must therefore rebuild those maps
+    (reload_spec rebuilds the engine's mark_index_map via build_mark_index_map from the new spec; the
+    coordinator method rebuilds marks / mark_to_plot / mark_indices), OR route through the full in-
+    memory rebuild fallback. A bare "swap the plot's MarkInputs" leaves the maps stale and a later
+    gesture re-scenes the wrong plot or indexes out of range (clg-ac16).
+  - >-
+    Commit routes through the buffer bridge ONLY: reseed_from_disk already renders text via
+    state.set_value (shell.rs:595-596); a committed edit re-serialises the working Spec, calls that
+    SAME set_value, and lets the unchanged cmd-s/decide_save/watcher pipeline carry it. NEVER an
+    out-of-band file write (bypasses the two-writer guard, spec_save.rs:113). PRISTINE-BUFFER GATE
+    (v1.1 correction): decide_save is an EXTERNAL-disk-change guard, NOT a dirty-buffer guard — for a
+    dirty in-app buffer with no external change (file_now == last_synced, buffer != either) it
+    returns Write (the `_ => Write` arm, spec_save.rs:133), and set_value would CLOBBER the author's
+    hand-typed edits before save() ever runs. So BEFORE set_value the commit checks the buffer is
+    pristine (buffer == last_synced, the should_reseed test, spec_save.rs:150); a DIRTY buffer
+    REFUSES the commit with a reason (author saves or discards the manual buffer edit first), never
+    set_value over it. decide_save remains the downstream external-file-conflict guard.
+  - "Within-plot confinement is a HARD gate at edit time, not a hope at reload time. The reducer / analysis gate-classifier classifies whether a pending edit would trip same_layout (plot count/geometry) or chrome_divergence (a new colour facet); a gate-tripping edit is refused-with-reason before it applies. Because the classifier lives in gpui-free brightfield-spec and the REAL gate (chrome_divergence main.rs:558, same_layout main.rs:1166) is app-binary-local (brightfield-app has no [lib] target), the classifier REIMPLEMENTS the gate from the spec/analysis representation and is pinned to it by an AGREEMENT test in a brightfield-app #[cfg(test)] module (clg-ac11) — drift (an under-refusing classifier that lets a new-legend edit silently bounce to 'restart to apply') is otherwise uncaught. Only gate-clean within-plot edits reach the transient render + a later commit."
+  - "Positional addressing (analysis.rs:1098 mark[{kind}], plot[{item-ordinal}]) renumbers later siblings on a within-plot insert/remove. The reducer walks the LIVE AST tree to locate the target and mutates in place under a whole-Spec snapshot; it must NOT persist a positional path STRING across an add/remove (it would corrupt). A duplicate mark[{kind}] within one plot is disambiguated by the item ordinal, which the reducer preserves."
+  - "Registry flip (registry.rs:305-315): the 5 NeedsCommandLog verbs flip Reserved -> Built — add binding_specs (m/a/e/d at View, undo at Dashboard+View) + Scores, drop reserved_reason. Each needs a keybinding_for arm (keymap.rs:64), an action_for_longname arm (:94), and a gpui action in actions! (:22); coverage tests kbg_ac01 (:141) + kbg_ac12 (:153) fail on a missing arm. The frozen bucket test (registry.rs:455-471) and the longname snapshot (:487-516: longnames UNCHANGED, only status/bindings change) are updated DELIBERATELY; the NeedsCommandLog enum variant is retained for its reason() surface + history even as its bucket empties."
+  - "Argument overlay: run_palette (shell.rs:1369) today only pick->runs a bare action; a NEW gpui-free argument-collector state machine feeds a palette argument-prompt mode. add-mark collects a mark KIND (enumerable pick-list, reuse the fuzzy matcher); set-channel collects a CHANNEL (enumerable) then a COLUMN (from the source profile). The collector is headless-unit-testable; the overlay is the gpui shim."
+  - "PNG-byte floor: the CommandLog panel, the argument overlay, and the transient render AT REST (no edit applied) are chrome/interaction ink — every example PNG is byte-identical to its pre-card baseline, NO re-baseline. Headless dumps capture launch state with no edit pending."
+  - "Verification split (project convention): the gpui-free SpecEdit/reducer/undo/registry-flip/argument-collector/gate-classifier AND the new engine Session::reload_spec seam are headless-unit-tested (verifies: capability); live keyboard dispatch, the transient render, the commit round-trip, and the dock panel are macOS-eyeball (verifies: stand-in) because keyboard/GPUI interaction is not headless-testable. See memories brightfield-window-verification / brightfield-pr-testing-preference."
+  - >-
+    Silent-no-op defence (card-0021 lesson: green tests hid a feature-dead bug when fixtures under-
+    sampled the input space): a verb must produce a REAL downstream effect asserted on the RIGHT
+    surface. SetChannel changes the SELECT, so assert the re-lowered SQL CHANGED + the executed batch
+    carries the new column + undo reverts the SQL. ChangeMarkType among the SimpleLowerer family
+    (dot/bar/line/rect all map to SimpleLowerer, lower.rs:883-894, which ignores mark.kind,
+    lower.rs:62) produces BYTE-IDENTICAL SQL and an identically-shaped batch — its real effect is the
+    SCENE GEOMETRY (circles vs rectangles, dispatched by find_renderer(renderers, m.kind)
+    crossfilter.rs:833), so assert the SCENE FINGERPRINT changed (scene_bytes over path_data/
+    draw_data via build_multi_mark_scene, crossfilter.rs:1012) + reverts on undo. NEVER assert only
+    that the log appended or a state field was written; and NEVER route a feasibility test through a
+    #[cfg(test)]-only executor (execute_raw_sql / test_execute_emitted) — that goes green while
+    proving nothing about a production path.
+
+ontology_schema:
+  name: "SpecEdit"
+  description: >
+    A typed structural mutation applied to the working Spec by apply(&mut Spec, &SpecEdit), the
+    gpui-free AST-mutation API card 0018 named as missing. Four variants (the 5th reserved verb,
+    undo, is a snapshot-stack pop, not an edit). Each edit is TYPED (never an exec-string, per the
+    VisiData warning), targets the focused plot's primary mark by walking the live AST via
+    ComponentPath, and is bracketed by a whole-Spec Clone snapshot so undo is total and near-free.
+    The reducer is order-preserving (IndexMap option bags, ast.rs:28,30) and idempotent under
+    re-serialise (parse.rs:1391), though not text-preserving (no byte-spans on nodes). Two variants
+    are count-STABLE (ChangeMarkType, SetChannel) and two are count-CHANGING (AddMark, RemoveMark);
+    the transient apply treats them differently (see the count-split constraint + clg-ac16).
+  variants:
+    - name: "ChangeMarkType"
+      fields: "{ plot: ComponentPath, mark_ordinal: usize, new_kind: MarkKind }"
+      description: "Retype the focused plot's primary mark (dot -> bar). Count-stable. Among the SimpleLowerer family the SQL is byte-identical (SimpleLowerer ignores mark.kind, lower.rs:62); the real change is the RENDERER/scene geometry (find_renderer by kind). Re-lower + re-execute + re-scene; the downstream-effect assertion is on the scene fingerprint (clg-ac05), not the SQL."
+    - name: "AddMark"
+      fields: "{ plot: ComponentPath, kind: MarkKind }"
+      description: "Append a new mark of `kind` to the focused plot's items (order-preserving). Count-CHANGING — the transient apply must rebuild the coordinator + engine flat-index maps (clg-ac16). The KIND is the argument-prompt overlay's payload. Must not create a chrome facet that trips chrome_divergence (refused-with-reason if it would)."
+    - name: "SetChannel"
+      fields: "{ plot: ComponentPath, mark_ordinal: usize, channel: Channel, column: String }"
+      description: "Bind `channel` (x/y/fill/...) to `column` on the primary mark. Count-stable. Channel is enumerable; column comes from the source profile. Changes the SELECT -> re-lower + re-query + re-scene; the downstream-effect assertion is on the changed SQL + the new batch column (clg-ac05)."
+    - name: "RemoveMark"
+      fields: "{ plot: ComponentPath, mark_ordinal: usize }"
+      description: "Drop the primary mark from the focused plot. Count-CHANGING — the transient apply must rebuild the flat-index maps (clg-ac16). A plot's LAST mark removal would empty the plot (trips same_layout) — v1 refuses emptying a plot with-reason."
+  reducer_contract: >
+    apply returns Ok(()) after mutating in place, or Err(RefuseReason) WITHOUT mutating when the
+    edit would trip a reload gate (empty a plot, add/remove a plot, change geometry, or introduce a
+    new chrome facet). The caller snapshots the pre-edit Spec BEFORE calling apply; on Err it
+    discards the snapshot (nothing changed). undo pops the snapshot stack and replaces the working
+    Spec, then re-renders transiently; it is a no-op-with-reason past a commit barrier.
+
+acceptance_criteria:
+  - id: clg-ac01
+    text: >-
+      A gpui-free SpecEdit enum (4 variants: ChangeMarkType / AddMark / SetChannel / RemoveMark) +
+      apply(&mut Spec, &SpecEdit) -> Result<(), RefuseReason> lands in a NEW framework-free module in
+      brightfield-spec. apply walks the root Component tree by ComponentPath to the focused plot,
+      mutates in place using the order-preserving IndexMap/Vec bags (ast.rs:28,30), and returns
+      Err-without-mutation on a gate-tripping edit. No gpui type crosses the boundary.
+    verify: "unit — apply each variant to a fixture Spec (single-mark plot + a vconcat multi-plot) and assert the AST changed exactly (kind/items/channel); assert a gate-tripping edit returns Err and leaves the Spec PartialEq-unchanged."
+  - id: clg-ac02
+    text: >-
+      A session snapshot-undo stack: each edit Clones the working Spec (ast.rs:23, total Clone) onto
+      the stack BEFORE apply; undo pops and replaces the working Spec. A commit sets a barrier; undo
+      cannot cross it (a no-op-with-reason). The stack is session-only (no stable ids, not replayable).
+    verify: "unit — push -> edit -> undo restores a PartialEq-equal Spec; a 3-edit sequence undoes in LIFO order; undo across a commit barrier is a no-op returning its reason; undo on an empty stack is a defined no-op."
+  - id: clg-ac03
+    text: >-
+      The 5 NeedsCommandLog verbs flip Reserved -> Built in registry() (registry.rs:311-315): each
+      gains binding_specs (m/a/e/d at View, undo at Dashboard+View) + Scores and drops
+      reserved_reason. Longnames are UNCHANGED so the longname snapshot (registry.rs:487-516) holds;
+      the frozen bucket test (registry.rs:455-471) is updated deliberately (NeedsCommandLog bucket now
+      empty); the NeedsCommandLog enum variant + its reason() arm are retained.
+    verify: "unit — the registry now reports 5 more Built verbs; the reserved-bucket test asserts NeedsCommandLog empty and NeedsKeyboardTarget unchanged; every Built verb is bound + scored (the existing registry invariant loop holds)."
+  - id: clg-ac04
+    text: >-
+      Mark targeting resolves by focused-plot + ordinal (v1: the plot's PRIMARY/first mark), NOT a
+      stored kind-keyed ComponentPath string. A within-plot AddMark/RemoveMark renumbers later
+      siblings' item-ordinal path segments (analysis.rs:1098) — the reducer re-walks the live AST each
+      edit and never caches a positional path across an add/remove. A duplicate mark[{kind}] within one
+      plot stays uniquely keyed in build_mark_index_map (lib.rs:1061) via the item ordinal.
+    verify: "unit (brightfield-engine crate — build_mark_index_map is engine-private, lib.rs:1061, unreachable from a brightfield-spec test; OR expose a gpui-free ordinal resolver in brightfield-spec to assert against) — AddMark of a second `dot` increases the plot's item count by EXACTLY ONE (cardinality) and yields two distinct AST nodes whose build_mark_index_map keys are unique; a RemoveMark then AddMark leaves the primary-mark resolution correct (no stale-path corruption). NB the vacuous 'flat indices differ' clause was dropped in v1.1 review: flat index is assigned by .enumerate() over the collected marks (lib.rs:1068), so two distinct marks always differ regardless of AddMark correctness — the real teeth are the cardinality delta + unique index-map keys + the stale-path guard."
+  - id: clg-ac05
+    text: >-
+      Silent-no-op defence, SPLIT BY VERB on the RIGHT surface (v1.1 — the v1.0 "re-lowering produces
+      DIFFERENT SQL ... a batch with the new mark kind" was VACUOUS for ChangeMarkType: dot/bar/line/
+      rect all map to SimpleLowerer (lower.rs:883-894) which ignores mark.kind (lower.rs:62), so a
+      retype is BYTE-IDENTICAL SQL and a RecordBatch has no "kind"). SetChannel: assert the re-lowered
+      QueryPlan SQL CHANGED and the executed batch carries the NEW COLUMN, and undo re-lowers to the
+      ORIGINAL SQL. ChangeMarkType: assert the SCENE FINGERPRINT changed — feed the re-lowered mark's
+      batch through build_multi_mark_scene and compare scene_bytes (path_data/draw_data,
+      crossfilter.rs:1012) against the pre-edit scene, and assert it reverts on undo (the real effect
+      is the renderer geometry, find_renderer by kind crossfilter.rs:833 — the SQL never observes it).
+      The assertion is on the changed SQL/batch (SetChannel) or the changed scene fingerprint
+      (ChangeMarkType), NEVER on a log append or a state-field write.
+    verify: "unit — (SetChannel) a live-DuckDB test: load a fixture spec, apply SetChannel(x -> another column), assert the re-lowered QueryPlan SQL differs and the executed RecordBatch carries the new column; undo, assert the SQL reverts. (ChangeMarkType) a headless scene test: apply ChangeMarkType(dot -> bar), build the scene via build_multi_mark_scene, assert scene_bytes differs from the pre-edit fingerprint; undo, assert it reverts. (The card-0021 as-bound-only lesson: the fixture must exercise the actual downstream effect, not a params-declared stand-in — and it must assert on the surface where the effect actually lives.)"
+  - id: clg-ac06
+    text: >-
+      THE transient-apply mechanism is pinned + proven, as a DURABLE coordinator refresh (v1.1): on
+      an applied edit the app layer re-analyses + re-lowers the AFFECTED PLOT's marks from the mutated
+      working Spec and drives a NEW coordinator method that (1) calls session.reload_spec (clg-ac15)
+      to swap the session's private spec so execute_mark re-emits the new SQL against the ALREADY-LIVE
+      registered views (no new Engine, no new DuckDB views, NO disk write), (2) re-executes the
+      affected marks -> fresh batches, (3) installs the fresh MarkInputs into coordinator.marks (a
+      count-stable retype/rechannel is an in-place swap; a count-changing add/remove additionally
+      rebuilds the flat-index maps, clg-ac16), (4) RESETS the affected plot's launch anchor to the
+      re-lowered fresh inference so the axis is clean not widen-unioned (anchor_scale scale.rs:360),
+      (5) build_plot_scene -> set_scene + notify. It is strictly heavier than `c` (crossfilter.rs:442,
+      which recolours cached batches and never re-queries). Because it durably mutates
+      coordinator.marks + launch_scales (like `c`, crossfilter.rs:456-464), the edit PERSISTS across
+      later gestures (see clg-ac11). If per-plot reload_spec proves unreachable, the documented
+      fallback is the full in-memory rebuild via build_from_spec (see clg-ac15 / decisions_locked) —
+      still transient, but a fresh session by construction.
+    verify: "unit — the feasibility leg drives the PRODUCTION seam Session::reload_spec (clg-ac15), NOT execute_raw_sql / test_execute_emitted (both #[cfg(test)], which would go green proving nothing): load a fixture, reload_spec with a channel-changed mutated Spec + its re-analysis, execute_mark on the SAME session, and assert the executed batch changed SHAPE (the new column present) — mirroring clg-ac05's real-downstream-effect discipline. in-app — press m/e on a focused view and watch the plot re-scene live with a CLEAN axis and no file write (a no-write static check on the apply path, mirroring the `c` ac-13 no-write assertion). verifies: capability for the re-execute, stand-in for the live render."
+  - id: clg-ac07
+    text: >-
+      The explicit commit action flushes ALL accumulated transient edits: it re-serialises the working
+      Spec canonically (parse.rs:1391) into a string, calls state.set_value (shell.rs:595-596) so the
+      buffer becomes the single source of truth, then the unchanged decide_save (spec_save.rs:113) /
+      save_spec_atomic (:50) / mtime-watcher pipeline carries it. No out-of-band write. PRISTINE-BUFFER
+      GATE (v1.1 correction — v1.0 wrongly named decide_save as the dirty-buffer guard): decide_save
+      only guards an EXTERNAL disk change (file_now vs last_synced); for a DIRTY in-app buffer with no
+      external change it returns Write (spec_save.rs:133) and set_value would silently CLOBBER the
+      author's hand-typed edits. So BEFORE set_value the commit checks the buffer is pristine (buffer
+      == last_synced, the should_reseed test spec_save.rs:150); a DIRTY buffer REFUSES the commit
+      with a reason (save or discard the manual edit first), never set_value over it. decide_save
+      stays the downstream EXTERNAL-file-conflict guard, not the dirty-buffer guard.
+    verify: "unit — (a) a serialiser round-trip test on the target within-plot-edited specs: parse -> apply -> serialise -> re-parse yields the same AST (incl. DataSourceKind Typed/Opaque via `extras`, parse.rs:1486-1491); (b) the pristine-buffer gate: buffer == last_synced -> commit proceeds; buffer != last_synced -> commit REFUSES with a reason and set_value is NOT called (assert the buffer is unchanged); (c) decide_save returns ExternalConflict for a disk-diverged file. in-app — with a pristine buffer, commit; confirm the file changes on disk and the watcher reloads it; with a dirty buffer, commit is refused with a reason (the hand-typed text survives)."
+  - id: clg-ac08
+    text: >-
+      A dedicated CommandLog model + a SECOND bottom-dock panel: an append-only list of the semantic
+      edit results (typed, human-readable — 'change-mark-type: dot -> bar'), an 'N uncommitted edits'
+      count, and a commit-barrier marker. It is DISTINCT from FeedbackLog (log_model.rs:31), which
+      stays the rejection/diagnostics log. The second dock citizen unlocks the dock-drag (shell.rs:846).
+    verify: "unit — the CommandLog model: append lands newest-first, the uncommitted count tracks edits minus commits, commit resets the count + inserts a barrier, undo pops the last entry. in-app — the panel is a second bottom-dock citizen, entries appear as verbs run, and the count updates."
+  - id: clg-ac09
+    text: >-
+      An argument-prompt overlay for the two argument-taking verbs: run_palette (shell.rs:1369) gains
+      an argument-collector mode driven by a gpui-free state machine. add-mark collects a mark KIND
+      (enumerable pick-list, reusing the fuzzy matcher); set-channel collects a CHANNEL (enumerable)
+      then a COLUMN (from the source profile). No bare canvas verb fires while the overlay is open (the
+      palette's existing overlay invariant).
+    verify: "unit — the argument-collector state machine: add-mark reaches Ready after one KIND pick; set-channel needs a CHANNEL then a COLUMN; an Esc at any step cancels to Idle; the produced SpecEdit carries the collected args. in-app — press `a`, pick a kind, confirm the mark is added; press `e`, pick channel + column, confirm the rebind."
+  - id: clg-ac10
+    text: >-
+      Keymap wiring: each of the 5 verbs gets a keybinding_for arm (keymap.rs:64), an
+      action_for_longname arm (:94), and a gpui action in actions! (:22); the coverage tests kbg_ac01
+      (:141) + kbg_ac12 (:153) stay green. The bound verbs act LIVE — a bare m/e/d on a focused view,
+      or the argument overlay for a/e, drives the transient apply (clg-ac06) and logs the result.
+    verify: "unit — the coverage tests assert every newly-Built registry binding has an adapter arm and action_for_longname covers exactly the runnable verbs. in-app — from a focused view, m/a/e/d each change the render live and land a command-log entry; undo reverses the last one. verifies: capability for coverage, stand-in for live dispatch."
+  - id: clg-ac11
+    text: >-
+      The coordinator-staleness boundary is documented + bounded + pinned by an AGREEMENT test
+      (v1.1 — the v1.0 "committed edit reverts on the next gesture" was WRONG: the transient apply
+      durably mutates the coordinator, crossfilter.rs:456-464 template, so a within-plot edit —
+      transient AND committed — PERSISTS across later brush/slider/legend gestures, exactly the
+      accepted cycled-scheme-persists behaviour, crossfilter.rs:435-437). The RESIDUAL deferred
+      boundary is an EXTERNAL disk edit arriving via the WATCHER (not the command log): the watcher
+      swaps ChartState scenes and never rebuilds the coordinator (main.rs:1214-1226 vs :1538), so an
+      external edit's fresh marks/scales won't survive a subsequent gesture — the command log
+      sidesteps this by mutating the coordinator directly. A STATIC dashboard (no coordinator,
+      crossfilter.rs:240) round-trips cleanly either way. A gate-tripping edit (empty/add/remove a
+      plot, geometry, a new chrome facet) is refused-with-reason at EDIT TIME; the gpui-free
+      gate-classifier's verdict is pinned EQUAL to the real reload gate (chrome_divergence
+      main.rs:558 / same_layout main.rs:1166) by an agreement test, so an under-refusing classifier
+      that lets a new-legend edit silently bounce is caught.
+    verify: "unit — the gate-classifier: a within-plot mark retype/rechannel/add/remove is gate-clean; emptying a plot / a new-colour-facet edit is refuse-with-reason. AGREEMENT test (brightfield-app #[cfg(test)] module — the crate that CAN see chrome_divergence/same_layout, as the existing main.rs:2471+ tests do): for a pre/post-edit spec pair, build the ChromeSnapshot + plot geometry from the MUTATED spec via the app's own build path and assert the spec-layer classifier's verdict EQUALS chrome_divergence(launch, rebuilt) / the same_layout predicate on the same inputs (ideally the classifier is the SINGLE shared predicate both the edit-time refusal and the reload gate call, so drift is impossible). in-app — a committed within-plot edit reloads clean AND survives a subsequent gesture on a live example; a chrome-facet edit is refused with a reason (no silent bounce)."
+  - id: clg-ac12
+    text: >-
+      Interaction/authoring ink, not data ink: at REST (no edit pending) the CommandLog panel, the
+      argument overlay, and the transient render are invisible to the headless dump, so every example
+      PNG is byte-identical to its pre-card baseline (NO re-baseline). An at-rest scene probe confirms
+      the launch render is unchanged.
+    verify: "PNG-identity — scripts/compare-example-pngs.sh reports all examples identical (cmp -s, no committed goldens). unit — an at-rest scene probe asserts the launch scene is unchanged with no edit applied."
+  - id: clg-ac13
+    text: >-
+      Gate: `cargo build` + `cargo test --workspace` green; NEVER `cargo fmt --all` (rustfmt-version
+      skew churns the repo). clippy is not installed in the 1.95.0 toolchain. Fresh worktrees use
+      `cargo +1.95.0`.
+    verify: "gate — the workspace build + test suite is green."
+  - id: clg-ac14
+    text: >-
+      A recorded KEYBOARD-ONLY authoring walkthrough is the sign-off artifact (card-0018 ac-17
+      precedent): from a focused view, with zero mouse — m change-mark-type -> a add-mark (arg overlay)
+      -> e set-channel (arg overlay) -> d remove-mark -> undo (each rendering live) -> the explicit
+      commit -> the watcher reloads the committed spec.
+    verify: "stand-in — Hugh records (or watches) a mouse-free screencast of the loop; the recording is the acceptance artifact and the living demo. Accepted because keyboard authoring is a human-observable property not headless-testable."
+  - id: clg-ac15
+    text: >-
+      NEW ENGINE SEAM (v1.1, the load-bearing transient deliverable): a public Session::reload_spec(
+      spec: Spec, analysis: Analysis) that swaps the session's PRIVATE spec / analysis / mark_index_map
+      IN PLACE (rebuilding mark_index_map via build_mark_index_map, lib.rs:1061, and reconciling the
+      selection subscriber wiring, lib.rs:363) while REUSING the existing connection + already-
+      registered source views — no new Engine, no new DuckDB views, no disk. After reload_spec the
+      existing execute_mark (lib.rs:509) re-emits the NEW SQL from the swapped spec. This exists
+      because today the live Session emits every query from its private self.spec with NO public setter
+      and the only executor of an externally-built EmittedQuery (execute_emitted, lib.rs:785) is
+      private / #[cfg(test)]-only — so a re-lowered structural edit had NO production path onto the
+      live session. The full-rebuild fallback is factored as build_from_spec(spec: Spec, base_dir)
+      that both build_everything (the disk path, main.rs:638) and the transient fallback call, so the
+      fallback runs on an in-memory Spec with no disk write (v1.0 wrongly named build_everything, which
+      takes a disk PATH).
+    verify: "unit — a live-DuckDB test: Engine::new().load_spec(spec_A); execute_mark(0) yields batch_A; reload_spec(spec_B, analysis_B) where spec_B rebinds a channel; execute_mark(0) now re-emits the NEW SQL and yields a batch with the new column — asserting the swap took effect on the SAME session (same connection, no reload from disk, views reused). A count-changing spec_B (an added mark) rebuilds mark_index_map so the new mark's flat index resolves + executes. (This is the production path clg-ac06's feasibility leg drives — NOT a #[cfg(test)] executor.)"
+  - id: clg-ac16
+    text: >-
+      COUNT-CHANGING INTEGRITY (v1.1): a transient AddMark/RemoveMark changes the mark COUNT, so the
+      apply must rebuild the coordinator's flat mark-index space — coordinator.marks (Vec), mark_to_plot
+      (HashMap<flatIdx,plotIdx>, crossfilter.rs:218/250-254) and every LivePlot.mark_indices (:128) —
+      AND the engine session's flat mark_index_map (via reload_spec, clg-ac15) + its selection
+      subscriber wiring. A bare "swap the plot's MarkInputs" leaves those maps stale and a later
+      gesture on ANOTHER plot re-scenes the wrong plot or indexes out of range (silent cross-plot
+      corruption / a dead mark). Count-stable ChangeMarkType/SetChannel do the in-place swap and skip
+      the renumbering; count-changing edits rebuild it (or route through the build_from_spec fallback).
+    verify: "unit — after an AddMark on plot P, assert (a) mark_to_plot has an entry for the new flat index pointing to P and every pre-existing mark still maps to its ORIGINAL plot; (b) the engine's mark_index_map resolves the new mark; a headless routing check: a simulated gesture targeting a DIFFERENT plot Q re-executes Q's marks (not P's). A RemoveMark then re-check the same integrity (no shifted index points at the wrong mark). in-app — after an add-mark, a brush on another plot still cross-filters correctly (mark_to_plot / mark_index_map integrity)."
+
+out_of_scope:
+  - "Text/comment/formatting-preserving write-back (a span-preserving CST) — the AST has no byte-spans (ast.rs); commit re-serialises canonically (the documented deviation). Deferred to a fast-follow."
+  - "The WATCHER-driven coordinator live-rebuild — the watcher swaps scenes but never rebuilds CrossfilterCoordinator (main.rs:1214-1226 vs :1538). v1's command-log edits sidestep this by mutating the coordinator DIRECTLY (clg-ac06), so a within-plot command-log edit persists. The residual gap is an EXTERNAL disk edit (arriving via the watcher, not the command log): its fresh marks/scales won't survive a subsequent gesture on an interactive dashboard — same class as cycled-scheme-persists. v1 documents the boundary; the watcher-rebuild fix is deferred."
+  - "A replayable / serialisable command log with STABLE node ids — positional addressing renumbers on insert/delete (analysis.rs:1098), so a replay keyed to it would corrupt under the very add/remove verbs it supports. v1 is a session snapshot-undo BUFFER; the replayable spine is a follow-on."
+  - "The needs-keyboard-target verbs f / g f / t + set-param (registry ReservedReason::NeedsKeyboardTarget) — a predicate/param-naming UI over the pointer-derived selection model. A different substrate, its own later card."
+  - "Mark-altitude focus + multi-mark target disambiguation — mark descent is still deferred (card 0018), so structural verbs target the focused plot's primary/first mark."
+  - "Whole-plot add/remove, plot-geometry edits, and new-chrome-facet edits (a mark that adds a colour encoding needing a new legend) — refused-with-reason (clg-ac11), not durably supported in v1."
+
+risks:
+  - "TRANSIENT-APPLY MECHANISM (load-bearing, recon open Q5) — `c` is NOT a sufficient template because it never re-queries, AND the render half ('swap MarkInputs') alone can't change the SQL: MarkInput is render-only and the live Session emits from its PRIVATE spec with no public setter. v1.1 pins the net-new Session::reload_spec seam (clg-ac15) as the load-bearing engine deliverable + a NON-VACUOUS feasibility test (clg-ac06 drives reload_spec, not a #[cfg(test)] executor). If reload_spec proves unreachable, the fallback is the build_from_spec in-memory rebuild (a fresh session, state reset)."
+  - "The canonical serialiser is lossy (parse.rs:1391 — reformats, drops comments, hardcoded block order 1414-1435; DataSourceKind Typed/Opaque round-trip via `extras` 1486-1491, a reshape/drop risk). A visible regression from byte-faithful save, confined to the explicit commit; clg-ac07 round-trip-tests it on the target specs."
+  - "Coordinator-staleness-on-gesture — v1.1 CORRECTION: a within-plot command-log edit does NOT revert (the transient apply durably mutates the coordinator, so it persists like the cycled scheme). The residual staleness is an EXTERNAL disk edit via the watcher (not the command log), which never rebuilds the coordinator; a static dashboard round-trips. v1 documents the boundary rather than rebuilding the coordinator on the watcher path (clg-ac11 / out_of_scope)."
+  - "Count-changing edits shift the flat mark-index space (coordinator.marks / mark_to_plot / mark_indices + the engine mark_index_map + selection subscribers). A bare MarkInput swap leaves them stale -> a later gesture re-scenes the wrong plot or indexes out of range. clg-ac16 rebuilds them for AddMark/RemoveMark (or routes through the fallback)."
+  - "Transient axis fidelity — build_plot_scene folds widen-only against the plot's launch_scales (anchor_scale unions domains, scale.rs:360), so a channel/kind rebind would show a UNIONED/stale axis unless the transient apply RESETS the affected plot's launch anchor to the re-lowered fresh inference first (clg-ac06). The defect self-heals on commit->reload (fresh build_everything) but the preview is the card's whole see-then-commit value, so the reset is required, not optional."
+  - "Reload gates bounce SOME structural edits (memo-correction: NOT all) — a mark add/remove/retype INSIDE a plot passes same_layout (main.rs:1166); a whole-plot / geometry / new-chrome-facet edit trips a gate. A commit-routed gate-tripping edit that silently needs a restart is worse than a greyed verb, so clg-ac11 refuses it AT EDIT TIME — and pins the gpui-free classifier EQUAL to the real app-binary gate by an agreement test (the classifier reimplements the gate because brightfield-app has no [lib] target)."
+  - "Silent-no-op class (card-0021 lesson) — green tests hid a feature-dead bug when fixtures under-sampled the input space. v1.1 splits clg-ac05 by verb on the RIGHT surface: SetChannel asserts changed SQL + new batch column; ChangeMarkType (byte-identical SQL among the SimpleLowerer family — lower.rs:62 ignores mark.kind) asserts the changed SCENE FINGERPRINT (scene_bytes). NEVER the log append alone, NEVER a #[cfg(test)]-only executor."
+  - "Positional addressing renumbers on insert/delete (analysis.rs:1098) — snapshot-undo sidesteps identity for undo, but the reducer must target by live-AST walk + ordinal, never a cached positional path string (clg-ac04); and the transient apply must renumber the runtime flat-index maps on a count change (clg-ac16)."
+  - "Out-of-band write / dirty-buffer clobber bypasses the two-writer guard (spec_save.rs:113) — the commit MUST funnel through the buffer + set_value, AND a PRISTINE-BUFFER GATE must precede set_value: decide_save is NOT a dirty-buffer guard (it returns Write for a dirty buffer, spec_save.rs:133), so committing over a dirty buffer would silently clobber hand-typed edits. clg-ac07 refuses a dirty-buffer commit with a reason."
+  - "Argument-taking verbs have NO input surface today — run_palette (shell.rs:1369) runs only a bare action; the argument-prompt overlay (clg-ac09) is net-new UI."
+  - "Live keyboard dispatch stays macOS-eyeball — the dispatch tables are headless-only and do not prove GPUI conformance; the in-app + screencast ACs (clg-ac06/10/14) verify the live wiring."
+  - "The registry flip empties the NeedsCommandLog bucket — the frozen bucket test (registry.rs:455-471) must be updated deliberately and the enum variant retained, or CI reads a real regression as an intended change (or vice versa)."
+
+evaluation_principles:
+  - principle: "Keyboard authoring provable — the mouse-free m/a/e/d + undo -> commit loop actually changes the render live and lands on disk (clg-ac06/10/14)."
+    weight: 0.22
+  - principle: "Transient-mechanism honesty — the per-affected-plot re-lower path is proven reachable through the NAMED production seam Session::reload_spec (clg-ac15/06), never hand-waved as 'like c' (which does not re-query) or 'swap MarkInputs' (render-only, can't change the SQL); the feasibility test drives the production path, not a #[cfg(test)] executor."
+    weight: 0.22
+  - principle: "Framework-free purity — SpecEdit / reducer / undo / registry-flip / argument-collector / gate-classifier are gpui-free and headless-tested; the app layer + the engine reload_spec seam are the shims, the classifier pinned to the real gate by an agreement test."
+    weight: 0.13
+  - principle: "No silent no-ops — every verb produces a real downstream effect on the RIGHT surface (SetChannel: SQL/batch; ChangeMarkType: scene fingerprint) + a log entry + a working undo; a count-changing edit keeps the flat-index maps consistent; a gate-tripping edit is refused-with-reason, never silently bounced (clg-ac05/11/16)."
+    weight: 0.2
+  - principle: "Fidelity-safe durability — commit routes through the buffer/two-writer pipeline behind a pristine-buffer gate (no dirty-buffer clobber); the lossy re-serialise is confined to the opt-in commit and round-trip-tested (clg-ac07)."
+    weight: 0.13
+  - principle: "Byte-identity — the command log, its panel, the overlays, and the at-rest render leave every example PNG unchanged (clg-ac12)."
+    weight: 0.1
+
+exit_conditions:
+  - "clg-ac01..05 + clg-ac07 (round-trip + pristine gate) + clg-ac08 (model) + clg-ac09 (collector) + clg-ac11 (classifier + agreement) + clg-ac12 (PNG) + clg-ac13 + clg-ac15 (reload_spec) + clg-ac16 (count-changing integrity) green — the gpui-free reducer/undo/registry-flip/argument-collector/gate-classifier + the engine reload_spec seam + serialiser round-trip + flat-index integrity + at-rest byte gate."
+  - "clg-ac06 (transient render, clean axis) + clg-ac10 (live verbs) + clg-ac08 (dock panel) + clg-ac09 (overlay) + clg-ac07 (commit -> reload) + clg-ac11 (edit persists a gesture) eyeball-confirmed by Hugh in the macOS app."
+  - "clg-ac14 recorded: a mouse-free keyboard authoring screencast (m/a/e/d/undo -> commit -> reload) is attached."
+  - "No durable spec mutation ships WITHOUT the explicit commit; the transient path writes nothing; a dirty-buffer commit is refused; the needs-keyboard-target verbs stay reserved-and-visible; the span-preserving CST + watcher coordinator-rebuild + replayable log are deferred and documented."
+
+memories_considered:
+  - key: brightfield-window-verification
+    disposition: adopted
+    reason: "The verification split — headless-unit for the gpui-free SpecEdit/reducer/undo/registry/gate-classifier AND the engine Session::reload_spec seam vs macOS-eyeball for the live keyboard dispatch, transient render, and commit round-trip — is the direct application of the headless-vs-eyeball loop; the walkthrough screencast (clg-ac14) is the eyeball sign-off."
+  - key: brightfield-pr-testing-preference
+    disposition: adopted
+    reason: "Ships on a branch/PR (isolated worktree, parallel with card 0022) for Hugh to product-test the live authoring loop in the app before merge; the in-app ACs (clg-ac06/07/08/09/10/11) are his checks."
+
+metadata:
+  version: "1.1"
+  test_prefix: "clg"
+  timestamp: "2026-07-14T00:00:00Z"
+  card: "orbit/cards/0023-keyboard-command-log.yaml"
+  extends: "orbit/specs/2026-07-11-keyboard-grammar/spec.yaml (card 0018 follow-on #2 — the SpecEdit spine behind the NeedsCommandLog verbs)"
+  parallel_with: "card 0022 (draggable/resizable brush) — isolated worktree, ultracode"
+  review_ref: >-
+    orbit/specs/2026-07-14-command-log/review-spec-2026-07-14.md — a 4-lens adversarial
+    /orb:review-spec (testability / completeness / load-bearing-correctness / scope-portability),
+    each finding independently re-adjudicated real-and-unaddressed vs already-covered against
+    CURRENT source. 10 findings survived (3 HIGH, 7 MEDIUM) and are folded here into v1.1. Biggest:
+    the v1.0 transient-apply mechanism was unreachable (no engine seam) -> new clg-ac15
+    (Session::reload_spec); clg-ac05 was vacuous for ChangeMarkType -> scene-fingerprint split;
+    the commit's decide_save dirty-buffer guard was false -> pristine-buffer gate (clg-ac07); the
+    clg-ac06/11 revert claim was inverted -> durable coordinator mutation persists; + count-changing
+    flat-index integrity (clg-ac16), the classifier<->gate agreement test (clg-ac11), the
+    widen-union axis reset (clg-ac06), and the re-scoped build_from_spec fallback (clg-ac15).
