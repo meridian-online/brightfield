@@ -1,0 +1,51 @@
+# Conditional encoding via Mosaic `highlight` (card 0021).
+#
+# One scatter plot, NO cross-filter. Drag a rectangular brush over some points:
+# the points INSIDE the brush keep full opacity while every other point fades to
+# 0.15. Nothing is dropped or re-queried — `highlight` KEEPS every mark on screen
+# and just deemphasises the non-matching ones (Mosaic's `highlight` interactor /
+# Vega-Lite's conditional `opacity`). Clear the brush to restore full opacity.
+#
+# The selection here is `as:`-bound only — it is born from the `intervalXY`
+# producer's `as: $range`, with no `params:` declaration. That as-bound form was
+# the case card 0021's review caught rendering inert; it now dims correctly, and
+# because the brush and the highlight share one plot it also exercises the
+# no-self-exclusion fix (the brushed plot greys its own non-matching points).
+#
+#   cargo run -p brightfield-app -- examples/highlight.yaml
+#
+# Live-window only — a headless PNG shows the resting state (nothing brushed, so
+# every point is at full opacity).
+data:
+  points:
+    - { x: 1, y: 3, group: west }
+    - { x: 2, y: 5, group: west }
+    - { x: 3, y: 2, group: west }
+    - { x: 2, y: 8, group: west }
+    - { x: 1, y: 6, group: west }
+    - { x: 4, y: 5, group: central }
+    - { x: 5, y: 7, group: central }
+    - { x: 6, y: 4, group: central }
+    - { x: 5, y: 9, group: central }
+    - { x: 4, y: 2, group: central }
+    - { x: 6, y: 8, group: central }
+    - { x: 7, y: 6, group: east }
+    - { x: 8, y: 9, group: east }
+    - { x: 9, y: 5, group: east }
+    - { x: 8, y: 3, group: east }
+    - { x: 7, y: 8, group: east }
+    - { x: 9, y: 7, group: east }
+    - { x: 10, y: 4, group: east }
+plot:
+  - mark: dot
+    data: { from: points }
+    x: x
+    y: y
+    fill: group
+  - select: intervalXY
+    as: $range
+  - select: highlight
+    by: $range
+    opacity: 0.15
+width: 640
+height: 480
