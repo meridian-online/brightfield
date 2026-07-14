@@ -23,9 +23,9 @@
 use indexmap::IndexMap;
 
 use crate::analysis::ComponentPath;
-use crate::ast::{Component, Mark, PlotNode, Spec, SpecValue, ValueOrParamRef};
+use crate::ast::{Component, LegendNode, Mark, PlotNode, Spec, SpecValue, ValueOrParamRef};
 use crate::layout::{resolve_axis_titles, AxisTitle};
-use crate::vocab::MarkKind;
+use crate::vocab::{LegendChannel, MarkKind};
 
 /// Positional channel keys inherited by an added mark from the plot's primary
 /// mark so the new mark actually renders against the same frame (data source +
@@ -109,6 +109,20 @@ impl SpecEdit {
         matches!(self, SpecEdit::AddMark { .. } | SpecEdit::RemoveMark { .. })
     }
 
+    /// The mark ordinal this edit targets (v1: always 0, the primary mark);
+    /// `AddMark` appends, so it reports 0. The count-stable in-place coordinator
+    /// mutation indexes `mark_indices` by this so it matches the reducer's
+    /// nth-mark mutation rather than assuming the first mark (card 0023 finding 7).
+    #[must_use]
+    pub fn mark_ordinal(&self) -> usize {
+        match self {
+            SpecEdit::ChangeMarkType { mark_ordinal, .. }
+            | SpecEdit::SetChannel { mark_ordinal, .. }
+            | SpecEdit::RemoveMark { mark_ordinal, .. } => *mark_ordinal,
+            SpecEdit::AddMark { .. } => 0,
+        }
+    }
+
     /// A short human-readable summary for the command-log panel
     /// (`change-mark-type: -> bar`).
     #[must_use]
@@ -150,6 +164,13 @@ pub enum RefuseReason {
     /// allows a retype only WITHIN the same zero-baseline class (dot<->line,
     /// barY<->areaY<->rectY, ...).
     WouldChangeInset,
+    /// Changing a colour scale (a `fill`/`stroke` rebind, or a retype that
+    /// adds/removes a sequential-colour renderer) on a plot a STANDALONE colour
+    /// `legend:` references would change that legend's swatches/gradient — a
+    /// `chrome_divergence` a reload can't hot-apply (card 0023 finding 3). An
+    /// INLINE colour fill with no referencing legend stays clean (not captured by
+    /// the gate); v1 refuses only the legend-referenced case.
+    WouldChangeLegend,
 }
 
 impl RefuseReason {
@@ -167,6 +188,9 @@ impl RefuseReason {
             }
             RefuseReason::WouldChangeInset => {
                 "would change the axis-inset baseline (retype within the same bar/area/dot class)"
+            }
+            RefuseReason::WouldChangeLegend => {
+                "would change a colour legend's scale (remove the standalone legend, or edit its plot's colour, first)"
             }
         }
     }
@@ -278,6 +302,25 @@ pub fn classify_edit(spec: &Spec, edit: &SpecEdit) -> Result<(), RefuseReason> {
         _ => {}
     }
 
+    // Colour-scale change under a referencing standalone legend (finding 3): a
+    // `legend: color for: <this plot>` renders the plot's fill/stroke colour
+    // scale, which `chrome_divergence` captures — so a colour rebind (or a retype
+    // that adds/removes a sequential-colour renderer) trips the real gate. Refuse
+    // it. An inline colour fill with NO referencing legend is NOT captured, so it
+    // stays clean (the earlier finding — see `clg_ac11_binding_an_inline_fill_is_clean`).
+    let colour_edit = match edit {
+        SpecEdit::SetChannel { channel, .. } => is_colour_channel(channel),
+        SpecEdit::ChangeMarkType { new_kind, mark_ordinal, .. } => {
+            let current = nth_mark_kind(plot, *mark_ordinal);
+            kind_carries_colour_scale(*new_kind)
+                || current.is_some_and(kind_carries_colour_scale)
+        }
+        _ => false,
+    };
+    if colour_edit && colour_legend_references_plot(spec, plot) {
+        return Err(RefuseReason::WouldChangeLegend);
+    }
+
     // Chrome-signature comparison: apply to a clone and diff the launch-fixed
     // chrome the reload gate compares.
     let before = plot_chrome_signature(plot);
@@ -324,6 +367,105 @@ fn plot_chrome_signature(plot: &PlotNode) -> PlotChromeSig {
         x_title: resolve_derived_title(&decided.x, plot, "x"),
         y_title: resolve_derived_title(&decided.y, plot, "y"),
     }
+}
+
+/// Whether a channel key drives a COLOUR scale (finding 3) — a rebind of one
+/// changes the colour domain/scheme a standalone legend renders.
+fn is_colour_channel(channel: &str) -> bool {
+    matches!(channel, "fill" | "stroke" | "color" | "colour")
+}
+
+/// Whether a mark kind's RENDERER carries a sequential colour scale (finding 3)
+/// — mirrors `configured_renderer`'s scheme-carrying set. A retype that adds or
+/// removes one changes what a standalone colour legend would render.
+fn kind_carries_colour_scale(kind: MarkKind) -> bool {
+    matches!(
+        kind,
+        MarkKind::Raster
+            | MarkKind::Heatmap
+            | MarkKind::Cell
+            | MarkKind::Hexbin
+            | MarkKind::Contour
+    )
+}
+
+/// The kind of the `ordinal`-th mark in a plot (finding 3 — the current colour
+/// state a retype changes away from).
+fn nth_mark_kind(plot: &PlotNode, ordinal: usize) -> Option<MarkKind> {
+    let item = nth_mark_item_index(plot, ordinal)?;
+    match &plot.items[item] {
+        Component::Mark(m) => Some(m.kind),
+        _ => None,
+    }
+}
+
+/// Whether a STANDALONE colour `legend:` anywhere in the spec references
+/// `focused` (finding 3): a `legend: color for: <focused's name>`, or — since a
+/// no-`for:` legend binds the sole colour-encoded plot — a no-`for:` colour
+/// legend when `focused` is itself colour-encoded (the conservative case the
+/// classifier can't disambiguate cheaply). Inline legends (drawn inside a plot)
+/// are NOT standalone and are not captured by `chrome_divergence`; only the
+/// composition-level `Component::Legend` nodes are.
+fn colour_legend_references_plot(spec: &Spec, focused: &PlotNode) -> bool {
+    let focused_name = focused.attributes.get("name").and_then(|v| match v {
+        SpecValue::String(s) => Some(s.as_str()),
+        _ => None,
+    });
+    let mut referenced = false;
+    for_each_legend(spec.root.as_ref(), &mut |legend| {
+        if legend.channel != LegendChannel::Color {
+            return;
+        }
+        match legend.options.get("for") {
+            Some(ValueOrParamRef::Value(SpecValue::String(name))) => {
+                if Some(name.as_str()) == focused_name {
+                    referenced = true;
+                }
+            }
+            // A no-`for:` colour legend binds the sole colour-encoded plot; if the
+            // focused plot is colour-encoded, conservatively treat it as bound.
+            None => {
+                if plot_is_colour_encoded(focused) {
+                    referenced = true;
+                }
+            }
+            // A `$param for:` can't be resolved statically — leave it (a rebind
+            // there is a rarer path the reload gate still backstops).
+            Some(_) => {}
+        }
+    });
+    referenced
+}
+
+/// Visit every standalone [`LegendNode`] under a component subtree (finding 3).
+fn for_each_legend(component: Option<&Component>, f: &mut impl FnMut(&LegendNode)) {
+    let Some(component) = component else { return };
+    match component {
+        Component::Legend(l) => f(l),
+        Component::Plot(p) => {
+            for c in &p.items {
+                for_each_legend(Some(c), f);
+            }
+        }
+        Component::HConcat(c) | Component::VConcat(c) => {
+            for child in &c.items {
+                for_each_legend(Some(child), f);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Whether a plot carries a colour encoding (finding 3): any mark binds a colour
+/// channel, or any mark's renderer carries a sequential colour scale.
+fn plot_is_colour_encoded(plot: &PlotNode) -> bool {
+    plot.items.iter().any(|c| match c {
+        Component::Mark(m) => {
+            kind_carries_colour_scale(m.kind)
+                || m.options.keys().any(|k| is_colour_channel(k))
+        }
+        _ => false,
+    })
 }
 
 /// Resolve an axis title DECISION to its concrete text, mirroring card 0019's
@@ -931,6 +1073,85 @@ vconcat:
         apply(&mut spec, &SpecEdit::AddMark { plot: cp("root"), kind: MarkKind::Line })
             .expect("clean");
         assert!(classify_edit(&spec, &SpecEdit::RemoveMark { plot: cp("root"), mark_ordinal: 0 }).is_ok());
+    }
+
+    // A dashboard with a STANDALONE colour legend `for: scatter` referencing a
+    // named plot: a colour edit on that plot changes the legend's scale → the
+    // real gate bounces, so the classifier must refuse it (finding 3). The plot
+    // is `root/vconcat[1]` (the legend is `root/vconcat[0]`).
+    const LEGEND_REFERENCED: &str = "\
+data:
+  t: SELECT 1 AS a, 2 AS b, 'x' AS c
+vconcat:
+  - legend: color
+    for: scatter
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: a
+        y: b
+        fill: c
+    name: scatter
+";
+
+    #[test]
+    fn clg_ac11_finding3_colour_rebind_under_a_referencing_legend_is_refused() {
+        let spec = parse(LEGEND_REFERENCED);
+        // A fill rebind on the legend-referenced plot changes its colour scale.
+        assert_eq!(
+            classify_edit(
+                &spec,
+                &SpecEdit::SetChannel {
+                    plot: cp("root/vconcat[1]"),
+                    mark_ordinal: 0,
+                    channel: "fill".to_string(),
+                    column: "b".to_string(),
+                }
+            ),
+            Err(RefuseReason::WouldChangeLegend)
+        );
+        // A retype that adds a sequential-colour renderer (dot -> heatmap) is
+        // likewise refused under the referencing legend.
+        assert_eq!(
+            classify_edit(
+                &spec,
+                &SpecEdit::ChangeMarkType {
+                    plot: cp("root/vconcat[1]"),
+                    mark_ordinal: 0,
+                    new_kind: MarkKind::Heatmap,
+                }
+            ),
+            Err(RefuseReason::WouldChangeLegend)
+        );
+        // A POSITIONAL (x) rebind on the same plot is NOT a colour change — it is
+        // governed by the axis-title rule, not the legend rule (here x is labelled
+        // by neither, so it is the derived-title refusal, not the legend one).
+        // Bind a labelled axis to isolate: the legend rule must not fire for x.
+        assert_ne!(
+            classify_edit(
+                &spec,
+                &SpecEdit::SetChannel {
+                    plot: cp("root/vconcat[1]"),
+                    mark_ordinal: 0,
+                    channel: "x".to_string(),
+                    column: "b".to_string(),
+                }
+            ),
+            Err(RefuseReason::WouldChangeLegend),
+            "a positional rebind is not a colour-legend change"
+        );
+    }
+
+    #[test]
+    fn clg_ac11_finding3_colour_rebind_without_a_legend_stays_clean() {
+        // The SAME fill rebind on a plot with NO standalone legend is clean — an
+        // inline colour fill is not captured by the gate (the earlier finding).
+        let spec = parse(SINGLE);
+        assert!(classify_edit(
+            &spec,
+            &SpecEdit::SetChannel { plot: cp("root"), mark_ordinal: 0, channel: "fill".to_string(), column: "c".to_string() }
+        )
+        .is_ok());
     }
 
     // -------- clg-ac07a: parse -> apply -> serialise -> re-parse round-trip ----

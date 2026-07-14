@@ -38,6 +38,23 @@ pub struct HighlightStyle {
     pub stroke_opacity: Option<f64>,
 }
 
+impl From<&brightfield_spec::analysis::HighlightStyle> for HighlightStyle {
+    /// Resolve a spec-side highlight `otherwise` style (CSS-hex colour strings)
+    /// into the render style (parsed `Color`s). Shared by card-0021 app assembly
+    /// AND the card-0023 command-log mark rebuild, so a re-queried mark dims
+    /// identically after a structural edit / undo (finding 1/2/4 — a rebuild that
+    /// dropped this silently killed highlight dimming).
+    fn from(style: &brightfield_spec::analysis::HighlightStyle) -> Self {
+        HighlightStyle {
+            opacity: style.opacity,
+            fill: style.fill.as_deref().and_then(parse_css_hex),
+            fill_opacity: style.fill_opacity,
+            stroke: style.stroke.as_deref().and_then(parse_css_hex),
+            stroke_opacity: style.stroke_opacity,
+        }
+    }
+}
+
 /// Default deemphasis alpha multiplier when a highlight carries no override
 /// fields — Mosaic's `opacity` default for the non-matching set.
 const DEFAULT_DIMMED_ALPHA: f32 = 0.2;

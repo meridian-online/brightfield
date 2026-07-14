@@ -164,9 +164,8 @@ pub fn should_reseed(buffer: &str, last_synced: Option<&str>, file_now: &str) ->
 /// reason (the author saves or discards the manual edit first). `decide_save`
 /// stays the downstream external-file-conflict guard, NOT the dirty-buffer guard.
 ///
-/// Its live caller (the deliberate commit action) is the deferred macOS-eyeball
-/// surface (card 0023); the gate logic is unit-tested now (clg-ac07).
-#[allow(dead_code)]
+/// Its live caller is the deliberate cmd-s commit action (card 0023,
+/// `EditorPanel::commit_buffer`); the gate logic is unit-tested (clg-ac07).
 #[must_use]
 pub fn commit_is_allowed(buffer: &str, last_synced: Option<&str>) -> bool {
     match last_synced {
@@ -178,8 +177,7 @@ pub fn commit_is_allowed(buffer: &str, last_synced: Option<&str>) -> bool {
 }
 
 /// The refusal reason a dirty-buffer commit surfaces (card 0023, clg-ac07).
-/// Consumed by the deferred commit action (macOS-eyeball surface).
-#[allow(dead_code)]
+/// Consumed by the cmd-s commit action (`EditorPanel::commit_buffer`).
 pub const DIRTY_BUFFER_COMMIT_REFUSAL: &str =
     "unsaved editor edits — save or discard them before committing command-log edits";
 

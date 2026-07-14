@@ -27,6 +27,10 @@ pub const SIDEBAR_PANEL_NAME: &str = "BrightfieldSidebar";
 /// The reload/save feedback Log panel's stable serialisation name.
 pub const LOG_PANEL_NAME: &str = "BrightfieldLog";
 
+/// The keyboard command-log panel's stable serialisation name (card 0023) — the
+/// SECOND bottom-dock citizen, distinct from the diagnostics Log.
+pub const CMD_LOG_PANEL_NAME: &str = "BrightfieldCommandLog";
+
 /// Default width of the left (sidebar) dock, in logical pixels.
 pub const SIDEBAR_DOCK_WIDTH: f64 = 220.0;
 

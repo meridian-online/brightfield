@@ -10,13 +10,9 @@
 //!
 //! No gpui type crosses this boundary (semantic-layer rule).
 //!
-//! DEFERRED WIRING (card 0023): the gpui-free collector is complete + unit-
-//! tested (clg-ac09), but the palette argument-prompt OVERLAY that drives it
-//! (the `a`/`e` verbs) is the macOS-eyeball surface and is not yet attached — so
-//! the non-test build sees these APIs as unused. `allow(dead_code)` marks them
-//! intentional-and-ready rather than accidental; the overlay pass removes it.
-
-#![allow(dead_code)]
+//! The palette argument-prompt overlay (shell's `Overlay::Arg`) drives this for
+//! the `a`/`e` verbs; the overlay itself is a macOS-eyeball surface, but the
+//! collector is unit-tested (clg-ac09).
 
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_spec::edit::SpecEdit;
@@ -95,8 +91,11 @@ impl ArgCollector {
         Self { plot, mark_ordinal, verb: ArgVerb::SetChannel, step: ArgStep::Channel }
     }
 
-    /// The verb being collected for.
+    /// The verb being collected for. A public accessor for parity with
+    /// [`Self::step`]; the overlay currently dispatches on `step` alone, so this
+    /// is unused in the shim today.
     #[must_use]
+    #[allow(dead_code)]
     pub fn verb(&self) -> ArgVerb {
         self.verb
     }

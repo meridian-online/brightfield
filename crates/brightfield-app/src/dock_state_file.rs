@@ -15,8 +15,10 @@ use crate::shell_model::CANVAS_PANEL_NAME;
 
 /// Version stamped into the persisted layout. Bump when the panel set or
 /// dock structure changes incompatibly; a mismatch falls back to the
-/// default layout (no migration, no prompt).
-pub const DOCK_STATE_VERSION: usize = 1;
+/// default layout (no migration, no prompt). v2 (card 0023): the bottom dock
+/// gained the second CommandLog panel, so v1 layouts (Log-only bottom) are
+/// discarded and rebuilt with both.
+pub const DOCK_STATE_VERSION: usize = 2;
 
 /// Debounce for `LayoutChanged`-triggered saves, in milliseconds (their
 /// dock example uses the same 10s window); quit flushes immediately.

@@ -16,9 +16,7 @@ pub enum CommandLogEntry {
     /// A semantic edit that was applied live ("change-mark-type: -> bar").
     Edit(String),
     /// A commit barrier ("committed 3 edits to disk"). Constructed by
-    /// [`CommandLog::commit`], whose live caller (the deliberate commit action)
-    /// is the deferred macOS-eyeball surface (card 0023).
-    #[allow(dead_code)]
+    /// [`CommandLog::commit`] on the deliberate cmd-s commit action (card 0023).
     Commit(String),
     /// A refused edit or a no-op undo, with its reason (authoring feedback).
     Refused(String),
@@ -35,8 +33,9 @@ impl CommandLogEntry {
         }
     }
 
-    /// Whether this row is a commit barrier (read by the deferred CommandLog
-    /// dock panel — card 0023 eyeball surface).
+    /// Whether this row is a commit barrier. A public predicate exercised by
+    /// the unit tests; the dock panel tags rows by matching the variant
+    /// directly, so this is unused in the shim today.
     #[allow(dead_code)]
     #[must_use]
     pub fn is_barrier(&self) -> bool {
@@ -99,9 +98,7 @@ impl CommandLog {
 
     /// Commit: insert a barrier recording how many edits were flushed and reset
     /// the uncommitted count. A no-op (returns `false`) when there is nothing to
-    /// commit. Its live caller (the deliberate commit action) is the deferred
-    /// macOS-eyeball surface (card 0023); the logic is unit-tested now.
-    #[allow(dead_code)]
+    /// commit. Called on the cmd-s commit action (card 0023); unit-tested.
     pub fn commit(&mut self) -> bool {
         if self.uncommitted == 0 {
             return false;

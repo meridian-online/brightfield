@@ -340,18 +340,21 @@ impl Session {
     }
 
     /// The flat mark index a `ComponentPath` string resolves to under the
-    /// CURRENT spec, if any (card 0023) — the coordinator's count-changing
-    /// refresh reads this to rebuild its own flat-index maps after a
-    /// [`Session::reload_spec`] renumbered the mark space (clg-ac16). Mirrors the
-    /// lookup `propagate_selection` / `execute_mark` dispatch use internally.
+    /// CURRENT spec, if any (card 0023) — the engine `mark_index_map` is the
+    /// single source of truth for the flat mark space after a
+    /// [`Session::reload_spec`] renumbers it (finding 5). Mirrors the lookup
+    /// `propagate_selection` / `execute_mark` dispatch use internally; the
+    /// clg-ac16 tests pin a rebuilt mark still resolves to its original path.
     #[must_use]
     pub fn mark_index_for_path(&self, path: &str) -> Option<usize> {
         self.mark_index_map.get(path).map(|&(idx, _)| idx)
     }
 
     /// The number of marks the CURRENT spec resolves to (card 0023) — the flat
-    /// mark-index space size the coordinator's count-changing refresh reconciles
-    /// against after a [`Session::reload_spec`].
+    /// mark-index space size. After a [`Session::reload_spec`] the coordinator's
+    /// count-changing refresh reconciles its own `marks.len()` against this so a
+    /// cardinality disagreement (a coordinator bug) is caught rather than routing
+    /// a later gesture to the wrong mark (finding 5, `assert_engine_mark_agreement`).
     #[must_use]
     pub fn mark_count(&self) -> usize {
         self.mark_index_map.len()
