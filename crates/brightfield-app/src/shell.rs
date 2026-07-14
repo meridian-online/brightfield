@@ -50,8 +50,14 @@ use brightfield_keys::{
     focus_jump_candidates, help_sheet, palette_filter, registry, Altitude, FocusState, FocusTree,
     JumpCandidate, PaletteCandidate, RecencyCounter,
 };
-use brightfield_spec::analysis::ComponentPath;
+use brightfield_spec::analysis::{analyse_spec, ComponentPath};
+use brightfield_spec::ast::{Component, Spec};
+use brightfield_spec::edit::{
+    apply as apply_spec_edit, classify_edit, plot_at_path, SpecEdit, UndoOutcome, UndoStack,
+};
+use brightfield_spec::vocab::{ImplStatus, MarkKind};
 
+use crate::command_log::CommandLog;
 use crate::dock_state_file::{
     self, LoadDecision, SaveAction, SavePolicy, DOCK_STATE_VERSION, SAVE_DEBOUNCE_MS,
 };
@@ -64,8 +70,9 @@ use crate::shell_model::{
     SIDEBAR_DOCK_WIDTH, SIDEBAR_PANEL_NAME,
 };
 use crate::keymap::{
-    action_for_longname, ClearSelection, CycleColourScheme, DiveIn, FocusJump, FocusNextSibling,
-    FocusPrevSibling, OpenHelp, OpenPalette, PopOut, ReloadSpec, ToggleFocus,
+    action_for_longname, ChangeMarkType, ClearSelection, CycleColourScheme, DiveIn, FocusJump,
+    FocusNextSibling, FocusPrevSibling, OpenHelp, OpenPalette, PopOut, ReloadSpec, RemoveMark,
+    ToggleFocus, Undo,
 };
 use crate::profile_model::{self, ProfileOutcome, SourceProfile};
 use crate::spec_save;
@@ -139,6 +146,30 @@ pub struct CanvasPanel {
     /// Where keyboard focus sits (the bare-verb / focus-ring target); `None` when
     /// the dashboard has no navigable structure.
     focus_state: Option<FocusState>,
+    /// The keyboard command-log session (card 0023): the working `Spec` the
+    /// structural verbs mutate, the snapshot-undo stack, and the shared
+    /// [`CommandLog`]. `None` until [`Self::set_command_session`] wires it (the
+    /// dump path + a spec that failed to re-parse never do), so the verbs
+    /// no-op gracefully on a session-less canvas.
+    command: Option<CommandSession>,
+}
+
+/// The keyboard command-log session state riding [`CanvasPanel`] (card 0023).
+/// Framework-bound only in that it holds a gpui `Entity<CommandLog>`; the
+/// reducer target ([`Spec`]) and the [`UndoStack`] are gpui-free.
+struct CommandSession {
+    /// The WORKING `Spec` — the reducer target ([`apply_spec_edit`] mutates it).
+    /// The live coordinator holds no `Spec` (crossfilter.rs), so it lives here.
+    working_spec: Spec,
+    /// The snapshot-undo stack (a whole-`Spec` clone per edit; clg-ac02).
+    undo: UndoStack,
+    /// The plot path each pushed snapshot's edit targeted, PARALLEL to `undo`'s
+    /// snapshots, so an undo knows which plot the reverted edit touched (v1 undo
+    /// refreshes all plots, so this is retained for future targeted refresh /
+    /// diagnostics rather than strictly required today).
+    undo_paths: Vec<String>,
+    /// The shared append-only command log (clg-ac08) the inline readout renders.
+    log: Entity<CommandLog>,
 }
 
 impl CanvasPanel {
@@ -168,6 +199,198 @@ impl CanvasPanel {
             focus_handle: cx.focus_handle(),
             focus_tree,
             focus_state,
+            command: None,
+        }
+    }
+
+    /// Wire the command-log session (card 0023) AFTER construction — so
+    /// [`CanvasPanel::new`]'s signature (and its many test callers) stay
+    /// untouched. `working_spec` is the parsed launch spec (the reducer target);
+    /// `log` is the shared [`CommandLog`] the inline readout renders and the
+    /// structural verbs append to. Called once from `main` when the pipeline
+    /// produced a re-parsable spec.
+    pub fn set_command_session(&mut self, working_spec: Spec, log: Entity<CommandLog>) {
+        self.command = Some(CommandSession {
+            working_spec,
+            undo: UndoStack::new(),
+            undo_paths: Vec::new(),
+            log,
+        });
+    }
+
+    /// The focused View's plot path (`root/vconcat[0]`, …), or `None` when focus
+    /// is at the Dashboard altitude (the command-log verbs are View-scoped). The
+    /// path scheme matches `edit::plot_at_path` + the coordinator's `LivePlot`
+    /// paths (all built from the shared `collect_plot_nodes`/`descend` walk), so
+    /// an edit targeting it resolves in both the reducer and the coordinator.
+    fn focused_view_path(&self) -> Option<String> {
+        let s = self.focus_state.as_ref()?;
+        if s.altitude(&self.focus_tree) == Altitude::View {
+            Some(s.path(&self.focus_tree).0.clone())
+        } else {
+            None
+        }
+    }
+
+    /// The next gate-clean retype for the focused View's primary mark (bare `m`
+    /// CYCLES the mark kind — it takes no argument, unlike `a`/`e`; card 0023).
+    /// Walks the Implemented kinds after the current one and returns the first
+    /// for which [`classify_edit`] is clean (so a cross-zero-baseline-class flip
+    /// or a title-changing rebind is skipped, not refused mid-cycle). `None` when
+    /// there is no focused View, no primary mark, or no clean retype exists.
+    fn next_retype_edit(&self) -> Option<SpecEdit> {
+        let session = self.command.as_ref()?;
+        let path = self.focused_view_path()?;
+        let plot = plot_at_path(&session.working_spec, &path)?;
+        let current = plot.items.iter().find_map(|c| match c {
+            Component::Mark(m) => Some(m.kind),
+            _ => None,
+        })?;
+        let kinds: Vec<MarkKind> = MarkKind::all()
+            .iter()
+            .copied()
+            .filter(|k| k.status() == ImplStatus::Implemented)
+            .collect();
+        let start = kinds.iter().position(|&k| k == current).unwrap_or(0);
+        for off in 1..=kinds.len() {
+            let cand = kinds[(start + off) % kinds.len()];
+            if cand == current {
+                continue;
+            }
+            let edit = SpecEdit::ChangeMarkType {
+                plot: ComponentPath(path.clone()),
+                mark_ordinal: 0,
+                new_kind: cand,
+            };
+            if classify_edit(&session.working_spec, &edit).is_ok() {
+                return Some(edit);
+            }
+        }
+        None
+    }
+
+    /// Append a message to the command log (clg-ac08) and repaint the readout.
+    fn log_command(&self, f: impl FnOnce(&mut CommandLog), cx: &mut Context<Self>) {
+        if let Some(session) = self.command.as_ref() {
+            session.log.update(cx, |log, cx| {
+                f(log);
+                cx.notify();
+            });
+        }
+    }
+
+    /// Apply a structural [`SpecEdit`] to the working spec + live coordinator
+    /// (card 0023, clg-ac06): snapshot for undo, classify+apply to the working
+    /// `Spec`, and on success re-analyse + drive the coordinator's transient
+    /// refresh + log the edit; on a refusal, log the reason (never mutating).
+    /// TRANSIENT — no disk write (the commit is a separate deliberate action).
+    fn apply_command_edit(&mut self, edit: &SpecEdit, window: &mut Window, cx: &mut Context<Self>) {
+        // Phase 1: classify + apply to the working spec under a snapshot. Borrows
+        // only `self.command`; produces the re-analysed spec or a refusal reason.
+        let prepared: Result<(Spec, brightfield_spec::analysis::SpecAnalysis, String), String> = {
+            let Some(session) = self.command.as_mut() else {
+                return;
+            };
+            let snapshot = session.working_spec.clone();
+            match apply_spec_edit(&mut session.working_spec, edit) {
+                Ok(()) => match analyse_spec(&session.working_spec) {
+                    Ok(analysis) => {
+                        session.undo.push(snapshot);
+                        session.undo_paths.push(edit.plot_path().to_string());
+                        Ok((session.working_spec.clone(), analysis, describe_edit(edit)))
+                    }
+                    Err(e) => {
+                        // A gate-clean edit should analyse; roll back defensively.
+                        session.working_spec = snapshot;
+                        Err(format!("{}: re-analysis failed: {e}", describe_edit(edit)))
+                    }
+                },
+                Err(reason) => Err(format!("{}: {}", describe_edit(edit), reason.reason())),
+            }
+        };
+        // Phase 2: drive the coordinator (disjoint field `chart_view`) + log.
+        match prepared {
+            Ok((spec, analysis, summary)) => {
+                let coord = self.chart_view.read(cx).coordinator();
+                let changed = if let Some(coord) = coord {
+                    coord.borrow_mut().apply_spec_edit(edit, spec, analysis, cx)
+                } else {
+                    false
+                };
+                self.log_command(|log| log.record_edit(summary), cx);
+                if changed {
+                    window.refresh();
+                }
+            }
+            Err(reason) => self.log_command(|log| log.record_refused(reason), cx),
+        }
+    }
+
+    /// `ChangeMarkType` handler (bare `m`, View-scoped — card 0023): cycle the
+    /// focused View's primary mark to the next gate-clean kind, applied live.
+    fn change_mark_type(&mut self, _: &ChangeMarkType, window: &mut Window, cx: &mut Context<Self>) {
+        match self.next_retype_edit() {
+            Some(edit) => self.apply_command_edit(&edit, window, cx),
+            None => self.log_command(
+                |log| log.record_refused("change-mark-type: no gate-clean retype from here"),
+                cx,
+            ),
+        }
+    }
+
+    /// `RemoveMark` handler (bare `d`, View-scoped — card 0023): drop the focused
+    /// View's primary mark, applied live. Emptying a plot is refused-with-reason
+    /// by the reducer (logged, never applied).
+    fn remove_mark(&mut self, _: &RemoveMark, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self.focused_view_path() else {
+            return;
+        };
+        let edit = SpecEdit::RemoveMark { plot: ComponentPath(path), mark_ordinal: 0 };
+        self.apply_command_edit(&edit, window, cx);
+    }
+
+    /// `Undo` handler (bare `u`, card 0023): pop the snapshot-undo stack, restore
+    /// the working spec, and reload every plot from it. A no-op past a commit
+    /// barrier / on an empty stack is logged with its reason (clg-ac02).
+    fn undo(&mut self, _: &Undo, window: &mut Window, cx: &mut Context<Self>) {
+        enum UndoAction {
+            Reload(Spec, brightfield_spec::analysis::SpecAnalysis),
+            Refused(String),
+        }
+        let action = {
+            let Some(session) = self.command.as_mut() else {
+                return;
+            };
+            match session.undo.undo() {
+                UndoOutcome::Restored(prev) => {
+                    session.undo_paths.pop();
+                    session.working_spec = *prev;
+                    match analyse_spec(&session.working_spec) {
+                        Ok(a) => UndoAction::Reload(session.working_spec.clone(), a),
+                        Err(e) => UndoAction::Refused(format!("undo: re-analysis failed: {e}")),
+                    }
+                }
+                UndoOutcome::NothingToUndo => UndoAction::Refused("undo: nothing to undo".to_string()),
+                UndoOutcome::PastCommitBarrier => {
+                    UndoAction::Refused("undo: nothing to undo (past the last commit)".to_string())
+                }
+            }
+        };
+        match action {
+            UndoAction::Reload(spec, analysis) => {
+                let coord = self.chart_view.read(cx).coordinator();
+                if let Some(coord) = coord {
+                    coord.borrow_mut().reload_all_from_spec(spec, analysis, cx);
+                }
+                self.log_command(
+                    |log| {
+                        log.record_undo();
+                    },
+                    cx,
+                );
+                window.refresh();
+            }
+            UndoAction::Refused(reason) => self.log_command(|log| log.record_refused(reason), cx),
         }
     }
 
@@ -361,6 +584,21 @@ impl CanvasPanel {
     }
 }
 
+/// A human-readable one-line summary of a [`SpecEdit`] for the command log
+/// (clg-ac08 — "change-mark-type: -> bar"). Typed, never an exec-string.
+fn describe_edit(edit: &SpecEdit) -> String {
+    match edit {
+        SpecEdit::ChangeMarkType { new_kind, .. } => {
+            format!("change-mark-type: -> {}", new_kind.wire_name())
+        }
+        SpecEdit::AddMark { kind, .. } => format!("add-mark: {}", kind.wire_name()),
+        SpecEdit::SetChannel { channel, column, .. } => {
+            format!("set-channel: {channel} -> {column}")
+        }
+        SpecEdit::RemoveMark { .. } => "remove-mark".to_string(),
+    }
+}
+
 impl EventEmitter<PanelEvent> for CanvasPanel {}
 
 impl Focusable for CanvasPanel {
@@ -404,6 +642,21 @@ impl Render for CanvasPanel {
         let breadcrumb = grammar_chrome_visible(self.presentation.read(cx).mode)
             .then(|| self.breadcrumb_text())
             .flatten();
+        // The inline command-log readout (card 0023, clg-ac08 surface): the
+        // uncommitted-edit count + the most-recent entries, authoring-only. The
+        // dedicated bottom-dock CommandLog panel is a documented follow-up; this
+        // keeps the model's live state observable without the dock-schema churn.
+        let command_readout: Option<(usize, Vec<String>)> =
+            (grammar_chrome_visible(self.presentation.read(cx).mode))
+                .then(|| self.command.as_ref())
+                .flatten()
+                .map(|s| {
+                    let log = s.log.read(cx);
+                    let recent: Vec<String> =
+                        log.entries().iter().take(6).map(|e| e.text().to_string()).collect();
+                    (log.uncommitted(), recent)
+                })
+                .filter(|(n, recent)| *n > 0 || !recent.is_empty());
         div()
             .relative()
             .size_full()
@@ -417,6 +670,9 @@ impl Render for CanvasPanel {
             .on_action(cx.listener(Self::focus_prev_sibling))
             .on_action(cx.listener(Self::clear_selection))
             .on_action(cx.listener(Self::cycle_colour_scheme))
+            .on_action(cx.listener(Self::change_mark_type))
+            .on_action(cx.listener(Self::remove_mark))
+            .on_action(cx.listener(Self::undo))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _event, window, cx| {
@@ -439,6 +695,31 @@ impl Render for CanvasPanel {
                     .text_color(rgb(0xd7dae0))
                     .text_size(px(12.0))
                     .child(text)
+            }))
+            .children(command_readout.map(|(uncommitted, recent)| {
+                let mut panel = div()
+                    .absolute()
+                    .right(px(8.0))
+                    .bottom(px(8.0))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .px_2()
+                    .py_1()
+                    .rounded(px(4.0))
+                    .bg(rgb(0x161a22))
+                    .border_1()
+                    .border_color(rgb(0x2b3242))
+                    .text_size(px(11.0))
+                    .child(
+                        div()
+                            .text_color(rgb(0x8a93a6))
+                            .child(format!("command log · {uncommitted} uncommitted")),
+                    );
+                for line in recent {
+                    panel = panel.child(div().text_color(rgb(0xd7dae0)).child(line));
+                }
+                panel
             }))
     }
 }

@@ -9,6 +9,10 @@
 
 mod boot;
 #[cfg(any(target_os = "macos", test))]
+mod arg_collector;
+#[cfg(any(target_os = "macos", test))]
+mod command_log;
+#[cfg(any(target_os = "macos", test))]
 mod dock_state_file;
 #[cfg(any(target_os = "macos", test))]
 mod keymap;
@@ -1638,6 +1642,7 @@ fn main() {
                 Rc::new(std::cell::RefCell::new(None));
             let sidebar_capture = sidebar_slot.clone();
             let spec_path_for_editor = spec_path.clone();
+            let spec_path_for_command = spec_path.clone();
             let feedback_log_for_editor = feedback_log.clone();
             // The workspace's clone of the force-reload flag (the watcher keeps
             // the original), captured into the window closure below.
@@ -1663,6 +1668,15 @@ fn main() {
                     let canvas = cx.new(|cx| {
                         shell::CanvasPanel::new(chart_view, title, presentation.clone(), focus_tree, cx)
                     });
+                    // Card 0023: wire the keyboard command-log session — the
+                    // working Spec (re-parsed from the launch file; the reducer
+                    // target) + a shared CommandLog the inline readout renders.
+                    // A parse failure here leaves the canvas session-less (the
+                    // structural verbs no-op gracefully), never a crash.
+                    if let Ok(parsed) = brightfield_spec::parse_spec_path(&spec_path_for_command) {
+                        let command_log = cx.new(|_| command_log::CommandLog::new());
+                        canvas.update(cx, |c, _| c.set_command_session(parsed.spec, command_log));
+                    }
                     *canvas_capture.borrow_mut() = Some(canvas.clone());
                     let editor = cx.new(|cx| {
                         shell::EditorPanel::new(
@@ -2552,6 +2566,153 @@ colorScheme: blues
             super::chrome_divergence(&launch, &unbound),
             Some("legend selection binding (as:/for:)")
         );
+    }
+
+    /// clg-ac11 AGREEMENT: the gpui-free gate-classifier's verdict EQUALS the
+    /// REAL app-binary reload gate (same_layout + chrome_divergence) for
+    /// pre/post-edit spec pairs built through the app's OWN pipeline. The
+    /// classifier REIMPLEMENTS the gate from the spec representation (brightfield-
+    /// app has no `[lib]` target, so it can't call chrome_divergence directly);
+    /// this pins the two so an UNDER-refusing classifier — one that lets a
+    /// new-colour-legend edit silently bounce to "restart to apply" — is caught.
+    /// It also empirically confirms a `dot -> bar` retype and an `x` rebind are
+    /// genuinely chrome-clean (the insets/titles reasoning behind the classifier).
+    #[test]
+    fn clg_ac11_classifier_agrees_with_the_real_reload_gate() {
+        use brightfield_spec::analysis::ComponentPath;
+        use brightfield_spec::ast::{Component, SpecValue, ValueOrParamRef};
+        use brightfield_spec::edit::{apply, classify_edit, SpecEdit};
+        use brightfield_spec::vocab::MarkKind;
+        use brightfield_spec::{parse_spec, serialise_spec, Format};
+
+        // A stable meta.title so the dashboard title (else derived from the
+        // filename) doesn't diverge just because each build uses a fresh path.
+        const BASE: &str = r#"
+meta:
+  title: Agreement Fixture
+data:
+  t:
+    - { a: 1, b: 2, cat: p }
+    - { a: 3, b: 4, cat: q }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: a
+    y: b
+xLabel: X axis
+"#;
+        let dir = std::env::temp_dir().join(format!("bf-clg-ac11-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let build = |name: &str, yaml: &str| -> (super::Dashboard, super::ChromeSnapshot) {
+            let path = dir.join(name);
+            std::fs::write(&path, yaml).unwrap();
+            let (dash, chrome, _p) =
+                super::run_pipeline(path.to_str().unwrap()).expect("pipeline runs");
+            (dash, chrome)
+        };
+
+        let base_spec = parse_spec(BASE, Format::Yaml).expect("parse base").spec;
+        let (launch_dash, launch_chrome) = build("base.yaml", BASE);
+
+        // The real reload gate: same plot count + geometry AND no chrome divergence.
+        let real_gate_clean = |yaml: &str, name: &str| -> bool {
+            let (dash, chrome) = build(name, yaml);
+            let same_layout = dash.plots.len() == launch_dash.plots.len()
+                && dash.plots.iter().all(|p| {
+                    launch_dash.plots.iter().any(|w| {
+                        w.path == p.path
+                            && w.x == p.x
+                            && w.y == p.y
+                            && w.width == p.width
+                            && w.height == p.height
+                    })
+                });
+            same_layout && super::chrome_divergence(&launch_chrome, &chrome).is_none()
+        };
+
+        let cp = |s: &str| ComponentPath(s.to_string());
+
+        // CLEAN edits: classifier Ok, and the real build agrees the gate is clean.
+        let clean: Vec<(SpecEdit, &str)> = vec![
+            (
+                SpecEdit::SetChannel { plot: cp("root"), mark_ordinal: 0, channel: "x".into(), column: "b".into() },
+                "setx.yaml",
+            ),
+            (
+                SpecEdit::ChangeMarkType { plot: cp("root"), mark_ordinal: 0, new_kind: MarkKind::Line },
+                "retype.yaml",
+            ),
+            (SpecEdit::AddMark { plot: cp("root"), kind: MarkKind::Line }, "addmark.yaml"),
+            // An inline colour fill is gate-clean (not captured by the gate).
+            (
+                SpecEdit::SetChannel { plot: cp("root"), mark_ordinal: 0, channel: "fill".into(), column: "cat".into() },
+                "fill.yaml",
+            ),
+        ];
+        for (edit, name) in &clean {
+            assert!(classify_edit(&base_spec, edit).is_ok(), "classifier should pass {edit:?}");
+            let mut m = base_spec.clone();
+            apply(&mut m, edit).expect("apply clean edit");
+            let yaml = serialise_spec(&m).expect("serialise");
+            assert!(real_gate_clean(&yaml, name), "the real reload gate must be CLEAN for {edit:?}");
+        }
+
+        // REFUSED edit: rebinding the DERIVED y axis (no yLabel) changes the
+        // derived y-axis title, regrowing launch-fixed margins. The classifier
+        // refuses it; a manually-applied version makes the real gate DIVERGE.
+        let ry = SpecEdit::SetChannel {
+            plot: cp("root"),
+            mark_ordinal: 0,
+            channel: "y".into(),
+            column: "a".into(),
+        };
+        assert_eq!(
+            classify_edit(&base_spec, &ry),
+            Err(brightfield_spec::edit::RefuseReason::WouldChangeAxisTitle),
+            "classifier refuses a derived-axis rebind"
+        );
+        let mut ry_spec = base_spec.clone();
+        if let Some(Component::Plot(p)) = ry_spec.root.as_mut() {
+            if let Some(Component::Mark(m)) =
+                p.items.iter_mut().find(|c| matches!(c, Component::Mark(_)))
+            {
+                m.options.insert("y".into(), ValueOrParamRef::Value(SpecValue::String("a".into())));
+            }
+        }
+        let ry_yaml = serialise_spec(&ry_spec).expect("serialise ry");
+        assert!(
+            !real_gate_clean(&ry_yaml, "ry.yaml"),
+            "the real gate WOULD bounce a derived-axis rebind — refusing it agrees"
+        );
+
+        // REFUSED edit: a cross-zero-baseline-class retype (dot -> barY) flips
+        // the value-axis inset default (bottom 5 -> 0). The classifier refuses
+        // it; the real build makes the gate DIVERGE (per-plot inset metadata).
+        let retype_bar = SpecEdit::ChangeMarkType {
+            plot: cp("root"),
+            mark_ordinal: 0,
+            new_kind: MarkKind::BarY,
+        };
+        assert_eq!(
+            classify_edit(&base_spec, &retype_bar),
+            Err(brightfield_spec::edit::RefuseReason::WouldChangeInset),
+            "classifier refuses a cross-baseline retype"
+        );
+        let mut bar_spec = base_spec.clone();
+        if let Some(Component::Plot(p)) = bar_spec.root.as_mut() {
+            if let Some(Component::Mark(m)) =
+                p.items.iter_mut().find(|c| matches!(c, Component::Mark(_)))
+            {
+                m.kind = MarkKind::BarY;
+            }
+        }
+        let bar_yaml = serialise_spec(&bar_spec).expect("serialise bar");
+        assert!(
+            !real_gate_clean(&bar_yaml, "bar.yaml"),
+            "the real gate WOULD bounce a cross-baseline retype — refusing it agrees"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Card 0016 review (F2): `ChromeSnapshot::capture` maps the launch parts

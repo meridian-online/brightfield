@@ -59,6 +59,10 @@ pub enum Drives {
     PaletteMeta,
     /// The transient colour-scheme preview.
     ColourPreview,
+    /// A structural spec edit through the command log (card 0023): change-mark-
+    /// type / add-mark / set-channel / remove-mark / undo. NOT `g`-broadcast
+    /// eligible (that is runtime-dispatch only, `scope::g_eligible`).
+    SpecEdit,
     /// A deferred verb, shown but unbound.
     Reserved,
 }
@@ -307,12 +311,59 @@ pub fn registry() -> Vec<VerbEntry> {
         reserved("cross-filter-all", vec![Dashboard], ReservedReason::NeedsKeyboardTarget, "Broadcast a cross-filter to every view (needs a keyboard target)"),
         reserved("toggle-point-select", vec![View], ReservedReason::NeedsKeyboardTarget, "Toggle a point selection (needs a keyboard target)"),
         reserved("set-param", DASHBOARD_AND_VIEW.to_vec(), ReservedReason::NeedsKeyboardTarget, "Set a parameter's value (needs a keyboard target)"),
-        // ---- reserved: needs the command log (m / a / e / d / undo) ----
-        reserved("change-mark-type", vec![View], ReservedReason::NeedsCommandLog, "Change a mark's type (needs command log)"),
-        reserved("add-mark", vec![View], ReservedReason::NeedsCommandLog, "Add a mark to the focused view (needs command log)"),
-        reserved("set-channel", vec![View], ReservedReason::NeedsCommandLog, "Bind a channel to a column (needs command log)"),
-        reserved("remove-mark", vec![View], ReservedReason::NeedsCommandLog, "Remove a mark (needs command log)"),
-        reserved("undo", DASHBOARD_AND_VIEW.to_vec(), ReservedReason::NeedsCommandLog, "Undo the last edit (needs command log)"),
+        // ---- command-log structural edits (card 0023): m/a/e/d at View, undo
+        //      at Dashboard+View. Flipped Reserved -> Built — the SpecEdit spine
+        //      + Session::reload_spec seam now back them (clg-ac03). ----
+        VerbEntry {
+            longname: "change-mark-type",
+            binding_specs: vec![ws("m")],
+            scope_applicability: vec![View],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Change the focused view's mark type (dot -> bar), applied live",
+            scores: Some(Scores { frequency: 3, mnemonic: 4, convention: 3, motor_note: "m = mark/morph; bare, view-scoped structural edit" }),
+        },
+        VerbEntry {
+            longname: "add-mark",
+            binding_specs: vec![ws("a")],
+            scope_applicability: vec![View],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Add a mark to the focused view (prompts for a kind), applied live",
+            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 4, motor_note: "a = add/append (vim insert family); argument overlay picks the kind" }),
+        },
+        VerbEntry {
+            longname: "set-channel",
+            binding_specs: vec![ws("e")],
+            scope_applicability: vec![View],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Bind a channel to a column on the focused view (prompts), applied live",
+            scores: Some(Scores { frequency: 3, mnemonic: 3, convention: 3, motor_note: "e = encode/edit-channel; argument overlay picks channel then column" }),
+        },
+        VerbEntry {
+            longname: "remove-mark",
+            binding_specs: vec![ws("d")],
+            scope_applicability: vec![View],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Remove the focused view's primary mark, applied live",
+            scores: Some(Scores { frequency: 2, mnemonic: 4, convention: 4, motor_note: "d = delete (vim); refused if it would empty the plot" }),
+        },
+        VerbEntry {
+            longname: "undo",
+            binding_specs: vec![ws("u")],
+            scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Undo the last uncommitted edit (cannot cross a commit)",
+            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 5, motor_note: "u = undo (vim); snapshot-stack pop, stops at a commit barrier" }),
+        },
     ]
 }
 
@@ -467,7 +518,11 @@ mod tests {
             .collect();
         needs_log.sort_unstable();
         needs_target.sort_unstable();
-        assert_eq!(needs_log, ["add-mark", "change-mark-type", "remove-mark", "set-channel", "undo"]);
+        // Card 0023 flipped the 5 command-log verbs Reserved -> Built, so the
+        // NeedsCommandLog bucket is now EMPTY (deliberate update; the enum
+        // variant + its reason() surface are retained). NeedsKeyboardTarget is
+        // unchanged.
+        assert!(needs_log.is_empty(), "NeedsCommandLog bucket is now empty (card 0023): {needs_log:?}");
         assert_eq!(needs_target, ["cross-filter-all", "filter-view", "set-param", "toggle-point-select"]);
         // Every reserved verb is unbound and unscored; every bound verb is scored.
         for v in &reg {

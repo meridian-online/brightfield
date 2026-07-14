@@ -36,9 +36,12 @@ use brightfield_render::mark::{
 };
 use brightfield_render::nearest::SelectionValue;
 use brightfield_render::scale::{Scale, ScaleSet, SequentialScheme};
-use brightfield_render::scene::{build_multi_mark_scene_anchored, ChartData};
+use brightfield_render::scene::{build_multi_mark_scene, build_multi_mark_scene_anchored, ChartData};
 use brightfield_render::title::ResolvedTitles;
-use brightfield_spec::analysis::{ComponentPath, LegendBinding};
+use brightfield_spec::analysis::{ComponentPath, LegendBinding, SpecAnalysis};
+use brightfield_spec::ast::{Component, Mark, Spec, SpecValue, ValueOrParamRef};
+use brightfield_spec::edit::SpecEdit;
+use brightfield_spec::layout::collect_plot_nodes;
 use brightfield_spec::vocab::MarkKind;
 use brightfield_sql::ir::Predicate;
 
@@ -472,6 +475,255 @@ impl CrossfilterCoordinator {
         true
     }
 
+    /// Apply a transient structural [`SpecEdit`] to the live coordinator (card
+    /// 0023, clg-ac06) — the load-bearing command-log mechanism, a DURABLE
+    /// coordinator refresh (heavier than `cycle_scheme`: it re-queries).
+    ///
+    /// The app has already `apply`'d the edit to the working `Spec` and
+    /// re-analysed; it hands the mutated `spec` + `analysis` here. This method
+    /// (1) [`Session::reload_spec`]s so `execute_mark` re-emits the NEW SQL
+    /// against the already-live views (no disk), (2) re-executes the affected
+    /// plot's marks -> fresh batches, (3) installs the fresh mark inputs (a
+    /// count-stable retype/rechannel is an in-place swap; a count-changing
+    /// add/remove rebuilds the flat-index maps — coordinator.marks /
+    /// mark_to_plot / every LivePlot.mark_indices — clg-ac16), (4) RESETS the
+    /// affected plot's launch anchor to the re-lowered FRESH inference so the
+    /// axis is clean not widen-unioned, (5) re-scenes. The mutation is DURABLE:
+    /// the edit PERSISTS across later gestures (like `c`).
+    ///
+    /// Returns `true` when a plot was refreshed (the caller then refreshes the
+    /// window); `false` for an edit whose plot the coordinator doesn't track.
+    pub fn apply_spec_edit(
+        &mut self,
+        edit: &SpecEdit,
+        spec: Spec,
+        analysis: SpecAnalysis,
+        cx: &mut App,
+    ) -> bool {
+        let Some(pi) = self.apply_spec_edit_data(edit, spec, analysis) else {
+            return false;
+        };
+        let scene = self.build_plot_scene(pi);
+        let state = self.plots[pi].state.clone();
+        state.update(cx, |s, c| {
+            s.set_scene(scene);
+            c.notify();
+        });
+        true
+    }
+
+    /// Reload the WHOLE working spec into the live session and rebuild EVERY
+    /// plot fresh (card 0023, the undo path). Unlike [`Self::apply_spec_edit`]
+    /// (which touches one affected plot for a known edit), an undo restores an
+    /// arbitrary earlier `Spec` and can revert any plot's kind / channel / mark
+    /// count, so this rebuilds all plots' marks fresh from the restored spec,
+    /// re-executes every mark, resets every launch anchor, and re-scenes every
+    /// plot. Heavier than a per-edit apply, but undo is a deliberate, infrequent
+    /// action. Returns `true` (the caller refreshes the window).
+    pub fn reload_all_from_spec(&mut self, spec: Spec, analysis: SpecAnalysis, cx: &mut App) -> bool {
+        self.session.reload_spec(spec.clone(), analysis);
+
+        // Rebuild every plot's marks fresh, in the engine's depth-first flat
+        // order, so coordinator.marks / mark_to_plot / mark_indices stay
+        // consistent with the reloaded session's mark_index_map.
+        let plot_meta: Vec<(String, SequentialScheme)> =
+            self.plots.iter().map(|p| (p.path.clone(), p.scheme)).collect();
+        let plot_nodes = collect_plot_nodes(&spec);
+        let mut new_marks: Vec<MarkInput> = Vec::new();
+        let mut new_indices: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut mark_to_plot: HashMap<usize, usize> = HashMap::new();
+        for (path, plot) in &plot_nodes {
+            let Some(pi) = plot_meta.iter().position(|(p, _)| p == path) else {
+                continue; // a plot the coordinator does not track
+            };
+            let scheme = plot_meta[pi].1;
+            for c in &plot.items {
+                if let Component::Mark(m) = c {
+                    let flat = new_marks.len();
+                    new_marks.push(build_fresh_mark_input(m, scheme));
+                    new_indices.entry(path.clone()).or_default().push(flat);
+                    mark_to_plot.insert(flat, pi);
+                }
+            }
+        }
+        self.marks = new_marks;
+        self.mark_to_plot = mark_to_plot;
+        for plot in self.plots.iter_mut() {
+            plot.mark_indices = new_indices.remove(&plot.path).unwrap_or_default();
+        }
+
+        // Re-execute, reset the launch anchor, and re-scene every plot.
+        for pi in 0..self.plots.len() {
+            for mi in self.plots[pi].mark_indices.clone() {
+                match self.session.execute_mark(mi) {
+                    Ok(batches) => {
+                        if let Some(m) = self.marks.get_mut(mi) {
+                            m.batch = concat_batches(batches);
+                        }
+                    }
+                    Err(e) => eprintln!("command-log undo: mark {mi} re-execute failed: {e}"),
+                }
+            }
+            if let Some(fresh) = self.fresh_plot_scales(pi) {
+                self.plots[pi].launch_scales = fresh;
+            }
+            let scene = self.build_plot_scene(pi);
+            let state = self.plots[pi].state.clone();
+            state.update(cx, |s, c| {
+                s.set_scene(scene);
+                c.notify();
+            });
+        }
+        true
+    }
+
+    /// The gpui-free data half of [`Self::apply_spec_edit`]: swap the session
+    /// spec, update marks + flat-index maps, re-execute, and RESET the affected
+    /// plot's launch anchor — returning the affected plot index to re-scene, or
+    /// `None` for an untracked plot. Separated so the whole mechanism minus the
+    /// final `set_scene` is unit-testable without a window (mirrors
+    /// [`Self::apply_slider`]).
+    fn apply_spec_edit_data(
+        &mut self,
+        edit: &SpecEdit,
+        spec: Spec,
+        analysis: SpecAnalysis,
+    ) -> Option<usize> {
+        let plot_path = edit.plot_path().to_string();
+        let pi = self.plots.iter().position(|p| p.path == plot_path)?;
+
+        // (1) Swap the session's private spec so execute_mark re-emits new SQL.
+        self.session.reload_spec(spec.clone(), analysis);
+
+        if edit.is_count_changing() {
+            // (3, count-changing) Rebuild coordinator.marks + the flat-index maps
+            // so the shifted mark space stays consistent with the engine's
+            // rebuilt mark_index_map (clg-ac16).
+            self.rebuild_marks_and_maps(&spec, &plot_path);
+        } else {
+            // (3, count-stable) In-place mutate the primary mark then re-execute.
+            if let Some(&mi) = self.plots[pi].mark_indices.first() {
+                match edit {
+                    SpecEdit::ChangeMarkType { new_kind, .. } => {
+                        if let Some(m) = self.marks.get_mut(mi) {
+                            m.kind = *new_kind;
+                            m.renderer_override = configured_renderer(
+                                *new_kind,
+                                self.plots[pi].scheme,
+                                m.bandwidth,
+                                m.thresholds,
+                                m.bin_width,
+                                None,
+                            );
+                        }
+                    }
+                    SpecEdit::SetChannel { channel, column, .. } => {
+                        if let (Some(m), Some(ch)) =
+                            (self.marks.get_mut(mi), Channel::from_wire(channel))
+                        {
+                            m.channels.insert(ch, column.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // (2) Re-execute the affected plot's marks -> fresh batches.
+        let mark_indices = self.plots[pi].mark_indices.clone();
+        for mi in mark_indices {
+            match self.session.execute_mark(mi) {
+                Ok(batches) => {
+                    if let Some(m) = self.marks.get_mut(mi) {
+                        m.batch = concat_batches(batches);
+                    }
+                }
+                Err(e) => eprintln!("command-log: mark {mi} re-execute failed: {e}"),
+            }
+        }
+
+        // (4) RESET the affected plot's launch anchor to the FRESH inference, so
+        // build_plot_scene renders a CLEAN axis, not a widen-union against the
+        // stale launch domain (a channel/kind rebind is neither a subset nor a
+        // param-widen). Preserve the launch Fill ramp's cycled scheme.
+        if let Some(fresh) = self.fresh_plot_scales(pi) {
+            self.plots[pi].launch_scales = fresh;
+        }
+        Some(pi)
+    }
+
+    /// The FRESH (un-anchored) inferred scales for a plot's current batches —
+    /// what a `commit -> reload`'s fresh `build_everything` would compute. Used
+    /// to reset the launch anchor after a structural edit so the preview axis is
+    /// clean (card 0023, clg-ac06). `None` when the plot has no renderable mark.
+    fn fresh_plot_scales(&self, plot_index: usize) -> Option<ScaleSet> {
+        let mark_indices = &self.plots[plot_index].mark_indices;
+        let layout = self.plots[plot_index].layout;
+        let titles = self.plots[plot_index].titles.clone();
+        let draw_inline_legend = self.plots[plot_index].draw_inline_legend;
+        let highlights: Vec<Option<HighlightState>> = mark_indices
+            .iter()
+            .map(|&mi| {
+                let m = self.marks.get(mi)?;
+                build_highlight_state(m.batch.as_ref()?, m.highlight_style.as_ref()?)
+            })
+            .collect();
+        let chart_data: Vec<ChartData<'_>> = mark_indices
+            .iter()
+            .zip(highlights.iter())
+            .filter_map(|(&mi, highlight)| {
+                let m = self.marks.get(mi)?;
+                let batch = m.batch.as_ref()?;
+                let renderer: &dyn MarkRenderer = m
+                    .renderer_override
+                    .as_deref()
+                    .or_else(|| find_renderer(&self.renderers, m.kind))?;
+                Some(ChartData {
+                    batch,
+                    channel_map: &m.channels,
+                    renderer,
+                    layout,
+                    view_extent: None,
+                    highlight: highlight.as_ref(),
+                })
+            })
+            .collect();
+        if chart_data.is_empty() {
+            return None;
+        }
+        let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
+        let (_scene, scales) = build_multi_mark_scene(&refs, draw_inline_legend, &titles);
+        Some(scales)
+    }
+
+    /// Rebuild `coordinator.marks` + the flat mark-index maps (`mark_to_plot`,
+    /// each `LivePlot.mark_indices`) after a count-changing edit renumbered the
+    /// mark space (card 0023, clg-ac16). Marks in UNAFFECTED plots are preserved
+    /// verbatim (their paths/positions are unchanged); the affected plot's marks
+    /// are rebuilt fresh from the mutated spec (`ChannelMap::from_mark` +
+    /// `configured_renderer` at the plot's scheme). The new flat order matches
+    /// the engine's `build_mark_index_map` (depth-first plot order, contiguous
+    /// per-plot marks) for the non-nested layouts the live coordinator drives.
+    fn rebuild_marks_and_maps(&mut self, spec: &Spec, affected_path: &str) {
+        // Owned per-plot metadata so no `self.plots` borrow is held while we
+        // move MarkInputs out of the old `self.marks`. plot_meta is in
+        // `self.plots` order, so the rebuilt `mark_to_plot` (keyed by that
+        // ordinal) drops straight in.
+        let plot_meta: Vec<(String, Vec<usize>, SequentialScheme)> = self
+            .plots
+            .iter()
+            .map(|p| (p.path.clone(), p.mark_indices.clone(), p.scheme))
+            .collect();
+        let old_marks = std::mem::take(&mut self.marks);
+        let (new_marks, mut new_indices, mark_to_plot) =
+            rebuild_flat_index_space(&plot_meta, old_marks, spec, affected_path);
+        self.marks = new_marks;
+        self.mark_to_plot = mark_to_plot;
+        for plot in self.plots.iter_mut() {
+            plot.mark_indices = new_indices.remove(&plot.path).unwrap_or_default();
+        }
+    }
+
     /// Commit a slider release (card 0005): dispatch the param value into the
     /// engine, then rebuild and swap the scenes of every plot whose marks
     /// re-executed. Mid-drag (`Dragging`) and `Idle` states are no-ops — only a
@@ -868,6 +1120,101 @@ fn has_sequential_fill(scales: &ScaleSet) -> bool {
     matches!(scales.get(Channel::Fill), Some(Scale::Sequential { .. }))
 }
 
+/// Build a fresh [`MarkInput`] for a mark added by the command log (card 0023),
+/// mirroring the app-assembly construction: channels from the mark, its kind,
+/// and a scheme/attr-configured `renderer_override` (`None` for dot/bar/line/
+/// rect — they render through the shared registry). `batch` is left `None`; the
+/// caller re-executes the affected plot's marks immediately after. Highlight is
+/// `None` (a freshly added mark carries no highlight style in v1).
+/// The gpui-free core of [`CrossfilterCoordinator::rebuild_marks_and_maps`]
+/// (card 0023, clg-ac16): recompute the flat mark-index space after a
+/// count-changing edit. Given each tracked plot's `(path, old flat indices,
+/// scheme)` in coordinator-plots order, the old flat `marks`, the mutated
+/// `spec`, and the affected plot's path, it returns the NEW contiguous `marks`
+/// vector, each plot's new flat indices (`path -> Vec<flat>`), and the rebuilt
+/// `mark_to_plot` (flat index -> plot ordinal, in `plot_meta` order).
+///
+/// Marks in UNAFFECTED plots are MOVED verbatim (their batches / renderers /
+/// channels preserved by position, so a later gesture re-scenes them exactly);
+/// the affected plot's marks are rebuilt fresh from the spec. Extracted from the
+/// coordinator so the count-changing integrity is unit-testable WITHOUT a gpui
+/// window (LivePlot carries a non-Send `Entity<ChartState>` no headless test can
+/// build) — mirroring the `apply_slider` / `apply_spec_edit_data` data-half split.
+fn rebuild_flat_index_space(
+    plot_meta: &[(String, Vec<usize>, SequentialScheme)],
+    old_marks: Vec<MarkInput>,
+    spec: &Spec,
+    affected_path: &str,
+) -> (Vec<MarkInput>, HashMap<String, Vec<usize>>, HashMap<usize, usize>) {
+    let mut old_slots: Vec<Option<MarkInput>> = old_marks.into_iter().map(Some).collect();
+    let plot_nodes = collect_plot_nodes(spec);
+    let mut new_marks: Vec<MarkInput> = Vec::new();
+    // plot path -> its new contiguous flat indices.
+    let mut new_indices: HashMap<String, Vec<usize>> = HashMap::new();
+    // new flat index -> plot ordinal (plot_meta / self.plots order).
+    let mut mark_to_plot: HashMap<usize, usize> = HashMap::new();
+
+    for (path, plot) in &plot_nodes {
+        let Some(pi) = plot_meta.iter().position(|(p, _, _)| p == path) else {
+            continue; // a plot the coordinator does not track
+        };
+        let (_, old_flat, scheme) = &plot_meta[pi];
+        let marks_in_plot: Vec<&Mark> = plot
+            .items
+            .iter()
+            .filter_map(|c| match c {
+                Component::Mark(m) => Some(m),
+                _ => None,
+            })
+            .collect();
+        for (j, mark) in marks_in_plot.iter().enumerate() {
+            let new_flat = new_marks.len();
+            let input = if path == affected_path {
+                build_fresh_mark_input(mark, *scheme)
+            } else {
+                // Preserve by (plot, position) — unaffected plots keep their
+                // batches/renderers/channels.
+                old_flat
+                    .get(j)
+                    .and_then(|&oi| old_slots.get_mut(oi).and_then(Option::take))
+                    .unwrap_or_else(|| build_fresh_mark_input(mark, *scheme))
+            };
+            new_marks.push(input);
+            new_indices.entry(path.clone()).or_default().push(new_flat);
+            mark_to_plot.insert(new_flat, pi);
+        }
+    }
+    (new_marks, new_indices, mark_to_plot)
+}
+
+fn build_fresh_mark_input(mark: &Mark, scheme: SequentialScheme) -> MarkInput {
+    let bandwidth = mark_attr_f64(mark, "bandwidth");
+    let thresholds = mark_attr_f64(mark, "thresholds")
+        .filter(|t| *t >= 1.0)
+        .map(|t| t as usize);
+    let bin_width = mark_attr_f64(mark, "binWidth");
+    MarkInput {
+        batch: None,
+        channels: ChannelMap::from_mark(mark),
+        kind: mark.kind,
+        renderer_override: configured_renderer(mark.kind, scheme, bandwidth, thresholds, bin_width, None),
+        bandwidth,
+        thresholds,
+        bin_width,
+        highlight_style: None,
+    }
+}
+
+/// Read a numeric mark attribute (`bandwidth` / `thresholds` / `binWidth`) from
+/// a mark's option bag as `f64`, if present as a literal number.
+fn mark_attr_f64(mark: &Mark, key: &str) -> Option<f64> {
+    match mark.options.get(key) {
+        Some(ValueOrParamRef::Value(SpecValue::Float(f))) => Some(*f),
+        Some(ValueOrParamRef::Value(SpecValue::Integer(i))) => Some(*i as f64),
+        _ => None,
+    }
+}
+
 /// Rebuild a mark's renderer through `scheme`, THREADING the mark's own retained
 /// render-config attrs (bandwidth / thresholds / bin_width) — the exact per-mark
 /// rebuild `cycle_scheme` performs, so a colour cycle re-colours WITHOUT reshaping
@@ -1012,6 +1359,161 @@ mod tests {
     fn scene_bytes(scene: &Scene) -> (Vec<u32>, Vec<u32>) {
         let e = scene.encoding();
         (e.path_data.clone(), e.draw_data.clone())
+    }
+
+    /// clg-ac05 (ChangeMarkType, on the RIGHT surface): a retype's real
+    /// downstream effect is the SCENE GEOMETRY, not the SQL — dot/bar/line/rect
+    /// all map to SimpleLowerer, which ignores `mark.kind` (byte-identical SQL,
+    /// no "kind" column in the batch). Feed one batch through the render path as
+    /// a dot, fingerprint the scene, retype to bar, re-render, and assert the
+    /// `scene_bytes` CHANGED; retype BACK and assert it reverts (the undo half).
+    /// This is the surface the card-0021 silent-no-op lesson demands for a
+    /// retype — a headless assertion the eyeball backstop could otherwise miss.
+    #[test]
+    fn clg_ac05_change_mark_type_changes_the_scene_fingerprint() {
+        use arrow::array::Float64Array;
+        use arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Float64, false),
+            Field::new("b", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])),
+                Arc::new(Float64Array::from(vec![10.0, 20.0, 30.0])),
+            ],
+        )
+        .unwrap();
+        let mut channels = ChannelMap::new();
+        channels.insert(Channel::X, "a".to_string());
+        channels.insert(Channel::Y, "b".to_string());
+        let renderers = default_renderers();
+        let layout = ChartLayout::new(400.0, 300.0);
+
+        let fingerprint = |kind: MarkKind| -> (Vec<u32>, Vec<u32>) {
+            let ro = configured_renderer(kind, SequentialScheme::default(), None, None, None, None);
+            let renderer: &dyn MarkRenderer =
+                ro.as_deref().or_else(|| find_renderer(&renderers, kind)).unwrap();
+            let cd = ChartData {
+                batch: &batch,
+                channel_map: &channels,
+                renderer,
+                layout,
+                view_extent: None,
+                highlight: None,
+            };
+            let (scene, _) = build_multi_mark_scene(&[&cd], false, &ResolvedTitles::default());
+            scene_bytes(&scene)
+        };
+
+        let dot = fingerprint(MarkKind::Dot);
+        let bar = fingerprint(MarkKind::BarY);
+        assert_ne!(dot, bar, "dot->bar retype changes the scene geometry (circles vs bars)");
+        let dot_again = fingerprint(MarkKind::Dot);
+        assert_eq!(dot, dot_again, "retype back to dot reverts the scene fingerprint");
+    }
+
+    /// clg-ac16 (count-changing flat-index integrity, COORDINATOR half): an
+    /// AddMark on plot P must rebuild the flat mark space so (a) `mark_to_plot`
+    /// has the NEW flat index -> P, (b) every pre-existing mark still maps to its
+    /// ORIGINAL plot, (c) an UNAFFECTED plot's mark is MOVED verbatim (its
+    /// retained render-config survives) while the affected plot's marks are
+    /// rebuilt fresh from the spec; a RemoveMark then re-checks the same
+    /// integrity. Drives the gpui-free `rebuild_flat_index_space` directly (the
+    /// data core of `rebuild_marks_and_maps` — LivePlot's non-Send
+    /// `Entity<ChartState>` can't be built headless). The engine half
+    /// (mark_index_map rebuild + resolve + execute) is pinned by
+    /// brightfield-engine's `clg_ac16_count_change_rebuilds_mark_index_map...`.
+    #[test]
+    fn clg_ac16_count_change_rebuilds_coordinator_mark_to_plot() {
+        use brightfield_spec::analysis::ComponentPath;
+        use brightfield_spec::edit::{apply, SpecEdit};
+        use brightfield_spec::{parse_spec, Format};
+
+        let yaml = "\
+data:
+  t: SELECT 1 AS a, 2 AS b
+vconcat:
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: a
+        y: b
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: a
+        y: b
+";
+        let spec = parse_spec(yaml, Format::Yaml).expect("parse").spec;
+        let cp = |s: &str| ComponentPath(s.to_string());
+
+        // A minimal MarkInput carrying a bandwidth SENTINEL: it survives a
+        // verbatim MOVE but not a fresh rebuild (the spec has no bandwidth attr,
+        // so a rebuilt mark's bandwidth is None) — the discriminator between
+        // "moved" (unaffected plot) and "rebuilt" (affected plot).
+        let sentinel = |bw: f64| MarkInput {
+            batch: None,
+            channels: ChannelMap::new(),
+            kind: MarkKind::Dot,
+            renderer_override: None,
+            bandwidth: Some(bw),
+            thresholds: None,
+            bin_width: None,
+            highlight_style: None,
+        };
+        // Old flat space: plot0 -> [0] (bw 0.11), plot1 -> [1] (bw 0.42).
+        let plot_meta = vec![
+            ("root/vconcat[0]".to_string(), vec![0usize], SequentialScheme::default()),
+            ("root/vconcat[1]".to_string(), vec![1usize], SequentialScheme::default()),
+        ];
+        let old_marks = vec![sentinel(0.11), sentinel(0.42)];
+
+        // AddMark a line to plot 0 (the affected plot).
+        let mut spec_b = spec.clone();
+        apply(&mut spec_b, &SpecEdit::AddMark { plot: cp("root/vconcat[0]"), kind: MarkKind::Line })
+            .expect("clean");
+        let (new_marks, new_indices, mark_to_plot) =
+            rebuild_flat_index_space(&plot_meta, old_marks, &spec_b, "root/vconcat[0]");
+
+        // Three marks now; plot 0 owns two contiguous indices, plot 1 owns one.
+        assert_eq!(new_marks.len(), 3);
+        let p0 = new_indices["root/vconcat[0]"].clone();
+        let p1 = new_indices["root/vconcat[1]"].clone();
+        assert_eq!(p0.len(), 2, "AddMark grows the affected plot by one");
+        assert_eq!(p1.len(), 1, "the unaffected plot keeps its one mark");
+        // (a)+(b) every flat index maps to the RIGHT plot.
+        for &mi in &p0 {
+            assert_eq!(mark_to_plot[&mi], 0, "plot 0's marks (incl. the new one) map to plot 0");
+        }
+        for &mi in &p1 {
+            assert_eq!(mark_to_plot[&mi], 1, "the pre-existing plot-1 mark still maps to plot 1");
+        }
+        // (c) the affected plot's marks were REBUILT fresh (no sentinel bandwidth);
+        // the unaffected plot's mark was MOVED verbatim (its 0.42 sentinel survives).
+        for &mi in &p0 {
+            assert_eq!(new_marks[mi].bandwidth, None, "affected plot's marks rebuilt fresh");
+        }
+        assert_eq!(new_marks[p1[0]].bandwidth, Some(0.42), "unaffected plot's mark moved verbatim");
+
+        // RemoveMark the primary from plot 0: re-check integrity (one mark each).
+        let mut spec_c = spec_b.clone();
+        apply(&mut spec_c, &SpecEdit::RemoveMark { plot: cp("root/vconcat[0]"), mark_ordinal: 0 })
+            .expect("clean");
+        let post_add_meta = vec![
+            ("root/vconcat[0]".to_string(), p0, SequentialScheme::default()),
+            ("root/vconcat[1]".to_string(), p1, SequentialScheme::default()),
+        ];
+        let (nm2, ni2, mtp2) =
+            rebuild_flat_index_space(&post_add_meta, new_marks, &spec_c, "root/vconcat[0]");
+        assert_eq!(nm2.len(), 2, "RemoveMark shrinks the flat space back to two");
+        assert_eq!(ni2["root/vconcat[0]"].len(), 1);
+        assert_eq!(ni2["root/vconcat[1]"].len(), 1);
+        let q2 = ni2["root/vconcat[1]"][0];
+        assert_eq!(mtp2[&q2], 1, "plot 1 still maps to plot 1 after the remove");
+        assert_eq!(nm2[q2].bandwidth, Some(0.42), "plot 1's mark still moved verbatim, not corrupted");
     }
 
     /// A pixel brush inverts to the right data range through a linear scale,
