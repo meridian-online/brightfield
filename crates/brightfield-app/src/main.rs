@@ -1521,12 +1521,19 @@ fn main() {
             // legend's index matches its binding.
             let legend_select_bindings: Vec<brightfield_ui::LegendSelectBinding> =
                 legend_bindings.iter().map(Into::into).collect();
+            // `command_log_active: true` — the authoring window always hosts the
+            // command log (card 0023), so a structural edit (m/a/e/d/u) must be
+            // able to drive even an otherwise-static plot (a plain scatter). Without
+            // this the coordinator is `None` for a no-selection / non-sequential
+            // spec and every edit silently no-ops on the canvas (the working spec +
+            // log update, the plot never moves — the card-0021 silent-no-op class).
             let coordinator = CrossfilterCoordinator::new(
                 session,
                 marks,
                 live_plots,
                 slider_bindings,
                 legend_select_bindings,
+                true,
             );
 
             // One placed chart per plot, each wired to the shared coordinator.
@@ -2104,7 +2111,7 @@ plot:
             column: "g".into(),
         };
         let coordinator =
-            CrossfilterCoordinator::new(session, Vec::<MarkInput>::new(), vec![], vec![], vec![ui_binding])
+            CrossfilterCoordinator::new(session, Vec::<MarkInput>::new(), vec![], vec![], vec![ui_binding], false)
                 .expect("legend-only liveness (lcf_ac03) keeps the coordinator");
 
         let colour = Scale::Colour {
@@ -2977,7 +2984,7 @@ hconcat:
         let legend_select: Vec<LegendSelectBinding> =
             live.legend_bindings.iter().map(Into::into).collect();
         assert!(
-            CrossfilterCoordinator::new(live.session, live.marks, vec![], vec![], legend_select)
+            CrossfilterCoordinator::new(live.session, live.marks, vec![], vec![], legend_select, false)
                 .is_none(),
             "no placement → no binding → no coordinator"
         );

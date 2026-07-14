@@ -229,18 +229,24 @@ impl CrossfilterCoordinator {
     /// per-plot / slider / legend metadata assembled at startup. Returns `None`
     /// when there is nothing live to drive — no plot has a brush binding AND
     /// there are no sliders AND no bound legends AND no plot carries a sequential
-    /// Fill ramp — so the window skips the wiring entirely and behaves as before.
+    /// Fill ramp AND the command log is not active — so a purely static
+    /// PNG/embedding path skips the wiring entirely and behaves as before.
     /// A dashboard whose only interactive surface is a bound legend (card 0009),
     /// or whose only live surface is a sequential colour scale (the `c`
-    /// colour-cycle, card 0018), stays live. Keeping the coordinator for an
-    /// otherwise-static sequential dashboard costs only the retained non-Send
-    /// Session in the window (the dump/watcher paths never build it).
+    /// colour-cycle, card 0018), stays live. `command_log_active` (card 0023) is
+    /// itself a live surface: the authoring window passes `true` so a structural
+    /// edit (m/a/e/d/u) can re-render even an otherwise-static plot — without it a
+    /// plain scatter's edits mutate the working spec + fill the log but never
+    /// re-render the canvas (the card-0021 silent-no-op class). Keeping the
+    /// coordinator costs only the retained non-Send Session in the window; the
+    /// dump/watcher paths never build one and pass `false`.
     pub fn new(
         session: Session,
         marks: Vec<MarkInput>,
         plots: Vec<LivePlot>,
         slider_bindings: Vec<SliderBinding>,
         legend_bindings: Vec<LegendSelectBinding>,
+        command_log_active: bool,
     ) -> Option<Rc<RefCell<Self>>> {
         let any_brush = plots.iter().any(|p| !p.bindings.is_empty());
         let any_sequential_fill = plots.iter().any(|p| has_sequential_fill(&p.launch_scales));
@@ -249,6 +255,7 @@ impl CrossfilterCoordinator {
             !slider_bindings.is_empty(),
             !legend_bindings.is_empty(),
             any_sequential_fill,
+            command_log_active,
         ) {
             return None;
         }
@@ -1187,8 +1194,9 @@ fn coordinator_has_live_surface(
     any_slider: bool,
     any_legend: bool,
     any_sequential_fill: bool,
+    command_log: bool,
 ) -> bool {
-    any_brush || any_slider || any_legend || any_sequential_fill
+    command_log || any_brush || any_slider || any_legend || any_sequential_fill
 }
 
 /// Whether a `ScaleSet`'s Fill channel is a `Scale::Sequential` ramp — the signal
@@ -2138,11 +2146,92 @@ projectionType: albers
         }];
         assert!(has_sequential_fill(&launch_scales(&raster, &renderers, &[0], &layout)));
         // (2) The gate OR-folds every driving surface, including sequential-Fill.
-        assert!(!coordinator_has_live_surface(false, false, false, false));
-        assert!(coordinator_has_live_surface(false, false, false, true));
-        assert!(coordinator_has_live_surface(true, false, false, false));
-        assert!(coordinator_has_live_surface(false, true, false, false));
-        assert!(coordinator_has_live_surface(false, false, true, false));
+        assert!(!coordinator_has_live_surface(false, false, false, false, false));
+        assert!(coordinator_has_live_surface(false, false, false, true, false));
+        assert!(coordinator_has_live_surface(true, false, false, false, false));
+        assert!(coordinator_has_live_surface(false, true, false, false, false));
+        assert!(coordinator_has_live_surface(false, false, true, false, false));
+        // card 0023: the command log is itself a live surface. Without this
+        // disjunct a static spec (categorical/absent fill, no selection — e.g.
+        // scatter.yaml) built no coordinator, so m/a/e/d/u mutated the working
+        // spec + filled the log but never re-rendered — the card-0021 silent-no-op
+        // class, on the simplest possible spec.
+        assert!(coordinator_has_live_surface(false, false, false, false, true));
+    }
+
+    /// clg-ac16 regression (the scatter silent-no-op): a STATIC spec — a plain
+    /// `dot` mark with a categorical fill, no params / selection / sequential
+    /// ramp — must still get a live coordinator when the command log is active,
+    /// so a structural edit can re-render. Before the `command_log_active`
+    /// disjunct `new` returned `None` here and every m/a/e/d/u was a canvas no-op
+    /// (the working spec + command log updated, the plot never moved). The flag is
+    /// load-bearing: `false` (the dump/embedding path) still yields `None`; `true`
+    /// (the authoring window) yields `Some`.
+    #[test]
+    fn clg_ac16_static_spec_gets_a_coordinator_for_the_command_log() {
+        use brightfield_engine::Engine;
+        use brightfield_spec::analysis::analyse_spec;
+        use brightfield_spec::{parse_spec, Format};
+        use brightfield_sql::collect_marks;
+
+        // A static scatter: categorical fill, no params, no selection, no
+        // sequential ramp — exactly the shape that built no coordinator.
+        let yaml = r#"
+data:
+  points:
+    - { weight: 52, height: 158, group: A }
+    - { weight: 70, height: 173, group: B }
+    - { weight: 95, height: 188, group: C }
+plot:
+  - mark: dot
+    data: { from: points }
+    x: weight
+    y: height
+    fill: group
+"#;
+        let build_marks = || {
+            let parsed = parse_spec(yaml, Format::Yaml).expect("parse");
+            let analysis = analyse_spec(&parsed.spec).expect("analyse");
+            let engine = Engine::new();
+            let mut session = engine
+                .load_spec(parsed.spec.clone(), analysis, None)
+                .expect("load")
+                .session;
+            let results = session.execute_all();
+            let marks_ast = collect_marks(&parsed.spec);
+            let marks: Vec<MarkInput> = results
+                .into_iter()
+                .enumerate()
+                .map(|(i, r)| MarkInput {
+                    batch: r.ok().and_then(concat_batches),
+                    channels: ChannelMap::from_mark(marks_ast[i]),
+                    kind: marks_ast[i].kind,
+                    renderer_override: None,
+                    bandwidth: None,
+                    thresholds: None,
+                    bin_width: None,
+                    highlight_style: None,
+                })
+                .collect();
+            (session, marks)
+        };
+
+        // No live surface AND the command log off (the PNG/embedding path) → None,
+        // exactly as before card 0023.
+        let (session, marks) = build_marks();
+        assert!(
+            CrossfilterCoordinator::new(session, marks, vec![], vec![], vec![], false).is_none(),
+            "a static spec with no command log stays coordinator-free (dump path)"
+        );
+
+        // The authoring window activates the command log → the same static spec
+        // now gets a coordinator, so a structural edit can re-render (scatter fix).
+        let (session, marks) = build_marks();
+        assert!(
+            CrossfilterCoordinator::new(session, marks, vec![], vec![], vec![], true).is_some(),
+            "the command log is a live surface: a static scatter's m/a/e/d/u must \
+             re-render, not silently no-op (card-0021 class)"
+        );
     }
 
     /// kbg_ac13 (attr retention): drives `recolour_override` — the EXACT per-mark
@@ -2919,7 +3008,7 @@ plot:
             max: 6.0,
             step: Some(1.0),
         };
-        let coord = CrossfilterCoordinator::new(session, marks, vec![], vec![binding], vec![])
+        let coord = CrossfilterCoordinator::new(session, marks, vec![], vec![binding], vec![], false)
             .expect("a slider binding keeps the coordinator alive with no brushes");
         let mut c = coord.borrow_mut();
 
@@ -2990,7 +3079,7 @@ plot:
             })
             .collect();
 
-        let coord = CrossfilterCoordinator::new(session, marks, vec![], vec![binding], vec![])
+        let coord = CrossfilterCoordinator::new(session, marks, vec![], vec![binding], vec![], false)
             .expect("coordinator");
         let mut c = coord.borrow_mut();
         let before = c.marks[0].batch.as_ref().map_or(0, |b| b.num_rows());
@@ -3078,7 +3167,7 @@ hconcat:
             })
             .collect();
 
-        CrossfilterCoordinator::new(session, marks, vec![], vec![], legend_bindings)
+        CrossfilterCoordinator::new(session, marks, vec![], vec![], legend_bindings, false)
             .expect("lcf_ac03 liveness: a bound legend alone keeps the coordinator alive")
     }
 
