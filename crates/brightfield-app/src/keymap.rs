@@ -43,7 +43,17 @@ actions!(
         /// Reload the spec from disk with a dirty-buffer guard (cmd-r, global).
         ReloadSpec,
         /// Cycle the focused view's sequential colour scheme (c, transient).
-        CycleColourScheme
+        CycleColourScheme,
+        /// Change the focused view's primary mark type (m, command log).
+        ChangeMarkType,
+        /// Add a mark to the focused view (a, argument overlay).
+        AddMark,
+        /// Bind a channel to a column on the focused view (e, argument overlay).
+        SetChannel,
+        /// Remove the focused view's primary mark (d, command log).
+        RemoveMark,
+        /// Undo the last uncommitted command-log edit (u).
+        Undo
     ]
 );
 
@@ -76,6 +86,12 @@ fn keybinding_for(bk: &BoundKey) -> Option<KeyBinding> {
         "clear-selection" => KeyBinding::new(ks, ClearSelection, ctx),
         "reload-spec" => KeyBinding::new(ks, ReloadSpec, ctx),
         "cycle-colour-scheme" => KeyBinding::new(ks, CycleColourScheme, ctx),
+        // Command-log structural edits (card 0023).
+        "change-mark-type" => KeyBinding::new(ks, ChangeMarkType, ctx),
+        "add-mark" => KeyBinding::new(ks, AddMark, ctx),
+        "set-channel" => KeyBinding::new(ks, SetChannel, ctx),
+        "remove-mark" => KeyBinding::new(ks, RemoveMark, ctx),
+        "undo" => KeyBinding::new(ks, Undo, ctx),
         // Shipped fixed points keep their original binding sites.
         "toggle-presentation" | "save-spec" => return None,
         _ => return None,
@@ -104,6 +120,11 @@ pub fn action_for_longname(longname: &str) -> Option<Box<dyn gpui::Action>> {
         "clear-selection" => Box::new(ClearSelection),
         "reload-spec" => Box::new(ReloadSpec),
         "cycle-colour-scheme" => Box::new(CycleColourScheme),
+        "change-mark-type" => Box::new(ChangeMarkType),
+        "add-mark" => Box::new(AddMark),
+        "set-channel" => Box::new(SetChannel),
+        "remove-mark" => Box::new(RemoveMark),
+        "undo" => Box::new(Undo),
         "toggle-presentation" => Box::new(brightfield_ui::TogglePresentation),
         // save-spec's handler is on the editor subtree (unreachable from a
         // canvas-anchored dispatch); reserved verbs are unbound.
@@ -146,7 +167,8 @@ mod tests {
             .filter(|bk| !SHIPPED_FIXED_POINTS.contains(&bk.longname))
             .count();
         assert_eq!(grammar_key_bindings().len(), want, "adapter dropped a new registry binding");
-        assert_eq!(want, 16, "16 new grammar bindings (18 registry keys − p − cmd-s)");
+        // Card 0023 added m/a/e/d/u (5 keys): 23 registry keys − p − cmd-s = 21.
+        assert_eq!(want, 21, "21 new grammar bindings (23 registry keys − p − cmd-s)");
     }
 
     #[test]
@@ -167,6 +189,11 @@ mod tests {
             ("clear-selection", "brightfield::ClearSelection"),
             ("reload-spec", "brightfield::ReloadSpec"),
             ("cycle-colour-scheme", "brightfield::CycleColourScheme"),
+            ("change-mark-type", "brightfield::ChangeMarkType"),
+            ("add-mark", "brightfield::AddMark"),
+            ("set-channel", "brightfield::SetChannel"),
+            ("remove-mark", "brightfield::RemoveMark"),
+            ("undo", "brightfield::Undo"),
             ("toggle-presentation", "brightfield::TogglePresentation"),
         ];
         for &(longname, action_name) in expected {

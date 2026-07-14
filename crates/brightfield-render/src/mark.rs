@@ -38,6 +38,23 @@ pub struct HighlightStyle {
     pub stroke_opacity: Option<f64>,
 }
 
+impl From<&brightfield_spec::analysis::HighlightStyle> for HighlightStyle {
+    /// Resolve a spec-side highlight `otherwise` style (CSS-hex colour strings)
+    /// into the render style (parsed `Color`s). Shared by card-0021 app assembly
+    /// AND the card-0023 command-log mark rebuild, so a re-queried mark dims
+    /// identically after a structural edit / undo (finding 1/2/4 — a rebuild that
+    /// dropped this silently killed highlight dimming).
+    fn from(style: &brightfield_spec::analysis::HighlightStyle) -> Self {
+        HighlightStyle {
+            opacity: style.opacity,
+            fill: style.fill.as_deref().and_then(parse_css_hex),
+            fill_opacity: style.fill_opacity,
+            stroke: style.stroke.as_deref().and_then(parse_css_hex),
+            stroke_opacity: style.stroke_opacity,
+        }
+    }
+}
+
 /// Default deemphasis alpha multiplier when a highlight carries no override
 /// fields — Mosaic's `opacity` default for the non-matching set.
 const DEFAULT_DIMMED_ALPHA: f32 = 0.2;
@@ -190,6 +207,17 @@ pub trait MarkRenderer {
     /// `true` (card 0008 geo mark).
     fn suppresses_frame(&self) -> bool {
         false
+    }
+
+    /// The map projection this renderer applies, if it is a projecting (geo)
+    /// mark; `None` for every cartesian mark (the default). Lets a caller
+    /// confirm the resolved projection a rebuilt geo mark carries WITHOUT
+    /// downcasting the boxed renderer — the seam the crossfilter rebuild's
+    /// survival test reads to distinguish Albers from the equirectangular
+    /// default (mirrors [`Self::suppresses_frame`]'s introspection-default
+    /// shape; zero impact on existing renderers).
+    fn projection(&self) -> Option<Projection> {
+        None
     }
 }
 
@@ -3240,6 +3268,10 @@ impl MarkRenderer for GeoRenderer {
     /// reads as a map. The scene builders skip grid + axes for it.
     fn suppresses_frame(&self) -> bool {
         true
+    }
+
+    fn projection(&self) -> Option<Projection> {
+        Some(self.projection)
     }
 }
 

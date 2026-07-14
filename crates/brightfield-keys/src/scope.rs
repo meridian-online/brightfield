@@ -156,7 +156,8 @@ mod tests {
         // Presentation is not a runtime verb.
         let res = resolve_scope(&verb("toggle-presentation"), ctx(&focused, Altitude::View, &root), true);
         assert!(matches!(res, ScopeResolution::Rejected(RejectReason::GNotAllowed { .. })));
-        // A reserved structural verb under g is likewise rejected.
+        // A structural (SpecEdit) verb under g is likewise rejected — it is
+        // Built (card 0023) but not runtime-dispatch, so not g-broadcast eligible.
         let res2 = resolve_scope(&verb("change-mark-type"), ctx(&focused, Altitude::View, &root), true);
         assert!(matches!(res2, ScopeResolution::Rejected(RejectReason::GNotAllowed { .. })));
     }
@@ -181,8 +182,10 @@ mod tests {
         let root = ComponentPath("root".into());
         let res = resolve_scope(&verb("filter-view"), ctx(&focused, Altitude::View, &root), false);
         assert_eq!(res, ScopeResolution::Rejected(RejectReason::Reserved(ReservedReason::NeedsKeyboardTarget)));
-        let res2 = resolve_scope(&verb("undo"), ctx(&focused, Altitude::View, &root), false);
-        assert_eq!(res2, ScopeResolution::Rejected(RejectReason::Reserved(ReservedReason::NeedsCommandLog)));
+        // The command-log verbs (undo etc.) are now Built (card 0023), so the
+        // second still-reserved bucket case uses another NeedsKeyboardTarget verb.
+        let res2 = resolve_scope(&verb("set-param"), ctx(&focused, Altitude::View, &root), false);
+        assert_eq!(res2, ScopeResolution::Rejected(RejectReason::Reserved(ReservedReason::NeedsKeyboardTarget)));
     }
 
     #[test]

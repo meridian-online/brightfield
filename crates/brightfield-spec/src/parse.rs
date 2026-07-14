@@ -1388,6 +1388,19 @@ fn json_to_yaml_value(j: &serde_json::Value) -> serde_yaml::Value {
 // Serialize: ParamRef canonicalises to "$name" string form.
 // ---------------------------------------------------------------------------
 
+/// Canonically re-serialise a [`Spec`] to a YAML string (card 0023 commit).
+///
+/// The command-log commit re-serialises the working (edited) Spec through this
+/// single canonical path (the `impl Serialize for Spec` below) into the editor
+/// buffer, then lets the unchanged `set_value` -> save -> watcher pipeline carry
+/// it. The write is LOSSY by design — it reformats, drops comments, and emits a
+/// fixed block order — so it is confined to the deliberate commit and
+/// round-trip-tested on the target within-plot-edited specs (`parse -> apply ->
+/// serialise -> re-parse` yields the same AST, clg-ac07a).
+pub fn serialise_spec(spec: &Spec) -> Result<String, String> {
+    serde_yaml::to_string(spec).map_err(|e| e.to_string())
+}
+
 impl Serialize for Spec {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         // Rough field count for hint only.

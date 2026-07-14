@@ -50,8 +50,15 @@ use brightfield_keys::{
     focus_jump_candidates, help_sheet, palette_filter, registry, Altitude, FocusState, FocusTree,
     JumpCandidate, PaletteCandidate, RecencyCounter,
 };
-use brightfield_spec::analysis::ComponentPath;
+use brightfield_spec::analysis::{analyse_spec, ComponentPath};
+use brightfield_spec::ast::{Component, Spec};
+use brightfield_spec::edit::{
+    apply as apply_spec_edit, classify_edit, plot_at_path, SpecEdit, UndoOutcome, UndoStack,
+};
+use brightfield_spec::vocab::{ImplStatus, MarkKind};
 
+use crate::arg_collector::{ArgCollector, ArgOutcome, ArgStep};
+use crate::command_log::CommandLog;
 use crate::dock_state_file::{
     self, LoadDecision, SaveAction, SavePolicy, DOCK_STATE_VERSION, SAVE_DEBOUNCE_MS,
 };
@@ -60,12 +67,13 @@ use crate::reload_feedback::{self, Severity};
 use crate::shell_model::{
     bottom_dock_action, bottom_dock_needs_backfill, dock_closes_when_emptied, docks_open,
     grammar_chrome_visible, layout_persistable, panel_visible, BottomDockAction, PanelRole,
-    BOTTOM_DOCK_HEIGHT, CANVAS_PANEL_NAME, EDITOR_DOCK_WIDTH, EDITOR_PANEL_NAME, LOG_PANEL_NAME,
-    SIDEBAR_DOCK_WIDTH, SIDEBAR_PANEL_NAME,
+    BOTTOM_DOCK_HEIGHT, CANVAS_PANEL_NAME, CMD_LOG_PANEL_NAME, EDITOR_DOCK_WIDTH, EDITOR_PANEL_NAME,
+    LOG_PANEL_NAME, SIDEBAR_DOCK_WIDTH, SIDEBAR_PANEL_NAME,
 };
 use crate::keymap::{
-    action_for_longname, ClearSelection, CycleColourScheme, DiveIn, FocusJump, FocusNextSibling,
-    FocusPrevSibling, OpenHelp, OpenPalette, PopOut, ReloadSpec, ToggleFocus,
+    action_for_longname, AddMark, ChangeMarkType, ClearSelection, CycleColourScheme, DiveIn,
+    FocusJump, FocusNextSibling, FocusPrevSibling, OpenHelp, OpenPalette, PopOut, ReloadSpec,
+    RemoveMark, SetChannel, ToggleFocus, Undo,
 };
 use crate::profile_model::{self, ProfileOutcome, SourceProfile};
 use crate::spec_save;
@@ -82,7 +90,12 @@ actions!(
         DockEditorAtBottom,
         DockEditorAtRight,
         DockSidebarAtBottom,
-        DockSidebarAtLeft
+        DockSidebarAtLeft,
+        /// Commit the accumulated command-log edits to disk (card 0023,
+        /// clg-ac07): cmd-s while the CANVAS has focus. Distinct from the
+        /// editor's cmd-s `SaveSpec` (which saves the hand-typed buffer);
+        /// resolved by focus context.
+        CommitEdits
     ]
 );
 
@@ -99,6 +112,17 @@ pub const DOCK_AREA_ID: &str = "brightfield-workspace";
 /// `cx.bind_keys` alongside the workspace bindings.
 pub fn editor_key_bindings() -> Vec<KeyBinding> {
     vec![KeyBinding::new("cmd-s", SaveSpec, Some(EDITOR_KEY_CONTEXT))]
+}
+
+/// The command-log commit binding (card 0023, clg-ac07): cmd-s scoped to the
+/// CANVAS ([`WORKSPACE_KEY_CONTEXT`]) → [`CommitEdits`]. So cmd-s commits pending
+/// structural edits while the canvas is focused, and saves the buffer while the
+/// editor is focused (`editor_key_bindings`) — resolved by focus context, the
+/// two never collide. Fed to `cx.bind_keys` beside the editor + grammar bindings;
+/// deliberately OUTSIDE the registry-sourced set (`grammar_key_bindings`), so the
+/// kbg_ac07 "cmd-s stays a card-0017 binding" invariant on that set still holds.
+pub fn workspace_command_bindings() -> Vec<KeyBinding> {
+    vec![KeyBinding::new("cmd-s", CommitEdits, Some(WORKSPACE_KEY_CONTEXT))]
 }
 
 /// The one bit of shared shell mode: card 0016's gpui-free
@@ -139,6 +163,30 @@ pub struct CanvasPanel {
     /// Where keyboard focus sits (the bare-verb / focus-ring target); `None` when
     /// the dashboard has no navigable structure.
     focus_state: Option<FocusState>,
+    /// The keyboard command-log session (card 0023): the working `Spec` the
+    /// structural verbs mutate, the snapshot-undo stack, and the shared
+    /// [`CommandLog`]. `None` until [`Self::set_command_session`] wires it (the
+    /// dump path + a spec that failed to re-parse never do), so the verbs
+    /// no-op gracefully on a session-less canvas.
+    command: Option<CommandSession>,
+}
+
+/// The keyboard command-log session state riding [`CanvasPanel`] (card 0023).
+/// Framework-bound only in that it holds a gpui `Entity<CommandLog>`; the
+/// reducer target ([`Spec`]) and the [`UndoStack`] are gpui-free.
+struct CommandSession {
+    /// The WORKING `Spec` — the reducer target ([`apply_spec_edit`] mutates it).
+    /// The live coordinator holds no `Spec` (crossfilter.rs), so it lives here.
+    working_spec: Spec,
+    /// The snapshot-undo stack (a whole-`Spec` clone per edit; clg-ac02).
+    undo: UndoStack,
+    /// The plot path each pushed snapshot's edit targeted, PARALLEL to `undo`'s
+    /// snapshots, so an undo knows which plot the reverted edit touched (v1 undo
+    /// refreshes all plots, so this is retained for future targeted refresh /
+    /// diagnostics rather than strictly required today).
+    undo_paths: Vec<String>,
+    /// The shared append-only command log (clg-ac08) the inline readout renders.
+    log: Entity<CommandLog>,
 }
 
 impl CanvasPanel {
@@ -168,6 +216,245 @@ impl CanvasPanel {
             focus_handle: cx.focus_handle(),
             focus_tree,
             focus_state,
+            command: None,
+        }
+    }
+
+    /// Wire the command-log session (card 0023) AFTER construction — so
+    /// [`CanvasPanel::new`]'s signature (and its many test callers) stay
+    /// untouched. `working_spec` is the parsed launch spec (the reducer target);
+    /// `log` is the shared [`CommandLog`] the inline readout renders and the
+    /// structural verbs append to. Called once from `main` when the pipeline
+    /// produced a re-parsable spec.
+    pub fn set_command_session(&mut self, working_spec: Spec, log: Entity<CommandLog>) {
+        self.command = Some(CommandSession {
+            working_spec,
+            undo: UndoStack::new(),
+            undo_paths: Vec::new(),
+            log,
+        });
+    }
+
+    /// The focused View's plot path (`root/vconcat[0]`, …), or `None` when focus
+    /// is at the Dashboard altitude (the command-log verbs are View-scoped). The
+    /// path scheme matches `edit::plot_at_path` + the coordinator's `LivePlot`
+    /// paths (all built from the shared `collect_plot_nodes`/`descend` walk), so
+    /// an edit targeting it resolves in both the reducer and the coordinator.
+    fn focused_view_path(&self) -> Option<String> {
+        let s = self.focus_state.as_ref()?;
+        if s.altitude(&self.focus_tree) == Altitude::View {
+            Some(s.path(&self.focus_tree).0.clone())
+        } else {
+            None
+        }
+    }
+
+    /// The next gate-clean retype for the focused View's primary mark (bare `m`
+    /// CYCLES the mark kind — it takes no argument, unlike `a`/`e`; card 0023).
+    /// Walks the Implemented kinds after the current one and returns the first
+    /// for which [`classify_edit`] is clean (so a cross-zero-baseline-class flip
+    /// or a title-changing rebind is skipped, not refused mid-cycle). `None` when
+    /// there is no focused View, no primary mark, or no clean retype exists.
+    fn next_retype_edit(&self) -> Option<SpecEdit> {
+        let session = self.command.as_ref()?;
+        let path = self.focused_view_path()?;
+        let plot = plot_at_path(&session.working_spec, &path)?;
+        let current = plot.items.iter().find_map(|c| match c {
+            Component::Mark(m) => Some(m.kind),
+            _ => None,
+        })?;
+        let kinds: Vec<MarkKind> = MarkKind::all()
+            .iter()
+            .copied()
+            .filter(|k| k.status() == ImplStatus::Implemented)
+            .collect();
+        let start = kinds.iter().position(|&k| k == current).unwrap_or(0);
+        for off in 1..=kinds.len() {
+            let cand = kinds[(start + off) % kinds.len()];
+            if cand == current {
+                continue;
+            }
+            let edit = SpecEdit::ChangeMarkType {
+                plot: ComponentPath(path.clone()),
+                mark_ordinal: 0,
+                new_kind: cand,
+            };
+            if classify_edit(&session.working_spec, &edit).is_ok() {
+                return Some(edit);
+            }
+        }
+        None
+    }
+
+    /// Append a message to the command log (clg-ac08) and repaint the readout.
+    fn log_command(&self, f: impl FnOnce(&mut CommandLog), cx: &mut Context<Self>) {
+        if let Some(session) = self.command.as_ref() {
+            session.log.update(cx, |log, cx| {
+                f(log);
+                cx.notify();
+            });
+        }
+    }
+
+    /// The focused View's plot path — the argument overlay's target (card 0023,
+    /// clg-ac09). `None` when there is no command session or focus sits at the
+    /// Dashboard altitude (the argument verbs are View-scoped).
+    pub fn command_target(&self) -> Option<ComponentPath> {
+        self.command.as_ref()?;
+        self.focused_view_path().map(ComponentPath)
+    }
+
+    /// The canonical YAML of the working spec, for a commit (card 0023, clg-ac07)
+    /// — `None` when there are no uncommitted edits (nothing to flush) or no
+    /// command session. Serialises through the same canonical writer a manual
+    /// save uses; the caller routes it through the editor buffer + save pipeline.
+    pub fn pending_commit_yaml(&self) -> Option<String> {
+        let session = self.command.as_ref()?;
+        if session.undo.uncommitted_len() == 0 {
+            return None;
+        }
+        brightfield_spec::parse::serialise_spec(&session.working_spec).ok()
+    }
+
+    /// Seal the current uncommitted edits behind a commit barrier + record the
+    /// commit in the log (card 0023, clg-ac07) — called after the buffer/save
+    /// pipeline has flushed `pending_commit_yaml` to disk.
+    pub fn mark_committed(&mut self, cx: &mut Context<Self>) {
+        if let Some(session) = self.command.as_mut() {
+            session.undo.commit_barrier();
+        }
+        self.log_command(
+            |log| {
+                log.commit();
+            },
+            cx,
+        );
+    }
+
+    /// Record a refused command (e.g. a dirty-buffer commit refusal) in the log.
+    pub fn log_command_refusal(&self, reason: &str, cx: &mut Context<Self>) {
+        self.log_command(|log| log.record_refused(reason.to_string()), cx);
+    }
+
+    /// Apply a structural [`SpecEdit`] to the working spec + live coordinator
+    /// (card 0023, clg-ac06): snapshot for undo, classify+apply to the working
+    /// `Spec`, and on success re-analyse + drive the coordinator's transient
+    /// refresh + log the edit; on a refusal, log the reason (never mutating).
+    /// TRANSIENT — no disk write (the commit is a separate deliberate action).
+    /// `pub` so the argument overlay (on `WorkspaceRoot`) applies a completed
+    /// `AddMark`/`SetChannel` (clg-ac09).
+    pub fn apply_command_edit(
+        &mut self,
+        edit: &SpecEdit,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Phase 1: classify + apply to the working spec under a snapshot. Borrows
+        // only `self.command`; produces the re-analysed spec or a refusal reason.
+        let prepared: Result<(Spec, brightfield_spec::analysis::SpecAnalysis, String), String> = {
+            let Some(session) = self.command.as_mut() else {
+                return;
+            };
+            let snapshot = session.working_spec.clone();
+            match apply_spec_edit(&mut session.working_spec, edit) {
+                Ok(()) => match analyse_spec(&session.working_spec) {
+                    Ok(analysis) => {
+                        session.undo.push(snapshot);
+                        session.undo_paths.push(edit.plot_path().to_string());
+                        Ok((session.working_spec.clone(), analysis, edit.summary()))
+                    }
+                    Err(e) => {
+                        // A gate-clean edit should analyse; roll back defensively.
+                        session.working_spec = snapshot;
+                        Err(format!("{}: re-analysis failed: {e}", edit.summary()))
+                    }
+                },
+                Err(reason) => Err(format!("{}: {}", edit.summary(), reason.reason())),
+            }
+        };
+        // Phase 2: drive the coordinator (disjoint field `chart_view`) + log.
+        match prepared {
+            Ok((spec, analysis, summary)) => {
+                let coord = self.chart_view.read(cx).coordinator();
+                let changed = if let Some(coord) = coord {
+                    coord.borrow_mut().apply_spec_edit(edit, spec, analysis, cx)
+                } else {
+                    false
+                };
+                self.log_command(|log| log.record_edit(summary), cx);
+                if changed {
+                    window.refresh();
+                }
+            }
+            Err(reason) => self.log_command(|log| log.record_refused(reason), cx),
+        }
+    }
+
+    /// `ChangeMarkType` handler (bare `m`, View-scoped — card 0023): cycle the
+    /// focused View's primary mark to the next gate-clean kind, applied live.
+    fn change_mark_type(&mut self, _: &ChangeMarkType, window: &mut Window, cx: &mut Context<Self>) {
+        match self.next_retype_edit() {
+            Some(edit) => self.apply_command_edit(&edit, window, cx),
+            None => self.log_command(
+                |log| log.record_refused("change-mark-type: no gate-clean retype from here"),
+                cx,
+            ),
+        }
+    }
+
+    /// `RemoveMark` handler (bare `d`, View-scoped — card 0023): drop the focused
+    /// View's primary mark, applied live. Emptying a plot is refused-with-reason
+    /// by the reducer (logged, never applied).
+    fn remove_mark(&mut self, _: &RemoveMark, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self.focused_view_path() else {
+            return;
+        };
+        let edit = SpecEdit::RemoveMark { plot: ComponentPath(path), mark_ordinal: 0 };
+        self.apply_command_edit(&edit, window, cx);
+    }
+
+    /// `Undo` handler (bare `u`, card 0023): pop the snapshot-undo stack, restore
+    /// the working spec, and reload every plot from it. A no-op past a commit
+    /// barrier / on an empty stack is logged with its reason (clg-ac02).
+    fn undo(&mut self, _: &Undo, window: &mut Window, cx: &mut Context<Self>) {
+        enum UndoAction {
+            Reload(Spec, brightfield_spec::analysis::SpecAnalysis),
+            Refused(String),
+        }
+        let action = {
+            let Some(session) = self.command.as_mut() else {
+                return;
+            };
+            match session.undo.undo() {
+                UndoOutcome::Restored(prev) => {
+                    session.undo_paths.pop();
+                    session.working_spec = *prev;
+                    match analyse_spec(&session.working_spec) {
+                        Ok(a) => UndoAction::Reload(session.working_spec.clone(), a),
+                        Err(e) => UndoAction::Refused(format!("undo: re-analysis failed: {e}")),
+                    }
+                }
+                UndoOutcome::NothingToUndo => UndoAction::Refused("undo: nothing to undo".to_string()),
+                UndoOutcome::PastCommitBarrier => {
+                    UndoAction::Refused("undo: nothing to undo (past the last commit)".to_string())
+                }
+            }
+        };
+        match action {
+            UndoAction::Reload(spec, analysis) => {
+                let coord = self.chart_view.read(cx).coordinator();
+                if let Some(coord) = coord {
+                    coord.borrow_mut().reload_all_from_spec(spec, analysis, cx);
+                }
+                self.log_command(
+                    |log| {
+                        log.record_undo();
+                    },
+                    cx,
+                );
+                window.refresh();
+            }
+            UndoAction::Refused(reason) => self.log_command(|log| log.record_refused(reason), cx),
         }
     }
 
@@ -404,6 +691,14 @@ impl Render for CanvasPanel {
         let breadcrumb = grammar_chrome_visible(self.presentation.read(cx).mode)
             .then(|| self.breadcrumb_text())
             .flatten();
+        // A lightweight inline "uncommitted edits" badge (card 0023), authoring-
+        // only — an at-a-glance cue right where the author works. The full
+        // history lives in the dedicated bottom-dock CommandLog panel (clg-ac08).
+        let command_readout: Option<usize> = (grammar_chrome_visible(self.presentation.read(cx).mode))
+            .then(|| self.command.as_ref())
+            .flatten()
+            .map(|s| s.log.read(cx).uncommitted())
+            .filter(|n| *n > 0);
         div()
             .relative()
             .size_full()
@@ -417,6 +712,9 @@ impl Render for CanvasPanel {
             .on_action(cx.listener(Self::focus_prev_sibling))
             .on_action(cx.listener(Self::clear_selection))
             .on_action(cx.listener(Self::cycle_colour_scheme))
+            .on_action(cx.listener(Self::change_mark_type))
+            .on_action(cx.listener(Self::remove_mark))
+            .on_action(cx.listener(Self::undo))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _event, window, cx| {
@@ -439,6 +737,21 @@ impl Render for CanvasPanel {
                     .text_color(rgb(0xd7dae0))
                     .text_size(px(12.0))
                     .child(text)
+            }))
+            .children(command_readout.map(|uncommitted| {
+                div()
+                    .absolute()
+                    .right(px(8.0))
+                    .bottom(px(8.0))
+                    .px_2()
+                    .py_1()
+                    .rounded(px(4.0))
+                    .bg(rgb(0x161a22))
+                    .border_1()
+                    .border_color(rgb(0x2b3242))
+                    .text_size(px(11.0))
+                    .text_color(rgb(0x8a93a6))
+                    .child(format!("{uncommitted} uncommitted · cmd-s to commit"))
             }))
     }
 }
@@ -597,6 +910,39 @@ impl EditorPanel {
         self.last_synced = Some(contents.to_string());
         self.conflict_pending = false;
     }
+
+    /// Commit a command-log flush THROUGH the editor buffer (card 0023, clg-ac07):
+    /// the PRISTINE-BUFFER gate first (a DIRTY buffer refuses — never `set_value`
+    /// over hand-typed edits), then render the canonical `yaml` into the buffer
+    /// and write it atomically, letting the watcher reload it. `Ok(())` on a
+    /// successful flush; `Err(reason)` when the buffer is dirty (the author saves
+    /// or discards first) or the write fails. Routes through the SAME buffer +
+    /// `save_spec_atomic` path a manual save uses (no out-of-band write).
+    pub fn commit_buffer(
+        &mut self,
+        yaml: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let buffer = self.state.read(cx).value();
+        if !spec_save::commit_is_allowed(buffer.as_ref(), self.last_synced.as_deref()) {
+            return Err(spec_save::DIRTY_BUFFER_COMMIT_REFUSAL.to_string());
+        }
+        self.state
+            .update(cx, |state, cx| state.set_value(yaml.to_string(), window, cx));
+        match spec_save::save_spec_atomic(yaml, &self.spec_path) {
+            Ok(_) => {
+                self.last_synced = Some(yaml.to_string());
+                Ok(())
+            }
+            Err(e) => {
+                let message = format!("Commit save failed: {e}");
+                eprintln!("{message}");
+                self.log_feedback(Severity::Error, &message, cx);
+                Err(message)
+            }
+        }
+    }
 }
 
 impl EventEmitter<PanelEvent> for EditorPanel {}
@@ -700,8 +1046,8 @@ impl SidebarPanel {
         cx.notify();
     }
 
-    /// The hosted profiles (shim assertion surface, sbp_ac03).
-    #[cfg(test)]
+    /// The hosted profiles — the sbp_ac03 shim assertion surface, and the
+    /// set-channel COLUMN pick-list's source (card 0023, delta finding 6).
     pub fn profiles(&self) -> &[SourceProfile] {
         &self.profiles
     }
@@ -941,6 +1287,119 @@ impl Render for LogPanel {
     }
 }
 
+/// The bottom-dock command-log panel (card 0023, clg-ac08) — the SECOND bottom
+/// citizen, rendering the framework-free [`CommandLog`] (the structural edits /
+/// commits / refusals a keyboard author runs), newest at top, with the
+/// uncommitted count in its header. DISTINCT from [`LogPanel`], which stays the
+/// reload/save diagnostics log. Its arrival is what unlocks the dock-drag (a
+/// single-panel dock can never source a drag).
+pub struct CommandLogPanel {
+    log: Entity<CommandLog>,
+    presentation: Entity<PresentationState>,
+    focus_handle: FocusHandle,
+}
+
+impl CommandLogPanel {
+    /// Host the shared command `log` (the SAME entity the canvas appends to).
+    pub fn new(
+        log: Entity<CommandLog>,
+        presentation: Entity<PresentationState>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        // Repaint on ANY log change (delta finding 7). The canvas appends to the
+        // log from ITS own context — a bare-verb refusal (`d`/`m`/undo) or an edit
+        // notifies the log entity's observers, not this panel — so without this
+        // observe the new row only surfaces on an unrelated later frame.
+        cx.observe(&log, |_, _, cx| cx.notify()).detach();
+        Self {
+            log,
+            presentation,
+            focus_handle: cx.focus_handle(),
+        }
+    }
+}
+
+impl EventEmitter<PanelEvent> for CommandLogPanel {}
+
+impl Focusable for CommandLogPanel {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Panel for CommandLogPanel {
+    fn panel_name(&self) -> &'static str {
+        CMD_LOG_PANEL_NAME
+    }
+
+    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        SharedString::from("Commands")
+    }
+
+    fn closable(&self, _cx: &App) -> bool {
+        false
+    }
+
+    fn zoomable(&self, _cx: &App) -> Option<PanelControl> {
+        None
+    }
+
+    fn visible(&self, cx: &App) -> bool {
+        // Same visibility rule as the diagnostics Log (authoring-only, a bottom
+        // citizen): reuse PanelRole::Log rather than adding a new role.
+        panel_visible(self.presentation.read(cx).mode, PanelRole::Log)
+    }
+}
+
+impl Render for CommandLogPanel {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        let foreground = cx.theme().foreground;
+        let accent = cx.theme().info;
+        let danger = cx.theme().danger;
+        let log = self.log.read(cx);
+        let uncommitted = log.uncommitted();
+        let entries = log.entries().to_vec();
+        let header = div()
+            .text_size(px(11.0))
+            .text_color(muted)
+            .child(SharedString::from(format!("{uncommitted} uncommitted")));
+        let list = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .size_full()
+            .p_3()
+            .text_size(px(12.0))
+            .overflow_hidden()
+            .child(header);
+        if entries.is_empty() {
+            return list.child(
+                div()
+                    .text_color(muted)
+                    .child(SharedString::from("(no command-log edits yet — try m / a / e / d / u)")),
+            );
+        }
+        list.children(entries.into_iter().map(move |entry| {
+            use crate::command_log::CommandLogEntry;
+            let (tag, tag_color) = match &entry {
+                CommandLogEntry::Edit(_) => ("edit", foreground),
+                CommandLogEntry::Commit(_) => ("commit", accent),
+                CommandLogEntry::Refused(_) => ("refused", danger),
+            };
+            div()
+                .flex()
+                .gap_2()
+                .child(div().text_color(tag_color).child(SharedString::from(tag)))
+                .child(
+                    div()
+                        .text_color(foreground)
+                        .child(SharedString::from(entry.text().to_string())),
+                )
+        }))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Workspace root (aws_ac03)
 // ---------------------------------------------------------------------------
@@ -979,6 +1438,10 @@ enum Overlay {
     /// The command palette (space / cmd-shift-p — ac-12): fuzzy verb-finder that
     /// dispatches the chosen verb against the refocused canvas.
     Palette,
+    /// The argument-prompt overlay for `a`/`e` (card 0023, clg-ac09): a running
+    /// [`ArgCollector`] drives a step-by-step pick (mark KIND, or CHANNEL then
+    /// COLUMN); the completed `SpecEdit` applies against the focused plot.
+    Arg,
 }
 
 /// The command palette renders at most this many candidate rows; the down-arrow
@@ -1021,6 +1484,12 @@ pub struct WorkspaceRoot {
     palette_query: String,
     palette_selected: usize,
     palette_recency: RecencyCounter,
+    /// The argument-prompt overlay's running collection (card 0023, clg-ac09):
+    /// `Some` while `a`/`e` is collecting; the query + selected row filter the
+    /// current step's option list. `None` whenever the overlay is not `Arg`.
+    arg: Option<ArgCollector>,
+    arg_query: String,
+    arg_selected: usize,
     /// Shared force-reload flag the cmd-r handler flips; the spec watcher polls
     /// it and runs one identical reload pass when set (card 0018, ac-11b).
     reload_trigger: Arc<AtomicBool>,
@@ -1048,6 +1517,7 @@ impl WorkspaceRoot {
         editor: Entity<EditorPanel>,
         sidebar: Entity<SidebarPanel>,
         log: Entity<LogPanel>,
+        command_log: Entity<CommandLogPanel>,
         presentation: Entity<PresentationState>,
         reload_trigger: Arc<AtomicBool>,
         window: &mut Window,
@@ -1064,7 +1534,7 @@ impl WorkspaceRoot {
         // with_saved_layout defaults the trigger (its wsc_ac03/ac04 test caller
         // never drives the watcher); the live wiring is injected here.
         let mut this = Self::with_saved_layout(
-            canvas, editor, sidebar, log, presentation, state_path, raw, window, cx,
+            canvas, editor, sidebar, log, command_log, presentation, state_path, raw, window, cx,
         );
         this.reload_trigger = reload_trigger;
         this
@@ -1080,6 +1550,7 @@ impl WorkspaceRoot {
         editor: Entity<EditorPanel>,
         sidebar: Entity<SidebarPanel>,
         log: Entity<LogPanel>,
+        command_log: Entity<CommandLogPanel>,
         presentation: Entity<PresentationState>,
         state_path: Option<PathBuf>,
         raw: Option<String>,
@@ -1111,6 +1582,10 @@ impl WorkspaceRoot {
             let log = log.clone();
             move |_, _, _, _, _| Box::new(log.clone())
         });
+        register_panel(cx, CMD_LOG_PANEL_NAME, {
+            let command_log = command_log.clone();
+            move |_, _, _, _, _| Box::new(command_log.clone())
+        });
 
         // Restore the saved arrangement, or build the default layout. Every
         // "is this state usable?" decision is dock_state_file's; a restore
@@ -1137,7 +1612,7 @@ impl WorkspaceRoot {
             }
         };
         if !restored {
-            Self::default_layout(&dock_area, &canvas, &editor, &sidebar, &log, window, cx);
+            Self::default_layout(&dock_area, &canvas, &editor, &sidebar, &log, &command_log, window, cx);
         } else {
             // Normalise (wsc_ac03 correction, review F1): pre-round saves
             // serialised bare-Tabs dock roots, which this pin's drag
@@ -1145,12 +1620,12 @@ impl WorkspaceRoot {
             // preserving the author's arrangement.
             Self::normalise_dock_roots(&dock_area, window, cx);
             if bottom_dock_needs_backfill(dock_area.read(cx).has_dock(DockPlacement::Bottom)) {
-                // Backfill (wsc_ac03): every pre-round saved layout lacks a
-                // bottom dock — append the same closed Log dock the default
-                // layout seeds, without touching the restored arrangement.
-                // DOCK_STATE_VERSION is unchanged on purpose: a version bump
-                // would discard the author's layout to add one dock.
-                Self::seed_bottom_dock(&dock_area, &log, window, cx);
+                // Backfill (wsc_ac03): a restored layout with no bottom dock —
+                // append the same closed bottom dock the default layout seeds
+                // (Log + CommandLog tabs), without touching the restored
+                // arrangement. (A saved layout that predates the CommandLog panel
+                // is discarded by the v2 version bump before reaching here.)
+                Self::seed_bottom_dock(&dock_area, &log, &command_log, window, cx);
             }
         }
 
@@ -1254,6 +1729,9 @@ impl WorkspaceRoot {
             palette_query: String::new(),
             palette_selected: 0,
             palette_recency: RecencyCounter::new(),
+            arg: None,
+            arg_query: String::new(),
+            arg_selected: 0,
             // Defaulted here; `new` injects the live trigger the watcher shares.
             reload_trigger: Arc::new(AtomicBool::new(false)),
             state_path,
@@ -1335,11 +1813,157 @@ impl WorkspaceRoot {
         cx.notify();
     }
 
+    /// `AddMark` handler (bare `a`, View-scoped — card 0023, clg-ac09): open the
+    /// argument overlay collecting a mark KIND, targeting the focused plot. A
+    /// no-op when there is no focused View / command session (bubbled from the
+    /// canvas; handled here because the overlay lives on `WorkspaceRoot`).
+    fn on_add_mark(&mut self, _: &AddMark, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(target) = self.canvas.read(cx).command_target() else {
+            return;
+        };
+        self.open_arg_overlay(ArgCollector::add_mark(target), window, cx);
+    }
+
+    /// `SetChannel` handler (bare `e`, View-scoped — card 0023, clg-ac09): open
+    /// the argument overlay collecting a CHANNEL then a COLUMN for the focused
+    /// plot's primary mark.
+    fn on_set_channel(&mut self, _: &SetChannel, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(target) = self.canvas.read(cx).command_target() else {
+            return;
+        };
+        self.open_arg_overlay(ArgCollector::set_channel(target, 0), window, cx);
+    }
+
+    /// Open the argument-prompt overlay with a fresh collector (shared by `a`/`e`).
+    fn open_arg_overlay(
+        &mut self,
+        collector: ArgCollector,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.overlays_allowed(cx) {
+            return;
+        }
+        self.arg = Some(collector);
+        self.arg_query.clear();
+        self.arg_selected = 0;
+        self.overlay = Overlay::Arg;
+        window.focus(&self.overlay_focus, cx);
+        cx.notify();
+    }
+
+    /// `CommitEdits` handler (cmd-s, canvas-focused — card 0023, clg-ac07): flush
+    /// the accumulated transient edits to disk THROUGH the editor buffer behind
+    /// the pristine-buffer gate. Nothing pending → a quiet no-op; a DIRTY editor
+    /// buffer → refused-with-reason (the hand-typed text survives). On success the
+    /// canvas seals the undo barrier + logs the commit and the watcher reloads.
+    fn on_commit(&mut self, _: &CommitEdits, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(yaml) = self.canvas.read(cx).pending_commit_yaml() else {
+            return; // nothing to commit
+        };
+        let result = self
+            .editor_panel
+            .update(cx, |editor, cx| editor.commit_buffer(&yaml, window, cx));
+        match result {
+            Ok(()) => self.canvas.update(cx, |c, cx| c.mark_committed(cx)),
+            Err(reason) => self.canvas.update(cx, |c, cx| c.log_command_refusal(&reason, cx)),
+        }
+        cx.notify();
+    }
+
     /// Close any open overlay and return focus to the canvas (the live
     /// realisation of the Esc ladder's dismiss-overlay rung, ac-06).
     fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.overlay = Overlay::Closed;
+        // Drop any running argument collection (the Esc "cancel to Idle" leg).
+        self.arg = None;
+        self.arg_query.clear();
+        self.arg_selected = 0;
         window.focus(&Focusable::focus_handle(&self.canvas, cx), cx);
+        cx.notify();
+    }
+
+    /// The current step's fuzzy-filtered option list (card 0023, clg-ac09): the
+    /// enumerable kind / channel picks, and — for the COLUMN step — the profiled
+    /// source columns (card 0017's `SourceProfile`), each case-insensitively
+    /// filtered by `arg_query`. The column list is a convenience: `run_arg` still
+    /// falls back to the raw query, so a column absent from the profile (or an
+    /// unprofiled source) stays typeable.
+    fn arg_options(&self, cx: &App) -> Vec<String> {
+        let Some(collector) = self.arg.as_ref() else {
+            return Vec::new();
+        };
+        let columns = match collector.step() {
+            ArgStep::Column { .. } => self.arg_column_options(cx),
+            _ => Vec::new(),
+        };
+        let all = collector.options(&columns);
+        let q = self.arg_query.to_lowercase();
+        all.into_iter().filter(|o| o.to_lowercase().contains(&q)).collect()
+    }
+
+    /// The distinct, non-internal column names across every PROFILED source in
+    /// the Data sidebar (card 0017), in first-seen order — the enumerable pick
+    /// list the set-channel COLUMN step offers (clg-ac09, delta finding 6). v1
+    /// offers the UNION across sources; narrowing to the focused plot's own
+    /// source is a follow-up (the free-text fallback covers the multi-source
+    /// case in the meantime).
+    fn arg_column_options(&self, cx: &App) -> Vec<String> {
+        let mut seen: Vec<String> = Vec::new();
+        for source in self.sidebar_panel.read(cx).profiles() {
+            if let ProfileOutcome::Profiled { columns, .. } = &source.outcome {
+                for col in columns {
+                    if !seen.iter().any(|c| c == &col.name) {
+                        seen.push(col.name.clone());
+                    }
+                }
+            }
+        }
+        seen
+    }
+
+    /// Run the current argument pick (Enter): the highlighted option, or — on the
+    /// free-text COLUMN step — the raw query. `Pending` advances the step (clear
+    /// the query); `Ready` applies the edit against the canvas and closes;
+    /// `Invalid` leaves the overlay open.
+    fn run_arg(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let filtered = self.arg_options(cx);
+        let is_column = matches!(self.arg.as_ref().map(ArgCollector::step), Some(ArgStep::Column { .. }));
+        let choice = filtered
+            .get(self.arg_selected)
+            .cloned()
+            .or_else(|| is_column.then(|| self.arg_query.clone()))
+            .unwrap_or_default();
+        let Some(collector) = self.arg.as_mut() else {
+            return;
+        };
+        match collector.pick(&choice) {
+            ArgOutcome::Pending => {
+                self.arg_query.clear();
+                self.arg_selected = 0;
+                cx.notify();
+            }
+            ArgOutcome::Ready(edit) => {
+                // Refocus the canvas BEFORE applying (the run_palette ordering
+                // note): apply_command_edit reads the focused plot's coordinator.
+                self.close_overlay(window, cx);
+                self.canvas.update(cx, |c, cx| c.apply_command_edit(&edit, window, cx));
+            }
+            ArgOutcome::Invalid => {
+                cx.notify();
+            }
+        }
+    }
+
+    /// Move the argument-overlay selection within the filtered options (down =
+    /// `true`), bound to ↓/↑ + Ctrl-j/k like the palette (card 0023, clg-ac09).
+    fn arg_nav(&mut self, down: bool, cx: &mut Context<Self>) {
+        let n = self.arg_options(cx).len();
+        if down {
+            self.arg_selected = (self.arg_selected + 1).min(n.saturating_sub(1));
+        } else {
+            self.arg_selected = self.arg_selected.saturating_sub(1);
+        }
         cx.notify();
     }
 
@@ -1481,6 +2105,27 @@ impl WorkspaceRoot {
                     if let Some(c) = k.chars().next().filter(|c| !c.is_control()) {
                         self.palette_query.push(c);
                         self.palette_selected = 0;
+                        cx.notify();
+                    }
+                }
+                _ => {}
+            },
+            Overlay::Arg => match key {
+                "escape" => self.close_overlay(window, cx),
+                "enter" => self.run_arg(window, cx),
+                "up" => self.arg_nav(false, cx),
+                "down" => self.arg_nav(true, cx),
+                "k" if event.keystroke.modifiers.control => self.arg_nav(false, cx),
+                "j" if event.keystroke.modifiers.control => self.arg_nav(true, cx),
+                "backspace" => {
+                    self.arg_query.pop();
+                    self.arg_selected = 0;
+                    cx.notify();
+                }
+                k if k.chars().count() == 1 => {
+                    if let Some(c) = k.chars().next().filter(|c| !c.is_control()) {
+                        self.arg_query.push(c);
+                        self.arg_selected = 0;
                         cx.notify();
                     }
                 }
@@ -1636,6 +2281,77 @@ impl WorkspaceRoot {
             .child(list)
     }
 
+    /// The argument-prompt overlay body (card 0023, clg-ac09): a prompt line for
+    /// the current step (mark kind / channel / column) + the fuzzy-filtered
+    /// option rows, the selected row highlighted. The free-text COLUMN step shows
+    /// the typed query as the pick (Enter takes it verbatim).
+    fn arg_overlay_body(&self, cx: &App) -> gpui::Div {
+        let (verb, prompt, is_column) = match self.arg.as_ref() {
+            Some(c) => {
+                let v = match c.step() {
+                    ArgStep::Kind => "add-mark",
+                    ArgStep::Channel | ArgStep::Column { .. } => "set-channel",
+                };
+                (v, c.step().prompt(), matches!(c.step(), ArgStep::Column { .. }))
+            }
+            None => ("", "", false),
+        };
+        let options = self.arg_options(cx);
+        let mut list = div().flex().flex_col().gap_0();
+        if is_column && options.is_empty() {
+            list = list.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_size(px(12.0))
+                    .text_color(rgb(0x8a93a6))
+                    .child("type a column name, then Enter"),
+            );
+        }
+        for (i, o) in options.iter().take(PALETTE_MAX_ROWS).enumerate() {
+            let selected = i == self.arg_selected;
+            list = list.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .rounded(px(4.0))
+                    .bg(if selected { rgb(0x2f6feb) } else { rgb(0x161a22) })
+                    .text_size(px(13.0))
+                    .text_color(if selected { rgb(0xffffff) } else { rgb(0xd7dae0) })
+                    .child(o.clone()),
+            );
+        }
+        div()
+            .w(px(480.0))
+            .max_h(px(460.0))
+            .overflow_hidden()
+            .p_3()
+            .rounded(px(8.0))
+            .bg(rgb(0x161a22))
+            .border_1()
+            .border_color(rgb(0x2b3242))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(rgb(0x8a93a6))
+                    .child(format!("{verb} · pick a {prompt}  (Esc to cancel)")),
+            )
+            .child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .rounded(px(4.0))
+                    .bg(rgb(0x0e1017))
+                    .text_size(px(14.0))
+                    .text_color(rgb(0xf0f2f6))
+                    .child(format!("> {}", self.arg_query)),
+            )
+            .child(list)
+    }
+
     /// A stack-rooted single-panel dock item (wsc_ac03 correction, review
     /// F1): at pin b7e63cc2 the entire drag machinery gates on TabPanels
     /// having a StackPanel parent — their `is_locked` returns true for a
@@ -1662,6 +2378,7 @@ impl WorkspaceRoot {
         editor: &Entity<EditorPanel>,
         sidebar: &Entity<SidebarPanel>,
         log: &Entity<LogPanel>,
+        command_log: &Entity<CommandLogPanel>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1674,22 +2391,33 @@ impl WorkspaceRoot {
             area.set_left_dock(left, Some(px(SIDEBAR_DOCK_WIDTH as f32)), true, window, cx);
             area.set_right_dock(right, Some(px(EDITOR_DOCK_WIDTH as f32)), true, window, cx);
         });
-        Self::seed_bottom_dock(dock_area, log, window, cx);
+        Self::seed_bottom_dock(dock_area, log, command_log, window, cx);
     }
 
-    /// Seed the bottom dock CLOSED with the Log panel: the 29px strip is
-    /// the drop/expand affordance (their drag UI only lands on existing
-    /// dock surfaces — seeding is the only way drag-to-bottom can work),
-    /// and closed doesn't re-carve the author's current layout. Stack-rooted
-    /// so the strip's TabPanel is a real drop target (review F1).
+    /// Seed the bottom dock CLOSED with the Log + CommandLog panels as tabs (card
+    /// 0023 makes the CommandLog the SECOND citizen — the pair is what unlocks the
+    /// dock drag, since a single-panel dock can never source a drag). The 29px
+    /// strip is the drop/expand affordance, closed doesn't re-carve the author's
+    /// layout, and the tabs are stack-rooted so the strip's TabPanel is a real
+    /// drop target (review F1).
     fn seed_bottom_dock(
         dock_area: &Entity<DockArea>,
         log: &Entity<LogPanel>,
+        command_log: &Entity<CommandLogPanel>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let weak = dock_area.downgrade();
-        let bottom = Self::stack_rooted_tab(log, &weak, window, cx);
+        let tabs = DockItem::tabs(
+            vec![
+                std::sync::Arc::new(log.clone()) as std::sync::Arc<dyn PanelView>,
+                std::sync::Arc::new(command_log.clone()),
+            ],
+            &weak,
+            window,
+            cx,
+        );
+        let bottom = DockItem::v_split(vec![tabs], &weak, window, cx);
         dock_area.update(cx, |area, cx| {
             area.set_bottom_dock(bottom, Some(px(BOTTOM_DOCK_HEIGHT as f32)), false, window, cx);
         });
@@ -2097,6 +2825,7 @@ impl Render for WorkspaceRoot {
             Overlay::Help => Some(self.help_overlay_body()),
             Overlay::Jump => Some(self.jump_overlay_body(cx)),
             Overlay::Palette => Some(self.palette_overlay_body(cx)),
+            Overlay::Arg => Some(self.arg_overlay_body(cx)),
         };
         let overlay = overlay_body.map(|body| {
             div()
@@ -2129,6 +2858,11 @@ impl Render for WorkspaceRoot {
             .on_action(cx.listener(Self::on_open_help))
             .on_action(cx.listener(Self::on_focus_jump))
             .on_action(cx.listener(Self::on_open_palette))
+            // Command-log argument verbs (a/e) + commit (cmd-s on the canvas):
+            // bubble from the focused canvas to this root (card 0023).
+            .on_action(cx.listener(Self::on_add_mark))
+            .on_action(cx.listener(Self::on_set_channel))
+            .on_action(cx.listener(Self::on_commit))
             // cmd-r (global, ungated): flips the shared force-reload flag.
             .on_action(cx.listener(Self::on_reload))
             .child(self.dock_area.clone())
@@ -2715,12 +3449,16 @@ mod tests {
             let sidebar = cx.new(|cx| SidebarPanel::new(Vec::new(), presentation_in.clone(), cx));
             let log_panel =
                 cx.new(|cx| LogPanel::new(feedback_log.clone(), presentation_in.clone(), cx));
+            let command_log_model = cx.new(|_| crate::command_log::CommandLog::new());
+            let command_log_panel = cx
+                .new(|cx| CommandLogPanel::new(command_log_model, presentation_in.clone(), cx));
             let workspace = cx.new(|cx| {
                 WorkspaceRoot::with_saved_layout(
                     canvas,
                     editor.clone(),
                     sidebar,
                     log_panel,
+                    command_log_panel,
                     presentation_in.clone(),
                     None,
                     raw,
@@ -2940,8 +3678,8 @@ mod tests {
         assert_eq!(size, Some(px(BOTTOM_DOCK_HEIGHT as f32)), "default open height");
         assert_eq!(
             bottom_dock_panel_names(cx, &shell.workspace),
-            vec![LOG_PANEL_NAME.to_string()],
-            "the Log panel anchors it"
+            vec![LOG_PANEL_NAME.to_string(), CMD_LOG_PANEL_NAME.to_string()],
+            "the Log + Commands panels anchor it (card 0023 adds the second tab)"
         );
         assert_all_roots_stack_rooted(cx, &shell.workspace);
     }
@@ -2986,7 +3724,7 @@ mod tests {
         assert_eq!(size, Some(px(BOTTOM_DOCK_HEIGHT as f32)));
         assert_eq!(
             bottom_dock_panel_names(cx, &shell.workspace),
-            vec![LOG_PANEL_NAME.to_string()]
+            vec![LOG_PANEL_NAME.to_string(), CMD_LOG_PANEL_NAME.to_string()]
         );
         // …and every restored bare-Tabs root was normalised (review F1).
         assert_all_roots_stack_rooted(cx, &shell.workspace);
@@ -3046,7 +3784,7 @@ mod tests {
         assert_eq!(size, Some(px(BOTTOM_DOCK_HEIGHT as f32)), "size preserved");
         assert_eq!(
             bottom_dock_panel_names(cx, &shell.workspace),
-            vec![LOG_PANEL_NAME.to_string()]
+            vec![LOG_PANEL_NAME.to_string(), CMD_LOG_PANEL_NAME.to_string()]
         );
         assert!(
             dock_root_is_stack_rooted(cx, &shell.workspace, DockPlacement::Bottom),
@@ -3087,8 +3825,12 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(
             bottom_dock_panel_names(cx, &shell.workspace),
-            vec![LOG_PANEL_NAME.to_string(), EDITOR_PANEL_NAME.to_string()],
-            "editor moved into the bottom dock"
+            vec![
+                LOG_PANEL_NAME.to_string(),
+                CMD_LOG_PANEL_NAME.to_string(),
+                EDITOR_PANEL_NAME.to_string()
+            ],
+            "editor moved into the bottom dock beside Log + Commands"
         );
 
         toggle_presentation_mode(cx, &shell.presentation);
@@ -3104,7 +3846,11 @@ mod tests {
         assert_eq!(size, Some(px(240.0)), "author's size preserved");
         assert_eq!(
             bottom_dock_panel_names(cx, &shell.workspace),
-            vec![LOG_PANEL_NAME.to_string(), EDITOR_PANEL_NAME.to_string()],
+            vec![
+                LOG_PANEL_NAME.to_string(),
+                CMD_LOG_PANEL_NAME.to_string(),
+                EDITOR_PANEL_NAME.to_string()
+            ],
             "contents preserved, including the moved-in editor"
         );
         assert!(
@@ -3164,7 +3910,7 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(
             bottom_dock_panel_names(cx, &shell.workspace),
-            vec![LOG_PANEL_NAME.to_string()],
+            vec![LOG_PANEL_NAME.to_string(), CMD_LOG_PANEL_NAME.to_string()],
             "the panel-tree change landed"
         );
         cx.update(|cx| {
@@ -3208,8 +3954,12 @@ mod tests {
         move_panel(cx, &shell, editor.clone(), DockPlacement::Bottom);
         assert_eq!(
             bottom_dock_panel_names(cx, &shell.workspace),
-            vec![LOG_PANEL_NAME.to_string(), EDITOR_PANEL_NAME.to_string()],
-            "editor docked at the bottom beside the Log"
+            vec![
+                LOG_PANEL_NAME.to_string(),
+                CMD_LOG_PANEL_NAME.to_string(),
+                EDITOR_PANEL_NAME.to_string()
+            ],
+            "editor docked at the bottom beside the Log + Commands"
         );
         assert_eq!(
             bottom_dock_state(cx, &shell.workspace).1,
@@ -3232,7 +3982,11 @@ mod tests {
         move_panel(cx, &shell, editor.clone(), DockPlacement::Bottom);
         assert_eq!(
             bottom_dock_panel_names(cx, &shell.workspace),
-            vec![LOG_PANEL_NAME.to_string(), EDITOR_PANEL_NAME.to_string()],
+            vec![
+                LOG_PANEL_NAME.to_string(),
+                CMD_LOG_PANEL_NAME.to_string(),
+                EDITOR_PANEL_NAME.to_string()
+            ],
             "repeating the move is a no-op, not a duplicate"
         );
 
@@ -3260,8 +4014,8 @@ mod tests {
         );
         assert_eq!(
             bottom_dock_panel_names(cx, &shell.workspace),
-            vec![LOG_PANEL_NAME.to_string()],
-            "the Log remains the bottom dock's anchor"
+            vec![LOG_PANEL_NAME.to_string(), CMD_LOG_PANEL_NAME.to_string()],
+            "the Log + Commands remain the bottom dock's anchors"
         );
         assert_eq!(
             bottom_dock_state(cx, &shell.workspace).1,

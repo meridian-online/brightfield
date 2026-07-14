@@ -9,6 +9,10 @@
 
 mod boot;
 #[cfg(any(target_os = "macos", test))]
+mod arg_collector;
+#[cfg(any(target_os = "macos", test))]
+mod command_log;
+#[cfg(any(target_os = "macos", test))]
 mod dock_state_file;
 #[cfg(any(target_os = "macos", test))]
 mod keymap;
@@ -617,24 +621,6 @@ fn parse_override_value(raw: &str) -> brightfield_spec::ast::SpecValue {
     }
 }
 
-/// Convert a spec-side [`brightfield_spec::analysis::HighlightStyle`] (literal
-/// strings) into the render-side [`brightfield_render::mark::HighlightStyle`]
-/// (parsed colours) the `otherwise` deemphasis applies (card 0021). A `fill` /
-/// `stroke` that is not a CSS hex colour (a named colour, `none`, malformed)
-/// resolves to `None` — the render site then leaves the base RGB untouched.
-fn resolve_highlight_render_style(
-    style: &brightfield_spec::analysis::HighlightStyle,
-) -> brightfield_render::mark::HighlightStyle {
-    use brightfield_render::mark::parse_css_hex;
-    brightfield_render::mark::HighlightStyle {
-        opacity: style.opacity,
-        fill: style.fill.as_deref().and_then(parse_css_hex),
-        fill_opacity: style.fill_opacity,
-        stroke: style.stroke.as_deref().and_then(parse_css_hex),
-        stroke_opacity: style.stroke_opacity,
-    }
-}
-
 fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
     // 1. Parse the spec.
     let parsed = parse_spec_path(spec_path).map_err(|e| format!("parse error: {e}"))?;
@@ -803,7 +789,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
         let highlight_style = highlight_bindings
             .iter()
             .find(|b| b.parent_plot.0 == plot.path)
-            .map(|b| resolve_highlight_render_style(&b.style));
+            .map(|b| brightfield_render::mark::HighlightStyle::from(&b.style));
 
         // Populate each of this plot's marks' `renderer_override` ONCE, from
         // the plot's colorScheme plus the mark's attributes (`configured_renderer`
@@ -1535,12 +1521,19 @@ fn main() {
             // legend's index matches its binding.
             let legend_select_bindings: Vec<brightfield_ui::LegendSelectBinding> =
                 legend_bindings.iter().map(Into::into).collect();
+            // `command_log_active: true` — the authoring window always hosts the
+            // command log (card 0023), so a structural edit (m/a/e/d/u) must be
+            // able to drive even an otherwise-static plot (a plain scatter). Without
+            // this the coordinator is `None` for a no-selection / non-sequential
+            // spec and every edit silently no-ops on the canvas (the working spec +
+            // log update, the plot never moves — the card-0021 silent-no-op class).
             let coordinator = CrossfilterCoordinator::new(
                 session,
                 marks,
                 live_plots,
                 slider_bindings,
                 legend_select_bindings,
+                true,
             );
 
             // One placed chart per plot, each wired to the shared coordinator.
@@ -1588,6 +1581,9 @@ fn main() {
             cx.bind_keys(brightfield_ui::workspace_key_bindings());
             cx.bind_keys(shell::editor_key_bindings());
             cx.bind_keys(keymap::grammar_key_bindings());
+            // Card 0023: cmd-s on the CANVAS commits command-log edits (distinct
+            // from the editor's cmd-s save; resolved by focus context).
+            cx.bind_keys(shell::workspace_command_bindings());
 
             // Size the initial window to the dashboard plus the 0016 chrome
             // margins and the default authoring dock widths (card 0017).
@@ -1638,6 +1634,7 @@ fn main() {
                 Rc::new(std::cell::RefCell::new(None));
             let sidebar_capture = sidebar_slot.clone();
             let spec_path_for_editor = spec_path.clone();
+            let spec_path_for_command = spec_path.clone();
             let feedback_log_for_editor = feedback_log.clone();
             // The workspace's clone of the force-reload flag (the watcher keeps
             // the original), captured into the window closure below.
@@ -1663,6 +1660,19 @@ fn main() {
                     let canvas = cx.new(|cx| {
                         shell::CanvasPanel::new(chart_view, title, presentation.clone(), focus_tree, cx)
                     });
+                    // Card 0023: the SHARED command-log model — the canvas writes
+                    // structural edits/commits/refusals to it; the dedicated
+                    // bottom-dock CommandLog panel renders the SAME entity.
+                    let command_log_model = cx.new(|_| command_log::CommandLog::new());
+                    // Wire the keyboard command-log session onto the canvas — the
+                    // working Spec (re-parsed from the launch file; the reducer
+                    // target) + the shared log. A parse failure here leaves the
+                    // canvas session-less (the verbs no-op gracefully), never a crash.
+                    if let Ok(parsed) = brightfield_spec::parse_spec_path(&spec_path_for_command) {
+                        canvas.update(cx, |c, _| {
+                            c.set_command_session(parsed.spec, command_log_model.clone())
+                        });
+                    }
                     *canvas_capture.borrow_mut() = Some(canvas.clone());
                     let editor = cx.new(|cx| {
                         shell::EditorPanel::new(
@@ -1688,12 +1698,18 @@ fn main() {
                             cx,
                         )
                     });
+                    // The second bottom-dock citizen: the command-log panel over
+                    // the shared command-log model (card 0023, clg-ac08).
+                    let command_log_panel = cx.new(|cx| {
+                        shell::CommandLogPanel::new(command_log_model.clone(), presentation.clone(), cx)
+                    });
                     let workspace = cx.new(|cx| {
                         shell::WorkspaceRoot::new(
                             canvas,
                             editor,
                             sidebar,
                             log,
+                            command_log_panel,
                             presentation,
                             reload_trigger_for_workspace,
                             window,
@@ -2095,7 +2111,7 @@ plot:
             column: "g".into(),
         };
         let coordinator =
-            CrossfilterCoordinator::new(session, Vec::<MarkInput>::new(), vec![], vec![], vec![ui_binding])
+            CrossfilterCoordinator::new(session, Vec::<MarkInput>::new(), vec![], vec![], vec![ui_binding], false)
                 .expect("legend-only liveness (lcf_ac03) keeps the coordinator");
 
         let colour = Scale::Colour {
@@ -2554,6 +2570,273 @@ colorScheme: blues
         );
     }
 
+    /// clg-ac11 AGREEMENT: the gpui-free gate-classifier's verdict EQUALS the
+    /// REAL app-binary reload gate (same_layout + chrome_divergence) for
+    /// pre/post-edit spec pairs built through the app's OWN pipeline. The
+    /// classifier REIMPLEMENTS the gate from the spec representation (brightfield-
+    /// app has no `[lib]` target, so it can't call chrome_divergence directly);
+    /// this pins the two so an UNDER-refusing classifier — one that lets a
+    /// new-colour-legend edit silently bounce to "restart to apply" — is caught.
+    /// It also empirically confirms a `dot -> bar` retype and an `x` rebind are
+    /// genuinely chrome-clean (the insets/titles reasoning behind the classifier).
+    #[test]
+    fn clg_ac11_classifier_agrees_with_the_real_reload_gate() {
+        use brightfield_spec::analysis::ComponentPath;
+        use brightfield_spec::ast::{Component, SpecValue, ValueOrParamRef};
+        use brightfield_spec::edit::{apply, classify_edit, SpecEdit};
+        use brightfield_spec::vocab::MarkKind;
+        use brightfield_spec::{parse_spec, serialise_spec, Format};
+
+        // A stable meta.title so the dashboard title (else derived from the
+        // filename) doesn't diverge just because each build uses a fresh path.
+        const BASE: &str = r#"
+meta:
+  title: Agreement Fixture
+data:
+  t:
+    - { a: 1, b: 2, cat: p }
+    - { a: 3, b: 4, cat: q }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: a
+    y: b
+xLabel: X axis
+"#;
+        let dir = std::env::temp_dir().join(format!("bf-clg-ac11-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let build = |name: &str, yaml: &str| -> (super::Dashboard, super::ChromeSnapshot) {
+            let path = dir.join(name);
+            std::fs::write(&path, yaml).unwrap();
+            let (dash, chrome, _p) =
+                super::run_pipeline(path.to_str().unwrap()).expect("pipeline runs");
+            (dash, chrome)
+        };
+
+        let base_spec = parse_spec(BASE, Format::Yaml).expect("parse base").spec;
+        let (launch_dash, launch_chrome) = build("base.yaml", BASE);
+
+        // The real reload gate: same plot count + geometry AND no chrome divergence.
+        let real_gate_clean = |yaml: &str, name: &str| -> bool {
+            let (dash, chrome) = build(name, yaml);
+            let same_layout = dash.plots.len() == launch_dash.plots.len()
+                && dash.plots.iter().all(|p| {
+                    launch_dash.plots.iter().any(|w| {
+                        w.path == p.path
+                            && w.x == p.x
+                            && w.y == p.y
+                            && w.width == p.width
+                            && w.height == p.height
+                    })
+                });
+            same_layout && super::chrome_divergence(&launch_chrome, &chrome).is_none()
+        };
+
+        let cp = |s: &str| ComponentPath(s.to_string());
+
+        // CLEAN edits: classifier Ok, and the real build agrees the gate is clean.
+        let clean: Vec<(SpecEdit, &str)> = vec![
+            (
+                SpecEdit::SetChannel { plot: cp("root"), mark_ordinal: 0, channel: "x".into(), column: "b".into() },
+                "setx.yaml",
+            ),
+            (
+                SpecEdit::ChangeMarkType { plot: cp("root"), mark_ordinal: 0, new_kind: MarkKind::Line },
+                "retype.yaml",
+            ),
+            (SpecEdit::AddMark { plot: cp("root"), kind: MarkKind::Line }, "addmark.yaml"),
+            // An inline colour fill is gate-clean (not captured by the gate).
+            (
+                SpecEdit::SetChannel { plot: cp("root"), mark_ordinal: 0, channel: "fill".into(), column: "cat".into() },
+                "fill.yaml",
+            ),
+        ];
+        for (edit, name) in &clean {
+            assert!(classify_edit(&base_spec, edit).is_ok(), "classifier should pass {edit:?}");
+            let mut m = base_spec.clone();
+            apply(&mut m, edit).expect("apply clean edit");
+            let yaml = serialise_spec(&m).expect("serialise");
+            assert!(real_gate_clean(&yaml, name), "the real reload gate must be CLEAN for {edit:?}");
+        }
+
+        // REFUSED edit: rebinding the DERIVED y axis (no yLabel) changes the
+        // derived y-axis title, regrowing launch-fixed margins. The classifier
+        // refuses it; a manually-applied version makes the real gate DIVERGE.
+        let ry = SpecEdit::SetChannel {
+            plot: cp("root"),
+            mark_ordinal: 0,
+            channel: "y".into(),
+            column: "a".into(),
+        };
+        assert_eq!(
+            classify_edit(&base_spec, &ry),
+            Err(brightfield_spec::edit::RefuseReason::WouldChangeAxisTitle),
+            "classifier refuses a derived-axis rebind"
+        );
+        let mut ry_spec = base_spec.clone();
+        if let Some(Component::Plot(p)) = ry_spec.root.as_mut() {
+            if let Some(Component::Mark(m)) =
+                p.items.iter_mut().find(|c| matches!(c, Component::Mark(_)))
+            {
+                m.options.insert("y".into(), ValueOrParamRef::Value(SpecValue::String("a".into())));
+            }
+        }
+        let ry_yaml = serialise_spec(&ry_spec).expect("serialise ry");
+        assert!(
+            !real_gate_clean(&ry_yaml, "ry.yaml"),
+            "the real gate WOULD bounce a derived-axis rebind — refusing it agrees"
+        );
+
+        // REFUSED edit: a cross-zero-baseline-class retype (dot -> barY) flips
+        // the value-axis inset default (bottom 5 -> 0). The classifier refuses
+        // it; the real build makes the gate DIVERGE (per-plot inset metadata).
+        let retype_bar = SpecEdit::ChangeMarkType {
+            plot: cp("root"),
+            mark_ordinal: 0,
+            new_kind: MarkKind::BarY,
+        };
+        assert_eq!(
+            classify_edit(&base_spec, &retype_bar),
+            Err(brightfield_spec::edit::RefuseReason::WouldChangeInset),
+            "classifier refuses a cross-baseline retype"
+        );
+        let mut bar_spec = base_spec.clone();
+        if let Some(Component::Plot(p)) = bar_spec.root.as_mut() {
+            if let Some(Component::Mark(m)) =
+                p.items.iter_mut().find(|c| matches!(c, Component::Mark(_)))
+            {
+                m.kind = MarkKind::BarY;
+            }
+        }
+        let bar_yaml = serialise_spec(&bar_spec).expect("serialise bar");
+        assert!(
+            !real_gate_clean(&bar_yaml, "bar.yaml"),
+            "the real gate WOULD bounce a cross-baseline retype — refusing it agrees"
+        );
+
+        // REFUSED (finding 3): a colour rebind on a plot a STANDALONE colour
+        // legend references changes that legend's scale — the real gate diverges.
+        // Its own launch fixture (the BASE has no legend). The plot is
+        // `root/vconcat[1]`, the legend `root/vconcat[0]`.
+        const LEGEND_BASE: &str = r#"
+meta:
+  title: Legend Agreement
+data:
+  t:
+    - { a: 1, b: 2, cat: p }
+    - { a: 3, b: 4, cat: q }
+vconcat:
+  - legend: color
+    for: scatter
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: a
+        y: b
+        fill: cat
+    name: scatter
+    xLabel: X axis
+    yLabel: Y axis
+"#;
+        let legend_base_spec = parse_spec(LEGEND_BASE, Format::Yaml).expect("parse legend base").spec;
+        let (legend_launch_dash, legend_launch_chrome) = build("legend_base.yaml", LEGEND_BASE);
+        let fill_rebind = SpecEdit::SetChannel {
+            plot: cp("root/vconcat[1]"),
+            mark_ordinal: 0,
+            channel: "fill".into(),
+            column: "b".into(),
+        };
+        assert_eq!(
+            classify_edit(&legend_base_spec, &fill_rebind),
+            Err(brightfield_spec::edit::RefuseReason::WouldChangeLegend),
+            "classifier refuses a colour rebind under a referencing legend"
+        );
+        // apply() would REFUSE (that's the point), so mutate the mark manually to
+        // build what a committed version would produce, then diff the real chrome.
+        let mut fill_spec = legend_base_spec.clone();
+        if let Some(Component::VConcat(c)) = fill_spec.root.as_mut() {
+            if let Some(Component::Plot(p)) = c.items.get_mut(1) {
+                if let Some(Component::Mark(m)) =
+                    p.items.iter_mut().find(|c| matches!(c, Component::Mark(_)))
+                {
+                    m.options.insert("fill".into(), ValueOrParamRef::Value(SpecValue::String("b".into())));
+                }
+            }
+        }
+        let fill_yaml = serialise_spec(&fill_spec).expect("serialise fill");
+        let (fill_dash, fill_chrome) = build("legend_fill.yaml", &fill_yaml);
+        assert_eq!(
+            fill_dash.plots.len(),
+            legend_launch_dash.plots.len(),
+            "the fill rebind keeps the layout — the legend scale IS the divergence"
+        );
+        assert!(
+            super::chrome_divergence(&legend_launch_chrome, &fill_chrome).is_some(),
+            "the real gate WOULD bounce a colour rebind under a legend — refusing it agrees"
+        );
+
+        // REFUSED (delta finding 2): a no-`for:` colour legend is placed only when
+        // EXACTLY ONE colour-encoded plot exists (`resolve_legends`'s `sole`).
+        // Adding a fill to the sole PLAIN plot flips the count 0->1, so the legend
+        // APPEARS — the real gate's `legends` diverges even though the focused
+        // plot was not colour-encoded PRE-edit (the exact case the pre-edit-only
+        // check missed). The plot is `root/vconcat[1]`, the legend `[0]`.
+        const NO_FOR_LEGEND_BASE: &str = r#"
+meta:
+  title: No-for Legend Agreement
+data:
+  t:
+    - { a: 1, b: 2, cat: p }
+    - { a: 3, b: 4, cat: q }
+vconcat:
+  - legend: color
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: a
+        y: b
+    name: scatter
+    xLabel: X axis
+    yLabel: Y axis
+"#;
+        let nofor_spec = parse_spec(NO_FOR_LEGEND_BASE, Format::Yaml).expect("parse no-for base").spec;
+        let (nofor_launch_dash, nofor_launch_chrome) = build("nofor_base.yaml", NO_FOR_LEGEND_BASE);
+        let nofor_fill = SpecEdit::SetChannel {
+            plot: cp("root/vconcat[1]"),
+            mark_ordinal: 0,
+            channel: "fill".into(),
+            column: "cat".into(),
+        };
+        assert_eq!(
+            classify_edit(&nofor_spec, &nofor_fill),
+            Err(brightfield_spec::edit::RefuseReason::WouldChangeLegend),
+            "classifier refuses a fill add that shows a no-`for:` legend (0->1 flip)"
+        );
+        let mut nofor_fill_spec = nofor_spec.clone();
+        if let Some(Component::VConcat(c)) = nofor_fill_spec.root.as_mut() {
+            if let Some(Component::Plot(p)) = c.items.get_mut(1) {
+                if let Some(Component::Mark(m)) =
+                    p.items.iter_mut().find(|c| matches!(c, Component::Mark(_)))
+                {
+                    m.options.insert("fill".into(), ValueOrParamRef::Value(SpecValue::String("cat".into())));
+                }
+            }
+        }
+        let nofor_yaml = serialise_spec(&nofor_fill_spec).expect("serialise no-for fill");
+        let (nofor_fill_dash, nofor_fill_chrome) = build("nofor_fill.yaml", &nofor_yaml);
+        assert_eq!(
+            nofor_fill_dash.plots.len(),
+            nofor_launch_dash.plots.len(),
+            "the fill add keeps the layout — the legend appearing IS the divergence"
+        );
+        assert!(
+            super::chrome_divergence(&nofor_launch_chrome, &nofor_fill_chrome).is_some(),
+            "the real gate WOULD bounce a no-`for:` legend appearing (0->1) — refusing it agrees"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Card 0016 review (F2): `ChromeSnapshot::capture` maps the launch parts
     /// into the gate's comparison keys — rect + scale Debug key per legend,
     /// the click-wiring key tuple per legend binding (card 0009 F7), and
@@ -2701,7 +2984,7 @@ hconcat:
         let legend_select: Vec<LegendSelectBinding> =
             live.legend_bindings.iter().map(Into::into).collect();
         assert!(
-            CrossfilterCoordinator::new(live.session, live.marks, vec![], vec![], legend_select)
+            CrossfilterCoordinator::new(live.session, live.marks, vec![], vec![], legend_select, false)
                 .is_none(),
             "no placement → no binding → no coordinator"
         );

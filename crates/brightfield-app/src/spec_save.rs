@@ -152,6 +152,35 @@ pub fn should_reseed(buffer: &str, last_synced: Option<&str>, file_now: &str) ->
     }
 }
 
+/// Whether a command-log COMMIT may proceed (card 0023, clg-ac07 pristine-buffer
+/// gate). A commit re-serialises the working Spec and `set_value`s it OVER the
+/// editor buffer; [`decide_save`] does NOT guard this — it only flags an
+/// EXTERNAL disk change (`file_now` vs `last_synced`), and for a DIRTY in-app
+/// buffer with no external change it returns [`SaveDecision::Write`], so
+/// `set_value` would silently CLOBBER the author's hand-typed edits before
+/// `save` ever runs. So the commit checks the buffer is PRISTINE first: a
+/// pristine buffer (`buffer == last_synced` — the `should_reseed` dirtiness
+/// test) may commit; a DIRTY buffer (or a never-synced editor) REFUSES with a
+/// reason (the author saves or discards the manual edit first). `decide_save`
+/// stays the downstream external-file-conflict guard, NOT the dirty-buffer guard.
+///
+/// Its live caller is the deliberate cmd-s commit action (card 0023,
+/// `EditorPanel::commit_buffer`); the gate logic is unit-tested (clg-ac07).
+#[must_use]
+pub fn commit_is_allowed(buffer: &str, last_synced: Option<&str>) -> bool {
+    match last_synced {
+        Some(synced) => buffer == synced,
+        // Never synced (boot seed failed): refuse — we can't know what a
+        // set_value would clobber, exactly as decide_save refuses an unseeded editor.
+        None => false,
+    }
+}
+
+/// The refusal reason a dirty-buffer commit surfaces (card 0023, clg-ac07).
+/// Consumed by the cmd-s commit action (`EditorPanel::commit_buffer`).
+pub const DIRTY_BUFFER_COMMIT_REFUSAL: &str =
+    "unsaved editor edits — save or discard them before committing command-log edits";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,6 +321,27 @@ mod tests {
         assert!(should_reseed("", None, "plot:\n"));
         // Never seeded but typed into → refuse to clobber.
         assert!(!should_reseed("typed", None, "plot:\n"));
+    }
+
+    /// clg-ac07 (pristine-buffer commit gate): a commit proceeds only over a
+    /// PRISTINE buffer (buffer == last_synced); a DIRTY buffer refuses (so
+    /// set_value never clobbers the author's hand-typed edits), and a
+    /// never-synced editor refuses too. Distinct from decide_save (which returns
+    /// Write for that same dirty buffer — the exact hole this gate closes).
+    #[test]
+    fn clg_ac07_commit_gate_allows_pristine_refuses_dirty() {
+        // Pristine: the buffer is exactly what we last synced with -> commit.
+        assert!(commit_is_allowed("plot:\n  - mark: dot\n", Some("plot:\n  - mark: dot\n")));
+        // Dirty: hand-typed edits sit in the buffer -> refuse the commit.
+        assert!(!commit_is_allowed("plot:\n  - mark: bar\n", Some("plot:\n  - mark: dot\n")));
+        // Never synced (boot seed failed) -> refuse.
+        assert!(!commit_is_allowed("anything", None));
+        // The hole this closes: decide_save would WRITE that same dirty buffer.
+        assert_eq!(
+            decide_save("plot:\n  - mark: bar\n", Some("plot:\n  - mark: dot\n"), Some("plot:\n  - mark: dot\n")),
+            SaveDecision::Write,
+            "decide_save is NOT the dirty-buffer guard — the commit gate is"
+        );
     }
 
     /// aws_ac04 (permission preservation): an owner-only 0600 spec keeps

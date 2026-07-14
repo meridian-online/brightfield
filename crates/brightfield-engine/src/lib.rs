@@ -261,6 +261,16 @@ impl SqlCache {
         self.entries.insert(sql.clone(), batches);
         self.order.push(sql);
     }
+
+    /// Drop every cached SQL->batches entry (card 0023 `reload_spec`): after the
+    /// session's private spec is swapped, a cached batch keyed to the OLD spec's
+    /// SQL must never be served — a byte-identical retype (SimpleLowerer ignores
+    /// mark.kind) would otherwise hit and re-use the pre-edit batch. The
+    /// `duckdb_execute_count` diagnostic is intentionally left intact.
+    fn invalidate(&mut self) {
+        self.entries.clear();
+        self.order.clear();
+    }
 }
 
 impl Session {
@@ -296,6 +306,58 @@ impl Session {
             .iter()
             .find(|(path, _)| path.0 == contributor)
             .map(|(_, predicate)| predicate)
+    }
+
+    /// Swap the session's `spec` / `analysis` / `mark_index_map` IN PLACE while
+    /// REUSING the existing connection + already-registered source views (card
+    /// 0023, clg-ac15) — the load-bearing transient seam behind the command log.
+    ///
+    /// The live `Session` emits every mark query from its OWN private `self.spec`
+    /// (see `execute_mark` / `emit_query`), and before this seam existed there
+    /// was NO public path to swap it — a re-lowered structural edit could only
+    /// re-emit the STALE SQL, or take the full disk rebuild. After a structural
+    /// [`brightfield_spec::edit::SpecEdit`] the app re-analyses the mutated
+    /// working `Spec` and hands both here; the private state is replaced (the
+    /// `mark_index_map` REBUILT via [`build_mark_index_map`] so an added/removed
+    /// mark's flat index resolves + the count-changing renumber lands,
+    /// clg-ac16), and the statement/SQL caches are INVALIDATED so the SAME
+    /// [`Session::execute_mark`] re-emits the NEW SQL from the swapped spec
+    /// against the live views — no new [`Engine`], no new DuckDB views, no disk.
+    ///
+    /// Param and selection state are PRESERVED (a within-plot edit must not drop
+    /// the live brush/slider); the selection subscriber wiring rides `analysis`
+    /// and is swapped with it. It is the caller's responsibility (the coordinator
+    /// refresh, clg-ac06/16) to keep its own flat-index maps consistent with the
+    /// rebuilt `mark_index_map` for a count-changing edit.
+    pub fn reload_spec(&mut self, spec: Spec, analysis: SpecAnalysis) {
+        self.mark_index_map = build_mark_index_map(&spec);
+        self.spec = spec;
+        self.analysis = analysis;
+        // Invalidate anything keyed to the OLD spec so the next execute re-emits
+        // fresh SQL rather than serving a stale cached batch/plan.
+        self.cache.clear();
+        self.sql_cache.invalidate();
+    }
+
+    /// The flat mark index a `ComponentPath` string resolves to under the
+    /// CURRENT spec, if any (card 0023) — the engine `mark_index_map` is the
+    /// single source of truth for the flat mark space after a
+    /// [`Session::reload_spec`] renumbers it (finding 5). Mirrors the lookup
+    /// `propagate_selection` / `execute_mark` dispatch use internally; the
+    /// clg-ac16 tests pin a rebuilt mark still resolves to its original path.
+    #[must_use]
+    pub fn mark_index_for_path(&self, path: &str) -> Option<usize> {
+        self.mark_index_map.get(path).map(|&(idx, _)| idx)
+    }
+
+    /// The number of marks the CURRENT spec resolves to (card 0023) — the flat
+    /// mark-index space size. After a [`Session::reload_spec`] the coordinator's
+    /// count-changing refresh reconciles its own `marks.len()` against this so a
+    /// cardinality disagreement (a coordinator bug) is caught rather than routing
+    /// a later gesture to the wrong mark (finding 5, `assert_engine_mark_agreement`).
+    #[must_use]
+    pub fn mark_count(&self) -> usize {
+        self.mark_index_map.len()
     }
 
     /// Convert the live `selection_state` into the shape `emit_query` consumes:
@@ -4364,6 +4426,196 @@ plot:
             session.current_selections(),
             &snapshot,
             "propagate_param must not mutate selection_state — snapshot mismatch"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Card 0023 — the command-log SpecEdit spine's engine seam (reload_spec).
+    // -----------------------------------------------------------------------
+
+    use brightfield_spec::edit::{apply, SpecEdit};
+
+    fn cp(s: &str) -> ComponentPath {
+        ComponentPath(s.to_string())
+    }
+
+    /// A density-x mark over inline (a, b) rows — the density lowerer aliases
+    /// its output column to the BOUND channel column, so a `SetChannel(x -> ..)`
+    /// genuinely CHANGES the re-lowered SQL and renames the executed batch's
+    /// column (unlike the `SELECT *` SimpleLowerer family). This is the
+    /// non-vacuous fixture the card-0021 silent-no-op lesson demands.
+    const DENSITY_SPEC: &str = r#"
+data:
+  t:
+    - { a: 1, b: 10 }
+    - { a: 2, b: 20 }
+    - { a: 3, b: 30 }
+plot:
+  - mark: densityX
+    data: { from: t }
+    x: a
+xLabel: X axis
+"#;
+
+    fn batch_has_column(batches: &[RecordBatch], name: &str) -> bool {
+        batches.iter().any(|b| b.column_by_name(name).is_some())
+    }
+
+    /// clg-ac15 / clg-ac06 feasibility (drives the PRODUCTION `reload_spec`, NOT
+    /// a `#[cfg(test)]` executor): load spec_A, execute a mark, then hand a
+    /// channel-rebound spec_B + its re-analysis to `reload_spec` on the SAME
+    /// session and re-execute — the batch changed SHAPE (the new column present)
+    /// and the connection/views were reused (no reload from disk).
+    #[test]
+    fn clg_ac15_reload_spec_reemits_new_sql_on_the_same_session() {
+        let (spec_a, analysis_a) = parse_and_analyse(DENSITY_SPEC);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec_a.clone(), analysis_a, None).unwrap().session;
+
+        let before = session.execute_mark(0).expect("density executes");
+        assert!(batch_has_column(&before, "a"), "launch batch carries column a");
+        assert!(!batch_has_column(&before, "b"), "launch batch does not carry b");
+
+        // Rebind x: a -> b on the mutated working Spec, re-analyse, reload.
+        let mut spec_b = spec_a.clone();
+        apply(
+            &mut spec_b,
+            &SpecEdit::SetChannel {
+                plot: cp("root"),
+                mark_ordinal: 0,
+                channel: "x".to_string(),
+                column: "b".to_string(),
+            },
+        )
+        .expect("clean edit");
+        let analysis_b = analyse_spec(&spec_b).expect("re-analyse");
+        session.reload_spec(spec_b, analysis_b);
+
+        // The SAME session re-emits the NEW SQL: the batch now carries column b.
+        let after = session.execute_mark(0).expect("re-emitted density executes");
+        assert!(batch_has_column(&after, "b"), "post-reload batch carries the NEW column b");
+        assert!(!batch_has_column(&after, "a"), "post-reload batch no longer carries a");
+    }
+
+    /// clg-ac05 (SetChannel, on the RIGHT surface): the re-lowered QueryPlan SQL
+    /// CHANGED, the executed batch carries the NEW column, and undo (reload the
+    /// pre-edit spec) re-lowers to the ORIGINAL SQL + column.
+    #[test]
+    fn clg_ac05_set_channel_changes_sql_and_batch_and_undo_reverts() {
+        let (spec_a, analysis_a) = parse_and_analyse(DENSITY_SPEC);
+        let sql_a = emit_query(&spec_a, 0, None, None).expect("emit A").sql;
+
+        let mut spec_b = spec_a.clone();
+        apply(
+            &mut spec_b,
+            &SpecEdit::SetChannel {
+                plot: cp("root"),
+                mark_ordinal: 0,
+                channel: "x".to_string(),
+                column: "b".to_string(),
+            },
+        )
+        .expect("clean edit");
+        let sql_b = emit_query(&spec_b, 0, None, None).expect("emit B").sql;
+        assert_ne!(sql_a, sql_b, "SetChannel must change the re-lowered SQL");
+
+        // Drive the production reload path and assert the batch column changed.
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec_a.clone(), analysis_a, None).unwrap().session;
+        let analysis_b = analyse_spec(&spec_b).expect("re-analyse B");
+        session.reload_spec(spec_b, analysis_b);
+        assert!(batch_has_column(&session.execute_mark(0).unwrap(), "b"), "batch carries new column");
+
+        // Undo == reload the pre-edit spec: the SQL + column revert.
+        let analysis_a2 = analyse_spec(&spec_a).expect("re-analyse A");
+        session.reload_spec(spec_a.clone(), analysis_a2);
+        let reverted = session.execute_mark(0).unwrap();
+        assert!(batch_has_column(&reverted, "a"), "undo reverts to column a");
+        assert!(!batch_has_column(&reverted, "b"), "undo drops column b");
+        assert_eq!(emit_query(&spec_a, 0, None, None).unwrap().sql, sql_a, "undo reverts the SQL");
+    }
+
+    /// clg-ac04 (engine): an AddMark grows the plot's mark cardinality by exactly
+    /// one, the two marks get DISTINCT `build_mark_index_map` keys (item-ordinal
+    /// disambiguated even for duplicate kinds), and a RemoveMark then AddMark
+    /// leaves the primary-mark resolution correct (no stale-path corruption).
+    #[test]
+    fn clg_ac04_add_mark_keeps_index_map_keys_unique_and_resolution_stable() {
+        let yaml = r#"
+data:
+  t:
+    - { a: 1, b: 2 }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: a
+    y: b
+"#;
+        let (mut spec, _) = parse_and_analyse(yaml);
+        assert_eq!(build_mark_index_map(&spec).len(), 1);
+
+        // AddMark a SECOND dot: cardinality +1, two DISTINCT keys.
+        apply(&mut spec, &SpecEdit::AddMark { plot: cp("root"), kind: MarkKind::Dot })
+            .expect("clean");
+        let map = build_mark_index_map(&spec);
+        assert_eq!(map.len(), 2, "AddMark grows the mark cardinality by exactly one");
+        // Distinct keys (item-ordinal disambiguates the duplicate `dot`).
+        let keys: HashSet<&String> = map.keys().collect();
+        assert_eq!(keys.len(), 2, "two distinct mark_index_map keys for two dots");
+
+        // RemoveMark (primary) then AddMark: the map still resolves cleanly.
+        apply(&mut spec, &SpecEdit::RemoveMark { plot: cp("root"), mark_ordinal: 0 })
+            .expect("clean");
+        apply(&mut spec, &SpecEdit::AddMark { plot: cp("root"), kind: MarkKind::Line })
+            .expect("clean");
+        let map2 = build_mark_index_map(&spec);
+        assert_eq!(map2.len(), 2, "remove-then-add nets two marks");
+        assert_eq!(map2.keys().collect::<HashSet<_>>().len(), 2, "keys stay unique");
+    }
+
+    /// clg-ac16 (engine half): a count-changing AddMark, pushed through
+    /// `reload_spec`, rebuilds the engine `mark_index_map` so the NEW mark's flat
+    /// index resolves AND executes — while every pre-existing mark still resolves
+    /// to its own path.
+    #[test]
+    fn clg_ac16_count_change_rebuilds_mark_index_map_new_mark_resolves() {
+        let yaml = r#"
+data:
+  t:
+    - { a: 1, b: 2 }
+vconcat:
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: a
+        y: b
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: a
+        y: b
+"#;
+        let (spec_a, analysis_a) = parse_and_analyse(yaml);
+        let engine = Engine::new();
+        let mut session = engine.load_spec(spec_a.clone(), analysis_a, None).unwrap().session;
+        assert_eq!(session.mark_count(), 2);
+
+        // AddMark to the SECOND plot; reload.
+        let mut spec_b = spec_a.clone();
+        apply(&mut spec_b, &SpecEdit::AddMark { plot: cp("root/vconcat[1]"), kind: MarkKind::Line })
+            .expect("clean");
+        let analysis_b = analyse_spec(&spec_b).expect("re-analyse");
+        session.reload_spec(spec_b, analysis_b);
+
+        // The map rebuilt: three marks, and each resolves + executes.
+        assert_eq!(session.mark_count(), 3, "reload_spec rebuilds the flat mark space");
+        for idx in 0..3 {
+            assert!(session.execute_mark(idx).is_ok(), "mark {idx} resolves + executes post-reload");
+        }
+        // The pre-existing first plot's dot still resolves to its original path.
+        assert!(
+            session.mark_index_for_path("root/vconcat[0]/plot[0]/mark[dot]").is_some(),
+            "a pre-existing mark still resolves to its ORIGINAL path"
         );
     }
 }
