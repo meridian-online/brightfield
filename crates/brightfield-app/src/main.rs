@@ -617,6 +617,24 @@ fn parse_override_value(raw: &str) -> brightfield_spec::ast::SpecValue {
     }
 }
 
+/// Convert a spec-side [`brightfield_spec::analysis::HighlightStyle`] (literal
+/// strings) into the render-side [`brightfield_render::mark::HighlightStyle`]
+/// (parsed colours) the `otherwise` deemphasis applies (card 0021). A `fill` /
+/// `stroke` that is not a CSS hex colour (a named colour, `none`, malformed)
+/// resolves to `None` — the render site then leaves the base RGB untouched.
+fn resolve_highlight_render_style(
+    style: &brightfield_spec::analysis::HighlightStyle,
+) -> brightfield_render::mark::HighlightStyle {
+    use brightfield_render::mark::parse_css_hex;
+    brightfield_render::mark::HighlightStyle {
+        opacity: style.opacity,
+        fill: style.fill.as_deref().and_then(parse_css_hex),
+        fill_opacity: style.fill_opacity,
+        stroke: style.stroke.as_deref().and_then(parse_css_hex),
+        stroke_opacity: style.stroke_opacity,
+    }
+}
+
 fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
     // 1. Parse the spec.
     let parsed = parse_spec_path(spec_path).map_err(|e| format!("parse error: {e}"))?;
@@ -636,6 +654,10 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
     // Legend producer bindings (card 0009), kept for the window path — a
     // bound legend's swatch click dispatches through the coordinator.
     let legend_bindings = analysis.legend_bindings.clone();
+    // Highlight consumer bindings (card 0021), kept before `analysis` moves into
+    // the engine so each plot's `otherwise` deemphasis style can be resolved onto
+    // its honouring marks below.
+    let highlight_bindings = analysis.highlight_bindings.clone();
 
     // 3. Load into engine (creates DuckDB views).
     let engine = Engine::new();
@@ -711,6 +733,8 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             bandwidth: None,
             thresholds: None,
             bin_width: None,
+            // Populated below for honouring marks in a highlight-bound plot.
+            highlight_style: None,
         });
     }
 
@@ -773,6 +797,14 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             .map(|(_, node)| Projection::from(resolve_projection(node)))
             .unwrap_or_default();
 
+        // The plot's highlight `otherwise` style (card 0021), if it carries a
+        // `highlight, by: $sel` interactor — resolved once per plot and set on
+        // each honouring mark below so a re-queried `__bf_selected` batch dims.
+        let highlight_style = highlight_bindings
+            .iter()
+            .find(|b| b.parent_plot.0 == plot.path)
+            .map(|b| resolve_highlight_render_style(&b.style));
+
         // Populate each of this plot's marks' `renderer_override` ONCE, from
         // the plot's colorScheme plus the mark's attributes (`configured_renderer`
         // owns the raster/heatmap/cell scheme + heatmap/contour bandwidth +
@@ -812,9 +844,18 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
                 m.bandwidth = bandwidth;
                 m.thresholds = thresholds;
                 m.bin_width = bin_width;
+                // Highlight (card 0021): only the honouring families dim, so a
+                // non-honouring mark in a highlight plot stays `None` and never
+                // builds a HighlightState even if its batch carries the column.
+                if brightfield_spec::analysis::mark_honours_highlight(kind) {
+                    m.highlight_style = highlight_style.clone();
+                }
             }
         }
 
+        // Highlight states, parallel to `chart_data` — declared FIRST so it
+        // outlives the `ChartData` that borrow into it (card 0021).
+        let mut highlight_states: Vec<Option<brightfield_render::mark::HighlightState>> = Vec::new();
         let mut chart_data: Vec<ChartData<'_>> = Vec::new();
         for &mi in &group.mark_indices {
             let Some(m) = mark_inputs.get(mi) else { continue };
@@ -829,17 +870,34 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
                     }
                 },
             };
+            // Highlight (card 0021): at launch no selection is active, so a
+            // honouring mark's batch carries no `__bf_selected` column and this
+            // resolves to `None` — the plot renders exactly as at rest
+            // (ce-ac07/ce-ac10 PNG byte-identity). The `Vec` outlives the
+            // borrow: it is parallel to `chart_data`, dropped after the scene.
+            let highlight = m
+                .highlight_style
+                .as_ref()
+                .and_then(|style| brightfield_render::mark::build_highlight_state(batch, style));
+            highlight_states.push(highlight);
             chart_data.push(ChartData {
                 batch,
                 channel_map: &m.channels,
                 renderer,
                 layout: layout.clone(),
                 view_extent: None,
+                // Filled in after the loop, once `highlight_states` is stable
+                // (pushing into the Vec would invalidate a borrow taken here).
                 highlight: None,
             });
         }
         if chart_data.is_empty() {
             continue;
+        }
+        // Attach each honouring mark's highlight state now that
+        // `highlight_states` will not reallocate.
+        for (d, hs) in chart_data.iter_mut().zip(highlight_states.iter()) {
+            d.highlight = hs.as_ref();
         }
 
         // Axis inset (card 0008 axis-inset round): resolve the plot's Mosaic

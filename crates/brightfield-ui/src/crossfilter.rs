@@ -31,7 +31,8 @@ use brightfield_engine::{concat_batches, RecordBatch, Session};
 use brightfield_render::channel::{Channel, ChannelMap};
 use brightfield_render::layout::ChartLayout;
 use brightfield_render::mark::{
-    configured_renderer, default_renderers, find_renderer, MarkRenderer,
+    build_highlight_state, configured_renderer, default_renderers, find_renderer, HighlightState,
+    HighlightStyle, MarkRenderer,
 };
 use brightfield_render::nearest::SelectionValue;
 use brightfield_render::scale::{Scale, ScaleSet, SequentialScheme};
@@ -109,6 +110,13 @@ pub struct MarkInput {
     pub thresholds: Option<usize>,
     /// Hexgrid bin width (see `bandwidth`).
     pub bin_width: Option<f64>,
+    /// Resolved `otherwise` deemphasis style when this mark's plot carries a
+    /// `highlight, by: $sel` interactor AND the mark honours highlight
+    /// (dot/bar/rect/text) — `None` otherwise (card 0021). When present, a
+    /// re-queried batch carrying the reserved `__bf_selected` boolean drives a
+    /// `HighlightState` that dims the non-matching rows; an at-rest batch (empty
+    /// selection → no `__bf_selected` column) renders every row normally.
+    pub highlight_style: Option<HighlightStyle>,
 }
 
 /// One plot in the live dashboard: its identity, the marks it owns, its layout,
@@ -802,9 +810,21 @@ fn render_plot_scene(
     titles: &ResolvedTitles,
     launch: &ScaleSet,
 ) -> (Scene, ScaleSet) {
+    // Highlight states must outlive the borrowed `ChartData`, so materialise
+    // them first (one per honouring mark whose current batch carries the
+    // membership column), then borrow into the entries.
+    let highlights: Vec<Option<HighlightState>> = mark_indices
+        .iter()
+        .map(|&mi| {
+            let m = marks.get(mi)?;
+            let batch = m.batch.as_ref()?;
+            build_highlight_state(batch, m.highlight_style.as_ref()?)
+        })
+        .collect();
     let chart_data: Vec<ChartData<'_>> = mark_indices
         .iter()
-        .filter_map(|&mi| {
+        .zip(highlights.iter())
+        .filter_map(|(&mi, highlight)| {
             let m = marks.get(mi)?;
             let batch = m.batch.as_ref()?;
             let renderer: &dyn MarkRenderer = m
@@ -817,7 +837,7 @@ fn render_plot_scene(
                 renderer,
                 layout: *layout,
                 view_extent: None,
-                highlight: None,
+                highlight: highlight.as_ref(),
             })
         })
         .collect();
@@ -1087,6 +1107,7 @@ mod tests {
             bandwidth: None,
             thresholds: None,
             bin_width: None,
+            highlight_style: None,
         }];
         let renderers = default_renderers();
         let layout = ChartLayout::new(400.0, 300.0);
@@ -1129,6 +1150,7 @@ mod tests {
                 bandwidth: None,
                 thresholds: None,
                 bin_width: None,
+                highlight_style: None,
             }];
             match launch_scales(&marks, &renderers, &[0], &layout).get(Channel::Fill) {
                 Some(Scale::Sequential { stops, .. }) => stops.clone(),
@@ -1174,6 +1196,7 @@ mod tests {
             bandwidth: None,
             thresholds: None,
             bin_width: None,
+            highlight_style: None,
         }];
         let mut launch = launch_scales(&viridis_marks, &renderers, &[0], &layout);
         match launch.get(Channel::Fill) {
@@ -1199,6 +1222,7 @@ mod tests {
             bandwidth: None,
             thresholds: None,
             bin_width: None,
+            highlight_style: None,
         }];
 
         // Negative: the override swap alone is inert — anchor_scale copies launch
@@ -1273,6 +1297,7 @@ mod tests {
             bandwidth: None,
             thresholds: None,
             bin_width: None,
+            highlight_style: None,
         }];
         assert!(has_sequential_fill(&launch_scales(&raster, &renderers, &[0], &layout)));
         // (2) The gate OR-folds every driving surface, including sequential-Fill.
@@ -1306,6 +1331,7 @@ mod tests {
                 bandwidth: bw,
                 thresholds: None,
                 bin_width: None,
+                highlight_style: None,
             };
             let ovr = recolour_override(&m, SequentialScheme::Blues);
             vec![MarkInput { renderer_override: ovr, ..m }]
@@ -1431,6 +1457,7 @@ mod tests {
             bandwidth: None,
             thresholds: None,
             bin_width: None,
+            highlight_style: None,
         }];
         let launch = launch_scales(&full_marks, &renderers, &[0], &layout);
 
@@ -1444,6 +1471,7 @@ mod tests {
             bandwidth: None,
             thresholds: None,
             bin_width: None,
+            highlight_style: None,
         }];
         let reinferred = launch_scales(&filtered_marks, &renderers, &[0], &layout);
         let launch_gentoo = launch.get(Channel::Fill).unwrap().map_colour("gentoo").unwrap();
@@ -1519,6 +1547,7 @@ mod tests {
                 bandwidth: None,
                 thresholds: None,
                 bin_width: None,
+                highlight_style: None,
             }]
         };
         let hlaunch_marks = hmark(hbatch);
@@ -1610,6 +1639,7 @@ mod tests {
                     bandwidth: None,
                     thresholds: None,
                     bin_width: None,
+                    highlight_style: None,
                 }]
             };
 
@@ -1670,6 +1700,7 @@ mod tests {
             bandwidth: None,
             thresholds: None,
             bin_width: None,
+            highlight_style: None,
         }];
         match launch_scales(&blues, &renderers, &[0], &layout).get(Channel::Fill) {
             Some(Scale::Sequential { stops, .. }) => {
@@ -1703,6 +1734,7 @@ mod tests {
                 bandwidth: None,
                 thresholds: None,
                 bin_width: None,
+                highlight_style: None,
             }]
         };
         let l1 = launch_scales(&marks_bw(Some(2.0)), &renderers, &[0], &layout);
@@ -1735,6 +1767,7 @@ mod tests {
                 bandwidth: None,
                 thresholds: None,
                 bin_width: None,
+                highlight_style: None,
             }];
             let scales = launch_scales(&marks, &renderers, &[0], &layout);
             count_scene_paths(&render_plot_scene(&marks, &renderers, &[0], &layout, true, &ResolvedTitles::default(), &scales).0)
@@ -1753,6 +1786,7 @@ mod tests {
             bandwidth: None,
             thresholds: None,
             bin_width: None,
+            highlight_style: None,
         }];
         let scales = launch_scales(&dot, &renderers, &[0], &layout);
         assert!(
@@ -1804,6 +1838,7 @@ mod tests {
                 bandwidth: None,
                 thresholds: None,
                 bin_width: None,
+                highlight_style: None,
             }]
         };
 
@@ -1902,6 +1937,7 @@ mod tests {
             bandwidth: None,
             thresholds: None,
             bin_width: None,
+            highlight_style: None,
         };
         // Overlay (mark 1): a blues raster, EMPTY at launch.
         let mut marks = vec![
@@ -1921,6 +1957,7 @@ mod tests {
                 bandwidth: None,
                 thresholds: None,
                 bin_width: None,
+                highlight_style: None,
             },
         ];
 
@@ -2035,6 +2072,7 @@ plot:
                 bandwidth: None,
                 thresholds: None,
                 bin_width: None,
+                highlight_style: None,
             })
             .collect();
 
@@ -2111,6 +2149,7 @@ plot:
                 bandwidth: None,
                 thresholds: None,
                 bin_width: None,
+                highlight_style: None,
             })
             .collect();
 
@@ -2198,6 +2237,7 @@ hconcat:
                 bandwidth: None,
                 thresholds: None,
                 bin_width: None,
+                highlight_style: None,
             })
             .collect();
 

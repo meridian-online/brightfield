@@ -3,11 +3,13 @@
 
 use std::path::Path;
 
-use brightfield_spec::ast::{DataSourceKind, ParamNode, Spec, SpecValue};
+use brightfield_spec::analysis::SELECTED_COLUMN;
+use brightfield_spec::ast::{DataSourceKind, ParamNode, SelectionNode, Spec, SpecValue};
 use brightfield_spec::parse::ParseWarning;
 use indexmap::IndexMap;
 
-use brightfield_spec::ast::{Component, Mark};
+use brightfield_spec::ast::{Component, Mark, ValueOrParamRef};
+use brightfield_spec::vocab::{ImplStatus, InteractorKind, SelectionResolution};
 
 use crate::binding::{Binding, EmittedQuery, ParamValues};
 use crate::error::EmitError;
@@ -587,6 +589,61 @@ pub fn emit_query_with_passes(
         }
     }
 
+    // Highlight membership projection (card 0021): if this mark's plot carries a
+    // `highlight, by: $sel` interactor, project a per-row boolean
+    // `(<pred>) AS __bf_selected` OUTSIDE the (possibly filtered) plan instead of
+    // filtering — the mark keeps its full batch and DIMS the non-matching rows
+    // (ce-ac04/ce-ac05). Membership evaluates against the source table (so a
+    // splom panel highlights on a column it does not plot). An empty selection
+    // compiles to `True` → no projection → the mark renders exactly as at rest
+    // (ce-ac07). An aggregate plan is guarded out (ce-ac09).
+    //
+    // Two departures from the filterBy path above:
+    //   FIX A — the `by:` selection may be created ONLY by an `as:` binding and
+    //     never declared in `params:` (weather's `$range`), so it is absent from
+    //     `spec.params`. A declared Selection uses its resolution; an as-bound-only
+    //     name synthesises a default-resolution node. A declared VALUE param is not
+    //     a selection → skipped (analysis warns HighlightBindingNonSelection).
+    //   FIX B — highlight NEVER self-excludes (`HIGHLIGHT_NO_SELF_EXCLUDE`): the
+    //     brushed plot must dim its OWN rows.
+    // (The filterBy gate above shares FIX A's blind spot — an as-bound-only
+    // `filterBy` is likewise inert there — but that is a pre-existing card-0006
+    // limitation, out of this card's scope; left untouched deliberately.)
+    let mark_highlight_by = collect_mark_highlight_by(spec);
+    if let Some(Some(selection_name)) = mark_highlight_by.get(mark_index) {
+        let default_node = default_highlight_selection();
+        let sel_node = match spec.params.get(selection_name) {
+            Some(ParamNode::Selection(sel)) => Some(sel),
+            // A declared value param is not a selection — never projects.
+            Some(ParamNode::Value(_)) => None,
+            // As-bound-only (or unknown): synthesise a resolution. An unknown name
+            // simply has no live contributors → True → no projection.
+            None => Some(&default_node),
+        };
+        if let Some(sel_node) = sel_node {
+            if !plan_aggregates(&plan) {
+                let contributors: &[(String, Predicate)] = selection_predicates
+                    .and_then(|all| {
+                        all.iter()
+                            .find(|(n, _)| n == selection_name)
+                            .map(|(_, c)| c.as_slice())
+                    })
+                    .unwrap_or(&[]);
+                let predicate =
+                    compile_selection(sel_node, HIGHLIGHT_NO_SELF_EXCLUDE, contributors);
+                if predicate != Predicate::True {
+                    plan = QueryPlan::Projection {
+                        input: Box::new(plan),
+                        columns: vec![
+                            "*".to_string(),
+                            format!("({predicate}) AS {SELECTED_COLUMN}"),
+                        ],
+                    };
+                }
+            }
+        }
+    }
+
     // Apply optimisation passes (built-in + caller-provided).
     let plan = apply_passes(plan, extra_passes);
 
@@ -684,6 +741,106 @@ fn interpolate_params(sql: &str, params: &ParamValues) -> String {
         }
     }
     out
+}
+
+/// The `by:` selection name of a mark's enclosing plot's `highlight` interactor,
+/// for each mark in depth-first order (mirroring [`collect_marks`]). `None` when
+/// the plot has no `highlight` interactor or its `by:` is not a lifted `Param`.
+/// A mark inherits its innermost enclosing plot's highlight.
+fn collect_mark_highlight_by(spec: &Spec) -> Vec<Option<String>> {
+    let mut out = Vec::new();
+    if let Some(root) = &spec.root {
+        collect_mark_highlight_by_in(root, None, &mut out);
+    }
+    out
+}
+
+fn collect_mark_highlight_by_in(
+    component: &Component,
+    current: Option<&str>,
+    out: &mut Vec<Option<String>>,
+) {
+    match component {
+        Component::Plot(plot) => {
+            // A highlight interactor is scoped to its own plot; a mark takes its
+            // INNERMOST enclosing plot's highlight (matching the analysis
+            // subscriber registration), so a nested sub-plot without its own
+            // highlight does not inherit an outer plot's.
+            let by = plot_highlight_by_name(&plot.items);
+            for item in &plot.items {
+                collect_mark_highlight_by_in(item, by.as_deref(), out);
+            }
+        }
+        Component::HConcat(concat) | Component::VConcat(concat) => {
+            for item in &concat.items {
+                collect_mark_highlight_by_in(item, current, out);
+            }
+        }
+        Component::Mark(_) => out.push(current.map(str::to_string)),
+        _ => {}
+    }
+}
+
+/// The selection name a plot's `highlight` interactor consumes (`by: $sel`), if
+/// present. Scans a plot's items for a `highlight` [`InteractorKind`] whose
+/// `by:` lifted to a `Param` ref.
+fn plot_highlight_by_name(items: &[Component]) -> Option<String> {
+    for item in items {
+        if let Component::Interactor(i) = item {
+            if i.kind == InteractorKind::Highlight {
+                if let Some(ValueOrParamRef::Param(pr)) = i.options.get("by") {
+                    return Some(pr.0.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// A `self_source` that matches no real contributor path, so
+/// `compile_selection`'s crossfilter branch excludes NOTHING. Highlight passes
+/// this (unlike filterBy) because "brush a region, grey the rest" must dim the
+/// brushed plot's OWN rows too — a highlight-bound mark self-excluding its own
+/// plot's contribution would leave the brushed plot un-dimmed (card 0021, FIX B).
+/// Real contributor paths are component paths (`root`, `root/hconcat[0]`, …), so
+/// this NUL-prefixed sentinel can never collide.
+const HIGHLIGHT_NO_SELF_EXCLUDE: &str = "\u{0}__bf_highlight_no_self_exclude";
+
+/// The resolution synthesised for a highlight's `by:` selection that is created
+/// ONLY by an `as:` binding (never declared in `params:`) — e.g. weather's
+/// `$range`, which exists solely via `intervalX as: $range`. `compile_selection`
+/// still reads the live contributors; only the resolution needs a default.
+///
+/// `Single` matches every EXPLICIT resolution in the highlight corpus (splom's
+/// `$brush`, weather's `$click` are both `single`), never self-excludes, and —
+/// for a single-contributor brush (the corpus shape) — resolves identically to
+/// any other resolution. Multi-contributor as-bound highlights are a documented
+/// edge (they combine as "most recent" under `single`).
+fn default_highlight_selection() -> SelectionNode {
+    SelectionNode {
+        select: SelectionResolution::Single,
+        status: ImplStatus::Implemented,
+        options: IndexMap::new(),
+    }
+}
+
+/// Whether a plan AGGREGATES in SQL anywhere in its tree — a GROUP BY or scalar
+/// aggregate restricts the output columns, so appending `(<pred>) AS
+/// __bf_selected` over it could reference a column the aggregate dropped and
+/// SQL-error. Highlight skips the membership projection for such a plan (the
+/// ce-ac09 runtime guard; analysis also warns `HighlightOnAggregate`). A
+/// row-level plan (Source / Filter / Projection over a source) exposes every
+/// source column, so the projection is always safe there.
+fn plan_aggregates(plan: &QueryPlan) -> bool {
+    match plan {
+        QueryPlan::Aggregation { .. } | QueryPlan::AggregateScalar { .. } => true,
+        QueryPlan::Filter { input, .. }
+        | QueryPlan::Projection { input, .. }
+        | QueryPlan::Bin { input, .. }
+        | QueryPlan::Order { input, .. }
+        | QueryPlan::Limit { input, .. } => plan_aggregates(input),
+        QueryPlan::Source { .. } | QueryPlan::Singleton { .. } => false,
+    }
 }
 
 /// Extract the selection name that this mark's `data.filter_by` references,
@@ -1037,5 +1194,207 @@ plot:
         assert!(emitted.sql.contains("AS y_min"));
         assert!(emitted.sql.contains("AS y_max"));
         assert!(!emitted.sql.contains("GROUP BY"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Highlight membership projection (card 0021)
+    // -----------------------------------------------------------------------
+
+    const HIGHLIGHT_SPEC: &str = r#"
+params:
+  brush: { select: single }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: a
+    y: b
+  - select: intervalXY
+    as: $brush
+  - select: highlight
+    by: $brush
+"#;
+
+    /// ce-ac03/ce-ac05: a highlight-bound mark with an ACTIVE selection projects
+    /// `(<pred>) AS __bf_selected` — and does NOT wrap the plan in a WHERE, so
+    /// the mark keeps its full batch and dims (highlight-not-filter).
+    #[test]
+    fn ce_ac03_highlight_projects_membership_column() {
+        let spec = parse_spec(HIGHLIGHT_SPEC, Format::Yaml).unwrap().spec;
+        let selections = vec![(
+            "brush".to_string(),
+            vec![("root/other".to_string(), Predicate::Expr("a > 1".to_string()))],
+        )];
+        let emitted = emit_query(&spec, 0, None, Some(&selections)).expect("emit");
+        assert!(
+            emitted.sql.contains(SELECTED_COLUMN),
+            "membership projection present: {}",
+            emitted.sql
+        );
+        assert!(emitted.sql.contains("a > 1"), "the predicate is projected");
+        assert!(
+            !emitted.sql.to_uppercase().contains("WHERE"),
+            "highlight must not filter rows: {}",
+            emitted.sql
+        );
+    }
+
+    /// ce-ac07/ce-ac10: with NO live selection a highlight plot's mark emits SQL
+    /// byte-identical to the same plot without any highlight interactor — the
+    /// at-rest look, so example PNGs don't move.
+    #[test]
+    fn ce_ac07_empty_selection_no_projection() {
+        let spec = parse_spec(HIGHLIGHT_SPEC, Format::Yaml).unwrap().spec;
+        let at_rest = emit_query(&spec, 0, None, None).expect("emit");
+        assert!(
+            !at_rest.sql.contains(SELECTED_COLUMN),
+            "empty selection projects nothing: {}",
+            at_rest.sql
+        );
+        // Same spec sans the highlight interactor emits the identical SQL.
+        let plain_yaml = r#"
+plot:
+  - mark: dot
+    data: { from: t }
+    x: a
+    y: b
+"#;
+        let plain = parse_spec(plain_yaml, Format::Yaml).unwrap().spec;
+        let plain_sql = emit_query(&plain, 0, None, None).expect("emit").sql;
+        assert_eq!(at_rest.sql, plain_sql, "at rest, highlight is invisible in the SQL");
+    }
+
+    /// ce-ac05: a mark that is BOTH `filterBy` one selection and `highlight` on
+    /// another resolves per its explicit bindings — a WHERE for the filter AND a
+    /// `__bf_selected` projection for the highlight, composed.
+    #[test]
+    fn ce_ac05_filter_and_highlight_compose() {
+        let yaml = r#"
+params:
+  click: { select: single }
+  range: { select: single }
+plot:
+  - mark: dot
+    data: { from: t, filterBy: $click }
+    x: a
+    y: b
+  - select: highlight
+    by: $range
+"#;
+        let spec = parse_spec(yaml, Format::Yaml).unwrap().spec;
+        let selections = vec![
+            (
+                "click".to_string(),
+                vec![("root/c".to_string(), Predicate::Expr("a = 1".to_string()))],
+            ),
+            (
+                "range".to_string(),
+                vec![("root/r".to_string(), Predicate::Expr("b > 2".to_string()))],
+            ),
+        ];
+        let emitted = emit_query(&spec, 0, None, Some(&selections)).expect("emit");
+        assert!(emitted.sql.to_uppercase().contains("WHERE"), "filter applied: {}", emitted.sql);
+        assert!(emitted.sql.contains("a = 1"), "filter predicate");
+        assert!(emitted.sql.contains(SELECTED_COLUMN), "highlight projection: {}", emitted.sql);
+        assert!(emitted.sql.contains("b > 2"), "highlight predicate");
+    }
+
+    /// ce-ac09: an aggregate mark (heatmap) is guarded — no membership
+    /// projection is appended even with an active selection, so the query can't
+    /// reference a grouped-away column and SQL-error.
+    #[test]
+    fn ce_ac09_emit_skips_projection_for_aggregate() {
+        let yaml = r#"
+params:
+  brush: { select: single }
+plot:
+  - mark: heatmap
+    data: { from: t }
+    x: a
+    y: b
+  - select: highlight
+    by: $brush
+"#;
+        let spec = parse_spec(yaml, Format::Yaml).unwrap().spec;
+        let selections = vec![(
+            "brush".to_string(),
+            vec![("root/other".to_string(), Predicate::Expr("a > 1".to_string()))],
+        )];
+        let emitted = emit_query(&spec, 0, None, Some(&selections)).expect("emit");
+        assert!(
+            !emitted.sql.contains(SELECTED_COLUMN),
+            "aggregate plan is guarded out of the projection: {}",
+            emitted.sql
+        );
+    }
+
+    /// FIX A (ce-ac08): a `by:` selection created ONLY by an `as:` binding and
+    /// never declared in `params:` (weather's `$range` shape) still projects the
+    /// membership column — the emit gate must not require a `spec.params` entry.
+    #[test]
+    fn ce_ac08_asbound_only_selection_projects() {
+        let yaml = r#"
+plot:
+  - mark: dot
+    data: { from: t }
+    x: a
+    y: b
+  - select: intervalX
+    as: $range
+  - select: highlight
+    by: $range
+    fill: '#ccc'
+    fillOpacity: 0.2
+"#;
+        let spec = parse_spec(yaml, Format::Yaml).unwrap().spec;
+        assert!(
+            spec.params.get("range").is_none(),
+            "range is as-bound only — not in params"
+        );
+        let selections = vec![(
+            "range".to_string(),
+            vec![("root/other".to_string(), Predicate::Expr("a > 1".to_string()))],
+        )];
+        let emitted = emit_query(&spec, 0, None, Some(&selections)).expect("emit");
+        assert!(
+            emitted.sql.contains(SELECTED_COLUMN),
+            "an as-bound-only highlight selection still projects: {}",
+            emitted.sql
+        );
+        assert!(emitted.sql.contains("a > 1"));
+    }
+
+    /// FIX B (ce-ac05): highlight does NOT self-exclude — a plot that BRUSHES and
+    /// HIGHLIGHTS the same crossfilter selection must still dim its OWN rows. With
+    /// the mark's own plot as the contributor, the crossfilter self-exclusion that
+    /// is correct for filterBy would (wrongly) drop it to empty → no projection.
+    #[test]
+    fn ce_ac05_highlight_does_not_self_exclude() {
+        let yaml = r#"
+params:
+  sel: { select: crossfilter }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: a
+    y: b
+  - select: intervalX
+    as: $sel
+  - select: highlight
+    by: $sel
+"#;
+        let spec = parse_spec(yaml, Format::Yaml).unwrap().spec;
+        // Contributor == the mark's OWN plot node ("root") — the self-source that
+        // filterBy would exclude.
+        let selections = vec![(
+            "sel".to_string(),
+            vec![("root".to_string(), Predicate::Expr("a > 1".to_string()))],
+        )];
+        let emitted = emit_query(&spec, 0, None, Some(&selections)).expect("emit");
+        assert!(
+            emitted.sql.contains(SELECTED_COLUMN),
+            "highlight includes the mark's own plot contribution (no self-exclusion): {}",
+            emitted.sql
+        );
+        assert!(emitted.sql.contains("a > 1"));
     }
 }

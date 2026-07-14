@@ -1,0 +1,81 @@
+feature: "Conditional encoding v1 — emphasize a selection by muting the rest (Mosaic `highlight`)"
+as_a: "analytics author composing an interactive dashboard"
+i_want: "to declare that data outside a selection is dimmed or recoloured, so the selected data stands out"
+so_that: "a brush or click visibly emphasizes its matches — the 'grey the rest' gesture every interactive charting tool ships — using portable Mosaic `highlight`, not a bespoke or non-portable grammar"
+
+# Discovery outcome (2026-07-13): the grammar-direction fork is settled. Mosaic has NO
+# Vega-Lite-style per-channel `condition` (when/then/otherwise) grammar; its idiomatic
+# selection-driven conditional encoding is the `highlight` interactor. Adopting Altair
+# `condition` would diverge from the Mosaic corpus Brightfield sells portability on. v1 wires
+# Mosaic-native `highlight`; the general `condition` grammar is deferred. Full research +
+# citations: orbit/cards/memos/2026-07-13-conditional-encoding-highlight-first.md
+
+scenarios:
+  - name: "A bound highlight dims the non-selected marks"
+    given: "a plot with a selection (an `intervalXY`/`toggle` brush `as: $sel`) and a `select: highlight, by: $sel` interactor"
+    when: "the author brushes a region (or clicks a point)"
+    then: "marks OUTSIDE the selection are deemphasized to the default translucency (opacity 0.2), while the selected marks keep their normal appearance — the selection visibly stands out"
+
+  - name: "Overrides recolour or mute the non-matching set"
+    given: "a `highlight` interactor carrying `fill: '#ccc'` (or `opacity:`, `stroke:`)"
+    when: "a selection is active"
+    then: "the non-selected marks take the override value (greyed via `fill: '#ccc'`, per weather.yaml) instead of the default opacity dim; the selected set is untouched — 'colour the selected, grey the rest' expressed by greying the rest"
+
+  - name: "Highlight tracks the selection live"
+    given: "a highlight bound to a selection that also cross-filters or is driven by a legend/brush"
+    when: "the selection changes"
+    then: "the emphasis updates reactively — highlight rides the existing propagate_selection → re-query → re-scene path; no new coordinator machinery"
+
+  - name: "An empty selection resolves predictably"
+    given: "a highlight whose driving selection is empty (nothing brushed yet)"
+    when: "the dashboard first renders"
+    then: "the plot resolves to the chosen empty-default — all marks normal (no dimming) OR all dimmed — fixed once for v1 so a fresh dashboard reads consistently (the `empty` knob; default is an /orb:design decision)"
+
+  - name: "Portable: vendored Mosaic specs render their highlight"
+    given: "the vendored splom.yaml and weather.yaml (which already carry `select: highlight`)"
+    when: "Brightfield loads them"
+    then: "their selection-driven emphasis renders — the corpus-portability win, at small cost because the render primitive already exists (region-tests also needs the separate `region` interactor, out of this card)"
+
+goal: >
+  Wire the Mosaic-native `highlight` interactor end to end so an author can declare
+  selection-driven emphasis — `select: highlight, by: $sel` deemphasizes the non-matching set,
+  with optional `opacity`/`fill`/`stroke` overrides — reusing the existing (currently test-only)
+  HighlightState render primitive. Two generalisations carry the work: (1) PARSE the declarative
+  interactor params (by / opacity / fill / stroke) into the AST; (2) BIND it to production —
+  drive ChartData.highlight from the engine's selection_state (today always None outside tests),
+  and generalise apply_highlight's FIXED alpha-dim into the opacity/fill/stroke override surface.
+  The selection substrate (compile_selection → Predicate → propagate_selection → re-query/re-scene)
+  is already complete, so highlight rides it for free — a per-row membership flag that dims, not a
+  WHERE that drops. This is a deliberate, honest NARROWING of the gap-map's "conditional channel
+  encoding" (gap #1) down to the dominant emphasize/mute use case, chosen for Mosaic-corpus
+  portability; the general Altair `condition` grammar (restyle-the-selected, different-field,
+  chaining, test predicates) is DEFERRED to a later discovery-gated card.
+
+maturity: "emerging"
+
+design_decisions:  # /orb:discovery, 2026-07-13 (Hugh)
+  - "GRAMMAR — Mosaic-native `highlight`, NOT Altair `condition`. Evidence-backed (3 adversarial verify agents, primary-source citations): Mosaic has no per-channel condition grammar; `condition` has zero corpus presence, so adopting it would break the Mosaic-portability positioning. See the discovery memo."
+  - "SCOPE — highlight-first v1; the general `condition` grammar (restyle the SELECTED set, bind a different field, chain branches, `test` predicates) is deferred until authoring demand appears."
+  - "SEMANTICS — highlight DEEMPHASIZES the non-selected set only; the selected keep their base appearance ('Selected values keep their normal appearance. Unselected values are deemphasized'). 'Colour selected, grey rest' = grey the rest via a `fill` override."
+  - "OVERRIDE SURFACE — flat declarative fields per Mosaic's Highlight.ts: `opacity` (default 0.2), `fill`, `stroke` (+ `fillOpacity`/`strokeOpacity`). Target these, not a `channels` object."
+  - "REUSE — the HighlightState / apply_highlight render primitive already exists (mark.rs:19-28, 203-215) but is test-only; the work is the declarative parse + the production selection_state binding + honouring the overrides. Not new rendering; not a one-line switch."
+
+open_questions:  # for /orb:design
+  - "empty default: empty selection → all-normal vs all-dimmed (Mosaic/VL default; product-visible on a fresh dashboard)."
+  - "membership source: build apply_highlight's per-row predicate from selection geometry (render-side closure, no DB round-trip) or a SQL membership column (single source of predicate truth)? Render-side likely suffices for highlight — smaller than the general-condition SQL path."
+  - "region bundling: highlight-only v1 (unblocks splom + weather) vs bundle the `region` interactor (vocab.rs:231, Unimplemented) to also unblock region-tests."
+  - "literal-colour `fill:` override: confirm the interactor-param path sidesteps the 'marks have no literal-colour channel' prerequisite the scoping investigation flagged (highlight's `fill` is an interactor param, not a mark channel — likely a non-issue)."
+  - "does wiring highlight through selection_state RETIRE the two hardcoded conditional instances (legend dim, hover emphasis), or layer on top? Retiring is cleaner but re-baselines legend/highlight rendering — a scope call."
+
+specs: []   # awaiting /orb:design → /orb:spec
+
+references:
+  - "orbit/cards/memos/2026-07-13-conditional-encoding-highlight-first.md: the discovery — full research, citations, and the grammar-direction decision this card executes."
+  - "orbit/cards/memos/2026-07-12-altair-interaction-grammar-gaps.md (gap #1, conditional channel encoding): the source ranking this the load-bearing primitive; this card is its honest narrowing to the portable highlight use case."
+  - "crates/brightfield-render/src/mark.rs:19-28,203-215: HighlightState + apply_highlight — the render primitive to reuse and generalise (fixed alpha-dim → opacity/fill/stroke overrides)."
+  - "crates/brightfield-render/src/scene.rs:45-47,485..,974: ChartData.highlight — Some only in a test; every production path sets None. The production binding is what this card adds."
+  - "crates/brightfield-spec/src/vocab.rs:230: InteractorKind::Highlight already flagged Implemented (on the test-wired primitive); :231 InteractorKind::Region is Unimplemented (the region-tests co-dependency)."
+  - "crates/brightfield-sql/src/lower.rs (compile_selection) + crates/brightfield-engine/src/lib.rs:309 (propagate_selection) + crates/brightfield-ui/src/crossfilter.rs:306: the complete selection substrate highlight rides — a dimming membership flag, not a filtering WHERE."
+  - "crates/brightfield-spec/vendor/mosaic-specs/yaml/splom.yaml (`highlight` + `opacity: 0.1`) and weather.yaml (`highlight` + `fill: '#ccc'`): the vendored specs this unblocks; the param surface v1 must support."
+  - "Mosaic Highlight.ts (interface) — https://github.com/uwdata/mosaic/blob/main/packages/vgplot/spec/src/spec/interactors/Highlight.ts"
+  - "Extends card 0006 (cross-filtered selections) — the selection substrate — and card 0009 (dashboard composition) — the legend/brush producers highlight responds to."
