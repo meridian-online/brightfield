@@ -2570,4 +2570,186 @@ hconcat:
         assert_eq!(slot_expr(&c).unwrap(), before, "the union is untouched by a miss");
         assert_eq!(rows(&c), before_rows);
     }
+
+    /// A minimal cross-filter spec (card 0022): plot 0 brushes `intervalX` into
+    /// `$brush`; plot 1 (mark index 1) is `filterBy: $brush`, so it is the sole
+    /// subscriber. Even temp spacing (3 apart) makes a resize's row count
+    /// deterministic.
+    const DRB_BRUSH_SPEC: &str = r#"
+params:
+  brush: { select: crossfilter }
+data:
+  readings:
+    - { temp: 2,  power: 14 }
+    - { temp: 5,  power: 18 }
+    - { temp: 8,  power: 21 }
+    - { temp: 11, power: 25 }
+    - { temp: 14, power: 30 }
+    - { temp: 17, power: 34 }
+    - { temp: 20, power: 39 }
+    - { temp: 23, power: 41 }
+    - { temp: 26, power: 44 }
+    - { temp: 29, power: 47 }
+    - { temp: 32, power: 49 }
+    - { temp: 35, power: 52 }
+hconcat:
+  - plot:
+      - mark: dot
+        data: { from: readings }
+        x: temp
+        y: power
+      - select: intervalX
+        as: $brush
+  - plot:
+      - mark: dot
+        data: { from: readings, filterBy: $brush }
+        x: temp
+        y: power
+"#;
+
+    /// drb-ac07: RE-DISPATCH ON RELEASE CHANGES THE DATA (the silent-no-op defence
+    /// — the card-0021 HIGH the green tests hid). A resize of the persisted brush
+    /// re-dispatches from the NEW corners by DRIVING the production
+    /// `redispatch_brushing_from`, and the DOWNSTREAM DATA changes (contributor
+    /// predicate P2 != P1 AND subscriber rows N2 != N1) — driven from the
+    /// drb-ac04 transform output, never hand-built corners. A NEGATIVE CONTROL
+    /// proves the wire is load-bearing: the raw moved `Selected` fed straight to
+    /// commit_brush_release_multi (the unchanged release path) dispatches NOTHING.
+    #[test]
+    fn drb_ac07_release_redispatch_changes_the_data() {
+        use crate::interaction::{
+            redispatch_brushing_from, resize_brush, BrushEdge, BrushRegion,
+        };
+        use brightfield_engine::Engine;
+        use brightfield_spec::analysis::analyse_spec;
+        use brightfield_spec::{parse_spec, Format};
+
+        let parsed = parse_spec(DRB_BRUSH_SPEC, Format::Yaml).expect("parse");
+        let analysis = analyse_spec(&parsed.spec).expect("analyse");
+        // The brush SOURCE: a real analysis-derived binding, not hand-built.
+        assert_eq!(analysis.brushable_bindings.len(), 1, "one intervalX binding");
+        let binding: BrushBinding = (&analysis.brushable_bindings[0]).into();
+        assert_eq!(binding.selection_name, "brush");
+        assert_eq!(binding.channels.x.as_deref(), Some("temp"));
+        let contributor = binding.contributor.0.clone();
+
+        let engine = Engine::new();
+        let mut session = engine
+            .load_spec(parsed.spec.clone(), analysis, None)
+            .expect("load")
+            .session;
+        let _ = session.execute_all();
+
+        // The plot's inversion scales: temp domain [2,35] over the plot-area x
+        // range [40,340] (a 360-wide plot's default margins), so a pixel brush
+        // inverts to a temp interval.
+        let mut scales = ScaleSet::new();
+        scales.insert(
+            Channel::X,
+            Scale::Linear {
+                domain_min: 2.0,
+                domain_max: 35.0,
+                range_start: 40.0,
+                range_end: 340.0,
+            },
+        );
+
+        // Sum subscriber rows across a commit's aggregated results.
+        fn subscriber_rows(
+            aggregated: &[(String, Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>)],
+        ) -> usize {
+            aggregated
+                .iter()
+                .flat_map(|(_, results)| results.iter())
+                .map(|(_, r)| {
+                    r.as_ref()
+                        .map(|bs| bs.iter().map(|b| b.num_rows()).sum::<usize>())
+                        .unwrap_or(0)
+                })
+                .sum()
+        }
+
+        // Commit a pixel brush (invert → data-space Brushing → dispatch), exactly
+        // as `commit_brush` does internally, and read the resulting subscriber rows.
+        let commit_pixels = |session: &mut Session, start: Point, current: Point| -> usize {
+            let data_rect = invert_pixel_brush(start, current, &scales);
+            let synthetic = InteractionState::Brushing {
+                start: Point::new(data_rect.x0, data_rect.y0),
+                current: Point::new(data_rect.x1, data_rect.y1),
+            };
+            let (_next, aggregated) =
+                commit_brush_release_multi(&synthetic, std::slice::from_ref(&binding), session);
+            subscriber_rows(&aggregated)
+        };
+
+        // --- Initial brush: pixel x∈[100,160] → temp∈[8.6,15.2] → {11,14}. ---
+        let start_px = Point::new(100.0, 100.0);
+        let current_px = Point::new(160.0, 200.0);
+        let n1 = commit_pixels(&mut session, start_px, current_px);
+        let p1 = session
+            .contributor_predicate("brush", &contributor)
+            .map(|p| format!("{p}"))
+            .expect("the initial brush wrote the slot");
+        assert_eq!(n1, 2, "temp∈[8.6,15.2] keeps 2 of 12 rows downstream");
+
+        // --- The move/resize end-state, produced by the drb-ac04 transform
+        // (NOT hand-built corners): drag the RIGHT edge from px 160 → 280, which
+        // provably crosses further datums so N2 != N1 is guaranteed. ---
+        let anchor = kurbo::Rect::new(100.0, 100.0, 160.0, 200.0);
+        let frame = kurbo::Rect::new(40.0, 20.0, 340.0, 280.0);
+        let moved = resize_brush(
+            anchor,
+            BrushRegion::Edge(BrushEdge::Right),
+            Point::new(280.0, 150.0),
+            frame,
+        );
+        let end_state = InteractionState::Dragging {
+            region: BrushRegion::Edge(BrushEdge::Right),
+            origin: Point::new(160.0, 150.0),
+            start: Point::new(moved.x0, moved.y0),
+            current: Point::new(moved.x1, moved.y1),
+            anchor,
+        };
+
+        // --- (b) DRIVE the production redispatch fn; feed ONLY its Brushing
+        // through invert_pixel_brush → commit_brush_release_multi. ---
+        let brushing = redispatch_brushing_from(&end_state)
+            .expect("a moved grab synthesises a Brushing");
+        match &brushing {
+            InteractionState::Brushing { current, .. } => assert!(
+                (current.x - 280.0).abs() < f64::EPSILON,
+                "the synthesised corners are the MOVED px corners, not the original"
+            ),
+            other => panic!("expected Brushing, got {other:?}"),
+        }
+        let (start2, current2) = match &brushing {
+            InteractionState::Brushing { start, current } => (*start, *current),
+            _ => unreachable!(),
+        };
+        let n2 = commit_pixels(&mut session, start2, current2);
+        let p2 = session
+            .contributor_predicate("brush", &contributor)
+            .map(|p| format!("{p}"))
+            .expect("the re-dispatch rewrote the slot");
+        assert_ne!(p2, p1, "the re-dispatched predicate differs from the original");
+        assert_ne!(n2, n1, "the re-dispatch changes the downstream row count");
+        assert_eq!(n2, 6, "temp∈[8.6,28.4] keeps 6 of 12 rows downstream");
+
+        // --- (c) NEGATIVE CONTROL: the RAW moved Selected fed straight to the
+        // unchanged release path (no redispatch synthesis) dispatches NOTHING —
+        // so this test FAILS if the synthesis wire is ever dropped. ---
+        let raw_selected = InteractionState::Selected {
+            start: Point::new(moved.x0, moved.y0),
+            current: Point::new(moved.x1, moved.y1),
+        };
+        let (_next, aggregated) = commit_brush_release_multi(
+            &raw_selected,
+            std::slice::from_ref(&binding),
+            &mut session,
+        );
+        assert!(
+            aggregated.is_empty(),
+            "a raw Selected through the unchanged path dispatches nothing (the wire is load-bearing)"
+        );
+    }
 }
