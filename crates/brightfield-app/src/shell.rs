@@ -1046,8 +1046,8 @@ impl SidebarPanel {
         cx.notify();
     }
 
-    /// The hosted profiles (shim assertion surface, sbp_ac03).
-    #[cfg(test)]
+    /// The hosted profiles — the sbp_ac03 shim assertion surface, and the
+    /// set-channel COLUMN pick-list's source (card 0023, delta finding 6).
     pub fn profiles(&self) -> &[SourceProfile] {
         &self.profiles
     }
@@ -1306,6 +1306,11 @@ impl CommandLogPanel {
         presentation: Entity<PresentationState>,
         cx: &mut Context<Self>,
     ) -> Self {
+        // Repaint on ANY log change (delta finding 7). The canvas appends to the
+        // log from ITS own context — a bare-verb refusal (`d`/`m`/undo) or an edit
+        // notifies the log entity's observers, not this panel — so without this
+        // observe the new row only surfaces on an unrelated later frame.
+        cx.observe(&log, |_, _, cx| cx.notify()).detach();
         Self {
             log,
             presentation,
@@ -1879,17 +1884,42 @@ impl WorkspaceRoot {
     }
 
     /// The current step's fuzzy-filtered option list (card 0023, clg-ac09): the
-    /// enumerable kind/channel picks, case-insensitively filtered by `arg_query`.
-    /// The COLUMN step has no enumerable list — it is free-text (the query itself
-    /// is the column name), so this returns empty and `run_arg` picks the query.
-    fn arg_options(&self) -> Vec<String> {
+    /// enumerable kind / channel picks, and — for the COLUMN step — the profiled
+    /// source columns (card 0017's `SourceProfile`), each case-insensitively
+    /// filtered by `arg_query`. The column list is a convenience: `run_arg` still
+    /// falls back to the raw query, so a column absent from the profile (or an
+    /// unprofiled source) stays typeable.
+    fn arg_options(&self, cx: &App) -> Vec<String> {
         let Some(collector) = self.arg.as_ref() else {
             return Vec::new();
         };
-        // Column is free-text; the kind/channel steps are enumerable.
-        let all = collector.options(&[]);
+        let columns = match collector.step() {
+            ArgStep::Column { .. } => self.arg_column_options(cx),
+            _ => Vec::new(),
+        };
+        let all = collector.options(&columns);
         let q = self.arg_query.to_lowercase();
         all.into_iter().filter(|o| o.to_lowercase().contains(&q)).collect()
+    }
+
+    /// The distinct, non-internal column names across every PROFILED source in
+    /// the Data sidebar (card 0017), in first-seen order — the enumerable pick
+    /// list the set-channel COLUMN step offers (clg-ac09, delta finding 6). v1
+    /// offers the UNION across sources; narrowing to the focused plot's own
+    /// source is a follow-up (the free-text fallback covers the multi-source
+    /// case in the meantime).
+    fn arg_column_options(&self, cx: &App) -> Vec<String> {
+        let mut seen: Vec<String> = Vec::new();
+        for source in self.sidebar_panel.read(cx).profiles() {
+            if let ProfileOutcome::Profiled { columns, .. } = &source.outcome {
+                for col in columns {
+                    if !seen.iter().any(|c| c == &col.name) {
+                        seen.push(col.name.clone());
+                    }
+                }
+            }
+        }
+        seen
     }
 
     /// Run the current argument pick (Enter): the highlighted option, or — on the
@@ -1897,7 +1927,7 @@ impl WorkspaceRoot {
     /// the query); `Ready` applies the edit against the canvas and closes;
     /// `Invalid` leaves the overlay open.
     fn run_arg(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let filtered = self.arg_options();
+        let filtered = self.arg_options(cx);
         let is_column = matches!(self.arg.as_ref().map(ArgCollector::step), Some(ArgStep::Column { .. }));
         let choice = filtered
             .get(self.arg_selected)
@@ -1928,7 +1958,7 @@ impl WorkspaceRoot {
     /// Move the argument-overlay selection within the filtered options (down =
     /// `true`), bound to ↓/↑ + Ctrl-j/k like the palette (card 0023, clg-ac09).
     fn arg_nav(&mut self, down: bool, cx: &mut Context<Self>) {
-        let n = self.arg_options().len();
+        let n = self.arg_options(cx).len();
         if down {
             self.arg_selected = (self.arg_selected + 1).min(n.saturating_sub(1));
         } else {
@@ -2255,7 +2285,7 @@ impl WorkspaceRoot {
     /// the current step (mark kind / channel / column) + the fuzzy-filtered
     /// option rows, the selected row highlighted. The free-text COLUMN step shows
     /// the typed query as the pick (Enter takes it verbatim).
-    fn arg_overlay_body(&self) -> gpui::Div {
+    fn arg_overlay_body(&self, cx: &App) -> gpui::Div {
         let (verb, prompt, is_column) = match self.arg.as_ref() {
             Some(c) => {
                 let v = match c.step() {
@@ -2266,7 +2296,7 @@ impl WorkspaceRoot {
             }
             None => ("", "", false),
         };
-        let options = self.arg_options();
+        let options = self.arg_options(cx);
         let mut list = div().flex().flex_col().gap_0();
         if is_column && options.is_empty() {
             list = list.child(
@@ -2795,7 +2825,7 @@ impl Render for WorkspaceRoot {
             Overlay::Help => Some(self.help_overlay_body()),
             Overlay::Jump => Some(self.jump_overlay_body(cx)),
             Overlay::Palette => Some(self.palette_overlay_body(cx)),
-            Overlay::Arg => Some(self.arg_overlay_body()),
+            Overlay::Arg => Some(self.arg_overlay_body(cx)),
         };
         let overlay = overlay_body.map(|body| {
             div()

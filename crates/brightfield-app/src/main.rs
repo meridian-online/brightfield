@@ -621,24 +621,6 @@ fn parse_override_value(raw: &str) -> brightfield_spec::ast::SpecValue {
     }
 }
 
-/// Convert a spec-side [`brightfield_spec::analysis::HighlightStyle`] (literal
-/// strings) into the render-side [`brightfield_render::mark::HighlightStyle`]
-/// (parsed colours) the `otherwise` deemphasis applies (card 0021). A `fill` /
-/// `stroke` that is not a CSS hex colour (a named colour, `none`, malformed)
-/// resolves to `None` — the render site then leaves the base RGB untouched.
-fn resolve_highlight_render_style(
-    style: &brightfield_spec::analysis::HighlightStyle,
-) -> brightfield_render::mark::HighlightStyle {
-    use brightfield_render::mark::parse_css_hex;
-    brightfield_render::mark::HighlightStyle {
-        opacity: style.opacity,
-        fill: style.fill.as_deref().and_then(parse_css_hex),
-        fill_opacity: style.fill_opacity,
-        stroke: style.stroke.as_deref().and_then(parse_css_hex),
-        stroke_opacity: style.stroke_opacity,
-    }
-}
-
 fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
     // 1. Parse the spec.
     let parsed = parse_spec_path(spec_path).map_err(|e| format!("parse error: {e}"))?;
@@ -807,7 +789,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
         let highlight_style = highlight_bindings
             .iter()
             .find(|b| b.parent_plot.0 == plot.path)
-            .map(|b| resolve_highlight_render_style(&b.style));
+            .map(|b| brightfield_render::mark::HighlightStyle::from(&b.style));
 
         // Populate each of this plot's marks' `renderer_override` ONCE, from
         // the plot's colorScheme plus the mark's attributes (`configured_renderer`
@@ -2784,6 +2766,65 @@ vconcat:
         assert!(
             super::chrome_divergence(&legend_launch_chrome, &fill_chrome).is_some(),
             "the real gate WOULD bounce a colour rebind under a legend — refusing it agrees"
+        );
+
+        // REFUSED (delta finding 2): a no-`for:` colour legend is placed only when
+        // EXACTLY ONE colour-encoded plot exists (`resolve_legends`'s `sole`).
+        // Adding a fill to the sole PLAIN plot flips the count 0->1, so the legend
+        // APPEARS — the real gate's `legends` diverges even though the focused
+        // plot was not colour-encoded PRE-edit (the exact case the pre-edit-only
+        // check missed). The plot is `root/vconcat[1]`, the legend `[0]`.
+        const NO_FOR_LEGEND_BASE: &str = r#"
+meta:
+  title: No-for Legend Agreement
+data:
+  t:
+    - { a: 1, b: 2, cat: p }
+    - { a: 3, b: 4, cat: q }
+vconcat:
+  - legend: color
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: a
+        y: b
+    name: scatter
+    xLabel: X axis
+    yLabel: Y axis
+"#;
+        let nofor_spec = parse_spec(NO_FOR_LEGEND_BASE, Format::Yaml).expect("parse no-for base").spec;
+        let (nofor_launch_dash, nofor_launch_chrome) = build("nofor_base.yaml", NO_FOR_LEGEND_BASE);
+        let nofor_fill = SpecEdit::SetChannel {
+            plot: cp("root/vconcat[1]"),
+            mark_ordinal: 0,
+            channel: "fill".into(),
+            column: "cat".into(),
+        };
+        assert_eq!(
+            classify_edit(&nofor_spec, &nofor_fill),
+            Err(brightfield_spec::edit::RefuseReason::WouldChangeLegend),
+            "classifier refuses a fill add that shows a no-`for:` legend (0->1 flip)"
+        );
+        let mut nofor_fill_spec = nofor_spec.clone();
+        if let Some(Component::VConcat(c)) = nofor_fill_spec.root.as_mut() {
+            if let Some(Component::Plot(p)) = c.items.get_mut(1) {
+                if let Some(Component::Mark(m)) =
+                    p.items.iter_mut().find(|c| matches!(c, Component::Mark(_)))
+                {
+                    m.options.insert("fill".into(), ValueOrParamRef::Value(SpecValue::String("cat".into())));
+                }
+            }
+        }
+        let nofor_yaml = serialise_spec(&nofor_fill_spec).expect("serialise no-for fill");
+        let (nofor_fill_dash, nofor_fill_chrome) = build("nofor_fill.yaml", &nofor_yaml);
+        assert_eq!(
+            nofor_fill_dash.plots.len(),
+            nofor_launch_dash.plots.len(),
+            "the fill add keeps the layout — the legend appearing IS the divergence"
+        );
+        assert!(
+            super::chrome_divergence(&nofor_launch_chrome, &nofor_fill_chrome).is_some(),
+            "the real gate WOULD bounce a no-`for:` legend appearing (0->1) — refusing it agrees"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

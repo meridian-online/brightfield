@@ -208,6 +208,17 @@ pub trait MarkRenderer {
     fn suppresses_frame(&self) -> bool {
         false
     }
+
+    /// The map projection this renderer applies, if it is a projecting (geo)
+    /// mark; `None` for every cartesian mark (the default). Lets a caller
+    /// confirm the resolved projection a rebuilt geo mark carries WITHOUT
+    /// downcasting the boxed renderer — the seam the crossfilter rebuild's
+    /// survival test reads to distinguish Albers from the equirectangular
+    /// default (mirrors [`Self::suppresses_frame`]'s introspection-default
+    /// shape; zero impact on existing renderers).
+    fn projection(&self) -> Option<Projection> {
+        None
+    }
 }
 
 /// Default dot radius in pixels.
@@ -3257,6 +3268,10 @@ impl MarkRenderer for GeoRenderer {
     /// reads as a map. The scene builders skip grid + axes for it.
     fn suppresses_frame(&self) -> bool {
         true
+    }
+
+    fn projection(&self) -> Option<Projection> {
+        Some(self.projection)
     }
 }
 

@@ -24,7 +24,7 @@ use indexmap::IndexMap;
 
 use crate::analysis::ComponentPath;
 use crate::ast::{Component, LegendNode, Mark, PlotNode, Spec, SpecValue, ValueOrParamRef};
-use crate::layout::{resolve_axis_titles, AxisTitle};
+use crate::layout::{collect_plot_nodes, resolve_axis_titles, AxisTitle};
 use crate::vocab::{LegendChannel, MarkKind};
 
 /// Positional channel keys inherited by an added mark from the plot's primary
@@ -302,12 +302,23 @@ pub fn classify_edit(spec: &Spec, edit: &SpecEdit) -> Result<(), RefuseReason> {
         _ => {}
     }
 
-    // Colour-scale change under a referencing standalone legend (finding 3): a
-    // `legend: color for: <this plot>` renders the plot's fill/stroke colour
-    // scale, which `chrome_divergence` captures — so a colour rebind (or a retype
-    // that adds/removes a sequential-colour renderer) trips the real gate. Refuse
-    // it. An inline colour fill with NO referencing legend is NOT captured, so it
-    // stays clean (the earlier finding — see `clg_ac11_binding_an_inline_fill_is_clean`).
+    // Apply the edit to a clone ONCE — both the colour-legend gate and the
+    // inset/title chrome comparison diff the launch-fixed chrome against it.
+    let mut clone = spec.clone();
+    apply_unchecked(&mut clone, edit);
+    let after_plot = plot_at_path(&clone, edit.plot_path()).ok_or(RefuseReason::PlotNotFound)?;
+
+    // Colour-scale change under a standalone colour legend (finding 3 + delta
+    // finding 2). An explicit `legend: color for: <this plot>` renders the plot's
+    // fill/stroke colour scale, which `chrome_divergence` captures — so a colour
+    // rebind (or a retype that adds/removes a sequential-colour renderer) trips
+    // the real gate. A no-`for:` colour legend is placed only when the dashboard
+    // has EXACTLY ONE colour-encoded plot (`resolve_legends`), so a colour edit
+    // that flips that count (0->1 shows the legend, 1->2 hides the sole one) — or
+    // that changes the sole colour plot's own domain — trips it too. Either way,
+    // refuse rather than silently bounce to "restart to apply". An inline colour
+    // fill with NO standalone legend stays clean (the earlier finding — see
+    // `clg_ac11_binding_an_inline_fill_is_clean`).
     let colour_edit = match edit {
         SpecEdit::SetChannel { channel, .. } => is_colour_channel(channel),
         SpecEdit::ChangeMarkType { new_kind, mark_ordinal, .. } => {
@@ -317,16 +328,13 @@ pub fn classify_edit(spec: &Spec, edit: &SpecEdit) -> Result<(), RefuseReason> {
         }
         _ => false,
     };
-    if colour_edit && colour_legend_references_plot(spec, plot) {
+    if colour_edit && colour_legend_chrome_changes(spec, &clone, plot, after_plot) {
         return Err(RefuseReason::WouldChangeLegend);
     }
 
-    // Chrome-signature comparison: apply to a clone and diff the launch-fixed
-    // chrome the reload gate compares.
+    // Chrome-signature comparison: diff the launch-fixed chrome the reload gate
+    // compares (inset baselines + derived axis titles).
     let before = plot_chrome_signature(plot);
-    let mut clone = spec.clone();
-    apply_unchecked(&mut clone, edit);
-    let after_plot = plot_at_path(&clone, edit.plot_path()).ok_or(RefuseReason::PlotNotFound)?;
     let after = plot_chrome_signature(after_plot);
 
     if before.baseline_x != after.baseline_x || before.baseline_y != after.baseline_y {
@@ -371,6 +379,14 @@ fn plot_chrome_signature(plot: &PlotNode) -> PlotChromeSig {
 
 /// Whether a channel key drives a COLOUR scale (finding 3) — a rebind of one
 /// changes the colour domain/scheme a standalone legend renders.
+///
+/// This does NOT distinguish `fill` from `stroke`: a `stroke` rebind under a
+/// legend that displays only the `fill` scale is refused too (delta finding 4).
+/// That is deliberate safe-side conservatism — the classifier's job is to never
+/// LET a silent "restart to apply" bounce through, and over-refusing a rare
+/// stroke-under-a-fill-legend edit is the cheap, correct-direction error (matches
+/// the classifier's documented conservatism). Narrowing to the scale the legend
+/// actually displays is a possible future refinement, not a correctness gap.
 fn is_colour_channel(channel: &str) -> bool {
     matches!(channel, "fill" | "stroke" | "color" | "colour")
 }
@@ -399,42 +415,72 @@ fn nth_mark_kind(plot: &PlotNode, ordinal: usize) -> Option<MarkKind> {
     }
 }
 
-/// Whether a STANDALONE colour `legend:` anywhere in the spec references
-/// `focused` (finding 3): a `legend: color for: <focused's name>`, or — since a
-/// no-`for:` legend binds the sole colour-encoded plot — a no-`for:` colour
-/// legend when `focused` is itself colour-encoded (the conservative case the
-/// classifier can't disambiguate cheaply). Inline legends (drawn inside a plot)
-/// are NOT standalone and are not captured by `chrome_divergence`; only the
-/// composition-level `Component::Legend` nodes are.
-fn colour_legend_references_plot(spec: &Spec, focused: &PlotNode) -> bool {
-    let focused_name = focused.attributes.get("name").and_then(|v| match v {
+/// Whether a colour edit on `focused` changes the chrome a STANDALONE colour
+/// `legend:` renders — the precise reproduction of the real reload gate's
+/// `legends` divergence (finding 3 + delta finding 2). Compares the pre-edit
+/// spec/plot (`before` / `focused_before`) to the post-edit clone (`after` /
+/// `focused_after`):
+///
+///   - An explicit `legend: color for: <name>` renders THAT plot's colour scale
+///     regardless of the global count, so a colour edit matters only when it
+///     targets the focused plot (the original finding 3).
+///   - A no-`for:` colour legend is placed only when EXACTLY ONE colour-encoded
+///     plot exists (`resolve_legends`). Its chrome changes when that placement
+///     FLIPS (0->1 shows it, 1->2 hides the sole one), or when it stays placed
+///     and the focused plot — the only plot a single edit touches — is the sole
+///     colour plot whose domain it renders (delta finding 2: gating only on the
+///     PRE-edit focused plot's colour-encoding missed the 0->1 / 1->2 flips).
+///   - A `$param for:` can't be resolved statically — the reload gate backstops.
+///
+/// Inline legends (drawn inside a plot) are NOT standalone and are not captured
+/// by `chrome_divergence`; only composition-level `Component::Legend` nodes are.
+fn colour_legend_chrome_changes(
+    before: &Spec,
+    after: &Spec,
+    focused_before: &PlotNode,
+    focused_after: &PlotNode,
+) -> bool {
+    let focused_name = focused_before.attributes.get("name").and_then(|v| match v {
         SpecValue::String(s) => Some(s.as_str()),
         _ => None,
     });
-    let mut referenced = false;
-    for_each_legend(spec.root.as_ref(), &mut |legend| {
+    // A single within-plot edit adds or removes no legends, so the before spec's
+    // legend set is authoritative; only the colour-plot COUNT and the focused
+    // plot's own colour-encoding can move.
+    let placed_before = count_colour_encoded_plots(before) == 1;
+    let placed_after = count_colour_encoded_plots(after) == 1;
+    let focused_is_colour =
+        plot_is_colour_encoded(focused_before) || plot_is_colour_encoded(focused_after);
+    let mut changed = false;
+    for_each_legend(before.root.as_ref(), &mut |legend| {
         if legend.channel != LegendChannel::Color {
             return;
         }
         match legend.options.get("for") {
             Some(ValueOrParamRef::Value(SpecValue::String(name))) => {
                 if Some(name.as_str()) == focused_name {
-                    referenced = true;
+                    changed = true;
                 }
             }
-            // A no-`for:` colour legend binds the sole colour-encoded plot; if the
-            // focused plot is colour-encoded, conservatively treat it as bound.
             None => {
-                if plot_is_colour_encoded(focused) {
-                    referenced = true;
+                if placed_before != placed_after || (placed_after && focused_is_colour) {
+                    changed = true;
                 }
             }
-            // A `$param for:` can't be resolved statically — leave it (a rebind
-            // there is a rarer path the reload gate still backstops).
             Some(_) => {}
         }
     });
-    referenced
+    changed
+}
+
+/// The number of colour-encoded plots in a spec — the count `resolve_legends`
+/// keys a no-`for:` colour legend's placement on (exactly one → placed). Delta
+/// finding 2.
+fn count_colour_encoded_plots(spec: &Spec) -> usize {
+    collect_plot_nodes(spec)
+        .iter()
+        .filter(|(_, plot)| plot_is_colour_encoded(plot))
+        .count()
 }
 
 /// Visit every standalone [`LegendNode`] under a component subtree (finding 3).
@@ -1152,6 +1198,146 @@ vconcat:
             &SpecEdit::SetChannel { plot: cp("root"), mark_ordinal: 0, channel: "fill".to_string(), column: "c".to_string() }
         )
         .is_ok());
+    }
+
+    // A no-`for:` colour legend + a SINGLE plot that is NOT yet colour-encoded:
+    // 0 colour plots -> the legend is unplaced. Adding a fill makes the plot the
+    // SOLE colour plot -> the legend appears -> the real gate's `legends` changes
+    // (delta finding 2: the 0->1 flip the pre-edit-only check missed).
+    const NO_FOR_LEGEND_ONE_PLAIN: &str = "\
+data:
+  t: SELECT 1 AS a, 2 AS b, 'x' AS c
+vconcat:
+  - legend: color
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: a
+        y: b
+    name: scatter
+";
+
+    // A no-`for:` colour legend + TWO plots, ONE already colour-encoded (the sole
+    // colour plot, so the legend is placed) and one plain. Colouring the plain
+    // plot makes TWO colour plots -> the sole legend disappears -> `legends`
+    // changes (delta finding 2: the 1->2 flip).
+    const NO_FOR_LEGEND_ONE_COLOUR: &str = "\
+data:
+  t: SELECT 1 AS a, 2 AS b, 'x' AS c
+vconcat:
+  - legend: color
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: a
+        y: b
+        fill: c
+    name: coloured
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: a
+        y: b
+    name: plain
+";
+
+    #[test]
+    fn clg_ac11_finding2_no_for_legend_appears_on_a_zero_to_one_flip_is_refused() {
+        // 0 -> 1 colour plots: adding a fill shows the no-`for:` legend. The
+        // pre-edit focused plot is NOT colour-encoded, so the old check let this
+        // through (the delta-review bug); the count-flip check now refuses it.
+        let spec = parse(NO_FOR_LEGEND_ONE_PLAIN);
+        assert_eq!(
+            classify_edit(
+                &spec,
+                &SpecEdit::SetChannel {
+                    plot: cp("root/vconcat[1]"),
+                    mark_ordinal: 0,
+                    channel: "fill".to_string(),
+                    column: "c".to_string(),
+                }
+            ),
+            Err(RefuseReason::WouldChangeLegend),
+            "a 0->1 colour-plot flip shows the no-`for:` legend — refuse"
+        );
+    }
+
+    #[test]
+    fn clg_ac11_finding2_no_for_legend_disappears_on_a_one_to_two_flip_is_refused() {
+        // 1 -> 2 colour plots: colouring the plain plot hides the sole no-`for:`
+        // legend. Again the focused (plain) plot is not colour-encoded pre-edit.
+        let spec = parse(NO_FOR_LEGEND_ONE_COLOUR);
+        assert_eq!(
+            classify_edit(
+                &spec,
+                &SpecEdit::SetChannel {
+                    plot: cp("root/vconcat[2]"),
+                    mark_ordinal: 0,
+                    channel: "fill".to_string(),
+                    column: "c".to_string(),
+                }
+            ),
+            Err(RefuseReason::WouldChangeLegend),
+            "a 1->2 colour-plot flip hides the sole no-`for:` legend — refuse"
+        );
+        // And a rebind on the EXISTING sole colour plot (count stays 1) changes the
+        // domain the placed legend renders — refuse (delta finding 2's stays-placed
+        // clause).
+        assert_eq!(
+            classify_edit(
+                &spec,
+                &SpecEdit::SetChannel {
+                    plot: cp("root/vconcat[1]"),
+                    mark_ordinal: 0,
+                    channel: "fill".to_string(),
+                    column: "b".to_string(),
+                }
+            ),
+            Err(RefuseReason::WouldChangeLegend),
+            "rebinding the sole colour plot's fill changes the placed legend's domain — refuse"
+        );
+    }
+
+    #[test]
+    fn clg_ac11_finding2_no_for_legend_stable_count_is_clean() {
+        // A no-`for:` legend with TWO colour plots is UNPLACED (count != 1). A
+        // colour rebind on one of them keeps count at 2 -> the legend stays absent
+        // -> no `legends` change -> the edit is NOT refused for the legend reason
+        // (guards against the conservative-fallback over-refusal).
+        let two_colour = "\
+data:
+  t: SELECT 1 AS a, 2 AS b, 'x' AS c
+vconcat:
+  - legend: color
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: a
+        y: b
+        fill: c
+    name: one
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: a
+        y: b
+        fill: c
+    name: two
+";
+        let spec = parse(two_colour);
+        assert_ne!(
+            classify_edit(
+                &spec,
+                &SpecEdit::SetChannel {
+                    plot: cp("root/vconcat[1]"),
+                    mark_ordinal: 0,
+                    channel: "fill".to_string(),
+                    column: "b".to_string(),
+                }
+            ),
+            Err(RefuseReason::WouldChangeLegend),
+            "a rebind that leaves the unplaced (count 2) legend absent is not a legend change"
+        );
     }
 
     // -------- clg-ac07a: parse -> apply -> serialise -> re-parse round-trip ----

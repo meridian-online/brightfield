@@ -704,11 +704,14 @@ impl CrossfilterCoordinator {
     }
 
     /// Validate the coordinator's flat mark space agrees with the engine session's
-    /// rebuilt `mark_index_map` (card 0023 finding 5): the engine map is the
-    /// single source of truth for flat indices, and both the coordinator and the
-    /// engine derive them from the SAME depth-first `collect_plot_nodes` walk, so
-    /// a cardinality mismatch is a coordinator bug that would route a later gesture
-    /// to the wrong mark. Logged loudly rather than silently corrupting.
+    /// rebuilt `mark_index_map` (card 0023 finding 5). The engine builds its map
+    /// from ITS OWN depth-first walk (`build_mark_index_map` → `collect_marks_with_path`),
+    /// while the coordinator rebuilds from `collect_plot_nodes`; the two walks
+    /// agree on mark ORDER only for the non-nested plot / hconcat / vconcat
+    /// layouts the live coordinator drives. So this is a CARDINALITY-ONLY backstop:
+    /// it catches a count disagreement (a coordinator bug that would route a later
+    /// gesture past the end of the mark space), not a per-index reordering. Logged
+    /// loudly rather than silently corrupting.
     fn assert_engine_mark_agreement(&self) {
         let engine = self.session.mark_count();
         if engine != self.marks.len() {
@@ -1708,9 +1711,27 @@ plot:
         let line = build_fresh_mark_input(&mk(K::Line), SequentialScheme::default(), Some(&style), Projection::Albers);
         assert!(line.highlight_style.is_none(), "a non-honouring mark never carries a highlight style");
 
-        // A geo mark threads the projection into its configured renderer.
+        // A geo mark threads the projection into its configured renderer — and
+        // it must be the ALBERS we passed, not the equirectangular default: the
+        // finding-1/2/4 regression was the rebuild dropping the projection, which
+        // `unwrap_or_default()` silently masks as equirectangular. Read it back
+        // through the renderer's `projection()` seam so the guard has teeth.
         let geo = build_fresh_mark_input(&mk(K::Geo), SequentialScheme::default(), None, Projection::Albers);
-        assert!(geo.renderer_override.is_some(), "a geo mark builds a projected renderer (projection threaded)");
+        assert_eq!(
+            geo.renderer_override.as_ref().and_then(|r| r.projection()),
+            Some(Projection::Albers),
+            "a geo mark carries the ALBERS projection through the rebuilt renderer (distinct from the default)"
+        );
+
+        // And the equirectangular default threads through as itself (a sanity
+        // pin that `projection()` is not hardwired to Albers).
+        let geo_default =
+            build_fresh_mark_input(&mk(K::Geo), SequentialScheme::default(), None, Projection::Equirectangular);
+        assert_eq!(
+            geo_default.renderer_override.as_ref().and_then(|r| r.projection()),
+            Some(Projection::Equirectangular),
+            "the equirectangular default threads through unchanged"
+        );
     }
 
     /// Finding 1/2/4 (the defect surface): a count-changing rebuild (the
@@ -1775,6 +1796,57 @@ vconcat:
             assert!(
                 new_marks[mi].highlight_style.is_some(),
                 "the affected plot's rebuilt honouring dots keep the highlight style (survives the rebuild)"
+            );
+        }
+    }
+
+    /// Finding 1/2/4 (the geo half, with teeth): a count-changing rebuild of a
+    /// geo plot must re-derive the ALBERS projection from the swapped spec — the
+    /// pre-fix rebuild passed `projection: None`, so the rebuilt renderer fell
+    /// back through `unwrap_or_default()` to equirectangular, silently reverting a
+    /// US-Albers basemap to plate carrée on the card's OWN `d`/undo verb. The
+    /// renderer's `projection()` seam distinguishes Albers from that default, so
+    /// this assertion (unlike a bare `is_some()`) actually pins the fix.
+    #[test]
+    fn findings124_geo_projection_survives_count_changing_rebuild() {
+        use brightfield_spec::{parse_spec, Format};
+        // A geo plot carrying `projectionType: albers` and TWO geo marks (so a
+        // RemoveMark leaves one). The rebuild reads only the mark kind + the
+        // plot's resolved projection — no data is executed — so a trivial source
+        // suffices.
+        let yaml = "\
+data:
+  t: SELECT 1 AS a
+plot:
+  - mark: geo
+    data: { from: t }
+  - mark: geo
+    data: { from: t }
+projectionType: albers
+";
+        let spec = parse_spec(yaml, Format::Yaml).expect("parse").spec;
+        let nodes = collect_plot_nodes(&spec);
+        let (path, _) = nodes.first().expect("one plot");
+        let path = path.clone();
+        let plot_meta = vec![(path.clone(), vec![0usize, 1usize], SequentialScheme::default())];
+        let blank = |_i: usize| MarkInput {
+            batch: None,
+            channels: ChannelMap::new(),
+            kind: MarkKind::Geo,
+            renderer_override: None,
+            bandwidth: None,
+            thresholds: None,
+            bin_width: None,
+            highlight_style: None,
+        };
+        let old_marks = vec![blank(0), blank(1)];
+        let (new_marks, new_indices, _) =
+            rebuild_flat_index_space(&plot_meta, old_marks, &spec, &[], &path);
+        for &mi in &new_indices[&path] {
+            assert_eq!(
+                new_marks[mi].renderer_override.as_ref().and_then(|r| r.projection()),
+                Some(Projection::Albers),
+                "the affected geo plot's rebuilt marks keep the ALBERS projection (survives the rebuild, not reverted to equirectangular)"
             );
         }
     }
