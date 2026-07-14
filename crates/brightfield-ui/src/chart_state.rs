@@ -292,7 +292,15 @@ impl ChartState {
             // the grab into a persisted Selected.
             InteractionState::Dragging { .. } => {
                 if !button_held {
-                    self.interaction = self.interaction.clone().on_grab_release();
+                    // A missed mouse-up during a grab (focus steal / release
+                    // outside the window): this path holds NO coordinator, so it
+                    // can't re-dispatch the moved range. Discard the in-flight
+                    // move — revert to the anchor (pre-drag) rect — so the overlay
+                    // and the live filter stay consistent at the already-
+                    // dispatched pre-drag range, mirroring the Brushing arm's
+                    // discard-to-Idle below. (The NORMAL release goes through the
+                    // element's mouse-up listener → redispatch → pointer_up.)
+                    self.interaction = self.interaction.clone().on_grab_cancel();
                     return true;
                 }
                 self.interaction = self.interaction.clone().on_grab_move(local, self.layout.frame_area());
@@ -395,10 +403,14 @@ impl ChartState {
         true
     }
 
-    /// Drop a persistent `Selected` rectangle (Esc / cross-filter clear). Returns
-    /// `true` if a committed selection overlay was cleared.
+    /// Drop a persistent selection overlay — a committed `Selected` OR an
+    /// in-flight `Dragging` (Esc / cross-filter clear). Returns `true` if an
+    /// overlay was cleared.
     pub fn clear_persistent_selection(&mut self) -> bool {
-        if matches!(self.interaction, InteractionState::Selected { .. }) {
+        // Drop an in-flight `Dragging` overlay too (card 0022): a clear arriving
+        // mid-drag retracts the filter, so leaving the grey rect drawn would be a
+        // transient visual/data mismatch.
+        if self.interaction.has_persistent_selection() {
             self.interaction = InteractionState::Idle;
             true
         } else {

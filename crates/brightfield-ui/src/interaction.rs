@@ -390,6 +390,39 @@ impl InteractionState {
         }
     }
 
+    /// Cancel an in-flight grab (card 0022): a MISSED mouse-up during a
+    /// move/resize (a focus steal, or a release outside the window — the normal
+    /// release goes through the element's mouse-up listener) reaches only
+    /// `pointer_move`, which holds NO coordinator handle and so cannot
+    /// re-dispatch the moved range. Collapsing to the moved `Selected` would draw
+    /// the grey overlay at the new range while the live filter stayed at the
+    /// pre-move range (the drb-ac07 silent-no-op class). Instead revert to the
+    /// `anchor` (pre-drag) rect — discarding the undispatched move so the overlay
+    /// and the filter stay consistent at the already-dispatched pre-drag range,
+    /// mirroring the `Brushing` arm's discard-to-`Idle`. Non-`Dragging` passes
+    /// through.
+    #[must_use]
+    pub fn on_grab_cancel(self) -> Self {
+        if let Self::Dragging { anchor, .. } = self {
+            Self::Selected {
+                start: Point::new(anchor.x0, anchor.y0),
+                current: Point::new(anchor.x1, anchor.y1),
+            }
+        } else {
+            self
+        }
+    }
+
+    /// Whether this state carries a persisted (or in-flight) selection overlay an
+    /// Esc / cross-filter clear should drop (card 0022): a committed `Selected`
+    /// OR an in-flight `Dragging` — so a clear arriving mid-drag doesn't retract
+    /// the filter while leaving the grey overlay drawn (a transient
+    /// visual/data mismatch). `Idle`/`Brushing`/`Hovering` carry no such overlay.
+    #[must_use]
+    pub fn has_persistent_selection(&self) -> bool {
+        matches!(self, Self::Selected { .. } | Self::Dragging { .. })
+    }
+
     /// Render the interaction overlay into the scene.
     ///
     /// This is pure rendering — no DuckDB query, no I/O. The overlay
@@ -1338,5 +1371,78 @@ mod tests {
         // The end-state feeds the re-dispatch: the in-flight Dragging read at
         // release re-dispatches the moved corners (Some), a zero-delta would not.
         assert!(redispatch_brushing_from(&moved).is_some(), "a moved grab re-dispatches on release");
+    }
+
+    /// Review finding 1: a MISSED mouse-up during a grab (the `!button_held`
+    /// pointer_move arm, which holds no coordinator and can't re-dispatch) must
+    /// DISCARD the in-flight move — reverting to the ANCHOR (pre-drag) rect — so
+    /// the overlay and the live filter stay consistent, NOT collapse to the moved
+    /// range (a silent-no-op overlay). `on_grab_cancel` is the pure transition the
+    /// shim calls.
+    #[test]
+    fn drb_grab_cancel_reverts_to_anchor_on_missed_release() {
+        let anchor = Rect::new(100.0, 100.0, 200.0, 150.0);
+        // A grab moved well away from the anchor.
+        let dragging = InteractionState::Dragging {
+            region: BrushRegion::Interior,
+            origin: Point::new(150.0, 125.0),
+            start: Point::new(230.0, 220.0),
+            current: Point::new(330.0, 270.0),
+            anchor,
+        };
+        // Sanity: the live (moved) rect differs from the anchor.
+        assert_ne!(dragging.selected_rect().unwrap(), anchor);
+
+        // A missed release cancels to a persisted Selected at the ANCHOR corners
+        // (the pre-drag range), NOT the moved corners.
+        let cancelled = dragging.clone().on_grab_cancel();
+        assert!(matches!(cancelled, InteractionState::Selected { .. }));
+        assert_eq!(
+            cancelled.selected_rect().unwrap(),
+            anchor,
+            "a missed release reverts to the anchor, not the undispatched moved range"
+        );
+        // Contrast: the NORMAL release (on_grab_release) keeps the moved range —
+        // because the mouse-up listener re-dispatches it first.
+        let released = dragging.on_grab_release();
+        assert_eq!(released.selected_rect().unwrap(), Rect::new(230.0, 220.0, 330.0, 270.0));
+        // Non-Dragging states pass through unchanged.
+        assert!(matches!(
+            InteractionState::Idle.on_grab_cancel(),
+            InteractionState::Idle
+        ));
+    }
+
+    /// Review finding 2: an Esc / cross-filter clear arriving MID-DRAG must drop
+    /// the in-flight `Dragging` overlay too (else the filter retracts while the
+    /// grey rect stays drawn). `has_persistent_selection` — the predicate
+    /// `clear_persistent_selection` delegates to — is true for Selected AND
+    /// Dragging, false for the overlay-less states.
+    #[test]
+    fn drb_has_persistent_selection_covers_dragging() {
+        let sel = InteractionState::Selected {
+            start: Point::new(100.0, 100.0),
+            current: Point::new(200.0, 150.0),
+        };
+        let dragging = InteractionState::Dragging {
+            region: BrushRegion::Interior,
+            origin: Point::new(150.0, 125.0),
+            start: Point::new(120.0, 110.0),
+            current: Point::new(220.0, 160.0),
+            anchor: Rect::new(100.0, 100.0, 200.0, 150.0),
+        };
+        assert!(sel.has_persistent_selection(), "a committed Selected clears");
+        assert!(dragging.has_persistent_selection(), "an in-flight Dragging also clears");
+        assert!(!InteractionState::Idle.has_persistent_selection());
+        assert!(!InteractionState::Brushing {
+            start: Point::new(1.0, 1.0),
+            current: Point::new(2.0, 2.0),
+        }
+        .has_persistent_selection());
+        assert!(!InteractionState::Hovering {
+            point: Point::new(1.0, 1.0),
+            nearest: None,
+        }
+        .has_persistent_selection());
     }
 }
