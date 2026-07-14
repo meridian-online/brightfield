@@ -138,6 +138,25 @@ impl ChartLayout {
         )
     }
 
+    /// The frame rectangle — margins ONLY, with NO range insets (card 0022).
+    ///
+    /// `plot_area` pulls inward by the axis-inset band (card 0008 #55) so an edge
+    /// mark renders whole inside the frame clip; a brush clamped to `plot_area`
+    /// therefore can't reach into that band to enclose a boundary dot whose 4px
+    /// disc overflows it. Clamping the move/resize/drag to `frame_area` instead
+    /// recovers the full band symmetrically, so the brush rectangle can enclose a
+    /// boundary dot. GLOBAL: every interval brush inherits this clamp target.
+    /// The enclosure guarantee holds precisely when the per-side inset >=
+    /// `DOT_RADIUS`; `plot_area` and the axis-inset range pull are UNCHANGED.
+    pub fn frame_area(&self) -> Rect {
+        Rect::new(
+            self.margin_left,
+            self.margin_top,
+            self.width - self.margin_right,
+            self.height - self.margin_bottom,
+        )
+    }
+
     /// Plot area width in pixels.
     pub fn plot_width(&self) -> f64 {
         self.width - self.margin_left - self.margin_right
@@ -335,6 +354,45 @@ mod tests {
         assert!((rx1 - area.x1).abs() < f64::EPSILON);
         assert!((ry0 - area.y1).abs() < f64::EPSILON);
         assert!((ry1 - area.y0).abs() < f64::EPSILON);
+    }
+
+    /// drb-ac06: `frame_area` is `plot_area` grown by the per-side insets exactly
+    /// (margins only, no insets), so a boundary dot's 4px disc — overflowing UP
+    /// into the 5px inset band — sits INSIDE frame_area and is enclosable when the
+    /// per-side inset >= DOT_RADIUS. A zero-inset plot collapses frame_area onto
+    /// plot_area (the conceded degenerate case, where the disc does not fit).
+    #[test]
+    fn drb_ac06_frame_area_recovers_the_inset_band() {
+        const DOT_RADIUS: f64 = 4.0; // mark.rs
+        let insets = Insets {
+            left: 5.0,
+            right: 7.0,
+            top: 5.0,
+            bottom: 9.0,
+        };
+        let layout = ChartLayout::with_insets(640.0, 480.0, insets);
+        let plot = layout.plot_area();
+        let frame = layout.frame_area();
+
+        // frame_area == plot_area grown by the per-side insets exactly.
+        assert!((frame.x0 - (plot.x0 - insets.left)).abs() < f64::EPSILON);
+        assert!((frame.y0 - (plot.y0 - insets.top)).abs() < f64::EPSILON);
+        assert!((frame.x1 - (plot.x1 + insets.right)).abs() < f64::EPSILON);
+        assert!((frame.y1 - (plot.y1 + insets.bottom)).abs() < f64::EPSILON);
+        // Margins only: frame_area is exactly the margin box.
+        assert_eq!(frame, Rect::new(40.0, 20.0, 620.0, 450.0));
+
+        // With the 5px top inset (>= DOT_RADIUS), a boundary dot centred at the
+        // inset range end (plot.y0) has its whole disc inside frame_area.
+        assert!(
+            plot.y0 - DOT_RADIUS >= frame.y0,
+            "the boundary disc fits inside frame_area when inset >= DOT_RADIUS"
+        );
+
+        // Zero-inset plot → frame_area == plot_area (and the disc does NOT fit).
+        let zero = ChartLayout::with_insets(640.0, 480.0, Insets::default());
+        assert_eq!(zero.frame_area(), zero.plot_area());
+        assert!(zero.plot_area().y0 - DOT_RADIUS < zero.frame_area().y0);
     }
 
     #[test]

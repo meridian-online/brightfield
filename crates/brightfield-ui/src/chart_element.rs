@@ -15,19 +15,21 @@
 //! - `prepaint()` — registers a hitbox covering the element bounds
 //! - `paint()` — composite + rasterise + paint + wire mouse events
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gpui::{
-    fill, point, px, size, App, BorderStyle, Bounds, Corners, Element, ElementId, Entity,
-    GlobalElementId, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Rgba, Size, Style, Window,
+    fill, point, px, size, App, BorderStyle, Bounds, Corners, CursorStyle, Element, ElementId,
+    Entity, GlobalElementId, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Rgba, Size, Style, Window,
 };
 use kurbo::Point;
 
 use crate::chart_state::ChartState;
 use crate::crossfilter::CrossfilterCoordinator;
-use crate::interaction::InteractionState;
+use crate::interaction::{
+    redispatch_brushing_from, BrushCorner, BrushEdge, BrushRegion, InteractionState,
+};
 
 /// GPUI element that paints a chart from its `ChartState` and routes mouse input.
 ///
@@ -47,23 +49,31 @@ pub struct ChartElement {
     /// through it to re-query and re-render subscriber plots; `None` means the
     /// brush is purely visual (no linked views).
     coordinator: Option<Rc<RefCell<CrossfilterCoordinator>>>,
+    /// The pointer's grab region over the persisted `Selected` rect (card 0022),
+    /// shared with the persistent `ChartView` so it survives the per-frame
+    /// element recreation (mirrors the legend's `hovered_index`). Set by the
+    /// mouse-move listener, read each paint to pick the position-dependent cursor.
+    region: Rc<Cell<BrushRegion>>,
 }
 
 impl ChartElement {
     /// Create a chart element bound to the given state entity. `index` gives the
     /// element a stable id distinguishing it from sibling plots in a dashboard,
     /// and is the plot index into `coordinator`. `coordinator` is `None` for a
-    /// dashboard that doesn't cross-filter.
+    /// dashboard that doesn't cross-filter. `region` is the persistent cursor-
+    /// region cell (card 0022) the hosting `ChartView` owns per plot.
     pub fn new(
         state: Entity<ChartState>,
         index: usize,
         coordinator: Option<Rc<RefCell<CrossfilterCoordinator>>>,
+        region: Rc<Cell<BrushRegion>>,
     ) -> Self {
         Self {
             state,
             index,
             id: ElementId::from(("brightfield-plot", index)),
             coordinator,
+            region,
         }
     }
 }
@@ -162,15 +172,25 @@ impl Element for ChartElement {
             }
         });
 
-        // Mouse move — extend the brush while the button is held, or update hover.
+        // Mouse move — extend the brush / move-resize the grabbed selection while
+        // the button is held, or update hover; and re-classify the pointer over
+        // any persisted Selected rect so the paint-phase cursor tracks the region
+        // under it (card 0022). Refresh on EITHER an interaction change or a
+        // cursor-region change (mirrors the legend's hovered_index refresh-on-change).
         window.on_mouse_event({
             let state = self.state.clone();
+            let region = self.region.clone();
             move |event: &MouseMoveEvent, phase, window, cx| {
                 if phase.bubble() {
                     let pos = Point::new(event.position.x.to_f64(), event.position.y.to_f64());
                     let held = event.pressed_button == Some(MouseButton::Left);
                     let changed = state.update(cx, |s, _| s.pointer_move(pos, element_origin, held));
-                    if changed {
+                    let next_region = state.read(cx).cursor_region(pos, element_origin);
+                    let region_changed = region.get() != next_region;
+                    if region_changed {
+                        region.set(next_region);
+                    }
+                    if changed || region_changed {
                         window.refresh();
                     }
                 }
@@ -188,12 +208,22 @@ impl Element for ChartElement {
             move |event: &MouseUpEvent, phase, window, cx| {
                 if phase.bubble() && event.button == MouseButton::Left {
                     // `committed` is true only for the plot that was actually
-                    // brushed, so an untouched sibling's listener doesn't trigger
-                    // a redundant window refresh.
+                    // brushed / grabbed, so an untouched sibling's listener doesn't
+                    // trigger a redundant window refresh.
                     let committed = match &coordinator {
                         Some(coord) => {
                             let interaction = state.read(cx).interaction().clone();
-                            coord.borrow_mut().commit_brush(plot_index, &interaction, cx)
+                            // A move/resize ends in `Dragging`, which commit_brush
+                            // (Brushing-only) ignores; synthesise a Brushing from
+                            // the NEW corners so the moved range re-dispatches (the
+                            // card-0021 silent-no-op defence — the SOLE synthesis
+                            // site, driven here). A fresh Brushing passes straight
+                            // through; a zero-delta grab yields the unchanged state
+                            // → commit_brush no-ops (no redundant re-query); an
+                            // untouched sibling's Selected likewise yields None.
+                            let to_commit =
+                                redispatch_brushing_from(&interaction).unwrap_or(interaction);
+                            coord.borrow_mut().commit_brush(plot_index, &to_commit, cx)
                         }
                         None => false,
                     };
@@ -219,6 +249,40 @@ impl Element for ChartElement {
 
         let _ = window.paint_image(bounds, Corners::default(), base, 0, false);
         paint_overlay(window, bounds, &interaction);
+
+        // Position-dependent cursor over the persisted selection (card 0022):
+        // pick the style from the tracked region (set by the mouse-move listener)
+        // and bind it to the element's whole hitbox — the position dependence
+        // comes from re-picking each paint, not from multiple hitboxes. Reuses
+        // the card-0020 set_cursor_style seam; NOT PointingHand (the legend cue).
+        // No cursor is set over `Outside` (default) or when nothing is selected.
+        let dragging = matches!(interaction, InteractionState::Dragging { .. });
+        if let Some(style) = region_cursor(self.region.get(), dragging) {
+            window.set_cursor_style(style, &*prepaint);
+        }
+    }
+}
+
+/// Map a grab region to its cursor style (card 0022, drb-ac08): an open hand
+/// over the interior (closed while dragging), a horizontal/vertical resize on an
+/// edge, a diagonal resize on a corner. `Outside` sets no cursor (the plot
+/// default). NOT PointingHand — that is the legend's clickable cue (card 0020).
+fn region_cursor(region: BrushRegion, dragging: bool) -> Option<CursorStyle> {
+    match region {
+        BrushRegion::Interior => Some(if dragging {
+            CursorStyle::ClosedHand
+        } else {
+            CursorStyle::OpenHand
+        }),
+        BrushRegion::Edge(BrushEdge::Left | BrushEdge::Right) => Some(CursorStyle::ResizeLeftRight),
+        BrushRegion::Edge(BrushEdge::Top | BrushEdge::Bottom) => Some(CursorStyle::ResizeUpDown),
+        BrushRegion::Corner(BrushCorner::TopLeft | BrushCorner::BottomRight) => {
+            Some(CursorStyle::ResizeUpLeftDownRight)
+        }
+        BrushRegion::Corner(BrushCorner::TopRight | BrushCorner::BottomLeft) => {
+            Some(CursorStyle::ResizeUpRightDownLeft)
+        }
+        BrushRegion::Outside => None,
     }
 }
 
@@ -255,9 +319,12 @@ fn paint_overlay(window: &mut Window, bounds: Bounds<Pixels>, interaction: &Inte
             q.border_style = BorderStyle::Solid;
             window.paint_quad(q);
         }
-        InteractionState::Selected { start, current } => {
-            // A committed selection persists after release — grey, so it reads as
-            // settled vs the active blue drag (Mosaic / Vega-Lite fidelity).
+        // A committed selection and an in-flight move/resize paint identically —
+        // grey, so it reads as settled vs the active blue drag (Mosaic /
+        // Vega-Lite fidelity). Both are GPUI quads over the cached raster, never
+        // composited into the vello Scene, so example PNGs stay byte-identical.
+        InteractionState::Selected { start, current }
+        | InteractionState::Dragging { start, current, .. } => {
             let x0 = start.x.min(current.x);
             let y0 = start.y.min(current.y);
             let w = (start.x.max(current.x) - x0) as f32;
@@ -285,5 +352,57 @@ fn paint_overlay(window: &mut Window, bounds: Bounds<Pixels>, interaction: &Inte
             q.corner_radii = (HOVER_RADIUS as f32).into(); // round the quad into a circle
             window.paint_quad(q);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::region_cursor;
+    use crate::interaction::{BrushCorner, BrushEdge, BrushRegion};
+    use gpui::CursorStyle;
+
+    /// drb-ac08 (mapping): the region→cursor mapping is a pure fn — open hand over
+    /// the interior (closed while dragging), horizontal/vertical resize on edges,
+    /// diagonal resize on corners, no cursor over Outside. (The live cursor glyph
+    /// and its change-on-motion are Hugh's in-app eyeball.)
+    #[test]
+    fn drb_ac08_region_cursor_mapping() {
+        assert_eq!(region_cursor(BrushRegion::Interior, false), Some(CursorStyle::OpenHand));
+        assert_eq!(region_cursor(BrushRegion::Interior, true), Some(CursorStyle::ClosedHand));
+        assert_eq!(
+            region_cursor(BrushRegion::Edge(BrushEdge::Left), false),
+            Some(CursorStyle::ResizeLeftRight)
+        );
+        assert_eq!(
+            region_cursor(BrushRegion::Edge(BrushEdge::Right), false),
+            Some(CursorStyle::ResizeLeftRight)
+        );
+        assert_eq!(
+            region_cursor(BrushRegion::Edge(BrushEdge::Top), false),
+            Some(CursorStyle::ResizeUpDown)
+        );
+        assert_eq!(
+            region_cursor(BrushRegion::Edge(BrushEdge::Bottom), false),
+            Some(CursorStyle::ResizeUpDown)
+        );
+        assert_eq!(
+            region_cursor(BrushRegion::Corner(BrushCorner::TopLeft), false),
+            Some(CursorStyle::ResizeUpLeftDownRight)
+        );
+        assert_eq!(
+            region_cursor(BrushRegion::Corner(BrushCorner::BottomRight), false),
+            Some(CursorStyle::ResizeUpLeftDownRight)
+        );
+        assert_eq!(
+            region_cursor(BrushRegion::Corner(BrushCorner::TopRight), false),
+            Some(CursorStyle::ResizeUpRightDownLeft)
+        );
+        assert_eq!(
+            region_cursor(BrushRegion::Corner(BrushCorner::BottomLeft), false),
+            Some(CursorStyle::ResizeUpRightDownLeft)
+        );
+        // Outside → no cursor (the plot default), whether or not "dragging".
+        assert_eq!(region_cursor(BrushRegion::Outside, false), None);
+        assert_eq!(region_cursor(BrushRegion::Outside, true), None);
     }
 }

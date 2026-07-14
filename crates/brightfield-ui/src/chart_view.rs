@@ -7,7 +7,7 @@
 //! to a GPUI window. ChartView::render() returns a ChartElement that
 //! implements the Element trait.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gpui::{div, px, rgb, Context, Entity, IntoElement, ParentElement, Render, Styled, Window};
@@ -30,7 +30,7 @@ use crate::brush::{
 use crate::chart_element::ChartElement;
 use crate::chart_state::ChartState;
 use crate::crossfilter::CrossfilterCoordinator;
-use crate::interaction::InteractionState;
+use crate::interaction::{BrushRegion, InteractionState};
 use crate::legend_element::{LegendElement, PlacedLegend};
 use crate::slider::SliderBinding;
 use crate::slider_element::{SliderElement, SliderWidget};
@@ -91,6 +91,11 @@ pub struct ChartView {
     height: f64,
     /// The positioned plots.
     charts: Vec<PlacedChart>,
+    /// Per-plot cursor-region cell (card 0022), one per chart, index-aligned with
+    /// `charts`. Persists across the per-frame `ChartElement` recreation (the
+    /// legend `hovered_index` pattern) so the paint-phase cursor can track the
+    /// pointer's grab region over a persisted `Selected` rect.
+    chart_regions: Vec<Rc<Cell<BrushRegion>>>,
     /// The positioned slider widgets (card 0005).
     sliders: Vec<PlacedSlider>,
     /// The positioned standalone legends (card 0016). Display-only unless a
@@ -116,10 +121,15 @@ impl ChartView {
         sliders: Vec<PlacedSlider>,
         legends: Vec<PlacedLegend>,
     ) -> Self {
+        let chart_regions = charts
+            .iter()
+            .map(|_| Rc::new(Cell::new(BrushRegion::Outside)))
+            .collect();
         Self {
             width,
             height,
             charts,
+            chart_regions,
             sliders,
             legends,
             focus_ring: None,
@@ -168,7 +178,12 @@ impl Render for ChartView {
                     .top(px(c.y as f32))
                     .w(px(c.width as f32))
                     .h(px(c.height as f32))
-                    .child(ChartElement::new(c.state.clone(), i, c.coordinator.clone()))
+                    .child(ChartElement::new(
+                        c.state.clone(),
+                        i,
+                        c.coordinator.clone(),
+                        self.chart_regions[i].clone(),
+                    ))
             }))
             .children(self.sliders.iter().enumerate().map(|(i, s)| {
                 div()

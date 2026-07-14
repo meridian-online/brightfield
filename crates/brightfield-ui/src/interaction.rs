@@ -44,6 +44,192 @@ pub enum InteractionState {
         /// Opposite corner, in chart coordinates.
         current: Point,
     },
+    /// A persisted `Selected` rectangle under active direct manipulation (card
+    /// 0022): the pointer grabbed `region` at `origin` and `{start, current}`
+    /// is the LIVE moved/resized rectangle. `anchor` is the rect at grab time,
+    /// so the release can tell a real move/resize from a zero-delta click (a
+    /// click on the rect) and re-dispatch only the former. Renders exactly like
+    /// `Selected` (the moved rect); the grab metadata never reaches the scene.
+    Dragging {
+        /// Which region of the rect was grabbed (interior / edge / corner).
+        region: BrushRegion,
+        /// Pointer position at grab time, in chart coordinates.
+        origin: Point,
+        /// Live moved/resized corner (min/max normalised with `current`).
+        start: Point,
+        /// Live moved/resized opposite corner.
+        current: Point,
+        /// The rectangle at grab time — the reference the release compares the
+        /// moved rect against to detect a zero-delta (inert) grab.
+        anchor: Rect,
+    },
+}
+
+/// The classification of a pointer position relative to a persisted `Selected`
+/// brush rectangle (card 0022) — the single source of truth for BOTH the
+/// paint-phase cursor style and the `pointer_down` grab decision + the
+/// subsequent move/resize transform. Computed by the gpui-free classifier
+/// [`brush_region`] with a handle tolerance band; `Corner` takes precedence
+/// over `Edge`, `Edge` over `Interior`, and anything beyond `tol` outside the
+/// rect is `Outside`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrushRegion {
+    /// Beyond the handle band on every side — not over the rect.
+    Outside,
+    /// Over the rect's interior — a grab translates the whole rect.
+    Interior,
+    /// Over one edge's handle band — a grab resizes that side.
+    Edge(BrushEdge),
+    /// Over one corner's handle band — a grab resizes two sides.
+    Corner(BrushCorner),
+}
+
+/// One resizable edge of a brush rectangle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrushEdge {
+    /// The `x0` (left) edge.
+    Left,
+    /// The `x1` (right) edge.
+    Right,
+    /// The `y0` (top) edge.
+    Top,
+    /// The `y1` (bottom) edge.
+    Bottom,
+}
+
+/// One resizable corner of a brush rectangle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrushCorner {
+    /// The `(x0, y0)` corner.
+    TopLeft,
+    /// The `(x1, y0)` corner.
+    TopRight,
+    /// The `(x0, y1)` corner.
+    BottomLeft,
+    /// The `(x1, y1)` corner.
+    BottomRight,
+}
+
+/// The action a `pointer_down` resolves to over a plot (card 0022), decided by
+/// the gpui-free [`InteractionState::resolve_press`] resolver: grab a hit on
+/// the persisted `Selected` rect (resolved BEFORE the plot-contains check, so a
+/// handle in the inset-band overhang above `plot_area.y0` still grabs), else
+/// start a fresh brush inside the plot, else ignore.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerAction {
+    /// The press hit the persisted `Selected` rect — enter a move/resize grab of
+    /// the classified region, PRESERVING the rect (never wiping it).
+    Grab(BrushRegion),
+    /// The press is inside the plot but Outside the rect — start (or replace
+    /// with) a fresh brush; over a persisted rect this is the click-retract path.
+    StartBrush,
+    /// The press is Outside the rect AND outside the plot — do nothing.
+    Ignore,
+}
+
+/// Handle tolerance band (px) for [`brush_region`]: how far from an edge/corner
+/// a pointer still grabs that handle (interior beyond the band = translate). The
+/// `/orb:design` ~4-6px call; 6px gives a comfortable grab target without
+/// swallowing a thin rect's interior.
+pub const HANDLE_TOL: f64 = 6.0;
+
+/// Normalise two corners into a `Rect` with `x0 <= x1`, `y0 <= y1`.
+fn norm_rect(a: Point, b: Point) -> Rect {
+    Rect::new(a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y))
+}
+
+/// Classify a local-space pointer over a `Selected` rect into
+/// interior / edge / corner / outside using a handle tolerance band `tol`
+/// (card 0022, drb-ac01). Renderer-free and gpui-free. `Corner` precedence over
+/// `Edge` over `Interior`; a point farther than `tol` outside any side is
+/// `Outside`. The region hit is resolved BEFORE any plot-containment check so a
+/// handle in the rect's inset-band overhang still grabs.
+#[must_use]
+pub fn brush_region(local: Point, rect: Rect, tol: f64) -> BrushRegion {
+    let rect = norm_rect(
+        Point::new(rect.x0, rect.y0),
+        Point::new(rect.x1, rect.y1),
+    );
+    // Beyond the tolerance-expanded rect on any side → Outside.
+    if local.x < rect.x0 - tol
+        || local.x > rect.x1 + tol
+        || local.y < rect.y0 - tol
+        || local.y > rect.y1 + tol
+    {
+        return BrushRegion::Outside;
+    }
+    let near_left = (local.x - rect.x0).abs() <= tol;
+    let near_right = (local.x - rect.x1).abs() <= tol;
+    let near_top = (local.y - rect.y0).abs() <= tol;
+    let near_bottom = (local.y - rect.y1).abs() <= tol;
+    // Corner over Edge over Interior. (For a rect thinner than the band a mid
+    // point can be near two opposite sides; it resolves to a corner, which is a
+    // harmless degenerate case.)
+    match (near_left, near_right, near_top, near_bottom) {
+        (true, _, true, _) => BrushRegion::Corner(BrushCorner::TopLeft),
+        (_, true, true, _) => BrushRegion::Corner(BrushCorner::TopRight),
+        (true, _, _, true) => BrushRegion::Corner(BrushCorner::BottomLeft),
+        (_, true, _, true) => BrushRegion::Corner(BrushCorner::BottomRight),
+        (true, _, _, _) => BrushRegion::Edge(BrushEdge::Left),
+        (_, true, _, _) => BrushRegion::Edge(BrushEdge::Right),
+        (_, _, true, _) => BrushRegion::Edge(BrushEdge::Top),
+        (_, _, _, true) => BrushRegion::Edge(BrushEdge::Bottom),
+        _ => BrushRegion::Interior,
+    }
+}
+
+/// Translate a whole rect by `(dx, dy)`, CLAMPING THE TRANSLATION (not each
+/// corner) so the rect keeps its SIZE until it hits `frame`, then slides along
+/// it (card 0022, drb-ac03). Clamping each corner independently would shrink the
+/// rect at the frame edge; clamping the translation preserves it.
+#[must_use]
+pub fn translate_brush(rect: Rect, dx: f64, dy: f64, frame: Rect) -> Rect {
+    let rect = norm_rect(Point::new(rect.x0, rect.y0), Point::new(rect.x1, rect.y1));
+    // Translation range keeping the rect inside the frame. When the rect is
+    // wider/taller than the frame the range inverts — pin that axis (no slide).
+    let clamp = |d: f64, lo: f64, hi: f64| if lo <= hi { d.clamp(lo, hi) } else { 0.0 };
+    let cdx = clamp(dx, frame.x0 - rect.x0, frame.x1 - rect.x1);
+    let cdy = clamp(dy, frame.y0 - rect.y0, frame.y1 - rect.y1);
+    Rect::new(rect.x0 + cdx, rect.y0 + cdy, rect.x1 + cdx, rect.y1 + cdy)
+}
+
+/// Resize a rect by moving the grabbed side(s) of an `Edge`/`Corner` region to
+/// `pointer` (clamped to `frame`); the opposite side stays pinned and the result
+/// is re-normalised so the rect NEVER inverts when the pointer crosses past the
+/// pinned side (card 0022, drb-ac04). An `Interior`/`Outside` region is not a
+/// resize and returns the rect unchanged.
+#[must_use]
+pub fn resize_brush(rect: Rect, region: BrushRegion, pointer: Point, frame: Rect) -> Rect {
+    let rect = norm_rect(Point::new(rect.x0, rect.y0), Point::new(rect.x1, rect.y1));
+    let px = pointer.x.clamp(frame.x0, frame.x1);
+    let py = pointer.y.clamp(frame.y0, frame.y1);
+    let (mut x0, mut y0, mut x1, mut y1) = (rect.x0, rect.y0, rect.x1, rect.y1);
+    match region {
+        BrushRegion::Edge(BrushEdge::Left) => x0 = px,
+        BrushRegion::Edge(BrushEdge::Right) => x1 = px,
+        BrushRegion::Edge(BrushEdge::Top) => y0 = py,
+        BrushRegion::Edge(BrushEdge::Bottom) => y1 = py,
+        BrushRegion::Corner(BrushCorner::TopLeft) => {
+            x0 = px;
+            y0 = py;
+        }
+        BrushRegion::Corner(BrushCorner::TopRight) => {
+            x1 = px;
+            y0 = py;
+        }
+        BrushRegion::Corner(BrushCorner::BottomLeft) => {
+            x0 = px;
+            y1 = py;
+        }
+        BrushRegion::Corner(BrushCorner::BottomRight) => {
+            x1 = px;
+            y1 = py;
+        }
+        BrushRegion::Interior | BrushRegion::Outside => {}
+    }
+    // Re-normalise: dragging a side past the pinned one flips which coordinate is
+    // min/max, but the rect stays non-inverted (the pinned side is still a bound).
+    Rect::new(x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1))
 }
 
 /// Brush overlay colour (semi-transparent blue).
@@ -98,6 +284,112 @@ impl InteractionState {
         }
     }
 
+    /// The rectangle of any rect-bearing state — the active `Brushing` drag, the
+    /// persisted `Selected` overlay, or an in-flight `Dragging` — as a min/max
+    /// normalised `Rect`; `None` for `Idle`/`Hovering` (card 0022, drb-ac02).
+    /// Unlike [`brush_rect`] (Brushing only), this ALSO exposes the persisted
+    /// `Selected` rect, so the grab hit-test ([`brush_region`]) and the
+    /// `pointer_down` decision ([`resolve_press`](Self::resolve_press)) can key
+    /// off it — today's `brush_rect` returning `None` for `Selected` made any
+    /// such hit-test silently never fire.
+    pub fn selected_rect(&self) -> Option<Rect> {
+        match self {
+            Self::Brushing { start, current }
+            | Self::Selected { start, current }
+            | Self::Dragging { start, current, .. } => Some(norm_rect(*start, *current)),
+            Self::Idle | Self::Hovering { .. } => None,
+        }
+    }
+
+    /// Resolve a pointer press over this state into a [`PointerAction`] (card
+    /// 0022, drb-ac05): a hit on the persisted `Selected` rect (region !=
+    /// `Outside`) is a `Grab` — resolved BEFORE the plot-contains gate, so a
+    /// handle in the rect's inset-band overhang above `plot_area.y0` still grabs;
+    /// otherwise a press inside the plot `StartBrush`es (clearing/replacing any
+    /// persisted rect), and a press Outside the rect AND outside the plot is
+    /// `Ignore`. Pure — the shim consumes it, so the ordering is unit-provable.
+    #[must_use]
+    pub fn resolve_press(&self, local: Point, plot_contains: bool, tol: f64) -> PointerAction {
+        // Grab-before-brush: the Selected-rect region hit STRICTLY precedes the
+        // plot-containment check (the anti-wipe invariant).
+        if let Self::Selected { .. } = self {
+            if let Some(rect) = self.selected_rect() {
+                let region = brush_region(local, rect, tol);
+                if region != BrushRegion::Outside {
+                    return PointerAction::Grab(region);
+                }
+            }
+        }
+        if plot_contains {
+            PointerAction::StartBrush
+        } else {
+            PointerAction::Ignore
+        }
+    }
+
+    /// Apply a resolved press (card 0022, drb-ac13): `Grab` enters `Dragging`
+    /// PRESERVING the rect corners (never a wipe to zero-area); `StartBrush`
+    /// begins a fresh `Brushing` at the press (replacing any `Selected`);
+    /// `Ignore` leaves the state unchanged. `local` is the press point.
+    #[must_use]
+    pub fn on_press(self, action: PointerAction, local: Point) -> Self {
+        match action {
+            PointerAction::Grab(region) => match self.selected_rect() {
+                Some(rect) => Self::Dragging {
+                    region,
+                    origin: local,
+                    start: Point::new(rect.x0, rect.y0),
+                    current: Point::new(rect.x1, rect.y1),
+                    anchor: rect,
+                },
+                None => self,
+            },
+            PointerAction::StartBrush => Self::start_brush(local),
+            PointerAction::Ignore => self,
+        }
+    }
+
+    /// Apply a pointer move during a grab (card 0022, drb-ac13): transform the
+    /// `Dragging` rect to `pointer` — an `Interior` grab translates the anchor by
+    /// the pointer delta, an `Edge`/`Corner` grab resizes the grabbed side(s) —
+    /// each clamped to `frame`. Non-`Dragging` states pass through unchanged.
+    #[must_use]
+    pub fn on_grab_move(self, pointer: Point, frame: Rect) -> Self {
+        if let Self::Dragging { region, origin, anchor, .. } = self {
+            let moved = match region {
+                BrushRegion::Interior => {
+                    translate_brush(anchor, pointer.x - origin.x, pointer.y - origin.y, frame)
+                }
+                BrushRegion::Edge(_) | BrushRegion::Corner(_) => {
+                    resize_brush(anchor, region, pointer, frame)
+                }
+                // Not a live-manipulable region; hold the rect.
+                BrushRegion::Outside => anchor,
+            };
+            Self::Dragging {
+                region,
+                origin,
+                start: Point::new(moved.x0, moved.y0),
+                current: Point::new(moved.x1, moved.y1),
+                anchor,
+            }
+        } else {
+            self
+        }
+    }
+
+    /// Finalise a grab (card 0022, drb-ac13): a `Dragging` collapses to a
+    /// persisted `Selected` at its current (moved/resized) rect — the end-state
+    /// the release re-dispatches from. Non-`Dragging` states pass through.
+    #[must_use]
+    pub fn on_grab_release(self) -> Self {
+        if let Self::Dragging { start, current, .. } = self {
+            Self::Selected { start, current }
+        } else {
+            self
+        }
+    }
+
     /// Render the interaction overlay into the scene.
     ///
     /// This is pure rendering — no DuckDB query, no I/O. The overlay
@@ -118,7 +410,10 @@ impl InteractionState {
                 let stroke = kurbo::Stroke::new(1.5);
                 scene.stroke(&stroke, Affine::IDENTITY, BRUSH_BORDER_COLOUR, None, &rect);
             }
-            Self::Selected { start, current } => {
+            // A committed selection and an in-flight move/resize render identically
+            // (the grey settled rect at its current corners) — the grab metadata
+            // never reaches the scene.
+            Self::Selected { start, current } | Self::Dragging { start, current, .. } => {
                 let rect = Rect::new(
                     start.x.min(current.x),
                     start.y.min(current.y),
@@ -134,6 +429,44 @@ impl InteractionState {
                 scene.fill(Fill::NonZero, Affine::IDENTITY, HOVER_COLOUR, None, &circle);
             }
         }
+    }
+}
+
+/// Synthesise a pixel-space `Brushing` from a move/resize end-state so the
+/// moved cross-filter re-dispatches on release (card 0022, drb-ac12) — the SOLE
+/// synthesis site of the silent-no-op defence (the card-0021 lesson), a pure
+/// gpui-free production fn the release path DRIVES.
+///
+/// `commit_brush` reads ONLY `Brushing`, so a gesture ending in `Dragging`
+/// re-dispatches nothing unless converted here. Returns:
+/// - `Some(Brushing { new corners })` for a `Dragging` whose rect actually moved
+///   from its `anchor` — the corners `invert_pixel_brush` then inverts downstream;
+/// - `None` for a zero-delta grab (a click on the rect, the moved rect within
+///   [`ZERO_AREA_EPSILON`] of the anchor) — so a click never fires a redundant
+///   re-query, the selection intact;
+/// - `None` for every other state (a persisted `Selected`, a fresh `Brushing`
+///   which already dispatches through the unchanged path, `Idle`, `Hovering`) —
+///   in particular a persisted `Selected` on an untouched sibling plot yields
+///   `None`, so a release there never re-dispatches its selection.
+#[must_use]
+pub fn redispatch_brushing_from(end_state: &InteractionState) -> Option<InteractionState> {
+    match end_state {
+        InteractionState::Dragging { start, current, anchor, .. } => {
+            let moved = norm_rect(*start, *current);
+            let unmoved = (moved.x0 - anchor.x0).abs() < crate::chart_view::ZERO_AREA_EPSILON
+                && (moved.y0 - anchor.y0).abs() < crate::chart_view::ZERO_AREA_EPSILON
+                && (moved.x1 - anchor.x1).abs() < crate::chart_view::ZERO_AREA_EPSILON
+                && (moved.y1 - anchor.y1).abs() < crate::chart_view::ZERO_AREA_EPSILON;
+            if unmoved {
+                None
+            } else {
+                Some(InteractionState::Brushing {
+                    start: *start,
+                    current: *current,
+                })
+            }
+        }
+        _ => None,
     }
 }
 
@@ -672,5 +1005,338 @@ mod tests {
             encoding.path_tags.len() > 0,
             "hovering without nearest should still render highlight circle"
         );
+    }
+
+    // --- card 0022 (draggable / resizable persisted brush) ---
+
+    const TOL: f64 = HANDLE_TOL;
+
+    /// drb-ac01: the gpui-free brush-region classifier resolves a pointer over a
+    /// Selected rect into Interior / Edge / Corner / Outside with corner-over-edge
+    /// precedence and a `tol` handle band.
+    #[test]
+    fn drb_ac01_brush_region_classifier() {
+        let rect = Rect::new(100.0, 100.0, 200.0, 150.0);
+
+        // Centre → Interior.
+        assert_eq!(brush_region(Point::new(150.0, 125.0), rect, TOL), BrushRegion::Interior);
+
+        // Each corner (within tol) → the matching Corner.
+        assert_eq!(
+            brush_region(Point::new(100.0, 100.0), rect, TOL),
+            BrushRegion::Corner(BrushCorner::TopLeft)
+        );
+        assert_eq!(
+            brush_region(Point::new(200.0, 100.0), rect, TOL),
+            BrushRegion::Corner(BrushCorner::TopRight)
+        );
+        assert_eq!(
+            brush_region(Point::new(100.0, 150.0), rect, TOL),
+            BrushRegion::Corner(BrushCorner::BottomLeft)
+        );
+        assert_eq!(
+            brush_region(Point::new(200.0, 150.0), rect, TOL),
+            BrushRegion::Corner(BrushCorner::BottomRight)
+        );
+
+        // Each edge midpoint (within tol, away from a corner) → the matching Edge.
+        assert_eq!(
+            brush_region(Point::new(150.0, 100.0), rect, TOL),
+            BrushRegion::Edge(BrushEdge::Top)
+        );
+        assert_eq!(
+            brush_region(Point::new(150.0, 150.0), rect, TOL),
+            BrushRegion::Edge(BrushEdge::Bottom)
+        );
+        assert_eq!(
+            brush_region(Point::new(100.0, 125.0), rect, TOL),
+            BrushRegion::Edge(BrushEdge::Left)
+        );
+        assert_eq!(
+            brush_region(Point::new(200.0, 125.0), rect, TOL),
+            BrushRegion::Edge(BrushEdge::Right)
+        );
+
+        // Beyond tol on every side → Outside.
+        assert_eq!(brush_region(Point::new(300.0, 300.0), rect, TOL), BrushRegion::Outside);
+        assert_eq!(brush_region(Point::new(150.0, 50.0), rect, TOL), BrushRegion::Outside);
+        // Just inside the band above the top edge is still the Top edge, not Outside.
+        assert_eq!(
+            brush_region(Point::new(150.0, 100.0 - TOL + 0.5), rect, TOL),
+            BrushRegion::Edge(BrushEdge::Top)
+        );
+
+        // A point in BOTH a corner's and an edge's band resolves the Corner
+        // (precedence): near the top-left corner but slightly down the left edge.
+        assert_eq!(
+            brush_region(Point::new(101.0, 103.0), rect, TOL),
+            BrushRegion::Corner(BrushCorner::TopLeft)
+        );
+    }
+
+    /// drb-ac02: the Selected-aware rect accessor returns Some(normalised) for
+    /// Selected / Brushing / Dragging and None for Idle / Hovering — while the
+    /// legacy `brush_rect` stays Brushing-only (the gpu_ac10 regression).
+    #[test]
+    fn drb_ac02_selected_rect_accessor() {
+        // Selected → Some, min/max normalised (x0<x1, y0<y1) even given reversed
+        // corners.
+        let sel = InteractionState::Selected {
+            start: Point::new(100.0, 200.0),
+            current: Point::new(10.0, 20.0),
+        };
+        let r = sel.selected_rect().expect("Selected exposes its rect");
+        assert!(r.x0 < r.x1 && r.y0 < r.y1);
+        assert!((r.x0 - 10.0).abs() < f64::EPSILON && (r.x1 - 100.0).abs() < f64::EPSILON);
+
+        // Brushing → Some (regression: unchanged), and brush_rect still agrees.
+        let brushing = InteractionState::Brushing {
+            start: Point::new(10.0, 20.0),
+            current: Point::new(100.0, 200.0),
+        };
+        assert!(brushing.selected_rect().is_some());
+        assert!(brushing.brush_rect().is_some(), "brush_rect Brushing semantics unchanged");
+
+        // Dragging → Some (the live moved rect).
+        let dragging = InteractionState::Dragging {
+            region: BrushRegion::Interior,
+            origin: Point::new(0.0, 0.0),
+            start: Point::new(10.0, 20.0),
+            current: Point::new(100.0, 200.0),
+            anchor: Rect::new(10.0, 20.0, 100.0, 200.0),
+        };
+        assert!(dragging.selected_rect().is_some());
+
+        // Idle / Hovering → None (both accessors). brush_rect stays None for
+        // Selected (the gap drb-ac02 documents — a hit-test on it never fired).
+        assert!(InteractionState::Idle.selected_rect().is_none());
+        assert!(InteractionState::Hovering { point: Point::new(1.0, 1.0), nearest: None }
+            .selected_rect()
+            .is_none());
+        assert!(sel.brush_rect().is_none(), "legacy brush_rect is still None for Selected");
+    }
+
+    /// drb-ac03: the translate transform moves all four corners by the delta,
+    /// preserving SIZE, and clamps the TRANSLATION (not each corner) at the frame.
+    #[test]
+    fn drb_ac03_translate_transform() {
+        let rect = Rect::new(100.0, 100.0, 200.0, 150.0);
+        let frame = Rect::new(0.0, 0.0, 640.0, 480.0);
+
+        // Well inside → every corner shifts by exactly (dx, dy); size unchanged.
+        let moved = translate_brush(rect, 30.0, 20.0, frame);
+        assert_eq!(moved, Rect::new(130.0, 120.0, 230.0, 170.0));
+        assert!((moved.width() - rect.width()).abs() < f64::EPSILON);
+        assert!((moved.height() - rect.height()).abs() < f64::EPSILON);
+
+        // A translation that would push past the frame butts against it, size
+        // PRESERVED (not shrunk): dx = 1000 → x1 pinned at 640, width still 100.
+        let butted = translate_brush(rect, 1000.0, 0.0, frame);
+        assert!((butted.x1 - 640.0).abs() < f64::EPSILON);
+        assert!((butted.width() - 100.0).abs() < f64::EPSILON, "size preserved at the frame edge");
+
+        // Zero delta → identity.
+        assert_eq!(translate_brush(rect, 0.0, 0.0, frame), rect);
+    }
+
+    /// drb-ac04: the resize transform moves only the grabbed side(s); the
+    /// opposite side stays pinned; the result never inverts.
+    #[test]
+    fn drb_ac04_resize_transform() {
+        let rect = Rect::new(100.0, 100.0, 200.0, 150.0);
+        let frame = Rect::new(0.0, 0.0, 640.0, 480.0);
+
+        // Right edge dragged right → widens x1 only.
+        let r = resize_brush(rect, BrushRegion::Edge(BrushEdge::Right), Point::new(260.0, 400.0), frame);
+        assert_eq!(r, Rect::new(100.0, 100.0, 260.0, 150.0));
+
+        // TopLeft corner → moves x0, y0 only (x1, y1 pinned).
+        let r = resize_brush(rect, BrushRegion::Corner(BrushCorner::TopLeft), Point::new(80.0, 90.0), frame);
+        assert_eq!(r, Rect::new(80.0, 90.0, 200.0, 150.0));
+
+        // Right edge dragged LEFT past x0 → normalised, x0<x1, the pinned side
+        // (old x0 = 100) is now the right bound.
+        let r = resize_brush(rect, BrushRegion::Edge(BrushEdge::Right), Point::new(50.0, 125.0), frame);
+        assert!(r.x0 < r.x1);
+        assert!((r.x1 - 100.0).abs() < f64::EPSILON, "the pinned side is still old x0");
+        assert!((r.x0 - 50.0).abs() < f64::EPSILON);
+
+        // A corner dragged past its diagonal opposite normalises likewise.
+        let r = resize_brush(rect, BrushRegion::Corner(BrushCorner::BottomRight), Point::new(50.0, 50.0), frame);
+        assert_eq!(r, Rect::new(50.0, 50.0, 100.0, 100.0));
+    }
+
+    /// drb-ac05: the grab-before-brush resolver maps (local, contains) to
+    /// Grab / StartBrush / Ignore, resolving a Selected-rect hit BEFORE the
+    /// plot-contains check (case b — the inset-band overhang), and a Grab carries
+    /// the pre-press rect intact (the anti-wipe invariant).
+    #[test]
+    fn drb_ac05_pointer_down_grab_resolver() {
+        let sel = InteractionState::Selected {
+            start: Point::new(100.0, 100.0),
+            current: Point::new(200.0, 150.0),
+        };
+
+        // (a) A press inside the rect → Grab(region); the resulting sub-state
+        // preserves the rect corners (anti-wipe).
+        let action = sel.resolve_press(Point::new(150.0, 125.0), true, TOL);
+        assert_eq!(action, PointerAction::Grab(BrushRegion::Interior));
+        let grabbed = sel.clone().on_press(action, Point::new(150.0, 125.0));
+        let r = grabbed.selected_rect().expect("the grab preserves the rect");
+        assert_eq!(r, Rect::new(100.0, 100.0, 200.0, 150.0), "a Grab never wipes the rect");
+
+        // (b) A press on a Selected rect whose TOP EDGE is above plot_area.y0 —
+        // in the inset band where contains() is FALSE — still Grabs, NOT Ignore:
+        // the region hit is resolved BEFORE the plot-containment check.
+        let band = InteractionState::Selected {
+            start: Point::new(100.0, 20.0), // top edge at y=20
+            current: Point::new(200.0, 120.0),
+        };
+        // plot_contains = false (the press sits in the inset-band overhang).
+        let action = band.resolve_press(Point::new(150.0, 20.0), false, TOL);
+        assert!(
+            matches!(action, PointerAction::Grab(_)),
+            "a handle in the inset-band overhang grabs, not Ignore: {action:?}"
+        );
+
+        // (c) A press inside the plot but Outside the rect → StartBrush (clears /
+        // replaces the persisted rect on commit).
+        assert_eq!(
+            sel.resolve_press(Point::new(400.0, 300.0), true, TOL),
+            PointerAction::StartBrush
+        );
+
+        // (d) A press with no Selected rect inside the plot → StartBrush.
+        assert_eq!(
+            InteractionState::Idle.resolve_press(Point::new(400.0, 300.0), true, TOL),
+            PointerAction::StartBrush
+        );
+
+        // (e) A press Outside the rect AND outside the plot → Ignore.
+        assert_eq!(
+            sel.resolve_press(Point::new(5.0, 5.0), false, TOL),
+            PointerAction::Ignore
+        );
+    }
+
+    /// drb-ac12: the pure release re-dispatch resolver — a MOVED/RESIZED Dragging
+    /// end-state → Some(Brushing) with the new corners; a zero-delta grab and
+    /// every non-grab state → None. Driven from the drb-ac03/04 transforms, not
+    /// hand-built corners.
+    #[test]
+    fn drb_ac12_redispatch_brushing_from() {
+        let anchor = Rect::new(100.0, 100.0, 200.0, 150.0);
+        let frame = Rect::new(0.0, 0.0, 640.0, 480.0);
+
+        // A Dragging moved by the drb-ac03 translate → Some(Brushing) whose
+        // corners equal the moved rect and DIFFER from the anchor.
+        let moved = translate_brush(anchor, 30.0, 20.0, frame);
+        let dragged = InteractionState::Dragging {
+            region: BrushRegion::Interior,
+            origin: Point::new(150.0, 125.0),
+            start: Point::new(moved.x0, moved.y0),
+            current: Point::new(moved.x1, moved.y1),
+            anchor,
+        };
+        match redispatch_brushing_from(&dragged) {
+            Some(InteractionState::Brushing { start, current }) => {
+                assert_eq!(norm_rect(start, current), moved);
+                assert_ne!(norm_rect(start, current), anchor, "moved corners differ from the original");
+            }
+            other => panic!("expected Some(Brushing) for a moved grab, got {other:?}"),
+        }
+
+        // A Dragging resized by the drb-ac04 resize → Some(Brushing) with the
+        // resized corners.
+        let resized = resize_brush(anchor, BrushRegion::Edge(BrushEdge::Right), Point::new(260.0, 400.0), frame);
+        let dragged = InteractionState::Dragging {
+            region: BrushRegion::Edge(BrushEdge::Right),
+            origin: Point::new(200.0, 125.0),
+            start: Point::new(resized.x0, resized.y0),
+            current: Point::new(resized.x1, resized.y1),
+            anchor,
+        };
+        match redispatch_brushing_from(&dragged) {
+            Some(InteractionState::Brushing { start, current }) => {
+                assert_eq!(norm_rect(start, current), resized);
+            }
+            other => panic!("expected Some(Brushing) for a resized grab, got {other:?}"),
+        }
+
+        // A zero-delta grab (a click on the rect — the moved rect equals the
+        // anchor) → None: no redundant re-query, selection intact.
+        let click = InteractionState::Dragging {
+            region: BrushRegion::Interior,
+            origin: Point::new(150.0, 125.0),
+            start: Point::new(anchor.x0, anchor.y0),
+            current: Point::new(anchor.x1, anchor.y1),
+            anchor,
+        };
+        assert!(redispatch_brushing_from(&click).is_none(), "a zero-delta grab re-dispatches nothing");
+
+        // Every non-grab state → None (a persisted Selected on an untouched
+        // sibling never re-dispatches; a fresh Brushing dispatches through the
+        // unchanged path; Idle / Hovering are inert).
+        assert!(redispatch_brushing_from(&InteractionState::Selected {
+            start: Point::new(100.0, 100.0),
+            current: Point::new(200.0, 150.0),
+        })
+        .is_none());
+        assert!(redispatch_brushing_from(&InteractionState::Brushing {
+            start: Point::new(100.0, 100.0),
+            current: Point::new(200.0, 150.0),
+        })
+        .is_none());
+        assert!(redispatch_brushing_from(&InteractionState::Idle).is_none());
+        assert!(redispatch_brushing_from(&InteractionState::Hovering {
+            point: Point::new(1.0, 1.0),
+            nearest: None,
+        })
+        .is_none());
+    }
+
+    /// drb-ac13: the pointer-shim transitions are pure InteractionState → state
+    /// functions provable headless in the default gate (the gpu-tests pointer
+    /// fixtures do NOT run there). A Grab at pointer_down preserves the rect
+    /// (anti-wipe); a move at pointer_move applies the transform; pointer_up
+    /// yields the moved Selected end-state the re-dispatch reads.
+    #[test]
+    fn drb_ac13_pointer_shim_state_transitions() {
+        let frame = Rect::new(0.0, 0.0, 640.0, 480.0);
+        let sel = InteractionState::Selected {
+            start: Point::new(100.0, 100.0),
+            current: Point::new(200.0, 150.0),
+        };
+
+        // pointer_down: a Grab preserves the rect corners (no wipe to zero-area).
+        let action = sel.resolve_press(Point::new(150.0, 125.0), true, TOL);
+        let dragging = sel.clone().on_press(action, Point::new(150.0, 125.0));
+        assert!(
+            matches!(dragging, InteractionState::Dragging { .. }),
+            "a Grab enters the Dragging sub-state"
+        );
+        assert_eq!(
+            dragging.selected_rect().unwrap(),
+            Rect::new(100.0, 100.0, 200.0, 150.0),
+            "the grab preserves the rect (anti-wipe)"
+        );
+
+        // pointer_move: the transform arm moves the rect (interior translate by
+        // the pointer delta (180-150, 145-125) = (30, 20)).
+        let moved = dragging.on_grab_move(Point::new(180.0, 145.0), frame);
+        assert_eq!(
+            moved.selected_rect().unwrap(),
+            Rect::new(130.0, 120.0, 230.0, 170.0),
+            "pointer_move applies the drb-ac03 translate"
+        );
+
+        // pointer_up: the moved sub-state yields the moved Selected end-state.
+        let released = moved.clone().on_grab_release();
+        assert!(matches!(released, InteractionState::Selected { .. }));
+        assert_eq!(released.selected_rect().unwrap(), Rect::new(130.0, 120.0, 230.0, 170.0));
+
+        // The end-state feeds the re-dispatch: the in-flight Dragging read at
+        // release re-dispatches the moved corners (Some), a zero-delta would not.
+        assert!(redispatch_brushing_from(&moved).is_some(), "a moved grab re-dispatches on release");
     }
 }

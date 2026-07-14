@@ -16,7 +16,7 @@ use kurbo::{Affine, Point};
 use vello::Scene;
 
 use crate::chart_layout::ChartLayout;
-use crate::interaction::{InteractionState, NavigationState};
+use crate::interaction::{brush_region, BrushRegion, InteractionState, NavigationState, PointerAction, HANDLE_TOL};
 use crate::vello_renderer::VelloRenderer;
 use brightfield_render::layout::{Insets, Margins};
 use brightfield_render::transition::Transition;
@@ -255,15 +255,24 @@ impl ChartState {
     // caller can trigger a repaint. They are the single source of truth shared
     // by the live event wiring (ChartElement) and the ChartView handlers.
 
-    /// Pointer pressed. Begins a brush if the press lands inside the plot area.
-    /// Returns `true` when the interaction state changed.
+    /// Pointer pressed. A thin shim over the gpui-free grab resolver
+    /// ([`InteractionState::resolve_press`], card 0022): a press ON the persisted
+    /// `Selected` rect GRABS it (enters a move/resize sub-state preserving the
+    /// rect) — resolved BEFORE the plot-contains gate, so a boundary handle in
+    /// the inset-band overhang above `plot_area.y0` still grabs; a press inside
+    /// the plot but Outside the rect starts (or replaces with) a fresh brush; a
+    /// press outside both is ignored. Returns `true` when the state changed.
     pub fn pointer_down(&mut self, window_pos: Point, element_origin: Point) -> bool {
         let local = self.layout.window_to_local(window_pos, element_origin);
-        if self.layout.contains(local) {
-            self.interaction = InteractionState::start_brush(local);
-            true
-        } else {
-            false
+        let action = self
+            .interaction
+            .resolve_press(local, self.layout.contains(local), HANDLE_TOL);
+        match action {
+            PointerAction::Ignore => false,
+            _ => {
+                self.interaction = self.interaction.clone().on_press(action, local);
+                true
+            }
         }
     }
 
@@ -276,6 +285,19 @@ impl ChartState {
     pub fn pointer_move(&mut self, window_pos: Point, element_origin: Point, button_held: bool) -> bool {
         let local = self.layout.window_to_local(window_pos, element_origin);
         match &self.interaction {
+            // An in-flight move/resize of a persisted selection (card 0022):
+            // transform the rect to the new pointer, clamped to the FRAME (not
+            // the inset-pulled plot area), so a boundary brush can reach the
+            // frame edge. A button-release we never got a mouse-up for finalises
+            // the grab into a persisted Selected.
+            InteractionState::Dragging { .. } => {
+                if !button_held {
+                    self.interaction = self.interaction.clone().on_grab_release();
+                    return true;
+                }
+                self.interaction = self.interaction.clone().on_grab_move(local, self.layout.frame_area());
+                true
+            }
             InteractionState::Brushing { .. } => {
                 if !button_held {
                     // The button was released without a mouse-up reaching us
@@ -283,7 +305,7 @@ impl ChartState {
                     self.interaction = InteractionState::Idle;
                     return true;
                 }
-                let clamped = self.clamp_to_plot(local);
+                let clamped = self.clamp_to_frame(local);
                 let mut next = self.interaction.clone();
                 next.update_brush(clamped);
                 self.interaction = next;
@@ -308,17 +330,41 @@ impl ChartState {
                 }
             }
             // A persisted selection stays put while merely moving/hovering over it;
-            // it is replaced only by a new brush (pointer_down) or cleared (Esc /
-            // click). Suppresses the hover marker on a selected plot.
+            // a press grabs it (pointer_down → Dragging), a click outside or Esc
+            // clears it. Suppresses the hover marker on a selected plot. (The
+            // paint-phase cursor over the rect is picked from `cursor_region`,
+            // tracked by the element's mouse-move listener.)
             InteractionState::Selected { .. } => false,
         }
     }
 
-    /// Clamp a local-space point to the plot area, so a brush dragged into the
-    /// margins keeps its rectangle within the data region.
-    fn clamp_to_plot(&self, p: Point) -> Point {
-        let area = self.layout.plot_area();
+    /// Clamp a local-space point to the FRAME area (margins only, no insets — card
+    /// 0022), so a brush dragged into the margins keeps its rectangle within the
+    /// frame while still reaching the axis-inset band to enclose a boundary dot.
+    /// Retargets the pre-card `clamp_to_plot` (plot_area); `plot_area` and the
+    /// axis-inset range pull are unchanged.
+    fn clamp_to_frame(&self, p: Point) -> Point {
+        let area = self.layout.frame_area();
         Point::new(p.x.clamp(area.x0, area.x1), p.y.clamp(area.y0, area.y1))
+    }
+
+    /// Classify the pointer over any persisted `Selected` rect for the
+    /// paint-phase cursor (card 0022): the grabbable region under `window_pos`,
+    /// or `Outside` when there is no persisted selection. While a grab is
+    /// in-flight (`Dragging`) the active region holds, so the cursor stays put.
+    /// Pure over the gpui-free [`brush_region`]; the element's mouse-move
+    /// listener stores the result and refreshes on change.
+    pub fn cursor_region(&self, window_pos: Point, element_origin: Point) -> BrushRegion {
+        let local = self.layout.window_to_local(window_pos, element_origin);
+        match &self.interaction {
+            InteractionState::Selected { .. } => self
+                .interaction
+                .selected_rect()
+                .map(|r| brush_region(local, r, HANDLE_TOL))
+                .unwrap_or(BrushRegion::Outside),
+            InteractionState::Dragging { region, .. } => *region,
+            _ => BrushRegion::Outside,
+        }
     }
 
     /// Pointer released. A DRAG commits to a persistent `Selected` rectangle
@@ -327,6 +373,14 @@ impl ChartState {
     /// progress. Selection dispatch (re-query) is handled separately by the app
     /// shell via `commit_brush`.
     pub fn pointer_up(&mut self) -> bool {
+        // Finalise an in-flight move/resize: the moved `Dragging` collapses to a
+        // persisted `Selected` at its new corners (card 0022). The cross-filter
+        // re-dispatch from those corners is driven by the element's mouse-up
+        // listener via `redispatch_brushing_from`, BEFORE this transition.
+        if matches!(self.interaction, InteractionState::Dragging { .. }) {
+            self.interaction = self.interaction.clone().on_grab_release();
+            return true;
+        }
         let (start, current) = match &self.interaction {
             InteractionState::Brushing { start, current } => (*start, *current),
             _ => return false,
