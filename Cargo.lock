@@ -838,6 +838,7 @@ dependencies = [
  "gpui-component-assets",
  "gpui_macos",
  "image",
+ "meridian-design",
  "serde_json",
  "vello",
 ]
@@ -920,6 +921,7 @@ dependencies = [
  "image",
  "indexmap",
  "kurbo 0.13.1",
+ "meridian-design",
  "peniko",
  "pollster 0.4.0",
  "smallvec",
@@ -3795,6 +3797,11 @@ checksum = "714098028fe011992e1c3962653c96b2d578c4b4bce9036e15ff220319b1e0e3"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "meridian-design"
+version = "0.1.0"
+source = "git+https://github.com/meridian-online/design?rev=9dd5d3882a38aa665d74544f87d412dab5129c24#9dd5d3882a38aa665d74544f87d412dab5129c24"
 
 [[package]]
 name = "metal"

@@ -25,11 +25,14 @@ use gpui::{
 };
 use kurbo::Point;
 
+use meridian_design::chrome::OVERLAY_LIGHT;
+
 use crate::chart_state::ChartState;
 use crate::crossfilter::CrossfilterCoordinator;
 use crate::interaction::{
     redispatch_brushing_from, BrushCorner, BrushEdge, BrushRegion, InteractionState,
 };
+use crate::theme_bridge;
 
 /// GPUI element that paints a chart from its `ChartState` and routes mouse input.
 ///
@@ -287,6 +290,11 @@ fn region_cursor(region: BrushRegion, dragging: bool) -> Option<CursorStyle> {
 }
 
 /// Convert a straight-alpha RGBA tuple (0–1) to a GPUI colour.
+///
+/// Retained solely for the hover-disc site below: that colour has a vello
+/// twin owned by the chart-ink migration (design phase 4 PR B), which
+/// retires this helper when it lands. Every tokenised overlay site routes
+/// through [`theme_bridge`] instead.
 fn rgba(r: f32, g: f32, b: f32, a: f32) -> Hsla {
     Rgba { r, g, b, a }.into()
 }
@@ -313,16 +321,21 @@ fn paint_overlay(window: &mut Window, bounds: Bounds<Pixels>, interaction: &Inte
                 origin: point(ox + px(x0 as f32), oy + px(y0 as f32)),
                 size: size(px(w), px(h)),
             };
-            let mut q = fill(rect, rgba(0.306, 0.475, 0.655, 0.251));
+            // The active drag rect is interactive, so it wears Maritime (the
+            // Meridian design rule: interactive/focus/selection = Maritime,
+            // chrome stays warm-neutral) — the focus-ring token as a light
+            // wash for the fill and stronger for the border.
+            let mut q = fill(rect, theme_bridge::rgba_with_alpha(OVERLAY_LIGHT.focus_ring, 0.15));
             q.border_widths = (1.5).into();
-            q.border_color = rgba(0.306, 0.475, 0.655, 0.753);
+            q.border_color = theme_bridge::rgba_with_alpha(OVERLAY_LIGHT.focus_ring, 0.75);
             q.border_style = BorderStyle::Solid;
             window.paint_quad(q);
         }
         // A committed selection and an in-flight move/resize paint identically —
-        // grey, so it reads as settled vs the active blue drag (Mosaic /
-        // Vega-Lite fidelity). Both are GPUI quads over the cached raster, never
-        // composited into the vello Scene, so example PNGs stay byte-identical.
+        // a neutral ink wash, so it reads as settled vs the active Maritime drag
+        // (Mosaic / Vega-Lite fidelity). Both are GPUI quads over the cached
+        // raster, never composited into the vello Scene, so example PNGs stay
+        // byte-identical.
         InteractionState::Selected { start, current }
         | InteractionState::Dragging { start, current, .. } => {
             let x0 = start.x.min(current.x);
@@ -333,9 +346,9 @@ fn paint_overlay(window: &mut Window, bounds: Bounds<Pixels>, interaction: &Inte
                 origin: point(ox + px(x0 as f32), oy + px(y0 as f32)),
                 size: size(px(w), px(h)),
             };
-            let mut q = fill(rect, rgba(0.5, 0.5, 0.5, 0.18));
+            let mut q = fill(rect, theme_bridge::rgba(OVERLAY_LIGHT.brush_fill));
             q.border_widths = (1.5).into();
-            q.border_color = rgba(0.42, 0.42, 0.42, 0.6);
+            q.border_color = theme_bridge::rgba(OVERLAY_LIGHT.brush_border);
             q.border_style = BorderStyle::Solid;
             window.paint_quad(q);
         }

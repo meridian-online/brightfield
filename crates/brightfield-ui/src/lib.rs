@@ -30,6 +30,7 @@ pub mod legend_element;
 pub mod legend_scene;
 pub mod slider;
 pub mod slider_element;
+mod theme_bridge;
 pub mod vello_renderer;
 pub mod workspace;
 pub mod workspace_actions;
