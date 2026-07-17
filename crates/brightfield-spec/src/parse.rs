@@ -1388,6 +1388,18 @@ fn json_to_yaml_value(j: &serde_json::Value) -> serde_yaml::Value {
 // Serialize: ParamRef canonicalises to "$name" string form.
 // ---------------------------------------------------------------------------
 
+/// The Meridian sequential ramp as CSS hex stops (blue-240, steps 100..=700).
+/// `colorScheme: meridian` is Brightfield-local sugar a vanilla Mosaic
+/// renderer would reject, so [`serialise_spec`] expands it to an explicit
+/// `colorRange` of these stops on export (deviations.yaml DEV-0004). Pinned
+/// byte-equal to the design crate's `viz::SEQUENTIAL_MERIDIAN` by an
+/// agreement test in brightfield-render (which depends on both crates); this
+/// crate stays dependency-light and carries the hex forms directly.
+pub const MERIDIAN_COLOR_RANGE_HEX: [&str; 13] = [
+    "#c6e4fb", "#a6d7fa", "#87c8f6", "#69baf0", "#4daae6", "#359bd9", "#238cc7", "#1d7cb2",
+    "#216d9b", "#285e81", "#2d4f67", "#274154", "#1b3546",
+];
+
 /// Canonically re-serialise a [`Spec`] to a YAML string (card 0023 commit).
 ///
 /// The command-log commit re-serialises the working (edited) Spec through this
@@ -1614,6 +1626,20 @@ where
             let items: Vec<SerComponent> = p.items.iter().map(SerComponent).collect();
             map.serialize_entry("plot", &items)?;
             for (k, v) in &p.attributes {
+                // `colorScheme: meridian` is Brightfield-local sugar
+                // (DEV-0004): export expands it to explicit `colorRange`
+                // stops so the emitted spec stays vanilla-Mosaic-portable.
+                // With an explicit colorRange ALSO present the sugar is
+                // dropped instead (never emit a duplicate key; the explicit
+                // range already wins consumption-side).
+                if k == "colorScheme"
+                    && matches!(v, SpecValue::String(s) if s == "meridian")
+                {
+                    if !p.attributes.contains_key("colorRange") {
+                        map.serialize_entry("colorRange", &MERIDIAN_COLOR_RANGE_HEX)?;
+                    }
+                    continue;
+                }
                 map.serialize_entry(k, &SerSpecValue(v))?;
             }
         }
@@ -2413,6 +2439,84 @@ plot:
                 .iter()
                 .any(|w| matches!(w, ParseWarning::Unimplemented { .. })),
             "highlight is Implemented — no Unimplemented warning"
+        );
+    }
+
+    // --- design phase 4 PR B: `colorScheme: meridian` export expansion ---
+
+    /// `colorScheme: meridian` is Brightfield-local sugar (DEV-0004): export
+    /// expands it to the explicit 13-stop `colorRange`, so the emitted spec
+    /// stays vanilla-Mosaic-portable. Portable scheme names pass through.
+    #[test]
+    fn dsb_serialise_expands_meridian_scheme_to_color_range() {
+        let src = "\
+data:
+  t: { file: data/t.parquet }
+plot:
+  - mark: raster
+    data: { from: t }
+    x: u
+    y: v
+colorScheme: meridian
+";
+        let spec = parse_spec(src, Format::Yaml).expect("parses").spec;
+        let out = serialise_spec(&spec).expect("serialises");
+        assert!(
+            !out.contains("colorScheme"),
+            "the Brightfield-local scheme name must not be exported:\n{out}"
+        );
+        assert!(out.contains("colorRange"), "expanded to colorRange:\n{out}");
+        for stop in [MERIDIAN_COLOR_RANGE_HEX[0], MERIDIAN_COLOR_RANGE_HEX[12]] {
+            assert!(
+                out.contains(stop),
+                "colorRange carries the ramp stop {stop}:\n{out}"
+            );
+        }
+        // The expansion re-parses cleanly (the export is consumable).
+        let reparsed = parse_spec(&out, Format::Yaml).expect("expanded export re-parses");
+        let plots = crate::layout::collect_plot_nodes(&reparsed.spec);
+        let (_, node) = plots.first().expect("one plot");
+        assert!(
+            matches!(node.attributes.get("colorRange"), Some(SpecValue::Array(a)) if a.len() == 13),
+            "re-parsed export carries the 13 explicit stops"
+        );
+
+        // A portable scheme name is exported unchanged.
+        let portable = src.replace("meridian", "viridis");
+        let spec2 = parse_spec(&portable, Format::Yaml).expect("parses").spec;
+        let out2 = serialise_spec(&spec2).expect("serialises");
+        assert!(
+            out2.contains("colorScheme: viridis") && !out2.contains("colorRange"),
+            "portable scheme names pass through untouched:\n{out2}"
+        );
+    }
+
+    /// With an explicit `colorRange` ALSO present, the sugar is dropped
+    /// instead of expanded — never a duplicate `colorRange` key.
+    #[test]
+    fn dsb_serialise_meridian_with_explicit_color_range_drops_sugar() {
+        let src = "\
+data:
+  t: { file: data/t.parquet }
+plot:
+  - mark: raster
+    data: { from: t }
+    x: u
+    y: v
+colorScheme: meridian
+colorRange: ['#000000', '#ffffff']
+";
+        let spec = parse_spec(src, Format::Yaml).expect("parses").spec;
+        let out = serialise_spec(&spec).expect("serialises");
+        assert!(!out.contains("colorScheme"), "sugar dropped:\n{out}");
+        assert_eq!(
+            out.matches("colorRange").count(),
+            1,
+            "exactly one colorRange key:\n{out}"
+        );
+        assert!(
+            out.contains("#000000") && !out.contains(MERIDIAN_COLOR_RANGE_HEX[0]),
+            "the author's explicit range wins:\n{out}"
         );
     }
 }

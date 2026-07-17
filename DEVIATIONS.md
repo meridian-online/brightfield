@@ -68,3 +68,33 @@ default (matplotlib, ggplot). Spec portability is preserved — a
 
 **Conformance layers suppressed:** 3
 
+## DEV-0004 — colour — default categorical palette / default mark colour
+
+**Mosaic behaviour.** Mosaic/Observable Plot default the categorical colour scheme to
+observable10 (first slot #4269d0) and an unencoded mark's colour to
+"currentColor" resolving in practice to the observable10/Tableau10
+steel blue; there is no "meridian" scheme name.
+
+
+**Brightfield behaviour.** brightfield's default categorical palette is the Meridian design
+system's "Harbour" order (8 slots, first slot blue #0083c4) and the
+default single-mark colour is Harbour slot 1. `colorScheme: meridian`
+is Brightfield-local sugar for the Meridian sequential ramp (13
+blue-240 stops); the sequential DEFAULT remains viridis (DEV-0003).
+Explicit `colorDomain`/`colorRange` literals are honoured, and
+`serialise_spec` expands `colorScheme: meridian` into explicit
+`colorRange` stops on export, so exported specs stay
+vanilla-Mosaic-portable.
+
+
+**Rationale.** Design-system adoption (Meridian phase 4): Harbour's slot ORDER is a
+colourblind-safety mechanism (chosen for maximum adjacent CVD
+distance) and its colours are tuned to the warm Meridian chart
+surface. Portability is preserved the same way DEV-0003 preserves it:
+a spec that names a portable scheme renders it; only renderer DEFAULTS
+and a Brightfield-local scheme name (expanded to explicit colours on
+export) diverge.
+
+
+**Conformance layers suppressed:** 3
+
