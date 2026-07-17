@@ -6,10 +6,11 @@ use peniko::Color;
 use vello::Scene;
 
 use crate::axis::Tick;
+use crate::ink::ink;
 use crate::layout::ChartLayout;
 
-/// Grid line colour (light grey).
-const GRID_COLOUR: Color = Color::new([0.867, 0.867, 0.867, 1.0]);
+/// Grid line colour — the Meridian gridline hairline (warm light grey).
+const GRID_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.gridline);
 
 /// Render vertical grid lines at x-axis tick positions.
 pub fn render_x_grid(scene: &mut Scene, layout: &ChartLayout, ticks: &[Tick]) {

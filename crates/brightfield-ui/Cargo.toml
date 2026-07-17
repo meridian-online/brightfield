@@ -12,6 +12,9 @@ brightfield-render = { path = "../brightfield-render" }
 brightfield-engine = { path = "../brightfield-engine" }
 brightfield-spec = { path = "../brightfield-spec" }
 brightfield-sql = { path = "../brightfield-sql" }
+# Meridian design tokens — the GPUI twins of the vello-side chart ink (slider
+# pair, hover disc) read the same source the render crate does.
+meridian-design = { git = "https://github.com/meridian-online/design", rev = "9dd5d3882a38aa665d74544f87d412dab5129c24" }
 gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", package = "gpui" }
 # Meridian design tokens (design phase 4 PR A): GPUI-side overlay colours
 # (brush rect, focus ring). MIT, dependency-free by contract.
