@@ -1,0 +1,78 @@
+feature: "Discrete input widgets (menu / radio / checkbox)"
+as_a: "analyst sweeping a categorical or boolean variable across a visualisation"
+i_want: "to declare a menu, radio group, or checkbox in the spec and click a value to drive a param"
+so_that: "discrete parameter exploration — pick a region, toggle a flag — is a click, not a YAML edit; the same live loop the slider already gives continuous values"
+
+# Scope (2026-07-17, from orbit/cards/memos/2026-07-12-altair-interaction-grammar-gaps.md
+# item 3, M): "add the widget + repeat the slider wiring," not new architecture.
+# The param machinery is SHIPPED (card 0005: subscriber graph, propagate_param
+# brightfield-ui/src/lib.rs:685, slider end-to-end via slider.rs + slider_element.rs);
+# InputKind::Menu/Search/Table sit Unimplemented (vocab.rs:252-258) and app assembly
+# skips every non-slider input (main.rs:759, :1083). The AST Input shape already
+# models everything needed (as_param / from_source / filter_by / options, ast.rs:320).
+# ONE WRINKLE the memo glossed: radio and checkbox are NOT Mosaic vocabulary (Mosaic
+# inputs = menu/search/slider/table; radio/checkbox are Altair binding_radio /
+# binding_checkbox) — shipping them means new InputKind variants, i.e. a Brightfield
+# vocab EXTENSION with a deliberate portability story (serialise-to-menu expansion
+# and/or a DEV entry — precedent: the `meridian` scheme expansion in serialise_spec,
+# #63). Design-time calls: param-valued only vs selection-valued menus (Mosaic menus
+# can publish an equality clause to a Selection); filterBy option-narrowing (AST has
+# the field); widget placement in the workspace. Search (text-match semantics) and
+# table (virtualised component) are SEPARATE, LATER cards. Per the egui-exit posture
+# (design ADR 0003 update): widget SEMANTICS (option resolution, one-of-N/boolean
+# state, param binding) live in gpui-free crates; only the thin rendering layer
+# touches gpui-component (now Meridian-themed, #62).
+
+scenarios:
+  - name: "Menu drives a param"
+    given: "a spec declares a param, a plot whose query references it, and `input: menu` bound via `as:` with an explicit options list"
+    when: "the author picks a menu entry"
+    then: "every plot referencing the param re-queries and re-renders with the new value — the slider's live loop, discrete — and the menu displays the picked entry as current"
+
+  - name: "Menu options derive from the data"
+    given: "a menu declared with `from:` a source and `column:` instead of an explicit options list"
+    when: "the spec loads"
+    then: "the option list is the column's distinct values resolved through the engine (not hardcoded), and the param's declared default shows as the selected entry"
+
+  - name: "Radio group is a flat menu"
+    given: "`input: radio` with a small option set bound to the same param shape"
+    when: "the author clicks an option"
+    then: "exactly one option is active at a time (one-of-N — identical param semantics to menu, presentation-only divergence) and subscribers re-render"
+
+  - name: "Checkbox toggles a boolean param"
+    given: "`input: checkbox` bound to a param consumed in a query expression (e.g. a WHERE flag)"
+    when: "the author clicks it"
+    then: "the param flips between true and false, subscribers re-query, and the checkbox state always reflects the current param value"
+
+  - name: "Non-Mosaic widgets don't silently break portability"
+    given: "a spec using radio or checkbox (Brightfield vocab extensions)"
+    when: "the spec is serialised for export"
+    then: "the divergence from Mosaic vocabulary is handled deliberately — expanded to portable vocabulary where semantics allow (a radio IS a menu) and/or recorded as a DEV entry — never silently emitted as vocabulary other tools reject"
+
+  - name: "The support report tells the truth"
+    given: "the vocab preflight SupportReport"
+    when: "menu/radio/checkbox ship"
+    then: "each reports Implemented and a spec using them earns no ParseWarning::Unimplemented; anything still unbuilt (search, table) keeps warning honestly (the slider re-promotion precedent, vocab.rs slw ac-08)"
+
+goal: >
+  Ship the discrete third of the input-widget family: menu (Mosaic-native),
+  radio and checkbox (Brightfield extensions with a deliberate portability
+  story), each a first-class param emitter repeating the slider's shipped
+  wiring — hosted widget → commit → propagate_param → subscriber
+  re-query/re-render. Options resolve from an explicit list or a data column;
+  InputKind::Menu flips Unimplemented→Implemented and Radio/Checkbox enter the
+  vocab honestly. Widget semantics stay gpui-free per the egui-exit posture;
+  gpui-component renders them Meridian-themed. Closes the last open item on
+  the Altair interaction gap-map.
+
+maturity: "planned"
+
+specs: []
+
+references:
+  - "orbit/cards/memos/2026-07-12-altair-interaction-grammar-gaps.md: item 3 (M) — the scoping source"
+  - "card 0005 (reactive parameters): the shipped machinery this card's widgets plug into"
+  - "card 0017 (authoring workspace): the shell that hosts the widgets"
+  - "Mosaic vgplot inputs: menu (from/column data-derived options, as: $param) — search/slider/table are the rest of the family"
+  - "Altair/Vega-Lite binding_radio / binding_checkbox: the radio/checkbox prior art"
+  - "serialise_spec meridian-scheme expansion (#63): the portability-handling precedent for Brightfield vocab extensions"
