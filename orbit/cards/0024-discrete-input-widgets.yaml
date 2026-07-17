@@ -75,7 +75,7 @@ goal: >
   vello resting twin, so PNG dumps keep showing widgets). Closes the last
   open item on the Altair interaction gap-map.
 
-maturity: "planned"
+maturity: "established"  # v1 shipped #64 (squash f0f521e, 2026-07-17); in-app confirmed by Hugh
 
 specs:
   - orbit/specs/2026-07-17-discrete-input-widgets/spec.yaml
