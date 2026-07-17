@@ -6,7 +6,7 @@ so_that: "discrete parameter exploration — pick a region, toggle a flag — is
 # Scope (2026-07-17, from orbit/cards/memos/2026-07-12-altair-interaction-grammar-gaps.md
 # item 3, M): "add the widget + repeat the slider wiring," not new architecture.
 # The param machinery is SHIPPED (card 0005: subscriber graph, propagate_param
-# brightfield-ui/src/lib.rs:685, slider end-to-end via slider.rs + slider_element.rs);
+# brightfield-engine/src/lib.rs:685, slider end-to-end via slider.rs + slider_element.rs);
 # InputKind::Menu/Search/Table sit Unimplemented (vocab.rs:252-258) and app assembly
 # skips every non-slider input (main.rs:759, :1083). The AST Input shape already
 # models everything needed (as_param / from_source / filter_by / options, ast.rs:320).

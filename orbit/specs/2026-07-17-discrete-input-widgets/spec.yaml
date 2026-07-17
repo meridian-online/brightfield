@@ -31,11 +31,13 @@ decisions_locked:  # tabletop 2026-07-17 (Hugh — all four recommended calls ac
   - "VALUE TARGET — param-valued only in v1. Selection-valued menus (Mosaic equality-clause-to-Selection) and filterBy option-narrowing defer to a later card."
   - "OPTIONS SOURCE — literal `options:` list, or derived static-at-load via SELECT DISTINCT (new public read-only engine method modeled on profile_sources — Session::execute_raw_sql is #[cfg(test)]-gated, lib.rs:913, and stays that way). Cap 50 distinct values; beyond the cap → truncate + runtime Log Warning (profile-failure precedent main.rs:1569, no toast). Options never re-query live in v1."
   - "RADIO HEIGHT — style: radio requires a LITERAL options list (derived options have unknown N at layout time, layout.rs:173 is a pure spec fn); a derived-options radio degrades honestly to menu presentation with a runtime Log Warning. Radio row height 22px (Meridian density row ladder)."
-  - "DEFAULT RECONCILIATION — the slider-clamp analogue (main.rs:758): a param default absent from the resolved options is PREPENDED to the list (the author's chosen value is legitimate — never snap the param to a different value, which would silently change query results). checkbox requires exactly two options (default [true, false] when `options:` absent); a style: checkbox with ≠2 options degrades to menu presentation with a runtime Log Warning."
+  - "DEFAULT RECONCILIATION — the slider-clamp analogue (main.rs:758): a param default absent from the resolved options is PREPENDED to the list (the author's chosen value is legitimate — never snap the param to a different value, which would silently change query results). ABSENCE is SpecValue PartialEq, strict-variant — no numeric cross-variant equality; the derived path surfaces column values in their native SpecValue variant so a same-typed default compares equal (the variant identity is load-bearing downstream, emit.rs:195-215). ORDERING: reconciliation runs BEFORE style finalisation — a checkbox whose post-prepend option count ≠ 2 degrades to menu presentation with a runtime Log Warning (a foreign default 'maybe' over [true,false] becomes an honest 3-option menu showing 'maybe' selected)."
+  - "CHECKBOX ARM — `style: checkbox` with `options:` ABSENT synthesises the default pair [Bool(true), Bool(false)] and yields a working binding (the card's flagship WHERE-flag shape needs no options list); with an explicit list, exactly two options required post-reconciliation (else degrade per above). CHECKED STATE: the widget renders checked iff the current param value == the FIRST option; a click dispatches the OTHER option."
   - "SAME-VALUE PICK IS A NO-OP — selecting the already-current option does not dispatch (no spurious re-query); pinned headless."
+  - "RELOAD POSTURE — widgets are LAUNCH-FIXED (slider parity). ChromeSnapshot (main.rs:567) gains a widget slice (per-input: rect, style, bound param, resolved options) so any menu-affecting spec edit gates the hot reload to 'restart to apply' — the shipped colorScheme/inset/titles precedent — rather than leaving a hosted widget silently stale under swapped scenes. Assembly-time resolution warnings cross run_pipeline's Send boundary the way Vec<SourceProfile> does and surface ONCE in the reload feedback block (main.rs:1325-adjacent)."
 
 constraints:
-  - "brightfield-sql BYTE-UNTOUCHED, machine-gated (empty git diff over crates/brightfield-sql) — String param substitution shipped with card 0014 (BindingMode::Interpolated binding.rs:92, spec_value_to_sql_literal emit.rs:195, String quoted + single-quote-escaped :200). serialise_spec (brightfield-spec) byte-untouched by the same gate over its file; `style:` rides the options-bag round-trip."
+  - "brightfield-sql BYTE-UNTOUCHED, machine-gated (empty git diff over crates/brightfield-sql) — String param substitution shipped with card 0014 (BindingMode::Interpolated binding.rs:92, spec_value_to_sql_literal emit.rs:195, String quoted + single-quote-escaped :200). serialise_spec is a FUNCTION at parse.rs:1412 (not a module); the machine gate over brightfield-spec is an empty git diff over crates/brightfield-spec/src/parse.rs — which requires the new diw-ac10/diw-ac15 parse + round-trip tests to land in crates/brightfield-spec/tests/ (integration, public API), NOT in parse.rs's #[cfg(test)] module (:1741). The implementer may not relocate the gate; if parse.rs genuinely must change, that is an escalation, not a quiet weakening."
   - "Framework-free logic, thin gpui shim (standing rule; egui-exit posture). MenuBinding/MenuState/commit_menu_release/options-resolution logic live gpui-free in brightfield-ui/src/menu.rs (slider.rs precedent) under plain #[cfg(test)] — no VelloRenderer, no gpu-tests feature. The element/hosting layer consumes them thinly."
   - "Coordinator changes are ADDITIVE PARALLEL LANES ONLY: menu_bindings field + commit_menu/apply_menu mirroring commit_slider/apply_slider (crossfilter.rs:821/847) + ctor param + any_menu disjunct (coordinator_has_live_surface :1192). Existing slider/brush/legend/highlight tests stay green unmodified (except signatures at the ctor callsites). The false slider.rs:20-25 header comment is CORRECTED to describe the real pattern (trait reuse + additive lanes)."
   - "Meridian ink only: widget chrome uses meridian_design tokens on BOTH sides of the twin (GPUI element + vello resting render), kept in sync the way SLIDER_* constants are (slider_element.rs:28-38 / scene.rs:419-422)."
@@ -53,13 +55,18 @@ acceptance_criteria:
       stringified); reads `style:` from the options bag into
       MenuStyle::{Menu,Radio,Checkbox} with unknown style values falling back
       to Menu + a surfaced reason; records a Derived marker (from_source +
-      column) when `options:` is absent and from/column are present; returns
-      None when neither options nor a derivable source exist.
+      column) when `options:` is absent and from/column are present; for
+      `style: checkbox` with `options:` absent, SYNTHESISES the default pair
+      [Bool(true), Bool(false)] and returns a binding (decisions_locked
+      checkbox arm — never a silent drop); returns None when neither options
+      nor a derivable source exist AND the style is not checkbox.
     verification: >
       Headless unit tests in menu.rs's #[cfg(test)] module over the
       input_fixture pattern (slider.rs:314 precedent): literal list typing,
       style parsing incl. unknown-style fallback, derived marker, missing-as
-      None, empty-options None. verifies: capability
+      None, empty-options None for style menu/radio ONLY, plus the
+      checkbox-default test pinning the synthesised [Bool(true), Bool(false)]
+      pair. verifies: capability
   - id: diw-ac02
     ac_type: code
     description: >
@@ -96,23 +103,36 @@ acceptance_criteria:
       Assembly options resolution (brightfield-app), on BOTH the launch path
       and the watcher/reload rebuild path: literal options pass through;
       Derived menus resolve via distinct_values; the current param value is
-      prepended when absent from the resolved list (decisions_locked default
-      reconciliation — the param is never snapped); truncation and per-input
-      resolution failure each append a runtime Log Warning (profile-failure
-      precedent main.rs:1569 — no toast) with the failed widget skipped and
-      every other widget and plot unaffected (per-source failure-isolation
-      precedent, card 0017 sidebar profiling).
+      prepended when absent from the resolved OR literal list (decisions_locked
+      default reconciliation — strict-variant SpecValue equality, the param is
+      never snapped); truncation and per-input resolution failure each append
+      a runtime Log Warning (profile-failure precedent main.rs:1569 — no
+      toast) with the failed widget skipped and every other widget and plot
+      unaffected (per-source failure-isolation precedent, card 0017 sidebar
+      profiling). On the watcher path, resolution warnings are RETURNED from
+      run_pipeline across the Send boundary (the Vec<SourceProfile> shape,
+      main.rs:672) and appended once in the reload feedback block
+      (main.rs:1325-adjacent) — warnings are per assembly pass by
+      construction.
     verification: >
-      Live-DuckDB assembly-level tests: derived list content; prepend-on-absent
-      (param default not in column); failure isolation (menu on a broken
-      column → warning entry + remaining widgets built). verifies: capability
+      Live-DuckDB assembly-level tests: derived list content;
+      prepend-on-absent for BOTH a derived list (param default not in column)
+      AND a literal list omitting the default; a strict-variant equality case
+      (Integer default vs derived same-typed values compares equal; no
+      cross-variant coercion); failure isolation (menu on a broken column →
+      warning entry + remaining widgets built); a transport test pinning that
+      run_pipeline returns the resolution warnings and the reload block
+      appends them exactly once. verifies: capability
   - id: diw-ac05
     ac_type: code
     description: >
       Per-style layout sizing at layout_component's Input arm (layout.rs:173,
       today a fixed DEFAULT_INPUT_WIDTH×DEFAULT_INPUT_HEIGHT 200×32): menu and
       checkbox keep 200×32; style: radio with a literal N-option list gets
-      height 22·N + chrome padding (Meridian row ladder); style: radio with
+      height 22·N + RADIO_CHROME_PAD (a NAMED constant, value 10.0, shared
+      between layout and the render twin — the SLIDER_* sync convention — so
+      the ac05 test pins the shared constant, not whatever the implementation
+      chose); style: radio with
       derived options (unknown N at layout time) is layout-sized as a menu and
       presentation-degraded to menu with a runtime Log Warning (decisions_locked).
       Dashboard bounding-box folding (main.rs:1115-1130 arm) accommodates the
@@ -126,7 +146,9 @@ acceptance_criteria:
     description: >
       Coordinator additive lanes: menu_bindings: Vec<MenuBinding> beside
       slider_bindings (crossfilter.rs:213); CrossfilterCoordinator::new gains
-      the parallel param (callsites main.rs:1643, dump/embed paths, tests);
+      the parallel param (callsites: main.rs:1643 — the authoring window —
+      plus the two #[cfg(test)] sites main.rs:2322/:3195; the dump path never
+      builds a coordinator);
       commit_menu/apply_menu mirror commit_slider/apply_slider
       (crossfilter.rs:821/847) — guard non-committed state, index bindings,
       dispatch through self.session, absorb results, rebuild+swap subscriber
@@ -164,15 +186,19 @@ acceptance_criteria:
     ac_type: code
     description: >
       DATA-EFFECT with NEGATIVE CONTROL (the card-0021/0022 silent-no-op
-      defence): a live-DuckDB end-to-end test drives commit_menu with a
-      String-valued pick on a spec whose plot filters by the param, and
-      asserts the subscriber mark re-executes with row counts changing to the
-      predicted value; the negative control proves the wire can fail (an
-      unregistered/out-of-range binding index produces NO re-execution and the
-      assertion style would catch it).
+      defence): a live-DuckDB end-to-end test drives apply_menu — the
+      gpui-free data half of the diw-ac06 split — on a coordinator built with
+      an EMPTY plots vec and a real Session (the slw_ac06 precedent,
+      crossfilter.rs:2957: "An empty plots vec means no gpui App is needed"),
+      committing a String-valued pick on a spec whose plot filters by the
+      param, and asserts marks[i].batch row counts change to the predicted
+      value; the negative control proves the wire can fail (an out-of-range
+      binding index returns None with the batch unchanged, at the same
+      surface). commit_menu (the &mut App half) is covered by Hugh's in-app
+      eyeball, already the exit condition.
     verification: >
-      Live-DuckDB test + negative control, both in the default gate (no
-      gpu-tests feature). verifies: capability
+      Live-DuckDB test + negative control at the apply_menu surface, both in
+      the default gate (no gpu-tests feature). verifies: capability
   - id: diw-ac09
     ac_type: code
     description: >
@@ -240,12 +266,14 @@ acceptance_criteria:
   - id: diw-ac14
     ac_type: code
     description: >
-      Degrade paths each produce exactly one runtime Log Warning and a usable
-      widget: unknown style value → menu presentation; style: checkbox with
-      ≠2 options → menu presentation; style: radio with derived options →
-      menu presentation; derived list truncated at cap 50 → truncated menu.
-      No degrade path panics, drops the widget silently, or double-warns on
-      reload.
+      Degrade paths each produce exactly one runtime Log Warning per assembly
+      pass and a usable widget: unknown style value → menu presentation;
+      style: checkbox with ≠2 options POST-RECONCILIATION (decisions_locked
+      ordering — the prepend runs first) → menu presentation; style: radio
+      with derived options → menu presentation; derived list truncated at cap
+      50 → truncated menu. No degrade path panics or drops the widget
+      silently; single-append across reload is carried by the diw-ac04
+      transport test.
     verification: >
       Assembly-level tests asserting the FeedbackLog entry (log_model.rs
       append precedent) and the surviving widget's binding.
@@ -254,12 +282,13 @@ acceptance_criteria:
     ac_type: gate
     description: >
       Blast-radius machine gate: git diff main...HEAD over
-      crates/brightfield-sql is EMPTY; brightfield-spec's serialise module is
-      byte-untouched; a serialise round-trip test pins a style:-carrying spec
-      re-emitting the key verbatim (portability by construction made
-      falsifiable).
+      crates/brightfield-sql (crate) AND crates/brightfield-spec/src/parse.rs
+      (file — serialise_spec lives there as a function, :1412) are both
+      EMPTY; a serialise round-trip test (in crates/brightfield-spec/tests/,
+      per the constraint) pins a style:-carrying spec re-emitting the key
+      verbatim (portability by construction made falsifiable).
     verification: >
-      Empty-diff check recorded in the PR + round-trip test.
+      Both empty-diff checks recorded in the PR + round-trip test.
       verifies: capability
   - id: diw-ac16
     ac_type: code
@@ -272,11 +301,26 @@ acceptance_criteria:
     verification: >
       Import inspection + the tests running without the gpu-tests feature;
       review checklist item. verifies: capability
+  - id: diw-ac17
+    ac_type: code
+    description: >
+      Reload honesty (decisions_locked reload posture): ChromeSnapshot
+      (main.rs:567) gains a widget slice — per-input rect, style, bound param
+      name, resolved options — and chrome_divergence (main.rs:650) reports a
+      menu-affecting spec edit so the watcher gates it to "restart to apply"
+      (the shipped colorScheme/inset/titles precedent) instead of hot-swapping
+      plot scenes around a silently stale hosted widget (the coordinator's
+      menu_bindings and the ChartView's PlacedMenus are launch-fixed).
+      Widget-neutral edits (e.g. a mark colour tweak) still hot-swap.
+    verification: >
+      chrome_divergence unit tests: options-list change, style change, added
+      widget, removed widget each diverge; a widget-neutral edit does not.
+      verifies: capability
 
 out_of_scope:
   - "search and table input kinds (stay Unimplemented, keep warning honestly)"
   - "selection-valued menus (Mosaic equality-clause to a Selection) and filterBy option-narrowing — later card, per tabletop"
-  - "live options re-query (external data change shows on reload, profile staleness parity)"
+  - "live options re-query — options are LAUNCH-FIXED (slider parity: min/max are equally launch-fixed today). A menu-affecting spec edit gates to 'restart to apply' (diw-ac17); an external data change under an unchanged spec shows on app restart, NOT on hot reload (the watcher fires on spec edits; resolved options have no set_profiles-style live tap in v1)"
   - "scrollable popup (cap + truncation warning instead)"
   - "computed-param options ($param inside options/min/max) — matching the slider's Decision-2-case-iii deferral (slider.rs:11-19)"
   - "label: rendering for widgets (slider ships without a rendered label today; a widget-label pass is its own polish item)"
@@ -286,7 +330,7 @@ risks:
   - "Popup z-order inside the ChartView element tree — HALT CONDITION with a named pivot (inline expansion), tabletop. Probe early in implementation."
   - "Assembly-time distinct query cost — >100ms added first-render on the example corpus moves resolution to the off-thread profiling pattern (tabletop halt condition). Measure on the branch."
   - "Silent-no-op class (card-0021/0022 recurring lesson) — a menu that logs/renders locally but never re-renders subscribers. diw-ac08's negative control exists precisely for this; the in-app eyeball remains the last line."
-  - "Reload double-warning or stale options if the watcher rebuild path is missed — diw-ac04 covers both paths explicitly; the known 'coordinator refresh on hot reload' chore is adjacent but NOT folded here."
+  - "Silently stale widgets under hot reload — closed by design, not by test alone: diw-ac17 gates menu-affecting edits to 'restart to apply' via the ChromeSnapshot widget slice, and diw-ac04's transport test pins the watcher-side warning path. The known 'coordinator refresh on hot reload' chore is adjacent but NOT folded here."
 
 evaluation_principles:
   - principle: "Honest reuse — claims about what is untouched are machine-gated, claims about what changes name their sites"
@@ -322,7 +366,8 @@ open_questions:
   - "Menu popup direction at the dashboard's bottom edge (open upward?) — decide at implementation, cosmetic."
 
 metadata:
-  version: "1.0"
+  version: "1.1"  # review-spec 2026-07-17 REQUEST_CHANGES: H1 checkbox arm, H2 reload posture (new diw-ac17), M1 gate re-scope, M2 apply_menu surface, L1-L3 folded
+  version_history: "1.0 initial; 1.1 addresses review-spec-2026-07-17.md (2 HIGH, 2 MEDIUM, 4 LOW — all folded)"
   test_prefix: "diw"
   card: orbit/cards/0024-discrete-input-widgets.yaml
   timestamp: "2026-07-17T00:00:00Z"
