@@ -10,7 +10,8 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use gpui::{div, px, rgb, Context, Entity, IntoElement, ParentElement, Render, Styled, Window};
+use gpui::{div, px, Context, Entity, IntoElement, ParentElement, Render, Styled, Window};
+use meridian_design::chrome::OVERLAY_LIGHT;
 
 use brightfield_engine::error::EngineError;
 use brightfield_engine::RecordBatch;
@@ -224,7 +225,9 @@ impl Render for ChartView {
                     .w(px(r.width as f32))
                     .h(px(r.height as f32))
                     .border_2()
-                    .border_color(rgb(0x2f6feb))
+                    // Focus = Maritime (Meridian design rule), via the
+                    // GPUI-side overlay token — never in the Vello scene.
+                    .border_color(crate::theme_bridge::rgba(OVERLAY_LIGHT.focus_ring))
                     .rounded(px(3.0))
             }))
     }

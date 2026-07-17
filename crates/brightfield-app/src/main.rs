@@ -19,6 +19,8 @@ mod keymap;
 #[cfg(any(target_os = "macos", test))]
 mod log_model;
 #[cfg(any(target_os = "macos", test))]
+mod meridian_theme;
+#[cfg(any(target_os = "macos", test))]
 mod reload_feedback;
 #[cfg(any(target_os = "macos", test))]
 mod shell;
@@ -1429,9 +1431,19 @@ fn main() {
         let launch_chrome =
             ChromeSnapshot::capture(title.clone(), &legends, &legend_bindings, &live_plots_meta);
         app.run(move |cx| {
+            // The bundled Meridian faces (Inter + JetBrains Mono) register
+            // BEFORE any window opens, so the theme's font families below
+            // resolve to these bytes rather than a system lookalike.
+            meridian_theme::register_fonts(cx);
             // gpui-component globals — theme, dock/input/root registries —
             // before any of its views exist (aws_ac01).
             gpui_component::init(cx);
+            // The Meridian theme pair replaces the stock gpui-component
+            // theme, LIGHT active. Deliberately no system-appearance sync:
+            // the vello chart canvas is light-only until the chart-ink PR
+            // (design phase 4 PR B) lands dark support — dark chrome around
+            // white charts would read as broken.
+            meridian_theme::install_theme(cx);
 
             // The shared feedback log (card 0017, wsc_ac02): the editor's
             // save outcomes and the watcher's reload rejections append to
