@@ -1,0 +1,20 @@
+[package]
+name = "brightfield-protocol"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Protocol manifest -> typed asset graph -> deterministic layout (gpui-free, vello-free)"
+
+[dependencies]
+brightfield-sql = { path = "../brightfield-sql" }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+# The workspace sqlparser version (brightfield-sql's) — the tokenizer drives
+# the statement splitter; the visitor feature drives per-statement asset
+# extraction.
+sqlparser = { version = "0.61", features = ["visitor"] }
+
+[lints]
+workspace = true
