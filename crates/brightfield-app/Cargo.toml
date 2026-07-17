@@ -15,6 +15,8 @@ path = "src/main.rs"
 brightfield-spec = { path = "../brightfield-spec" }
 brightfield-keys = { path = "../brightfield-keys" }
 brightfield-sql = { path = "../brightfield-sql" }
+# Protocol manifest -> asset graph -> layout for the DAG dump arm (card 0025).
+brightfield-protocol = { path = "../brightfield-protocol" }
 brightfield-engine = { path = "../brightfield-engine" }
 brightfield-render = { path = "../brightfield-render" }
 brightfield-ui = { path = "../brightfield-ui" }

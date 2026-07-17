@@ -829,6 +829,7 @@ dependencies = [
  "arrow",
  "brightfield-engine",
  "brightfield-keys",
+ "brightfield-protocol",
  "brightfield-render",
  "brightfield-spec",
  "brightfield-sql",
@@ -874,10 +875,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "brightfield-protocol"
+version = "0.1.0"
+dependencies = [
+ "brightfield-sql",
+ "serde",
+ "serde_yaml",
+ "sqlparser",
+]
+
+[[package]]
 name = "brightfield-render"
 version = "0.1.0"
 dependencies = [
  "arrow",
+ "brightfield-protocol",
  "brightfield-spec",
  "indexmap",
  "kurbo 0.13.1",

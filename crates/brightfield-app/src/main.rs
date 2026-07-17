@@ -1473,6 +1473,57 @@ fn spawn_spec_watcher(
     .detach();
 }
 
+/// Render a Protocol manifest's asset DAG to a PNG (card 0025) — the
+/// protocol twin of the dashboard dump arm in `main`: compose the scene,
+/// `VelloRenderer::render_to_pixels`, `image::RgbaImage`, save. Same
+/// optional `BRIGHTFIELD_DUMP_SCALE` supersampling, same
+/// returns-before-workspace guarantee (the caller returns immediately).
+fn dump_protocol_png(spec_path: &str, text: &str, dump_path: &str) -> Result<(), String> {
+    let manifest = brightfield_protocol::parse_manifest_str(text)
+        .map_err(|e| format!("protocol parse error: {e}"))?;
+    let manifest_dir = Path::new(spec_path).parent().unwrap_or_else(|| Path::new("."));
+    let sources = brightfield_protocol::graph::load_model_sources(&manifest, manifest_dir);
+    let graph = brightfield_protocol::graph::build_graph(&manifest, &sources);
+    let graph = brightfield_protocol::collapse_families(&graph);
+    let layout =
+        brightfield_protocol::layout(&graph, &brightfield_protocol::LayoutConfig::default());
+    let mut composite = vello::Scene::new();
+    brightfield_render::asset_scene::render_asset_graph(&mut composite, &layout, &graph);
+    eprintln!(
+        "Protocol parsed: {} ({} steps, {} assets, {} edges)",
+        manifest.name,
+        manifest.steps.len(),
+        graph.nodes.len(),
+        graph.edges.len()
+    );
+
+    let scale: f32 = env::var("BRIGHTFIELD_DUMP_SCALE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|s: &f32| *s > 0.0)
+        .unwrap_or(1.0);
+    let dev_w = ((layout.width as f32) * scale).round() as u32;
+    let dev_h = ((layout.height as f32) * scale).round() as u32;
+    let mut scaled = vello::Scene::new();
+    scaled.append(&composite, Some(vello::kurbo::Affine::scale(f64::from(scale))));
+
+    let renderer = brightfield_ui::VelloRenderer::new();
+    let pixels = renderer
+        .lock()
+        .expect("renderer mutex poisoned")
+        .render_to_pixels(&scaled, dev_w, dev_h);
+    let img = image::RgbaImage::from_raw(dev_w, dev_h, pixels)
+        .ok_or_else(|| "pixel buffer size mismatch".to_string())?;
+    img.save(dump_path).map_err(|e| format!("failed to write PNG: {e}"))?;
+    let non_zero = img.as_raw().iter().filter(|&&b| b != 0).count();
+    let total = img.as_raw().len();
+    eprintln!(
+        "PNG dumped: {dump_path} ({dev_w}x{dev_h}, {non_zero}/{total} non-zero bytes, {:.1}% coverage)",
+        100.0 * non_zero as f64 / total as f64
+    );
+    Ok(())
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
@@ -1480,6 +1531,32 @@ fn main() {
         process::exit(1);
     }
     let spec_path = &args[1];
+
+    // Protocol sniff (card 0025): a YAML whose top level has a `steps:`
+    // sequence and NO `plot:`/`data:` keys is an arcform Protocol manifest.
+    // Decided BEFORE Mosaic spec parsing, so Mosaic inputs reach the
+    // existing pipeline byte-untouched (pds-ac08). The dump arm mirrors the
+    // dashboard dump arm below; the window arm exits cleanly — the windowed
+    // protocol view lands in a later card (pds-ac07).
+    if let Ok(text) = std::fs::read_to_string(spec_path) {
+        if brightfield_protocol::is_protocol_manifest(&text) {
+            match boot::boot_mode(env::var("BRIGHTFIELD_DUMP_PNG").ok()) {
+                boot::BootMode::HeadlessDump(dump_path) => {
+                    if let Err(e) = dump_protocol_png(spec_path, &text, &dump_path) {
+                        eprintln!("{e}");
+                        process::exit(1);
+                    }
+                }
+                boot::BootMode::Window => {
+                    eprintln!(
+                        "the windowed protocol view lands in a later card — \
+                         use BRIGHTFIELD_DUMP_PNG=<path> for the DAG render"
+                    );
+                }
+            }
+            return;
+        }
+    }
 
     let (dashboard, live) = match build_everything(spec_path) {
         Ok(parts) => parts,
