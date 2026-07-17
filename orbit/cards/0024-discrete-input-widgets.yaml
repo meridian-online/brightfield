@@ -22,6 +22,14 @@ so_that: "discrete parameter exploration — pick a region, toggle a flag — is
 # (design ADR 0003 update): widget SEMANTICS (option resolution, one-of-N/boolean
 # state, param binding) live in gpui-free crates; only the thin rendering layer
 # touches gpui-component (now Meridian-themed, #62).
+#
+# DESIGN LOCKED (2026-07-17 tabletop, Hugh — all four recommended calls accepted;
+# see orbit/specs/2026-07-17-discrete-input-widgets/tabletop.md): slider-parity
+# hand-drawn construction (GPUI quads + vello resting twin, model/element split);
+# radio/checkbox as a `style:` attribute ON menu (options bag preserved verbatim —
+# NO new InputKind variants; the portability wrinkle above dissolves: every spec
+# parses as plain Mosaic `input: menu`); param-valued only in v1; data-derived
+# options resolved static at load via SELECT DISTINCT (capped, warning beyond).
 
 scenarios:
   - name: "Menu drives a param"
@@ -52,22 +60,25 @@ scenarios:
   - name: "The support report tells the truth"
     given: "the vocab preflight SupportReport"
     when: "menu/radio/checkbox ship"
-    then: "each reports Implemented and a spec using them earns no ParseWarning::Unimplemented; anything still unbuilt (search, table) keeps warning honestly (the slider re-promotion precedent, vocab.rs slw ac-08)"
+    then: "InputKind::Menu reports Implemented and a spec using menu (any style) earns no ParseWarning::Unimplemented; anything still unbuilt (search, table) keeps warning honestly (the slider re-promotion precedent, vocab.rs slw ac-08)"
 
 goal: >
   Ship the discrete third of the input-widget family: menu (Mosaic-native),
-  radio and checkbox (Brightfield extensions with a deliberate portability
-  story), each a first-class param emitter repeating the slider's shipped
-  wiring — hosted widget → commit → propagate_param → subscriber
-  re-query/re-render. Options resolve from an explicit list or a data column;
-  InputKind::Menu flips Unimplemented→Implemented and Radio/Checkbox enter the
-  vocab honestly. Widget semantics stay gpui-free per the egui-exit posture;
-  gpui-component renders them Meridian-themed. Closes the last open item on
-  the Altair interaction gap-map.
+  with radio and checkbox as style presentations of menu (`style:` in the
+  preserved-verbatim options bag — no new vocabulary, portable by
+  construction), each a first-class param emitter repeating the slider's
+  shipped wiring — hosted widget → commit → propagate_param → subscriber
+  re-query/re-render. Options resolve from an explicit list or a data column
+  (SELECT DISTINCT at assembly, capped); InputKind::Menu flips
+  Unimplemented→Implemented. Widget semantics stay gpui-free per the
+  egui-exit posture; construction is slider-parity hand-drawn (GPUI quads +
+  vello resting twin, so PNG dumps keep showing widgets). Closes the last
+  open item on the Altair interaction gap-map.
 
 maturity: "planned"
 
-specs: []
+specs:
+  - orbit/specs/2026-07-17-discrete-input-widgets/spec.yaml
 
 references:
   - "orbit/cards/memos/2026-07-12-altair-interaction-grammar-gaps.md: item 3 (M) — the scoping source"
