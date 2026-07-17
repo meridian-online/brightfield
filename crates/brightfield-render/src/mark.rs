@@ -14,7 +14,9 @@ use vello::Scene;
 
 use crate::channel::{Channel, ChannelMap};
 use crate::kde::{kde_1d_weighted, kde_2d, silverman_1d_weighted, silverman_2d_per_axis};
-use crate::scale::{merge_linear_scale, Scale, ScaleSet, SequentialScheme};
+use crate::scale::{
+    apply_colour_override, merge_linear_scale, ColourOverride, Scale, ScaleSet, SequentialScheme,
+};
 use crate::text::{draw_text, TextAnchor};
 
 /// The `otherwise` override a highlight applies to its NON-matching
@@ -224,8 +226,18 @@ pub trait MarkRenderer {
 /// Default dot radius in pixels.
 const DOT_RADIUS: f64 = 4.0;
 
-/// Default mark colour (steelblue).
-const DEFAULT_COLOUR: Color = Color::new([0.306, 0.475, 0.655, 1.0]);
+/// Default mark colour — Meridian Harbour slot 1 blue (`#0083c4`). Replaces
+/// the former Tableau10 blue `#4e79a7` (which an old comment mislabelled CSS
+/// steelblue; CSS steelblue is `#4682b4` — neither survives here).
+const DEFAULT_COLOUR: Color = crate::ink::ink(meridian_design::viz::MARK_DEFAULT_LIGHT);
+
+/// NULL ink — the fill for a row whose bound fill VALUE is genuinely NULL: a
+/// warm gray deliberately below the series chroma floor, so a NULL can never
+/// impersonate a scheme colour (it used to fall through to [`DEFAULT_COLOUR`]
+/// at full opacity and read as a HIGH value on light-anchored schemes).
+/// Reserved for genuine NULLs — every other fallthrough (no fill channel, no
+/// colour scale, unmapped category) keeps [`DEFAULT_COLOUR`].
+const NULL_INK: Color = crate::ink::ink(meridian_design::viz::NULL_INK_LIGHT);
 
 /// Default line stroke width.
 const LINE_STROKE_WIDTH: f64 = 2.0;
@@ -306,7 +318,22 @@ fn resolve_position(
     }
 }
 
-/// Resolve the colour for a data point.
+/// Whether a mark's bound fill VALUE is genuinely NULL at `row` — read
+/// type-agnostically off the Arrow validity bitmap, so a NULL in a string OR
+/// numeric fill column is caught. `false` for an absent column (that is a
+/// binding problem, not a NULL value — it keeps the default colour).
+fn fill_value_is_null(batch: &RecordBatch, fill_col: &str, row: usize) -> bool {
+    let Ok(idx) = batch.schema().index_of(fill_col) else {
+        return false;
+    };
+    let col = batch.column(idx);
+    row < col.len() && col.is_null(row)
+}
+
+/// Resolve the colour for a data point. A bound fill whose value is genuinely
+/// NULL at this row renders [`NULL_INK`] — never [`DEFAULT_COLOUR`], which
+/// would impersonate a data value; every OTHER fallthrough (no fill channel,
+/// no colour scale, unmapped category) keeps the default mark colour.
 fn resolve_colour(
     scales: &ScaleSet,
     channel_map: &ChannelMap,
@@ -322,6 +349,9 @@ fn resolve_colour(
                     }
                 }
             }
+        }
+        if fill_value_is_null(batch, fill_col, row) {
+            return NULL_INK;
         }
     }
     DEFAULT_COLOUR
@@ -1632,7 +1662,7 @@ fn bin_step(centres: &[f64]) -> Option<f64> {
 ///
 /// The ramp is the Fill [`Scale::Sequential`] this mark's [`Self::augment_scales`]
 /// builds from the count domain; `scheme` selects its colours. If the Fill scale
-/// is somehow absent, `render` falls back to the legacy alpha-on-steelblue path.
+/// is somehow absent, `render` falls back to the legacy alpha-on-default-blue path.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RasterRenderer {
     /// The continuous colour scheme (default viridis).
@@ -1682,7 +1712,7 @@ impl MarkRenderer for RasterRenderer {
         // Prefer the Fill Sequential ramp (built by augment_scales). Its domain is
         // zero-anchored [0, max_count]; each occupied cell samples the ramp at its
         // count, floored at RASTER_MIN_T so the sparsest cells stay visible. A
-        // missing / non-Sequential Fill scale falls back to alpha-on-steelblue.
+        // missing / non-Sequential Fill scale falls back to alpha-on-default-blue.
         let fill_ramp = match scales.get(Channel::Fill) {
             Some(scale @ Scale::Sequential { .. }) => Some(scale),
             _ => None,
@@ -1813,7 +1843,7 @@ impl MarkRenderer for RasterRenderer {
 /// `[0, max_density]`); `scheme` selects its colours and `bandwidth` (the
 /// mark's attribute, in data units) overrides Silverman's rule on both axes.
 /// If the Fill scale is somehow absent, `render` falls back to
-/// alpha-on-steelblue like the density mark.
+/// alpha-on-default-blue like the density mark.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct HeatmapRenderer {
     /// The continuous colour scheme (default viridis).
@@ -1857,7 +1887,7 @@ impl MarkRenderer for HeatmapRenderer {
         let draw_dy = bin_step(&grid.y_centres).unwrap_or(grid.dy);
 
         // Prefer the Fill Sequential ramp (built by augment_scales); a missing /
-        // non-Sequential Fill scale falls back to alpha-on-steelblue.
+        // non-Sequential Fill scale falls back to alpha-on-default-blue.
         let fill_ramp = match scales.get(Channel::Fill) {
             Some(scale @ Scale::Sequential { .. }) => Some(scale),
             _ => None,
@@ -2047,6 +2077,10 @@ impl MarkRenderer for CellRenderer {
             };
             let colour = match (&fill_ramp, fill_vals.as_ref().and_then(|v| v[i])) {
                 (Some(ramp), Some(value)) => Color::new(ramp.map_continuous(value)),
+                // A ramp-backed numeric fill whose value is NULL at this row is
+                // genuinely NULL — render NULL ink, never a colour a scheme
+                // value could produce (the NULL-reads-as-high bug).
+                (Some(_), None) if fill_vals.is_some() => NULL_INK,
                 _ => resolve_colour(scales, channel_map, batch, i),
             };
             let cell = kurbo::Rect::new(cx - bw / 2.0, cy - bh / 2.0, cx + bw / 2.0, cy + bh / 2.0);
@@ -2122,7 +2156,7 @@ const DEFAULT_CONTOUR_LEVELS: usize = 10;
 /// `thresholds` here is the ISO-LEVEL COUNT (Mosaic semantics) — the lowerer
 /// registration shields it from the density lowerer's bin-count read, so it
 /// never changes the SQL; `bins` still sizes the grid. `bandwidth` overrides
-/// Silverman like the heatmap. Stroke is the literal steelblue default v1
+/// Silverman like the heatmap. Stroke is the literal default-colour v1
 /// (per-level ramp strokes are deferred).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ContourRenderer {
@@ -2221,7 +2255,7 @@ const HEX_Y1_COL: &str = "__bf_hex_y1";
 /// (with the [`RASTER_MIN_T`] visibility floor so the sparsest hex stays
 /// visible); an avg fill follows the cell anchoring rule. The scheme rides
 /// `MarkInput::renderer_override` (live-rebuild parity — the cfr seam). A
-/// missing / non-Sequential Fill scale falls back to alpha-on-steelblue.
+/// missing / non-Sequential Fill scale falls back to alpha-on-default-blue.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct HexbinRenderer {
     /// The continuous colour scheme (default viridis).
@@ -2332,6 +2366,11 @@ impl MarkRenderer for HexbinRenderer {
                     let t = (v / max_fill).clamp(0.0, 1.0).max(RASTER_MIN_T) as f32;
                     Color::new([cr, cg, cb, t])
                 }
+                // A bound numeric fill whose value is NULL at this row is
+                // genuinely NULL — NULL ink, never the default colour (which
+                // reads as a data value). Other fallthroughs (no fill channel,
+                // an all-zero fill) keep the default.
+                (_, None) if fill_vals.is_some() => NULL_INK,
                 _ => DEFAULT_COLOUR,
             };
             scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &path);
@@ -3235,6 +3274,10 @@ impl MarkRenderer for GeoRenderer {
             if has_fill {
                 let colour = match (&fill_ramp, fill_vals.as_ref().and_then(|v| v[row])) {
                     (Some(ramp), Some(value)) => Color::new(ramp.map_continuous(value)),
+                    // A choropleth feature whose metric is NULL renders NULL
+                    // ink — a warm gray no ramp value produces — instead of
+                    // impersonating a high value (the NULL-reads-as-high bug).
+                    (Some(_), None) if fill_vals.is_some() => NULL_INK,
                     _ => resolve_colour(scales, channel_map, batch, row),
                 };
                 scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &path);
@@ -3497,6 +3540,89 @@ pub fn configured_renderer(
         })),
         _ => None,
     }
+}
+
+/// Wrap a mark's renderer to apply a plot-level explicit
+/// `colorDomain`/`colorRange` override (card: design phase 4 PR B — the
+/// parsed-but-ignored consumption chore). Pure delegation, except
+/// `augment_scales` re-applies [`apply_colour_override`] AFTER the inner
+/// mark's augment — so the author's explicit domain/range wins over both
+/// column inference and the density-family ramp builders, on the first render
+/// AND on every live rebuild (the wrapper rides `MarkInput.renderer_override`
+/// like `configured_renderer`'s output).
+///
+/// KNOWN in-session limitation (documented, matches the cycled-scheme
+/// precedent): the verbs that REBUILD a renderer override from scratch — the
+/// transient `c` colour-cycle and a command-log mark retype — reconstruct
+/// through `configured_renderer` and drop this wrapper until restart.
+pub struct ColourOverrideRenderer {
+    /// The wrapped renderer (the mark's configured or registry-default one).
+    pub inner: Box<dyn MarkRenderer + Send + Sync>,
+    /// The plot's resolved explicit colour override.
+    pub override_: ColourOverride,
+}
+
+impl MarkRenderer for ColourOverrideRenderer {
+    fn render(
+        &self,
+        scene: &mut Scene,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        scales: &ScaleSet,
+        highlight: Option<&HighlightState>,
+    ) {
+        self.inner.render(scene, batch, channel_map, scales, highlight);
+    }
+
+    fn render_interpolated(
+        &self,
+        scene: &mut Scene,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        scales: &ScaleSet,
+        prev_positions: &[(f64, f64)],
+        t: f64,
+        highlight: Option<&HighlightState>,
+    ) {
+        self.inner
+            .render_interpolated(scene, batch, channel_map, scales, prev_positions, t, highlight);
+    }
+
+    fn zero_baseline_channel(&self) -> Option<Channel> {
+        self.inner.zero_baseline_channel()
+    }
+
+    fn augment_scales(
+        &self,
+        scales: &mut ScaleSet,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        x_range: (f64, f64),
+        y_range: (f64, f64),
+    ) {
+        self.inner
+            .augment_scales(scales, batch, channel_map, x_range, y_range);
+        apply_colour_override(scales, &self.override_);
+    }
+
+    fn suppresses_frame(&self) -> bool {
+        self.inner.suppresses_frame()
+    }
+
+    fn projection(&self) -> Option<Projection> {
+        self.inner.projection()
+    }
+}
+
+/// An OWNED registry-default renderer for `kind` (the boxed twin of
+/// [`find_renderer`]) — for callers that must wrap a mark that has no
+/// configured renderer, e.g. [`ColourOverrideRenderer`] around a plain dot.
+#[must_use]
+pub fn owned_default_renderer(kind: MarkKind) -> Option<Box<dyn MarkRenderer + Send + Sync>> {
+    default_renderers()
+        .into_iter()
+        .find(|(k, _)| *k == kind)
+        .map(|(_, r)| r)
 }
 
 /// Look up a renderer for a mark kind.
@@ -4566,7 +4692,7 @@ mod tests {
         );
 
         // Fallback: with the Fill scale removed, cells render through the legacy
-        // steelblue path — same hue, count-proportional (floored) alpha.
+        // default-blue path — same hue, count-proportional (floored) alpha.
         let mut no_fill = ScaleSet::new();
         no_fill.insert(Channel::X, scales.get(Channel::X).unwrap().clone());
         no_fill.insert(Channel::Y, scales.get(Channel::Y).unwrap().clone());
@@ -4579,7 +4705,7 @@ mod tests {
         assert_eq!(
             fallback,
             std::collections::HashSet::from([packed([cr, cg, cb, alpha_low]), packed([cr, cg, cb, 1.0])]),
-            "fallback keeps the steelblue hue with count-proportional alpha"
+            "fallback keeps the default-blue hue with count-proportional alpha"
         );
     }
 
@@ -5306,7 +5432,7 @@ mod tests {
     // (density → map_continuous) — the colours ACTUALLY ENCODED into the scene
     // are the ramp samples of the smoothed field (probed via draw_data, the #36
     // precedent), cells with different densities encode different colours, and
-    // with no Fill scale the render falls back to alpha-on-steelblue. Driven by
+    // with no Fill scale the render falls back to alpha-on-default-blue. Driven by
     // the dmk_ac01 fixture — 8 SCRAMBLED rows with cell (2, 2) OMITTED — so the
     // "every cell" claim is falsifiable: an occupied-bins-only regression draws
     // 8 cells and misses the unoccupied cell's smoothed colour.
@@ -5373,7 +5499,7 @@ mod tests {
              occupied-bins-only regression fails here"
         );
 
-        // Fallback: no Fill scale → steelblue with density-proportional alpha.
+        // Fallback: no Fill scale → the default blue with density-proportional alpha.
         let mut no_fill = ScaleSet::new();
         no_fill.insert(Channel::X, scales.get(Channel::X).unwrap().clone());
         no_fill.insert(Channel::Y, scales.get(Channel::Y).unwrap().clone());
@@ -5389,7 +5515,7 @@ mod tests {
             scene2.encoding().draw_data.iter().copied().collect();
         assert_eq!(
             fallback, fallback_expected,
-            "fallback keeps the steelblue hue with density-proportional alpha"
+            "fallback keeps the default-blue hue with density-proportional alpha"
         );
     }
 
@@ -6213,6 +6339,181 @@ mod tests {
             count_scene_paths(&scene),
             2,
             "the NaN-edged row is dropped; the two finite bins draw"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // design phase 4 PR B — NULL ink: a genuinely-NULL fill value renders the
+    // reserved warm-gray NULL_INK, never a scheme colour and never the default
+    // mark colour (the NULL-reads-as-high bug, booked as the
+    // NULL-numeric-fill chore).
+    // -----------------------------------------------------------------------
+
+    /// The old Tableau10 blue the bug used to paint NULL cells with — pinned
+    /// here so the regression assertions can prove it is gone.
+    const OLD_STEELBLUE: [f32; 4] = [0.306, 0.475, 0.655, 1.0];
+
+    #[test]
+    fn dsb_null_numeric_fill_renders_null_ink_on_cell() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Utf8, false),
+            Field::new("y", DataType::Utf8, false),
+            Field::new("v", DataType::Float64, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["a", "b"])),
+                Arc::new(StringArray::from(vec!["u", "u"])),
+                Arc::new(Float64Array::from(vec![Some(10.0), None])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        cm.insert(Channel::Fill, "v".to_string());
+
+        let (xr, yr) = ((40.0, 600.0), (450.0, 20.0));
+        let mut scales = infer_scales(&batch, &cm, xr, yr);
+        let renderer = CellRenderer::default();
+        renderer.augment_scales(&mut scales, &batch, &cm, xr, yr);
+        let ramp = scales.get(Channel::Fill).expect("fill ramp built");
+        let ramp_at_10 = ramp.map_continuous(10.0);
+
+        let mut scene = Scene::new();
+        renderer.render(&mut scene, &batch, &cm, &scales, None);
+        let drawn: std::collections::HashSet<u32> =
+            scene.encoding().draw_data.iter().copied().collect();
+        assert_eq!(
+            drawn,
+            std::collections::HashSet::from([
+                packed(ramp_at_10),
+                packed(NULL_INK.components),
+            ]),
+            "the valued cell samples the ramp; the NULL cell renders NULL ink"
+        );
+        assert!(
+            !drawn.contains(&packed(OLD_STEELBLUE)),
+            "the NULL cell no longer paints the old steelblue default"
+        );
+        assert!(
+            !drawn.contains(&packed(DEFAULT_COLOUR.components)),
+            "the NULL cell does not read as the default mark colour either"
+        );
+    }
+
+    #[test]
+    fn dsb_null_categorical_fill_renders_null_ink_on_dot() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+            Field::new("cat", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![1.0, 2.0])),
+                Arc::new(Float64Array::from(vec![1.0, 2.0])),
+                Arc::new(StringArray::from(vec![Some("a"), None])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        cm.insert(Channel::Fill, "cat".to_string());
+
+        let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        let slot1 = scales
+            .get(Channel::Fill)
+            .and_then(|s| s.map_colour("a"))
+            .expect("categorical fill scale built");
+
+        let mut scene = Scene::new();
+        DotRenderer.render(&mut scene, &batch, &cm, &scales, None);
+        let drawn: std::collections::HashSet<u32> =
+            scene.encoding().draw_data.iter().copied().collect();
+        assert_eq!(
+            drawn,
+            std::collections::HashSet::from([packed(slot1), packed(NULL_INK.components)]),
+            "the categorised dot takes its palette slot; the NULL-category dot renders NULL ink"
+        );
+    }
+
+    #[test]
+    fn dsb_null_fill_renders_null_ink_on_hexbin() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+            Field::new("m", DataType::Float64, true),
+            Field::new(HEX_DX_COL, DataType::Float64, false),
+            Field::new(HEX_DY_COL, DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![0.0, 10.0])),
+                Arc::new(Float64Array::from(vec![0.0, 10.0])),
+                Arc::new(Float64Array::from(vec![Some(5.0), None])),
+                Arc::new(Float64Array::from(vec![1.0, 1.0])),
+                Arc::new(Float64Array::from(vec![1.0, 1.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        cm.insert(Channel::Fill, "m".to_string());
+
+        let (xr, yr) = ((40.0, 600.0), (450.0, 20.0));
+        let mut scales = infer_scales(&batch, &cm, xr, yr);
+        let renderer = HexbinRenderer::default();
+        renderer.augment_scales(&mut scales, &batch, &cm, xr, yr);
+
+        let mut scene = Scene::new();
+        renderer.render(&mut scene, &batch, &cm, &scales, None);
+        let drawn: std::collections::HashSet<u32> =
+            scene.encoding().draw_data.iter().copied().collect();
+        assert!(
+            drawn.contains(&packed(NULL_INK.components)),
+            "the NULL-metric hex renders NULL ink"
+        );
+        assert!(
+            !drawn.contains(&packed(DEFAULT_COLOUR.components))
+                && !drawn.contains(&packed(OLD_STEELBLUE)),
+            "the NULL-metric hex renders neither the default mark colour nor old steelblue"
+        );
+    }
+
+    /// Negative control: a mark with NO fill channel keeps the default mark
+    /// colour — NULL ink is reserved for a bound fill whose VALUE is NULL.
+    #[test]
+    fn dsb_no_fill_channel_keeps_default_colour() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![1.0])),
+                Arc::new(Float64Array::from(vec![2.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        let mut scene = Scene::new();
+        DotRenderer.render(&mut scene, &batch, &cm, &scales, None);
+        let drawn: std::collections::HashSet<u32> =
+            scene.encoding().draw_data.iter().copied().collect();
+        assert_eq!(
+            drawn,
+            std::collections::HashSet::from([packed(DEFAULT_COLOUR.components)]),
+            "no fill channel → the (Harbour slot 1) default mark colour, not NULL ink"
         );
     }
 }

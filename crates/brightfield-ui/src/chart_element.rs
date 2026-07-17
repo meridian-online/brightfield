@@ -361,7 +361,12 @@ fn paint_overlay(window: &mut Window, bounds: Bounds<Pixels>, interaction: &Inte
                 ),
                 size: size(px(d), px(d)),
             };
-            let mut q = fill(rect, rgba(0.949, 0.557, 0.169, 0.376));
+            // Hover disc tracks categorical slot 2 (Harbour gold) so it stays
+            // an accent DISTINCT from the slot-1 blue default marks it sits
+            // over — the same "palette slot 2" convention the old Tableau10
+            // orange followed. Translucent, same historical alpha.
+            let slot2 = meridian_design::viz::CATEGORICAL_LIGHT[1];
+            let mut q = fill(rect, rgba(slot2.r, slot2.g, slot2.b, 0.376));
             q.corner_radii = (HOVER_RADIUS as f32).into(); // round the quad into a circle
             window.paint_quad(q);
         }

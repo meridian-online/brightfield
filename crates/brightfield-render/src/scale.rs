@@ -401,6 +401,83 @@ fn anchor_scale(launch: &Scale, fresh: &Scale) -> Scale {
     }
 }
 
+/// A plot-level explicit colour-scale override — Mosaic's `colorDomain` /
+/// `colorRange` attributes, resolved once at app assembly (literal arrays, or
+/// `$param` references into literal-value params — the weather.yaml shape) and
+/// applied AFTER scale inference and every mark's `augment_scales`, so the
+/// author's explicit domain/range wins over both column inference and the
+/// density-family ramp builders.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ColourOverride {
+    /// Explicit categorical domain (the category ORDER, which fixes each
+    /// category's palette slot) from a string-array `colorDomain`.
+    pub categories: Option<Vec<String>>,
+    /// Explicit continuous domain endpoints from a 2-numeric `colorDomain`.
+    pub domain: Option<(f64, f64)>,
+    /// Explicit colours from `colorRange` — the categorical palette, or the
+    /// evenly-spaced sequential ramp stops (2 endpoints interpolate as a
+    /// two-stop ramp; k stops as a k-stop ramp).
+    pub range: Option<Vec<[f32; 4]>>,
+}
+
+impl ColourOverride {
+    /// Whether the override carries nothing to apply.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.categories.is_none() && self.domain.is_none() && self.range.is_none()
+    }
+}
+
+/// Apply an explicit `colorDomain`/`colorRange` override to the colour-bearing
+/// channels (Fill / Stroke) of `set`, in place.
+///
+/// - A categorical [`Scale::Colour`] takes the override's category order and/or
+///   palette (so `colorDomain: [a, b]` + `colorRange: [c1, c2]` pins `a → c1`,
+///   `b → c2` regardless of data order).
+/// - A continuous [`Scale::Sequential`] takes the override's `[lo, hi]` domain
+///   and/or its colours as the evenly-spaced ramp stops.
+/// - Positional scales and absent channels are untouched; an override facet
+///   that does not fit the scale kind (e.g. `categories` against a Sequential)
+///   is ignored.
+pub fn apply_colour_override(set: &mut ScaleSet, ov: &ColourOverride) {
+    for ch in [Channel::Fill, Channel::Stroke] {
+        let Some(scale) = set.get(ch) else { continue };
+        let new = match scale {
+            Scale::Colour { categories, palette } => {
+                let categories = ov
+                    .categories
+                    .clone()
+                    .unwrap_or_else(|| categories.clone());
+                let palette = ov.range.clone().unwrap_or_else(|| palette.clone());
+                if categories.is_empty() || palette.is_empty() {
+                    continue;
+                }
+                Scale::Colour { categories, palette }
+            }
+            Scale::Sequential {
+                domain_min,
+                domain_max,
+                stops,
+            } => {
+                let (domain_min, domain_max) =
+                    ov.domain.unwrap_or((*domain_min, *domain_max));
+                let stops = match &ov.range {
+                    // A ramp needs at least two stops to interpolate.
+                    Some(r) if r.len() >= 2 => r.clone(),
+                    _ => stops.clone(),
+                };
+                Scale::Sequential {
+                    domain_min,
+                    domain_max,
+                    stops,
+                }
+            }
+            _ => continue,
+        };
+        set.insert(ch, new);
+    }
+}
+
 /// A built-in continuous colour scheme. Wire names are lowercase and
 /// Mosaic-aligned, so a `colorScheme:` value stays portable across renderers.
 ///
@@ -419,6 +496,11 @@ pub enum SequentialScheme {
     /// Mosaic/Plot's declared quantitative default — a rainbow map, included for
     /// spec fidelity.
     Turbo,
+    /// The Meridian design system's blue-240 ramp (steps 100..=700) — an
+    /// OPT-IN Brightfield-local name; the default stays [`Self::Viridis`].
+    /// Non-portable: `serialise_spec` expands it to explicit `colorRange`
+    /// stops on export (see deviations.yaml DEV-0004).
+    Meridian,
 }
 
 impl SequentialScheme {
@@ -429,18 +511,20 @@ impl SequentialScheme {
             Self::Viridis => "viridis",
             Self::Blues => "blues",
             Self::Turbo => "turbo",
+            Self::Meridian => "meridian",
         }
     }
 
     /// The next scheme in the transient colour-cycle (card 0018, ac-13):
-    /// Viridis → Blues → Turbo → Viridis. The single source of truth for the
-    /// cycle order.
+    /// Viridis → Blues → Turbo → Meridian → Viridis. The single source of
+    /// truth for the cycle order.
     #[must_use]
     pub fn next(self) -> Self {
         match self {
             Self::Viridis => Self::Blues,
             Self::Blues => Self::Turbo,
-            Self::Turbo => Self::Viridis,
+            Self::Turbo => Self::Meridian,
+            Self::Meridian => Self::Viridis,
         }
     }
 
@@ -452,19 +536,22 @@ impl SequentialScheme {
             "viridis" => Some(Self::Viridis),
             "blues" => Some(Self::Blues),
             "turbo" => Some(Self::Turbo),
+            "meridian" => Some(Self::Meridian),
             _ => None,
         }
     }
 
     /// Evenly-spaced RGBA control points (low → high), interpolated by
-    /// [`Scale::map_continuous`]. Nine hand-transcribed points per scheme — enough
-    /// to read as the intended ramp; a full 256-entry LUT is a later refinement.
+    /// [`Scale::map_continuous`]. Nine hand-transcribed points per classic
+    /// scheme (a full 256-entry LUT is a later refinement); meridian carries
+    /// the design crate's thirteen published steps verbatim.
     #[must_use]
     pub fn stops(self) -> Vec<[f32; 4]> {
         match self {
             Self::Viridis => VIRIDIS_STOPS.to_vec(),
             Self::Blues => BLUES_STOPS.to_vec(),
             Self::Turbo => TURBO_STOPS.to_vec(),
+            Self::Meridian => MERIDIAN_STOPS.to_vec(),
         }
     }
 }
@@ -509,19 +596,19 @@ const TURBO_STOPS: &[[f32; 4]] = &[
     [0.480, 0.016, 0.011, 1.0], // #7a0403
 ];
 
-/// Default colour palette — Observable Plot's categorical10.
-const CATEGORICAL_PALETTE: &[[f32; 4]] = &[
-    [0.306, 0.475, 0.655, 1.0], // steel blue #4e79a7
-    [0.949, 0.557, 0.169, 1.0], // orange #f28e2b
-    [0.882, 0.341, 0.349, 1.0], // red #e15759
-    [0.463, 0.718, 0.698, 1.0], // teal #76b7b2
-    [0.349, 0.631, 0.310, 1.0], // green #59a14f
-    [0.929, 0.788, 0.282, 1.0], // yellow #edc948
-    [0.690, 0.478, 0.631, 1.0], // purple #b07aa1
-    [1.000, 0.616, 0.655, 1.0], // pink #ff9da7
-    [0.612, 0.459, 0.373, 1.0], // brown #9c755f
-    [0.729, 0.690, 0.675, 1.0], // grey #bab0ac
-];
+/// The Meridian sequential ramp (blue-240, steps 100..=700) — the design
+/// crate's thirteen published control points, converted once at compile time.
+const MERIDIAN_STOPS: &[[f32; 4]] =
+    &crate::ink::components(meridian_design::viz::SEQUENTIAL_MERIDIAN);
+
+/// Default colour palette — the Meridian "Harbour" categorical order (blue,
+/// gold, teal, red, violet, orange, plum, green), replacing Observable Plot's
+/// categorical10. The ORDER is the colourblind-safety mechanism (chosen for
+/// maximum adjacent CVD distance) and is therefore data, never cosmetic —
+/// eight slots; `map_colour` cycles by index beyond them (see deviations.yaml
+/// DEV-0004).
+const CATEGORICAL_PALETTE: &[[f32; 4]] =
+    &crate::ink::components(meridian_design::viz::CATEGORICAL_LIGHT);
 
 /// Infer scales from a RecordBatch and ChannelMap.
 ///
@@ -1601,6 +1688,7 @@ mod tests {
             SequentialScheme::Viridis,
             SequentialScheme::Blues,
             SequentialScheme::Turbo,
+            SequentialScheme::Meridian,
         ] {
             let stops = scheme.stops();
             assert!(stops.len() >= 5, "{scheme:?} has >= 5 stops");
@@ -1623,20 +1711,160 @@ mod tests {
     }
 
     #[test]
-    fn scs_ac02_next_cycles_viridis_blues_turbo() {
-        // The transient colour-cycle order (card 0018, ac-13), wrapping back to
-        // the start after three presses.
+    fn scs_ac02_next_cycles_viridis_blues_turbo_meridian() {
+        // The transient colour-cycle order (card 0018, ac-13; meridian added
+        // by design phase 4 PR B), wrapping back to the start after four
+        // presses.
         assert_eq!(SequentialScheme::Viridis.next(), SequentialScheme::Blues);
         assert_eq!(SequentialScheme::Blues.next(), SequentialScheme::Turbo);
-        assert_eq!(SequentialScheme::Turbo.next(), SequentialScheme::Viridis);
-        // Three cycles from any start return to it.
+        assert_eq!(SequentialScheme::Turbo.next(), SequentialScheme::Meridian);
+        assert_eq!(SequentialScheme::Meridian.next(), SequentialScheme::Viridis);
+        // Four cycles from any start return to it.
         for start in [
             SequentialScheme::Viridis,
             SequentialScheme::Blues,
             SequentialScheme::Turbo,
+            SequentialScheme::Meridian,
         ] {
-            assert_eq!(start.next().next().next(), start, "{start:?} cycles in 3");
+            assert_eq!(start.next().next().next().next(), start, "{start:?} cycles in 4");
         }
+    }
+
+    // --- design phase 4 PR B: the meridian scheme + Harbour palette carry the
+    //     design crate's published values verbatim ---
+
+    #[test]
+    fn dsb_meridian_stops_match_design_crate() {
+        let stops = SequentialScheme::Meridian.stops();
+        let src = meridian_design::viz::SEQUENTIAL_MERIDIAN;
+        assert_eq!(stops.len(), src.len(), "all 13 published steps carried");
+        for (i, (stop, token)) in stops.iter().zip(src.iter()).enumerate() {
+            assert_eq!(
+                *stop,
+                [token.r, token.g, token.b, token.a],
+                "meridian stop {i} equals the design token"
+            );
+        }
+        // The DEFAULT stays viridis — meridian is opt-in by name only.
+        assert_eq!(SequentialScheme::default(), SequentialScheme::Viridis);
+    }
+
+    #[test]
+    fn dsb_categorical_palette_is_harbour() {
+        let src = meridian_design::viz::CATEGORICAL_LIGHT;
+        assert_eq!(CATEGORICAL_PALETTE.len(), src.len(), "8 Harbour slots");
+        for (i, (slot, token)) in CATEGORICAL_PALETTE.iter().zip(src.iter()).enumerate() {
+            assert_eq!(
+                *slot,
+                [token.r, token.g, token.b, token.a],
+                "Harbour slot {i} equals the design token (order is load-bearing)"
+            );
+        }
+        // A 9th category cycles back to slot 1 (index % len).
+        let scale = Scale::Colour {
+            categories: (0..9).map(|i| format!("c{i}")).collect(),
+            palette: CATEGORICAL_PALETTE.to_vec(),
+        };
+        assert_eq!(
+            scale.map_colour("c8"),
+            Some(CATEGORICAL_PALETTE[0]),
+            "9th category wraps to slot 1"
+        );
+    }
+
+    #[test]
+    fn dsb_spec_export_hex_agrees_with_design_crate() {
+        // brightfield-spec carries the meridian ramp as CSS hex strings (the
+        // serialise-time colorRange expansion) WITHOUT depending on the design
+        // crate; this render-side test pins the two byte-equal so they can't
+        // drift.
+        let hex = brightfield_spec::parse::MERIDIAN_COLOR_RANGE_HEX;
+        let src = meridian_design::viz::SEQUENTIAL_MERIDIAN;
+        assert_eq!(hex.len(), src.len());
+        for (i, (h, token)) in hex.iter().zip(src.iter()).enumerate() {
+            assert_eq!(*h, token.hex(), "export hex stop {i} equals the design token");
+        }
+    }
+
+    // --- design phase 4 PR B: explicit colorDomain/colorRange overrides ---
+
+    #[test]
+    fn dsb_colour_override_pins_categorical_domain_and_range() {
+        // Data-order inference gave b-then-a; the explicit override pins the
+        // author's domain order and palette, so a → #111111, b → #222222
+        // regardless of data arrival order.
+        let mut set = ScaleSet::new();
+        set.insert(
+            Channel::Fill,
+            Scale::Colour {
+                categories: vec!["b".into(), "a".into()],
+                palette: CATEGORICAL_PALETTE.to_vec(),
+            },
+        );
+        let c1 = [0x11 as f32 / 255.0; 3];
+        let c2 = [0x22 as f32 / 255.0; 3];
+        let ov = ColourOverride {
+            categories: Some(vec!["a".into(), "b".into()]),
+            domain: None,
+            range: Some(vec![
+                [c1[0], c1[1], c1[2], 1.0],
+                [c2[0], c2[1], c2[2], 1.0],
+            ]),
+        };
+        apply_colour_override(&mut set, &ov);
+        let scale = set.get(Channel::Fill).expect("fill scale kept");
+        assert_eq!(scale.map_colour("a"), Some([c1[0], c1[1], c1[2], 1.0]));
+        assert_eq!(scale.map_colour("b"), Some([c2[0], c2[1], c2[2], 1.0]));
+    }
+
+    #[test]
+    fn dsb_colour_override_two_stop_ramp_and_domain() {
+        // A 2-endpoint colorRange becomes a two-stop ramp; a 2-numeric
+        // colorDomain replaces the inferred endpoints.
+        let mut set = ScaleSet::new();
+        set.insert(
+            Channel::Fill,
+            Scale::Sequential {
+                domain_min: 0.0,
+                domain_max: 40.0,
+                stops: SequentialScheme::Viridis.stops(),
+            },
+        );
+        let lo = [0.0, 0.0, 0.0, 1.0];
+        let hi = [1.0, 1.0, 1.0, 1.0];
+        let ov = ColourOverride {
+            categories: None,
+            domain: Some((0.0, 100.0)),
+            range: Some(vec![lo, hi]),
+        };
+        apply_colour_override(&mut set, &ov);
+        let scale = set.get(Channel::Fill).expect("fill scale kept");
+        match scale {
+            Scale::Sequential { domain_min, domain_max, stops } => {
+                assert_eq!((*domain_min, *domain_max), (0.0, 100.0), "explicit domain wins");
+                assert_eq!(stops.len(), 2, "two-stop ramp");
+            }
+            other => panic!("expected Sequential, got {other:?}"),
+        }
+        // The midpoint interpolates halfway between the endpoints.
+        let mid = scale.map_continuous(50.0);
+        for c in &mid[..3] {
+            assert!((c - 0.5).abs() < 1e-6, "midpoint interpolates, got {mid:?}");
+        }
+        // A partial override leaves the untouched facets alone: a positional
+        // scale is never touched.
+        let mut pos = ScaleSet::new();
+        pos.insert(Channel::X, Scale::Linear { domain_min: 0.0, domain_max: 1.0, range_start: 0.0, range_end: 10.0 });
+        apply_colour_override(&mut pos, &ov);
+        assert!(
+            matches!(
+                pos.get(Channel::X),
+                Some(Scale::Linear { domain_min, domain_max, range_start, range_end })
+                    if *domain_min == 0.0 && *domain_max == 1.0
+                        && *range_start == 0.0 && *range_end == 10.0
+            ),
+            "positional scales untouched"
+        );
     }
 
     // --- scs_ac03: adding Sequential leaves every exhaustive match decided ---
