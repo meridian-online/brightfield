@@ -164,8 +164,23 @@ fn menu_presentation(
         )
         .on_mouse_down(MouseButton::Left, {
             let state = placed.state.clone();
+            // Decide from the RENDER-TIME open snapshot, never a re-read of
+            // the live gesture: one physical click on the OPEN menu's box
+            // double-fires — gpui runs the popup's `on_mouse_down_out` in
+            // the CAPTURE phase (click_away → Closed) BEFORE this BUBBLE
+            // handler, so a `toggle_open()` re-read of the now-Closed state
+            // would always re-open, killing the toggle-to-close half of
+            // diw-ac07 the ▴ chevron advertises. Pinned headlessly by
+            // menu.rs `diw_ac07_composed_box_click_closes_after_capture_click_away`.
+            let was_open = open;
             move |_ev, window, cx| {
-                state.update(cx, |w, _| w.gesture = w.gesture.toggle_open());
+                state.update(cx, |w, _| {
+                    w.gesture = if was_open {
+                        MenuState::Closed
+                    } else {
+                        w.gesture.toggle_open()
+                    };
+                });
                 window.refresh();
             }
         });

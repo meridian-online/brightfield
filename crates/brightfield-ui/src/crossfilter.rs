@@ -3276,19 +3276,51 @@ plot:
 
     /// diw_ac08 (same-value no-op at the coordinator): committing the
     /// already-current option is absorbed as an empty rebuild set — no
-    /// re-query, no batch movement (decisions_locked).
+    /// re-query, no batch movement (decisions_locked). Row counts alone are
+    /// INSENSITIVE here (a spurious same-filter re-query yields an identical
+    /// 2-row batch, and the empty-plots fixture returns `Some(empty set)`
+    /// either way), so the observable is the batch's OBJECT IDENTITY:
+    /// `absorb` swaps `marks[i].batch` (fresh column allocations) only on a
+    /// real dispatch. The different-value pick at the end is the sensitivity
+    /// control — the same probe MUST move when a dispatch happens.
     #[test]
     fn diw_ac08_same_value_pick_no_requery() {
+        use std::sync::Arc;
+
         let coord = menu_coordinator();
         let mut c = coord.borrow_mut();
-        // "east" (index 1) is already current.
+        let column_of = |c: &CrossfilterCoordinator| {
+            c.marks[0]
+                .batch
+                .as_ref()
+                .expect("the fixture mark has a batch")
+                .column(0)
+                .clone()
+        };
+        let before = column_of(&c);
+
+        // "east" (index 1) is already current: absorbed, batch NOT swapped.
         let rebuilt = c.apply_menu(0, &MenuState::Committed { index: 1 });
         assert_eq!(
             rebuilt,
             Some(HashSet::new()),
             "a same-value pick dispatches nothing — empty rebuild set"
         );
+        assert!(
+            Arc::ptr_eq(&before, &column_of(&c)),
+            "the same-value pick left the batch allocation untouched — no re-query"
+        );
         assert_eq!(c.marks[0].batch.as_ref().map_or(0, |b| b.num_rows()), 2);
+
+        // Sensitivity control: a DIFFERENT-value pick ("west", index 2)
+        // dispatches, and absorb swaps the batch — the identity probe moves.
+        let rebuilt = c.apply_menu(0, &MenuState::Committed { index: 2 });
+        assert!(rebuilt.is_some(), "the different-value pick commits");
+        assert!(
+            !Arc::ptr_eq(&before, &column_of(&c)),
+            "a real dispatch swaps the batch allocation — the probe is sensitive"
+        );
+        assert_eq!(c.marks[0].batch.as_ref().map_or(0, |b| b.num_rows()), 1);
     }
 
     /// diw_ac09 (String-param SQL integrity): a menu value carrying a single

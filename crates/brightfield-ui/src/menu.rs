@@ -201,6 +201,14 @@ pub enum MenuState {
 impl MenuState {
     /// A menu-box click: `Closed → Open`, `Open → Closed` (toggle).
     /// `Committed` passes through untouched (mid-commit clicks are inert).
+    ///
+    /// COMPOSED WIRING NOTE (diw-ac07): the gpui shim only reaches this from
+    /// a box click when the menu RENDERED closed. A box click while open
+    /// double-fires — gpui runs the popup's capture-phase `on_mouse_down_out`
+    /// ([`Self::click_away`] → `Closed`) before the box's bubble-phase
+    /// handler — so the shim closes from its render-time open snapshot
+    /// instead of toggling the capture-mutated state (which would always
+    /// re-open). See `diw_ac07_composed_box_click_closes_after_capture_click_away`.
     #[must_use]
     pub fn toggle_open(&self) -> Self {
         match self {
@@ -459,6 +467,29 @@ mod tests {
             "the reason names the unknown style: {}",
             reasons[0]
         );
+
+        // A NON-STRING style value (`style: 1`) takes the Some(other) arm:
+        // same fallback to Menu, exactly one surfaced reason.
+        let non_string = menu_fixture(
+            Some("k"),
+            None,
+            &[
+                ("style", SpecValue::Integer(1)),
+                ("options", str_options(&["a", "b"])),
+            ],
+        );
+        let (b, reasons) = MenuBinding::from_input(&non_string);
+        assert_eq!(
+            b.expect("still a usable widget").style,
+            MenuStyle::Menu,
+            "a non-string style falls back to menu presentation"
+        );
+        assert_eq!(reasons.len(), 1, "exactly one surfaced reason: {reasons:?}");
+        assert!(
+            reasons[0].contains("non-string style"),
+            "the reason names the degrade class: {}",
+            reasons[0]
+        );
     }
 
     // diw-ac01: options absent + from/column present records the Derived
@@ -695,6 +726,50 @@ mod tests {
             MenuState::Committed { index: 1 }.click_away(),
             MenuState::Committed { index: 1 }
         );
+    }
+
+    // diw-ac07 (composed shim semantics): one physical click on the OPEN
+    // menu's box double-fires in gpui — the popup's on_mouse_down_out runs
+    // in the CAPTURE phase (click_away → Closed) BEFORE the box's
+    // BUBBLE-phase on_mouse_down. The box decision must therefore come from
+    // the RENDER-TIME open snapshot (`was_open`), never a toggle_open()
+    // re-read of the capture-mutated gesture — the re-read would flip the
+    // now-Closed state straight back to Open, leaving the box click unable
+    // to ever close the list (the ▴ chevron's advertised toggle-to-close).
+    #[test]
+    fn diw_ac07_composed_box_click_closes_after_capture_click_away() {
+        // Render time: the list is open; the box renders was_open = true.
+        let rendered = MenuState::Open { hover: None };
+        let was_open = matches!(rendered, MenuState::Open { .. });
+
+        // Capture phase: the popup's click-away fires first (the box sits
+        // outside the popup's hitbox).
+        let after_capture = rendered.click_away();
+        assert_eq!(after_capture, MenuState::Closed);
+
+        // Bubble phase: the box decides from the snapshot (the shim's rule).
+        let after_bubble = if was_open {
+            MenuState::Closed
+        } else {
+            after_capture.toggle_open()
+        };
+        assert_eq!(
+            after_bubble,
+            MenuState::Closed,
+            "the open box click must CLOSE the list — a toggle_open() re-read \
+             of the capture-mutated state would wrongly yield Open"
+        );
+
+        // The closed-box half of the same wiring: no popup is rendered, so
+        // no capture handler fires; the snapshot path still opens the list.
+        let rendered = MenuState::Closed;
+        let was_open = matches!(rendered, MenuState::Open { .. });
+        let after_bubble = if was_open {
+            MenuState::Closed
+        } else {
+            rendered.toggle_open()
+        };
+        assert_eq!(after_bubble, MenuState::Open { hover: None });
     }
 
     // Option labels: strings pass through, numerics/bools format naturally.

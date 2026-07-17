@@ -3394,13 +3394,15 @@ vconcat:
 
     /// Card 0016 review (F2): `ChromeSnapshot::capture` maps the launch parts
     /// into the gate's comparison keys — rect + scale Debug key per legend,
-    /// the click-wiring key tuple per legend binding (card 0009 F7), and
-    /// path + scheme + inline flag per plot.
+    /// the click-wiring key tuple per legend binding (card 0009 F7),
+    /// path + scheme + inline flag per plot, and (card 0024, diw-ac17) rect +
+    /// style + param + resolved-options Debug key per menu-family widget.
     #[test]
     fn reload_gate_snapshot_captures_comparison_keys() {
         use brightfield_render::layout::Insets;
         use brightfield_render::scale::{Scale, ScaleSet, SequentialScheme};
         use brightfield_spec::analysis::{ComponentPath, LegendBinding};
+        use brightfield_spec::ast::SpecValue;
         use brightfield_spec::layout::Rect;
 
         let scale = Scale::Colour {
@@ -3428,13 +3430,27 @@ vconcat:
             scheme: SequentialScheme::Blues,
             titles: brightfield_render::title::ResolvedTitles::default(),
         };
+        let menu_options = vec![
+            SpecValue::String("east".to_string()),
+            SpecValue::String("west".to_string()),
+        ];
+        let menu = super::MenuPlacement {
+            rect: Rect::new(0.0, 300.0, 200.0, 32.0),
+            binding: super::MenuBinding {
+                param_name: "region".to_string(),
+                style: super::MenuStyle::Menu,
+                options: menu_options.clone(),
+                derived: None,
+            },
+            value: SpecValue::String("east".to_string()),
+        };
 
         let snap = super::ChromeSnapshot::capture(
             "framed".to_string(),
             &[legend],
             &[binding],
             &[meta],
-            &[],
+            &[menu],
         );
         assert_eq!(snap.title, "framed");
         assert_eq!(
@@ -3461,6 +3477,119 @@ vconcat:
                 brightfield_render::title::ResolvedTitles::default()
             )]
         );
+        assert_eq!(
+            snap.widgets,
+            vec![(
+                0.0,
+                300.0,
+                200.0,
+                32.0,
+                "Menu".to_string(),
+                "region".to_string(),
+                format!("{menu_options:?}"),
+            )],
+            "the capture-side widget mapping carries rect + style + param + \
+             RESOLVED options (card 0024, diw-ac17)"
+        );
+    }
+
+    /// diw_ac17 (PRODUCTION capture): two snapshots built by the REAL
+    /// pipeline (`run_pipeline` → `ChromeSnapshot::capture` over the resolved
+    /// `dashboard.menus`) whose ONLY spec delta is a menu `options:` edit —
+    /// identical plot layout, identical title — diverge on exactly the widget
+    /// slice, with the production reason string. This drives the capture-side
+    /// mapping the struct-literal diw_ac17 tests cannot see: an empty or
+    /// mis-mapped production `widgets` slice would pass every hand-built
+    /// snapshot test while the real gate silently hot-swapped stale widgets.
+    #[test]
+    fn diw_ac17_production_capture_options_edit_gates_widget_slice() {
+        use brightfield_spec::ast::SpecValue;
+
+        const BASE: &str = r#"
+meta:
+  title: Capture Fixture
+params:
+  region: east
+data:
+  t:
+    - { x: 1, region: east }
+    - { x: 2, region: west }
+vconcat:
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: x
+        y: x
+  - input: menu
+    as: $region
+    options: [east, west]
+"#;
+        // The SAME spec with one more option — the only delta.
+        const EDITED: &str = r#"
+meta:
+  title: Capture Fixture
+params:
+  region: east
+data:
+  t:
+    - { x: 1, region: east }
+    - { x: 2, region: west }
+vconcat:
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: x
+        y: x
+  - input: menu
+    as: $region
+    options: [east, west, north]
+"#;
+        let dir = std::env::temp_dir().join(format!("bf-diw-ac17-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let build = |name: &str, yaml: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, yaml).unwrap();
+            super::run_pipeline(path.to_str().unwrap()).expect("pipeline runs")
+        };
+
+        let (_d1, launch, _p1, _w1) = build("launch.yaml", BASE);
+        let (_d2, identical, _p2, _w2) = build("identical.yaml", BASE);
+        let (_d3, edited, _p3, _w3) = build("edited.yaml", EDITED);
+
+        // The production capture emitted a real, correctly-mapped slice —
+        // not an empty vec that would compare equal on every edit.
+        assert_eq!(
+            launch.widgets.len(),
+            1,
+            "the production capture populates the widget slice"
+        );
+        let w = &launch.widgets[0];
+        assert_eq!(w.4, "Menu");
+        assert_eq!(w.5, "region");
+        assert_eq!(
+            w.6,
+            format!(
+                "{:?}",
+                vec![
+                    SpecValue::String("east".to_string()),
+                    SpecValue::String("west".to_string()),
+                ]
+            ),
+            "the RESOLVED options ride the production capture"
+        );
+
+        // Control: an identical spec produces NO divergence — everything
+        // outside the widget slice really is equal across the two builds.
+        assert_eq!(super::chrome_divergence(&launch, &identical), None);
+
+        // The options edit alone trips the widget gate — production string.
+        assert_eq!(
+            super::chrome_divergence(&launch, &edited),
+            Some("input widget (menu/radio/checkbox rect, style, param, or options)"),
+            "a menu options edit at identical plot layout gates on the widget slice"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Card 0009 F4a (static/live divergence, phantom binding): a dot plot

@@ -7,6 +7,7 @@
 use crate::ast::{
     Component, ConcatNode, Input, Mark, PlotNode, Spec, SpaceNode, SpecValue, ValueOrParamRef,
 };
+use crate::vocab::InputKind;
 
 // ---------------------------------------------------------------------------
 // Rect
@@ -199,6 +200,12 @@ fn layout_component(component: &Component, x: f64, y: f64) -> LayoutNode {
 /// assembly degrades its presentation to menu with a runtime Log Warning so
 /// the widget never overflows the rect it was given.
 fn input_widget_height(input: &Input) -> f64 {
+    // Per-style sizing is a menu-family (`input: menu`) concern only: on any
+    // other kind a stray `style: radio` + literal `options:` (inert keys for
+    // that kind — e.g. a slider) must not earn a radio-tall rect.
+    if input.kind != InputKind::Menu {
+        return DEFAULT_INPUT_HEIGHT;
+    }
     let style_is_radio = matches!(
         input.options.get("style"),
         Some(ValueOrParamRef::Value(SpecValue::String(s))) if s == "radio"
@@ -1694,5 +1701,26 @@ vconcat:
 "#,
         );
         assert_eq!(checkbox, Rect::new(0.0, 0.0, 200.0, 32.0));
+    }
+
+    /// diw_ac05: sizing gates on `InputKind::Menu` — an `input: slider`
+    /// carrying a stray `style: radio` + literal `options:` (both inert keys
+    /// on a slider) keeps the fixed 200×32 box, never a radio-tall rect.
+    #[test]
+    fn diw_ac05_non_menu_kind_ignores_style_keys() {
+        let slider = input_rect(
+            r#"
+vconcat:
+  - input: slider
+    style: radio
+    as: $threshold
+    options: [a, b, c]
+"#,
+        );
+        assert_eq!(
+            slider,
+            Rect::new(0.0, 0.0, DEFAULT_INPUT_WIDTH, DEFAULT_INPUT_HEIGHT),
+            "non-menu kinds ignore the menu-family style keys"
+        );
     }
 }
