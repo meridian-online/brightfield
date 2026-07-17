@@ -250,10 +250,14 @@ vocab_enum! {
 vocab_enum! {
     /// Known input widget kinds (the `input:` discriminator).
     pub enum InputKind {
-        Menu => ("menu", Unimplemented),
+        // Wired end-to-end (card 0024, 2026-07-17): a hosted MenuElement drives
+        // its param via commit_menu → propagate_param → re-render, with radio
+        // and checkbox as `style:` presentations of menu (options-bag key — NO
+        // new vocabulary; `input: radio`/`input: checkbox` stay UnknownName).
+        Menu => ("menu", Implemented),
         Search => ("search", Unimplemented),
         // Wired end-to-end (card 0005, 2026-07-03): a hosted SliderElement drives
-        // its param via commit_slider → propagate_param → re-render. Menu/Search/
+        // its param via commit_slider → propagate_param → re-render. Search/
         // Table remain Unimplemented (no widget yet).
         Slider => ("slider", Implemented),
         Table => ("table", Unimplemented),
@@ -358,16 +362,24 @@ mod tests {
         }
     }
 
-    /// slw ac-08 (card 0005, 2026-07-03). `InputKind::Slider` is Implemented: a
-    /// hosted SliderElement drives its param through commit_slider →
-    /// propagate_param → re-render (reversing the 2026-07-02 harden demotion for
-    /// slider only). The other input kinds — Menu/Search/Table — stay Unimplemented.
+    /// slw ac-08 (card 0005, 2026-07-03; UPDATED by card 0024, 2026-07-17).
+    /// `InputKind::Slider` is Implemented (a hosted SliderElement drives its
+    /// param through commit_slider → propagate_param → re-render) AND
+    /// `InputKind::Menu` is Implemented (card 0024: a hosted MenuElement
+    /// drives its param through commit_menu → propagate_param → re-render,
+    /// radio/checkbox riding as `style:` presentations). Search/Table stay
+    /// Unimplemented — and keep warning honestly at parse.
     #[test]
     fn slw_ac08_input_kind_slider_implemented_when_wired() {
         assert_eq!(
             InputKind::Slider.status(),
             ImplStatus::Implemented,
             "Slider is wired end-to-end (card 0005) — re-promoted"
+        );
+        assert_eq!(
+            InputKind::Menu.status(),
+            ImplStatus::Implemented,
+            "Menu is wired end-to-end (card 0024) — promoted"
         );
         let implemented: Vec<InputKind> = InputKind::all()
             .iter()
@@ -376,8 +388,8 @@ mod tests {
             .collect();
         assert_eq!(
             implemented,
-            vec![InputKind::Slider],
-            "only Slider is implemented; Menu/Search/Table remain Unimplemented"
+            vec![InputKind::Menu, InputKind::Slider],
+            "exactly Menu + Slider are implemented; Search/Table remain Unimplemented"
         );
     }
 

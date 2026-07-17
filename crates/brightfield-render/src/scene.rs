@@ -2,7 +2,7 @@
 //! into a single vello::Scene.
 
 use arrow::record_batch::RecordBatch;
-use kurbo::{Affine, Circle, Rect, RoundedRect};
+use kurbo::{Affine, BezPath, Circle, Rect, RoundedRect, Stroke};
 use peniko::{Color, Fill};
 use vello::Scene;
 
@@ -446,6 +446,146 @@ pub fn render_slider(scene: &mut Scene, x: f64, y: f64, width: f64, height: f64,
     scene.fill(Fill::NonZero, Affine::IDENTITY, SLIDER_THUMB_COLOUR, None, &thumb);
 }
 
+/// Menu-family widget ink + geometry (card 0024) — kept in sync with the
+/// live GPUI shim (crates/brightfield-ui/src/menu_element.rs `WIDGET_*`
+/// constants) so the headless PNG matches the window, exactly like the
+/// SLIDER_* pair above. Both sides read the same Meridian tokens: fill =
+/// chart surface, border = warm gray step 5 (the slider-track gray), label
+/// = primary ink, affordance (chevron / ring outline) = muted ink, active
+/// (selected dot / check) = Maritime focus ink.
+const WIDGET_FILL_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.surface);
+const WIDGET_BORDER_COLOUR: Color = ink(meridian_design::scales::GRAY_LIGHT[4]);
+const WIDGET_LABEL_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.ink_primary);
+const WIDGET_AFFORDANCE_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.ink_muted);
+const WIDGET_ACTIVE_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.focus);
+/// Widget label text size (px) — matches the GPUI shim's `WIDGET_TEXT_SIZE`.
+const WIDGET_TEXT_SIZE: f32 = 12.0;
+/// Vertical offset from a row's centre to the label baseline at
+/// `WIDGET_TEXT_SIZE` (approximately half the cap height).
+const WIDGET_BASELINE_NUDGE: f64 = 4.0;
+
+/// Draw a resting `style: menu` widget (card 0024): a rounded box with the
+/// current value's label and a downward chevron affordance. Used by the
+/// headless PNG dump to preview the closed menu exactly as the window hosts
+/// it (the render_slider convention).
+pub fn render_menu(scene: &mut Scene, x: f64, y: f64, width: f64, height: f64, label: &str) {
+    let bx = RoundedRect::new(x + 0.5, y + 0.5, x + width - 0.5, y + height - 0.5, 4.0);
+    scene.fill(Fill::NonZero, Affine::IDENTITY, WIDGET_FILL_COLOUR, None, &bx);
+    scene.stroke(
+        &Stroke::new(1.0),
+        Affine::IDENTITY,
+        WIDGET_BORDER_COLOUR,
+        None,
+        &bx,
+    );
+    let cy = y + height / 2.0;
+    crate::text::draw_text(
+        scene,
+        label,
+        x + 10.0,
+        cy + WIDGET_BASELINE_NUDGE,
+        WIDGET_TEXT_SIZE,
+        WIDGET_LABEL_COLOUR,
+        crate::text::TextAnchor::Start,
+    );
+    // Chevron: a small downward triangle at the right edge.
+    let (cx0, cx1) = (x + width - 18.0, x + width - 8.0);
+    let mut chevron = BezPath::new();
+    chevron.move_to((cx0, cy - 2.5));
+    chevron.line_to((cx1, cy - 2.5));
+    chevron.line_to(((cx0 + cx1) / 2.0, cy + 3.5));
+    chevron.close_path();
+    scene.fill(Fill::NonZero, Affine::IDENTITY, WIDGET_AFFORDANCE_COLOUR, None, &chevron);
+}
+
+/// Draw a resting `style: radio` widget (card 0024): one
+/// [`brightfield_spec::layout::RADIO_ROW_HEIGHT`] row per option — ring +
+/// filled-when-selected Maritime dot + label — inside the
+/// `22·N + RADIO_CHROME_PAD` rect the layout reserved (the shared-constant
+/// contract, diw-ac05).
+pub fn render_radio(
+    scene: &mut Scene,
+    x: f64,
+    y: f64,
+    _width: f64,
+    labels: &[String],
+    selected: Option<usize>,
+) {
+    use brightfield_spec::layout::{RADIO_CHROME_PAD, RADIO_ROW_HEIGHT};
+    for (i, label) in labels.iter().enumerate() {
+        let cy = y + RADIO_CHROME_PAD / 2.0 + RADIO_ROW_HEIGHT * (i as f64 + 0.5);
+        let ring = Circle::new((x + 10.0, cy), 6.0);
+        scene.fill(Fill::NonZero, Affine::IDENTITY, WIDGET_FILL_COLOUR, None, &ring);
+        scene.stroke(
+            &Stroke::new(1.0),
+            Affine::IDENTITY,
+            WIDGET_AFFORDANCE_COLOUR,
+            None,
+            &ring,
+        );
+        if selected == Some(i) {
+            let dot = Circle::new((x + 10.0, cy), 3.0);
+            scene.fill(Fill::NonZero, Affine::IDENTITY, WIDGET_ACTIVE_COLOUR, None, &dot);
+        }
+        crate::text::draw_text(
+            scene,
+            label,
+            x + 24.0,
+            cy + WIDGET_BASELINE_NUDGE,
+            WIDGET_TEXT_SIZE,
+            WIDGET_LABEL_COLOUR,
+            crate::text::TextAnchor::Start,
+        );
+    }
+}
+
+/// Draw a resting `style: checkbox` widget (card 0024): a rounded box with
+/// a Maritime check glyph when checked, plus a label (the bound param's
+/// name — widget `label:` rendering is its own polish item).
+pub fn render_checkbox(
+    scene: &mut Scene,
+    x: f64,
+    y: f64,
+    _width: f64,
+    height: f64,
+    checked: bool,
+    label: &str,
+) {
+    let cy = y + height / 2.0;
+    let (bx0, by0) = (x + 4.0, cy - 7.0);
+    let bx = RoundedRect::new(bx0, by0, bx0 + 14.0, by0 + 14.0, 3.0);
+    scene.fill(Fill::NonZero, Affine::IDENTITY, WIDGET_FILL_COLOUR, None, &bx);
+    scene.stroke(
+        &Stroke::new(1.0),
+        Affine::IDENTITY,
+        WIDGET_BORDER_COLOUR,
+        None,
+        &bx,
+    );
+    if checked {
+        let mut check = BezPath::new();
+        check.move_to((bx0 + 3.0, by0 + 7.5));
+        check.line_to((bx0 + 6.0, by0 + 10.5));
+        check.line_to((bx0 + 11.0, by0 + 3.5));
+        scene.stroke(
+            &Stroke::new(2.0),
+            Affine::IDENTITY,
+            WIDGET_ACTIVE_COLOUR,
+            None,
+            &check,
+        );
+    }
+    crate::text::draw_text(
+        scene,
+        label,
+        bx0 + 22.0,
+        cy + WIDGET_BASELINE_NUDGE,
+        WIDGET_TEXT_SIZE,
+        WIDGET_LABEL_COLOUR,
+        crate::text::TextAnchor::Start,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -464,6 +604,72 @@ mod tests {
             2,
             "slider draws a track + a thumb"
         );
+    }
+
+    // diw ac-11 (card 0024): the resting menu twin draws the box (fill +
+    // border) + the chevron affordance, and real glyphs for the label.
+    #[test]
+    fn diw_ac11_render_menu_draws_box_chevron_and_label() {
+        let mut scene = Scene::new();
+        render_menu(&mut scene, 0.0, 400.0, 200.0, 32.0, "east");
+        assert_eq!(
+            crate::mark::count_scene_paths(&scene),
+            3,
+            "box fill + box border + chevron"
+        );
+        assert_eq!(
+            crate::mark::count_scene_glyphs(&scene),
+            4,
+            "the current-value label renders real glyphs"
+        );
+    }
+
+    // diw ac-11: the resting radio twin draws one 22px row per option —
+    // ring (fill + outline) per row plus ONE filled dot on the selected row —
+    // and label glyphs for every option.
+    #[test]
+    fn diw_ac11_render_radio_draws_rows_and_selected_dot() {
+        let labels: Vec<String> =
+            ["circle", "square", "triangle"].iter().map(|s| s.to_string()).collect();
+        let mut scene = Scene::new();
+        render_radio(&mut scene, 0.0, 400.0, 200.0, &labels, Some(1));
+        assert_eq!(
+            crate::mark::count_scene_paths(&scene),
+            3 * 2 + 1,
+            "three rings (fill + outline) + one selected dot"
+        );
+        assert_eq!(
+            crate::mark::count_scene_glyphs(&scene),
+            "circlesquaretriangle".chars().count(),
+            "every option label renders"
+        );
+
+        // No selection → no dot.
+        let mut unselected = Scene::new();
+        render_radio(&mut unselected, 0.0, 400.0, 200.0, &labels, None);
+        assert_eq!(crate::mark::count_scene_paths(&unselected), 3 * 2);
+    }
+
+    // diw ac-11: the checkbox twin draws box fill + border, PLUS the check
+    // glyph exactly when checked; the label renders either way.
+    #[test]
+    fn diw_ac11_render_checkbox_check_glyph_tracks_checked_state() {
+        let mut checked = Scene::new();
+        render_checkbox(&mut checked, 0.0, 400.0, 200.0, 32.0, true, "flag");
+        let mut unchecked = Scene::new();
+        render_checkbox(&mut unchecked, 0.0, 400.0, 200.0, 32.0, false, "flag");
+        assert_eq!(
+            crate::mark::count_scene_paths(&checked),
+            3,
+            "box fill + border + check stroke when checked"
+        );
+        assert_eq!(
+            crate::mark::count_scene_paths(&unchecked),
+            2,
+            "no check stroke when unchecked"
+        );
+        assert_eq!(crate::mark::count_scene_glyphs(&checked), 4, "the label renders");
+        assert_eq!(crate::mark::count_scene_glyphs(&unchecked), 4);
     }
     use arrow::array::{Float64Array, StringArray, TimestampMicrosecondArray};
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};

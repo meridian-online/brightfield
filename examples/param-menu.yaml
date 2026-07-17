@@ -1,0 +1,51 @@
+# Discrete input widgets demo (card 0024 — menu / radio / checkbox).
+#
+# One dot plot driven by three params, each bound to a different presentation
+# of `input: menu`:
+#   - a MENU whose options DERIVE from the data (`from:` + `column:` →
+#     SELECT DISTINCT at load) picks the region,
+#   - a `style: radio` with a literal options list picks the kind,
+#   - a `style: checkbox` (default [true, false] pair) gates the x > 2 filter.
+# Every pick commits through propagate_param and the plot re-queries live —
+# the slider's loop, discrete. Radio and checkbox are presentations of menu
+# (a `style:` key in the options bag), so this spec parses as plain Mosaic.
+#
+# Run the window (macOS) and click the widgets:
+#   cargo run -p brightfield-app -- examples/param-menu.yaml
+# Preview a value headlessly:
+#   BRIGHTFIELD_PARAM_OVERRIDE="region=west" BRIGHTFIELD_DUMP_PNG=out.png \
+#     cargo run -p brightfield-app -- examples/param-menu.yaml
+params:
+  region: east
+  kind: circle
+  flag: false
+data:
+  points:
+    - { x: 1, y: 3, region: east, kind: circle }
+    - { x: 2, y: 5, region: east, kind: square }
+    - { x: 3, y: 2, region: east, kind: circle }
+    - { x: 4, y: 8, region: west, kind: triangle }
+    - { x: 5, y: 4, region: west, kind: circle }
+    - { x: 6, y: 7, region: north, kind: square }
+    - { x: 7, y: 6, region: north, kind: circle }
+    - { x: 8, y: 9, region: east, kind: triangle }
+vconcat:
+  - plot:
+      - mark: dot
+        data: { from: points, filter: "region = $region AND kind = $kind AND (x > 2 OR NOT $flag)" }
+        x: x
+        y: y
+    width: 640
+    height: 300
+  - hconcat:
+      - input: menu
+        as: $region
+        from: points
+        column: region
+      - input: menu
+        style: radio
+        as: $kind
+        options: [circle, square, triangle]
+      - input: menu
+        style: checkbox
+        as: $flag

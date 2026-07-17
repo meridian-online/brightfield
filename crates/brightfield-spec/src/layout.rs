@@ -7,6 +7,7 @@
 use crate::ast::{
     Component, ConcatNode, Input, Mark, PlotNode, Spec, SpaceNode, SpecValue, ValueOrParamRef,
 };
+use crate::vocab::InputKind;
 
 // ---------------------------------------------------------------------------
 // Rect
@@ -47,6 +48,14 @@ pub const DEFAULT_PLOT_HEIGHT: f64 = 400.0;
 pub const DEFAULT_INPUT_WIDTH: f64 = 200.0;
 /// Default input widget height (pixels).
 pub const DEFAULT_INPUT_HEIGHT: f64 = 32.0;
+/// Row height for a `style: radio` input's option rows (card 0024 — the
+/// Meridian density row ladder). Shared with the vello resting twin
+/// (`brightfield-render` `render_radio`), the SLIDER_* sync convention.
+pub const RADIO_ROW_HEIGHT: f64 = 22.0;
+/// Vertical chrome padding a radio-presented input adds around its rows —
+/// `height = RADIO_ROW_HEIGHT · N + RADIO_CHROME_PAD`. Shared with the
+/// render twin like [`RADIO_ROW_HEIGHT`].
+pub const RADIO_CHROME_PAD: f64 = 10.0;
 /// Default legend width (pixels).
 pub const DEFAULT_LEGEND_WIDTH: f64 = 120.0;
 /// Default legend height (pixels).
@@ -170,8 +179,8 @@ fn layout_component(component: &Component, x: f64, y: f64) -> LayoutNode {
         Component::Legend(_) => LayoutNode::Legend {
             rect: Rect::new(x, y, DEFAULT_LEGEND_WIDTH, DEFAULT_LEGEND_HEIGHT),
         },
-        Component::Input(_) => LayoutNode::Input {
-            rect: Rect::new(x, y, DEFAULT_INPUT_WIDTH, DEFAULT_INPUT_HEIGHT),
+        Component::Input(input) => LayoutNode::Input {
+            rect: Rect::new(x, y, DEFAULT_INPUT_WIDTH, input_widget_height(input)),
         },
         Component::Mark(_) => LayoutNode::Mark {
             rect: Rect::new(x, y, DEFAULT_PLOT_WIDTH, DEFAULT_PLOT_HEIGHT),
@@ -179,6 +188,36 @@ fn layout_component(component: &Component, x: f64, y: f64) -> LayoutNode {
         Component::Interactor(_) => LayoutNode::Interactor {
             rect: Rect::new(x, y, 0.0, 0.0),
         },
+    }
+}
+
+/// Per-style input widget height (card 0024, diw-ac05). Menu and checkbox
+/// presentations keep the fixed `DEFAULT_INPUT_WIDTH × DEFAULT_INPUT_HEIGHT`
+/// box; `style: radio` with a LITERAL N-option list reserves one
+/// [`RADIO_ROW_HEIGHT`] row per option plus [`RADIO_CHROME_PAD`]. A radio
+/// with DERIVED options (from/column — unknown N at layout time; this is a
+/// pure spec fn with no engine in reach) is layout-sized as a menu, and app
+/// assembly degrades its presentation to menu with a runtime Log Warning so
+/// the widget never overflows the rect it was given.
+fn input_widget_height(input: &Input) -> f64 {
+    // Per-style sizing is a menu-family (`input: menu`) concern only: on any
+    // other kind a stray `style: radio` + literal `options:` (inert keys for
+    // that kind — e.g. a slider) must not earn a radio-tall rect.
+    if input.kind != InputKind::Menu {
+        return DEFAULT_INPUT_HEIGHT;
+    }
+    let style_is_radio = matches!(
+        input.options.get("style"),
+        Some(ValueOrParamRef::Value(SpecValue::String(s))) if s == "radio"
+    );
+    if !style_is_radio {
+        return DEFAULT_INPUT_HEIGHT;
+    }
+    match input.options.get("options") {
+        Some(ValueOrParamRef::Value(SpecValue::Array(items))) if !items.is_empty() => {
+            RADIO_ROW_HEIGHT * items.len() as f64 + RADIO_CHROME_PAD
+        }
+        _ => DEFAULT_INPUT_HEIGHT,
     }
 }
 
@@ -1579,6 +1618,109 @@ hconcat:
         assert_eq!(
             resolve_plot_title(&plot_with(&[("title", SpecValue::Integer(3))])),
             None,
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // diw-ac05 (card 0024): per-style input widget sizing at the Input arm.
+    // -----------------------------------------------------------------------
+
+    /// Parse a single composition-level input spec and return its layout rect.
+    fn input_rect(yaml: &str) -> Rect {
+        let parsed = parse_spec(yaml, Format::Yaml).expect("parse");
+        let inputs = placed_inputs(&parsed.spec, Rect::new(0.0, 0.0, 0.0, 0.0));
+        assert_eq!(inputs.len(), 1, "one composition-level input");
+        inputs[0].rect
+    }
+
+    /// diw_ac05: `style: radio` with a literal N-option list reserves
+    /// `RADIO_ROW_HEIGHT · N + RADIO_CHROME_PAD` — pinned against the SHARED
+    /// constants (the SLIDER_* sync convention), not a recomputed value.
+    #[test]
+    fn diw_ac05_radio_literal_height_formula() {
+        let rect = input_rect(
+            r#"
+vconcat:
+  - input: menu
+    style: radio
+    as: $shape
+    options: [circle, square, triangle]
+"#,
+        );
+        assert_eq!(rect.width, DEFAULT_INPUT_WIDTH);
+        assert_eq!(
+            rect.height,
+            RADIO_ROW_HEIGHT * 3.0 + RADIO_CHROME_PAD,
+            "three literal options → three 22px rows + the shared chrome pad"
+        );
+    }
+
+    /// diw_ac05: a radio with DERIVED options (from/column — unknown N at
+    /// layout time) is layout-sized as a menu; assembly degrades the
+    /// presentation to match.
+    #[test]
+    fn diw_ac05_radio_derived_options_menu_sized() {
+        let rect = input_rect(
+            r#"
+data:
+  t: [{ region: east }]
+vconcat:
+  - input: menu
+    style: radio
+    as: $region
+    from: t
+    column: region
+"#,
+        );
+        assert_eq!(
+            rect,
+            Rect::new(0.0, 0.0, DEFAULT_INPUT_WIDTH, DEFAULT_INPUT_HEIGHT),
+            "derived radio keeps the menu box — the degrade rule keeps geometry honest"
+        );
+    }
+
+    /// diw_ac05: menu and checkbox presentations keep the fixed 200×32 box.
+    #[test]
+    fn diw_ac05_menu_and_checkbox_unchanged_200x32() {
+        let menu = input_rect(
+            r#"
+vconcat:
+  - input: menu
+    as: $region
+    options: [east, west]
+"#,
+        );
+        assert_eq!(menu, Rect::new(0.0, 0.0, 200.0, 32.0));
+
+        let checkbox = input_rect(
+            r#"
+vconcat:
+  - input: menu
+    style: checkbox
+    as: $flag
+"#,
+        );
+        assert_eq!(checkbox, Rect::new(0.0, 0.0, 200.0, 32.0));
+    }
+
+    /// diw_ac05: sizing gates on `InputKind::Menu` — an `input: slider`
+    /// carrying a stray `style: radio` + literal `options:` (both inert keys
+    /// on a slider) keeps the fixed 200×32 box, never a radio-tall rect.
+    #[test]
+    fn diw_ac05_non_menu_kind_ignores_style_keys() {
+        let slider = input_rect(
+            r#"
+vconcat:
+  - input: slider
+    style: radio
+    as: $threshold
+    options: [a, b, c]
+"#,
+        );
+        assert_eq!(
+            slider,
+            Rect::new(0.0, 0.0, DEFAULT_INPUT_WIDTH, DEFAULT_INPUT_HEIGHT),
+            "non-menu kinds ignore the menu-family style keys"
         );
     }
 }

@@ -46,6 +46,71 @@ fn escape_ident(name: &str) -> String {
     name.replace('"', "\"\"")
 }
 
+/// The ordered distinct values of a source column, resolved for a
+/// data-derived input widget's options (card 0024). Produced by
+/// [`Session::distinct_values`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct DistinctValues {
+    /// The distinct values in `ORDER BY value` order (NULL rows excluded),
+    /// each in its native [`SpecValue`] variant.
+    pub values: Vec<SpecValue>,
+    /// `true` when the column held more than the requested cap of distinct
+    /// values and `values` was truncated to the cap.
+    pub truncated: bool,
+}
+
+/// Read one cell of an Arrow array as its native [`SpecValue`] variant —
+/// the typed bridge for [`Session::distinct_values`]. `None` for an Arrow
+/// type with no `SpecValue` mapping (the caller surfaces an honest error
+/// rather than silently stringifying).
+fn spec_value_at(array: &dyn duckdb::arrow::array::Array, row: usize) -> Option<SpecValue> {
+    use duckdb::arrow::array::{
+        BooleanArray, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array,
+        LargeStringArray, StringArray, UInt16Array, UInt32Array, UInt8Array,
+    };
+    use duckdb::arrow::datatypes::DataType;
+    let any = array.as_any();
+    match array.data_type() {
+        DataType::Utf8 => any
+            .downcast_ref::<StringArray>()
+            .map(|a| SpecValue::String(a.value(row).to_string())),
+        DataType::LargeUtf8 => any
+            .downcast_ref::<LargeStringArray>()
+            .map(|a| SpecValue::String(a.value(row).to_string())),
+        DataType::Boolean => any
+            .downcast_ref::<BooleanArray>()
+            .map(|a| SpecValue::Bool(a.value(row))),
+        DataType::Int8 => any
+            .downcast_ref::<Int8Array>()
+            .map(|a| SpecValue::Integer(i64::from(a.value(row)))),
+        DataType::Int16 => any
+            .downcast_ref::<Int16Array>()
+            .map(|a| SpecValue::Integer(i64::from(a.value(row)))),
+        DataType::Int32 => any
+            .downcast_ref::<Int32Array>()
+            .map(|a| SpecValue::Integer(i64::from(a.value(row)))),
+        DataType::Int64 => any
+            .downcast_ref::<Int64Array>()
+            .map(|a| SpecValue::Integer(a.value(row))),
+        DataType::UInt8 => any
+            .downcast_ref::<UInt8Array>()
+            .map(|a| SpecValue::Integer(i64::from(a.value(row)))),
+        DataType::UInt16 => any
+            .downcast_ref::<UInt16Array>()
+            .map(|a| SpecValue::Integer(i64::from(a.value(row)))),
+        DataType::UInt32 => any
+            .downcast_ref::<UInt32Array>()
+            .map(|a| SpecValue::Integer(i64::from(a.value(row)))),
+        DataType::Float32 => any
+            .downcast_ref::<Float32Array>()
+            .map(|a| SpecValue::Float(f64::from(a.value(row)))),
+        DataType::Float64 => any
+            .downcast_ref::<Float64Array>()
+            .map(|a| SpecValue::Float(a.value(row))),
+        _ => None,
+    }
+}
+
 use brightfield_spec::analysis::{ComponentPath, SpecAnalysis};
 use brightfield_spec::ast::{Component, Spec, SpecValue};
 use brightfield_spec::parse::ParseWarning;
@@ -918,6 +983,67 @@ impl Session {
         let mut stmt = self.conn.prepare(sql)?;
         let arrow = stmt.query_arrow(duckdb::params![])?;
         Ok(arrow.collect())
+    }
+
+    /// The ordered distinct values of `column` in `source_name`, for a
+    /// data-derived input widget's options (card 0024, diw-ac03). Modeled on
+    /// [`Self::profile_sources`]: read-only and non-`&mut`, bypassing every
+    /// mark cache, so it is safe on the launch session before the window
+    /// opens and on the watcher's throwaway off-thread session — and NEVER
+    /// needed on the coordinator's live session (options are launch-fixed).
+    ///
+    /// NULL rows are excluded and the values arrive in `ORDER BY value`
+    /// order, each in its native [`SpecValue`] variant (a VARCHAR column
+    /// yields `String`s, an integer column `Integer`s — the variant identity
+    /// is load-bearing downstream at SQL emit). A column holding more than
+    /// `cap` distinct values is truncated to the first `cap` with
+    /// `truncated: true` so the caller can warn.
+    ///
+    /// Errors are per-call and never poison the session: a bad column, a
+    /// vanished source, or a column type with no `SpecValue` mapping returns
+    /// [`EngineError::DistinctFailed`] and the connection stays usable.
+    pub fn distinct_values(
+        &self,
+        source_name: &str,
+        column: &str,
+        cap: usize,
+    ) -> Result<DistinctValues, EngineError> {
+        let fail = |reason: String| EngineError::DistinctFailed {
+            source_name: source_name.to_string(),
+            column: column.to_string(),
+            reason,
+        };
+        let src = escape_ident(source_name);
+        let col = escape_ident(column);
+        // LIMIT cap+1: one row of headroom is exactly the truncation signal.
+        let sql = format!(
+            "SELECT DISTINCT \"{col}\" AS value FROM \"{src}\" \
+             WHERE \"{col}\" IS NOT NULL ORDER BY value LIMIT {}",
+            cap.saturating_add(1)
+        );
+        let batches = self
+            .query_arrow_raw(&sql)
+            .map_err(|e| fail(e.to_string()))?;
+        let mut values: Vec<SpecValue> = Vec::new();
+        for batch in &batches {
+            let array = batch.column(0);
+            for row in 0..batch.num_rows() {
+                match spec_value_at(array.as_ref(), row) {
+                    Some(v) => values.push(v),
+                    None => {
+                        return Err(fail(format!(
+                            "unsupported column type {:?} for input-widget options",
+                            array.data_type()
+                        )))
+                    }
+                }
+            }
+        }
+        let truncated = values.len() > cap;
+        if truncated {
+            values.truncate(cap);
+        }
+        Ok(DistinctValues { values, truncated })
     }
 
     /// Profile every `data:` source for the Data sidebar — the real
@@ -4617,5 +4743,105 @@ vconcat:
             session.mark_index_for_path("root/vconcat[0]/plot[0]/mark[dot]").is_some(),
             "a pre-existing mark still resolves to its ORIGINAL path"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // diw-ac03 (card 0024): Session::distinct_values — the read-only options
+    // seam for data-derived input widgets.
+    // -----------------------------------------------------------------------
+
+    /// A live session over a source with duplicated categories, a NULL row,
+    /// and an integer column — the distinct_values fixture.
+    fn distinct_fixture_session() -> Session {
+        let yaml = r#"
+data:
+  t:
+    - { region: west, n: 3 }
+    - { region: east, n: 1 }
+    - { region: west, n: 3 }
+    - { region: ~, n: 2 }
+    - { region: north, n: 1 }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: n
+    y: n
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        Engine::new().load_spec(spec, analysis, None).unwrap().session
+    }
+
+    /// diw_ac03: values arrive ordered (ORDER BY value), de-duplicated, NULL
+    /// rows excluded, in the column's native SpecValue variant.
+    #[test]
+    fn diw_ac03_distinct_values_ordered_deduped_null_excluded() {
+        let session = distinct_fixture_session();
+        let dv = session.distinct_values("t", "region", 50).expect("resolves");
+        assert_eq!(
+            dv.values,
+            vec![
+                SpecValue::String("east".to_string()),
+                SpecValue::String("north".to_string()),
+                SpecValue::String("west".to_string()),
+            ],
+            "ordered, de-duplicated, NULL excluded, native String variant"
+        );
+        assert!(!dv.truncated, "3 distinct values under a cap of 50");
+    }
+
+    /// diw_ac03: an integer column surfaces native Integer variants — the
+    /// variant identity is load-bearing for strict-variant default
+    /// reconciliation and SQL emit downstream.
+    #[test]
+    fn diw_ac03_distinct_values_native_integer_variant() {
+        let session = distinct_fixture_session();
+        let dv = session.distinct_values("t", "n", 50).expect("resolves");
+        assert_eq!(
+            dv.values,
+            vec![SpecValue::Integer(1), SpecValue::Integer(2), SpecValue::Integer(3)],
+            "an integer column yields Integer, never a stringified value"
+        );
+    }
+
+    /// diw_ac03: a column exceeding the cap truncates to exactly `cap`
+    /// values and sets the flag; a column at exactly the cap does not.
+    #[test]
+    fn diw_ac03_distinct_values_cap_truncation_at_cap_plus_one() {
+        let session = distinct_fixture_session();
+        // 3 distinct regions, cap 2 → truncated to the first 2 in order.
+        let dv = session.distinct_values("t", "region", 2).expect("resolves");
+        assert!(dv.truncated, "cap+1 available → truncated flag set");
+        assert_eq!(
+            dv.values,
+            vec![
+                SpecValue::String("east".to_string()),
+                SpecValue::String("north".to_string()),
+            ],
+            "exactly cap values, in order"
+        );
+        // Cap exactly equal to the distinct count → complete, not truncated.
+        let dv = session.distinct_values("t", "region", 3).expect("resolves");
+        assert!(!dv.truncated, "exactly-cap columns are complete");
+        assert_eq!(dv.values.len(), 3);
+    }
+
+    /// diw_ac03: a nonexistent column errors without poisoning the session —
+    /// a subsequent query on the same session succeeds.
+    #[test]
+    fn diw_ac03_distinct_values_bad_column_isolated() {
+        let session = distinct_fixture_session();
+        let err = session
+            .distinct_values("t", "no_such_column", 50)
+            .expect_err("a bad column errors");
+        match err {
+            EngineError::DistinctFailed { source_name, column, .. } => {
+                assert_eq!(source_name, "t");
+                assert_eq!(column, "no_such_column");
+            }
+            other => panic!("expected DistinctFailed, got {other:?}"),
+        }
+        // The session is not poisoned: the next call succeeds.
+        let dv = session.distinct_values("t", "region", 50).expect("session still usable");
+        assert_eq!(dv.values.len(), 3);
     }
 }
