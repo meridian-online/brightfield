@@ -64,6 +64,49 @@ fn aws_ac01_dump_mode_exits_before_workspace_construction() {
 /// multi-plot example, deliberately NON-raster: the raster family's
 /// GROUP BY row order is not byte-stable run-to-run on this branch (the
 /// determinism chore lands separately).
+/// diw_ac12 (card 0024): the new widget example — a derived menu, a literal
+/// radio, and a checkbox around a param-filtered dot plot — dumps a
+/// NON-EMPTY PNG and is byte-identical across two runs (the aws_ac07
+/// determinism shape). The resting twins (render_menu/render_radio/
+/// render_checkbox) ride the dump path, so this also pins that widget ink
+/// cannot wobble run-to-run.
+#[test]
+fn diw_ac12_param_menu_example_dump_deterministic() {
+    let dir = std::env::temp_dir().join(format!("bf-diw-ac12-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let spec_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/param-menu.yaml");
+    assert!(spec_path.exists(), "example spec present at {spec_path:?}");
+
+    let mut pngs: Vec<Vec<u8>> = Vec::new();
+    for run in 0..2 {
+        let png_path = dir.join(format!("menu-{run}.png"));
+        let _ = fs::remove_file(&png_path);
+        let output = Command::new(env!("CARGO_BIN_EXE_brightfield"))
+            .arg(&spec_path)
+            .env("BRIGHTFIELD_DUMP_PNG", &png_path)
+            .env_remove("BRIGHTFIELD_PARAM_OVERRIDE")
+            .output()
+            .expect("binary runs");
+        assert!(
+            output.status.success(),
+            "dump run {run} exits cleanly: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        pngs.push(fs::read(&png_path).expect("PNG written"));
+    }
+
+    assert!(!pngs[0].is_empty(), "the widget example produced pixels");
+    assert!(
+        pngs[0] == pngs[1],
+        "two dumps of param-menu.yaml must be byte-identical ({} vs {} bytes)",
+        pngs[0].len(),
+        pngs[1].len()
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn aws_ac07_dump_run_twice_is_byte_identical() {
     // Own directory (not `temp_dir()`): the aws_ac01 test removes its

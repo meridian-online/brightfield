@@ -33,6 +33,8 @@ use crate::chart_state::ChartState;
 use crate::crossfilter::CrossfilterCoordinator;
 use crate::interaction::{BrushRegion, InteractionState};
 use crate::legend_element::{LegendElement, PlacedLegend};
+use crate::menu::MenuBinding;
+use crate::menu_element::{menu_element, MenuWidget};
 use crate::slider::SliderBinding;
 use crate::slider_element::{SliderElement, SliderWidget};
 
@@ -80,11 +82,35 @@ pub struct PlacedSlider {
     pub coordinator: Option<Rc<RefCell<CrossfilterCoordinator>>>,
 }
 
+/// One menu-family widget positioned in the dashboard (card 0024): its rect,
+/// the resolved param binding it drives (menu / radio / checkbox style,
+/// options already resolved + reconciled at assembly), its reactive widget
+/// state, and the shared coordinator its picks commit through. Element index
+/// = coordinator menu-binding index (menus hosted in placement order, the
+/// slider registration-order contract).
+pub struct PlacedMenu {
+    /// Left edge within the dashboard, in pixels.
+    pub x: f64,
+    /// Top edge within the dashboard, in pixels.
+    pub y: f64,
+    /// Widget width in pixels.
+    pub width: f64,
+    /// Widget height in pixels.
+    pub height: f64,
+    /// The resolved param binding (name + style + typed options).
+    pub binding: MenuBinding,
+    /// Reactive widget state (current value + interaction state).
+    pub state: Entity<MenuWidget>,
+    /// Shared coordinator; a pick routes through it to re-query + repaint.
+    pub coordinator: Option<Rc<RefCell<CrossfilterCoordinator>>>,
+}
+
 /// GPUI render component for a dashboard: hosts one [`ChartElement`] per plot,
-/// one [`SliderElement`] per slider, and one [`LegendElement`] per standalone
-/// legend (display-only unless bound to a selection — card 0009), each
-/// absolutely positioned at its layout rect, in a container sized to the
-/// dashboard's bounding box. A single-plot spec is just a one-plot dashboard.
+/// one [`SliderElement`] per slider, one menu-family widget per `input: menu`
+/// (card 0024), and one [`LegendElement`] per standalone legend (display-only
+/// unless bound to a selection — card 0009), each absolutely positioned at its
+/// layout rect, in a container sized to the dashboard's bounding box. A
+/// single-plot spec is just a one-plot dashboard.
 pub struct ChartView {
     /// Dashboard width in pixels.
     width: f64,
@@ -99,6 +125,10 @@ pub struct ChartView {
     chart_regions: Vec<Rc<Cell<BrushRegion>>>,
     /// The positioned slider widgets (card 0005).
     sliders: Vec<PlacedSlider>,
+    /// The positioned menu-family widgets (card 0024) — menu / radio /
+    /// checkbox presentations of `input: menu`. Hosted in placement order,
+    /// which is the coordinator's menu-binding index space.
+    menus: Vec<PlacedMenu>,
     /// The positioned standalone legends (card 0016). Display-only unless a
     /// placement carries a selection binding (card 0009), in which case it
     /// indexes the coordinator's OWN legend-binding space — distinct from the
@@ -120,6 +150,7 @@ impl ChartView {
         height: f64,
         charts: Vec<PlacedChart>,
         sliders: Vec<PlacedSlider>,
+        menus: Vec<PlacedMenu>,
         legends: Vec<PlacedLegend>,
     ) -> Self {
         let chart_regions = charts
@@ -132,6 +163,7 @@ impl ChartView {
             charts,
             chart_regions,
             sliders,
+            menus,
             legends,
             focus_ring: None,
         }
@@ -212,6 +244,20 @@ impl Render for ChartView {
                         .h(px(l.height as f32))
                         .child(LegendElement::new(l, i, renderer.clone()))
                 })
+            }))
+            // Menu-family widgets (card 0024) render AFTER charts/sliders/
+            // legends so a widget box sits above sibling chrome; the OPEN
+            // option list additionally rides `deferred` + `occlude` inside
+            // `menu_element`, painting above everything and swallowing
+            // clicks from hitboxes beneath (diw-ac07).
+            .children(self.menus.iter().enumerate().map(|(i, m)| {
+                div()
+                    .absolute()
+                    .left(px(m.x as f32))
+                    .top(px(m.y as f32))
+                    .w(px(m.width as f32))
+                    .h(px(m.height as f32))
+                    .child(menu_element(m, i, self.height, cx))
             }))
             // The keyboard focus ring (card 0018): a border-only overlay at the
             // focused node's rect. `None` when focus is inactive or presentation

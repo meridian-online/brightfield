@@ -17,12 +17,20 @@
 //! the live `param_state`. ac-15 locks the deferral as a behavioural
 //! property at the coordinator layer.
 //!
-//! ## Out of scope (other input widgets)
+//! ## Other input widgets (card 0024 correction)
 //!
-//! Menu / Search / Table remain Unimplemented in
-//! [`brightfield_spec::vocab::InputKind`] (Decision 5). They will reuse
-//! the `ParamDispatcher` trait + `commit_<widget>_release` helper pattern
-//! defined here when their drives land — no coordinator change required.
+//! The menu family (menu / radio / checkbox, `menu.rs`) reuses the
+//! `ParamDispatcher` trait + `commit_<widget>_release` helper pattern
+//! defined here. This header's original promise — "no coordinator change
+//! required" — was FALSE (Explore-verified 2026-07-17): the ENGINE-facing
+//! half reuses byte-untouched (`ParamDispatcher` → `propagate_param`;
+//! String params already substitute quoted+escaped at SQL emit), but each
+//! widget family adds its own ADDITIVE coordinator lane — a bindings field
+//! plus `commit_<widget>`/`apply_<widget>` beside the slider's, and a
+//! disjunct in the live-surface gate. That is the real reuse contract:
+//! trait reuse + additive lanes, not a coordinator-free drop-in.
+//! Search / Table remain Unimplemented in
+//! [`brightfield_spec::vocab::InputKind`].
 
 use brightfield_engine::error::EngineError;
 use brightfield_engine::RecordBatch;

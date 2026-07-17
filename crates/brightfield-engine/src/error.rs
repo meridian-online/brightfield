@@ -42,4 +42,19 @@ pub enum EngineError {
         /// The emission error from brightfield-sql.
         cause: EmitError,
     },
+
+    /// A distinct-values options query failed (card 0024 input widgets) —
+    /// a bad column name, a vanished source, or a column type with no
+    /// [`brightfield_spec::ast::SpecValue`] mapping. Per-input isolated:
+    /// the caller warns and skips the one widget, never the dashboard.
+    #[error("distinct values failed for {source_name}.{column}: {reason}")]
+    DistinctFailed {
+        /// The data source name from the spec.
+        source_name: String,
+        /// The column whose distinct values were requested.
+        column: String,
+        /// The underlying failure, stringified (a DuckDB error or an
+        /// unsupported-type explanation).
+        reason: String,
+    },
 }

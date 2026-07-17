@@ -28,6 +28,8 @@ pub mod crossfilter;
 pub mod interaction;
 pub mod legend_element;
 pub mod legend_scene;
+pub mod menu;
+pub mod menu_element;
 pub mod slider;
 pub mod slider_element;
 mod theme_bridge;
@@ -39,11 +41,16 @@ pub use brush::{brush_rect_to_predicate, BrushKind, ChannelColumns};
 pub use chart_element::ChartElement;
 pub use chart_layout::ChartLayout;
 pub use chart_state::ChartState;
-pub use chart_view::{ChartView, PlacedChart, PlacedSlider};
+pub use chart_view::{ChartView, PlacedChart, PlacedMenu, PlacedSlider};
 pub use crossfilter::{CrossfilterCoordinator, LegendSelectBinding, LivePlot, MarkInput};
 pub use interaction::InteractionState;
 pub use legend_element::{swatch_hit_category, LegendElement, PlacedLegend};
 pub use legend_scene::build_legend_scene;
+pub use menu::{
+    checkbox_checked, checkbox_toggle_index, commit_menu_release, option_label, DerivedOptions,
+    MenuBinding, MenuState, MenuStyle,
+};
+pub use menu_element::MenuWidget;
 pub use slider::{commit_slider_release, ParamDispatcher, SliderBinding, SliderState};
 pub use slider_element::{SliderElement, SliderWidget};
 pub use vello_renderer::VelloRenderer;

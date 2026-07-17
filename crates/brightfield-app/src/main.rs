@@ -18,6 +18,7 @@ mod dock_state_file;
 mod keymap;
 #[cfg(any(target_os = "macos", test))]
 mod log_model;
+mod menu_resolve;
 #[cfg(any(target_os = "macos", test))]
 mod meridian_theme;
 #[cfg(any(target_os = "macos", test))]
@@ -56,7 +57,9 @@ use brightfield_spec::parse_spec_path;
 use brightfield_spec::vocab::{InputKind, LegendChannel, MarkKind};
 use brightfield_sql::{collect_marks, collect_plot_groups};
 use brightfield_ui::chart_view::BrushBinding;
-use brightfield_ui::{CrossfilterCoordinator, LivePlot, MarkInput, SliderBinding};
+use brightfield_ui::{CrossfilterCoordinator, LivePlot, MarkInput, MenuBinding, MenuStyle, SliderBinding};
+
+use crate::menu_resolve::{resolve_menu_placements, MenuPlacement};
 
 /// Concatenate the record batches from one mark's query into a single batch.
 ///
@@ -140,6 +143,10 @@ struct Dashboard {
     height: u32,
     plots: Vec<PlotRender>,
     sliders: Vec<SliderPlacement>,
+    /// Resolved menu-family widget placements (card 0024) — options resolved
+    /// + reconciled at assembly. The window hosts each as a menu element; the
+    /// headless/PNG path draws the resting twins.
+    menus: Vec<MenuPlacement>,
     legends: Vec<LegendPlacement>,
     meta_title: Option<String>,
     /// The keyboard-focus tree over the dashboard's ComponentPath structure
@@ -522,6 +529,13 @@ struct LiveParts {
     /// Legend producer bindings (card 0009), in analysis order — the
     /// coordinator's legend index space; placements join by legend path.
     legend_bindings: Vec<brightfield_spec::analysis::LegendBinding>,
+    /// Menu options-resolution warnings from THIS assembly pass (card 0024,
+    /// diw-ac04) — truncation, per-input failures, style degrades. The launch
+    /// path appends them to the Log dock once the window opens; the watcher
+    /// path returns them from `run_pipeline` (pure data, `Send`) and appends
+    /// them BEFORE the reload gates.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    menu_warnings: Vec<String>,
 }
 
 /// Per-plot live metadata captured during rendering, joined to its `ChartState`
@@ -587,6 +601,17 @@ struct ChromeSnapshot {
     /// edit regrows the launch margins, which the watcher can't hot-apply, so it
     /// gates identically (grown margins are a pure function of the titles).
     plot_render_meta: Vec<(String, SequentialScheme, bool, Insets, ResolvedTitles)>,
+    /// Per hosted menu-family widget (card 0024, diw-ac17), in placement
+    /// order: rect, presentation style, bound param name, and the RESOLVED
+    /// options (Debug form). The coordinator's menu_bindings and the
+    /// ChartView's PlacedMenus are launch-fixed, so ANY menu-affecting edit —
+    /// options list, style, added/removed widget — must gate to "restart to
+    /// apply". Carrying RESOLVED (not declared) options is deliberate: under
+    /// a Derived menu whose underlying data drifted since launch, any spec
+    /// edit gates too — the hosted widget genuinely IS stale
+    /// (honest-conservative; snapshotting source/column instead would readmit
+    /// the stale-options hot-swap this slice exists to close).
+    widgets: Vec<(f64, f64, f64, f64, String, String, String)>,
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -597,6 +622,7 @@ impl ChromeSnapshot {
         legends: &[LegendPlacement],
         bindings: &[brightfield_spec::analysis::LegendBinding],
         plots: &[LivePlotMeta],
+        menus: &[MenuPlacement],
     ) -> Self {
         Self {
             title,
@@ -635,6 +661,20 @@ impl ChromeSnapshot {
                     )
                 })
                 .collect(),
+            widgets: menus
+                .iter()
+                .map(|m| {
+                    (
+                        m.rect.x,
+                        m.rect.y,
+                        m.rect.width,
+                        m.rect.height,
+                        format!("{:?}", m.binding.style),
+                        m.binding.param_name.clone(),
+                        format!("{:?}", m.binding.options),
+                    )
+                })
+                .collect(),
         }
     }
 }
@@ -656,6 +696,9 @@ fn chrome_divergence(launch: &ChromeSnapshot, rebuilt: &ChromeSnapshot) -> Optio
     if launch.plot_render_meta != rebuilt.plot_render_meta {
         return Some("per-plot render metadata (colorScheme/inline legend/inset/titles)");
     }
+    if launch.widgets != rebuilt.widgets {
+        return Some("input widget (menu/radio/checkbox rect, style, param, or options)");
+    }
     None
 }
 
@@ -669,7 +712,9 @@ fn chrome_divergence(launch: &ChromeSnapshot, rebuilt: &ChromeSnapshot) -> Optio
 /// the hot-reload watcher keeps the last good chart when a mid-edit save is
 /// momentarily invalid.
 #[cfg(any(target_os = "macos", test))]
-fn run_pipeline(spec_path: &str) -> Result<(Dashboard, ChromeSnapshot, Vec<SourceProfile>), String> {
+fn run_pipeline(
+    spec_path: &str,
+) -> Result<(Dashboard, ChromeSnapshot, Vec<SourceProfile>, Vec<String>), String> {
     build_everything(spec_path).map(|(dashboard, live)| {
         let title = brightfield_ui::resolve_title(dashboard.meta_title.as_deref(), spec_path);
         let chrome = ChromeSnapshot::capture(
@@ -677,14 +722,34 @@ fn run_pipeline(spec_path: &str) -> Result<(Dashboard, ChromeSnapshot, Vec<Sourc
             &dashboard.legends,
             &live.legend_bindings,
             &live.plots,
+            &dashboard.menus,
         );
         // Sidebar profiles from the throwaway session BEFORE it drops (card
         // 0017): pure data, so it crosses the watcher's Send return boundary
         // where the non-Send Session cannot. The Session is created, profiled,
         // and dropped entirely on the background executor — never handed out.
         let profiles = live.session.profile_sources();
-        (dashboard, chrome, profiles)
+        // Menu resolution warnings cross the same Send boundary (card 0024,
+        // diw-ac04 — the Vec<SourceProfile> shape): the watcher appends them
+        // BEFORE the same_layout/chrome_divergence gates so a gated "restart
+        // to apply" reload still co-surfaces the warning explaining why.
+        let warnings = live.menu_warnings.clone();
+        (dashboard, chrome, profiles, warnings)
     })
+}
+
+/// The Log-dock entries one reload/launch pass appends for assembly-time
+/// menu resolution warnings (card 0024, diw-ac04): exactly one `Warning`
+/// per warning string, per assembly pass — independent of whether the pass
+/// subsequently gates (the watcher appends these BEFORE the
+/// same_layout/chrome_divergence `continue`s, so a gated "restart to apply"
+/// still co-surfaces the explanation instead of dropping it).
+#[cfg(any(target_os = "macos", test))]
+fn resolution_warning_entries(warnings: &[String]) -> Vec<(reload_feedback::Severity, String)> {
+    warnings
+        .iter()
+        .map(|w| (reload_feedback::Severity::Warning, w.clone()))
+        .collect()
 }
 
 /// Run the spec-to-scene pipeline, returning a [`Dashboard`] — one independently
@@ -1098,6 +1163,14 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             })
             .collect();
 
+    // Menu-family widget placements (card 0024): each composition-level
+    // `input: menu` (any style) with a param target resolves its options —
+    // literal pass-through, or SELECT DISTINCT for from/column — reconciles
+    // the param default, and finalises the presentation style. Runs on BOTH
+    // the launch and watcher paths (this fn is both); read-only on the
+    // session. Warnings ride LiveParts to the Log dock (diw-ac04).
+    let (menus, menu_warnings) = resolve_menu_placements(&parsed.spec, &session);
+
     // Standalone legends (multi-view inc 6): resolve each `legend:` node to the
     // colour scale of the plot its `for:` names. Resolved before `live_plots` is
     // moved into `LiveParts` (it borrows the per-plot scales).
@@ -1112,12 +1185,14 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
         eprintln!("warning: {d}");
     }
 
-    // Fold slider + legend rects into the dashboard size so a widget beside/below
-    // the plots reserves its space (the window is the bounding box).
+    // Fold slider + menu + legend rects into the dashboard size so a widget
+    // beside/below the plots reserves its space (the window is the bounding
+    // box) — a radio-tall rect (diw-ac05) is accommodated here like any other.
     let width = placed
         .iter()
         .map(|p| p.rect.x + p.rect.width)
         .chain(sliders.iter().map(|s| s.rect.x + s.rect.width))
+        .chain(menus.iter().map(|m| m.rect.x + m.rect.width))
         .chain(legends.iter().map(|l| l.rect.x + l.rect.width))
         .fold(0.0_f64, f64::max)
         .ceil() as u32;
@@ -1125,6 +1200,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
         .iter()
         .map(|p| p.rect.y + p.rect.height)
         .chain(sliders.iter().map(|s| s.rect.y + s.rect.height))
+        .chain(menus.iter().map(|m| m.rect.y + m.rect.height))
         .chain(legends.iter().map(|l| l.rect.y + l.rect.height))
         .fold(0.0_f64, f64::max)
         .ceil() as u32;
@@ -1134,6 +1210,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             height,
             plots,
             sliders,
+            menus,
             legends,
             meta_title: parsed.spec.meta.as_ref().and_then(|m| m.title.clone()),
             // The keyboard-focus tree over the dashboard structure (card 0018),
@@ -1145,6 +1222,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             marks: mark_inputs,
             plots: live_plots,
             legend_bindings,
+            menu_warnings,
         },
     ))
 }
@@ -1246,7 +1324,23 @@ fn spawn_spec_watcher(
                 .await;
 
             match built {
-                Ok((dashboard, rebuilt_chrome, rebuilt_profiles)) => {
+                Ok((dashboard, rebuilt_chrome, rebuilt_profiles, resolution_warnings)) => {
+                    // Menu resolution warnings surface FIRST — before the
+                    // same_layout / chrome_divergence gates below `continue`
+                    // past the feedback taps — so a menu-affecting edit that
+                    // gates to "restart to apply" still co-surfaces the
+                    // warning explaining why (card 0024, diw-ac04). Exactly
+                    // one append per warning per assembly pass.
+                    if !resolution_warnings.is_empty() {
+                        let entries = resolution_warning_entries(&resolution_warnings);
+                        cx.update(|app| {
+                            for (severity, message) in entries {
+                                feedback_log.update(app, |log, _| {
+                                    log.append(severity, message);
+                                });
+                            }
+                        });
+                    }
                     // Only a data/visual change is hot-swappable: the window's
                     // plot layout is fixed at launch, so require exactly the same
                     // plots (by stable path) at the same geometry. Any structural
@@ -1443,6 +1537,44 @@ fn main() {
                 frac,
             );
         }
+        // Draw the resting menu-family widgets (card 0024) exactly as the
+        // window hosts them: the closed menu box at the current value, the
+        // radio rows with the selected dot, the checkbox at its checked
+        // state — the render_slider convention, one twin per style.
+        for m in &dashboard.menus {
+            match m.binding.style {
+                MenuStyle::Menu => brightfield_render::scene::render_menu(
+                    &mut composite,
+                    m.rect.x,
+                    m.rect.y,
+                    m.rect.width,
+                    m.rect.height,
+                    &brightfield_ui::option_label(&m.value),
+                ),
+                MenuStyle::Radio => {
+                    let labels: Vec<String> =
+                        m.binding.options.iter().map(brightfield_ui::option_label).collect();
+                    let selected = m.binding.options.iter().position(|o| *o == m.value);
+                    brightfield_render::scene::render_radio(
+                        &mut composite,
+                        m.rect.x,
+                        m.rect.y,
+                        m.rect.width,
+                        &labels,
+                        selected,
+                    );
+                }
+                MenuStyle::Checkbox => brightfield_render::scene::render_checkbox(
+                    &mut composite,
+                    m.rect.x,
+                    m.rect.y,
+                    m.rect.width,
+                    m.rect.height,
+                    brightfield_ui::checkbox_checked(&m.binding.options, Some(&m.value)),
+                    &m.binding.param_name,
+                ),
+            }
+        }
         // Draw the standalone legends into the composite at their layout rects
         // (multi-view inc 6). Each shows its resolved plot's colour scale.
         for l in &dashboard.legends {
@@ -1488,7 +1620,8 @@ fn main() {
         let app = gpui::Application::with_platform(Rc::new(gpui_macos::MacPlatform::new(false)))
             .with_assets(gpui_component_assets::Assets);
         let spec_path = spec_path.to_string();
-        let Dashboard { width, height, plots, sliders, legends, meta_title, focus_tree } = dashboard;
+        let Dashboard { width, height, plots, sliders, menus, legends, meta_title, focus_tree } =
+            dashboard;
         // The dashboard's display title — the ONE resolver call feeding both
         // the native titlebar and the canvas panel's tab title below.
         let title = brightfield_ui::resolve_title(meta_title.as_deref(), &spec_path);
@@ -1497,6 +1630,7 @@ fn main() {
             marks,
             plots: live_plots_meta,
             legend_bindings,
+            menu_warnings,
         } = live;
         // Workspace shell inputs (card 0017), computed before `marks` moves
         // into the coordinator: the editor buffer seed (the spec file's
@@ -1529,8 +1663,13 @@ fn main() {
         // per-plot render metadata are fixed at launch, so the watcher
         // refuses to hot-swap when a rebuild diverges on any of them
         // ("restart to apply" — same contract as a layout change).
-        let launch_chrome =
-            ChromeSnapshot::capture(title.clone(), &legends, &legend_bindings, &live_plots_meta);
+        let launch_chrome = ChromeSnapshot::capture(
+            title.clone(),
+            &legends,
+            &legend_bindings,
+            &live_plots_meta,
+            &menus,
+        );
         app.run(move |cx| {
             // The bundled Meridian faces (Inter + JetBrains Mono) register
             // BEFORE any window opens, so the theme's font families below
@@ -1575,6 +1714,15 @@ fn main() {
                         );
                     });
                 }
+            }
+            // Menu options-resolution warnings from the launch assembly pass
+            // (card 0024, diw-ac04/diw-ac14): truncation, per-input failures,
+            // style degrades — Warning, no toast (the profile precedent),
+            // exactly one entry per warning per pass.
+            for (severity, message) in resolution_warning_entries(&menu_warnings) {
+                feedback_log.update(cx, |log, _| {
+                    log.append(severity, message);
+                });
             }
 
             // One ChartState per plot; the watcher tracks each by its stable
@@ -1629,6 +1777,12 @@ fn main() {
             // matches its binding.
             let slider_bindings: Vec<SliderBinding> =
                 sliders.iter().map(|s| s.binding.clone()).collect();
+            // Coordinator menu bindings (card 0024), in the same order as the
+            // hosted menu widgets below (both derived from `menus`), so a
+            // widget's element index matches its binding — the registration-
+            // order contract (diw-ac07).
+            let menu_bindings: Vec<MenuBinding> =
+                menus.iter().map(|m| m.binding.clone()).collect();
             // Coordinator legend bindings (card 0009), in analysis order — the
             // same slice `placed_legend_views` positions against, so a hosted
             // legend's index matches its binding.
@@ -1645,6 +1799,7 @@ fn main() {
                 marks,
                 live_plots,
                 slider_bindings,
+                menu_bindings,
                 legend_select_bindings,
                 true,
             );
@@ -1674,6 +1829,23 @@ fn main() {
                     height: s.rect.height,
                     binding: s.binding.clone(),
                     state: cx.new(|_| brightfield_ui::SliderWidget::new(s.value)),
+                    coordinator: coordinator.clone(),
+                })
+                .collect();
+
+            // One placed menu-family widget per resolved `input: menu`, wired
+            // to the same coordinator; index = position (matching the
+            // menu_bindings order above). The widget rests at the reconciled
+            // current value.
+            let placed_menus: Vec<brightfield_ui::PlacedMenu> = menus
+                .iter()
+                .map(|m| brightfield_ui::PlacedMenu {
+                    x: m.rect.x,
+                    y: m.rect.y,
+                    width: m.rect.width,
+                    height: m.rect.height,
+                    binding: m.binding.clone(),
+                    state: cx.new(|_| brightfield_ui::MenuWidget::new(m.value.clone())),
                     coordinator: coordinator.clone(),
                 })
                 .collect();
@@ -1760,6 +1932,7 @@ fn main() {
                             f64::from(height),
                             charts,
                             placed_sliders,
+                            placed_menus,
                             hosted_legends,
                         )
                     });
@@ -2319,7 +2492,7 @@ plot:
             column: "g".into(),
         };
         let coordinator =
-            CrossfilterCoordinator::new(session, Vec::<MarkInput>::new(), vec![], vec![], vec![ui_binding], false)
+            CrossfilterCoordinator::new(session, Vec::<MarkInput>::new(), vec![], vec![], vec![], vec![ui_binding], false)
                 .expect("legend-only liveness (lcf_ac03) keeps the coordinator");
 
         let colour = Scale::Colour {
@@ -2644,7 +2817,7 @@ colorScheme: blues
         )
         .unwrap();
 
-        let (_, _, profiles) =
+        let (_, _, profiles, _warnings) =
             super::run_pipeline(spec_path.to_str().unwrap()).expect("pipeline ok");
         let _ = std::fs::remove_dir_all(&dir);
 
@@ -2686,6 +2859,15 @@ colorScheme: blues
                     inline,
                     Insets::default(),
                     brightfield_render::title::ResolvedTitles::default(),
+                )],
+                widgets: vec![(
+                    0.0,
+                    300.0,
+                    200.0,
+                    32.0,
+                    "Menu".to_string(),
+                    "region".to_string(),
+                    "[String(\"east\"), String(\"west\")]".to_string(),
                 )],
             };
         let launch = snapshot("framed", SequentialScheme::Blues, true);
@@ -2778,6 +2960,171 @@ colorScheme: blues
         );
     }
 
+    /// diw_ac17 (card 0024 reload honesty): the ChromeSnapshot widget slice
+    /// gates every menu-affecting edit to "restart to apply" — the
+    /// coordinator's menu_bindings and the ChartView's PlacedMenus are
+    /// launch-fixed, so an options-list change, a style change, and an
+    /// added/removed widget each diverge; a widget-neutral edit (identical
+    /// widget slice) does not. Resolved-options capture also means a Derived
+    /// menu whose data drifted diverges on ANY edit — honest-conservative by
+    /// design (the resolved slice moved; the hosted widget IS stale).
+    #[test]
+    fn diw_ac17_widget_slice_gates_menu_affecting_edits() {
+        use brightfield_render::layout::Insets;
+        use brightfield_render::scale::SequentialScheme;
+
+        let snapshot = |widgets: Vec<(f64, f64, f64, f64, String, String, String)>| {
+            super::ChromeSnapshot {
+                title: "framed".to_string(),
+                legends: vec![],
+                legend_bindings: vec![],
+                plot_render_meta: vec![(
+                    "/plot/0".to_string(),
+                    SequentialScheme::Blues,
+                    true,
+                    Insets::default(),
+                    brightfield_render::title::ResolvedTitles::default(),
+                )],
+                widgets,
+            }
+        };
+        let widget = |style: &str, options: &str| {
+            (
+                0.0,
+                300.0,
+                200.0,
+                32.0,
+                style.to_string(),
+                "region".to_string(),
+                options.to_string(),
+            )
+        };
+        const GATE: Option<&str> =
+            Some("input widget (menu/radio/checkbox rect, style, param, or options)");
+
+        let launch = snapshot(vec![widget("Menu", "[east, west]")]);
+
+        // Widget-neutral edit under UNCHANGED data: identical slice → hot-swap.
+        assert_eq!(
+            super::chrome_divergence(&launch, &snapshot(vec![widget("Menu", "[east, west]")])),
+            None,
+            "a widget-neutral edit still hot-swaps"
+        );
+        // Options-list change (an edit, or a Derived column that drifted).
+        assert_eq!(
+            super::chrome_divergence(
+                &launch,
+                &snapshot(vec![widget("Menu", "[east, west, north]")])
+            ),
+            GATE
+        );
+        // Style change.
+        assert_eq!(
+            super::chrome_divergence(&launch, &snapshot(vec![widget("Radio", "[east, west]")])),
+            GATE
+        );
+        // Added widget.
+        assert_eq!(
+            super::chrome_divergence(
+                &launch,
+                &snapshot(vec![
+                    widget("Menu", "[east, west]"),
+                    widget("Checkbox", "[true, false]"),
+                ])
+            ),
+            GATE
+        );
+        // Removed widget.
+        assert_eq!(super::chrome_divergence(&launch, &snapshot(vec![])), GATE);
+    }
+
+    /// diw_ac04 (warning transport): `run_pipeline` RETURNS the assembly
+    /// pass's menu resolution warnings across the Send boundary (the
+    /// Vec<SourceProfile> shape), and `resolution_warning_entries` maps them
+    /// to exactly one Warning entry each — the watcher appends these BEFORE
+    /// the same_layout/chrome_divergence gates. The GATED case is composed
+    /// explicitly: a warning-producing edit that ALSO trips
+    /// chrome_divergence still has its warning in hand when the gate fires.
+    #[test]
+    fn diw_ac04_run_pipeline_returns_warnings_and_gated_case_composes() {
+        // A derived-options radio: degrades to menu presentation with ONE
+        // warning (diw-ac14) — a warning-producing spec.
+        const BASE: &str = r#"
+meta:
+  title: Transport Fixture
+data:
+  t:
+    - { x: 1, region: east }
+    - { x: 2, region: west }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: x
+    y: x
+"#;
+        const WITH_WIDGET: &str = r#"
+meta:
+  title: Transport Fixture
+params:
+  region: east
+data:
+  t:
+    - { x: 1, region: east }
+    - { x: 2, region: west }
+vconcat:
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: x
+        y: x
+  - input: menu
+    style: radio
+    as: $region
+    from: t
+    column: region
+"#;
+        let dir = std::env::temp_dir().join(format!("bf-diw-ac04-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let build = |name: &str, yaml: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, yaml).unwrap();
+            super::run_pipeline(path.to_str().unwrap()).expect("pipeline runs")
+        };
+
+        // Launch on the widget-less base.
+        let (_dash, launch_chrome, _profiles, launch_warnings) = build("base.yaml", BASE);
+        assert!(launch_warnings.is_empty(), "the base produces no warnings");
+
+        // The edit adds a warning-producing widget (derived radio) — run the
+        // rebuild exactly as the watcher would.
+        let (_dash2, rebuilt_chrome, _p2, warnings) = build("edited.yaml", WITH_WIDGET);
+
+        // (1) The warnings crossed run_pipeline's Send boundary.
+        assert_eq!(warnings.len(), 1, "one degrade, one warning: {warnings:?}");
+        assert!(warnings[0].contains("literal options list"), "{}", warnings[0]);
+
+        // (2) Exactly one Log entry per warning, Warning severity — appended
+        // once per assembly pass by construction (the watcher calls this
+        // once, before the gates).
+        let entries = super::resolution_warning_entries(&warnings);
+        assert_eq!(entries.len(), 1);
+        assert!(matches!(entries[0].0, crate::reload_feedback::Severity::Warning));
+        assert_eq!(entries[0].1, warnings[0]);
+
+        // (3) The GATED case: the same edit also trips chrome_divergence
+        // (an added widget — and here a changed layout too, but the chrome
+        // gate alone suffices), so the reload will refuse to hot-swap. The
+        // warning is already in hand BEFORE that refusal — the append
+        // precedes the gate in the watcher body, so the "restart to apply"
+        // co-surfaces its explanation instead of dropping it.
+        assert!(
+            super::chrome_divergence(&launch_chrome, &rebuilt_chrome).is_some(),
+            "the widget edit gates to restart-to-apply"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// clg-ac11 AGREEMENT: the gpui-free gate-classifier's verdict EQUALS the
     /// REAL app-binary reload gate (same_layout + chrome_divergence) for
     /// pre/post-edit spec pairs built through the app's OWN pipeline. The
@@ -2816,7 +3163,7 @@ xLabel: X axis
         let build = |name: &str, yaml: &str| -> (super::Dashboard, super::ChromeSnapshot) {
             let path = dir.join(name);
             std::fs::write(&path, yaml).unwrap();
-            let (dash, chrome, _p) =
+            let (dash, chrome, _p, _w) =
                 super::run_pipeline(path.to_str().unwrap()).expect("pipeline runs");
             (dash, chrome)
         };
@@ -3087,6 +3434,7 @@ vconcat:
             &[legend],
             &[binding],
             &[meta],
+            &[],
         );
         assert_eq!(snap.title, "framed");
         assert_eq!(
@@ -3192,7 +3540,7 @@ hconcat:
         let legend_select: Vec<LegendSelectBinding> =
             live.legend_bindings.iter().map(Into::into).collect();
         assert!(
-            CrossfilterCoordinator::new(live.session, live.marks, vec![], vec![], legend_select, false)
+            CrossfilterCoordinator::new(live.session, live.marks, vec![], vec![], vec![], legend_select, false)
                 .is_none(),
             "no placement → no binding → no coordinator"
         );

@@ -53,6 +53,7 @@ use crate::chart_view::{
     commit_brush_release_multi, commit_click_multi, BrushBinding, ZERO_AREA_EPSILON,
 };
 use crate::interaction::InteractionState;
+use crate::menu::{commit_menu_release, MenuBinding, MenuState};
 use crate::slider::{commit_slider_release, SliderBinding, SliderState};
 
 /// Build the predicate for a legend's selected category set (card 0020 legend
@@ -211,6 +212,10 @@ pub struct CrossfilterCoordinator {
     /// A slider's subscribers may span multiple plots; the affected plots are
     /// resolved generically via `mark_to_plot` from the re-executed mark indices.
     slider_bindings: Vec<SliderBinding>,
+    /// Dashboard-level menu-family bindings (card 0024), indexed by hosted
+    /// widget — the additive parallel lane beside `slider_bindings`. Options
+    /// are resolved + reconciled at assembly (launch-fixed, slider parity).
+    menu_bindings: Vec<MenuBinding>,
     /// Dashboard-level legend producer bindings (card 0009), indexed by the
     /// bound legend's position in the analysis binding list — the index a
     /// hosted `LegendElement` carries. Toggle state is NOT mirrored here: the
@@ -226,11 +231,12 @@ pub struct CrossfilterCoordinator {
 
 impl CrossfilterCoordinator {
     /// Build a coordinator from the live engine session and the per-mark /
-    /// per-plot / slider / legend metadata assembled at startup. Returns `None`
-    /// when there is nothing live to drive — no plot has a brush binding AND
-    /// there are no sliders AND no bound legends AND no plot carries a sequential
-    /// Fill ramp AND the command log is not active — so a purely static
-    /// PNG/embedding path skips the wiring entirely and behaves as before.
+    /// per-plot / slider / menu / legend metadata assembled at startup. Returns
+    /// `None` when there is nothing live to drive — no plot has a brush binding
+    /// AND there are no sliders AND no menu widgets AND no bound legends AND no
+    /// plot carries a sequential Fill ramp AND the command log is not active —
+    /// so a purely static PNG/embedding path skips the wiring entirely and
+    /// behaves as before.
     /// A dashboard whose only interactive surface is a bound legend (card 0009),
     /// or whose only live surface is a sequential colour scale (the `c`
     /// colour-cycle, card 0018), stays live. `command_log_active` (card 0023) is
@@ -245,6 +251,7 @@ impl CrossfilterCoordinator {
         marks: Vec<MarkInput>,
         plots: Vec<LivePlot>,
         slider_bindings: Vec<SliderBinding>,
+        menu_bindings: Vec<MenuBinding>,
         legend_bindings: Vec<LegendSelectBinding>,
         command_log_active: bool,
     ) -> Option<Rc<RefCell<Self>>> {
@@ -253,6 +260,7 @@ impl CrossfilterCoordinator {
         if !coordinator_has_live_surface(
             any_brush,
             !slider_bindings.is_empty(),
+            !menu_bindings.is_empty(),
             !legend_bindings.is_empty(),
             any_sequential_fill,
             command_log_active,
@@ -270,6 +278,7 @@ impl CrossfilterCoordinator {
             marks,
             plots,
             slider_bindings,
+            menu_bindings,
             legend_bindings,
             mark_to_plot,
             renderers: default_renderers(),
@@ -855,6 +864,54 @@ impl CrossfilterCoordinator {
         Some(to_rebuild)
     }
 
+    /// Commit a menu-family pick (card 0024), mirroring [`Self::commit_slider`]:
+    /// dispatch the picked option's typed value into the engine, then rebuild
+    /// and swap the scenes of every plot whose marks re-executed. Only a
+    /// `Committed` state commits — `Closed`/`Open` are no-ops, so opening a
+    /// list or hovering never re-queries.
+    ///
+    /// Returns `true` if a pick was committed (the caller then refreshes the
+    /// window once, repainting the swapped subscriber scenes).
+    pub fn commit_menu(&mut self, menu_index: usize, state: &MenuState, cx: &mut App) -> bool {
+        let to_rebuild = match self.apply_menu(menu_index, state) {
+            Some(set) => set,
+            None => return false,
+        };
+        for pi in to_rebuild {
+            let scene = self.build_plot_scene(pi);
+            let state_entity = self.plots[pi].state.clone();
+            state_entity.update(cx, |s, c| {
+                s.set_scene(scene);
+                c.notify();
+            });
+        }
+        true
+    }
+
+    /// The gpui-free half of [`Self::commit_menu`] (the `apply_slider` split):
+    /// on a `Committed` state, dispatch the picked option's [`SpecValue`]
+    /// verbatim through `commit_menu_release` — which reads the param's LIVE
+    /// value from the session so a same-value pick dispatches nothing — and
+    /// absorb the re-execution results into the per-mark batches, returning
+    /// the set of plots to rebuild. Returns `None` (nothing committed) for a
+    /// non-`Committed` state or an out-of-range widget index — the diw-ac08
+    /// negative-control surface. Separated so the commit data-path is
+    /// unit-testable without a window.
+    fn apply_menu(&mut self, menu_index: usize, state: &MenuState) -> Option<HashSet<usize>> {
+        if !matches!(state, MenuState::Committed { .. }) {
+            return None;
+        }
+        let binding = self.menu_bindings.get(menu_index)?.clone();
+        // The live param value decides the same-value no-op — read from the
+        // session (the source of truth), never a widget-side mirror.
+        let current = self.session.current_params().get(&binding.param_name).cloned();
+        let (_next, results) =
+            commit_menu_release(state, &binding, current.as_ref(), &mut self.session);
+        let mut to_rebuild: HashSet<usize> = HashSet::new();
+        self.absorb(results, &mut to_rebuild);
+        Some(to_rebuild)
+    }
+
     /// Commit a legend swatch click (card 0009): drive the single-select
     /// toggle for legend binding `legend_index`, dispatch or clear its
     /// selection through the live `Session`, then rebuild and swap the scenes
@@ -1184,19 +1241,21 @@ fn render_plot_scene(
 }
 
 /// Whether a coordinator has any live-driving surface — a brush, a slider, a
-/// bound legend, OR a sequential Fill ramp (the `c` colour-cycle, card 0018,
-/// ac-13). `new` returns `None` when none hold. Factored out (over booleans, not
-/// `LivePlot`s) so the gate — including the sequential-Fill relaxation that keeps
-/// an otherwise-static heatmap dashboard live — is headlessly testable without a
-/// window (a `LivePlot` holds a gpui `Entity`).
+/// menu-family widget (card 0024), a bound legend, OR a sequential Fill ramp
+/// (the `c` colour-cycle, card 0018, ac-13). `new` returns `None` when none
+/// hold. Factored out (over booleans, not `LivePlot`s) so the gate — including
+/// the sequential-Fill relaxation that keeps an otherwise-static heatmap
+/// dashboard live — is headlessly testable without a window (a `LivePlot`
+/// holds a gpui `Entity`).
 fn coordinator_has_live_surface(
     any_brush: bool,
     any_slider: bool,
+    any_menu: bool,
     any_legend: bool,
     any_sequential_fill: bool,
     command_log: bool,
 ) -> bool {
-    command_log || any_brush || any_slider || any_legend || any_sequential_fill
+    command_log || any_brush || any_slider || any_menu || any_legend || any_sequential_fill
 }
 
 /// Whether a `ScaleSet`'s Fill channel is a `Scale::Sequential` ramp — the signal
@@ -2146,17 +2205,20 @@ projectionType: albers
         }];
         assert!(has_sequential_fill(&launch_scales(&raster, &renderers, &[0], &layout)));
         // (2) The gate OR-folds every driving surface, including sequential-Fill.
-        assert!(!coordinator_has_live_surface(false, false, false, false, false));
-        assert!(coordinator_has_live_surface(false, false, false, true, false));
-        assert!(coordinator_has_live_surface(true, false, false, false, false));
-        assert!(coordinator_has_live_surface(false, true, false, false, false));
-        assert!(coordinator_has_live_surface(false, false, true, false, false));
+        assert!(!coordinator_has_live_surface(false, false, false, false, false, false));
+        assert!(coordinator_has_live_surface(false, false, false, false, true, false));
+        assert!(coordinator_has_live_surface(true, false, false, false, false, false));
+        assert!(coordinator_has_live_surface(false, true, false, false, false, false));
+        assert!(coordinator_has_live_surface(false, false, false, true, false, false));
+        // card 0024: a menu-family widget is a live surface of its own — a
+        // menu-only dashboard must keep the coordinator alive (diw-ac06).
+        assert!(coordinator_has_live_surface(false, false, true, false, false, false));
         // card 0023: the command log is itself a live surface. Without this
         // disjunct a static spec (categorical/absent fill, no selection — e.g.
         // scatter.yaml) built no coordinator, so m/a/e/d/u mutated the working
         // spec + filled the log but never re-rendered — the card-0021 silent-no-op
         // class, on the simplest possible spec.
-        assert!(coordinator_has_live_surface(false, false, false, false, true));
+        assert!(coordinator_has_live_surface(false, false, false, false, false, true));
     }
 
     /// clg-ac16 regression (the scatter silent-no-op): a STATIC spec — a plain
@@ -2220,7 +2282,7 @@ plot:
         // exactly as before card 0023.
         let (session, marks) = build_marks();
         assert!(
-            CrossfilterCoordinator::new(session, marks, vec![], vec![], vec![], false).is_none(),
+            CrossfilterCoordinator::new(session, marks, vec![], vec![], vec![], vec![], false).is_none(),
             "a static spec with no command log stays coordinator-free (dump path)"
         );
 
@@ -2228,7 +2290,7 @@ plot:
         // now gets a coordinator, so a structural edit can re-render (scatter fix).
         let (session, marks) = build_marks();
         assert!(
-            CrossfilterCoordinator::new(session, marks, vec![], vec![], vec![], true).is_some(),
+            CrossfilterCoordinator::new(session, marks, vec![], vec![], vec![], vec![], true).is_some(),
             "the command log is a live surface: a static scatter's m/a/e/d/u must \
              re-render, not silently no-op (card-0021 class)"
         );
@@ -3008,7 +3070,7 @@ plot:
             max: 6.0,
             step: Some(1.0),
         };
-        let coord = CrossfilterCoordinator::new(session, marks, vec![], vec![binding], vec![], false)
+        let coord = CrossfilterCoordinator::new(session, marks, vec![], vec![binding], vec![], vec![], false)
             .expect("a slider binding keeps the coordinator alive with no brushes");
         let mut c = coord.borrow_mut();
 
@@ -3079,7 +3141,7 @@ plot:
             })
             .collect();
 
-        let coord = CrossfilterCoordinator::new(session, marks, vec![], vec![binding], vec![], false)
+        let coord = CrossfilterCoordinator::new(session, marks, vec![], vec![binding], vec![], vec![], false)
             .expect("coordinator");
         let mut c = coord.borrow_mut();
         let before = c.marks[0].batch.as_ref().map_or(0, |b| b.num_rows());
@@ -3089,6 +3151,167 @@ plot:
             after < before,
             "raising the example slider drops points: {before} -> {after}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // diw ac-06/ac-08/ac-09 (card 0024): the menu-family coordinator lane,
+    // against a REAL session — the slw_ac06 pattern (an empty `plots` vec
+    // means no gpui App is needed; we assert on the swapped batch directly).
+    // -----------------------------------------------------------------------
+
+    /// A String param filtering a dot plot — the menu data-effect fixture.
+    /// `region: east` default → 2 of 4 rows; the third region carries an
+    /// O'Brien-class single quote for the SQL-integrity pin (diw-ac09).
+    const MENU_SPEC: &str = r#"
+params:
+  region: east
+data:
+  t:
+    - { x: 1, region: east }
+    - { x: 2, region: east }
+    - { x: 3, region: west }
+    - { x: 4, region: "O'Brien" }
+plot:
+  - mark: dot
+    data: { from: t, filter: "region = $region" }
+    x: x
+    y: x
+"#;
+
+    /// Build a menu-only coordinator over MENU_SPEC's live session. The
+    /// `Some(..)` here IS the diw-ac06 liveness assertion: a dashboard whose
+    /// only interactive surface is a menu widget must keep the coordinator
+    /// alive.
+    fn menu_coordinator() -> Rc<RefCell<CrossfilterCoordinator>> {
+        use brightfield_engine::Engine;
+        use brightfield_spec::analysis::analyse_spec;
+        use brightfield_spec::{parse_spec, Format};
+        use brightfield_sql::collect_marks;
+
+        let parsed = parse_spec(MENU_SPEC, Format::Yaml).expect("parse");
+        let analysis = analyse_spec(&parsed.spec).expect("analyse");
+        let engine = Engine::new();
+        let mut session = engine
+            .load_spec(parsed.spec.clone(), analysis, None)
+            .expect("load")
+            .session;
+        let results = session.execute_all();
+        let marks_ast = collect_marks(&parsed.spec);
+        let marks: Vec<MarkInput> = results
+            .into_iter()
+            .enumerate()
+            .map(|(i, r)| MarkInput {
+                batch: r.ok().and_then(concat_batches),
+                channels: ChannelMap::from_mark(marks_ast[i]),
+                kind: marks_ast[i].kind,
+                renderer_override: None,
+                bandwidth: None,
+                thresholds: None,
+                bin_width: None,
+                highlight_style: None,
+            })
+            .collect();
+
+        let binding = crate::menu::MenuBinding {
+            param_name: "region".to_string(),
+            style: crate::menu::MenuStyle::Menu,
+            options: vec![
+                SpecValue::String("O'Brien".to_string()),
+                SpecValue::String("east".to_string()),
+                SpecValue::String("west".to_string()),
+            ],
+            derived: None,
+        };
+        CrossfilterCoordinator::new(session, marks, vec![], vec![], vec![binding], vec![], false)
+            .expect("diw-ac06 liveness: a menu binding alone keeps the coordinator alive")
+    }
+
+    /// diw_ac08 (DATA-EFFECT): apply_menu on a Committed String pick
+    /// re-executes the subscribing mark — the batch row count changes to the
+    /// predicted value. The card-0021/0022 silent-no-op defence at the
+    /// gpui-free half of the commit split.
+    #[test]
+    fn diw_ac08_apply_menu_reexecutes_subscriber_on_commit() {
+        let coord = menu_coordinator();
+        let mut c = coord.borrow_mut();
+
+        // region=east default → 2 rows.
+        assert_eq!(c.marks[0].batch.as_ref().map_or(0, |b| b.num_rows()), 2);
+
+        // Non-committed states never re-query (open/hover are overlay-only).
+        assert!(c.apply_menu(0, &MenuState::Closed).is_none());
+        assert!(c.apply_menu(0, &MenuState::Open { hover: Some(1) }).is_none());
+        assert_eq!(c.marks[0].batch.as_ref().map_or(0, |b| b.num_rows()), 2);
+
+        // Commit "west" (index 2) → exactly the 1 west row.
+        let rebuilt = c.apply_menu(0, &MenuState::Committed { index: 2 });
+        assert!(rebuilt.is_some(), "Committed commits");
+        assert_eq!(
+            c.marks[0].batch.as_ref().map_or(0, |b| b.num_rows()),
+            1,
+            "the subscriber re-executed at region=west"
+        );
+    }
+
+    /// diw_ac08 (NEGATIVE CONTROL): the wire can fail — an out-of-range
+    /// binding index returns `None` with the batch unchanged, at the same
+    /// apply_menu surface the positive test drives.
+    #[test]
+    fn diw_ac08_negative_control_out_of_range_index_is_inert() {
+        let coord = menu_coordinator();
+        let mut c = coord.borrow_mut();
+        let before = c.marks[0].batch.as_ref().map_or(0, |b| b.num_rows());
+        assert_eq!(before, 2);
+
+        assert!(
+            c.apply_menu(7, &MenuState::Committed { index: 0 }).is_none(),
+            "an out-of-range widget index commits nothing"
+        );
+        assert_eq!(
+            c.marks[0].batch.as_ref().map_or(0, |b| b.num_rows()),
+            before,
+            "the batch is untouched — the positive test's effect is real"
+        );
+    }
+
+    /// diw_ac08 (same-value no-op at the coordinator): committing the
+    /// already-current option is absorbed as an empty rebuild set — no
+    /// re-query, no batch movement (decisions_locked).
+    #[test]
+    fn diw_ac08_same_value_pick_no_requery() {
+        let coord = menu_coordinator();
+        let mut c = coord.borrow_mut();
+        // "east" (index 1) is already current.
+        let rebuilt = c.apply_menu(0, &MenuState::Committed { index: 1 });
+        assert_eq!(
+            rebuilt,
+            Some(HashSet::new()),
+            "a same-value pick dispatches nothing — empty rebuild set"
+        );
+        assert_eq!(c.marks[0].batch.as_ref().map_or(0, |b| b.num_rows()), 2);
+    }
+
+    /// diw_ac09 (String-param SQL integrity): a menu value carrying a single
+    /// quote (O'Brien-class) flows propagate_param → interpolated SQL →
+    /// correct filtered results, riding the shipped emit.rs escaping — no
+    /// brightfield-sql change (the byte-untouched machine gate co-verifies).
+    #[test]
+    fn diw_ac09_quoted_string_value_filters_correctly() {
+        let coord = menu_coordinator();
+        let mut c = coord.borrow_mut();
+
+        let rebuilt = c.apply_menu(0, &MenuState::Committed { index: 0 });
+        assert!(rebuilt.is_some(), "the quoted pick commits");
+        assert_eq!(
+            c.marks[0].batch.as_ref().map_or(0, |b| b.num_rows()),
+            1,
+            "region = 'O''Brien' matches exactly its one row — quoting escaped, not broken"
+        );
+
+        // And back out: a subsequent plain pick still works (the statement
+        // path was never corrupted by the quote).
+        c.apply_menu(0, &MenuState::Committed { index: 1 });
+        assert_eq!(c.marks[0].batch.as_ref().map_or(0, |b| b.num_rows()), 2);
     }
 
     // -----------------------------------------------------------------------
@@ -3167,7 +3390,7 @@ hconcat:
             })
             .collect();
 
-        CrossfilterCoordinator::new(session, marks, vec![], vec![], legend_bindings, false)
+        CrossfilterCoordinator::new(session, marks, vec![], vec![], vec![], legend_bindings, false)
             .expect("lcf_ac03 liveness: a bound legend alone keeps the coordinator alive")
     }
 

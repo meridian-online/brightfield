@@ -2939,7 +2939,7 @@ mod tests {
     fn aws_ac02_canvas_panel_is_a_shim_around_the_chart_view(cx: &mut TestAppContext) {
         let (chart, presentation, panel) = cx.update(|cx| {
             let chart =
-                cx.new(|_| ChartView::new(320.0, 240.0, Vec::new(), Vec::new(), Vec::new()));
+                cx.new(|_| ChartView::new(320.0, 240.0, Vec::new(), Vec::new(), Vec::new(), Vec::new()));
             let presentation = cx.new(|_| PresentationState {
                 mode: PresentationMode::default(),
             });
@@ -3433,7 +3433,7 @@ mod tests {
         let presentation_in = presentation.clone();
         let window: gpui::WindowHandle<Root> = cx.add_window(move |window, cx| {
             let chart =
-                cx.new(|_| ChartView::new(320.0, 240.0, Vec::new(), Vec::new(), Vec::new()));
+                cx.new(|_| ChartView::new(320.0, 240.0, Vec::new(), Vec::new(), Vec::new(), Vec::new()));
             let canvas =
                 cx.new(|cx| CanvasPanel::new(chart, "Test", presentation_in.clone(), FocusTree::empty(), cx));
             let editor = cx.new(|cx| {
