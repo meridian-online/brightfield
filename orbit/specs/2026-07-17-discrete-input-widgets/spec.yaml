@@ -64,8 +64,11 @@ acceptance_criteria:
       is WIDENED beyond slider parity to carry degrade reasons —
       (Option<MenuBinding>, Vec<reason>) or equivalent — so the gpui-free
       model stays the single source of the degrade decision and assembly only
-      logs what the model surfaced (the diw-ac14 warnings ride this
-      transport).
+      logs what the model surfaced. SCOPE (v3 review): only the
+      CONSTRUCTION-TIME degrade classes ride this transport (unknown style);
+      the assembly-time classes — post-reconciliation checkbox/radio, cap
+      truncation — surface at assembly, where the param default and
+      distinct_values result are in scope (from_input never sees them).
     verification: >
       Headless unit tests in menu.rs's #[cfg(test)] module over the
       input_fixture pattern (slider.rs:314 precedent): literal list typing,
