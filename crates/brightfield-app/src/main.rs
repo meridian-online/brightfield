@@ -42,9 +42,10 @@ use brightfield_render::layout::{ChartLayout, Insets, Margins};
 use brightfield_render::title::ResolvedTitles;
 use brightfield_render::legend::{colour_legend_size, render_colour_legend_at};
 use brightfield_render::mark::{
-    configured_renderer, default_renderers, find_renderer, MarkRenderer, Projection,
+    configured_renderer, default_renderers, find_renderer, owned_default_renderer, parse_css_hex,
+    ColourOverrideRenderer, MarkRenderer, Projection,
 };
-use brightfield_render::scale::{Scale, ScaleSet, SequentialScheme};
+use brightfield_render::scale::{ColourOverride, Scale, ScaleSet, SequentialScheme};
 use brightfield_render::scene::{build_multi_mark_scene, compose_dashboard, ChartData};
 use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::layout::{
@@ -224,6 +225,87 @@ fn raster_scheme(color_scheme: Option<&brightfield_spec::ast::SpecValue>) -> Seq
         }),
         _ => SequentialScheme::default(),
     }
+}
+
+/// Resolve a plot-level attribute expected to be a literal array: a direct
+/// `SpecValue::Array`, or a `$param` reference to a literal-value param whose
+/// value is an array (the weather.yaml `colorDomain: $domain` shape). `None`
+/// for anything else — including a selection param, and Mosaic's `Fixed`
+/// keyword (which names a fixed-at-first-render domain, not a literal).
+fn resolve_literal_array<'a>(
+    spec: &'a brightfield_spec::ast::Spec,
+    value: &'a brightfield_spec::ast::SpecValue,
+) -> Option<&'a [brightfield_spec::ast::SpecValue]> {
+    use brightfield_spec::ast::{ParamNode, SpecValue};
+    match value {
+        SpecValue::Array(a) => Some(a),
+        SpecValue::Param(p) => match spec.params.get(&p.0)? {
+            ParamNode::Value(SpecValue::Array(a)) => Some(a),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// A literal number inside a spec array (integer or float).
+fn spec_value_f64(v: &brightfield_spec::ast::SpecValue) -> Option<f64> {
+    use brightfield_spec::ast::SpecValue;
+    match v {
+        SpecValue::Float(f) => Some(*f),
+        SpecValue::Integer(i) => Some(*i as f64),
+        _ => None,
+    }
+}
+
+/// Resolve a plot's explicit `colorDomain`/`colorRange` into a render-side
+/// [`ColourOverride`] (the Mosaic-fidelity consumption chore — both attributes
+/// were previously parsed-but-ignored). `colorDomain` is either an array of
+/// category strings (a categorical domain, fixing each category's palette
+/// slot) or exactly two numbers (a continuous domain); `colorRange` is an
+/// array of CSS hex colours. Values may be literal arrays or `$param`
+/// references to literal-value params. A malformed value warns and is
+/// ignored; `None` when neither attribute contributes.
+fn resolve_colour_override(
+    spec: &brightfield_spec::ast::Spec,
+    node: &brightfield_spec::ast::PlotNode,
+) -> Option<ColourOverride> {
+    let mut ov = ColourOverride::default();
+    if let Some(v) = node.attributes.get("colorDomain") {
+        if let Some(items) = resolve_literal_array(spec, v) {
+            let strings: Vec<String> = items
+                .iter()
+                .filter_map(|i| i.as_str().map(str::to_string))
+                .collect();
+            let numbers: Vec<f64> = items.iter().filter_map(spec_value_f64).collect();
+            if !items.is_empty() && strings.len() == items.len() {
+                ov.categories = Some(strings);
+            } else if items.len() == 2 && numbers.len() == 2 {
+                ov.domain = Some((numbers[0], numbers[1]));
+            } else {
+                eprintln!(
+                    "warning: colorDomain must be an array of category strings \
+                     or exactly two numbers — ignored"
+                );
+            }
+        }
+    }
+    if let Some(v) = node.attributes.get("colorRange") {
+        if let Some(items) = resolve_literal_array(spec, v) {
+            let colours: Vec<[f32; 4]> = items
+                .iter()
+                .filter_map(|i| i.as_str().and_then(parse_css_hex).map(|c| c.components))
+                .collect();
+            if !items.is_empty() && colours.len() == items.len() {
+                ov.range = Some(colours);
+            } else {
+                eprintln!(
+                    "warning: colorRange entries must be CSS hex colours \
+                     (#rgb / #rrggbb / #rrggbbaa) — ignored"
+                );
+            }
+        }
+    }
+    (!ov.is_empty()).then_some(ov)
 }
 
 /// Literal numeric mark attribute (e.g. `bandwidth: 15`), skipping params —
@@ -784,6 +866,10 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
         let projection = plot_node
             .map(|(_, node)| Projection::from(resolve_projection(node)))
             .unwrap_or_default();
+        // The plot's explicit colorDomain/colorRange (Mosaic fidelity chore),
+        // wrapped around each mark's renderer below so the explicit
+        // domain/range wins over inference on first render and live rebuilds.
+        let colour_ov = plot_node.and_then(|(_, node)| resolve_colour_override(&parsed.spec, node));
 
         // The plot's highlight `otherwise` style (card 0021), if it carries a
         // `highlight, by: $sel` interactor — resolved once per plot and set on
@@ -837,6 +923,21 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
                 // builds a HighlightState even if its batch carries the column.
                 if brightfield_spec::analysis::mark_honours_highlight(kind) {
                     m.highlight_style = highlight_style.clone();
+                }
+                // Explicit colorDomain/colorRange: wrap the mark's renderer
+                // (configured, or the registry default for a plain mark) so
+                // the override is re-applied after every augment_scales.
+                if let Some(co) = &colour_ov {
+                    let inner = m
+                        .renderer_override
+                        .take()
+                        .or_else(|| owned_default_renderer(kind));
+                    if let Some(inner) = inner {
+                        m.renderer_override = Some(Box::new(ColourOverrideRenderer {
+                            inner,
+                            override_: co.clone(),
+                        }));
+                    }
                 }
             }
         }
@@ -1951,6 +2052,10 @@ hconcat:
         // colorScheme resolution: known name → scheme; unknown / absent → viridis.
         let blues = SpecValue::String("blues".into());
         assert_eq!(super::raster_scheme(Some(&blues)), SequentialScheme::Blues);
+        // The opt-in Brightfield-local meridian scheme resolves by name too
+        // (design phase 4 PR B); the default below stays viridis.
+        let meridian = SpecValue::String("meridian".into());
+        assert_eq!(super::raster_scheme(Some(&meridian)), SequentialScheme::Meridian);
         let bad = SpecValue::String("notascheme".into());
         assert_eq!(
             super::raster_scheme(Some(&bad)),
@@ -2034,6 +2139,97 @@ colorScheme: blues
                 );
             }
             other => panic!("expected a blues Fill Sequential, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // design phase 4 PR B: explicit colorDomain/colorRange are CONSUMED (they
+    // were parsed-but-ignored) — driven through the real build_everything seam
+    // so the attribute → ColourOverride → wrapped-renderer plumbing can't
+    // silently no-op (the card-0021 lesson).
+    #[test]
+    fn dsb_color_domain_range_consumed_end_to_end() {
+        use brightfield_render::mark::parse_css_hex;
+        use brightfield_render::scale::Scale;
+
+        // Categorical, literal arrays: the domain pins category → slot even
+        // though the data arrives in the OPPOSITE order.
+        const CATEGORICAL: &str = r#"
+data:
+  points:
+    - { x: 1, y: 1, kind: b }
+    - { x: 2, y: 2, kind: a }
+plot:
+  - mark: dot
+    data: { from: points }
+    x: x
+    y: y
+    fill: kind
+colorDomain: [a, b]
+colorRange: ['#112233', '#445566']
+"#;
+        let dir = std::env::temp_dir().join(format!("bf-dsb-cdr-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("categorical.yaml");
+        std::fs::write(&path, CATEGORICAL).unwrap();
+        let (_dashboard, live) =
+            super::build_everything(path.to_str().unwrap()).expect("pipeline runs");
+        let fill = live.plots[0]
+            .scales
+            .get(Channel::Fill)
+            .expect("dot plot has a Fill scale");
+        match fill {
+            Scale::Colour { categories, palette } => {
+                assert_eq!(
+                    categories,
+                    &vec!["a".to_string(), "b".to_string()],
+                    "colorDomain pins the category order (data arrived b-first)"
+                );
+                let expected: Vec<[f32; 4]> = ["#112233", "#445566"]
+                    .iter()
+                    .map(|h| parse_css_hex(h).unwrap().components)
+                    .collect();
+                assert_eq!(palette, &expected, "colorRange supplies the palette");
+            }
+            other => panic!("expected an overridden Colour scale, got {other:?}"),
+        }
+
+        // Continuous, param-driven (the weather.yaml `$colors` shape): a
+        // 2-endpoint colorRange becomes the raster ramp's two stops.
+        const CONTINUOUS: &str = r#"
+data:
+  points:
+    - { x: 1, y: 1 }
+    - { x: 2, y: 2 }
+    - { x: 3, y: 3 }
+params:
+  ramp: ['#000000', '#ffffff']
+plot:
+  - mark: raster
+    data: { from: points }
+    x: x
+    y: y
+colorRange: $ramp
+"#;
+        let path2 = dir.join("continuous.yaml");
+        std::fs::write(&path2, CONTINUOUS).unwrap();
+        let (_dashboard2, live2) =
+            super::build_everything(path2.to_str().unwrap()).expect("pipeline runs");
+        let fill2 = live2.plots[0]
+            .scales
+            .get(Channel::Fill)
+            .expect("raster plot has a Fill scale");
+        match fill2 {
+            Scale::Sequential { stops, .. } => {
+                assert_eq!(
+                    stops,
+                    &vec![[0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0, 1.0]],
+                    "a param-driven 2-endpoint colorRange becomes the two ramp stops \
+                     (not the viridis default)"
+                );
+            }
+            other => panic!("expected an overridden Sequential, got {other:?}"),
         }
 
         let _ = std::fs::remove_dir_all(&dir);

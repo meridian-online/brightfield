@@ -8,9 +8,21 @@ use peniko::{Color, Fill};
 use vello::Scene;
 
 use crate::axis::format_number;
+use crate::ink::{ink, ink_with_alpha};
 use crate::layout::ChartLayout;
 use crate::scale::Scale;
 use crate::text::{draw_text, measure_width, TextAnchor, LABEL_COLOUR, LABEL_SIZE};
+
+/// Legend panel background — the Meridian chart surface at the historical
+/// 0.85 alpha, translucent for legibility over marks/grid.
+const PANEL_BACKGROUND: Color = ink_with_alpha(meridian_design::chrome::INK_LIGHT.surface, 0.85);
+
+/// Legend panel border — Meridian warm gray step 4 (border-weight hairline).
+const PANEL_BORDER: Color = ink(meridian_design::scales::GRAY_LIGHT[3]);
+
+/// Border around the sequential legend's gradient bar, so a light-anchored
+/// ramp reads against the panel — Meridian baseline ink.
+const BAR_BORDER: Color = ink(meridian_design::chrome::INK_LIGHT.baseline);
 
 /// Swatch size in pixels.
 const SWATCH_SIZE: f64 = 12.0;
@@ -237,14 +249,14 @@ fn render_swatch_legend_at(
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
-        Color::new([1.0, 1.0, 1.0, 0.85]),
+        PANEL_BACKGROUND,
         None,
         &panel,
     );
     scene.stroke(
         &kurbo::Stroke::new(0.5),
         Affine::IDENTITY,
-        Color::new([0.8, 0.8, 0.8, 1.0]),
+        PANEL_BORDER,
         None,
         &panel,
     );
@@ -319,14 +331,14 @@ pub fn render_sequential_legend_at(
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
-        Color::new([1.0, 1.0, 1.0, 0.85]),
+        PANEL_BACKGROUND,
         None,
         &panel,
     );
     scene.stroke(
         &kurbo::Stroke::new(0.5),
         Affine::IDENTITY,
-        Color::new([0.8, 0.8, 0.8, 1.0]),
+        PANEL_BORDER,
         None,
         &panel,
     );
@@ -356,7 +368,7 @@ pub fn render_sequential_legend_at(
     scene.stroke(
         &kurbo::Stroke::new(0.5),
         Affine::IDENTITY,
-        Color::new([0.6, 0.6, 0.6, 1.0]),
+        BAR_BORDER,
         None,
         &bar,
     );

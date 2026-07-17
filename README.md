@@ -149,6 +149,6 @@ Part of the [Meridian](https://meridian.online) project.
 
 Built with [GPUI](https://www.gpui.rs/) (Zed's GPU-accelerated UI framework), [gpui-plot](https://crates.io/crates/gpui-plot) (native plotting foundation), [DuckDB](https://duckdb.org) via [duckdb-rs](https://crates.io/crates/duckdb), [Apache Arrow](https://arrow.apache.org/) via [arrow-rs](https://github.com/apache/arrow-rs), and [Serde](https://serde.rs).
 
-Chart labels are rendered with [IBM Plex Sans](https://github.com/IBM/plex), bundled under the [SIL Open Font License 1.1](crates/brightfield-render/assets/fonts/LICENSE-IBMPlexSans.txt).
+Chart labels are rendered with [Inter](https://rsms.me/inter/), bundled (with its SIL Open Font License 1.1) via the Meridian design crate.
 
 Spec format, grammar-of-graphics semantics, param/selection model, and query optimisation strategies derived from the [Mosaic](https://idl.uw.edu/mosaic/) project (UW IDL + CMU DIG — see [Mosaic TVCG'24](https://idl.uw.edu/papers/mosaic)).

@@ -881,6 +881,7 @@ dependencies = [
  "brightfield-spec",
  "indexmap",
  "kurbo 0.13.1",
+ "meridian-design",
  "peniko",
  "serde_json",
  "skrifa",

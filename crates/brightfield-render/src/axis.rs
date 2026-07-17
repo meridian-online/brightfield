@@ -7,6 +7,7 @@ use kurbo::{Affine, Line, Point};
 use peniko::Color;
 use vello::Scene;
 
+use crate::ink::ink;
 use crate::layout::ChartLayout;
 use crate::scale::Scale;
 use crate::text::{
@@ -24,11 +25,13 @@ pub struct Tick {
     pub position: f64,
 }
 
-/// Default tick colour.
-const TICK_COLOUR: Color = Color::new([0.2, 0.2, 0.2, 1.0]);
+/// Default tick colour — Meridian baseline ink. Recessive axes: the domain
+/// line and ticks sit back while the data ink carries the chart; tick-label
+/// TEXT stays legible via the darker muted ink (text.rs `LABEL_COLOUR`).
+const TICK_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.baseline);
 
-/// Axis line colour.
-const AXIS_COLOUR: Color = Color::new([0.2, 0.2, 0.2, 1.0]);
+/// Axis line colour — same recessive baseline ink as the ticks.
+const AXIS_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.baseline);
 
 /// Tick mark length in pixels.
 const TICK_LENGTH: f64 = 5.0;

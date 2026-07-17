@@ -9,17 +9,18 @@ use vello::Scene;
 use crate::axis::{compute_ticks, render_plot_title, render_x_axis, render_y_axis};
 use crate::channel::{Channel, ChannelMap};
 use crate::grid::{render_x_grid, render_y_grid};
+use crate::ink::ink;
 use crate::layout::ChartLayout;
 use crate::legend::render_colour_legend;
 use crate::mark::{HighlightState, MarkRenderer};
 use crate::scale::{infer_scales, infer_scales_multi, Scale, ScaleSet, ViewExtent};
 use crate::title::ResolvedTitles;
 
-/// Opaque white chart background. Drawn first so grid, marks, axes and legend
-/// composite on top. Without it the scene renders onto transparency, which a
-/// PNG export shows as a black/checkerboard backdrop and which makes a working
-/// chart look broken.
-const BACKGROUND_COLOUR: Color = Color::new([1.0, 1.0, 1.0, 1.0]);
+/// Opaque chart background — the Meridian warm chart surface. Drawn first so
+/// grid, marks, axes and legend composite on top. Without it the scene renders
+/// onto transparency, which a PNG export shows as a black/checkerboard backdrop
+/// and which makes a working chart look broken.
+const BACKGROUND_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.surface);
 
 /// Fill the full chart area with [`BACKGROUND_COLOUR`]. Must be the first
 /// geometry added to the scene so everything else draws on top.
@@ -412,9 +413,11 @@ pub fn compose_dashboard(width: f64, height: f64, plots: &[(f64, f64, &Scene)]) 
 }
 
 /// Slider widget colours + geometry — kept in sync with the live GPUI
-/// `SliderElement` so the headless PNG matches the window (card 0005).
-const SLIDER_TRACK_COLOUR: Color = Color::new([0.82, 0.83, 0.86, 1.0]);
-const SLIDER_THUMB_COLOUR: Color = Color::new([0.306, 0.475, 0.655, 1.0]);
+/// `SliderElement` (crates/brightfield-ui/src/slider_element.rs) so the
+/// headless PNG matches the window (card 0005). Both sides read the same
+/// Meridian tokens: track = warm gray step 5, thumb = Maritime focus ink.
+const SLIDER_TRACK_COLOUR: Color = ink(meridian_design::scales::GRAY_LIGHT[4]);
+const SLIDER_THUMB_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.focus);
 const SLIDER_THUMB_RADIUS: f64 = 7.0;
 const SLIDER_TRACK_THICKNESS: f64 = 4.0;
 

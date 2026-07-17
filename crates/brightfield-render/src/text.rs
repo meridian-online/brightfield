@@ -3,9 +3,9 @@
 //!
 //! Axis ticks, axis titles and legend entries call [`draw_text`] to paint real
 //! glyphs. Before this, labels were invisible placeholder rects, so axes were
-//! unreadable. The font (IBM Plex Sans Regular, the face GPUI itself uses) is
-//! embedded at compile time so the binary stays self-contained — see
-//! `assets/fonts/LICENSE-IBMPlexSans.txt` (SIL Open Font License 1.1).
+//! unreadable. The font (Inter Regular, the Meridian design system's UI sans)
+//! is embedded at compile time via the `meridian-design` crate so the binary
+//! stays self-contained; its SIL OFL 1.1 licence ships inside that crate.
 
 use std::sync::{Arc, OnceLock};
 
@@ -15,18 +15,21 @@ use skrifa::metrics::GlyphMetrics;
 use skrifa::prelude::*;
 use vello::{Glyph, Scene};
 
-/// Bundled UI font: IBM Plex Sans Regular (SIL Open Font License 1.1).
-static FONT_DATA: &[u8] = include_bytes!("../assets/fonts/IBMPlexSans-Regular.ttf");
+use crate::ink::ink;
 
-/// Default label text colour (dark grey, matching axis/tick strokes).
-pub const LABEL_COLOUR: Color = Color::new([0.2, 0.2, 0.2, 1.0]);
+/// Bundled UI font: Inter Regular (SIL Open Font License 1.1, licence bundled
+/// in the `meridian-design` crate alongside the bytes).
+static FONT_DATA: &[u8] = meridian_design::fonts::INTER_REGULAR;
+
+/// Default label text colour — Meridian muted ink (tick labels, legend text).
+pub const LABEL_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.ink_muted);
 
 /// Default label size in pixels.
 pub const LABEL_SIZE: f32 = 11.0;
 
-/// Axis / plot title colour — slightly darker than tick labels so a title reads
-/// as a heading, not another tick label.
-pub const TITLE_COLOUR: Color = Color::new([0.1, 0.1, 0.1, 1.0]);
+/// Axis / plot title colour — Meridian primary ink, darker than tick labels so
+/// a title reads as a heading, not another tick label.
+pub const TITLE_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.ink_primary);
 
 /// Axis / plot title size in pixels (a touch larger than tick labels).
 pub const TITLE_SIZE: f32 = 12.0;

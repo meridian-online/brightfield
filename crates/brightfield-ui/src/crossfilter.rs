@@ -2835,7 +2835,7 @@ plot:
     /// into the raster, the rebuild must ADOPT the raster's freshly-inferred Fill
     /// ramp — rendering its cells through the configured scheme. A launch-pinned
     /// rebuild (the F2 bug) would keep the Fill-less launch scales, and the raster
-    /// would fall back to the legacy alpha-on-steelblue path instead of the ramp.
+    /// would fall back to the legacy alpha-on-default-blue path instead of the ramp.
     #[test]
     fn cfr_f2_absorbed_raster_adopts_configured_ramp() {
         use peniko::Color;
@@ -2909,11 +2909,11 @@ plot:
             other => panic!("expected an adopted Fill Sequential, got {other:?}"),
         }
 
-        // The raster's cells render THROUGH that ramp, not the steelblue fallback.
+        // The raster's cells render THROUGH that ramp, not the default-blue fallback.
         // Probe the raster in isolation (mark 1 only) so the base layer's
-        // steelblue dots can't be mistaken for a fallback cell. The peak cell
+        // default-blue dots can't be mistaken for a fallback cell. The peak cell
         // (count 9 == the ramp's domain max) samples the ramp's top stop; the
-        // fallback would have painted it full-alpha steelblue (DEFAULT_COLOUR).
+        // fallback would have painted it full-alpha default blue (DEFAULT_COLOUR).
         let (raster_scene, _) =
             render_plot_scene(&marks, &renderers, &[1], &layout, false, &ResolvedTitles::default(), &launch);
         let drawn: std::collections::HashSet<u32> =
@@ -2925,7 +2925,7 @@ plot:
         );
         assert!(
             !drawn.contains(&packed([0.306, 0.475, 0.655, 1.0])),
-            "no cell falls back to full-alpha steelblue — the ramp path was taken"
+            "no cell falls back to full-alpha default blue — the ramp path was taken"
         );
     }
 

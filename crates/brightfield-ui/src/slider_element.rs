@@ -29,6 +29,14 @@ const THUMB_RADIUS: f32 = 7.0;
 /// Track bar thickness (logical px).
 const TRACK_THICKNESS: f32 = 4.0;
 
+/// Slider colours — kept in sync with the headless twin
+/// (brightfield-render scene.rs `SLIDER_TRACK_COLOUR`/`SLIDER_THUMB_COLOUR`)
+/// so the dumped PNG matches the window (card 0005). Both sides read the same
+/// Meridian tokens: track = warm gray step 5 (#dcdad8), thumb = Maritime
+/// focus ink (#4b7a9b).
+const TRACK_TOKEN: meridian_design::colour::Rgba = meridian_design::scales::GRAY_LIGHT[4];
+const THUMB_TOKEN: meridian_design::colour::Rgba = meridian_design::chrome::INK_LIGHT.focus;
+
 /// Persistent per-slider UI state held in a gpui `Entity`: the committed
 /// (resting) value and the current drag gesture. Binding + geometry live on the
 /// [`SliderElement`], rebuilt each frame from the host placement.
@@ -252,7 +260,7 @@ impl Element for SliderElement {
             ),
             size: size(px(track_w as f32), px(TRACK_THICKNESS)),
         };
-        let mut tq = fill(track_rect, rgba(0.82, 0.83, 0.86, 1.0));
+        let mut tq = fill(track_rect, token(TRACK_TOKEN));
         tq.corner_radii = (TRACK_THICKNESS / 2.0).into();
         window.paint_quad(tq);
 
@@ -265,13 +273,20 @@ impl Element for SliderElement {
             ),
             size: size(px(THUMB_RADIUS * 2.0), px(THUMB_RADIUS * 2.0)),
         };
-        let mut thq = fill(thumb_rect, rgba(0.306, 0.475, 0.655, 1.0));
+        let mut thq = fill(thumb_rect, token(THUMB_TOKEN));
         thq.corner_radii = (THUMB_RADIUS).into();
         window.paint_quad(thq);
     }
 }
 
-/// Straight-alpha RGBA (0–1) → GPUI colour (mirrors chart_element::rgba).
-fn rgba(r: f32, g: f32, b: f32, a: f32) -> Hsla {
-    Rgba { r, g, b, a }.into()
+/// Meridian design token → GPUI colour (straight-alpha sRGB on both sides;
+/// mirrors chart_element::rgba's boundary conversion).
+fn token(c: meridian_design::colour::Rgba) -> Hsla {
+    Rgba {
+        r: c.r,
+        g: c.g,
+        b: c.b,
+        a: c.a,
+    }
+    .into()
 }
