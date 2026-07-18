@@ -880,6 +880,7 @@ version = "0.1.0"
 dependencies = [
  "brightfield-sql",
  "serde",
+ "serde_json",
  "serde_yaml",
  "sqlparser",
 ]

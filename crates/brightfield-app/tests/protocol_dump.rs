@@ -1,9 +1,10 @@
-//! Card 0025: the protocol dump arm, proven behaviourally against the REAL
-//! binary in the `dump_seam.rs` idiom. The sniff decides protocol-vs-Mosaic
-//! BEFORE spec parsing; the dump arm returns before any workspace/window
-//! construction (a leak would keep the run loop alive and hang these tests);
-//! window mode on a protocol manifest exits cleanly with a pointer to the
-//! dump variable (pds-ac07).
+//! The protocol dump arm, proven behaviourally against the REAL binary in the
+//! `dump_seam.rs` idiom. The default input is the emitted Protocol+Run
+//! contract; the interim manifest parser is the gated offline/fixture fallback
+//! (`BRIGHTFIELD_PROTOCOL_OFFLINE=1`), so the fixture tests below set that flag.
+//! The dump arm returns before any workspace/window construction (a leak would
+//! keep the run loop alive and hang these tests); window mode exits cleanly
+//! with a pointer to the dump variable.
 
 use std::fs;
 use std::path::PathBuf;
@@ -56,6 +57,7 @@ fn pds_ac01_edgar_gleif_dump_is_deterministic() {
         let _ = fs::remove_file(&png_path);
         let output = Command::new(env!("CARGO_BIN_EXE_brightfield"))
             .arg(&manifest)
+            .env("BRIGHTFIELD_PROTOCOL_OFFLINE", "1")
             .env("BRIGHTFIELD_DUMP_PNG", &png_path)
             .env_remove("BRIGHTFIELD_DUMP_SCALE")
             .env_remove("BRIGHTFIELD_PARAM_OVERRIDE")
@@ -106,6 +108,7 @@ fn pds_ac04_degrade_fixture_dumps() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_brightfield"))
         .arg(&manifest)
+        .env("BRIGHTFIELD_PROTOCOL_OFFLINE", "1")
         .env("BRIGHTFIELD_DUMP_PNG", &png_path)
         .env_remove("BRIGHTFIELD_PARAM_OVERRIDE")
         .output()
@@ -144,6 +147,7 @@ fn pds_window_mode_malformed_manifest_exits_nonzero() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_brightfield"))
         .arg(&bad)
+        .env("BRIGHTFIELD_PROTOCOL_OFFLINE", "1")
         .env_remove("BRIGHTFIELD_DUMP_PNG")
         .env_remove("BRIGHTFIELD_PARAM_OVERRIDE")
         .output()
@@ -170,6 +174,7 @@ fn pds_ac07_window_mode_prints_later_card_message() {
     let manifest = fixture("edgar_gleif/arcform.yaml");
     let output = Command::new(env!("CARGO_BIN_EXE_brightfield"))
         .arg(&manifest)
+        .env("BRIGHTFIELD_PROTOCOL_OFFLINE", "1")
         .env_remove("BRIGHTFIELD_DUMP_PNG")
         .env_remove("BRIGHTFIELD_PARAM_OVERRIDE")
         .output()
@@ -187,5 +192,78 @@ fn pds_ac07_window_mode_prints_later_card_message() {
     assert!(
         stderr.contains("BRIGHTFIELD_DUMP_PNG"),
         "the message points at the dump variable: {stderr}"
+    );
+}
+
+/// The path to the crate-vendored Protocol+Run contract fixture (the default
+/// input) — a real emitted `arc run` sample.
+fn contract_fixture(name: &str) -> PathBuf {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../brightfield-protocol/fixtures")
+        .join(name);
+    assert!(p.exists(), "contract fixture present at {p:?}");
+    p
+}
+
+/// The DEFAULT input is the emitted contract: dumping one (no offline flag)
+/// renders a non-empty DAG PNG and names the run.
+#[test]
+fn contract_is_the_default_input_and_dumps_a_dag() {
+    let dir = std::env::temp_dir().join(format!("bf-pds-contract-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let contract = contract_fixture("sample_run.contract.json");
+    let png_path = dir.join("contract.png");
+    let _ = fs::remove_file(&png_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_brightfield"))
+        .arg(&contract)
+        .env("BRIGHTFIELD_DUMP_PNG", &png_path)
+        .env_remove("BRIGHTFIELD_PROTOCOL_OFFLINE")
+        .env_remove("BRIGHTFIELD_PARAM_OVERRIDE")
+        .output()
+        .expect("binary runs");
+    assert!(
+        output.status.success(),
+        "contract dump exits cleanly: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Protocol run: widgets_demo"),
+        "the run was built from the contract (default path): {stderr}"
+    );
+    let (w, h, coverage) = parse_dump_line(&stderr);
+    assert!(w > 40 && h > 40, "graph-scale render, not an empty layout: {w}x{h}");
+    assert!(coverage > 0.0, "the composed scene carries real ink");
+    assert!(fs::metadata(&png_path).map(|m| m.len()).unwrap_or(0) > 0, "PNG written");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A raw manifest WITHOUT the offline flag is gated: the arm prints guidance
+/// pointing at the contract as the default input and exits 0 without rendering.
+#[test]
+fn manifest_without_offline_flag_is_gated() {
+    let manifest = fixture("edgar_gleif/arcform.yaml");
+    let output = Command::new(env!("CARGO_BIN_EXE_brightfield"))
+        .arg(&manifest)
+        .env_remove("BRIGHTFIELD_PROTOCOL_OFFLINE")
+        .env_remove("BRIGHTFIELD_DUMP_PNG")
+        .env_remove("BRIGHTFIELD_PARAM_OVERRIDE")
+        .output()
+        .expect("binary runs");
+    assert!(output.status.success(), "the gate is guidance, not an error");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("BRIGHTFIELD_PROTOCOL_OFFLINE"),
+        "the gate names the offline flag: {stderr}"
+    );
+    assert!(
+        stderr.contains("contract"),
+        "the gate points at the contract as the default input: {stderr}"
+    );
+    assert!(
+        !stderr.contains("PNG dumped:"),
+        "a gated manifest renders nothing: {stderr}"
     );
 }

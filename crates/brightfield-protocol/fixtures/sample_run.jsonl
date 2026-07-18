@@ -1,0 +1,5 @@
+{"step":"load","state":"running","ts":"2026-07-18T10:01:07Z"}
+{"step":"load","state":"success","ts":"2026-07-18T10:01:07Z"}
+{"step":"tally","state":"running","ts":"2026-07-18T10:01:07Z"}
+{"step":"tally","state":"success","ts":"2026-07-18T10:01:07Z"}
+{"event":"run_complete","outcome":"success"}
