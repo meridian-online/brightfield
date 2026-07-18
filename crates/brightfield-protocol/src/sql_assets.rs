@@ -145,17 +145,60 @@ fn object_name_key(name: &ObjectName) -> String {
     name.to_string().to_lowercase()
 }
 
-/// First positional string-literal argument of a table function — the file
-/// path of `read_parquet('p', ...)` and friends.
-fn first_string_arg(args: &TableFunctionArgs) -> Option<String> {
-    args.args.iter().find_map(|arg| {
-        if let FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Value(v))) = arg {
+/// File path argument names some DuckDB `read_*` functions accept in named
+/// form (`read_csv(path => 'p')`).
+fn is_path_arg(name: &str) -> bool {
+    matches!(name.to_ascii_lowercase().as_str(), "path" | "path_or_paths")
+}
+
+/// Collect the file path(s) a DuckDB `read_*` table function reads: the FIRST
+/// positional argument — a `'path'` string OR a `['a','b']` list literal — plus
+/// any `path`/`path_or_paths` named argument. Option arguments (`delim='\t'`,
+/// `header=true`, …) are deliberately NOT treated as paths, so a stray string
+/// option value never masquerades as lineage.
+fn read_fn_paths(args: &TableFunctionArgs) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let mut positional_seen = false;
+    for arg in &args.args {
+        match arg {
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) => {
+                if !positional_seen {
+                    collect_string_paths(expr, &mut out);
+                    positional_seen = true;
+                }
+            }
+            FunctionArg::Named { name, arg: FunctionArgExpr::Expr(expr), .. } => {
+                if is_path_arg(&name.value) {
+                    collect_string_paths(expr, &mut out);
+                }
+            }
+            FunctionArg::ExprNamed { name: Expr::Identifier(name), arg: FunctionArgExpr::Expr(expr), .. } => {
+                if is_path_arg(&name.value) {
+                    collect_string_paths(expr, &mut out);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Gather single-quoted string literals from a path expression: a bare string,
+/// or every string element of a `['a','b']` list literal.
+fn collect_string_paths(expr: &Expr, out: &mut BTreeSet<String>) {
+    match expr {
+        Expr::Value(v) => {
             if let Value::SingleQuotedString(s) = &v.value {
-                return Some(s.clone());
+                out.insert(s.clone());
             }
         }
-        None
-    })
+        Expr::Array(arr) => {
+            for elem in &arr.elem {
+                collect_string_paths(elem, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 impl Visitor for RelationCollector {
@@ -177,9 +220,7 @@ impl Visitor for RelationCollector {
                 // A table FUNCTION: read_* consumes a file; any other table
                 // function (generate_series, ...) is not lineage.
                 if READ_FNS.contains(&key.as_str()) {
-                    if let Some(path) = first_string_arg(args) {
-                        self.files.insert(path);
-                    }
+                    self.files.extend(read_fn_paths(args));
                 }
             } else {
                 self.relations.insert(key);
@@ -313,6 +354,51 @@ mod tests {
                     consumed_files.iter().collect::<Vec<_>>(),
                     vec![&"build/p.parquet".to_string()]
                 );
+            }
+            other => panic!("expected Parsed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pds_read_parquet_list_form_captures_every_path() {
+        // The DuckDB list form read_parquet(['a','b']) must yield BOTH file
+        // edges, not silently drop the lineage (only the unnamed single-string
+        // form was matched before).
+        let sql = "CREATE TABLE t AS SELECT * FROM read_parquet(['build/a.parquet', 'build/b.parquet'])";
+        let assets = extract_statement_assets(sql);
+        match &assets[0] {
+            StatementAssets::Parsed { consumed_files, .. } => {
+                assert!(consumed_files.contains("build/a.parquet"));
+                assert!(consumed_files.contains("build/b.parquet"));
+                assert_eq!(consumed_files.len(), 2);
+            }
+            other => panic!("expected Parsed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pds_read_csv_named_path_form_captures_the_file() {
+        // The named `read_csv(path = 'x')` form must capture the file edge (the
+        // old first_string_arg only matched an unnamed positional string).
+        let sql = "CREATE TABLE u AS SELECT * FROM read_csv(path = 'build/c.csv')";
+        let assets = extract_statement_assets(sql);
+        match &assets[0] {
+            StatementAssets::Parsed { consumed_files, .. } => {
+                assert!(consumed_files.contains("build/c.csv"), "named path captured: {consumed_files:?}");
+            }
+            other => panic!("expected Parsed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pds_read_csv_named_path_and_option_strings() {
+        // Named `path =>` form is captured; a string OPTION value (delim) is
+        // NOT mistaken for a file path.
+        let sql = "CREATE TABLE u AS SELECT * FROM read_csv('build/d.csv', delim='\t', header=true)";
+        let assets = extract_statement_assets(sql);
+        match &assets[0] {
+            StatementAssets::Parsed { consumed_files, .. } => {
+                assert_eq!(consumed_files.iter().collect::<Vec<_>>(), vec![&"build/d.csv".to_string()]);
             }
             other => panic!("expected Parsed, got {other:?}"),
         }
