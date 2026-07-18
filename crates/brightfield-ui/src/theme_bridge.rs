@@ -20,17 +20,9 @@ pub(crate) fn rgba(c: meridian_design::Rgba) -> Hsla {
     gpui::Rgba { r: c.r, g: c.g, b: c.b, a: c.a }.into()
 }
 
-/// Convert a Meridian token colour with an overridden alpha — for sites
-/// that reuse one token at several strengths (the active drag rect paints
-/// the focus-ring Maritime as a light wash for its fill and stronger for
-/// its border).
-pub(crate) fn rgba_with_alpha(c: meridian_design::Rgba, a: f32) -> Hsla {
-    gpui::Rgba { r: c.r, g: c.g, b: c.b, a }.into()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{rgba, rgba_with_alpha};
+    use super::rgba;
     use meridian_design::chrome::OVERLAY_LIGHT;
 
     /// The conversion is a straight component copy into `gpui::Rgba` before
@@ -44,15 +36,5 @@ mod tests {
         assert!((back.g - OVERLAY_LIGHT.focus_ring.g).abs() < 1e-3);
         assert!((back.b - OVERLAY_LIGHT.focus_ring.b).abs() < 1e-3);
         assert!((back.a - OVERLAY_LIGHT.focus_ring.a).abs() < 1e-3);
-    }
-
-    /// The alpha override replaces the token's alpha and leaves the hue
-    /// components alone.
-    #[test]
-    fn alpha_override_replaces_alpha_only() {
-        let hsla = rgba_with_alpha(OVERLAY_LIGHT.focus_ring, 0.15);
-        let back: gpui::Rgba = hsla.into();
-        assert!((back.a - 0.15).abs() < 1e-3);
-        assert!((back.r - OVERLAY_LIGHT.focus_ring.r).abs() < 1e-3);
     }
 }

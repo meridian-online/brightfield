@@ -1,426 +1,319 @@
-//! ChartElement — GPUI Element that paints the chart and routes mouse input.
+//! Chart paint logic — framework-free, routed through the [`ChartSurface`]
+//! boundary.
 //!
-//! ChartElement is created fresh by `ChartView::render()` each frame. It holds
-//! the `Entity<ChartState>` and, on paint:
-//!   1. composites the interaction overlay (brush rect / hover marker) onto a
-//!      clone of the current scene,
-//!   2. rasterises that scene with the shared Vello renderer and paints it, and
-//!   3. registers window mouse listeners that drive the chart's interaction
-//!      state (brush / hover). GPUI clears per-frame listeners each frame, so
-//!      they are re-registered every paint; a state change calls
-//!      `window.refresh()` to repaint with the updated overlay.
+//! This module holds the *logic* of the deepest chart shell without naming any
+//! host (gpui) element or paint type. Each frame the host (see
+//! [`crate::gpui_canvas`]) drives [`paint_chart`] with a [`ChartSurface`]:
+//!   1. present the chart's current scene + reserve its on-screen rect,
+//!   2. draw the interaction overlay (brush rect / hover marker / selection
+//!      highlight) via the surface's [`OverlayPainter`], and
+//!   3. set the position-dependent cursor over any persisted selection.
 //!
-//! Lifecycle:
-//! - `request_layout()` — fixed-size layout from ChartState dimensions
-//! - `prepaint()` — registers a hitbox covering the element bounds
-//! - `paint()` — composite + rasterise + paint + wire mouse events
+//! Pointer input is gathered by the host into [`SurfaceInput`] and routed here
+//! through [`route_pointer_down`] / [`route_pointer_move`] / [`redispatch_target`]
+//! into the EXISTING interaction transitions on [`ChartState`] (unchanged) — the
+//! host owns only the framework glue (window refresh, cross-filter commit,
+//! per-frame listener re-registration), never the interaction semantics.
 
-use std::cell::{Cell, RefCell};
-use std::rc::Rc;
-
-use gpui::{
-    fill, point, px, size, App, BorderStyle, Bounds, Corners, CursorStyle, Element, ElementId,
-    Entity, GlobalElementId, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Rgba, Size, Style, Window,
+use crate::canvas_host::{
+    ChartSurface, Color, OverlayPainter, PixelSize, SurfaceCursor, SurfaceInput, SurfaceRect,
 };
-use kurbo::Point;
-
-use meridian_design::chrome::OVERLAY_LIGHT;
-
 use crate::chart_state::ChartState;
-use crate::crossfilter::CrossfilterCoordinator;
 use crate::interaction::{
     redispatch_brushing_from, BrushCorner, BrushEdge, BrushRegion, InteractionState,
 };
-use crate::theme_bridge;
+use kurbo::Point;
+use meridian_design::chrome::OVERLAY_LIGHT;
 
-/// GPUI element that paints a chart from its `ChartState` and routes mouse input.
+/// Hover marker radius in logical pixels (mirrors `interaction::render_overlay`).
+const HOVER_RADIUS: f64 = 8.0;
+
+/// Paint one chart frame through the host surface. The host has already
+/// registered this frame's input listeners; here we present, overlay, and set
+/// the cursor — the paint-phase half of the lifecycle, framework-free.
 ///
-/// Created by `ChartView::render()` each frame. Owns no chart state of its own —
-/// it reads and updates the shared `Entity<ChartState>`.
-pub struct ChartElement {
-    /// The reactive chart state entity.
-    state: Entity<ChartState>,
-    /// This plot's index, both for the stable element id and as the plot index
-    /// into the cross-filter coordinator (charts are hosted in plot order).
-    index: usize,
-    /// Stable, per-plot element id. (Sibling charts already get independent
-    /// hitboxes — each `insert_hitbox` mints a unique id — so this is for GPUI's
-    /// per-element state keying rather than relying on anonymous ids.)
-    id: ElementId,
-    /// Shared cross-filter coordinator. When present, a brush release routes
-    /// through it to re-query and re-render subscriber plots; `None` means the
-    /// brush is purely visual (no linked views).
-    coordinator: Option<Rc<RefCell<CrossfilterCoordinator>>>,
-    /// The pointer's grab region over the persisted `Selected` rect (card 0022),
-    /// shared with the persistent `ChartView` so it survives the per-frame
-    /// element recreation (mirrors the legend's `hovered_index`). Set by the
-    /// mouse-move listener, read each paint to pick the position-dependent cursor.
-    region: Rc<Cell<BrushRegion>>,
+/// A zero-size plot presents nothing (the listeners still ran) — mirroring the
+/// pre-refactor early return before rasterisation.
+pub fn paint_chart(
+    surface: &mut dyn ChartSurface,
+    interaction: &InteractionState,
+    region: BrushRegion,
+    size: PixelSize,
+) {
+    if size.width == 0 || size.height == 0 {
+        return; // nothing to rasterise; the host's input listeners already ran
+    }
+
+    // Present the cached, device-resolution base raster and reserve the rect,
+    // then draw the interaction overlay on top as cheap host primitives — so
+    // hovering/brushing never re-run Vello.
+    let _bounds = surface.present(size);
+    draw_overlay(interaction, surface.overlay());
+
+    // Position-dependent cursor over the persisted selection (card 0022): the
+    // grab region was tracked by the host's mouse-move listener; re-pick the
+    // cursor from it each paint. No cursor over `Outside` or when nothing is
+    // selected (`overlay_cursor` returns `None`).
+    let dragging = matches!(interaction, InteractionState::Dragging { .. });
+    surface.set_cursor(overlay_cursor(region, dragging));
 }
 
-impl ChartElement {
-    /// Create a chart element bound to the given state entity. `index` gives the
-    /// element a stable id distinguishing it from sibling plots in a dashboard,
-    /// and is the plot index into `coordinator`. `coordinator` is `None` for a
-    /// dashboard that doesn't cross-filter. `region` is the persistent cursor-
-    /// region cell (card 0022) the hosting `ChartView` owns per plot.
-    pub fn new(
-        state: Entity<ChartState>,
-        index: usize,
-        coordinator: Option<Rc<RefCell<CrossfilterCoordinator>>>,
-        region: Rc<Cell<BrushRegion>>,
-    ) -> Self {
-        Self {
-            state,
-            index,
-            id: ElementId::from(("brightfield-plot", index)),
-            coordinator,
-            region,
+/// Draw the interaction overlay (brush rectangle / hover marker / selection
+/// highlight) via the host's [`OverlayPainter`]. Coordinates are surface-local
+/// logical pixels — the same space the interaction state stores — and the host
+/// offsets them by the surface origin. Drawing the overlay as host primitives
+/// (rather than compositing into the Vello scene) means an interaction repaint
+/// reuses the cached base raster, and keeps example PNGs byte-identical (the
+/// overlay never enters the scene).
+pub fn draw_overlay(interaction: &InteractionState, painter: &mut dyn OverlayPainter) {
+    match interaction {
+        InteractionState::Idle => {}
+        InteractionState::Brushing { start, current } => {
+            let rect = norm_surface_rect(*start, *current);
+            // The active drag rect is interactive, so it wears Maritime (the
+            // Meridian design rule: interactive/focus/selection = Maritime,
+            // chrome stays warm-neutral) — the focus-ring token as a light wash
+            // for the fill and stronger for the border.
+            painter.fill_rect(rect, Color::from_token_alpha(OVERLAY_LIGHT.focus_ring, 0.15));
+            painter.stroke_rect(rect, Color::from_token_alpha(OVERLAY_LIGHT.focus_ring, 0.75), 1.5);
+        }
+        // A committed selection and an in-flight move/resize paint identically —
+        // a neutral ink wash, so it reads as settled vs the active Maritime drag
+        // (Mosaic / Vega-Lite fidelity).
+        InteractionState::Selected { start, current }
+        | InteractionState::Dragging { start, current, .. } => {
+            let rect = norm_surface_rect(*start, *current);
+            painter.fill_rect(rect, Color::from_token(OVERLAY_LIGHT.brush_fill));
+            painter.stroke_rect(rect, Color::from_token(OVERLAY_LIGHT.brush_border), 1.5);
+        }
+        InteractionState::Hovering { point: p, .. } => {
+            // Hover disc tracks categorical slot 2 (Harbour gold) so it stays an
+            // accent DISTINCT from the slot-1 blue default marks it sits over —
+            // the same "palette slot 2" convention the old Tableau10 orange
+            // followed. Translucent, same historical alpha.
+            let slot2 = meridian_design::viz::CATEGORICAL_LIGHT[1];
+            painter.fill_circle(
+                *p,
+                HOVER_RADIUS,
+                Color { r: slot2.r, g: slot2.g, b: slot2.b, a: 0.376 },
+            );
         }
     }
 }
 
-impl IntoElement for ChartElement {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
+/// Normalise two brush corners into a surface rectangle (min corner + extent),
+/// the same min/max the pre-refactor overlay computed.
+fn norm_surface_rect(start: Point, current: Point) -> SurfaceRect {
+    let x0 = start.x.min(current.x);
+    let y0 = start.y.min(current.y);
+    let w = start.x.max(current.x) - x0;
+    let h = start.y.max(current.y) - y0;
+    SurfaceRect::new(x0, y0, w, h)
 }
 
-impl Element for ChartElement {
-    type RequestLayoutState = ();
-    type PrepaintState = gpui::Hitbox;
-
-    fn id(&self) -> Option<ElementId> {
-        Some(self.id.clone())
-    }
-
-    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, Self::RequestLayoutState) {
-        let (width, height) = {
-            let state = self.state.read(cx);
-            (state.width(), state.height())
-        };
-        let mut style = Style::default();
-        style.size = Size {
-            width: gpui::Length::Definite(gpui::DefiniteLength::Absolute(
-                gpui::AbsoluteLength::Pixels(px(width as f32)),
-            )),
-            height: gpui::Length::Definite(gpui::DefiniteLength::Absolute(
-                gpui::AbsoluteLength::Pixels(px(height as f32)),
-            )),
-        };
-        let layout_id = window.request_layout(style, [], cx);
-        (layout_id, ())
-    }
-
-    fn prepaint(
-        &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _request_layout: &mut Self::RequestLayoutState,
-        window: &mut Window,
-        _cx: &mut App,
-    ) -> Self::PrepaintState {
-        // Register a hitbox covering the full element bounds for mouse events.
-        window.insert_hitbox(bounds, HitboxBehavior::Normal)
-    }
-
-    fn paint(
-        &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _request_layout: &mut Self::RequestLayoutState,
-        prepaint: &mut Self::PrepaintState,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        // Register window mouse listeners FIRST, so input survives even a
-        // transient zero-size frame (the raster below may early-return, but the
-        // listeners only need bounds.origin + the hitbox). The element origin
-        // maps window-space positions to chart-local coordinates; the hitbox
-        // restricts presses to this element. GPUI clears per-frame listeners, so
-        // they are re-registered every paint, and window.refresh() is the
-        // repaint trigger when the interaction state changes.
-        let element_origin = Point::new(bounds.origin.x.to_f64(), bounds.origin.y.to_f64());
-
-        // Mouse down — begin a brush if the press is over the chart.
-        window.on_mouse_event({
-            let state = self.state.clone();
-            let hitbox = prepaint.clone();
-            move |event: &MouseDownEvent, phase, window, cx| {
-                if phase.bubble()
-                    && event.button == MouseButton::Left
-                    && hitbox.is_hovered(window)
-                {
-                    let pos = Point::new(event.position.x.to_f64(), event.position.y.to_f64());
-                    let changed = state.update(cx, |s, _| s.pointer_down(pos, element_origin));
-                    if changed {
-                        window.refresh();
-                    }
-                }
-            }
-        });
-
-        // Mouse move — extend the brush / move-resize the grabbed selection while
-        // the button is held, or update hover; and re-classify the pointer over
-        // any persisted Selected rect so the paint-phase cursor tracks the region
-        // under it (card 0022). Refresh on EITHER an interaction change or a
-        // cursor-region change (mirrors the legend's hovered_index refresh-on-change).
-        window.on_mouse_event({
-            let state = self.state.clone();
-            let region = self.region.clone();
-            move |event: &MouseMoveEvent, phase, window, cx| {
-                if phase.bubble() {
-                    let pos = Point::new(event.position.x.to_f64(), event.position.y.to_f64());
-                    let held = event.pressed_button == Some(MouseButton::Left);
-                    let changed = state.update(cx, |s, _| s.pointer_move(pos, element_origin, held));
-                    let next_region = state.read(cx).cursor_region(pos, element_origin);
-                    let region_changed = region.get() != next_region;
-                    if region_changed {
-                        region.set(next_region);
-                    }
-                    if changed || region_changed {
-                        window.refresh();
-                    }
-                }
-            }
-        });
-
-        // Mouse up — commit the brush (cross-filter the linked views, if wired)
-        // then end the visual brush. The commit reads this plot's Brushing rect
-        // BEFORE pointer_up clears it, dispatches the selection through the
-        // coordinator's live Session, and swaps the re-queried subscriber scenes.
-        window.on_mouse_event({
-            let state = self.state.clone();
-            let coordinator = self.coordinator.clone();
-            let plot_index = self.index;
-            move |event: &MouseUpEvent, phase, window, cx| {
-                if phase.bubble() && event.button == MouseButton::Left {
-                    // `committed` is true only for the plot that was actually
-                    // brushed / grabbed, so an untouched sibling's listener doesn't
-                    // trigger a redundant window refresh.
-                    let committed = match &coordinator {
-                        Some(coord) => {
-                            let interaction = state.read(cx).interaction().clone();
-                            // A move/resize ends in `Dragging`, which commit_brush
-                            // (Brushing-only) ignores; synthesise a Brushing from
-                            // the NEW corners so the moved range re-dispatches (the
-                            // card-0021 silent-no-op defence — the SOLE synthesis
-                            // site, driven here). A fresh Brushing passes straight
-                            // through; a zero-delta grab yields the unchanged state
-                            // → commit_brush no-ops (no redundant re-query); an
-                            // untouched sibling's Selected likewise yields None.
-                            let to_commit =
-                                redispatch_brushing_from(&interaction).unwrap_or(interaction);
-                            coord.borrow_mut().commit_brush(plot_index, &to_commit, cx)
-                        }
-                        None => false,
-                    };
-                    let changed = state.update(cx, |s, _| s.pointer_up());
-                    if changed || committed {
-                        window.refresh();
-                    }
-                }
-            }
-        });
-
-        // Fetch the cached, device-resolution base raster (re-rendered only when
-        // the scene changes) and paint it; then draw the interaction overlay as
-        // cheap GPUI quads on top, so hovering/brushing never re-run Vello.
-        let sf = window.scale_factor();
-        let (base, interaction) = {
-            let state = self.state.read(cx);
-            if state.width() == 0 || state.height() == 0 {
-                return; // nothing to rasterise; mouse listeners already registered
-            }
-            (state.base_image(sf), state.interaction().clone())
-        };
-
-        let _ = window.paint_image(bounds, Corners::default(), base, 0, false);
-        paint_overlay(window, bounds, &interaction);
-
-        // Position-dependent cursor over the persisted selection (card 0022):
-        // pick the style from the tracked region (set by the mouse-move listener)
-        // and bind it to the element's whole hitbox — the position dependence
-        // comes from re-picking each paint, not from multiple hitboxes. Reuses
-        // the card-0020 set_cursor_style seam; NOT PointingHand (the legend cue).
-        // No cursor is set over `Outside` (default) or when nothing is selected.
-        let dragging = matches!(interaction, InteractionState::Dragging { .. });
-        if let Some(style) = region_cursor(self.region.get(), dragging) {
-            window.set_cursor_style(style, &*prepaint);
-        }
-    }
-}
-
-/// Map a grab region to its cursor style (card 0022, drb-ac08): an open hand
+/// Map a grab region to its surface cursor (card 0022, drb-ac08): an open hand
 /// over the interior (closed while dragging), a horizontal/vertical resize on an
 /// edge, a diagonal resize on a corner. `Outside` sets no cursor (the plot
-/// default). NOT PointingHand — that is the legend's clickable cue (card 0020).
-fn region_cursor(region: BrushRegion, dragging: bool) -> Option<CursorStyle> {
+/// default). The host maps [`SurfaceCursor`] to its own cursor type.
+pub fn overlay_cursor(region: BrushRegion, dragging: bool) -> Option<SurfaceCursor> {
     match region {
         BrushRegion::Interior => Some(if dragging {
-            CursorStyle::ClosedHand
+            SurfaceCursor::Grabbing
         } else {
-            CursorStyle::OpenHand
+            SurfaceCursor::Grab
         }),
-        BrushRegion::Edge(BrushEdge::Left | BrushEdge::Right) => Some(CursorStyle::ResizeLeftRight),
-        BrushRegion::Edge(BrushEdge::Top | BrushEdge::Bottom) => Some(CursorStyle::ResizeUpDown),
+        BrushRegion::Edge(BrushEdge::Left | BrushEdge::Right) => {
+            Some(SurfaceCursor::ResizeHorizontal)
+        }
+        BrushRegion::Edge(BrushEdge::Top | BrushEdge::Bottom) => Some(SurfaceCursor::ResizeVertical),
         BrushRegion::Corner(BrushCorner::TopLeft | BrushCorner::BottomRight) => {
-            Some(CursorStyle::ResizeUpLeftDownRight)
+            Some(SurfaceCursor::ResizeNwSe)
         }
         BrushRegion::Corner(BrushCorner::TopRight | BrushCorner::BottomLeft) => {
-            Some(CursorStyle::ResizeUpRightDownLeft)
+            Some(SurfaceCursor::ResizeNeSw)
         }
         BrushRegion::Outside => None,
     }
 }
 
-/// Convert a straight-alpha RGBA tuple (0–1) to a GPUI colour.
-///
-/// Retained solely for the hover-disc site below: that colour has a vello
-/// twin owned by the chart-ink migration (design phase 4 PR B), which
-/// retires this helper when it lands. Every tokenised overlay site routes
-/// through [`theme_bridge`] instead.
-fn rgba(r: f32, g: f32, b: f32, a: f32) -> Hsla {
-    Rgba { r, g, b, a }.into()
+// --- Pointer input routing -------------------------------------------------
+//
+// The host gathers each native pointer event into a `SurfaceInput` and calls
+// these; they translate it into the EXISTING interaction transitions on
+// `ChartState` (which delegate to `interaction.rs`). Only the framework glue —
+// entity update, window refresh, cross-filter commit — stays host-side.
+
+/// The result of routing a pointer-move: whether the interaction changed, and
+/// the (possibly new) grab region under the pointer for the paint-phase cursor.
+#[derive(Clone, Copy, Debug)]
+pub struct MoveOutcome {
+    /// Whether the interaction state changed (host should refresh).
+    pub changed: bool,
+    /// The grab region under the pointer, for the paint-phase cursor.
+    pub region: BrushRegion,
 }
 
-/// Hover marker radius in logical pixels (mirrors `interaction::render_overlay`).
-const HOVER_RADIUS: f64 = 8.0;
-
-/// Paint the interaction overlay (brush rectangle / hover marker) as GPUI quads
-/// over the chart image. Coordinates are element-local logical pixels — the same
-/// space the interaction state stores — offset by the element origin. Drawing
-/// the overlay as quads (rather than compositing into the Vello scene) means an
-/// interaction repaint reuses the cached base raster instead of re-rendering.
-fn paint_overlay(window: &mut Window, bounds: Bounds<Pixels>, interaction: &InteractionState) {
-    let ox = bounds.origin.x;
-    let oy = bounds.origin.y;
-    match interaction {
-        InteractionState::Idle => {}
-        InteractionState::Brushing { start, current } => {
-            let x0 = start.x.min(current.x);
-            let y0 = start.y.min(current.y);
-            let w = (start.x.max(current.x) - x0) as f32;
-            let h = (start.y.max(current.y) - y0) as f32;
-            let rect = Bounds {
-                origin: point(ox + px(x0 as f32), oy + px(y0 as f32)),
-                size: size(px(w), px(h)),
-            };
-            // The active drag rect is interactive, so it wears Maritime (the
-            // Meridian design rule: interactive/focus/selection = Maritime,
-            // chrome stays warm-neutral) — the focus-ring token as a light
-            // wash for the fill and stronger for the border.
-            let mut q = fill(rect, theme_bridge::rgba_with_alpha(OVERLAY_LIGHT.focus_ring, 0.15));
-            q.border_widths = (1.5).into();
-            q.border_color = theme_bridge::rgba_with_alpha(OVERLAY_LIGHT.focus_ring, 0.75);
-            q.border_style = BorderStyle::Solid;
-            window.paint_quad(q);
-        }
-        // A committed selection and an in-flight move/resize paint identically —
-        // a neutral ink wash, so it reads as settled vs the active Maritime drag
-        // (Mosaic / Vega-Lite fidelity). Both are GPUI quads over the cached
-        // raster, never composited into the vello Scene, so example PNGs stay
-        // byte-identical.
-        InteractionState::Selected { start, current }
-        | InteractionState::Dragging { start, current, .. } => {
-            let x0 = start.x.min(current.x);
-            let y0 = start.y.min(current.y);
-            let w = (start.x.max(current.x) - x0) as f32;
-            let h = (start.y.max(current.y) - y0) as f32;
-            let rect = Bounds {
-                origin: point(ox + px(x0 as f32), oy + px(y0 as f32)),
-                size: size(px(w), px(h)),
-            };
-            let mut q = fill(rect, theme_bridge::rgba(OVERLAY_LIGHT.brush_fill));
-            q.border_widths = (1.5).into();
-            q.border_color = theme_bridge::rgba(OVERLAY_LIGHT.brush_border);
-            q.border_style = BorderStyle::Solid;
-            window.paint_quad(q);
-        }
-        InteractionState::Hovering { point: p, .. } => {
-            let d = (HOVER_RADIUS * 2.0) as f32;
-            let rect = Bounds {
-                origin: point(
-                    ox + px((p.x - HOVER_RADIUS) as f32),
-                    oy + px((p.y - HOVER_RADIUS) as f32),
-                ),
-                size: size(px(d), px(d)),
-            };
-            // Hover disc tracks categorical slot 2 (Harbour gold) so it stays
-            // an accent DISTINCT from the slot-1 blue default marks it sits
-            // over — the same "palette slot 2" convention the old Tableau10
-            // orange followed. Translucent, same historical alpha.
-            let slot2 = meridian_design::viz::CATEGORICAL_LIGHT[1];
-            let mut q = fill(rect, rgba(slot2.r, slot2.g, slot2.b, 0.376));
-            q.corner_radii = (HOVER_RADIUS as f32).into(); // round the quad into a circle
-            window.paint_quad(q);
+/// Route a pointer-down. A press over the hitbox begins a brush / grabs a
+/// persisted selection (the `pointer_down` resolver decides which). Returns
+/// `true` when the interaction changed. A non-primary press, or one off the
+/// hitbox, is ignored — matching the pre-refactor left-button + hovered gate.
+pub fn route_pointer_down(input: &SurfaceInput, state: &mut ChartState, origin: Point) -> bool {
+    if input.pointer_primary.is_down() && input.hovered {
+        if let Some(pos) = input.pointer_pos {
+            return state.pointer_down(pos, origin);
         }
     }
+    false
+}
+
+/// Route a pointer-move: extend the brush / move-resize the grab while the
+/// primary button is held, or update hover; and re-classify the pointer over any
+/// persisted selection so the paint-phase cursor tracks the region under it.
+pub fn route_pointer_move(input: &SurfaceInput, state: &mut ChartState, origin: Point) -> MoveOutcome {
+    let Some(pos) = input.pointer_pos else {
+        return MoveOutcome { changed: false, region: BrushRegion::Outside };
+    };
+    let held = input.pointer_primary.is_down();
+    let changed = state.pointer_move(pos, origin, held);
+    let region = state.cursor_region(pos, origin);
+    MoveOutcome { changed, region }
+}
+
+/// The interaction to commit on release. A move/resize that ends in `Dragging`
+/// is synthesised into a pixel-space `Brushing` from its NEW corners so the moved
+/// range re-dispatches (the card-0022 defence); every other state passes through
+/// unchanged. The host feeds the result into the cross-filter coordinator BEFORE
+/// `ChartState::pointer_up` clears the gesture.
+pub fn redispatch_target(state: &ChartState) -> InteractionState {
+    let interaction = state.interaction().clone();
+    redispatch_brushing_from(&interaction).unwrap_or(interaction)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::region_cursor;
-    use crate::interaction::{BrushCorner, BrushEdge, BrushRegion};
-    use gpui::CursorStyle;
+    use super::{draw_overlay, overlay_cursor};
+    use crate::canvas_host::{Color, OverlayPainter, SurfaceCursor, SurfaceRect};
+    use crate::interaction::{BrushCorner, BrushEdge, BrushRegion, InteractionState};
+    use kurbo::Point;
 
     /// drb-ac08 (mapping): the region→cursor mapping is a pure fn — open hand over
     /// the interior (closed while dragging), horizontal/vertical resize on edges,
-    /// diagonal resize on corners, no cursor over Outside. (The live cursor glyph
+    /// diagonal resize on corners, no cursor over Outside. (The host maps each
+    /// `SurfaceCursor` to its own glyph — pinned in `gpui_canvas`; the live glyph
     /// and its change-on-motion are Hugh's in-app eyeball.)
     #[test]
     fn drb_ac08_region_cursor_mapping() {
-        assert_eq!(region_cursor(BrushRegion::Interior, false), Some(CursorStyle::OpenHand));
-        assert_eq!(region_cursor(BrushRegion::Interior, true), Some(CursorStyle::ClosedHand));
+        assert_eq!(overlay_cursor(BrushRegion::Interior, false), Some(SurfaceCursor::Grab));
+        assert_eq!(overlay_cursor(BrushRegion::Interior, true), Some(SurfaceCursor::Grabbing));
         assert_eq!(
-            region_cursor(BrushRegion::Edge(BrushEdge::Left), false),
-            Some(CursorStyle::ResizeLeftRight)
+            overlay_cursor(BrushRegion::Edge(BrushEdge::Left), false),
+            Some(SurfaceCursor::ResizeHorizontal)
         );
         assert_eq!(
-            region_cursor(BrushRegion::Edge(BrushEdge::Right), false),
-            Some(CursorStyle::ResizeLeftRight)
+            overlay_cursor(BrushRegion::Edge(BrushEdge::Right), false),
+            Some(SurfaceCursor::ResizeHorizontal)
         );
         assert_eq!(
-            region_cursor(BrushRegion::Edge(BrushEdge::Top), false),
-            Some(CursorStyle::ResizeUpDown)
+            overlay_cursor(BrushRegion::Edge(BrushEdge::Top), false),
+            Some(SurfaceCursor::ResizeVertical)
         );
         assert_eq!(
-            region_cursor(BrushRegion::Edge(BrushEdge::Bottom), false),
-            Some(CursorStyle::ResizeUpDown)
+            overlay_cursor(BrushRegion::Edge(BrushEdge::Bottom), false),
+            Some(SurfaceCursor::ResizeVertical)
         );
         assert_eq!(
-            region_cursor(BrushRegion::Corner(BrushCorner::TopLeft), false),
-            Some(CursorStyle::ResizeUpLeftDownRight)
+            overlay_cursor(BrushRegion::Corner(BrushCorner::TopLeft), false),
+            Some(SurfaceCursor::ResizeNwSe)
         );
         assert_eq!(
-            region_cursor(BrushRegion::Corner(BrushCorner::BottomRight), false),
-            Some(CursorStyle::ResizeUpLeftDownRight)
+            overlay_cursor(BrushRegion::Corner(BrushCorner::BottomRight), false),
+            Some(SurfaceCursor::ResizeNwSe)
         );
         assert_eq!(
-            region_cursor(BrushRegion::Corner(BrushCorner::TopRight), false),
-            Some(CursorStyle::ResizeUpRightDownLeft)
+            overlay_cursor(BrushRegion::Corner(BrushCorner::TopRight), false),
+            Some(SurfaceCursor::ResizeNeSw)
         );
         assert_eq!(
-            region_cursor(BrushRegion::Corner(BrushCorner::BottomLeft), false),
-            Some(CursorStyle::ResizeUpRightDownLeft)
+            overlay_cursor(BrushRegion::Corner(BrushCorner::BottomLeft), false),
+            Some(SurfaceCursor::ResizeNeSw)
         );
         // Outside → no cursor (the plot default), whether or not "dragging".
-        assert_eq!(region_cursor(BrushRegion::Outside, false), None);
-        assert_eq!(region_cursor(BrushRegion::Outside, true), None);
+        assert_eq!(overlay_cursor(BrushRegion::Outside, false), None);
+        assert_eq!(overlay_cursor(BrushRegion::Outside, true), None);
+    }
+
+    /// Records overlay primitive calls so the pure overlay-decision logic can be
+    /// asserted without a live window (the host paint is Hugh's in-app eyeball).
+    #[derive(Default)]
+    struct RecordingPainter {
+        rects: Vec<(SurfaceRect, Color)>,
+        strokes: Vec<(SurfaceRect, Color, f32)>,
+        circles: Vec<(Point, f64, Color)>,
+    }
+    impl OverlayPainter for RecordingPainter {
+        fn fill_rect(&mut self, r: SurfaceRect, c: Color) {
+            self.rects.push((r, c));
+        }
+        fn stroke_rect(&mut self, r: SurfaceRect, c: Color, w: f32) {
+            self.strokes.push((r, c, w));
+        }
+        fn fill_circle(&mut self, center: Point, radius: f64, c: Color) {
+            self.circles.push((center, radius, c));
+        }
+        fn line(&mut self, _a: Point, _b: Point, _c: Color, _w: f32) {}
+        fn text(&mut self, _at: Point, _s: &str, _c: Color, _size: f32) {}
+    }
+
+    /// The overlay decision per interaction state: `Idle` draws nothing; a brush
+    /// draws a normalised fill + 1.5px border; a selection/drag draws the settled
+    /// wash; a hover draws an 8px-radius disc — the same primitives the
+    /// pre-refactor `paint_overlay` emitted, now framework-free.
+    #[test]
+    fn draw_overlay_emits_expected_primitives() {
+        // Idle → nothing.
+        let mut p = RecordingPainter::default();
+        draw_overlay(&InteractionState::Idle, &mut p);
+        assert!(p.rects.is_empty() && p.strokes.is_empty() && p.circles.is_empty());
+
+        // Brushing → one normalised fill + one 1.5px border (corners normalised).
+        let mut p = RecordingPainter::default();
+        draw_overlay(
+            &InteractionState::Brushing {
+                start: Point::new(120.0, 40.0),
+                current: Point::new(20.0, 90.0),
+            },
+            &mut p,
+        );
+        assert_eq!(p.rects.len(), 1);
+        assert_eq!(p.strokes.len(), 1);
+        let (rect, _) = p.rects[0];
+        assert_eq!((rect.x, rect.y, rect.width, rect.height), (20.0, 40.0, 100.0, 50.0));
+        assert_eq!(p.strokes[0].2, 1.5);
+        assert!(p.circles.is_empty());
+
+        // Selected → the settled fill + border (same shape as a drag).
+        let mut p = RecordingPainter::default();
+        draw_overlay(
+            &InteractionState::Selected {
+                start: Point::new(10.0, 10.0),
+                current: Point::new(30.0, 50.0),
+            },
+            &mut p,
+        );
+        assert_eq!(p.rects.len(), 1);
+        assert_eq!(p.strokes.len(), 1);
+
+        // Hovering → one 8px-radius disc at the point, alpha 0.376.
+        let mut p = RecordingPainter::default();
+        draw_overlay(
+            &InteractionState::Hovering { point: Point::new(64.0, 48.0), nearest: None },
+            &mut p,
+        );
+        assert_eq!(p.circles.len(), 1);
+        let (center, radius, color) = p.circles[0];
+        assert_eq!(center, Point::new(64.0, 48.0));
+        assert_eq!(radius, 8.0);
+        assert!((color.a - 0.376).abs() < 1e-6);
+        assert!(p.rects.is_empty() && p.strokes.is_empty());
     }
 }

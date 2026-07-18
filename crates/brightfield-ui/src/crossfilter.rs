@@ -3,8 +3,9 @@
 //! Keeps the engine [`Session`] and the per-mark / per-plot render metadata
 //! alive past the initial render, so a brush committed in the window
 //! re-executes the subscriber marks and swaps their scenes in place. The window
-//! holds one coordinator wrapped in `Rc<RefCell<…>>`; each plot's `ChartElement`
-//! mouse-up handler calls [`CrossfilterCoordinator::commit_brush`].
+//! holds one coordinator wrapped in `Rc<RefCell<…>>`; each plot's
+//! `GpuiChartSurface` mouse-up handler calls
+//! [`CrossfilterCoordinator::commit_brush`].
 //!
 //! The chain — all but the final `set_scene` is exercised headlessly by
 //! `tests/crossfilter_integration.rs` and the inversion is unit-tested below:

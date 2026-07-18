@@ -1765,7 +1765,7 @@ fn main() {
     }
 
     // Open a native GPUI window: the docked authoring workspace (card 0017) —
-    // a DockArea hosting the canvas panel (one ChartElement per plot,
+    // a DockArea hosting the canvas panel (one GpuiChartSurface per plot,
     // positioned per the layout, each with its own ChartState so interaction
     // is per-plot), the YAML spec editor, and the data sidebar.
     #[cfg(target_os = "macos")]
