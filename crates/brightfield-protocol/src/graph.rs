@@ -19,9 +19,13 @@
 //!   producing statement of a relation that is consumed later in the same
 //!   file and never referenced by any other step is INTERNAL, otherwise
 //!   TABLE (statement-level only — CTE parsing is a later card).
-//! - The terminal `parquet_export` whose dest no other step reads (via
-//!   `depends_on`/SQL/`with.input` — annotator-style `with:` path references
-//!   do not count) re-kinds that FILE node **Dataset**.
+//! - A `parquet_export` dest re-kinds to **Dataset** (the sink) when no other
+//!   step reads it via `depends_on`/SQL/`with.input` AND it does not feed —
+//!   through any edge, including annotator-style `with:` op consumption —
+//!   another export dest. That second clause is what keeps a mid-pipeline
+//!   export consumed by a later op via a named `with:` key (splink's `edgar:`)
+//!   from being mistaken for the terminal, while a describe/validate read of
+//!   the terminal (a leaf sidecar) leaves it the sink.
 //! - `finetype_validate` steps produce NO node: `gate: true` on the seam and
 //!   `shield: true` on the edge into the asset named by `with.parquet`
 //!   (pds-ac05) — a shield on the lineage, not a box in it.
@@ -353,15 +357,34 @@ impl Builder {
         if let Some(id) = self.produced_file.get(path) {
             return vec![id.clone()];
         }
+        // (a) Produced entries that COVER the consumed path (a producer
+        //     dir/glob of a deeper consumed path) — keep the deepest producer.
         let covering: Vec<(&String, &AssetId)> = self
             .produced_file
             .iter()
             .filter(|(p, _)| path_covers(p, path))
             .collect();
-        let deepest = covering.iter().map(|(p, _)| p.split('/').count()).max();
-        covering
+        if !covering.is_empty() {
+            let deepest = covering.iter().map(|(p, _)| p.split('/').count()).max();
+            return covering
+                .into_iter()
+                .filter(|(p, _)| Some(p.split('/').count()) == deepest)
+                .map(|(_, id)| id.clone())
+                .collect();
+        }
+        // (b) The consumed path is an ANCESTOR directory of produced dests: it
+        //     names every producer beneath it (a `depends_on: [build/ncen]`
+        //     over extract steps that each dest `build/ncen/<q>`). Wire the
+        //     shallowest producers under it — never fabricate a bare dir node.
+        let under: Vec<(&String, &AssetId)> = self
+            .produced_file
+            .iter()
+            .filter(|(p, _)| path_covers(path, p))
+            .collect();
+        let shallowest = under.iter().map(|(p, _)| p.split('/').count()).min();
+        under
             .into_iter()
-            .filter(|(p, _)| Some(p.split('/').count()) == deepest)
+            .filter(|(p, _)| Some(p.split('/').count()) == shallowest)
             .map(|(_, id)| id.clone())
             .collect()
     }
@@ -507,6 +530,24 @@ pub fn build_graph(
                     b.push_edge(from, &to, &ir.name);
                 }
             }
+            if ir.out_files.is_empty() {
+                // An op/command/opaque step that declares no output asset
+                // (out/dest) has no data-state node to hang its seam on — the
+                // interim contract can't type its effect. Surface it as an
+                // issue-badged chip wired from its inputs, never a silent drop
+                // from the DAG.
+                let chip = b.ensure_node(AssetNode {
+                    id: format!("stmt.{proto}.{}#effect", ir.name),
+                    kind: AssetKind::Opaque,
+                    label: ir.name.clone(),
+                    step: Some(ir.name.clone()),
+                    family_count: None,
+                    issue: Some("step declares no output asset".to_string()),
+                });
+                for from in &consumed {
+                    b.push_edge(from, &chip, &ir.name);
+                }
+            }
         } else if let Some(error) = &ir.sql_error {
             // Step-level degrade: the whole model is one opaque chip wired
             // from its depends_on (pds-ac04's file-read sibling).
@@ -542,7 +583,7 @@ pub fn build_graph(
                     StatementAssets::Opaque { index, error, .. } => {
                         // Statement-level degrade: ONLY this statement becomes
                         // an issue-badged chip; siblings still explode.
-                        b.ensure_node(AssetNode {
+                        let chip = b.ensure_node(AssetNode {
                             id: format!("stmt.{proto}.{}#{index}", ir.name),
                             kind: AssetKind::Opaque,
                             label: format!("statement {}", index + 1),
@@ -550,11 +591,33 @@ pub fn build_graph(
                             family_count: None,
                             issue: Some(error.clone()),
                         });
+                        // Wire the chip from the step's depends_on (like the
+                        // step-level degrade) so a failed MIDDLE statement sits
+                        // inside its lineage, not adrift in the input column.
+                        for dep in &ir.depends {
+                            let ids = if is_path_like(dep) {
+                                b.resolve_file_or_create(dep)
+                            } else {
+                                vec![resolve_rel(&mut b, dep)]
+                            };
+                            for id in ids {
+                                b.record_strict(&id, &ir.name);
+                                b.push_edge(&id, &chip, &ir.name);
+                            }
+                        }
                     }
                     StatementAssets::Parsed {
                         produced, consumed_relations, consumed_files, ..
                     } => {
-                        let target = produced.as_ref().map(|rel| resolve_rel(&mut b, rel));
+                        // A targetless statement (INSERT/COPY/UPDATE — no
+                        // CREATE TABLE/VIEW) produces no relation node in the
+                        // interim contract; do NOT fabricate orphan consumed
+                        // nodes with no edge to hang them on (DML lineage is a
+                        // later card).
+                        let Some(target) = produced.as_ref().map(|rel| resolve_rel(&mut b, rel))
+                        else {
+                            continue;
+                        };
                         let mut consumed: BTreeSet<AssetId> = BTreeSet::new();
                         for rel in consumed_relations {
                             let id = resolve_rel(&mut b, rel);
@@ -567,13 +630,11 @@ pub fn build_graph(
                                 consumed.insert(id);
                             }
                         }
-                        if let Some(target) = &target {
-                            for from in &consumed {
-                                b.push_edge(from, target, &ir.name);
-                            }
-                            if first_target.is_none() {
-                                first_target = Some(target.clone());
-                            }
+                        for from in &consumed {
+                            b.push_edge(from, &target, &ir.name);
+                        }
+                        if first_target.is_none() {
+                            first_target = Some(target.clone());
                         }
                         covered.extend(consumed);
                     }
@@ -620,18 +681,48 @@ pub fn build_graph(
         }
     }
 
-    // Dataset sink: a parquet_export dest no other step reads (strictly).
+    // Dataset sink: a parquet_export dest that (a) no OTHER step reads via
+    // depends_on/SQL/with.input AND (b) does not feed — through any edge,
+    // including annotator-style op consumption — another parquet_export dest.
+    // (b) is what stops a mid-pipeline export consumed by a later op through a
+    // named `with:` key (splink's `edgar:`) from being mistaken for the
+    // terminal even when nothing depends_on it; a describe/validate read of the
+    // terminal produces only a leaf sidecar, so the terminal still qualifies.
+    let export_dests: BTreeSet<AssetId> = irs
+        .iter()
+        .filter(|ir| ir.op_name.as_deref() == Some(EXPORT_OP))
+        .flat_map(|ir| ir.out_files.iter().map(|p| format!("file.{proto}.{p}")))
+        .collect();
+    let mut forward: BTreeMap<AssetId, BTreeSet<AssetId>> = BTreeMap::new();
+    for edge in &b.edges {
+        forward.entry(edge.from.clone()).or_default().insert(edge.to.clone());
+    }
+    let feeds_another_export = |start: &AssetId| -> bool {
+        let mut stack = vec![start.clone()];
+        let mut seen: BTreeSet<AssetId> = BTreeSet::new();
+        while let Some(node) = stack.pop() {
+            for succ in forward.get(&node).into_iter().flatten() {
+                if succ != start && export_dests.contains(succ) {
+                    return true;
+                }
+                if seen.insert(succ.clone()) {
+                    stack.push(succ.clone());
+                }
+            }
+        }
+        false
+    };
     for ir in &irs {
         if ir.op_name.as_deref() != Some(EXPORT_OP) {
             continue;
         }
         for path in &ir.out_files {
             let id = format!("file.{proto}.{path}");
-            let read_elsewhere = b
+            let read_strictly = b
                 .strict_consumers
                 .get(&id)
                 .is_some_and(|steps| steps.iter().any(|s| *s != ir.name));
-            if !read_elsewhere {
+            if !read_strictly && !feeds_another_export(&id) {
                 if let Some(node) = b.nodes.get_mut(&id) {
                     node.kind = AssetKind::Dataset;
                 }
@@ -785,5 +876,160 @@ steps:
     #[test]
     fn pds_build_graph_is_deterministic() {
         assert_eq!(mini_graph(), mini_graph());
+    }
+
+    #[test]
+    fn pds_dataset_sink_ignores_annotator_but_not_pipeline_consumption() {
+        // A mid-pipeline parquet_export dest consumed by a LATER op through a
+        // named `with:` key (splink-style `edgar:`) must NOT be re-kinded the
+        // terminal sink — even when nothing depends_on it. This is the
+        // fixture's own splink_resolve shape MINUS load.sql's depends_on
+        // backstop: the under-sampled input that hid the two-Dataset bug.
+        let yaml = r"
+name: f
+steps:
+  - name: build_sec
+    sql: models/sec.sql
+  - name: export_sec
+    op: parquet_export@1
+    with: { input: sec_entities, dest: build/sec_entities.parquet }
+  - name: resolve
+    op: splink_resolve@1
+    with: { edgar: build/sec_entities.parquet, out: build/resolved.parquet }
+  - name: tier
+    sql: models/tier.sql
+    depends_on: [build/resolved.parquet]
+  - name: export_final
+    op: parquet_export@1
+    with: { input: edges_out, dest: build/final.parquet }
+";
+        let manifest = parse_manifest_str(yaml).unwrap();
+        let mut sources = BTreeMap::new();
+        sources.insert(
+            "build_sec".to_string(),
+            Ok("CREATE TABLE sec_entities AS SELECT 1 AS cik;".to_string()),
+        );
+        sources.insert(
+            "tier".to_string(),
+            Ok("CREATE TABLE edges_out AS SELECT * FROM read_parquet('build/resolved.parquet');"
+                .to_string()),
+        );
+        let g = build_graph(&manifest, &sources);
+        let datasets: Vec<&str> = g
+            .nodes
+            .values()
+            .filter(|n| n.kind == AssetKind::Dataset)
+            .map(|n| n.label.as_str())
+            .collect();
+        assert_eq!(datasets, vec!["build/final.parquet"], "exactly the terminal export is the sink");
+        assert_eq!(
+            g.nodes["file.f.build/sec_entities.parquet"].kind,
+            AssetKind::File,
+            "the mid-pipeline export stays FILE (it has an outgoing lineage edge)"
+        );
+        assert!(
+            g.edges.iter().any(|e| e.from == "file.f.build/sec_entities.parquet"
+                && e.to == "file.f.build/resolved.parquet"),
+            "the named `with:` consumption still draws the lineage edge"
+        );
+    }
+
+    #[test]
+    fn pds_depends_on_ancestor_dir_wires_producers_not_a_fabricated_node() {
+        // depends_on names the PARENT directory of produced dests; it must
+        // resolve to every producer beneath it, never fabricate a disconnected
+        // external `file.<proto>.build/ncen` node (path_covers only handled the
+        // consumed-deeper direction before).
+        let yaml = r"
+name: x
+steps:
+  - name: extract_q1
+    op: archive_extract@1
+    with: { archive: a.zip, dest: build/ncen/q1 }
+  - name: extract_q2
+    op: archive_extract@1
+    with: { archive: b.zip, dest: build/ncen/q2 }
+  - name: load
+    sql: models/load.sql
+    depends_on: [build/ncen]
+";
+        let manifest = parse_manifest_str(yaml).unwrap();
+        let mut sources = BTreeMap::new();
+        sources.insert("load".to_string(), Ok("CREATE TABLE loaded AS SELECT 1;".to_string()));
+        let g = build_graph(&manifest, &sources);
+        assert!(!g.nodes.contains_key("file.x.build/ncen"), "no fabricated ancestor node");
+        assert!(g
+            .edges
+            .iter()
+            .any(|e| e.from == "file.x.build/ncen/q1" && e.to == "asset.x.loaded"));
+        assert!(g
+            .edges
+            .iter()
+            .any(|e| e.from == "file.x.build/ncen/q2" && e.to == "asset.x.loaded"));
+    }
+
+    #[test]
+    fn pds_targetless_statement_fabricates_no_orphan_node() {
+        // An INSERT (no CREATE target) must not fabricate a floating
+        // consumed-relation node with no incident edges.
+        let yaml = "name: d\nsteps:\n  - name: t\n    sql: models/t.sql\n";
+        let manifest = parse_manifest_str(yaml).unwrap();
+        let mut sources = BTreeMap::new();
+        sources.insert(
+            "t".to_string(),
+            Ok("CREATE TABLE agg AS SELECT 1 AS n;\nINSERT INTO agg SELECT * FROM extra_src;"
+                .to_string()),
+        );
+        let g = build_graph(&manifest, &sources);
+        assert!(
+            !g.nodes.keys().any(|k| k.contains("extra_src")),
+            "the INSERT's consumed relation is not fabricated as an orphan node"
+        );
+        assert!(g.nodes.contains_key("asset.d.agg"), "the CREATE target still exists");
+    }
+
+    #[test]
+    fn pds_statement_level_chip_wires_from_depends_on() {
+        // A failed MIDDLE statement chip must inherit the step's depends_on so
+        // it isn't a layer-0 orphan detached from the flow it interrupts.
+        let yaml = "name: d\nsteps:\n  - name: fetch\n    op: http_fetch@1\n    with: { url: 'https://h/x', out: build/raw.csv }\n  - name: t\n    sql: models/t.sql\n    depends_on: [build/raw.csv]\n";
+        let manifest = parse_manifest_str(yaml).unwrap();
+        let mut sources = BTreeMap::new();
+        sources.insert(
+            "t".to_string(),
+            Ok("CREATE TABLE a AS SELECT * FROM read_csv('build/raw.csv');\n\
+                SELEC broken here;\n\
+                CREATE TABLE b AS SELECT * FROM a;"
+                .to_string()),
+        );
+        let g = build_graph(&manifest, &sources);
+        assert_eq!(g.nodes["stmt.d.t#1"].kind, AssetKind::Opaque);
+        assert!(
+            g.edges
+                .iter()
+                .any(|e| e.to == "stmt.d.t#1" && e.from == "file.d.build/raw.csv"),
+            "the chip is wired from the step's depends_on, not adrift in layer 0"
+        );
+    }
+
+    #[test]
+    fn pds_output_less_step_surfaces_a_chip_not_a_silent_drop() {
+        // A command step that consumes inputs but declares no out/dest must
+        // still appear in the DAG (an issue-badged chip wired from its inputs),
+        // never vanish with zero signal.
+        let yaml = "name: c\nsteps:\n  - name: fetch\n    op: http_fetch@1\n    with: { url: 'https://h/a', out: build/a.csv }\n  - name: scrub\n    command: ./scrub.sh\n    depends_on: [build/a.csv]\n";
+        let manifest = parse_manifest_str(yaml).unwrap();
+        let g = build_graph(&manifest, &BTreeMap::new());
+        assert_eq!(
+            g.nodes["stmt.c.scrub#effect"].kind,
+            AssetKind::Opaque,
+            "the output-less step is a visible chip"
+        );
+        assert!(
+            g.edges
+                .iter()
+                .any(|e| e.to == "stmt.c.scrub#effect" && e.from == "file.c.build/a.csv"),
+            "wired from its input, so it never vanishes"
+        );
     }
 }
