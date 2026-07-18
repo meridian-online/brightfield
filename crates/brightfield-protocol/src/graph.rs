@@ -374,18 +374,25 @@ impl Builder {
         }
         // (b) The consumed path is an ANCESTOR directory of produced dests: it
         //     names every producer beneath it (a `depends_on: [build/ncen]`
-        //     over extract steps that each dest `build/ncen/<q>`). Wire the
-        //     shallowest producers under it — never fabricate a bare dir node.
+        //     over extract steps that each dest `build/ncen/<q>`). Wire EVERY
+        //     producer beneath it that is not itself nested under a SHALLOWER
+        //     producer already in the set (per-subtree "shallowest") — never
+        //     fabricate a bare dir node. A single global min-depth filter would
+        //     silently drop deeper INDEPENDENT producers (`build/ncen/2023/q2`
+        //     alongside `build/ncen/q1`), erasing their lineage edge.
         let under: Vec<(&String, &AssetId)> = self
             .produced_file
             .iter()
             .filter(|(p, _)| path_covers(path, p))
             .collect();
-        let shallowest = under.iter().map(|(p, _)| p.split('/').count()).min();
         under
-            .into_iter()
-            .filter(|(p, _)| Some(p.split('/').count()) == shallowest)
-            .map(|(_, id)| id.clone())
+            .iter()
+            .filter(|(p, _)| {
+                !under
+                    .iter()
+                    .any(|(q, _)| q.as_str() != p.as_str() && path_covers(q, p))
+            })
+            .map(|&(_, id)| id.clone())
             .collect()
     }
 
@@ -858,6 +865,57 @@ steps:
         // The archive is an annotator-style `with:` path with no producer —
         // no node is fabricated from an unresolvable config string.
         assert!(!g.nodes.contains_key("file.anc.build/z.zip"));
+    }
+
+    #[test]
+    fn pds_depends_ancestor_wires_every_producer_at_mixed_depths() {
+        // A `depends_on: [build/ncen]` names EVERY producer beneath the
+        // ancestor dir. Two producers sit at depth 3 (build/ncen/q1, /q2) and
+        // one INDEPENDENT producer sits deeper at depth 4 (build/ncen/2023/q3).
+        // A single global min-depth filter keeps only the depth-3 producers and
+        // silently drops the deeper one's lineage edge; per-subtree "shallowest"
+        // wires all three (none is nested under another). This fails pre-fix:
+        // the build/ncen/2023/q3 edge is never drawn.
+        let yaml = r"
+name: mixdepth
+steps:
+  - name: extract_q1
+    op: archive_extract@1
+    with:
+      archive: build/q1.zip
+      dest: build/ncen/q1
+  - name: extract_q2
+    op: archive_extract@1
+    with:
+      archive: build/q2.zip
+      dest: build/ncen/q2
+  - name: extract_q3
+    op: archive_extract@1
+    with:
+      archive: build/q3.zip
+      dest: build/ncen/2023/q3
+  - name: load
+    op: duckdb_load@1
+    with:
+      dest: build/loaded.parquet
+    depends_on: [build/ncen]
+";
+        let manifest = parse_manifest_str(yaml).unwrap();
+        let g = build_graph(&manifest, &BTreeMap::new());
+        let wired = |from: &str| {
+            g.edges.iter().any(|e| e.from == from && e.to == "file.mixdepth.build/loaded.parquet")
+        };
+        // Equal-depth siblings both wire (the invariant the fix must preserve).
+        assert!(wired("file.mixdepth.build/ncen/q1"), "shallow sibling q1 wired");
+        assert!(wired("file.mixdepth.build/ncen/q2"), "shallow sibling q2 wired");
+        // The DEEPER independent producer wires too (the regression this guards).
+        assert!(
+            wired("file.mixdepth.build/ncen/2023/q3"),
+            "deeper independent producer under the same ancestor must still wire"
+        );
+        // The consumed ancestor dir itself is never fabricated — branch (b)
+        // wires existing producers, it does not invent a directory node.
+        assert!(!g.nodes.contains_key("file.mixdepth.build/ncen"));
     }
 
     #[test]
