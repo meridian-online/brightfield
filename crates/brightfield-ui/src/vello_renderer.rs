@@ -85,7 +85,17 @@ impl VelloRenderer {
         }))
     }
 
-    /// Render a Vello scene to an RGBA pixel buffer.
+    /// The dedicated wgpu device this renderer owns (a cheap handle clone).
+    pub fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
+
+    /// The dedicated wgpu queue this renderer submits on (a cheap handle clone).
+    pub fn queue(&self) -> &wgpu::Queue {
+        &self.queue
+    }
+
+    /// Render a Vello scene to an RGBA pixel buffer over a transparent base.
     ///
     /// Returns `Vec<u8>` with length `width * height * 4` containing
     /// RGBA pixel data. The buffer is read back from the GPU texture.
@@ -94,6 +104,26 @@ impl VelloRenderer {
     ///
     /// Panics if width or height is zero.
     pub fn render_to_pixels(&mut self, scene: &Scene, width: u32, height: u32) -> Vec<u8> {
+        self.render_to_pixels_with_base(scene, width, height, vello::peniko::Color::TRANSPARENT)
+    }
+
+    /// Render a Vello scene to an RGBA pixel buffer over the given base colour.
+    ///
+    /// The base-colour-agnostic core of [`Self::render_to_pixels`] (which clears
+    /// to transparent). Used by the [`crate::canvas_host::CanvasHost`] present
+    /// path; the current chart present always clears to transparent (the overlay
+    /// and ink carry their own alpha).
+    ///
+    /// # Panics
+    ///
+    /// Panics if width or height is zero.
+    pub fn render_to_pixels_with_base(
+        &mut self,
+        scene: &Scene,
+        width: u32,
+        height: u32,
+        base: vello::peniko::Color,
+    ) -> Vec<u8> {
         assert!(width > 0 && height > 0, "render dimensions must be non-zero");
 
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -122,7 +152,7 @@ impl VelloRenderer {
                 scene,
                 &view,
                 &vello::RenderParams {
-                    base_color: vello::peniko::Color::TRANSPARENT,
+                    base_color: base,
                     width,
                     height,
                     antialiasing_method: vello::AaConfig::Msaa16,

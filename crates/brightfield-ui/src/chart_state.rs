@@ -5,8 +5,8 @@
 //! VelloRenderer reference. It is wrapped in `gpui::Entity<ChartState>` for
 //! reactive notifications.
 //!
-//! ChartElement borrows from ChartState for one paint cycle. ChartState owns
-//! all mutable state; ChartElement owns none.
+//! The chart surface borrows from ChartState for one paint cycle. ChartState
+//! owns all mutable state; the surface owns none.
 
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
@@ -15,7 +15,9 @@ use gpui::RenderImage;
 use kurbo::{Affine, Point};
 use vello::Scene;
 
+use crate::canvas_host::{CanvasHost, Color, PixelSize};
 use crate::chart_layout::ChartLayout;
+use crate::gpui_canvas::GpuiCanvasHost;
 use crate::interaction::{brush_region, BrushRegion, InteractionState, NavigationState, PointerAction, HANDLE_TOL};
 use crate::vello_renderer::VelloRenderer;
 use brightfield_render::layout::{Insets, Margins};
@@ -23,7 +25,7 @@ use brightfield_render::transition::Transition;
 
 /// Reactive chart state, wrapped in `gpui::Entity` for notifications.
 ///
-/// Owns all mutable chart state. ChartElement borrows from this for
+/// Owns all mutable chart state. The chart surface borrows from this for
 /// one paint cycle — it is a stateless rendering shell.
 pub struct ChartState {
     /// The Vello scene containing the full chart (marks + axes + grid + legend).
@@ -127,21 +129,14 @@ impl ChartState {
         let mut scaled = Scene::new();
         scaled.append(&self.scene, Some(Affine::scale_non_uniform(scale_x, scale_y)));
 
-        let mut pixels = self
-            .renderer
-            .lock()
-            .expect("VelloRenderer mutex poisoned")
-            .render_to_pixels(&scaled, dev_w, dev_h);
-        // RenderImage expects BGRA.
-        for px in pixels.chunks_exact_mut(4) {
-            px.swap(0, 2);
-        }
-        let buffer =
-            image::RgbaImage::from_raw(dev_w, dev_h, pixels).expect("pixel buffer size mismatch");
-        let image = Arc::new(RenderImage::new(smallvec::SmallVec::from_elem(
-            image::Frame::new(buffer),
-            1,
-        )));
+        // Present through the CanvasHost boundary: scene → device-resolution
+        // RenderImage (GPU readback + BGRA swap). The chart clears to a
+        // transparent base — the overlay and ink carry their own alpha.
+        let image = GpuiCanvasHost::new(self.renderer.clone()).present_scene(
+            &scaled,
+            PixelSize { width: dev_w, height: dev_h },
+            Color::TRANSPARENT,
+        );
         *self.base_cache.borrow_mut() = Some(BaseRaster {
             dev_w,
             dev_h,
@@ -253,7 +248,7 @@ impl ChartState {
     // origin) into the chart's local plot coordinates and update the
     // interaction state. Each returns `true` when the state changed so the
     // caller can trigger a repaint. They are the single source of truth shared
-    // by the live event wiring (ChartElement) and the ChartView handlers.
+    // by the live event wiring (GpuiChartSurface) and the ChartView handlers.
 
     /// Pointer pressed. A thin shim over the gpui-free grab resolver
     /// ([`InteractionState::resolve_press`], card 0022): a press ON the persisted

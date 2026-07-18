@@ -4,8 +4,8 @@
 //! It owns an `Entity<ChartState>` and implements `gpui::Render`.
 //!
 //! Consumers create a ChartView with a `Model<ChartState>` and add it
-//! to a GPUI window. ChartView::render() returns a ChartElement that
-//! implements the Element trait.
+//! to a GPUI window. ChartView::render() hosts one GpuiChartSurface per
+//! plot (the gpui `Element` shell).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -28,9 +28,9 @@ use brightfield_spec::layout::Rect;
 use crate::brush::{
     brush_rect_to_predicate, point_to_predicate, BrushKind, ChannelColumns, SelectionDispatcher,
 };
-use crate::chart_element::ChartElement;
 use crate::chart_state::ChartState;
 use crate::crossfilter::CrossfilterCoordinator;
+use crate::gpui_canvas::GpuiChartSurface;
 use crate::interaction::{BrushRegion, InteractionState};
 use crate::legend_element::{LegendElement, PlacedLegend};
 use crate::menu::MenuBinding;
@@ -105,7 +105,7 @@ pub struct PlacedMenu {
     pub coordinator: Option<Rc<RefCell<CrossfilterCoordinator>>>,
 }
 
-/// GPUI render component for a dashboard: hosts one [`ChartElement`] per plot,
+/// GPUI render component for a dashboard: hosts one [`GpuiChartSurface`] per plot,
 /// one [`SliderElement`] per slider, one menu-family widget per `input: menu`
 /// (card 0024), and one [`LegendElement`] per standalone legend (display-only
 /// unless bound to a selection — card 0009), each absolutely positioned at its
@@ -119,7 +119,7 @@ pub struct ChartView {
     /// The positioned plots.
     charts: Vec<PlacedChart>,
     /// Per-plot cursor-region cell (card 0022), one per chart, index-aligned with
-    /// `charts`. Persists across the per-frame `ChartElement` recreation (the
+    /// `charts`. Persists across the per-frame `GpuiChartSurface` recreation (the
     /// legend `hovered_index` pattern) so the paint-phase cursor can track the
     /// pointer's grab region over a persisted `Selected` rect.
     chart_regions: Vec<Rc<Cell<BrushRegion>>>,
@@ -187,7 +187,7 @@ impl ChartView {
 impl Render for ChartView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // The container is the dashboard's fixed size, with each plot absolutely
-        // positioned at its rect; each ChartElement reads its own ChartState and
+        // positioned at its rect; each GpuiChartSurface reads its own ChartState and
         // wires its own mouse events, so plots don't share interaction. (The
         // white window background + centring moved up to the app crate's
         // CanvasPanel — card 0017's DockArea shell — so the dashboard canvas
@@ -211,7 +211,7 @@ impl Render for ChartView {
                     .top(px(c.y as f32))
                     .w(px(c.width as f32))
                     .h(px(c.height as f32))
-                    .child(ChartElement::new(
+                    .child(GpuiChartSurface::new(
                         c.state.clone(),
                         i,
                         c.coordinator.clone(),

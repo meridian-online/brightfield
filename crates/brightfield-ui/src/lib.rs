@@ -11,8 +11,14 @@
 //!
 //! - **ChartState** — reactive state wrapped in `gpui::Entity`. Owns scene,
 //!   interaction, navigation, transition, dimensions, and VelloRenderer ref.
-//! - **ChartElement** — stateless rendering shell. Borrows from ChartState
-//!   for one paint cycle. Implements `gpui::Element`.
+//! - **CanvasHost / ChartSurface / OverlayPainter** (`canvas_host`) — the
+//!   framework-free render/host boundary. The chart's paint logic
+//!   (`chart_element`) is expressed against these traits and names no gpui type.
+//! - **chart_element** — the framework-free chart paint logic (present + overlay
+//!   + cursor + input routing), driven each frame through a `ChartSurface`.
+//! - **GpuiCanvasHost / GpuiChartSurface** (`gpui_canvas`) — the gpui host. The
+//!   `Element` shell (layout/prepaint/paint + mouse listeners) and the present
+//!   path (scene → RenderImage). The sole place gpui element/paint types live.
 //! - **ChartView** — GPUI `Render` component. Owns `Entity<ChartState>`.
 //!   Public API for consumers.
 //! - **VelloRenderer** — wgpu-backed Vello renderer. Arc-shared, dedicated
@@ -20,11 +26,13 @@
 //! - **ChartLayout** — coordinate mapping pipeline for mouse events.
 
 pub mod brush;
+pub mod canvas_host;
 pub mod chart_element;
 pub mod chart_layout;
 pub mod chart_state;
 pub mod chart_view;
 pub mod crossfilter;
+pub mod gpui_canvas;
 pub mod interaction;
 pub mod legend_element;
 pub mod legend_scene;
@@ -38,11 +46,12 @@ pub mod workspace;
 pub mod workspace_actions;
 
 pub use brush::{brush_rect_to_predicate, BrushKind, ChannelColumns};
-pub use chart_element::ChartElement;
+pub use canvas_host::{CanvasHost, ChartSurface, OverlayPainter};
 pub use chart_layout::ChartLayout;
 pub use chart_state::ChartState;
 pub use chart_view::{ChartView, PlacedChart, PlacedMenu, PlacedSlider};
 pub use crossfilter::{CrossfilterCoordinator, LegendSelectBinding, LivePlot, MarkInput};
+pub use gpui_canvas::{GpuiCanvasHost, GpuiChartSurface};
 pub use interaction::InteractionState;
 pub use legend_element::{swatch_hit_category, LegendElement, PlacedLegend};
 pub use legend_scene::build_legend_scene;
