@@ -1,0 +1,59 @@
+{
+  "contract_version": "b4/1",
+  "run": {
+    "run_id": "20260718-100107-208baa40",
+    "attempt_id": "20260718-100107-208baa40",
+    "protocol": {
+      "name": "widgets_demo",
+      "manifest_sha256": "4023a24abdbbbaca090c018d70aaa6f7cabbb52b4edd0db6ea7949cf6609b1fa",
+      "dir": "/tmp/e2e_clean"
+    },
+    "engine": { "arc": "0.1.0", "duckdb": "v1.5.4" },
+    "params": [],
+    "started_at": "2026-07-18T10:01:07Z",
+    "finished_at": "2026-07-18T10:01:07Z",
+    "outcome": "success"
+  },
+  "assets": [
+    {
+      "id": "table:widget_tally", "kind": "table", "name": "widget_tally",
+      "path": null, "bytes": null, "row_count": 1, "content_hash": null,
+      "produced_by": "tally", "consumed_by": []
+    },
+    {
+      "id": "table:widgets", "kind": "table", "name": "widgets",
+      "path": null, "bytes": null, "row_count": 5, "content_hash": null,
+      "produced_by": "load", "consumed_by": ["tally"]
+    }
+  ],
+  "steps": [
+    {
+      "name": "load", "kind": "sql", "op_ref": null, "resolved_with": null,
+      "sql": {
+        "model_path": "models/load.sql",
+        "sql_text": "CREATE OR REPLACE TABLE widgets AS\nSELECT * FROM (VALUES (1,'alpha'),(2,'bravo'),(3,'charlie'),(4,'delta'),(5,'echo')) AS t(id, name);\n",
+        "sql_hash": "f8b48d5b5dc0dd9d133c6c5ffcbd62e8fbddd39cb2e8de6a97953914be0b6ba5",
+        "statements": [ { "produces": ["widgets"], "reads": [] } ]
+      },
+      "status": { "state": "success", "skip_reason": null },
+      "attempts": 1, "duration_sec": null, "retry": null, "timeout_sec": null,
+      "io": { "stdout_path": null, "stderr_path": null },
+      "ingress_meta": null,
+      "narrative": { "label": null, "stage": null, "doc": null }
+    },
+    {
+      "name": "tally", "kind": "sql", "op_ref": null, "resolved_with": null,
+      "sql": {
+        "model_path": "models/tally.sql",
+        "sql_text": "CREATE OR REPLACE TABLE widget_tally AS\nSELECT count(*) AS n FROM widgets;\n",
+        "sql_hash": "32c393135056085107fe2dc8192ae8a2bea95363da0ff2e5cd6cc87ce5e85b0c",
+        "statements": [ { "produces": ["widget_tally"], "reads": ["widgets"] } ]
+      },
+      "status": { "state": "success", "skip_reason": null },
+      "attempts": 1, "duration_sec": null, "retry": null, "timeout_sec": null,
+      "io": { "stdout_path": null, "stderr_path": null },
+      "ingress_meta": null,
+      "narrative": { "label": null, "stage": null, "doc": null }
+    }
+  ]
+}

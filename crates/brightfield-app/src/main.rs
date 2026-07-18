@@ -1473,29 +1473,19 @@ fn spawn_spec_watcher(
     .detach();
 }
 
-/// Render a Protocol manifest's asset DAG to a PNG (card 0025) — the
-/// protocol twin of the dashboard dump arm in `main`: compose the scene,
-/// `VelloRenderer::render_to_pixels`, `image::RgbaImage`, save. Same
-/// optional `BRIGHTFIELD_DUMP_SCALE` supersampling, same
-/// returns-before-workspace guarantee (the caller returns immediately).
-fn dump_protocol_png(spec_path: &str, text: &str, dump_path: &str) -> Result<(), String> {
-    let manifest = brightfield_protocol::parse_manifest_str(text)
-        .map_err(|e| format!("protocol parse error: {e}"))?;
-    let manifest_dir = Path::new(spec_path).parent().unwrap_or_else(|| Path::new("."));
-    let sources = brightfield_protocol::graph::load_model_sources(&manifest, manifest_dir);
-    let graph = brightfield_protocol::graph::build_graph(&manifest, &sources);
-    let graph = brightfield_protocol::collapse_families(&graph);
+/// Render an already-built (and collapsed) asset DAG to a PNG — the protocol
+/// twin of the dashboard dump arm in `main`: compose the scene,
+/// `VelloRenderer::render_to_pixels`, `image::RgbaImage`, save. Same optional
+/// `BRIGHTFIELD_DUMP_SCALE` supersampling. Shared by the contract (default) and
+/// the offline manifest (fixture) dump paths.
+fn dump_asset_graph_png(
+    graph: &brightfield_protocol::AssetGraph,
+    dump_path: &str,
+) -> Result<(), String> {
     let layout =
-        brightfield_protocol::layout(&graph, &brightfield_protocol::LayoutConfig::default());
+        brightfield_protocol::layout(graph, &brightfield_protocol::LayoutConfig::default());
     let mut composite = vello::Scene::new();
-    brightfield_render::asset_scene::render_asset_graph(&mut composite, &layout, &graph);
-    eprintln!(
-        "Protocol parsed: {} ({} steps, {} assets, {} edges)",
-        manifest.name,
-        manifest.steps.len(),
-        graph.nodes.len(),
-        graph.edges.len()
-    );
+    brightfield_render::asset_scene::render_asset_graph(&mut composite, &layout, graph);
 
     let scale: f32 = env::var("BRIGHTFIELD_DUMP_SCALE")
         .ok()
@@ -1524,6 +1514,50 @@ fn dump_protocol_png(spec_path: &str, text: &str, dump_path: &str) -> Result<(),
     Ok(())
 }
 
+/// Render the DAG of an emitted Protocol+Run contract — the **default** input.
+/// The run already lists its assets + steps, so this reads the lineage rather
+/// than re-parsing a manifest and its `models/*.sql`. A live `<run_id>.jsonl`
+/// stream beside the contract is folded onto the step states when present.
+fn dump_contract_png(contract_path: &str, dump_path: &str) -> Result<(), String> {
+    let path = Path::new(contract_path);
+    // A live stream sits beside the contract as `<stem>.jsonl`.
+    let stream = path.with_extension("jsonl");
+    let stream_path = stream.exists().then_some(stream);
+    let view = brightfield_protocol::load_contract_with_stream(path, stream_path.as_deref())
+        .map_err(|e| e.to_string())?;
+    let graph = brightfield_protocol::collapse_families(&view.graph);
+    eprintln!(
+        "Protocol run: {} [{}] ({} steps, {} assets, {} edges)",
+        view.run.protocol,
+        view.run.run_id,
+        view.steps.len(),
+        graph.nodes.len(),
+        graph.edges.len()
+    );
+    dump_asset_graph_png(&graph, dump_path)
+}
+
+/// Render a Protocol manifest's asset DAG to a PNG — the **gated offline /
+/// fixture fallback** (`BRIGHTFIELD_PROTOCOL_OFFLINE=1`), for a manifest with
+/// no emitted run. Parses `arcform.yaml` + its `models/*.sql` and infers the
+/// same graph the contract path reads.
+fn dump_protocol_png(spec_path: &str, text: &str, dump_path: &str) -> Result<(), String> {
+    let manifest = brightfield_protocol::parse_manifest_str(text)
+        .map_err(|e| format!("protocol parse error: {e}"))?;
+    let manifest_dir = Path::new(spec_path).parent().unwrap_or_else(|| Path::new("."));
+    let sources = brightfield_protocol::graph::load_model_sources(&manifest, manifest_dir);
+    let graph = brightfield_protocol::graph::build_graph(&manifest, &sources);
+    let graph = brightfield_protocol::collapse_families(&graph);
+    eprintln!(
+        "Protocol parsed: {} ({} steps, {} assets, {} edges)",
+        manifest.name,
+        manifest.steps.len(),
+        graph.nodes.len(),
+        graph.edges.len()
+    );
+    dump_asset_graph_png(&graph, dump_path)
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
@@ -1532,39 +1566,79 @@ fn main() {
     }
     let spec_path = &args[1];
 
-    // Protocol sniff (card 0025): a YAML whose top level has a `steps:`
-    // sequence and NO `plot:`/`data:` keys is an arcform Protocol manifest.
-    // Decided BEFORE Mosaic spec parsing, so Mosaic inputs reach the
-    // existing pipeline byte-untouched (pds-ac08). The dump arm mirrors the
-    // dashboard dump arm below; the window arm exits cleanly — the windowed
-    // protocol view lands in a later card (pds-ac07).
+    // Protocol view routing. The DEFAULT input is the emitted Protocol+Run
+    // JSON contract (`arc run` writes `build/.arcform/runs/<run_id>.json`): the
+    // run already lists its assets + steps, so the view renders a real run.
+    // The interim arcform-manifest parser is the gated offline/fixture fallback
+    // (`BRIGHTFIELD_PROTOCOL_OFFLINE=1`) for a manifest with no run. Both are
+    // decided BEFORE Mosaic spec parsing, so Mosaic inputs reach the existing
+    // pipeline byte-untouched. The window arm exits cleanly — the windowed
+    // protocol view lands in a later card.
     if let Ok(text) = std::fs::read_to_string(spec_path) {
-        if brightfield_protocol::is_protocol_manifest(&text) {
-            match boot::boot_mode(env::var("BRIGHTFIELD_DUMP_PNG").ok()) {
-                boot::BootMode::HeadlessDump(dump_path) => {
-                    if let Err(e) = dump_protocol_png(spec_path, &text, &dump_path) {
-                        eprintln!("{e}");
-                        process::exit(1);
-                    }
+        match brightfield_protocol::parse_contract(text.as_bytes()) {
+            // A well-formed Protocol+Run contract — the default path.
+            Ok(contract) => {
+                if !contract.is_supported_version() {
+                    eprintln!(
+                        "unsupported contract_version {:?}; this build targets the {:?} family",
+                        contract.contract_version,
+                        brightfield_protocol::SUPPORTED_CONTRACT_FAMILY
+                    );
+                    process::exit(1);
                 }
-                boot::BootMode::Window => {
-                    // Parse even in window mode so a malformed protocol
-                    // manifest surfaces a diagnostic (exit 1) instead of a
-                    // misleading clean exit; the windowed view itself lands in
-                    // a later card.
-                    match brightfield_protocol::parse_manifest_str(&text) {
-                        Ok(_) => eprintln!(
-                            "the windowed protocol view lands in a later card — \
-                             use BRIGHTFIELD_DUMP_PNG=<path> for the DAG render"
-                        ),
-                        Err(e) => {
-                            eprintln!("protocol parse error: {e}");
+                match boot::boot_mode(env::var("BRIGHTFIELD_DUMP_PNG").ok()) {
+                    boot::BootMode::HeadlessDump(dump_path) => {
+                        if let Err(e) = dump_contract_png(spec_path, &dump_path) {
+                            eprintln!("{e}");
                             process::exit(1);
                         }
                     }
+                    boot::BootMode::Window => eprintln!(
+                        "the windowed protocol view lands in a later card — \
+                         use BRIGHTFIELD_DUMP_PNG=<path> for the DAG render"
+                    ),
                 }
+                return;
             }
-            return;
+            // Not a contract. A protocol MANIFEST is the gated offline/fixture
+            // fallback; anything else falls through to the Mosaic pipeline.
+            Err(_) if brightfield_protocol::is_protocol_manifest(&text) => {
+                if env::var("BRIGHTFIELD_PROTOCOL_OFFLINE").is_err() {
+                    eprintln!(
+                        "this is a Protocol manifest, not an emitted Protocol+Run contract. \
+                         The default input is the contract (build/.arcform/runs/<run_id>.json). \
+                         To render a manifest offline without a run, set \
+                         BRIGHTFIELD_PROTOCOL_OFFLINE=1."
+                    );
+                    return;
+                }
+                match boot::boot_mode(env::var("BRIGHTFIELD_DUMP_PNG").ok()) {
+                    boot::BootMode::HeadlessDump(dump_path) => {
+                        if let Err(e) = dump_protocol_png(spec_path, &text, &dump_path) {
+                            eprintln!("{e}");
+                            process::exit(1);
+                        }
+                    }
+                    boot::BootMode::Window => {
+                        // Parse even in window mode so a malformed manifest
+                        // surfaces a diagnostic (exit 1) instead of a misleading
+                        // clean exit; the windowed view itself lands in a later
+                        // card.
+                        match brightfield_protocol::parse_manifest_str(&text) {
+                            Ok(_) => eprintln!(
+                                "the windowed protocol view lands in a later card — \
+                                 use BRIGHTFIELD_DUMP_PNG=<path> for the DAG render"
+                            ),
+                            Err(e) => {
+                                eprintln!("protocol parse error: {e}");
+                                process::exit(1);
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+            Err(_) => {}
         }
     }
 

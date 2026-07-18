@@ -5,12 +5,14 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Protocol manifest -> typed asset graph -> deterministic layout (gpui-free, vello-free)"
+description = "Protocol+Run contract -> typed asset graph -> deterministic layout (gpui-free, vello-free)"
 
 [dependencies]
 brightfield-sql = { path = "../brightfield-sql" }
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
+# The emitted Protocol+Run JSON contract + live `.jsonl` stream (the default input).
+serde_json = "1"
 # The workspace sqlparser version (brightfield-sql's) — the tokenizer drives
 # the statement splitter; the visitor feature drives per-statement asset
 # extraction.

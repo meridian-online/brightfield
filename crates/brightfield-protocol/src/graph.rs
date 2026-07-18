@@ -165,10 +165,12 @@ pub fn load_model_sources(
         .collect()
 }
 
-/// The finetype gate operator — renders as a shield, never a node.
-const GATE_OP: &str = "finetype_validate";
-/// The export operator whose unread dest is the Dataset sink.
-const EXPORT_OP: &str = "parquet_export";
+/// The finetype gate operator — renders as a shield, never a node. Shared with
+/// the contract path so both inputs recognise the same gate vocabulary.
+pub(crate) const GATE_OP: &str = "finetype_validate";
+/// The export operator whose unread dest is the Dataset sink. Shared with the
+/// contract path so both inputs derive the terminal sink identically.
+pub(crate) const EXPORT_OP: &str = "parquet_export";
 
 /// Host portion of a URL, for SOURCE labels.
 fn host_of(url: &str) -> String {
