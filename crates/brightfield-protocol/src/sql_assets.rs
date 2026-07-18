@@ -392,13 +392,26 @@ mod tests {
 
     #[test]
     fn pds_read_csv_named_path_and_option_strings() {
-        // Named `path =>` form is captured; a string OPTION value (delim) is
-        // NOT mistaken for a file path.
-        let sql = "CREATE TABLE u AS SELECT * FROM read_csv('build/d.csv', delim='\t', header=true)";
+        // The named `path =>` form must be captured as lineage, while a string
+        // OPTION whose value merely LOOKS like a path (`filename => 'meta/…'`)
+        // must NOT be. Every argument here is named, so the pre-fix
+        // `first_string_arg` (unnamed-positional-only) matched NOTHING and
+        // consumed_files came back empty — so this asserts both the real
+        // capture and the non-capture the fix introduced, and fails pre-fix.
+        let sql = "CREATE TABLE u AS SELECT * FROM \
+                   read_csv(path => 'build/real.csv', filename => 'meta/label.txt', header => true)";
         let assets = extract_statement_assets(sql);
         match &assets[0] {
             StatementAssets::Parsed { consumed_files, .. } => {
-                assert_eq!(consumed_files.iter().collect::<Vec<_>>(), vec![&"build/d.csv".to_string()]);
+                assert!(
+                    consumed_files.contains("build/real.csv"),
+                    "named `path =>` is captured: {consumed_files:?}"
+                );
+                assert!(
+                    !consumed_files.contains("meta/label.txt"),
+                    "a path-like string OPTION value is not lineage: {consumed_files:?}"
+                );
+                assert_eq!(consumed_files.len(), 1, "only the real path: {consumed_files:?}");
             }
             other => panic!("expected Parsed, got {other:?}"),
         }
