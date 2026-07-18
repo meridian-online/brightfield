@@ -92,10 +92,23 @@ pub fn parse_manifest_str(text: &str) -> Result<Manifest, serde_yaml::Error> {
     serde_yaml::from_str(text)
 }
 
-/// The protocol sniff (pds-ac08's guard): a YAML document whose top level is
-/// a mapping with a `steps:` **sequence** and NO `plot:`/`data:` keys is a
-/// Protocol manifest. Anything else — including every Mosaic spec — is not,
-/// so Mosaic inputs reach the existing spec parser byte-untouched.
+/// Mosaic-spec keys that decide a YAML belongs to the existing spec pipeline,
+/// never the protocol arm — top-level `data:`/`meta:`/`config:` plus every
+/// component-root discriminator the Mosaic parser recognises (`walk_component`:
+/// plot/vconcat/hconcat/hspace/vspace/legend/mark/select/input). A Mosaic spec
+/// carrying a stray `steps:` key must still route to the spec pipeline, so any
+/// of these present vetoes the sniff. (`params:` is deliberately absent — a
+/// Protocol manifest legitimately carries it too.)
+const MOSAIC_KEYS: &[&str] = &[
+    "plot", "data", "vconcat", "hconcat", "hspace", "vspace", "legend", "mark", "select", "input",
+    "meta", "config", "plotDefaults",
+];
+
+/// The protocol sniff (pds-ac08's guard): a YAML document whose top level is a
+/// mapping with a `steps:` **sequence** and NONE of the Mosaic keys is a
+/// Protocol manifest. Anything else — including every Mosaic spec, even one
+/// with a stray `steps:` key — is not, so Mosaic inputs reach the existing
+/// spec parser byte-untouched.
 #[must_use]
 pub fn is_protocol_manifest(text: &str) -> bool {
     let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(text) else {
@@ -105,7 +118,7 @@ pub fn is_protocol_manifest(text: &str) -> bool {
         return false;
     };
     let steps_is_sequence = map.get("steps").is_some_and(serde_yaml::Value::is_sequence);
-    let has_mosaic_keys = map.contains_key("plot") || map.contains_key("data");
+    let has_mosaic_keys = MOSAIC_KEYS.iter().any(|k| map.contains_key(*k));
     steps_is_sequence && !has_mosaic_keys
 }
 
@@ -173,5 +186,21 @@ steps:
         // Non-mapping and non-YAML inputs are not protocols.
         assert!(!is_protocol_manifest("- 1\n- 2\n"));
         assert!(!is_protocol_manifest(": : :"));
+    }
+
+    #[test]
+    fn pds_sniff_rejects_mosaic_component_roots_with_stray_steps() {
+        // A Mosaic spec whose root is a component discriminator (no top-level
+        // plot/data) plus a stray `steps:` sequence must still route to the
+        // spec pipeline, not the protocol arm.
+        for root in ["vconcat", "hconcat", "hspace", "vspace", "legend", "mark", "select", "input"] {
+            let spec = format!("{root}:\n  - a\nsteps:\n  - name: x\n");
+            assert!(
+                !is_protocol_manifest(&spec),
+                "a Mosaic `{root}` root with a stray steps: must not sniff as protocol"
+            );
+        }
+        // meta/config roots likewise veto.
+        assert!(!is_protocol_manifest("meta:\n  title: t\nsteps:\n  - name: x\n"));
     }
 }

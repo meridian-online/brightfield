@@ -1548,10 +1548,20 @@ fn main() {
                     }
                 }
                 boot::BootMode::Window => {
-                    eprintln!(
-                        "the windowed protocol view lands in a later card — \
-                         use BRIGHTFIELD_DUMP_PNG=<path> for the DAG render"
-                    );
+                    // Parse even in window mode so a malformed protocol
+                    // manifest surfaces a diagnostic (exit 1) instead of a
+                    // misleading clean exit; the windowed view itself lands in
+                    // a later card.
+                    match brightfield_protocol::parse_manifest_str(&text) {
+                        Ok(_) => eprintln!(
+                            "the windowed protocol view lands in a later card — \
+                             use BRIGHTFIELD_DUMP_PNG=<path> for the DAG render"
+                        ),
+                        Err(e) => {
+                            eprintln!("protocol parse error: {e}");
+                            process::exit(1);
+                        }
+                    }
                 }
             }
             return;
