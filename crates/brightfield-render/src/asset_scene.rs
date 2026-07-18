@@ -36,6 +36,10 @@ const EDGE_COLOUR: Color = ink(meridian_design::scales::GRAY_LIGHT[5]);
 const ACCENT_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.focus);
 /// Issue badge on an opaque chip.
 const ISSUE_COLOUR: Color = ink(meridian_design::scales::AMBER_LIGHT[8]);
+/// Glyph drawn on the amber issue badge — the light surface tone through the
+/// ink() boundary (not an ad-hoc `Color::WHITE`), so a future dark-ink theme
+/// pass tracks it with every other chrome constant.
+const BADGE_GLYPH_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.surface);
 /// Muted fill for INTERNAL statement intermediates.
 const INTERNAL_FILL: Color = ink(meridian_design::scales::GRAY_LIGHT[1]);
 /// Chip fill for degraded statements.
@@ -110,11 +114,24 @@ fn draw_shield(scene: &mut Scene, cx: f64, cy: f64) {
     scene.fill(Fill::NonZero, Affine::IDENTITY, ACCENT_COLOUR, None, &shield);
 }
 
-/// Midpoint of the route's middle segment — the chevron site.
+/// The chevron site on the route's middle segment. The right-pointing glyph
+/// must land on a HORIZONTAL run: for a row-changing segment `orthogonal_path`
+/// draws an H-V-H detour (horizontal at `a.y` to `mid_x`, vertical, horizontal
+/// in at `b.y`), and the raw midpoint would sit on the vertical run. Place it
+/// mid-way along the FIRST horizontal leg instead, so it always reads along the
+/// flow direction.
 fn route_midpoint(points: &[(f64, f64)]) -> (f64, f64) {
     let seg = (points.len() - 1) / 2;
     let (a, b) = (points[seg], points[seg + 1]);
-    (((a.0 + b.0) / 2.0).round(), ((a.1 + b.1) / 2.0).round())
+    if (a.1 - b.1).abs() < 0.5 {
+        // Already horizontal: the true midpoint reads along the flow.
+        (((a.0 + b.0) / 2.0).round(), ((a.1 + b.1) / 2.0).round())
+    } else {
+        // Row-changing: sit on the first horizontal leg (a.y, a.0..mid_x),
+        // matching orthogonal_path's `mid_x = round((a.0 + b.0) / 2)`.
+        let mid_x = ((a.0 + b.0) / 2.0).round();
+        (((a.0 + mid_x) / 2.0).round(), a.1.round())
+    }
 }
 
 fn draw_edge(scene: &mut Scene, route: &EdgeRoute) {
@@ -238,7 +255,7 @@ fn draw_node(
                 x + w - 2.0,
                 y + 5.5,
                 9.0,
-                Color::WHITE,
+                BADGE_GLYPH_COLOUR,
                 TextAnchor::Middle,
             );
             label_colour = MUTED_LABEL_COLOUR;
@@ -327,5 +344,29 @@ steps:
         let fitted = fit_label(long, 100.0);
         assert!(fitted.chars().count() < long.chars().count());
         assert!(fitted.ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn pds_chevron_sits_on_a_horizontal_run_not_the_vertical() {
+        // A row-changing middle segment is drawn H-V-H; the chevron must land
+        // on the first horizontal leg (y == a.y, x between a.x and mid_x), never
+        // on the vertical run where a right-pointing glyph reads detached.
+        let a = (100.0, 40.0);
+        let b = (200.0, 120.0); // different row
+        let (cx, cy) = route_midpoint(&[a, b]);
+        assert_eq!(cy, a.1, "chevron y is on the horizontal leg, not mid-way up the vertical");
+        let mid_x = ((a.0 + b.0) / 2.0).round();
+        assert!(a.0 <= cx && cx <= mid_x, "chevron x is on the first horizontal leg: {cx}");
+        // A same-row segment keeps the true midpoint.
+        let (hx, hy) = route_midpoint(&[(10.0, 50.0), (30.0, 50.0)]);
+        assert_eq!((hx, hy), (20.0, 50.0));
+    }
+
+    #[test]
+    fn pds_badge_glyph_is_an_ink_token_not_raw_white() {
+        // The issue-badge glyph colour goes through the meridian-design ink()
+        // boundary, not an ad-hoc peniko Color::WHITE.
+        assert_eq!(BADGE_GLYPH_COLOUR, ink(meridian_design::chrome::INK_LIGHT.surface));
+        assert_ne!(BADGE_GLYPH_COLOUR, Color::WHITE);
     }
 }

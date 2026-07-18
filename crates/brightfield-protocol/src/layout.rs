@@ -101,7 +101,10 @@ fn node_height(kind: AssetKind) -> f64 {
 #[must_use]
 pub fn layout(graph: &AssetGraph, config: &LayoutConfig) -> Layout {
     // Unique (from, to) pairs drive layering + routing; parallel edges merge
-    // into one lane carrying the first via and any shield.
+    // into one lane that keeps the FIRST seam via and ORs any shield. A None
+    // via never shadows a Some (collapse re-targeting can emit a via-less edge
+    // alongside a seam-bearing one), so the merged lane always draws its
+    // chevron when any parallel edge carries a seam.
     let mut unique: BTreeMap<(AssetId, AssetId), (Option<StepId>, bool)> = BTreeMap::new();
     for edge in &graph.edges {
         if edge.from == edge.to
@@ -113,6 +116,9 @@ pub fn layout(graph: &AssetGraph, config: &LayoutConfig) -> Layout {
         let entry = unique
             .entry((edge.from.clone(), edge.to.clone()))
             .or_insert((edge.via.clone(), edge.shield));
+        if entry.0.is_none() {
+            entry.0 = edge.via.clone();
+        }
         entry.1 = entry.1 || edge.shield;
     }
 
@@ -329,8 +335,45 @@ pub fn layout(graph: &AssetGraph, config: &LayoutConfig) -> Layout {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::build_graph;
+    use crate::graph::{build_graph, AssetGraph, AssetNode, Edge};
     use crate::manifest::parse_manifest_str;
+
+    /// A two-node graph reached by parallel edges: a via-less one (as collapse
+    /// re-targeting emits) FIRST, then a seam-bearing one.
+    fn parallel_edges(via_first: Option<&str>, via_second: Option<&str>) -> AssetGraph {
+        let node = |id: &str| AssetNode {
+            id: id.to_string(),
+            kind: AssetKind::File,
+            label: id.to_string(),
+            step: None,
+            family_count: None,
+            issue: None,
+        };
+        let edge = |via: Option<&str>| Edge {
+            from: "file.p.a".to_string(),
+            to: "file.p.b".to_string(),
+            via: via.map(str::to_string),
+            shield: false,
+        };
+        AssetGraph {
+            protocol: "p".to_string(),
+            nodes: [("file.p.a".to_string(), node("file.p.a")), ("file.p.b".to_string(), node("file.p.b"))]
+                .into_iter()
+                .collect(),
+            seams: BTreeMap::new(),
+            edges: vec![edge(via_first), edge(via_second)],
+        }
+    }
+
+    #[test]
+    fn pds_parallel_edge_merge_keeps_the_seam_via() {
+        // A None-via edge listed FIRST must not shadow the Some-via sibling —
+        // the merged lane keeps the chevron.
+        let g = parallel_edges(None, Some("transform"));
+        let l = layout(&g, &LayoutConfig::default());
+        assert_eq!(l.lanes.len(), 1);
+        assert_eq!(l.lanes[0].via.as_deref(), Some("transform"), "the seam via survives the merge");
+    }
 
     fn diamond() -> AssetGraph {
         // fetch feeds two extracts which both feed a loader — plus one edge
