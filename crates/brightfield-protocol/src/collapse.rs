@@ -17,6 +17,27 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::graph::{AssetGraph, AssetKind, AssetNode, Edge, Seam, SeamKind, StepId};
 
+/// A detected name-cycle is only a genuine parameterised family when its
+/// instances are parameter-variants of one another — here: the external SOURCE
+/// hosts the member steps fetch from must be the SAME across the whole family.
+/// Two different external systems that merely share the fetch/extract naming
+/// shape (`fetch_edgar` from one host, `fetch_gleif` from another) are NOT one
+/// family: collapsing them would erase which systems feed the pipeline — the
+/// exact information the card exists to show. Families with no SOURCE members
+/// (e.g. a pure transform cycle) carry no such signal and pass.
+fn is_parameter_variant(family: &Family, graph: &AssetGraph) -> bool {
+    let members: BTreeSet<&StepId> = family.members.iter().collect();
+    let hosts: BTreeSet<&str> = graph
+        .nodes
+        .values()
+        .filter(|n| {
+            n.kind == AssetKind::Source && n.step.as_ref().is_some_and(|s| members.contains(s))
+        })
+        .map(|n| n.label.as_str())
+        .collect();
+    hosts.len() <= 1
+}
+
 /// The cycle-matching signature of a seam: op steps must repeat the same
 /// operator; sql/command/opaque steps match their own class.
 fn seam_signature(seam: &Seam) -> (u8, &str) {
@@ -125,7 +146,10 @@ fn common_tail<'a>(block: &[&'a Seam]) -> Option<&'a str> {
 pub fn collapse_families(graph: &AssetGraph) -> AssetGraph {
     let mut ordered: Vec<&Seam> = graph.seams.values().collect();
     ordered.sort_by_key(|s| s.index);
-    let families = detect_families(&ordered);
+    let families: Vec<Family> = detect_families(&ordered)
+        .into_iter()
+        .filter(|f| is_parameter_variant(f, graph))
+        .collect();
     if families.is_empty() {
         return graph.clone();
     }
@@ -320,5 +344,50 @@ steps:
         // fetch_x/extract_x vs fetch_y/extract_y: stripped names differ, so
         // the cycle does not repeat; tails are all q1 anyway.
         assert_eq!(collapse_families(&g), g);
+    }
+
+    #[test]
+    fn pds_distinct_source_hosts_do_not_collapse() {
+        // fetch_edgar/extract_edgar (one host) + fetch_gleif/extract_gleif (a
+        // DIFFERENT host) share the fetch+extract naming shape and distinct
+        // tails, so detect_families matches them — but they are genuinely
+        // different sources and must NOT fold, or both external systems vanish
+        // from the lineage.
+        let yaml = r"
+name: two
+steps:
+  - name: fetch_edgar
+    op: http_fetch@1
+    with: { url: 'https://edgar.example/e.zip', out: build/e.zip }
+  - name: extract_edgar
+    op: archive_extract@1
+    with: { archive: build/e.zip, dest: build/edgar }
+  - name: fetch_gleif
+    op: http_fetch@1
+    with: { url: 'https://gleif.example/g.zip', out: build/g.zip }
+  - name: extract_gleif
+    op: archive_extract@1
+    with: { archive: build/g.zip, dest: build/gleif }
+  - name: load
+    sql: models/load.sql
+    depends_on: [build/edgar, build/gleif]
+";
+        let manifest = parse_manifest_str(yaml).unwrap();
+        let mut sources = BTreeMap::new();
+        sources.insert("load".to_string(), Ok("CREATE TABLE loaded AS SELECT 1;".to_string()));
+        let g = build_graph(&manifest, &sources);
+        let collapsed = collapse_families(&g);
+        assert!(
+            !collapsed.nodes.values().any(|n| n.kind == AssetKind::Family),
+            "different-host sources are not one parameterised family"
+        );
+        assert!(collapsed
+            .nodes
+            .values()
+            .any(|n| n.kind == AssetKind::Source && n.label == "edgar.example"));
+        assert!(collapsed
+            .nodes
+            .values()
+            .any(|n| n.kind == AssetKind::Source && n.label == "gleif.example"));
     }
 }
