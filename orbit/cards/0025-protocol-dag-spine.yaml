@@ -1,0 +1,61 @@
+feature: "Protocol DAG spine — headless asset-graph render of an arcform manifest (Tideline phase 1)"
+as_a: "pipeline author who defines datasets as arcform Protocols (typed op:/sql: steps)"
+i_want: "brightfield to render a Protocol manifest as an asset-lineage DAG — every fetched file, DuckDB table, and SQL statement intermediate as a typed node, steps as transform seams — dumped headlessly to a deterministic PNG"
+so_that: "the pipeline's data lineage is visible at a glance (what feeds what, where the boundary sits) before any windowed protocol workspace exists, with the PNG as the byte-baselined regression gate for everything that follows"
+
+# Discovery / scope (2026-07-18). Phase 1 of the asset-first protocol view ("Tideline"):
+# the ASSET graph is the picture — data states are nodes, steps shrink to seams — inverting
+# the orchestrator-UI default of step-boxes-with-arrows. This card is the HEADLESS SPINE
+# only: parse → typed graph → deterministic layout → vello scene → PNG on the existing
+# BRIGHTFIELD_DUMP_PNG path. No windowed panel, no keyboard altitude, no CTE parsing, no
+# run/status skin — those are later cards. Code-verified recon against 6265ad7:
+#   - boot.rs BootMode is the ONE dump/window seam (aws_ac01); the dump arm composites
+#     per-plot vello Scenes then VelloRenderer::render_to_pixels → image::RgbaImage::save
+#     (main.rs:1504-1600). The protocol arm follows the same shape and the same
+#     returns-before-workspace guarantee.
+#   - brightfield-sql::conform::parse_and_normalise (DuckDbDialect) parses multi-statement
+#     SQL but fails the WHOLE string on one bad statement — so the splitter must find
+#     statement boundaries at the TOKEN level (semicolons outside strings/comments) and
+#     parse each statement individually, degrading per-statement, never per-file.
+#   - The input format is arcform's manifest as it exists today (name/engine/params/
+#     defaults/steps; steps carry op:@version + with:, or sql: model paths + depends_on).
+#     This parser is the INTERIM contract — deliberately thin and deletable; it swaps for
+#     the arcform-emitted Protocol+Run JSON when that lands upstream.
+#   - Fixture: the public open-analytics edgar_gleif Protocol (21 steps, 4 SQL models)
+#     vendored under examples/protocol/ — the real shape: 10-file fan-in, a 4-quarter
+#     parameterised fetch+extract family, a long-running op step, a gate, one Dataset sink.
+# Asset derivation (interim): with.url → SOURCE; with.out/with.dest → FILE; sql: models
+# parse per-statement → CREATE TABLE/VIEW names become TABLE (terminal statement) or
+# INTERNAL (intermediate statement) nodes; read_parquet/read_csv/read_xlsx refs + depends_on
+# paths → FILE edges; with.input → TABLE edge. finetype_validate steps render as a CHECK
+# shield on the edge they guard, never as a lineage node. The N-CEN-style family
+# (fetch+extract × quarters) auto-collapses to one partitioned tile.
+# Layout: hand-ported Sugiyama (longest-path layering, dummy-node lanes, fixed-iteration
+# median sweeps, deterministic tie-breaks by node id) — no new graph dependency; BTreeMap
+# ordering end-to-end so the same manifest always yields the same pixels.
+
+expected_behaviours:
+  - id: pds-ac01
+    text: "Dumping the vendored edgar_gleif Protocol (BRIGHTFIELD_DUMP_PNG over examples/protocol/edgar_gleif/arcform.yaml) writes a non-empty PNG, byte-identical across two runs (the aws_ac07 determinism shape)."
+  - id: pds-ac02
+    text: "tier.sql explodes at statement level: authoritative → authoritative_d → probabilistic → crosswalk_edges appear as a connected lineage chain inside the graph (intermediates typed INTERNAL, the terminal statement TABLE)."
+  - id: pds-ac03
+    text: "The four N-CEN fetch+extract pairs collapse to one partitioned family tile (×4), with edges re-targeted to the tile — 8 steps become 1 visual unit."
+  - id: pds-ac04
+    text: "A model file containing one unparseable statement degrades ONLY that statement to an opaque chip node (issue-badged); sibling statements still explode. Never a black-boxed file."
+  - id: pds-ac05
+    text: "Typed node classes render distinguishably: SOURCE (external), FILE, TABLE, INTERNAL, DATASET sink; the finetype gate is a shield badge on its guarded edge, not a node."
+  - id: pds-ac06
+    text: "Layout is deterministic: the same manifest yields identical node coordinates across runs (unit-pinned, no HashMap iteration order anywhere in the layout path)."
+  - id: pds-ac07
+    text: "A protocol manifest opened WITHOUT the dump variable (window mode) prints a clear 'windowed protocol view lands in a later card' message and exits cleanly — no crash, no partial window."
+  - id: pds-ac08
+    text: "All existing Mosaic-spec behaviour is untouched: the full example gallery stays byte-identical (spec/sql/engine/render diff empty for Mosaic inputs)."
+
+implementation_notes: |
+  New gpui-free crate crates/brightfield-protocol (manifest.rs / sql_assets.rs / graph.rs /
+  collapse.rs / layout.rs), an asset_scene module in brightfield-render following the
+  scene.rs conventions (meridian-design ink, text.rs labels), and a protocol sniff
+  (top-level `steps:` key) ahead of Mosaic spec parsing in brightfield-app feeding a
+  protocol dump arm beside the dashboard one. Full technical plan:
+  orbit/specs/2026-07-18-protocol-dag-spine/spec.md

@@ -7,6 +7,7 @@
 //! **Dependency chain:** `brightfield-spec` -> `brightfield-render`.
 //! Neither `gpui` nor `brightfield-engine` is a dependency.
 
+pub mod asset_scene;
 pub mod axis;
 pub mod channel;
 pub mod contour;

@@ -1,0 +1,23 @@
+# Degrade fixture (card 0025, pds-ac04): the middle statement of
+# models/degrade.sql is deliberately unparseable. The DAG render must degrade
+# ONLY that statement to an opaque chip — its sibling statements still explode
+# into typed nodes. Never a black-boxed file.
+name: degrade
+engine: duckdb
+
+steps:
+  - name: fetch_raw
+    op: http_fetch@1
+    with:
+      url: https://example.com/raw.csv
+      out: build/raw.csv
+
+  - name: transform
+    sql: models/degrade.sql
+    depends_on: [build/raw.csv]
+
+  - name: export
+    op: parquet_export@1
+    with:
+      input: cleaned
+      dest: build/degrade.parquet

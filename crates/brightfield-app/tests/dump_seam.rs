@@ -144,3 +144,48 @@ fn aws_ac07_dump_run_twice_is_byte_identical() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// pds-ac08 (cross-branch pin): the Mosaic gallery output is byte-identical to
+/// a COMMITTED golden baseline — not just self-consistent run-to-run. The
+/// aws_ac07/diw_ac12 tests above compare the branch binary to ITSELF, so a
+/// change that deterministically moved Mosaic pixels would still pass them;
+/// this test fails the moment `dashboard.yaml` renders a single byte
+/// differently from the checked-in `tests/goldens/dashboard.png` (captured on
+/// main's Mosaic path, which this environment reproduces bit-for-bit — the same
+/// determinism aws_ac07 already relies on). dashboard.yaml is the non-raster
+/// spec aws_ac07 uses precisely because it is deterministic.
+#[test]
+fn aws_ac08_dashboard_matches_committed_golden() {
+    let golden = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/goldens/dashboard.png");
+    assert!(golden.exists(), "committed golden present at {golden:?}");
+    let spec_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/dashboard.yaml");
+
+    let dir = std::env::temp_dir().join(format!("bf-aws-ac08-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let png_path = dir.join("dashboard.png");
+    let _ = fs::remove_file(&png_path);
+    let output = Command::new(env!("CARGO_BIN_EXE_brightfield"))
+        .arg(&spec_path)
+        .env("BRIGHTFIELD_DUMP_PNG", &png_path)
+        .env_remove("BRIGHTFIELD_DUMP_SCALE")
+        .env_remove("BRIGHTFIELD_PARAM_OVERRIDE")
+        .output()
+        .expect("binary runs");
+    assert!(
+        output.status.success(),
+        "dashboard dump exits cleanly: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let rendered = fs::read(&png_path).expect("PNG written");
+    let baseline = fs::read(&golden).expect("golden readable");
+    assert!(
+        rendered == baseline,
+        "dashboard.yaml must stay byte-identical to the committed golden \
+         ({} rendered vs {} golden bytes) — a Mosaic pixel moved",
+        rendered.len(),
+        baseline.len()
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}

@@ -1,0 +1,232 @@
+# The EDGAR ↔ GLEIF crosswalk Protocol — the reproducible *definition* of how the
+# `crosswalk.edgar_gleif` Dataset is made. `arc run` executes this manifest; one Run
+# → one Dataset version (the freshness lever). See ./README.md (the Protocol primitive).
+#
+# ALL-CONFIG. Every step is a first-class `sql:` model or a typed `op:` operator (the
+# arcform catalog) — there are NO opaque `command:`/`sh -c` steps. The retired
+# scripts/*.sh + scripts/describe.py did fetch/unzip/paginate/describe as bash; those
+# are now the http_fetch / archive_extract / gleif_ra_fetch / datapackage_describe /
+# parquet_export operators. This manifest REFERENCES them by name@version; their code
+# lives in the arcform repo (the engine + operator catalog), not here.
+#
+# BOUNDARY — PUBLISH (content-addressed R2 upload + catalog pointer flip) stays in the
+# out-of-repo publish pipeline and READS this Protocol's terminal output,
+# build/edgar_gleif.parquet + the emitted datapackage.json. It is not an arc step.
+#
+# Produces: build/edgar_gleif.parquet  →  published as crosswalk.edgar_gleif
+name: edgar_gleif
+engine: duckdb
+engine_version: ">=1.2"
+db: build/edgar_gleif.db
+
+params:
+  # Stamped on every row. Pin at run time: arc run --param as_of=2026-07-14
+  as_of:
+    default: ""
+
+# Transient API/network blips shouldn't sink a run — retry fetches with backoff.
+defaults:
+  retry:
+    max_attempts: 3
+    backoff_sec: 2.0
+
+steps:
+  # ── Inputs: the published source Datasets (content-addressed openlake) ─────────
+  - name: fetch_edgar
+    op: http_fetch@1
+    with:
+      url: https://openlake.meridian.online/edgar.parquet
+      out: build/edgar.parquet
+
+  - name: fetch_gleif
+    op: http_fetch@1
+    with:
+      url: https://openlake.meridian.online/gleif.parquet
+      out: build/gleif.parquet
+
+  # ── SEC entity universe (crosswalk LEFT side): fetch the raw cik-lookup list, then
+  #    parse + ticker-join it in DuckDB, then export the typed Parquet load/resolve read.
+  - name: fetch_cik_lookup
+    op: http_fetch@1
+    with:
+      url: https://www.sec.gov/Archives/edgar/cik-lookup-data.txt
+      out: build/cik_lookup.txt
+      headers:
+        User-Agent: "Meridian Protocol (open-analytics; research@meridian.online)"
+
+  - name: build_sec_entities
+    sql: models/sec_entities.sql
+    depends_on: [build/cik_lookup.txt, build/edgar.parquet]
+
+  - name: export_sec_entities
+    op: parquet_export@1
+    with:
+      input: sec_entities
+      dest: build/sec_entities.parquet
+
+  # ── Deterministic backbone: authoritative CIK/series ↔ LEI (no guessing) ───────
+  # Official sources ONLY (SEC + GLEIF). Authority provides the link for funds;
+  # operating companies have no official CIK↔LEI, so they are name-resolved below.
+  - name: fetch_gleif_sec_registrations
+    # GLEIF entities registered at SEC EDGAR (RA000665): LEI + registeredAs (numeric CIK
+    # for operating cos, S…/C… series/class for funds) + entity.category. Cursor-paged
+    # (GLEIF caps offset paging at 10k; RA000665 has ~27k) — the operator delegates
+    # paging to dlt. See arcform gleif_ra_fetch.
+    op: gleif_ra_fetch@1
+    with:
+      ra: RA000665
+      out: build/gleif_ra_sec.csv
+
+  # ── SEC Form N-CEN (the annual fund filing — most direct fund-LEI authority) ────
+  # PINNED quarters (reproducibility): the retired fetch_ncen.sh discovered the "latest
+  # N" off the SEC index page, so a run's crosswalk drifted as new quarters appeared.
+  # Pinning the four most-recent quarters makes the Protocol reproducible — a re-run
+  # fetches the SAME data. (html_link_discover remains the catalog operator for dynamic
+  # discovery when that is wanted; bump these when refreshing the fund layer.) Each
+  # quarter: fetch the zip, then extract only REGISTRANT.tsv (registrant CIK↔LEI) +
+  # FUND_REPORTED_INFO.tsv (series SERIES_ID↔LEI) — the two tables load.sql globs.
+  - name: fetch_ncen_2026q2
+    op: http_fetch@1
+    with:
+      url: https://www.sec.gov/files/dera/data/form-n-cen-data-sets/2026q2_ncen.zip
+      out: build/ncen_zips/2026q2.zip
+      headers:
+        User-Agent: "Meridian Protocol (open-analytics; research@meridian.online)"
+  - name: extract_ncen_2026q2
+    op: archive_extract@1
+    with:
+      archive: build/ncen_zips/2026q2.zip
+      members: [REGISTRANT.tsv, FUND_REPORTED_INFO.tsv]
+      dest: build/ncen/2026q2
+
+  - name: fetch_ncen_2026q1
+    op: http_fetch@1
+    with:
+      url: https://www.sec.gov/files/dera/data/form-n-cen-data-sets/2026q1_ncen.zip
+      out: build/ncen_zips/2026q1.zip
+      headers:
+        User-Agent: "Meridian Protocol (open-analytics; research@meridian.online)"
+  - name: extract_ncen_2026q1
+    op: archive_extract@1
+    with:
+      archive: build/ncen_zips/2026q1.zip
+      members: [REGISTRANT.tsv, FUND_REPORTED_INFO.tsv]
+      dest: build/ncen/2026q1
+
+  - name: fetch_ncen_2025q4
+    op: http_fetch@1
+    with:
+      url: https://www.sec.gov/files/dera/data/form-n-cen-data-sets/2025q4_ncen.zip
+      out: build/ncen_zips/2025q4.zip
+      headers:
+        User-Agent: "Meridian Protocol (open-analytics; research@meridian.online)"
+  - name: extract_ncen_2025q4
+    op: archive_extract@1
+    with:
+      archive: build/ncen_zips/2025q4.zip
+      members: [REGISTRANT.tsv, FUND_REPORTED_INFO.tsv]
+      dest: build/ncen/2025q4
+
+  - name: fetch_ncen_2025q3
+    op: http_fetch@1
+    with:
+      url: https://www.sec.gov/files/dera/data/form-n-cen-data-sets/2025q3_ncen.zip
+      out: build/ncen_zips/2025q3.zip
+      headers:
+        User-Agent: "Meridian Protocol (open-analytics; research@meridian.online)"
+  - name: extract_ncen_2025q3
+    op: archive_extract@1
+    with:
+      archive: build/ncen_zips/2025q3.zip
+      members: [REGISTRANT.tsv, FUND_REPORTED_INFO.tsv]
+      dest: build/ncen/2025q3
+
+  # ── Load + normalize the fetched sources into typed tables ─────────────────────
+  - name: load
+    sql: models/load.sql
+    depends_on:
+      - build/sec_entities.parquet
+      - build/gleif.parquet
+      - build/gleif_ra_sec.csv
+      - build/ncen/2026q2/registrant.tsv
+      - build/ncen/2026q2/fund_reported_info.tsv
+      - build/ncen/2026q1/registrant.tsv
+      - build/ncen/2026q1/fund_reported_info.tsv
+      - build/ncen/2025q4/registrant.tsv
+      - build/ncen/2025q4/fund_reported_info.tsv
+      - build/ncen/2025q3/registrant.tsv
+      - build/ncen/2025q3/fund_reported_info.tsv
+
+  # ── Resolve: probabilistic name match for the operating-company tail ───────────
+  - name: resolve
+    # The frozen Fellegi-Sunter/Splink model (SEED=42, precision-first), promoted from
+    # an opaque `uv run --script …` call to a versioned operator that embeds the exact
+    # script bytes. reads build/sec_entities.parquet + build/gleif.parquet (auto-wired
+    # from their producers); produces build/resolved.parquet. ~4h full-corpus job, so
+    # retry is pinned to 1 (a mid-run failure/timeout is retryable in the substrate — a
+    # cap stops the engine re-attempting a 4h job).
+    op: splink_resolve@1
+    with:
+      edgar: build/sec_entities.parquet
+      gleif: build/gleif.parquet
+      out: build/resolved.parquet
+    retry:
+      max_attempts: 1
+    timeout_sec: 14400
+
+  # ── Tier: deterministic (authoritative) ∪ splink (confirmed/candidate) ─────────
+  - name: tier
+    sql: models/tier.sql
+    depends_on: [build/resolved.parquet]
+    produces: [crosswalk_edges]
+
+  # ── Package: materialise the terminal edge table (adds as_of + corpus) ─────────
+  - name: package
+    sql: models/package.sql
+    depends_on: [crosswalk_edges]
+    produces: [edgar_gleif_out]
+
+  # ── Export: write the terminal Parquet the publish seam consumes ───────────────
+  # parquet_export replaces package.sql's old `COPY … (COMPRESSION zstd)` — the COPY the
+  # engine can't parse, which was a graph ISLAND that could silently ship a stale
+  # Parquet. Now a first-class produced asset. The TOTAL order_by (company_name is not
+  # unique — 6,906 ties) makes the bytes reproducible; row_group_size preserves layout.
+  - name: export_edgar_gleif
+    op: parquet_export@1
+    with:
+      input: edgar_gleif_out
+      dest: build/edgar_gleif.parquet
+      compression: zstd
+      row_group_size: 50000
+      order_by: "company_name, key_type, key, lei"
+
+  # ── Validate: GATE the built Parquet against the self-derived finetype contract ─
+  # finetype_validate makes finetype LOAD-BEARING, not just post-hoc descriptive:
+  # `finetype validate` (CHECK-ONLY) types every column and checks the terminal Parquet
+  # against schema.finetype.json. That contract is self-derived from THIS Parquet
+  # (finetype profile -o json-schema --stats, relaxed to the observable envelope — see
+  # the schema's $comment), so every current row passes: a pass-through today, a
+  # fail-closed DRIFT tripwire for future Runs (a value outside a closed enum, a length
+  # past the envelope, a range break → the run fails). CHECK-ONLY writes nothing and
+  # never reorders/drops rows, so build/edgar_gleif.parquet stays byte-identical — this
+  # step READS the output, it does not touch it.
+  - name: validate
+    op: finetype_validate@1
+    with:
+      parquet: build/edgar_gleif.parquet
+      schema: schema.finetype.json
+
+  # ── Describe: EMIT datapackage.json from the built Parquet ─────────────────────
+  # datapackage_describe embeds the retired scripts/describe.py: `finetype profile … -o
+  # datapackage` types the columns; descriptor.overrides.json overlays the hand-curated
+  # half (identity, licenses, per-field prose, primaryKey/foreignKeys). Hard-fails if a
+  # curated key references a column not in the Parquet (drift is what it exists to catch).
+  - name: describe
+    op: datapackage_describe@1
+    with:
+      parquet: build/edgar_gleif.parquet
+      overrides: descriptor.overrides.json
+      out: datapackage.json
+
+  # publish: the out-of-repo publish pipeline reads build/edgar_gleif.parquet + the
+  # emitted datapackage.json (boundary — not an arc step). See README.
