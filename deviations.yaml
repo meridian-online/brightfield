@@ -16,18 +16,27 @@ deviations:
       frame, etc.), legends, and interactors (intervalX, intervalXY,
       highlight, toggle, nearest) against a live DuckDB session.
     brightfield_behaviour: |
-      v1 ships the spec-portability contract only — the AST parser, preflight
-      SupportReport, deviation registry, and layer-1 AST round-trip gate. No
-      layout, mark, legend, interactor, or input is rendered yet; every
-      `ImplStatus` in `brightfield-spec`'s vocabulary registry is `Unimplemented`
-      pending the renderer card.
+      The renderer has landed: marks, axes, scales, legends, and interactors
+      are drawn as a Vello 2D scene by the framework-free `brightfield-render`
+      crate and presented both live (GPUI/wgpu shell) and headless (PNG). 38
+      vocabulary entries in `brightfield-spec`'s registry are now marked
+      `Implemented`. The layered conformance runner, however, gates only
+      layers 1 (AST round-trip) and 2 (data-source SQL/DDL equivalence): both
+      pass across all 10 curated specs — 20 of the 40 spec×layer cells green.
+      Layers 3 (visual-encoding equivalence) and 4 (interaction equivalence)
+      still return `LayerOutcome::Pending`, because the oracles that would diff
+      a rendered Vello scene and a scripted-interaction selection state against
+      Mosaic-web output are not wired into the runner yet — even though the
+      renderer itself ships.
     rationale: |
-      Honest scaffolding: layers 2 (SQL equivalence), 3 (encoding
-      equivalence), and 4 (interaction equivalence) return
-      `LayerOutcome::Pending` rather than fake-green. Flipping an individual
-      `LayerCheck` to Pass/Fail is what unblocks each curated spec; this
-      deviation is the accounting surface that keeps the preflight gate
-      honest until then.
+      Honest scaffolding: conformance is only as strong as its oracle. Layers 3
+      and 4 return `Pending` rather than fake-green until an encoding-equivalence
+      oracle (rendered scene structure) and an interaction-equivalence oracle
+      (scripted events → selection state) are wired to the shipped renderer.
+      This deviation is the accounting surface that keeps the preflight gate
+      honest: flipping `EncodingEquivalenceCheck` / `InteractionEquivalenceCheck`
+      from `Pending` to `Pass`/`Fail` per curated spec is what retires the
+      remaining 20 cells.
     affected_specs:
       - crossfilter.yaml
       - facet-interval.yaml
