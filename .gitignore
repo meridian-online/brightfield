@@ -1,6 +1,9 @@
 /target
 /.claude
 
+# Local real-UI capture artifacts (brightfield-shot / parity PNGs); regenerable.
+/render-proof
+
 # User-supplied geo data for examples/live/ (download per each spec's header;
 # never committed — see examples/live/us-states.yaml).
 /examples/live/*.json

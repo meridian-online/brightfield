@@ -3,10 +3,12 @@
 //! These traits factor the chart's paint path into a framework-free seam. The
 //! chart's logic (building the scene, interpreting brush/hover input, deciding
 //! the overlay) is expressed against these traits; the framework that actually
-//! owns a GPU device, a window, and a pointer implements them. Today the sole
-//! implementor is the gpui host in [`crate::gpui_canvas`]; the seam exists so a
-//! second host (a native immediate-mode surface) can be dropped in later without
-//! touching the chart logic.
+//! owns a GPU device, a window, and a pointer implements them. Implementors: the
+//! gpui host (`brightfield_ui::gpui_canvas`, a `RenderImage` via GPU readback —
+//! the transitional present path) and the egui host (`brightfield_shell`, a
+//! `vello::Scene` rendered to a texture on eframe's shared wgpu device, presented
+//! zero-copy as an `egui::TextureId` — the readback deleted). The seam lets a new
+//! host drop in without touching the chart logic.
 //!
 //! - [`CanvasHost`] owns the shared wgpu device/queue and turns a `vello::Scene`
 //!   into a host-displayable handle (the gpui host: a `RenderImage` via GPU
