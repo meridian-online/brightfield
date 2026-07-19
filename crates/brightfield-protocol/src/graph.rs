@@ -792,11 +792,17 @@ pub fn lineage(graph: &AssetGraph, focus: &AssetId) -> BTreeSet<AssetId> {
         }
     }
     // Downstream: everything the focus (transitively) feeds — seeded from the
-    // focus alone, so an ancestor's *other* branches are not pulled in.
+    // focus alone, so an ancestor's *other* branches are not pulled in. This
+    // walk keeps its OWN visited set: a node that is both an ancestor and a
+    // descendant of the focus (a cycle through the focus) is already in `ids`
+    // from the upstream pass, so sharing that set would stop the downstream
+    // walk from expanding it and silently drop its exclusive descendants.
+    let mut seen_down = BTreeSet::new();
     let mut frontier = vec![focus.clone()];
     while let Some(node) = frontier.pop() {
         for edge in &graph.edges {
-            if edge.from == node && ids.insert(edge.to.clone()) {
+            if edge.from == node && seen_down.insert(edge.to.clone()) {
+                ids.insert(edge.to.clone());
                 frontier.push(edge.to.clone());
             }
         }
@@ -1244,5 +1250,50 @@ steps:
         assert_eq!(sink.len(), g.nodes.len(), "the sink's lineage is the whole chain");
         // An unknown focus yields an empty lineage.
         assert!(lineage(&g, &"file.mini.nope".to_string()).is_empty());
+    }
+
+    /// A cycle through the focus must not swallow descendants. `x` is BOTH an
+    /// ancestor (`x -> focus`) and a descendant (`focus -> x`) of the focus.
+    /// Sharing one visited set between the upstream and downstream walks marks
+    /// `x` seen upstream, so the downstream walk never expands it and silently
+    /// drops `y` — a descendant reachable only through the cycle node. Separate
+    /// visited sets keep every descendant.
+    #[test]
+    fn lineage_keeps_descendants_reachable_only_through_a_cycle_node() {
+        let node = |id: &str| AssetNode {
+            id: id.to_string(),
+            kind: AssetKind::Table,
+            label: id.to_string(),
+            step: None,
+            family_count: None,
+            issue: None,
+        };
+        let edge = |from: &str, to: &str| Edge {
+            from: from.to_string(),
+            to: to.to_string(),
+            via: None,
+            shield: false,
+        };
+        let mut nodes = BTreeMap::new();
+        for id in ["a", "focus", "x", "y"] {
+            nodes.insert(id.to_string(), node(id));
+        }
+        let g = AssetGraph {
+            protocol: "cyc".to_string(),
+            nodes,
+            seams: BTreeMap::new(),
+            edges: vec![
+                edge("a", "focus"),
+                edge("focus", "x"),
+                edge("x", "focus"),
+                edge("x", "y"),
+            ],
+        };
+        let full = lineage(&g, &"focus".to_string());
+        // `a` upstream, `x` on the cycle, and `y` — the descendant reachable
+        // only through the cycle node — are all in the focus's lineage.
+        for id in ["a", "focus", "x", "y"] {
+            assert!(full.contains(id), "lineage keeps {id} across the focus cycle");
+        }
     }
 }

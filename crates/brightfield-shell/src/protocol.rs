@@ -376,7 +376,9 @@ impl ProtocolModel {
     }
 
     /// Flip the reading axis and re-lay-out. The nav's spatial geometry is
-    /// re-seeded so `hjkl` follow the new axis.
+    /// re-seeded so `hjkl` follow the new axis, and the selection is re-framed —
+    /// a transpose is the most disruptive layout change, so (like the drill
+    /// actions) it re-centres the selection rather than leaving it off-screen.
     pub fn toggle_flow(&mut self) {
         self.flow = match self.flow {
             Flow::Vertical => Flow::Horizontal,
@@ -384,6 +386,7 @@ impl ProtocolModel {
         };
         self.sync_nav_geometry();
         self.recompute_layout();
+        self.request_frame();
     }
 
     /// Drain a pending yank (the address to copy to the clipboard), if any.
@@ -925,7 +928,7 @@ fn canvas_ui(
     ui: &mut egui::Ui,
     model: &mut ProtocolModel,
     texture: Option<egui::TextureId>,
-    _canvas_id: TileId,
+    canvas_id: TileId,
 ) {
     let Some(texture) = texture else {
         ui.centered_and_justified(|ui| ui.label("presenting…"));
@@ -960,7 +963,7 @@ fn canvas_ui(
                     // A node that is already comfortably visible is left alone,
                     // so manual scrolling is never fought.
                     let frame_gen = model.frame_gen();
-                    let framed_id = egui::Id::new("proto-canvas-framed-gen");
+                    let framed_id = egui::Id::new(("proto-canvas-framed-gen", canvas_id));
                     let last_framed =
                         ui.ctx().data(|d| d.get_temp::<u64>(framed_id)).unwrap_or(0);
                     if frame_gen != last_framed {
