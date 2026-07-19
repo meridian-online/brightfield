@@ -470,9 +470,11 @@ impl ProtocolModel {
             "protocol-drill-in" => self.drill_in(),
             "protocol-drill-out" => self.drill_out(),
             "open-steps-sheet" => {
-                let was = self.show_sheet;
-                self.show_sheet = true;
-                !was
+                // Toggle, so `S` both opens and closes the sheet — pressing it
+                // again is the obvious way back to the canvas (Esc/Backspace also
+                // close it via drill_out).
+                self.show_sheet = !self.show_sheet;
+                true
             }
             "yank-address" => self.yank(),
             _ => false,
@@ -1247,12 +1249,17 @@ fn hint_ui(ui: &mut egui::Ui, model: &ProtocolModel) {
     ui.add_space(2.0);
     // The motion keys follow the drawn flow: along it, produce/consume; across
     // it, siblings. Spell out which keys are which for the current axis.
-    let hint = match model.flow() {
-        Flow::Vertical => {
-            "k/j producer·consumer   h/l siblings   za fold   t flip   Enter lineage   Esc/⌫ widen   S steps   y yank"
-        }
-        Flow::Horizontal => {
-            "h/l producer·consumer   j/k siblings   za fold   t flip   Enter lineage   Esc/⌫ widen   S steps   y yank"
+    let hint = if model.show_sheet() {
+        // The sheet takes j/k for row motion, so spell out the way back to the canvas.
+        "j/k rows   S / Esc / ⌫ back to canvas   y yank"
+    } else {
+        match model.flow() {
+            Flow::Vertical => {
+                "k/j producer·consumer   h/l siblings   za fold   t flip   Enter lineage   Esc/⌫ widen   S steps   y yank"
+            }
+            Flow::Horizontal => {
+                "h/l producer·consumer   j/k siblings   za fold   t flip   Enter lineage   Esc/⌫ widen   S steps   y yank"
+            }
         }
     };
     ui.horizontal(|ui| {
@@ -1453,8 +1460,16 @@ mod tests {
         assert!(!m.show_sheet());
         m.feed_events(&[key_shift(egui::Key::S)]);
         assert!(m.show_sheet(), "S opened the steps sheet");
+        // S again toggles it closed (previously a no-op — the way back was mouse-only).
+        m.feed_events(&[key_shift(egui::Key::S)]);
+        assert!(!m.show_sheet(), "S again toggled the steps sheet closed");
+        // Esc and Backspace also close it (Backspace is the Hyperkey-independent path).
+        m.feed_events(&[key_shift(egui::Key::S)]);
         m.feed_events(&[key(egui::Key::Escape)]);
         assert!(!m.show_sheet(), "Esc closed the steps sheet");
+        m.feed_events(&[key_shift(egui::Key::S)]);
+        m.feed_events(&[key(egui::Key::Backspace)]);
+        assert!(!m.show_sheet(), "Backspace closed the steps sheet");
     }
 
     /// `Enter` drills into a visible local scope, a repeat never stacks a
