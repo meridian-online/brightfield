@@ -747,6 +747,97 @@ pub fn build_graph(
     }
 }
 
+/// The **local neighbourhood** of `focus` in `graph`: the focused node plus its
+/// direct producers and consumers (one hop each way). The drill scope — `Enter`
+/// focuses the canvas on this induced slice, `Esc` pops back out. An id not in
+/// the graph yields an empty set.
+#[must_use]
+pub fn neighbourhood(graph: &AssetGraph, focus: &AssetId) -> BTreeSet<AssetId> {
+    let mut ids = BTreeSet::new();
+    if !graph.nodes.contains_key(focus) {
+        return ids;
+    }
+    ids.insert(focus.clone());
+    for edge in &graph.edges {
+        if &edge.to == focus {
+            ids.insert(edge.from.clone());
+        }
+        if &edge.from == focus {
+            ids.insert(edge.to.clone());
+        }
+    }
+    ids
+}
+
+/// The **full transitive lineage** of `focus` in `graph`: the focused node,
+/// every ancestor that feeds it (all upstream, transitively) and every
+/// descendant it feeds (all downstream, transitively). Where [`neighbourhood`]
+/// stops one hop each way, this walks the whole chain — the drill scope shows
+/// the entire family tree that touches the selection. An id not in the graph
+/// yields an empty set.
+#[must_use]
+pub fn lineage(graph: &AssetGraph, focus: &AssetId) -> BTreeSet<AssetId> {
+    let mut ids = BTreeSet::new();
+    if !graph.nodes.contains_key(focus) {
+        return ids;
+    }
+    ids.insert(focus.clone());
+    // Upstream: everything that (transitively) produces the focus.
+    let mut frontier = vec![focus.clone()];
+    while let Some(node) = frontier.pop() {
+        for edge in &graph.edges {
+            if edge.to == node && ids.insert(edge.from.clone()) {
+                frontier.push(edge.from.clone());
+            }
+        }
+    }
+    // Downstream: everything the focus (transitively) feeds — seeded from the
+    // focus alone, so an ancestor's *other* branches are not pulled in. This
+    // walk keeps its OWN visited set: a node that is both an ancestor and a
+    // descendant of the focus (a cycle through the focus) is already in `ids`
+    // from the upstream pass, so sharing that set would stop the downstream
+    // walk from expanding it and silently drop its exclusive descendants.
+    let mut seen_down = BTreeSet::new();
+    let mut frontier = vec![focus.clone()];
+    while let Some(node) = frontier.pop() {
+        for edge in &graph.edges {
+            if edge.from == node && seen_down.insert(edge.to.clone()) {
+                ids.insert(edge.to.clone());
+                frontier.push(edge.to.clone());
+            }
+        }
+    }
+    ids
+}
+
+/// The subgraph of `graph` induced on `keep`: the kept nodes plus every edge
+/// (and the seam it flows through) with both endpoints kept. A pure,
+/// deterministic `AssetGraph -> AssetGraph` slice — the drill scope's displayed
+/// graph, laid out and rastered like any other.
+#[must_use]
+pub fn induced_subgraph(graph: &AssetGraph, keep: &BTreeSet<AssetId>) -> AssetGraph {
+    let nodes: BTreeMap<AssetId, AssetNode> = graph
+        .nodes
+        .iter()
+        .filter(|(id, _)| keep.contains(*id))
+        .map(|(id, n)| (id.clone(), n.clone()))
+        .collect();
+    let edges: Vec<Edge> = graph
+        .edges
+        .iter()
+        .filter(|e| keep.contains(&e.from) && keep.contains(&e.to))
+        .cloned()
+        .collect();
+    let kept_steps: BTreeSet<&StepId> = edges.iter().filter_map(|e| e.via.as_ref()).collect();
+    let seams: BTreeMap<StepId, Seam> = graph
+        .seams
+        .iter()
+        .filter(|(step, _)| kept_steps.contains(step))
+        .map(|(s, seam)| (s.clone(), seam.clone()))
+        .collect();
+    AssetGraph { protocol: graph.protocol.clone(), nodes, seams, edges }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1091,5 +1182,118 @@ steps:
                 .any(|e| e.to == "stmt.c.scrub#effect" && e.from == "file.c.build/a.csv"),
             "wired from its input, so it never vanishes"
         );
+    }
+
+    /// A drill scope is the focused node plus its one-hop producers/consumers,
+    /// and the induced slice keeps only edges internal to that set.
+    #[test]
+    fn neighbourhood_and_induced_subgraph_slice_the_local_scope() {
+        let yaml = "name: d\nsteps:\n  - name: fetch\n    op: http_fetch@1\n    with: { url: 'https://h/a', out: build/a.csv }\n  - name: transform\n    sql: models/t.sql\n    depends_on: [build/a.csv]\n  - name: export\n    op: parquet_export@1\n    with: { input: t_out, dest: build/t.parquet }\n";
+        let manifest = parse_manifest_str(yaml).unwrap();
+        let mut sources = BTreeMap::new();
+        sources.insert(
+            "transform".to_string(),
+            Ok("CREATE TABLE t_out AS SELECT * FROM read_csv('build/a.csv');".to_string()),
+        );
+        let g = build_graph(&manifest, &sources);
+        let focus = "file.d.build/a.csv".to_string();
+        let hood = neighbourhood(&g, &focus);
+        assert!(hood.contains(&focus), "the focus is in its own neighbourhood");
+        // Every node adjacent to the focus is included; nothing two hops out.
+        for edge in &g.edges {
+            if edge.from == focus {
+                assert!(hood.contains(&edge.to), "a direct consumer is kept");
+            }
+            if edge.to == focus {
+                assert!(hood.contains(&edge.from), "a direct producer is kept");
+            }
+        }
+        let sub = induced_subgraph(&g, &hood);
+        assert_eq!(sub.nodes.len(), hood.len(), "the slice has exactly the kept nodes");
+        assert!(
+            sub.edges.iter().all(|e| hood.contains(&e.from) && hood.contains(&e.to)),
+            "only internal edges survive the slice"
+        );
+        // Unknown focus yields an empty scope.
+        assert!(neighbourhood(&g, &"file.d.nope".to_string()).is_empty());
+    }
+
+    /// `lineage` is the full transitive closure — every upstream ancestor and
+    /// downstream descendant of the focus — strictly wider than the one-hop
+    /// neighbourhood on a chain longer than two.
+    #[test]
+    fn lineage_is_the_full_transitive_closure_not_one_hop() {
+        // A linear chain: source -> file -> stmt -> table -> dataset. Focusing
+        // the middle statement, its lineage is the whole chain (two hops each
+        // way), where the neighbourhood is only the three adjacent nodes.
+        let g = mini_graph();
+        let focus = "stmt.mini.transform#0".to_string();
+        let full = lineage(&g, &focus);
+        for id in [
+            "source.mini.https://example.com/data/a.csv",
+            "file.mini.build/a.csv",
+            "stmt.mini.transform#0",
+            "asset.mini.t_out",
+            "file.mini.build/t.parquet",
+        ] {
+            assert!(full.contains(id), "the transitive lineage keeps {id}");
+        }
+        let hood = neighbourhood(&g, &focus);
+        assert!(
+            full.len() > hood.len(),
+            "lineage ({}) is wider than the one-hop neighbourhood ({})",
+            full.len(),
+            hood.len()
+        );
+        // Focusing the sink pulls in every ancestor but adds no descendant.
+        let sink = lineage(&g, &"file.mini.build/t.parquet".to_string());
+        assert_eq!(sink.len(), g.nodes.len(), "the sink's lineage is the whole chain");
+        // An unknown focus yields an empty lineage.
+        assert!(lineage(&g, &"file.mini.nope".to_string()).is_empty());
+    }
+
+    /// A cycle through the focus must not swallow descendants. `x` is BOTH an
+    /// ancestor (`x -> focus`) and a descendant (`focus -> x`) of the focus.
+    /// Sharing one visited set between the upstream and downstream walks marks
+    /// `x` seen upstream, so the downstream walk never expands it and silently
+    /// drops `y` — a descendant reachable only through the cycle node. Separate
+    /// visited sets keep every descendant.
+    #[test]
+    fn lineage_keeps_descendants_reachable_only_through_a_cycle_node() {
+        let node = |id: &str| AssetNode {
+            id: id.to_string(),
+            kind: AssetKind::Table,
+            label: id.to_string(),
+            step: None,
+            family_count: None,
+            issue: None,
+        };
+        let edge = |from: &str, to: &str| Edge {
+            from: from.to_string(),
+            to: to.to_string(),
+            via: None,
+            shield: false,
+        };
+        let mut nodes = BTreeMap::new();
+        for id in ["a", "focus", "x", "y"] {
+            nodes.insert(id.to_string(), node(id));
+        }
+        let g = AssetGraph {
+            protocol: "cyc".to_string(),
+            nodes,
+            seams: BTreeMap::new(),
+            edges: vec![
+                edge("a", "focus"),
+                edge("focus", "x"),
+                edge("x", "focus"),
+                edge("x", "y"),
+            ],
+        };
+        let full = lineage(&g, &"focus".to_string());
+        // `a` upstream, `x` on the cycle, and `y` — the descendant reachable
+        // only through the cycle node — are all in the focus's lineage.
+        for id in ["a", "focus", "x", "y"] {
+            assert!(full.contains(id), "lineage keeps {id} across the focus cycle");
+        }
     }
 }

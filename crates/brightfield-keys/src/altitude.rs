@@ -13,6 +13,11 @@ pub enum Altitude {
     Dashboard,
     /// A single plot / view leaf — the focus floor.
     View,
+    /// The protocol asset-graph panel: focus sits on an asset node
+    /// or a step seam, and the topological/fold/drill grammar applies. A
+    /// distinct altitude so protocol verbs never leak into the chart grammar
+    /// and vice versa.
+    Protocol,
 }
 
 impl Altitude {
@@ -22,6 +27,7 @@ impl Altitude {
         match self {
             Altitude::Dashboard => "dashboard",
             Altitude::View => "view",
+            Altitude::Protocol => "protocol",
         }
     }
 }

@@ -31,6 +31,9 @@ pub mod error;
 pub mod graph;
 pub mod layout;
 pub mod manifest;
+pub mod nav;
+pub mod panel;
+pub mod sheet;
 pub mod sql_assets;
 pub mod stream;
 
@@ -39,11 +42,16 @@ use std::path::Path;
 
 pub use collapse::collapse_families;
 pub use contract::{parse_contract, Contract, SUPPORTED_CONTRACT_FAMILY, SUPPORTED_CONTRACT_VERSION};
-pub use contract_graph::{apply_stream, build_contract_view, AssetMeta, ContractView, RunView, StepView};
+pub use contract_graph::{
+    apply_stream, build_contract_view, AssetMeta, ContractView, RunView, SeamStatus, StepView,
+};
 pub use error::Error;
 pub use graph::{AssetGraph, AssetKind, AssetNode, Edge, Seam, SeamKind};
-pub use layout::{layout, Layout, LayoutConfig};
+pub use layout::{layout, Flow, Layout, LayoutConfig};
 pub use manifest::{is_protocol_manifest, parse_manifest_str, Manifest, Step};
+pub use nav::{Dir, FoldOutcome, ProtocolNav};
+pub use panel::{inspector_for, kind_label, outline_order, outline_rows, InspectorFacts, OutlineRow};
+pub use sheet::{StepRow, StepsSheet};
 pub use stream::{fold_stream, StreamReader, StreamState};
 
 /// Build a [`ContractView`] from raw Protocol+Run contract bytes — the default

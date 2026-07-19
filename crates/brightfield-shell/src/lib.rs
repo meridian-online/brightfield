@@ -18,3 +18,4 @@ pub mod canvas;
 pub mod capture;
 pub mod design;
 pub mod pipeline;
+pub mod protocol;
