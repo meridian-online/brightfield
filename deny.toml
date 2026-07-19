@@ -4,8 +4,7 @@
 # tree, which has carried GPL-3.0 crates since 2025-12-05 (sum_tree -> ztracing
 # -> zlog; zed issue #55470). The GPL shims are replaced by clean-room stubs via
 # the [patch] section in Cargo.toml; this config makes any copyleft regression a
-# loud failure at every pin bump. See
-# orbit/cards/memos/2026-07-05-gpl-precedent-and-dioxus.md.
+# loud failure at every pin bump. (GPL-precedent rationale tracked in planning.)
 
 [licenses]
 allow = [

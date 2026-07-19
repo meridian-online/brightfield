@@ -123,7 +123,7 @@ The system comprises four layers:
 
 Early development. The project is in the discovery and design phase. The architecture favours vertical slices — a working end-to-end pipeline for a single chart type — over horizontal layers completed in isolation.
 
-Feature cards and specifications live under [`orbit/`](orbit/).
+Feature cards and specifications are tracked centrally, outside this repository.
 
 ## Relationship to the Meridian Ecosystem
 

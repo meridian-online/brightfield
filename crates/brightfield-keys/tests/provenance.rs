@@ -8,9 +8,7 @@
 use brightfield_keys::{registry, VerbEntry};
 
 /// The research digest, baked in at compile time (path relative to this test file).
-const RESEARCH: &str = include_str!(
-    "../../../orbit/specs/2026-07-11-keyboard-grammar/keymap-research.md"
-);
+const RESEARCH: &str = include_str!("data/keymap-research.md");
 
 #[test]
 fn kbg_ac08_every_bound_longname_has_a_score_row() {

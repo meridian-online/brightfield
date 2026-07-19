@@ -3,7 +3,7 @@ name = "ztracing"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Clean-room no-op replacement for zed's GPL-3.0 ztracing crate, applied via [patch] so Brightfield binaries link no GPL code. See orbit/cards/memos/2026-07-05-gpl-precedent-and-dioxus.md."
+description = "Clean-room no-op replacement for zed's GPL-3.0 ztracing crate, applied via [patch] so Brightfield binaries link no GPL code (GPL-precedent rationale tracked in planning)."
 publish = false
 
 [dependencies]
