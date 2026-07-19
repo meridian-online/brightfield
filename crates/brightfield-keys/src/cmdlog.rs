@@ -1,4 +1,4 @@
-//! The protocol command log (card 0029, doc-25 §5) — framework-free.
+//! The protocol command log — framework-free.
 //!
 //! The cmdlog discipline made structural: a **Data**-tier command
 //! ([`CommandTier::Data`]) is recorded as `longname + dotted address + input`
@@ -129,7 +129,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn t29_data_command_logs_by_longname_and_dotted_address() {
+    fn data_command_logs_by_longname_and_dotted_address() {
         let mut log = ProtocolCmdLog::new();
         let row = log
             .record(
@@ -155,7 +155,7 @@ mod tests {
     }
 
     #[test]
-    fn t29_view_command_is_refused_never_logged() {
+    fn view_command_is_refused_never_logged() {
         let mut log = ProtocolCmdLog::new();
         let err = log
             .record(CommandTier::View, "protocol-consumer", "asset.p.x", None)
@@ -165,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn t29_data_command_carries_typed_input_when_present() {
+    fn data_command_carries_typed_input_when_present() {
         let mut log = ProtocolCmdLog::new();
         log.record(CommandTier::Data, "change-mark-type", "view.dashboard.plot0", Some("bar".into()))
             .unwrap();
@@ -176,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn t29_jsonl_is_one_row_per_line() {
+    fn jsonl_is_one_row_per_line() {
         let mut log = ProtocolCmdLog::new();
         log.record(CommandTier::Data, "yank-address", "asset.p.a", None).unwrap();
         log.record(CommandTier::Data, "yank-address", "asset.p.b", None).unwrap();

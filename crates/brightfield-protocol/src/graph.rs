@@ -1187,7 +1187,7 @@ steps:
     /// A drill scope is the focused node plus its one-hop producers/consumers,
     /// and the induced slice keeps only edges internal to that set.
     #[test]
-    fn t48_neighbourhood_and_induced_subgraph_slice_the_local_scope() {
+    fn neighbourhood_and_induced_subgraph_slice_the_local_scope() {
         let yaml = "name: d\nsteps:\n  - name: fetch\n    op: http_fetch@1\n    with: { url: 'https://h/a', out: build/a.csv }\n  - name: transform\n    sql: models/t.sql\n    depends_on: [build/a.csv]\n  - name: export\n    op: parquet_export@1\n    with: { input: t_out, dest: build/t.parquet }\n";
         let manifest = parse_manifest_str(yaml).unwrap();
         let mut sources = BTreeMap::new();

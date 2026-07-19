@@ -58,8 +58,8 @@ pub struct RunView {
     pub complete: bool,
 }
 
-/// The execution-status channel a seam renders (card 0029) — the per-step
-/// status + live state (inherited from T38) reduced to the handful of tints the
+/// The execution-status channel a seam renders — the per-step run
+/// status + live state, reduced to the handful of tints the
 /// canvas draws. Kept beside the pure [`AssetGraph`] so the renderer can tint
 /// seams without the graph carrying measurement. The honesty rule holds:
 /// `Skipped` is its own tint, never `Ok`; an unrun step is never green.
@@ -162,7 +162,7 @@ impl StepView {
 
 impl ContractView {
     /// The per-step execution-status tint the canvas draws on each seam
-    /// (card 0029) — surfacing the T38-inherited status + live state in the
+    /// — surfacing the run status + live state in the
     /// interactive view. Keyed by step name, matching [`Edge::via`].
     #[must_use]
     pub fn seam_statuses(&self) -> BTreeMap<StepId, SeamStatus> {

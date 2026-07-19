@@ -51,7 +51,7 @@ const CHIP_FILL: Color = ink(meridian_design::scales::GRAY_LIGHT[2]);
 const LABEL_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.ink_primary);
 /// Muted label ink (internal/chip labels).
 const MUTED_LABEL_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.ink_muted);
-/// Execution-status tints for a seam (card 0029) — the reserved Meridian status
+/// Execution-status tints for a seam — the reserved Meridian status
 /// inks, never reused as series colour. `NotRun` keeps the quiet edge ink so an
 /// unrun seam is never green.
 const STATUS_OK: Color = ink(meridian_design::viz::STATUS.good);
@@ -349,7 +349,7 @@ pub fn render_asset_graph(scene: &mut Scene, layout: &Layout, graph: &AssetGraph
 }
 
 /// Draw the laid-out asset graph into `scene`, tinting each seam chevron by its
-/// per-step execution status (card 0029). `status` is keyed by step name
+/// per-step execution status. `status` is keyed by step name
 /// (matching a route's `via`); a seam with no entry falls back to
 /// [`SeamStatus::NotRun`] — the quiet edge ink, never green. Feed it
 /// [`ContractView::seam_statuses`](brightfield_protocol::contract_graph::ContractView::seam_statuses).
@@ -435,7 +435,7 @@ steps:
     }
 
     #[test]
-    fn t29_seam_status_tints_the_chevron() {
+    fn seam_status_tints_the_chevron() {
         use brightfield_protocol::contract_graph::SeamStatus;
         let yaml = r"
 name: s
@@ -507,7 +507,7 @@ steps:
     }
 
     #[test]
-    fn t29_vertical_chevron_sits_on_a_vertical_run_not_the_horizontal() {
+    fn vertical_chevron_sits_on_a_vertical_run_not_the_horizontal() {
         // A column-changing middle segment is drawn V-H-V; the chevron must land
         // on the first vertical leg (x == a.x, y between a.y and mid_y), so a
         // down-pointing glyph reads along the flow.
@@ -523,7 +523,7 @@ steps:
     }
 
     #[test]
-    fn t29_vertical_scene_renders_and_transposes_the_path() {
+    fn vertical_scene_renders_and_transposes_the_path() {
         // The vertical layout draws real geometry, and orthogonal_path routes
         // V-H-V (a mid-run at a shared x), never the horizontal H-V-H.
         use brightfield_protocol::layout::Flow;

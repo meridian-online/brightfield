@@ -1,6 +1,6 @@
 //! The egui Protocol panel — the asset-graph view rebuilt natively on the
-//! egui/eframe shell (card 0029, the egui realisation of the retired gpui
-//! `protocol_shell`).
+//! egui/eframe shell — the egui realisation of the retired gpui
+//! `protocol_shell`.
 //!
 //! Structure, folding in the review of the first (gpui) cut:
 //!
@@ -698,7 +698,7 @@ impl ProtocolShell {
     }
 
     /// Re-raster the DAG through the host only when (expanded, flow, resolution)
-    /// changed. Presents the current displayed graph via the T46 seam.
+    /// changed. Presents the current displayed graph via the canvas-host seam.
     fn ensure_presented(&mut self, ppp: f32) {
         let (expanded, flow) = self.model.layout_key();
         let gen = self.model.layout_gen();
@@ -1392,8 +1392,8 @@ mod tests {
     /// Vertical flow, from the default selection: `j`/`k` run the
     /// producer/consumer axis and `h`/`l` step siblings — and each lands on a
     /// node whose RENDERED CENTRE is genuinely in the pressed screen direction,
-    /// not merely a topological neighbour. This is the spatial-nav acceptance
-    /// (card 0029 AC #2), asserted against the drawn geometry: `j` goes strictly
+    /// not merely a topological neighbour. This is the spatial-nav behaviour,
+    /// asserted against the drawn geometry: `j` goes strictly
     /// below, `k` is a wall at the top row (or strictly above), `l`/`h` step to a
     /// same-row sibling strictly right/left.
     #[test]

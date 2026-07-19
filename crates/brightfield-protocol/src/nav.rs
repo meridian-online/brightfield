@@ -1,4 +1,4 @@
-//! Spatial, flow-aware navigation over the asset graph (card 0029, AC #2) —
+//! Spatial, flow-aware navigation over the asset graph —
 //! framework-free.
 //!
 //! The keyboard grammar's motion layer as a pure state machine. The vim keys
@@ -71,7 +71,7 @@ pub struct ProtocolNav {
     expanded: BTreeSet<AssetId>,
     /// The focused node.
     cursor: Option<AssetId>,
-    /// The drill path — `Enter` pushes the cursor, `Esc` pops (doc-25 §5).
+    /// The drill path — `Enter` pushes the cursor, `Esc` pops.
     breadcrumb: Vec<AssetId>,
     /// The reading axis the spatial keys resolve against ([`set_geometry`]).
     flow: Flow,
@@ -471,7 +471,7 @@ steps:
     }
 
     #[test]
-    fn t29_hl_walks_producer_and_consumer_topologically() {
+    fn hl_walks_producer_and_consumer_topologically() {
         let g = chain_graph();
         let mut nav = ProtocolNav::new(&g);
         // The entry cursor is a root (the source, no producer).
@@ -494,7 +494,7 @@ steps:
     }
 
     #[test]
-    fn t29_hl_are_walls_at_the_ends() {
+    fn hl_are_walls_at_the_ends() {
         let g = chain_graph();
         let mut nav = ProtocolNav::new(&g);
         // At a root, `h` cannot move.
@@ -505,7 +505,7 @@ steps:
     }
 
     #[test]
-    fn t29_jk_step_rank_siblings_without_wrapping() {
+    fn jk_step_rank_siblings_without_wrapping() {
         // A fan-out layer: two files produced from one source feed one join, so
         // the middle layer holds two rank siblings.
         let yaml = r"
@@ -539,7 +539,7 @@ steps:
     }
 
     #[test]
-    fn t29_za_folds_only_a_family_tile() {
+    fn za_folds_only_a_family_tile() {
         // The N-CEN-style family collapses to a Family tile; `za` toggles it and
         // is a no-op anywhere else.
         let yaml = r"
@@ -587,7 +587,7 @@ steps:
     }
 
     #[test]
-    fn t29_enter_esc_push_and_pop_the_drill_stack() {
+    fn enter_esc_push_and_pop_the_drill_stack() {
         let g = chain_graph();
         let mut nav = ProtocolNav::new(&g);
         assert!(nav.breadcrumb().is_empty());
@@ -610,7 +610,7 @@ steps:
     }
 
     #[test]
-    fn t29_nav_construction_is_deterministic() {
+    fn nav_construction_is_deterministic() {
         let g = chain_graph();
         let a = ProtocolNav::new(&g);
         let b = ProtocolNav::new(&g);
@@ -657,7 +657,7 @@ steps:
     /// `h`/`l` (left/right) step between rank siblings — the mapping matches the
     /// drawn top→bottom flow.
     #[test]
-    fn t48_vertical_flow_maps_updown_to_flow_leftright_to_siblings() {
+    fn vertical_flow_maps_updown_to_flow_leftright_to_siblings() {
         use crate::layout::{layout, Flow, LayoutConfig};
         let g = diamond_graph();
         let l = layout(&g, &LayoutConfig { flow: Flow::Vertical, ..LayoutConfig::default() });
@@ -691,7 +691,7 @@ steps:
     /// producer/consumer axis and `k`/`j` (up/down) step between siblings — the
     /// SAME graph, the keys following the drawn left→right flow.
     #[test]
-    fn t48_horizontal_flow_maps_leftright_to_flow_updown_to_siblings() {
+    fn horizontal_flow_maps_leftright_to_flow_updown_to_siblings() {
         use crate::layout::{layout, Flow, LayoutConfig};
         let g = diamond_graph();
         let l = layout(&g, &LayoutConfig { flow: Flow::Horizontal, ..LayoutConfig::default() });
@@ -719,7 +719,7 @@ steps:
 
     /// A repeated `Enter` on the current node does not stack a duplicate crumb.
     #[test]
-    fn t48_drill_in_dedups_the_current_node() {
+    fn drill_in_dedups_the_current_node() {
         let g = chain_graph();
         let mut nav = ProtocolNav::new(&g);
         assert!(nav.drill_in(), "first drill pushes the crumb");

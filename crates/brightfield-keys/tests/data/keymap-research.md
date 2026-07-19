@@ -41,7 +41,7 @@ by the `kbg_ac08_*` provenance test; scores mirror `VerbEntry.scores` (frequency
 | `save-spec` | `cmd-s` | 3 / 5 / 5 | cmd-s = save (universal; shipped, editor-scoped) |
 | `cycle-colour-scheme` | `c` | 3 / 5 / 3 | `c` = colour (mnemonic); view-scoped, transient preview |
 
-### Protocol altitude (card 0029) — the asset-graph grammar (doc-25 §5)
+### Protocol altitude — the asset-graph grammar
 
 The protocol panel is a distinct altitude, so its verbs never collide with the chart grammar. Motion,
 folds, and drill are **View**-tier (never logged); the object verb that names an asset is **Data**-tier

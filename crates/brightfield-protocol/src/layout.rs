@@ -515,7 +515,7 @@ steps:
     }
 
     #[test]
-    fn t29_vertical_flow_reads_top_to_bottom() {
+    fn vertical_flow_reads_top_to_bottom() {
         // Vertical transposes the SAME graph: every downstream node sits strictly
         // BELOW its producer, edges exit the bottom edge and enter the top.
         let g = diamond();
@@ -541,7 +541,7 @@ steps:
     }
 
     #[test]
-    fn t29_vertical_bounds_width_to_the_widest_layer() {
+    fn vertical_bounds_width_to_the_widest_layer() {
         // The motivating win: horizontal's long axis is width (sideways scroll);
         // vertical puts the long axis on height, so the canvas is TALLER than it
         // is WIDE and strictly narrower than the horizontal render's width.
@@ -557,7 +557,7 @@ steps:
     }
 
     #[test]
-    fn t29_vertical_layout_is_deterministic_and_whole_pixel() {
+    fn vertical_layout_is_deterministic_and_whole_pixel() {
         let g = diamond();
         let cfg = LayoutConfig { flow: Flow::Vertical, ..LayoutConfig::default() };
         assert_eq!(layout(&g, &cfg), layout(&g, &cfg));

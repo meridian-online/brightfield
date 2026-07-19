@@ -1,5 +1,4 @@
-//! Framework-free derivation for the Protocol panel's outline + inspector
-//! (card 0029, AC #1).
+//! Framework-free derivation for the Protocol panel's outline + inspector.
 //!
 //! The live gpui panel (`brightfield-app::protocol_shell`) and the headless
 //! panel-composite render (`brightfield-render::panel_scene`) draw the SAME
@@ -98,7 +97,7 @@ pub fn kind_label(kind: AssetKind) -> &'static str {
 
 /// A deterministic topological order over the graph's nodes (producer →
 /// consumer). Kahn's algorithm with an id-sorted ready queue, so the outline is
-/// stable across runs and independent of pixel geometry (doc-25 §5). Nodes left
+/// stable across runs and independent of pixel geometry. Nodes left
 /// in a cycle (there should be none) are appended in id order so every node
 /// appears exactly once.
 #[must_use]

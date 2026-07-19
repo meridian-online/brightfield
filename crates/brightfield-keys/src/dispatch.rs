@@ -17,7 +17,7 @@ pub enum DispatchContext {
     EditorFocused,
     /// An overlay (palette / help / focus-jump) is open above the workspace.
     OverlayOpen,
-    /// The protocol asset-graph panel holds focus (card 0029) — its topological
+    /// The protocol asset-graph panel holds focus — its topological
     /// grammar resolves here, isolated from the chart canvas's bare verbs.
     ProtocolFocused,
 }

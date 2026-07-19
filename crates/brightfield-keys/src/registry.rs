@@ -28,7 +28,7 @@ pub enum BindingContext {
     /// Editor-scoped: fires only while the YAML editor holds focus.
     Editor,
     /// Protocol-panel-scoped: fires only while the protocol asset-graph panel
-    /// holds focus (card 0029). A distinct context so the panel's topological
+    /// holds focus. A distinct context so the panel's topological
     /// `h`/`l`/`j`/`k` never collide with the chart grammar's nav bindings.
     Protocol,
     /// Global (`context = None`): fires from any focus (palette twin, focus
@@ -71,8 +71,8 @@ pub enum Drives {
     Reserved,
 }
 
-/// The command tier — the cmdlog discipline's REQUIRED taxonomy (card 0029,
-/// doc-25 §5), enforced from the first commit because it cannot be retrofitted.
+/// The command tier — the cmdlog discipline's REQUIRED taxonomy,
+/// enforced from the first commit because it cannot be retrofitted.
 ///
 /// Every verb declares which tier it is. The split governs the command log: a
 /// **View** command (navigation, folds, panes, palette/help) is never logged —
@@ -143,7 +143,7 @@ pub struct VerbEntry {
     pub scope_applicability: Vec<Altitude>,
     /// What the verb drives.
     pub drives: Drives,
-    /// The cmdlog tier — REQUIRED on every verb (card 0029). Governs whether the
+    /// The cmdlog tier — REQUIRED on every verb. Governs whether the
     /// verb logs, and, for `Data`, that it logs by dotted address (never a
     /// screen position). Enforced by [`registry`]'s construction, so a new verb
     /// cannot be added without a deliberate tier call.
@@ -418,7 +418,7 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Undo the last uncommitted edit (cannot cross a commit)",
             scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 5, motor_note: "u = undo (vim); snapshot-stack pop, stops at a commit barrier" }),
         },
-        // ---- protocol altitude (card 0029): the asset-graph grammar. All the
+        // ---- protocol altitude: the asset-graph grammar. All the
         //      motion/fold/drill verbs are View-tier (never logged); the object
         //      verb that names an asset is Data-tier (logged by dotted address). ----
         VerbEntry {
@@ -739,7 +739,7 @@ mod tests {
     }
 
     #[test]
-    fn t29_every_verb_declares_a_tier_and_only_data_logs() {
+    fn every_verb_declares_a_tier_and_only_data_logs() {
         // The cmdlog discipline's REQUIRED field: every verb carries a tier, and
         // exactly the Data tier is logged. Navigation/fold/pane/meta verbs are
         // View; the spec-edit + object verbs that name a dotted address are Data.
@@ -779,7 +779,7 @@ mod tests {
     }
 
     #[test]
-    fn t29_protocol_altitude_verbs_are_scoped_to_protocol_only() {
+    fn protocol_altitude_verbs_are_scoped_to_protocol_only() {
         // Protocol verbs never leak into the chart grammar: they apply at
         // Protocol and nowhere else.
         let reg = registry();

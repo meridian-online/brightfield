@@ -1,11 +1,11 @@
-//! The `S` steps sheet (card 0029, AC #4) — framework-free.
+//! The `S` steps sheet — framework-free.
 //!
 //! The asset-first canvas is powerful but disorienting the first time: "where
 //! did my *step list* go?" The `S` sheet is the answer — the flat, run-ordered
 //! list of steps as a plain navigable grid, the shape every orchestrator shows
 //! and the one the asset inversion hides. It is also where the per-step
-//! **status** and live **state** inherited from T38 finally surface as columns
-//! (doc-25 §5, "the S sheet answers asset-inversion disorientation").
+//! **status** and live **state** finally surface as columns
+//! ("the S sheet answers asset-inversion disorientation").
 //!
 //! Pure data + a cursor: the app renders the rows into a `gpui-component` table
 //! and drives the cursor from `j`/`k`; the headless tests drive the same
@@ -51,7 +51,7 @@ pub const COLUMNS: [&str; 6] = ["#", "step", "kind", "detail", "status", "live"]
 impl StepsSheet {
     /// Build the sheet from a built [`ContractView`]: one row per step, ordered
     /// by the run order the seams record (not the alphabetical step map). The
-    /// status/live columns carry the T38-inherited per-step state.
+    /// status/live columns carry the per-step run status and live state.
     #[must_use]
     pub fn from_view(view: &ContractView) -> Self {
         let mut rows: Vec<StepRow> = view
@@ -190,7 +190,7 @@ mod tests {
     }
 
     #[test]
-    fn t29_steps_sheet_is_the_flat_run_ordered_list() {
+    fn steps_sheet_is_the_flat_run_ordered_list() {
         let sheet = StepsSheet::from_view(&view());
         assert_eq!(sheet.len(), 2);
         // Run order, not the alphabetical step map (fetch before load).
@@ -205,8 +205,8 @@ mod tests {
     }
 
     #[test]
-    fn t29_steps_sheet_surfaces_per_step_status_and_skip_reason() {
-        // The T38-inherited status finally shows: fetch ok, load skipped (never
+    fn steps_sheet_surfaces_per_step_status_and_skip_reason() {
+        // The per-step run status finally shows: fetch ok, load skipped (never
         // shown as ok), with the typed skip reason.
         let sheet = StepsSheet::from_view(&view());
         assert_eq!(sheet.rows()[0].status, "ok");
@@ -215,7 +215,7 @@ mod tests {
     }
 
     #[test]
-    fn t29_steps_sheet_surfaces_folded_live_state() {
+    fn steps_sheet_surfaces_folded_live_state() {
         // A live `.jsonl` line for a running step overlays its live_state, which
         // the sheet's `live` column shows.
         let mut view = view();
@@ -229,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn t29_steps_sheet_cursor_navigates_without_wrapping() {
+    fn steps_sheet_cursor_navigates_without_wrapping() {
         let mut sheet = StepsSheet::from_view(&view());
         assert_eq!(sheet.cursor(), 0);
         assert_eq!(sheet.selected().unwrap().name, "fetch");
@@ -242,7 +242,7 @@ mod tests {
     }
 
     #[test]
-    fn t29_steps_sheet_columns_are_the_grid_schema() {
+    fn steps_sheet_columns_are_the_grid_schema() {
         assert_eq!(COLUMNS, ["#", "step", "kind", "detail", "status", "live"]);
     }
 }

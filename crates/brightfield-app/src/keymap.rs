@@ -101,7 +101,7 @@ fn keybinding_for(bk: &BoundKey) -> Option<KeyBinding> {
         "undo" => KeyBinding::new(ks, Undo, ctx),
         // Shipped fixed points keep their original binding sites.
         "toggle-presentation" | "save-spec" => return None,
-        // Protocol-context verbs (card 0029) are handled by the egui Protocol
+        // Protocol-context verbs are handled by the egui Protocol
         // panel, not this gpui adapter, and land here intentionally.
         _ => return None,
     })
@@ -171,7 +171,7 @@ mod tests {
     fn kbg_ac01_adapter_covers_every_new_registry_binding() {
         // The adapter produces exactly the registry's chart-grammar bindings minus
         // the two shipped fixed points — no other longname is silently dropped.
-        // Protocol-context verbs (card 0029) are excluded: that grammar is
+        // Protocol-context verbs are excluded: that grammar is
         // dispatched by the egui Protocol panel (`brightfield-shell::protocol`)
         // through the registry directly, not by this gpui adapter.
         let want: usize = keymap_bindings(&registry())
