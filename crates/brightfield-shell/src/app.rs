@@ -10,7 +10,6 @@
 
 use brightfield_render::canvas_host::{CanvasHost, ChartSurface, Color, PixelSize, SurfaceCursor};
 use meridian_design::chrome::{INK_DARK, INK_LIGHT};
-use meridian_design::scales::{AMBER_LIGHT, GREEN_LIGHT, MARITIME_LIGHT};
 
 use egui::containers::{CentralPanel, Panel};
 
@@ -137,20 +136,13 @@ pub fn draw_shell(ui: &mut egui::Ui, state: &mut ShellState) {
         .exact_size(180.0)
         .show(ui, |ui| {
             ui.add_space(6.0);
-            ui.label(egui::RichText::new("Series").strong());
-            for (name, token) in [
-                ("A", MARITIME_LIGHT[8]),
-                ("B", GREEN_LIGHT[8]),
-                ("C", AMBER_LIGHT[8]),
-            ] {
-                ui.horizontal(|ui| {
-                    let (rect, _) =
-                        ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
-                    ui.painter().rect_filled(rect, 2.0, design::to_color32(token));
-                    ui.label(name);
-                });
-            }
-            ui.separator();
+            // Legend fix (review): the hardcoded "Series A/B/C" swatch block used
+            // to live here — it duplicated the chart's own in-scene legend and,
+            // being fixed at three series, mislabelled a single-series bar chart.
+            // Cut. Accurate, one-per-chart legends belong in the plot margin,
+            // derived from each chart's real series — a follow-up that needs the
+            // compose pipeline to surface series metadata (it is currently baked
+            // into the Vello scene by `build_multi_mark_scene`).
             ui.label(egui::RichText::new("Controls").strong());
             ui.label("param");
             ui.add(egui::Slider::new(&mut state.demo_value, 0.0..=1.0));

@@ -10,14 +10,16 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use brightfield_protocol::layout::Flow;
 use brightfield_render::vello_renderer::VelloRenderer;
 use meridian_design::chrome::{INK_DARK, INK_LIGHT};
 use vello::wgpu;
 
 use crate::app::{draw_shell, ShellState};
-use crate::canvas::EguiCanvasHost;
+use crate::canvas::{EguiCanvasHost, SharedEguiRenderer};
 use crate::design::Mode;
 use crate::pipeline::Composed;
+use crate::protocol::{host_on_device, ProtocolInputs, ProtocolShell};
 
 /// Create a headless (surface-less) wgpu device on the default adapter.
 ///
@@ -54,19 +56,7 @@ pub fn capture_png(
 ) -> Result<(u32, u32), String> {
     let (device, queue) = headless_device()?;
     let target_format = wgpu::TextureFormat::Rgba8Unorm;
-    let egui_renderer = egui_wgpu::Renderer::new(
-        &device,
-        target_format,
-        egui_wgpu::RendererOptions {
-            msaa_samples: 1,
-            depth_stencil_format: None,
-            // Deterministic across machines (dithering adds sRGB noise): off, so
-            // the capture is stable for the perceptual gate.
-            dithering: false,
-            predictable_texture_filtering: true,
-        },
-    );
-    let egui_renderer = Arc::new(egui::mutex::RwLock::new(egui_renderer));
+    let egui_renderer = new_egui_renderer(&device, target_format);
     let vello = VelloRenderer::from_shared(device.clone(), queue.clone());
     let host = EguiCanvasHost::new(device.clone(), queue.clone(), vello, egui_renderer.clone());
 
@@ -77,8 +67,83 @@ pub fn capture_png(
     ctx.set_pixels_per_point(scale);
     let screen = egui::vec2(win_w, win_h);
 
-    // Frame sequence: a warm-up (fonts atlas + panel layout settle), the scripted
-    // frames, then a final settle frame that becomes the captured image.
+    let full = run_ui_frames(&ctx, &egui_renderer, &device, &queue, screen, script, |ui| {
+        draw_shell(ui, &mut state);
+    });
+    finish_capture(
+        &ctx, &egui_renderer, &device, &queue, full, win_w, win_h, scale, mode, target_format, out,
+    )
+}
+
+/// Render the egui **Protocol panel** (dock + DAG + outline + inspector + steps)
+/// to `out` as a PNG at `scale`, optionally seeding the selection to `focus`
+/// (the dotted asset id a click would target) before applying one scripted frame
+/// of events per entry in `script`. The loop the gpui protocol shell never had:
+/// prove a keystroke drives the view by capturing the actual pixels.
+///
+/// # Errors
+/// Returns a message on GPU, encode, or file-write failure.
+pub fn capture_protocol_png(
+    inputs: ProtocolInputs,
+    mode: Mode,
+    flow: Flow,
+    focus: Option<String>,
+    scale: f32,
+    out: &Path,
+    script: Vec<Vec<egui::Event>>,
+) -> Result<(u32, u32), String> {
+    let (device, queue) = headless_device()?;
+    let target_format = wgpu::TextureFormat::Rgba8Unorm;
+    let egui_renderer = new_egui_renderer(&device, target_format);
+    let host = host_on_device(device.clone(), queue.clone(), egui_renderer.clone());
+
+    let mut shell = ProtocolShell::new(inputs, host, mode, flow);
+    if let Some(id) = focus {
+        shell.model_mut().select_id(id);
+    }
+    let (win_w, win_h) = shell.window_size();
+
+    let ctx = egui::Context::default();
+    ctx.set_pixels_per_point(scale);
+    let screen = egui::vec2(win_w, win_h);
+
+    let full = run_ui_frames(&ctx, &egui_renderer, &device, &queue, screen, script, |ui| {
+        shell.draw(ui);
+    });
+    finish_capture(
+        &ctx, &egui_renderer, &device, &queue, full, win_w, win_h, scale, mode, target_format, out,
+    )
+}
+
+/// A headless `egui_wgpu` renderer with the shot's deterministic options
+/// (dithering off, predictable filtering) so captures are stable across machines.
+fn new_egui_renderer(device: &wgpu::Device, format: wgpu::TextureFormat) -> SharedEguiRenderer {
+    let r = egui_wgpu::Renderer::new(
+        device,
+        format,
+        egui_wgpu::RendererOptions {
+            msaa_samples: 1,
+            depth_stencil_format: None,
+            dithering: false,
+            predictable_texture_filtering: true,
+        },
+    );
+    Arc::new(egui::mutex::RwLock::new(r))
+}
+
+/// Drive the shared draw function through a warm-up frame (fonts atlas + layout
+/// settle), the scripted frames (one per entry), and a final settle frame that
+/// becomes the captured image — keeping the renderer's texture atlas current each
+/// frame. Returns the last frame's [`egui::FullOutput`].
+fn run_ui_frames(
+    ctx: &egui::Context,
+    egui_renderer: &SharedEguiRenderer,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    screen: egui::Vec2,
+    script: Vec<Vec<egui::Event>>,
+    mut draw: impl FnMut(&mut egui::Ui),
+) -> egui::FullOutput {
     let mut frames: Vec<Vec<egui::Event>> = Vec::with_capacity(script.len() + 2);
     frames.push(Vec::new());
     frames.extend(script);
@@ -91,13 +156,11 @@ pub fn capture_png(
             events,
             ..Default::default()
         };
-        let out = ctx.run_ui(raw, |ui| draw_shell(ui, &mut state));
+        let out = ctx.run_ui(raw, |ui| draw(ui));
         {
-            // Keep the renderer's texture atlas current every frame (the font
-            // atlas is set on the first pass, not the last).
             let mut r = egui_renderer.write();
             for (id, delta) in &out.textures_delta.set {
-                r.update_texture(&device, &queue, *id, delta);
+                r.update_texture(device, queue, *id, delta);
             }
             for id in &out.textures_delta.free {
                 r.free_texture(id);
@@ -105,9 +168,25 @@ pub fn capture_png(
         }
         full = Some(out);
     }
-    let full = full.expect("at least one frame ran");
+    full.expect("at least one frame ran")
+}
 
-    // Tessellate + render the final frame into an offscreen target.
+/// Tessellate + render the final frame into an offscreen target on the page tone,
+/// read it back, and write the PNG. Returns the device pixel dimensions.
+#[allow(clippy::too_many_arguments)]
+fn finish_capture(
+    ctx: &egui::Context,
+    egui_renderer: &SharedEguiRenderer,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    full: egui::FullOutput,
+    win_w: f32,
+    win_h: f32,
+    scale: f32,
+    mode: Mode,
+    target_format: wgpu::TextureFormat,
+    out: &Path,
+) -> Result<(u32, u32), String> {
     let clipped = ctx.tessellate(full.shapes, scale);
     let size_px = [
         ((win_w * scale).round() as u32).max(1),
@@ -150,7 +229,7 @@ pub fn capture_png(
     });
     let user_cmds = {
         let mut r = egui_renderer.write();
-        r.update_buffers(&device, &queue, &mut encoder, &clipped, &screen_desc)
+        r.update_buffers(device, queue, &mut encoder, &clipped, &screen_desc)
     };
     {
         let mut pass = encoder
@@ -176,7 +255,7 @@ pub fn capture_png(
     }
     queue.submit(user_cmds.into_iter().chain(std::iter::once(encoder.finish())));
 
-    let pixels = read_texture(&device, &queue, &target, size_px[0], size_px[1]);
+    let pixels = read_texture(device, queue, &target, size_px[0], size_px[1]);
     let img = image::RgbaImage::from_raw(size_px[0], size_px[1], pixels)
         .ok_or_else(|| "readback pixel buffer size mismatch".to_string())?;
     img.save(out).map_err(|e| format!("failed to write {}: {e}", out.display()))?;
@@ -273,7 +352,9 @@ fn read_texture(
 /// - `{"pointer":[x,y]}`  — move the pointer to logical (x,y)
 /// - `{"click":[x,y]}`    — move + press + release the primary button
 /// - `{"key":"A"}`        — press+release a named key
+/// - `{"key":"S","shift":true}` — with the shift modifier (chorded verbs)
 ///
+/// The `z a` fold chord is two lines: `{"key":"Z"}` then `{"key":"A"}`.
 /// Unknown lines are skipped with a warning.
 ///
 /// # Errors
@@ -309,13 +390,16 @@ pub fn parse_script(path: &Path) -> Result<Vec<Vec<egui::Event>>, String> {
             }
         } else if let Some(k) = v.get("key").and_then(|k| k.as_str()) {
             if let Some(key) = egui::Key::from_name(k) {
+                // Optional `"shift": true` for chorded verbs (e.g. shift-S).
+                let shift = v.get("shift").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                let modifiers = egui::Modifiers { shift, ..Default::default() };
                 for pressed in [true, false] {
                     events.push(egui::Event::Key {
                         key,
                         physical_key: None,
                         pressed,
                         repeat: false,
-                        modifiers: egui::Modifiers::default(),
+                        modifiers,
                     });
                 }
             }

@@ -32,6 +32,9 @@ image = "0.25"
 arrow = { version = "58", default-features = false }
 # --script ndjson parsing for the headless shot's scripted RawInput.
 serde_json = "1"
+egui_tiles = { version = "0.16", default-features = false }
+brightfield-protocol = { version = "0.1.0", path = "../brightfield-protocol" }
+brightfield-keys = { version = "0.1.0", path = "../brightfield-keys" }
 
 [dev-dependencies]
 # Tier-1 real-UI snapshot loop: egui_kittest renders the real app headlessly on
