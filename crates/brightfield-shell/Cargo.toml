@@ -1,0 +1,54 @@
+[package]
+name = "brightfield-shell"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "egui/eframe shell hosting the Vello mosaic canvas on a shared wgpu device (gpui-free)"
+
+[dependencies]
+# The framework-free render/host seam + Vello renderer + scene builders.
+brightfield-render = { path = "../brightfield-render" }
+# Spec -> engine -> executed marks -> Vello scene pipeline (all gpui-free).
+brightfield-engine = { path = "../brightfield-engine" }
+brightfield-spec = { path = "../brightfield-spec" }
+brightfield-sql = { path = "../brightfield-sql" }
+# Meridian design tokens, bridged into egui Style/Visuals/FontDefinitions.
+meridian-design = { git = "https://github.com/meridian-online/design", rev = "9dd5d3882a38aa665d74544f87d412dab5129c24" }
+
+# egui 0.35 rides wgpu 29 — the same major Vello 0.9 uses — so egui-wgpu's device
+# and vello::wgpu are one crate and one device (decision-63 version lock).
+egui = "0.35"
+eframe = { version = "0.35", default-features = false, features = ["wgpu"] }
+egui-wgpu = "0.35"
+
+vello = { version = "0.9", features = ["wgpu"] }
+kurbo = "0.13"
+peniko = "0.6"
+pollster = "0.4"
+image = "0.25"
+# RecordBatch + batch concat for the mark-execution pipeline.
+arrow = { version = "58", default-features = false }
+# --script ndjson parsing for the headless shot's scripted RawInput.
+serde_json = "1"
+
+[dev-dependencies]
+# Tier-1 real-UI snapshot loop: egui_kittest renders the real app headlessly on
+# wgpu and perceptually diffs against committed baselines (dify under the hood).
+egui_kittest = { version = "0.35", features = ["wgpu", "snapshot"] }
+
+[[bin]]
+name = "brightfield-shell"
+path = "src/main.rs"
+
+[[bin]]
+name = "brightfield-shot"
+path = "src/bin/brightfield-shot.rs"
+
+[[bin]]
+name = "bf-imgdiff"
+path = "src/bin/bf-imgdiff.rs"
+
+[lints]
+workspace = true
