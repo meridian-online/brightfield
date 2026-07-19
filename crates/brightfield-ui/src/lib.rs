@@ -26,7 +26,11 @@
 //! - **ChartLayout** — coordinate mapping pipeline for mouse events.
 
 pub mod brush;
-pub mod canvas_host;
+// The framework-free render/host seam now lives in `brightfield-render` (so a
+// gpui-free egui host can implement it). Re-exported here so this crate's
+// `crate::canvas_host::…` paths and downstream `brightfield_ui::CanvasHost`
+// keep resolving unchanged.
+pub use brightfield_render::canvas_host;
 pub mod chart_element;
 pub mod chart_layout;
 pub mod chart_state;
@@ -41,7 +45,10 @@ pub mod menu_element;
 pub mod slider;
 pub mod slider_element;
 mod theme_bridge;
-pub mod vello_renderer;
+// Moved to `brightfield-render` alongside the seam it serves; re-exported so
+// `crate::vello_renderer::VelloRenderer` and `brightfield_ui::VelloRenderer`
+// keep resolving.
+pub use brightfield_render::vello_renderer;
 pub mod workspace;
 pub mod workspace_actions;
 

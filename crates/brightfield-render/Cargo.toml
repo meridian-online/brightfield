@@ -16,14 +16,23 @@ brightfield-protocol = { path = "../brightfield-protocol" }
 # MIT, dependency-free and gpui-free, so the render crate stays framework-free.
 meridian-design = { git = "https://github.com/meridian-online/design", rev = "9dd5d3882a38aa665d74544f87d412dab5129c24" }
 arrow = { version = "58", default-features = false, features = ["chrono-tz"] }
-vello = "0.9"
+# `wgpu` feature: this crate now owns the framework-free render/host seam
+# (`canvas_host` traits + `VelloRenderer`) that the egui shell implements, so it
+# needs `vello::wgpu` + `vello::Renderer` in the normal build, not just dev.
+vello = { version = "0.9", features = ["wgpu"] }
 kurbo = "0.13"
 peniko = "0.6"
 skrifa = "0.42"
 indexmap = "2"
+# Blocking wait on wgpu adapter/device creation + readback polls (VelloRenderer).
+pollster = "0.4"
 # GeoJSON parsing for the geo mark (card 0008). Already vendored via
 # brightfield-spec, so cargo-deny stays clean.
 serde_json = "1"
+
+[features]
+# GPU-backed VelloRenderer tests (opt-in: they create a real wgpu device).
+gpu-tests = []
 
 [dev-dependencies]
 vello = { version = "0.9", features = ["wgpu"] }

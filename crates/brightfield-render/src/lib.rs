@@ -9,6 +9,7 @@
 
 pub mod asset_scene;
 pub mod axis;
+pub mod canvas_host;
 pub mod channel;
 pub mod contour;
 pub mod grid;
@@ -25,9 +26,12 @@ pub mod text;
 pub mod title;
 pub mod tooltip;
 pub mod transition;
+pub mod vello_renderer;
 
 // Re-exports for downstream consumers.
+pub use canvas_host::{CanvasHost, ChartSurface, OverlayPainter};
 pub use channel::ChannelMap;
+pub use vello_renderer::VelloRenderer;
 pub use layout::ChartLayout;
 pub use mark::{HighlightState, MarkRenderer};
 pub use nearest::{find_nearest, NearestHit, NearestMode};

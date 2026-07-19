@@ -95,6 +95,75 @@ impl VelloRenderer {
         &self.queue
     }
 
+    /// Build a Vello renderer on an **externally owned** wgpu device/queue —
+    /// the egui/eframe path (the shared `egui_wgpu::RenderState` device), so a
+    /// Vello scene rasterises straight onto a texture egui samples, with no
+    /// second device and no CPU readback (decision-68). The gpui path keeps
+    /// [`Self::new`]'s dedicated device.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the Vello renderer fails to build on the given device.
+    pub fn from_shared(device: wgpu::Device, queue: wgpu::Queue) -> Arc<Mutex<Self>> {
+        let renderer = VelloInner::new(
+            &device,
+            RendererOptions {
+                use_cpu: false,
+                antialiasing_support: vello::AaSupport::all(),
+                num_init_threads: None,
+                pipeline_cache: None,
+            },
+        )
+        .expect("VelloRenderer: failed to create Vello renderer on the shared device.");
+        Arc::new(Mutex::new(Self {
+            device,
+            queue,
+            renderer,
+        }))
+    }
+
+    /// Rasterise `scene` straight into `view` (an existing texture view on this
+    /// renderer's device) over `base`, with **no readback** — the zero-copy
+    /// present primitive the egui host wraps in `register_native_texture`. The
+    /// target texture must be `Rgba8Unorm` with `STORAGE_BINDING |
+    /// RENDER_ATTACHMENT` usage and be `width`x`height` device pixels.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `width`/`height` is zero or Vello's render fails.
+    pub fn render_to_texture(
+        &mut self,
+        scene: &Scene,
+        view: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+        base: vello::peniko::Color,
+    ) {
+        assert!(width > 0 && height > 0, "render dimensions must be non-zero");
+        self.renderer
+            .render_to_texture(
+                &self.device,
+                &self.queue,
+                scene,
+                view,
+                &vello::RenderParams {
+                    base_color: base,
+                    width,
+                    height,
+                    antialiasing_method: vello::AaConfig::Msaa16,
+                },
+            )
+            .expect("VelloRenderer: render_to_texture failed");
+    }
+
+    /// Read an RGBA texture on this device back into a tightly-packed
+    /// `width*height*4` `Vec<u8>` (row padding stripped) — the offscreen capture
+    /// path for `brightfield-shot`, the one place the egui pipeline touches a
+    /// readback (final PNG only, never per display frame).
+    pub fn read_texture(&self, texture: &wgpu::Texture, width: u32, height: u32) -> Vec<u8> {
+        self.read_texture_to_pixels(texture, width, height)
+    }
+
     /// Render a Vello scene to an RGBA pixel buffer over a transparent base.
     ///
     /// Returns `Vec<u8>` with length `width * height * 4` containing
