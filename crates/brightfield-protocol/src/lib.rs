@@ -49,7 +49,7 @@ pub use error::Error;
 pub use graph::{AssetGraph, AssetKind, AssetNode, Edge, Seam, SeamKind};
 pub use layout::{layout, Flow, Layout, LayoutConfig};
 pub use manifest::{is_protocol_manifest, parse_manifest_str, Manifest, Step};
-pub use nav::{FoldOutcome, ProtocolNav};
+pub use nav::{Dir, FoldOutcome, ProtocolNav};
 pub use panel::{inspector_for, kind_label, outline_order, outline_rows, InspectorFacts, OutlineRow};
 pub use sheet::{StepRow, StepsSheet};
 pub use stream::{fold_stream, StreamReader, StreamState};

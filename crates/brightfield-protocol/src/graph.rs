@@ -747,6 +747,56 @@ pub fn build_graph(
     }
 }
 
+/// The **local neighbourhood** of `focus` in `graph`: the focused node plus its
+/// direct producers and consumers (one hop each way). The drill scope — `Enter`
+/// focuses the canvas on this induced slice, `Esc` pops back out. An id not in
+/// the graph yields an empty set.
+#[must_use]
+pub fn neighbourhood(graph: &AssetGraph, focus: &AssetId) -> BTreeSet<AssetId> {
+    let mut ids = BTreeSet::new();
+    if !graph.nodes.contains_key(focus) {
+        return ids;
+    }
+    ids.insert(focus.clone());
+    for edge in &graph.edges {
+        if &edge.to == focus {
+            ids.insert(edge.from.clone());
+        }
+        if &edge.from == focus {
+            ids.insert(edge.to.clone());
+        }
+    }
+    ids
+}
+
+/// The subgraph of `graph` induced on `keep`: the kept nodes plus every edge
+/// (and the seam it flows through) with both endpoints kept. A pure,
+/// deterministic `AssetGraph -> AssetGraph` slice — the drill scope's displayed
+/// graph, laid out and rastered like any other.
+#[must_use]
+pub fn induced_subgraph(graph: &AssetGraph, keep: &BTreeSet<AssetId>) -> AssetGraph {
+    let nodes: BTreeMap<AssetId, AssetNode> = graph
+        .nodes
+        .iter()
+        .filter(|(id, _)| keep.contains(*id))
+        .map(|(id, n)| (id.clone(), n.clone()))
+        .collect();
+    let edges: Vec<Edge> = graph
+        .edges
+        .iter()
+        .filter(|e| keep.contains(&e.from) && keep.contains(&e.to))
+        .cloned()
+        .collect();
+    let kept_steps: BTreeSet<&StepId> = edges.iter().filter_map(|e| e.via.as_ref()).collect();
+    let seams: BTreeMap<StepId, Seam> = graph
+        .seams
+        .iter()
+        .filter(|(step, _)| kept_steps.contains(step))
+        .map(|(s, seam)| (s.clone(), seam.clone()))
+        .collect();
+    AssetGraph { protocol: graph.protocol.clone(), nodes, seams, edges }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1091,5 +1141,39 @@ steps:
                 .any(|e| e.to == "stmt.c.scrub#effect" && e.from == "file.c.build/a.csv"),
             "wired from its input, so it never vanishes"
         );
+    }
+
+    /// A drill scope is the focused node plus its one-hop producers/consumers,
+    /// and the induced slice keeps only edges internal to that set.
+    #[test]
+    fn t48_neighbourhood_and_induced_subgraph_slice_the_local_scope() {
+        let yaml = "name: d\nsteps:\n  - name: fetch\n    op: http_fetch@1\n    with: { url: 'https://h/a', out: build/a.csv }\n  - name: transform\n    sql: models/t.sql\n    depends_on: [build/a.csv]\n  - name: export\n    op: parquet_export@1\n    with: { input: t_out, dest: build/t.parquet }\n";
+        let manifest = parse_manifest_str(yaml).unwrap();
+        let mut sources = BTreeMap::new();
+        sources.insert(
+            "transform".to_string(),
+            Ok("CREATE TABLE t_out AS SELECT * FROM read_csv('build/a.csv');".to_string()),
+        );
+        let g = build_graph(&manifest, &sources);
+        let focus = "file.d.build/a.csv".to_string();
+        let hood = neighbourhood(&g, &focus);
+        assert!(hood.contains(&focus), "the focus is in its own neighbourhood");
+        // Every node adjacent to the focus is included; nothing two hops out.
+        for edge in &g.edges {
+            if edge.from == focus {
+                assert!(hood.contains(&edge.to), "a direct consumer is kept");
+            }
+            if edge.to == focus {
+                assert!(hood.contains(&edge.from), "a direct producer is kept");
+            }
+        }
+        let sub = induced_subgraph(&g, &hood);
+        assert_eq!(sub.nodes.len(), hood.len(), "the slice has exactly the kept nodes");
+        assert!(
+            sub.edges.iter().all(|e| hood.contains(&e.from) && hood.contains(&e.to)),
+            "only internal edges survive the slice"
+        );
+        // Unknown focus yields an empty scope.
+        assert!(neighbourhood(&g, &"file.d.nope".to_string()).is_empty());
     }
 }

@@ -35,7 +35,7 @@ use brightfield_protocol::layout::{Flow, Layout, LayoutConfig, Rect};
 use brightfield_protocol::panel::{
     inspector_for, kind_label, outline_rows, InspectorFacts, OutlineRow,
 };
-use brightfield_protocol::{collapse_families, FoldOutcome, ProtocolNav, StepRow, StepsSheet};
+use brightfield_protocol::{collapse_families, Dir, FoldOutcome, ProtocolNav, StepRow, StepsSheet};
 
 use brightfield_render::canvas_host::{CanvasHost, Color, PixelSize};
 
@@ -194,15 +194,21 @@ pub struct ProtocolModel {
     show_sheet: bool,
     /// Whether the canvas shows the full (unfolded) graph.
     display_expanded: bool,
+    /// The drill scope: when a node is drilled into (`Enter`), the canvas shows
+    /// this induced local slice instead of the whole graph; `Esc` pops it.
+    scope_graph: Option<AssetGraph>,
     /// `za` chord: a pending `z` awaiting `a`.
     pending_z: bool,
     /// The last yanked address, shown as a transient confirmation.
     yank_flash: Option<AssetId>,
     /// Drained by the shell to perform the actual clipboard copy.
     yank_request: Option<AssetId>,
-    /// The current laid-out graph (matches `flow` + `display_expanded`).
+    /// The current laid-out graph (matches `flow` + `display_expanded` + scope).
     layout: Layout,
     layout_key: (bool, Flow),
+    /// Bumps on every re-layout — the raster cache invalidates on a scope/drill
+    /// change too, not just an expand/flow flip.
+    layout_gen: u64,
     key_table: BTreeMap<String, &'static str>,
 }
 
@@ -223,7 +229,7 @@ impl ProtocolModel {
         // The initial canvas shows the collapsed graph.
         let cfg = LayoutConfig { flow, ..LayoutConfig::default() };
         let layout = brightfield_protocol::layout(&inputs.graph_collapsed, &cfg);
-        Self {
+        let mut model = Self {
             protocol: inputs.protocol,
             graph_collapsed: inputs.graph_collapsed,
             graph_full: inputs.graph_full,
@@ -237,23 +243,49 @@ impl ProtocolModel {
             flow,
             show_sheet: false,
             display_expanded: false,
+            scope_graph: None,
             pending_z: false,
             yank_flash: None,
             yank_request: None,
             layout,
             layout_key: (false, flow),
+            layout_gen: 0,
             key_table: protocol_key_table(),
-        }
+        };
+        // Seed the nav's spatial geometry from the collapsed layout so the very
+        // first keystroke moves along the drawn flow.
+        model.sync_nav_geometry();
+        model
     }
 
-    /// The graph currently shown in the canvas (full when a family is unfolded).
+    /// Feed the nav the collapsed graph's rendered geometry at the current flow,
+    /// so `hjkl` resolve to the on-screen producer/consumer/sibling. The nav
+    /// always walks the collapsed graph, so this is its geometry regardless of a
+    /// fold or drill scope; only a flow change alters it.
+    fn sync_nav_geometry(&mut self) {
+        let cfg = LayoutConfig { flow: self.flow, ..LayoutConfig::default() };
+        let geom = brightfield_protocol::layout(&self.graph_collapsed, &cfg);
+        self.nav.set_geometry(self.flow, &geom);
+    }
+
+    /// The graph currently shown in the canvas: the drill scope when one is
+    /// active, else the full graph when a family is unfolded, else the collapsed
+    /// graph.
     #[must_use]
     pub fn displayed_graph(&self) -> &AssetGraph {
-        if self.display_expanded {
+        if let Some(scope) = &self.scope_graph {
+            scope
+        } else if self.display_expanded {
             &self.graph_full
         } else {
             &self.graph_collapsed
         }
+    }
+
+    /// Whether a drill scope is focusing the canvas on a local neighbourhood.
+    #[must_use]
+    pub fn is_drilled(&self) -> bool {
+        self.scope_graph.is_some()
     }
 
     /// The current layout (matches the displayed graph + flow).
@@ -339,12 +371,14 @@ impl ProtocolModel {
         self.yank_flash = None;
     }
 
-    /// Flip the reading axis and re-lay-out.
+    /// Flip the reading axis and re-lay-out. The nav's spatial geometry is
+    /// re-seeded so `hjkl` follow the new axis.
     pub fn toggle_flow(&mut self) {
         self.flow = match self.flow {
             Flow::Vertical => Flow::Horizontal,
             Flow::Horizontal => Flow::Vertical,
         };
+        self.sync_nav_geometry();
         self.recompute_layout();
     }
 
@@ -391,35 +425,31 @@ impl ProtocolModel {
     }
 
     /// Dispatch a resolved verb longname to the model action. Returns whether
-    /// state changed.
+    /// state changed. The four motion verbs are bound to fixed vim keys; each
+    /// maps to that key's **pixel direction**, and [`ProtocolNav::move_dir`]
+    /// resolves the direction to a producer/consumer or sibling by the flow — so
+    /// `h`/`l` and `j`/`k` always move along the drawn layout.
     fn dispatch(&mut self, verb: &str) -> bool {
         match verb {
-            "protocol-producer" => self.move_if(ProtocolNav::to_producer),
-            "protocol-consumer" => self.move_if(ProtocolNav::to_consumer),
+            "protocol-producer" => self.move_dir(Dir::Left), // h
+            "protocol-consumer" => self.move_dir(Dir::Right), // l
             "protocol-sibling-next" => {
                 if self.show_sheet {
                     self.sheet.cursor_down()
                 } else {
-                    self.move_if(ProtocolNav::to_sibling_next)
+                    self.move_dir(Dir::Down) // j
                 }
             }
             "protocol-sibling-prev" => {
                 if self.show_sheet {
                     self.sheet.cursor_up()
                 } else {
-                    self.move_if(ProtocolNav::to_sibling_prev)
+                    self.move_dir(Dir::Up) // k
                 }
             }
             "toggle-fold-family" => self.toggle_fold(),
-            "protocol-drill-in" => self.move_if(ProtocolNav::drill_in),
-            "protocol-drill-out" => {
-                if self.show_sheet {
-                    self.show_sheet = false;
-                    true
-                } else {
-                    self.move_if(ProtocolNav::drill_out)
-                }
-            }
+            "protocol-drill-in" => self.drill_in(),
+            "protocol-drill-out" => self.drill_out(),
             "open-steps-sheet" => {
                 let was = self.show_sheet;
                 self.show_sheet = true;
@@ -430,15 +460,66 @@ impl ProtocolModel {
         }
     }
 
-    /// Run a nav motion; on a real move, re-sync the selection from the cursor.
-    fn move_if(&mut self, motion: fn(&mut ProtocolNav) -> bool) -> bool {
-        if motion(&mut self.nav) {
+    /// Move the cursor one node in the pressed vim direction (resolved to the
+    /// on-screen producer/consumer/sibling by the flow); on a real move, re-sync
+    /// the selection from the cursor.
+    fn move_dir(&mut self, dir: Dir) -> bool {
+        if self.nav.move_dir(dir) {
             self.selected = self.nav.cursor().cloned();
             self.yank_flash = None;
             true
         } else {
             false
         }
+    }
+
+    /// `Enter` — drill into the selected node: push the (deduped) breadcrumb and
+    /// focus the canvas on that node's local scope (its one-hop
+    /// producer/consumer neighbourhood), re-laid-out and re-rastered so the
+    /// scope change is visible. A repeated `Enter` on the same node is a no-op.
+    fn drill_in(&mut self) -> bool {
+        if !self.nav.drill_in() {
+            return false;
+        }
+        if let Some(focus) = self.nav.cursor().cloned() {
+            let keep = brightfield_protocol::graph::neighbourhood(&self.graph_collapsed, &focus);
+            self.scope_graph =
+                Some(brightfield_protocol::graph::induced_subgraph(&self.graph_collapsed, &keep));
+            self.selected = Some(focus);
+            self.yank_flash = None;
+        }
+        self.recompute_layout();
+        true
+    }
+
+    /// `Esc` — close the steps sheet if open, else pop one drill level: re-scope
+    /// the canvas to the parent crumb's neighbourhood, or clear the scope back to
+    /// the whole graph at the root.
+    fn drill_out(&mut self) -> bool {
+        if self.show_sheet {
+            self.show_sheet = false;
+            return true;
+        }
+        if !self.nav.drill_out() {
+            return false;
+        }
+        match self.nav.breadcrumb().last().cloned() {
+            Some(parent) => {
+                let keep = brightfield_protocol::graph::neighbourhood(&self.graph_collapsed, &parent);
+                self.scope_graph = Some(brightfield_protocol::graph::induced_subgraph(
+                    &self.graph_collapsed,
+                    &keep,
+                ));
+                self.selected = Some(parent);
+            }
+            None => {
+                self.scope_graph = None;
+                self.selected = self.nav.cursor().cloned();
+            }
+        }
+        self.yank_flash = None;
+        self.recompute_layout();
+        true
     }
 
     /// `za` — fold/unfold the family under the cursor, swapping the displayed
@@ -465,22 +546,31 @@ impl ProtocolModel {
         }
     }
 
-    /// Recompute the layout for the current displayed graph + flow.
+    /// Recompute the layout for the current displayed graph (scope / expand) +
+    /// flow, and bump the generation so the raster cache invalidates.
     fn recompute_layout(&mut self) {
         let cfg = LayoutConfig { flow: self.flow, ..LayoutConfig::default() };
-        let graph = if self.display_expanded {
-            &self.graph_full
-        } else {
-            &self.graph_collapsed
+        let laid = {
+            let graph = self.displayed_graph();
+            brightfield_protocol::layout(graph, &cfg)
         };
-        self.layout = brightfield_protocol::layout(graph, &cfg);
+        self.layout = laid;
         self.layout_key = (self.display_expanded, self.flow);
+        self.layout_gen = self.layout_gen.wrapping_add(1);
     }
 
-    /// The cache key the presented raster must match: (expanded, flow).
+    /// The (expanded, flow) view state — the fold + flow half of the cache key.
     #[must_use]
     fn layout_key(&self) -> (bool, Flow) {
         self.layout_key
+    }
+
+    /// A monotonic counter that changes on every re-layout — the drill/scope
+    /// half of the raster cache key (an expand/flow flip alone is not enough to
+    /// tell a scope change apart).
+    #[must_use]
+    fn layout_gen(&self) -> u64 {
+        self.layout_gen
     }
 }
 
@@ -516,8 +606,10 @@ pub struct ProtocolShell {
     steps_id: TileId,
     host: EguiCanvasHost,
     texture: Option<egui::TextureId>,
-    /// (expanded, flow, dev_w, dev_h) the texture was last presented at.
-    presented_key: Option<(bool, Flow, u32, u32)>,
+    /// (expanded, flow, layout_gen, dev_w, dev_h) the texture was last presented
+    /// at — the generation catches a drill/scope re-layout an (expanded, flow)
+    /// pair alone would miss.
+    presented_key: Option<(bool, Flow, u64, u32, u32)>,
     mode: Mode,
     fonts_installed: bool,
 }
@@ -569,12 +661,13 @@ impl ProtocolShell {
     /// changed. Presents the current displayed graph via the T46 seam.
     fn ensure_presented(&mut self, ppp: f32) {
         let (expanded, flow) = self.model.layout_key();
+        let gen = self.model.layout_gen();
         let l = self.model.layout();
         let dev = PixelSize {
             width: ((l.width as f32) * ppp).round().max(1.0) as u32,
             height: ((l.height as f32) * ppp).round().max(1.0) as u32,
         };
-        let key = (expanded, flow, dev.width, dev.height);
+        let key = (expanded, flow, gen, dev.width, dev.height);
         if self.presented_key == Some(key) && self.texture.is_some() {
             return;
         }
@@ -901,57 +994,150 @@ fn outline_ui(ui: &mut egui::Ui, model: &mut ProtocolModel) {
     }
 }
 
-/// The inspector: the selected asset's S/R/C/E/D detail.
+/// Padding off the pane divider so the inspector never reads flush-left, plus a
+/// small field rhythm. The design system's named space-steps land in a later
+/// phase; until then this is a local rhythm off the dense ladder.
+const INSPECTOR_PAD_X: i8 = 14;
+const INSPECTOR_PAD_Y: i8 = 8;
+const FIELD_GAP: f32 = 9.0;
+
+/// The inspector: the selected asset's detail, padded and self-describing. Each
+/// field carries a plain-language explainer so a first-time viewer knows what it
+/// means; the measured values (rows / size / materialised) show only after a
+/// run, and the offline manifest says so rather than showing blanks.
 fn inspector_ui(ui: &mut egui::Ui, model: &ProtocolModel) {
-    ui.add_space(4.0);
-    ui.label(egui::RichText::new("INSPECTOR").color(ink(INK_LIGHT.ink_muted)).small());
-    ui.separator();
-    let facts = model.inspector();
-    if !facts.present {
-        ui.label(egui::RichText::new("no selection").color(ink(INK_LIGHT.ink_muted)));
-        return;
-    }
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        ui.label(
-            egui::RichText::new(facts.label.clone())
-                .color(ink(INK_LIGHT.ink_primary))
-                .heading(),
-        );
-        ui.label(
-            egui::RichText::new(kind_label(facts.kind))
-                .color(ink(INK_LIGHT.ink_secondary))
-                .small(),
-        );
-        ui.add_space(6.0);
-        kv(ui, "address", &facts.address);
-        kv(
-            ui,
-            "produced by",
-            facts.producing_step.as_deref().unwrap_or("— external input"),
-        );
-        if let Some(t) = &facts.transform {
-            kv(ui, "transform", t);
-        }
-        kv(ui, "status", status_word(facts.status));
-        if let Some(rc) = facts.row_count {
-            kv(ui, "rows", &rc.to_string());
-        }
-        if let Some(m) = facts.materialized {
-            kv(ui, "materialized", if m { "yes" } else { "no" });
-        }
-        if let Some(b) = facts.bytes {
-            kv(ui, "bytes", &b.to_string());
-        }
-        if let Some(issue) = &facts.issue {
-            kv(ui, "issue", issue);
-        }
-    });
+    egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(INSPECTOR_PAD_X, INSPECTOR_PAD_Y))
+        .show(ui, |ui| {
+            ui.label(egui::RichText::new("INSPECTOR").color(ink(INK_LIGHT.ink_muted)).small().strong());
+            ui.separator();
+            let facts = model.inspector();
+            if !facts.present {
+                ui.add_space(FIELD_GAP);
+                ui.label(
+                    egui::RichText::new("Nothing selected — click a node, or move with h j k l.")
+                        .color(ink(INK_LIGHT.ink_muted)),
+                );
+                return;
+            }
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| inspector_body(ui, &facts));
+        });
 }
 
-fn kv(ui: &mut egui::Ui, label: &str, value: &str) {
-    ui.add_space(4.0);
-    ui.label(egui::RichText::new(label).color(ink(INK_LIGHT.ink_muted)).small());
-    ui.label(egui::RichText::new(value).color(ink(INK_LIGHT.ink_secondary)));
+/// Render the selected asset's fields with explainers.
+fn inspector_body(ui: &mut egui::Ui, facts: &InspectorFacts) {
+    ui.add_space(FIELD_GAP);
+    // Heading: the asset's label + a plain-language gloss of its kind.
+    ui.label(egui::RichText::new(&facts.label).color(ink(INK_LIGHT.ink_primary)).heading());
+    ui.label(egui::RichText::new(kind_gloss(facts.kind)).color(ink(INK_LIGHT.ink_secondary)).small());
+
+    field(ui, "Address", &facts.address, "Stable dotted id for this asset — press y to copy it.", true);
+
+    match &facts.producing_step {
+        Some(step) => field(ui, "Produced by", step, "The step / operator that builds this asset.", false),
+        None => field(
+            ui,
+            "Produced by",
+            "external input",
+            "Fetched from outside the build — nothing in the protocol produces it.",
+            false,
+        ),
+    }
+
+    if let Some(t) = &facts.transform {
+        field(ui, "Transform", t, "How that step derives the asset (operator or SQL model).", false);
+    }
+
+    field(ui, "Status", status_word(facts.status), status_gloss(facts.status), false);
+
+    // Measured values exist only after a real run; the offline manifest carries
+    // lineage only, so say that rather than show blank rows.
+    let measured = facts.row_count.is_some() || facts.bytes.is_some() || facts.materialized.is_some();
+    if measured {
+        if let Some(rc) = facts.row_count {
+            field(ui, "Rows", &rc.to_string(), "Row count measured on the last run.", false);
+        }
+        if let Some(b) = facts.bytes {
+            field(ui, "Size", &human_bytes(b), "Bytes written on the last run.", false);
+        }
+        if let Some(m) = facts.materialized {
+            field(
+                ui,
+                "Materialized",
+                if m { "yes" } else { "no" },
+                "Whether the run actually wrote this asset.",
+                false,
+            );
+        }
+    } else {
+        ui.add_space(FIELD_GAP);
+        ui.label(
+            egui::RichText::new(
+                "No measured values yet — this is the offline manifest, which carries lineage \
+                 only. Row count, size, and content hash appear once the protocol is run.",
+            )
+            .color(ink(INK_LIGHT.ink_muted))
+            .small()
+            .italics(),
+        );
+    }
+
+    if let Some(issue) = &facts.issue {
+        field(ui, "Issue", issue, "Why this step is degraded / opaque.", false);
+    }
+}
+
+/// One inspector field: a muted caption, the value, and a one-line explainer.
+fn field(ui: &mut egui::Ui, label: &str, value: &str, explain: &str, mono: bool) {
+    ui.add_space(FIELD_GAP);
+    ui.label(egui::RichText::new(label.to_uppercase()).color(ink(INK_LIGHT.ink_muted)).small().strong());
+    let mut value_text = egui::RichText::new(value).color(ink(INK_LIGHT.ink_primary));
+    if mono {
+        value_text = value_text.monospace();
+    }
+    ui.label(value_text);
+    ui.label(egui::RichText::new(explain).color(ink(INK_LIGHT.ink_muted)).small());
+}
+
+/// A plain-language gloss of an [`AssetKind`] for the inspector subtitle.
+fn kind_gloss(kind: AssetKind) -> &'static str {
+    match kind {
+        AssetKind::Source => "source · an external origin fetched into the build",
+        AssetKind::File => "file · a file on disk a step writes or reads",
+        AssetKind::Table => "table · a durable relation other steps read",
+        AssetKind::Internal => "internal · a statement intermediate inside one model",
+        AssetKind::Dataset => "dataset · the published output artefact (the sink)",
+        AssetKind::Family => "family · a collapsed group of parameterised steps",
+        AssetKind::Opaque => "opaque · a degraded or unreadable step",
+    }
+}
+
+/// A one-line explanation of a run status for the inspector.
+fn status_gloss(s: SeamStatus) -> &'static str {
+    match s {
+        SeamStatus::Ok => "Ran successfully on the last run.",
+        SeamStatus::Running => "Currently running.",
+        SeamStatus::Skipped => "Skipped — already up to date, or gated off.",
+        SeamStatus::Failed => "Failed on the last run — check the run log.",
+        SeamStatus::NotRun => "Not run in this view (the offline manifest has no run status).",
+    }
+}
+
+/// Human-readable byte size (1 KiB steps), for the inspector's measured Size.
+fn human_bytes(b: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    if b < 1024 {
+        return format!("{b} B");
+    }
+    let mut v = b as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < UNITS.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    format!("{v:.1} {}", UNITS[i])
 }
 
 /// The S steps sheet: the flat run-ordered step list as a grid.
@@ -1000,19 +1186,28 @@ fn steps_ui(ui: &mut egui::Ui, model: &ProtocolModel) {
 /// mutation, so it is a free function).
 fn hint_ui(ui: &mut egui::Ui, model: &ProtocolModel) {
     ui.add_space(2.0);
+    // The motion keys follow the drawn flow: along it, produce/consume; across
+    // it, siblings. Spell out which keys are which for the current axis.
+    let hint = match model.flow() {
+        Flow::Vertical => {
+            "k/j producer·consumer   h/l siblings   za fold   Enter/Esc drill   S steps   y yank"
+        }
+        Flow::Horizontal => {
+            "h/l producer·consumer   j/k siblings   za fold   Enter/Esc drill   S steps   y yank"
+        }
+    };
     ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(
-                "h/l producer·consumer   j/k siblings   za fold   Enter/Esc drill   S steps   y yank",
-            )
-            .color(ink(INK_LIGHT.ink_muted))
-            .monospace()
-            .small(),
-        );
+        ui.label(egui::RichText::new(hint).color(ink(INK_LIGHT.ink_muted)).monospace().small());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if let Some(addr) = model.yank_flash() {
                 ui.label(
                     egui::RichText::new(format!("yanked {addr}"))
+                        .color(ink(INK_LIGHT.focus))
+                        .small(),
+                );
+            } else if model.is_drilled() {
+                ui.label(
+                    egui::RichText::new("focused — Esc to widen")
                         .color(ink(INK_LIGHT.focus))
                         .small(),
                 );
@@ -1116,19 +1311,80 @@ mod tests {
         }
     }
 
-    /// `l` moves the selection downstream and syncs the outline mark.
+    /// The centre of a node's rendered rect in the model's current layout — the
+    /// on-screen geometry a spatial move is asserted against.
+    fn centre(m: &ProtocolModel, id: &AssetId) -> (f64, f64) {
+        let r = &m.layout().positions[id];
+        (r.x + r.width / 2.0, r.y + r.height / 2.0)
+    }
+
+    /// An edgar_gleif model at a chosen reading flow.
+    fn model_flow(flow: Flow) -> ProtocolModel {
+        ProtocolModel::new(load_protocol_offline(EDGAR).expect("load edgar_gleif"), flow)
+    }
+
+    /// Vertical flow, from the default selection: `j`/`k` run the
+    /// producer/consumer axis and `h`/`l` step siblings — and each lands on a
+    /// node whose RENDERED CENTRE is genuinely in the pressed screen direction,
+    /// not merely a topological neighbour. This is the spatial-nav acceptance
+    /// (card 0029 AC #2), asserted against the drawn geometry: `j` goes strictly
+    /// below, `k` is a wall at the top row (or strictly above), `l`/`h` step to a
+    /// same-row sibling strictly right/left.
     #[test]
-    fn consumer_key_moves_selection() {
-        let mut m = model();
-        let start = m.selected().cloned();
-        let moved = m.feed_events(&[key(egui::Key::L)]);
-        assert!(moved, "l dispatched a consumer move");
-        assert_ne!(m.selected().cloned(), start, "the selection advanced");
-        assert_eq!(
-            m.outline().iter().filter(|r| r.selected).count(),
-            1,
-            "exactly one outline row is marked"
-        );
+    fn vertical_keys_move_in_the_pressed_screen_direction() {
+        let mut m = model_flow(Flow::Vertical);
+        assert_eq!(m.flow(), Flow::Vertical);
+        let start = m.selected().cloned().expect("a boot selection");
+        let (sx, sy) = centre(&m, &start);
+
+        // j = down: the new selection sits strictly BELOW the start (a consumer).
+        assert!(m.feed_events(&[key(egui::Key::J)]), "j moved down the flow");
+        let down = m.selected().cloned().unwrap();
+        assert_ne!(down, start, "the selection advanced");
+        assert!(centre(&m, &down).1 > sy + 0.5, "j landed strictly below: {down}");
+        assert_eq!(m.outline().iter().filter(|r| r.selected).count(), 1, "one row marked");
+
+        // k = up from the top row: a wall (nothing above), else strictly above.
+        let mut m = model_flow(Flow::Vertical);
+        if m.feed_events(&[key(egui::Key::K)]) {
+            let up = m.selected().cloned().unwrap();
+            assert!(centre(&m, &up).1 < sy - 0.5, "k landed strictly above: {up}");
+        }
+
+        // l = right: a same-row sibling strictly to the RIGHT.
+        let mut m = model_flow(Flow::Vertical);
+        assert!(m.feed_events(&[key(egui::Key::L)]), "l stepped a sibling right");
+        let right = m.selected().cloned().unwrap();
+        assert!(centre(&m, &right).0 > sx + 0.5, "l landed strictly right: {right}");
+
+        // h = left: a same-row sibling strictly to the LEFT.
+        let mut m = model_flow(Flow::Vertical);
+        assert!(m.feed_events(&[key(egui::Key::H)]), "h stepped a sibling left");
+        let left = m.selected().cloned().unwrap();
+        assert!(centre(&m, &left).0 < sx - 0.5, "h landed strictly left: {left}");
+    }
+
+    /// Horizontal flow rotates the axes: `l`/`h` become producer/consumer and
+    /// `j`/`k` step siblings. The SAME default node, the keys following the drawn
+    /// left→right flow — again asserted against the rendered centres: `l` lands
+    /// strictly right (a consumer), `j` strictly below (a sibling).
+    #[test]
+    fn horizontal_keys_rotate_with_the_flow() {
+        let mut m = model_flow(Flow::Horizontal);
+        assert_eq!(m.flow(), Flow::Horizontal);
+        let start = m.selected().cloned().expect("a boot selection");
+        let (sx, sy) = centre(&m, &start);
+
+        // l = right: a consumer down the flow, strictly to the RIGHT.
+        assert!(m.feed_events(&[key(egui::Key::L)]), "l consumed down the flow");
+        let right = m.selected().cloned().unwrap();
+        assert!(centre(&m, &right).0 > sx + 0.5, "l landed strictly right: {right}");
+
+        // j = down: a sibling across the flow, strictly BELOW.
+        let mut m = model_flow(Flow::Horizontal);
+        assert!(m.feed_events(&[key(egui::Key::J)]), "j stepped a sibling down");
+        let down = m.selected().cloned().unwrap();
+        assert!(centre(&m, &down).1 > sy + 0.5, "j landed strictly below: {down}");
     }
 
     /// `S` opens the steps sheet; `Esc` closes it.
@@ -1140,6 +1396,32 @@ mod tests {
         assert!(m.show_sheet(), "S opened the steps sheet");
         m.feed_events(&[key(egui::Key::Escape)]);
         assert!(!m.show_sheet(), "Esc closed the steps sheet");
+    }
+
+    /// `Enter` drills into a visible local scope, a repeat never stacks a
+    /// duplicate crumb, and `Esc` widens back out.
+    #[test]
+    fn enter_drills_to_a_scope_without_duplicate_crumbs() {
+        let mut m = model();
+        assert!(!m.is_drilled());
+        let full = m.graph_collapsed.nodes.len();
+        let before_gen = m.layout_gen();
+
+        // Enter focuses the canvas on the selection's local neighbourhood.
+        assert!(m.feed_events(&[key(egui::Key::Enter)]), "Enter drilled in");
+        assert!(m.is_drilled(), "the canvas is now scoped");
+        assert_eq!(m.breadcrumb().len(), 1);
+        assert!(m.displayed_graph().nodes.len() <= full, "the scope is a local slice");
+        assert_ne!(m.layout_gen(), before_gen, "the raster cache key changed (a re-layout)");
+
+        // A repeat Enter on the same node is a no-op — no duplicate crumb.
+        assert!(!m.feed_events(&[key(egui::Key::Enter)]), "a repeat Enter does nothing");
+        assert_eq!(m.breadcrumb().len(), 1, "no consecutive-duplicate crumb");
+
+        // Esc widens back to the whole graph.
+        assert!(m.feed_events(&[key(egui::Key::Escape)]), "Esc drilled out");
+        assert!(!m.is_drilled());
+        assert!(m.breadcrumb().is_empty());
     }
 
     /// `za` on the family re-lays-out: the displayed graph and the layout both

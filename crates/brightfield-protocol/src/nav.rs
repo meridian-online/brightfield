@@ -1,22 +1,46 @@
-//! Topological navigation over the asset graph (card 0029, AC #2) —
+//! Spatial, flow-aware navigation over the asset graph (card 0029, AC #2) —
 //! framework-free.
 //!
-//! The keyboard grammar's motion layer as a pure state machine: `h`/`l` walk
-//! the DAG's edges to a producer/consumer, `j`/`k` step between rank siblings
-//! (the nodes sharing a layer), `za` folds/unfolds a parameterised family, and
-//! `Enter`/`Esc` push and pop a drill stack whose breadcrumb tracks the path.
-//! Everything is **topological** — the moves walk the graph, never pixel
-//! geometry — so a re-layout (or the horizontal↔vertical flip) leaves the
-//! grammar unchanged (doc-25 §5). No gpui, no vello: the app's key handler
-//! calls these methods and re-reads [`cursor`](ProtocolNav::cursor); the
-//! headless tests drive the same surface.
+//! The keyboard grammar's motion layer as a pure state machine. The vim keys
+//! move the cursor in their **rendered** direction ([`move_dir`](ProtocolNav::move_dir)):
+//! the reading [`Flow`] decides which axis is the producer→consumer flow and
+//! which stacks siblings, so the same key follows what is on screen.
 //!
-//! Determinism: adjacency and sibling order are `BTreeMap`/`Vec`-of-sorted-ids,
-//! so `h` from a fan-in node always lands on the same producer.
+//! - **Vertical flow** (top→bottom): `k`/up → producer, `j`/down → consumer;
+//!   `h`/left and `l`/right step to the rank sibling on that side.
+//! - **Horizontal flow** (left→right): `h`/left → producer, `l`/right →
+//!   consumer; `k`/up and `j`/down step to the sibling above/below.
+//!
+//! Where a direction is ambiguous — a fan of producers/consumers, or several
+//! siblings — the move resolves to the node whose rendered centre is spatially
+//! nearest in the pressed direction (fed by [`set_geometry`](ProtocolNav::set_geometry)),
+//! so movement always matches the drawn layout. `za` folds/unfolds a
+//! parameterised family and `Enter`/`Esc` push/pop a drill stack whose
+//! breadcrumb tracks the path (no consecutive duplicates). No gpui, no vello:
+//! the app's key handler calls these methods and re-reads
+//! [`cursor`](ProtocolNav::cursor); the headless tests drive the same surface.
+//!
+//! Determinism: adjacency and sibling sets are `BTreeMap`/`Vec`-of-sorted-ids
+//! and geometry ties break by node id, so a move is reproducible.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::graph::{AssetGraph, AssetId, AssetKind};
+use crate::layout::{Flow, Layout};
+
+/// A pressed vim direction. Resolved against the current [`Flow`] to a
+/// producer/consumer step (along the flow axis) or a sibling step (across it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dir {
+    /// `k`
+    Up,
+    /// `j`
+    Down,
+    /// `h`
+    Left,
+    /// `l`
+    Right,
+}
 
 /// What a fold toggle did — a family folds/unfolds; anything else is rejected so
 /// a mis-aimed `za` is a no-op, not a silent state change.
@@ -49,6 +73,11 @@ pub struct ProtocolNav {
     cursor: Option<AssetId>,
     /// The drill path — `Enter` pushes the cursor, `Esc` pops (doc-25 §5).
     breadcrumb: Vec<AssetId>,
+    /// The reading axis the spatial keys resolve against ([`set_geometry`]).
+    flow: Flow,
+    /// Rendered node centres — the geometry `move_dir` honours. Empty until the
+    /// shell calls [`set_geometry`]; the topological primitives work without it.
+    centers: BTreeMap<AssetId, (f64, f64)>,
 }
 
 impl ProtocolNav {
@@ -118,7 +147,30 @@ impl ProtocolNav {
             expanded: BTreeSet::new(),
             cursor,
             breadcrumb: Vec::new(),
+            flow: Flow::default(),
+            centers: BTreeMap::new(),
         }
+    }
+
+    /// Record the rendered geometry (node centres) + reading `flow` the spatial
+    /// [`move_dir`](ProtocolNav::move_dir) keys honour. Call whenever the layout
+    /// the user sees is (re)computed so a keystroke matches what is on screen.
+    /// Only nodes this nav knows are kept — a scoped/expanded layout's extra
+    /// nodes are ignored, so the cursor is always addressable.
+    pub fn set_geometry(&mut self, flow: Flow, layout: &Layout) {
+        self.flow = flow;
+        self.centers = layout
+            .positions
+            .iter()
+            .filter(|(id, _)| self.layer.contains_key(*id))
+            .map(|(id, r)| (id.clone(), (r.x + r.width / 2.0, r.y + r.height / 2.0)))
+            .collect();
+    }
+
+    /// The reading axis the spatial keys resolve against.
+    #[must_use]
+    pub fn flow(&self) -> Flow {
+        self.flow
     }
 
     /// The focused node.
@@ -180,6 +232,94 @@ impl ProtocolNav {
         true
     }
 
+    /// Move the cursor one node in the pressed vim direction **as rendered**.
+    /// The [`Flow`] decides the axis: along the flow, `Up`/`Left` reach the
+    /// producer and `Down`/`Right` the consumer; across it the same keys step to
+    /// the sibling on that side. Ambiguity (a fan of neighbours, or several
+    /// siblings) resolves to the node whose centre is spatially nearest in the
+    /// pressed direction. Returns whether the cursor moved.
+    pub fn move_dir(&mut self, dir: Dir) -> bool {
+        if self.is_flow_axis(dir) {
+            // Along the flow: producer towards the origin, consumer away from it.
+            let upstream = matches!(dir, Dir::Up | Dir::Left);
+            self.edge_move(upstream, dir)
+        } else {
+            self.sibling_move(dir)
+        }
+    }
+
+    /// Whether `dir` runs along the flow axis (producer/consumer) rather than
+    /// across it (siblings), given the current [`Flow`].
+    fn is_flow_axis(&self, dir: Dir) -> bool {
+        match self.flow {
+            Flow::Vertical => matches!(dir, Dir::Up | Dir::Down),
+            Flow::Horizontal => matches!(dir, Dir::Left | Dir::Right),
+        }
+    }
+
+    /// Producer/consumer step: among the cursor's graph neighbours (`preds` when
+    /// `upstream`, else `succs`), pick the one whose rendered centre is most in
+    /// line with the cursor across the flow — the neighbour that reads as
+    /// directly ahead. Falls back to id order when geometry is unset (headless
+    /// callers that never call [`set_geometry`](ProtocolNav::set_geometry)).
+    fn edge_move(&mut self, upstream: bool, dir: Dir) -> bool {
+        let Some(cur) = self.cursor.clone() else { return false };
+        let table = if upstream { &self.preds } else { &self.succs };
+        let neighbours = table.get(&cur).cloned().unwrap_or_default();
+        if neighbours.is_empty() {
+            return false;
+        }
+        let pick = self
+            .center(&cur)
+            .and_then(|origin| {
+                neighbours
+                    .iter()
+                    .filter_map(|id| self.center(id).map(|c| (id, c)))
+                    .min_by(|(_, a), (_, b)| {
+                        axis_key(origin, *a, dir, true)
+                            .partial_cmp(&axis_key(origin, *b, dir, true))
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .map(|(id, _)| id.clone())
+            })
+            .unwrap_or_else(|| neighbours[0].clone());
+        self.cursor = Some(pick);
+        true
+    }
+
+    /// Sibling step: among the cursor's rank siblings (same layer), pick the one
+    /// nearest in the pressed pixel direction. A wall (returns false) when no
+    /// sibling lies that way — so the edge of a layer is felt and id order never
+    /// overrides the drawn position. Needs geometry; without an on-screen
+    /// direction to honour it is a no-op.
+    fn sibling_move(&mut self, dir: Dir) -> bool {
+        let Some(cur) = self.cursor.clone() else { return false };
+        let Some(&l) = self.layer.get(&cur) else { return false };
+        let Some(origin) = self.center(&cur) else { return false };
+        let pick = self.ranks[l]
+            .iter()
+            .filter(|id| **id != cur)
+            .filter_map(|id| self.center(id).map(|c| (id, c)))
+            .filter(|(_, c)| in_direction(origin, *c, dir))
+            .min_by(|(_, a), (_, b)| {
+                axis_key(origin, *a, dir, false)
+                    .partial_cmp(&axis_key(origin, *b, dir, false))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(id, _)| id.clone());
+        if let Some(t) = pick {
+            self.cursor = Some(t);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The rendered centre of `id`, if geometry has been set.
+    fn center(&self, id: &AssetId) -> Option<(f64, f64)> {
+        self.centers.get(id).copied()
+    }
+
     /// `za` — fold/unfold the parameterised family under the cursor. A no-op
     /// (returns [`FoldOutcome::NotAFamily`]) when the cursor is not on a Family
     /// tile — folds only ever act on collapsible nodes.
@@ -203,14 +343,16 @@ impl ProtocolNav {
     }
 
     /// `Enter` — drill into the focused node: push it onto the drill stack. The
-    /// breadcrumb grows by one; returns whether a node was pushed.
+    /// breadcrumb tracks the drill PATH with **no consecutive duplicates** —
+    /// drilling the already-current node (a repeated `Enter`) is a no-op, so the
+    /// crumb never stacks `fetch › fetch › …`. Returns whether a node was pushed.
     pub fn drill_in(&mut self) -> bool {
-        if let Some(cur) = self.cursor.clone() {
-            self.breadcrumb.push(cur);
-            true
-        } else {
-            false
+        let Some(cur) = self.cursor.clone() else { return false };
+        if self.breadcrumb.last() == Some(&cur) {
+            return false;
         }
+        self.breadcrumb.push(cur);
+        true
     }
 
     /// `Esc` — pop one level off the drill stack, returning the cursor to the
@@ -262,6 +404,38 @@ fn longest_path_layers(
         }
     }
     layer
+}
+
+/// Is `c` strictly in the pressed direction from `origin`? The gate that makes
+/// a sibling step honour the drawn left/right/up/down instead of id order.
+fn in_direction(origin: (f64, f64), c: (f64, f64), dir: Dir) -> bool {
+    const EPS: f64 = 0.5;
+    match dir {
+        Dir::Up => c.1 < origin.1 - EPS,
+        Dir::Down => c.1 > origin.1 + EPS,
+        Dir::Left => c.0 < origin.0 - EPS,
+        Dir::Right => c.0 > origin.0 + EPS,
+    }
+}
+
+/// The sort key for "nearest in the pressed direction", as `(primary, secondary)`
+/// distances. For an **edge** move (`align_first`) the cross-axis offset leads,
+/// so the neighbour most directly ahead wins; for a **sibling** move the
+/// along-axis distance leads, so the immediate neighbour wins. Each breaks ties
+/// on the other component — a total, deterministic order over the candidates.
+fn axis_key(origin: (f64, f64), c: (f64, f64), dir: Dir, align_first: bool) -> (f64, f64) {
+    let dx = (c.0 - origin.0).abs();
+    let dy = (c.1 - origin.1).abs();
+    // (distance along the pressed axis, distance across it).
+    let (along, cross) = match dir {
+        Dir::Up | Dir::Down => (dy, dx),
+        Dir::Left | Dir::Right => (dx, dy),
+    };
+    if align_first {
+        (cross, along)
+    } else {
+        (along, cross)
+    }
 }
 
 #[cfg(test)]
@@ -442,5 +616,119 @@ steps:
         let b = ProtocolNav::new(&g);
         assert_eq!(a.cursor(), b.cursor());
         assert_eq!(a.ranks, b.ranks);
+    }
+
+    /// A diamond with two rank siblings AND a producer + consumer for each — the
+    /// fixture the spatial-mapping tests need to exercise every axis.
+    fn diamond_graph() -> AssetGraph {
+        let yaml = r"
+name: diamond
+steps:
+  - name: fetch
+    op: http_fetch@1
+    with: { url: 'https://h.example/a', out: build/a }
+  - name: left
+    op: archive_extract@1
+    with: { archive: build/a, dest: build/l }
+  - name: right
+    op: archive_extract@1
+    with: { archive: build/a, dest: build/r }
+  - name: join
+    sql: models/j.sql
+    depends_on: [build/l, build/r]
+";
+        let manifest = parse_manifest_str(yaml).unwrap();
+        let mut sources = BTreeMap::new();
+        sources.insert(
+            "join".to_string(),
+            Ok("CREATE TABLE j AS SELECT * FROM read_csv('build/l/x.csv') \
+                UNION ALL SELECT * FROM read_csv('build/r/x.csv');"
+                .to_string()),
+        );
+        build_graph(&manifest, &sources)
+    }
+
+    fn center(l: &crate::layout::Layout, id: &str) -> (f64, f64) {
+        let r = &l.positions[&id.to_string()];
+        (r.x + r.width / 2.0, r.y + r.height / 2.0)
+    }
+
+    /// Vertical flow: `k`/`j` (up/down) are the producer/consumer axis and
+    /// `h`/`l` (left/right) step between rank siblings — the mapping matches the
+    /// drawn top→bottom flow.
+    #[test]
+    fn t48_vertical_flow_maps_updown_to_flow_leftright_to_siblings() {
+        use crate::layout::{layout, Flow, LayoutConfig};
+        let g = diamond_graph();
+        let l = layout(&g, &LayoutConfig { flow: Flow::Vertical, ..LayoutConfig::default() });
+        let (left, right) = ("file.diamond.build/l".to_string(), "file.diamond.build/r".to_string());
+        let base_layer = {
+            let n = ProtocolNav::new(&g);
+            assert_eq!(n.layer[&left], n.layer[&right], "the two extracts are rank siblings");
+            n.layer[&left]
+        };
+
+        // Up = producer (a shallower layer), Down = consumer (a deeper layer).
+        let mut nav = ProtocolNav::new(&g);
+        nav.set_geometry(Flow::Vertical, &l);
+        nav.focus(&left);
+        assert!(nav.move_dir(Dir::Up), "up reaches the producer");
+        assert!(nav.layer[nav.cursor().unwrap()] < base_layer, "up climbed upstream");
+        nav.focus(&left);
+        assert!(nav.move_dir(Dir::Down), "down reaches the consumer");
+        assert!(nav.layer[nav.cursor().unwrap()] > base_layer, "down descended downstream");
+
+        // Left/Right = the rank sibling (same layer), picked by rendered side.
+        let (cl, cr) = (center(&l, &left), center(&l, &right));
+        let to_r = if cr.0 > cl.0 { Dir::Right } else { Dir::Left };
+        nav.focus(&left);
+        assert!(nav.move_dir(to_r), "the horizontal key steps to the sibling");
+        assert_eq!(nav.cursor().unwrap(), &right);
+        assert_eq!(nav.layer[nav.cursor().unwrap()], base_layer, "sibling stays in the layer");
+    }
+
+    /// Horizontal flow rotates the axes: `h`/`l` (left/right) become the
+    /// producer/consumer axis and `k`/`j` (up/down) step between siblings — the
+    /// SAME graph, the keys following the drawn left→right flow.
+    #[test]
+    fn t48_horizontal_flow_maps_leftright_to_flow_updown_to_siblings() {
+        use crate::layout::{layout, Flow, LayoutConfig};
+        let g = diamond_graph();
+        let l = layout(&g, &LayoutConfig { flow: Flow::Horizontal, ..LayoutConfig::default() });
+        let (left, right) = ("file.diamond.build/l".to_string(), "file.diamond.build/r".to_string());
+        let base_layer = ProtocolNav::new(&g).layer[&left];
+
+        // Left = producer, Right = consumer.
+        let mut nav = ProtocolNav::new(&g);
+        nav.set_geometry(Flow::Horizontal, &l);
+        nav.focus(&left);
+        assert!(nav.move_dir(Dir::Left), "left reaches the producer");
+        assert!(nav.layer[nav.cursor().unwrap()] < base_layer);
+        nav.focus(&left);
+        assert!(nav.move_dir(Dir::Right), "right reaches the consumer");
+        assert!(nav.layer[nav.cursor().unwrap()] > base_layer);
+
+        // Up/Down = the rank sibling, picked by rendered side.
+        let (cl, cr) = (center(&l, &left), center(&l, &right));
+        let to_r = if cr.1 > cl.1 { Dir::Down } else { Dir::Up };
+        nav.focus(&left);
+        assert!(nav.move_dir(to_r), "the vertical key steps to the sibling");
+        assert_eq!(nav.cursor().unwrap(), &right);
+        assert_eq!(nav.layer[nav.cursor().unwrap()], base_layer);
+    }
+
+    /// A repeated `Enter` on the current node does not stack a duplicate crumb.
+    #[test]
+    fn t48_drill_in_dedups_the_current_node() {
+        let g = chain_graph();
+        let mut nav = ProtocolNav::new(&g);
+        assert!(nav.drill_in(), "first drill pushes the crumb");
+        assert_eq!(nav.breadcrumb().len(), 1);
+        assert!(!nav.drill_in(), "a repeat on the same node is a no-op");
+        assert_eq!(nav.breadcrumb().len(), 1, "no consecutive-duplicate crumb");
+        // Moving to a new node, then drilling, grows the path.
+        nav.to_consumer();
+        assert!(nav.drill_in());
+        assert_eq!(nav.breadcrumb().len(), 2);
     }
 }

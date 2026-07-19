@@ -429,8 +429,8 @@ pub fn registry() -> Vec<VerbEntry> {
             drives: D::Navigation,
             status: VerbStatus::Built,
             reserved_reason: None,
-            help: "Move to the focused asset's producer (topological left)",
-            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "h = upstream/producer (vim left); survives re-layout, unlike an arrow" }),
+            help: "Vim h (left): the producer when the flow runs left-to-right, else the sibling to the left — resolved by the drawn layout",
+            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "h = left; producer along a horizontal flow, sibling-left across a vertical one — follows the rendered axis" }),
         },
         VerbEntry {
             longname: "protocol-consumer",
@@ -440,8 +440,8 @@ pub fn registry() -> Vec<VerbEntry> {
             drives: D::Navigation,
             status: VerbStatus::Built,
             reserved_reason: None,
-            help: "Move to the focused asset's consumer (topological right)",
-            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "l = downstream/consumer (vim right); topological, not geometric" }),
+            help: "Vim l (right): the consumer when the flow runs left-to-right, else the sibling to the right — resolved by the drawn layout",
+            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "l = right; consumer along a horizontal flow, sibling-right across a vertical one — follows the rendered axis" }),
         },
         VerbEntry {
             longname: "protocol-sibling-next",
@@ -451,8 +451,8 @@ pub fn registry() -> Vec<VerbEntry> {
             drives: D::Navigation,
             status: VerbStatus::Built,
             reserved_reason: None,
-            help: "Move to the next rank sibling (down the layer)",
-            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "j = next sibling (vim down); orders by node id within the layer" }),
+            help: "Vim j (down): the consumer when the flow runs top-to-bottom, else the next sibling below — resolved by the drawn layout",
+            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "j = down; consumer along a vertical flow, next sibling across a horizontal one — nearest in the pressed direction" }),
         },
         VerbEntry {
             longname: "protocol-sibling-prev",
@@ -462,8 +462,8 @@ pub fn registry() -> Vec<VerbEntry> {
             drives: D::Navigation,
             status: VerbStatus::Built,
             reserved_reason: None,
-            help: "Move to the previous rank sibling (up the layer)",
-            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "k = prev sibling (vim up); orders by node id within the layer" }),
+            help: "Vim k (up): the producer when the flow runs top-to-bottom, else the previous sibling above — resolved by the drawn layout",
+            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "k = up; producer along a vertical flow, previous sibling across a horizontal one — nearest in the pressed direction" }),
         },
         VerbEntry {
             longname: "toggle-fold-family",
