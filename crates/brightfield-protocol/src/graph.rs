@@ -769,6 +769,41 @@ pub fn neighbourhood(graph: &AssetGraph, focus: &AssetId) -> BTreeSet<AssetId> {
     ids
 }
 
+/// The **full transitive lineage** of `focus` in `graph`: the focused node,
+/// every ancestor that feeds it (all upstream, transitively) and every
+/// descendant it feeds (all downstream, transitively). Where [`neighbourhood`]
+/// stops one hop each way, this walks the whole chain — the drill scope shows
+/// the entire family tree that touches the selection. An id not in the graph
+/// yields an empty set.
+#[must_use]
+pub fn lineage(graph: &AssetGraph, focus: &AssetId) -> BTreeSet<AssetId> {
+    let mut ids = BTreeSet::new();
+    if !graph.nodes.contains_key(focus) {
+        return ids;
+    }
+    ids.insert(focus.clone());
+    // Upstream: everything that (transitively) produces the focus.
+    let mut frontier = vec![focus.clone()];
+    while let Some(node) = frontier.pop() {
+        for edge in &graph.edges {
+            if edge.to == node && ids.insert(edge.from.clone()) {
+                frontier.push(edge.from.clone());
+            }
+        }
+    }
+    // Downstream: everything the focus (transitively) feeds — seeded from the
+    // focus alone, so an ancestor's *other* branches are not pulled in.
+    let mut frontier = vec![focus.clone()];
+    while let Some(node) = frontier.pop() {
+        for edge in &graph.edges {
+            if edge.from == node && ids.insert(edge.to.clone()) {
+                frontier.push(edge.to.clone());
+            }
+        }
+    }
+    ids
+}
+
 /// The subgraph of `graph` induced on `keep`: the kept nodes plus every edge
 /// (and the seam it flows through) with both endpoints kept. A pure,
 /// deterministic `AssetGraph -> AssetGraph` slice — the drill scope's displayed
@@ -1175,5 +1210,39 @@ steps:
         );
         // Unknown focus yields an empty scope.
         assert!(neighbourhood(&g, &"file.d.nope".to_string()).is_empty());
+    }
+
+    /// `lineage` is the full transitive closure — every upstream ancestor and
+    /// downstream descendant of the focus — strictly wider than the one-hop
+    /// neighbourhood on a chain longer than two.
+    #[test]
+    fn lineage_is_the_full_transitive_closure_not_one_hop() {
+        // A linear chain: source -> file -> stmt -> table -> dataset. Focusing
+        // the middle statement, its lineage is the whole chain (two hops each
+        // way), where the neighbourhood is only the three adjacent nodes.
+        let g = mini_graph();
+        let focus = "stmt.mini.transform#0".to_string();
+        let full = lineage(&g, &focus);
+        for id in [
+            "source.mini.https://example.com/data/a.csv",
+            "file.mini.build/a.csv",
+            "stmt.mini.transform#0",
+            "asset.mini.t_out",
+            "file.mini.build/t.parquet",
+        ] {
+            assert!(full.contains(id), "the transitive lineage keeps {id}");
+        }
+        let hood = neighbourhood(&g, &focus);
+        assert!(
+            full.len() > hood.len(),
+            "lineage ({}) is wider than the one-hop neighbourhood ({})",
+            full.len(),
+            hood.len()
+        );
+        // Focusing the sink pulls in every ancestor but adds no descendant.
+        let sink = lineage(&g, &"file.mini.build/t.parquet".to_string());
+        assert_eq!(sink.len(), g.nodes.len(), "the sink's lineage is the whole chain");
+        // An unknown focus yields an empty lineage.
+        assert!(lineage(&g, &"file.mini.nope".to_string()).is_empty());
     }
 }

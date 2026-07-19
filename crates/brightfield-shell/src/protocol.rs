@@ -209,6 +209,9 @@ pub struct ProtocolModel {
     /// Bumps on every re-layout — the raster cache invalidates on a scope/drill
     /// change too, not just an expand/flow flip.
     layout_gen: u64,
+    /// Bumps whenever a keyboard move changes the selection — the cue for the
+    /// canvas to keep the freshly-selected node in frame (see `request_frame`).
+    frame_gen: u64,
     key_table: BTreeMap<String, &'static str>,
 }
 
@@ -250,6 +253,7 @@ impl ProtocolModel {
             layout,
             layout_key: (false, flow),
             layout_gen: 0,
+            frame_gen: 0,
             key_table: protocol_key_table(),
         };
         // Seed the nav's spatial geometry from the collapsed layout so the very
@@ -417,6 +421,18 @@ impl ProtocolModel {
             self.pending_z = true;
             return false;
         }
+        // `t` transposes the reading axis — the keyboard twin of the "flow: …"
+        // click control.
+        if key == egui::Key::T {
+            self.toggle_flow();
+            return true;
+        }
+        // Backspace is a plain-key fallback for the widen/reset that Esc drives —
+        // an ordinary hardware key that always reaches the app, so widening never
+        // depends on a remapped or app-synthesized Escape arriving intact.
+        if key == egui::Key::Backspace {
+            return self.drill_out();
+        }
         let Some(token) = key_token(key, mods) else { return false };
         match self.key_table.get(token).copied() {
             Some(verb) => self.dispatch(verb),
@@ -467,27 +483,45 @@ impl ProtocolModel {
         if self.nav.move_dir(dir) {
             self.selected = self.nav.cursor().cloned();
             self.yank_flash = None;
+            self.request_frame();
             true
         } else {
             false
         }
     }
 
+    /// Signal that the selection moved under keyboard control, so the canvas
+    /// should bring the newly-selected node back into frame if it has scrolled
+    /// out of (or near the edge of) the visible viewport.
+    fn request_frame(&mut self) {
+        self.frame_gen = self.frame_gen.wrapping_add(1);
+    }
+
+    /// A monotonic counter that changes each time a keyboard move re-selects a
+    /// node — the canvas compares it against the last node it framed and scrolls
+    /// the selection into view when it differs.
+    #[must_use]
+    pub fn frame_gen(&self) -> u64 {
+        self.frame_gen
+    }
+
     /// `Enter` — drill into the selected node: push the (deduped) breadcrumb and
-    /// focus the canvas on that node's local scope (its one-hop
-    /// producer/consumer neighbourhood), re-laid-out and re-rastered so the
-    /// scope change is visible. A repeated `Enter` on the same node is a no-op.
+    /// focus the canvas on that node's full transitive lineage (every ancestor
+    /// upstream that feeds it + every descendant downstream it feeds + the node
+    /// itself), re-laid-out and re-rastered so the scope change is visible. A
+    /// repeated `Enter` on the same node is a no-op.
     fn drill_in(&mut self) -> bool {
         if !self.nav.drill_in() {
             return false;
         }
         if let Some(focus) = self.nav.cursor().cloned() {
-            let keep = brightfield_protocol::graph::neighbourhood(&self.graph_collapsed, &focus);
+            let keep = brightfield_protocol::graph::lineage(&self.graph_collapsed, &focus);
             self.scope_graph =
                 Some(brightfield_protocol::graph::induced_subgraph(&self.graph_collapsed, &keep));
             self.selected = Some(focus);
             self.yank_flash = None;
         }
+        self.request_frame();
         self.recompute_layout();
         true
     }
@@ -505,7 +539,7 @@ impl ProtocolModel {
         }
         match self.nav.breadcrumb().last().cloned() {
             Some(parent) => {
-                let keep = brightfield_protocol::graph::neighbourhood(&self.graph_collapsed, &parent);
+                let keep = brightfield_protocol::graph::lineage(&self.graph_collapsed, &parent);
                 self.scope_graph = Some(brightfield_protocol::graph::induced_subgraph(
                     &self.graph_collapsed,
                     &keep,
@@ -518,6 +552,7 @@ impl ProtocolModel {
             }
         }
         self.yank_flash = None;
+        self.request_frame();
         self.recompute_layout();
         true
     }
@@ -919,6 +954,27 @@ fn canvas_ui(
                         egui::Stroke::new(2.0, ink(INK_LIGHT.focus)),
                         egui::StrokeKind::Outside,
                     );
+                    // Frame follows selection: after a keyboard move, if the
+                    // selected node has scrolled out of the viewport (or is
+                    // within a small margin of an edge), pan it back into frame.
+                    // A node that is already comfortably visible is left alone,
+                    // so manual scrolling is never fought.
+                    let frame_gen = model.frame_gen();
+                    let framed_id = egui::Id::new("proto-canvas-framed-gen");
+                    let last_framed =
+                        ui.ctx().data(|d| d.get_temp::<u64>(framed_id)).unwrap_or(0);
+                    if frame_gen != last_framed {
+                        let margin = 28.0;
+                        let vis = ui.clip_rect();
+                        let out_of_frame = r.min.x < vis.min.x + margin
+                            || r.max.x > vis.max.x - margin
+                            || r.min.y < vis.min.y + margin
+                            || r.max.y > vis.max.y - margin;
+                        if out_of_frame {
+                            ui.scroll_to_rect(r.expand(margin), None);
+                        }
+                        ui.ctx().data_mut(|d| d.insert_temp(framed_id, frame_gen));
+                    }
                 }
             }
 
@@ -1190,10 +1246,10 @@ fn hint_ui(ui: &mut egui::Ui, model: &ProtocolModel) {
     // it, siblings. Spell out which keys are which for the current axis.
     let hint = match model.flow() {
         Flow::Vertical => {
-            "k/j producer·consumer   h/l siblings   za fold   Enter/Esc drill   S steps   y yank"
+            "k/j producer·consumer   h/l siblings   za fold   t flip   Enter lineage   Esc/⌫ widen   S steps   y yank"
         }
         Flow::Horizontal => {
-            "h/l producer·consumer   j/k siblings   za fold   Enter/Esc drill   S steps   y yank"
+            "h/l producer·consumer   j/k siblings   za fold   t flip   Enter lineage   Esc/⌫ widen   S steps   y yank"
         }
     };
     ui.horizontal(|ui| {
@@ -1407,11 +1463,11 @@ mod tests {
         let full = m.graph_collapsed.nodes.len();
         let before_gen = m.layout_gen();
 
-        // Enter focuses the canvas on the selection's local neighbourhood.
+        // Enter focuses the canvas on the selection's full transitive lineage.
         assert!(m.feed_events(&[key(egui::Key::Enter)]), "Enter drilled in");
         assert!(m.is_drilled(), "the canvas is now scoped");
         assert_eq!(m.breadcrumb().len(), 1);
-        assert!(m.displayed_graph().nodes.len() <= full, "the scope is a local slice");
+        assert!(m.displayed_graph().nodes.len() <= full, "the lineage slice fits the graph");
         assert_ne!(m.layout_gen(), before_gen, "the raster cache key changed (a re-layout)");
 
         // A repeat Enter on the same node is a no-op — no duplicate crumb.
@@ -1474,6 +1530,70 @@ mod tests {
         assert_eq!(m.flow(), Flow::Horizontal);
         let (hw, hh) = (m.layout().width, m.layout().height);
         assert!(hw > hh, "horizontal is wider than tall: {hw}x{hh}");
+    }
+
+    /// `Enter` drills into the selected node's FULL lineage: when the selection
+    /// has both an upstream producer and a downstream consumer, the drilled
+    /// scope keeps a two-hop chain — strictly wider than a one-hop slice.
+    #[test]
+    fn enter_scopes_the_full_transitive_lineage() {
+        let mut m = model();
+        // Walk to a node that has a producer (so it is not the top source) and
+        // a consumer (so it is not the sink): step down once, then the lineage
+        // must reach back up to the origin and forward to the dataset.
+        assert!(m.feed_events(&[key(egui::Key::J)]), "j advanced off the top row");
+        let sel = m.selected().cloned().expect("a selection");
+        let want = brightfield_protocol::graph::lineage(&m.graph_collapsed, &sel);
+        assert!(m.feed_events(&[key(egui::Key::Enter)]), "Enter drilled in");
+        // The drilled scope is exactly the induced lineage — every kept node is
+        // a lineage member and the count matches.
+        assert_eq!(
+            m.displayed_graph().nodes.len(),
+            want.len(),
+            "the drilled scope is the selection's full lineage"
+        );
+        assert!(
+            m.displayed_graph().nodes.keys().all(|id| want.contains(id)),
+            "every drilled node is on the selection's lineage"
+        );
+    }
+
+    /// `t` transposes the reading axis — the keyboard twin of the flow-toggle
+    /// click control — and re-seeds the layout each way.
+    #[test]
+    fn t_key_transposes_the_flow() {
+        let mut m = model();
+        assert_eq!(m.flow(), Flow::Vertical);
+        assert!(m.feed_events(&[key(egui::Key::T)]), "t flipped the axis");
+        assert_eq!(m.flow(), Flow::Horizontal);
+        assert!(m.feed_events(&[key(egui::Key::T)]), "t flipped back");
+        assert_eq!(m.flow(), Flow::Vertical);
+    }
+
+    /// Backspace is a plain-key fallback for Esc's widen/reset, so widening never
+    /// depends on a remapped or synthesized Escape.
+    #[test]
+    fn backspace_widens_like_esc() {
+        let mut m = model();
+        assert!(m.feed_events(&[key(egui::Key::Enter)]), "Enter drilled in");
+        assert!(m.is_drilled());
+        assert!(m.feed_events(&[key(egui::Key::Backspace)]), "Backspace widened");
+        assert!(!m.is_drilled(), "Backspace popped the drill exactly as Esc does");
+        // And it still closes the steps sheet, matching Esc's dual role.
+        m.feed_events(&[key_shift(egui::Key::S)]);
+        assert!(m.show_sheet());
+        assert!(m.feed_events(&[key(egui::Key::Backspace)]), "Backspace closed the sheet");
+        assert!(!m.show_sheet());
+    }
+
+    /// A keyboard move bumps the reframe cue so the canvas keeps the freshly
+    /// selected node in view.
+    #[test]
+    fn keyboard_move_requests_a_reframe() {
+        let mut m = model_flow(Flow::Vertical);
+        let before = m.frame_gen();
+        assert!(m.feed_events(&[key(egui::Key::J)]), "j moved the selection");
+        assert!(m.frame_gen() > before, "a keyboard move asks the canvas to reframe");
     }
 
     /// `y` requests a yank of the selected dotted address (never a screen
