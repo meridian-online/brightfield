@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# fww_ac08 (card 0016): byte-identity harness for the example PNGs.
+# Perceptual example-PNG gate (decision-68: byte-exact `cmp -s` is dead — egui
+# text AA isn't bit-stable, and the render path is migrating to egui/Vello).
 #
-# Renders every example spec headlessly (BRIGHTFIELD_DUMP_PNG) and byte-
-# compares each against a baseline directory captured from a known-good
-# commit (typically main):
+# Renders every example spec headlessly (BRIGHTFIELD_DUMP_PNG) and compares each
+# against a baseline directory with a pixelmatch/dify-style perceptual diff
+# (`bf-imgdiff`) instead of byte identity. Capture a baseline from a known-good
+# commit first:
 #
 #   mkdir -p /tmp/bf-baselines
 #   for f in examples/*.yaml; do \
@@ -12,33 +14,44 @@
 #   git switch <feature-branch>
 #   scripts/compare-example-pngs.sh /tmp/bf-baselines
 #
-# Examples with no baseline PNG (new in the branch under test) are reported
-# as NEW and do not fail the run. Any DIFFERS is a halt condition.
+# Examples with no baseline PNG (new in the branch under test) are reported as
+# NEW and do not fail the run. Any DIFFERS (perceptual) is a halt condition.
+#
+# Tunables: FAIL_RATIO (fraction of differing pixels tolerated, default 0.005),
+# THRESHOLD (per-pixel YIQ cutoff, default 0.1).
 
 set -euo pipefail
 
 baseline_dir="${1:?usage: $0 <baseline-dir>}"
+fail_ratio="${FAIL_RATIO:-0.005}"
+threshold="${THRESHOLD:-0.1}"
 out_dir="$(mktemp -d)"
 trap 'rm -rf "$out_dir"' EXIT
+
+# Build the renderer + the perceptual differ once so the loop is fast.
+cargo build -q -p brightfield-app
+cargo build -q -p brightfield-shell --bin bf-imgdiff
+imgdiff="$(cargo build -q -p brightfield-shell --bin bf-imgdiff --message-format=json 2>/dev/null \
+    | sed -n 's/.*"executable":"\([^"]*bf-imgdiff\)".*/\1/p' | head -1)"
+imgdiff="${imgdiff:-target/debug/bf-imgdiff}"
 
 identical=0 differing=0 new=0
 for f in examples/*.yaml; do
     name="$(basename "$f" .yaml)"
-    # Attribute a failed render instead of letting `set -e` abort the loop
-    # silently: keep stderr in a file and replay it on failure.
     BRIGHTFIELD_DUMP_PNG="$out_dir/$name.png" cargo run -q -p brightfield-app -- "$f" \
         >/dev/null 2>"$out_dir/$name.stderr" \
         || { echo "RENDER FAILED: $name — stderr:" >&2; cat "$out_dir/$name.stderr" >&2; exit 1; }
     if [ ! -f "$baseline_dir/$name.png" ]; then
         echo "NEW:      $name (no baseline)"
         new=$((new + 1))
-    elif cmp -s "$baseline_dir/$name.png" "$out_dir/$name.png"; then
+    elif "$imgdiff" "$baseline_dir/$name.png" "$out_dir/$name.png" \
+            --threshold "$threshold" --fail-ratio "$fail_ratio" >/dev/null 2>&1; then
         identical=$((identical + 1))
     else
-        echo "DIFFERS:  $name"
+        echo "DIFFERS:  $name (perceptual)"
         differing=$((differing + 1))
     fi
 done
 
-echo "identical: $identical, differing: $differing, new: $new"
+echo "within-tolerance: $identical, differing: $differing, new: $new"
 [ "$differing" -eq 0 ]
