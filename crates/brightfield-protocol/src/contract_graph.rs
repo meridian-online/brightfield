@@ -58,6 +58,25 @@ pub struct RunView {
     pub complete: bool,
 }
 
+/// The execution-status channel a seam renders (card 0029) — the per-step
+/// status + live state (inherited from T38) reduced to the handful of tints the
+/// canvas draws. Kept beside the pure [`AssetGraph`] so the renderer can tint
+/// seams without the graph carrying measurement. The honesty rule holds:
+/// `Skipped` is its own tint, never `Ok`; an unrun step is never green.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeamStatus {
+    /// No status recorded — unrun / unmeasured (never green).
+    NotRun,
+    /// Live stream says the step is in flight.
+    Running,
+    /// Terminal success.
+    Ok,
+    /// Skipped (fresh / hash-clean) — distinct from success.
+    Skipped,
+    /// Failed.
+    Failed,
+}
+
 /// Per-step detail for the step panel — the fields the pure [`AssetGraph`]
 /// deliberately does not carry (SQL text, status, live state, narrative label).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,6 +135,39 @@ pub struct ContractView {
     pub steps: BTreeMap<StepId, StepView>,
     /// Per-asset measured/status detail, keyed by crate asset id.
     pub assets: BTreeMap<AssetId, AssetMeta>,
+}
+
+impl StepView {
+    /// The seam's execution-status tint: the live stream state wins when the
+    /// step is in flight, else the authoritative terminal `.json` state.
+    #[must_use]
+    pub fn seam_status(&self) -> SeamStatus {
+        if let Some(live) = &self.live_state {
+            match live.as_str() {
+                "running" | "retrying" | "started" => return SeamStatus::Running,
+                "succeeded" | "success" | "ok" => return SeamStatus::Ok,
+                "failed" | "aborted" => return SeamStatus::Failed,
+                "skipped" | "skipped_fresh" | "skipped_hash" => return SeamStatus::Skipped,
+                _ => {}
+            }
+        }
+        match self.state {
+            StepState::Success => SeamStatus::Ok,
+            StepState::Failed => SeamStatus::Failed,
+            StepState::Skipped => SeamStatus::Skipped,
+            StepState::Unknown => SeamStatus::NotRun,
+        }
+    }
+}
+
+impl ContractView {
+    /// The per-step execution-status tint the canvas draws on each seam
+    /// (card 0029) — surfacing the T38-inherited status + live state in the
+    /// interactive view. Keyed by step name, matching [`Edge::via`].
+    #[must_use]
+    pub fn seam_statuses(&self) -> BTreeMap<StepId, SeamStatus> {
+        self.steps.iter().map(|(name, s)| (name.clone(), s.seam_status())).collect()
+    }
 }
 
 /// The flat tail of a contract id (`table:widgets` → `widgets`).

@@ -17,6 +17,9 @@ pub enum DispatchContext {
     EditorFocused,
     /// An overlay (palette / help / focus-jump) is open above the workspace.
     OverlayOpen,
+    /// The protocol asset-graph panel holds focus (card 0029) — its topological
+    /// grammar resolves here, isolated from the chart canvas's bare verbs.
+    ProtocolFocused,
 }
 
 /// Whether a binding in `binding` context resolves in the `dispatch` situation.
@@ -32,6 +35,7 @@ pub fn fires(binding: BindingContext, dispatch: DispatchContext) -> bool {
         (BindingContext::Global, _) => true,
         (BindingContext::Workspace, DispatchContext::CanvasFocused) => true,
         (BindingContext::Editor, DispatchContext::EditorFocused) => true,
+        (BindingContext::Protocol, DispatchContext::ProtocolFocused) => true,
         _ => false,
     }
 }

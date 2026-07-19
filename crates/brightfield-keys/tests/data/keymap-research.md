@@ -41,6 +41,25 @@ by the `kbg_ac08_*` provenance test; scores mirror `VerbEntry.scores` (frequency
 | `save-spec` | `cmd-s` | 3 / 5 / 5 | cmd-s = save (universal; shipped, editor-scoped) |
 | `cycle-colour-scheme` | `c` | 3 / 5 / 3 | `c` = colour (mnemonic); view-scoped, transient preview |
 
+### Protocol altitude (card 0029) — the asset-graph grammar (doc-25 §5)
+
+The protocol panel is a distinct altitude, so its verbs never collide with the chart grammar. Motion,
+folds, and drill are **View**-tier (never logged); the object verb that names an asset is **Data**-tier
+(logged by longname + dotted address, never a screen position). The topological verbs survive re-layout
+because they walk the graph's edges, not pixel geometry.
+
+| longname | key(s) | freq / mnem / conv | motor note |
+|----------|--------|--------------------|------------|
+| `protocol-producer` | `h` | 5 / 4 / 5 | `h` = upstream/producer (vim left); topological, survives re-layout |
+| `protocol-consumer` | `l` | 5 / 4 / 5 | `l` = downstream/consumer (vim right); topological, survives re-layout |
+| `protocol-sibling-next` | `j` | 5 / 4 / 5 | `j` = next rank sibling (vim down); orders by node id within the layer |
+| `protocol-sibling-prev` | `k` | 5 / 4 / 5 | `k` = prev rank sibling (vim up); orders by node id within the layer |
+| `toggle-fold-family` | `z a` | 3 / 4 / 5 | `za` = toggle fold (vim fold family); a fold is a view change, never logged |
+| `protocol-drill-in` | `enter` | 4 / 4 / 5 | enter = dive (miller-columns); pushes the drill stack |
+| `protocol-drill-out` | `escape` | 4 / 4 / 5 | esc = pop one level (Esc ladder); breadcrumb tracks the pop |
+| `open-steps-sheet` | `shift-s` | 3 / 5 / 4 | `S` = steps sheet (VisiData sheet family); answers "where is my step list" |
+| `yank-address` | `y` | 3 / 5 / 4 | `y` = yank (vim); a Data verb — logged by longname + dotted address |
+
 Reserved verbs are deliberately unscored (no key yet), shown greyed in the palette until their keys land:
 needs-keyboard-target (`filter-view`, `cross-filter-all`, `toggle-point-select`, `set-param`) and
 needs-command-log (`change-mark-type`, `add-mark`, `set-channel`, `remove-mark`, `undo`).

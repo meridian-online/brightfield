@@ -57,12 +57,19 @@ actions!(
     ]
 );
 
+/// The gpui context predicate for the Protocol asset-graph grammar. The
+/// Protocol panel now lives in the egui shell (`brightfield-shell`), so no
+/// element in this gpui app declares this context — protocol bindings register
+/// under it but stay inert here, never leaking into the chart grammar.
+const PROTOCOL_KEY_CONTEXT: &str = "ProtocolPanel";
+
 /// Map a framework-free [`BindingContext`] to a gpui context predicate string
 /// (`None` = global, fires regardless of focus).
 fn context_string(ctx: BindingContext) -> Option<&'static str> {
     match ctx {
         BindingContext::Workspace => Some(WORKSPACE_KEY_CONTEXT),
         BindingContext::Editor => Some(EDITOR_KEY_CONTEXT),
+        BindingContext::Protocol => Some(PROTOCOL_KEY_CONTEXT),
         BindingContext::Global => None,
     }
 }
@@ -94,6 +101,8 @@ fn keybinding_for(bk: &BoundKey) -> Option<KeyBinding> {
         "undo" => KeyBinding::new(ks, Undo, ctx),
         // Shipped fixed points keep their original binding sites.
         "toggle-presentation" | "save-spec" => return None,
+        // Protocol-context verbs (card 0029) are handled by the egui Protocol
+        // panel, not this gpui adapter, and land here intentionally.
         _ => return None,
     })
 }
@@ -160,10 +169,14 @@ mod tests {
 
     #[test]
     fn kbg_ac01_adapter_covers_every_new_registry_binding() {
-        // The adapter produces exactly the registry's bindings minus the two
-        // shipped fixed points — no other longname is silently dropped.
+        // The adapter produces exactly the registry's chart-grammar bindings minus
+        // the two shipped fixed points — no other longname is silently dropped.
+        // Protocol-context verbs (card 0029) are excluded: that grammar is
+        // dispatched by the egui Protocol panel (`brightfield-shell::protocol`)
+        // through the registry directly, not by this gpui adapter.
         let want: usize = keymap_bindings(&registry())
             .iter()
+            .filter(|bk| bk.context != BindingContext::Protocol)
             .filter(|bk| !SHIPPED_FIXED_POINTS.contains(&bk.longname))
             .count();
         assert_eq!(grammar_key_bindings().len(), want, "adapter dropped a new registry binding");
@@ -208,7 +221,14 @@ mod tests {
         let table: std::collections::HashSet<&str> = expected.iter().map(|(l, _)| *l).collect();
         let reg = registry();
         for v in &reg {
-            if v.is_reserved() || v.longname == "save-spec" {
+            let is_protocol = v
+                .binding_specs
+                .iter()
+                .any(|s| s.context == BindingContext::Protocol);
+            if v.is_reserved() || v.longname == "save-spec" || is_protocol {
+                // Reserved (unbound), save-spec (editor subtree), and the Protocol
+                // grammar (served by the egui Protocol panel, not this gpui adapter)
+                // are all deliberately not palette-runnable here.
                 assert!(
                     action_for_longname(v.longname).is_none(),
                     "{} must not be palette-runnable",

@@ -55,6 +55,25 @@ pub struct Layout {
     pub positions: BTreeMap<AssetId, Rect>,
     /// Routed edges along the dummy-node lanes.
     pub lanes: Vec<EdgeRoute>,
+    /// The direction the DAG was laid out — the renderer routes edges (and
+    /// points seam chevrons) along this axis.
+    pub flow: Flow,
+}
+
+/// Which way the layers progress — the reading axis of the DAG.
+///
+/// The layering + crossing-reduction passes are orientation-agnostic and run
+/// verbatim; only the final coordinate assignment (and the renderer's edge
+/// routing) transposes. `Horizontal` is the wide overview/export render;
+/// `Vertical` puts the long axis on natural scroll — the right reading inside a
+/// dock pane and the shape web's `/protocols` spine reads top-to-bottom.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Flow {
+    /// Layers → columns, left → right; nodes stack vertically within a layer.
+    #[default]
+    Horizontal,
+    /// Layers → rows, top → bottom; nodes spread horizontally within a layer.
+    Vertical,
 }
 
 /// Tunable spacing; the default is the dump arm's configuration.
@@ -62,15 +81,19 @@ pub struct Layout {
 pub struct LayoutConfig {
     /// Canvas margin on all sides.
     pub margin: f64,
-    /// Horizontal gap between layer columns.
+    /// Gap between layers along the flow axis (columns horizontally, rows
+    /// vertically).
     pub col_gap: f64,
-    /// Vertical gap between nodes in a column.
+    /// Gap between sibling nodes across the flow axis (down a column
+    /// horizontally, along a row vertically).
     pub row_gap: f64,
+    /// The direction the DAG flows.
+    pub flow: Flow,
 }
 
 impl Default for LayoutConfig {
     fn default() -> Self {
-        Self { margin: 32.0, col_gap: 64.0, row_gap: 20.0 }
+        Self { margin: 32.0, col_gap: 64.0, row_gap: 20.0, flow: Flow::Horizontal }
     }
 }
 
@@ -250,8 +273,12 @@ pub fn layout(graph: &AssetGraph, config: &LayoutConfig) -> Layout {
         }
     }
 
-    // Coordinates: per-layer columns sized to the widest card, stacks
-    // vertically centred on the tallest column, whole pixels throughout.
+    // Coordinates. Two axes, named orientation-neutrally: the **along** axis
+    // separates layers (the flow direction), the **cross** axis stacks the
+    // nodes within a layer. Horizontal maps along→x, cross→y; Vertical
+    // transposes to along→y, cross→x. The layering + crossing passes above are
+    // untouched — only this assignment (and the renderer's routing) flips.
+    let vertical = matches!(config.flow, Flow::Vertical);
     let size_of = |slot: &Slot| -> (f64, f64) {
         match slot {
             Slot::Real(id) => {
@@ -261,64 +288,94 @@ pub fn layout(graph: &AssetGraph, config: &LayoutConfig) -> Layout {
             Slot::Dummy { .. } => (0.0, 10.0),
         }
     };
-    let col_widths: Vec<f64> = layers
+    // (along, cross) extent of a slot. A dummy is a thin lane in BOTH flows: 0
+    // along, 10 across — so transposing must not swap those, hence the explicit
+    // form rather than reusing `size_of`.
+    let extents = |slot: &Slot| -> (f64, f64) {
+        match slot {
+            Slot::Real(_) => {
+                let (w, h) = size_of(slot);
+                if vertical { (h, w) } else { (w, h) }
+            }
+            Slot::Dummy { .. } => (0.0, 10.0),
+        }
+    };
+    // Layer "thickness" along the flow (widest/tallest card), floored so a
+    // sparse layer still reserves a lane; layer "length" across it.
+    let thickness: Vec<f64> = layers
         .iter()
-        .map(|l| l.iter().map(|s| size_of(s).0).fold(48.0, f64::max))
+        .map(|l| l.iter().map(|s| extents(s).0).fold(48.0, f64::max))
         .collect();
-    let col_heights: Vec<f64> = layers
+    let lengths: Vec<f64> = layers
         .iter()
         .map(|l| {
-            let heights: f64 = l.iter().map(|s| size_of(s).1).sum();
-            heights + config.row_gap * (l.len().saturating_sub(1)) as f64
+            let sum: f64 = l.iter().map(|s| extents(s).1).sum();
+            sum + config.row_gap * (l.len().saturating_sub(1)) as f64
         })
         .collect();
-    let tallest = col_heights.iter().copied().fold(0.0, f64::max);
+    let longest = lengths.iter().copied().fold(0.0, f64::max);
 
     let mut positions: BTreeMap<AssetId, Rect> = BTreeMap::new();
     let mut lane_points: BTreeMap<String, (f64, f64)> = BTreeMap::new();
-    let mut x = config.margin;
+    let mut a = config.margin; // along coordinate — advances per layer
     for (l, slots) in layers.iter().enumerate() {
-        let col_w = col_widths[l];
-        let mut y = config.margin + ((tallest - col_heights[l]) / 2.0).max(0.0);
+        let thick = thickness[l];
+        let mut c = config.margin + ((longest - lengths[l]) / 2.0).max(0.0);
         for slot in slots {
-            let (w, h) = size_of(slot);
+            let (a_ext, c_ext) = extents(slot);
             match slot {
                 Slot::Real(id) => {
+                    let (w, h) = size_of(slot);
+                    // Centre the card within the layer thickness (along), place
+                    // it at the running cross coordinate.
+                    let centred = a + (thick - a_ext) / 2.0;
+                    let (x, y) = if vertical { (c, centred) } else { (centred, c) };
                     positions.insert(
                         id.clone(),
-                        Rect {
-                            x: (x + (col_w - w) / 2.0).round(),
-                            y: y.round(),
-                            width: w.round(),
-                            height: h.round(),
-                        },
+                        Rect { x: x.round(), y: y.round(), width: w.round(), height: h.round() },
                     );
                 }
                 Slot::Dummy { .. } => {
-                    lane_points.insert(
-                        slot_id(slot),
-                        ((x + col_w / 2.0).round(), (y + h / 2.0).round()),
-                    );
+                    // Lane point: along-centre of the layer, cross-centre of the
+                    // slot.
+                    let along_c = a + thick / 2.0;
+                    let cross_c = c + c_ext / 2.0;
+                    let (px, py) = if vertical { (cross_c, along_c) } else { (along_c, cross_c) };
+                    lane_points.insert(slot_id(slot), (px.round(), py.round()));
                 }
             }
-            y += h + config.row_gap;
+            c += c_ext + config.row_gap;
         }
-        x += col_w + config.col_gap;
+        a += thick + config.col_gap;
     }
-    let width = (x - config.col_gap + config.margin).round();
-    let height = (tallest + 2.0 * config.margin).round();
+    let along_total = (a - config.col_gap + config.margin).round();
+    let cross_total = (longest + 2.0 * config.margin).round();
+    let (width, height) =
+        if vertical { (cross_total, along_total) } else { (along_total, cross_total) };
 
-    // Routes: from-right-edge -> dummy lane points -> to-left-edge.
+    // Routes: exit the producer's downstream edge -> dummy lane points -> enter
+    // the consumer's upstream edge. Horizontal exits the right edge / enters the
+    // left; Vertical exits the bottom / enters the top (downstream sits below).
     let lanes: Vec<EdgeRoute> = unique
         .iter()
         .map(|((from, to), (via, shield))| {
             let f = &positions[from];
             let t = &positions[to];
-            let mut points = vec![(f.x + f.width, (f.y + f.height / 2.0).round())];
+            let start = if vertical {
+                ((f.x + f.width / 2.0).round(), f.y + f.height)
+            } else {
+                (f.x + f.width, (f.y + f.height / 2.0).round())
+            };
+            let end = if vertical {
+                ((t.x + t.width / 2.0).round(), t.y)
+            } else {
+                (t.x, (t.y + t.height / 2.0).round())
+            };
+            let mut points = vec![start];
             for d in &routes_chain[&(from.clone(), to.clone())] {
                 points.push(lane_points[&slot_id(d)]);
             }
-            points.push((t.x, (t.y + t.height / 2.0).round()));
+            points.push(end);
             EdgeRoute {
                 from: from.clone(),
                 to: to.clone(),
@@ -329,7 +386,7 @@ pub fn layout(graph: &AssetGraph, config: &LayoutConfig) -> Layout {
         })
         .collect();
 
-    Layout { width, height, positions, lanes }
+    Layout { width, height, positions, lanes, flow: config.flow }
 }
 
 #[cfg(test)]
@@ -437,6 +494,7 @@ steps:
     fn pds_layout_flows_left_to_right() {
         let g = diamond();
         let l = layout(&g, &LayoutConfig::default());
+        assert_eq!(l.flow, Flow::Horizontal);
         for lane in &l.lanes {
             let f = &l.positions[&lane.from];
             let t = &l.positions[&lane.to];
@@ -454,5 +512,60 @@ steps:
             l.lanes.iter().any(|lane| lane.points.len() > 2),
             "the layer-spanning edge routes through a dummy lane"
         );
+    }
+
+    #[test]
+    fn t29_vertical_flow_reads_top_to_bottom() {
+        // Vertical transposes the SAME graph: every downstream node sits strictly
+        // BELOW its producer, edges exit the bottom edge and enter the top.
+        let g = diamond();
+        let cfg = LayoutConfig { flow: Flow::Vertical, ..LayoutConfig::default() };
+        let l = layout(&g, &cfg);
+        assert_eq!(l.flow, Flow::Vertical);
+        for lane in &l.lanes {
+            let f = &l.positions[&lane.from];
+            let t = &l.positions[&lane.to];
+            assert!(
+                f.y + f.height <= t.y,
+                "downstream sits strictly below: {} -> {}",
+                lane.from,
+                lane.to
+            );
+            // Edge exits the producer's bottom edge, enters the consumer's top.
+            let (_, sy) = *lane.points.first().unwrap();
+            let (_, ey) = *lane.points.last().unwrap();
+            assert_eq!(sy, f.y + f.height, "exits the bottom edge");
+            assert_eq!(ey, t.y, "enters the top edge");
+        }
+        assert_eq!(l.positions.len(), g.nodes.len());
+    }
+
+    #[test]
+    fn t29_vertical_bounds_width_to_the_widest_layer() {
+        // The motivating win: horizontal's long axis is width (sideways scroll);
+        // vertical puts the long axis on height, so the canvas is TALLER than it
+        // is WIDE and strictly narrower than the horizontal render's width.
+        let g = diamond();
+        let h = layout(&g, &LayoutConfig::default());
+        let v = layout(&g, &LayoutConfig { flow: Flow::Vertical, ..LayoutConfig::default() });
+        assert!(v.height > v.width, "vertical is taller than wide: {}x{}", v.width, v.height);
+        assert!(v.width < h.width, "vertical bounds width below the horizontal render");
+        // The transpose swaps which axis is long: horizontal is wider than tall,
+        // vertical is taller than wide (the layouts are near-mirror dimensions,
+        // not byte-identical — per-node width != height shifts the packing).
+        assert!(h.width > h.height, "horizontal is wider than tall");
+    }
+
+    #[test]
+    fn t29_vertical_layout_is_deterministic_and_whole_pixel() {
+        let g = diamond();
+        let cfg = LayoutConfig { flow: Flow::Vertical, ..LayoutConfig::default() };
+        assert_eq!(layout(&g, &cfg), layout(&g, &cfg));
+        let l = layout(&g, &cfg);
+        for r in l.positions.values() {
+            for val in [r.x, r.y, r.width, r.height] {
+                assert_eq!(val.fract(), 0.0, "whole pixels: {r:?}");
+            }
+        }
     }
 }

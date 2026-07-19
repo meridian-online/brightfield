@@ -27,6 +27,10 @@ pub enum BindingContext {
     Workspace,
     /// Editor-scoped: fires only while the YAML editor holds focus.
     Editor,
+    /// Protocol-panel-scoped: fires only while the protocol asset-graph panel
+    /// holds focus (card 0029). A distinct context so the panel's topological
+    /// `h`/`l`/`j`/`k` never collide with the chart grammar's nav bindings.
+    Protocol,
     /// Global (`context = None`): fires from any focus (palette twin, focus
     /// toggle, save/reload-from-anywhere).
     Global,
@@ -65,6 +69,32 @@ pub enum Drives {
     SpecEdit,
     /// A deferred verb, shown but unbound.
     Reserved,
+}
+
+/// The command tier — the cmdlog discipline's REQUIRED taxonomy (card 0029,
+/// doc-25 §5), enforced from the first commit because it cannot be retrofitted.
+///
+/// Every verb declares which tier it is. The split governs the command log: a
+/// **View** command (navigation, folds, panes, palette/help) is never logged —
+/// it changes only what you look at. A **Data** command carries a stable dotted
+/// address (an asset id / focused node), and IS logged as `longname + address +
+/// input`, JSONL, **never** a screen position or pointer movement. A logged row
+/// is shape-identical to an `op:`/`with:` step, so a session's Data rows compile
+/// straight into a protocol fragment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandTier {
+    /// Changes only the view (nav / fold / pane / meta). Never logged.
+    View,
+    /// Acts on addressed data. Logged by longname + dotted address + input.
+    Data,
+}
+
+impl CommandTier {
+    /// Whether commands at this tier are written to the command log.
+    #[must_use]
+    pub fn is_logged(self) -> bool {
+        matches!(self, CommandTier::Data)
+    }
 }
 
 /// Lifecycle status of a verb in this card.
@@ -113,6 +143,11 @@ pub struct VerbEntry {
     pub scope_applicability: Vec<Altitude>,
     /// What the verb drives.
     pub drives: Drives,
+    /// The cmdlog tier — REQUIRED on every verb (card 0029). Governs whether the
+    /// verb logs, and, for `Data`, that it logs by dotted address (never a
+    /// screen position). Enforced by [`registry`]'s construction, so a new verb
+    /// cannot be added without a deliberate tier call.
+    pub tier: CommandTier,
     /// Lifecycle status.
     pub status: VerbStatus,
     /// For reserved verbs: which bucket blocks it. `None` for active verbs.
@@ -161,18 +196,20 @@ const DASHBOARD_AND_VIEW: &[Altitude] = &[Altitude::Dashboard, Altitude::View];
 /// and [`help_sheet`].
 #[must_use]
 pub fn registry() -> Vec<VerbEntry> {
-    use Altitude::{Dashboard, View};
+    use Altitude::{Dashboard, Protocol, View};
     use BindingContext::{Editor, Global, Workspace};
     use Drives as D;
 
     let ws = |k: &'static str| BindingSpec { keystrokes: k, context: Workspace };
     let global = |k: &'static str| BindingSpec { keystrokes: k, context: Global };
     let editor = |k: &'static str| BindingSpec { keystrokes: k, context: Editor };
+    let proto = |k: &'static str| BindingSpec { keystrokes: k, context: BindingContext::Protocol };
 
     vec![
         // ---- navigation (ac-10) ----
         VerbEntry {
             longname: "dive-in",
+            tier: CommandTier::View,
             binding_specs: vec![ws("l"), ws("enter")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
             drives: D::Navigation,
@@ -183,6 +220,7 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "pop-out",
+            tier: CommandTier::View,
             binding_specs: vec![ws("h"), ws("q")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
             drives: D::Navigation,
@@ -193,6 +231,7 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "focus-next-sibling",
+            tier: CommandTier::View,
             binding_specs: vec![ws("j"), ws("tab")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
             drives: D::Navigation,
@@ -203,6 +242,7 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "focus-prev-sibling",
+            tier: CommandTier::View,
             binding_specs: vec![ws("k"), ws("shift-tab")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
             drives: D::Navigation,
@@ -213,6 +253,7 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "toggle-focus",
+            tier: CommandTier::View,
             binding_specs: vec![global("cmd-e")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
             drives: D::Navigation,
@@ -223,6 +264,7 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "focus-jump",
+            tier: CommandTier::View,
             binding_specs: vec![ws("/")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
             drives: D::Navigation,
@@ -234,6 +276,7 @@ pub fn registry() -> Vec<VerbEntry> {
         // ---- palette + help (ac-12, ac-19) ----
         VerbEntry {
             longname: "open-palette",
+            tier: CommandTier::View,
             binding_specs: vec![ws("space"), global("cmd-shift-p")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
             drives: D::PaletteMeta,
@@ -244,6 +287,7 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "open-help",
+            tier: CommandTier::View,
             binding_specs: vec![ws("?")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
             drives: D::PaletteMeta,
@@ -255,6 +299,7 @@ pub fn registry() -> Vec<VerbEntry> {
         // ---- runtime verbs (ac-11) ----
         VerbEntry {
             longname: "clear-selection",
+            tier: CommandTier::View,
             binding_specs: vec![ws("escape")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
             drives: D::RuntimeDispatch,
@@ -265,6 +310,7 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "reload-spec",
+            tier: CommandTier::View,
             binding_specs: vec![global("cmd-r")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
             drives: D::RuntimeDispatch,
@@ -277,6 +323,7 @@ pub fn registry() -> Vec<VerbEntry> {
         //      the registry is the single binding source ----
         VerbEntry {
             longname: "toggle-presentation",
+            tier: CommandTier::View,
             binding_specs: vec![ws("p")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
             drives: D::Presentation,
@@ -287,6 +334,7 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "save-spec",
+            tier: CommandTier::View,
             binding_specs: vec![editor("cmd-s")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
             drives: D::RuntimeDispatch,
@@ -298,6 +346,7 @@ pub fn registry() -> Vec<VerbEntry> {
         // ---- colour preview (ac-13): transient, view-scoped ----
         VerbEntry {
             longname: "cycle-colour-scheme",
+            tier: CommandTier::View,
             binding_specs: vec![ws("c")],
             scope_applicability: vec![View],
             drives: D::ColourPreview,
@@ -316,6 +365,7 @@ pub fn registry() -> Vec<VerbEntry> {
         //      + Session::reload_spec seam now back them (clg-ac03). ----
         VerbEntry {
             longname: "change-mark-type",
+            tier: CommandTier::Data,
             binding_specs: vec![ws("m")],
             scope_applicability: vec![View],
             drives: D::SpecEdit,
@@ -326,6 +376,7 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "add-mark",
+            tier: CommandTier::Data,
             binding_specs: vec![ws("a")],
             scope_applicability: vec![View],
             drives: D::SpecEdit,
@@ -336,6 +387,7 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "set-channel",
+            tier: CommandTier::Data,
             binding_specs: vec![ws("e")],
             scope_applicability: vec![View],
             drives: D::SpecEdit,
@@ -346,6 +398,7 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "remove-mark",
+            tier: CommandTier::Data,
             binding_specs: vec![ws("d")],
             scope_applicability: vec![View],
             drives: D::SpecEdit,
@@ -356,6 +409,7 @@ pub fn registry() -> Vec<VerbEntry> {
         },
         VerbEntry {
             longname: "undo",
+            tier: CommandTier::View,
             binding_specs: vec![ws("u")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
             drives: D::SpecEdit,
@@ -363,6 +417,108 @@ pub fn registry() -> Vec<VerbEntry> {
             reserved_reason: None,
             help: "Undo the last uncommitted edit (cannot cross a commit)",
             scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 5, motor_note: "u = undo (vim); snapshot-stack pop, stops at a commit barrier" }),
+        },
+        // ---- protocol altitude (card 0029): the asset-graph grammar. All the
+        //      motion/fold/drill verbs are View-tier (never logged); the object
+        //      verb that names an asset is Data-tier (logged by dotted address). ----
+        VerbEntry {
+            longname: "protocol-producer",
+            tier: CommandTier::View,
+            binding_specs: vec![proto("h")],
+            scope_applicability: vec![Protocol],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Move to the focused asset's producer (topological left)",
+            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "h = upstream/producer (vim left); survives re-layout, unlike an arrow" }),
+        },
+        VerbEntry {
+            longname: "protocol-consumer",
+            tier: CommandTier::View,
+            binding_specs: vec![proto("l")],
+            scope_applicability: vec![Protocol],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Move to the focused asset's consumer (topological right)",
+            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "l = downstream/consumer (vim right); topological, not geometric" }),
+        },
+        VerbEntry {
+            longname: "protocol-sibling-next",
+            tier: CommandTier::View,
+            binding_specs: vec![proto("j")],
+            scope_applicability: vec![Protocol],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Move to the next rank sibling (down the layer)",
+            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "j = next sibling (vim down); orders by node id within the layer" }),
+        },
+        VerbEntry {
+            longname: "protocol-sibling-prev",
+            tier: CommandTier::View,
+            binding_specs: vec![proto("k")],
+            scope_applicability: vec![Protocol],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Move to the previous rank sibling (up the layer)",
+            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "k = prev sibling (vim up); orders by node id within the layer" }),
+        },
+        VerbEntry {
+            longname: "toggle-fold-family",
+            tier: CommandTier::View,
+            binding_specs: vec![proto("z a")],
+            scope_applicability: vec![Protocol],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Fold/unfold the parameterised family under the cursor",
+            scores: Some(Scores { frequency: 3, mnemonic: 4, convention: 5, motor_note: "za = toggle fold (vim fold family); a fold is a view change, never logged" }),
+        },
+        VerbEntry {
+            longname: "protocol-drill-in",
+            tier: CommandTier::View,
+            binding_specs: vec![proto("enter")],
+            scope_applicability: vec![Protocol],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Drill into the focused asset (push the drill stack)",
+            scores: Some(Scores { frequency: 4, mnemonic: 4, convention: 5, motor_note: "enter = dive (miller-columns); pushes a breadcrumb the drill stack tracks" }),
+        },
+        VerbEntry {
+            longname: "protocol-drill-out",
+            tier: CommandTier::View,
+            binding_specs: vec![proto("escape")],
+            scope_applicability: vec![Protocol],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Pop one level off the drill stack",
+            scores: Some(Scores { frequency: 4, mnemonic: 4, convention: 5, motor_note: "esc = pop one level (Esc ladder); breadcrumb tracks the pop" }),
+        },
+        VerbEntry {
+            longname: "open-steps-sheet",
+            tier: CommandTier::View,
+            binding_specs: vec![proto("shift-s")],
+            scope_applicability: vec![Protocol],
+            drives: D::PaletteMeta,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Open the S steps sheet — the flat step list as a grid",
+            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 4, motor_note: "S = steps sheet (VisiData sheet family); answers 'where is my step list'" }),
+        },
+        VerbEntry {
+            longname: "yank-address",
+            tier: CommandTier::Data,
+            binding_specs: vec![proto("y")],
+            scope_applicability: vec![Protocol],
+            drives: D::RuntimeDispatch,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Yank the focused asset's dotted address to the clipboard",
+            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 4, motor_note: "y = yank (vim); a Data verb — logged by longname + dotted address" }),
         },
     ]
 }
@@ -376,6 +532,9 @@ fn reserved(
 ) -> VerbEntry {
     VerbEntry {
         longname,
+        // Every reserved verb here needs a keyboard data-target — i.e. a dotted
+        // address to act on — so each is a Data-tier command by construction.
+        tier: CommandTier::Data,
         binding_specs: Vec::new(),
         scope_applicability,
         drives: Drives::Reserved,
@@ -566,8 +725,73 @@ mod tests {
             "set-channel",
             "remove-mark",
             "undo",
+            "protocol-producer",
+            "protocol-consumer",
+            "protocol-sibling-next",
+            "protocol-sibling-prev",
+            "toggle-fold-family",
+            "protocol-drill-in",
+            "protocol-drill-out",
+            "open-steps-sheet",
+            "yank-address",
         ];
         assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn t29_every_verb_declares_a_tier_and_only_data_logs() {
+        // The cmdlog discipline's REQUIRED field: every verb carries a tier, and
+        // exactly the Data tier is logged. Navigation/fold/pane/meta verbs are
+        // View; the spec-edit + object verbs that name a dotted address are Data.
+        let reg = registry();
+        let logged: Vec<&str> =
+            reg.iter().filter(|v| v.tier.is_logged()).map(|v| v.longname).collect();
+        // The Data-tier set is exactly the addressed verbs.
+        let mut got = logged.clone();
+        got.sort_unstable();
+        let mut expected = vec![
+            "change-mark-type",
+            "add-mark",
+            "set-channel",
+            "remove-mark",
+            "filter-view",
+            "cross-filter-all",
+            "toggle-point-select",
+            "set-param",
+            "yank-address",
+        ];
+        expected.sort_unstable();
+        assert_eq!(got, expected, "only addressed (Data) verbs log");
+        // Every protocol MOTION verb is View-tier (a fold/nav is never logged).
+        for name in [
+            "protocol-producer",
+            "protocol-consumer",
+            "protocol-sibling-next",
+            "protocol-sibling-prev",
+            "toggle-fold-family",
+            "protocol-drill-in",
+            "protocol-drill-out",
+            "open-steps-sheet",
+        ] {
+            let v = reg.iter().find(|v| v.longname == name).unwrap();
+            assert_eq!(v.tier, CommandTier::View, "{name} is a view command, never logged");
+        }
+    }
+
+    #[test]
+    fn t29_protocol_altitude_verbs_are_scoped_to_protocol_only() {
+        // Protocol verbs never leak into the chart grammar: they apply at
+        // Protocol and nowhere else.
+        let reg = registry();
+        for v in reg.iter().filter(|v| v.longname.starts_with("protocol-")
+            || v.longname == "toggle-fold-family"
+            || v.longname == "open-steps-sheet"
+            || v.longname == "yank-address")
+        {
+            assert_eq!(v.scope_applicability, vec![Altitude::Protocol], "{} is protocol-only", v.longname);
+            assert!(!v.applies_at(Altitude::View), "{} must not fire at View", v.longname);
+            assert!(!v.applies_at(Altitude::Dashboard), "{} must not fire at Dashboard", v.longname);
+        }
     }
 
     #[test]
