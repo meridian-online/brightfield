@@ -2,13 +2,13 @@
 
 > **Early Release** — Brightfield is in early development. The project is in the discovery and design phase. Expect breaking changes to spec semantics, CLI arguments, library APIs, and rendering output between releases. Pin to a specific version if stability matters for your use case.
 
-GPU-native desktop application for interactive data visualisation at any scale. Brightfield combines [Mosaic](https://idl.uw.edu/mosaic/)'s declarative specification grammar and coordinator architecture with [GPUI](https://www.gpui.rs/)'s GPU-accelerated rendering and [DuckDB](https://duckdb.org)'s analytical query engine — all implemented in Rust for a single-process, zero-serialisation-overhead experience.
+GPU-native desktop application for interactive data visualisation at any scale. Brightfield combines [Mosaic](https://idl.uw.edu/mosaic/)'s declarative specification grammar and coordinator architecture with a [Vello](https://github.com/linebender/vello) GPU 2D scene renderer hosted in a [GPUI](https://www.gpui.rs/) application shell and [DuckDB](https://duckdb.org)'s analytical query engine — all implemented in Rust for a single-process, zero-serialisation-overhead experience.
 
 The goal is a tool that can interactively visualise and explore datasets from thousands to billions of records with fluid, GPU-rendered interactions, without the performance ceiling of browser-based rendering or the overhead of a webview shell.
 
 ## Quick Start
 
-Brightfield builds with a standard Rust toolchain (1.80+). From a clone of the repo, render the self-contained example spec:
+Brightfield builds with a recent Rust toolchain (1.95+ — the floor set by the pinned GPUI and Vello 0.9). From a clone of the repo, render the self-contained example spec:
 
 ```sh
 # macOS — opens a native, GPU-rendered window
@@ -27,7 +27,7 @@ The native window is currently macOS-only (it needs GPUI's Metal backend). On Li
 - **Spec-driven.** The Mosaic declarative specification (YAML/JSON) is the stable contract. Users author visualisations and dashboards as portable spec files. The rendering backend is an implementation detail.
 - **Database-first.** All data-intensive computation — filtering, aggregation, binning, joins, window functions — is pushed to DuckDB. The renderer receives only the minimal data needed for display.
 - **Single-process, in-memory.** DuckDB runs in-process via `duckdb-rs`. No HTTP server, no WebSocket layer, no serialisation boundary between the query engine and the coordinator. Data flows as Arrow record batches in shared memory.
-- **GPU-native rendering.** GPUI provides GPU-accelerated rendering at up to 120 FPS via Metal (macOS) and Vulkan (Linux), with a hybrid immediate/retained mode model suited to interactive, frequently-updating visualisations.
+- **GPU-native rendering.** Charts are drawn as [Vello](https://github.com/linebender/vello) 2D scenes rendered on the GPU via wgpu (Metal on macOS, Vulkan on Linux). GPUI hosts the application window and widget shell and presents the rendered scene, giving a hybrid immediate/retained model suited to interactive, frequently-updating visualisations.
 
 ## Features
 
@@ -79,10 +79,10 @@ The system comprises four layers:
                    │ minimal data
                    ▼
 ┌──────────────────────────────────────────────┐
-│           Renderer (GPUI)                     │
+│        Renderer (Vello scene + GPUI)          │
 │  Marks, axes, scales, legends, interactors    │
-│  GPU-accelerated via Metal/Vulkan             │
-│  Built on GPUI + gpui-plot foundations        │
+│  Vello 2D scene, GPU-drawn via wgpu           │
+│  (Metal/Vulkan); presented by the GPUI shell  │
 └──────────────────────────────────────────────┘
 ```
 
@@ -92,7 +92,7 @@ The system comprises four layers:
 
 **Coordinator.** A Rust equivalent of Mosaic's `mosaic-core` package. Manages reactive params, first-class selections with resolution strategies, SQL-keyed result caching, automatic pre-aggregation, M4 downsampling, and priority queuing for interactive vs background queries. Data flows as Arrow record batches via `duckdb-rs`, staying in Rust memory throughout.
 
-**Renderer.** Native rendering via GPUI, building on `gpui-plot` as a foundation. Marks, scales (linear/log/sqrt/band/ordinal/time/colour), axes, legends, interactors, layout primitives, and GPUI's built-in animation system for smooth transitions on data and selection updates.
+**Renderer.** A framework-free `brightfield-render` crate turns marks, scales (linear/log/sqrt/band/ordinal/time/colour), axes, legends, interactors, and layout primitives into a [Vello](https://github.com/linebender/vello) `Scene` — no GPUI dependency, so the same scene builder feeds both the live window and the headless PNG path. The GPUI shell (`brightfield-ui`) owns a dedicated wgpu device that rasterises the Vello scene and presents it, wiring pointer events into the interaction transitions and driving smooth transitions on data and selection updates. Text is shaped and rendered with [skrifa](https://github.com/googlefonts/fontations).
 
 ## Platform Support
 
@@ -105,8 +105,8 @@ The system comprises four layers:
 | Component | Technology | Rationale |
 |-----------|-----------|-----------|
 | Language | Rust | Performance, memory safety, single-language stack |
-| UI framework | GPUI (from Zed) | GPU-accelerated, hybrid immediate/retained mode, 120 FPS target, Rust-native |
-| Charting foundation | gpui-plot | Existing GPUI-native plotting with axes, zooming, panning |
+| 2D scene renderer | Vello (via wgpu) | GPU-accelerated vector 2D; marks, axes, scales, legends drawn as a retained `Scene`; renders live and headless |
+| Application shell | GPUI (from Zed) + gpui-component | Window, docked panels, spec editor, and widget shell; hosts and presents the Vello scene |
 | Query engine | DuckDB via duckdb-rs | Best-in-class analytical database, in-process, Arrow-native |
 | Data transfer | Apache Arrow (arrow-rs) | Zero-copy columnar format, shared between DuckDB and renderer |
 | Spec format | Mosaic spec (YAML/JSON) | Best available declarative grammar, portable, well-documented |
@@ -147,7 +147,7 @@ Contributions welcome! Please open an issue or PR.
 
 Part of the [Meridian](https://meridian.online) project.
 
-Built with [GPUI](https://www.gpui.rs/) (Zed's GPU-accelerated UI framework), [gpui-plot](https://crates.io/crates/gpui-plot) (native plotting foundation), [DuckDB](https://duckdb.org) via [duckdb-rs](https://crates.io/crates/duckdb), [Apache Arrow](https://arrow.apache.org/) via [arrow-rs](https://github.com/apache/arrow-rs), and [Serde](https://serde.rs).
+Built with [Vello](https://github.com/linebender/vello) (Linebender's GPU 2D scene renderer) on [wgpu](https://wgpu.rs/), hosted in [GPUI](https://www.gpui.rs/) (Zed's GPU-accelerated UI framework), with text shaped by [skrifa](https://github.com/googlefonts/fontations), [DuckDB](https://duckdb.org) via [duckdb-rs](https://crates.io/crates/duckdb), [Apache Arrow](https://arrow.apache.org/) via [arrow-rs](https://github.com/apache/arrow-rs), and [Serde](https://serde.rs).
 
 Chart labels are rendered with [Inter](https://rsms.me/inter/), bundled (with its SIL Open Font License 1.1) via the Meridian design crate.
 
