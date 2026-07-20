@@ -248,7 +248,8 @@ mod tests {
 
     #[test]
     fn fixed_points_are_left_to_their_shipped_binding_sites() {
-        // The adapter does NOT re-bind p or cmd-s (covered elsewhere).
+        // The adapter does NOT re-bind p or cmd-s — both keep the binding sites
+        // they shipped with, covered by the workspace and spec-save tests.
         let b = grammar_key_bindings();
         assert!(matches_complete(&b, "p").is_empty(), "p stays a workspace binding");
         assert!(matches_complete(&b, "cmd-s").is_empty(), "cmd-s stays an editor binding");

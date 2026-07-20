@@ -3401,7 +3401,7 @@ mod tests {
 
     // -----------------------------------------------------------------------
     // Bottom dock seed/backfill + presentation round trip,
-    // against the real WorkspaceRoot in a test window (precedent).
+    // against the real WorkspaceRoot in a test window.
     // -----------------------------------------------------------------------
 
     struct TestShell {

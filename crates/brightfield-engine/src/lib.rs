@@ -721,7 +721,7 @@ impl Session {
     /// at every level against the full `param_state` and the active
     /// `selection_state`. The selection-predicate slice is captured ONCE
     /// before the loop, so chained re-execution honours the active brush
-    /// at every level (the decision-2 invariant).
+    /// at every level (the capture-once invariant).
     ///
     /// **Dedup invariant (decision 3 — first-level-wins):** a
     /// mark whose query references both an upstream param (e.g. `$A`) and a
@@ -758,7 +758,7 @@ impl Session {
         // 3. Capture the selection-predicate slice ONCE before the loop.
         //    Every level of the walk receives the same slice, so a chained
         //    re-execution after a brush release continues to honour the
-        //    active selection (the decision-2 invariant). Capturing inside the
+        //    active selection (the capture-once invariant). Capturing inside the
         //    loop would re-read self.selection_state at every level — no
         //    behavioural difference today, but a foot-gun if a future change
         //    accidentally mutates selection_state mid-walk.
