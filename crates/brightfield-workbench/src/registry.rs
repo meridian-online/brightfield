@@ -1,12 +1,16 @@
-//! The only route from an item to a pane.
+//! The route from an item to a pane.
 //!
 //! Everything downstream reads this one list: the default arrangement is
 //! built from it, the live item map is instantiated from it, and the item
-//! vocabulary a saved layout is validated against is published from it. An
-//! item that is not in a registry has no way into a tile tree at all — which
-//! is what turns the empty-state gate from a posture into a gate. "The list
-//! is hand-written, something could escape it" stops being true once the list
-//! is the only door.
+//! vocabulary a saved layout is validated against is published from it.
+//!
+//! It is the door every pane is *meant* to come through, not one it is forced
+//! through — `egui_tiles::Tiles::insert_pane` is public and will take a
+//! [`PaneKey`](crate::PaneKey) from anyone. So [`audit`](crate::audit) covers
+//! every item that went through the registry, which is every item anyone has a
+//! reason to add; a pane inserted around it leaves the contract and the
+//! audit's reach in the same move. Worth knowing before leaning on the gate
+//! for a guarantee it cannot give.
 
 use std::collections::BTreeSet;
 

@@ -320,17 +320,15 @@ pub trait Item<D: ?Sized> {
     /// Draw the body.
     ///
     /// `ui` is a child `Ui` whose `max_rect` *and clip rect* are both the
-    /// content rect the shell reserved **below** the header band. Anything
-    /// drawn through this `Ui` — its painter, its widgets, any `Ui` derived
-    /// from it — is clipped to that rect, so a pane cannot put a header of its
-    /// own where the shell's goes.
+    /// content rect the shell reserved **below** the header band, so drawing
+    /// the ordinary way cannot put a header where the shell's goes.
     ///
-    /// That is a clip, not a capability: `egui::Area`, `egui::Window` and
-    /// `ctx.layer_painter` take a fresh layer from the `Context` and are not
-    /// clipped by it. egui gives no way to withhold those from a `&mut Ui`
-    /// holder, so against a pane that sets out to bypass the contract the
-    /// backstop is review, not the type system. See
-    /// [`crate::chrome::pane_frame`].
+    /// That is a default, not a capability. `Ui::set_clip_rect` widens the
+    /// clip on this very `Ui`, and `egui::Area` / `egui::Window` /
+    /// `ctx.layer_painter` take a fresh layer from the `Context`. egui gives
+    /// no way to withhold any of those from a `&mut Ui` holder, so against a
+    /// pane that sets out to bypass the contract the backstop is review, not
+    /// the type system. See [`crate::chrome::pane_frame`].
     ///
     /// Not called at all when `subject(doc).empty_state` is `Some`.
     fn ui(&mut self, doc: &mut D, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>);

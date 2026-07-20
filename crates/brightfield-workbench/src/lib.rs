@@ -19,28 +19,32 @@
 //! pane header, breadcrumb, tab title, dirty marker, toolbar row and status
 //! rail from it, in one file ([`chrome`]).
 //!
-//! Two properties make that a contract rather than a convention:
+//! Neither of the two properties below is enforced by the compiler. Both are
+//! stated here with the strength they actually have, because code written
+//! against an overstated guarantee is worse off than code written against a
+//! known-soft one:
 //!
-//! - **A pane's `Ui` is clipped below the header band.** [`Item::ui`]
-//!   receives a child `Ui` whose `max_rect` *and clip rect* are both the
-//!   content rect the shell reserved below the band, so a header drawn
-//!   through that `Ui` — its painter, its widgets, any `Ui` derived from it —
-//!   never reaches the pixels. The clip does not reach a pane that takes a
-//!   fresh layer from the `Context` (`egui::Area`, `ctx.layer_painter`), and
-//!   egui offers no way to withhold that from a `&mut Ui` holder; the honest
-//!   statement is *unreachable by accident, reviewable on purpose*. See
+//! - **A pane's `Ui` is clipped below the header band — by default.**
+//!   [`Item::ui`] receives a child `Ui` whose `max_rect` *and clip rect* are
+//!   both the content rect reserved below the band, so a header drawn the
+//!   ordinary way never reaches the pixels. A pane that means to escape can:
+//!   `Ui::set_clip_rect` widens the clip on the `Ui` it was handed, and
+//!   `egui::Area` / `ctx.layer_painter` take a fresh layer outright. egui
+//!   offers no way to withhold either from a `&mut Ui` holder. The honest
+//!   statement is *unreachable by accident, reviewable on purpose* — and the
+//!   reason review suffices is that no [`Subject`] field asks for a header, so
+//!   a pane wanting one has already left the contract. See
 //!   [`chrome::pane_frame`].
 //! - **A forgotten empty state is caught by an audit, not by the compiler.**
 //!   [`Subject::empty_state`] is an `Option` and returning `None` compiles
-//!   cleanly, so the type system does not catch one. [`audit`] does: it walks
-//!   a registry, asks every item for its subject over an empty document, and
-//!   rejects a missing empty state — along with prose that breaks the house
-//!   style, an unregistered verb, and a rail with no toggle. It ships in the
-//!   crate rather than as a helper each view's tests re-write, so a view gates
-//!   itself with one call; the registry being the only route a pane has into a
-//!   layout is what makes one call enough. And when `empty_state` is `Some`
-//!   the shell paints it and does **not** call [`Item::ui`], so a declared
-//!   empty state cannot then be skipped at draw time either.
+//!   cleanly. [`audit`] catches it: it walks a registry, asks every item for
+//!   its subject over an empty document, and rejects a missing empty state —
+//!   along with prose that breaks the house style, an unregistered verb, and a
+//!   rail with no toggle. It ships in the crate rather than as a helper each
+//!   view's tests re-write, so a view gates itself with one call. That is only
+//!   as good as the registry being the door every pane comes through, which is
+//!   a convention this crate makes convenient rather than one it can enforce —
+//!   `egui_tiles` will insert a pane for anyone who asks it.
 //!
 //! Because a `Subject` is plain data — no egui type, no colour, no GPU handle
 //! anywhere in it — the entire visible vocabulary of a surface can be

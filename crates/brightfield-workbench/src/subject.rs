@@ -403,10 +403,14 @@ pub struct Subject {
     pub status: Vec<StatusEntry>,
     /// `Some` means there is nothing to show.
     ///
-    /// When it is `Some` the shell paints this and does **not** call
-    /// [`crate::Item::ui`]. That is what makes the empty state impossible to
-    /// skip: it is not a branch inside the pane's draw code that someone can
-    /// forget to write, it is the shell declining to call the pane at all.
+    /// The intended contract is that when this is `Some` the shell paints it
+    /// and does **not** call [`crate::Item::ui`] — an empty state that is not
+    /// a branch inside the pane's draw code, and so not one anybody can forget
+    /// to write.
+    ///
+    /// **That shell does not exist yet.** This crate defines the vocabulary;
+    /// the frame loop that honours it arrives with the workspace. Until then
+    /// this field is data with an audit over it, not a behaviour.
     pub empty_state: Option<EmptyState>,
 }
 

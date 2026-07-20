@@ -116,28 +116,27 @@ fn ui_font() -> egui::FontId {
 /// already showing the title.
 ///
 /// The returned `Ui`'s `max_rect` **and** its clip rect are both the content
-/// rect *below* the header band and inside the panel padding. Two different
-/// strengths of guarantee follow, and it is worth being precise about which
-/// is which:
+/// rect *below* the header band and inside the panel padding.
 ///
-/// - **Enforced.** Anything painted through the returned `Ui` — `ui.painter()`,
-///   every widget added to it, every nested `Ui` derived from it — is clipped
-///   to the content rect and cannot land in the header band. `max_rect` alone
-///   would not do this: `Ui::new_child` clones the parent's painter and leaves
-///   its clip rect untouched (`egui::Ui::new_child`), so `max_rect` seeds
-///   layout only. The [`Ui::shrink_clip_rect`](egui::Ui::shrink_clip_rect)
-///   below is what makes the statement true.
-/// - **Not enforced.** An item that reaches around its `Ui` — `egui::Area`,
-///   `egui::Window`, `ctx.layer_painter`, anything that takes a fresh layer
-///   from the `Context` — is not clipped by this and can paint anywhere on
-///   screen. egui offers no way to withhold that from a `&mut Ui` holder.
-///   Against *that* the rule is a review rule, backed by the fact that a pane
-///   has no reason to want one and by there being no [`Subject`] field that
-///   could ask for it.
+/// **This is a default, not an enforcement, and the distinction matters
+/// because a lot of code will be written against it.** A pane that simply
+/// draws — `ui.painter()`, its widgets, any nested `Ui` derived from it — is
+/// clipped to the content rect and cannot reach the header band. `max_rect`
+/// alone would not do that: `Ui::new_child` clones the parent's painter and
+/// leaves its clip rect untouched, so `max_rect` seeds layout only, and the
+/// [`Ui::shrink_clip_rect`](egui::Ui::shrink_clip_rect) below is what makes
+/// the default hold.
 ///
-/// So: a pane cannot draw a header by accident, and the contract tests pin
-/// that. A pane that sets out to draw one through a new layer can, and the
-/// answer to that is code review, not the type system.
+/// A pane that *sets out* to escape can. `Ui::set_clip_rect` widens the clip
+/// on the very `&mut Ui` the item is handed; `egui::Area`, `egui::Window` and
+/// `ctx.layer_painter` take a fresh layer from the `Context` entirely. egui
+/// offers no way to withhold any of that from a `&mut Ui` holder, and no
+/// phrasing of this comment will change it.
+///
+/// So the honest statement is: **a pane cannot draw a header by accident**,
+/// and the contract tests pin that. A pane that means to draw one is a code
+/// review, and the reason to expect review to be enough is that no [`Subject`]
+/// field asks for a header — a pane wanting one is already off the contract.
 pub fn pane_frame(ui: &mut egui::Ui, subject: &Subject, header: bool, mode: Mode) -> egui::Ui {
     let sem = semantic(mode.is_dark());
     let outer = ui.max_rect();
