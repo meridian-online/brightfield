@@ -108,7 +108,7 @@ pub enum VerbStatus {
     Reserved,
 }
 
-/// Why a reserved verb is not yet available — the two named buckets.
+/// Why a reserved verb is not yet available — the named buckets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReservedReason {
     /// `m` / `a` / `e` / `d` / undo — need the command log (the SpecEdit AST
@@ -117,6 +117,15 @@ pub enum ReservedReason {
     /// `f` / `g f` / `t` / set-param — need a keyboard data-target: a way to
     /// name a predicate without a pointer-derived rectangle or point.
     NeedsKeyboardTarget,
+    /// The pane toggles — need the one-app shell. A rail's show/hide verb is
+    /// named by the item registry that declares the rail (every rail and tab
+    /// must name one, because a pane a user can close and cannot reopen is a
+    /// trap), but nothing can *perform* it until the workspace owns the window
+    /// and its layout file. Declaring the verb here rather than inventing one
+    /// at the call site is the point: the shell may not invent verbs, and a
+    /// control with no registered command behind it is exactly how a palette
+    /// and a keymap drift apart from what the UI offers.
+    NeedsWorkspaceShell,
 }
 
 impl ReservedReason {
@@ -127,6 +136,7 @@ impl ReservedReason {
         match self {
             ReservedReason::NeedsCommandLog => "needs command log",
             ReservedReason::NeedsKeyboardTarget => "needs a keyboard target",
+            ReservedReason::NeedsWorkspaceShell => "needs the workspace shell",
         }
     }
 }
@@ -532,6 +542,38 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Yank the focused asset's dotted address to the clipboard",
             scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 4, motor_note: "y = yank (vim); a Data verb — logged by longname + dotted address" }),
         },
+        // ---- protocol panes: the show/hide verbs the item registry names.
+        //      Reserved rather than bound: the pane toggles cannot be performed
+        //      until the workspace shell owns the window and its layout, and a
+        //      keystroke that silently does nothing is worse than no keystroke.
+        //      They are here because a rail must NAME its toggle (a pane the
+        //      user can close and cannot reopen is a trap) and the shell may not
+        //      invent a verb to name it with. View-tier: showing a rail changes
+        //      what you look at, never the data, so it is never logged. They
+        //      take the general `reserved` bucket's shape but not its helper,
+        //      which builds Data-tier entries. ----
+        VerbEntry {
+            longname: "toggle-outline-rail",
+            tier: CommandTier::View,
+            binding_specs: Vec::new(),
+            scope_applicability: vec![Protocol],
+            drives: D::Reserved,
+            status: VerbStatus::Reserved,
+            reserved_reason: Some(ReservedReason::NeedsWorkspaceShell),
+            help: "Show or hide the protocol outline rail",
+            scores: None,
+        },
+        VerbEntry {
+            longname: "toggle-inspector-rail",
+            tier: CommandTier::View,
+            binding_specs: Vec::new(),
+            scope_applicability: vec![Protocol],
+            drives: D::Reserved,
+            status: VerbStatus::Reserved,
+            reserved_reason: Some(ReservedReason::NeedsWorkspaceShell),
+            help: "Show or hide the protocol inspector rail",
+            scores: None,
+        },
     ]
 }
 
@@ -711,6 +753,19 @@ mod tests {
                 "toggle-point-select"
             ]
         );
+        // The pane toggles: named by the protocol view's item registry, which
+        // requires every rail to name the verb that shows and hides it, and
+        // unbound until the workspace shell can perform one.
+        let mut needs_shell: Vec<&str> = reg
+            .iter()
+            .filter(|v| v.reserved_reason == Some(ReservedReason::NeedsWorkspaceShell))
+            .map(|v| v.longname)
+            .collect();
+        needs_shell.sort_unstable();
+        assert_eq!(
+            needs_shell,
+            ["toggle-inspector-rail", "toggle-outline-rail"]
+        );
         // Every reserved verb is unbound and unscored; every bound verb is scored.
         for v in &reg {
             if v.is_reserved() {
@@ -774,6 +829,8 @@ mod tests {
             "protocol-drill-out",
             "open-steps-sheet",
             "yank-address",
+            "toggle-outline-rail",
+            "toggle-inspector-rail",
         ];
         assert_eq!(got, expected);
     }

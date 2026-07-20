@@ -1,6 +1,5 @@
-//! The egui Protocol panel — the asset-graph view rebuilt natively on the
-//! egui/eframe shell — the egui realisation of the retired gpui
-//! `protocol_shell`.
+//! The egui Protocol panel — the asset-graph view, expressed as four
+//! [`Item`]s on the workbench shell contract.
 //!
 //! Structure, folding in the review of the first (gpui) cut:
 //!
@@ -21,13 +20,32 @@
 //!   invalidates the raster cache, and re-presents through [`EguiCanvasHost`] —
 //!   the family *visibly* collapses/expands in the canvas.
 //!
+//! # What this file no longer does
+//!
+//! It used to draw its own chrome. Three pane headers, spelled three different
+//! ways; a second heading four pixels off the first inside the inspector body;
+//! five treatments of "this thing is selected"; seven places where "there is
+//! nothing here" was answered ad hoc, two of them by rendering a header and
+//! silence; a colour layer hardcoded to `INK_LIGHT`, so dark mode drew light
+//! ink on a dark page. All of that is gone, and none of it is replaced in
+//! kind: a pane now **declares** a [`Subject`] and
+//! [`brightfield_workbench::PaneChrome`] draws the header band, the empty
+//! state, the selection wash and the focus ring from the token layer.
+//!
+//! What is still this file's own is the panel's top breadcrumb bar and its
+//! bottom key-hint bar, because [`ProtocolShell`] still owns a window of its
+//! own. Those move to the shell's toolbar row and status rail when the
+//! one-app migration lands; they are the last chrome here that a `Subject`
+//! does not describe.
+//!
 //! The pure interaction model ([`ProtocolModel`]) is GPU-free and unit-tested;
-//! [`ProtocolShell`] wires it to the dock, the Vello raster, and the chrome.
+//! [`ProtocolDoc`] adds the canvas host the panes share, and [`ProtocolShell`]
+//! wires the document to the dock.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use egui_tiles::{Container, SimplificationOptions, Tile, TileId, Tree, UiResponse};
+use egui_tiles::{Container, Tile, Tree};
 
 use brightfield_protocol::contract_graph::{AssetMeta, SeamStatus, StepView};
 use brightfield_protocol::graph::{AssetGraph, AssetId, AssetKind, SeamKind, StepId};
@@ -37,10 +55,17 @@ use brightfield_protocol::panel::{
 };
 use brightfield_protocol::{collapse_families, Dir, FoldOutcome, ProtocolNav, StepRow, StepsSheet};
 
-use brightfield_render::canvas_host::{CanvasHost, Color, PixelSize};
+use brightfield_render::canvas_host::{Color, PixelSize};
 
-use meridian_design::chrome::INK_LIGHT;
-use meridian_design::scales::GRAY_LIGHT;
+use brightfield_keys::BindingContext;
+use brightfield_workbench::registry::{DockSide, Slot};
+use brightfield_workbench::workspace::{tabbed_tiles_of, tabs_holding, tile_of};
+use brightfield_workbench::{
+    chrome, EmptyState, Icon, Item, ItemCtx, ItemId, ItemMap, ItemRegistry, ItemSpec, PaneChrome,
+    PaneKey, Request, Subject, Tone, Verb, ViewKind,
+};
+
+use meridian_design::{control, semantic, spacing};
 
 use crate::canvas::EguiCanvasHost;
 use crate::design::{self, Mode};
@@ -69,6 +94,35 @@ pub struct ProtocolInputs {
     pub steps: BTreeMap<StepId, StepView>,
     /// The S-sheet rows in run order.
     pub sheet_rows: Vec<StepRow>,
+}
+
+impl ProtocolInputs {
+    /// Inputs with nothing in them — no assets, no seams, no steps.
+    ///
+    /// The document [`brightfield_workbench::audit`] runs a registry over: the
+    /// gate constructs every pane and asks each for its [`Subject`] over an
+    /// empty document, so "empty" has to be a value this crate can build
+    /// without a manifest, a device or a window. It is also the state a first
+    /// run of the panel would show if the manifest it opened declared nothing,
+    /// which is exactly the case each pane's empty state is written for.
+    #[must_use]
+    pub fn empty() -> Self {
+        let graph = AssetGraph {
+            protocol: String::new(),
+            nodes: BTreeMap::new(),
+            seams: BTreeMap::new(),
+            edges: Vec::new(),
+        };
+        Self {
+            protocol: String::new(),
+            graph_collapsed: graph.clone(),
+            graph_full: graph,
+            statuses: BTreeMap::new(),
+            assets: BTreeMap::new(),
+            steps: BTreeMap::new(),
+            sheet_rows: Vec::new(),
+        }
+    }
 }
 
 /// Load a protocol manifest (`arcform.yaml` + its `models/*.sql`) into
@@ -140,7 +194,6 @@ fn synth_sheet_rows(graph: &AssetGraph) -> Vec<StepRow> {
 /// of truth (not a map duplicated here). Keyed by the registry's keystroke
 /// strings (`"h"`, `"z a"`, `"shift-s"`, …).
 fn protocol_key_table() -> BTreeMap<String, &'static str> {
-    use brightfield_keys::registry::BindingContext;
     let mut table = BTreeMap::new();
     for verb in brightfield_keys::registry::registry() {
         for spec in &verb.binding_specs {
@@ -176,7 +229,7 @@ fn key_token(key: egui::Key, mods: egui::Modifiers) -> Option<&'static str> {
 
 /// The Protocol panel's pure state: the graphs, the nav/sheet cores, the
 /// selection, and the view toggles. No GPU, no egui rendering — just the model
-/// the shell renders and the key grammar drives.
+/// the panes render and the key grammar drives.
 pub struct ProtocolModel {
     /// Protocol name (breadcrumb).
     pub protocol: String,
@@ -291,6 +344,30 @@ impl ProtocolModel {
         } else {
             &self.graph_collapsed
         }
+    }
+
+    /// Whether the protocol declares any assets at all.
+    ///
+    /// The outline rail's empty-state test. A count over
+    /// [`ProtocolModel::outline`] would answer the same question and allocate a
+    /// row vector to do it, once per pane per frame — and a `Subject` is asked
+    /// for on every frame, including for panes that are not drawing.
+    #[must_use]
+    pub fn has_assets(&self) -> bool {
+        !self.graph_collapsed.nodes.is_empty()
+    }
+
+    /// Whether the selection names an asset that is still in the graph.
+    ///
+    /// The inspector's empty-state test, and deliberately stricter than
+    /// `selected().is_some()`: a stale id would render an inspector with every
+    /// field blank, which is the failure mode the empty state exists to
+    /// replace.
+    #[must_use]
+    pub fn has_selection(&self) -> bool {
+        self.selected
+            .as_ref()
+            .is_some_and(|id| self.graph_collapsed.nodes.contains_key(id))
     }
 
     /// Whether a drill scope is focusing the canvas on a local neighbourhood.
@@ -467,7 +544,14 @@ impl ProtocolModel {
     /// maps to that key's **pixel direction**, and [`ProtocolNav::move_dir`]
     /// resolves the direction to a producer/consumer or sibling by the flow — so
     /// `h`/`l` and `j`/`k` always move along the drawn layout.
-    fn dispatch(&mut self, verb: &str) -> bool {
+    ///
+    /// Public because it is now the *second* way a verb reaches the model: a
+    /// keystroke resolves through [`ProtocolModel::feed_events`], and a control
+    /// a pane declares in its [`Subject`] arrives as a
+    /// [`Request::Verb`](brightfield_workbench::Request) the shell drains after
+    /// the frame. Both land here, so a click and a keystroke cannot drift into
+    /// two implementations of one verb.
+    pub fn dispatch(&mut self, verb: &str) -> bool {
         match verb {
             "protocol-producer" => self.move_dir(Dir::Left), // h
             "protocol-consumer" => self.move_dir(Dir::Right), // l
@@ -639,103 +723,114 @@ impl ProtocolModel {
 }
 
 // ---------------------------------------------------------------------------
-// Dock panes.
+// ProtocolDoc — the state every pane in this view shares.
 // ---------------------------------------------------------------------------
 
-/// One dock citizen.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Pane {
-    /// The DAG canvas (the presented Vello raster).
-    Canvas,
-    /// The topological outline rail.
-    Outline,
-    /// The selection inspector.
-    Inspector,
-    /// The flat run-ordered steps sheet.
-    Steps,
+/// The protocol view's **document**: the interaction model, and the canvas the
+/// DAG rasters into.
+///
+/// Every pane in the view reads this and two of them write it — clicking a node
+/// on the canvas selects it, and so does clicking an outline row. No
+/// [`Item`] holds a handle to it: the shell hands out exactly one `&mut
+/// ProtocolDoc`, for the duration of one pane's draw. That is the aliasing rule
+/// the whole contract hangs off, and it is why the canvas host lives *here*
+/// rather than inside the canvas pane.
+pub struct ProtocolDoc {
+    /// The interaction model — GPU-free, unit-tested, and the only writer of
+    /// selection, fold and drill state.
+    pub model: ProtocolModel,
+    /// The DAG raster: the host, the presented texture, and the key it was
+    /// presented at.
+    pub canvas: CanvasSlot,
 }
 
-// ---------------------------------------------------------------------------
-// ProtocolShell — model + dock + raster + chrome.
-// ---------------------------------------------------------------------------
-
-/// The full egui Protocol panel: the [`ProtocolModel`], the dock tree, the Vello
-/// raster host, and the presented texture. [`ProtocolShell::draw`] is the single
-/// frame source (live window, headless shot, snapshot) — the loop's guarantee.
-pub struct ProtocolShell {
-    model: ProtocolModel,
-    dock: Tree<Pane>,
-    tabs_id: TileId,
-    canvas_id: TileId,
-    steps_id: TileId,
-    host: EguiCanvasHost,
+/// The canvas half of the document: a Vello raster of the displayed graph,
+/// re-rendered only when the view it depicts has changed.
+pub struct CanvasSlot {
+    /// `None` on a headless document — a model with no device behind it.
+    ///
+    /// Optional rather than required because a `ProtocolDoc` has to be
+    /// constructible without a GPU: [`brightfield_workbench::audit`] builds
+    /// every pane and asks it for a [`Subject`] over an empty document, and a
+    /// gate that needed an adapter would be a gate that does not run in a unit
+    /// test. Every pane's *chrome* is a pure function of the model, so nothing
+    /// a subject says depends on this being `Some`.
+    host: Option<EguiCanvasHost>,
     texture: Option<egui::TextureId>,
-    /// (expanded, flow, layout_gen, dev_w, dev_h) the texture was last presented
-    /// at — the generation catches a drill/scope re-layout an (expanded, flow)
-    /// pair alone would miss.
-    presented_key: Option<(bool, Flow, u64, u32, u32)>,
-    mode: Mode,
-    fonts_installed: bool,
+    /// (expanded, flow, `layout_gen`, `dev_w`, `dev_h`, `is_dark`) the texture
+    /// was last presented at — the generation catches a drill/scope re-layout
+    /// an (expanded, flow) pair alone would miss, and the mode catches a
+    /// light/dark switch, which changes the raster's page tone.
+    presented_key: Option<(bool, Flow, u64, u32, u32, bool)>,
 }
 
-impl ProtocolShell {
-    /// Build the shell over `inputs` and an [`EguiCanvasHost`] on the shell's
-    /// shared device, with the initial `flow` (vertical by default).
+impl ProtocolDoc {
+    /// A document over `model`, rastering through `host`.
     #[must_use]
-    pub fn new(inputs: ProtocolInputs, host: EguiCanvasHost, mode: Mode, flow: Flow) -> Self {
-        let model = ProtocolModel::new(inputs, flow);
-        let (dock, tabs_id, canvas_id, steps_id) = build_dock();
+    pub fn new(model: ProtocolModel, host: EguiCanvasHost) -> Self {
         Self {
             model,
-            dock,
-            tabs_id,
-            canvas_id,
-            steps_id,
-            host,
-            texture: None,
-            presented_key: None,
-            mode,
-            fonts_installed: false,
+            canvas: CanvasSlot {
+                host: Some(host),
+                texture: None,
+                presented_key: None,
+            },
         }
     }
 
-    /// The panel's natural window size in logical points — the DAG bounds plus
-    /// the outline + inspector rails and the top/bottom chrome. Sized generously
-    /// so the whole dock fits headlessly without clipping.
+    /// A document with no device behind it — see [`CanvasSlot::host`].
     #[must_use]
-    pub fn window_size(&self) -> (f32, f32) {
-        let l = self.model.layout();
-        let w = (l.width as f32 + OUTLINE_W + INSPECTOR_W + 48.0).max(1100.0);
-        let h = (l.height as f32 + 130.0).clamp(680.0, 1600.0);
-        (w, h)
+    pub fn headless(model: ProtocolModel) -> Self {
+        Self {
+            model,
+            canvas: CanvasSlot {
+                host: None,
+                texture: None,
+                presented_key: None,
+            },
+        }
     }
 
-    /// The window/tab title.
+    /// An empty document: no assets, no seams, no steps, no device.
+    ///
+    /// The value [`protocol_registry`]'s audit runs against.
     #[must_use]
-    pub fn title(&self) -> String {
-        format!("Protocol · {}", self.model.protocol)
+    pub fn empty() -> Self {
+        Self::headless(ProtocolModel::new(ProtocolInputs::empty(), Flow::Vertical))
     }
 
-    /// Mutable access to the model (for the shot's `--focus` seed).
-    pub fn model_mut(&mut self) -> &mut ProtocolModel {
-        &mut self.model
-    }
-
-    /// Re-raster the DAG through the host only when (expanded, flow, resolution)
-    /// changed. Presents the current displayed graph via the canvas-host seam.
-    fn ensure_presented(&mut self, ppp: f32) {
+    /// Re-raster the DAG through the host only when (expanded, flow, scope,
+    /// resolution, mode) changed, and hand the canvas pane the texture to
+    /// paint.
+    fn ensure_presented(&mut self, ppp: f32, mode: Mode) {
         let (expanded, flow) = self.model.layout_key();
-        let gen = self.model.layout_gen();
+        let generation = self.model.layout_gen();
         let l = self.model.layout();
         let dev = PixelSize {
             width: ((l.width as f32) * ppp).round().max(1.0) as u32,
             height: ((l.height as f32) * ppp).round().max(1.0) as u32,
         };
-        let key = (expanded, flow, gen, dev.width, dev.height);
-        if self.presented_key == Some(key) && self.texture.is_some() {
+        let key = (
+            expanded,
+            flow,
+            generation,
+            dev.width,
+            dev.height,
+            mode.is_dark(),
+        );
+        if self.canvas.presented_key == Some(key) && self.canvas.texture.is_some() {
             return;
         }
-        let base = Color::from_token(INK_LIGHT.page);
+        let Some(host) = self.canvas.host.as_mut() else {
+            return;
+        };
+        // The raster's own page tone. The asset scene paints its own canvas
+        // rectangle over this, so it is only ever seen through the scene's
+        // antialiased edges — but it is a token either way, and resolved for
+        // the mode like every other colour this file paints. It has to be in
+        // the presented key for that to mean anything: a raster held over a
+        // mode switch would keep the tone it was baked at.
+        let base = Color::from_token(semantic(mode.is_dark()).surfaces.raised);
         // Build the scene under an immutable borrow, then present (mutable host).
         let scene = {
             let mut s = vello::Scene::new();
@@ -749,202 +844,639 @@ impl ProtocolShell {
             scaled.append(&s, Some(kurbo::Affine::scale(f64::from(ppp))));
             scaled
         };
-        let id = self.host.present_scene(&scene, dev, base);
-        self.texture = Some(id);
-        self.presented_key = Some(key);
+        let id = host.present_keyed(CANVAS_PANE, &scene, dev, base);
+        self.canvas.texture = Some(id);
+        self.canvas.presented_key = Some(key);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The registry: the one declaration of this view's shape.
+// ---------------------------------------------------------------------------
+
+/// The DAG canvas — the view's centre pane.
+pub const CANVAS: ItemId = ItemId::new("protocol-canvas");
+/// The topological outline rail.
+pub const OUTLINE: ItemId = ItemId::new("protocol-outline");
+/// The selection inspector rail.
+pub const INSPECTOR: ItemId = ItemId::new("protocol-inspector");
+/// The flat run-ordered steps sheet, a tab beside the canvas.
+pub const STEPS: ItemId = ItemId::new("protocol-steps");
+
+/// Add this view's item ids to the process's layout vocabulary.
+///
+/// Called at boot from [`ProtocolShell::new`], before any layout file could be
+/// read. Idempotent, so a test binary that builds two shells neither falls over
+/// nor grows the vocabulary — which is why it is safe to expose as its own
+/// entry point for a test that needs the vocabulary without needing a device.
+///
+/// The ids come from [`protocol_registry`] and nowhere else. A hand-written
+/// `static [ItemId; 4]` used to stand here: a second declaration of the view's
+/// shape that a fifth pane could be added to the registry without.
+pub fn publish_item_ids() {
+    protocol_registry().publish_ids();
+}
+
+/// The canvas pane's address — the key its Vello texture slot is filed under.
+const CANVAS_PANE: PaneKey = PaneKey::new(ViewKind::Protocol, CANVAS);
+
+/// The outline rail's share of the window. Declared once and read twice: the
+/// registry lays the dock out with it, and [`ProtocolShell::window_size`] sizes
+/// the window from it. The pair of pixel constants this replaces said 260px and
+/// 300px while the tiles said 24% and 22%, and the two had drifted.
+const OUTLINE_SHARE: f32 = 0.24;
+/// The inspector rail's share of the window.
+const INSPECTOR_SHARE: f32 = 0.22;
+
+/// Every icon here is a *name*, resolved to paint at draw time. The Meridian
+/// icon set has not landed in this workspace, so the chrome reserves each
+/// glyph's box without painting into it.
+const ICON_CANVAS: Icon = Icon("asset-graph");
+const ICON_OUTLINE: Icon = Icon("list-tree");
+const ICON_INSPECTOR: Icon = Icon("info-panel");
+const ICON_STEPS: Icon = Icon("list-ordered");
+
+/// The protocol view's registry: four panes, where each sits, and the verb that
+/// shows and hides it.
+///
+/// This is the **only** declaration of the view's shape. The dock's default
+/// arrangement ([`ItemRegistry::default_tree`]), the live item map
+/// ([`ItemRegistry::instantiate`]) and the published id vocabulary
+/// ([`ItemRegistry::publish_ids`], via [`publish_item_ids`]) are all derived
+/// from this list, so a pane cannot be added to one and forgotten in another.
+#[must_use]
+pub fn protocol_registry() -> ItemRegistry<ProtocolDoc> {
+    ItemRegistry::new(
+        ViewKind::Protocol,
+        vec![
+            ItemSpec {
+                id: OUTLINE,
+                slot: Slot::Rail {
+                    side: DockSide::Left,
+                    share: OUTLINE_SHARE,
+                },
+                toggle: Some(Verb::new("toggle-outline-rail")),
+                make: || Box::new(OutlinePane),
+            },
+            ItemSpec {
+                id: CANVAS,
+                slot: Slot::Centre,
+                toggle: None,
+                make: || Box::new(CanvasPane),
+            },
+            ItemSpec {
+                id: STEPS,
+                slot: Slot::CentreTab,
+                toggle: Some(Verb::new("open-steps-sheet")),
+                make: || Box::new(StepsPane),
+            },
+            ItemSpec {
+                id: INSPECTOR,
+                slot: Slot::Rail {
+                    side: DockSide::Right,
+                    share: INSPECTOR_SHARE,
+                },
+                toggle: Some(Verb::new("toggle-inspector-rail")),
+                make: || Box::new(InspectorPane),
+            },
+        ],
+    )
+}
+
+// ---------------------------------------------------------------------------
+// The four panes.
+// ---------------------------------------------------------------------------
+
+/// The topological outline rail: one row per asset, in run order.
+///
+/// A unit struct because it has no view-local state at all — its scroll
+/// position is egui's, and everything it draws is a pure function of the
+/// document.
+struct OutlinePane;
+
+impl Item<ProtocolDoc> for OutlinePane {
+    fn item_id(&self) -> ItemId {
+        OUTLINE
     }
 
-    /// Before rendering: make the active Canvas/Steps tab authoritative from the
-    /// model's `show_sheet` (so the `S`/`Esc` keys drive it).
-    fn set_active_tab(&mut self) {
-        let want = if self.model.show_sheet {
-            self.steps_id
+    fn subject(&self, doc: &ProtocolDoc) -> Subject {
+        let subject = Subject::new("Outline", ICON_OUTLINE, BindingContext::Protocol);
+        if doc.model.has_assets() {
+            subject
         } else {
-            self.canvas_id
-        };
-        if let Some(Tile::Container(Container::Tabs(tabs))) = self.dock.tiles.get_mut(self.tabs_id)
-        {
-            tabs.set_active(want);
+            subject.empty(EmptyState::new(
+                ICON_OUTLINE,
+                "No assets yet",
+                "This protocol declares no assets, so there is nothing to list. \
+                 Open a manifest whose steps build at least one table or file.",
+            ))
         }
     }
 
-    /// After rendering: read a manual tab click back into `show_sheet` (so a
-    /// pointer click on the Steps tab also opens the sheet, and Canvas closes it).
-    fn read_active_tab(&mut self) {
-        if let Some(Tile::Container(Container::Tabs(tabs))) = self.dock.tiles.get(self.tabs_id) {
-            if let Some(active) = tabs.active {
-                self.model.show_sheet = active == self.steps_id;
-            }
-        }
-    }
-
-    /// Draw one Protocol frame into `ui` — the single tier-agnostic source.
-    pub fn draw(&mut self, ui: &mut egui::Ui) {
-        let ctx = ui.ctx().clone();
-        if !self.fonts_installed {
-            design::apply(&ctx, self.mode);
-            self.fonts_installed = true;
-        }
-
-        // Dispatch this frame's key grammar, then perform any yank.
-        let events = ctx.input(|i| i.events.clone());
-        self.model.feed_events(&events);
-        if let Some(addr) = self.model.take_yank_request() {
-            ctx.copy_text(addr);
-        }
-
-        self.ensure_presented(ctx.pixels_per_point());
-        self.set_active_tab();
-
-        // Orientation chrome: breadcrumb (top) + key-hint bar (bottom).
-        egui::containers::Panel::top("proto-breadcrumb")
-            .resizable(false)
-            .show(ui, |ui| self.breadcrumb_ui(ui));
-        egui::containers::Panel::bottom("proto-hint")
-            .resizable(false)
-            .show(ui, |ui| hint_ui(ui, &self.model));
-
-        // The dock fills the rest (disjoint borrows of model + dock through self).
-        egui::containers::CentralPanel::default().show(ui, |ui| {
-            let mut behavior = ProtocolBehavior {
-                model: &mut self.model,
-                texture: self.texture,
-                canvas_id: self.canvas_id,
-            };
-            self.dock.ui(&mut behavior, ui);
-        });
-
-        // Read a manual Canvas/Steps tab click back into the model.
-        self.read_active_tab();
-    }
-
-    /// The top breadcrumb + a flow toggle (mutates the model, so it lives on the
-    /// shell rather than the free `hint_ui`).
-    fn breadcrumb_ui(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(format!("Protocol · {}", self.model.protocol))
-                    .color(ink(INK_LIGHT.ink_primary))
-                    .strong(),
-            );
-            let sel = self
-                .model
-                .selected()
-                .and_then(|id| self.model.graph_collapsed.nodes.get(id))
-                .map(|n| n.label.clone());
-            if let Some(label) = sel {
-                ui.label(egui::RichText::new("›").color(ink(INK_LIGHT.ink_muted)));
-                ui.label(egui::RichText::new(label).color(ink(INK_LIGHT.ink_secondary)));
-            }
-            for crumb in self.model.breadcrumb() {
-                ui.label(egui::RichText::new("»").color(ink(INK_LIGHT.ink_muted)));
-                ui.label(
-                    egui::RichText::new(crumb)
-                        .color(ink(INK_LIGHT.ink_secondary))
-                        .small(),
-                );
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let (word, next) = match self.model.flow() {
-                    Flow::Vertical => ("vertical", "horizontal"),
-                    Flow::Horizontal => ("horizontal", "vertical"),
-                };
-                if ui
-                    .button(egui::RichText::new(format!("flow: {word} ⇄")).small())
-                    .on_hover_text(format!("switch to {next} flow"))
-                    .clicked()
-                {
-                    self.model.toggle_flow();
-                    self.presented_key = None;
+    fn ui(&mut self, doc: &mut ProtocolDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
+        let rows = doc.model.outline();
+        let mut clicked: Option<AssetId> = None;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for row in &rows {
+                    if outline_row(ui, row, cx.mode).clicked() {
+                        clicked = Some(row.id.clone());
+                    }
                 }
             });
-        });
-        ui.add_space(4.0);
-    }
-}
-
-/// Build the dock tree: Outline · (Canvas | Steps tabs) · Inspector, a
-/// horizontal split. Returns the tree and the (tabs, canvas, steps) tile ids.
-fn build_dock() -> (Tree<Pane>, TileId, TileId, TileId) {
-    let mut tiles = egui_tiles::Tiles::default();
-    let outline = tiles.insert_pane(Pane::Outline);
-    let canvas = tiles.insert_pane(Pane::Canvas);
-    let steps = tiles.insert_pane(Pane::Steps);
-    let inspector = tiles.insert_pane(Pane::Inspector);
-    let tabs = tiles.insert_tab_tile(vec![canvas, steps]);
-    // Canvas is the default active tab.
-    if let Some(Tile::Container(Container::Tabs(t))) = tiles.get_mut(tabs) {
-        t.set_active(canvas);
-    }
-    let root = tiles.insert_horizontal_tile(vec![outline, tabs, inspector]);
-    // Give the rails a fixed-ish share; the canvas gets the bulk.
-    if let Some(Tile::Container(Container::Linear(lin))) = tiles.get_mut(root) {
-        lin.shares.set_share(outline, 0.24);
-        lin.shares.set_share(tabs, 0.54);
-        lin.shares.set_share(inspector, 0.22);
-    }
-    (Tree::new("protocol-dock", root, tiles), tabs, canvas, steps)
-}
-
-// ---------------------------------------------------------------------------
-// Behavior — renders each pane from the model.
-// ---------------------------------------------------------------------------
-
-struct ProtocolBehavior<'a> {
-    model: &'a mut ProtocolModel,
-    texture: Option<egui::TextureId>,
-    canvas_id: TileId,
-}
-
-impl egui_tiles::Behavior<Pane> for ProtocolBehavior<'_> {
-    fn tab_title_for_pane(&mut self, pane: &Pane) -> egui::WidgetText {
-        match pane {
-            Pane::Canvas => "Canvas",
-            Pane::Steps => "Steps",
-            Pane::Outline => "Outline",
-            Pane::Inspector => "Inspector",
+        if let Some(id) = clicked {
+            doc.model.select_id(id);
         }
-        .into()
+    }
+}
+
+/// One outline row: status dot, label, kind — and, when it is the selection,
+/// the one selection wash.
+///
+/// The row rect is allocated *before* anything is painted into it, which is
+/// what lets the wash sit under the content rather than beside it. The version
+/// this replaces used `Ui::selectable_label`, whose wash is the framework's,
+/// and then swapped the label ink on top of it — two signals for one state, one
+/// of them not from the token layer at all.
+fn outline_row(ui: &mut egui::Ui, row: &OutlineRow, mode: Mode) -> egui::Response {
+    let sem = semantic(mode.is_dark());
+    let b = control::binding(spacing::ROW_DENSE);
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), b.row),
+        egui::Sense::click(),
+    );
+    if row.selected {
+        chrome::selection_wash(ui, rect, mode);
     }
 
-    fn simplification_options(&self) -> SimplificationOptions {
-        // Keep the authored dock shape stable (no pruning / no auto-tabbing).
-        SimplificationOptions::OFF
+    let painter = ui.painter();
+    let dot = b.icon / 4.0;
+    let mut x = rect.left() + b.pad_x;
+    painter.circle_filled(
+        egui::pos2(x + dot, rect.center().y),
+        dot,
+        status_colour(row.status, mode),
+    );
+    x += b.icon + spacing::ICON_LABEL_GAP;
+    painter.text(
+        egui::pos2(x, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        truncate(&row.label, 26),
+        ui_font(),
+        chrome::colour(sem.text.primary),
+    );
+    painter.text(
+        egui::pos2(rect.right() - b.pad_x, rect.center().y),
+        egui::Align2::RIGHT_CENTER,
+        kind_label(row.kind),
+        ui_font(),
+        chrome::colour(sem.text.muted),
+    );
+    response
+}
+
+/// The DAG canvas: the presented Vello raster in a scroll area, with the
+/// keyboard cursor ringed and click → select hit-testing.
+struct CanvasPane;
+
+impl Item<ProtocolDoc> for CanvasPane {
+    fn item_id(&self) -> ItemId {
+        CANVAS
     }
 
-    fn pane_ui(&mut self, ui: &mut egui::Ui, _id: TileId, pane: &mut Pane) -> UiResponse {
-        match pane {
-            Pane::Canvas => canvas_ui(ui, self.model, self.texture, self.canvas_id),
-            Pane::Outline => outline_ui(ui, self.model),
-            Pane::Inspector => inspector_ui(ui, self.model),
-            Pane::Steps => steps_ui(ui, self.model),
+    fn subject(&self, doc: &ProtocolDoc) -> Subject {
+        let subject = Subject::new("Canvas", ICON_CANVAS, BindingContext::Protocol);
+        if doc.model.displayed_graph().nodes.is_empty() {
+            subject.empty(EmptyState::new(
+                ICON_CANVAS,
+                "Nothing to draw",
+                "The graph in view holds no assets. Widen the drill scope, or open \
+                 a protocol whose steps produce something.",
+            ))
+        } else {
+            subject
         }
-        UiResponse::None
+    }
+
+    fn ui(&mut self, doc: &mut ProtocolDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
+        let Some(texture) = doc.canvas.texture else {
+            // No device behind this document. The pane is blank rather than
+            // apologetic: a headless document is a test fixture, never a state
+            // a user reaches, so a message here would be chrome nobody sees.
+            return;
+        };
+        let (w, h) = {
+            let l = doc.model.layout();
+            (l.width as f32, l.height as f32)
+        };
+        egui::ScrollArea::both()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let (rect, resp) =
+                    ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click_and_drag());
+                egui::Image::new((texture, rect.size()))
+                    .tint(egui::Color32::WHITE)
+                    .paint_at(ui, rect);
+
+                // The keyboard cursor, ringed with the token layer's focus ring
+                // — one treatment, at the ring's own width, offset and radius.
+                // The hand-rolled 2px stroke at a 4px radius it replaces matched
+                // nothing else in the product.
+                if let Some(sel) = doc.model.selected().cloned() {
+                    if let Some(node) = doc.model.layout().positions.get(&sel).cloned() {
+                        let r = node_rect(rect.min, &node);
+                        chrome::focus_ring(ui, r, cx.mode);
+                        frame_selection(ui, doc, cx, r);
+                    }
+                }
+
+                // Click → select: hit-test canvas-local coords against the layout.
+                if resp.clicked() {
+                    if let Some(p) = resp.interact_pointer_pos() {
+                        let lx = f64::from(p.x - rect.min.x);
+                        let ly = f64::from(p.y - rect.min.y);
+                        if let Some(id) = hit_test(doc.model.layout(), lx, ly) {
+                            doc.model.select_id(id);
+                        }
+                    }
+                }
+            });
     }
 }
 
-// ---------------------------------------------------------------------------
-// Pane renderers (native egui) + chrome.
-// ---------------------------------------------------------------------------
-
-const OUTLINE_W: f32 = 260.0;
-const INSPECTOR_W: f32 = 300.0;
-const ROW_H: f32 = 22.0;
-
-/// Meridian token → egui colour (light chrome — the DAG raster is light-first).
-fn ink(c: meridian_design::colour::Rgba) -> egui::Color32 {
-    design::to_color32(c)
+/// Frame follows selection: after a keyboard move, if the selected node has
+/// scrolled out of the viewport (or is within a small margin of an edge), pan it
+/// back into frame. A node that is already comfortably visible is left alone, so
+/// manual scrolling is never fought.
+fn frame_selection(ui: &mut egui::Ui, doc: &ProtocolDoc, cx: &ItemCtx<'_>, node: egui::Rect) {
+    let frame_gen = doc.model.frame_gen();
+    let framed_id = egui::Id::new(("proto-canvas-framed-gen", cx.tile));
+    let last_framed = ui.ctx().data(|d| d.get_temp::<u64>(framed_id)).unwrap_or(0);
+    if frame_gen == last_framed {
+        return;
+    }
+    let margin = spacing::SPACE_7;
+    let vis = ui.clip_rect();
+    let out_of_frame = node.min.x < vis.min.x + margin
+        || node.max.x > vis.max.x - margin
+        || node.min.y < vis.min.y + margin
+        || node.max.y > vis.max.y - margin;
+    if out_of_frame {
+        ui.scroll_to_rect(node.expand(margin), None);
+    }
+    ui.ctx().data_mut(|d| d.insert_temp(framed_id, frame_gen));
 }
 
-fn status_color(s: SeamStatus) -> egui::Color32 {
-    ink(match s {
-        SeamStatus::Ok => meridian_design::viz::STATUS.good,
-        SeamStatus::Running => meridian_design::viz::STATUS.warning,
-        SeamStatus::Skipped => GRAY_LIGHT[6],
-        SeamStatus::Failed => meridian_design::viz::STATUS.critical,
-        SeamStatus::NotRun => GRAY_LIGHT[5],
-    })
+/// The inspector rail: the selected asset's detail, each field with a
+/// plain-language explainer.
+struct InspectorPane;
+
+impl Item<ProtocolDoc> for InspectorPane {
+    fn item_id(&self) -> ItemId {
+        INSPECTOR
+    }
+
+    fn subject(&self, doc: &ProtocolDoc) -> Subject {
+        let subject = Subject::new("Inspector", ICON_INSPECTOR, BindingContext::Protocol);
+        if doc.model.has_selection() {
+            subject
+        } else {
+            subject.empty(EmptyState::new(
+                ICON_INSPECTOR,
+                "Nothing selected",
+                "Click a node in the canvas or a row in the outline, or move the \
+                 cursor with h j k l.",
+            ))
+        }
+    }
+
+    fn ui(&mut self, doc: &mut ProtocolDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
+        let facts = doc.model.inspector();
+        let mode = cx.mode;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| inspector_body(ui, &facts, mode));
+    }
+}
+
+/// Render the selected asset's fields with explainers.
+///
+/// The asset's label used to be a `heading()` here — a second type size inside
+/// a pane whose header band is already its name. It is the pane's content now,
+/// at the one UI size, in primary ink.
+fn inspector_body(ui: &mut egui::Ui, facts: &InspectorFacts, mode: Mode) {
+    let sem = semantic(mode.is_dark());
+    ui.label(
+        egui::RichText::new(&facts.label)
+            .font(ui_font())
+            .color(chrome::colour(sem.text.primary)),
+    );
+    ui.label(
+        egui::RichText::new(kind_gloss(facts.kind))
+            .font(ui_font())
+            .color(chrome::colour(sem.text.secondary)),
+    );
+
+    field(
+        ui,
+        mode,
+        "Address",
+        &facts.address,
+        "Stable dotted id for this asset — press y to copy it.",
+        true,
+    );
+
+    match &facts.producing_step {
+        Some(step) => field(
+            ui,
+            mode,
+            "Produced by",
+            step,
+            "The step / operator that builds this asset.",
+            false,
+        ),
+        None => field(
+            ui,
+            mode,
+            "Produced by",
+            "external input",
+            "Fetched from outside the build — nothing in the protocol produces it.",
+            false,
+        ),
+    }
+
+    if let Some(t) = &facts.transform {
+        field(
+            ui,
+            mode,
+            "Transform",
+            t,
+            "How that step derives the asset (operator or SQL model).",
+            false,
+        );
+    }
+
+    field(
+        ui,
+        mode,
+        "Status",
+        status_word(facts.status),
+        status_gloss(facts.status),
+        false,
+    );
+
+    // Measured values exist only after a real run; the offline manifest carries
+    // lineage only, so say that rather than show blank rows. This is a *field*
+    // that is not yet measured, not a pane with nothing in it — the pane's
+    // empty state is the `Subject`'s, and it says something else entirely.
+    let measured =
+        facts.row_count.is_some() || facts.bytes.is_some() || facts.materialized.is_some();
+    if measured {
+        if let Some(rc) = facts.row_count {
+            field(
+                ui,
+                mode,
+                "Rows",
+                &rc.to_string(),
+                "Row count measured on the last run.",
+                false,
+            );
+        }
+        if let Some(b) = facts.bytes {
+            field(
+                ui,
+                mode,
+                "Size",
+                &human_bytes(b),
+                "Bytes written on the last run.",
+                false,
+            );
+        }
+        if let Some(m) = facts.materialized {
+            field(
+                ui,
+                mode,
+                "Materialized",
+                if m { "yes" } else { "no" },
+                "Whether the run actually wrote this asset.",
+                false,
+            );
+        }
+    } else {
+        ui.add_space(spacing::SPACE_4);
+        ui.label(
+            egui::RichText::new(
+                "No measured values yet — this is the offline manifest, which carries lineage \
+                 only. Row count, size, and content hash appear once the protocol is run.",
+            )
+            .font(ui_font())
+            .color(chrome::colour(sem.text.muted))
+            .italics(),
+        );
+    }
+
+    if let Some(issue) = &facts.issue {
+        field(
+            ui,
+            mode,
+            "Issue",
+            issue,
+            "Why this step is degraded / opaque.",
+            false,
+        );
+    }
+}
+
+/// One inspector field: a muted caption, the value, and a one-line explainer.
+///
+/// `mono` picks the face the *value* is set in. It is true for a value the
+/// reader compares character by character — the address — and false for prose.
+/// See [`mono_font`] for why it selects a `FontId` rather than chaining
+/// `RichText::monospace`.
+fn field(ui: &mut egui::Ui, mode: Mode, label: &str, value: &str, explain: &str, mono: bool) {
+    let sem = semantic(mode.is_dark());
+    ui.add_space(spacing::SPACE_4);
+    ui.label(
+        egui::RichText::new(label.to_uppercase())
+            .font(ui_font())
+            .color(chrome::colour(sem.text.muted)),
+    );
+    ui.label(
+        egui::RichText::new(value)
+            .font(if mono { mono_font() } else { ui_font() })
+            .color(chrome::colour(sem.text.primary)),
+    );
+    ui.label(
+        egui::RichText::new(explain)
+            .font(ui_font())
+            .color(chrome::colour(sem.text.muted)),
+    );
+}
+
+/// The S steps sheet: the flat run-ordered step list as a grid.
+struct StepsPane;
+
+impl Item<ProtocolDoc> for StepsPane {
+    fn item_id(&self) -> ItemId {
+        STEPS
+    }
+
+    fn subject(&self, doc: &ProtocolDoc) -> Subject {
+        let subject = Subject::new("Steps", ICON_STEPS, BindingContext::Protocol);
+        if doc.model.sheet().is_empty() {
+            subject.empty(EmptyState::new(
+                ICON_STEPS,
+                "No steps yet",
+                "This protocol runs nothing. A manifest with op: or sql: steps \
+                 fills this list in run order.",
+            ))
+        } else {
+            subject
+        }
+    }
+
+    fn ui(&mut self, doc: &mut ProtocolDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
+        let sem = semantic(cx.mode.is_dark());
+        let cursor = doc.model.sheet().cursor();
+        egui::ScrollArea::both()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let grid = egui::Grid::new("proto-steps-grid")
+                    .striped(true)
+                    .num_columns(6)
+                    .spacing(egui::vec2(spacing::SPACE_6, spacing::SPACE_2))
+                    .show(ui, |ui| {
+                        for h in brightfield_protocol::sheet::COLUMNS {
+                            ui.label(
+                                egui::RichText::new(h)
+                                    .font(ui_font())
+                                    .color(chrome::colour(sem.text.muted)),
+                            );
+                        }
+                        ui.end_row();
+                        let mut wash = None;
+                        for (i, row) in doc.model.sheet().rows().iter().enumerate() {
+                            if let Some(w) = steps_row(ui, row, i == cursor, cx.mode) {
+                                wash = Some(w);
+                            }
+                        }
+                        wash
+                    });
+                // The wash is filled in *after* the grid closes, because that
+                // is the first moment the row's full width is known. Sizing it
+                // from the union of the row's own cells fell ~40px short of the
+                // zebra stripe beside it: the stripe spans the grid's full
+                // width, while the last column is empty on an offline row and
+                // contributes a zero-width rect. So the x range comes from the
+                // grid and only the y range from the row.
+                if let Some((idx, rows)) = grid.inner {
+                    let rect = egui::Rect::from_x_y_ranges(grid.response.rect.x_range(), rows)
+                        .expand(spacing::SPACE_1);
+                    ui.painter()
+                        .set(idx, chrome::selection_wash_shape(rect, cx.mode));
+                }
+            });
+    }
+}
+
+/// One steps row, with the cursor row wearing the one selection wash.
+///
+/// Returns the reserved wash slot and the row's vertical extent when this is
+/// the cursor row, for the caller to fill in once the grid's width is known.
+/// The wash has to be *reserved* before the cells are laid out, because a grid
+/// row's rect is not known until its widest cell has been measured. That is
+/// what [`chrome::selection_wash_shape`] exists for. The version this replaces
+/// marked the cursor with a ▸ prefix and an ink swap and no wash at all — a
+/// third spelling of "this row is selected".
+fn steps_row(
+    ui: &mut egui::Ui,
+    row: &StepRow,
+    selected: bool,
+    mode: Mode,
+) -> Option<(egui::layers::ShapeIdx, egui::Rangef)> {
+    let sem = semantic(mode.is_dark());
+    let wash = selected.then(|| ui.painter().add(egui::Shape::Noop));
+    let ink = chrome::colour(sem.text.primary);
+    let quiet = chrome::colour(sem.text.secondary);
+
+    let name = if row.gate {
+        format!("{} ◈", row.name)
+    } else {
+        row.name.clone()
+    };
+    let first = ui.label(
+        egui::RichText::new(row.order.to_string())
+            .font(mono_font())
+            .color(ink),
+    );
+    ui.label(egui::RichText::new(name).font(ui_font()).color(ink));
+    ui.label(egui::RichText::new(row.kind).font(ui_font()).color(quiet));
+    ui.label(
+        egui::RichText::new(truncate(&row.detail, 40))
+            .font(ui_font())
+            .color(quiet),
+    );
+    ui.label(egui::RichText::new(row.status).font(ui_font()).color(quiet));
+    let live = row
+        .live_state
+        .clone()
+        .or_else(|| row.skip_reason.clone())
+        .unwrap_or_default();
+    let last = ui.label(
+        egui::RichText::new(live)
+            .font(ui_font())
+            .color(chrome::colour(sem.text.muted)),
+    );
+    ui.end_row();
+
+    wash.map(|idx| (idx, first.rect.union(last.rect).y_range()))
+}
+
+// ---------------------------------------------------------------------------
+// Shared pane helpers.
+// ---------------------------------------------------------------------------
+
+/// The one UI type size. Chrome has no headings — see
+/// [`brightfield_workbench::chrome`].
+fn ui_font() -> egui::FontId {
+    egui::FontId::proportional(meridian_design::typography::UI_SIZE)
+}
+
+/// The same size in the Meridian mono face, for a value the reader compares
+/// character by character: an address, a run ordinal, the key hints.
+///
+/// It has to be a [`egui::FontId`] rather than `RichText::monospace`, and that
+/// is the whole reason this exists. `RichText::font` sets *size and family*
+/// together, while `RichText::monospace` only sets the text style — so
+/// `.font(ui_font()).monospace()` resolves the style first and then overwrites
+/// its family with `ui_font`'s proportional one. The `.monospace()` is inert
+/// and the value silently renders proportional. Three call sites in this file
+/// were written that way and lost their mono face without a compiler word.
+///
+/// `FontFamily::Monospace` is the family [`crate::design::install_fonts`] maps
+/// to the design system's [`MONO_FAMILY`](meridian_design::typography::MONO_FAMILY),
+/// so this reaches the token layer's face rather than egui's fallback.
+fn mono_font() -> egui::FontId {
+    egui::FontId::monospace(meridian_design::typography::UI_SIZE)
+}
+
+/// A seam status as ink.
+///
+/// The three real statuses take the reserved Meridian status inks through the
+/// [`Tone`] vocabulary, so the panel cannot reach past them for an accent.
+/// Skipped and not-run are not statuses so much as their absence, and they take
+/// quiet ink from the semantic layer: two raw gray rungs used to stand here,
+/// which meant a dark-mode panel drew light-mode grays.
+fn status_colour(s: SeamStatus, mode: Mode) -> egui::Color32 {
+    let sem = semantic(mode.is_dark());
+    match s {
+        SeamStatus::Ok => chrome::tone_colour(Tone::Good, mode),
+        SeamStatus::Running => chrome::tone_colour(Tone::Warning, mode),
+        SeamStatus::Failed => chrome::tone_colour(Tone::Critical, mode),
+        SeamStatus::Skipped => chrome::colour(sem.text.disabled),
+        SeamStatus::NotRun => chrome::colour(sem.text.placeholder),
+    }
 }
 
 fn status_word(s: SeamStatus) -> &'static str {
@@ -955,77 +1487,6 @@ fn status_word(s: SeamStatus) -> &'static str {
         SeamStatus::Failed => "failed",
         SeamStatus::NotRun => "not run",
     }
-}
-
-/// The DAG canvas pane: the presented Vello raster in a scroll area, with a
-/// selection highlight and click → select hit-testing.
-fn canvas_ui(
-    ui: &mut egui::Ui,
-    model: &mut ProtocolModel,
-    texture: Option<egui::TextureId>,
-    canvas_id: TileId,
-) {
-    let Some(texture) = texture else {
-        ui.centered_and_justified(|ui| ui.label("presenting…"));
-        return;
-    };
-    let (w, h) = {
-        let l = model.layout();
-        (l.width as f32, l.height as f32)
-    };
-    egui::ScrollArea::both()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            let (rect, resp) =
-                ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click_and_drag());
-            egui::Image::new((texture, rect.size()))
-                .tint(egui::Color32::WHITE)
-                .paint_at(ui, rect);
-
-            // Selection highlight over the selected node's layout rect.
-            if let Some(sel) = model.selected().cloned() {
-                if let Some(node) = model.layout().positions.get(&sel).cloned() {
-                    let r = node_rect(rect.min, &node);
-                    ui.painter().rect_stroke(
-                        r,
-                        4.0,
-                        egui::Stroke::new(2.0, ink(INK_LIGHT.focus)),
-                        egui::StrokeKind::Outside,
-                    );
-                    // Frame follows selection: after a keyboard move, if the
-                    // selected node has scrolled out of the viewport (or is
-                    // within a small margin of an edge), pan it back into frame.
-                    // A node that is already comfortably visible is left alone,
-                    // so manual scrolling is never fought.
-                    let frame_gen = model.frame_gen();
-                    let framed_id = egui::Id::new(("proto-canvas-framed-gen", canvas_id));
-                    let last_framed = ui.ctx().data(|d| d.get_temp::<u64>(framed_id)).unwrap_or(0);
-                    if frame_gen != last_framed {
-                        let margin = 28.0;
-                        let vis = ui.clip_rect();
-                        let out_of_frame = r.min.x < vis.min.x + margin
-                            || r.max.x > vis.max.x - margin
-                            || r.min.y < vis.min.y + margin
-                            || r.max.y > vis.max.y - margin;
-                        if out_of_frame {
-                            ui.scroll_to_rect(r.expand(margin), None);
-                        }
-                        ui.ctx().data_mut(|d| d.insert_temp(framed_id, frame_gen));
-                    }
-                }
-            }
-
-            // Click → select: hit-test canvas-local coords against the layout.
-            if resp.clicked() {
-                if let Some(p) = resp.interact_pointer_pos() {
-                    let lx = f64::from(p.x - rect.min.x);
-                    let ly = f64::from(p.y - rect.min.y);
-                    if let Some(id) = hit_test(model.layout(), lx, ly) {
-                        model.select_id(id);
-                    }
-                }
-            }
-        });
 }
 
 fn node_rect(origin: egui::Pos2, r: &Rect) -> egui::Rect {
@@ -1043,226 +1504,6 @@ fn hit_test(layout: &Layout, lx: f64, ly: f64) -> Option<AssetId> {
         .rev()
         .find(|(_, r)| lx >= r.x && lx <= r.x + r.width && ly >= r.y && ly <= r.y + r.height)
         .map(|(id, _)| id.clone())
-}
-
-/// The outline rail: topological rows, status dot + label + kind, click to
-/// select.
-fn outline_ui(ui: &mut egui::Ui, model: &mut ProtocolModel) {
-    ui.add_space(4.0);
-    ui.label(
-        egui::RichText::new("OUTLINE")
-            .color(ink(INK_LIGHT.ink_muted))
-            .small(),
-    );
-    ui.separator();
-    let rows = model.outline();
-    let mut clicked: Option<AssetId> = None;
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            for row in rows {
-                ui.horizontal(|ui| {
-                    let (dot, _) =
-                        ui.allocate_exact_size(egui::vec2(12.0, ROW_H), egui::Sense::hover());
-                    ui.painter()
-                        .circle_filled(dot.center(), 3.5, status_color(row.status));
-                    let ink_c = if row.selected {
-                        ink(INK_LIGHT.ink_primary)
-                    } else {
-                        ink(INK_LIGHT.ink_secondary)
-                    };
-                    let resp = ui.selectable_label(
-                        row.selected,
-                        egui::RichText::new(truncate(&row.label, 26)).color(ink_c),
-                    );
-                    if resp.clicked() {
-                        clicked = Some(row.id.clone());
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(
-                            egui::RichText::new(kind_label(row.kind))
-                                .color(ink(INK_LIGHT.ink_muted))
-                                .small(),
-                        );
-                    });
-                });
-            }
-        });
-    if let Some(id) = clicked {
-        model.select_id(id);
-    }
-}
-
-/// Padding off the pane divider so the inspector never reads flush-left, plus a
-/// small field rhythm. The design system's named space-steps land in a later
-/// phase; until then this is a local rhythm off the dense ladder.
-const INSPECTOR_PAD_X: i8 = 14;
-const INSPECTOR_PAD_Y: i8 = 8;
-const FIELD_GAP: f32 = 9.0;
-
-/// The inspector: the selected asset's detail, padded and self-describing. Each
-/// field carries a plain-language explainer so a first-time viewer knows what it
-/// means; the measured values (rows / size / materialised) show only after a
-/// run, and the offline manifest says so rather than showing blanks.
-fn inspector_ui(ui: &mut egui::Ui, model: &ProtocolModel) {
-    egui::Frame::new()
-        .inner_margin(egui::Margin::symmetric(INSPECTOR_PAD_X, INSPECTOR_PAD_Y))
-        .show(ui, |ui| {
-            ui.label(
-                egui::RichText::new("INSPECTOR")
-                    .color(ink(INK_LIGHT.ink_muted))
-                    .small()
-                    .strong(),
-            );
-            ui.separator();
-            let facts = model.inspector();
-            if !facts.present {
-                ui.add_space(FIELD_GAP);
-                ui.label(
-                    egui::RichText::new("Nothing selected — click a node, or move with h j k l.")
-                        .color(ink(INK_LIGHT.ink_muted)),
-                );
-                return;
-            }
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| inspector_body(ui, &facts));
-        });
-}
-
-/// Render the selected asset's fields with explainers.
-fn inspector_body(ui: &mut egui::Ui, facts: &InspectorFacts) {
-    ui.add_space(FIELD_GAP);
-    // Heading: the asset's label + a plain-language gloss of its kind.
-    ui.label(
-        egui::RichText::new(&facts.label)
-            .color(ink(INK_LIGHT.ink_primary))
-            .heading(),
-    );
-    ui.label(
-        egui::RichText::new(kind_gloss(facts.kind))
-            .color(ink(INK_LIGHT.ink_secondary))
-            .small(),
-    );
-
-    field(
-        ui,
-        "Address",
-        &facts.address,
-        "Stable dotted id for this asset — press y to copy it.",
-        true,
-    );
-
-    match &facts.producing_step {
-        Some(step) => field(
-            ui,
-            "Produced by",
-            step,
-            "The step / operator that builds this asset.",
-            false,
-        ),
-        None => field(
-            ui,
-            "Produced by",
-            "external input",
-            "Fetched from outside the build — nothing in the protocol produces it.",
-            false,
-        ),
-    }
-
-    if let Some(t) = &facts.transform {
-        field(
-            ui,
-            "Transform",
-            t,
-            "How that step derives the asset (operator or SQL model).",
-            false,
-        );
-    }
-
-    field(
-        ui,
-        "Status",
-        status_word(facts.status),
-        status_gloss(facts.status),
-        false,
-    );
-
-    // Measured values exist only after a real run; the offline manifest carries
-    // lineage only, so say that rather than show blank rows.
-    let measured =
-        facts.row_count.is_some() || facts.bytes.is_some() || facts.materialized.is_some();
-    if measured {
-        if let Some(rc) = facts.row_count {
-            field(
-                ui,
-                "Rows",
-                &rc.to_string(),
-                "Row count measured on the last run.",
-                false,
-            );
-        }
-        if let Some(b) = facts.bytes {
-            field(
-                ui,
-                "Size",
-                &human_bytes(b),
-                "Bytes written on the last run.",
-                false,
-            );
-        }
-        if let Some(m) = facts.materialized {
-            field(
-                ui,
-                "Materialized",
-                if m { "yes" } else { "no" },
-                "Whether the run actually wrote this asset.",
-                false,
-            );
-        }
-    } else {
-        ui.add_space(FIELD_GAP);
-        ui.label(
-            egui::RichText::new(
-                "No measured values yet — this is the offline manifest, which carries lineage \
-                 only. Row count, size, and content hash appear once the protocol is run.",
-            )
-            .color(ink(INK_LIGHT.ink_muted))
-            .small()
-            .italics(),
-        );
-    }
-
-    if let Some(issue) = &facts.issue {
-        field(
-            ui,
-            "Issue",
-            issue,
-            "Why this step is degraded / opaque.",
-            false,
-        );
-    }
-}
-
-/// One inspector field: a muted caption, the value, and a one-line explainer.
-fn field(ui: &mut egui::Ui, label: &str, value: &str, explain: &str, mono: bool) {
-    ui.add_space(FIELD_GAP);
-    ui.label(
-        egui::RichText::new(label.to_uppercase())
-            .color(ink(INK_LIGHT.ink_muted))
-            .small()
-            .strong(),
-    );
-    let mut value_text = egui::RichText::new(value).color(ink(INK_LIGHT.ink_primary));
-    if mono {
-        value_text = value_text.monospace();
-    }
-    ui.label(value_text);
-    ui.label(
-        egui::RichText::new(explain)
-            .color(ink(INK_LIGHT.ink_muted))
-            .small(),
-    );
 }
 
 /// A plain-language gloss of an [`AssetKind`] for the inspector subtitle.
@@ -1304,87 +1545,264 @@ fn human_bytes(b: u64) -> String {
     format!("{v:.1} {}", UNITS[i])
 }
 
-/// The S steps sheet: the flat run-ordered step list as a grid.
-fn steps_ui(ui: &mut egui::Ui, model: &ProtocolModel) {
-    ui.add_space(4.0);
-    ui.label(
-        egui::RichText::new("STEPS — the flat run-ordered list")
-            .color(ink(INK_LIGHT.ink_muted))
-            .small(),
-    );
-    ui.separator();
-    let cursor = model.sheet().cursor();
-    egui::ScrollArea::both()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            egui::Grid::new("proto-steps-grid")
-                .striped(true)
-                .num_columns(6)
-                .spacing(egui::vec2(16.0, 4.0))
-                .show(ui, |ui| {
-                    for h in brightfield_protocol::sheet::COLUMNS {
-                        ui.label(
-                            egui::RichText::new(h)
-                                .color(ink(INK_LIGHT.ink_muted))
-                                .strong()
-                                .small(),
-                        );
-                    }
-                    ui.end_row();
-                    for (i, row) in model.sheet().rows().iter().enumerate() {
-                        let sel = i == cursor;
-                        let c = if sel {
-                            ink(INK_LIGHT.ink_primary)
-                        } else {
-                            ink(INK_LIGHT.ink_secondary)
-                        };
-                        let name = if row.gate {
-                            format!("{} ◈", row.name)
-                        } else {
-                            row.name.clone()
-                        };
-                        let mark = if sel { "▸ " } else { "  " };
-                        ui.label(
-                            egui::RichText::new(format!("{mark}{}", row.order))
-                                .color(c)
-                                .monospace(),
-                        );
-                        ui.label(egui::RichText::new(name).color(c));
-                        ui.label(
-                            egui::RichText::new(row.kind)
-                                .color(ink(INK_LIGHT.ink_secondary))
-                                .small(),
-                        );
-                        ui.label(
-                            egui::RichText::new(truncate(&row.detail, 40))
-                                .color(ink(INK_LIGHT.ink_secondary))
-                                .small(),
-                        );
-                        ui.label(
-                            egui::RichText::new(row.status)
-                                .color(ink(INK_LIGHT.ink_secondary))
-                                .small(),
-                        );
-                        let live = row
-                            .live_state
-                            .clone()
-                            .or_else(|| row.skip_reason.clone())
-                            .unwrap_or_default();
-                        ui.label(
-                            egui::RichText::new(live)
-                                .color(ink(INK_LIGHT.ink_muted))
-                                .small(),
-                        );
-                        ui.end_row();
-                    }
-                });
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+// ---------------------------------------------------------------------------
+// ProtocolShell — the document, the dock, and the two bars it still owns.
+// ---------------------------------------------------------------------------
+
+/// The full egui Protocol panel: the [`ProtocolDoc`], the four live items, and
+/// the dock tree the registry laid out. [`ProtocolShell::draw`] is the single
+/// frame source (live window, headless shot, snapshot) — the loop's guarantee.
+///
+/// It still owns a window, a top breadcrumb bar and a bottom key-hint bar, all
+/// three of which the one-app shell takes over later. What it no longer owns is
+/// any pane's chrome: every pane header, empty state, selection wash and focus
+/// ring on this surface is drawn by [`PaneChrome`] from a [`Subject`].
+pub struct ProtocolShell {
+    doc: ProtocolDoc,
+    items: ItemMap<ProtocolDoc>,
+    dock: Tree<PaneKey>,
+    /// The focused pane. Tracked because [`PaneChrome`] reports focus moves and
+    /// hands each pane its own focus state; nothing paints it yet — the pane
+    /// focus ring lands with the one-app shell, which is also where a focused
+    /// pane starts to *mean* something (its subject becomes the window chrome).
+    focus: Option<PaneKey>,
+    mode: Mode,
+    fonts_installed: bool,
+}
+
+impl ProtocolShell {
+    /// Build the shell over `inputs` and an [`EguiCanvasHost`] on the shell's
+    /// shared device, with the initial `flow` (vertical by default).
+    #[must_use]
+    pub fn new(inputs: ProtocolInputs, host: EguiCanvasHost, mode: Mode, flow: Flow) -> Self {
+        publish_item_ids();
+        let registry = protocol_registry();
+        Self {
+            doc: ProtocolDoc::new(ProtocolModel::new(inputs, flow), host),
+            items: registry.instantiate(),
+            dock: registry.default_tree(),
+            focus: None,
+            mode,
+            fonts_installed: false,
+        }
+    }
+
+    /// The panel's natural window size in logical points: wide enough that the
+    /// canvas pane's *share* of it fits the DAG, plus the top and bottom bars.
+    ///
+    /// Derived from the rail shares rather than from a second pair of pixel
+    /// constants. The constants said the rails were 560px wide while the tiles
+    /// gave them 46% of the window, so on the fixture the canvas pane was ~9%
+    /// narrower than the DAG it had to show and the graph opened part-scrolled.
+    #[must_use]
+    pub fn window_size(&self) -> (f32, f32) {
+        let l = self.doc.model.layout();
+        let centre = 1.0 - OUTLINE_SHARE - INSPECTOR_SHARE;
+        let w = (l.width as f32 / centre + spacing::SPACE_9).max(1100.0);
+        let h = (l.height as f32 + 130.0).clamp(680.0, 1600.0);
+        (w, h)
+    }
+
+    /// The window/tab title.
+    #[must_use]
+    pub fn title(&self) -> String {
+        format!("Protocol · {}", self.doc.model.protocol)
+    }
+
+    /// Mutable access to the model (for the shot's `--focus` seed).
+    pub fn model_mut(&mut self) -> &mut ProtocolModel {
+        &mut self.doc.model
+    }
+
+    /// Draw one Protocol frame into `ui` — the single tier-agnostic source.
+    pub fn draw(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        if !self.fonts_installed {
+            design::apply(&ctx, self.mode);
+            self.fonts_installed = true;
+        }
+
+        // Dispatch this frame's key grammar, then perform any yank.
+        let events = ctx.input(|i| i.events.clone());
+        self.doc.model.feed_events(&events);
+        if let Some(addr) = self.doc.model.take_yank_request() {
+            ctx.copy_text(addr);
+        }
+
+        self.doc.ensure_presented(ctx.pixels_per_point(), self.mode);
+        self.set_active_tab();
+
+        // Orientation chrome: breadcrumb (top) + key-hint bar (bottom). Still
+        // the shell's own, still not a `Subject` — see the module docs.
+        egui::containers::Panel::top("proto-breadcrumb")
+            .resizable(false)
+            .show(ui, |ui| self.breadcrumb_ui(ui));
+        egui::containers::Panel::bottom("proto-hint")
+            .resizable(false)
+            .show(ui, |ui| hint_ui(ui, &self.doc.model, self.mode));
+
+        // The dock fills the rest. Every pane's chrome comes from its subject,
+        // through the one `egui_tiles::Behavior` in the product.
+        let tabbed = tabbed_tiles_of(&self.dock);
+        let mut requests: Vec<Request> = Vec::new();
+        egui::containers::CentralPanel::default().show(ui, |ui| {
+            let mut behavior = PaneChrome::new(
+                &mut self.doc,
+                &mut self.items,
+                self.mode,
+                self.focus,
+                &tabbed,
+                &mut requests,
+            );
+            self.dock.ui(&mut behavior, ui);
         });
+        self.apply(&ctx, requests);
+
+        // Read a manual Canvas/Steps tab click back into the model.
+        self.read_active_tab();
+        self.sweep_canvas();
+    }
+
+    /// Perform the requests the frame's panes raised, now that the tile tree's
+    /// borrow is over.
+    ///
+    /// A verb is dispatched to the model, which is where a keystroke's verb
+    /// lands too — so a control and its keystroke cannot become two
+    /// implementations of one command.
+    fn apply(&mut self, ctx: &egui::Context, requests: Vec<Request>) {
+        for request in requests {
+            match request {
+                Request::Verb(verb) => {
+                    self.doc.model.dispatch(verb.as_str());
+                }
+                Request::Focus(key) => self.focus = Some(key),
+                Request::Repaint => ctx.request_repaint(),
+            }
+        }
+    }
+
+    /// Before rendering: make the active Canvas/Steps tab authoritative from the
+    /// model's `show_sheet` (so the `S`/`Esc` keys drive it).
+    fn set_active_tab(&mut self) {
+        let Some(canvas) = tile_of(&self.dock, CANVAS_PANE) else {
+            return;
+        };
+        let Some(steps) = tile_of(&self.dock, PaneKey::new(ViewKind::Protocol, STEPS)) else {
+            return;
+        };
+        let want = if self.doc.model.show_sheet {
+            steps
+        } else {
+            canvas
+        };
+        let Some(tabs_id) = tabs_holding(&self.dock, canvas) else {
+            return;
+        };
+        if let Some(Tile::Container(Container::Tabs(tabs))) = self.dock.tiles.get_mut(tabs_id) {
+            tabs.set_active(want);
+        }
+    }
+
+    /// After rendering: read a manual tab click back into `show_sheet` (so a
+    /// pointer click on the Steps tab also opens the sheet, and Canvas closes it).
+    fn read_active_tab(&mut self) {
+        let Some(steps) = tile_of(&self.dock, PaneKey::new(ViewKind::Protocol, STEPS)) else {
+            return;
+        };
+        let Some(tabs_id) = tabs_holding(&self.dock, steps) else {
+            return;
+        };
+        if let Some(Tile::Container(Container::Tabs(tabs))) = self.dock.tiles.get(tabs_id) {
+            if let Some(active) = tabs.active {
+                self.doc.model.show_sheet = active == steps;
+            }
+        }
+    }
+
+    /// Declare which panes this frame laid out, so the host can free the canvas
+    /// slot of any pane that has gone.
+    ///
+    /// Every pane in the tree is declared, including a canvas that is tabbed out
+    /// of sight this frame. That is deliberate and it is the safe direction:
+    /// `ensure_presented` caches its texture id across frames and returns early
+    /// on an unchanged view, so a slot freed while the canvas was behind the
+    /// steps tab would leave a dangling id the moment the user tabbed back.
+    fn sweep_canvas(&mut self) {
+        let Some(host) = self.doc.canvas.host.as_mut() else {
+            return;
+        };
+        let visible: BTreeSet<PaneKey> = self
+            .dock
+            .tiles
+            .tiles()
+            .filter_map(|tile| match tile {
+                Tile::Pane(key) => Some(*key),
+                Tile::Container(_) => None,
+            })
+            .collect();
+        host.end_frame(&visible);
+    }
+
+    /// The top breadcrumb + a flow toggle (mutates the model, so it lives on the
+    /// shell rather than the free `hint_ui`).
+    ///
+    /// The selection used to be restated here as a `› label` hop — a fifth way
+    /// of saying "this is selected", one pane away from the wash that already
+    /// says it. The drill crumbs stay: they are scope, not selection.
+    fn breadcrumb_ui(&mut self, ui: &mut egui::Ui) {
+        let sem = semantic(self.mode.is_dark());
+        ui.add_space(spacing::SPACE_2);
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(format!("Protocol · {}", self.doc.model.protocol))
+                    .font(ui_font())
+                    .color(chrome::colour(sem.text.primary)),
+            );
+            for crumb in self.doc.model.breadcrumb() {
+                ui.label(
+                    egui::RichText::new("»")
+                        .font(ui_font())
+                        .color(chrome::colour(sem.text.muted)),
+                );
+                ui.label(
+                    egui::RichText::new(crumb)
+                        .font(ui_font())
+                        .color(chrome::colour(sem.text.secondary)),
+                );
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let (word, next) = match self.doc.model.flow() {
+                    Flow::Vertical => ("vertical", "horizontal"),
+                    Flow::Horizontal => ("horizontal", "vertical"),
+                };
+                if ui
+                    .button(egui::RichText::new(format!("flow: {word} ⇄")).font(ui_font()))
+                    .on_hover_text(format!("switch to {next} flow"))
+                    .clicked()
+                {
+                    self.doc.model.toggle_flow();
+                    self.doc.canvas.presented_key = None;
+                }
+            });
+        });
+        ui.add_space(spacing::SPACE_2);
+    }
 }
 
 /// The bottom key-hint bar + a flow/state indicator (read-only — no model
 /// mutation, so it is a free function).
-fn hint_ui(ui: &mut egui::Ui, model: &ProtocolModel) {
-    ui.add_space(2.0);
+fn hint_ui(ui: &mut egui::Ui, model: &ProtocolModel, mode: Mode) {
+    let sem = semantic(mode.is_dark());
+    ui.add_space(spacing::SPACE_1);
     // The motion keys follow the drawn flow: along it, produce/consume; across
     // it, siblings. Spell out which keys are which for the current axis.
     let hint = if model.show_sheet() {
@@ -1401,24 +1819,28 @@ fn hint_ui(ui: &mut egui::Ui, model: &ProtocolModel) {
         }
     };
     ui.horizontal(|ui| {
+        // Small and proportional — what this bar has always rendered. `main`
+        // wrote `.monospace().small()`, but `.small()` came last and both call
+        // `text_style()`, which overwrites unconditionally, so Small won and the
+        // mono never took effect. Making it mono would be a new design decision
+        // rather than a restoration, so it keeps the face it has today.
         ui.label(
             egui::RichText::new(hint)
-                .color(ink(INK_LIGHT.ink_muted))
-                .monospace()
-                .small(),
+                .small()
+                .color(chrome::colour(sem.text.muted)),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if let Some(addr) = model.yank_flash() {
                 ui.label(
                     egui::RichText::new(format!("yanked {addr}"))
-                        .color(ink(INK_LIGHT.focus))
-                        .small(),
+                        .font(ui_font())
+                        .color(chrome::tone_colour(Tone::Accent, mode)),
                 );
             } else if model.is_drilled() {
                 ui.label(
                     egui::RichText::new("focused — Esc to widen")
-                        .color(ink(INK_LIGHT.focus))
-                        .small(),
+                        .font(ui_font())
+                        .color(chrome::tone_colour(Tone::Accent, mode)),
                 );
             } else {
                 let state = if model.is_expanded() {
@@ -1428,22 +1850,13 @@ fn hint_ui(ui: &mut egui::Ui, model: &ProtocolModel) {
                 };
                 ui.label(
                     egui::RichText::new(state)
-                        .color(ink(INK_LIGHT.ink_muted))
-                        .small(),
+                        .font(ui_font())
+                        .color(chrome::colour(sem.text.muted)),
                 );
             }
         });
     });
-    ui.add_space(2.0);
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
-    }
-    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
-    out.push('…');
-    out
+    ui.add_space(spacing::SPACE_1);
 }
 
 // A convenience the shot/live binaries share: build the host on a device.

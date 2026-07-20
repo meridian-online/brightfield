@@ -131,6 +131,32 @@ impl<D: ?Sized> ItemRegistry<D> {
         self.specs.iter().map(|s| s.id).collect()
     }
 
+    /// Publish this view's item ids into the process's layout vocabulary, so a
+    /// saved layout naming one of these panes can be validated against a build
+    /// that has it.
+    ///
+    /// This is what makes "the registry is the only declaration of a view's
+    /// shape" true rather than aspirational. The protocol view used to hand
+    /// [`ItemId::publish`] a hand-written `static [ItemId; 4]` sitting beside
+    /// the registry, which is a second declaration by definition: adding a
+    /// fifth pane to the registry and forgetting the array compiled, ran, and
+    /// produced a pane whose saved layout would silently not load.
+    ///
+    /// # Why it leaks, and why that is bounded
+    ///
+    /// [`ItemId::publish`] takes `&'static [ItemId]` — see its docs for why —
+    /// and the ids here are computed, so the slice has to be leaked. The early
+    /// return holds that to at most one leak per view per process: a second
+    /// call over an already-published vocabulary allocates the `Vec`, finds
+    /// every id known, and drops it.
+    pub fn publish_ids(&self) {
+        let ids = self.ids();
+        if ids.iter().all(|id| ItemId::known().contains(id)) {
+            return;
+        }
+        ItemId::publish(Vec::leak(ids));
+    }
+
     /// The pane key for an item in this view.
     #[must_use]
     pub const fn pane_key(&self, item: ItemId) -> PaneKey {
@@ -266,9 +292,10 @@ impl<D: ?Sized> ItemRegistry<D> {
 ///
 /// Each item is constructed, asked for its [`crate::Subject`] over
 /// `empty_doc`, and required to: report the id its spec claims; declare an
-/// empty state; write that empty state's prose to the house style; declare
-/// only registered verbs; and, unless it is the centre pane, name the verb
-/// that shows and hides it.
+/// empty state; write that empty state's prose to the house style; and declare
+/// only verbs the keyboard registry has. Unless it is the centre pane, its
+/// spec must also name the verb that shows and hides it — and that verb is
+/// held to the same registration rule as the subject's own.
 ///
 /// # Why this lives in the crate rather than in a test
 ///
@@ -335,8 +362,21 @@ pub fn audit<D: ?Sized>(reg: &ItemRegistry<D>, empty_doc: &D) -> Result<(), Stri
             }
         }
 
-        if spec.slot != Slot::Centre && spec.toggle.is_none() {
-            return Err(format!("{id}: a rail or tab with no toggle verb"));
+        // The toggle verb is on the *spec*, not the subject, so
+        // `declared_verbs` above never sees it. Checked here for the same
+        // reason: a rail whose show/hide verb the keyboard registry does not
+        // have is a rail that cannot be reopened once closed.
+        match &spec.toggle {
+            Some(verb) if !verb.is_registered() => {
+                return Err(format!(
+                    "{id}: declares unregistered verb {:?}",
+                    verb.as_str()
+                ));
+            }
+            None if spec.slot != Slot::Centre => {
+                return Err(format!("{id}: a rail or tab with no toggle verb"));
+            }
+            _ => {}
         }
     }
     Ok(())

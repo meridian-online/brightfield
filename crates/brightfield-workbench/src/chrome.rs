@@ -284,15 +284,29 @@ pub fn focus_ring(ui: &egui::Ui, rect: egui::Rect, mode: Mode) {
 /// ink swap layered on top, a text marker with an ink swap and no wash at
 /// all, and the selection restated as a breadcrumb hop.
 pub fn selection_wash(ui: &egui::Ui, rect: egui::Rect, mode: Mode) {
+    ui.painter().add(selection_wash_shape(rect, mode));
+}
+
+/// The selection wash as a shape, for a caller that cannot paint it before the
+/// content it sits under.
+///
+/// [`selection_wash`] is this plus a paint, and every caller should prefer it.
+/// This exists for one shape of caller: a row whose rect is not known until its
+/// cells have been laid out — an `egui::Grid` row is the case in hand — where
+/// the wash has to be reserved with `Painter::add` and filled in afterwards
+/// with `Painter::set`. Returning the same shape both ways is what keeps that
+/// from becoming a sixth treatment of "this is selected".
+pub fn selection_wash_shape(rect: egui::Rect, mode: Mode) -> egui::Shape {
     let sem = semantic(mode.is_dark());
-    let painter = ui.painter();
-    painter.rect_filled(rect, radius::CHIP, colour(sem.rows.selected_background));
-    painter.rect_stroke(
-        rect,
-        radius::CHIP,
-        egui::Stroke::new(1.0, colour(sem.rows.selected_border)),
-        egui::StrokeKind::Inside,
-    );
+    egui::Shape::Vec(vec![
+        egui::Shape::rect_filled(rect, radius::CHIP, colour(sem.rows.selected_background)),
+        egui::Shape::rect_stroke(
+            rect,
+            radius::CHIP,
+            egui::Stroke::new(1.0, colour(sem.rows.selected_border)),
+            egui::StrokeKind::Inside,
+        ),
+    ])
 }
 
 // ---------------------------------------------------------------------------
