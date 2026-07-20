@@ -9,6 +9,7 @@
 # Only the baseline itself is committed (per the egui_kittest README).
 **/tests/snapshots/**/*.diff.png
 **/tests/snapshots/**/*.new.png
+**/tests/snapshots/**/*.old.png
 
 # User-supplied geo data for examples/live/ (download per each spec's header;
 # never committed — see examples/live/us-states.yaml).
