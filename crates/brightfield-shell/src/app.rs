@@ -29,8 +29,8 @@ pub struct ShellState {
     mode: Mode,
     /// A native egui slider (a shell widget, not part of the chart trait).
     demo_value: f32,
-    /// Whether to draw the hover crosshair overlay — the worked example that keeps
-/// the overlay seam exercised end to end.
+    /// Whether to draw the hover crosshair overlay — the worked example that
+    /// keeps the overlay seam exercised end to end.
     overlay_on: bool,
     fonts_installed: bool,
 }
