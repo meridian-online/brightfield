@@ -347,6 +347,12 @@ fn the_layout_file_survives_a_restart_and_every_way_it_can_be_broken() {
         tracker.is_dirty(),
         "a FAILED write cleared the dirty marker — that layout change is now lost for good"
     );
+    // …and it backs off rather than retrying on every frame for as long as
+    // the disk stays unwritable.
+    assert!(
+        tracker.poll(due + 3 + SAVE_DEBOUNCE_MS, &blocked).is_none(),
+        "a failed write left the deadline in the past, so this retries every frame"
+    );
 
     // …and the retry, at a path that works, writes what was pending.
     assert_eq!(tracker.flush(&write_path), Some(Ok(())));

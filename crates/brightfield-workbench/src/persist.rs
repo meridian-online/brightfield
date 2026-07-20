@@ -315,8 +315,13 @@ impl DirtyTracker {
     ///
     /// Returns `None` when nothing was written, and the write's result when
     /// something was attempted. The marker advances **only** on `Ok`: a
-    /// failed write leaves the tracker dirty and re-armed, so the next tick
-    /// or the exit flush retries it. That is the spike's bug, not inherited.
+    /// failed write leaves the tracker dirty, so the exit flush or a later
+    /// tick retries it rather than losing that layout change for good. That
+    /// is the spike's bug, not inherited.
+    ///
+    /// A failure re-arms the countdown rather than leaving the deadline in
+    /// the past, so a disk that is full or read-only is retried once per
+    /// debounce window instead of once per frame.
     ///
     /// Costs one clone of the layout per tick while the layout is moving, and
     /// nothing at all while it is still — that clone is the price of not
@@ -334,7 +339,16 @@ impl DirtyTracker {
                 self.armed = Some((self.live.clone(), now_ms + SAVE_DEBOUNCE_MS));
                 None
             }
-            Some((_, due)) if now_ms >= *due => Some(self.write_to(path)),
+            Some((_, due)) if now_ms >= *due => {
+                let result = self.write_to(path);
+                if result.is_err() {
+                    // Still dirty, and the deadline is now in the past — leave
+                    // it there and this would retry on every frame for as long
+                    // as the disk stays unwritable.
+                    self.armed = Some((self.live.clone(), now_ms + SAVE_DEBOUNCE_MS));
+                }
+                Some(result)
+            }
             Some(_) => None,
             None => {
                 self.armed = Some((self.live.clone(), now_ms + SAVE_DEBOUNCE_MS));
