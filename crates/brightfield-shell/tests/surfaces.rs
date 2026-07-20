@@ -40,16 +40,18 @@
 //! Every input is fixed: checked-in spec fixtures, a fixed logical window size
 //! (each surface's own `window_size()`, which is a pure function of the fixture),
 //! a fixed `pixels_per_point`, and no wall-clock or randomness anywhere on
-//! either path. No pointer is ever moved, so the chart's hover crosshair overlay
-//! is never armed; the only scripted input in this file is one keypress, and it
-//! is a keypress with no cursor-position component. The capture path already runs
-//! a warm-up frame (font atlas + layout settle), then the scripted frames, then a
-//! final settle frame which is the one captured — that is what makes a
-//! first-frame layout pass invisible to the baseline. Measured on the reference
-//! machine, five consecutive runs of all five tests produced byte-identical PNGs.
+//! either path. **No baseline capture moves a pointer**, so the chart's hover
+//! crosshair overlay is never armed in one; the only scripted input a baseline
+//! takes is one keypress, and it is a keypress with no cursor-position
+//! component. The one test here that does move a pointer —
+//! [`the_overlay_toggle_still_reaches_the_chart_pane`] — has no baseline at all:
+//! it compares three captures against each other, so nothing about it is stored.
+//! The capture path already runs a warm-up frame (font atlas + layout settle),
+//! then the scripted frames, then a final settle frame which is the one captured
+//! — that is what makes a first-frame layout pass invisible to the baseline.
 //!
 //! Scale is **1.0** here, against the sheet tier's 2.0. The chart window is
-//! 934×360 logical points and the protocol window 1642×1250, so at 2.0 these
+//! 940×380 logical points and the protocol window 1642×1250, so at 2.0 these
 //! five baselines would cost roughly 3 MB of repo; at 1.0 they cost 0.8 MB for
 //! the same coverage. The perceptual gate is a per-pixel delta, not a per-image
 //! one, so the lower raster does not buy any slack — it just stores less of it.
@@ -96,18 +98,63 @@ fn read_rgba(path: &PathBuf) -> image::RgbaImage {
         .to_rgba8()
 }
 
-/// Capture the **chart shell** — `draw_shell` over `ShellState`: the top header
-/// band, the right controls panel, and the composited Vello dashboard in the
-/// central panel.
-fn shell_surface(mode: Mode, name: &str) {
+/// Capture the **chart shell** — `draw_shell` over `ShellState`: the top bar,
+/// and the dock's two panes (the composited Vello dashboard, and the controls
+/// rail), each in the header band `PaneChrome` draws from its `Subject`.
+fn shell_capture(mode: Mode, name: &str, script: Vec<Vec<egui::Event>>) -> image::RgbaImage {
     let spec = fixture("examples/dashboard.yaml");
     let composed = compose_spec(spec.to_str().expect("utf-8 fixture path"))
         .unwrap_or_else(|e| panic!("compose {}: {e}", spec.display()));
     let out = scratch(name);
-    let (w, h) = capture_png(composed, mode, SCALE, &out, Vec::new())
+    let (w, h) = capture_png(composed, mode, SCALE, &out, script)
         .unwrap_or_else(|e| panic!("capture {name}: {e}"));
     assert!(w > 0 && h > 0, "{name}: empty capture");
-    egui_kittest::image_snapshot(&read_rgba(&out), name);
+    read_rgba(&out)
+}
+
+/// The same, diffed against the committed baseline.
+fn shell_surface(mode: Mode, name: &str) {
+    egui_kittest::image_snapshot(&shell_capture(mode, name, Vec::new()), name);
+}
+
+/// One frame that moves the pointer to a logical position.
+fn move_to(x: f32, y: f32) -> Vec<egui::Event> {
+    vec![egui::Event::PointerMoved(egui::pos2(x, y))]
+}
+
+/// One frame that moves the pointer and clicks the primary button there — the
+/// same event triple `capture::parse_script` synthesises for a `{"click":[x,y]}`
+/// line.
+fn click_at(x: f32, y: f32) -> Vec<egui::Event> {
+    let pos = egui::pos2(x, y);
+    let mut events = move_to(x, y);
+    for pressed in [true, false] {
+        events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        });
+    }
+    events
+}
+
+/// A rectangle of an image's pixels, as bytes — for comparing one region of two
+/// captures while ignoring everything outside it.
+fn region(img: &image::RgbaImage, x0: u32, y0: u32, x1: u32, y1: u32) -> Vec<u8> {
+    assert!(
+        x1 <= img.width() && y1 <= img.height(),
+        "region {x1}×{y1} is outside a {}×{} capture",
+        img.width(),
+        img.height()
+    );
+    let mut out = Vec::with_capacity(((x1 - x0) * (y1 - y0) * 4) as usize);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            out.extend_from_slice(&img.get_pixel(x, y).0);
+        }
+    }
+    out
 }
 
 /// Capture the **protocol shell** — `ProtocolShell::draw`: the outline rail, the
@@ -217,4 +264,65 @@ fn protocol_steps_light_surface() {
 #[test]
 fn protocol_dark_surface() {
     protocol_surface(Mode::Dark, "protocol_dark", Vec::new());
+}
+
+/// The overlay toggle still reaches the canvas across the dock.
+///
+/// The chart pane and the controls rail are two `egui_tiles` panes now, and the
+/// flag one writes and the other reads lives on the document between them. That
+/// is exactly the kind of wiring a re-expression can drop in silence: the
+/// checkbox would still tick, the crosshair would simply never appear again, and
+/// no baseline in this file would notice — none of the five moves a pointer.
+///
+/// Three captures, compared over a rectangle **strictly inside the chart raster**
+/// so the controls rail's own change of state is out of frame:
+///
+/// - pointer nowhere (the baseline capture's input),
+/// - pointer over the chart, overlay armed as it boots,
+/// - the "hover overlay" checkbox clicked off, *then* the pointer over the chart.
+///
+/// The first two must differ — that is the crosshair being drawn. The first and
+/// third must be identical — that is the toggle actually suppressing it. Light
+/// only: the plumbing is mode-independent and a dark twin would cost three more
+/// GPU captures to re-photograph the same wire.
+#[test]
+fn the_overlay_toggle_still_reaches_the_chart_pane() {
+    // Inside the Vello raster and clear of the pane's frame, its header band and
+    // the rail beside it.
+    const X0: u32 = 60;
+    const Y0: u32 = 100;
+    const X1: u32 = 700;
+    const Y1: u32 = 340;
+    // Over the chart, so both crosshair lines cross the region above.
+    const OVER_CHART: (f32, f32) = (400.0, 220.0);
+    // The "hover overlay" checkbox in the controls rail.
+    const CHECKBOX: (f32, f32) = (800.0, 125.0);
+
+    let idle = shell_capture(Mode::Light, "overlay_idle", Vec::new());
+    let hovered = shell_capture(
+        Mode::Light,
+        "overlay_on",
+        vec![move_to(OVER_CHART.0, OVER_CHART.1)],
+    );
+    let toggled_off = shell_capture(
+        Mode::Light,
+        "overlay_off",
+        vec![
+            click_at(CHECKBOX.0, CHECKBOX.1),
+            move_to(OVER_CHART.0, OVER_CHART.1),
+        ],
+    );
+
+    assert_ne!(
+        region(&idle, X0, Y0, X1, Y1),
+        region(&hovered, X0, Y0, X1, Y1),
+        "hovering the chart drew nothing — the overlay seam no longer reaches the pane"
+    );
+    assert_eq!(
+        region(&idle, X0, Y0, X1, Y1),
+        region(&toggled_off, X0, Y0, X1, Y1),
+        "the crosshair drew with the overlay checkbox off — either the click \
+         missed the checkbox, or the flag the rail writes is not the flag the \
+         chart pane reads"
+    );
 }
