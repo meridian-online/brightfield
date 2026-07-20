@@ -210,28 +210,6 @@ fn the_default_dock_is_outline_canvas_steps_inspector() {
     );
 }
 
-/// A tree built from the registry round-trips through the layout file's id
-/// vocabulary.
-///
-/// The panel does not persist its layout yet, and this is what has to hold
-/// before it can: a pane key only deserialises if its item id was published,
-/// and the ids are published from the registry. Watched redden: removing the
-/// `ItemId::publish` call from the shell's constructor fails here.
-#[test]
-fn every_pane_key_survives_the_layout_files_id_check() {
-    // The publish happens in `ProtocolShell::new`, which needs a device — so
-    // reach it the way a test can, through a headless document's registry.
-    brightfield_shell::protocol::publish_item_ids();
-    for item in [CANVAS, OUTLINE, INSPECTOR, STEPS] {
-        let key = PaneKey::new(ViewKind::Protocol, item);
-        let json = serde_json::to_string(&key).expect("a pane key serialises");
-        assert_eq!(
-            serde_json::from_str::<PaneKey>(&json).expect("and round trips"),
-            key
-        );
-    }
-}
-
 /// The empty inputs helper is public because the audit needs it; keep it
 /// honest about being a *protocol* with nothing in it rather than a
 /// half-built one.

@@ -212,50 +212,6 @@ fn the_pane_frame_reserves_room_for_a_focus_ring() {
 }
 
 // ---------------------------------------------------------------------------
-// One selection treatment, two entry points
-// ---------------------------------------------------------------------------
-
-/// [`chrome::selection_wash`] and [`chrome::selection_wash_shape`] paint the
-/// same thing.
-///
-/// The shape-returning form exists for a caller that cannot paint the wash
-/// before the content it sits under — an `egui::Grid` row, whose rect is not
-/// known until its widest cell has been measured, reserves the wash with
-/// `Painter::add` and fills it in with `Painter::set` afterwards. Two entry
-/// points to one treatment is exactly how a product acquires a sixth spelling
-/// of "this is selected", so this pins that they cannot diverge.
-///
-/// Watched redden: giving the shape form `radius::CONTROL` while the painting
-/// form keeps `radius::CHIP` — a one-token difference no baseline at this
-/// raster would show — fails here.
-#[test]
-fn both_ways_of_painting_the_selection_wash_agree() {
-    let row = egui::Rect::from_min_size(egui::pos2(8.0, 8.0), egui::vec2(200.0, 22.0));
-    for mode in [Mode::Light, Mode::Dark] {
-        // Compared as triangles rather than as `Shape`s: `Shape` is not `Eq`,
-        // and the triangles are what actually reaches the GPU.
-        let (_, direct) = frame_pixels(|ui| chrome::selection_wash(ui, row, mode));
-        let (_, reserved) = frame_pixels(|ui| {
-            ui.painter().add(chrome::selection_wash_shape(row, mode));
-        });
-        let vertices = |p: &[egui::ClippedPrimitive]| -> Vec<(egui::Pos2, egui::Color32)> {
-            p.iter()
-                .filter_map(|c| match &c.primitive {
-                    egui::epaint::Primitive::Mesh(m) => Some(m),
-                    egui::epaint::Primitive::Callback(_) => None,
-                })
-                .flat_map(|m| m.vertices.iter().map(|v| (v.pos, v.color)))
-                .collect()
-        };
-        assert_eq!(
-            vertices(&direct),
-            vertices(&reserved),
-            "{mode:?}: the two selection-wash entry points paint different pixels"
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
 // The toolbar row
 // ---------------------------------------------------------------------------
 

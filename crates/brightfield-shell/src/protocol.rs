@@ -757,10 +757,11 @@ pub struct CanvasSlot {
     /// a subject says depends on this being `Some`.
     host: Option<EguiCanvasHost>,
     texture: Option<egui::TextureId>,
-    /// (expanded, flow, `layout_gen`, `dev_w`, `dev_h`) the texture was last
-    /// presented at — the generation catches a drill/scope re-layout an
-    /// (expanded, flow) pair alone would miss.
-    presented_key: Option<(bool, Flow, u64, u32, u32)>,
+    /// (expanded, flow, `layout_gen`, `dev_w`, `dev_h`, `is_dark`) the texture
+    /// was last presented at — the generation catches a drill/scope re-layout
+    /// an (expanded, flow) pair alone would miss, and the mode catches a
+    /// light/dark switch, which changes the raster's page tone.
+    presented_key: Option<(bool, Flow, u64, u32, u32, bool)>,
 }
 
 impl ProtocolDoc {
@@ -799,8 +800,9 @@ impl ProtocolDoc {
     }
 
     /// Re-raster the DAG through the host only when (expanded, flow, scope,
-    /// resolution) changed, and hand the canvas pane the texture to paint.
-    fn ensure_presented(&mut self, ppp: f32) {
+    /// resolution, mode) changed, and hand the canvas pane the texture to
+    /// paint.
+    fn ensure_presented(&mut self, ppp: f32, mode: Mode) {
         let (expanded, flow) = self.model.layout_key();
         let generation = self.model.layout_gen();
         let l = self.model.layout();
@@ -808,7 +810,14 @@ impl ProtocolDoc {
             width: ((l.width as f32) * ppp).round().max(1.0) as u32,
             height: ((l.height as f32) * ppp).round().max(1.0) as u32,
         };
-        let key = (expanded, flow, generation, dev.width, dev.height);
+        let key = (
+            expanded,
+            flow,
+            generation,
+            dev.width,
+            dev.height,
+            mode.is_dark(),
+        );
         if self.canvas.presented_key == Some(key) && self.canvas.texture.is_some() {
             return;
         }
@@ -817,9 +826,11 @@ impl ProtocolDoc {
         };
         // The raster's own page tone. The asset scene paints its own canvas
         // rectangle over this, so it is only ever seen through the scene's
-        // antialiased edges — but it is a token either way, resolved for the
-        // mode like every other colour this file paints.
-        let base = Color::from_token(semantic(false).surfaces.raised);
+        // antialiased edges — but it is a token either way, and resolved for
+        // the mode like every other colour this file paints. It has to be in
+        // the presented key for that to mean anything: a raster held over a
+        // mode switch would keep the tone it was baked at.
+        let base = Color::from_token(semantic(mode.is_dark()).surfaces.raised);
         // Build the scene under an immutable borrow, then present (mutable host).
         let scene = {
             let mut s = vello::Scene::new();
@@ -852,18 +863,18 @@ pub const INSPECTOR: ItemId = ItemId::new("protocol-inspector");
 /// The flat run-ordered steps sheet, a tab beside the canvas.
 pub const STEPS: ItemId = ItemId::new("protocol-steps");
 
-/// This view's item vocabulary, published so a saved layout naming one of these
-/// panes can be validated against a build that has it.
-static PROTOCOL_ITEMS: [ItemId; 4] = [CANVAS, OUTLINE, INSPECTOR, STEPS];
-
-/// Add this view's item ids to the process's vocabulary.
+/// Add this view's item ids to the process's layout vocabulary.
 ///
 /// Called at boot from [`ProtocolShell::new`], before any layout file could be
 /// read. Idempotent, so a test binary that builds two shells neither falls over
 /// nor grows the vocabulary — which is why it is safe to expose as its own
 /// entry point for a test that needs the vocabulary without needing a device.
+///
+/// The ids come from [`protocol_registry`] and nowhere else. A hand-written
+/// `static [ItemId; 4]` used to stand here: a second declaration of the view's
+/// shape that a fifth pane could be added to the registry without.
 pub fn publish_item_ids() {
-    ItemId::publish(&PROTOCOL_ITEMS);
+    protocol_registry().publish_ids();
 }
 
 /// The canvas pane's address — the key its Vello texture slot is filed under.
@@ -889,8 +900,10 @@ const ICON_STEPS: Icon = Icon("list-ordered");
 /// shows and hides it.
 ///
 /// This is the **only** declaration of the view's shape. The dock's default
-/// arrangement, the live item map and the published id vocabulary all read it,
-/// so a pane cannot be added to one and forgotten in another.
+/// arrangement ([`ItemRegistry::default_tree`]), the live item map
+/// ([`ItemRegistry::instantiate`]) and the published id vocabulary
+/// ([`ItemRegistry::publish_ids`], via [`publish_item_ids`]) are all derived
+/// from this list, so a pane cannot be added to one and forgotten in another.
 #[must_use]
 pub fn protocol_registry() -> ItemRegistry<ProtocolDoc> {
     ItemRegistry::new(
@@ -1276,6 +1289,11 @@ fn inspector_body(ui: &mut egui::Ui, facts: &InspectorFacts, mode: Mode) {
 }
 
 /// One inspector field: a muted caption, the value, and a one-line explainer.
+///
+/// `mono` picks the face the *value* is set in. It is true for a value the
+/// reader compares character by character — the address — and false for prose.
+/// See [`mono_font`] for why it selects a `FontId` rather than chaining
+/// `RichText::monospace`.
 fn field(ui: &mut egui::Ui, mode: Mode, label: &str, value: &str, explain: &str, mono: bool) {
     let sem = semantic(mode.is_dark());
     ui.add_space(spacing::SPACE_4);
@@ -1284,13 +1302,11 @@ fn field(ui: &mut egui::Ui, mode: Mode, label: &str, value: &str, explain: &str,
             .font(ui_font())
             .color(chrome::colour(sem.text.muted)),
     );
-    let mut value_text = egui::RichText::new(value)
-        .font(ui_font())
-        .color(chrome::colour(sem.text.primary));
-    if mono {
-        value_text = value_text.monospace();
-    }
-    ui.label(value_text);
+    ui.label(
+        egui::RichText::new(value)
+            .font(if mono { mono_font() } else { ui_font() })
+            .color(chrome::colour(sem.text.primary)),
+    );
     ui.label(
         egui::RichText::new(explain)
             .font(ui_font())
@@ -1326,7 +1342,7 @@ impl Item<ProtocolDoc> for StepsPane {
         egui::ScrollArea::both()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                egui::Grid::new("proto-steps-grid")
+                let grid = egui::Grid::new("proto-steps-grid")
                     .striped(true)
                     .num_columns(6)
                     .spacing(egui::vec2(spacing::SPACE_6, spacing::SPACE_2))
@@ -1339,22 +1355,46 @@ impl Item<ProtocolDoc> for StepsPane {
                             );
                         }
                         ui.end_row();
+                        let mut wash = None;
                         for (i, row) in doc.model.sheet().rows().iter().enumerate() {
-                            steps_row(ui, row, i == cursor, cx.mode);
+                            if let Some(w) = steps_row(ui, row, i == cursor, cx.mode) {
+                                wash = Some(w);
+                            }
                         }
+                        wash
                     });
+                // The wash is filled in *after* the grid closes, because that
+                // is the first moment the row's full width is known. Sizing it
+                // from the union of the row's own cells fell ~40px short of the
+                // zebra stripe beside it: the stripe spans the grid's full
+                // width, while the last column is empty on an offline row and
+                // contributes a zero-width rect. So the x range comes from the
+                // grid and only the y range from the row.
+                if let Some((idx, rows)) = grid.inner {
+                    let rect = egui::Rect::from_x_y_ranges(grid.response.rect.x_range(), rows)
+                        .expand(spacing::SPACE_1);
+                    ui.painter()
+                        .set(idx, chrome::selection_wash_shape(rect, cx.mode));
+                }
             });
     }
 }
 
 /// One steps row, with the cursor row wearing the one selection wash.
 ///
-/// The wash has to be *reserved* before the cells are laid out and filled in
-/// after, because a grid row's rect is not known until its widest cell has been
-/// measured. That is what [`chrome::selection_wash_shape`] exists for. The
-/// version this replaces marked the cursor with a `▸` prefix and an ink swap and
-/// no wash at all — a third spelling of "this row is selected".
-fn steps_row(ui: &mut egui::Ui, row: &StepRow, selected: bool, mode: Mode) {
+/// Returns the reserved wash slot and the row's vertical extent when this is
+/// the cursor row, for the caller to fill in once the grid's width is known.
+/// The wash has to be *reserved* before the cells are laid out, because a grid
+/// row's rect is not known until its widest cell has been measured. That is
+/// what [`chrome::selection_wash_shape`] exists for. The version this replaces
+/// marked the cursor with a ▸ prefix and an ink swap and no wash at all — a
+/// third spelling of "this row is selected".
+fn steps_row(
+    ui: &mut egui::Ui,
+    row: &StepRow,
+    selected: bool,
+    mode: Mode,
+) -> Option<(egui::layers::ShapeIdx, egui::Rangef)> {
     let sem = semantic(mode.is_dark());
     let wash = selected.then(|| ui.painter().add(egui::Shape::Noop));
     let ink = chrome::colour(sem.text.primary);
@@ -1367,9 +1407,8 @@ fn steps_row(ui: &mut egui::Ui, row: &StepRow, selected: bool, mode: Mode) {
     };
     let first = ui.label(
         egui::RichText::new(row.order.to_string())
-            .font(ui_font())
-            .color(ink)
-            .monospace(),
+            .font(mono_font())
+            .color(ink),
     );
     ui.label(egui::RichText::new(name).font(ui_font()).color(ink));
     ui.label(egui::RichText::new(row.kind).font(ui_font()).color(quiet));
@@ -1391,11 +1430,7 @@ fn steps_row(ui: &mut egui::Ui, row: &StepRow, selected: bool, mode: Mode) {
     );
     ui.end_row();
 
-    if let Some(idx) = wash {
-        let rect = first.rect.union(last.rect).expand(spacing::SPACE_1);
-        ui.painter()
-            .set(idx, chrome::selection_wash_shape(rect, mode));
-    }
+    wash.map(|idx| (idx, first.rect.union(last.rect).y_range()))
 }
 
 // ---------------------------------------------------------------------------
@@ -1406,6 +1441,24 @@ fn steps_row(ui: &mut egui::Ui, row: &StepRow, selected: bool, mode: Mode) {
 /// [`brightfield_workbench::chrome`].
 fn ui_font() -> egui::FontId {
     egui::FontId::proportional(meridian_design::typography::UI_SIZE)
+}
+
+/// The same size in the Meridian mono face, for a value the reader compares
+/// character by character: an address, a run ordinal, the key hints.
+///
+/// It has to be a [`egui::FontId`] rather than `RichText::monospace`, and that
+/// is the whole reason this exists. `RichText::font` sets *size and family*
+/// together, while `RichText::monospace` only sets the text style — so
+/// `.font(ui_font()).monospace()` resolves the style first and then overwrites
+/// its family with `ui_font`'s proportional one. The `.monospace()` is inert
+/// and the value silently renders proportional. Three call sites in this file
+/// were written that way and lost their mono face without a compiler word.
+///
+/// `FontFamily::Monospace` is the family [`crate::design::install_fonts`] maps
+/// to the design system's [`MONO_FAMILY`](meridian_design::typography::MONO_FAMILY),
+/// so this reaches the token layer's face rather than egui's fallback.
+fn mono_font() -> egui::FontId {
+    egui::FontId::monospace(meridian_design::typography::UI_SIZE)
 }
 
 /// A seam status as ink.
@@ -1585,7 +1638,7 @@ impl ProtocolShell {
             ctx.copy_text(addr);
         }
 
-        self.doc.ensure_presented(ctx.pixels_per_point());
+        self.doc.ensure_presented(ctx.pixels_per_point(), self.mode);
         self.set_active_tab();
 
         // Orientation chrome: breadcrumb (top) + key-hint bar (bottom). Still
@@ -1768,9 +1821,8 @@ fn hint_ui(ui: &mut egui::Ui, model: &ProtocolModel, mode: Mode) {
     ui.horizontal(|ui| {
         ui.label(
             egui::RichText::new(hint)
-                .font(ui_font())
-                .color(chrome::colour(sem.text.muted))
-                .monospace(),
+                .font(mono_font())
+                .color(chrome::colour(sem.text.muted)),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if let Some(addr) = model.yank_flash() {
