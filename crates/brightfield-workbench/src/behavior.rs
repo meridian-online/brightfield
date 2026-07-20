@@ -21,18 +21,34 @@
 //! only that four sequential `&mut self` calls compile, which nearly any
 //! ownership shape manages.
 //!
-//! What the shape does buy is a level down, and is about aliasing *within*
-//! one call rather than across several. [`PaneChrome`] holds the document and
-//! the item map as two fields, and `pane_ui` destructures `&mut self` so the
-//! borrow checker sees them as disjoint: an item is borrowed mutably out of
-//! `items` and handed `&mut **doc` in the same expression. Were the document
-//! reached *through* the item, that line would be `item.ui(&mut item.doc, …)`
-//! — one `&mut` to the item and a second reaching through it — which does not
-//! compile, and the usual escape is an `Rc<RefCell<_>>` whose discipline is
-//! then checked at runtime instead of by the compiler. That is the whole
-//! claim: smaller than the one it replaces, and the one the code actually
-//! supports. Delete the destructure in `pane_ui` and the borrow error is
-//! immediate.
+//! What the shape does buy is a level down, and is about aliasing *within* one
+//! call rather than across several. [`PaneChrome`] holds the document and the
+//! item map as **sibling** fields, so the borrow checker splits them and
+//! `pane_ui` can borrow an item mutably out of `items` and hand it the
+//! document in the same expression. Were the document reached *through* the
+//! item, that line would read `item.ui(&mut item.doc, …)` — one `&mut` to the
+//! item and a second reaching inside it — and that is E0499. Checked rather
+//! than asserted:
+//!
+//! ```compile_fail
+//! struct Doc { n: u32 }
+//! trait Item { fn ui(&mut self, doc: &mut Doc); }
+//! struct Owning { doc: Doc }
+//! impl Item for Owning { fn ui(&mut self, doc: &mut Doc) { doc.n += self.doc.n; } }
+//! fn drive(item: &mut Owning) {
+//!     item.ui(&mut item.doc); // cannot borrow `*item` as mutable more than once
+//! }
+//! ```
+//!
+//! The usual escape from that is an `Rc<RefCell<_>>`, whose discipline is then
+//! enforced at runtime instead of by the compiler. That is the whole claim,
+//! and it is a smaller one than it replaces.
+//!
+//! One thing it is **not**: an argument for the destructure in `pane_ui`.
+//! Field-level borrow splitting works through `self.doc` and `self.items` just
+//! as well, and the body compiles unchanged with the destructure taken out —
+//! tried, not assumed. It is there to name the fields once and to make the
+//! disjointness legible, and nothing depends on it.
 
 use std::collections::HashSet;
 
@@ -105,9 +121,11 @@ impl<D: ?Sized> egui_tiles::Behavior<PaneKey> for PaneChrome<'_, D> {
 
     /// Draw one pane: its chrome from its subject, then its body.
     fn pane_ui(&mut self, ui: &mut egui::Ui, tile: TileId, pane: &mut PaneKey) -> UiResponse {
-        // Destructured so the borrow checker sees `doc`, `items` and
-        // `requests` as three disjoint fields rather than one `&mut self`.
-        // This is the borrow the whole contract is arranged around.
+        // Destructured to name the fields once. Field-level borrow splitting
+        // would work through `self.doc` and `self.items` too — the body
+        // compiles either way — so this is legibility, not a requirement. The
+        // requirement is that the document and the items are siblings rather
+        // than nested; see the module docs.
         let Self {
             doc,
             items,
