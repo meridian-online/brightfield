@@ -22,6 +22,13 @@ jobs:
       # commit, never history.
       - uses: actions/checkout@v4
 
+      # The gate's own regression test runs FIRST. A hygiene gate fails silently
+      # in both directions — it can stop matching, or start matching honest
+      # prose — so "the gate still works" has to be checked before "the tree is
+      # clean" means anything.
+      - name: hygiene gate self-test
+        run: ./scripts/check-public-hygiene-selftest.sh
+
       # No `working-directory`. The gate cd's to the repo root itself and scans
       # every tracked file in the repository, workspace crates included.
       - name: private planning identifiers
