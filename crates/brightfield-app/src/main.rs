@@ -1502,7 +1502,9 @@ fn dump_asset_graph_png(
     let layout =
         brightfield_protocol::layout(graph, &brightfield_protocol::LayoutConfig::default());
     let mut composite = vello::Scene::new();
-    brightfield_render::asset_scene::render_asset_graph(&mut composite, &layout, graph);
+    // Light ink: this arm writes a PNG for a document or a terminal, not for a
+    // themed window, so there is no mode to read. `false` is the choice, stated.
+    brightfield_render::asset_scene::render_asset_graph(&mut composite, &layout, graph, false);
 
     let scale: f32 = env::var("BRIGHTFIELD_DUMP_SCALE")
         .ok()

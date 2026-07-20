@@ -757,11 +757,43 @@ pub struct CanvasSlot {
     /// a subject says depends on this being `Some`.
     host: Option<EguiCanvasHost>,
     texture: Option<egui::TextureId>,
-    /// (expanded, flow, `layout_gen`, `dev_w`, `dev_h`, `is_dark`) the texture
-    /// was last presented at — the generation catches a drill/scope re-layout
-    /// an (expanded, flow) pair alone would miss, and the mode catches a
-    /// light/dark switch, which changes the raster's page tone.
-    presented_key: Option<(bool, Flow, u64, u32, u32, bool)>,
+    /// What the texture in [`Self::texture`] was last presented at — see
+    /// [`CanvasKey`].
+    presented_key: Option<CanvasKey>,
+}
+
+/// Everything the DAG raster's pixels depend on.
+///
+/// The generation catches a drill/scope re-layout an (expanded, flow) pair
+/// alone would miss; the device size catches a resize or a scale change; and
+/// `dark` catches a theme switch, which since this increment changes most of
+/// the raster's colours rather than only the page tone behind them — a few
+/// solids (the issue badge, its glyph, the status tints) are paints and stay
+/// put in both modes. Held as a named struct rather than an anonymous tuple
+/// because `differs_only_by_mode` is what a test can hold the mode component
+/// to — a bare tuple can lose a
+/// field to a refactor and stay compiling and green.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CanvasKey {
+    expanded: bool,
+    flow: Flow,
+    generation: u64,
+    dev_width: u32,
+    dev_height: u32,
+    dark: bool,
+}
+
+impl CanvasKey {
+    /// Whether `self` and `other` differ in the mode component and nothing
+    /// else — the shape a theme switch alone produces.
+    #[cfg(test)]
+    fn differs_only_by_mode(self, other: Self) -> bool {
+        self.dark != other.dark
+            && Self {
+                dark: other.dark,
+                ..self
+            } == other
+    }
 }
 
 impl ProtocolDoc {
@@ -799,25 +831,31 @@ impl ProtocolDoc {
         Self::headless(ProtocolModel::new(ProtocolInputs::empty(), Flow::Vertical))
     }
 
-    /// Re-raster the DAG through the host only when (expanded, flow, scope,
-    /// resolution, mode) changed, and hand the canvas pane the texture to
-    /// paint.
-    fn ensure_presented(&mut self, ppp: f32, mode: Mode) {
+    /// The identity of the raster this document would present right now.
+    fn canvas_key(&self, ppp: f32, mode: Mode) -> (CanvasKey, PixelSize) {
         let (expanded, flow) = self.model.layout_key();
-        let generation = self.model.layout_gen();
         let l = self.model.layout();
         let dev = PixelSize {
             width: ((l.width as f32) * ppp).round().max(1.0) as u32,
             height: ((l.height as f32) * ppp).round().max(1.0) as u32,
         };
-        let key = (
-            expanded,
-            flow,
-            generation,
-            dev.width,
-            dev.height,
-            mode.is_dark(),
-        );
+        (
+            CanvasKey {
+                expanded,
+                flow,
+                generation: self.model.layout_gen(),
+                dev_width: dev.width,
+                dev_height: dev.height,
+                dark: mode.is_dark(),
+            },
+            dev,
+        )
+    }
+
+    /// Re-raster the DAG through the host only when [`CanvasKey`] changed, and
+    /// hand the canvas pane the texture to paint.
+    fn ensure_presented(&mut self, ppp: f32, mode: Mode) {
+        let (key, dev) = self.canvas_key(ppp, mode);
         if self.canvas.presented_key == Some(key) && self.canvas.texture.is_some() {
             return;
         }
@@ -839,6 +877,7 @@ impl ProtocolDoc {
                 self.model.layout(),
                 self.model.displayed_graph(),
                 &self.model.statuses,
+                mode.is_dark(),
             );
             let mut scaled = vello::Scene::new();
             scaled.append(&s, Some(kurbo::Affine::scale(f64::from(ppp))));
@@ -1885,6 +1924,35 @@ mod tests {
     fn model() -> ProtocolModel {
         let inputs = load_protocol_offline(EDGAR).expect("load edgar_gleif");
         ProtocolModel::new(inputs, Flow::Vertical)
+    }
+
+    /// A theme switch invalidates the cached DAG raster, and does so through
+    /// the key rather than by luck.
+    ///
+    /// The raster is presented once and re-presented from the slot on every
+    /// later frame, so a key blind to the mode leaves a light-ink DAG on the
+    /// screen after a switch to dark — the same bug, one frame later. The
+    /// assertion is deliberately two-sided: the two keys differ, and they
+    /// differ in the mode component *only*, so it cannot be satisfied by a key
+    /// that happens to churn for an unrelated reason.
+    #[test]
+    fn a_theme_switch_changes_the_canvas_key_and_nothing_else() {
+        let doc = ProtocolDoc::headless(model());
+        let (light, light_dev) = doc.canvas_key(2.0, Mode::Light);
+        let (dark, dark_dev) = doc.canvas_key(2.0, Mode::Dark);
+        assert_ne!(light, dark, "a theme switch left the raster key unchanged");
+        assert!(
+            light.differs_only_by_mode(dark),
+            "the two keys differ by more than the mode: {light:?} vs {dark:?}"
+        );
+        assert_eq!(
+            light_dev, dark_dev,
+            "the mode does not change the raster size"
+        );
+        // The other components still bite — a key that only ever varied by mode
+        // would pass the assertions above and cache a stale layout instead.
+        let (finer, _) = doc.canvas_key(3.0, Mode::Light);
+        assert_ne!(light, finer, "a scale change must re-raster too");
     }
 
     /// The offline pipeline builds both graphs; the collapsed one has exactly one

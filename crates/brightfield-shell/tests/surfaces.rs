@@ -171,11 +171,11 @@ fn protocol_light_surface() {
 /// the first cut. The hint bar reads `S steps`, which is why that is easy to get
 /// wrong; the assertion below is what catches it.
 ///
-/// Light only, deliberately. The sheet is pure egui chrome — the same
-/// hardcoded-`INK_LIGHT` problem the dark canvas baseline already documents
-/// would be the only thing a dark twin showed, and it would cost another
-/// full-window image for that. Covered here: the surface exists and renders.
-/// Not covered: the sheet's dark ink. Say so rather than imply otherwise.
+/// Light only, deliberately. The sheet is pure egui chrome, so its ink comes
+/// from the same `semantic(dark)` resolution `chrome_dark` and the dark canvas
+/// tab already cover; a dark twin would cost another full-window image to
+/// re-photograph that. Covered here: the surface exists and renders. Not
+/// covered: this particular sheet in dark. Say so rather than imply otherwise.
 #[test]
 fn protocol_steps_light_surface() {
     let steps = protocol_surface(
@@ -200,15 +200,20 @@ fn protocol_steps_light_surface() {
     );
 }
 
-/// Pins the protocol panel in dark mode **including what is wrong with it**.
+/// Pins the protocol panel in dark mode, chrome **and** DAG raster.
 ///
-/// The panel hardcodes `meridian_design::chrome::INK_LIGHT` throughout and never
-/// reads `INK_DARK`, so this baseline shows light-mode ink on a dark page:
-/// low-contrast and, in places, unreadable. That is the surface as it ships
-/// today, and pinning it is the point — the increment that threads the mode
-/// through will land as a deliberate, reviewable baseline diff instead of
-/// disappearing into an untested surface. Do not "fix" this baseline by
-/// regenerating it; fix the panel, and let the regeneration be the evidence.
+/// This baseline used to pin the panel's dark mode *including what was wrong
+/// with it*: `asset_scene` hardcoded `meridian_design::chrome::INK_LIGHT`, so
+/// the DAG rendered as a white sheet inside a dark window. Both halves now
+/// resolve through `semantic(dark)` — the chrome through
+/// `brightfield_workbench::chrome`, the raster through
+/// `asset_scene::AssetInk` — and this photograph is the evidence the earlier
+/// note asked for.
+///
+/// What it does **not** cover: the chart side of `brightfield-render` (axis,
+/// grid, legend, marks, `scene.rs`) still names light tokens. None of it is on
+/// this surface — the protocol panel draws no charts — so a green run here says
+/// nothing about it either way.
 #[test]
 fn protocol_dark_surface() {
     protocol_surface(Mode::Dark, "protocol_dark", Vec::new());
