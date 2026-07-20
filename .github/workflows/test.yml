@@ -70,13 +70,10 @@ jobs:
       # zed/GPUI and gpui-component pins are git dependencies) plus ./target.
       - uses: Swatinem/rust-cache@v2
 
-      # No `cargo fmt --check` / `cargo clippy -D warnings` step yet, and that
-      # is not an oversight: as of this commit the tree is not clean under
-      # either (115 files differ from default rustfmt, and clippy stops on a
-      # deny-by-default lint in a brightfield-spec test). Adding them now would
-      # mean landing a workflow that is red on arrival. Formatting/linting the
-      # tree once, then gating it, is a separate change — this one exists to get
-      # `cargo test` enforced at all, which it never has been.
+      # No `cargo fmt --check` / `cargo clippy -D warnings` step here, on
+      # purpose: both now exist, in `lint.yml`. They are a separate workflow so
+      # they report in minutes without queueing behind this suite, and so they
+      # still report when this suite is red or cancelled.
 
       # --test-threads=1 is the project's standing invocation: it keeps the
       # GPU-backed suites (GPUI's TestAppContext, and the shared wgpu device the
