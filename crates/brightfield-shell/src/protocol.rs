@@ -810,7 +810,8 @@ impl ProtocolDoc {
         }
     }
 
-    /// A document with no device behind it — see [`CanvasSlot::host`].
+    /// A document with no device behind it — its private `CanvasSlot::host` is
+    /// `None`.
     #[must_use]
     pub fn headless(model: ProtocolModel) -> Self {
         Self {

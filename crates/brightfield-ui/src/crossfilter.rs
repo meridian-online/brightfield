@@ -867,7 +867,7 @@ impl CrossfilterCoordinator {
         true
     }
 
-    /// The gpui-free half of [`commit_slider`]: on a `Released` state, dispatch
+    /// The gpui-free half of [`Self::commit_slider`]: on a `Released` state, dispatch
     /// the param and absorb the re-execution results into the per-mark batches,
     /// returning the set of plots to rebuild. Returns `None` (nothing committed)
     /// for a non-`Released` state or an out-of-range slider index. Separated so

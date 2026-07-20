@@ -6,7 +6,7 @@
 //!
 //! It is the door every pane is *meant* to come through, not one it is forced
 //! through — `egui_tiles::Tiles::insert_pane` is public and will take a
-//! [`PaneKey`](crate::PaneKey) from anyone. So [`audit`](crate::audit) covers
+//! [`PaneKey`] from anyone. So [`audit`] covers
 //! every item that went through the registry, which is every item anyone has a
 //! reason to add; a pane inserted around it leaves the contract and the
 //! audit's reach in the same move. Worth knowing before leaning on the gate

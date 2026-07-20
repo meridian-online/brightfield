@@ -4,8 +4,8 @@
 //! paints, by REUSING the composite path's positioned legend renderers
 //! (`brightfield-render/src/legend.rs` is a read-only seam — never forked):
 //! a categorical [`Scale::Colour`] draws the swatch column via
-//! [`render_colour_legend_at`], a continuous [`Scale::Sequential`] draws the
-//! gradient bar via [`render_sequential_legend_at`], each sized by its
+//! [`render_colour_legend_at_selected`], a continuous [`Scale::Sequential`]
+//! draws the gradient bar via [`render_sequential_legend_at`], each sized by its
 //! matching size function. Same code, same pixels as the headless PNG.
 //!
 //! No gpui import may enter this file (the semantic-layer rule — the GPUI

@@ -354,7 +354,7 @@ pub fn commit_brush_release_multi<D: SelectionDispatcher>(
 /// may not be Brushing), a binding, and a dispatcher, produce the
 /// dispatch result vec and the next InteractionState. Lifted out of
 /// the GPUI context for testability — chart_view.on_mouse_up_with_dispatch
-/// shares the same logic but threads it through Entity<ChartState>.
+/// shares the same logic but threads it through `Entity<ChartState>`.
 ///
 /// **cfs3 wrapper:** preserved as a single-binding convenience over
 /// [`commit_brush_release_multi`] so the single-binding surface stays green.

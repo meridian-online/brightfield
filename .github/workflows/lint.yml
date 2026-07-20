@@ -12,17 +12,20 @@ env:
 # `test`:
 #
 # * `test` runs the whole suite behind a 60-minute ceiling, including the
-#   egui_kittest pixel tier. These two gates run no tests and render nothing,
-#   so a formatting slip or a lint regression should report in minutes without
-#   waiting on it — and should still report when the suite is red.
+#   egui_kittest pixel tier. These three gates run no tests and render nothing,
+#   so a formatting slip, a lint regression or a dead doc link should report in
+#   minutes without waiting on it — and should still report when the suite is
+#   red.
 # * `test` cancels in-progress runs per ref. This one is cheap enough not to
 #   need cancelling, and a lint regression should be reported on every pushed
 #   commit.
 #
-# The tree was made clean under both gates in the three commits preceding this
-# file: `cargo fmt --all` over the workspace, then a warning-by-warning clippy
-# triage in which every lint is either fixed or carries an `#[allow]` with a
-# written reason. This gate is green on arrival, not aspirational.
+# The tree was made clean under each gate before that gate landed: `cargo fmt
+# --all` over the workspace, then a warning-by-warning clippy triage in which
+# every lint is either fixed or carries an `#[allow]` with a written reason,
+# then a site-by-site rustdoc triage in which every finding is fixed and no
+# `#[allow]` was added at all. Each gate is green on arrival, not aspirational —
+# and each has been watched fail on a deliberately broken tree before landing.
 jobs:
   fmt-clippy:
     # macos-15, matching `test`, and NOT the ubuntu-latest that `public-hygiene`
@@ -68,3 +71,50 @@ jobs:
       # repeating it here would only report the same problem twice.
       - name: cargo clippy --workspace --all-targets -D warnings
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # rustdoc, for the one thing the four gates above cannot see: a doc link
+      # that names something which does not exist. `cargo doc` resolves every
+      # intra-doc link and warns on the ones it cannot; `-D warnings` in
+      # RUSTDOCFLAGS turns that into a failure.
+      #
+      # This is here because such a link did ship: a module doc named the
+      # renderer it delegates to by a name that file has never called, and that
+      # resolves to nothing from where it is written. fmt/clippy/test/deny/
+      # hygiene were all green on it, and only a human reviewer caught it. A
+      # dead link in a crate whose whole job is to be the shared vocabulary is
+      # worse than a dead link elsewhere — it is read by everyone building
+      # against the contract.
+      #
+      # `--no-deps` so a warning in a dependency's docs cannot redden this repo.
+      #
+      # `--document-private-items` is not decoration, and it is the stricter of
+      # the two forms this could take. Measured on the tree this gate landed
+      # against, it is a strict SUPERSET of the plain public-only run:
+      #
+      # * everything the public run flags, it flags too — including
+      #   `private_intra_doc_links` (a public item linking a private one), which
+      #   still fires under the flag, only with a different note ("resolves only
+      #   because you passed --document-private-items, but will break without").
+      #   Passing the flag does not buy silence on that class.
+      # * and it additionally resolves the links written inside private items,
+      #   which the public run never looks at. Three of the dead links this
+      #   commit fixes lived exactly there — two on private fields of
+      #   `ProtocolNav`, one on a private method in `crossfilter`. The
+      #   public-only form would have shipped all three: measured on this tree,
+      #   private-items finds 43 sites and public-only 40, and the 40 are a
+      #   subset of the 43, not a different set.
+      #
+      # A doc comment on a private item is read by the next person to change
+      # that code, which is the reader this repo has most of. So the gate checks
+      # every doc comment in the workspace, not the subset that reaches docs.rs.
+      #
+      # The tree was made clean under BOTH forms before this landed, and no
+      # `#[allow(rustdoc::...)]` was added anywhere to get there: every one of
+      # the 43 findings was fixed at the source. Where a public doc pointed at
+      # a private helper, the link became plain code formatting naming it as
+      # private, rather than the helper being made public to satisfy a link —
+      # doc links do not get to widen an API.
+      - name: cargo doc (intra-doc links must resolve)
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps --document-private-items

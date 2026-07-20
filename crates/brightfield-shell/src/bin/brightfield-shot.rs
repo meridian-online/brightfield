@@ -11,10 +11,13 @@
 //!   → the egui Protocol panel (dock + DAG + outline + inspector + steps).
 //!
 //! Usage:
-//!   brightfield-shot --spec S.yaml --out out.png
-//!                    [--size WxH] [--scale N] [--theme light|dark]
-//!                    [--script keys.ndjson]
-//!                    [--flow vertical|horizontal] [--focus <dotted-id>]
+//!
+//! ```text
+//! brightfield-shot --spec S.yaml --out out.png
+//!                  [--size WxH] [--scale N] [--theme light|dark]
+//!                  [--script keys.ndjson]
+//!                  [--flow vertical|horizontal] [--focus <dotted-id>]
+//! ```
 //!
 //! `--flow` / `--focus` apply to the Protocol panel: the reading axis (vertical
 //! by default) and the boot selection (the dotted asset id a click would target,

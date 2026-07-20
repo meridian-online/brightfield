@@ -6,8 +6,8 @@
 //! `paint_image` (the chart_state.rs choke point pattern, with the same
 //! scale-factor-aware cache so repaints don't re-run Vello). The raster is
 //! padded by the panel border's 0.25 logical-px overhang on every side (see
-//! [`legend_raster_geometry`]) so the window paints the full stroke the PNG
-//! composite shows, instead of clipping it at the buffer edge.
+//! the private `legend_raster_geometry`) so the window paints the full stroke
+//! the PNG composite shows, instead of clipping it at the buffer edge.
 //!
 //! **Display-only by default:** a legend without a selection binding has no
 //! mouse listeners, no coordinator, no hitbox.
@@ -111,8 +111,8 @@ impl PlacedLegend {
 /// for a click between/outside entries or a non-Colour scale.
 ///
 /// Coordinate space: the painted raster is inflated by the border-pad fringe
-/// (see [`legend_raster_geometry`]), but the paint offsets the image by the
-/// same pad so the panel INTERIOR stays exactly at the element's layout
+/// (see the private `legend_raster_geometry`), but the paint offsets the image
+/// by the same pad so the panel INTERIOR stays exactly at the element's layout
 /// bounds — the pad cancels, and element-local coordinates map straight onto
 /// entry-rect space at origin (0, 0) with no offset.
 #[must_use]

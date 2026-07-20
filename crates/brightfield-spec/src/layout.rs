@@ -425,10 +425,9 @@ pub fn resolve_projection(plot: &PlotNode) -> ResolvedProjection {
 }
 
 /// The default geometry column a geo mark reads — the name `ST_Read` (and a
-/// spatial join) produces, and the name the [`GeoLowerer`] wraps in
+/// spatial join) produces, and the name `GeoLowerer` (in `brightfield-sql`,
+/// which depends on this crate, so it cannot be linked from here) wraps in
 /// `ST_AsGeoJSON`.
-///
-/// [`GeoLowerer`]: (see brightfield-sql)
 pub const DEFAULT_GEOMETRY_COLUMN: &str = "geom";
 
 /// Resolve a geo mark's geometry column from its `geometry:` channel, default
@@ -585,7 +584,7 @@ pub struct PlacedInput {
 /// Mirrors [`placed_plots`]: walks the layout tree and emits one [`PlacedInput`]
 /// per `input:` node placed in an hconcat/vconcat. Inputs nested inside a plot's
 /// items are not composition widgets and are ignored (matching
-/// [`collect_placed_plots`]'s stop-at-plot behaviour).
+/// the private `collect_placed_plots`'s stop-at-plot behaviour).
 #[must_use]
 pub fn placed_inputs(spec: &Spec, viewport: Rect) -> Vec<PlacedInput> {
     let mut out = Vec::new();
@@ -621,7 +620,7 @@ fn collect_placed_inputs(node: &LayoutNode, path: &str, out: &mut Vec<PlacedInpu
 /// component path — the node-side of the [`placed_inputs`] join.
 ///
 /// Walks the [`Component`] tree with the *same* path scheme as
-/// [`collect_placed_inputs`] (which walks the layout tree). Because
+/// the private `collect_placed_inputs` (which walks the layout tree). Because
 /// [`compute_layout`] maps each Component to exactly one LayoutNode, the paths
 /// align, so a placed rect joins to its `Input` node by path.
 #[must_use]
@@ -657,9 +656,9 @@ fn collect_input_nodes_in<'a>(
 
 /// Positioned input widgets joined to their AST nodes: `(rect, &Input)` per
 /// composition-level input. This is the app-facing view — build a
-/// [`SliderBinding`] from each `&Input` and host a widget at its `rect`.
-///
-/// [`SliderBinding`]: (see brightfield-ui)
+/// `SliderBinding` (in `brightfield-ui`, which depends on this crate, so it
+/// cannot be linked from here) from each `&Input` and host a widget at its
+/// `rect`.
 #[must_use]
 pub fn placed_input_nodes(spec: &Spec, viewport: Rect) -> Vec<(Rect, &Input)> {
     let placed = placed_inputs(spec, viewport);
@@ -717,8 +716,9 @@ fn collect_plot_nodes_in<'a>(
 /// identity and positioned rect — the legend analogue of [`PlacedInput`].
 ///
 /// Uses the same path scheme as [`PlacedPlot`] / [`placed_inputs`], so a placed
-/// legend joins to its [`LegendNode`] via [`collect_legend_nodes`]. See
-/// [`placed_legend_nodes`] for the joined view an app hosts.
+/// legend joins to its [`LegendNode`](crate::ast::LegendNode) via
+/// [`collect_legend_nodes`]. See [`placed_legend_nodes`] for the joined view an
+/// app hosts.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlacedLegend {
     /// Component path of the legend node.
@@ -766,7 +766,8 @@ fn collect_placed_legends(node: &LayoutNode, path: &str, out: &mut Vec<PlacedLeg
 
 /// The composition-level standalone legend AST nodes, each paired with its
 /// component path — the node-side of the [`placed_legends`] join. Walks the
-/// [`Component`] tree with the same path scheme as [`collect_placed_legends`].
+/// [`Component`] tree with the same path scheme as the private
+/// `collect_placed_legends`.
 #[must_use]
 pub fn collect_legend_nodes(spec: &Spec) -> Vec<(String, &crate::ast::LegendNode)> {
     let mut out = Vec::new();

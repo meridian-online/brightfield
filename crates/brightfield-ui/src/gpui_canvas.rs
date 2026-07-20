@@ -13,7 +13,7 @@
 //!      clears per-frame listeners each frame, so they are re-registered every
 //!      paint; a state change calls `window.refresh()`.
 //!   2. drives the framework-free [`crate::chart_element::paint_chart`] through a
-//!      per-frame [`GpuiFrame`] (which implements [`ChartSurface`] + the
+//!      per-frame private `GpuiFrame` (which implements [`ChartSurface`] + the
 //!      [`OverlayPainter`]) — present the cached base raster, draw the overlay as
 //!      gpui quads, set the position-dependent cursor.
 //!
