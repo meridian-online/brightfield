@@ -1,4 +1,4 @@
-# Standalone continuous legend (card 0008 sequential colour scale): a
+# Standalone continuous legend (sequential colour scale): a
 # `legend: color for: heat` node placed as a composition sibling renders the
 # raster plot's count → colour ramp as a vertical GRADIENT BAR (with min/mid/max
 # tick labels) at its own layout rect, to the right of the plot. An explicit

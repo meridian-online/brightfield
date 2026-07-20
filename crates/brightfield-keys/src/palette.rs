@@ -1,4 +1,4 @@
-//! The palette filter (ac-05): fuzzy-match over longname + help, scoped by the
+//! The palette filter: fuzzy-match over longname + help, scoped by the
 //! focused altitude, ranked by fuzzy score (non-empty query) or frequency then a
 //! per-session recency counter (empty query). Reserved verbs are INCLUDED, flagged
 //! with their bucket — never hidden.

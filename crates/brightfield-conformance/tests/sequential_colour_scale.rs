@@ -1,4 +1,4 @@
-//! scs_ac09 (card 0008, sequential colour scale).
+//! Sequential colour scale.
 //!
 //! A raster spec declaring `colorScheme` parses cleanly (no
 //! `ParseWarning::Unimplemented`) and preflights as Implemented: `colorScheme`

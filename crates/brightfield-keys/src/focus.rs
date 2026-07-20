@@ -1,5 +1,5 @@
-//! The focus state machine over the ComponentPath tree (ac-02) and the
-//! path↔plot(+rect) resolver — plus focus-jump path fuzzy-matching (ac-18).
+//! The focus state machine over the ComponentPath tree and the
+//! path↔plot(+rect) resolver — plus focus-jump path fuzzy-matching.
 //!
 //! Built gpui-free from the spec's layout tree: the focus tree carries the SAME
 //! plot-node path scheme as `brightfield_spec::layout::placed_plots` (and thus
@@ -273,7 +273,7 @@ impl FocusState {
 }
 
 // ---------------------------------------------------------------------------
-// Focus-jump path fuzzy-matching (ac-18)
+// Focus-jump path fuzzy-matching
 // ---------------------------------------------------------------------------
 
 /// A focus-jump candidate: a focusable path and its fuzzy score for `query`.

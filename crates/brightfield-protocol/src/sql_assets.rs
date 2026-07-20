@@ -1,10 +1,10 @@
-//! Per-statement SQL asset extraction (card 0025).
+//! Per-statement SQL asset extraction.
 //!
 //! `brightfield_sql::conform::parse_and_normalise` parses multi-statement SQL
 //! but fails the WHOLE string on one bad statement — so the splitter here
 //! finds statement boundaries at the TOKEN level (semicolons outside
 //! strings/comments) and each statement is parsed individually, degrading
-//! **per-statement, never per-file** (pds-ac04). Every fragment keeps its
+//! **per-statement, never per-file**. Every fragment keeps its
 //! byte range in the source file so later cards can highlight it.
 
 use std::collections::BTreeSet;
@@ -231,8 +231,8 @@ impl Visitor for RelationCollector {
 }
 
 /// Split `sql` and extract per-statement assets, degrading each unparseable
-/// statement to [`StatementAssets::Opaque`] while its siblings still explode
-/// (pds-ac04). Comment-only fragments contribute nothing.
+/// statement to [`StatementAssets::Opaque`] while its siblings still explode.
+/// Comment-only fragments contribute nothing.
 #[must_use]
 pub fn extract_statement_assets(sql: &str) -> Vec<StatementAssets> {
     let mut out = Vec::new();

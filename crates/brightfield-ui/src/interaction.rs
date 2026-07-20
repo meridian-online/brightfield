@@ -44,8 +44,8 @@ pub enum InteractionState {
         /// Opposite corner, in chart coordinates.
         current: Point,
     },
-    /// A persisted `Selected` rectangle under active direct manipulation (card
-    /// 0022): the pointer grabbed `region` at `origin` and `{start, current}`
+    /// A persisted `Selected` rectangle under active direct manipulation
+    /// : the pointer grabbed `region` at `origin` and `{start, current}`
     /// is the LIVE moved/resized rectangle. `anchor` is the rect at grab time,
     /// so the release can tell a real move/resize from a zero-delta click (a
     /// click on the rect) and re-dispatch only the former. Renders exactly like
@@ -66,7 +66,7 @@ pub enum InteractionState {
 }
 
 /// The classification of a pointer position relative to a persisted `Selected`
-/// brush rectangle (card 0022) — the single source of truth for BOTH the
+/// brush rectangle — the single source of truth for BOTH the
 /// paint-phase cursor style and the `pointer_down` grab decision + the
 /// subsequent move/resize transform. Computed by the gpui-free classifier
 /// [`brush_region`] with a handle tolerance band; `Corner` takes precedence
@@ -110,7 +110,7 @@ pub enum BrushCorner {
     BottomRight,
 }
 
-/// The action a `pointer_down` resolves to over a plot (card 0022), decided by
+/// The action a `pointer_down` resolves to over a plot, decided by
 /// the gpui-free [`InteractionState::resolve_press`] resolver: grab a hit on
 /// the persisted `Selected` rect (resolved BEFORE the plot-contains check, so a
 /// handle in the inset-band overhang above `plot_area.y0` still grabs), else
@@ -139,8 +139,8 @@ fn norm_rect(a: Point, b: Point) -> Rect {
 }
 
 /// Classify a local-space pointer over a `Selected` rect into
-/// interior / edge / corner / outside using a handle tolerance band `tol`
-/// (card 0022, drb-ac01). Renderer-free and gpui-free. `Corner` precedence over
+/// interior / edge / corner / outside using a handle tolerance band `tol`.
+/// Renderer-free and gpui-free. `Corner` precedence over
 /// `Edge` over `Interior`; a point farther than `tol` outside any side is
 /// `Outside`. The region hit is resolved BEFORE any plot-containment check so a
 /// handle in the rect's inset-band overhang still grabs.
@@ -180,7 +180,7 @@ pub fn brush_region(local: Point, rect: Rect, tol: f64) -> BrushRegion {
 
 /// Translate a whole rect by `(dx, dy)`, CLAMPING THE TRANSLATION (not each
 /// corner) so the rect keeps its SIZE until it hits `frame`, then slides along
-/// it (card 0022, drb-ac03). Clamping each corner independently would shrink the
+/// it. Clamping each corner independently would shrink the
 /// rect at the frame edge; clamping the translation preserves it.
 #[must_use]
 pub fn translate_brush(rect: Rect, dx: f64, dy: f64, frame: Rect) -> Rect {
@@ -196,7 +196,7 @@ pub fn translate_brush(rect: Rect, dx: f64, dy: f64, frame: Rect) -> Rect {
 /// Resize a rect by moving the grabbed side(s) of an `Edge`/`Corner` region to
 /// `pointer` (clamped to `frame`); the opposite side stays pinned and the result
 /// is re-normalised so the rect NEVER inverts when the pointer crosses past the
-/// pinned side (card 0022, drb-ac04). An `Interior`/`Outside` region is not a
+/// pinned side. An `Interior`/`Outside` region is not a
 /// resize and returns the rect unchanged.
 #[must_use]
 pub fn resize_brush(rect: Rect, region: BrushRegion, pointer: Point, frame: Rect) -> Rect {
@@ -286,7 +286,7 @@ impl InteractionState {
 
     /// The rectangle of any rect-bearing state — the active `Brushing` drag, the
     /// persisted `Selected` overlay, or an in-flight `Dragging` — as a min/max
-    /// normalised `Rect`; `None` for `Idle`/`Hovering` (card 0022, drb-ac02).
+    /// normalised `Rect`; `None` for `Idle`/`Hovering`.
     /// Unlike [`brush_rect`] (Brushing only), this ALSO exposes the persisted
     /// `Selected` rect, so the grab hit-test ([`brush_region`]) and the
     /// `pointer_down` decision ([`resolve_press`](Self::resolve_press)) can key
@@ -301,8 +301,8 @@ impl InteractionState {
         }
     }
 
-    /// Resolve a pointer press over this state into a [`PointerAction`] (card
-    /// 0022, drb-ac05): a hit on the persisted `Selected` rect (region !=
+    /// Resolve a pointer press over this state into a [`PointerAction`]
+    /// : a hit on the persisted `Selected` rect (region !=
     /// `Outside`) is a `Grab` — resolved BEFORE the plot-contains gate, so a
     /// handle in the rect's inset-band overhang above `plot_area.y0` still grabs;
     /// otherwise a press inside the plot `StartBrush`es (clearing/replacing any
@@ -327,7 +327,7 @@ impl InteractionState {
         }
     }
 
-    /// Apply a resolved press (card 0022, drb-ac13): `Grab` enters `Dragging`
+    /// Apply a resolved press: `Grab` enters `Dragging`
     /// PRESERVING the rect corners (never a wipe to zero-area); `StartBrush`
     /// begins a fresh `Brushing` at the press (replacing any `Selected`);
     /// `Ignore` leaves the state unchanged. `local` is the press point.
@@ -349,7 +349,7 @@ impl InteractionState {
         }
     }
 
-    /// Apply a pointer move during a grab (card 0022, drb-ac13): transform the
+    /// Apply a pointer move during a grab: transform the
     /// `Dragging` rect to `pointer` — an `Interior` grab translates the anchor by
     /// the pointer delta, an `Edge`/`Corner` grab resizes the grabbed side(s) —
     /// each clamped to `frame`. Non-`Dragging` states pass through unchanged.
@@ -378,7 +378,7 @@ impl InteractionState {
         }
     }
 
-    /// Finalise a grab (card 0022, drb-ac13): a `Dragging` collapses to a
+    /// Finalise a grab: a `Dragging` collapses to a
     /// persisted `Selected` at its current (moved/resized) rect — the end-state
     /// the release re-dispatches from. Non-`Dragging` states pass through.
     #[must_use]
@@ -390,13 +390,13 @@ impl InteractionState {
         }
     }
 
-    /// Cancel an in-flight grab (card 0022): a MISSED mouse-up during a
+    /// Cancel an in-flight grab: a MISSED mouse-up during a
     /// move/resize (a focus steal, or a release outside the window — the normal
     /// release goes through the element's mouse-up listener) reaches only
     /// `pointer_move`, which holds NO coordinator handle and so cannot
     /// re-dispatch the moved range. Collapsing to the moved `Selected` would draw
     /// the grey overlay at the new range while the live filter stayed at the
-    /// pre-move range (the drb-ac07 silent-no-op class). Instead revert to the
+    /// pre-move range (the silent-no-op class). Instead revert to the
     /// `anchor` (pre-drag) rect — discarding the undispatched move so the overlay
     /// and the filter stay consistent at the already-dispatched pre-drag range,
     /// mirroring the `Brushing` arm's discard-to-`Idle`. Non-`Dragging` passes
@@ -414,7 +414,7 @@ impl InteractionState {
     }
 
     /// Whether this state carries a persisted (or in-flight) selection overlay an
-    /// Esc / cross-filter clear should drop (card 0022): a committed `Selected`
+    /// Esc / cross-filter clear should drop: a committed `Selected`
     /// OR an in-flight `Dragging` — so a clear arriving mid-drag doesn't retract
     /// the filter while leaving the grey overlay drawn (a transient
     /// visual/data mismatch). `Idle`/`Brushing`/`Hovering` carry no such overlay.
@@ -466,8 +466,8 @@ impl InteractionState {
 }
 
 /// Synthesise a pixel-space `Brushing` from a move/resize end-state so the
-/// moved cross-filter re-dispatches on release (card 0022, drb-ac12) — the SOLE
-/// synthesis site of the silent-no-op defence (the card-0021 lesson), a pure
+/// moved cross-filter re-dispatches on release — the SOLE
+/// synthesis site of the silent-no-op defence, a pure
 /// gpui-free production fn the release path DRIVES.
 ///
 /// `commit_brush` reads ONLY `Brushing`, so a gesture ending in `Dragging`
@@ -759,7 +759,7 @@ mod tests {
         );
     }
 
-    // --- nav_ac04: NavigationConfig ---
+    // --- NavigationConfig ---
 
     #[test]
     fn nav_ac04_pan_config() {
@@ -822,7 +822,7 @@ mod tests {
         assert!(NavigationConfig::from_interactor_kind(InteractorKind::Toggle).is_none());
     }
 
-    // --- nav_ac05: Pan gesture handler ---
+    // --- Pan gesture handler ---
 
     #[test]
     fn nav_ac05_pan_x_only() {
@@ -868,7 +868,7 @@ mod tests {
         assert!((y_min - (-15.0)).abs() < f64::EPSILON);
     }
 
-    // --- nav_ac06: Zoom gesture handler ---
+    // --- Zoom gesture handler ---
 
     #[test]
     fn nav_ac06_zoom_in_center_narrows_symmetrically() {
@@ -907,7 +907,7 @@ mod tests {
         assert!(state.view_extent.y.is_none());
     }
 
-    // --- nav_ac07: Reset ---
+    // --- Reset ---
 
     #[test]
     fn nav_ac07_reset_clears_extent() {
@@ -927,7 +927,7 @@ mod tests {
         assert!(state.view_extent.y.is_none());
     }
 
-    // --- nav_ac08: Debounce ---
+    // --- Debounce ---
 
     #[test]
     fn nav_ac08_debounce_not_settled_immediately() {
@@ -997,7 +997,7 @@ mod tests {
         );
     }
 
-    // --- ifb_ac10: Hovering with NearestHit ---
+    // --- Hovering with NearestHit ---
 
     #[test]
     fn ifb_ac10_hovering_with_nearest_hit() {
@@ -1040,11 +1040,11 @@ mod tests {
         );
     }
 
-    // --- card 0022 (draggable / resizable persisted brush) ---
+    // --- (draggable / resizable persisted brush) ---
 
     const TOL: f64 = HANDLE_TOL;
 
-    /// drb-ac01: the gpui-free brush-region classifier resolves a pointer over a
+    /// the gpui-free brush-region classifier resolves a pointer over a
     /// Selected rect into Interior / Edge / Corner / Outside with corner-over-edge
     /// precedence and a `tol` handle band.
     #[test]
@@ -1107,9 +1107,9 @@ mod tests {
         );
     }
 
-    /// drb-ac02: the Selected-aware rect accessor returns Some(normalised) for
+    /// the Selected-aware rect accessor returns Some(normalised) for
     /// Selected / Brushing / Dragging and None for Idle / Hovering — while the
-    /// legacy `brush_rect` stays Brushing-only (the gpu_ac10 regression).
+    /// legacy `brush_rect` stays Brushing-only (the regression).
     #[test]
     fn drb_ac02_selected_rect_accessor() {
         // Selected → Some, min/max normalised (x0<x1, y0<y1) even given reversed
@@ -1141,7 +1141,7 @@ mod tests {
         assert!(dragging.selected_rect().is_some());
 
         // Idle / Hovering → None (both accessors). brush_rect stays None for
-        // Selected (the gap drb-ac02 documents — a hit-test on it never fired).
+        // Selected (the documented gap — a hit-test on it never fired).
         assert!(InteractionState::Idle.selected_rect().is_none());
         assert!(InteractionState::Hovering { point: Point::new(1.0, 1.0), nearest: None }
             .selected_rect()
@@ -1149,7 +1149,7 @@ mod tests {
         assert!(sel.brush_rect().is_none(), "legacy brush_rect is still None for Selected");
     }
 
-    /// drb-ac03: the translate transform moves all four corners by the delta,
+    /// the translate transform moves all four corners by the delta,
     /// preserving SIZE, and clamps the TRANSLATION (not each corner) at the frame.
     #[test]
     fn drb_ac03_translate_transform() {
@@ -1172,7 +1172,7 @@ mod tests {
         assert_eq!(translate_brush(rect, 0.0, 0.0, frame), rect);
     }
 
-    /// drb-ac04: the resize transform moves only the grabbed side(s); the
+    /// the resize transform moves only the grabbed side(s); the
     /// opposite side stays pinned; the result never inverts.
     #[test]
     fn drb_ac04_resize_transform() {
@@ -1199,7 +1199,7 @@ mod tests {
         assert_eq!(r, Rect::new(50.0, 50.0, 100.0, 100.0));
     }
 
-    /// drb-ac05: the grab-before-brush resolver maps (local, contains) to
+    /// the grab-before-brush resolver maps (local, contains) to
     /// Grab / StartBrush / Ignore, resolving a Selected-rect hit BEFORE the
     /// plot-contains check (case b — the inset-band overhang), and a Grab carries
     /// the pre-press rect intact (the anti-wipe invariant).
@@ -1252,16 +1252,16 @@ mod tests {
         );
     }
 
-    /// drb-ac12: the pure release re-dispatch resolver — a MOVED/RESIZED Dragging
+    /// the pure release re-dispatch resolver — a MOVED/RESIZED Dragging
     /// end-state → Some(Brushing) with the new corners; a zero-delta grab and
-    /// every non-grab state → None. Driven from the drb-ac03/04 transforms, not
+    /// every non-grab state → None. Driven from the translate/resize transforms, not
     /// hand-built corners.
     #[test]
     fn drb_ac12_redispatch_brushing_from() {
         let anchor = Rect::new(100.0, 100.0, 200.0, 150.0);
         let frame = Rect::new(0.0, 0.0, 640.0, 480.0);
 
-        // A Dragging moved by the drb-ac03 translate → Some(Brushing) whose
+        // A Dragging moved by the translate → Some(Brushing) whose
         // corners equal the moved rect and DIFFER from the anchor.
         let moved = translate_brush(anchor, 30.0, 20.0, frame);
         let dragged = InteractionState::Dragging {
@@ -1279,7 +1279,7 @@ mod tests {
             other => panic!("expected Some(Brushing) for a moved grab, got {other:?}"),
         }
 
-        // A Dragging resized by the drb-ac04 resize → Some(Brushing) with the
+        // A Dragging resized by the resize → Some(Brushing) with the
         // resized corners.
         let resized = resize_brush(anchor, BrushRegion::Edge(BrushEdge::Right), Point::new(260.0, 400.0), frame);
         let dragged = InteractionState::Dragging {
@@ -1328,7 +1328,7 @@ mod tests {
         .is_none());
     }
 
-    /// drb-ac13: the pointer-shim transitions are pure InteractionState → state
+    /// the pointer-shim transitions are pure InteractionState → state
     /// functions provable headless in the default gate (the gpu-tests pointer
     /// fixtures do NOT run there). A Grab at pointer_down preserves the rect
     /// (anti-wipe); a move at pointer_move applies the transform; pointer_up
@@ -1360,7 +1360,7 @@ mod tests {
         assert_eq!(
             moved.selected_rect().unwrap(),
             Rect::new(130.0, 120.0, 230.0, 170.0),
-            "pointer_move applies the drb-ac03 translate"
+            "pointer_move applies the translate"
         );
 
         // pointer_up: the moved sub-state yields the moved Selected end-state.

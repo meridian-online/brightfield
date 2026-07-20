@@ -1,6 +1,6 @@
 //! Marching squares — iso-lines over a row-major scalar grid.
 //!
-//! The contour mark's geometry pass (card 0008, density marks): given the
+//! The contour mark's geometry pass (density marks): given the
 //! KDE-smoothed grid the density lowerer's batch reconstructs (see
 //! `mark::build_kde_grid`), extract the iso-lines at N levels as data-space
 //! polylines. Pure geometry, no scene or scale dependencies, so the topology
@@ -200,7 +200,7 @@ mod tests {
             + v11 * tx * ty
     }
 
-    // dmk_ac04: a single-Gaussian grid yields one CLOSED iso-loop per level —
+    // a single-Gaussian grid yields one CLOSED iso-loop per level —
     // loop count matches the requested threshold count — and every vertex
     // evaluates back to its level through the grid (it brackets the crossing).
     #[test]

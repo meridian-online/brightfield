@@ -1,6 +1,6 @@
 //! The typed Rust AST for a parsed Mosaic 0.24.x spec.
 //!
-//! ## Structure vs enum split (per ac-02)
+//! ## Structure vs enum split
 //!
 //! - **Structs**: `Spec`, `Meta`, `Config`, `PlotDefaults`, `DataSource`,
 //!   `ParamNode`, `SelectionNode`, `Mark`, `Interactor`, `Input`, `PlotNode`,
@@ -400,7 +400,7 @@ impl ExpressionNode {
 }
 
 /// A self-aggregating channel transform — the typed form of a channel value
-/// like `fill: {count:}` or `fill: {avg: score_value}` (card 0008 hexbin /
+/// like `fill: {count:}` or `fill: {avg: score_value}` (hexbin /
 /// self-aggregating cell). Mosaic marks such as hexbin carry the aggregate on
 /// the channel itself; the lowerer turns it into a `GROUP BY` with the matching
 /// SQL aggregate. Distinct from a plain column/literal/param channel — parsing
@@ -531,7 +531,7 @@ use self::{ComponentKind as _, InputKind as _, InteractorKind as _, LegendChanne
 mod tests {
     use super::*;
 
-    /// ac-02 verification: `Component` is a sealed enum with no `Other`
+    /// verification: `Component` is a sealed enum with no `Other`
     /// variant. Construction of each named variant compiles; no catch-all is
     /// available. The match below is exhaustive — adding a new variant
     /// without naming it here fails compilation.
@@ -557,7 +557,7 @@ mod tests {
         assert_eq!(discriminator(&plot), "plot");
     }
 
-    /// ac-02 verification: Mark / Interactor / Input are *structs* keyed by
+    /// verification: Mark / Interactor / Input are *structs* keyed by
     /// their respective `*Kind` enums — constructable with named fields here
     /// which compiles only if they are structs, not enums.
     #[test]

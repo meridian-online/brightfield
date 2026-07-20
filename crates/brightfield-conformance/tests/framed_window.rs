@@ -1,4 +1,4 @@
-//! fww_ac05 (card 0016, framed window).
+//! Framed window.
 //!
 //! A spec with a standalone `legend: color` node preflights clean at the
 //! legend surface: `ComponentKind::Legend` is Implemented (the legend renders

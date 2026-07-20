@@ -1,5 +1,5 @@
-//! Brush-to-predicate adapter (cfs2_ac10) and selection dispatch
-//! abstraction (cfs2_ac11).
+//! Brush-to-predicate adapter and selection dispatch
+//! abstraction.
 //!
 //! Converts a chart-coordinate brush rectangle into a Predicate IR value
 //! that the runtime selection coordinator can store and resolve, and
@@ -28,8 +28,8 @@ pub enum BrushKind {
     IntervalXY,
     /// Point selection — a single (column, value) equality predicate
     /// produced by chart-side click-to-point or input-widget-driven
-    /// selections (card 0005 v3 surface). v3 lands the variant + adapter
-    /// only; no chart_view dispatch path is wired (cfs3 ac-09 / decision 2).
+    /// selections (v3 surface). v3 lands the variant + adapter
+    /// only; no chart_view dispatch path is wired (/ decision 2).
     Point,
     /// X-channel point selection (toggleX) — `x = <clicked value>`.
     PointX,
@@ -160,8 +160,8 @@ pub fn point_to_predicate(
 /// (with quotes) for a string match or `42` (no quotes) for a number.
 ///
 /// This is the v3 forward-compat adapter for input-widget-driven point
-/// selections (card 0005 v3); chart-side click-to-point dispatch is
-/// deferred (cfs3 decision 2 / ac-09).
+/// selections (v3); chart-side click-to-point dispatch is
+/// deferred (decision 2).
 pub fn point_predicate(column: &str, value: &str) -> Predicate {
     Predicate::Expr(format!("{column} = {value}"))
 }
@@ -183,7 +183,7 @@ pub trait SelectionDispatcher {
     /// click-outside-active-brush path. Mirrors
     /// `Session::clear_selection`'s shape: returns one
     /// `(mark_index, Result)` per subscriber that re-executes against the
-    /// reduced selection state. Card 0006 v3 (cfs3) ac-01, ac-03.
+    /// reduced selection state.
     fn clear(
         &mut self,
         name: &str,
@@ -228,7 +228,7 @@ fn y_range_predicate(col: &str, lo: f64, hi: f64) -> Predicate {
 mod tests {
     use super::*;
 
-    /// cfs2_ac10: brush_rect_to_predicate on intervalX produces an And
+    /// brush_rect_to_predicate on intervalX produces an And
     /// of two Expr clauses bounding the x channel column.
     #[test]
     fn cfs2_ac10_brush_rect_to_predicate_interval_x() {
@@ -253,7 +253,7 @@ mod tests {
         }
     }
 
-    /// cfs2_ac10: intervalY produces an And of two Expr clauses on y.
+    /// intervalY produces an And of two Expr clauses on y.
     #[test]
     fn cfs2_ac10_brush_rect_to_predicate_interval_y() {
         let rect = Rect::new(10.0, 50.0, 90.0, 250.0);
@@ -275,7 +275,7 @@ mod tests {
         }
     }
 
-    /// cfs2_ac10: intervalXY combines all four bounds into a flat
+    /// intervalXY combines all four bounds into a flat
     /// four-clause And.
     #[test]
     fn cfs2_ac10_brush_rect_to_predicate_interval_xy() {
@@ -303,7 +303,7 @@ mod tests {
         }
     }
 
-    /// cfs2_ac10: missing channel → degenerate Predicate::True.
+    /// missing channel → degenerate Predicate::True.
     #[test]
     fn cfs2_ac10_brush_rect_to_predicate_missing_channel() {
         let rect = Rect::new(10.0, 50.0, 90.0, 250.0);
@@ -314,10 +314,10 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
-    // cfs3 — BrushKind::Point + point_predicate (card 0006 v3)
+    // cfs3 — BrushKind::Point + point_predicate (v3)
     // ---------------------------------------------------------------------
 
-    /// cfs3_ac09: BrushKind::Point is a constructible enum variant distinct
+    /// BrushKind::Point is a constructible enum variant distinct
     /// from the interval variants, and `point_predicate(column, value)`
     /// returns a `Predicate::Expr` containing the column and the **already-
     /// formatted SQL literal** value (no quoting performed by the helper).
@@ -360,7 +360,7 @@ mod tests {
         }
     }
 
-    /// cfs point-selection (card 0006): point_to_predicate maps a clicked data
+    /// cfs point-selection: point_to_predicate maps a clicked data
     /// value onto the plot's x column (PointX) or y column (PointY) as an
     /// equality predicate; a missing channel or non-point kind degenerates to
     /// True. Each `SelectionValue` variant formats a type-correct literal.

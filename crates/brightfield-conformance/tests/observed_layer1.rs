@@ -1,4 +1,4 @@
-//! Layer-1 corpus totality gate (ac-15).
+//! Layer-1 corpus totality gate.
 //!
 //! Exercises the entire observed corpus through the conformance runner's
 //! `LayerCheck` plumbing. When layers 2–4 activate, the same dispatch path

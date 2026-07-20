@@ -174,7 +174,7 @@ fn split_args(s: &str) -> Vec<String> {
 /// Render a `QueryPlan` to DuckDB-dialect SQL, accumulating `Binding` entries
 /// for parameterised positions.
 ///
-/// Source renders as a bare table name (the VIEW created by card 0004's DDL).
+/// Source renders as a bare table name (the VIEW created by the DDL).
 /// Filter renders a WHERE clause. Aggregation uses DuckDB positional GROUP BY.
 /// Bin renders a `width_bucket()` call.
 pub fn render_query(plan: &QueryPlan, bindings: &mut Vec<Binding>) -> String {

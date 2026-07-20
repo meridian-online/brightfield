@@ -1,4 +1,4 @@
-//! sqlparser-rs structural conformance utilities (ac-11).
+//! sqlparser-rs structural conformance utilities.
 //!
 //! Low-level parse + compare functions. `brightfield-conformance` calls these
 //! for layer-2 checks; the emitter's own tests also use them.

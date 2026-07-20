@@ -1,4 +1,4 @@
-//! Reload-feedback routing (card 0017, aws_ac05) — framework-free.
+//! Reload-feedback routing — framework-free.
 //!
 //! Maps the hot-reload watcher's EXISTING outcomes onto an in-workspace
 //! notification decision. The watcher's control flow is untouched: each
@@ -77,7 +77,7 @@ pub fn clears_errors(outcome: &ReloadOutcome<'_>) -> bool {
 mod tests {
     use super::*;
 
-    /// aws_ac05 (reject-parse): a failed pipeline surfaces as an error
+    /// Reject-parse: a failed pipeline surfaces as an error
     /// notification carrying the pipeline's own message.
     #[test]
     fn aws_ac05_parse_failure_notifies_with_the_error() {
@@ -91,7 +91,7 @@ mod tests {
         assert!(message.contains("last good chart"), "explains the kept chart");
     }
 
-    /// aws_ac05 (reject-chrome): the chrome-divergence gate's "restart to
+    /// Reject-chrome: the chrome-divergence gate's "restart to
     /// apply" surfaces as a warning naming the diverged facet; a structural
     /// layout change warns the same way.
     #[test]
@@ -109,14 +109,14 @@ mod tests {
         assert!(message.contains("restart to apply"), "{message}");
     }
 
-    /// aws_ac05 (success stays quiet): an applied reload produces NO
+    /// Success stays quiet: an applied reload produces NO
     /// notification — the repainted canvas is the feedback.
     #[test]
     fn aws_ac05_successful_reload_stays_quiet() {
         assert_eq!(reload_notification(&ReloadOutcome::Applied), None);
     }
 
-    /// aws_ac05 correction 2026-07-08: error notifications persist until
+    /// correction 2026-07-08: error notifications persist until
     /// the author resolves them (a transient toast was missed in product
     /// use); restart-to-apply warnings stay transient.
     #[test]
@@ -125,7 +125,7 @@ mod tests {
         assert!(!sticky(Severity::Warning));
     }
 
-    /// aws_ac05 correction 2026-07-08: recovery is self-cleaning — only a
+    /// correction 2026-07-08: recovery is self-cleaning — only a
     /// successful reload clears the outstanding error; rejections replace
     /// it (one live toast), and warnings never touch it.
     #[test]

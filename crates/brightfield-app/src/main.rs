@@ -100,17 +100,17 @@ struct PlotRender {
     width: u32,
     height: u32,
     scene: vello::Scene,
-    /// Resolved per-side range insets (card 0008 axis-inset round), carried to
+    /// Resolved per-side range insets (axis-inset round), carried to
     /// each plot's `ChartState` so its interaction geometry matches the inset
     /// scale range the scene was drawn against.
     insets: Insets,
-    /// Title-grown margins (card 0019), carried to each plot's `ChartState` (via
+    /// Title-grown margins, carried to each plot's `ChartState` (via
     /// `set_margins_and_insets`) so its interaction geometry matches the
     /// grown-margin scene — and survives a window resize.
     margins: Margins,
 }
 
-/// A slider widget's placement (card 0005): its dashboard rect, the param binding
+/// A slider widget's placement: its dashboard rect, the param binding
 /// it drives, and the thumb's resting value. The window path turns each into a
 /// hosted `SliderElement`; the headless/PNG path draws it into the composite.
 struct SliderPlacement {
@@ -122,9 +122,9 @@ struct SliderPlacement {
 /// A standalone `legend:` node's placement (multi-view inc 6): its component
 /// path, its dashboard rect, and the colour scale it displays, resolved from
 /// the plot its `for:` names. The headless/PNG path draws it into the
-/// composite; the window hosts it as a `LegendElement` at the same rect (card
-/// 0016) — display-only unless the node is bound `as:` a selection, in which
-/// case `path` joins it to its analysis [`LegendBinding`] (card 0009).
+/// composite; the window hosts it as a `LegendElement` at the same rect
+/// — display-only unless the node is bound `as:` a selection, in which
+/// case `path` joins it to its analysis [`LegendBinding`].
 ///
 /// [`LegendBinding`]: brightfield_spec::analysis::LegendBinding
 struct LegendPlacement {
@@ -143,14 +143,14 @@ struct Dashboard {
     height: u32,
     plots: Vec<PlotRender>,
     sliders: Vec<SliderPlacement>,
-    /// Resolved menu-family widget placements (card 0024) — options resolved
+    /// Resolved menu-family widget placements — options resolved
     /// + reconciled at assembly. The window hosts each as a menu element; the
     /// headless/PNG path draws the resting twins.
     menus: Vec<MenuPlacement>,
     legends: Vec<LegendPlacement>,
     meta_title: Option<String>,
-    /// The keyboard-focus tree over the dashboard's ComponentPath structure
-    /// (card 0018). Built from the spec at assembly; consumed by the canvas
+    /// The keyboard-focus tree over the dashboard's ComponentPath structure.
+    /// Built from the spec at assembly; consumed by the canvas
     /// panel. Only read in the windowed (macOS) arm.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     focus_tree: brightfield_keys::FocusTree,
@@ -158,14 +158,13 @@ struct Dashboard {
 
 /// Map each resolved [`LegendPlacement`] to its hosted window descriptor —
 /// one [`brightfield_ui::PlacedLegend`] per placement, at the placement's
-/// rect (card 0016). The live path and the fww_ac05/lcf_ac05 view-model
-/// tests share this single mapping.
+/// rect. The live path and the view-model tests share this single mapping.
 ///
-/// A placement whose node carries a producer binding (card 0009) — matched
+/// A placement whose node carries a producer binding — matched
 /// by legend path against `bindings`, categorical [`Scale::Colour`] only —
 /// is additionally wired to `coordinator` at its binding index, so a swatch
 /// click commits through `commit_legend_click`. Sequential (gradient) and
-/// unbound legends stay display-only, exactly as 0016 shipped.
+/// unbound legends stay display-only.
 #[cfg(any(target_os = "macos", test))]
 fn placed_legend_views(
     legends: &[LegendPlacement],
@@ -222,7 +221,7 @@ fn colour_scale_of(scales: &ScaleSet) -> Option<Scale> {
 /// scheme is baked into each mark's `MarkInput::renderer_override`
 /// (`configured_renderer`) at assembly, which is what carries scheme fidelity to
 /// the live rebuild; it is ALSO recorded in [`LivePlotMeta::scheme`] for the
-/// hot-reload chrome gate only (card 0016).
+/// hot-reload chrome gate only.
 fn raster_scheme(color_scheme: Option<&brightfield_spec::ast::SpecValue>) -> SequentialScheme {
     use brightfield_spec::ast::SpecValue;
     match color_scheme {
@@ -317,7 +316,7 @@ fn resolve_colour_override(
 
 /// Literal numeric mark attribute (e.g. `bandwidth: 15`), skipping params —
 /// read at assembly time so a mark-level attribute reaches its per-mark
-/// renderer override (card 0008, density marks).
+/// renderer override (density marks).
 fn mark_attr_f64(mark: &brightfield_spec::ast::Mark, key: &str) -> Option<f64> {
     use brightfield_spec::ast::{SpecValue, ValueOrParamRef};
     match mark.options.get(key)? {
@@ -389,7 +388,7 @@ fn resolve_legends(spec: &brightfield_spec::ast::Spec, live_plots: &[LivePlotMet
 
     let mut out = Vec::new();
     // The placed-rect ↔ AST-node join, path retained: the placement's path is
-    // what joins a bound legend to its analysis LegendBinding (card 0009).
+    // what joins a bound legend to its analysis LegendBinding.
     let nodes = collect_legend_nodes(spec);
     for placed in placed_legends(spec, Rect::new(0.0, 0.0, 0.0, 0.0)) {
         let Some((_, node)) = nodes.iter().find(|(path, _)| path == &placed.path) else {
@@ -445,7 +444,7 @@ fn resolve_legends(spec: &brightfield_spec::ast::Spec, live_plots: &[LivePlotMet
 }
 
 /// Reconcile the analysis-side legend producer bindings against the LIVE
-/// legend placements (card 0009 F4, interim until the two population counts
+/// legend placements (interim until the two population counts
 /// unify). `build_legend_bindings` counts colour-encoded plots by STRING
 /// `fill:`/`stroke:` option, while [`resolve_legends`] counts by live
 /// Colour/Sequential scale — the populations diverge (a numeric fill counts
@@ -526,11 +525,11 @@ struct LiveParts {
     marks: Vec<MarkInput>,
     /// Per plot, aligned 1:1 with `Dashboard.plots`.
     plots: Vec<LivePlotMeta>,
-    /// Legend producer bindings (card 0009), in analysis order — the
+    /// Legend producer bindings, in analysis order — the
     /// coordinator's legend index space; placements join by legend path.
     legend_bindings: Vec<brightfield_spec::analysis::LegendBinding>,
-    /// Menu options-resolution warnings from THIS assembly pass (card 0024,
-    /// diw-ac04) — truncation, per-input failures, style degrades. The launch
+    /// Menu options-resolution warnings from THIS assembly pass —
+    /// truncation, per-input failures, style degrades. The launch
     /// path appends them to the Log dock once the window opens; the watcher
     /// path returns them from `run_pipeline` (pure data, `Send`) and appends
     /// them BEFORE the reload gates.
@@ -557,7 +556,7 @@ struct LivePlotMeta {
     /// re-run the old scheme. Live-rebuild scheme fidelity does NOT ride this
     /// field — it rides each mark's `MarkInput::renderer_override`.
     scheme: SequentialScheme,
-    /// The plot's resolved axis + plot titles (card 0019). Carried to the
+    /// The plot's resolved axis + plot titles. Carried to the
     /// coordinator's `LivePlot.titles` so a live rebuild re-emits them, and into
     /// the `ChromeSnapshot` gate so a title / xLabel / yLabel / plot-title edit
     /// (which also regrows the margins) falls back to "restart to apply" — the
@@ -584,24 +583,24 @@ struct ChromeSnapshot {
     /// Per hosted legend, in document order: layout rect plus a cheap
     /// structural key of the displayed scale (its `Debug` form).
     legends: Vec<(f64, f64, f64, f64, String)>,
-    /// Per legend producer binding (card 0009), in analysis order: the click
+    /// Per legend producer binding, in analysis order: the click
     /// wiring keys (legend path, `for:`-plot path, selection name, colour
     /// column). An `as:`/`for:`-only edit changes these WITHOUT moving any
     /// legend rect or scale, so the gate needs them explicitly — otherwise a
     /// hot swap would keep the launch-time coordinator's stale click wiring.
     legend_bindings: Vec<(String, String, String, String)>,
     /// Per plot, in dashboard order: path, resolved colour scheme, whether the
-    /// plot draws its own inline legend, and the resolved range insets (card
-    /// 0008 axis-inset). Insets are launch-fixed in the coordinator's
+    /// plot draws its own inline legend, and the resolved range insets
+    /// (axis-inset). Insets are launch-fixed in the coordinator's
     /// `LivePlot.layout`, so an edit that changes them — an explicit `inset:`
     /// attribute OR a data change that flips the default (e.g. a value axis
     /// crossing zero) — would hot-swap the scene once, then revert on the next
     /// gesture; gating it here forces "restart to apply", exactly as `scheme`.
-    /// The resolved titles (card 0019) ride the same tuple — a title / label
+    /// The resolved titles ride the same tuple — a title / label
     /// edit regrows the launch margins, which the watcher can't hot-apply, so it
     /// gates identically (grown margins are a pure function of the titles).
     plot_render_meta: Vec<(String, SequentialScheme, bool, Insets, ResolvedTitles)>,
-    /// Per hosted menu-family widget (card 0024, diw-ac17), in placement
+    /// Per hosted menu-family widget, in placement
     /// order: rect, presentation style, bound param name, and the RESOLVED
     /// options (Debug form). The coordinator's menu_bindings and the
     /// ChartView's PlacedMenus are launch-fixed, so ANY menu-affecting edit —
@@ -724,13 +723,13 @@ fn run_pipeline(
             &live.plots,
             &dashboard.menus,
         );
-        // Sidebar profiles from the throwaway session BEFORE it drops (card
-        // 0017): pure data, so it crosses the watcher's Send return boundary
+        // Sidebar profiles from the throwaway session BEFORE it drops
+        // : pure data, so it crosses the watcher's Send return boundary
         // where the non-Send Session cannot. The Session is created, profiled,
         // and dropped entirely on the background executor — never handed out.
         let profiles = live.session.profile_sources();
-        // Menu resolution warnings cross the same Send boundary (card 0024,
-        // diw-ac04 — the Vec<SourceProfile> shape): the watcher appends them
+        // Menu resolution warnings cross the same Send boundary (the
+        // Vec<SourceProfile> shape): the watcher appends them
         // BEFORE the same_layout/chrome_divergence gates so a gated "restart
         // to apply" reload still co-surfaces the warning explaining why.
         let warnings = live.menu_warnings.clone();
@@ -739,7 +738,7 @@ fn run_pipeline(
 }
 
 /// The Log-dock entries one reload/launch pass appends for assembly-time
-/// menu resolution warnings (card 0024, diw-ac04): exactly one `Warning`
+/// menu resolution warnings: exactly one `Warning`
 /// per warning string, per assembly pass — independent of whether the pass
 /// subsequently gates (the watcher appends these BEFORE the
 /// same_layout/chrome_divergence `continue`s, so a gated "restart to apply"
@@ -758,7 +757,7 @@ fn resolution_warning_entries(warnings: &[String]) -> Vec<(reload_feedback::Seve
 /// needs for in-window cross-filtering. A single plot is just a one-plot
 /// dashboard.
 /// Parse a `BRIGHTFIELD_PARAM_OVERRIDE` value into a `SpecValue` — integer,
-/// then float, then string (card 0014 headless preview).
+/// then float, then string (headless preview).
 fn parse_override_value(raw: &str) -> brightfield_spec::ast::SpecValue {
     use brightfield_spec::ast::SpecValue;
     if let Ok(i) = raw.parse::<i64>() {
@@ -786,10 +785,10 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
         .iter()
         .map(|bb| (bb.parent_plot.0.clone(), BrushBinding::from(bb)))
         .collect();
-    // Legend producer bindings (card 0009), kept for the window path — a
+    // Legend producer bindings, kept for the window path — a
     // bound legend's swatch click dispatches through the coordinator.
     let legend_bindings = analysis.legend_bindings.clone();
-    // Highlight consumer bindings (card 0021), kept before `analysis` moves into
+    // Highlight consumer bindings, kept before `analysis` moves into
     // the engine so each plot's `otherwise` deemphasis style can be resolved onto
     // its honouring marks below.
     let highlight_bindings = analysis.highlight_bindings.clone();
@@ -802,7 +801,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
         .map_err(|e| format!("engine error: {e}"))?;
     let mut session = load.session;
 
-    // 3b. Optional headless param override (card 0014): apply
+    // 3b. Optional headless param override: apply
     //     BRIGHTFIELD_PARAM_OVERRIDE="name=value[,name=value]" before executing,
     //     so a PNG dump can preview the dashboard at a chosen param value — the
     //     same propagate_param path a slider will drive live once the widget lands.
@@ -815,7 +814,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
     }
 
     // 3c. Reconcile each slider's param to its declared [min, max] before
-    //     executing (card 0005). A spec whose param default lies outside the
+    //     executing. A spec whose param default lies outside the
     //     slider's own domain (an authoring inconsistency) would otherwise render
     //     one value while the clamped thumb rests at another; clamping the param
     //     to the slider's range keeps the first render and the thumb in agreement.
@@ -926,7 +925,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
         let scheme = plot_node
             .map(|(_, node)| raster_scheme(node.attributes.get("colorScheme")))
             .unwrap_or_default();
-        // The plot's map projection (card 0008 geo) — resolved once, carried to
+        // The plot's map projection (geo) — resolved once, carried to
         // each geo mark's configured renderer, fixed at launch like colorScheme.
         let projection = plot_node
             .map(|(_, node)| Projection::from(resolve_projection(node)))
@@ -936,7 +935,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
         // domain/range wins over inference on first render and live rebuilds.
         let colour_ov = plot_node.and_then(|(_, node)| resolve_colour_override(&parsed.spec, node));
 
-        // The plot's highlight `otherwise` style (card 0021), if it carries a
+        // The plot's highlight `otherwise` style, if it carries a
         // `highlight, by: $sel` interactor — resolved once per plot and set on
         // each honouring mark below so a re-queried `__bf_selected` batch dims.
         let highlight_style = highlight_bindings
@@ -978,12 +977,12 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
                 );
                 // Retain the render-config inputs so a live colour cycle can
                 // rebuild the override through the NEW scheme without losing the
-                // KDE bandwidth / contour thresholds / hexgrid binWidth (card
-                // 0018, ac-13). Inert on the first render and the dump path.
+                // KDE bandwidth / contour thresholds / hexgrid binWidth
+                // . Inert on the first render and the dump path.
                 m.bandwidth = bandwidth;
                 m.thresholds = thresholds;
                 m.bin_width = bin_width;
-                // Highlight (card 0021): only the honouring families dim, so a
+                // Highlight: only the honouring families dim, so a
                 // non-honouring mark in a highlight plot stays `None` and never
                 // builds a HighlightState even if its batch carries the column.
                 if brightfield_spec::analysis::mark_honours_highlight(kind) {
@@ -1008,7 +1007,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
         }
 
         // Highlight states, parallel to `chart_data` — declared FIRST so it
-        // outlives the `ChartData` that borrow into it (card 0021).
+        // outlives the `ChartData` that borrow into it.
         let mut highlight_states: Vec<Option<brightfield_render::mark::HighlightState>> = Vec::new();
         let mut chart_data: Vec<ChartData<'_>> = Vec::new();
         for &mi in &group.mark_indices {
@@ -1024,10 +1023,10 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
                     }
                 },
             };
-            // Highlight (card 0021): at launch no selection is active, so a
+            // Highlight: at launch no selection is active, so a
             // honouring mark's batch carries no `__bf_selected` column and this
             // resolves to `None` — the plot renders exactly as at rest
-            // (ce-ac07/ce-ac10 PNG byte-identity). The `Vec` outlives the
+            // (PNG byte-identity). The `Vec` outlives the
             // borrow: it is parallel to `chart_data`, dropped after the scene.
             let highlight = m
                 .highlight_style
@@ -1054,7 +1053,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             d.highlight = hs.as_ref();
         }
 
-        // Axis inset (card 0008 axis-inset round): resolve the plot's Mosaic
+        // Axis inset (axis-inset round): resolve the plot's Mosaic
         // inset attributes (most-specific-wins) and overlay the continuous-end
         // default (zero-baseline ends stay flush), then pull the positional
         // scale ranges inward so an edge mark renders whole inside the frame
@@ -1079,7 +1078,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
         );
         drop(inset_entries);
 
-        // Axis + plot titles (card 0019): resolve the plot's title decisions
+        // Axis + plot titles: resolve the plot's title decisions
         // (Override/Suppress/Derive) from its attributes, resolve DERIVE against
         // the mark channel maps (first column-bound entry names the axis), then
         // grow the margins to reserve a fixed band per present title. Titles are
@@ -1139,7 +1138,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
         return Err("no marks rendered successfully".to_string());
     }
 
-    // Slider placements (card 0005): each composition-level `input: slider` with
+    // Slider placements: each composition-level `input: slider` with
     // a param target + numeric bounds becomes a hosted widget at its layout rect,
     // its thumb resting at the param's current (default) value.
     let sliders: Vec<SliderPlacement> =
@@ -1163,12 +1162,12 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             })
             .collect();
 
-    // Menu-family widget placements (card 0024): each composition-level
+    // Menu-family widget placements: each composition-level
     // `input: menu` (any style) with a param target resolves its options —
     // literal pass-through, or SELECT DISTINCT for from/column — reconciles
     // the param default, and finalises the presentation style. Runs on BOTH
     // the launch and watcher paths (this fn is both); read-only on the
-    // session. Warnings ride LiveParts to the Log dock (diw-ac04).
+    // session. Warnings ride LiveParts to the Log dock.
     let (menus, menu_warnings) = resolve_menu_placements(&parsed.spec, &session);
 
     // Standalone legends (multi-view inc 6): resolve each `legend:` node to the
@@ -1176,8 +1175,8 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
     // moved into `LiveParts` (it borrows the per-plot scales).
     let legends = resolve_legends(&parsed.spec, &live_plots);
 
-    // Reconcile the producer bindings against the live placements (card 0009
-    // F4): drop phantom bindings with no hosted legend, and diagnose placed
+    // Reconcile the producer bindings against the live placements (F4):
+    // drop phantom bindings with no hosted legend, and diagnose placed
     // `as:` legends whose clicks would be dead.
     let (legend_bindings, legend_binding_diags) =
         reconcile_legend_bindings(&parsed.spec, &legends, legend_bindings);
@@ -1187,7 +1186,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
 
     // Fold slider + menu + legend rects into the dashboard size so a widget
     // beside/below the plots reserves its space (the window is the bounding
-    // box) — a radio-tall rect (diw-ac05) is accommodated here like any other.
+    // box) — a radio-tall rect is accommodated here like any other.
     let width = placed
         .iter()
         .map(|p| p.rect.x + p.rect.width)
@@ -1213,7 +1212,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             menus,
             legends,
             meta_title: parsed.spec.meta.as_ref().and_then(|m| m.title.clone()),
-            // The keyboard-focus tree over the dashboard structure (card 0018),
+            // The keyboard-focus tree over the dashboard structure,
             // built with the same layout walk (and path scheme) as `placed_plots`.
             focus_tree: brightfield_keys::FocusTree::from_spec(&parsed.spec),
         },
@@ -1236,7 +1235,7 @@ fn file_mtime(path: &str) -> Option<std::time::SystemTime> {
 }
 
 /// Whether the watcher runs a reload pass this poll: the spec's mtime changed,
-/// OR a cmd-r force-reload was requested (card 0018, ac-11b). Pure so the poll
+/// OR a cmd-r force-reload was requested. Pure so the poll
 /// gate is headlessly testable.
 #[cfg(any(target_os = "macos", test))]
 fn should_run_reload(
@@ -1284,7 +1283,7 @@ fn spawn_spec_watcher(
         loop {
             cx.background_executor().timer(POLL).await;
             let now = file_mtime(&spec_path);
-            // A cmd-r press flips the shared flag (ac-11b): consume it here so a
+            // A cmd-r press flips the shared flag: consume it here so a
             // forced pass runs the identical reload body below even when the
             // mtime is unchanged. `last = now` still advances, so a forced pass
             // with an unchanged file doesn't re-fire on the next tick.
@@ -1329,7 +1328,7 @@ fn spawn_spec_watcher(
                     // same_layout / chrome_divergence gates below `continue`
                     // past the feedback taps — so a menu-affecting edit that
                     // gates to "restart to apply" still co-surfaces the
-                    // warning explaining why (card 0024, diw-ac04). Exactly
+                    // warning explaining why. Exactly
                     // one append per warning per assembly pass.
                     if !resolution_warnings.is_empty() {
                         let entries = resolution_warning_entries(&resolution_warnings);
@@ -1408,7 +1407,7 @@ fn spawn_spec_watcher(
                         app.refresh_windows();
                     });
                     // Refresh the Data sidebar with the profiles computed on
-                    // the throwaway session (sbp_ac04): the frozen-at-launch
+                    // the throwaway session: the frozen-at-launch
                     // gap closes — a spec edit adding/removing a source is now
                     // reflected. Per-source profiling failures already folded
                     // into a Failed variant (the sidebar shows a muted row);
@@ -1434,8 +1433,8 @@ fn spawn_spec_watcher(
                     });
                     eprintln!("reloaded {spec_path}");
                     // The routing decision is total: Applied maps to NO
-                    // notification — successful reloads stay quiet
-                    // (aws_ac05), through the same fn the rejections use.
+                    // notification — successful reloads stay quiet,
+                    // through the same fn the rejections use.
                     if let Some((severity, message)) =
                         reload_notification(&ReloadOutcome::Applied)
                     {
@@ -1659,7 +1658,7 @@ fn main() {
 
     // Debug path: composite the per-plot scenes and dump a PNG instead of
     // opening a window. Triggered by `BRIGHTFIELD_DUMP_PNG=<path>`. The
-    // decision is the `boot` module's seam (aws_ac01): this arm RETURNS
+    // decision is the `boot` module's seam: this arm RETURNS
     // before the workspace shell (DockArea/panels/editor) is reachable, so
     // shell state can never move a pixel in a dumped PNG.
     if let boot::BootMode::HeadlessDump(dump_path) =
@@ -1681,7 +1680,7 @@ fn main() {
             &placements,
         );
         // Draw the resting slider widgets into the composite so the PNG previews
-        // them (card 0005). The thumb sits at the param's current value.
+        // them. The thumb sits at the param's current value.
         for s in &dashboard.sliders {
             let span = s.binding.max - s.binding.min;
             let frac = if span > 0.0 {
@@ -1698,7 +1697,7 @@ fn main() {
                 frac,
             );
         }
-        // Draw the resting menu-family widgets (card 0024) exactly as the
+        // Draw the resting menu-family widgets exactly as the
         // window hosts them: the closed menu box at the current value, the
         // radio rows with the selected dot, the checkbox at its checked
         // state — the render_slider convention, one twin per style.
@@ -1764,7 +1763,7 @@ fn main() {
         return;
     }
 
-    // Open a native GPUI window: the docked authoring workspace (card 0017) —
+    // Open a native GPUI window: the docked authoring workspace —
     // a DockArea hosting the canvas panel (one GpuiChartSurface per plot,
     // positioned per the layout, each with its own ChartState so interaction
     // is per-plot), the YAML spec editor, and the data sidebar.
@@ -1775,9 +1774,9 @@ fn main() {
         use std::rc::Rc;
 
         let renderer = brightfield_ui::VelloRenderer::new();
-        // The entrypoint keeps gpui_macos (the 0017 locked pick — migrating
+        // The entrypoint keeps gpui_macos (the locked pick — migrating
         // to gpui_platform is an escalation, never a silent swap) and gains
-        // gpui-component's bundled icon assets (aws_ac01).
+        // gpui-component's bundled icon assets.
         let app = gpui::Application::with_platform(Rc::new(gpui_macos::MacPlatform::new(false)))
             .with_assets(gpui_component_assets::Assets);
         let spec_path = spec_path.to_string();
@@ -1793,11 +1792,11 @@ fn main() {
             legend_bindings,
             menu_warnings,
         } = live;
-        // Workspace shell inputs (card 0017), computed before `marks` moves
+        // Workspace shell inputs, computed before `marks` moves
         // into the coordinator: the editor buffer seed (the spec file's
         // text) and the sidebar derivation (spec AST + the column names of
         // the batches the pipeline ALREADY executed — no new DuckDB
-        // queries, aws_ac06). A failed seed read is passed through as None
+        // queries). A failed seed read is passed through as None
         // — NOT an empty string, which the editor could later "save" over
         // the real file (the empty-seed truncation guard): an unseeded
         // editor refuses cmd-s until a pristine reseed lands.
@@ -1811,7 +1810,7 @@ fn main() {
                 None
             }
         };
-        // Real per-source column profiles for the Data sidebar (card 0017),
+        // Real per-source column profiles for the Data sidebar,
         // the upgrade over the launch-frozen column-name approximation:
         // computed synchronously on the launch session BEFORE the window opens
         // (launch already runs every mark query; this adds one scan per
@@ -1837,7 +1836,7 @@ fn main() {
             // resolve to these bytes rather than a system lookalike.
             meridian_theme::register_fonts(cx);
             // gpui-component globals — theme, dock/input/root registries —
-            // before any of its views exist (aws_ac01).
+            // before any of its views exist.
             gpui_component::init(cx);
             // The Meridian theme pair replaces the stock gpui-component
             // theme, LIGHT active. Deliberately no system-appearance sync:
@@ -1846,13 +1845,13 @@ fn main() {
             // white charts would read as broken.
             meridian_theme::install_theme(cx);
 
-            // The shared feedback log (card 0017, wsc_ac02): the editor's
+            // The shared feedback log: the editor's
             // save outcomes and the watcher's reload rejections append to
             // it; the bottom-dock Log panel renders it. History — reload
             // recovery clears the sticky error toast, never this.
             let feedback_log = cx.new(|_| log_model::FeedbackLog::default());
 
-            // The shared force-reload flag (card 0018, ac-11b): the cmd-r
+            // The shared force-reload flag: the cmd-r
             // handler on WorkspaceRoot flips it; the watcher consults it each
             // poll and runs one identical reload pass when set — reusing the
             // whole hot-reload path (dirty-safe reseed, panic-guarded pipeline,
@@ -1865,7 +1864,7 @@ fn main() {
 
             // A source whose launch profiling failed surfaces in the Log dock
             // at Warning (no toast — the sidebar already shows a muted row for
-            // it); the same routing the watcher uses on reload (sbp_ac04).
+            // it); the same routing the watcher uses on reload.
             for profile in &sidebar_profiles {
                 if let brightfield_engine::ProfileOutcome::Failed(reason) = &profile.outcome {
                     feedback_log.update(cx, |log, _| {
@@ -1876,8 +1875,8 @@ fn main() {
                     });
                 }
             }
-            // Menu options-resolution warnings from the launch assembly pass
-            // (card 0024, diw-ac04/diw-ac14): truncation, per-input failures,
+            // Menu options-resolution warnings from the launch assembly pass:
+            // truncation, per-input failures,
             // style degrades — Warning, no toast (the profile precedent),
             // exactly one entry per warning per pass.
             for (severity, message) in resolution_warning_entries(&menu_warnings) {
@@ -1899,7 +1898,7 @@ fn main() {
                 // Carry the plot's resolved range insets AND title-grown margins
                 // into its interaction layout so brush inversion / hit-testing
                 // match the grown-margin + inset scale range the scene was drawn
-                // against (card 0008 axis-inset + card 0019 titles), and survive
+                // against (axis-inset + titles), and survive
                 // a window resize.
                 state.update(cx, |s, _| s.set_margins_and_insets(margins, insets));
                 watched.push(WatchedPlot { path: p.path, x, y, width: w, height: h, state });
@@ -1922,12 +1921,12 @@ fn main() {
                     scales: meta.scales.clone(),
                     launch_scales: meta.scales,
                     // The launch scheme seeds the transient colour-cycle's
-                    // running state (card 0018, ac-13); LivePlotMeta already
+                    // running state; LivePlotMeta already
                     // carries it — this just stops dropping it. NOT the same as
                     // LivePlotMeta.scheme's other role (the ChromeSnapshot gate).
                     scheme: meta.scheme,
                     draw_inline_legend: meta.draw_inline_legend,
-                    // Resolved axis + plot titles (card 0019) — a live rebuild
+                    // Resolved axis + plot titles — a live rebuild
                     // re-emits them so a gesture never drops the labels.
                     titles: meta.titles,
                     state: w.state.clone(),
@@ -1938,23 +1937,23 @@ fn main() {
             // matches its binding.
             let slider_bindings: Vec<SliderBinding> =
                 sliders.iter().map(|s| s.binding.clone()).collect();
-            // Coordinator menu bindings (card 0024), in the same order as the
+            // Coordinator menu bindings, in the same order as the
             // hosted menu widgets below (both derived from `menus`), so a
             // widget's element index matches its binding — the registration-
-            // order contract (diw-ac07).
+            // order contract.
             let menu_bindings: Vec<MenuBinding> =
                 menus.iter().map(|m| m.binding.clone()).collect();
-            // Coordinator legend bindings (card 0009), in analysis order — the
+            // Coordinator legend bindings, in analysis order — the
             // same slice `placed_legend_views` positions against, so a hosted
             // legend's index matches its binding.
             let legend_select_bindings: Vec<brightfield_ui::LegendSelectBinding> =
                 legend_bindings.iter().map(Into::into).collect();
             // `command_log_active: true` — the authoring window always hosts the
-            // command log (card 0023), so a structural edit (m/a/e/d/u) must be
+            // command log, so a structural edit (m/a/e/d/u) must be
             // able to drive even an otherwise-static plot (a plain scatter). Without
             // this the coordinator is `None` for a no-selection / non-sequential
             // spec and every edit silently no-ops on the canvas (the working spec +
-            // log update, the plot never moves — the card-0021 silent-no-op class).
+            // log update, the plot never moves — the silent-no-op class).
             let coordinator = CrossfilterCoordinator::new(
                 session,
                 marks,
@@ -2012,31 +2011,30 @@ fn main() {
                 .collect();
 
             // One hosted legend descriptor per resolved placement, at its
-            // layout rect beside the plots (card 0016) — a bound categorical
+            // layout rect beside the plots — a bound categorical
             // legend additionally carries the coordinator + its binding index,
-            // arming click-to-filter (card 0009); the rest stay display-only.
+            // arming click-to-filter; the rest stay display-only.
             let hosted_legends =
                 placed_legend_views(&legends, &legend_bindings, coordinator.as_ref());
 
             // The keyboard grammar, declared as data. The shipped fixed points
             // keep their original binding sites — bare `p` → TogglePresentation
-            // (card 0016) and cmd-s → SaveSpec (card 0017) — untouched. The new
-            // grammar verbs (card 0018) are sourced from the gpui-free registry
-            // (ac-01/ac-07); their union with the two fixed points is exactly the
+            // and cmd-s → SaveSpec — untouched. The new
+            // grammar verbs are sourced from the gpui-free registry;
+            // their union with the two fixed points is exactly the
             // registry keymap. Each binding carries its own context predicate.
             cx.bind_keys(brightfield_ui::workspace_key_bindings());
             cx.bind_keys(shell::editor_key_bindings());
             cx.bind_keys(keymap::grammar_key_bindings());
-            // Card 0023: cmd-s on the CANVAS commits command-log edits (distinct
+            // cmd-s on the CANVAS commits command-log edits (distinct
             // from the editor's cmd-s save; resolved by focus context).
             cx.bind_keys(shell::workspace_command_bindings());
 
-            // Size the initial window to the dashboard plus the 0016 chrome
-            // margins and the default authoring dock widths (card 0017).
+            // Size the initial window to the dashboard plus the chrome
+            // margins and the default authoring dock widths.
             // `window_bounds` is the CONTENT rect — the macOS titlebar is
             // added above it. Initial size ONLY: DockArea owns layout from
-            // here (the 0016 toggle-resize invariant is superseded; recorded
-            // in the 0017 tabletop).
+            // here (the toggle-resize invariant is superseded).
             let (win_w, win_h) =
                 shell_model::initial_window_size(f64::from(width), f64::from(height));
             // Clamp to the primary display's visible bounds (menu bar/dock
@@ -2074,7 +2072,7 @@ fn main() {
                 Rc::new(std::cell::RefCell::new(None));
             let editor_capture = editor_slot.clone();
             // The sidebar panel, captured out of the window closure for the
-            // watcher's profile-refresh tap (sbp_ac04) — like the editor
+            // watcher's profile-refresh tap — like the editor
             // reseed tap.
             let sidebar_slot: Rc<std::cell::RefCell<Option<gpui::Entity<shell::SidebarPanel>>>> =
                 Rc::new(std::cell::RefCell::new(None));
@@ -2097,7 +2095,7 @@ fn main() {
                             hosted_legends,
                         )
                     });
-                    // The docked workspace shell (card 0017): shared
+                    // The docked workspace shell: shared
                     // presentation state, the three panels, the DockArea
                     // root, all wrapped in gpui-component's Root (the
                     // notification/dialog layers live there).
@@ -2107,7 +2105,7 @@ fn main() {
                     let canvas = cx.new(|cx| {
                         shell::CanvasPanel::new(chart_view, title, presentation.clone(), focus_tree, cx)
                     });
-                    // Card 0023: the SHARED command-log model — the canvas writes
+                    // the SHARED command-log model — the canvas writes
                     // structural edits/commits/refusals to it; the dedicated
                     // bottom-dock CommandLog panel renders the SAME entity.
                     let command_log_model = cx.new(|_| command_log::CommandLog::new());
@@ -2137,7 +2135,7 @@ fn main() {
                     });
                     *sidebar_capture.borrow_mut() = Some(sidebar.clone());
                     // The bottom-dock Log panel over the shared feedback
-                    // log (wsc_ac02).
+                    // log.
                     let log = cx.new(|cx| {
                         shell::LogPanel::new(
                             feedback_log_for_editor.clone(),
@@ -2146,7 +2144,7 @@ fn main() {
                         )
                     });
                     // The second bottom-dock citizen: the command-log panel over
-                    // the shared command-log model (card 0023, clg-ac08).
+                    // the shared command-log model.
                     let command_log_panel = cx.new(|cx| {
                         shell::CommandLogPanel::new(command_log_model.clone(), presentation.clone(), cx)
                     });
@@ -2179,7 +2177,7 @@ fn main() {
 
             // Hot-reload: swap each plot's scene when the spec changes on
             // disk; rejections additionally surface as workspace
-            // notifications (aws_ac05's tap — same outcomes, same stderr),
+            // notifications (the tap — same outcomes, same stderr),
             // and a PRISTINE editor buffer reseeds from the changed file
             // (the watcher's second sanctioned tap — reload control flow
             // untouched).
@@ -2219,7 +2217,7 @@ mod tests {
     use brightfield_spec::analysis::analyse_spec;
     use brightfield_spec::{parse_spec, Format};
 
-    /// kbg_ac11b: the watcher's poll gate runs a reload when the mtime changed
+    /// the watcher's poll gate runs a reload when the mtime changed
     /// OR a cmd-r force is pending — and skips only when neither holds.
     #[test]
     fn should_run_reload_gates_on_mtime_change_or_force() {
@@ -2302,7 +2300,7 @@ mod tests {
         }
     }
 
-    // scs_ac07: a raster plot's Fill Sequential resolves for a standalone legend,
+    // a raster plot's Fill Sequential resolves for a standalone legend,
     // sized as a gradient bar.
     #[test]
     fn scs_ac07_sequential_resolves_for_standalone_legend() {
@@ -2371,7 +2369,7 @@ hconcat:
         );
     }
 
-    // scs_ac08: the assembly resolves a raster plot's colorScheme to a scheme,
+    // the assembly resolves a raster plot's colorScheme to a scheme,
     // and a RasterRenderer built with it produces the matching Fill ramp.
     #[test]
     fn scs_ac08_colorscheme_selects_the_ramp() {
@@ -2429,7 +2427,7 @@ hconcat:
         }
     }
 
-    // scs_ac08 (review strengthening): drive the REAL consumption seam end-to-end
+    // Review strengthening: drive the REAL consumption seam end-to-end
     // — build_everything reads the plot's colorScheme, builds the per-mark
     // RasterRenderer override, and threads it through augment_scales — so a key
     // typo or raster_boxes index drift can't silently render everything viridis.
@@ -2481,7 +2479,7 @@ colorScheme: blues
     // design phase 4 PR B: explicit colorDomain/colorRange are CONSUMED (they
     // were parsed-but-ignored) — driven through the real build_everything seam
     // so the attribute → ColourOverride → wrapped-renderer plumbing can't
-    // silently no-op (the card-0021 lesson).
+    // silently no-op (the silent-no-op lesson).
     #[test]
     fn dsb_color_domain_range_consumed_end_to_end() {
         use brightfield_render::mark::parse_css_hex;
@@ -2569,7 +2567,7 @@ colorRange: $ramp
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // fww_ac05 (card 0016): the view-model mapping hosts one display-only
+    // the view-model mapping hosts one display-only
     // legend child per resolved placement, at the placement's rect — asserted
     // over the descriptor list (no GPUI tree), through the same
     // `placed_legend_views` the live window path calls.
@@ -2614,7 +2612,7 @@ colorRange: $ramp
         );
     }
 
-    // lcf_ac05 (card 0009): the view-model mapping arms click-to-filter ONLY
+    // the view-model mapping arms click-to-filter ONLY
     // for a bound categorical legend — it carries the coordinator + its
     // binding index (positioned by legend path against the analysis binding
     // list) — while Sequential and unbound placements stay display-only.
@@ -2654,7 +2652,7 @@ plot:
         };
         let coordinator =
             CrossfilterCoordinator::new(session, Vec::<MarkInput>::new(), vec![], vec![], vec![], vec![ui_binding], false)
-                .expect("legend-only liveness (lcf_ac03) keeps the coordinator");
+                .expect("legend-only liveness keeps the coordinator");
 
         let colour = Scale::Colour {
             categories: vec!["a".into()],
@@ -2701,7 +2699,7 @@ plot:
         assert!(views[2].binding.is_none(), "unbound legends stay display-only");
     }
 
-    // fww_ac06 (card 0016): colorScheme reaches the LIVE path — build_everything
+    // colorScheme reaches the LIVE path — build_everything
     // resolves the plot's declared scheme into LivePlotMeta, the field the
     // coordinator threads into every live rebuild. Unknown schemes fall back to
     // viridis (warning path). Render-only: no SQL / plan-hash involvement.
@@ -2745,7 +2743,7 @@ colorScheme: {color_scheme}
         );
     }
 
-    // dmk_ac02 (card 0008, density marks): a heatmap plot's colorScheme reaches
+    // Density marks: a heatmap plot's colorScheme reaches
     // the rendered Fill ramp through the REAL assembly seam — build_everything
     // resolves the plot's scheme, builds the per-mark HeatmapRenderer override,
     // and threads it through augment_scales — and the same scheme is THREADED
@@ -2807,7 +2805,7 @@ colorScheme: blues
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // dmk_ac03 (card 0008, density marks): a cell plot's colorScheme reaches the
+    // Density marks: a cell plot's colorScheme reaches the
     // numeric-fill Sequential through the same per-mark assembly seam — DuckDB
     // executes the pass-through query, augment_scales replaces the inferred
     // Linear with the anchored blues ramp. First-render/headless only: a live
@@ -2859,14 +2857,14 @@ colorScheme: blues
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // dmk_ac04 (card 0008, density marks): the contour mark's `thresholds`
+    // Density marks: the contour mark's `thresholds`
     // attribute reaches the per-mark ContourRenderer override through the REAL
     // assembly seam (build_everything's mark_boxes), pinning the override wiring
     // end-to-end: 5 iso-levels stroke strictly more scene paths than 2 over the
     // same data. If the attr never reached the renderer, both builds would draw
     // the registry default level count and the two path counts would tie. (The
     // SQL half of the shield — thresholds NOT changing the emitted bin count —
-    // is pinned in brightfield-sql's dmk_ac04 regression test.)
+    // is pinned in brightfield-sql's regression test.)
     #[test]
     fn dmk_ac04_contour_thresholds_override_reaches_renderer_end_to_end() {
         use brightfield_render::mark::count_scene_paths;
@@ -2875,7 +2873,7 @@ colorScheme: blues
         std::fs::create_dir_all(&dir).unwrap();
 
         let build = |thresholds: usize, file: &str| {
-            // The dmk_ac04 unimodal fixture as raw points — corners 1, edges 4,
+            // The unimodal fixture as raw points — corners 1, edges 4,
             // centre 16 — so equiwidth binning reconstructs the 3x3 histogram.
             let mut rows = String::new();
             for (x, y, n) in [
@@ -2943,7 +2941,7 @@ colorScheme: blues
         assert!(missing.is_err(), "missing spec should return Err, not exit");
     }
 
-    /// sbp_ac04 (hand-off is Send): the profile set the watcher carries back
+    /// Hand-off is Send: the profile set the watcher carries back
     /// from its throwaway session must cross the background→main boundary — so
     /// the whole `run_pipeline` return tuple, profiles included, must be Send.
     /// (The non-Send `Session` never crosses; only this data does.)
@@ -2954,11 +2952,11 @@ colorScheme: blues
         assert_send::<(super::Dashboard, super::ChromeSnapshot, Vec<super::SourceProfile>)>();
     }
 
-    /// sbp_ac04 (hand-off carries real profiles): `run_pipeline` — the exact
+    /// Hand-off carries real profiles: `run_pipeline` — the exact
     /// fn the watcher runs on the background executor — computes and returns
     /// per-source profiles from its throwaway session, so the sidebar refresh
     /// has real data to apply. A headless probe of the hand-off; the live
-    /// mtime-watcher loop is confirmed in-app (sbp_ac05).
+    /// mtime-watcher loop is confirmed in-app.
     #[test]
     fn sbp_ac04_run_pipeline_returns_source_profiles() {
         use brightfield_engine::ProfileOutcome;
@@ -2995,7 +2993,7 @@ colorScheme: blues
         }
     }
 
-    /// Card 0016 review (F2): the hot-reload chrome gate is a pure comparison —
+    /// Review (F2): the hot-reload chrome gate is a pure comparison —
     /// a plots-only rebuild passes, while a title / legend / render-metadata
     /// divergence names what changed so the watcher prints "restart to apply"
     /// instead of silently hot-swapping stale chrome.
@@ -3062,7 +3060,7 @@ colorScheme: blues
         // Inset edit (or a data-driven default flip): launch-fixed in the
         // coordinator, so without the gate the swap renders the new inset once
         // then reverts on the next gesture — gated exactly like colorScheme
-        // (card 0008 axis-inset).
+        // (axis-inset).
         let mut insetted = snapshot("framed", SequentialScheme::Blues, true);
         insetted.plot_render_meta[0].3 = Insets {
             left: 8.0,
@@ -3074,7 +3072,7 @@ colorScheme: blues
             super::chrome_divergence(&launch, &insetted),
             Some("per-plot render metadata (colorScheme/inline legend/inset/titles)")
         );
-        // apt-ac08: a title / xLabel / yLabel / plot-title edit regrows the
+        // a title / xLabel / yLabel / plot-title edit regrows the
         // launch margins, which the watcher can't hot-apply — gated exactly like
         // inset (a gesture would otherwise revert to the launch titles/margins).
         let mut retitled = snapshot("framed", SequentialScheme::Blues, true);
@@ -3101,7 +3099,7 @@ colorScheme: blues
             Some("legend placement/scale")
         );
 
-        // Binding-only divergence (card 0009 F7): an `as:`/`for:`-only edit
+        // Binding-only divergence: an `as:`/`for:`-only edit
         // moves NO rect and changes NO scale — the legend still sits at the
         // same place drawing the same swatches — but its click wiring
         // (selection name here; equally plot path or colour column) differs,
@@ -3121,7 +3119,7 @@ colorScheme: blues
         );
     }
 
-    /// diw_ac17 (card 0024 reload honesty): the ChromeSnapshot widget slice
+    /// Reload honesty: the ChromeSnapshot widget slice
     /// gates every menu-affecting edit to "restart to apply" — the
     /// coordinator's menu_bindings and the ChartView's PlacedMenus are
     /// launch-fixed, so an options-list change, a style change, and an
@@ -3199,7 +3197,7 @@ colorScheme: blues
         assert_eq!(super::chrome_divergence(&launch, &snapshot(vec![])), GATE);
     }
 
-    /// diw_ac04 (warning transport): `run_pipeline` RETURNS the assembly
+    /// Warning transport: `run_pipeline` RETURNS the assembly
     /// pass's menu resolution warnings across the Send boundary (the
     /// Vec<SourceProfile> shape), and `resolution_warning_entries` maps them
     /// to exactly one Warning entry each — the watcher appends these BEFORE
@@ -3209,7 +3207,7 @@ colorScheme: blues
     #[test]
     fn diw_ac04_run_pipeline_returns_warnings_and_gated_case_composes() {
         // A derived-options radio: degrades to menu presentation with ONE
-        // warning (diw-ac14) — a warning-producing spec.
+        // warning — a warning-producing spec.
         const BASE: &str = r#"
 meta:
   title: Transport Fixture
@@ -3286,7 +3284,7 @@ vconcat:
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// clg-ac11 AGREEMENT: the gpui-free gate-classifier's verdict EQUALS the
+    /// AGREEMENT: the gpui-free gate-classifier's verdict EQUALS the
     /// REAL app-binary reload gate (same_layout + chrome_divergence) for
     /// pre/post-edit spec pairs built through the app's OWN pipeline. The
     /// classifier REIMPLEMENTS the gate from the spec representation (brightfield-
@@ -3553,10 +3551,10 @@ vconcat:
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Card 0016 review (F2): `ChromeSnapshot::capture` maps the launch parts
+    /// Review (F2): `ChromeSnapshot::capture` maps the launch parts
     /// into the gate's comparison keys — rect + scale Debug key per legend,
-    /// the click-wiring key tuple per legend binding (card 0009 F7),
-    /// path + scheme + inline flag per plot, and (card 0024, diw-ac17) rect +
+    /// the click-wiring key tuple per legend binding,
+    /// path + scheme + inline flag per plot, and rect +
     /// style + param + resolved-options Debug key per menu-family widget.
     #[test]
     fn reload_gate_snapshot_captures_comparison_keys() {
@@ -3626,7 +3624,7 @@ vconcat:
                 "sel".to_string(),
                 "species".to_string(),
             )],
-            "the click-wiring keys ride the snapshot (card 0009 F7)"
+            "the click-wiring keys ride the snapshot"
         );
         assert_eq!(
             snap.plot_render_meta,
@@ -3650,16 +3648,16 @@ vconcat:
                 format!("{menu_options:?}"),
             )],
             "the capture-side widget mapping carries rect + style + param + \
-             RESOLVED options (card 0024, diw-ac17)"
+             RESOLVED options"
         );
     }
 
-    /// diw_ac17 (PRODUCTION capture): two snapshots built by the REAL
+    /// PRODUCTION capture: two snapshots built by the REAL
     /// pipeline (`run_pipeline` → `ChromeSnapshot::capture` over the resolved
     /// `dashboard.menus`) whose ONLY spec delta is a menu `options:` edit —
     /// identical plot layout, identical title — diverge on exactly the widget
     /// slice, with the production reason string. This drives the capture-side
-    /// mapping the struct-literal diw_ac17 tests cannot see: an empty or
+    /// mapping the struct-literal tests cannot see: an empty or
     /// mis-mapped production `widgets` slice would pass every hand-built
     /// snapshot test while the real gate silently hot-swapped stale widgets.
     #[test]
@@ -3753,7 +3751,7 @@ vconcat:
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Card 0009 F4a (static/live divergence, phantom binding): a dot plot
+    /// (static/live divergence, phantom binding): a dot plot
     /// with a string `fill:` plus a raster plot. `build_legend_bindings`
     /// counts colour plots by string fill option (dot only → sole → binding
     /// forms), but `resolve_legends` counts by LIVE scale (dot Colour AND
@@ -3812,7 +3810,7 @@ hconcat:
         );
         assert!(
             live.legend_bindings.is_empty(),
-            "the phantom binding is discarded (card 0009 F4a)"
+            "the phantom binding is discarded"
         );
         let (retained, diags) = super::reconcile_legend_bindings(
             &parsed.spec,
@@ -3838,7 +3836,7 @@ hconcat:
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Card 0009 F4b (static/live divergence, dead clicks diagnosed): two
+    /// (static/live divergence, dead clicks diagnosed): two
     /// plots whose `fill:` options are BOTH strings (one names a numeric
     /// column) — the static population is 2 (ambiguous, no binding) while
     /// the live population is 1 (the numeric fill infers Linear, not
@@ -3898,7 +3896,7 @@ hconcat:
         assert!(retained.is_empty());
         assert!(
             diags.iter().any(|d| d.contains("clicks on it will not filter")),
-            "the placed-but-unbound `as:` legend is diagnosed (card 0009 F4b): {diags:?}"
+            "the placed-but-unbound `as:` legend is diagnosed: {diags:?}"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

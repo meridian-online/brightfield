@@ -42,8 +42,8 @@ fn parse_dump_line(stderr: &str) -> (u32, u32, f64) {
     (w, h, coverage)
 }
 
-/// pds-ac01: dumping the vendored edgar_gleif Protocol writes a non-empty
-/// PNG, byte-identical across two runs (the aws_ac07 determinism shape).
+/// dumping the vendored edgar_gleif Protocol writes a non-empty
+/// PNG, byte-identical across two runs (the determinism shape).
 #[test]
 fn pds_ac01_edgar_gleif_dump_is_deterministic() {
     let dir = std::env::temp_dir().join(format!("bf-pds-ac01-{}", std::process::id()));
@@ -95,7 +95,7 @@ fn pds_ac01_edgar_gleif_dump_is_deterministic() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// pds-ac04 (pixels half): the degrade fixture — one deliberately
+/// Pixels half: the degrade fixture — one deliberately
 /// unparseable middle statement — still dumps a non-empty PNG (the chip
 /// renders; the file is never black-boxed into a failed run).
 #[test]
@@ -166,7 +166,7 @@ fn pds_window_mode_malformed_manifest_exits_nonzero() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// pds-ac07: a protocol manifest WITHOUT the dump variable (window mode)
+/// a protocol manifest WITHOUT the dump variable (window mode)
 /// prints a clear later-card message and exits 0 — no crash, no partial
 /// window (a window would keep the run loop alive and hang this test).
 #[test]

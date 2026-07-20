@@ -1,4 +1,4 @@
-//! Optimisation pass pipeline (ac-07).
+//! Optimisation pass pipeline.
 //!
 //! V1 ships the pipeline shape with no passes registered. Each future
 //! optimisation (pre-aggregation, M4) adds a `Pass` impl.

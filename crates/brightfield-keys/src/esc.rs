@@ -1,4 +1,4 @@
-//! The Esc precedence ladder (ac-06): a pure decision over the current surface
+//! The Esc precedence ladder: a pure decision over the current surface
 //! state. Strict order — dismiss an open overlay > cancel a pending prefix >
 //! clear the focused view's selection. It does NOT auto-pop the focus surface
 //! (pop is `h` / `q`).

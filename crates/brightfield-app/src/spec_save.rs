@@ -1,4 +1,4 @@
-//! Spec-file save (card 0017, aws_ac04) — framework-free.
+//! Spec-file save — framework-free.
 //!
 //! The editor's cmd-s handler is built from the pure pieces here:
 //! [`decide_save`] (the conflict/truncation guard over the three texts in
@@ -152,7 +152,7 @@ pub fn should_reseed(buffer: &str, last_synced: Option<&str>, file_now: &str) ->
     }
 }
 
-/// Whether a command-log COMMIT may proceed (card 0023, clg-ac07 pristine-buffer
+/// Whether a command-log COMMIT may proceed (pristine-buffer
 /// gate). A commit re-serialises the working Spec and `set_value`s it OVER the
 /// editor buffer; [`decide_save`] does NOT guard this — it only flags an
 /// EXTERNAL disk change (`file_now` vs `last_synced`), and for a DIRTY in-app
@@ -164,8 +164,8 @@ pub fn should_reseed(buffer: &str, last_synced: Option<&str>, file_now: &str) ->
 /// reason (the author saves or discards the manual edit first). `decide_save`
 /// stays the downstream external-file-conflict guard, NOT the dirty-buffer guard.
 ///
-/// Its live caller is the deliberate cmd-s commit action (card 0023,
-/// `EditorPanel::commit_buffer`); the gate logic is unit-tested (clg-ac07).
+/// Its live caller is the deliberate cmd-s commit action
+/// (`EditorPanel::commit_buffer`); the gate logic is unit-tested.
 #[must_use]
 pub fn commit_is_allowed(buffer: &str, last_synced: Option<&str>) -> bool {
     match last_synced {
@@ -176,7 +176,7 @@ pub fn commit_is_allowed(buffer: &str, last_synced: Option<&str>) -> bool {
     }
 }
 
-/// The refusal reason a dirty-buffer commit surfaces (card 0023, clg-ac07).
+/// The refusal reason a dirty-buffer commit surfaces.
 /// Consumed by the cmd-s commit action (`EditorPanel::commit_buffer`).
 pub const DIRTY_BUFFER_COMMIT_REFUSAL: &str =
     "unsaved editor edits — save or discard them before committing command-log edits";
@@ -192,7 +192,7 @@ mod tests {
         dir.join(name)
     }
 
-    /// aws_ac04 (atomic write): the buffer replaces the file's contents in
+    /// Atomic write: the buffer replaces the file's contents in
     /// full, and no temp file survives the save — the temp+rename pair
     /// leaves exactly one artefact, the destination.
     #[test]
@@ -217,7 +217,7 @@ mod tests {
         let _ = fs::remove_file(&path);
     }
 
-    /// aws_ac04 (creation): saving to a not-yet-existing path writes it
+    /// Creation: saving to a not-yet-existing path writes it
     /// (the read-compare simply finds nothing to compare against).
     #[test]
     fn aws_ac04_save_creates_a_missing_file() {
@@ -229,7 +229,7 @@ mod tests {
         let _ = fs::remove_file(&path);
     }
 
-    /// aws_ac04 (unchanged no-op): an identical buffer touches nothing —
+    /// Unchanged no-op: an identical buffer touches nothing —
     /// same mtime, `Unchanged` outcome — so cmd-s on a clean buffer never
     /// triggers a watcher reload.
     #[test]
@@ -247,7 +247,7 @@ mod tests {
         let _ = fs::remove_file(&path);
     }
 
-    /// aws_ac04 (two-writer guard): a file that changed on disk since the
+    /// Two-writer guard: a file that changed on disk since the
     /// editor last synced flags an external conflict instead of silently
     /// overwriting; a file matching the buffer is Unchanged; a file
     /// matching last_synced (nothing external happened) writes; a file
@@ -267,7 +267,7 @@ mod tests {
         assert_eq!(decide_save("b", None, Some("a")), SaveDecision::Write);
     }
 
-    /// aws_ac04 (truncation guard): an empty buffer facing a non-empty
+    /// Truncation guard: an empty buffer facing a non-empty
     /// file it does not own (last_synced does not match the file) must
     /// never truncate it — the empty-seed data-loss window.
     #[test]
@@ -285,7 +285,7 @@ mod tests {
         );
     }
 
-    /// aws_ac04 (unseeded refusal): an editor whose boot seed failed
+    /// Unseeded refusal: an editor whose boot seed failed
     /// (last_synced = None) refuses to save at all — whatever sits in the
     /// buffer, it never held the file's contents, so writing could only
     /// destroy them.
@@ -304,7 +304,7 @@ mod tests {
         assert_eq!(decide_save("x", None, None), SaveDecision::RefuseUnseeded);
     }
 
-    /// aws_ac04 (reseed decision): only a pristine buffer follows external
+    /// Reseed decision: only a pristine buffer follows external
     /// disk changes — a dirty buffer keeps the author's edits (the save
     /// path's conflict guard handles those); our own save's mtime echo
     /// (file == buffer) never reseeds; a never-seeded editor adopts the
@@ -323,7 +323,7 @@ mod tests {
         assert!(!should_reseed("typed", None, "plot:\n"));
     }
 
-    /// clg-ac07 (pristine-buffer commit gate): a commit proceeds only over a
+    /// Pristine-buffer commit gate: a commit proceeds only over a
     /// PRISTINE buffer (buffer == last_synced); a DIRTY buffer refuses (so
     /// set_value never clobbers the author's hand-typed edits), and a
     /// never-synced editor refuses too. Distinct from decide_save (which returns
@@ -344,7 +344,7 @@ mod tests {
         );
     }
 
-    /// aws_ac04 (permission preservation): an owner-only 0600 spec keeps
+    /// Permission preservation: an owner-only 0600 spec keeps
     /// its mode bits across the temp+rename — the temp inherits the
     /// destination's permissions before the rename.
     #[cfg(unix)]
@@ -364,7 +364,7 @@ mod tests {
         let _ = fs::remove_file(&path);
     }
 
-    /// aws_ac04 (symlinked spec): saving through a symlink updates the
+    /// Symlinked spec: saving through a symlink updates the
     /// TARGET file and leaves the link in place — the destination is
     /// canonicalised before the temp+rename, so the rename replaces the
     /// target, never the link itself.

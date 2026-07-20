@@ -1,4 +1,4 @@
-//! Axis inset resolution (card 0008, axis-inset round).
+//! Axis inset resolution (axis-inset round).
 //!
 //! Pulls positional scale ranges inward by a small pixel inset so an edge mark
 //! (e.g. a dot sitting exactly at a domain bound) renders its whole disc inside
@@ -164,7 +164,7 @@ mod tests {
         SideInsets::default()
     }
 
-    // --- axi_ac02: default overlay matrix (pure `overlay`) ---
+    // --- default overlay matrix (pure `overlay`) ---
 
     #[test]
     fn axi_ac02_continuous_both_axes_inset_all_four_ends() {
@@ -299,7 +299,7 @@ mod tests {
         assert_eq!(got.right, 0.0); // band, no explicit → no default
     }
 
-    // --- axi_ac02 wiring + axi_ac05: end-to-end over real fixtures ---
+    // --- wiring: end-to-end over real fixtures ---
 
     mod fixtures {
         use super::*;
@@ -453,8 +453,8 @@ mod tests {
             // The finding closes, as a real before/after geometry contrast: a dot
             // at domain max, mapped through the resolved (inset) range vs the
             // un-inset range, and its outer disc edge measured against the frame.
-            // The pixel-level frame-clip proof is the PNG sweep (axi-ac06) + the
-            // gallery (axi-ac07); this pins the scale geometry the clip acts on.
+            // The pixel-level frame-clip proof is the PNG sweep + the
+            // gallery; this pins the scale geometry the clip acts on.
             const DOT_RADIUS: f64 = 4.0; // mark.rs
             let batch = dot_batch();
             let cm = dot_channels();

@@ -1,4 +1,4 @@
-//! Deterministic Sugiyama layout (card 0025, pds-ac06).
+//! Deterministic Sugiyama layout.
 //!
 //! Hand-ported, dependency-free: longest-path layering left -> right, dummy
 //! nodes lane edges that span more than one layer, crossing reduction is
@@ -38,7 +38,7 @@ pub struct EdgeRoute {
     pub to: AssetId,
     /// The seam the flow passes through (chevron site), if any.
     pub via: Option<StepId>,
-    /// Gate shield on this edge (pds-ac05).
+    /// Gate shield on this edge.
     pub shield: bool,
     /// Waypoints, whole pixels.
     pub points: Vec<(f64, f64)>,
@@ -108,7 +108,7 @@ fn node_width(kind: AssetKind, label: &str) -> f64 {
     }
 }
 
-/// Card height per node class (pds-ac05's distinguishable treatments).
+/// Card height per node class (the distinguishable treatments).
 fn node_height(kind: AssetKind) -> f64 {
     match kind {
         AssetKind::Source => 30.0,
@@ -227,7 +227,7 @@ pub fn layout(graph: &AssetGraph, config: &LayoutConfig) -> Layout {
     }
 
     // Crossing reduction: exactly 4 median sweeps (down, up, down, up), ties
-    // by node id — the fixed-iteration rule that pins pds-ac06.
+    // by node id — a fixed-iteration rule.
     for sweep in 0..4 {
         let downward = sweep % 2 == 0;
         let range: Vec<usize> = if downward {

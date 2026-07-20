@@ -3,7 +3,7 @@
 //! Every mark, interactor, input, and component name a Mosaic spec may use
 //! is enumerated here. Each variant carries an implementation status —
 //! `Implemented | Planned | Unimplemented` — so the preflight `SupportReport`
-//! (card 0002) can walk a parsed AST and report which specs exercise
+//! can walk a parsed AST and report which specs exercise
 //! vocabulary brightfield does not yet render without having to second-guess.
 //!
 //! A name that is not present in the registry at all is a hard
@@ -109,7 +109,7 @@ vocab_enum! {
         BarY => ("barY", Implemented),
         BarX => ("barX", Implemented),
         // Cells
-        // cell v1 wired end-to-end (card 0008 density marks, 2026-07-06):
+        // cell v1 wired end-to-end (density marks, 2026-07-06):
         // pre-aggregated categorical x × categorical y with a numeric fill
         // through a Sequential ramp (Utf8 fill keeps the Colour path).
         // cellX/cellY and the self-aggregating fill: count form stay
@@ -127,7 +127,7 @@ vocab_enum! {
         LineX => ("lineX", Unimplemented),
         LineY => ("lineY", Unimplemented),
         // Rectangles
-        // rect/rectX/rectY wired end-to-end (card 0008, 2026-07-03): RectRenderer
+        // rect/rectX/rectY wired end-to-end (2026-07-03): RectRenderer
         // draws rectangles from explicit x1/x2 × y1/y2 extents (bare `rect`), or a
         // ranged edge + zero-baselined value (rectX/rectY numeric-edged bars).
         Rect => ("rect", Implemented),
@@ -154,7 +154,7 @@ vocab_enum! {
         DensityX => ("densityX", Implemented),
         DensityY => ("densityY", Implemented),
         DenseLine => ("denseLine", Unimplemented),
-        // heatmap/contour wired end-to-end (card 0008 density marks,
+        // heatmap/contour wired end-to-end (density marks,
         // 2026-07-06): both ride the 2D density lowerer's binned grid —
         // heatmap ramps the KDE-smoothed field per cell, contour traces
         // marching-squares iso-lines over it (thresholds = iso-level count,
@@ -162,11 +162,11 @@ vocab_enum! {
         Heatmap => ("heatmap", Implemented),
         Contour => ("contour", Implemented),
         // Binned 2D count heatmap — filled cells coloured (by alpha) per bin
-        // count, reusing the 2D density binning. (card 0008 mark breadth)
+        // count, reusing the 2D density binning. (mark breadth)
         Raster => ("raster", Implemented),
         // Hex — hexbin (pixel-space cube-round binning, self-aggregating fill)
-        // and hexgrid (decorative dataless mesh) wired end-to-end (card 0008
-        // hexbin follow-up).
+        // and hexgrid (decorative dataless mesh) wired end-to-end in the
+        // hexbin follow-up.
         Hexbin => ("hexbin", Implemented),
         Hexgrid => ("hexgrid", Implemented),
         // Waffle
@@ -187,7 +187,7 @@ vocab_enum! {
         GridY => ("gridY", Unimplemented),
         GridFx => ("gridFx", Unimplemented),
         GridFy => ("gridFy", Unimplemented),
-        // Geo — projected GeoJSON basemap / choropleth (card 0008, last mark).
+        // Geo — projected GeoJSON basemap / choropleth (last mark).
         // GeoLowerer (near-clone of SimpleLowerer + ST_AsGeoJSON on a spatial
         // geometry column) feeds a render-side GeoRenderer that projects each
         // vertex client-side (equirectangular / US-tuned Albers) and draws one
@@ -226,7 +226,7 @@ vocab_enum! {
         Nearest => ("nearest", Unimplemented),
         NearestX => ("nearestX", Unimplemented),
         NearestY => ("nearestY", Unimplemented),
-        // toggleX/toggleY wired end-to-end (card 0006, 2026-07-03): each becomes
+        // toggleX/toggleY wired end-to-end (2026-07-03): each becomes
         // a single-channel point selection (BrushKind::PointX/PointY) that drives
         // an equality predicate through propagate_selection. `toggle` (both axes)
         // stays Unimplemented until its value-pair producer + click gesture land.
@@ -250,13 +250,13 @@ vocab_enum! {
 vocab_enum! {
     /// Known input widget kinds (the `input:` discriminator).
     pub enum InputKind {
-        // Wired end-to-end (card 0024, 2026-07-17): a hosted MenuElement drives
+        // Wired end-to-end (2026-07-17): a hosted MenuElement drives
         // its param via commit_menu → propagate_param → re-render, with radio
         // and checkbox as `style:` presentations of menu (options-bag key — NO
         // new vocabulary; `input: radio`/`input: checkbox` stay UnknownName).
         Menu => ("menu", Implemented),
         Search => ("search", Unimplemented),
-        // Wired end-to-end (card 0005, 2026-07-03): a hosted SliderElement drives
+        // Wired end-to-end (2026-07-03): a hosted SliderElement drives
         // its param via commit_slider → propagate_param → re-render. Search/
         // Table remain Unimplemented (no widget yet).
         Slider => ("slider", Implemented),
@@ -274,7 +274,7 @@ vocab_enum! {
         VConcat => ("vconcat", Unimplemented),
         HSpace => ("hspace", Unimplemented),
         VSpace => ("vspace", Unimplemented),
-        // Standalone `legend:` nodes render end-to-end (card 0016): resolved to
+        // Standalone `legend:` nodes render end-to-end: resolved to
         // their `for:` plot's colour scale, drawn into the headless composite
         // AND hosted in the window as a display-only LegendElement at the same
         // layout rect.
@@ -288,7 +288,7 @@ vocab_enum! {
     /// SQL-emit layer — `compile_selection` (brightfield-sql) gives each a
     /// distinct predicate combination (crossfilter self-excludes then ANDs,
     /// intersect ANDs, union ORs, single keeps the most recent) and they are
-    /// runtime-tested (cfs2_ac06).
+    /// runtime-tested.
     pub enum SelectionResolution {
         Crossfilter => ("crossfilter", Implemented),
         Intersect => ("intersect", Implemented),
@@ -313,7 +313,7 @@ vocab_enum! {
 mod tests {
     use super::*;
 
-    /// ac-03 verification: every variant of every Kind enum exposes an
+    /// verification: every variant of every Kind enum exposes an
     /// `ImplStatus` via a `status()` method.
     #[test]
     fn dfspec_ac03_every_kind_has_status() {
@@ -337,11 +337,11 @@ mod tests {
         }
     }
 
-    /// ac-09 (ifb) — REVISED (harden, 2026-07-02). `Highlight` stays
+    /// (ifb) — REVISED (harden, 2026-07-02). `Highlight` stays
     /// `Implemented` (the renderer's `HighlightState` dim/emphasis is wired), but
     /// `Nearest`/`NearestX`/`NearestY` are demoted to `Unimplemented`: parsed but
     /// unwired (`find_nearest` has no production caller; hover resolves
-    /// `nearest: None`). Reverses ifb ac-09/ac-10 — see the demotion memo.
+    /// `nearest: None`). See the demotion memo.
     #[test]
     fn feedback_variant_statuses_after_demotion() {
         assert_eq!(
@@ -362,10 +362,10 @@ mod tests {
         }
     }
 
-    /// slw ac-08 (card 0005, 2026-07-03; UPDATED by card 0024, 2026-07-17).
+    /// 2026-07-03; UPDATED 2026-07-17.
     /// `InputKind::Slider` is Implemented (a hosted SliderElement drives its
     /// param through commit_slider → propagate_param → re-render) AND
-    /// `InputKind::Menu` is Implemented (card 0024: a hosted MenuElement
+    /// `InputKind::Menu` is Implemented (a hosted MenuElement
     /// drives its param through commit_menu → propagate_param → re-render,
     /// radio/checkbox riding as `style:` presentations). Search/Table stay
     /// Unimplemented — and keep warning honestly at parse.
@@ -374,12 +374,12 @@ mod tests {
         assert_eq!(
             InputKind::Slider.status(),
             ImplStatus::Implemented,
-            "Slider is wired end-to-end (card 0005) — re-promoted"
+            "Slider is wired end-to-end — re-promoted"
         );
         assert_eq!(
             InputKind::Menu.status(),
             ImplStatus::Implemented,
-            "Menu is wired end-to-end (card 0024) — promoted"
+            "Menu is wired end-to-end — promoted"
         );
         let implemented: Vec<InputKind> = InputKind::all()
             .iter()
@@ -393,7 +393,7 @@ mod tests {
         );
     }
 
-    /// cfs point-selection (card 0006, 2026-07-03). `toggleX`/`toggleY` are
+    /// cfs point-selection (2026-07-03). `toggleX`/`toggleY` are
     /// Implemented: each maps to a single-channel point selection
     /// (BrushKind::PointX/PointY) that drives an equality predicate through
     /// propagate_selection. `toggle` (both axes) stays Unimplemented until its
@@ -409,7 +409,7 @@ mod tests {
         );
     }
 
-    /// ac-11 (nav) — REVERSED (harden, 2026-07-02). The six Pan/PanZoom variants
+    /// (nav) — REVERSED (harden, 2026-07-02). The six Pan/PanZoom variants
     /// are demoted to `Unimplemented`: `apply_pan`/`apply_zoom`/
     /// `ChartState::set_navigation` exist and are unit-tested, but no production
     /// caller wires them (no scroll/wheel handler; navigation is always None).
@@ -439,7 +439,7 @@ mod tests {
         assert!(MarkKind::from_wire("fooBar").is_none());
     }
 
-    /// scs_ac09 (card 0008, sequential colour scale). `LegendChannel::Color`
+    /// Sequential colour scale. `LegendChannel::Color`
     /// stays Implemented — it now covers continuous (gradient-bar) legends as
     /// well as categorical (swatch) legends.
     #[test]
@@ -447,7 +447,7 @@ mod tests {
         assert_eq!(LegendChannel::Color.status(), ImplStatus::Implemented);
     }
 
-    /// dmk_ac05 (card 0008) — RE-PINNED by the hexbin follow-up, then by geo.
+    /// RE-PINNED by the hexbin follow-up, then by geo.
     /// Heatmap, Contour, Cell (density marks) plus Hexbin and Hexgrid are
     /// Implemented: hexbin is pixel-space cube-round binning with a
     /// self-aggregating fill, hexgrid the decorative dataless mesh. The
@@ -465,7 +465,7 @@ mod tests {
             assert_eq!(
                 promoted.status(),
                 ImplStatus::Implemented,
-                "{promoted:?} is wired end-to-end (card 0008) — promoted"
+                "{promoted:?} is wired end-to-end — promoted"
             );
         }
         for staged_out in [
@@ -482,7 +482,7 @@ mod tests {
         }
     }
 
-    /// geo-ac01 (card 0008, geo mark). `MarkKind::Geo` is promoted to
+    /// Geo mark. `MarkKind::Geo` is promoted to
     /// Implemented — it parses with no `ParseWarning::Unimplemented` and renders
     /// end-to-end. `Voronoi` inherits geo's former role as the always-
     /// unimplemented census stand-in (genuinely far off; no lowerer/renderer).
@@ -491,7 +491,7 @@ mod tests {
         assert_eq!(
             MarkKind::Geo.status(),
             ImplStatus::Implemented,
-            "geo renders end-to-end (card 0008) — promoted"
+            "geo renders end-to-end — promoted"
         );
         assert_eq!(
             MarkKind::Voronoi.status(),
@@ -500,7 +500,7 @@ mod tests {
         );
     }
 
-    /// fww_ac05 (card 0016, framed window). `ComponentKind::Legend` is
+    /// Framed window. `ComponentKind::Legend` is
     /// promoted to Implemented: standalone legends render in the headless
     /// composite AND as hosted window elements at their layout rects. The
     /// other layout components stay Unimplemented (DEV-0001 scaffolding).
@@ -509,7 +509,7 @@ mod tests {
         assert_eq!(
             ComponentKind::Legend.status(),
             ImplStatus::Implemented,
-            "legend is hosted in the window (card 0016) — promoted"
+            "legend is hosted in the window — promoted"
         );
         let implemented: Vec<ComponentKind> = ComponentKind::all()
             .iter()

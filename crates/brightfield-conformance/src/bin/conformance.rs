@@ -1,4 +1,4 @@
-//! `conformance` binary (ac-13).
+//! `conformance` binary.
 //!
 //! CLI entrypoint for the conformance runner. Dispatches through the same
 //! `LayerCheck` registry `cargo test` uses, so adding a layer doesn't fork

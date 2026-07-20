@@ -1,4 +1,4 @@
-//! Conformance layer definitions and the `LayerCheck` trait seam (ac-05, ac-06).
+//! Conformance layer definitions and the `LayerCheck` trait seam.
 //!
 //! Each layer is an independently-diagnostic pass/fail gate. V1 ships
 //! `AstRoundTripCheck` as the only concrete implementation; layers 2–4
@@ -162,8 +162,7 @@ impl LayerCheck for AstRoundTripCheck {
 ///
 /// Calls the `brightfield-sql` emitter to produce DDL for the spec's data
 /// sources, canonicalises the output, and string-diffs against the sibling
-/// `<name>.layer2.expected.sql` file. Plot-SELECT conformance stays pending
-/// until card 0003 ships.
+/// `<name>.layer2.expected.sql` file. Plot-SELECT conformance stays pending.
 pub struct SqlEquivalenceCheck;
 
 impl SqlEquivalenceCheck {

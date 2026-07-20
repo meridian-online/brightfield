@@ -1,4 +1,4 @@
-//! MenuElement — thin GPUI shim for the menu widget family (card 0024).
+//! MenuElement — thin GPUI shim for the menu widget family.
 //!
 //! The model half (`MenuBinding` / `MenuState` / `commit_menu_release`)
 //! lives in `menu.rs` and stays gpui-free; this file is the window layer,
@@ -12,7 +12,7 @@
 //! egui-exit posture). The open menu's option list rides [`gpui::deferred`]
 //! so it paints ABOVE sibling plots/widgets/legends, and `occlude()` so a
 //! click on an option can never fall through to a chart's brush handler
-//! beneath (diw-ac07).
+//! beneath.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -35,7 +35,7 @@ use crate::theme_bridge::rgba;
 
 /// Widget ink — kept in sync with the vello resting twin
 /// (brightfield-render scene.rs `WIDGET_*` constants) so the dumped PNG
-/// matches the window (the SLIDER_* convention, card 0005/0024). Both sides
+/// matches the window (the SLIDER_* convention). Both sides
 /// read the same Meridian tokens: fill = chart surface, border = warm gray
 /// step 5 (the slider-track gray), label = primary ink, affordance
 /// (chevron / ring outline) = muted ink, active (selected dot / check) =
@@ -79,7 +79,7 @@ impl MenuWidget {
 
 /// Build the menu-family element for one placed widget. `index` is the
 /// widget's index into the coordinator's menu bindings (menus hosted in
-/// order — the registration-order contract, diw-ac07); `dashboard_height`
+/// order — the registration-order contract); `dashboard_height`
 /// decides whether an open menu's list drops below the box or opens upward
 /// at the dashboard's bottom edge (cosmetic, per the spec's open question).
 pub fn menu_element(
@@ -170,7 +170,7 @@ fn menu_presentation(
             // the CAPTURE phase (click_away → Closed) BEFORE this BUBBLE
             // handler, so a `toggle_open()` re-read of the now-Closed state
             // would always re-open, killing the toggle-to-close half of
-            // diw-ac07 the ▴ chevron advertises. Pinned headlessly by
+            // the ▴ chevron advertises. Pinned headlessly by
             // menu.rs `diw_ac07_composed_box_click_closes_after_capture_click_away`.
             let was_open = open;
             move |_ev, window, cx| {

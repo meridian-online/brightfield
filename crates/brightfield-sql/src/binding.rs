@@ -1,4 +1,4 @@
-//! Binding model for the query emitter (ac-06, ac-10).
+//! Binding model for the query emitter.
 //!
 //! `EmittedQuery` is the output of `emit_query` — it carries the SQL string,
 //! parameter bindings, and a structural plan hash for shape-cache keying.

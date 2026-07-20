@@ -1,13 +1,13 @@
-//! The keymap adapter (ac-01 / ac-07): turns the gpui-free command registry
+//! The keymap adapter: turns the gpui-free command registry
 //! (`brightfield-keys`) into gpui `KeyBinding`s and actions.
 //!
 //! The registry is the single source of truth for the keymap. The two shipped
 //! fixed points keep their original binding sites — bare `p` → `TogglePresentation`
-//! (card 0016, `brightfield_ui::workspace_key_bindings`) and `cmd-s` → `SaveSpec`
-//! (card 0017, `shell::editor_key_bindings`) — so their handlers are untouched;
+//! (`brightfield_ui::workspace_key_bindings`) and `cmd-s` → `SaveSpec`
+//! (`shell::editor_key_bindings`) — so their handlers are untouched;
 //! the registry documents them (for the palette / help / provenance), and this
 //! adapter sources every NEW grammar verb. `main` binds all three; their union is
-//! exactly the registry keymap, and the dispatch-resolution table (ac-07, tested
+//! exactly the registry keymap, and the dispatch-resolution table (tested
 //! headless in `brightfield-keys`) is a projection of that same registry.
 //!
 //! The new grammar actions are declared here; their live handlers land with the
@@ -76,7 +76,7 @@ fn context_string(ctx: BindingContext) -> Option<&'static str> {
 
 /// Build a gpui `KeyBinding` for one registry [`BoundKey`]. The two shipped fixed
 /// points (`toggle-presentation`, `save-spec`) return `None` — they keep their
-/// card-0016/0017 binding sites — as does any longname without a live action, so
+/// original binding sites — as does any longname without a live action, so
 /// a new registry longname missing a case here is caught by the coverage test.
 fn keybinding_for(bk: &BoundKey) -> Option<KeyBinding> {
     let ks = bk.keystrokes;
@@ -93,7 +93,7 @@ fn keybinding_for(bk: &BoundKey) -> Option<KeyBinding> {
         "clear-selection" => KeyBinding::new(ks, ClearSelection, ctx),
         "reload-spec" => KeyBinding::new(ks, ReloadSpec, ctx),
         "cycle-colour-scheme" => KeyBinding::new(ks, CycleColourScheme, ctx),
-        // Command-log structural edits (card 0023).
+        // Command-log structural edits.
         "change-mark-type" => KeyBinding::new(ks, ChangeMarkType, ctx),
         "add-mark" => KeyBinding::new(ks, AddMark, ctx),
         "set-channel" => KeyBinding::new(ks, SetChannel, ctx),
@@ -108,7 +108,7 @@ fn keybinding_for(bk: &BoundKey) -> Option<KeyBinding> {
 }
 
 /// Build a runnable gpui [`gpui::Action`] for a verb's `longname` — the command
-/// palette's pick→run constructor (ac-12). Mirrors [`keybinding_for`]'s longname
+/// palette's pick→run constructor. Mirrors [`keybinding_for`]'s longname
 /// list, but boxes an action rather than a `KeyBinding`. `None` for anything the
 /// palette cannot RUN against the focused canvas: reserved (palette-visible,
 /// unbound) verbs, and `save-spec` — whose handler lives on the editor subtree,
@@ -180,7 +180,7 @@ mod tests {
             .filter(|bk| !SHIPPED_FIXED_POINTS.contains(&bk.longname))
             .count();
         assert_eq!(grammar_key_bindings().len(), want, "adapter dropped a new registry binding");
-        // Card 0023 added m/a/e/d/u (5 keys): 23 registry keys − p − cmd-s = 21.
+        // The command log added m/a/e/d/u (5 keys): 23 registry keys − p − cmd-s = 21.
         assert_eq!(want, 21, "21 new grammar bindings (23 registry keys − p − cmd-s)");
     }
 
@@ -248,10 +248,10 @@ mod tests {
 
     #[test]
     fn kbg_ac07_fixed_points_are_left_to_their_shipped_binding_sites() {
-        // The adapter does NOT re-bind p or cmd-s (covered by fww_ac07 / aws_ac04).
+        // The adapter does NOT re-bind p or cmd-s (covered elsewhere).
         let b = grammar_key_bindings();
-        assert!(matches_complete(&b, "p").is_empty(), "p stays a card-0016 binding");
-        assert!(matches_complete(&b, "cmd-s").is_empty(), "cmd-s stays a card-0017 binding");
+        assert!(matches_complete(&b, "p").is_empty(), "p stays a workspace binding");
+        assert!(matches_complete(&b, "cmd-s").is_empty(), "cmd-s stays an editor binding");
     }
 
     #[test]

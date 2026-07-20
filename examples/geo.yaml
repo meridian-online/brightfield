@@ -1,7 +1,7 @@
 meta:
   title: Choropleth (inline GeoJSON)
   description: >
-    A hermetic geo-mark demo (card 0008). Four inline GeoJSON polygons are
+    A hermetic geo-mark demo. Four inline GeoJSON polygons are
     projected client-side (equirectangular, the default) and coloured by a
     numeric `rate` through the sequential ramp — a choropleth. No spatial
     extension or network is needed: the `geom` column is inline VARCHAR GeoJSON

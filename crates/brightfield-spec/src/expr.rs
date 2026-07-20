@@ -177,7 +177,7 @@ fn is_ident_continue(b: u8) -> bool {
 mod tests {
     use super::*;
 
-    /// ac-06 test 1: `$ident` outside literal contexts lifts to a ParamRef.
+    /// test 1: `$ident` outside literal contexts lifts to a ParamRef.
     #[test]
     fn dfspec_ac06_params_outside_literals() {
         let node = tokenise("x > $lo AND x < $hi");
@@ -188,7 +188,7 @@ mod tests {
         assert_eq!(node.to_wire(), "x > $lo AND x < $hi");
     }
 
-    /// ac-06 test 2: `$` inside a single-quoted string literal is preserved
+    /// test 2: `$` inside a single-quoted string literal is preserved
     /// verbatim and does not lift to a ParamRef.
     #[test]
     fn dfspec_ac06_dollar_in_single_quoted_literal() {
@@ -198,7 +198,7 @@ mod tests {
         assert!(node.is_literal());
     }
 
-    /// ac-06 test 3: `$` inside a double-quoted identifier is preserved
+    /// test 3: `$` inside a double-quoted identifier is preserved
     /// verbatim and does not lift to a ParamRef.
     #[test]
     fn dfspec_ac06_dollar_in_double_quoted_identifier() {
@@ -207,7 +207,7 @@ mod tests {
         assert!(node.params.is_empty());
     }
 
-    /// ac-06 test 4: `$` inside a `-- line comment` is preserved verbatim
+    /// test 4: `$` inside a `-- line comment` is preserved verbatim
     /// through end-of-line.
     #[test]
     fn dfspec_ac06_dollar_in_line_comment() {
@@ -220,7 +220,7 @@ mod tests {
         );
     }
 
-    /// ac-06 test 5: `$` inside a `/* block comment */` is preserved verbatim.
+    /// test 5: `$` inside a `/* block comment */` is preserved verbatim.
     #[test]
     fn dfspec_ac06_dollar_in_block_comment() {
         let node = tokenise("x /* ignore $this */ AND $that");

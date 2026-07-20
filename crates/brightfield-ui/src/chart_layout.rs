@@ -36,7 +36,7 @@ pub struct ChartLayout {
     pub margin_right: f64,
     /// Bottom margin in pixels (space for x-axis labels).
     pub margin_bottom: f64,
-    /// Per-side range insets (card 0008 axis-inset round), carried identically
+    /// Per-side range insets (axis-inset round), carried identically
     /// to the render `ChartLayout` so hit-testing and brush inversion use the
     /// same inset pixels as the rendered scale range. Applied inside
     /// [`ChartLayout::plot_area`]; a cross-model agreement test pins render
@@ -92,7 +92,7 @@ impl ChartLayout {
     }
 
     /// Create a layout composing custom (title-grown) margins with range insets
-    /// — the title-aware runtime path (card 0019). Mirrors the render
+    /// — the title-aware runtime path. Mirrors the render
     /// `ChartLayout::with_margins_and_insets`: the grown margins reserve the
     /// title bands (outer budget) while the insets pull the positional range
     /// inward. Both models fed the same values keep `plot_area` == render
@@ -138,9 +138,9 @@ impl ChartLayout {
         )
     }
 
-    /// The frame rectangle — margins ONLY, with NO range insets (card 0022).
+    /// The frame rectangle — margins ONLY, with NO range insets.
     ///
-    /// `plot_area` pulls inward by the axis-inset band (card 0008 #55) so an edge
+    /// `plot_area` pulls inward by the axis-inset band (#55) so an edge
     /// mark renders whole inside the frame clip; a brush clamped to `plot_area`
     /// therefore can't reach into that band to enclose a boundary dot whose 4px
     /// disc overflows it. Clamping the move/resize/drag to `frame_area` instead
@@ -203,7 +203,7 @@ mod tests {
     use brightfield_render::layout::ChartLayout as RenderLayout;
     use kurbo::Point;
 
-    // --- gmr_ac08: Coordinate mapping pipeline ---
+    // --- Coordinate mapping pipeline ---
 
     #[test]
     fn gmr_ac08_plot_area_with_default_margins() {
@@ -276,7 +276,7 @@ mod tests {
         assert!(result.is_none());
     }
 
-    // --- axi_ac03: interaction parity under insets ---
+    // --- interaction parity under insets ---
 
     #[test]
     fn axi_ac03_plot_area_pulls_inward_by_insets() {
@@ -356,7 +356,7 @@ mod tests {
         assert!((ry1 - area.y0).abs() < f64::EPSILON);
     }
 
-    /// drb-ac06: `frame_area` is `plot_area` grown by the per-side insets exactly
+    /// `frame_area` is `plot_area` grown by the per-side insets exactly
     /// (margins only, no insets), so a boundary dot's 4px disc — overflowing UP
     /// into the 5px inset band — sits INSIDE frame_area and is enclosable when the
     /// per-side inset >= DOT_RADIUS. A zero-inset plot collapses frame_area onto

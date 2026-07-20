@@ -389,7 +389,7 @@ mod tests {
 
     #[test]
     fn apt_ac03_render_y_axis_rotates_its_title_but_x_does_not() {
-        // Pins apt-ac03 AT THE RENDER SITE: render_y_axis must draw its title
+        // Pinned AT THE RENDER SITE: render_y_axis must draw its title
         // rotated (a draw_text_rotated → draw_text refactor would ship a
         // horizontal, tick-colliding y-title otherwise). render_x_axis's title
         // is horizontal; neither axis rotates without a title.

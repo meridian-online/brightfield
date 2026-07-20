@@ -1,4 +1,4 @@
-//! Live cross-filter coordinator (card 0006).
+//! Live cross-filter coordinator.
 //!
 //! Keeps the engine [`Session`] and the per-mark / per-plot render metadata
 //! alive past the initial render, so a brush committed in the window
@@ -57,7 +57,7 @@ use crate::interaction::InteractionState;
 use crate::menu::{commit_menu_release, MenuBinding, MenuState};
 use crate::slider::{commit_slider_release, SliderBinding, SliderState};
 
-/// Build the predicate for a legend's selected category set (card 0020 legend
+/// Build the predicate for a legend's selected category set (legend
 /// multi-select): a bare `Predicate::Expr` for a single category — byte-identical
 /// to a single-select point predicate, so it shares the statement cache — or a
 /// `Predicate::Or` of the per-category equalities for a union. `categories` MUST
@@ -103,12 +103,12 @@ pub struct MarkInput {
     /// renders through the shared registry. The SAME override the first render
     /// used drives every live rebuild, so a heatmap/cell/raster keeps its
     /// scheme and a heatmap/contour keeps its bandwidth/thresholds across a
-    /// gesture (card 0006 renderer seam). Render-only: no SQL / plan-hash
+    /// gesture (renderer seam). Render-only: no SQL / plan-hash
     /// involvement.
     pub renderer_override: Option<Box<dyn MarkRenderer + Send + Sync>>,
     /// Retained render-config inputs, parallel to `renderer_override`: the
     /// heatmap/contour KDE bandwidth, contour iso-level count, and hexgrid bin
-    /// width computed once at app assembly. `cycle_scheme` (card 0018, ac-13)
+    /// width computed once at app assembly. `cycle_scheme`
     /// rebuilds the override through `configured_renderer` with these, so a
     /// transient colour cycle re-colours WITHOUT reshaping the density surface,
     /// iso-lines, or hex mesh. `None` for a mark that carries none.
@@ -119,7 +119,7 @@ pub struct MarkInput {
     pub bin_width: Option<f64>,
     /// Resolved `otherwise` deemphasis style when this mark's plot carries a
     /// `highlight, by: $sel` interactor AND the mark honours highlight
-    /// (dot/bar/rect/text) — `None` otherwise (card 0021). When present, a
+    /// (dot/bar/rect/text) — `None` otherwise. When present, a
     /// re-queried batch carrying the reserved `__bf_selected` boolean drives a
     /// `HighlightState` that dims the non-matching rows; an at-rest batch (empty
     /// selection → no `__bf_selected` column) renders every row normally.
@@ -142,7 +142,7 @@ pub struct LivePlot {
     /// gesture and folds them against `launch_scales` (widen-only), storing the
     /// result here; pixel-brush and click inversion read it, so inversion always
     /// matches what is on screen. At launch state (and under any subset filter)
-    /// it equals `launch_scales` exactly (card 0006 render fidelity).
+    /// it equals `launch_scales` exactly (render fidelity).
     pub scales: ScaleSet,
     /// The plot's LAUNCH ScaleSet, captured when the coordinator was built and
     /// immutable thereafter — the widen-only anchor every rebuild folds the
@@ -151,7 +151,7 @@ pub struct LivePlot {
     /// on-plot (F1). Never re-inferred: "launch" means "pinned at window launch".
     pub launch_scales: ScaleSet,
     /// The plot's CURRENT sequential colour scheme — the transient colour-cycle's
-    /// running state (card 0018, ac-13). Seeded from the launch scheme; `c`
+    /// running state. Seeded from the launch scheme; `c`
     /// advances it and `cycle_scheme` recolours `launch_scales`' Fill ramp
     /// accordingly. "Transient" = never written to the spec — NOT "reverts on
     /// reload": a hot reload swaps in a fresh scene but never rebuilds the
@@ -164,7 +164,7 @@ pub struct LivePlot {
     /// the app layer and carried here so a live re-render honours the same
     /// suppression instead of resurrecting the inline legend.
     pub draw_inline_legend: bool,
-    /// The plot's resolved axis + plot titles (card 0019). Rides here — NOT the
+    /// The plot's resolved axis + plot titles. Rides here — NOT the
     /// `Copy` `ChartLayout` (Strings would break `Copy`) — so every launch-
     /// anchored live rebuild re-emits the same titles the first render drew. The
     /// grown title margins are baked into `layout` (and the `ChartState`).
@@ -173,7 +173,7 @@ pub struct LivePlot {
     pub state: Entity<ChartState>,
 }
 
-/// A legend's selection-producer binding, UI-side (card 0009) — the mirror of
+/// A legend's selection-producer binding, UI-side — the mirror of
 /// the spec-side [`LegendBinding`], carrying what a swatch click dispatches:
 /// the selection it writes, the contributor identity (the `for:` plot's node
 /// path, giving self-exclusion by construction), and the colour column the
@@ -202,22 +202,22 @@ impl From<&LegendBinding> for LegendSelectBinding {
 }
 
 /// Coordinates live cross-filtering (brushes), reactive params (sliders), and
-/// legend point selections (swatch clicks — card 0009) across a dashboard's
+/// legend point selections (swatch clicks) across a dashboard's
 /// plots. All gestures re-execute subscriber marks through the same live
 /// `Session` and rebuild only the affected plot scenes.
 pub struct CrossfilterCoordinator {
     session: Session,
     marks: Vec<MarkInput>,
     plots: Vec<LivePlot>,
-    /// Dashboard-level slider bindings (card 0005), indexed by hosted slider.
+    /// Dashboard-level slider bindings, indexed by hosted slider.
     /// A slider's subscribers may span multiple plots; the affected plots are
     /// resolved generically via `mark_to_plot` from the re-executed mark indices.
     slider_bindings: Vec<SliderBinding>,
-    /// Dashboard-level menu-family bindings (card 0024), indexed by hosted
+    /// Dashboard-level menu-family bindings, indexed by hosted
     /// widget — the additive parallel lane beside `slider_bindings`. Options
     /// are resolved + reconciled at assembly (launch-fixed, slider parity).
     menu_bindings: Vec<MenuBinding>,
-    /// Dashboard-level legend producer bindings (card 0009), indexed by the
+    /// Dashboard-level legend producer bindings, indexed by the
     /// bound legend's position in the analysis binding list — the index a
     /// hosted `LegendElement` carries. Toggle state is NOT mirrored here: the
     /// engine's `(selection, contributor)` slot is shared with the plot's
@@ -238,13 +238,13 @@ impl CrossfilterCoordinator {
     /// plot carries a sequential Fill ramp AND the command log is not active —
     /// so a purely static PNG/embedding path skips the wiring entirely and
     /// behaves as before.
-    /// A dashboard whose only interactive surface is a bound legend (card 0009),
+    /// A dashboard whose only interactive surface is a bound legend,
     /// or whose only live surface is a sequential colour scale (the `c`
-    /// colour-cycle, card 0018), stays live. `command_log_active` (card 0023) is
+    /// colour-cycle), stays live. `command_log_active` is
     /// itself a live surface: the authoring window passes `true` so a structural
     /// edit (m/a/e/d/u) can re-render even an otherwise-static plot — without it a
     /// plain scatter's edits mutate the working spec + fill the log but never
-    /// re-render the canvas (the card-0021 silent-no-op class). Keeping the
+    /// re-render the canvas (the silent-no-op class). Keeping the
     /// coordinator costs only the retained non-Send Session in the window; the
     /// dump/watcher paths never build one and pass `false`.
     pub fn new(
@@ -376,7 +376,7 @@ impl CrossfilterCoordinator {
     }
 
     /// Clear the selection contributed by the plot at `plot_path` (keyboard Esc —
-    /// card 0018, ac-11): retract each of its brush/point bindings, re-execute
+    /// retract each of its brush/point bindings, re-execute
     /// subscribers back toward unfiltered, and rebuild the affected scenes.
     /// Returns `true` if anything was actually cleared (caller then refreshes).
     pub fn clear_plot(&mut self, plot_path: &str, cx: &mut App) -> bool {
@@ -390,8 +390,8 @@ impl CrossfilterCoordinator {
         filter || overlay
     }
 
-    /// Clear EVERY plot's selection (Esc at the dashboard altitude — card 0018,
-    /// ac-11). Returns `true` if anything was cleared.
+    /// Clear EVERY plot's selection (Esc at the dashboard altitude).
+    /// Returns `true` if anything was cleared.
     pub fn clear_all(&mut self, cx: &mut App) -> bool {
         let bindings: Vec<BrushBinding> =
             self.plots.iter().flat_map(|p| p.bindings.clone()).collect();
@@ -446,8 +446,8 @@ impl CrossfilterCoordinator {
         cleared
     }
 
-    /// Cycle the focused plot's sequential colour scheme, transiently (card 0018,
-    /// ac-13). Advances the plot's running `scheme`, rebuilds each of its marks'
+    /// Cycle the focused plot's sequential colour scheme, transiently.
+    /// Advances the plot's running `scheme`, rebuilds each of its marks'
     /// `renderer_override` through `configured_renderer` RETAINING bandwidth /
     /// thresholds / bin_width (so a mere colour cycle never reshapes a KDE
     /// surface, contour iso-lines, or a hex mesh), then — the load-bearing step —
@@ -494,8 +494,8 @@ impl CrossfilterCoordinator {
         true
     }
 
-    /// Apply a transient structural [`SpecEdit`] to the live coordinator (card
-    /// 0023, clg-ac06) — the load-bearing command-log mechanism, a DURABLE
+    /// Apply a transient structural [`SpecEdit`] to the live coordinator
+    /// — the load-bearing command-log mechanism, a DURABLE
     /// coordinator refresh (heavier than `cycle_scheme`: it re-queries).
     ///
     /// The app has already `apply`'d the edit to the working `Spec` and
@@ -505,7 +505,7 @@ impl CrossfilterCoordinator {
     /// plot's marks -> fresh batches, (3) installs the fresh mark inputs (a
     /// count-stable retype/rechannel is an in-place swap; a count-changing
     /// add/remove rebuilds the flat-index maps — coordinator.marks /
-    /// mark_to_plot / every LivePlot.mark_indices — clg-ac16), (4) RESETS the
+    /// mark_to_plot / every LivePlot.mark_indices), (4) RESETS the
     /// affected plot's launch anchor to the re-lowered FRESH inference so the
     /// axis is clean not widen-unioned, (5) re-scenes. The mutation is DURABLE:
     /// the edit PERSISTS across later gestures (like `c`).
@@ -532,7 +532,7 @@ impl CrossfilterCoordinator {
     }
 
     /// Reload the WHOLE working spec into the live session and rebuild EVERY
-    /// plot fresh (card 0023, the undo path). Unlike [`Self::apply_spec_edit`]
+    /// plot fresh (the undo path). Unlike [`Self::apply_spec_edit`]
     /// (which touches one affected plot for a known edit), an undo restores an
     /// arbitrary earlier `Spec` and can revert any plot's kind / channel / mark
     /// count, so this rebuilds all plots' marks fresh from the restored spec,
@@ -541,7 +541,7 @@ impl CrossfilterCoordinator {
     /// action. Returns `true` (the caller refreshes the window).
     pub fn reload_all_from_spec(&mut self, spec: Spec, analysis: SpecAnalysis, cx: &mut App) -> bool {
         // Capture the highlight bindings BEFORE reload_spec MOVES `analysis`, so a
-        // rebuilt mark keeps its card-0021 dimming (finding 1/2/4).
+        // rebuilt mark keeps its dimming (finding 1/2/4).
         let highlight_bindings = analysis.highlight_bindings.clone();
         self.session.reload_spec(spec.clone(), analysis);
 
@@ -627,7 +627,7 @@ impl CrossfilterCoordinator {
         // Capture the re-analysis inputs a mark rebuild needs BEFORE `reload_spec`
         // MOVES `analysis` (finding 1/2/4): the highlight bindings + the affected
         // plot's render context (highlight `otherwise` style + geo projection), so
-        // a rebuilt/retyped mark keeps its card-0021 dimming + card-0008 projection
+        // a rebuilt/retyped mark keeps its dimming + projection
         // instead of silently reverting to no-highlight / equirectangular.
         let highlight_bindings = analysis.highlight_bindings.clone();
         let affected_ctx = collect_plot_nodes(&spec)
@@ -641,7 +641,7 @@ impl CrossfilterCoordinator {
         if edit.is_count_changing() {
             // (3, count-changing) Rebuild coordinator.marks + the flat-index maps
             // so the shifted mark space stays consistent with the engine's
-            // rebuilt mark_index_map (clg-ac16).
+            // rebuilt mark_index_map.
             self.rebuild_marks_and_maps(&spec, &highlight_bindings, &plot_path);
         } else {
             // (3, count-stable) In-place mutate the mark at the edit's ORDINAL
@@ -721,7 +721,7 @@ impl CrossfilterCoordinator {
     }
 
     /// Validate the coordinator's flat mark space agrees with the engine session's
-    /// rebuilt `mark_index_map` (card 0023 finding 5). The engine builds its map
+    /// rebuilt `mark_index_map` (finding 5). The engine builds its map
     /// from ITS OWN depth-first walk (`build_mark_index_map` → `collect_marks_with_path`),
     /// while the coordinator rebuilds from `collect_plot_nodes`; the two walks
     /// agree on mark ORDER only for the non-nested plot / hconcat / vconcat
@@ -744,7 +744,7 @@ impl CrossfilterCoordinator {
     /// The FRESH (un-anchored) inferred scales for a plot's current batches —
     /// what a `commit -> reload`'s fresh `build_everything` would compute. Used
     /// to reset the launch anchor after a structural edit so the preview axis is
-    /// clean (card 0023, clg-ac06). `None` when the plot has no renderable mark.
+    /// clean. `None` when the plot has no renderable mark.
     fn fresh_plot_scales(&self, plot_index: usize) -> Option<ScaleSet> {
         let mark_indices = &self.plots[plot_index].mark_indices;
         let layout = self.plots[plot_index].layout;
@@ -787,7 +787,7 @@ impl CrossfilterCoordinator {
 
     /// Rebuild `coordinator.marks` + the flat mark-index maps (`mark_to_plot`,
     /// each `LivePlot.mark_indices`) after a count-changing edit renumbered the
-    /// mark space (card 0023, clg-ac16). Marks in UNAFFECTED plots are preserved
+    /// mark space. Marks in UNAFFECTED plots are preserved
     /// verbatim (their paths/positions are unchanged); the affected plot's marks
     /// are rebuilt fresh from the mutated spec (`ChannelMap::from_mark` +
     /// `configured_renderer` at the plot's scheme, re-deriving highlight style +
@@ -820,7 +820,7 @@ impl CrossfilterCoordinator {
         }
     }
 
-    /// Commit a slider release (card 0005): dispatch the param value into the
+    /// Commit a slider release: dispatch the param value into the
     /// engine, then rebuild and swap the scenes of every plot whose marks
     /// re-executed. Mid-drag (`Dragging`) and `Idle` states are no-ops — only a
     /// `Released` value commits (matches the tested commit-on-release contract),
@@ -865,7 +865,7 @@ impl CrossfilterCoordinator {
         Some(to_rebuild)
     }
 
-    /// Commit a menu-family pick (card 0024), mirroring [`Self::commit_slider`]:
+    /// Commit a menu-family pick, mirroring [`Self::commit_slider`]:
     /// dispatch the picked option's typed value into the engine, then rebuild
     /// and swap the scenes of every plot whose marks re-executed. Only a
     /// `Committed` state commits — `Closed`/`Open` are no-ops, so opening a
@@ -895,7 +895,7 @@ impl CrossfilterCoordinator {
     /// value from the session so a same-value pick dispatches nothing — and
     /// absorb the re-execution results into the per-mark batches, returning
     /// the set of plots to rebuild. Returns `None` (nothing committed) for a
-    /// non-`Committed` state or an out-of-range widget index — the diw-ac08
+    /// non-`Committed` state or an out-of-range widget index — the
     /// negative-control surface. Separated so the commit data-path is
     /// unit-testable without a window.
     fn apply_menu(&mut self, menu_index: usize, state: &MenuState) -> Option<HashSet<usize>> {
@@ -913,7 +913,7 @@ impl CrossfilterCoordinator {
         Some(to_rebuild)
     }
 
-    /// Commit a legend swatch click (card 0009): drive the single-select
+    /// Commit a legend swatch click: drive the single-select
     /// toggle for legend binding `legend_index`, dispatch or clear its
     /// selection through the live `Session`, then rebuild and swap the scenes
     /// of every plot whose marks re-executed. `hit` is the clicked category
@@ -930,8 +930,8 @@ impl CrossfilterCoordinator {
         categories: &[String],
         cx: &mut App,
     ) -> bool {
-        // Shift-click (`additive`) toggles a category into/out of an OR'd union
-        // (card 0020); a plain click is the single-select replace/toggle.
+        // Shift-click (`additive`) toggles a category into/out of an OR'd union;
+        // a plain click is the single-select replace/toggle.
         let applied = if additive {
             self.apply_legend_toggle(legend_index, hit, categories)
         } else {
@@ -953,7 +953,7 @@ impl CrossfilterCoordinator {
     }
 
     /// The gpui-free half of [`Self::commit_legend_click`] — the single-select
-    /// toggle state machine (lcf ac-03):
+    /// toggle state machine:
     ///
     /// - a category whose exact point predicate is NOT the slot's current
     ///   predicate dispatches `column = 'category'` via
@@ -1028,7 +1028,7 @@ impl CrossfilterCoordinator {
         Some(to_rebuild)
     }
 
-    /// The additive (shift-click) half of a legend click (card 0020 legend
+    /// The additive (shift-click) half of a legend click (legend
     /// multi-select): toggle `hit`'s category into/out of an OR'd union built
     /// from THIS legend's categories, reusing [`Self::legend_selected_categories`]
     /// to derive the current member set — so a foreign predicate sharing the
@@ -1078,10 +1078,10 @@ impl CrossfilterCoordinator {
     }
 
     /// The bound legend's currently-selected categories, for the hosted
-    /// [`crate::legend_element::LegendElement`] to dim the non-members (card
-    /// 0006 selected-state, extended to a multi-select union by card 0020).
+    /// [`crate::legend_element::LegendElement`] to dim the non-members
+    /// (selected-state, extended to a multi-select union).
     /// Derived per call from the engine's contributor slot — NO stored mirror
-    /// (the card 0009 F1 lesson): the slot predicate is decomposed into its OR
+    /// (the F1 lesson): the slot predicate is decomposed into its OR
     /// members and every candidate category whose point predicate is a member is
     /// returned, in `categories` order.
     ///
@@ -1146,7 +1146,7 @@ impl CrossfilterCoordinator {
     /// rendered against LAUNCH-ANCHORED scales: a fresh inference over the
     /// current batches folded (widen-only) against the immutable launch set, so
     /// the frame of reference holds still under a filter yet widens to keep
-    /// query-rewrite rows on-plot (card 0006 render fidelity, F1/F2). Stores the
+    /// query-rewrite rows on-plot (render fidelity, F1/F2). Stores the
     /// anchored set as the plot's displayed `scales` so a subsequent brush/click
     /// inverts against exactly what was drawn.
     fn build_plot_scene(&mut self, plot_index: usize) -> Scene {
@@ -1189,7 +1189,7 @@ impl CrossfilterCoordinator {
 /// configured renderer its FIRST render used — raster/heatmap/cell scheme,
 /// heatmap/contour bandwidth, contour thresholds), falling back to the shared
 /// registry for an unconfigured mark. This is the single renderer-config seam
-/// the first render and every live rebuild share (card 0006), closing the
+/// the first render and every live rebuild share, closing the
 /// heatmap/cell/contour and raster live-scheme losses in one place.
 ///
 /// `draw_inline_legend` mirrors the app's first-render suppression (a
@@ -1242,8 +1242,8 @@ fn render_plot_scene(
 }
 
 /// Whether a coordinator has any live-driving surface — a brush, a slider, a
-/// menu-family widget (card 0024), a bound legend, OR a sequential Fill ramp
-/// (the `c` colour-cycle, card 0018, ac-13). `new` returns `None` when none
+/// menu-family widget, a bound legend, OR a sequential Fill ramp
+/// (the `c` colour-cycle). `new` returns `None` when none
 /// hold. Factored out (over booleans, not `LivePlot`s) so the gate — including
 /// the sequential-Fill relaxation that keeps an otherwise-static heatmap
 /// dashboard live — is headlessly testable without a window (a `LivePlot`
@@ -1260,15 +1260,15 @@ fn coordinator_has_live_surface(
 }
 
 /// Whether a `ScaleSet`'s Fill channel is a `Scale::Sequential` ramp — the signal
-/// that a plot is colour-cyclable (card 0018, ac-13). Pinned to Channel::Fill +
+/// that a plot is colour-cyclable. Pinned to Channel::Fill +
 /// the Sequential variant, and shared by both `new`'s live-surface gate and
 /// `cycle_scheme`'s guard so the two can't drift.
 fn has_sequential_fill(scales: &ScaleSet) -> bool {
     matches!(scales.get(Channel::Fill), Some(Scale::Sequential { .. }))
 }
 
-/// The gpui-free core of [`CrossfilterCoordinator::rebuild_marks_and_maps`]
-/// (card 0023, clg-ac16): recompute the flat mark-index space after a
+/// The gpui-free core of [`CrossfilterCoordinator::rebuild_marks_and_maps`]:
+/// recompute the flat mark-index space after a
 /// count-changing edit. Given each tracked plot's `(path, old flat indices,
 /// scheme)` in coordinator-plots order, the old flat `marks`, the mutated
 /// `spec`, its re-analysis `highlight_bindings`, and the affected plot's path, it
@@ -1334,8 +1334,8 @@ fn rebuild_flat_index_space(
 }
 
 /// The per-plot render context a mark rebuild must re-derive from the swapped
-/// spec + analysis (card 0023 finding 1/2/4): the plot's highlight `otherwise`
-/// style (card 0021) and its map projection (card 0008 geo). Mirrors app
+/// spec + analysis (finding 1/2/4): the plot's highlight `otherwise`
+/// style and its map projection (geo). Mirrors app
 /// assembly (main.rs) so a re-queried mark carries the SAME highlight/projection
 /// it launched with — a rebuild that reset these to `None` silently killed
 /// dashboard-wide highlight dimming and reverted a US-Albers basemap to
@@ -1356,7 +1356,7 @@ fn plot_render_context(
 /// Build a fresh [`MarkInput`] from a spec mark + its plot's render context
 /// (scheme, highlight style, projection). `highlight_style` is applied only to
 /// the honouring families (`mark_honours_highlight`); `projection` only to a
-/// `geo` mark — exactly the two gates app assembly applies (card 0023 finding
+/// `geo` mark — exactly the two gates app assembly applies (finding
 /// 1/2/4). Used by the count-changing rebuild + the undo full-reload path.
 fn build_fresh_mark_input(
     mark: &Mark,
@@ -1406,7 +1406,7 @@ fn mark_attr_f64(mark: &Mark, key: &str) -> Option<f64> {
 /// Rebuild a mark's renderer through `scheme`, THREADING the mark's own retained
 /// render-config attrs (bandwidth / thresholds / bin_width) — the exact per-mark
 /// rebuild `cycle_scheme` performs, so a colour cycle re-colours WITHOUT reshaping
-/// the KDE surface, contour iso-lines, or hex mesh (card 0018, ac-13). Extracted
+/// the KDE surface, contour iso-lines, or hex mesh. Extracted
 /// so the attr threading is headlessly testable (`cycle_scheme` itself needs a
 /// window).
 fn recolour_override(
@@ -1423,8 +1423,8 @@ fn recolour_override(
     configured_renderer(m.kind, scheme, m.bandwidth, m.thresholds, m.bin_width, None)
 }
 
-/// Swap a `ScaleSet`'s Fill ramp stops in place, preserving its domain (card
-/// 0018, ac-13). Returns `true` when a `Scale::Sequential` Fill was present and
+/// Swap a `ScaleSet`'s Fill ramp stops in place, preserving its domain
+/// . Returns `true` when a `Scale::Sequential` Fill was present and
 /// recoloured; `false` for a categorical or absent Fill. The load-bearing half
 /// of a colour cycle: `anchor_scale` copies LAUNCH stops (scale.rs), so
 /// rewriting the launch Fill stops is what actually moves the on-screen ramp.
@@ -1549,13 +1549,13 @@ mod tests {
         (e.path_data.clone(), e.draw_data.clone())
     }
 
-    /// clg-ac05 (ChangeMarkType, on the RIGHT surface): a retype's real
+    /// ChangeMarkType, on the RIGHT surface: a retype's real
     /// downstream effect is the SCENE GEOMETRY, not the SQL — dot/bar/line/rect
     /// all map to SimpleLowerer, which ignores `mark.kind` (byte-identical SQL,
     /// no "kind" column in the batch). Feed one batch through the render path as
     /// a dot, fingerprint the scene, retype to bar, re-render, and assert the
     /// `scene_bytes` CHANGED; retype BACK and assert it reverts (the undo half).
-    /// This is the surface the card-0021 silent-no-op lesson demands for a
+    /// This is the surface the silent-no-op lesson demands for a
     /// retype — a headless assertion the eyeball backstop could otherwise miss.
     #[test]
     fn clg_ac05_change_mark_type_changes_the_scene_fingerprint() {
@@ -1603,7 +1603,7 @@ mod tests {
         assert_eq!(dot, dot_again, "retype back to dot reverts the scene fingerprint");
     }
 
-    /// clg-ac16 (count-changing flat-index integrity, COORDINATOR half): an
+    /// Count-changing flat-index integrity, COORDINATOR half: an
     /// AddMark on plot P must rebuild the flat mark space so (a) `mark_to_plot`
     /// has the NEW flat index -> P, (b) every pre-existing mark still maps to its
     /// ORIGINAL plot, (c) an UNAFFECTED plot's mark is MOVED verbatim (its
@@ -1705,7 +1705,7 @@ vconcat:
     }
 
     /// Finding 1/2/4: `plot_render_context` re-derives a plot's highlight
-    /// `otherwise` style (card 0021) + map projection (card 0008) from the swapped
+    /// `otherwise` style + map projection from the swapped
     /// spec + analysis, so a mark rebuild carries them instead of `None`.
     #[test]
     fn findings124_plot_render_context_derives_highlight_and_projection() {
@@ -2033,7 +2033,7 @@ projectionType: albers
         );
     }
 
-    /// fww_ac06 (card 0016, reworked onto the renderer-override seam): the live
+    /// Reworked onto the renderer-override seam: the live
     /// rebuild keeps the plot's declared colorScheme because the scheme now rides
     /// the mark's `renderer_override` (`configured_renderer`) — the SAME seam the
     /// first render uses — not a deleted `LivePlot.scheme` field. A raster mark
@@ -2075,10 +2075,10 @@ projectionType: albers
         );
     }
 
-    /// kbg_ac13 (recolour is load-bearing): rewriting the LAUNCH Fill stops moves
+    /// Recolour is load-bearing: rewriting the LAUNCH Fill stops moves
     /// the anchored ramp; a renderer_override-only scheme swap does NOT (anchor_scale
     /// copies launch stops). The mechanic `cycle_scheme` relies on — mirrors
-    /// fww_ac06's launch-Fill-stops probe.
+    /// the launch-Fill-stops probe.
     #[test]
     fn kbg_ac13_recolour_launch_stops_moves_the_anchored_ramp() {
         let (batch, channels) = grid_batch();
@@ -2158,7 +2158,7 @@ projectionType: albers
         }
     }
 
-    /// kbg_ac13 (None-gate relaxation): the relaxation has two parts and both are
+    /// None-gate relaxation: the relaxation has two parts and both are
     /// pinned here — (1) `has_sequential_fill` detects a colour-cyclable plot from
     /// its launch Fill being a `Scale::Sequential` (so a wrong-channel or
     /// wrong-variant regression makes `c` inert on the heatmap dashboards it
@@ -2211,18 +2211,18 @@ projectionType: albers
         assert!(coordinator_has_live_surface(true, false, false, false, false, false));
         assert!(coordinator_has_live_surface(false, true, false, false, false, false));
         assert!(coordinator_has_live_surface(false, false, false, true, false, false));
-        // card 0024: a menu-family widget is a live surface of its own — a
-        // menu-only dashboard must keep the coordinator alive (diw-ac06).
+        // a menu-family widget is a live surface of its own — a
+        // menu-only dashboard must keep the coordinator alive.
         assert!(coordinator_has_live_surface(false, false, true, false, false, false));
-        // card 0023: the command log is itself a live surface. Without this
+        // the command log is itself a live surface. Without this
         // disjunct a static spec (categorical/absent fill, no selection — e.g.
         // scatter.yaml) built no coordinator, so m/a/e/d/u mutated the working
-        // spec + filled the log but never re-rendered — the card-0021 silent-no-op
+        // spec + filled the log but never re-rendered — the silent-no-op
         // class, on the simplest possible spec.
         assert!(coordinator_has_live_surface(false, false, false, false, false, true));
     }
 
-    /// clg-ac16 regression (the scatter silent-no-op): a STATIC spec — a plain
+    /// regression (the scatter silent-no-op): a STATIC spec — a plain
     /// `dot` mark with a categorical fill, no params / selection / sequential
     /// ramp — must still get a live coordinator when the command log is active,
     /// so a structural edit can re-render. Before the `command_log_active`
@@ -2280,7 +2280,7 @@ plot:
         };
 
         // No live surface AND the command log off (the PNG/embedding path) → None,
-        // exactly as before card 0023.
+        // exactly as before.
         let (session, marks) = build_marks();
         assert!(
             CrossfilterCoordinator::new(session, marks, vec![], vec![], vec![], vec![], false).is_none(),
@@ -2293,11 +2293,11 @@ plot:
         assert!(
             CrossfilterCoordinator::new(session, marks, vec![], vec![], vec![], vec![], true).is_some(),
             "the command log is a live surface: a static scatter's m/a/e/d/u must \
-             re-render, not silently no-op (card-0021 class)"
+             re-render, not silently no-op"
         );
     }
 
-    /// kbg_ac13 (attr retention): drives `recolour_override` — the EXACT per-mark
+    /// Attr retention: drives `recolour_override` — the EXACT per-mark
     /// rebuild `cycle_scheme` performs — and proves it threads the mark's OWN
     /// bandwidth into the new renderer, so a colour cycle can't reshape the KDE
     /// surface. Both marks are rebuilt by `recolour_override` and anchored against
@@ -2339,7 +2339,7 @@ plot:
         );
     }
 
-    /// cfr_ac01 (launch-anchored scales): after a legend click FILTERS the
+    /// Launch-anchored scales: after a legend click FILTERS the
     /// subscriber to a subset, the rebuild anchors its fresh inference against
     /// the launch scales widen-only — so a subset yields exactly the launch
     /// domain and the axes hold still, instead of shrinking to the filtered
@@ -2389,7 +2389,7 @@ plot:
         );
     }
 
-    /// cfr_ac02 (all-channel pinning — colour): a `fill:species` scatter
+    /// All-channel pinning — colour: a `fill:species` scatter
     /// filtered to one species still encodes that species' LAUNCH palette
     /// colour, not the palette[0] a single-category re-inference would assign.
     /// Categorical Fill rides the same launch-pinned `ScaleSet` as x/y.
@@ -2579,7 +2579,7 @@ plot:
         );
     }
 
-    /// cfr_ac03 (round-trip identity — the crown invariant): a gesture sequence
+    /// Round-trip identity — the crown invariant: a gesture sequence
     /// that returns the engine to unfiltered state rebuilds a scene byte-identical
     /// to launch. Any residual re-inference (item 1) or renderer-config loss
     /// (item 3) would break the equality. Checked for BOTH a plain dot plot
@@ -2660,7 +2660,7 @@ plot:
         }
     }
 
-    /// cfr_ac04 (live renderer-config seam): a mark rebuilds through its
+    /// Live renderer-config seam: a mark rebuilds through its
     /// `renderer_override` — the SAME configured renderer its first render used.
     /// A blues heatmap keeps blues stops; explicit bandwidth changes the render
     /// vs Silverman; contour keeps its thresholds (more levels ⇒ more iso-line
@@ -2786,10 +2786,10 @@ plot:
         );
     }
 
-    /// F1 (widen-only, the SUPERSET half of cfr_ac01): a slider that WIDENS the
+    /// F1 (widen-only, the SUPERSET half): a slider that WIDENS the
     /// query swaps in a batch whose domain is a strict superset of launch. The
     /// launch-anchored rebuild must WIDEN to admit the new point — the opposite
-    /// failure mode from cfr_ac01's subset (which clips back to launch). A
+    /// failure mode from the subset (which clips back to launch). A
     /// launch-PINNED rebuild (the F1 bug) would leave the domain at launch and
     /// the new point would render past the plot edge. Proof is at the scale the
     /// renderer actually encodes with: the new point maps INSIDE the plot under
@@ -3012,7 +3012,7 @@ plot:
         assert!((rect.x1 - 80.0).abs() < 1e-9);
     }
 
-    // slw ac-06/ac-07 (card 0005): commit_slider's data path — a Released value
+    // commit_slider's data path — a Released value
     // re-executes the subscribing mark (row count changes); a Dragging value is a
     // no-op. An empty `plots` vec means no gpui App is needed: the rebuild loop
     // has nothing to repaint, and we assert on the swapped batch directly.
@@ -3079,7 +3079,7 @@ plot:
         let before = c.marks[0].batch.as_ref().map_or(0, |b| b.num_rows());
         assert_eq!(before, 4);
 
-        // ac-07: mid-drag never commits.
+        // mid-drag never commits.
         assert!(
             c.apply_slider(0, &SliderState::Dragging { value: 5.0 })
                 .is_none(),
@@ -3087,7 +3087,7 @@ plot:
         );
         assert_eq!(c.marks[0].batch.as_ref().map_or(0, |b| b.num_rows()), before);
 
-        // ac-06: release at threshold=5 re-executes → x in {6} = 1 row.
+        // release at threshold=5 re-executes → x in {6} = 1 row.
         let rebuilt = c.apply_slider(0, &SliderState::Released { value: 5.0 });
         assert!(rebuilt.is_some(), "Released commits");
         let after = c.marks[0].batch.as_ref().map_or(0, |b| b.num_rows());
@@ -3095,7 +3095,7 @@ plot:
         assert_eq!(after, 1);
     }
 
-    // slw ac-09 (card 0005): the shipped example ties the whole chain together —
+    // the shipped example ties the whole chain together —
     // its `input: slider` yields a binding via the layout join, and committing a
     // higher threshold through the coordinator drops points.
     #[test]
@@ -3155,14 +3155,14 @@ plot:
     }
 
     // -----------------------------------------------------------------------
-    // diw ac-06/ac-08/ac-09 (card 0024): the menu-family coordinator lane,
-    // against a REAL session — the slw_ac06 pattern (an empty `plots` vec
+    // the menu-family coordinator lane,
+    // against a REAL session — the pattern (an empty `plots` vec
     // means no gpui App is needed; we assert on the swapped batch directly).
     // -----------------------------------------------------------------------
 
     /// A String param filtering a dot plot — the menu data-effect fixture.
     /// `region: east` default → 2 of 4 rows; the third region carries an
-    /// O'Brien-class single quote for the SQL-integrity pin (diw-ac09).
+    /// O'Brien-class single quote for the SQL-integrity pin.
     const MENU_SPEC: &str = r#"
 params:
   region: east
@@ -3180,7 +3180,7 @@ plot:
 "#;
 
     /// Build a menu-only coordinator over MENU_SPEC's live session. The
-    /// `Some(..)` here IS the diw-ac06 liveness assertion: a dashboard whose
+    /// `Some(..)` here IS the liveness assertion: a dashboard whose
     /// only interactive surface is a menu widget must keep the coordinator
     /// alive.
     fn menu_coordinator() -> Rc<RefCell<CrossfilterCoordinator>> {
@@ -3224,12 +3224,12 @@ plot:
             derived: None,
         };
         CrossfilterCoordinator::new(session, marks, vec![], vec![], vec![binding], vec![], false)
-            .expect("diw-ac06 liveness: a menu binding alone keeps the coordinator alive")
+            .expect("liveness: a menu binding alone keeps the coordinator alive")
     }
 
-    /// diw_ac08 (DATA-EFFECT): apply_menu on a Committed String pick
+    /// DATA-EFFECT: apply_menu on a Committed String pick
     /// re-executes the subscribing mark — the batch row count changes to the
-    /// predicted value. The card-0021/0022 silent-no-op defence at the
+    /// predicted value. The silent-no-op defence at the
     /// gpui-free half of the commit split.
     #[test]
     fn diw_ac08_apply_menu_reexecutes_subscriber_on_commit() {
@@ -3254,7 +3254,7 @@ plot:
         );
     }
 
-    /// diw_ac08 (NEGATIVE CONTROL): the wire can fail — an out-of-range
+    /// NEGATIVE CONTROL: the wire can fail — an out-of-range
     /// binding index returns `None` with the batch unchanged, at the same
     /// apply_menu surface the positive test drives.
     #[test]
@@ -3275,7 +3275,7 @@ plot:
         );
     }
 
-    /// diw_ac08 (same-value no-op at the coordinator): committing the
+    /// Same-value no-op at the coordinator: committing the
     /// already-current option is absorbed as an empty rebuild set — no
     /// re-query, no batch movement (decisions_locked). Row counts alone are
     /// INSENSITIVE here (a spurious same-filter re-query yields an identical
@@ -3324,7 +3324,7 @@ plot:
         assert_eq!(c.marks[0].batch.as_ref().map_or(0, |b| b.num_rows()), 1);
     }
 
-    /// diw_ac09 (String-param SQL integrity): a menu value carrying a single
+    /// String-param SQL integrity: a menu value carrying a single
     /// quote (O'Brien-class) flows propagate_param → interpolated SQL →
     /// correct filtered results, riding the shipped emit.rs escaping — no
     /// brightfield-sql change (the byte-untouched machine gate co-verifies).
@@ -3348,7 +3348,7 @@ plot:
     }
 
     // -----------------------------------------------------------------------
-    // lcf ac-03 (card 0009): legend single-select toggle through the
+    // legend single-select toggle through the
     // coordinator seam, against a REAL session — and the liveness guard.
     // -----------------------------------------------------------------------
 
@@ -3424,7 +3424,7 @@ hconcat:
             .collect();
 
         CrossfilterCoordinator::new(session, marks, vec![], vec![], vec![], legend_bindings, false)
-            .expect("lcf_ac03 liveness: a bound legend alone keeps the coordinator alive")
+            .expect("liveness: a bound legend alone keeps the coordinator alive")
     }
 
     /// The predicate the legend's contributor slot currently holds, read
@@ -3436,7 +3436,7 @@ hconcat:
             .map(|p| format!("{p}"))
     }
 
-    /// lcf_ac03: the toggle state machine drives dispatch/clear through the
+    /// the toggle state machine drives dispatch/clear through the
     /// coordinator against a real session — new category filters the
     /// downstream mark, a different category switches, the same category
     /// clears, and an empty-panel click clears (or no-ops when nothing is
@@ -3485,7 +3485,7 @@ hconcat:
         assert!(c.apply_legend_click(9, Some("gentoo")).is_none());
     }
 
-    /// Regression (card 0009 F1a): the `(selection, contributor)` slot is
+    /// Regression: the `(selection, contributor)` slot is
     /// shared with the `for:`-plot's brush/point interactors. After a brush
     /// replaces the legend's dispatched predicate, clicking the SAME swatch
     /// again must DISPATCH (replacing the brush with the category predicate)
@@ -3530,7 +3530,7 @@ hconcat:
         assert_eq!(rows(&c), 3, "downstream re-filters to the category");
     }
 
-    /// Regression (card 0009 F1b): after the slot is emptied behind the
+    /// Regression: after the slot is emptied behind the
     /// legend's back (an empty plot click clears this contributor), the same
     /// swatch must dispatch again in ONE click — a mirror still holding the
     /// category would treat it as a toggle-off no-op round trip.
@@ -3564,7 +3564,7 @@ hconcat:
         assert_ne!(rows(&c), baseline);
     }
 
-    /// cfr_ac05 (selected-category lookup): `legend_selected_categories` reads
+    /// Selected-category lookup: `legend_selected_categories` reads
     /// the bound legend's active categories from the engine's contributor slot
     /// per call — never a UI mirror. Select → one; switch → the new one; toggle
     /// off → empty; a brush replacing the slot → empty (the F1a scenario, now
@@ -3625,7 +3625,7 @@ hconcat:
         assert!(c.legend_selected_categories(9, &categories).is_empty());
     }
 
-    /// lif_ac05 (card 0020 multi-select): a shift-click toggles a category into
+    /// Multi-select: a shift-click toggles a category into
     /// an OR'd union built from THIS legend's categories, canonically sorted so
     /// the same set emits the same SQL; a single member is a bare Expr; a second
     /// shift-click on a member removes it. `slot_expr` is Display-formatted, so
@@ -3683,7 +3683,7 @@ hconcat:
         assert_eq!(rows(&c), 3);
     }
 
-    /// lif_ac07 (card 0020): removing the LAST member of a union clears the
+    /// removing the LAST member of a union clears the
     /// contributor — never an empty `Or` (which Displays FALSE -> zero rows) —
     /// so the subscriber returns to its unfiltered baseline, not a blank plot.
     #[test]
@@ -3706,7 +3706,7 @@ hconcat:
         assert!(c.legend_selected_categories(0, &cats).is_empty());
     }
 
-    /// lif_ac05 (card 0020): a shift-click never folds a FOREIGN predicate (a
+    /// a shift-click never folds a FOREIGN predicate (a
     /// same-plot point selection occupying the shared slot) into the union — it
     /// starts a fresh set; and a shift-click that hits no entry (`None`) is a
     /// no-op that leaves an active union untouched.
@@ -3753,7 +3753,7 @@ hconcat:
         assert_eq!(rows(&c), before_rows);
     }
 
-    /// A minimal cross-filter spec (card 0022): plot 0 brushes `intervalX` into
+    /// A minimal cross-filter spec: plot 0 brushes `intervalX` into
     /// `$brush`; plot 1 (mark index 1) is `filterBy: $brush`, so it is the sole
     /// subscriber. Even temp spacing (3 apart) makes a resize's row count
     /// deterministic.
@@ -3789,12 +3789,12 @@ hconcat:
         y: power
 "#;
 
-    /// drb-ac07: RE-DISPATCH ON RELEASE CHANGES THE DATA (the silent-no-op defence
-    /// — the card-0021 HIGH the green tests hid). A resize of the persisted brush
+    /// RE-DISPATCH ON RELEASE CHANGES THE DATA (the silent-no-op defence
+    /// — the HIGH the green tests hid). A resize of the persisted brush
     /// re-dispatches from the NEW corners by DRIVING the production
     /// `redispatch_brushing_from`, and the DOWNSTREAM DATA changes (contributor
     /// predicate P2 != P1 AND subscriber rows N2 != N1) — driven from the
-    /// drb-ac04 transform output, never hand-built corners. A NEGATIVE CONTROL
+    /// transform output, never hand-built corners. A NEGATIVE CONTROL
     /// proves the wire is load-bearing: the raw moved `Selected` fed straight to
     /// commit_brush_release_multi (the unchanged release path) dispatches NOTHING.
     #[test]
@@ -3874,7 +3874,7 @@ hconcat:
             .expect("the initial brush wrote the slot");
         assert_eq!(n1, 2, "temp∈[8.6,15.2] keeps 2 of 12 rows downstream");
 
-        // --- The move/resize end-state, produced by the drb-ac04 transform
+        // --- The move/resize end-state, produced by the transform
         // (NOT hand-built corners): drag the RIGHT edge from px 160 → 280, which
         // provably crosses further datums so N2 != N1 is guaranteed. ---
         let anchor = kurbo::Rect::new(100.0, 100.0, 160.0, 200.0);

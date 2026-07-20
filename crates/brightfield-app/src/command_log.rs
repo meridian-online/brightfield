@@ -1,4 +1,4 @@
-//! The command-log model (card 0023, clg-ac08) — framework-free.
+//! The command-log model — framework-free.
 //!
 //! A dedicated, append-only history of the semantic edit results the keyboard
 //! command log produces ("change-mark-type: -> bar"), an "N uncommitted edits"
@@ -16,7 +16,7 @@ pub enum CommandLogEntry {
     /// A semantic edit that was applied live ("change-mark-type: -> bar").
     Edit(String),
     /// A commit barrier ("committed 3 edits to disk"). Constructed by
-    /// [`CommandLog::commit`] on the deliberate cmd-s commit action (card 0023).
+    /// [`CommandLog::commit`] on the deliberate cmd-s commit action.
     Commit(String),
     /// A refused edit or a no-op undo, with its reason (authoring feedback).
     Refused(String),
@@ -44,7 +44,7 @@ impl CommandLogEntry {
 }
 
 /// The append-only command log, newest first, tracking the uncommitted-edit
-/// count and commit barriers (clg-ac08). Deliberately separate from
+/// count and commit barriers. Deliberately separate from
 /// [`crate::log_model::FeedbackLog`].
 #[derive(Debug, Default)]
 pub struct CommandLog {
@@ -98,7 +98,7 @@ impl CommandLog {
 
     /// Commit: insert a barrier recording how many edits were flushed and reset
     /// the uncommitted count. A no-op (returns `false`) when there is nothing to
-    /// commit. Called on the cmd-s commit action (card 0023); unit-tested.
+    /// commit. Called on the cmd-s commit action; unit-tested.
     pub fn commit(&mut self) -> bool {
         if self.uncommitted == 0 {
             return false;

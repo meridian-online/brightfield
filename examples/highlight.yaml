@@ -1,4 +1,4 @@
-# Conditional encoding via Mosaic `highlight` (card 0021).
+# Conditional encoding via Mosaic `highlight`.
 #
 # One scatter plot, NO cross-filter. Drag a rectangular brush over some points:
 # the points INSIDE the brush keep full opacity while every other point fades to
@@ -8,7 +8,7 @@
 #
 # The selection here is `as:`-bound only — it is born from the `intervalXY`
 # producer's `as: $range`, with no `params:` declaration. That as-bound form was
-# the case card 0021's review caught rendering inert; it now dims correctly, and
+# the case the review caught rendering inert; it now dims correctly, and
 # because the brush and the highlight share one plot it also exercises the
 # no-self-exclusion fix (the brushed plot greys its own non-matching points).
 #

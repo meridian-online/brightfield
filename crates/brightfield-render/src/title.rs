@@ -1,6 +1,6 @@
 //! Axis + plot titles — resolve the spec's Override/Suppress/Derive decisions
 //! against the plot's channel maps into concrete title text, and grow the plot
-//! margins to reserve a fixed band for each present title (card 0019).
+//! margins to reserve a fixed band for each present title.
 //!
 //! The DERIVE decision (from [`brightfield_spec::layout::resolve_axis_titles`])
 //! is turned into a field name HERE — where the channel map lives — because the

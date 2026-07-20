@@ -1,8 +1,7 @@
 # Vendored Mosaic spec corpus
 
 Reference corpus vendored from upstream Mosaic for use by the
-`brightfield-spec` crate's corpus totality test (ac-12) and structural tests
-(ac-13).
+`brightfield-spec` crate's corpus totality test and structural tests.
 
 ## Upstream
 

@@ -1,5 +1,5 @@
-//! Card 0024 (discrete input widgets) — vocabulary honesty + portability
-//! gates at the PUBLIC parse/serialise API (diw-ac10 / diw-ac13 / diw-ac15).
+//! (discrete input widgets) — vocabulary honesty + portability
+//! gates at the PUBLIC parse/serialise API.
 //!
 //! These are integration tests by mandate, not preference: the card's
 //! machine gate keeps `crates/brightfield-spec/src/parse.rs` byte-untouched,
@@ -9,7 +9,7 @@
 use brightfield_spec::ast::{Component, SpecValue, ValueOrParamRef};
 use brightfield_spec::{parse_spec, serialise_spec, Format, NameSurface, ParseError, ParseWarning};
 
-/// diw_ac10: `input: radio` and `input: checkbox` are NOT wire names — the
+/// `input: radio` and `input: checkbox` are NOT wire names — the
 /// no-new-vocab decision made falsifiable. Radio/checkbox exist only as
 /// `style:` presentations OF `input: menu`.
 #[test]
@@ -33,7 +33,7 @@ options: [a, b]
     }
 }
 
-/// diw_ac10: `style:` lands VERBATIM in `Input.options` (the parse.rs
+/// `style:` lands VERBATIM in `Input.options` (the parse.rs
 /// catch-all) with no warning — the key rides the preserved options bag,
 /// untyped at parse time.
 #[test]
@@ -61,7 +61,7 @@ options: [circle, square]
     );
 }
 
-/// diw_ac10: a spec using `input: menu` earns no Unimplemented warning
+/// a spec using `input: menu` earns no Unimplemented warning
 /// (Menu flipped Implemented), while the still-unbuilt kinds — search,
 /// table — keep warning honestly.
 #[test]
@@ -97,7 +97,7 @@ options: [a]
     }
 }
 
-/// diw_ac15: a `style:`-carrying spec re-emits the key verbatim through
+/// a `style:`-carrying spec re-emits the key verbatim through
 /// `serialise_spec` and round-trips to an equal AST — portability by
 /// construction made falsifiable (every widget this card enables serialises
 /// as plain Mosaic `input: menu`).
@@ -139,7 +139,7 @@ vconcat:
     assert_eq!(first.spec, second.spec, "AST equality after round-trip");
 }
 
-/// diw_ac13: the shipped example exercises all three presentations and
+/// the shipped example exercises all three presentations and
 /// parses warning-free (menu now Implemented; `style:` is an ordinary key).
 #[test]
 fn diw_ac13_param_menu_example_parses_warning_free() {

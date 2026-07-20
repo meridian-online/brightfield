@@ -180,7 +180,7 @@ impl ParseError {
 mod tests {
     use super::*;
 
-    /// ac-09 verification: every variant (except `Io` and `UnknownFormat`)
+    /// verification: every variant (except `Io` and `UnknownFormat`)
     /// exposes an accessible `span` and the public `SourceSpan` type is a
     /// plain struct defined here (not re-exported from miette).
     #[test]

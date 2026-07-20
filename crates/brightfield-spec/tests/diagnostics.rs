@@ -1,4 +1,4 @@
-//! ac-14 (gate): Malformed-spec diagnostics. Five cases, each asserting that
+//! Gate: Malformed-spec diagnostics. Five cases, each asserting that
 //! the parser returns the correct `ParseError` variant for a specific class
 //! of user mistake. Spans are checked where the deserialiser is expected to
 //! provide them; structural errors may carry `None`.

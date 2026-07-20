@@ -1,4 +1,4 @@
-//! Sidebar profile formatting (card 0017 — sidebar profiling) —
+//! Sidebar profile formatting (sidebar profiling) —
 //! framework-free.
 //!
 //! The engine computes the raw per-source profiles ([`SourceProfile`], its
@@ -138,7 +138,7 @@ mod tests {
         }
     }
 
-    /// sbp_ac02 (thousands + row-count label): counts group with commas; the
+    /// Thousands + row-count label: counts group with commas; the
     /// header label is singular at 1 and plural (incl. 0) otherwise.
     #[test]
     fn sbp_ac02_thousands_and_row_count_label() {
@@ -153,7 +153,7 @@ mod tests {
         assert_eq!(row_count_label(231_083), "231,083 rows");
     }
 
-    /// sbp_ac02 (trimmed bounds): floats lose trailing zeros; ints and
+    /// Trimmed bounds: floats lose trailing zeros; ints and
     /// temporal/string bounds pass through untouched.
     #[test]
     fn sbp_ac02_trim_number_matrix() {
@@ -172,7 +172,7 @@ mod tests {
         assert_eq!(trim_number("2020-01-15 10:30:00"), "2020-01-15 10:30:00");
     }
 
-    /// sbp_ac02 (stat line matrix): ints/floats/dates show a trimmed range;
+    /// Stat line matrix: ints/floats/dates show a trimmed range;
     /// strings and all-null columns show only distinct/nulls.
     #[test]
     fn sbp_ac02_stat_line_by_type() {
@@ -208,7 +208,7 @@ mod tests {
         assert_eq!(stat_line(&allnull), "0 distinct · 500 nulls");
     }
 
-    /// sbp_ac02 (cap boundary): at or under the cap shows everything with no
+    /// Cap boundary: at or under the cap shows everything with no
     /// tail; over the cap shows exactly the cap plus a "(+N more)" tail.
     #[test]
     fn sbp_ac02_column_cap_boundary() {
@@ -219,7 +219,7 @@ mod tests {
         assert_eq!(tail.as_deref(), Some("(+7 more)"));
     }
 
-    /// sbp_ac02 (fallback rows + warning): the muted fallback strings and the
+    /// Fallback rows + warning: the muted fallback strings and the
     /// log warning carry the source name / reason verbatim.
     #[test]
     fn sbp_ac02_fallback_rows_and_warning() {

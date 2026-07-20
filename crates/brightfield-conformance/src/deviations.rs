@@ -1,4 +1,4 @@
-//! Deviation registry (ac-09, ac-10).
+//! Deviation registry.
 //!
 //! The registry lives at repo-root `deviations.yaml` and is the single
 //! source of truth for deliberate divergences from Mosaic-web rendering.

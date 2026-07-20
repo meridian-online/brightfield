@@ -1,4 +1,4 @@
-//! ac-13 (gate): Structural test against the canonical `crossfilter.yaml`
+//! Gate: Structural test against the canonical `crossfilter.yaml`
 //! spec from the vendored corpus. Verifies that:
 //!
 //! - `params.brush` is parsed as a `SelectionNode` (not a value param).

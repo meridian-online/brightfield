@@ -1,4 +1,4 @@
-//! Unit tests for the brightfield-sql emitter — covers ac-02 through ac-10, ac-17.
+//! Unit tests for the brightfield-sql emitter.
 
 use brightfield_spec::ast::{DataSource, DataSourceKind, Spec, SpecValue};
 use brightfield_sql::emit::{emit_sources, SourceKindTag};
@@ -22,7 +22,7 @@ fn spec_with_source(name: &str, kind: DataSourceKind, extras: IndexMap<String, S
     }
 }
 
-// ── ac-02: EmitError variants ──────────────────────────────────────────────
+// ── EmitError variants ──────────────────────────────────────────────
 
 #[test]
 fn dfsql_emit_error_variants() {
@@ -42,7 +42,7 @@ fn dfsql_emit_error_variants() {
     assert!(e3.to_string().contains("test detail"), "Display should mention detail");
 }
 
-// ── ac-04: emit_sources entry point ────────────────────────────────────────
+// ── emit_sources entry point ────────────────────────────────────────
 
 #[test]
 fn dfsql_emit_sources_returns_one_ddl_per_data_entry() {
@@ -68,7 +68,7 @@ fn dfsql_emit_sources_returns_one_ddl_per_data_entry() {
     assert_eq!(output.statements[2].view_name, "src");
 }
 
-// ── ac-05: Parquet emission ────────────────────────────────────────────────
+// ── Parquet emission ────────────────────────────────────────────────
 
 #[test]
 fn dfsql_parquet_emission() {
@@ -94,7 +94,7 @@ fn dfsql_parquet_http_url_passthrough() {
     assert!(output.statements[0].sql.contains("https://example.com/data.parquet"));
 }
 
-// ── ac-06: CSV emission ────────────────────────────────────────────────────
+// ── CSV emission ────────────────────────────────────────────────────
 
 #[test]
 fn dfsql_csv_emission_with_extras() {
@@ -132,7 +132,7 @@ fn dfsql_csv_unknown_extra_warns() {
     assert_eq!(output.warnings.len(), 1, "Expected 1 warning for unknown CSV extra");
 }
 
-// ── ac-07: JSON emission ───────────────────────────────────────────────────
+// ── JSON emission ───────────────────────────────────────────────────
 
 #[test]
 fn dfsql_json_emission() {
@@ -178,7 +178,7 @@ fn dfsql_spatial_emission() {
     assert!(output.statements[0].sql.contains("ST_Read("));
 }
 
-// ── ac-08: DuckDB ATTACH ──────────────────────────────────────────────────
+// ── DuckDB ATTACH ──────────────────────────────────────────────────
 
 #[test]
 fn dfsql_duckdb_attach_emission() {
@@ -204,7 +204,7 @@ fn dfsql_duckdb_read_only_enforced() {
     assert!(output.statements[0].sql.contains("READ_ONLY"));
 }
 
-// ── ac-09: Inline rows ────────────────────────────────────────────────────
+// ── Inline rows ────────────────────────────────────────────────────
 
 #[test]
 fn dfsql_inline_object_rows() {
@@ -272,7 +272,7 @@ fn dfsql_inline_row_limit() {
     }
 }
 
-// ── ac-10: Query and Shorthand emission ────────────────────────────────────
+// ── Query and Shorthand emission ────────────────────────────────────
 
 #[test]
 fn dfsql_query_emission() {
@@ -298,7 +298,7 @@ fn dfsql_shorthand_emission() {
     assert!(output.statements[0].sql.contains("CREATE OR REPLACE VIEW \"src\" AS my_table"));
 }
 
-// ── ac-17: Error-path dispatch ─────────────────────────────────────────────
+// ── Error-path dispatch ─────────────────────────────────────────────
 
 #[test]
 fn dfsql_typed_without_file_is_invariant_violation() {

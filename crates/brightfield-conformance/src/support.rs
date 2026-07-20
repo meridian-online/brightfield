@@ -1,6 +1,5 @@
 //! Preflight `SupportReport` — walks a parsed `Spec` and emits one entry
-//! per component whose `ImplStatus` is `Planned` or `Unimplemented`
-//! (ac-02, ac-03, ac-04).
+//! per component whose `ImplStatus` is `Planned` or `Unimplemented`.
 //!
 //! The walker is deterministic: the same `Spec` produces a bytewise-
 //! identical `SupportReport`. Walk order is document order — the order the
@@ -224,7 +223,7 @@ mod tests {
 
     #[test]
     fn dfconf_preflight_legend_channel_gates_renderability() {
-        // Card 0016 review (F1): ComponentKind::Legend is Implemented, but only
+        // Review (F1): ComponentKind::Legend is Implemented, but only
         // the `color` channel renders — `legend: symbol` / `legend: opacity`
         // are still unrenderable (LegendChannel Unimplemented), so the legend
         // arm must consult the CHANNEL status, not just the component's.

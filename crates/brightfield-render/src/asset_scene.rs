@@ -1,10 +1,10 @@
-//! Asset-graph scene builder (card 0025) — draws a `brightfield-protocol`
+//! Asset-graph scene builder — draws a `brightfield-protocol`
 //! layout into a vello scene.
 //!
 //! The protocol DAG twin of `scene.rs`: same idiom (Meridian ink via the
 //! `ink` boundary, labels through the `text` module, plain kurbo shapes),
 //! but the input is an [`AssetGraph`] + [`Layout`] instead of data batches.
-//! Node treatments per kind (pds-ac05): SOURCE pill, FILE document
+//! Node treatments per kind: SOURCE pill, FILE document
 //! silhouette, TABLE card, INTERNAL muted card, DATASET double-ring, family
 //! tile with an `xN` count, opaque chip with an issue badge. Steps render as
 //! seam chevrons on their edges; a validation gate is a shield glyph on the
@@ -149,7 +149,7 @@ fn draw_chevron(scene: &mut Scene, cx: f64, cy: f64, flow: Flow, colour: Color) 
     }
 }
 
-/// The gate-as-shield glyph near the guarded edge's target (pds-ac05).
+/// The gate-as-shield glyph near the guarded edge's target.
 fn draw_shield(scene: &mut Scene, cx: f64, cy: f64) {
     let (w, h) = (9.0, 11.0);
     let mut shield = BezPath::new();
@@ -318,7 +318,7 @@ fn draw_node(
             return; // family draws its own label (offset for the badge)
         }
         AssetKind::Opaque => {
-            // Issue-badged chip: dashed outline, amber badge (pds-ac04).
+            // Issue-badged chip: dashed outline, amber badge.
             let chip = RoundedRect::new(x, y, x + w, y + h, 3.0);
             scene.fill(Fill::NonZero, Affine::IDENTITY, CHIP_FILL, None, &chip);
             let dashed = Stroke::new(1.0).with_dashes(0.0, [3.0, 2.0]);
@@ -385,7 +385,7 @@ mod tests {
     use brightfield_protocol::parse_manifest_str;
     use std::collections::BTreeMap;
 
-    /// pds-ac05: every node kind + a shielded edge renders real geometry.
+    /// every node kind + a shielded edge renders real geometry.
     #[test]
     fn pds_ac05_all_node_treatments_render() {
         let yaml = r"

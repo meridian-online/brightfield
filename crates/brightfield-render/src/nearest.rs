@@ -147,7 +147,7 @@ fn column_as_f64(batch: &RecordBatch, col_name: &str) -> Option<Vec<Option<f64>>
 /// The numeric value of a single cell as `f64`, coerced from any supported
 /// column type. `None` for a null, an out-of-range row, or a non-numeric column.
 ///
-/// Point selection (card 0006) reads a datum's EXACT stored value this way: the
+/// Point selection reads a datum's EXACT stored value this way: the
 /// dispatched predicate is `col = value`, and equating the continuous click
 /// coordinate would never match a discrete datum.
 pub fn column_value_at(batch: &RecordBatch, col_name: &str, row: usize) -> Option<f64> {
@@ -345,7 +345,7 @@ mod tests {
         (batch, cm, scales)
     }
 
-    // ac-01: NearestMode variants are exhaustive
+    // NearestMode variants are exhaustive
     #[test]
     fn ifb_ac01_nearest_mode_variants() {
         let modes = [NearestMode::X, NearestMode::Y, NearestMode::XY];
@@ -365,7 +365,7 @@ mod tests {
         assert!((hit.distance - 5.5).abs() < f64::EPSILON);
     }
 
-    // ac-02: find_nearest functionality
+    // find_nearest functionality
     #[test]
     fn ifb_ac02_exact_hit_returns_some() {
         let (batch, cm, scales) = test_batch();

@@ -1,4 +1,4 @@
-# US state basemap — LIVE-IN-APP-ONLY geo example (card 0008).
+# US state basemap — LIVE-IN-APP-ONLY geo example.
 #
 # This is the real ST_Read corpus path: a `type: spatial` source loads a GeoJSON
 # file through DuckDB's `ST_Read`, the GeoLowerer wraps the GEOMETRY column in

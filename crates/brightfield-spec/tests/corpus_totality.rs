@@ -1,4 +1,4 @@
-//! ac-12 (gate): Every YAML file under `vendor/mosaic-specs/yaml/` must parse
+//! Gate: Every YAML file under `vendor/mosaic-specs/yaml/` must parse
 //! without `ParseError`. Warnings are expected — the corpus exercises the
 //! full breadth of the Mosaic vocabulary, and brightfield has `Unimplemented`
 //! status on every vocabulary entry in v1 — but no file may fail outright.

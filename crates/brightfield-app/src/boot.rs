@@ -1,4 +1,4 @@
-//! Boot-mode seam (card 0017, aws_ac01) — framework-free.
+//! Boot-mode seam — framework-free.
 //!
 //! The ONE decision separating the headless PNG dump from the windowed
 //! authoring workspace, lifted out of `main` so it is headlessly testable
@@ -33,7 +33,7 @@ pub fn boot_mode(dump_png: Option<String>) -> BootMode {
 mod tests {
     use super::*;
 
-    /// aws_ac01 (seam): the dump variable short-circuits to the headless
+    /// Seam: the dump variable short-circuits to the headless
     /// arm — the only arm `main` reaches before `return` — and its absence
     /// is the only route to the workspace. Presentation/dock state appears
     /// nowhere in the decision, so shell work cannot affect PNG output.

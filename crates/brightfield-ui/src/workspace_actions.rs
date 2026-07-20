@@ -1,10 +1,10 @@
-//! Workspace actions and key bindings (card 0016, hosted by card 0017's
+//! Workspace actions and key bindings (hosted by the
 //! shell).
 //!
 //! Declares the [`TogglePresentation`] action, the workspace key context it
 //! dispatches in, and the `p` binding as remappable data. The `WorkspaceView`
 //! window root this file once hosted was superseded by the gpui-component
-//! `DockArea` shell (card 0017, #45) and has been deleted; the action's live
+//! `DockArea` shell (#45) and has been deleted; the action's live
 //! handler is the app crate's `CanvasPanel`.
 
 use gpui::{actions, KeyBinding};
@@ -32,10 +32,10 @@ mod tests {
     use super::*;
     use gpui::Keystroke;
 
-    /// fww_ac07 (binding data): the workspace keymap is declared as data —
+    /// Binding data: the workspace keymap is declared as data —
     /// exactly one binding, bare `p`, dispatching `TogglePresentation` inside
-    /// the workspace key context. (The handler's flip is fww_ac03's tested
-    /// state machine; physical keypress delivery is ac-11's manual eyeball.)
+    /// the workspace key context. (The handler's flip is the tested
+    /// state machine; physical keypress delivery is the manual eyeball.)
     #[test]
     fn fww_ac07_p_binds_toggle_presentation_in_workspace_context() {
         let bindings = workspace_key_bindings();

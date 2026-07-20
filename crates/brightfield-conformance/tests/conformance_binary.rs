@@ -1,4 +1,4 @@
-//! Integration tests for the `conformance` binary (ac-13).
+//! Integration tests for the `conformance` binary.
 //!
 //! Asserts CLI surface contracts: exit code 0 on green layer-1 curated,
 //! exit code 0 on pending layer-2 curated, and the `SUMMARY:` footer shape.

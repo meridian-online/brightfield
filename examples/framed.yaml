@@ -1,4 +1,4 @@
-# Framed window (card 0016): a spec-declared `meta.title` resolves into BOTH
+# Framed window: a spec-declared `meta.title` resolves into BOTH
 # the native macOS titlebar and the workspace header strip, the dashboard
 # mounts in a padded content area below the header, and the standalone legend
 # is hosted in the window at its layout rect — exactly as the headless PNG

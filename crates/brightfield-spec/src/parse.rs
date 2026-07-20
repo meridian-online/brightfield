@@ -126,7 +126,7 @@ pub const LIFT_SURFACE_FIELDS: &[&str] = &[
     // Interactor/input
     "as",
     // `by:` on a `highlight` interactor names the selection it CONSUMES
-    // (card 0021) — lifted to a `Param` ref symmetric with `as:`, so a
+    // — lifted to a `Param` ref symmetric with `as:`, so a
     // downstream `HighlightBinding` reads it exactly like a producer's `as:`.
     "by",
     "field",
@@ -257,7 +257,7 @@ pub enum ParseWarning {
     },
 
     /// A legend's `as:` references a param name that is not declared in
-    /// `params:`. The legend stays display-only (card 0009) — unlike
+    /// `params:`. The legend stays display-only — unlike
     /// interactors, a legend producer binding requires a declared selection
     /// because its self-exclusion contract depends on the declared
     /// resolution.
@@ -268,7 +268,7 @@ pub enum ParseWarning {
 
     /// A legend's `as:` references a param that is declared as a
     /// `ParamNode::Value`, not a `ParamNode::Selection`. The legend stays
-    /// display-only (card 0009).
+    /// display-only.
     LegendBindingNonSelection {
         /// The param name.
         name: String,
@@ -278,7 +278,7 @@ pub enum ParseWarning {
     /// whose key `X` is not a recognised aggregate function. The channel
     /// degrades — it is left as a plain object, NOT read as a column named `X`
     /// (no silent column lookup) — and this names the offending key so an
-    /// author sees the typo (card 0008 hexbin / self-aggregating cell).
+    /// author sees the typo (hexbin / self-aggregating cell).
     UnknownAggregate {
         /// The channel field the map appeared on (e.g. `fill`).
         field: String,
@@ -290,8 +290,7 @@ pub enum ParseWarning {
     /// `crossfilter`. Only crossfilter resolution self-excludes the
     /// contributor's own plot (`compile_selection`), so any other resolution
     /// would let the legend filter its own `for:` plot and invalidate the
-    /// launch-time colour-scale snapshot; the legend stays display-only
-    /// (card 0009).
+    /// launch-time colour-scale snapshot; the legend stays display-only.
     LegendBindingNonCrossfilter {
         /// The param name.
         name: String,
@@ -304,7 +303,7 @@ pub enum ParseWarning {
     /// that is neither a literal number nor a `$param` reference. The attribute
     /// degrades to absent for range insetting (the axis falls back to its
     /// default inset), and this names it so an author sees the typo rather than
-    /// silently losing the inset (card 0008 axis-inset round).
+    /// silently losing the inset (axis-inset round).
     NonNumericInset {
         /// The offending attribute key.
         attribute: String,
@@ -313,7 +312,7 @@ pub enum ParseWarning {
     /// A `highlight` interactor's `by:` references a param name that is not
     /// declared in `params:` and is not created by any `as:` binding. The
     /// highlight stays inert (no binding forms) — like a legend producer, a
-    /// highlight consumer needs a real selection to dim against (card 0021).
+    /// highlight consumer needs a real selection to dim against.
     HighlightBindingMissing {
         /// The undeclared / unbound selection name.
         name: String,
@@ -321,7 +320,7 @@ pub enum ParseWarning {
 
     /// A `highlight` interactor's `by:` references a param that is declared as
     /// a `ParamNode::Value`, not a `ParamNode::Selection` (and is not an
-    /// `as:`-bound selection). The highlight stays inert (card 0021).
+    /// `as:`-bound selection). The highlight stays inert.
     HighlightBindingNonSelection {
         /// The value-param name.
         name: String,
@@ -333,8 +332,7 @@ pub enum ParseWarning {
     /// grouped output — a predicate over a non-group-key column would SQL-error
     /// — so the highlight is guarded out (no binding, no projection) rather than
     /// risking a runtime crash. A row-level mark (dot/bar/rect/text) is
-    /// unaffected: the projection there evaluates against the full source table
-    /// (card 0021, ce-ac09).
+    /// unaffected: the projection there evaluates against the full source table.
     HighlightOnAggregate {
         /// The `by:` selection name.
         selection: String,
@@ -346,7 +344,7 @@ pub enum ParseWarning {
     /// `title`) carried a value that is neither a string nor `null`/`$param`.
     /// The label degrades — the axis falls back to its derived field-name title,
     /// or the plot title is dropped — and this names it so an author sees the
-    /// typo rather than silently losing the label (card 0019 axis + plot titles).
+    /// typo rather than silently losing the label (axis + plot titles).
     NonStringLabel {
         /// The offending attribute key.
         attribute: String,
@@ -356,7 +354,7 @@ pub enum ParseWarning {
     /// projection (v1: `equirectangular`, `albers`, `albers-usa`). The plot
     /// degrades to the default equirectangular fit, and this names the value so
     /// an author sees the unsupported projection rather than silently getting a
-    /// different map (card 0008 geo mark).
+    /// different map (geo mark).
     UnknownProjection {
         /// The unrecognised projection value (or `<non-string>` for a non-string).
         value: String,
@@ -831,7 +829,7 @@ impl Walker {
         for item in seq {
             plot_items.push(self.walk_component(item)?);
         }
-        // Plot-level inset attributes (card 0008 axis-inset round). Distinct
+        // Plot-level inset attributes (axis-inset round). Distinct
         // from the mark-level `inset*` names in the attribute allowlist — these
         // resolve into positional-scale range insets.
         const PLOT_INSET_KEYS: [&str; 7] = [
@@ -862,7 +860,7 @@ impl Walker {
                 self.warnings
                     .push(ParseWarning::NonNumericInset { attribute: key.clone() });
             }
-            // A plot-level axis / plot title attribute (card 0019). A valid
+            // A plot-level axis / plot title attribute. A valid
             // label is a string (override), or `null` / `""` (suppress); a
             // lifted `$param` is a recorded deferral. Anything else (number,
             // boolean, …) degrades to the derived title — name it so the author
@@ -874,7 +872,7 @@ impl Walker {
                 self.warnings
                     .push(ParseWarning::NonStringLabel { attribute: key.clone() });
             }
-            // A plot-level `projectionType` (card 0008 geo) that names a
+            // A plot-level `projectionType` (geo) that names a
             // projection v1 can't render (or a non-string value) degrades to the
             // default equirectangular fit — name it so the author sees the
             // unsupported projection. A lifted `$param` is a recorded deferral.
@@ -1400,7 +1398,7 @@ pub const MERIDIAN_COLOR_RANGE_HEX: [&str; 13] = [
     "#216d9b", "#285e81", "#2d4f67", "#274154", "#1b3546",
 ];
 
-/// Canonically re-serialise a [`Spec`] to a YAML string (card 0023 commit).
+/// Canonically re-serialise a [`Spec`] to a YAML string (commit).
 ///
 /// The command-log commit re-serialises the working (edited) Spec through this
 /// single canonical path (the `impl Serialize for Spec` below) into the editor
@@ -1408,7 +1406,7 @@ pub const MERIDIAN_COLOR_RANGE_HEX: [&str; 13] = [
 /// it. The write is LOSSY by design — it reformats, drops comments, and emits a
 /// fixed block order — so it is confined to the deliberate commit and
 /// round-trip-tested on the target within-plot-edited specs (`parse -> apply ->
-/// serialise -> re-parse` yields the same AST, clg-ac07a).
+/// serialise -> re-parse` yields the same AST).
 pub fn serialise_spec(spec: &Spec) -> Result<String, String> {
     serde_yaml::to_string(spec).map_err(|e| e.to_string())
 }
@@ -1590,7 +1588,7 @@ impl Serialize for SerSpecValue<'_> {
             SpecValue::Expression(e) => s.serialize_str(&e.to_wire()),
             // Re-serialise the aggregate transform to its single-key map form:
             // `{count: null}` / `{avg: "col"}`, so parse → serialise → parse is
-            // idempotent (dfspec_ac11).
+            // idempotent.
             SpecValue::Aggregate { func, column } => {
                 let mut map = s.serialize_map(Some(1))?;
                 match column {
@@ -1811,7 +1809,7 @@ plot:
     #[test]
     fn dfspec_ac08_unimplemented_mark_warns_with_stub() {
         // `voronoi` is a genuinely-unimplemented mark (no renderer/lowerer), so
-        // it still warns. (cell was this test's stub until card 0008's density
+        // it still warns. (cell was this test's stub until the density
         // marks promoted it — the swap keeps exactly one always-unimplemented
         // stand-in exercising the warning path.)
         let src = r#"
@@ -1912,7 +1910,7 @@ plot:
         assert_eq!(a.spec, b.spec);
     }
 
-    /// ac-05 verification (spec-mandated): for every entry in
+    /// verification (spec-mandated): for every entry in
     /// [`LIFT_SURFACE_FIELDS`], placing that field on a Mark's option bag
     /// with a `"$foo"` string form produces `ValueOrParamRef::Param`.
     /// Parametrised — omissions surface as failures, not silent
@@ -1948,7 +1946,7 @@ plot:
         }
     }
 
-    /// ac-05 verification: same contract as the string-form parametrisation
+    /// verification: same contract as the string-form parametrisation
     /// but with the object shorthand `{param: foo}` at every lift position.
     #[test]
     fn dfspec_ac05_lift_surface_parametrised_object_form() {
@@ -1979,7 +1977,7 @@ plot:
         }
     }
 
-    /// ac-07: unknown keys under `meta` parse successfully and emit
+    /// unknown keys under `meta` parse successfully and emit
     /// exactly one `ParseWarning::UnknownOption { path: "meta", key }`.
     /// Post-D2 contract (narrowed from fatal SchemaViolation).
     #[test]
@@ -2005,7 +2003,7 @@ plot:
     #[test]
     fn axi_ac01_nonnumeric_plot_inset_warns_but_param_defers() {
         // A non-numeric plot inset degrades to absent AND names itself (not a
-        // silent drop) — the axi-ac01 "malformed" case.
+        // silent drop) — the "malformed" case.
         let bad = "data:\n  t:\n    - { x: 1, y: 2 }\nplot:\n  - { mark: dot, data: { from: t }, x: x, y: y }\ninset: nope\n";
         let out = parse_spec(bad, Format::Yaml).expect("parses despite a bad inset");
         let n = out
@@ -2043,7 +2041,7 @@ plot:
     #[test]
     fn apt_ac02_nonstring_label_warns_but_string_null_param_defer() {
         // A number for an axis label degrades to the derived title AND names
-        // itself (card 0019) — mirroring the NonNumericInset parse-time check.
+        // itself — mirroring the NonNumericInset parse-time check.
         let bad = "data:\n  t:\n    - { x: 1, y: 2 }\nplot:\n  - { mark: dot, data: { from: t }, x: x, y: y }\nxLabel: 42\n";
         let out = parse_spec(bad, Format::Yaml).expect("parses despite a bad label");
         let n = out
@@ -2091,7 +2089,7 @@ plot:
     #[test]
     fn geo_ac04_unknown_projection_warns_but_supported_defer() {
         // An unsupported projection degrades to the default equirectangular fit
-        // AND names itself (card 0008 geo) — mirroring the NonStringLabel check.
+        // AND names itself (geo) — mirroring the NonStringLabel check.
         let bad = "data:\n  t:\n    - { x: 1, y: 2 }\nplot:\n  - { mark: dot, data: { from: t }, x: x, y: y }\nprojectionType: mercator\n";
         let out = parse_spec(bad, Format::Yaml).expect("parses despite unsupported projection");
         assert!(
@@ -2146,7 +2144,7 @@ plot:
         );
     }
 
-    /// ac-07: unknown keys on mark option bags are accepted silently
+    /// unknown keys on mark option bags are accepted silently
     /// (open bag — no warning, no error).
     #[test]
     fn dfspec_ac07_mark_unknown_option_is_accepted() {
@@ -2168,7 +2166,7 @@ plot:
         assert!(m.options.contains_key("weirdKey"));
     }
 
-    /// gomb ac-14 — statistical-mark options pass parser cleanly
+    /// Statistical-mark options pass parser cleanly
     /// (no SchemaViolation, no UnknownOption warning).
     #[test]
     fn gomb_ac14_statistical_mark_options_accepted() {
@@ -2194,7 +2192,7 @@ plot:
     }
 
     // -----------------------------------------------------------------------
-    // hex_ac01 — self-aggregating channel transforms (fill/r {count:}/{avg:})
+    // Self-aggregating channel transforms (fill/r {count:}/{avg:})
     // -----------------------------------------------------------------------
 
     use crate::ast::AggregateFunc;
@@ -2208,7 +2206,7 @@ plot:
         m.options.get(channel).expect("channel present").clone()
     }
 
-    /// hex_ac01: `fill: {count:}` (flights-hexbin / mark-types) parses to a
+    /// `fill: {count:}` (flights-hexbin / mark-types) parses to a
     /// typed count aggregate with no source column.
     #[test]
     fn hex_ac01_fill_count_parses_to_aggregate() {
@@ -2222,7 +2220,7 @@ plot:
         );
     }
 
-    /// hex_ac01: `fill: {avg: score_value}` (wnba-shots) parses to a typed avg
+    /// `fill: {avg: score_value}` (wnba-shots) parses to a typed avg
     /// aggregate carrying its source column.
     #[test]
     fn hex_ac01_fill_avg_parses_to_aggregate_with_column() {
@@ -2236,7 +2234,7 @@ plot:
         );
     }
 
-    /// hex_ac01: `r: {count:}` (wnba-shots) parses to an aggregate on the r
+    /// `r: {count:}` (wnba-shots) parses to an aggregate on the r
     /// channel — recorded, deferred at execution, NOT a parse error.
     #[test]
     fn hex_ac01_r_count_parses_to_aggregate() {
@@ -2260,7 +2258,7 @@ plot:
         );
     }
 
-    /// hex_ac01: `mean` is an accepted alias for `avg`.
+    /// `mean` is an accepted alias for `avg`.
     #[test]
     fn hex_ac01_mean_aliases_avg() {
         let entry = mark_channel("mark: hexbin\nfill: { mean: v }\n", "fill");
@@ -2273,7 +2271,7 @@ plot:
         );
     }
 
-    /// hex_ac01: an UNKNOWN aggregate name warns (naming it) and degrades to a
+    /// an UNKNOWN aggregate name warns (naming it) and degrades to a
     /// plain object — never a silent column lookup for a column named after the
     /// key. The renderer's channel extraction ignores the object.
     #[test]
@@ -2300,7 +2298,7 @@ plot:
         ));
     }
 
-    /// hex_ac01: plain column/literal/param fill channels are untouched by
+    /// plain column/literal/param fill channels are untouched by
     /// aggregate detection.
     #[test]
     fn hex_ac01_plain_fill_channels_untouched() {
@@ -2320,7 +2318,7 @@ plot:
         assert!(mark_channel("mark: dot\nfill: { param: c }\n", "fill").is_param());
     }
 
-    /// hex_ac01: the three vendored corpus specs with aggregate channels parse
+    /// the three vendored corpus specs with aggregate channels parse
     /// cleanly (no error) after the aggregate form lands.
     #[test]
     fn hex_ac01_vendored_hexbin_corpus_parses() {
@@ -2363,7 +2361,7 @@ plot:
         }
     }
 
-    /// hex_ac01: an aggregate channel round-trips through serialise → parse.
+    /// an aggregate channel round-trips through serialise → parse.
     #[test]
     fn hex_ac01_aggregate_channel_round_trips() {
         let src = "mark: hexbin\nfill: { avg: score_value }\nr: { count: }\n";
@@ -2373,7 +2371,7 @@ plot:
         assert_eq!(a.spec, b.spec, "serialised:\n{serialised}");
     }
 
-    /// ac-14 case (c) — post-D2: a `meta:` unknown field is not a
+    /// case (c) — post-D2: a `meta:` unknown field is not a
     /// `SchemaViolation`; it is a `ParseWarning::UnknownOption`. Locking
     /// the D2 adjustment against regression.
     #[test]
@@ -2390,7 +2388,7 @@ plot:
         );
     }
 
-    /// ce-ac01 (card 0021): a `highlight` interactor's `by:` lifts to a `Param`
+    /// a `highlight` interactor's `by:` lifts to a `Param`
     /// ref — symmetric with a producer's `as:` — while its literal `opacity`
     /// override stays a plain value. No `Unimplemented` warning fires (Highlight
     /// is already vocab `Implemented`).

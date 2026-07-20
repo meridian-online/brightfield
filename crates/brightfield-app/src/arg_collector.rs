@@ -1,4 +1,4 @@
-//! The argument-prompt collector (card 0023, clg-ac09) — framework-free.
+//! The argument-prompt collector — framework-free.
 //!
 //! Two of the five command-log verbs take arguments: `add-mark` collects a mark
 //! KIND, and `set-channel` collects a CHANNEL then a COLUMN. The Space palette's
@@ -12,7 +12,7 @@
 //!
 //! The palette argument-prompt overlay (shell's `Overlay::Arg`) drives this for
 //! the `a`/`e` verbs; the overlay itself is a macOS-eyeball surface, but the
-//! collector is unit-tested (clg-ac09).
+//! collector is unit-tested.
 
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_spec::edit::SpecEdit;
@@ -68,7 +68,7 @@ pub enum ArgOutcome {
 /// A running argument collection for one argument-taking verb. Created when the
 /// verb fires on a focused plot, advanced by [`ArgCollector::pick`], and dropped
 /// (by the overlay setting its slot to `None`) on Esc — the "cancel to Idle"
-/// leg (clg-ac09).
+/// leg.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArgCollector {
     plot: ComponentPath,

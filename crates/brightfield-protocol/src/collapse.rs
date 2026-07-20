@@ -1,4 +1,4 @@
-//! Parameterised family collapse (card 0025, pds-ac03).
+//! Parameterised family collapse.
 //!
 //! Detection: maximal runs of >=2 step *pair* (or longer) cycles whose names
 //! share a prefix and differ only in a trailing `_`-separated token —
@@ -140,7 +140,7 @@ fn common_tail<'a>(block: &[&'a Seam]) -> Option<&'a str> {
     tail
 }
 
-/// Fold every detected parameterised family to one `Family` tile (pds-ac03).
+/// Fold every detected parameterised family to one `Family` tile.
 /// Pure and idempotent: collapsing an already-collapsed graph is a no-op.
 #[must_use]
 pub fn collapse_families(graph: &AssetGraph) -> AssetGraph {

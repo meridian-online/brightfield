@@ -1,4 +1,4 @@
--- Degrade fixture (card 0025, pds-ac04). The MIDDLE statement below is
+-- Degrade fixture. The MIDDLE statement below is
 -- deliberately not SQL: it tokenises (plain words) but fails to parse, so it
 -- must become an opaque chip while both siblings still explode into typed
 -- nodes.

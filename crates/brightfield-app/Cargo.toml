@@ -15,13 +15,13 @@ path = "src/main.rs"
 brightfield-spec = { path = "../brightfield-spec" }
 brightfield-keys = { path = "../brightfield-keys" }
 brightfield-sql = { path = "../brightfield-sql" }
-# Protocol manifest -> asset graph -> layout for the DAG dump arm (card 0025).
+# Protocol manifest -> asset graph -> layout for the DAG dump arm.
 brightfield-protocol = { path = "../brightfield-protocol" }
 brightfield-engine = { path = "../brightfield-engine" }
 brightfield-render = { path = "../brightfield-render" }
 brightfield-ui = { path = "../brightfield-ui" }
 gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", package = "gpui" }
-# The authoring workspace shell (card 0017): DockArea, Panel, code editor,
+# The authoring workspace shell: DockArea, Panel, code editor,
 # Root notifications. Pinned by exact commit (its zed pin matches ours,
 # 1d217ee); tree-sitter-yaml is the only grammar feature — the spec editor's
 # language.
@@ -41,7 +41,7 @@ image = "0.25"
 gpui_macos = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", package = "gpui_macos", features = ["runtime_shaders", "font-kit"] }
 
 [dev-dependencies]
-# TestAppContext for the panel-shim tests (aws_ac02/ac06) — entities without
+# TestAppContext for the panel-shim tests — entities without
 # a real window. Dev-only: `cargo run`/`cargo build` never see this feature.
 gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", package = "gpui", features = ["test-support"] }
 

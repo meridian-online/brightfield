@@ -1,5 +1,5 @@
-//! Assembly-time menu options resolution + default reconciliation (card
-//! 0024, diw-ac04/diw-ac14).
+//! Assembly-time menu options resolution + default reconciliation
+//! .
 //!
 //! Runs on BOTH the launch path and the watcher/reload rebuild path (both
 //! flow through `build_everything`), against the pass's own `Session`:
@@ -11,7 +11,7 @@
 //! checkbox/radio to menu presentation honestly. Every degrade path yields
 //! exactly one runtime Log Warning per assembly pass and a USABLE widget;
 //! only a per-input resolution FAILURE skips its widget — isolated, every
-//! other widget and plot unaffected (the card-0017 profile precedent).
+//! other widget and plot unaffected (the profile precedent).
 
 use brightfield_engine::Session;
 use brightfield_spec::ast::Spec;
@@ -27,7 +27,7 @@ pub const MENU_OPTIONS_CAP: usize = 50;
 /// resolved binding (literal options, final — possibly degraded — style),
 /// and the value the resting widget displays.
 pub struct MenuPlacement {
-    /// The layout rect (per-style sized — diw-ac05).
+    /// The layout rect (per-style sized).
     pub rect: Rect,
     /// The resolved binding the coordinator + hosted element share.
     pub binding: MenuBinding,
@@ -57,7 +57,7 @@ pub fn resolve_menu_placements(
         }
         // Construction: the gpui-free model is the single source of the
         // construction-time degrade decisions (unknown style) — assembly
-        // only logs what it surfaced (diw-ac01).
+        // only logs what it surfaced.
         let (binding, reasons) = MenuBinding::from_input(input);
         warnings.extend(reasons);
         let Some(mut binding) = binding else {
@@ -65,7 +65,7 @@ pub fn resolve_menu_placements(
         };
 
         // Layout-time literal row count, BEFORE reconciliation can prepend:
-        // the count layout_component reserved rows for (diw-ac05). Radio's
+        // the count layout_component reserved rows for. Radio's
         // post-prepend rule compares against this.
         let layout_n = binding.options.len();
 
@@ -206,7 +206,7 @@ vconcat:
         y: x
 "#;
 
-    /// diw_ac04: a derived menu resolves its options from the column's
+    /// a derived menu resolves its options from the column's
     /// distinct values (ordered), and the declared default — present in the
     /// column — is NOT prepended (strict equality found it).
     #[test]
@@ -238,7 +238,7 @@ params:
         assert_eq!(placements[0].value, SpecValue::String("east".to_string()));
     }
 
-    /// diw_ac04: prepend-on-absent for BOTH a derived list (param default not
+    /// prepend-on-absent for BOTH a derived list (param default not
     /// in the column) AND a literal list omitting the default — the param is
     /// never snapped, the LIST moves.
     #[test]
@@ -293,7 +293,7 @@ params:
         );
     }
 
-    /// diw_ac04: strict-variant SpecValue equality — an Integer default
+    /// strict-variant SpecValue equality — an Integer default
     /// against a derived same-typed Integer list compares EQUAL (no prepend),
     /// with no cross-variant coercion in sight.
     #[test]
@@ -318,7 +318,7 @@ params:
         );
     }
 
-    /// diw_ac04 + diw_ac14: per-input failure isolation — a menu on a broken
+    /// per-input failure isolation — a menu on a broken
     /// column earns one warning and is skipped; the sibling widgets resolve
     /// untouched.
     #[test]
@@ -349,7 +349,7 @@ params:
         );
     }
 
-    /// diw_ac14: unknown style value → menu presentation + exactly one
+    /// unknown style value → menu presentation + exactly one
     /// warning + a usable widget (the model's surfaced reason, logged once).
     #[test]
     fn diw_ac14_unknown_style_degrades_to_menu_with_one_warning() {
@@ -371,7 +371,7 @@ params:
         assert!(warnings[0].contains("dropdown"), "{}", warnings[0]);
     }
 
-    /// diw_ac14: style: checkbox with ≠2 options POST-RECONCILIATION — a
+    /// style: checkbox with ≠2 options POST-RECONCILIATION — a
     /// foreign default 'maybe' over [true, false] becomes an honest 3-option
     /// menu showing 'maybe' selected (the decisions_locked ordering: the
     /// prepend runs FIRST, then the count rule judges 3).
@@ -405,7 +405,7 @@ params:
         assert!(warnings[0].contains("exactly two options"), "{}", warnings[0]);
     }
 
-    /// diw_ac14: a well-formed checkbox (declared [true, false] default pair,
+    /// a well-formed checkbox (declared [true, false] default pair,
     /// bool param) does NOT degrade — the flagship shape stays a checkbox.
     #[test]
     fn diw_ac14_wellformed_checkbox_stays_checkbox() {
@@ -425,7 +425,7 @@ params:
         assert_eq!(placements[0].value, SpecValue::Bool(false));
     }
 
-    /// diw_ac14 (the v2-review composition case): literal radio [a, b, c] +
+    /// The v2-review composition case: literal radio [a, b, c] +
     /// absent param default d → the prepend makes 4 options where layout
     /// reserved 3 rows → menu presentation + one warning. The geometry never
     /// overflows the 22·N + RADIO_CHROME_PAD rect.
@@ -455,7 +455,7 @@ params:
         assert_eq!(p.rect.height, RADIO_ROW_HEIGHT * 3.0 + RADIO_CHROME_PAD);
     }
 
-    /// diw_ac14 + diw_ac05: style: radio with derived options → menu
+    /// style: radio with derived options → menu
     /// presentation (menu-sized rect) + one warning.
     #[test]
     fn diw_ac14_derived_radio_degrades_to_menu() {
@@ -474,12 +474,12 @@ params:
         let (placements, warnings) = resolve_menu_placements(&spec, &session);
         assert_eq!(placements.len(), 1);
         assert_eq!(placements[0].binding.style, MenuStyle::Menu);
-        assert_eq!(placements[0].rect.height, 32.0, "menu-sized (diw-ac05)");
+        assert_eq!(placements[0].rect.height, 32.0, "menu-sized");
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("literal options list"), "{}", warnings[0]);
     }
 
-    /// diw_ac14: the resolution warnings land in the FeedbackLog as exactly
+    /// the resolution warnings land in the FeedbackLog as exactly
     /// one Warning entry each (the log_model append precedent) — the same
     /// entries both the launch pass and the watcher pass append, mapped
     /// through `resolution_warning_entries`.
@@ -511,7 +511,7 @@ params:
         assert_eq!(log.entries()[0].message, warnings[0]);
     }
 
-    /// diw_ac14: a derived list truncated at the cap keeps a usable
+    /// a derived list truncated at the cap keeps a usable
     /// (truncated) menu + one warning. 60 distinct values → 50 options.
     #[test]
     fn diw_ac14_cap_truncation_warns_and_keeps_widget() {

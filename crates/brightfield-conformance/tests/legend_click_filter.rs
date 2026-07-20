@@ -1,4 +1,4 @@
-//! lcf_ac06 (card 0009, legend click-to-filter).
+//! Legend click-to-filter.
 //!
 //! A spec binding a standalone legend to a selection — `legend: color
 //! as: $sel for: scatter` — parses clean (the `as:` binding rides the legend
@@ -10,7 +10,7 @@
 use brightfield_conformance::{preflight, ComponentIdentity, Surface};
 use brightfield_spec::{parse_spec, ComponentKind, Format, ParseWarning};
 
-/// The SHIPPED example (card 0009 F8): the conformance gate pins the real
+/// The SHIPPED example: the conformance gate pins the real
 /// `examples/legend-select.yaml`, not a hand-inlined near-copy that could
 /// drift from what users actually run.
 const LEGEND_AS_BINDING: &str = include_str!("../../../examples/legend-select.yaml");
@@ -28,7 +28,7 @@ fn lcf_ac06_legend_as_binding_parses_and_preflights_implemented() {
     }
 
     // Preflight records only non-Implemented components, so the bound legend
-    // must not appear at all (mirrors fww_ac05 for the display-only form).
+    // must not appear at all (mirrors the display-only form).
     let report = preflight(&parsed.spec);
     let legend_entries: Vec<&_> = report
         .entries

@@ -1,4 +1,4 @@
-//! AST → IR lowering (ac-03, ac-05).
+//! AST → IR lowering.
 //!
 //! The `MarkLower` trait is the extension point for per-mark lowering. V1
 //! ships no concrete implementations — every `MarkKind` returns
@@ -75,8 +75,8 @@ impl MarkLower for SimpleLowerer {
     }
 }
 
-/// Lowerer for the geo mark — projected GeoJSON basemap / choropleth (card
-/// 0008, last mark).
+/// Lowerer for the geo mark — projected GeoJSON basemap / choropleth
+/// (last mark).
 ///
 /// Geo is NOT an aggregation mark: this is a near-clone of [`SimpleLowerer`]
 /// (`SELECT *`, [`apply_data_filter`], [`project_param_channels`]) with ONE
@@ -160,7 +160,7 @@ fn source_is_spatial(ctx: &LowerCtx<'_>, source: &str) -> bool {
 }
 
 /// Positional-channel option keys whose `$param` binding is projected into the
-/// query (card 0014, Decision 2). Kept in sync with brightfield-render's
+/// query (Decision 2). Kept in sync with brightfield-render's
 /// positional `Channel` set (x/y/x1/y1/x2/y2); non-positional channels
 /// (fill/stroke/size/text) bound to a param are the deferred render-only case.
 const POSITIONAL_CHANNEL_KEYS: &[&str] = &["x", "y", "x1", "y1", "x2", "y2"];
@@ -197,7 +197,7 @@ fn project_param_channels(mark: &Mark, base: QueryPlan) -> QueryPlan {
 }
 
 /// If `extras` carries a `filter` (`data: { from, filter: "..." }`), wrap `plan`
-/// in a WHERE (card 0014, Decision 2). A no-op when there is no filter.
+/// in a WHERE (Decision 2). A no-op when there is no filter.
 ///
 /// A filter that references a `$param` parses to an `Expression` (rendered to raw
 /// SQL text with the `$name` preserved for emit-time interpolation, so the param
@@ -345,7 +345,7 @@ impl MarkLower for RegressionLowerer {
 ///
 /// The lowerer reads `bins` (or `thresholds`) from the mark's option bag.
 /// Default is 100 to match Mosaic's reference implementation (spec 2026-04-28
-/// statistical-marks ac-07 implementation note). The bin width is computed
+/// statistical-marks implementation note). The bin width is computed
 /// from the column extent at render time — for the SQL pass we use a fixed
 /// bucket count and let DuckDB compute extents via subqueries.
 pub struct DensityLowerer {
@@ -502,7 +502,7 @@ fn build_density_2d(table: &str, x_col: &str, y_col: &str, bins: i64) -> QueryPl
 /// BIN count. The shield strips `thresholds` from the option bag before
 /// delegating, so the collision can never reach the emitted SQL — `bins`
 /// stays available to size the grid. This is a registration-layer concern
-/// only; the parser is untouched (card 0008, density marks).
+/// only; the parser is untouched (density marks).
 pub struct ContourAttrShield {
     inner: DensityLowerer,
 }
@@ -927,7 +927,7 @@ pub fn default_lowerers() -> Vec<(MarkKind, Box<dyn MarkLower>)> {
         ),
         // Heatmap reuses the same 2D density binning; the renderer smooths the
         // reconstructed grid (kde_2d) and ramps EVERY cell — raster's smoothed
-        // sibling. Zero new SQL (card 0008, density marks).
+        // sibling. Zero new SQL (density marks).
         (
             MarkKind::Heatmap,
             Box::new(DensityLowerer {
@@ -945,7 +945,7 @@ pub fn default_lowerers() -> Vec<(MarkKind, Box<dyn MarkLower>)> {
             }),
         ),
         // Hexbin — Mosaic's flagship at-scale mark, pixel-space hex binning
-        // fully in SQL (card 0008 hexbin follow-up).
+        // fully in SQL (hexbin follow-up).
         (MarkKind::Hexbin, Box::new(HexbinLowerer)),
         // Hexgrid — decorative dataless mesh; emits a singleton row.
         (MarkKind::Hexgrid, Box::new(HexgridLowerer)),
@@ -1063,7 +1063,7 @@ mod tests {
         assert!(matches!(result, Err(EmitError::UnsupportedMark { .. })));
     }
 
-    // --- geo-ac03 tests: GeoLowerer ---
+    // --- tests: GeoLowerer ---
 
     /// A LowerCtx whose `data_sources` holds one named source (leaked for test
     /// convenience, like `make_ctx`).
@@ -1365,7 +1365,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // gomb ac-06 / ac-07 — statistical-mark lowerers
+    // Statistical-mark lowerers
     // -----------------------------------------------------------------------
 
     fn make_mark_with_options(
@@ -1542,7 +1542,7 @@ mod tests {
         }
     }
 
-    // dmk_ac04 (card 0008, density marks): the contour attr-shield keeps
+    // Density marks: the contour attr-shield keeps
     // `thresholds` (ISO-LEVEL count on a contour mark) out of the density
     // lowerer's BIN-count read — the emitted bucket count stays at the default
     // 100 — while `bins` still sizes the grid, and a plain density mark keeps
@@ -1639,7 +1639,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // hex_ac02 — HexbinLowerer SQL shape
+    // HexbinLowerer SQL shape
     // -----------------------------------------------------------------------
 
     fn hexbin_mark() -> Mark {

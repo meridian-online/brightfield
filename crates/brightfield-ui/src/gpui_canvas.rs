@@ -116,7 +116,7 @@ pub struct GpuiChartSurface {
     /// through it to re-query and re-render subscriber plots; `None` means the
     /// brush is purely visual (no linked views).
     coordinator: Option<Rc<RefCell<CrossfilterCoordinator>>>,
-    /// The pointer's grab region over the persisted `Selected` rect (card 0022),
+    /// The pointer's grab region over the persisted `Selected` rect,
     /// shared with the persistent `ChartView` so it survives the per-frame
     /// element recreation. Set by the mouse-move listener, read each paint to
     /// pick the position-dependent cursor.
@@ -379,7 +379,7 @@ impl ChartSurface for GpuiFrame<'_> {
     }
 
     fn set_cursor(&mut self, cursor: Option<SurfaceCursor>) {
-        // Reuses the card-0020 set_cursor_style seam; bound to the element's whole
+        // Reuses the set_cursor_style seam; bound to the element's whole
         // hitbox — the position dependence comes from re-picking each paint. No
         // cursor is set when `None` (the plot default).
         if let Some(c) = cursor {
@@ -467,10 +467,10 @@ impl GpuiFrame<'_> {
 // Framework-free ↔ gpui mappings.
 // ---------------------------------------------------------------------------
 
-/// Map a surface cursor to its gpui glyph (card 0022, drb-ac08): an open hand
+/// Map a surface cursor to its gpui glyph: an open hand
 /// over the interior (closed while dragging), horizontal/vertical resize on
 /// edges, diagonal resize on corners. NOT PointingHand — that is the legend's
-/// clickable cue (card 0020).
+/// clickable cue.
 fn surface_cursor_to_gpui(cursor: SurfaceCursor) -> CursorStyle {
     match cursor {
         SurfaceCursor::Grab => CursorStyle::OpenHand,
@@ -519,7 +519,7 @@ mod tests {
     use crate::canvas_host::SurfaceCursor;
     use gpui::CursorStyle;
 
-    /// drb-ac08 (glyph): each surface cursor maps to the exact gpui glyph the
+    /// Glyph: each surface cursor maps to the exact gpui glyph the
     /// pre-refactor `region_cursor` produced — open/closed hand over the interior,
     /// axis resize on edges, diagonal resize on corners. Composed with
     /// `chart_element::overlay_cursor` (region → SurfaceCursor), this preserves

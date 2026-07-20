@@ -302,8 +302,8 @@ impl ScaleSet {
     }
 }
 
-/// Anchor a freshly-inferred scale set to a launch reference, widen-only (card
-/// 0006 launch-anchored scales). Each rebuild infers `fresh` from the current
+/// Anchor a freshly-inferred scale set to a launch reference, widen-only
+/// (launch-anchored scales). Each rebuild infers `fresh` from the current
 /// batches and folds it against the immutable `launch` set so the frame of
 /// reference holds still while only the data moves — but a gesture that
 /// REWRITES the query (a slider changing a `$param`, not a subset filter) can
@@ -515,7 +515,7 @@ impl SequentialScheme {
         }
     }
 
-    /// The next scheme in the transient colour-cycle (card 0018, ac-13):
+    /// The next scheme in the transient colour-cycle:
     /// Viridis → Blues → Turbo → Meridian → Viridis. The single source of
     /// truth for the cycle order.
     #[must_use]
@@ -940,8 +940,8 @@ fn union_scales(scales: &[Scale], range_start: f64, range_end: f64) -> Option<Sc
 
 /// The kind of a positional axis, classified from its bound columns' Arrow
 /// types WITHOUT building scales — a datatype peek mirroring
-/// [`infer_column_scale`]'s arms. Used to decide the default axis inset (card
-/// 0008 axis-inset round) before ranges are fed to scale inference.
+/// [`infer_column_scale`]'s arms. Used to decide the default axis inset
+/// (axis-inset round) before ranges are fed to scale inference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AxisClass {
     /// A linear or time scale (numeric / timestamp column). Gets the default
@@ -1324,7 +1324,7 @@ mod tests {
         assert!((scale.map_f64(100.0) - 500.0).abs() < f64::EPSILON);
     }
 
-    // --- nav_ac01: ViewExtent ---
+    // --- ViewExtent ---
 
     #[test]
     fn nav_ac01_view_extent_with_both_axes() {
@@ -1353,7 +1353,7 @@ mod tests {
         assert!(ve.y.is_none());
     }
 
-    // --- nav_ac02: Scale::inverse_f64 ---
+    // --- Scale::inverse_f64 ---
 
     #[test]
     fn nav_ac02_linear_inverse_at_endpoints() {
@@ -1449,7 +1449,7 @@ mod tests {
         assert!(bw < 100.0); // each band is 100px wide, with 10% padding -> 90px
     }
 
-    // --- msv ac-02: infer_scales_multi ---
+    // --- infer_scales_multi ---
 
     #[test]
     fn msv_ac02_multi_unions_linear_domains() {
@@ -1626,7 +1626,7 @@ mod tests {
         );
     }
 
-    // --- scs_ac01: Scale::Sequential + map_continuous ---
+    // --- Scale::Sequential + map_continuous ---
 
     #[test]
     fn scs_ac01_map_continuous_interpolates_and_clamps() {
@@ -1680,7 +1680,7 @@ mod tests {
         assert!((c[2] - 0.5).abs() < 1e-6, "blue = {}", c[2]);
     }
 
-    // --- scs_ac02: SequentialScheme ---
+    // --- SequentialScheme ---
 
     #[test]
     fn scs_ac02_scheme_stops_and_wire_roundtrip() {
@@ -1712,7 +1712,7 @@ mod tests {
 
     #[test]
     fn scs_ac02_next_cycles_viridis_blues_turbo_meridian() {
-        // The transient colour-cycle order (card 0018, ac-13; meridian added
+        // The transient colour-cycle order (meridian added
         // by design phase 4 PR B), wrapping back to the start after four
         // presses.
         assert_eq!(SequentialScheme::Viridis.next(), SequentialScheme::Blues);
@@ -1867,7 +1867,7 @@ mod tests {
         );
     }
 
-    // --- scs_ac03: adding Sequential leaves every exhaustive match decided ---
+    // --- adding Sequential leaves every exhaustive match decided ---
 
     #[test]
     fn scs_ac03_sequential_match_arms_decided() {
@@ -1907,7 +1907,7 @@ mod tests {
         assert!(a.inverse_f64(5.0).is_none());
     }
 
-    // --- cfr_ac01/F1: anchor_scales widen-only matrix ---
+    // --- F1: anchor_scales widen-only matrix ---
 
     fn linear(min: f64, max: f64) -> Scale {
         Scale::Linear {
@@ -1918,7 +1918,7 @@ mod tests {
         }
     }
 
-    /// cfr_ac01 (launch-anchored, widen-only): the pure anchor fold. A SUBSET
+    /// Launch-anchored, widen-only: the pure anchor fold. A SUBSET
     /// fresh domain yields exactly launch (an ordinary filter gesture is
     /// pixel-identical to a hard pin); a SUPERSET fresh domain widens the launch
     /// domain to include it (a query-rewrite gesture keeps new rows on-plot);
@@ -2008,7 +2008,7 @@ mod tests {
         assert!(a.get(Channel::Fill).is_some(), "only-in-fresh adopted (F2: late raster ramp)");
     }
 
-    // --- axi_ac04: a launch-baked inset survives every anchored rebuild ---
+    // --- a launch-baked inset survives every anchored rebuild ---
 
     #[test]
     fn axi_ac04_inset_survives_anchored_rebuild() {
@@ -2063,7 +2063,7 @@ mod tests {
         }
     }
 
-    // --- axi_ac02: positional_axis_class datatype peek ---
+    // --- positional_axis_class datatype peek ---
 
     #[test]
     fn axi_positional_axis_class_peeks_datatypes() {

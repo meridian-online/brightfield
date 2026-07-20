@@ -1,4 +1,4 @@
-//! Fixture-level assertions (card 0025) against the vendored edgar_gleif
+//! Fixture-level assertions against the vendored edgar_gleif
 //! Protocol and the degrade fixture — the acceptance criteria in graph form,
 //! no pixels involved.
 

@@ -1,4 +1,4 @@
-//! Reload/save feedback log (card 0017, wsc_ac02) — framework-free.
+//! Reload/save feedback log — framework-free.
 //!
 //! The Log panel's model: an append-only, capacity-capped history of every
 //! feedback outcome the workspace notified about (reload rejections, editor
@@ -26,7 +26,7 @@ pub struct LogEntry {
 
 /// The append-only feedback log, newest first. There is deliberately NO
 /// clearing API: reload recovery clears the sticky error notification, never
-/// the history (wsc_ac02's no-clear-on-recovery rule).
+/// the history (the no-clear-on-recovery rule).
 #[derive(Debug, Default)]
 pub struct FeedbackLog {
     /// Entries, newest at index 0, at most [`LOG_CAP`].
@@ -58,7 +58,7 @@ impl FeedbackLog {
 mod tests {
     use super::*;
 
-    /// wsc_ac02 (append + order): appends land newest-first with the exact
+    /// Append + order: appends land newest-first with the exact
     /// severity + message pair they were given.
     #[test]
     fn wsc_ac02_append_is_newest_first_verbatim() {
@@ -86,7 +86,7 @@ mod tests {
         );
     }
 
-    /// wsc_ac02 (cap): the log holds at most LOG_CAP entries — the newest
+    /// Cap: the log holds at most LOG_CAP entries — the newest
     /// survive, the oldest fall off.
     #[test]
     fn wsc_ac02_cap_drops_the_oldest() {

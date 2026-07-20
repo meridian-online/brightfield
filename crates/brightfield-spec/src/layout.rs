@@ -48,7 +48,7 @@ pub const DEFAULT_PLOT_HEIGHT: f64 = 400.0;
 pub const DEFAULT_INPUT_WIDTH: f64 = 200.0;
 /// Default input widget height (pixels).
 pub const DEFAULT_INPUT_HEIGHT: f64 = 32.0;
-/// Row height for a `style: radio` input's option rows (card 0024 — the
+/// Row height for a `style: radio` input's option rows (the
 /// Meridian density row ladder). Shared with the vello resting twin
 /// (`brightfield-render` `render_radio`), the SLIDER_* sync convention.
 pub const RADIO_ROW_HEIGHT: f64 = 22.0;
@@ -191,7 +191,7 @@ fn layout_component(component: &Component, x: f64, y: f64) -> LayoutNode {
     }
 }
 
-/// Per-style input widget height (card 0024, diw-ac05). Menu and checkbox
+/// Per-style input widget height. Menu and checkbox
 /// presentations keep the fixed `DEFAULT_INPUT_WIDTH × DEFAULT_INPUT_HEIGHT`
 /// box; `style: radio` with a LITERAL N-option list reserves one
 /// [`RADIO_ROW_HEIGHT`] row per option plus [`RADIO_CHROME_PAD`]. A radio
@@ -366,7 +366,7 @@ pub fn resolve_axis_titles(plot: &PlotNode) -> AxisTitles {
     }
 }
 
-/// The map projection a geo plot resolves to (card 0008 geo mark). Which
+/// The map projection a geo plot resolves to (geo mark). Which
 /// projection is a PURE spec decision (this resolver, reading plot-level
 /// `projectionType`); the forward MATH lives render-side in
 /// `brightfield_render::mark::Projection`, converted from this.
@@ -553,7 +553,7 @@ fn collect_placed_plots(node: &LayoutNode, path: &str, out: &mut Vec<PlacedPlot>
 }
 
 // ---------------------------------------------------------------------------
-// Input placement (widgets — card 0005)
+// Input placement (widgets)
 // ---------------------------------------------------------------------------
 
 /// A composition-level input widget (e.g. a slider) with its component-path
@@ -838,7 +838,7 @@ vconcat:
         step: 1
 "#;
 
-    // slw ac-01 (card 0005): placed_inputs surfaces a composition-level input's
+    // placed_inputs surfaces a composition-level input's
     // rect + path (the rect the multi-view extraction used to drop).
     #[test]
     fn slw_ac01_placed_inputs_path_and_rect() {
@@ -860,7 +860,7 @@ plot:
         assert!(placed_inputs(&p2.spec, Rect::zero()).is_empty());
     }
 
-    // slw ac-02: collect_input_nodes paths match placed_inputs, and
+    // collect_input_nodes paths match placed_inputs, and
     // placed_input_nodes joins each rect to the Input that writes the param.
     #[test]
     fn slw_ac02_collect_input_nodes_and_join() {
@@ -976,7 +976,7 @@ hconcat:
         assert_eq!(joined[0].1.channel, crate::vocab::LegendChannel::Color);
     }
 
-    // ac-01: Rect struct
+    // Rect struct
     #[test]
     fn mvdc_ac01_rect_fields() {
         let r = Rect::new(10.0, 20.0, 300.0, 200.0);
@@ -995,7 +995,7 @@ hconcat:
         assert_eq!(r.height, 0.0);
     }
 
-    // ac-02: LayoutNode enum is exhaustive over Component variants
+    // LayoutNode enum is exhaustive over Component variants
     #[test]
     fn mvdc_ac02_layout_node_exhaustive_match() {
         fn discriminator(n: &LayoutNode) -> &'static str {
@@ -1027,7 +1027,7 @@ hconcat:
         assert_eq!(node.rect().width, 120.0);
     }
 
-    // ac-03: compute_layout basic
+    // compute_layout basic
     #[test]
     fn mvdc_ac03_single_plot() {
         let spec = Spec {
@@ -1059,7 +1059,7 @@ hconcat:
         assert!(tree.is_none());
     }
 
-    // ac-04: hconcat stacks left-to-right
+    // hconcat stacks left-to-right
     #[test]
     fn mvdc_ac04_hconcat_two_plots() {
         let spec = Spec {
@@ -1088,7 +1088,7 @@ hconcat:
         }
     }
 
-    // ac-05: vconcat stacks top-to-bottom
+    // vconcat stacks top-to-bottom
     #[test]
     fn mvdc_ac05_vconcat_two_plots() {
         let spec = Spec {
@@ -1117,7 +1117,7 @@ hconcat:
         }
     }
 
-    // ac-06: hspace and vspace gaps
+    // hspace and vspace gaps
     #[test]
     fn mvdc_ac06_hspace_gap() {
         let spec = Spec {
@@ -1185,7 +1185,7 @@ hconcat:
         }
     }
 
-    // ac-07: resolve_space_value
+    // resolve_space_value
     #[test]
     fn mvdc_ac07_numeric_pixels() {
         assert_eq!(resolve_space_value(&SpecValue::Integer(35), 16.0), 35.0);
@@ -1213,7 +1213,7 @@ hconcat:
         assert_eq!(resolve_space_value(&SpecValue::Null, 16.0), 0.0);
     }
 
-    // ac-08: nested composition (grid)
+    // nested composition (grid)
     #[test]
     fn mvdc_ac08_nested_grid() {
         // hconcat [ vconcat [A, B], vconcat [C, D] ]
@@ -1263,7 +1263,7 @@ hconcat:
         }
     }
 
-    // ac-09: mixed component types
+    // mixed component types
     #[test]
     fn mvdc_ac09_mixed_types() {
         use crate::vocab::{InputKind, LegendChannel, ImplStatus};
@@ -1308,7 +1308,7 @@ hconcat:
         }
     }
 
-    // ac-10: plot attributes override defaults
+    // plot attributes override defaults
     #[test]
     fn mvdc_ac10_plot_declared_size() {
         let mut attrs = IndexMap::new();
@@ -1343,10 +1343,10 @@ hconcat:
         assert_eq!(tree.rect().height, 200.0);
     }
 
-    // ac-11 — REVISED (card 0009, lcf ac-01): `as:` on a legend is a selection
+    // REVISED: `as:` on a legend is a selection
     // PRODUCER binding (clicking a swatch WRITES the selection), so the
     // corpus legends with `as: $toggle` / `as: $interval` must NOT appear in
-    // the subscriber graph. The original ac-11 pinned the backwards wiring
+    // the subscriber graph. The original assertion pinned the backwards wiring
     // (legend-as-subscriber); the fixed analysis arm skips the `as:` key and
     // surfaces the binding via `legend_bindings` instead.
     #[test]
@@ -1373,7 +1373,7 @@ hconcat:
         }
     }
 
-    // ac-13: vendored corpus specs with composition
+    // vendored corpus specs with composition
     #[test]
     fn mvdc_ac13_corpus_layout() {
         use std::path::PathBuf;
@@ -1408,7 +1408,7 @@ hconcat:
         assert!(tested > 0, "no composition specs found in corpus");
     }
 
-    // --- axi_ac01: plot inset attribute resolution (most-specific-wins) ---
+    // --- plot inset attribute resolution (most-specific-wins) ---
 
     fn plot_with(attrs: &[(&str, SpecValue)]) -> PlotNode {
         let mut attributes = IndexMap::new();
@@ -1622,7 +1622,7 @@ hconcat:
     }
 
     // -----------------------------------------------------------------------
-    // diw-ac05 (card 0024): per-style input widget sizing at the Input arm.
+    // per-style input widget sizing at the Input arm.
     // -----------------------------------------------------------------------
 
     /// Parse a single composition-level input spec and return its layout rect.
@@ -1633,7 +1633,7 @@ hconcat:
         inputs[0].rect
     }
 
-    /// diw_ac05: `style: radio` with a literal N-option list reserves
+    /// `style: radio` with a literal N-option list reserves
     /// `RADIO_ROW_HEIGHT · N + RADIO_CHROME_PAD` — pinned against the SHARED
     /// constants (the SLIDER_* sync convention), not a recomputed value.
     #[test]
@@ -1655,7 +1655,7 @@ vconcat:
         );
     }
 
-    /// diw_ac05: a radio with DERIVED options (from/column — unknown N at
+    /// a radio with DERIVED options (from/column — unknown N at
     /// layout time) is layout-sized as a menu; assembly degrades the
     /// presentation to match.
     #[test]
@@ -1679,7 +1679,7 @@ vconcat:
         );
     }
 
-    /// diw_ac05: menu and checkbox presentations keep the fixed 200×32 box.
+    /// menu and checkbox presentations keep the fixed 200×32 box.
     #[test]
     fn diw_ac05_menu_and_checkbox_unchanged_200x32() {
         let menu = input_rect(
@@ -1703,7 +1703,7 @@ vconcat:
         assert_eq!(checkbox, Rect::new(0.0, 0.0, 200.0, 32.0));
     }
 
-    /// diw_ac05: sizing gates on `InputKind::Menu` — an `input: slider`
+    /// sizing gates on `InputKind::Menu` — an `input: slider`
     /// carrying a stray `style: radio` + literal `options:` (both inert keys
     /// on a slider) keeps the fixed 200×32 box, never a radio-tall rect.
     #[test]

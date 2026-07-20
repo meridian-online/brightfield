@@ -1,4 +1,4 @@
-//! Conformance runner (ac-12).
+//! Conformance runner.
 //!
 //! `run_conformance` is the library entry point both `cargo test` and the
 //! `conformance` binary dispatch through. It enumerates the requested
@@ -6,7 +6,7 @@
 //! it — surfacing per-(spec, layer) [`LayerOutcome`]s plus a roll-up
 //! [`ReportSummary`].
 //!
-//! Unknown layers (outside 1..=4) are filtered silently per ac-12.
+//! Unknown layers (outside 1..=4) are filtered silently.
 
 use std::fs;
 

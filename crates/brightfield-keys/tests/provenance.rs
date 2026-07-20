@@ -1,7 +1,7 @@
-//! ac-08 (provenance doc check): every BOUND key in the shipped registry traces
+//! Provenance doc check: every BOUND key in the shipped registry traces
 //! to a recorded score row in `keymap-research.md` — no key is bound by taste.
 //!
-//! This is the mechanical half of ac-08 (the longname cross-ref). The scope-model
+//! This is the mechanical half of the check (the longname cross-ref). The scope-model
 //! decisions match (selection-first, g-broadcast, view floor) are a manual doc
 //! review, recorded in the same file.
 
@@ -21,7 +21,7 @@ fn kbg_ac08_every_bound_longname_has_a_score_row() {
         let needle = format!("`{}`", v.longname);
         assert!(
             RESEARCH.contains(&needle),
-            "bound verb `{}` has no score row in keymap-research.md (ac-08 provenance gap)",
+            "bound verb `{}` has no score row in keymap-research.md (provenance gap)",
             v.longname
         );
         // Sanity: a bound verb carries the scores the table records.

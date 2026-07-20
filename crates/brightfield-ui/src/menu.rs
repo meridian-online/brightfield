@@ -1,4 +1,4 @@
-//! Menu widget family — menu / radio / checkbox (card 0024).
+//! Menu widget family — menu / radio / checkbox.
 //!
 //! The discrete counterpart of `slider.rs`, following the same gpui-free
 //! model / thin element split: `MenuBinding` is the widget's dispatch-time
@@ -7,7 +7,7 @@
 //! pure dispatch helper exercised against a recording double. The GPUI
 //! shim (`menu_element.rs`) and hosting (`chart_view.rs`) consume these
 //! thinly — no param or option-resolution logic lives window-side
-//! (diw-ac16, the egui-exit posture).
+//! (the egui-exit posture).
 //!
 //! Radio and checkbox are `style:` PRESENTATIONS of `input: menu`, read
 //! from the preserved-verbatim options bag — never new vocabulary
@@ -81,7 +81,7 @@ impl MenuBinding {
     /// Returns `(binding, degrade_reasons)` — the return is widened beyond
     /// slider parity so this gpui-free model is the single source of the
     /// CONSTRUCTION-TIME degrade decisions and assembly only logs what the
-    /// model surfaced (diw-ac01). Today the only construction-time class is
+    /// model surfaced. Today the only construction-time class is
     /// an unknown `style:` value (falls back to `Menu` + one reason); the
     /// assembly-time classes — post-reconciliation checkbox/radio, cap
     /// truncation — surface at assembly, where the param default and
@@ -202,7 +202,7 @@ impl MenuState {
     /// A menu-box click: `Closed → Open`, `Open → Closed` (toggle).
     /// `Committed` passes through untouched (mid-commit clicks are inert).
     ///
-    /// COMPOSED WIRING NOTE (diw-ac07): the gpui shim only reaches this from
+    /// COMPOSED WIRING NOTE: the gpui shim only reaches this from
     /// a box click when the menu RENDERED closed. A box click while open
     /// double-fires — gpui runs the popup's capture-phase `on_mouse_down_out`
     /// ([`Self::click_away`] → `Closed`) before the box's bubble-phase
@@ -281,7 +281,7 @@ pub fn option_label(value: &SpecValue) -> String {
     }
 }
 
-/// Pure dispatch helper (diw-ac02), mirroring `commit_slider_release`. On a
+/// Pure dispatch helper, mirroring `commit_slider_release`. On a
 /// `Committed` state, dispatches the SELECTED option's [`SpecValue`]
 /// verbatim (a String stays a String — contrast the slider's hardcoded
 /// `Float`) and returns to `Closed`.
@@ -384,7 +384,7 @@ mod tests {
         }
     }
 
-    // diw-ac01: a literal options list preserves each option's SpecValue
+    // a literal options list preserves each option's SpecValue
     // variant — a numeric option is NOT stringified.
     #[test]
     fn diw_ac01_literal_options_preserve_typing() {
@@ -419,7 +419,7 @@ mod tests {
         assert!(b.derived.is_none());
     }
 
-    // diw-ac01: style parsing — radio and checkbox read from the options bag;
+    // style parsing — radio and checkbox read from the options bag;
     // an unknown style falls back to Menu WITH a surfaced reason (the widened
     // return carries the construction-time degrade decision).
     #[test]
@@ -492,7 +492,7 @@ mod tests {
         );
     }
 
-    // diw-ac01: options absent + from/column present records the Derived
+    // options absent + from/column present records the Derived
     // marker (resolution happens at assembly, not here).
     #[test]
     fn diw_ac01_derived_marker_from_source_and_column() {
@@ -514,7 +514,7 @@ mod tests {
         );
     }
 
-    // diw-ac01: missing `as:` yields no binding (slider parity).
+    // missing `as:` yields no binding (slider parity).
     #[test]
     fn diw_ac01_missing_as_param_yields_none() {
         let input = menu_fixture(None, None, &[("options", str_options(&["a", "b"]))]);
@@ -522,7 +522,7 @@ mod tests {
         assert!(b.is_none(), "no param target, no widget");
     }
 
-    // diw-ac01: no options and no derivable source yields None for style
+    // no options and no derivable source yields None for style
     // menu/radio ONLY (checkbox synthesises — next test).
     #[test]
     fn diw_ac01_empty_options_none_for_menu_and_radio_only() {
@@ -550,7 +550,7 @@ mod tests {
         assert!(MenuBinding::from_input(&no_column).0.is_none());
     }
 
-    // diw-ac01: `style: checkbox` with `options:` absent synthesises the
+    // `style: checkbox` with `options:` absent synthesises the
     // default pair [Bool(true), Bool(false)] — a working binding, never a
     // silent drop (the flagship WHERE-flag shape).
     #[test]
@@ -571,7 +571,7 @@ mod tests {
         );
     }
 
-    // diw-ac02: exactly one dispatch per commit, the typed value verbatim
+    // exactly one dispatch per commit, the typed value verbatim
     // (a String stays a String), Committed → Closed.
     #[test]
     fn diw_ac02_commit_dispatches_typed_value_and_closes() {
@@ -599,7 +599,7 @@ mod tests {
         assert_eq!(next, MenuState::Closed);
     }
 
-    // diw-ac02: an Integer option dispatches as Integer (variant identity is
+    // an Integer option dispatches as Integer (variant identity is
     // load-bearing at SQL emit).
     #[test]
     fn diw_ac02_integer_option_dispatches_as_integer() {
@@ -617,7 +617,7 @@ mod tests {
         assert_eq!(d.calls[0].1, SpecValue::Integer(2));
     }
 
-    // diw-ac02: selecting the already-current value dispatches NOTHING
+    // selecting the already-current value dispatches NOTHING
     // (decisions_locked same-value no-op), still settling to Closed.
     #[test]
     fn diw_ac02_same_value_pick_is_a_no_op() {
@@ -639,7 +639,7 @@ mod tests {
         assert_eq!(next, MenuState::Closed);
     }
 
-    // diw-ac02: non-committed states are pass-through no-ops.
+    // non-committed states are pass-through no-ops.
     #[test]
     fn diw_ac02_non_committed_states_no_dispatch() {
         let b = binding(MenuStyle::Menu, vec![SpecValue::Bool(true)]);
@@ -660,7 +660,7 @@ mod tests {
         assert_eq!(next, MenuState::Closed);
     }
 
-    // diw-ac02: the checkbox toggles between exactly its two option values —
+    // the checkbox toggles between exactly its two option values —
     // checked iff current == FIRST option, a click dispatches the OTHER.
     #[test]
     fn diw_ac02_checkbox_toggles_between_its_two_options() {
@@ -698,7 +698,7 @@ mod tests {
         assert!(checkbox_toggle_index(&opts[..1], Some(&SpecValue::Bool(true))).is_none());
     }
 
-    // diw-ac07 (shim decision logic, extracted pure): open / pick /
+    // Shim decision logic, extracted pure: open / pick /
     // click-away transitions.
     #[test]
     fn diw_ac07_state_transitions_open_pick_click_away() {
@@ -728,7 +728,7 @@ mod tests {
         );
     }
 
-    // diw-ac07 (composed shim semantics): one physical click on the OPEN
+    // Composed shim semantics: one physical click on the OPEN
     // menu's box double-fires in gpui — the popup's on_mouse_down_out runs
     // in the CAPTURE phase (click_away → Closed) BEFORE the box's
     // BUBBLE-phase on_mouse_down. The box decision must therefore come from

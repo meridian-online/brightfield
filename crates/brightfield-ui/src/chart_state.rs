@@ -44,11 +44,11 @@ pub struct ChartState {
     renderer: Arc<Mutex<VelloRenderer>>,
     /// Layout with coordinate mapping (derived from width/height + insets).
     layout: ChartLayout,
-    /// Per-side range insets (card 0008 axis-inset round), stored so a resize
+    /// Per-side range insets (axis-inset round), stored so a resize
     /// (`set_dimensions`) rebuilds the layout without dropping them. Set once at
     /// launch from the plot's resolved insets via [`ChartState::set_insets`].
     insets: Insets,
-    /// Title-grown margins (card 0019 axis + plot titles), stored so a resize
+    /// Title-grown margins (axis + plot titles), stored so a resize
     /// rebuilds the layout without resetting them to `Margins::default` — a
     /// titled plot's `plot_area` (hence brush inversion / point-click) must
     /// match the grown-margin scene it was drawn against, not the default. Set
@@ -212,7 +212,7 @@ impl ChartState {
         *self.base_cache.borrow_mut() = None;
     }
 
-    /// Set the resolved per-side range insets (card 0008 axis-inset round) and
+    /// Set the resolved per-side range insets (axis-inset round) and
     /// rebuild the layout so hit-testing and brush inversion use the same inset
     /// pixels as the rendered scale range. Preserves the title-grown margins.
     /// The scene raster is unaffected (it was drawn render-side with the insets
@@ -222,7 +222,7 @@ impl ChartState {
         self.rebuild_layout();
     }
 
-    /// Set the title-grown margins AND the range insets together (card 0019),
+    /// Set the title-grown margins AND the range insets together,
     /// rebuilding the layout so a titled plot's `plot_area` — driving brush
     /// inversion and point-click hit-testing — matches the grown-margin scene it
     /// was drawn against. The assembly thread; a later resize preserves both.
@@ -251,7 +251,7 @@ impl ChartState {
     // by the live event wiring (GpuiChartSurface) and the ChartView handlers.
 
     /// Pointer pressed. A thin shim over the gpui-free grab resolver
-    /// ([`InteractionState::resolve_press`], card 0022): a press ON the persisted
+    /// ([`InteractionState::resolve_press`]): a press ON the persisted
     /// `Selected` rect GRABS it (enters a move/resize sub-state preserving the
     /// rect) — resolved BEFORE the plot-contains gate, so a boundary handle in
     /// the inset-band overhang above `plot_area.y0` still grabs; a press inside
@@ -280,7 +280,7 @@ impl ChartState {
     pub fn pointer_move(&mut self, window_pos: Point, element_origin: Point, button_held: bool) -> bool {
         let local = self.layout.window_to_local(window_pos, element_origin);
         match &self.interaction {
-            // An in-flight move/resize of a persisted selection (card 0022):
+            // An in-flight move/resize of a persisted selection:
             // transform the rect to the new pointer, clamped to the FRAME (not
             // the inset-pulled plot area), so a boundary brush can reach the
             // frame edge. A button-release we never got a mouse-up for finalises
@@ -341,8 +341,8 @@ impl ChartState {
         }
     }
 
-    /// Clamp a local-space point to the FRAME area (margins only, no insets — card
-    /// 0022), so a brush dragged into the margins keeps its rectangle within the
+    /// Clamp a local-space point to the FRAME area (margins only, no insets),
+    /// so a brush dragged into the margins keeps its rectangle within the
     /// frame while still reaching the axis-inset band to enclose a boundary dot.
     /// Retargets the pre-card `clamp_to_plot` (plot_area); `plot_area` and the
     /// axis-inset range pull are unchanged.
@@ -352,7 +352,7 @@ impl ChartState {
     }
 
     /// Classify the pointer over any persisted `Selected` rect for the
-    /// paint-phase cursor (card 0022): the grabbable region under `window_pos`,
+    /// paint-phase cursor: the grabbable region under `window_pos`,
     /// or `Outside` when there is no persisted selection. While a grab is
     /// in-flight (`Dragging`) the active region holds, so the cursor stays put.
     /// Pure over the gpui-free [`brush_region`]; the element's mouse-move
@@ -377,7 +377,7 @@ impl ChartState {
     /// shell via `commit_brush`.
     pub fn pointer_up(&mut self) -> bool {
         // Finalise an in-flight move/resize: the moved `Dragging` collapses to a
-        // persisted `Selected` at its new corners (card 0022). The cross-filter
+        // persisted `Selected` at its new corners. The cross-filter
         // re-dispatch from those corners is driven by the element's mouse-up
         // listener via `redispatch_brushing_from`, BEFORE this transition.
         if matches!(self.interaction, InteractionState::Dragging { .. }) {
@@ -402,7 +402,7 @@ impl ChartState {
     /// in-flight `Dragging` (Esc / cross-filter clear). Returns `true` if an
     /// overlay was cleared.
     pub fn clear_persistent_selection(&mut self) -> bool {
-        // Drop an in-flight `Dragging` overlay too (card 0022): a clear arriving
+        // Drop an in-flight `Dragging` overlay too: a clear arriving
         // mid-drag retracts the filter, so leaving the grey rect drawn would be a
         // transient visual/data mismatch.
         if self.interaction.has_persistent_selection() {
@@ -432,7 +432,7 @@ mod tests {
     use super::*;
     use vello::Scene;
 
-    // --- gmr_ac01: ChartState struct ---
+    // --- ChartState struct ---
 
     #[test]
     fn gmr_ac01_chart_state_construction() {

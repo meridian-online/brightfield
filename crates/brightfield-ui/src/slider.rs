@@ -6,7 +6,7 @@
 //! for brightfield_engine::Session` forwards to `Session::propagate_param`,
 //! and a pure `commit_slider_release` helper isolates the dispatch logic
 //! from the GPUI event loop so it can be exercised against a recording
-//! double (cfs2_ac11 lifted-helper precedent → rpw3_ac11/ac-12/ac-13).
+//! double (the lifted-helper precedent).
 //!
 //! ## Out of scope (Decision 2 case iii deferral)
 //!
@@ -14,10 +14,10 @@
 //! are themselves `$param` references — are NOT modelled here. Min/max/step
 //! are read as plain `f64`s on construction. When the computed-param case
 //! lands, `SliderBinding::from_input` will gain a resolution step against
-//! the live `param_state`. ac-15 locks the deferral as a behavioural
+//! the live `param_state`. The deferral is locked as a behavioural
 //! property at the coordinator layer.
 //!
-//! ## Other input widgets (card 0024 correction)
+//! ## Other input widgets
 //!
 //! The menu family (menu / radio / checkbox, `menu.rs`) reuses the
 //! `ParamDispatcher` trait + `commit_<widget>_release` helper pattern
@@ -37,7 +37,7 @@ use brightfield_engine::RecordBatch;
 use brightfield_spec::ast::{Input, SpecValue, ValueOrParamRef};
 
 /// Selection-dispatch surface mirror — the param half of the same pattern
-/// `SelectionDispatcher` defines for brushes (cfs2_ac11).
+/// `SelectionDispatcher` defines for brushes.
 ///
 /// `ChartView` (or any host that wires a slider in) calls `dispatch` on
 /// release; the real `Session` impl forwards to `propagate_param`. Tests
@@ -134,7 +134,7 @@ fn read_numeric_option(input: &Input, key: &str) -> Option<f64> {
 
 /// Per-frame state for a slider, lifted out of GPUI so it can be tested
 /// without a window. Mirrors the `InteractionState`/`commit_brush_release`
-/// shape from chart_view.rs (cfs2_ac11 boundary).
+/// shape from chart_view.rs.
 ///
 /// Transitions: `Idle → Dragging` on `mouse_down`,
 /// `Dragging → Released` on `mouse_up`,
@@ -179,7 +179,7 @@ impl SliderState {
     }
 }
 
-/// Pure helper for rpw3_ac11/ac-12/ac-13. Given a `SliderState` (which
+/// Pure helper for the commit path. Given a `SliderState` (which
 /// may or may not be `Released`), a binding, and a dispatcher, dispatches
 /// the slider's value as a `SpecValue::Float` and returns the result vec
 /// alongside the next `SliderState` (always `Idle` post-release).
@@ -256,7 +256,7 @@ mod tests {
         }
     }
 
-    // slw ac-04 (card 0005): a track pixel maps to a param value; endpoints and
+    // A track pixel maps to a param value; endpoints and
     // mid are exact, step snaps, out-of-track clamps.
     #[test]
     fn slw_ac04_value_at_maps_track_pixels() {
@@ -273,7 +273,7 @@ mod tests {
         assert!((value_at(150.0, 100.0, 200.0, &c) - 0.25).abs() < 1e-9);
     }
 
-    // slw ac-04: thumb_fraction is the drawing-side inverse and clamps.
+    // thumb_fraction is the drawing-side inverse and clamps.
     #[test]
     fn slw_ac04_thumb_fraction_inverts_value() {
         let b = binding(0.0, 10.0, Some(1.0));
@@ -336,7 +336,7 @@ mod tests {
         }
     }
 
-    /// rpw3 ac-09: <Session as ParamDispatcher>::dispatch forwards to
+    /// <Session as ParamDispatcher>::dispatch forwards to
     /// propagate_param identically. The trait body is a single forwarding
     /// call — this test pins that contract by walking through the trait
     /// surface and asserting the param_state effect that propagate_param
@@ -365,7 +365,7 @@ mod tests {
         // engine, not the forwarding contract.
     }
 
-    /// rpw3 ac-10: SliderBinding::from_input captures param_name plus
+    /// SliderBinding::from_input captures param_name plus
     /// min/max/step from the Input.options block.
     #[test]
     fn rpw3_ac10_slider_binding_from_input_options() {
@@ -381,7 +381,7 @@ mod tests {
         assert_eq!(binding.step, Some(1.0));
     }
 
-    /// rpw3 ac-10: integer-authored bounds are coerced to f64.
+    /// integer-authored bounds are coerced to f64.
     #[test]
     fn rpw3_ac10_slider_binding_integer_bounds_coerced() {
         let input = input_fixture(SpecValue::Integer(0), SpecValue::Integer(100), None);
@@ -447,7 +447,7 @@ mod tests {
         }
     }
 
-    /// rpw3 ac-11: commit_slider_release dispatches the binding's
+    /// commit_slider_release dispatches the binding's
     /// param_name + value as a SpecValue::Float, transitions Released → Idle.
     #[test]
     fn rpw3_ac11_commit_slider_release_dispatches() {
@@ -476,8 +476,8 @@ mod tests {
         assert_eq!(next_state, SliderState::Idle);
     }
 
-    /// rpw3 ac-12: the slider's mouse_up handler invokes
-    /// commit_slider_release. Mirrors cfs2_ac11's lifted-helper boundary:
+    /// the slider's mouse_up handler invokes
+    /// commit_slider_release. Mirrors the lifted-helper boundary:
     /// drive the state machine from Idle → Dragging → Released and
     /// observe one dispatch.
     #[test]
@@ -496,10 +496,7 @@ mod tests {
         state.update_drag(60.0);
         state.update_drag(80.5);
         assert!(matches!(state, SliderState::Dragging { .. }));
-        assert!(
-            dispatcher.calls.is_empty(),
-            "mid-drag must not dispatch (ac-13 invariant)"
-        );
+        assert!(dispatcher.calls.is_empty(), "mid-drag must not dispatch");
 
         // mouse_up: transition Dragging → Released, then commit.
         state.release();
@@ -516,7 +513,7 @@ mod tests {
         assert_eq!(next_state, SliderState::Idle);
     }
 
-    /// rpw3 ac-13: mouse_down without a subsequent mouse_up does NOT
+    /// mouse_down without a subsequent mouse_up does NOT
     /// dispatch. Mid-drag state is overlay-only on the widget.
     #[test]
     fn rpw3_ac13_slider_no_drag_no_dispatch() {

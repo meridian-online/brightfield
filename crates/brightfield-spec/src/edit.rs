@@ -1,7 +1,7 @@
-//! The SpecEdit spine — typed structural mutations of the working Spec (card
-//! 0023, the keyboard command-log).
+//! The SpecEdit spine — typed structural mutations of the working Spec
+//! (the keyboard command-log).
 //!
-//! Card 0018's keyboard grammar named five reserved verbs (`m` / `a` / `e` /
+//! The keyboard grammar named five reserved verbs (`m` / `a` / `e` /
 //! `d` / undo) that all "need the command log": a way to change a mark's type,
 //! add a mark, bind a channel, remove a mark, and undo — applied live, then
 //! committed on a deliberate action. This module is the substrate behind them:
@@ -34,7 +34,7 @@ use crate::vocab::{LegendChannel, MarkKind};
 const INHERITED_CHANNELS: &[&str] = &["x", "y", "x1", "x2", "y1", "y2"];
 
 /// A typed structural mutation applied to the working [`Spec`] by [`apply`] —
-/// the gpui-free AST-mutation API card 0018 named as missing.
+/// the gpui-free AST-mutation API the keyboard grammar named as missing.
 ///
 /// Four variants (the 5th reserved verb, undo, is an [`UndoStack`] pop, not an
 /// edit). Each edit is TYPED (never an exec-string, per the VisiData warning),
@@ -43,8 +43,7 @@ const INHERITED_CHANNELS: &[&str] = &["x", "y", "x1", "x2", "y1", "y2"];
 /// is total and near-free. Two variants are count-STABLE
 /// ([`SpecEdit::ChangeMarkType`], [`SpecEdit::SetChannel`]) and two are
 /// count-CHANGING ([`SpecEdit::AddMark`], [`SpecEdit::RemoveMark`]); the
-/// transient apply treats them differently (the coordinator flat-index rebuild,
-/// clg-ac16).
+/// transient apply treats them differently (the coordinator flat-index rebuild).
 #[derive(Debug, Clone, PartialEq)]
 pub enum SpecEdit {
     /// Retype the focused plot's primary mark (`dot` -> `bar`). Count-stable.
@@ -103,7 +102,7 @@ impl SpecEdit {
 
     /// Whether this edit changes the mark COUNT (AddMark / RemoveMark) — the
     /// transient apply must rebuild the coordinator + engine flat-index maps
-    /// for a count-changing edit (clg-ac16).
+    /// for a count-changing edit.
     #[must_use]
     pub fn is_count_changing(&self) -> bool {
         matches!(self, SpecEdit::AddMark { .. } | SpecEdit::RemoveMark { .. })
@@ -112,7 +111,7 @@ impl SpecEdit {
     /// The mark ordinal this edit targets (v1: always 0, the primary mark);
     /// `AddMark` appends, so it reports 0. The count-stable in-place coordinator
     /// mutation indexes `mark_indices` by this so it matches the reducer's
-    /// nth-mark mutation rather than assuming the first mark (card 0023 finding 7).
+    /// nth-mark mutation rather than assuming the first mark (finding 7).
     #[must_use]
     pub fn mark_ordinal(&self) -> usize {
         match self {
@@ -152,14 +151,14 @@ pub enum RefuseReason {
     /// Removing this mark would leave the plot empty — a within-plot edit must
     /// not empty a plot (trips `same_layout`); v1 refuses it.
     WouldEmptyPlot,
-    /// Rebinding a DERIVED x/y axis would change the axis title (card 0019
-    /// derives the title from the encoding's column name), which grows the
+    /// Rebinding a DERIVED x/y axis would change the axis title (derived
+    /// from the encoding's column name), which grows the
     /// launch-fixed margins — a `chrome_divergence` a reload can't hot-apply. v1
     /// refuses it; bind such an axis on a plot with an explicit `xLabel`/`yLabel`
     /// (an Override / Suppress axis is title-stable under a rebind).
     WouldChangeAxisTitle,
     /// Retyping to a mark of a DIFFERENT zero-baseline class (e.g. `dot` -> `bar`)
-    /// would flip the axis-inset default on the value axis (card 0008 — a
+    /// would flip the axis-inset default on the value axis (a
     /// zero-baseline end stays flush), a launch-fixed `chrome_divergence`. v1
     /// allows a retype only WITHIN the same zero-baseline class (dot<->line,
     /// barY<->areaY<->rectY, ...).
@@ -167,7 +166,7 @@ pub enum RefuseReason {
     /// Changing a colour scale (a `fill`/`stroke` rebind, or a retype that
     /// adds/removes a sequential-colour renderer) on a plot a STANDALONE colour
     /// `legend:` references would change that legend's swatches/gradient — a
-    /// `chrome_divergence` a reload can't hot-apply (card 0023 finding 3). An
+    /// `chrome_divergence` a reload can't hot-apply (finding 3). An
     /// INLINE colour fill with no referencing legend stays clean (not captured by
     /// the gate); v1 refuses only the legend-referenced case.
     WouldChangeLegend,
@@ -198,7 +197,7 @@ impl RefuseReason {
 
 /// Apply a structural edit to the working Spec IN PLACE, or return
 /// `Err(RefuseReason)` WITHOUT mutating when the edit would trip a reload gate
-/// or its target does not exist (clg-ac01).
+/// or its target does not exist.
 ///
 /// The classifier runs first ([`classify_edit`]) so a gate-tripping edit never
 /// mutates; the caller snapshots the pre-edit Spec BEFORE calling apply and, on
@@ -264,7 +263,7 @@ fn apply_unchecked(spec: &mut Spec, edit: &SpecEdit) {
 }
 
 /// Classify whether a pending edit would trip a reload gate or has no valid
-/// target — WITHOUT mutating (clg-ac11). This REIMPLEMENTS the app-binary reload
+/// target — WITHOUT mutating. This REIMPLEMENTS the app-binary reload
 /// gate (`same_layout` / `chrome_divergence`, main.rs) from the spec
 /// representation, because brightfield-app has no `[lib]` target; a brightfield-
 /// app AGREEMENT test pins these verdicts equal.
@@ -272,8 +271,8 @@ fn apply_unchecked(spec: &mut Spec, edit: &SpecEdit) {
 /// Two structural preconditions refuse first (a missing target mark; a
 /// `RemoveMark` that would EMPTY the plot). Then the WITHIN-PLOT chrome signature
 /// is diffed BEFORE vs AFTER the edit (applied to a clone): the axis-inset
-/// baseline SET (card 0008 — an axis end is flush iff ANY mark zero-baselines it)
-/// and the DERIVED x/y axis titles (card 0019 — a Derive axis takes the first
+/// baseline SET (an axis end is flush iff ANY mark zero-baselines it)
+/// and the DERIVED x/y axis titles (a Derive axis takes the first
 /// mark's column). A difference is refused ([`RefuseReason::WouldChangeInset`] /
 /// [`RefuseReason::WouldChangeAxisTitle`]) because both feed launch-fixed chrome
 /// a reload can't hot-apply. Everything a within-plot mark edit CANNOT change is
@@ -514,7 +513,7 @@ fn plot_is_colour_encoded(plot: &PlotNode) -> bool {
     })
 }
 
-/// Resolve an axis title DECISION to its concrete text, mirroring card 0019's
+/// Resolve an axis title DECISION to its concrete text, mirroring the
 /// render-side `resolve_axis`: Override -> the string, Suppress -> None, Derive
 /// -> the first mark's column for the channel.
 fn resolve_derived_title(decision: &AxisTitle, plot: &PlotNode, channel_key: &str) -> Option<String> {
@@ -526,7 +525,7 @@ fn resolve_derived_title(decision: &AxisTitle, plot: &PlotNode, channel_key: &st
 }
 
 /// The column a plot's DERIVED x/y axis currently takes its title from: the
-/// FIRST mark that binds `channel_key` to a column, mirroring card 0019's
+/// FIRST mark that binds `channel_key` to a column, mirroring the
 /// `resolve_axis` "first map that binds the channel". `None` when no mark binds
 /// it (an absent-then-bound rebind still changes the title None -> column).
 fn derived_axis_column(plot: &PlotNode, channel_key: &str) -> Option<String> {
@@ -556,8 +555,8 @@ fn inherited_positional(
 
 /// The axis a mark kind baselines at zero on — a gpui-free MIRROR of the
 /// render-side `MarkRenderer::zero_baseline_channel` (bar/area/rect value forms,
-/// mark.rs) so the classifier can predict the axis-inset flip a retype causes
-/// (card 0008). `BarRenderer` baselines Y for BOTH barX and barY; area/rect
+/// mark.rs) so the classifier can predict the axis-inset flip a retype causes.
+/// `BarRenderer` baselines Y for BOTH barX and barY; area/rect
 /// value forms baseline their value axis; every other mark has no baseline.
 /// Pinned to the real renderer mapping by the brightfield-app agreement test.
 fn mark_zero_baseline_axis(kind: MarkKind) -> Option<&'static str> {
@@ -628,7 +627,7 @@ fn descend_mut<'a>(
 }
 
 // ---------------------------------------------------------------------------
-// Snapshot-undo stack with a commit barrier (clg-ac02)
+// Snapshot-undo stack with a commit barrier
 // ---------------------------------------------------------------------------
 
 /// The result of an [`UndoStack::undo`] request.
@@ -647,7 +646,7 @@ pub enum UndoOutcome {
 
 /// A session snapshot-undo stack: each edit clones the working Spec onto the
 /// stack BEFORE `apply`; [`UndoStack::undo`] pops and hands back the snapshot.
-/// A commit sets a barrier undo cannot cross (clg-ac02). Session-only — no
+/// A commit sets a barrier undo cannot cross. Session-only — no
 /// stable ids, not replayable.
 #[derive(Debug, Default)]
 pub struct UndoStack {
@@ -778,7 +777,7 @@ vconcat:
             .count()
     }
 
-    // -------- clg-ac01: apply mutates the AST exactly per variant --------
+    // -------- apply mutates the AST exactly per variant --------
 
     #[test]
     fn clg_ac01_change_mark_type_retypes_primary() {
@@ -914,7 +913,7 @@ vconcat:
         assert_eq!(err, RefuseReason::PlotNotFound);
     }
 
-    // -------- clg-ac04: targeting re-walks the live AST (no stale path) ------
+    // -------- targeting re-walks the live AST (no stale path) ------
 
     #[test]
     fn clg_ac04_remove_then_add_keeps_primary_resolution_correct() {
@@ -957,7 +956,7 @@ vconcat:
         analyse_spec(&spec).expect("analysis on a two-dot plot");
     }
 
-    // -------- clg-ac02: snapshot-undo with a commit barrier --------
+    // -------- snapshot-undo with a commit barrier --------
 
     #[test]
     fn clg_ac02_push_edit_undo_restores_partial_eq() {
@@ -1030,7 +1029,7 @@ vconcat:
         assert_eq!(undo.undo(), UndoOutcome::NothingToUndo);
     }
 
-    // -------- clg-ac11: gate-classifier verdicts --------
+    // -------- gate-classifier verdicts --------
 
     #[test]
     fn clg_ac11_within_plot_edits_are_gate_clean() {
@@ -1054,8 +1053,8 @@ vconcat:
 
     #[test]
     fn clg_ac11_rebinding_a_derived_axis_is_refused() {
-        // A rebind of a DERIVED (unlabelled) x/y axis changes the axis title
-        // (card 0019), which the launch-fixed margins can't hot-apply — refused.
+        // A rebind of a DERIVED (unlabelled) x/y axis changes the axis title,
+        // which the launch-fixed margins can't hot-apply — refused.
         let spec = parse(SINGLE);
         assert_eq!(
             classify_edit(
@@ -1340,7 +1339,7 @@ vconcat:
         );
     }
 
-    // -------- clg-ac07a: parse -> apply -> serialise -> re-parse round-trip ----
+    // -------- parse -> apply -> serialise -> re-parse round-trip ----
 
     #[test]
     fn clg_ac07a_edited_spec_round_trips_through_the_canonical_serialiser() {

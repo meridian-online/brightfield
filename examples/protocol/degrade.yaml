@@ -1,4 +1,4 @@
-# Degrade fixture (card 0025, pds-ac04): the middle statement of
+# Degrade fixture: the middle statement of
 # models/degrade.sql is deliberately unparseable. The DAG render must degrade
 # ONLY that statement to an opaque chip — its sibling statements still explode
 # into typed nodes. Never a black-boxed file.

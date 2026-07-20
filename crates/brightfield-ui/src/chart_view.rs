@@ -51,8 +51,7 @@ pub struct PlacedChart {
     /// Plot height in pixels.
     pub height: f64,
     /// The plot's ComponentPath (plot-node path, e.g. `root/hconcat[0]`) — the
-    /// focus / verb-target identity, matching the coordinator's `LivePlot.path`
-    /// (card 0018).
+    /// focus / verb-target identity, matching the coordinator's `LivePlot.path`.
     pub path: ComponentPath,
     /// The plot's reactive chart state.
     pub state: Entity<ChartState>,
@@ -62,7 +61,7 @@ pub struct PlacedChart {
     pub coordinator: Option<Rc<RefCell<CrossfilterCoordinator>>>,
 }
 
-/// One slider widget positioned in the dashboard (card 0005): its rect, the
+/// One slider widget positioned in the dashboard: its rect, the
 /// param binding it drives, its reactive widget state, and the shared coordinator
 /// its release commits through.
 pub struct PlacedSlider {
@@ -82,7 +81,7 @@ pub struct PlacedSlider {
     pub coordinator: Option<Rc<RefCell<CrossfilterCoordinator>>>,
 }
 
-/// One menu-family widget positioned in the dashboard (card 0024): its rect,
+/// One menu-family widget positioned in the dashboard: its rect,
 /// the resolved param binding it drives (menu / radio / checkbox style,
 /// options already resolved + reconciled at assembly), its reactive widget
 /// state, and the shared coordinator its picks commit through. Element index
@@ -106,9 +105,9 @@ pub struct PlacedMenu {
 }
 
 /// GPUI render component for a dashboard: hosts one [`GpuiChartSurface`] per plot,
-/// one [`SliderElement`] per slider, one menu-family widget per `input: menu`
-/// (card 0024), and one [`LegendElement`] per standalone legend (display-only
-/// unless bound to a selection — card 0009), each absolutely positioned at its
+/// one [`SliderElement`] per slider, one menu-family widget per `input: menu`,
+/// and one [`LegendElement`] per standalone legend (display-only
+/// unless bound to a selection), each absolutely positioned at its
 /// layout rect, in a container sized to the dashboard's bounding box. A
 /// single-plot spec is just a one-plot dashboard.
 pub struct ChartView {
@@ -118,24 +117,24 @@ pub struct ChartView {
     height: f64,
     /// The positioned plots.
     charts: Vec<PlacedChart>,
-    /// Per-plot cursor-region cell (card 0022), one per chart, index-aligned with
+    /// Per-plot cursor-region cell, one per chart, index-aligned with
     /// `charts`. Persists across the per-frame `GpuiChartSurface` recreation (the
     /// legend `hovered_index` pattern) so the paint-phase cursor can track the
     /// pointer's grab region over a persisted `Selected` rect.
     chart_regions: Vec<Rc<Cell<BrushRegion>>>,
-    /// The positioned slider widgets (card 0005).
+    /// The positioned slider widgets.
     sliders: Vec<PlacedSlider>,
-    /// The positioned menu-family widgets (card 0024) — menu / radio /
+    /// The positioned menu-family widgets — menu / radio /
     /// checkbox presentations of `input: menu`. Hosted in placement order,
     /// which is the coordinator's menu-binding index space.
     menus: Vec<PlacedMenu>,
-    /// The positioned standalone legends (card 0016). Display-only unless a
-    /// placement carries a selection binding (card 0009), in which case it
+    /// The positioned standalone legends. Display-only unless a
+    /// placement carries a selection binding, in which case it
     /// indexes the coordinator's OWN legend-binding space — distinct from the
     /// chart/slider index spaces.
     legends: Vec<PlacedLegend>,
     /// The focus ring rect (dashboard pixels), drawn over the focused node when
-    /// keyboard focus is active and authoring chrome is visible (card 0018). The
+    /// keyboard focus is active and authoring chrome is visible. The
     /// owning `CanvasPanel` sets it from the focus state machine and clears it in
     /// presentation mode. Purely visual — chart interaction rides window-level
     /// mouse handlers, so the ring never intercepts events.
@@ -171,14 +170,14 @@ impl ChartView {
 
     /// Set (or clear) the focus ring rect. The `CanvasPanel` calls this from the
     /// focus state machine after a nav move, and clears it (`None`) in
-    /// presentation mode; the caller notifies to repaint (card 0018).
+    /// presentation mode; the caller notifies to repaint.
     pub fn set_focus_ring(&mut self, ring: Option<Rect>) {
         self.focus_ring = ring;
     }
 
     /// The shared cross-filter coordinator (all plots hold the same `Rc`), if this
     /// dashboard cross-filters — the seam a keyboard runtime verb (Esc clear)
-    /// drives, without threading the coordinator through the panel (card 0018).
+    /// drives, without threading the coordinator through the panel.
     pub fn coordinator(&self) -> Option<Rc<RefCell<CrossfilterCoordinator>>> {
         self.charts.first().and_then(|c| c.coordinator.clone())
     }
@@ -190,7 +189,7 @@ impl Render for ChartView {
         // positioned at its rect; each GpuiChartSurface reads its own ChartState and
         // wires its own mouse events, so plots don't share interaction. (The
         // white window background + centring moved up to the app crate's
-        // CanvasPanel — card 0017's DockArea shell — so the dashboard canvas
+        // CanvasPanel — the DockArea shell — so the dashboard canvas
         // is exactly the spec-derived surface.)
         //
         // Legends rasterise through the shared Vello renderer the plots already
@@ -245,11 +244,11 @@ impl Render for ChartView {
                         .child(LegendElement::new(l, i, renderer.clone()))
                 })
             }))
-            // Menu-family widgets (card 0024) render AFTER charts/sliders/
+            // Menu-family widgets render AFTER charts/sliders/
             // legends so a widget box sits above sibling chrome; the OPEN
             // option list additionally rides `deferred` + `occlude` inside
             // `menu_element`, painting above everything and swallowing
-            // clicks from hitboxes beneath (diw-ac07).
+            // clicks from hitboxes beneath.
             .children(self.menus.iter().enumerate().map(|(i, m)| {
                 div()
                     .absolute()
@@ -259,7 +258,7 @@ impl Render for ChartView {
                     .h(px(m.height as f32))
                     .child(menu_element(m, i, self.height, cx))
             }))
-            // The keyboard focus ring (card 0018): a border-only overlay at the
+            // The keyboard focus ring: a border-only overlay at the
             // focused node's rect. `None` when focus is inactive or presentation
             // hides authoring chrome. Non-interactive — brush/hover ride
             // window-level mouse handlers, so the ring never intercepts events.
@@ -308,9 +307,8 @@ pub const ZERO_AREA_EPSILON: f64 = 0.5;
 /// Returns the next `InteractionState` (always `Idle` after a release) plus
 /// per-binding aggregated dispatch results.
 ///
-/// cfs3 ac-04. Single-binding consumers should call
-/// [`commit_brush_release`] (a 1-element-slice wrapper preserved for the
-/// cfs2_ac11 boundary).
+/// Single-binding consumers should call
+/// [`commit_brush_release`] (a 1-element-slice wrapper).
 pub fn commit_brush_release_multi<D: SelectionDispatcher>(
     interaction: &InteractionState,
     bindings: &[BrushBinding],
@@ -354,14 +352,14 @@ pub fn commit_brush_release_multi<D: SelectionDispatcher>(
     }
 }
 
-/// Pure helper for cfs2_ac11: given an InteractionState (which may or
+/// Pure helper for the single-binding path: given an InteractionState (which may or
 /// may not be Brushing), a binding, and a dispatcher, produce the
 /// dispatch result vec and the next InteractionState. Lifted out of
 /// the GPUI context for testability — chart_view.on_mouse_up_with_dispatch
 /// shares the same logic but threads it through Entity<ChartState>.
 ///
 /// **cfs3 wrapper:** preserved as a single-binding convenience over
-/// [`commit_brush_release_multi`] so the cfs2_ac11 surface stays green.
+/// [`commit_brush_release_multi`] so the single-binding surface stays green.
 pub fn commit_brush_release<D: SelectionDispatcher>(
     interaction: &InteractionState,
     binding: &BrushBinding,
@@ -382,8 +380,6 @@ pub fn commit_brush_release<D: SelectionDispatcher>(
 /// supplied binding's selection and return `Idle` as the next state. A
 /// non-zero `Brushing` does NOT dispatch through this path — it goes
 /// through [`commit_brush_release`] (the drag-release path).
-///
-/// cfs3 ac-03.
 pub fn commit_brush_clear<D: SelectionDispatcher>(
     interaction: &InteractionState,
     binding: &BrushBinding,
@@ -408,7 +404,7 @@ pub fn commit_brush_clear<D: SelectionDispatcher>(
     }
 }
 
-/// Commit a CLICK gesture across a plot's bindings (card 0006 — the point-
+/// Commit a CLICK gesture across a plot's bindings (the point-
 /// selection gesture that finishes cross-filter). Unlike a drag (which drives
 /// interval selections), a click drives POINT selections:
 ///
@@ -549,7 +545,7 @@ fn resolve_point_value(
 
 /// Convert a spec-side [`BrushableBinding`] into a UI-side [`BrushBinding`]
 /// by translating the mirror enums (`BrushKind`, `ChannelColumns`). The
-/// conversion is faithful — every field copies through verbatim. cfs3 ac-06.
+/// conversion is faithful — every field copies through verbatim.
 impl From<&BrushableBinding> for BrushBinding {
     fn from(b: &BrushableBinding) -> Self {
         BrushBinding {
@@ -642,7 +638,7 @@ mod tests {
         assert!((rect.y1 - 400.0).abs() < f64::EPSILON);
     }
 
-    // --- gmr_ac07: Resize ---
+    // --- Resize ---
 
     #[test]
     fn gmr_ac07_layout_dimensions_change() {
@@ -663,7 +659,7 @@ mod tests {
         assert!((area.y1 - (768.0 - 30.0)).abs() < f64::EPSILON);
     }
 
-    // --- cfs2_ac11: brush release dispatches a propagate_selection call ---
+    // --- brush release dispatches a propagate_selection call ---
 
     /// Recording test double: captures every dispatch and clear call
     /// in order so tests can assert call counts, ordering, and arguments.
@@ -772,7 +768,7 @@ mod tests {
         assert!(matches!(next_state, InteractionState::Idle));
     }
 
-    /// cfs point-selection (card 0006): a rect DRAG skips point-kind bindings —
+    /// cfs point-selection: a rect DRAG skips point-kind bindings —
     /// only interval selections are rect-driven. A plot carrying BOTH a toggleX
     /// (PointX) and an intervalY binding must dispatch only the interval on a
     /// drag, never a degenerate `True` into the point selection.
@@ -815,7 +811,7 @@ mod tests {
     // cfs3 — clearing, multi-binding dispatch, BrushableBinding conversion
     // ---------------------------------------------------------------------
 
-    /// cfs3_ac03: commit_brush_clear dispatches a `clear` call when the
+    /// commit_brush_clear dispatches a `clear` call when the
     /// interaction is Idle OR a zero-area Brushing (click). A non-zero
     /// Brushing does NOT clear (that path is the drag-release, handled by
     /// commit_brush_release). Returns Idle as the next state on a clear.
@@ -876,7 +872,7 @@ mod tests {
         assert!(matches!(next_state, InteractionState::Brushing { .. }));
     }
 
-    /// cfs3_ac04: commit_brush_release_multi (the lifted multi-binding
+    /// commit_brush_release_multi (the lifted multi-binding
     /// helper) dispatches one propagate_selection per binding, with each
     /// binding's predicate computed against its own kind. Verifies the
     /// kind-compatibility filter — an IntervalX binding produces an x-only
@@ -955,7 +951,7 @@ mod tests {
         assert!(matches!(next_state, InteractionState::Idle));
     }
 
-    /// cfs3_ac06: BrushBinding::from(&BrushableBinding) preserves every
+    /// BrushBinding::from(&BrushableBinding) preserves every
     /// field — selection_name, contributor (= parent_plot), kind, and
     /// channels — translating between the spec-side and ui-side mirror
     /// enums verbatim.

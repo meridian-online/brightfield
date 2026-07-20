@@ -1,4 +1,4 @@
-//! Integration tests for the `generate-deviations` binary (ac-11).
+//! Integration tests for the `generate-deviations` binary.
 //!
 //! Three gates:
 //!   - determinism: same input → byte-identical output across runs

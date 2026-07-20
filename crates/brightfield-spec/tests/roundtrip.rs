@@ -1,4 +1,4 @@
-//! ac-11 corpus verification: every vendored Mosaic spec round-trips at the
+//! corpus verification: every vendored Mosaic spec round-trips at the
 //! AST level.
 //!
 //! Contract:

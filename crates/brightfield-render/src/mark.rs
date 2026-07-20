@@ -20,7 +20,7 @@ use crate::scale::{
 use crate::text::{draw_text, TextAnchor};
 
 /// The `otherwise` override a highlight applies to its NON-matching
-/// (deemphasised) rows — the flat Mosaic `Highlight` surface (card 0021). Every
+/// (deemphasised) rows — the flat Mosaic `Highlight` surface. Every
 /// field is optional; an all-`None` style falls back to the Mosaic default
 /// (`opacity` 0.2). `opacity`/`fill_opacity` SCALE the resolved alpha; `fill`
 /// REPLACES the resolved RGB. `stroke`/`stroke_opacity` are modelled for corpus
@@ -42,8 +42,8 @@ pub struct HighlightStyle {
 
 impl From<&brightfield_spec::analysis::HighlightStyle> for HighlightStyle {
     /// Resolve a spec-side highlight `otherwise` style (CSS-hex colour strings)
-    /// into the render style (parsed `Color`s). Shared by card-0021 app assembly
-    /// AND the card-0023 command-log mark rebuild, so a re-queried mark dims
+    /// into the render style (parsed `Color`s). Shared by app assembly
+    /// AND the command-log mark rebuild, so a re-queried mark dims
     /// identically after a structural edit / undo (finding 1/2/4 — a rebuild that
     /// dropped this silently killed highlight dimming).
     fn from(style: &brightfield_spec::analysis::HighlightStyle) -> Self {
@@ -66,7 +66,7 @@ const DEFAULT_DIMMED_ALPHA: f32 = 0.2;
 /// When active, rows where `predicate(row_index)` returns `true` render
 /// untouched (the SELECTED set keeps its normal appearance); rows where it
 /// returns `false` are deemphasised per `otherwise` — the Mosaic `highlight`
-/// semantics (card 0021).
+/// semantics.
 pub struct HighlightState {
     /// Predicate: returns `true` for rows that should render untouched.
     pub predicate: Box<dyn Fn(usize) -> bool + Send + Sync>,
@@ -76,9 +76,9 @@ pub struct HighlightState {
 
 /// Build a per-row [`HighlightState`] from a re-queried batch's reserved
 /// [`brightfield_spec::analysis::SELECTED_COLUMN`] boolean and the mark's
-/// resolved `otherwise` style (card 0021). Returns `None` when the batch carries
+/// resolved `otherwise` style. Returns `None` when the batch carries
 /// no membership column — the at-rest / empty-selection case, so every row
-/// renders normally (ce-ac07) — or when that column is not a boolean array.
+/// renders normally — or when that column is not a boolean array.
 ///
 /// The membership booleans are copied into an owned `Vec` the predicate closure
 /// captures, so the returned state is self-contained (`Send + Sync + 'static`).
@@ -206,7 +206,7 @@ pub trait MarkRenderer {
     /// map, not a cartesian plot, so it draws no axes or gridlines. Defaults to
     /// `false` (mirrors [`Self::zero_baseline_channel`]: zero impact on existing
     /// renderers). The scene builders skip the frame when any entry returns
-    /// `true` (card 0008 geo mark).
+    /// `true` (geo mark).
     fn suppresses_frame(&self) -> bool {
         false
     }
@@ -364,7 +364,7 @@ fn resolve_colour(
 /// `opacity`/`fill_opacity` scale the alpha, and — when the style carries NO
 /// deemphasis field at all — the Mosaic default (alpha × 0.2) is used. A
 /// matching row (predicate `true`) and the no-highlight case are returned
-/// unchanged. (card 0021, ce-ac06)
+/// unchanged.
 fn apply_highlight(colour: Color, row: usize, highlight: Option<&HighlightState>) -> Color {
     match highlight {
         Some(hs) if !(hs.predicate)(row) => deemphasise(colour, &hs.otherwise),
@@ -1373,7 +1373,7 @@ impl MarkRenderer for Density1DRenderer {
 // ---------------------------------------------------------------------------
 
 /// A reconstructed, KDE-smoothed 2D grid — the shared substrate of the
-/// `density`, `heatmap`, and `contour` renderers (card 0008, density marks).
+/// `density`, `heatmap`, and `contour` renderers (density marks).
 ///
 /// The density lowerer emits one `(x centre, y centre, __bf_count)` row per
 /// OCCUPIED bin; [`build_kde_grid`] reconstructs the dense rectangular
@@ -1384,7 +1384,7 @@ impl MarkRenderer for Density1DRenderer {
 /// The lattice is DENSE: the centres run `first..last` at the recovered bin
 /// pitch (the GCD of the occupied-centre gaps, via [`bin_step`]), so unoccupied
 /// interior bins are materialised with zero mass. kde_2d then smooths over the
-/// true geometry — a sparse axis is not collapsed to adjacency (hex-ac07).
+/// true geometry — a sparse axis is not collapsed to adjacency.
 pub(crate) struct KdeGrid {
     /// Dense x bin centres (grid columns), `first..last` at pitch `dx`.
     pub x_centres: Vec<f64>,
@@ -1416,7 +1416,7 @@ impl KdeGrid {
 /// Reconstruct the 2D histogram from a density-lowerer batch and smooth it
 /// with [`kde_2d`] — extracted verbatim from `Density2DRenderer::render` so
 /// heatmap and contour ride the identical grid (behaviour-identity is pinned
-/// by the byte-identical density example PNGs and `dmk_ac01`).
+/// by the byte-identical density example PNGs).
 ///
 /// `bandwidth`, when present (the mark's `bandwidth:` attribute, in data
 /// units), is applied to both axes; otherwise Silverman's rule runs per axis
@@ -1462,7 +1462,7 @@ pub(crate) fn build_kde_grid(
     // kde_2d smooth over the real geometry (gaps are gaps, not collapsed to
     // adjacency) and gives contour true gap geometry. Before this fix the grid
     // held only the occupied centres, so a sparse axis read as densely packed
-    // (hex-ac07; the deliberate density-family re-baseline).
+    // (the deliberate density-family re-baseline).
     let dx = bin_step(&x_occ)?;
     let dy = bin_step(&y_occ)?;
     if dx <= 0.0 || dy <= 0.0 {
@@ -1832,7 +1832,7 @@ impl MarkRenderer for RasterRenderer {
 // ---------------------------------------------------------------------------
 
 /// Renders the KDE-smoothed 2D density field as ramp-filled grid cells — the
-/// smoothed sibling of raster (card 0008, density marks). Raster ramps the raw
+/// smoothed sibling of raster (density marks). Raster ramps the raw
 /// `__bf_count` of each OCCUPIED bin; heatmap ramps the [`build_kde_grid`]
 /// field over EVERY grid cell, so the plot reads as a continuous density
 /// surface rather than discrete count tiles. Both register against the same
@@ -1876,7 +1876,7 @@ impl MarkRenderer for HeatmapRenderer {
             return;
         };
 
-        // Draw pitch per axis. Since hex-ac07 the KDE lattice is DENSE (a
+        // Draw pitch per axis. The KDE lattice is DENSE (a
         // `first..last` run at the recovered `bin_step` pitch, interior gap bins
         // materialised), so `grid.dx`/`grid.dy` already ARE the true uniform
         // pitch. The `bin_step` recompute below is therefore a no-op on that
@@ -1954,7 +1954,7 @@ impl MarkRenderer for HeatmapRenderer {
             return;
         };
 
-        // Same per-axis DRAW pitch as `render`. On hex-ac07's dense lattice this
+        // Same per-axis DRAW pitch as `render`. On the dense lattice this
         // equals `grid.dx`/`grid.dy` (a no-op recompute); kept in lockstep with
         // `render` so the half-bin widening matches the cells actually drawn.
         let draw_dx = bin_step(&grid.x_centres).unwrap_or(grid.dx);
@@ -2007,7 +2007,7 @@ impl MarkRenderer for HeatmapRenderer {
 // ---------------------------------------------------------------------------
 
 /// Renders one filled rect per (x category, y category) pair — a
-/// calendar-style value matrix (card 0008, density marks). Cell v1 is
+/// calendar-style value matrix (density marks). Cell v1 is
 /// PRE-AGGREGATED: one row per pair, with a numeric `fill:` column carrying
 /// the cell's value. Both axes ride the existing per-channel Band inference;
 /// each rect is centred via `map_category` and sized via `band_width`.
@@ -2151,7 +2151,7 @@ const DEFAULT_CONTOUR_LEVELS: usize = 10;
 
 /// Renders density iso-lines: marching squares over the same
 /// [`build_kde_grid`] field the heatmap shades, at N evenly-spaced levels
-/// (card 0008, density marks).
+/// (density marks).
 ///
 /// `thresholds` here is the ISO-LEVEL COUNT (Mosaic semantics) — the lowerer
 /// registration shields it from the density lowerer's bin-count read, so it
@@ -2404,7 +2404,7 @@ impl MarkRenderer for HexbinRenderer {
         // occupied-centre span loses that pitch (max_centre - min_centre ≠ raw
         // span, off by up to a hex from quantisation), so the mesh would drift
         // and accumulate multi-pixel error across the lattice — the bug the
-        // hex_ac04 alignment probe now guards. It also matches every other
+        // alignment probe now guards. It also matches every other
         // mark's domain = data extent, and Plot/d3-hexbin (which don't extend
         // the domain for hex overhang at all). The one cost is up to a half-hex
         // clip on the outermost edge hex; bins represent data inside the raw
@@ -2549,7 +2549,7 @@ fn linear_parts(scale: &Scale) -> Option<(f64, f64, f64, f64)> {
 /// the raw-pixel lattice anchored at (0,0) — so the row stagger matches the
 /// lowerer bit-for-bit — and map each centre back to data. The mesh is then
 /// drawn through the SAME scales as the hexes, so they land together. See the
-/// `hex_ac04` alignment probe.
+/// hexgrid alignment probe.
 ///
 /// The exactness holds on the FRESH / static-scale path (a plot's initial
 /// build, and any rebuild that re-derives the scales from the re-executed
@@ -3094,7 +3094,7 @@ fn resolve_stroke_colour(
 }
 
 // ---------------------------------------------------------------------------
-// GeoRenderer (geo — projected GeoJSON basemap / choropleth, card 0008)
+// GeoRenderer (geo — projected GeoJSON basemap / choropleth)
 // ---------------------------------------------------------------------------
 
 /// Client-side map projection forward math — the pure-math half of the geo
@@ -3170,7 +3170,7 @@ const GEO_STROKE_COLOUR: Color = Color::new([0.15, 0.15, 0.15, 1.0]);
 const GEO_STROKE_WIDTH: f64 = 0.75;
 
 /// Renders the geo mark: projected GeoJSON Polygon/MultiPolygon features as a
-/// filled choropleth or stroked basemap (card 0008, the last card-0008 mark).
+/// filled choropleth or stroked basemap (the last mark of the family).
 ///
 /// The geometry column is always the canonical [`DEFAULT_GEOMETRY_COLUMN`]
 /// (`geom`) — the `GeoLowerer` canonicalises the author's `geometry:` column to
@@ -3506,7 +3506,7 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
 /// ([`default_renderers`]) unchanged.
 ///
 /// The ONE construction site both the app's first render and the cross-filter
-/// coordinator's live rebuild dispatch through (card 0006 renderer seam):
+/// coordinator's live rebuild dispatch through (renderer seam):
 /// raster/heatmap/cell/hexbin carry the plot's `colorScheme`, heatmap/contour
 /// carry the mark's `bandwidth`, contour carries its iso-level `thresholds`,
 /// hexgrid carries its `binWidth`, and geo carries the plot's resolved
@@ -4009,7 +4009,7 @@ mod tests {
         assert_eq!(count_scene_glyphs(&scene), 5, "one glyph per label character");
     }
 
-    // --- ifb_ac03: HighlightState ---
+    // --- HighlightState ---
 
     #[test]
     fn ifb_ac03_highlight_state_predicate() {
@@ -4033,7 +4033,7 @@ mod tests {
         assert_send_sync::<Box<dyn Fn(usize) -> bool + Send + Sync>>();
     }
 
-    // --- ifb_ac04: MarkRenderer with highlight ---
+    // --- MarkRenderer with highlight ---
 
     #[test]
     fn ifb_ac04_dot_renderer_with_highlight() {
@@ -4112,9 +4112,9 @@ mod tests {
         );
     }
 
-    // --- card 0021: conditional encoding (highlight) ---
+    // --- conditional encoding (highlight) ---
 
-    /// ce-ac06: an empty `otherwise` style deemphasises to the Mosaic default
+    /// an empty `otherwise` style deemphasises to the Mosaic default
     /// alpha × 0.2; a matching row is untouched.
     #[test]
     fn ce_ac06_deemphasise_default_alpha() {
@@ -4125,7 +4125,7 @@ mod tests {
         assert!((a - 0.2).abs() < 1e-6, "default deemphasis is alpha × 0.2");
     }
 
-    /// ce-ac06: `opacity` scales the resolved alpha (splom's `opacity: 0.1`).
+    /// `opacity` scales the resolved alpha (splom's `opacity: 0.1`).
     #[test]
     fn ce_ac06_deemphasise_opacity_scales_alpha() {
         let base = Color::new([0.3, 0.5, 0.7, 1.0]);
@@ -4137,7 +4137,7 @@ mod tests {
         assert!((a - 0.1).abs() < 1e-6);
     }
 
-    /// ce-ac06: `fill` replaces the RGB and `fillOpacity` sets the alpha
+    /// `fill` replaces the RGB and `fillOpacity` sets the alpha
     /// (weather's `fill: '#ccc', fillOpacity: 0.2`).
     #[test]
     fn ce_ac06_deemphasise_fill_and_fill_opacity() {
@@ -4154,7 +4154,7 @@ mod tests {
         assert!((a - 0.2).abs() < 1e-6, "fillOpacity sets alpha");
     }
 
-    /// ce-ac06: a matching row (predicate true) is returned unchanged.
+    /// a matching row (predicate true) is returned unchanged.
     #[test]
     fn ce_ac06_apply_highlight_matching_row_untouched() {
         let base = Color::new([0.3, 0.5, 0.7, 1.0]);
@@ -4183,7 +4183,7 @@ mod tests {
         assert!(parse_css_hex("#gg").is_none());
     }
 
-    /// ce-ac10: `build_highlight_state` reads the reserved `__bf_selected`
+    /// `build_highlight_state` reads the reserved `__bf_selected`
     /// boolean and drives a per-row dim — and the CI-covered end of the feature:
     /// a scene rendered WITH a non-trivial membership differs (some rows dimmed)
     /// from the same scene rendered without highlight.
@@ -4235,7 +4235,7 @@ mod tests {
         );
 
         // An all-true membership (empty-selection edge) leaves every row lit — a
-        // batch with no membership column yields no state at all (ce-ac07).
+        // batch with no membership column yields no state at all.
         let no_col_schema = Arc::new(Schema::new(vec![
             Field::new("x", DataType::Float64, false),
             Field::new("y", DataType::Float64, false),
@@ -4254,7 +4254,7 @@ mod tests {
         );
     }
 
-    // --- ifb_ac07: render_interpolated ---
+    // --- render_interpolated ---
 
     #[test]
     fn ifb_ac07_dot_render_interpolated_at_zero() {
@@ -4331,7 +4331,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Statistical-mark tests (gomb_ ac-03 / ac-04 / ac-05 / ac-08)
+    // Statistical-mark tests
     // -----------------------------------------------------------------------
 
     fn density_1d_batch() -> RecordBatch {
@@ -4367,7 +4367,7 @@ mod tests {
 
         let mut scene = Scene::new();
         renderer.render(&mut scene, &batch, &cm, &scales, None);
-        // Spec ac-03 requires at least one fill (the density curve).
+        // The spec requires at least one fill (the density curve).
         // count_scene_paths reads vello's n_paths counter — incremented
         // once per fill or stroke.
         assert!(
@@ -4436,7 +4436,7 @@ mod tests {
         let mut scene = Scene::new();
         let renderer = Density2DRenderer;
         renderer.render(&mut scene, &batch, &cm, &scales, None);
-        // Spec ac-04 requires one circle per non-empty cell. With a 3×3 grid
+        // The spec requires one circle per non-empty cell. With a 3×3 grid
         // of all-positive counts, the renderer must produce at least 9 fills.
         // count_scene_paths gives a real count via vello's n_paths counter.
         assert!(
@@ -4446,7 +4446,7 @@ mod tests {
         );
     }
 
-    // dmk_ac01 (card 0008, density marks): the shared KDE-grid helper reproduces
+    // Density marks: the shared KDE-grid helper reproduces
     // exactly the values the inline Density2D path produced — same histogram
     // reconstruction (row order and gaps included), same Silverman bandwidths,
     // same kde_2d call — pinned by replaying the inline formula over the fixture
@@ -4526,7 +4526,7 @@ mod tests {
         assert!(build_kde_grid(&batch, "x_bin", "y_bin", Some(0.0)).is_none());
     }
 
-    // hex-ac07: build_kde_grid materialises a DENSE first..last lattice at the
+    // build_kde_grid materialises a DENSE first..last lattice at the
     // recovered pitch, so unoccupied INTERIOR bins are present (zero mass) and
     // kde_2d smooths over the true geometry. A contiguous grid is unchanged
     // (the byte-identity guard for the shipped heatmap/contour examples); a
@@ -4636,7 +4636,7 @@ mod tests {
         Color::new(colour).premultiply().to_rgba8().to_u32()
     }
 
-    // scs_ac05: each occupied cell is coloured through the Fill Sequential ramp
+    // each occupied cell is coloured through the Fill Sequential ramp
     // (count → map_continuous) at full alpha, so the colours ACTUALLY ENCODED into
     // the scene are the ramp samples — probed via draw_data, not re-derived from
     // the Scale. With no Fill scale it falls back to the legacy alpha path.
@@ -4710,7 +4710,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // hex_ac03 — HexbinRenderer scene probes + augment_scales
+    // HexbinRenderer scene probes + augment_scales
     // -----------------------------------------------------------------------
 
     /// A hexbin batch: two hexes, `(x, y)` centres, a fill column, and the
@@ -4744,7 +4744,7 @@ mod tests {
         cm
     }
 
-    /// hex_ac03: a COUNT fill ramps through the zero-anchored Sequential (with
+    /// a COUNT fill ramps through the zero-anchored Sequential (with
     /// the RASTER_MIN_T floor), and the colours ACTUALLY encoded into the scene
     /// are those ramp samples — probed via draw_data, not re-derived. One filled
     /// hexagon per row.
@@ -4775,7 +4775,7 @@ mod tests {
         );
     }
 
-    /// hex_ac03: an AVG fill follows the cell anchoring rule and maps through
+    /// an AVG fill follows the cell anchoring rule and maps through
     /// the ramp WITHOUT the count floor.
     #[test]
     fn hex_ac03_avg_fills_follow_cell_anchoring() {
@@ -4800,7 +4800,7 @@ mod tests {
         );
     }
 
-    /// hex_ac03: augment_scales widens x/y by half a hex (the constant in-band
+    /// augment_scales widens x/y by half a hex (the constant in-band
     /// half-extents) and applies the cell anchoring rule for a signed avg fill.
     #[test]
     fn hex_ac03_augment_scales_widens_and_anchors() {
@@ -4827,7 +4827,7 @@ mod tests {
         }
     }
 
-    /// hex_ac03: augment_scales MERGES the Fill scale — a sibling's categorical
+    /// augment_scales MERGES the Fill scale — a sibling's categorical
     /// Colour Fill survives untouched (merge-not-clobber, raster/cell precedent).
     #[test]
     fn hex_ac03_augment_scales_merges_not_clobber() {
@@ -4848,7 +4848,7 @@ mod tests {
         );
     }
 
-    /// hex_ac03: the configured renderer (the cfr `renderer_override` seam)
+    /// the configured renderer (the cfr `renderer_override` seam)
     /// draws a rebuild byte-identically — the same override renderer is used for
     /// the first render and every live rebuild, so output is stable.
     #[test]
@@ -4878,7 +4878,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // geo — GeoRenderer + Projection (card 0008, last mark)
+    // geo — GeoRenderer + Projection (last mark)
     // -----------------------------------------------------------------------
 
     /// A one-square-polygon batch, optionally with a numeric `rate` fill column.
@@ -5009,7 +5009,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // hex_ac04 — HexgridRenderer (dataless mesh) + lattice alignment
+    // HexgridRenderer (dataless mesh) + lattice alignment
     // -----------------------------------------------------------------------
 
     /// A singleton batch, as the hexgrid lowerer emits (one row, no positional
@@ -5032,7 +5032,7 @@ mod tests {
         s
     }
 
-    /// hex_ac04: the mesh covers the plot rect with the right hex count for a
+    /// the mesh covers the plot rect with the right hex count for a
     /// known extent + binWidth (one stroked outline per lattice centre).
     #[test]
     fn hex_ac04_hexgrid_mesh_covers_plot_extent() {
@@ -5085,7 +5085,7 @@ mod tests {
         (out, dx_data, dy_data)
     }
 
-    /// hex_ac04 (F1 alignment probe — the reinstated one). A sibling hexbin
+    /// F1 alignment probe — the reinstated one. A sibling hexbin
     /// overlays the hexgrid mesh EXACTLY on-lattice. Map a faithful hexbin
     /// batch's centres through the REAL render pipeline (`infer_scales` +
     /// `HexbinRenderer::augment_scales`, which now widens RAW-anchored from the
@@ -5193,7 +5193,7 @@ mod tests {
         assert_hexbin_mesh_coincides(500.0, 300.0, 30.0, 0.0, 50.0, 0.0, 6.0);
     }
 
-    /// hex_ac04: a DATALESS hexgrid renders headlessly with NO data-driven
+    /// a DATALESS hexgrid renders headlessly with NO data-driven
     /// scales — augment_scales synthesises the unit x/y scales from the plot
     /// ranges, and render then produces mesh geometry.
     #[test]
@@ -5211,7 +5211,7 @@ mod tests {
         assert!(count_scene_paths(&scene) > 0, "dataless mesh still renders");
     }
 
-    /// hex_ac04: augment_scales does NOT clobber a sibling's data-driven scale
+    /// augment_scales does NOT clobber a sibling's data-driven scale
     /// (so a hexgrid + hexbin plot keeps the hexbin's real domain and the mesh
     /// rides it).
     #[test]
@@ -5364,7 +5364,7 @@ mod tests {
         }
     }
 
-    // scs_ac04: augment_scales builds a Fill Sequential zero-anchored at
+    // augment_scales builds a Fill Sequential zero-anchored at
     // [0, max_count] with the scheme's stops, alongside the x/y half-bin widening.
     #[test]
     fn scs_ac04_raster_augment_scales_builds_fill_sequential() {
@@ -5428,12 +5428,12 @@ mod tests {
         .unwrap()
     }
 
-    // dmk_ac02: every KDE grid cell is coloured through the Fill Sequential ramp
+    // every KDE grid cell is coloured through the Fill Sequential ramp
     // (density → map_continuous) — the colours ACTUALLY ENCODED into the scene
     // are the ramp samples of the smoothed field (probed via draw_data, the #36
     // precedent), cells with different densities encode different colours, and
     // with no Fill scale the render falls back to alpha-on-default-blue. Driven by
-    // the dmk_ac01 fixture — 8 SCRAMBLED rows with cell (2, 2) OMITTED — so the
+    // the fixture — 8 SCRAMBLED rows with cell (2, 2) OMITTED — so the
     // "every cell" claim is falsifiable: an occupied-bins-only regression draws
     // 8 cells and misses the unoccupied cell's smoothed colour.
     #[test]
@@ -5519,7 +5519,7 @@ mod tests {
         );
     }
 
-    // dmk_ac02: augment_scales builds a Fill Sequential zero-anchored at
+    // augment_scales builds a Fill Sequential zero-anchored at
     // [0, max_density] with the scheme's stops, widens x/y by half a bin to the
     // grid extent, and merges rather than clobbers (a sibling's categorical
     // Colour Fill survives) — mirroring raster's augment_scales contract.
@@ -5570,7 +5570,7 @@ mod tests {
         }
     }
 
-    // dmk_ac02: the mark's `bandwidth` attribute reaches kde_2d through the
+    // the mark's `bandwidth` attribute reaches kde_2d through the
     // renderer — an explicit bandwidth renders a DIFFERENT field than the
     // Silverman fallback, and exactly the field build_kde_grid produces for it.
     #[test]
@@ -5609,7 +5609,7 @@ mod tests {
         assert_eq!(drawn_explicit, expected, "bandwidth threads through to the drawn field");
     }
 
-    // hex-ac07: build_kde_grid materialises a DENSE first..last lattice at the
+    // build_kde_grid materialises a DENSE first..last lattice at the
     // recovered pitch — unoccupied interior bins carry zero mass. x centres
     // {0.5, 15.5, 16.5} have a TRUE pitch of 1 (the GCD of the gaps {15, 1}),
     // so the grid now spans {0.5, 1.5, ..., 16.5} (17 columns) at grid.dx == 1
@@ -5687,12 +5687,12 @@ mod tests {
         assert_eq!(aug.get(Channel::Y).unwrap().domain_max(), Some(2.0));
     }
 
-    // dmk_ac04: the renderer strokes one path per chained iso-line, and the
+    // the renderer strokes one path per chained iso-line, and the
     // `thresholds` attr drives the LEVEL count — 5 levels stroke strictly more
     // iso-lines than 2 over the same grid, and the stroked path count equals a
     // replay of contour_polylines over the same shared KDE grid at the same
     // levels (the SQL-side half of the shield lives in brightfield-sql's
-    // dmk_ac04 regression test).
+    // regression test).
     #[test]
     fn dmk_ac04_contour_iso_line_count_follows_thresholds() {
         let batch = heatmap_batch();
@@ -5760,7 +5760,7 @@ mod tests {
         .unwrap()
     }
 
-    // dmk_ac03: one rect per occupied (x category, y category) pair, positioned
+    // one rect per occupied (x category, y category) pair, positioned
     // on the two Band scales, with distinct numeric fill values encoding
     // distinct ramp colours (probed via draw_data per the #36 precedent).
     #[test]
@@ -5797,7 +5797,7 @@ mod tests {
         assert_eq!(drawn, expected, "cell fills are the ramp samples of the values");
     }
 
-    // dmk_ac03: augment_scales anchors the Fill Sequential domain per the v1
+    // augment_scales anchors the Fill Sequential domain per the v1
     // rule — [0, max] when min >= 0, else [min, max] — REPLACING the Linear a
     // numeric fill otherwise infers (the trap), unioning with a co-rendered
     // Sequential, and leaving a categorical Colour fill untouched.
@@ -5886,7 +5886,7 @@ mod tests {
         );
     }
 
-    // dmk_ac03: a Utf8 fill keeps the existing categorical Colour behaviour —
+    // a Utf8 fill keeps the existing categorical Colour behaviour —
     // augment_scales leaves the inferred Colour scale alone and the rects draw
     // in palette colours through resolve_colour, exactly as before.
     #[test]
@@ -5991,7 +5991,7 @@ mod tests {
         let mut scene = Scene::new();
         let renderer = RegressionRenderer { ci: 0.95 };
         renderer.render(&mut scene, &batch, &cm, &scales, None);
-        // Spec ac-05 requires both a fitted line (stroke) AND a CI band
+        // The spec requires both a fitted line (stroke) AND a CI band
         // (fill). vello's n_paths counter increments once per fill or
         // stroke, so the regression renderer must produce ≥2 paths.
         assert!(
@@ -6018,11 +6018,11 @@ mod tests {
         assert!(find_renderer(&registry, MarkKind::DensityY).is_some());
         assert!(find_renderer(&registry, MarkKind::RegressionX).is_some());
         assert!(find_renderer(&registry, MarkKind::RegressionY).is_some());
-        // Heatmap is registered as of card 0008's density-marks instalment.
+        // Heatmap is registered as of the density-marks instalment.
         assert!(find_renderer(&registry, MarkKind::Heatmap).is_some());
         // Hexbin is registered as of the hexbin follow-up.
         assert!(find_renderer(&registry, MarkKind::Hexbin).is_some());
-        // Geo is registered as of card 0008's geo mark.
+        // Geo is registered as of the geo mark.
         assert!(find_renderer(&registry, MarkKind::Geo).is_some());
         // Unimplemented kinds should return None (no silent fallback). Voronoi is
         // the always-unimplemented census stand-in (geo's former role).
@@ -6068,7 +6068,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // RectRenderer (card 0008)
+    // RectRenderer
     // -----------------------------------------------------------------------
 
     /// rectY: three x-binned bars from a zero y baseline. Proves (a) one fill per

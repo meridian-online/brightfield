@@ -1,10 +1,10 @@
-//! The dispatch-resolution table (ac-07): a PROJECTION of the same keymap-as-data
+//! The dispatch-resolution table: a PROJECTION of the same keymap-as-data
 //! vec `main` feeds to `cx.bind_keys` — not a hand-maintained mirror. It encodes,
 //! and is tested for, the context/overlay resolution invariants.
 //!
 //! IMPORTANT (honesty): this proves the projection is faithful to the binding vec
 //! and internally consistent. It does NOT prove GPUI's live dispatch conforms to
-//! these invariants — that conformance is eyeball-verified by ac-09 / ac-12.
+//! these invariants — that conformance is eyeball-verified.
 
 use crate::registry::{BindingContext, BoundKey};
 
@@ -24,7 +24,7 @@ pub enum DispatchContext {
 
 /// Whether a binding in `binding` context resolves in the `dispatch` situation.
 ///
-/// The matrix that encodes every ac-07 invariant:
+/// The matrix that encodes every dispatch-resolution invariant:
 /// - a Global (`context = None`) binding resolves from BOTH canvas and editor;
 /// - a Workspace bare verb resolves ONLY when the canvas is focused — never under
 ///   the editor, never under an open overlay;

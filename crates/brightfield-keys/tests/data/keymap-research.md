@@ -14,11 +14,11 @@ the session transcript, not the repo.
 > `c` = set-colour-scheme becomes **`c` = cycle-colour-scheme** on the focused view's sequential-scheme
 > marks (transient). The `g`-broadcast *mechanism* stays implemented + unit-tested in the resolver.
 > A second pass (`/orb:review-spec`) then **confirmed `/` (focus-jump = jump-to-component, per row
-> below) and `?` (help overlay) stay in v1** — wired as spec ac-18/ac-19, resolving a scope gap where
+> below) and `?` (help overlay) stay in v1** — wired in the spec, resolving a scope gap where
 > they were scored v1 here but neither built nor deferred in the spec. See `spec.yaml` (v1.2) for the
 > ratified v1 boundary.
 
-## v1 shipped-binding provenance (ac-08)
+## v1 shipped-binding provenance
 
 Every key bound in the shipped registry (`brightfield-keys`) traces to a row here — no key is bound by
 taste. The mechanical cross-ref `brightfield_keys::registry()` bound-longnames ↔ this table is asserted
@@ -37,7 +37,7 @@ by the `kbg_ac08_*` provenance test; scores mirror `VerbEntry.scores` (frequency
 | `open-help` | `?` | 2 / 4 / 5 | `?` = help (near-universal convention) |
 | `clear-selection` | `escape` | 4 / 4 / 5 | esc = cancel/clear (universal); terminal rung of the Esc ladder |
 | `reload-spec` | `cmd-r` | 2 / 4 / 4 | cmd-r = reload (browser); bare `r` NOT bound (dirty-guard) |
-| `toggle-presentation` | `p` | 2 / 3 / 3 | `p` = present (shipped fixed point, card 0016) |
+| `toggle-presentation` | `p` | 2 / 3 / 3 | `p` = present (shipped fixed point) |
 | `save-spec` | `cmd-s` | 3 / 5 / 5 | cmd-s = save (universal; shipped, editor-scoped) |
 | `cycle-colour-scheme` | `c` | 3 / 5 / 3 | `c` = colour (mnemonic); view-scoped, transient preview |
 
@@ -64,7 +64,7 @@ Reserved verbs are deliberately unscored (no key yet), shown greyed in the palet
 needs-keyboard-target (`filter-view`, `cross-filter-all`, `toggle-point-select`, `set-param`) and
 needs-command-log (`change-mark-type`, `add-mark`, `set-channel`, `remove-mark`, `undo`).
 
-Recorded scope-model decisions (manual-review half of ac-08): selection-first (scope = focused node);
+Recorded scope-model decisions (the manual-review half): selection-first (scope = focused node);
 `g` = dashboard-broadcast mechanism, runtime verbs only, always resolves to root; `z` dropped;
 view-altitude floor (no mark descent); `f`/`g f`/`t` deferred. These match the shipped resolver in
 `brightfield-keys` (`scope.rs`, `focus.rs`).

@@ -90,7 +90,7 @@ pub enum SortDir {
 /// `input` source, a `Projection` wraps its input, etc.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum QueryPlan {
-    /// Leaf node referencing a named view (from card 0004's DDL).
+    /// Leaf node referencing a named view (from the DDL).
     Source {
         table: String,
     },
