@@ -15,7 +15,11 @@
 //!    would paint nothing and egui would emit only a `Missing texture` log line.
 //! 2. A slot survives a resize with the *same* `TextureId`, so a caller may hold
 //!    an id across frames.
-//! 3. `end_frame` frees what nobody referenced and keeps what someone did.
+//! 3. `end_frame` frees what is neither presented nor declared visible, and keeps
+//!    what is either — including a pane that cached its id and did not come back
+//!    to the host at all, which is what both live surfaces do on an unchanged
+//!    frame.
+//! 4. Dropping the host hands every registration back to the shared renderer.
 //!
 //! # The ordering question these tests answer
 //!
@@ -25,8 +29,9 @@
 //! once the rect is known, and the question is whether that is safe.
 //!
 //! It is, and two tests say so. [`in_frame_present_paints_both_panes`] presents
-//! two panes from inside their own draws, across a frame that resizes one of
-//! them, and reads the rendered window back. The sharper one is
+//! two panes from inside their own draws and reads the rendered window back, so
+//! neither pane's mid-UI present blanks the other. The one that actually pins the
+//! ordering is
 //! [`a_mesh_painted_before_the_present_still_shows_the_presented_pixels`]:
 //! it paints with an id held from the previous frame and *then* presents at a
 //! new size, so the binding is replaced and the old texture dropped after the
@@ -34,12 +39,10 @@
 //! error. `egui_wgpu::Renderer::render` resolves a mesh's bind group by id at
 //! render time, and Vello submits on the same queue eframe paints on.
 //!
-//! So the lag is current, not permanent, and `last_rect` / `note_rect` are
-//! vestigial: nothing needs a remembered rect to size a raster. They are kept
-//! because the migration may still want a rect for a pane that has to size
-//! something *other* than its own present; if it turns out nothing does, the API
-//! can shed them without touching this evidence.
+//! So the lag is current, not permanent: nothing needs a remembered rect to size
+//! a raster, and the host carries no rect memory.
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use brightfield_render::canvas_host::{CanvasHost, Color, PixelSize};
@@ -183,6 +186,16 @@ fn blank() -> vello::Scene {
     vello::Scene::new()
 }
 
+/// The visible-pane set `end_frame` takes.
+fn visible(keys: impl IntoIterator<Item = PaneKey>) -> BTreeSet<PaneKey> {
+    keys.into_iter().collect()
+}
+
+/// "Nothing is on screen" — the sweep-everything-unpresented case.
+fn nothing() -> BTreeSet<PaneKey> {
+    BTreeSet::new()
+}
+
 fn size(w: u32, h: u32) -> PixelSize {
     PixelSize {
         width: w,
@@ -198,6 +211,17 @@ fn centre_px(pixels: &[u8], w: u32, h: u32) -> [u8; 4] {
 fn px_at(pixels: &[u8], w: u32, x: u32, y: u32) -> [u8; 4] {
     let i = ((y * w + x) * 4) as usize;
     [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+}
+
+/// The `Rgba8Unorm` bytes a `Color` clears to. Only the primaries above are used,
+/// so no gamma question arises.
+fn bytes(c: Color) -> [u8; 4] {
+    [
+        (c.r * 255.0).round() as u8,
+        (c.g * 255.0).round() as u8,
+        (c.b * 255.0).round() as u8,
+        (c.a * 255.0).round() as u8,
+    ]
 }
 
 /// Assert a sampled pixel is the expected colour, allowing for the sampler's
@@ -221,9 +245,9 @@ fn assert_colour(got: [u8; 4], want: [u8; 4], what: &str) {
 /// and A paints nothing for the frame.
 ///
 /// Verified by giving `present_keyed` back the old single-slot semantics (free
-/// every registration before presenting): this test fired `two panes in one
-/// frame: A's registration was freed by B's present`. That mutation reddens 7 of
-/// the 9 tests in this file.
+/// and drop every *other* slot before presenting): this test fired `two panes in
+/// one frame: A's registration was freed by B's present`. That mutation reddens
+/// 5 of the 11 tests in this file.
 #[test]
 fn two_panes_presented_in_one_frame_keep_both_registrations() {
     let mut rig = Rig::new();
@@ -301,9 +325,10 @@ fn a_resize_repoints_the_same_texture_id() {
 /// Frame 1 presents both panes; frame 2 presents only A. B is gone, A is not —
 /// and A is not merely still in the map, its egui binding is still resolvable.
 ///
-/// Verified twice: making `end_frame` a no-op fired `a pane that stopped drawing
-/// leaked its slot`; making it clear the whole map fired `a pane that presented
-/// this frame was swept`.
+/// Verified twice: making `end_frame`'s retain unconditionally `true` fired `a
+/// pane that stopped drawing leaked its slot` (left 2, right 1); making it
+/// unconditionally `false` fired `end_frame swept a live slot` (left 0, right 2)
+/// at the frame-1 check, before the frame-2 assertions are reached.
 #[test]
 fn end_frame_frees_the_dropped_slot_and_keeps_the_live_one() {
     let mut rig = Rig::new();
@@ -311,12 +336,12 @@ fn end_frame_frees_the_dropped_slot_and_keeps_the_live_one() {
     let b = rig
         .host
         .present_keyed(PANE_B, &blank(), size(48, 32), GREEN);
-    rig.host.end_frame();
+    rig.host.end_frame(&visible([PANE_A, PANE_B]));
     assert_eq!(rig.host.slot_count(), 2, "end_frame swept a live slot");
 
     // Frame 2: only A draws.
     rig.host.present_keyed(PANE_A, &blank(), size(64, 64), RED);
-    rig.host.end_frame();
+    rig.host.end_frame(&visible([PANE_A]));
 
     assert_eq!(
         rig.host.slot_count(),
@@ -334,63 +359,87 @@ fn end_frame_frees_the_dropped_slot_and_keeps_the_live_one() {
     rig.assert_no_validation_errors();
 }
 
-/// Would catch: liveness defined as "re-rastered this frame". Both live surfaces
-/// cache their raster and re-present only when the scene or the size changed, so
-/// a pane that is visible but unchanged calls `texture_id` and nothing else. If
-/// that did not count as a reference, `end_frame` would free the texture of a
-/// pane that is on screen — the single-slot bug back again, one frame later.
+/// Would catch: liveness defined as "re-rastered this frame", or as "somebody
+/// called into the host this frame". Both live surfaces cache their raster and
+/// re-present only when the scene or the size changed, and on an unchanged frame
+/// they paint from a `TextureId` held in a field of their own — they do not touch
+/// the host at all. Only the caller's declaration can keep such a pane alive; if
+/// it did not, `end_frame` would free the texture of a pane that is on screen —
+/// the single-slot bug back again, one frame later.
 ///
-/// Verified by dropping the `referenced = true` from `texture_id`: `a visible
-/// pane that only asked for its id was swept` fired.
+/// Verified by dropping `|| visible.contains(key)` from `end_frame`'s retain: `a
+/// pane declared visible but not re-presented was swept` fired.
 #[test]
-fn asking_for_a_cached_slots_id_keeps_it_alive() {
+fn a_cached_pane_declared_visible_survives_the_sweep() {
     let mut rig = Rig::new();
     let a = rig.host.present_keyed(PANE_A, &blank(), size(64, 64), RED);
-    rig.host.end_frame();
+    rig.host.end_frame(&visible([PANE_A]));
 
-    // Frame 2: the pane is visible but unchanged, so it only paints its cache.
+    // Frame 2: on screen, unchanged, so it paints its cached id and never comes
+    // back to the host. The id is still the one it cached.
     assert_eq!(rig.host.texture_id(PANE_A), Some(a));
-    rig.host.end_frame();
+    rig.host.end_frame(&visible([PANE_A]));
     assert!(
         rig.registered(a),
-        "a visible pane that only asked for its id was swept"
+        "a pane declared visible but not re-presented was swept"
     );
 
-    // Frame 3: nobody mentions it at all.
-    rig.host.end_frame();
+    // Frame 3: it is gone from the layout.
+    rig.host.end_frame(&nothing());
     assert!(
         !rig.registered(a),
-        "a pane nobody referenced kept its binding"
+        "a pane that left the layout kept its binding"
     );
+    assert_eq!(rig.host.texture_id(PANE_A), None);
     rig.assert_no_validation_errors();
 }
 
-/// Would catch: `note_rect` recording against the wrong slot, or `last_rect`
-/// leaking one pane's geometry to another. Cheap, but the two are a pair and an
-/// unasserted pair drifts.
+/// Would catch: a sweep that trusts `visible` alone. Presenting is itself proof a
+/// pane is drawing, so a caller that presents a pane and forgets to name it must
+/// leak, never blank — the asymmetry the API is documented to have.
 ///
-/// Verified by making `note_rect` write to every slot: `one pane's rect reached
-/// another's slot` fired.
+/// Verified by dropping `slot.presented ||` from `end_frame`'s retain: `a pane
+/// that presented this frame was swept for not being named` fired.
 #[test]
-fn rects_are_recorded_per_pane() {
+fn presenting_alone_survives_a_sweep_that_forgot_to_name_the_pane() {
     let mut rig = Rig::new();
-    rig.host.present_keyed(PANE_A, &blank(), size(64, 64), RED);
-    rig.host
-        .present_keyed(PANE_B, &blank(), size(48, 32), GREEN);
+    let a = rig.host.present_keyed(PANE_A, &blank(), size(64, 64), RED);
 
-    let r = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(64.0, 64.0));
-    rig.host.note_rect(PANE_A, r);
+    rig.host.end_frame(&nothing());
 
-    assert_eq!(rig.host.last_rect(PANE_A), Some(r));
-    assert_eq!(
-        rig.host.last_rect(PANE_B),
-        None,
-        "one pane's rect reached another's slot"
+    assert!(
+        rig.registered(a),
+        "a pane that presented this frame was swept for not being named"
     );
-    assert_eq!(
-        rig.host
-            .last_rect(PaneKey::new(ViewKind::Charts, ItemId::new("absent"))),
-        None
+    assert_eq!(rig.host.slot_count(), 1);
+    rig.assert_no_validation_errors();
+}
+
+/// Would catch: a host that drops without returning its registrations. The shared
+/// `egui_wgpu::Renderer` outlives the host, so an unfreed id is a bind group and
+/// a sampler held for the renderer's life — once per pane the host ever showed.
+///
+/// Verified by deleting `impl Drop for EguiCanvasHost`: `a dropped host left its
+/// registrations in the shared renderer` fired for both ids.
+#[test]
+fn dropping_the_host_frees_every_registration() {
+    let mut rig = Rig::new();
+    let (a, b) = {
+        let mut host = EguiCanvasHost::new(
+            rig.device.clone(),
+            rig.queue.clone(),
+            Arc::clone(&rig.vello),
+            Arc::clone(&rig.egui_renderer),
+        );
+        let a = host.present_keyed(PANE_A, &blank(), size(64, 64), RED);
+        let b = host.present_keyed(PANE_B, &blank(), size(48, 32), GREEN);
+        assert!(rig.registered(a) && rig.registered(b));
+        (a, b)
+    };
+
+    assert!(
+        !rig.registered(a) && !rig.registered(b),
+        "a dropped host left its registrations in the shared renderer"
     );
     rig.assert_no_validation_errors();
 }
@@ -423,24 +472,34 @@ fn the_trait_forward_reuses_one_legacy_slot() {
 /// image is painted — for two panes in one frame, then render the frame through
 /// `egui_wgpu` and read the window back.
 ///
-/// The claim under test: because egui resolves a mesh's bind group at render
-/// time (end of frame) and Vello submits on the same queue egui does, updating a
-/// binding mid-UI cannot be read too early. If that holds, no pane needs a
-/// remembered rect and the resize lag is zero.
+/// The claim under test: two panes presenting mid-UI in the same frame both
+/// reach the screen. Under the single-slot host the second present frees the
+/// first's registration and the first pane paints nothing, and because
+/// `egui_wgpu` only logs `Missing texture`, the pixels are the only witness.
 ///
-/// The second frame resizes pane A, which is the case that would break it — a
-/// re-pointed binding, a destroyed texture, and a paint that happened before the
-/// re-point all inside one frame.
+/// What this test does **not** measure: a paint that precedes a re-point. Both
+/// panes here paint after their own present, so no mesh in the frame carries a
+/// binding that is replaced later in the same UI pass. That ordering is the
+/// subject of
+/// [`a_mesh_painted_before_the_present_still_shows_the_presented_pixels`], which
+/// isolates it on one pane.
+///
+/// Frame 2 does shrink pane A and re-present it in a new colour, so a slot that
+/// silently kept frame 1's texture is visible as the wrong colour rather than
+/// merely the wrong size — but it is a second sample of the same in-frame present,
+/// not resize coverage.
 ///
 /// Would catch: an in-frame present that reads back the panel background,
-/// garbage, or another pane's pixels; and any validation error raised by
-/// presenting mid-UI.
+/// garbage, or another pane's pixels; a re-present that does not reach the
+/// screen; and any validation error raised by presenting mid-UI.
 ///
-/// Verified twice. Dropping the `Image` paint for pane A fired `pane A, frame 0:
-/// got [27, 27, 27, 255], want ~[255, 0, 0, 255]` — the panel background, i.e.
-/// the assertion really is reading the presented texture and not the chrome.
-/// Asserting blue for pane B fired `pane B, frame 0: got [0, 255, 0, 255]`,
-/// which pins the sampling arithmetic to the right rect.
+/// Verified three ways. Dropping the `Image` paint for pane A fired `pane A,
+/// frame 0: got [27, 27, 27, 255], want ~[255, 0, 0, 255]` — the panel
+/// background, i.e. the assertion really is reading the presented texture and not
+/// the chrome. Asserting blue for pane B fired `pane B, frame 0: got [0, 255, 0,
+/// 255]`, which pins the sampling arithmetic to the right rect. Replacing pane
+/// A's frame-2 present with `texture_id` (the mutation that used to pass) fires
+/// `pane A, frame 1: got [255, 0, 0, 255], want ~[0, 0, 255, 255]`.
 #[test]
 fn in_frame_present_paints_both_panes() {
     let mut rig = Rig::new();
@@ -448,11 +507,15 @@ fn in_frame_present_paints_both_panes() {
     ctx.set_pixels_per_point(1.0);
     let screen = egui::vec2(320.0, 160.0);
 
-    // (pane A size, pane B size) per frame. Frame 2 resizes A.
-    for (frame, (a_size, b_size)) in [((120u32, 100u32), (120u32, 100u32)), ((60, 60), (120, 100))]
-        .into_iter()
-        .enumerate()
-    {
+    // Per frame: pane A's (size, colour) and pane B's. Frame 2 shrinks A and
+    // re-presents it blue, so a stale slot shows as the wrong colour.
+    #[allow(clippy::type_complexity)]
+    let frames: [((u32, u32, Color), (u32, u32, Color)); 2] = [
+        ((120, 100, RED), (120, 100, GREEN)),
+        ((60, 60, BLUE), (120, 100, GREEN)),
+    ];
+    for (frame, ((aw, ah, a_base), (bw, bh, b_base))) in frames.into_iter().enumerate() {
+        let (a_size, b_size) = ((aw, ah), (bw, bh));
         let mut rects: Vec<egui::Rect> = Vec::new();
         let host = &mut rig.host;
         let out = ctx.run_ui(
@@ -463,7 +526,8 @@ fn in_frame_present_paints_both_panes() {
             |ui| {
                 egui::containers::CentralPanel::default().show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        for (key, (w, h), base) in [(PANE_A, a_size, RED), (PANE_B, b_size, GREEN)]
+                        for (key, (w, h), base) in
+                            [(PANE_A, a_size, a_base), (PANE_B, b_size, b_base)]
                         {
                             // The rect first — this is the ordering the current
                             // shell cannot use, because it presents before the
@@ -485,7 +549,7 @@ fn in_frame_present_paints_both_panes() {
 
         upload_font_textures(&rig, &out);
         let pixels = render_frame(&rig, &ctx, out, screen);
-        rig.host.end_frame();
+        rig.host.end_frame(&visible([PANE_A, PANE_B]));
 
         let w = screen.x as u32;
         let (a_rect, b_rect) = (rects[0], rects[1]);
@@ -496,7 +560,7 @@ fn in_frame_present_paints_both_panes() {
                 a_rect.center().x as u32,
                 a_rect.center().y as u32,
             ),
-            [255, 0, 0, 255],
+            bytes(a_base),
             &format!("pane A, frame {frame}"),
         );
         assert_colour(
@@ -506,7 +570,7 @@ fn in_frame_present_paints_both_panes() {
                 b_rect.center().x as u32,
                 b_rect.center().y as u32,
             ),
-            [0, 255, 0, 255],
+            bytes(b_base),
             &format!("pane B, frame {frame}"),
         );
         assert_eq!(
@@ -672,7 +736,7 @@ fn a_mesh_painted_before_the_present_still_shows_the_presented_pixels() {
         );
         upload_font_textures(&rig, &out);
         let pixels = render_frame(&rig, &ctx, out, screen);
-        rig.host.end_frame();
+        rig.host.end_frame(&visible([PANE_A]));
 
         let c = painted.expect("the pane drew").center();
         assert_colour(
@@ -682,4 +746,70 @@ fn a_mesh_painted_before_the_present_still_shows_the_presented_pixels() {
         );
         rig.assert_no_validation_errors();
     }
+}
+
+/// The sweep at its documented call site, with the caching pane both live
+/// surfaces actually are: run the UI (which paints an id held from an earlier
+/// frame and never touches the host), then `end_frame`, and only then paint.
+///
+/// This is the exact sequence the shell will use — `end_frame` at the end of
+/// `App::update`, before eframe renders — and the one that made "liveness = did
+/// anyone ask" unsafe: under that rule the slot is freed between the paint and
+/// the render pass, `egui_wgpu::Renderer::render` cannot resolve the mesh's bind
+/// group, and the pane reads back the panel background with nothing but a
+/// `Missing texture` log line to show for it.
+///
+/// Would catch: a sweep that ignores `visible`, or one that is unsafe to run
+/// between the UI pass and the paint.
+///
+/// Verified by dropping `|| visible.contains(key)` from `end_frame`'s retain:
+/// `the swept pane read back the panel background: got [27, 27, 27, 255], want
+/// ~[255, 0, 0, 255]` fired, with no validation error — the silent blank, exactly
+/// as advertised.
+#[test]
+fn a_cached_pane_survives_a_sweep_between_the_ui_and_the_paint() {
+    let mut rig = Rig::new();
+    let ctx = egui::Context::default();
+    ctx.set_pixels_per_point(1.0);
+    let screen = egui::vec2(320.0, 160.0);
+    let rect_size = egui::vec2(120.0, 100.0);
+
+    // Frame 1: present and cache the id, the way `ShellState::ensure_presented`
+    // does. The host is not consulted again.
+    let held = rig
+        .host
+        .present_keyed(PANE_A, &blank(), size(120, 100), RED);
+    rig.host.end_frame(&visible([PANE_A]));
+
+    // Frame 2: the pane is unchanged, so it paints the cached id and nothing else.
+    let mut painted: Option<egui::Rect> = None;
+    let out = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen)),
+            ..Default::default()
+        },
+        |ui| {
+            egui::containers::CentralPanel::default().show(ui, |ui| {
+                let (rect, _) = ui.allocate_exact_size(rect_size, egui::Sense::hover());
+                egui::Image::new((held, rect.size()))
+                    .tint(egui::Color32::WHITE)
+                    .paint_at(ui, rect);
+                painted = Some(rect);
+            });
+        },
+    );
+
+    // The sweep lands here: after the UI, before the paint.
+    rig.host.end_frame(&visible([PANE_A]));
+
+    upload_font_textures(&rig, &out);
+    let pixels = render_frame(&rig, &ctx, out, screen);
+
+    let c = painted.expect("the pane drew").center();
+    assert_colour(
+        px_at(&pixels, screen.x as u32, c.x as u32, c.y as u32),
+        [255, 0, 0, 255],
+        "the swept pane read back the panel background",
+    );
+    rig.assert_no_validation_errors();
 }
