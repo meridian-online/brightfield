@@ -61,24 +61,33 @@
 //!   plus [`audit`], the gate itself.
 //! - [`shell`] — the surfaces the *shell* owns rather than a pane:
 //!   [`ToolbarItem`], [`StatusItem`], [`ModalView`].
-//! - [`workspace`] — [`ViewKind`], the view a pane belongs to.
+//! - [`workspace`] — [`ViewKind`] and [`Workspace`]: one tile tree per view,
+//!   plus which pane holds focus in each.
+//! - [`behavior`] — [`PaneChrome`], the one `egui_tiles::Behavior`.
+//! - [`persist`] — the versioned layout file and its debounced writer.
 //! - [`chrome`] — the one drawing file.
+//! - [`design`] — the Meridian tokens → egui `Style`/`Visuals`/fonts bridge.
 
+pub mod behavior;
 pub mod chrome;
+pub mod design;
 pub mod item;
+pub mod persist;
 pub mod registry;
 pub mod shell;
 pub mod subject;
 pub mod workspace;
 
+pub use behavior::PaneChrome;
 pub use item::{Handled, Item, ItemCtx, ItemId, ItemMap, PaneKey, Request};
+pub use persist::{DirtyTracker, LoadOutcome, SavedLayout, WindowGeometry};
 pub use registry::{audit, DockSide, ItemRegistry, ItemSpec, Slot};
 pub use shell::{ModalOutcome, ModalView, StatusItem, ToolbarItem, WorkspaceCtx, WorkspaceView};
 pub use subject::{
     Affordance, Crumb, Dirty, EmptyState, HideAffordance, Icon, StatusEntry, StatusSide, Subject,
     Tone, ToolbarEntry, ToolbarLocation, Verb,
 };
-pub use workspace::ViewKind;
+pub use workspace::{ViewKind, Workspace};
 
 /// Light or dark chrome.
 ///

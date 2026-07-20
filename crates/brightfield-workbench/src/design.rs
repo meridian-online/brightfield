@@ -2,13 +2,31 @@
 //!
 //! The design crate is deliberately framework-free (`meridian_design::Rgba` is
 //! plain sRGB straight-alpha data — ADR 0003), so every consumer converts at its
-//! own boundary. This module is that boundary for the egui shell: it derives an
-//! [`egui::Visuals`] / [`egui::Style`] from the Meridian gray + Maritime scales,
-//! chrome ink, and type ramp, and installs the bundled Inter / JetBrains Mono
-//! faces into egui's [`egui::FontDefinitions`]. Nothing here is invented — it is
-//! a mechanical port of `meridian-design` tokens onto egui's slots.
+//! own boundary. This module is that boundary for every egui surface: it derives
+//! an [`egui::Visuals`] / [`egui::Style`] from the Meridian gray + Maritime
+//! scales, chrome ink, and type ramp, and installs the bundled Inter / JetBrains
+//! Mono faces into egui's [`egui::FontDefinitions`]. Nothing here is invented —
+//! it is a mechanical port of `meridian-design` tokens onto egui's slots.
 //!
 //! The single colour boundary is [`to_color32`]; everything else composes it.
+//!
+//! # Why this lives in the workbench rather than in the shell
+//!
+//! It used to live in `brightfield-shell` — the crate that *consumes* the
+//! workbench. That put the type ramp and the widget ink downstream of the
+//! chrome drawn from them, with two consequences. Any workbench test that runs
+//! a real frame got egui's default sans and egui's default widget greys, so
+//! anything it measured or pinned was a baseline that is neither Meridian nor
+//! what ships. And [`crate::Mode`] already had to live up here, because
+//! [`crate::chrome`] resolves every colour through
+//! `meridian_design::semantic(dark)` — so the mode enum and the style bridge
+//! that consumes it sat in two crates for no reason but history.
+//!
+//! Its whole dependency set is `egui`, `meridian_design` and `std::sync::Arc`:
+//! no eframe, no wgpu, no vello, so nothing about the move loosens the
+//! constraint that keeps this crate headlessly testable. `brightfield-shell`
+//! re-exports the module under its old path, so `brightfield_shell::design::…`
+//! call sites are unchanged.
 
 use std::sync::Arc;
 
@@ -23,14 +41,11 @@ use meridian_design::MARITIME;
 
 /// Light or dark chrome.
 ///
-/// Defined in `brightfield-workbench` and re-exported here. It moved because
-/// the workbench's chrome resolves every colour it paints through
-/// `meridian_design::semantic(dark)`, so it needs the mode before any shell
-/// type exists. It is re-exported rather than relocated outright because
-/// `design::Mode` is the name this crate, the snapshot tier and the headless
-/// shot binary already use — a mechanical rename across all of them would be
-/// churn that buries the one change actually worth reading.
-pub use brightfield_workbench::Mode;
+/// Defined at this crate's root, because [`crate::chrome`] needs it too, and
+/// re-exported here: `design::Mode` is the name the shell, the snapshot tier
+/// and the headless shot binary already use, and a mechanical rename across
+/// all of them would be churn that buries the change worth reading.
+pub use crate::Mode;
 
 /// The **one** colour boundary: a Meridian token (sRGB, straight alpha, 0–1) →
 /// an `egui::Color32` (gamma sRGB, straight alpha), keeping the token's alpha.

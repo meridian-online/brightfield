@@ -15,23 +15,29 @@ description = "The shell contract: what a pane declares about itself, and the on
 # carries no GPU handle, and why the whole contract can be asserted in a unit
 # test with no adapter, no window and no renderer.
 egui = "0.35"
-# `serde` is egui_tiles' only feature and its default; naming it explicitly
-# stops a future `default-features = false` from silently removing the ability
-# to persist a layout.
+# `serde` is egui_tiles' only feature and its default, and a `Tree` that cannot
+# serialise takes the whole arrangement out of the layout file. Naming it here
+# states a requirement rather than fixes a live break: this crate would get the
+# feature from the default anyway, and it declares it, so it builds correctly
+# on its own. It is named because Cargo unifies features across a workspace in
+# one direction only — a `default-features = false` elsewhere cannot remove
+# what this crate asks for, but relying on *another* crate's default to supply
+# it would be the version of this that does break.
 egui_tiles = { version = "0.16", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
+# JSON is the layout file's format: human-readable, diffable, and already in the
+# tree. Confined to `persist` — a `Subject` still carries no serialisation, and
+# nothing in the chrome path knows this crate exists.
+serde_json = "1"
 # The design tokens. Every colour, radius, row height and gap in this crate
-# comes from here; nothing is invented locally.
+# comes from here; nothing is invented locally. `design` is also where the
+# tokens become an `egui::Style`/`Visuals` and the bundled faces become an
+# `egui::FontDefinitions` — that bridge lives here rather than in the consuming
+# shell so a workbench frame is drawn in Meridian type and ink, not egui's.
 meridian-design = { git = "https://github.com/meridian-online/design", rev = "539c579c43897fdd0c7d5c141221201d5e97a910" }
 # The command registry, so a declared verb can be checked against the real
 # keyboard grammar rather than merely spelled like one.
 brightfield-keys = { version = "0.1.0", path = "../brightfield-keys" }
-
-[dev-dependencies]
-# The contract tests serialise a PaneKey to prove a layout naming an item this
-# build does not have fails to LOAD rather than materialising an undrawable
-# pane. Nothing in the crate itself serialises to JSON.
-serde_json = "1"
 
 [lints]
 workspace = true
