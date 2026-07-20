@@ -8,6 +8,8 @@ version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3b7f7f85a7e5f68090000ed7622545829afd484d210358702ae4cb97dd0c320"
 dependencies = [
+ "enumn",
+ "serde",
  "uuid",
 ]
 
@@ -81,6 +83,7 @@ dependencies = [
  "const-random",
  "getrandom 0.3.4",
  "once_cell",
+ "serde",
  "version_check",
  "zerocopy",
 ]
@@ -968,6 +971,7 @@ dependencies = [
  "brightfield-render",
  "brightfield-spec",
  "brightfield-sql",
+ "brightfield-workbench",
  "eframe",
  "egui",
  "egui-wgpu",
@@ -1021,6 +1025,18 @@ dependencies = [
  "pollster 0.4.0",
  "smallvec",
  "vello",
+]
+
+[[package]]
+name = "brightfield-workbench"
+version = "0.1.0"
+dependencies = [
+ "brightfield-keys",
+ "egui",
+ "egui_tiles",
+ "meridian-design",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1916,6 +1932,7 @@ checksum = "6758be723a3f298bbfda4db75748bc2ba0abafe096b6383c7c32da264764fbc3"
 dependencies = [
  "bytemuck",
  "emath",
+ "serde",
 ]
 
 [[package]]
@@ -1966,6 +1983,7 @@ dependencies = [
  "log",
  "nohash-hasher",
  "profiling",
+ "serde",
  "smallvec",
  "unicode-segmentation",
 ]
@@ -2042,6 +2060,7 @@ dependencies = [
  "egui",
  "itertools 0.14.0",
  "log",
+ "serde",
 ]
 
 [[package]]
@@ -2057,6 +2076,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cd4ec073c9898516584d8c6cfdcee95b530b3d941cd5031ef4050aa36812308b"
 dependencies = [
  "bytemuck",
+ "serde",
 ]
 
 [[package]]
@@ -2103,6 +2123,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "enumn"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f9ed6b3789237c8a0c1c505af1c7eb2c560df6186f01b098c3a1064ea532f38"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "epaint"
 version = "0.35.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2120,6 +2151,7 @@ dependencies = [
  "parking_lot",
  "profiling",
  "self_cell",
+ "serde",
  "skrifa",
  "smallvec",
  "unicode-general-category",
@@ -2407,6 +2439,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b38ad915f6dadd993ced50848a8291a543bd41ca62bc10740d5e64e2ab4cfd7"
 dependencies = [
  "bytemuck",
+ "serde",
 ]
 
 [[package]]
@@ -4295,7 +4328,7 @@ dependencies = [
 [[package]]
 name = "meridian-design"
 version = "0.1.0"
-source = "git+https://github.com/meridian-online/design?rev=9dd5d3882a38aa665d74544f87d412dab5129c24#9dd5d3882a38aa665d74544f87d412dab5129c24"
+source = "git+https://github.com/meridian-online/design?rev=539c579c43897fdd0c7d5c141221201d5e97a910#539c579c43897fdd0c7d5c141221201d5e97a910"
 
 [[package]]
 name = "metal"
@@ -6769,6 +6802,9 @@ name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "smithay-client-toolkit"

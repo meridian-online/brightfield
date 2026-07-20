@@ -15,7 +15,7 @@ brightfield-engine = { path = "../brightfield-engine" }
 brightfield-spec = { path = "../brightfield-spec" }
 brightfield-sql = { path = "../brightfield-sql" }
 # Meridian design tokens, bridged into egui Style/Visuals/FontDefinitions.
-meridian-design = { git = "https://github.com/meridian-online/design", rev = "9dd5d3882a38aa665d74544f87d412dab5129c24" }
+meridian-design = { git = "https://github.com/meridian-online/design", rev = "539c579c43897fdd0c7d5c141221201d5e97a910" }
 
 # VERSION LOCK — egui 0.35 rides wgpu 29, the same wgpu major Vello 0.9 uses, so
 # `egui_wgpu`'s wgpu and `vello::wgpu` resolve to ONE crate instance and therefore
@@ -39,6 +39,11 @@ serde_json = "1"
 egui_tiles = { version = "0.16", default-features = false }
 brightfield-protocol = { version = "0.1.0", path = "../brightfield-protocol" }
 brightfield-keys = { version = "0.1.0", path = "../brightfield-keys" }
+# The shell contract: Subject, Item, the registry, and the one chrome file.
+# Only `Mode` is consumed so far — the views move onto the contract in later
+# steps — but the edge is here now so `design::Mode` can be a re-export rather
+# than a second definition of the same two-variant enum.
+brightfield-workbench = { version = "0.1.0", path = "../brightfield-workbench" }
 
 [dev-dependencies]
 # Tier-1 real-UI snapshot loop: egui_kittest renders the real app headlessly on

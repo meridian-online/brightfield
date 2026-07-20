@@ -1,0 +1,37 @@
+[package]
+name = "brightfield-workbench"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The shell contract: what a pane declares about itself, and the one place chrome is drawn"
+
+[dependencies]
+# egui is the drawing surface, and egui_tiles supplies the tile identity a pane
+# is addressed by. Deliberately ABSENT: eframe, egui-wgpu, wgpu, vello, gpui.
+# That absence is load-bearing three times over — it is why this crate owns its
+# own layout persistence rather than borrowing the gpui shell's, why `ItemCtx`
+# carries no GPU handle, and why the whole contract can be asserted in a unit
+# test with no adapter, no window and no renderer.
+egui = "0.35"
+# `serde` is egui_tiles' only feature and its default; naming it explicitly
+# stops a future `default-features = false` from silently removing the ability
+# to persist a layout.
+egui_tiles = { version = "0.16", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+# The design tokens. Every colour, radius, row height and gap in this crate
+# comes from here; nothing is invented locally.
+meridian-design = { git = "https://github.com/meridian-online/design", rev = "539c579c43897fdd0c7d5c141221201d5e97a910" }
+# The command registry, so a declared verb can be checked against the real
+# keyboard grammar rather than merely spelled like one.
+brightfield-keys = { version = "0.1.0", path = "../brightfield-keys" }
+
+[dev-dependencies]
+# The contract tests serialise a PaneKey to prove a layout naming an item this
+# build does not have fails to LOAD rather than materialising an undrawable
+# pane. Nothing in the crate itself serialises to JSON.
+serde_json = "1"
+
+[lints]
+workspace = true

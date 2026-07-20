@@ -21,16 +21,16 @@ use meridian_design::scales::{
 use meridian_design::typography::{CHART_LABEL_SIZE, UI_SIZE};
 use meridian_design::MARITIME;
 
-/// Light or dark chrome. The Vello chart canvas is light-first this phase, so
-/// [`Mode::Light`] is the shell default (dark chrome around a white chart reads
-/// as broken until dark chart ink lands).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Mode {
-    /// Light chrome (the current default).
-    Light,
-    /// Dark chrome (tokens ready; chart ink follows in a later phase).
-    Dark,
-}
+/// Light or dark chrome.
+///
+/// Defined in `brightfield-workbench` and re-exported here. It moved because
+/// the workbench's chrome resolves every colour it paints through
+/// `meridian_design::semantic(dark)`, so it needs the mode before any shell
+/// type exists. It is re-exported rather than relocated outright because
+/// `design::Mode` is the name this crate, the snapshot tier and the headless
+/// shot binary already use — a mechanical rename across all of them would be
+/// churn that buries the one change actually worth reading.
+pub use brightfield_workbench::Mode;
 
 /// The **one** colour boundary: a Meridian token (sRGB, straight alpha, 0–1) →
 /// an `egui::Color32` (gamma sRGB, straight alpha), keeping the token's alpha.

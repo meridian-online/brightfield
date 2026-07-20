@@ -31,7 +31,7 @@ gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", 
 # Meridian design tokens (design phase 4 PR A): bundled Inter/JetBrains Mono
 # font bytes + the emitted gpui-component ThemeConfig JSON pair. MIT,
 # dependency-free by contract.
-meridian-design = { git = "https://github.com/meridian-online/design", rev = "9dd5d3882a38aa665d74544f87d412dab5129c24" }
+meridian-design = { git = "https://github.com/meridian-online/design", rev = "539c579c43897fdd0c7d5c141221201d5e97a910" }
 serde_json = "1"
 arrow = { version = "58", default-features = false }
 vello = "0.9"
