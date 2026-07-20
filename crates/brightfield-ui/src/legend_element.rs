@@ -198,7 +198,7 @@ fn raster_cache_hit(
 
 /// Whether a legend arms its click / cursor / hover affordances: it must be
 /// BOUND (`binding_present`) AND categorical (`Scale::Colour`). Sequential and
-/// unbound legends stay display-only (affordance). A pure
+/// unbound legends stay display-only. A pure
 /// predicate so the gate is unit-testable without constructing an element.
 fn legend_is_clickable(binding_present: bool, scale: &Scale) -> bool {
     binding_present && matches!(scale, Scale::Colour { .. })
@@ -546,7 +546,7 @@ mod tests {
     /// same set + same hover hits; a different set, a widened union, or a new
     /// hover misses; a static legend (empty set, `None` hover) always hits.
     #[test]
-    fn cfr_ac06_raster_cache_keys_on_dims_selected_and_hover() {
+    fn raster_cache_keys_on_dims_selected_and_hover() {
         let g = set(&["gentoo"]);
         let a = set(&["adelie"]);
         let ga = set(&["adelie", "gentoo"]);
@@ -576,7 +576,7 @@ mod tests {
     /// (gradient) legend both stay inert, so a static key never invites a click
     /// it cannot honour.
     #[test]
-    fn lif_ac01_only_a_bound_colour_legend_is_clickable() {
+    fn only_a_bound_colour_legend_is_clickable() {
         let colour = colour_scale();
         let sequential = Scale::Sequential {
             domain_min: 0.0,
@@ -595,7 +595,7 @@ mod tests {
     /// than a click would select. Centres map to 0,1,2; a row gap and a
     /// Sequential scale resolve to no entry.
     #[test]
-    fn lif_ac02_swatch_hit_index_shares_click_geometry() {
+    fn swatch_hit_index_shares_click_geometry() {
         let scale = colour_scale();
         let rects = swatch_entry_rects(0.0, 0.0, &scale);
         for (i, rect) in rects.iter().enumerate() {
@@ -624,7 +624,7 @@ mod tests {
     /// device pixels per side, so the window legend paints the full stroke
     /// the PNG composite shows.
     #[test]
-    fn fww_ac04_raster_buffer_pads_for_border_overhang() {
+    fn raster_buffer_pads_for_border_overhang() {
         // sf = 1: a 0.25px overhang ceils to a 1-device-px pad per side.
         assert_eq!(legend_raster_geometry(120.0, 24.0, 1.0), (122, 26, 1));
         // sf = 2 (Retina): 0.5 device px of overhang still ceils to 1.
@@ -656,7 +656,7 @@ mod tests {
     /// click in the panel padding between/around entries resolves None, and
     /// a Sequential scale never resolves (no discrete entries).
     #[test]
-    fn lcf_ac05_swatch_hit_category_maps_local_click_to_entry() {
+    fn swatch_hit_category_maps_local_click_to_entry() {
         let scale = colour_scale();
         let rects = swatch_entry_rects(0.0, 0.0, &scale);
         assert_eq!(rects.len(), 3);

@@ -465,14 +465,14 @@ steps:
     }
 
     #[test]
-    fn pds_ac06_layout_repeated_call_equality() {
+    fn layout_repeated_call_equality() {
         let g = diamond();
         let cfg = LayoutConfig::default();
         assert_eq!(layout(&g, &cfg), layout(&g, &cfg));
     }
 
     #[test]
-    fn pds_ac06_whole_pixel_quantisation() {
+    fn whole_pixel_quantisation() {
         let g = diamond();
         let l = layout(&g, &LayoutConfig::default());
         assert_eq!(l.width.fract(), 0.0);

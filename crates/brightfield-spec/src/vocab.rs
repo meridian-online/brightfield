@@ -316,7 +316,7 @@ mod tests {
     /// verification: every variant of every Kind enum exposes an
     /// `ImplStatus` via a `status()` method.
     #[test]
-    fn dfspec_ac03_every_kind_has_status() {
+    fn every_kind_has_status() {
         for k in MarkKind::all() {
             let _ = k.status();
         }
@@ -362,7 +362,7 @@ mod tests {
         }
     }
 
-    /// 2026-07-03; UPDATED 2026-07-17.
+    /// Input-widget status (recorded 2026-07-03; updated 2026-07-17).
     /// `InputKind::Slider` is Implemented (a hosted SliderElement drives its
     /// param through commit_slider → propagate_param → re-render) AND
     /// `InputKind::Menu` is Implemented (a hosted MenuElement
@@ -370,7 +370,7 @@ mod tests {
     /// radio/checkbox riding as `style:` presentations). Search/Table stay
     /// Unimplemented — and keep warning honestly at parse.
     #[test]
-    fn slw_ac08_input_kind_slider_implemented_when_wired() {
+    fn input_kind_slider_implemented_when_wired() {
         assert_eq!(
             InputKind::Slider.status(),
             ImplStatus::Implemented,
@@ -432,7 +432,7 @@ mod tests {
     }
 
     #[test]
-    fn dfspec_ac03_wire_lookup_round_trips() {
+    fn wire_lookup_round_trips() {
         for k in MarkKind::all() {
             assert_eq!(MarkKind::from_wire(k.wire_name()), Some(*k));
         }
@@ -443,7 +443,7 @@ mod tests {
     /// stays Implemented — it now covers continuous (gradient-bar) legends as
     /// well as categorical (swatch) legends.
     #[test]
-    fn scs_ac09_legend_color_channel_stays_implemented() {
+    fn legend_color_channel_stays_implemented() {
         assert_eq!(LegendChannel::Color.status(), ImplStatus::Implemented);
     }
 
@@ -454,7 +454,7 @@ mod tests {
     /// still-deferred marks stay Unimplemented: cellX/cellY, denseLine, and
     /// Voronoi (the always-unimplemented swap stand-in — geo was promoted).
     #[test]
-    fn dmk_ac05_density_mark_promotions_and_non_promotions() {
+    fn density_mark_promotions_and_non_promotions() {
         for promoted in [
             MarkKind::Heatmap,
             MarkKind::Contour,
@@ -487,7 +487,7 @@ mod tests {
     /// end-to-end. `Voronoi` inherits geo's former role as the always-
     /// unimplemented census stand-in (genuinely far off; no lowerer/renderer).
     #[test]
-    fn geo_ac01_geo_implemented_voronoi_is_new_standin() {
+    fn geo_implemented_voronoi_is_new_standin() {
         assert_eq!(
             MarkKind::Geo.status(),
             ImplStatus::Implemented,
@@ -505,7 +505,7 @@ mod tests {
     /// composite AND as hosted window elements at their layout rects. The
     /// other layout components stay Unimplemented (DEV-0001 scaffolding).
     #[test]
-    fn fww_ac05_component_legend_implemented_when_hosted() {
+    fn component_legend_implemented_when_hosted() {
         assert_eq!(
             ComponentKind::Legend.status(),
             ImplStatus::Implemented,

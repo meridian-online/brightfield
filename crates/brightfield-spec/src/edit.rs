@@ -317,7 +317,7 @@ pub fn classify_edit(spec: &Spec, edit: &SpecEdit) -> Result<(), RefuseReason> {
     // that changes the sole colour plot's own domain — trips it too. Either way,
     // refuse rather than silently bounce to "restart to apply". An inline colour
     // fill with NO standalone legend stays clean (the earlier finding — see
-    // `clg_ac11_binding_an_inline_fill_is_clean`).
+    // `binding_an_inline_fill_is_clean`).
     let colour_edit = match edit {
         SpecEdit::SetChannel { channel, .. } => is_colour_channel(channel),
         SpecEdit::ChangeMarkType { new_kind, mark_ordinal, .. } => {
@@ -780,10 +780,10 @@ vconcat:
     // -------- apply mutates the AST exactly per variant --------
 
     #[test]
-    fn clg_ac01_change_mark_type_retypes_primary() {
+    fn change_mark_type_retypes_primary() {
         // dot -> line: a within-zero-baseline-class retype (both non-baseline),
         // so it is gate-clean (a cross-class dot -> bar is refused; see
-        // clg_ac11_cross_baseline_retype_is_refused).
+        // cross_baseline_retype_is_refused).
         let mut spec = parse(SINGLE);
         assert_eq!(primary_kind(&spec, "root"), MarkKind::Dot);
         apply(
@@ -799,7 +799,7 @@ vconcat:
     }
 
     #[test]
-    fn clg_ac01_set_channel_binds_column() {
+    fn set_channel_binds_column() {
         // Rebinding a LABELLED (Override) axis is gate-clean and mutates options.
         let mut spec = parse(SINGLE_LABELLED);
         apply(
@@ -824,7 +824,7 @@ vconcat:
     }
 
     #[test]
-    fn clg_ac01_add_mark_appends_and_inherits_data() {
+    fn add_mark_appends_and_inherits_data() {
         let mut spec = parse(SINGLE);
         assert_eq!(mark_count(&spec, "root"), 1);
         apply(&mut spec, &SpecEdit::AddMark { plot: cp("root"), kind: MarkKind::Line })
@@ -842,7 +842,7 @@ vconcat:
     }
 
     #[test]
-    fn clg_ac01_remove_mark_drops_primary_in_multi_mark_plot() {
+    fn remove_mark_drops_primary_in_multi_mark_plot() {
         let mut spec = parse(SINGLE);
         apply(&mut spec, &SpecEdit::AddMark { plot: cp("root"), kind: MarkKind::Line })
             .expect("clean");
@@ -855,7 +855,7 @@ vconcat:
     }
 
     #[test]
-    fn clg_ac01_gate_tripping_edit_leaves_spec_unchanged() {
+    fn gate_tripping_edit_leaves_spec_unchanged() {
         // RemoveMark that would empty the plot: Err, Spec byte-identical.
         let mut spec = parse(SINGLE);
         let before = spec.clone();
@@ -880,7 +880,7 @@ vconcat:
     }
 
     #[test]
-    fn clg_ac01_edits_target_the_focused_plot_in_a_multi_plot_spec() {
+    fn edits_target_the_focused_plot_in_a_multi_plot_spec() {
         let mut spec = parse(VCONCAT);
         assert_eq!(primary_kind(&spec, "root/vconcat[0]"), MarkKind::Dot);
         assert_eq!(primary_kind(&spec, "root/vconcat[1]"), MarkKind::Line);
@@ -899,7 +899,7 @@ vconcat:
     }
 
     #[test]
-    fn clg_ac01_unknown_plot_path_refuses() {
+    fn unknown_plot_path_refuses() {
         let mut spec = parse(SINGLE);
         let err = apply(
             &mut spec,
@@ -916,7 +916,7 @@ vconcat:
     // -------- targeting re-walks the live AST (no stale path) ------
 
     #[test]
-    fn clg_ac04_remove_then_add_keeps_primary_resolution_correct() {
+    fn remove_then_add_keeps_primary_resolution_correct() {
         // A RemoveMark then AddMark must leave the primary-mark resolution
         // correct — no stale positional path corruption.
         let mut spec = parse(SINGLE);
@@ -945,7 +945,7 @@ vconcat:
     }
 
     #[test]
-    fn clg_ac04_add_mark_yields_two_distinct_nodes_analysis_walks_them() {
+    fn add_mark_yields_two_distinct_nodes_analysis_walks_them() {
         // A second `dot` in one plot stays uniquely addressable by item ordinal
         // (analysis walks item positions, not kind).
         let mut spec = parse(SINGLE);
@@ -959,7 +959,7 @@ vconcat:
     // -------- snapshot-undo with a commit barrier --------
 
     #[test]
-    fn clg_ac02_push_edit_undo_restores_partial_eq() {
+    fn push_edit_undo_restores_partial_eq() {
         let mut spec = parse(SINGLE);
         let mut undo = UndoStack::new();
         undo.push(spec.clone());
@@ -981,7 +981,7 @@ vconcat:
     }
 
     #[test]
-    fn clg_ac02_three_edits_undo_in_lifo_order() {
+    fn three_edits_undo_in_lifo_order() {
         // All retypes stay within the non-zero-baseline class (dot/line/text/rect
         // are all baseline-None), so each is gate-clean.
         let mut spec = parse(SINGLE);
@@ -1007,7 +1007,7 @@ vconcat:
     }
 
     #[test]
-    fn clg_ac02_undo_cannot_cross_a_commit_barrier() {
+    fn undo_cannot_cross_a_commit_barrier() {
         let mut spec = parse(SINGLE);
         let mut undo = UndoStack::new();
         undo.push(spec.clone());
@@ -1024,7 +1024,7 @@ vconcat:
     }
 
     #[test]
-    fn clg_ac02_undo_on_empty_stack_is_a_defined_no_op() {
+    fn undo_on_empty_stack_is_a_defined_no_op() {
         let mut undo = UndoStack::new();
         assert_eq!(undo.undo(), UndoOutcome::NothingToUndo);
     }
@@ -1032,7 +1032,7 @@ vconcat:
     // -------- gate-classifier verdicts --------
 
     #[test]
-    fn clg_ac11_within_plot_edits_are_gate_clean() {
+    fn within_plot_edits_are_gate_clean() {
         let spec = parse(SINGLE);
         // A same-class retype (dot -> line) and add are clean (they change no
         // inset baseline / derived title / colour facet).
@@ -1052,7 +1052,7 @@ vconcat:
     }
 
     #[test]
-    fn clg_ac11_rebinding_a_derived_axis_is_refused() {
+    fn rebinding_a_derived_axis_is_refused() {
         // A rebind of a DERIVED (unlabelled) x/y axis changes the axis title,
         // which the launch-fixed margins can't hot-apply — refused.
         let spec = parse(SINGLE);
@@ -1072,7 +1072,7 @@ vconcat:
     }
 
     #[test]
-    fn clg_ac11_cross_baseline_retype_is_refused() {
+    fn cross_baseline_retype_is_refused() {
         // dot (no baseline) -> barY (Y baseline) flips the value-axis inset,
         // launch-fixed chrome -> refused. dot -> circle (both None) is clean.
         let spec = parse(SINGLE);
@@ -1091,7 +1091,7 @@ vconcat:
     }
 
     #[test]
-    fn clg_ac11_emptying_a_plot_is_refused() {
+    fn emptying_a_plot_is_refused() {
         let spec = parse(SINGLE);
         assert_eq!(
             classify_edit(&spec, &SpecEdit::RemoveMark { plot: cp("root"), mark_ordinal: 0 }),
@@ -1100,7 +1100,7 @@ vconcat:
     }
 
     #[test]
-    fn clg_ac11_binding_an_inline_fill_is_clean() {
+    fn binding_an_inline_fill_is_clean() {
         // An inline colour fill is NOT captured by chrome_divergence (only
         // STANDALONE legends are), so binding `fill` is gate-clean — verified
         // against the real gate by the brightfield-app agreement test.
@@ -1113,7 +1113,7 @@ vconcat:
     }
 
     #[test]
-    fn clg_ac11_remove_is_clean_when_plot_keeps_a_mark() {
+    fn remove_is_clean_when_plot_keeps_a_mark() {
         let mut spec = parse(SINGLE);
         apply(&mut spec, &SpecEdit::AddMark { plot: cp("root"), kind: MarkKind::Line })
             .expect("clean");
@@ -1140,7 +1140,7 @@ vconcat:
 ";
 
     #[test]
-    fn clg_ac11_finding3_colour_rebind_under_a_referencing_legend_is_refused() {
+    fn finding3_colour_rebind_under_a_referencing_legend_is_refused() {
         let spec = parse(LEGEND_REFERENCED);
         // A fill rebind on the legend-referenced plot changes its colour scale.
         assert_eq!(
@@ -1188,7 +1188,7 @@ vconcat:
     }
 
     #[test]
-    fn clg_ac11_finding3_colour_rebind_without_a_legend_stays_clean() {
+    fn finding3_colour_rebind_without_a_legend_stays_clean() {
         // The SAME fill rebind on a plot with NO standalone legend is clean — an
         // inline colour fill is not captured by the gate (the earlier finding).
         let spec = parse(SINGLE);
@@ -1241,7 +1241,7 @@ vconcat:
 ";
 
     #[test]
-    fn clg_ac11_finding2_no_for_legend_appears_on_a_zero_to_one_flip_is_refused() {
+    fn finding2_no_for_legend_appears_on_a_zero_to_one_flip_is_refused() {
         // 0 -> 1 colour plots: adding a fill shows the no-`for:` legend. The
         // pre-edit focused plot is NOT colour-encoded, so the old check let this
         // through (the delta-review bug); the count-flip check now refuses it.
@@ -1262,7 +1262,7 @@ vconcat:
     }
 
     #[test]
-    fn clg_ac11_finding2_no_for_legend_disappears_on_a_one_to_two_flip_is_refused() {
+    fn finding2_no_for_legend_disappears_on_a_one_to_two_flip_is_refused() {
         // 1 -> 2 colour plots: colouring the plain plot hides the sole no-`for:`
         // legend. Again the focused (plain) plot is not colour-encoded pre-edit.
         let spec = parse(NO_FOR_LEGEND_ONE_COLOUR);
@@ -1298,7 +1298,7 @@ vconcat:
     }
 
     #[test]
-    fn clg_ac11_finding2_no_for_legend_stable_count_is_clean() {
+    fn finding2_no_for_legend_stable_count_is_clean() {
         // A no-`for:` legend with TWO colour plots is UNPLACED (count != 1). A
         // colour rebind on one of them keeps count at 2 -> the legend stays absent
         // -> no `legends` change -> the edit is NOT refused for the legend reason
@@ -1342,7 +1342,7 @@ vconcat:
     // -------- parse -> apply -> serialise -> re-parse round-trip ----
 
     #[test]
-    fn clg_ac07a_edited_spec_round_trips_through_the_canonical_serialiser() {
+    fn edited_spec_round_trips_through_the_canonical_serialiser() {
         use crate::parse::serialise_spec;
         // Apply each variant's shape, then round-trip: the re-parsed AST must
         // equal the in-memory edited AST (the commit's re-serialise is lossy on

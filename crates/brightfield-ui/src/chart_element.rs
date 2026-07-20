@@ -202,7 +202,7 @@ mod tests {
     /// `SurfaceCursor` to its own glyph — pinned in `gpui_canvas`; the live glyph
     /// and its change-on-motion are Hugh's in-app eyeball.)
     #[test]
-    fn drb_ac08_region_cursor_mapping() {
+    fn region_cursor_mapping() {
         assert_eq!(overlay_cursor(BrushRegion::Interior, false), Some(SurfaceCursor::Grab));
         assert_eq!(overlay_cursor(BrushRegion::Interior, true), Some(SurfaceCursor::Grabbing));
         assert_eq!(

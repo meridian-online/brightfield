@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use brightfield_spec::{parse_spec, Format};
 
 #[test]
-fn dfspec_ac11_every_corpus_spec_round_trips() {
+fn every_corpus_spec_round_trips() {
     let corpus = corpus_dir();
     let entries = read_yaml_files(&corpus);
     assert!(!entries.is_empty(), "no YAML files found under {corpus:?}");

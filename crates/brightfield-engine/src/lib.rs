@@ -355,8 +355,8 @@ impl Session {
     }
 
     /// The predicate `contributor` currently holds in selection `name`, if
-    /// any — a read-only lookup into the live per-contributor store
-    /// . `contributor` is the `ComponentPath` payload string (the parent
+    /// any — a read-only lookup into the live per-contributor store.
+    /// `contributor` is the `ComponentPath` payload string (the parent
     /// plot path), matching the keys `propagate_selection` stores.
     ///
     /// The legend toggle derives its dispatch-vs-clear decision from this
@@ -721,9 +721,9 @@ impl Session {
     /// at every level against the full `param_state` and the active
     /// `selection_state`. The selection-predicate slice is captured ONCE
     /// before the loop, so chained re-execution honours the active brush
-    /// at every level (/ decision 2 invariant).
+    /// at every level (the decision-2 invariant).
     ///
-    /// **Dedup invariant (/ decision 3 — first-level-wins):** a
+    /// **Dedup invariant (decision 3 — first-level-wins):** a
     /// mark whose query references both an upstream param (e.g. `$A`) and a
     /// descendant (`$B` with `A → B`) appears in `subscriber_graph[A]`
     /// AND `subscriber_graph[B]`. The walk dispatches it at A's level
@@ -758,7 +758,7 @@ impl Session {
         // 3. Capture the selection-predicate slice ONCE before the loop.
         //    Every level of the walk receives the same slice, so a chained
         //    re-execution after a brush release continues to honour the
-        //    active selection (invariant). Capturing inside the
+        //    active selection (the decision-2 invariant). Capturing inside the
         //    loop would re-read self.selection_state at every level — no
         //    behavioural difference today, but a foot-gun if a future change
         //    accidentally mutates selection_state mid-walk.
@@ -1300,7 +1300,7 @@ mod tests {
 
     // --- EngineError variants ---
     #[test]
-    fn dex_ac02_engine_error_connection_failed() {
+    fn engine_error_connection_failed() {
         let err = EngineError::ConnectionFailed {
             cause: duckdb::Error::InvalidColumnIndex(0),
         };
@@ -1309,7 +1309,7 @@ mod tests {
     }
 
     #[test]
-    fn dex_ac02_engine_error_ddl_failed() {
+    fn engine_error_ddl_failed() {
         let err = EngineError::DdlFailed {
             source_name: "flights".to_string(),
             sql: "CREATE VIEW flights AS ...".to_string(),
@@ -1321,7 +1321,7 @@ mod tests {
     }
 
     #[test]
-    fn dex_ac02_engine_error_query_failed() {
+    fn engine_error_query_failed() {
         let err = EngineError::QueryFailed {
             mark_index: 2,
             mark_kind: "dot".to_string(),
@@ -1334,7 +1334,7 @@ mod tests {
     }
 
     #[test]
-    fn dex_ac02_engine_error_emit_failed() {
+    fn engine_error_emit_failed() {
         let err = EngineError::EmitFailed {
             cause: EmitError::UnsupportedMark {
                 kind: "geo".to_string(),
@@ -1347,7 +1347,7 @@ mod tests {
 
     // --- Engine::new() and load_spec ---
     #[test]
-    fn dex_ac03_load_spec_with_inline_data() {
+    fn load_spec_with_inline_data() {
         let yaml = r#"
 data:
   t:
@@ -1376,7 +1376,7 @@ plot:
     /// GeoJSON text the renderer parses. This is the hermetic path the inline
     /// example baselines on.
     #[test]
-    fn geo_ac02_ac03_inline_geojson_executes_offline_unwrapped() {
+    fn ac03_inline_geojson_executes_offline_unwrapped() {
         let yaml = r#"
 data:
   areas:
@@ -1414,7 +1414,7 @@ plot:
 
     // --- execute_mark ---
     #[test]
-    fn dex_ac04_execute_mark_unsupported() {
+    fn execute_mark_unsupported() {
         // Use a mark kind that SimpleLowerer is NOT registered for
         let yaml = r#"
 data:
@@ -1440,7 +1440,7 @@ plot:
 
     // --- execute_all with partial failure ---
     #[test]
-    fn dex_ac05_execute_all_partial_failure() {
+    fn execute_all_partial_failure() {
         // Mix a supported mark (dot with data.from) and an unsupported mark (voronoi)
         let yaml = r#"
 data:
@@ -1466,7 +1466,7 @@ plot:
 
     // --- SimpleLowerer end-to-end via Session ---
     #[test]
-    fn msv_ac01_execute_mark_dot_with_data_from() {
+    fn execute_mark_dot_with_data_from() {
         let yaml = r#"
 data:
   flights:
@@ -1491,7 +1491,7 @@ plot:
 
     // --- DDL failure produces structured error ---
     #[test]
-    fn dex_ac08_ddl_failed_nonexistent_parquet() {
+    fn ddl_failed_nonexistent_parquet() {
         let yaml = r#"
 data:
   flights: { file: /nonexistent/path/flights.parquet }
@@ -1543,7 +1543,7 @@ plot:
     /// `__bf_*` column profiles to typed, gated stats — min/max only for the
     /// numeric/temporal columns, the internal column filtered out.
     #[test]
-    fn sbp_ac01_profiles_mixed_types_nulls_and_gating() {
+    fn profiles_mixed_types_nulls_and_gating() {
         let yaml = r#"
 data:
   t: "SELECT * FROM (VALUES (1, 1.5, 'a', DATE '2020-01-01', 10), (2, NULL, 'b', DATE '2020-06-01', 20)) AS v(i, f, s, d, __bf_secret)"
@@ -1603,7 +1603,7 @@ plot:
     /// other — the upgrade over the batch-derived approximation, which listed
     /// it empty.
     #[test]
-    fn sbp_ac01_declaration_order_and_unconsumed_source() {
+    fn declaration_order_and_unconsumed_source() {
         let yaml = r#"
 data:
   used:
@@ -1643,7 +1643,7 @@ plot:
     /// the Unsupported variant WITHOUT being queried, while a sibling view
     /// profiles normally.
     #[test]
-    fn sbp_ac01_attached_db_is_unsupported() {
+    fn attached_db_is_unsupported() {
         // A real on-disk DuckDB the spec can ATTACH read-only.
         let db_path = temp_fixture_path("attach.duckdb");
         {
@@ -1688,7 +1688,7 @@ plot:
     /// after load returns a Failed variant carrying the reason, while a
     /// sibling inline source profiles normally — the sidebar never blanks.
     #[test]
-    fn sbp_ac01_failing_source_is_isolated() {
+    fn failing_source_is_isolated() {
         let csv_path = temp_fixture_path("gone.csv");
         std::fs::write(&csv_path, "x\n1\n2\n").expect("write fixture csv");
         let yaml = format!(
@@ -1729,7 +1729,7 @@ plot:
 
     // --- Session drop and re-create ---
     #[test]
-    fn dex_ac09_session_drop_and_recreate() {
+    fn session_drop_and_recreate() {
         let yaml1 = r#"
 data:
   t1:
@@ -1764,7 +1764,7 @@ plot:
 
     // --- update_param filters to marks only ---
     #[test]
-    fn dex_ac06_update_param_filters_to_marks() {
+    fn update_param_filters_to_marks() {
         // Spec with a param referenced by a mark via filterBy AND an input
         // that also references the param. update_param should only return
         // results for marks, not inputs.
@@ -1810,7 +1810,7 @@ vconcat:
 
     // --- Prepared statement cache ---
     #[test]
-    fn dex_ac07_cache_populated_on_execute() {
+    fn cache_populated_on_execute() {
         let yaml = r#"
 data:
   t:
@@ -1860,7 +1860,7 @@ plot:
     // --- renderer-side SQL cache + duckdb_execute_count ---
 
     #[test]
-    fn gomb_ac11_sql_cache_skips_duckdb_execute_on_repeat() {
+    fn sql_cache_skips_duckdb_execute_on_repeat() {
         let yaml = r#"
 data:
   t:
@@ -1898,7 +1898,7 @@ plot:
     }
 
     #[test]
-    fn gomb_ac11_sql_cache_lru_eviction() {
+    fn sql_cache_lru_eviction() {
         // Property: cache eviction is LRU, not FIFO/random/MRU.
         // Strategy:
         //   1. Insert k0..k31 (cache full at 32, oldest = k0).
@@ -1974,7 +1974,7 @@ plot:
     }
 
     #[test]
-    fn gomb_ac12_propagate_param_with_unchanged_sql_hits_cache() {
+    fn propagate_param_with_unchanged_sql_hits_cache() {
         // Property: propagate_param re-dispatches subscribers via the SQL
         // execute path. When the param's value does NOT affect the emitted
         // SQL string, the second propagate_param call hits the cache and
@@ -1987,10 +1987,10 @@ plot:
         // empty for the contributor, so emit_query produces byte-identical
         // SQL across propagate_param calls regardless of the brush value.
         //
-        // This honours the spec's intent — "param mutation that
+        // This honours the cache-warmth rule — "param mutation that
         // does not change SQL keeps the cache warm" — without requiring
-        // bandwidth-as-runtime-param wiring, which is deferred to the
-        // two-tier param-effect routing card.
+        // bandwidth-as-runtime-param wiring, which stays deferred until param
+        // effects are routed in two tiers (data-shape vs render-only).
         let yaml = r#"
 params:
   brush:
@@ -2078,7 +2078,7 @@ plot:
     /// dx = binWidth/2 = 10 (data units); dy = size ≈ 11.547. Row order is
     /// x-centre then y-centre (determinism).
     #[test]
-    fn hex_ac02_hexbin_cube_round_fixture_executes() {
+    fn hexbin_cube_round_fixture_executes() {
         let yaml = r#"
 data:
   pts:
@@ -2139,7 +2139,7 @@ height: 150
     /// double-render byte-equality (the #42 determinism class) — the
     /// hexbin SQL orders its emitted centres, so two executions match exactly.
     #[test]
-    fn hex_ac02_hexbin_double_render_deterministic() {
+    fn hexbin_double_render_deterministic() {
         let yaml = r#"
 data:
   pts:
@@ -2172,7 +2172,7 @@ plot:
     /// a `fill: {avg: col}` hexbin aggregates the column per hex,
     /// aliased to the source column so the renderer's numeric-fill path reads it.
     #[test]
-    fn hex_ac02_hexbin_avg_executes() {
+    fn hexbin_avg_executes() {
         // Two points in the same hex (near origin) with values 10 and 20 ⇒ avg
         // 15; one far point (its own hex) with value 100.
         let yaml = r#"
@@ -2205,7 +2205,7 @@ height: 150
     /// a self-aggregating `cell` with `fill: {count:}` GROUP BYs the
     /// two categorical axes and counts per (x, y) pair, executed against DuckDB.
     #[test]
-    fn hex_ac05_self_aggregating_count_cell_executes() {
+    fn self_aggregating_count_cell_executes() {
         let yaml = r#"
 data:
   events:
@@ -2372,7 +2372,7 @@ plot:
     /// changes the mark's batch output when the param changes. This previously
     /// returned byte-identical output (in fact no `y`/`k` column at all).
     #[test]
-    fn pefr_ac05_propagate_param_changes_channel_batch() {
+    fn propagate_param_changes_channel_batch() {
         let yaml = r#"
 params:
   k: 3
@@ -2414,7 +2414,7 @@ plot:
     /// propagate_param on a `data.filter` param
     /// re-filters the row set — the param reaches the WHERE clause.
     #[test]
-    fn pefr_ac08_propagate_param_filter_changes_rows() {
+    fn propagate_param_filter_changes_rows() {
         let yaml = r#"
 params:
   k: 0
@@ -2459,7 +2459,7 @@ plot:
     /// misses the cache and re-executes DuckDB — the plan_hash fold keys the
     /// caches on the inlined value, so no stale batch is returned.
     #[test]
-    fn pefr_ac09_data_shape_param_reexecutes() {
+    fn data_shape_param_reexecutes() {
         let yaml = r#"
 params:
   k: 0
@@ -2500,7 +2500,7 @@ plot:
     /// the shipped example spec is reactive — raising
     /// the threshold param re-executes the query and drops points.
     #[test]
-    fn pefr_ac12_example_param_threshold_is_reactive() {
+    fn example_param_threshold_is_reactive() {
         let yaml = include_str!("../../../examples/param-threshold.yaml");
         let (spec, analysis) = parse_and_analyse(yaml);
         let engine = Engine::new();
@@ -2609,7 +2609,7 @@ plot:
 
     // --- QueryFailed with mark_index and mark_kind ---
     #[test]
-    fn dex_ac08_query_failed_with_mark_context() {
+    fn query_failed_with_mark_context() {
         let yaml = r#"
 data:
   t:
@@ -2647,7 +2647,7 @@ plot:
 
     // --- ddl_warnings accessor ---
     #[test]
-    fn dex_ac03_ddl_warnings_accessible() {
+    fn ddl_warnings_accessible() {
         // Inline data produces no warnings — test that the accessor works.
         let yaml = r#"
 data:
@@ -2667,7 +2667,7 @@ plot:
 
     // --- mixed partial failure via test helper ---
     #[test]
-    fn dex_ac05_execute_all_mixed_results() {
+    fn execute_all_mixed_results() {
         // Two marks: one succeeds via SimpleLowerer, one fails (unsupported).
         // This demonstrates Session can produce mixed Ok+Err in the same session.
         let yaml = r#"
@@ -2700,7 +2700,7 @@ plot:
 
     // --- (nav): update_extent with navigation filter ---
     #[test]
-    fn nav_ac10_update_extent_produces_filtered_sql() {
+    fn update_extent_produces_filtered_sql() {
         // Spec with inline data and a mark — we test that the emitted SQL
         // contains a BETWEEN-style predicate for the filtered column.
         let yaml = r#"
@@ -2735,7 +2735,7 @@ plot:
     }
 
     #[test]
-    fn nav_ac10_update_extent_emits_between_clause() {
+    fn update_extent_emits_between_clause() {
         // Direct test: emit a query with the navigation filter pass and
         // verify the SQL contains the expected BETWEEN-style predicates.
         use brightfield_sql::navigation_filter_pass::NavigationFilterPass;
@@ -2763,7 +2763,7 @@ plot:
     }
 
     #[test]
-    fn nav_ac10_update_extent_both_axes() {
+    fn update_extent_both_axes() {
         use brightfield_sql::navigation_filter_pass::NavigationFilterPass;
         use brightfield_sql::passes::Pass;
 
@@ -2784,7 +2784,7 @@ plot:
     }
 
     #[test]
-    fn nav_ac10_update_extent_none_is_no_filter() {
+    fn update_extent_none_is_no_filter() {
         let yaml = r#"
 data:
   t:
@@ -2803,7 +2803,7 @@ plot:
     }
 
     #[test]
-    fn dex_ac07_cache_returns_arrow_batches() {
+    fn cache_returns_arrow_batches() {
         let yaml = r#"
 data:
   t:
@@ -2832,7 +2832,7 @@ plot:
     // --- param_state + current_params ---
 
     #[test]
-    fn rpw2_ac01_param_state_initialised_from_defaults() {
+    fn param_state_initialised_from_defaults() {
         let yaml = r#"
 params:
   threshold: 50
@@ -2865,7 +2865,7 @@ plot:
     }
 
     #[test]
-    fn rpw2_ac01_param_state_empty_when_no_params() {
+    fn param_state_empty_when_no_params() {
         let yaml = r#"
 data:
   t:
@@ -2889,7 +2889,7 @@ plot:
     // --- propagate_param dispatches to subscribers ---
 
     #[test]
-    fn rpw2_ac02_propagate_param_dispatches_to_subscriber_mark() {
+    fn propagate_param_dispatches_to_subscriber_mark() {
         // Mark subscribes to "brush" via filterBy — this makes the mark
         // appear in the subscriber graph for "brush".
         // filterBy requires a selection param (not a value param).
@@ -2932,7 +2932,7 @@ plot:
     }
 
     #[test]
-    fn rpw2_ac02_propagate_param_updates_state_and_dispatches() {
+    fn propagate_param_updates_state_and_dispatches() {
         // Mark subscribes to "brush" via filterBy (selection param).
         let yaml = r#"
 params:
@@ -2969,7 +2969,7 @@ plot:
     // --- unsubscribed param returns empty ---
 
     #[test]
-    fn rpw2_ac03_unsubscribed_param_returns_empty() {
+    fn unsubscribed_param_returns_empty() {
         let yaml = r#"
 params:
   orphan: 0
@@ -3000,7 +3000,7 @@ plot:
     // --- partial failure ---
 
     #[test]
-    fn rpw2_ac04_partial_failure_mixed_ok_err() {
+    fn partial_failure_mixed_ok_err() {
         // Two marks subscribe to "brush" via filterBy. Dot is supported by
         // SimpleLowerer (Ok), voronoi is not (Err). Each mark is dispatched
         // independently — voronoi's failure must not prevent dot from succeeding.
@@ -3059,7 +3059,7 @@ plot:
     // --- unknown param permissive ---
 
     #[test]
-    fn rpw2_ac05_unknown_param_permissive() {
+    fn unknown_param_permissive() {
         let yaml = r#"
 data:
   t:
@@ -3088,7 +3088,7 @@ plot:
     // --- execute_mark uses param_state ---
 
     #[test]
-    fn rpw2_ac06_execute_mark_passes_param_state() {
+    fn execute_mark_passes_param_state() {
         // Verify that after propagate_param updates param_state, the state
         // is accessible and consistent. The actual param injection into SQL
         // depends on SimpleLowerer — here we verify the state
@@ -3139,7 +3139,7 @@ plot:
     // --- end-to-end integration ---
 
     #[test]
-    fn rpw2_ac07_end_to_end_param_propagation() {
+    fn end_to_end_param_propagation() {
         // Full pipeline: parse spec with params, load, propagate, verify state.
         // The actual SQL param injection requires SimpleLowerer;
         // this test verifies the coordinator's state management end-to-end.
@@ -3209,7 +3209,7 @@ plot:
     }
 
     #[test]
-    fn rpw2_ac01_selection_params_excluded_from_initial_state() {
+    fn selection_params_excluded_from_initial_state() {
         // Selection params should not appear in initial param_state.
         let yaml = r#"
 params:
@@ -3254,7 +3254,7 @@ plot:
     /// Ok results with zero rows — the brush WHERE-clause is threaded through
     /// to emit_query at every level.
     #[test]
-    fn rpw3_ac04_propagate_param_chained_walk() {
+    fn propagate_param_chained_walk() {
         // Chained DAG A → B (via menu input that filterBy $A and writes $B).
         // m_A and m_B both filterBy $brush AND subscribe to $A / $B
         // respectively via the opacity ParamRef channel. The marks live in
@@ -3381,7 +3381,7 @@ hconcat:
     /// the result vec — last-level-wins would also produce at-most-once
     /// but with a different ordering.
     #[test]
-    fn rpw3_ac05_propagate_param_first_level_wins_dedup() {
+    fn propagate_param_first_level_wins_dedup() {
         // Chained DAG A → B. Two marks:
         //   m_AB: subscribes to BOTH $A and $B (via opacity: $A AND fill: $B)
         //   m_B:  subscribes only to $B (via opacity: $B)
@@ -3482,7 +3482,7 @@ hconcat:
     /// descendant params (DAG siblings of the propagated root, or unrelated
     /// params) must NOT be re-executed.
     #[test]
-    fn rpw3_ac06_propagate_param_descendants_only() {
+    fn propagate_param_descendants_only() {
         // DAG: parent P → A, parent P → C (A and C are siblings in the DAG).
         // Marks: m_A subscribes to $A; m_C subscribes to $C.
         // Propagate A: only m_A should dispatch — m_C is a non-descendant.
@@ -3551,7 +3551,7 @@ hconcat:
     /// propagating to a param with no subscribers and no
     /// descendants returns an empty result vec, but param_state is updated.
     #[test]
-    fn rpw3_ac07_propagate_param_unsubscribed_leaf() {
+    fn propagate_param_unsubscribed_leaf() {
         let yaml = r#"
 params:
   orphan: 0
@@ -3587,7 +3587,7 @@ plot:
     /// (no registered lowerer → Err with EmitFailed { cause: UnsupportedMark }).
     /// The walk continues across mixed Ok/Err and updates param_state.
     #[test]
-    fn rpw3_ac08_propagate_param_partial_failure() {
+    fn propagate_param_partial_failure() {
         let yaml = r#"
 params:
   brush: { select: intersect }
@@ -3669,7 +3669,7 @@ plot:
     /// implementer who silently extends the walk to derive downstream
     /// param values from query results would break this test.
     #[test]
-    fn rpw3_ac15_propagate_param_does_not_mutate_downstream_params() {
+    fn propagate_param_does_not_mutate_downstream_params() {
         // Chained DAG A → B. Initial param_state has both A and B set.
         // After propagate_param("A", new_a), B should remain at its
         // initial value (the walk MUST NOT compute a new value for B from
@@ -3720,7 +3720,7 @@ data:
     /// selection_state is empty at load and gains an entry on first
     /// propagate_selection.
     #[test]
-    fn cfs2_ac01_selection_state_initial_empty() {
+    fn selection_state_initial_empty() {
         let yaml = r#"
 params:
   brush:
@@ -3760,7 +3760,7 @@ plot:
     /// propagate_selection dispatches to all subscriber marks.
     /// Two plots both filterBy $brush; result vec has one Ok per subscriber.
     #[test]
-    fn cfs2_ac02_propagate_selection_dispatches_to_subscribers() {
+    fn propagate_selection_dispatches_to_subscribers() {
         let yaml = r#"
 params:
   brush:
@@ -3811,7 +3811,7 @@ vconcat:
     /// a second propagate_selection from the same contributor
     /// replaces the prior predicate. A different contributor accumulates.
     #[test]
-    fn cfs2_ac03_same_contributor_replaces_predicate() {
+    fn same_contributor_replaces_predicate() {
         let yaml = r#"
 params:
   brush:
@@ -3864,7 +3864,7 @@ plot:
     /// resolution is crossfilter. A subscriber in plot[1] receives the
     /// predicate.
     #[test]
-    fn cfs2_ac05_parent_plot_self_exclusion() {
+    fn parent_plot_self_exclusion() {
         // crossfilter resolution drops predicates whose contributor source
         // matches the subscriber's self_source. We verify by emitting
         // the SQL for each subscriber and checking whether the predicate
@@ -3935,7 +3935,7 @@ vconcat:
     /// (intersect → AND, union → OR, single → last predicate). Verified
     /// by inspecting the rendered SQL.
     #[test]
-    fn cfs2_ac06_resolution_strategies_runtime() {
+    fn resolution_strategies_runtime() {
         // Intersect: AND of contributors.
         let yaml_intersect = r#"
 params:
@@ -4076,7 +4076,7 @@ plot:
     /// analysis.selection_subscribers) updates state but dispatches
     /// nothing.
     #[test]
-    fn cfs2_ac07_unsubscribed_selection_silent() {
+    fn unsubscribed_selection_silent() {
         let yaml = r#"
 data:
   t:
@@ -4112,7 +4112,7 @@ plot:
     /// and one unsupported (voronoi). One Ok + one Err; selection_state
     /// updated regardless. Mirrors the v2 partial-failure case.
     #[test]
-    fn cfs2_ac08_partial_failure() {
+    fn partial_failure() {
         let yaml = r#"
 params:
   brush:
@@ -4164,7 +4164,7 @@ plot:
     /// the resulting SQL contains a WHERE clause derived from the
     /// predicate — not "WHERE TRUE".
     #[test]
-    fn cfs2_ac09_emit_query_threads_param_and_selection() {
+    fn emit_query_threads_param_and_selection() {
         let yaml = r#"
 params:
   brush:
@@ -4213,7 +4213,7 @@ plot:
     /// rows via the full pipeline (parse → analyse → load → propagate
     /// → emit_query consumes selection → DuckDB returns batches).
     #[test]
-    fn cfs2_ac12_crossfilter_yaml_end_to_end() {
+    fn crossfilter_yaml_end_to_end() {
         // Use an inline crossfilter-style spec rather than the vendored
         // YAML directly: the vendor file uses parquet/csv files that
         // require an actual filesystem path. The structural shape is
@@ -4291,7 +4291,7 @@ hconcat:
     /// selection_state[name] and re-executes every subscriber. The result
     /// shape mirrors propagate_selection.
     #[test]
-    fn cfs3_ac01_clear_selection_removes_contributor() {
+    fn clear_selection_removes_contributor() {
         let yaml = r#"
 params:
   brush:
@@ -4360,7 +4360,7 @@ plot:
     /// name with an unknown contributor is a silent no-op — empty result vec,
     /// selection_state untouched, no panic.
     #[test]
-    fn cfs3_ac02_clear_selection_unsubscribed_silent() {
+    fn clear_selection_unsubscribed_silent() {
         let yaml = r#"
 params:
   brush:
@@ -4421,7 +4421,7 @@ plot:
     /// lib.rs:464-466 behaviour (propagate_param reads selection_state but
     /// never writes it) as a regression test.
     #[test]
-    fn cfs3_ac07_param_change_preserves_selection() {
+    fn param_change_preserves_selection() {
         let yaml = r#"
 params:
   threshold:
@@ -4498,7 +4498,7 @@ plot:
     /// This is the rally seam regression — pins the rpw3 chained walk as
     /// read-only over cfs2/cfs3 state.
     #[test]
-    fn cfs3_ac08_propagate_param_does_not_clobber_selection_state() {
+    fn propagate_param_does_not_clobber_selection_state() {
         let yaml = r#"
 params:
   threshold:
@@ -4587,7 +4587,7 @@ xLabel: X axis
     /// session and re-execute — the batch changed SHAPE (the new column present)
     /// and the connection/views were reused (no reload from disk).
     #[test]
-    fn clg_ac15_reload_spec_reemits_new_sql_on_the_same_session() {
+    fn reload_spec_reemits_new_sql_on_the_same_session() {
         let (spec_a, analysis_a) = parse_and_analyse(DENSITY_SPEC);
         let engine = Engine::new();
         let mut session = engine.load_spec(spec_a.clone(), analysis_a, None).unwrap().session;
@@ -4621,7 +4621,7 @@ xLabel: X axis
     /// CHANGED, the executed batch carries the NEW column, and undo (reload the
     /// pre-edit spec) re-lowers to the ORIGINAL SQL + column.
     #[test]
-    fn clg_ac05_set_channel_changes_sql_and_batch_and_undo_reverts() {
+    fn set_channel_changes_sql_and_batch_and_undo_reverts() {
         let (spec_a, analysis_a) = parse_and_analyse(DENSITY_SPEC);
         let sql_a = emit_query(&spec_a, 0, None, None).expect("emit A").sql;
 
@@ -4660,7 +4660,7 @@ xLabel: X axis
     /// disambiguated even for duplicate kinds), and a RemoveMark then AddMark
     /// leaves the primary-mark resolution correct (no stale-path corruption).
     #[test]
-    fn clg_ac04_add_mark_keeps_index_map_keys_unique_and_resolution_stable() {
+    fn add_mark_keeps_index_map_keys_unique_and_resolution_stable() {
         let yaml = r#"
 data:
   t:
@@ -4698,7 +4698,7 @@ plot:
     /// index resolves AND executes — while every pre-existing mark still resolves
     /// to its own path.
     #[test]
-    fn clg_ac16_count_change_rebuilds_mark_index_map_new_mark_resolves() {
+    fn count_change_rebuilds_mark_index_map_new_mark_resolves() {
         let yaml = r#"
 data:
   t:
@@ -4768,7 +4768,7 @@ plot:
     /// values arrive ordered (ORDER BY value), de-duplicated, NULL
     /// rows excluded, in the column's native SpecValue variant.
     #[test]
-    fn diw_ac03_distinct_values_ordered_deduped_null_excluded() {
+    fn distinct_values_ordered_deduped_null_excluded() {
         let session = distinct_fixture_session();
         let dv = session.distinct_values("t", "region", 50).expect("resolves");
         assert_eq!(
@@ -4787,7 +4787,7 @@ plot:
     /// variant identity is load-bearing for strict-variant default
     /// reconciliation and SQL emit downstream.
     #[test]
-    fn diw_ac03_distinct_values_native_integer_variant() {
+    fn distinct_values_native_integer_variant() {
         let session = distinct_fixture_session();
         let dv = session.distinct_values("t", "n", 50).expect("resolves");
         assert_eq!(
@@ -4800,7 +4800,7 @@ plot:
     /// a column exceeding the cap truncates to exactly `cap`
     /// values and sets the flag; a column at exactly the cap does not.
     #[test]
-    fn diw_ac03_distinct_values_cap_truncation_at_cap_plus_one() {
+    fn distinct_values_cap_truncation_at_cap_plus_one() {
         let session = distinct_fixture_session();
         // 3 distinct regions, cap 2 → truncated to the first 2 in order.
         let dv = session.distinct_values("t", "region", 2).expect("resolves");
@@ -4822,7 +4822,7 @@ plot:
     /// a nonexistent column errors without poisoning the session —
     /// a subsequent query on the same session succeeds.
     #[test]
-    fn diw_ac03_distinct_values_bad_column_isolated() {
+    fn distinct_values_bad_column_isolated() {
         let session = distinct_fixture_session();
         let err = session
             .distinct_values("t", "no_such_column", 50)

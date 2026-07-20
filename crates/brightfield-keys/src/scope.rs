@@ -133,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac03_bare_clear_selection_at_a_view_resolves_the_focused_plot() {
+    fn bare_clear_selection_at_a_view_resolves_the_focused_plot() {
         let focused = ComponentPath("root/hconcat[1]".into());
         let root = ComponentPath("root".into());
         let res = resolve_scope(&verb("clear-selection"), ctx(&focused, Altitude::View, &root), false);
@@ -141,7 +141,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac03_g_resolves_to_the_single_root_for_a_runtime_verb() {
+    fn g_resolves_to_the_single_root_for_a_runtime_verb() {
         let focused = ComponentPath("root/hconcat[1]".into());
         let root = ComponentPath("root".into());
         // g is tested even though no g-key is wired in v1.
@@ -150,7 +150,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac03_g_on_a_structural_or_non_runtime_verb_is_rejected() {
+    fn g_on_a_structural_or_non_runtime_verb_is_rejected() {
         let focused = ComponentPath("root/hconcat[0]".into());
         let root = ComponentPath("root".into());
         // Presentation is not a runtime verb.
@@ -163,7 +163,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac03_bare_verb_off_its_altitude_is_rejected_with_reason() {
+    fn bare_verb_off_its_altitude_is_rejected_with_reason() {
         let focused = ComponentPath("root".into());
         let root = ComponentPath("root".into());
         // cycle-colour-scheme is view-only; at the dashboard altitude it rejects.
@@ -177,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac03_bare_reserved_verb_rejects_with_its_bucket() {
+    fn bare_reserved_verb_rejects_with_its_bucket() {
         let focused = ComponentPath("root/hconcat[0]".into());
         let root = ComponentPath("root".into());
         let res = resolve_scope(&verb("filter-view"), ctx(&focused, Altitude::View, &root), false);
@@ -189,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac04_bare_applicability_matches_altitude_gate_and_excludes_reserved() {
+    fn bare_applicability_matches_altitude_gate_and_excludes_reserved() {
         let reg = registry();
         for v in &reg {
             for altitude in [Altitude::Dashboard, Altitude::View] {

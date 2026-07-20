@@ -233,7 +233,7 @@ mod tests {
     /// Round-trip: a well-formed saved layout at the expected
     /// version restores exactly — serialise → decide_load → the same value.
     #[test]
-    fn aws_ac03_round_trip_restores_saved_layout() {
+    fn round_trip_restores_saved_layout() {
         let value = layout_json(DOCK_STATE_VERSION);
         let raw = serde_json::to_string_pretty(&value).unwrap();
         match decide_load(Some(&raw), DOCK_STATE_VERSION) {
@@ -246,7 +246,7 @@ mod tests {
     /// non-object root, a missing version, and a version mismatch each
     /// fall back to the default layout with a distinct reason.
     #[test]
-    fn aws_ac03_missing_corrupt_or_mismatched_state_falls_back() {
+    fn missing_corrupt_or_mismatched_state_falls_back() {
         let cases: Vec<(Option<String>, &str)> = vec![
             (None, "no saved layout"),
             (Some("{ not json ".to_string()), "saved layout is not valid JSON"),
@@ -272,7 +272,7 @@ mod tests {
     /// payload with an empty shell — no children, null info — wherever it
     /// sits in the tree, while every other panel's state survives intact.
     #[test]
-    fn aws_ac03_canvas_state_is_excluded_from_persistence() {
+    fn canvas_state_is_excluded_from_persistence() {
         let mut value = layout_json(DOCK_STATE_VERSION);
         strip_canvas_state(&mut value);
 
@@ -314,7 +314,7 @@ mod tests {
     /// window elapses, a second change pushes the deadline out, an
     /// unchanged state skips the write, and quit flushes immediately.
     #[test]
-    fn aws_ac03_save_policy_debounces_and_quit_flushes() {
+    fn save_policy_debounces_and_quit_flushes() {
         let mut policy = SavePolicy::default();
 
         // Nothing pending → the timer does nothing.
@@ -362,7 +362,7 @@ mod tests {
     /// authoring mode (and the quit flush in authoring covers a quit that
     /// arrives first).
     #[test]
-    fn aws_ac03_timer_fired_while_presenting_writes_nothing() {
+    fn timer_fired_while_presenting_writes_nothing() {
         let mut policy = SavePolicy::default();
         policy.layout_changed(1_000);
         let due = 1_000 + SAVE_DEBOUNCE_MS;
@@ -381,7 +381,7 @@ mod tests {
     /// Path selection: the env override wins and the fallbacks
     /// choose a per-user config location; no home, no path.
     #[test]
-    fn aws_ac03_state_path_prefers_override_then_config_dir() {
+    fn state_path_prefers_override_then_config_dir() {
         let over = dock_state_path(Some("/tmp/bf-test"), None, Some("/Users/x"));
         assert_eq!(over, Some(PathBuf::from("/tmp/bf-test/dock-state.json")));
 

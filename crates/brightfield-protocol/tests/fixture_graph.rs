@@ -31,7 +31,7 @@ fn rel_node<'g>(g: &'g AssetGraph, step: &str, label: &str) -> &'g brightfield_p
 }
 
 #[test]
-fn pds_ac02_tier_sql_explodes_into_a_statement_chain() {
+fn tier_sql_explodes_into_a_statement_chain() {
     let g = fixture_graph("edgar_gleif/arcform.yaml");
     // tier.sql's four statements: authoritative -> authoritative_d ->
     // probabilistic -> crosswalk_edges. Intermediates are INTERNAL (consumed
@@ -55,7 +55,7 @@ fn pds_ac02_tier_sql_explodes_into_a_statement_chain() {
 }
 
 #[test]
-fn pds_ac03_ncen_family_collapses_to_one_tile() {
+fn ncen_family_collapses_to_one_tile() {
     let g = collapse_families(&fixture_graph("edgar_gleif/arcform.yaml"));
     // The four fetch+extract pairs (8 steps) fold to one partitioned tile.
     let tile = &g.nodes["family.edgar_gleif.fetch_ncen+extract_ncen"];
@@ -83,7 +83,7 @@ fn pds_ac03_ncen_family_collapses_to_one_tile() {
 }
 
 #[test]
-fn pds_ac04_degrade_fixture_chips_only_the_bad_statement() {
+fn degrade_fixture_chips_only_the_bad_statement() {
     let g = fixture_graph("degrade.yaml");
     // The middle statement is an opaque, issue-badged chip...
     let chip = &g.nodes["stmt.degrade.transform#1"];
@@ -102,7 +102,7 @@ fn pds_ac04_degrade_fixture_chips_only_the_bad_statement() {
 }
 
 #[test]
-fn pds_ac05_fixture_kinds_gate_and_sink() {
+fn fixture_kinds_gate_and_sink() {
     let g = fixture_graph("edgar_gleif/arcform.yaml");
     // SOURCE nodes carry host labels.
     assert!(g
@@ -133,7 +133,7 @@ fn pds_ac05_fixture_kinds_gate_and_sink() {
 }
 
 #[test]
-fn pds_ac06_fixture_layout_is_deterministic() {
+fn fixture_layout_is_deterministic() {
     // Parse -> graph -> collapse -> layout TWICE from scratch: identical
     // coordinates (BTreeMap ordering end-to-end, fixed median sweeps).
     let cfg = LayoutConfig::default();

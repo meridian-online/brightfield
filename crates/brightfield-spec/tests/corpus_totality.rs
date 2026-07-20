@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use brightfield_spec::{parse_spec_path, ParseError};
 
 #[test]
-fn dfspec_ac12_corpus_totality() {
+fn corpus_totality() {
     let corpus = corpus_dir();
     let entries = read_yaml_files(&corpus);
     assert!(

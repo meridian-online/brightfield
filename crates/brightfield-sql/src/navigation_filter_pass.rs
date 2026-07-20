@@ -94,7 +94,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_ac09_empty_filters_is_identity() {
+    fn empty_filters_is_identity() {
         let pass = NavigationFilterPass::new(vec![]);
         let plan = source_plan();
         let result = pass.apply(plan.clone());
@@ -102,7 +102,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_ac09_x_only_inserts_one_filter() {
+    fn x_only_inserts_one_filter() {
         let pass = NavigationFilterPass::from_extents(
             Some(("x", 2.0, 4.0)),
             None,
@@ -123,7 +123,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_ac09_y_only_inserts_one_filter() {
+    fn y_only_inserts_one_filter() {
         let pass = NavigationFilterPass::from_extents(
             None,
             Some(("y", 10.0, 50.0)),
@@ -141,7 +141,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_ac09_both_axes_inserts_two_nested_filters() {
+    fn both_axes_inserts_two_nested_filters() {
         let pass = NavigationFilterPass::from_extents(
             Some(("x", 1.0, 3.0)),
             Some(("y", 10.0, 30.0)),
@@ -169,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_ac09_predicate_uses_column_names_from_channel_map() {
+    fn predicate_uses_column_names_from_channel_map() {
         // Simulate ChannelMap providing "timestamp" for x and "price" for y.
         let pass = NavigationFilterPass::from_extents(
             Some(("timestamp", 1000.0, 2000.0)),
@@ -183,7 +183,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_ac09_none_extent_is_noop() {
+    fn none_extent_is_noop() {
         let pass = NavigationFilterPass::from_extents(None, None);
         let plan = source_plan();
         let result = pass.apply(plan.clone());

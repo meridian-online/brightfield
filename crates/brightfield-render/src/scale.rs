@@ -1218,7 +1218,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_ac02_infer_linear_scales() {
+    fn infer_linear_scales() {
         let batch = make_numeric_batch();
         let mut cm = ChannelMap::new();
         cm.insert(Channel::X, "x".to_string());
@@ -1254,7 +1254,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_ac02_infer_band_scale() {
+    fn infer_band_scale() {
         let batch = make_categorical_batch();
         let mut cm = ChannelMap::new();
         cm.insert(Channel::X, "category".to_string());
@@ -1271,7 +1271,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_ac02_infer_time_scale() {
+    fn infer_time_scale() {
         let batch = make_time_batch();
         let mut cm = ChannelMap::new();
         cm.insert(Channel::X, "ts".to_string());
@@ -1294,7 +1294,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_ac02_infer_colour_scale_for_fill_channel() {
+    fn infer_colour_scale_for_fill_channel() {
         let batch = make_categorical_batch();
         let mut cm = ChannelMap::new();
         cm.insert(Channel::Fill, "category".to_string());
@@ -1312,7 +1312,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_ac02_linear_scale_maps_correctly() {
+    fn linear_scale_maps_correctly() {
         let scale = Scale::Linear {
             domain_min: 0.0,
             domain_max: 100.0,
@@ -1327,7 +1327,7 @@ mod tests {
     // --- ViewExtent ---
 
     #[test]
-    fn nav_ac01_view_extent_with_both_axes() {
+    fn view_extent_with_both_axes() {
         let ve = ViewExtent {
             x: Some((10.0, 50.0)),
             y: Some((100.0, 200.0)),
@@ -1337,14 +1337,14 @@ mod tests {
     }
 
     #[test]
-    fn nav_ac01_view_extent_with_none_axes() {
+    fn view_extent_with_none_axes() {
         let ve = ViewExtent::default();
         assert_eq!(ve.x, None);
         assert_eq!(ve.y, None);
     }
 
     #[test]
-    fn nav_ac01_view_extent_partial() {
+    fn view_extent_partial() {
         let ve = ViewExtent {
             x: Some((1.0, 2.0)),
             y: None,
@@ -1356,7 +1356,7 @@ mod tests {
     // --- Scale::inverse_f64 ---
 
     #[test]
-    fn nav_ac02_linear_inverse_at_endpoints() {
+    fn linear_inverse_at_endpoints() {
         let scale = Scale::Linear {
             domain_min: 0.0,
             domain_max: 100.0,
@@ -1370,7 +1370,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_ac02_linear_inverse_at_midpoint() {
+    fn linear_inverse_at_midpoint() {
         let scale = Scale::Linear {
             domain_min: 0.0,
             domain_max: 100.0,
@@ -1382,7 +1382,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_ac02_linear_inverse_roundtrip() {
+    fn linear_inverse_roundtrip() {
         let scale = Scale::Linear {
             domain_min: 10.0,
             domain_max: 90.0,
@@ -1396,7 +1396,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_ac02_time_inverse() {
+    fn time_inverse() {
         let scale = Scale::Time {
             domain_min_us: 1_000_000,
             domain_max_us: 4_000_000,
@@ -1410,7 +1410,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_ac02_band_inverse_returns_none() {
+    fn band_inverse_returns_none() {
         let scale = Scale::Band {
             categories: vec!["a".to_string(), "b".to_string()],
             range_start: 0.0,
@@ -1421,7 +1421,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_ac02_colour_inverse_returns_none() {
+    fn colour_inverse_returns_none() {
         let scale = Scale::Colour {
             categories: vec!["a".to_string()],
             palette: vec![[1.0, 0.0, 0.0, 1.0]],
@@ -1430,7 +1430,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_ac02_band_scale_maps_categories() {
+    fn band_scale_maps_categories() {
         let scale = Scale::Band {
             categories: vec!["a".to_string(), "b".to_string(), "c".to_string()],
             range_start: 0.0,
@@ -1452,7 +1452,7 @@ mod tests {
     // --- infer_scales_multi ---
 
     #[test]
-    fn msv_ac02_multi_unions_linear_domains() {
+    fn multi_unions_linear_domains() {
         // Batch 1: x in [1, 5], y in [10, 50]
         let schema1 = Arc::new(Schema::new(vec![
             Field::new("x", DataType::Float64, false),
@@ -1519,7 +1519,7 @@ mod tests {
     }
 
     #[test]
-    fn msv_ac02_multi_unions_categorical_fill() {
+    fn multi_unions_categorical_fill() {
         let schema1 = Arc::new(Schema::new(vec![
             Field::new("category", DataType::Utf8, false),
         ]));
@@ -1560,7 +1560,7 @@ mod tests {
     }
 
     #[test]
-    fn msv_ac02_multi_single_entry_matches_infer_scales() {
+    fn multi_single_entry_matches_infer_scales() {
         let batch = make_numeric_batch();
         let mut cm = ChannelMap::new();
         cm.insert(Channel::X, "x".to_string());
@@ -1629,7 +1629,7 @@ mod tests {
     // --- Scale::Sequential + map_continuous ---
 
     #[test]
-    fn scs_ac01_map_continuous_interpolates_and_clamps() {
+    fn map_continuous_interpolates_and_clamps() {
         let black = [0.0, 0.0, 0.0, 1.0];
         let white = [1.0, 1.0, 1.0, 1.0];
         let scale = Scale::Sequential {
@@ -1662,7 +1662,7 @@ mod tests {
     }
 
     #[test]
-    fn scs_ac01_map_continuous_locates_correct_bracket() {
+    fn map_continuous_locates_correct_bracket() {
         // Three stops over [0, 2]: red, green, blue. A value at t=0.75 sits in the
         // second segment (green → blue) three-quarters along.
         let scale = Scale::Sequential {
@@ -1683,7 +1683,7 @@ mod tests {
     // --- SequentialScheme ---
 
     #[test]
-    fn scs_ac02_scheme_stops_and_wire_roundtrip() {
+    fn scheme_stops_and_wire_roundtrip() {
         for scheme in [
             SequentialScheme::Viridis,
             SequentialScheme::Blues,
@@ -1711,7 +1711,7 @@ mod tests {
     }
 
     #[test]
-    fn scs_ac02_next_cycles_viridis_blues_turbo_meridian() {
+    fn next_cycles_viridis_blues_turbo_meridian() {
         // The transient colour-cycle order (meridian added
         // by design phase 4 PR B), wrapping back to the start after four
         // presses.
@@ -1870,7 +1870,7 @@ mod tests {
     // --- adding Sequential leaves every exhaustive match decided ---
 
     #[test]
-    fn scs_ac03_sequential_match_arms_decided() {
+    fn sequential_match_arms_decided() {
         let stops = SequentialScheme::Viridis.stops();
         let a = Scale::Sequential {
             domain_min: 0.0,
@@ -1926,7 +1926,7 @@ mod tests {
     /// present only in fresh (a late-arriving mark) is adopted; only-in-launch
     /// is kept.
     #[test]
-    fn cfr_ac01_anchor_scales_is_widen_only() {
+    fn anchor_scales_is_widen_only() {
         // Subset fresh → launch exactly (byte-for-byte the launch domain).
         let mut launch = ScaleSet::new();
         launch.insert(Channel::X, linear(0.0, 100.0));
@@ -2011,7 +2011,7 @@ mod tests {
     // --- a launch-baked inset survives every anchored rebuild ---
 
     #[test]
-    fn axi_ac04_inset_survives_anchored_rebuild() {
+    fn inset_survives_anchored_rebuild() {
         // Launch range carries a nonzero inset (45..615, not the un-inset
         // 40..620). anchor_scale copies the launch range verbatim, so the inset
         // rides through every widen-only fold.

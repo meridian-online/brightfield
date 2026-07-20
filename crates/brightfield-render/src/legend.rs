@@ -399,7 +399,7 @@ mod tests {
     use crate::scale::Scale;
 
     #[test]
-    fn gpu_ac07_colour_legend_4_categories() {
+    fn colour_legend_4_categories() {
         let layout = ChartLayout::new(800.0, 480.0);
         let colour_scale = Scale::Colour {
             categories: vec![
@@ -427,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_ac07_legend_skips_non_colour_scale() {
+    fn legend_skips_non_colour_scale() {
         let layout = ChartLayout::new(800.0, 480.0);
         let linear_scale = Scale::Linear {
             domain_min: 0.0,
@@ -516,7 +516,7 @@ mod tests {
     }
 
     #[test]
-    fn scs_ac06_sequential_legend_draws_bar_and_dispatches() {
+    fn sequential_legend_draws_bar_and_dispatches() {
         // The bar (sampled quads + border) produces scene content.
         let mut scene = Scene::new();
         render_sequential_legend_at(&mut scene, 40.0, 40.0, &sequential_scale());
@@ -566,7 +566,7 @@ mod tests {
     /// padding + i*ENTRY_SPACING, SWATCH_SIZE tall, spanning swatch + gap +
     /// label extent — and is empty for Sequential/Band scales.
     #[test]
-    fn lcf_ac02_swatch_entry_rects_match_rendered_layout() {
+    fn swatch_entry_rects_match_rendered_layout() {
         let scale = colour_scale_3(); // categories "a", "bb", "ccc"
         let (box_x, box_y) = (640.0, 40.0);
         let rects = swatch_entry_rects(box_x, box_y, &scale);
@@ -610,7 +610,7 @@ mod tests {
     /// checked against independently-computed packed colours (not against the
     /// delegating `render_colour_legend_at`, which would be circular).
     #[test]
-    fn cfr_ac06_selected_state_dims_others_without_moving_geometry() {
+    fn selected_state_dims_others_without_moving_geometry() {
         let scale = colour_scale_3(); // "a", "bb", "ccc"
 
         let mut none = Scene::new();

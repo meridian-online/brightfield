@@ -435,7 +435,7 @@ mod tests {
     // --- ChartState struct ---
 
     #[test]
-    fn gmr_ac01_chart_state_construction() {
+    fn chart_state_construction() {
         let renderer = VelloRenderer::new();
         let scene = Scene::new();
         let state = ChartState::new(scene, 640, 480, renderer);
@@ -449,7 +449,7 @@ mod tests {
 
     #[cfg(feature = "gpu-tests")]
     #[test]
-    fn gmr_ac01_chart_state_scene_update() {
+    fn chart_state_scene_update() {
         let renderer = VelloRenderer::new();
         let mut state = ChartState::new(Scene::new(), 640, 480, renderer);
 
@@ -475,7 +475,7 @@ mod tests {
 
     #[cfg(feature = "gpu-tests")]
     #[test]
-    fn gmr_ac01_chart_state_dimensions_update() {
+    fn chart_state_dimensions_update() {
         let renderer = VelloRenderer::new();
         let mut state = ChartState::new(Scene::new(), 640, 480, renderer);
 
@@ -488,7 +488,7 @@ mod tests {
 
     #[cfg(feature = "gpu-tests")]
     #[test]
-    fn apt_ac06_resize_preserves_grown_title_margins() {
+    fn resize_preserves_grown_title_margins() {
         // The review HIGH: a resize must NOT reset title-grown margins to
         // Margins::default (which would desync hit-testing from the titled
         // scene). set_margins_and_insets stores them; set_dimensions preserves.
@@ -516,7 +516,7 @@ mod tests {
 
     #[cfg(feature = "gpu-tests")]
     #[test]
-    fn gmr_ac01_chart_state_interaction_update() {
+    fn chart_state_interaction_update() {
         let renderer = VelloRenderer::new();
         let mut state = ChartState::new(Scene::new(), 640, 480, renderer);
 

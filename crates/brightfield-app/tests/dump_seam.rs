@@ -24,13 +24,13 @@ plot:
 "#;
 
 fn temp_dir() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("bf-aws-ac01-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("bf-dump-seam-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
     dir
 }
 
 #[test]
-fn aws_ac01_dump_mode_exits_before_workspace_construction() {
+fn dump_mode_exits_before_workspace_construction() {
     let dir = temp_dir();
     let spec_path = dir.join("seam.yaml");
     fs::write(&spec_path, SPEC).unwrap();
@@ -71,8 +71,8 @@ fn aws_ac01_dump_mode_exits_before_workspace_construction() {
 /// render_checkbox) ride the dump path, so this also pins that widget ink
 /// cannot wobble run-to-run.
 #[test]
-fn diw_ac12_param_menu_example_dump_deterministic() {
-    let dir = std::env::temp_dir().join(format!("bf-diw-ac12-{}", std::process::id()));
+fn param_menu_example_dump_deterministic() {
+    let dir = std::env::temp_dir().join(format!("bf-param-menu-dump-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
     let spec_path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/param-menu.yaml");
@@ -108,10 +108,10 @@ fn diw_ac12_param_menu_example_dump_deterministic() {
 }
 
 #[test]
-fn aws_ac07_dump_run_twice_is_byte_identical() {
+fn dump_run_twice_is_byte_identical() {
     // Own directory (not `temp_dir()`): the test removes its
     // directory on completion, and the two tests run in parallel.
-    let dir = std::env::temp_dir().join(format!("bf-aws-ac07-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("bf-dump-determinism-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
     let spec_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/dashboard.yaml");
     assert!(spec_path.exists(), "example spec present at {spec_path:?}");
@@ -155,12 +155,12 @@ fn aws_ac07_dump_run_twice_is_byte_identical() {
 /// determinism the dump seam already relies on). dashboard.yaml is the
 /// non-raster spec used precisely because it is deterministic.
 #[test]
-fn aws_ac08_dashboard_matches_committed_golden() {
+fn dashboard_matches_committed_golden() {
     let golden = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/goldens/dashboard.png");
     assert!(golden.exists(), "committed golden present at {golden:?}");
     let spec_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/dashboard.yaml");
 
-    let dir = std::env::temp_dir().join(format!("bf-aws-ac08-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("bf-dashboard-golden-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
     let png_path = dir.join("dashboard.png");
     let _ = fs::remove_file(&png_path);

@@ -208,7 +208,7 @@ impl MenuState {
     /// ([`Self::click_away`] → `Closed`) before the box's bubble-phase
     /// handler — so the shim closes from its render-time open snapshot
     /// instead of toggling the capture-mutated state (which would always
-    /// re-open). See `diw_ac07_composed_box_click_closes_after_capture_click_away`.
+    /// re-open). See `composed_box_click_closes_after_capture_click_away`.
     #[must_use]
     pub fn toggle_open(&self) -> Self {
         match self {
@@ -387,7 +387,7 @@ mod tests {
     // a literal options list preserves each option's SpecValue
     // variant — a numeric option is NOT stringified.
     #[test]
-    fn diw_ac01_literal_options_preserve_typing() {
+    fn literal_options_preserve_typing() {
         let input = menu_fixture(
             Some("k"),
             None,
@@ -423,7 +423,7 @@ mod tests {
     // an unknown style falls back to Menu WITH a surfaced reason (the widened
     // return carries the construction-time degrade decision).
     #[test]
-    fn diw_ac01_style_parses_and_unknown_style_degrades_with_reason() {
+    fn style_parses_and_unknown_style_degrades_with_reason() {
         let radio = menu_fixture(
             Some("k"),
             None,
@@ -495,7 +495,7 @@ mod tests {
     // options absent + from/column present records the Derived
     // marker (resolution happens at assembly, not here).
     #[test]
-    fn diw_ac01_derived_marker_from_source_and_column() {
+    fn derived_marker_from_source_and_column() {
         let input = menu_fixture(
             Some("region"),
             Some("athletes"),
@@ -516,7 +516,7 @@ mod tests {
 
     // missing `as:` yields no binding (slider parity).
     #[test]
-    fn diw_ac01_missing_as_param_yields_none() {
+    fn missing_as_param_yields_none() {
         let input = menu_fixture(None, None, &[("options", str_options(&["a", "b"]))]);
         let (b, _) = MenuBinding::from_input(&input);
         assert!(b.is_none(), "no param target, no widget");
@@ -525,7 +525,7 @@ mod tests {
     // no options and no derivable source yields None for style
     // menu/radio ONLY (checkbox synthesises — next test).
     #[test]
-    fn diw_ac01_empty_options_none_for_menu_and_radio_only() {
+    fn empty_options_none_for_menu_and_radio_only() {
         // No options key at all.
         let bare = menu_fixture(Some("k"), None, &[]);
         assert!(MenuBinding::from_input(&bare).0.is_none());
@@ -554,7 +554,7 @@ mod tests {
     // default pair [Bool(true), Bool(false)] — a working binding, never a
     // silent drop (the flagship WHERE-flag shape).
     #[test]
-    fn diw_ac01_checkbox_default_pair_synthesised() {
+    fn checkbox_default_pair_synthesised() {
         let input = menu_fixture(
             Some("flag"),
             None,
@@ -574,7 +574,7 @@ mod tests {
     // exactly one dispatch per commit, the typed value verbatim
     // (a String stays a String), Committed → Closed.
     #[test]
-    fn diw_ac02_commit_dispatches_typed_value_and_closes() {
+    fn commit_dispatches_typed_value_and_closes() {
         let b = binding(
             MenuStyle::Menu,
             vec![
@@ -602,7 +602,7 @@ mod tests {
     // an Integer option dispatches as Integer (variant identity is
     // load-bearing at SQL emit).
     #[test]
-    fn diw_ac02_integer_option_dispatches_as_integer() {
+    fn integer_option_dispatches_as_integer() {
         let b = binding(
             MenuStyle::Menu,
             vec![SpecValue::Integer(1), SpecValue::Integer(2)],
@@ -620,7 +620,7 @@ mod tests {
     // selecting the already-current value dispatches NOTHING
     // (decisions_locked same-value no-op), still settling to Closed.
     #[test]
-    fn diw_ac02_same_value_pick_is_a_no_op() {
+    fn same_value_pick_is_a_no_op() {
         let b = binding(
             MenuStyle::Menu,
             vec![
@@ -641,7 +641,7 @@ mod tests {
 
     // non-committed states are pass-through no-ops.
     #[test]
-    fn diw_ac02_non_committed_states_no_dispatch() {
+    fn non_committed_states_no_dispatch() {
         let b = binding(MenuStyle::Menu, vec![SpecValue::Bool(true)]);
         let mut d = RecordingDispatcher::new();
 
@@ -663,7 +663,7 @@ mod tests {
     // the checkbox toggles between exactly its two option values —
     // checked iff current == FIRST option, a click dispatches the OTHER.
     #[test]
-    fn diw_ac02_checkbox_toggles_between_its_two_options() {
+    fn checkbox_toggles_between_its_two_options() {
         let opts = vec![SpecValue::Bool(true), SpecValue::Bool(false)];
         let b = binding(MenuStyle::Checkbox, opts.clone());
         let mut d = RecordingDispatcher::new();
@@ -701,7 +701,7 @@ mod tests {
     // Shim decision logic, extracted pure: open / pick /
     // click-away transitions.
     #[test]
-    fn diw_ac07_state_transitions_open_pick_click_away() {
+    fn state_transitions_open_pick_click_away() {
         // Menu box click toggles open, then closed.
         let s = MenuState::Closed.toggle_open();
         assert_eq!(s, MenuState::Open { hover: None });
@@ -737,7 +737,7 @@ mod tests {
     // now-Closed state straight back to Open, leaving the box click unable
     // to ever close the list (the ▴ chevron's advertised toggle-to-close).
     #[test]
-    fn diw_ac07_composed_box_click_closes_after_capture_click_away() {
+    fn composed_box_click_closes_after_capture_click_away() {
         // Render time: the list is open; the box renders was_open = true.
         let rendered = MenuState::Open { hover: None };
         let was_open = matches!(rendered, MenuState::Open { .. });

@@ -1741,28 +1741,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dfspec_ac04_parse_spec_yaml_entry() {
+    fn parse_spec_yaml_entry() {
         let src = "meta:\n  title: hello\n";
         let out = parse_spec(src, Format::Yaml).expect("parses");
         assert_eq!(out.spec.meta.as_ref().unwrap().title.as_deref(), Some("hello"));
     }
 
     #[test]
-    fn dfspec_ac04_parse_spec_json_entry() {
+    fn parse_spec_json_entry() {
         let src = r#"{"meta":{"title":"hi"}}"#;
         let out = parse_spec(src, Format::Json).expect("parses");
         assert_eq!(out.spec.meta.as_ref().unwrap().title.as_deref(), Some("hi"));
     }
 
     #[test]
-    fn dfspec_ac04_parse_spec_path_unknown_ext() {
+    fn parse_spec_path_unknown_ext() {
         let p = std::path::PathBuf::from("/tmp/nope.toml");
         let err = parse_spec_path(&p).unwrap_err();
         assert!(matches!(err, ParseError::UnknownFormat { .. }));
     }
 
     #[test]
-    fn dfspec_ac05_dollar_ident_detection() {
+    fn dollar_ident_detection() {
         assert_eq!(dollar_ident("$brush"), Some("brush"));
         assert_eq!(dollar_ident("$snake_case"), Some("snake_case"));
         assert_eq!(dollar_ident("$a1"), Some("a1"));
@@ -1773,7 +1773,7 @@ mod tests {
     }
 
     #[test]
-    fn dfspec_ac05_maybe_lift_string_and_object_shorthands() {
+    fn maybe_lift_string_and_object_shorthands() {
         let s = serde_yaml::Value::String("$foo".into());
         assert_eq!(maybe_lift(&s), Some(ParamRef::new("foo")));
 
@@ -1791,7 +1791,7 @@ mod tests {
     }
 
     #[test]
-    fn dfspec_ac08_unknown_mark_errors() {
+    fn unknown_mark_errors() {
         let src = r#"
 plot:
   - mark: fooBar
@@ -1807,7 +1807,7 @@ plot:
     }
 
     #[test]
-    fn dfspec_ac08_unimplemented_mark_warns_with_stub() {
+    fn unimplemented_mark_warns_with_stub() {
         // `voronoi` is a genuinely-unimplemented mark (no renderer/lowerer), so
         // it still warns. (cell was this test's stub until the density
         // marks promoted it — the swap keeps exactly one always-unimplemented
@@ -1826,7 +1826,7 @@ plot:
     }
 
     #[test]
-    fn dfspec_ac10_version_match_rules() {
+    fn version_match_rules() {
         assert!(version_matches("0.24.0"));
         assert!(version_matches("0.24.1"));
         assert!(version_matches("0.24"));
@@ -1836,7 +1836,7 @@ plot:
     }
 
     #[test]
-    fn dfspec_ac10_version_mismatch_warns() {
+    fn version_mismatch_warns() {
         let src = "meta:\n  version: 0.23.0\n";
         let out = parse_spec(src, Format::Yaml).expect("parses");
         assert!(out
@@ -1846,7 +1846,7 @@ plot:
     }
 
     #[test]
-    fn dfspec_ac10_version_match_no_warning() {
+    fn version_match_no_warning() {
         let src = "meta:\n  version: 0.24.2\n";
         let out = parse_spec(src, Format::Yaml).expect("parses");
         assert!(!out
@@ -1856,7 +1856,7 @@ plot:
     }
 
     #[test]
-    fn dfspec_ac10_version_absent_no_warning() {
+    fn version_absent_no_warning() {
         let src = "meta:\n  title: no version\n";
         let out = parse_spec(src, Format::Yaml).expect("parses");
         assert!(!out
@@ -1866,7 +1866,7 @@ plot:
     }
 
     #[test]
-    fn dfspec_ac10_version_invalid_warns() {
+    fn version_invalid_warns() {
         let src = "meta:\n  version: bogus\n";
         let out = parse_spec(src, Format::Yaml).expect("parses");
         assert!(out
@@ -1876,14 +1876,14 @@ plot:
     }
 
     #[test]
-    fn dfspec_ac14_strict_context_reject_dollar() {
+    fn strict_context_reject_dollar() {
         let src = "meta:\n  title: $dynamic\n";
         let err = parse_spec(src, Format::Yaml).unwrap_err();
         assert!(matches!(err, ParseError::StrictContextUnresolvedRef { .. }));
     }
 
     #[test]
-    fn dfspec_ac11_paramref_serialises_to_dollar_form() {
+    fn paramref_serialises_to_dollar_form() {
         // Round-trip a SpecValue::Param through YAML and confirm "$foo" shape.
         let v = SpecValue::Param(ParamRef::new("foo"));
         let s = serde_yaml::to_string(&SerSpecValue(&v)).unwrap();
@@ -1891,7 +1891,7 @@ plot:
     }
 
     #[test]
-    fn dfspec_ac11_ast_round_trip_idempotent() {
+    fn ast_round_trip_idempotent() {
         let src = r#"
 meta:
   title: rt
@@ -1917,7 +1917,7 @@ plot:
     /// under-coverage. Mark is chosen as the universal parent because
     /// `Walker::lift_field` is uniformly called for all option-bag walks.
     #[test]
-    fn dfspec_ac05_lift_surface_parametrised_string_form() {
+    fn lift_surface_parametrised_string_form() {
         for field in LIFT_SURFACE_FIELDS {
             let src = format!("mark: dot\n{field}: $foo\n");
             let out = parse_spec(&src, Format::Yaml)
@@ -1949,7 +1949,7 @@ plot:
     /// verification: same contract as the string-form parametrisation
     /// but with the object shorthand `{param: foo}` at every lift position.
     #[test]
-    fn dfspec_ac05_lift_surface_parametrised_object_form() {
+    fn lift_surface_parametrised_object_form() {
         for field in LIFT_SURFACE_FIELDS {
             let src = format!("mark: dot\n{field}: {{ param: foo }}\n");
             let out = parse_spec(&src, Format::Yaml)
@@ -1981,7 +1981,7 @@ plot:
     /// exactly one `ParseWarning::UnknownOption { path: "meta", key }`.
     /// Post-D2 contract (narrowed from fatal SchemaViolation).
     #[test]
-    fn dfspec_ac07_meta_unknown_key_warns() {
+    fn meta_unknown_key_warns() {
         let src = "meta:\n  credit: Observable\n  title: x\n";
         let out = parse_spec(src, Format::Yaml).expect("parses despite unknown meta key");
         let matches: Vec<_> = out
@@ -2001,7 +2001,7 @@ plot:
     }
 
     #[test]
-    fn axi_ac01_nonnumeric_plot_inset_warns_but_param_defers() {
+    fn nonnumeric_plot_inset_warns_but_param_defers() {
         // A non-numeric plot inset degrades to absent AND names itself (not a
         // silent drop) — the "malformed" case.
         let bad = "data:\n  t:\n    - { x: 1, y: 2 }\nplot:\n  - { mark: dot, data: { from: t }, x: x, y: y }\ninset: nope\n";
@@ -2039,7 +2039,7 @@ plot:
     }
 
     #[test]
-    fn apt_ac02_nonstring_label_warns_but_string_null_param_defer() {
+    fn nonstring_label_warns_but_string_null_param_defer() {
         // A number for an axis label degrades to the derived title AND names
         // itself — mirroring the NonNumericInset parse-time check.
         let bad = "data:\n  t:\n    - { x: 1, y: 2 }\nplot:\n  - { mark: dot, data: { from: t }, x: x, y: y }\nxLabel: 42\n";
@@ -2087,7 +2087,7 @@ plot:
     }
 
     #[test]
-    fn geo_ac04_unknown_projection_warns_but_supported_defer() {
+    fn unknown_projection_warns_but_supported_defer() {
         // An unsupported projection degrades to the default equirectangular fit
         // AND names itself (geo) — mirroring the NonStringLabel check.
         let bad = "data:\n  t:\n    - { x: 1, y: 2 }\nplot:\n  - { mark: dot, data: { from: t }, x: x, y: y }\nprojectionType: mercator\n";
@@ -2115,7 +2115,7 @@ plot:
     }
 
     #[test]
-    fn apt_ac02_dollar_in_label_text_degrades_to_derive_round_trip() {
+    fn dollar_in_label_text_degrades_to_derive_round_trip() {
         // A label whose text contains a bare `$ident` (a currency/unit literal
         // like "Cost in $usd") is lifted to an Expression at parse time, so it
         // can't be used verbatim — it warns NonStringLabel and the axis falls
@@ -2147,7 +2147,7 @@ plot:
     /// unknown keys on mark option bags are accepted silently
     /// (open bag — no warning, no error).
     #[test]
-    fn dfspec_ac07_mark_unknown_option_is_accepted() {
+    fn mark_unknown_option_is_accepted() {
         let src = "mark: dot\nweirdKey: 42\n";
         let out = parse_spec(src, Format::Yaml).expect("parses with unknown mark option");
         // No UnknownOption warnings for mark option bags — they are open.
@@ -2169,7 +2169,7 @@ plot:
     /// Statistical-mark options pass parser cleanly
     /// (no SchemaViolation, no UnknownOption warning).
     #[test]
-    fn gomb_ac14_statistical_mark_options_accepted() {
+    fn statistical_mark_options_accepted() {
         let cases = [
             ("density", "bandwidth: 0.5"),
             ("density", "normalize: \"max\""),
@@ -2209,7 +2209,7 @@ plot:
     /// `fill: {count:}` (flights-hexbin / mark-types) parses to a
     /// typed count aggregate with no source column.
     #[test]
-    fn hex_ac01_fill_count_parses_to_aggregate() {
+    fn fill_count_parses_to_aggregate() {
         let entry = mark_channel("mark: hexbin\nfill: { count: }\n", "fill");
         assert_eq!(
             entry,
@@ -2223,7 +2223,7 @@ plot:
     /// `fill: {avg: score_value}` (wnba-shots) parses to a typed avg
     /// aggregate carrying its source column.
     #[test]
-    fn hex_ac01_fill_avg_parses_to_aggregate_with_column() {
+    fn fill_avg_parses_to_aggregate_with_column() {
         let entry = mark_channel("mark: hexbin\nfill: { avg: score_value }\n", "fill");
         assert_eq!(
             entry,
@@ -2237,7 +2237,7 @@ plot:
     /// `r: {count:}` (wnba-shots) parses to an aggregate on the r
     /// channel — recorded, deferred at execution, NOT a parse error.
     #[test]
-    fn hex_ac01_r_count_parses_to_aggregate() {
+    fn r_count_parses_to_aggregate() {
         let out = parse_spec("mark: hexbin\nr: { count: }\n", Format::Yaml).expect("parses");
         let m = match out.spec.root.unwrap() {
             Component::Mark(m) => m,
@@ -2260,7 +2260,7 @@ plot:
 
     /// `mean` is an accepted alias for `avg`.
     #[test]
-    fn hex_ac01_mean_aliases_avg() {
+    fn mean_aliases_avg() {
         let entry = mark_channel("mark: hexbin\nfill: { mean: v }\n", "fill");
         assert_eq!(
             entry,
@@ -2275,7 +2275,7 @@ plot:
     /// plain object — never a silent column lookup for a column named after the
     /// key. The renderer's channel extraction ignores the object.
     #[test]
-    fn hex_ac01_unknown_aggregate_warns_and_degrades() {
+    fn unknown_aggregate_warns_and_degrades() {
         let out =
             parse_spec("mark: hexbin\nfill: { stdev: v }\n", Format::Yaml).expect("parses");
         assert!(
@@ -2301,7 +2301,7 @@ plot:
     /// plain column/literal/param fill channels are untouched by
     /// aggregate detection.
     #[test]
-    fn hex_ac01_plain_fill_channels_untouched() {
+    fn plain_fill_channels_untouched() {
         // String column.
         assert_eq!(
             mark_channel("mark: dot\nfill: species\n", "fill"),
@@ -2321,7 +2321,7 @@ plot:
     /// the three vendored corpus specs with aggregate channels parse
     /// cleanly (no error) after the aggregate form lands.
     #[test]
-    fn hex_ac01_vendored_hexbin_corpus_parses() {
+    fn vendored_hexbin_corpus_parses() {
         for name in ["flights-hexbin", "wnba-shots", "mark-types"] {
             let path = format!(
                 "{}/vendor/mosaic-specs/yaml/{name}.yaml",
@@ -2363,7 +2363,7 @@ plot:
 
     /// an aggregate channel round-trips through serialise → parse.
     #[test]
-    fn hex_ac01_aggregate_channel_round_trips() {
+    fn aggregate_channel_round_trips() {
         let src = "mark: hexbin\nfill: { avg: score_value }\nr: { count: }\n";
         let a = parse_spec(src, Format::Yaml).expect("first parse");
         let serialised = serde_yaml::to_string(&a.spec).expect("serialise");
@@ -2375,7 +2375,7 @@ plot:
     /// `SchemaViolation`; it is a `ParseWarning::UnknownOption`. Locking
     /// the D2 adjustment against regression.
     #[test]
-    fn dfspec_ac14_meta_unknown_field_is_warning_not_error() {
+    fn meta_unknown_field_is_warning_not_error() {
         let src = "meta:\n  bogus: x\n  title: t\n";
         let out = parse_spec(src, Format::Yaml).expect("parses under D2");
         assert!(
@@ -2393,7 +2393,7 @@ plot:
     /// override stays a plain value. No `Unimplemented` warning fires (Highlight
     /// is already vocab `Implemented`).
     #[test]
-    fn ce_ac01_highlight_by_lifts_to_param() {
+    fn highlight_by_lifts_to_param() {
         let yaml = r#"
 params:
   brush: { select: single }

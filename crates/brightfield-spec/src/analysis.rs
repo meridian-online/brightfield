@@ -1025,8 +1025,8 @@ fn collect_interactor_bindings(
 /// `SpecAnalysis` can name brushable interactor variants without a reverse
 /// dependency on brightfield-ui. Variant order matches the UI-side enum.
 ///
-/// `Point` is forward-compat for input-widget-driven point selections
-/// (v3); the spec-side analysis filters it out of `brushable_bindings`
+/// `Point` is forward-compat for input-widget-driven point selections;
+/// the spec-side analysis filters it out of `brushable_bindings`
 /// because no chart-side dispatch path exists for it in v3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BrushKind {
@@ -1495,7 +1495,7 @@ fn resolve_highlight_style(interactor: &Interactor) -> HighlightStyle {
 /// mirroring [`validate_filter_by_refs`]'s known-selection set. An unknown or
 /// value-param `by:` pushes a `HighlightBinding*` warning and forms no binding.
 /// A highlight on a plot whose data mark AGGREGATES in SQL pushes
-/// `HighlightOnAggregate` and forms no binding (guard) — the row-level
+/// `HighlightOnAggregate` and forms no binding — the row-level
 /// honouring families (dot/bar/rect/text) are unaffected.
 pub fn build_highlight_bindings(
     spec: &Spec,
@@ -1877,7 +1877,7 @@ mod tests {
     /// topological_descendants on a simple linear chain
     /// A → B → C returns [A, B, C].
     #[test]
-    fn rpw3_ac01_topological_descendants_simple_chain() {
+    fn topological_descendants_simple_chain() {
         let analysis = analysis_with_edges(vec![("A", "B"), ("B", "C")]);
         let order = topological_descendants(&analysis, "A");
         assert_eq!(order, vec!["A".to_string(), "B".to_string(), "C".to_string()]);
@@ -1890,7 +1890,7 @@ mod tests {
     /// $query and reads $category; table input writes $hover and reads
     /// $query).
     #[test]
-    fn rpw3_ac02_topological_descendants_athletes_yaml() {
+    fn topological_descendants_athletes_yaml() {
         let yaml = std::fs::read_to_string(
             "vendor/mosaic-specs/yaml/athletes.yaml",
         )
@@ -1934,7 +1934,7 @@ mod tests {
     /// topological_descendants on a leaf root (no DAG edges
     /// out, possibly not in DAG at all) returns [root].
     #[test]
-    fn rpw3_ac03_topological_descendants_leaf_root() {
+    fn topological_descendants_leaf_root() {
         // Root with zero outgoing edges, but present as a target of
         // another edge — its descendants are just [itself].
         let analysis = analysis_with_edges(vec![("upstream", "root")]);
@@ -1950,7 +1950,7 @@ mod tests {
 
     // ----- v2 parent_plot helper -----
     #[test]
-    fn cfs2_ac04_parent_plot_helper() {
+    fn parent_plot_helper() {
         // mark inside vconcat → plot
         assert_eq!(
             parent_plot("root/vconcat[0]/plot[1]/mark[dot]"),
@@ -2013,7 +2013,7 @@ mod tests {
 
     // typed fields on Input
     #[test]
-    fn rpw_ac01_input_typed_fields_extracted() {
+    fn input_typed_fields_extracted() {
         let yaml = r#"
 data:
   athletes: { file: athletes.csv }
@@ -2043,7 +2043,7 @@ filterBy: $category
     }
 
     #[test]
-    fn rpw_ac01_input_no_typed_fields() {
+    fn input_no_typed_fields() {
         let yaml = r#"
 input: slider
 min: 0
@@ -2062,7 +2062,7 @@ max: 100
 
     // subscriber graph
     #[test]
-    fn rpw_ac03_subscriber_graph_basic() {
+    fn subscriber_graph_basic() {
         let yaml = r#"
 params:
   threshold: 42
@@ -2081,7 +2081,7 @@ plot:
     /// expression subscribes the mark, so propagate_param re-executes it.
     /// Previously, collect_spec_value_subscribers ignored Expressions.
     #[test]
-    fn pefr_ac06_expression_param_subscribes() {
+    fn expression_param_subscribes() {
         let yaml = r#"
 params:
   k: 0
@@ -2106,7 +2106,7 @@ plot:
     }
 
     #[test]
-    fn rpw_ac03_subscriber_graph_multiple_subscribers() {
+    fn subscriber_graph_multiple_subscribers() {
         let yaml = r#"
 params:
   brush: { select: crossfilter }
@@ -2126,7 +2126,7 @@ vconcat:
 
     // dead param warning
     #[test]
-    fn rpw_ac04_dead_param_warning() {
+    fn dead_param_warning() {
         let yaml = r#"
 params:
   unused: 42
@@ -2143,7 +2143,7 @@ plot:
     }
 
     #[test]
-    fn rpw_ac04_no_dead_param_when_referenced() {
+    fn no_dead_param_when_referenced() {
         let yaml = r#"
 params:
   brush: { select: crossfilter }
@@ -2161,7 +2161,7 @@ plot:
 
     // topological ordering
     #[test]
-    fn rpw_ac05_topological_order_chain() {
+    fn topological_order_chain() {
         let yaml = r#"
 params:
   category: All
@@ -2191,7 +2191,7 @@ vconcat:
 
     // cycle detection
     #[test]
-    fn rpw_ac06_cycle_detected() {
+    fn cycle_detected() {
         let yaml = r#"
 params:
   a: 1
@@ -2214,7 +2214,7 @@ vconcat:
 
     // type mismatch
     #[test]
-    fn rpw_ac07_slider_to_selection_mismatch() {
+    fn slider_to_selection_mismatch() {
         let yaml = r#"
 params:
   brush: { select: crossfilter }
@@ -2230,7 +2230,7 @@ as: $brush
     }
 
     #[test]
-    fn rpw_ac07_table_to_scalar_mismatch() {
+    fn table_to_scalar_mismatch() {
         let yaml = r#"
 params:
   count: 42
@@ -2246,7 +2246,7 @@ as: $count
     }
 
     #[test]
-    fn rpw_ac07_slider_to_numeric_no_mismatch() {
+    fn slider_to_numeric_no_mismatch() {
         let yaml = r#"
 params:
   threshold: 42
@@ -2263,7 +2263,7 @@ as: $threshold
 
     // type enum constructors
     #[test]
-    fn rpw_ac08_widget_output_type_mapping() {
+    fn widget_output_type_mapping() {
         assert_eq!(WidgetOutputType::from_input_kind(InputKind::Slider), WidgetOutputType::ScalarNumeric);
         assert_eq!(WidgetOutputType::from_input_kind(InputKind::Menu), WidgetOutputType::ScalarString);
         assert_eq!(WidgetOutputType::from_input_kind(InputKind::Search), WidgetOutputType::ScalarString);
@@ -2271,7 +2271,7 @@ as: $threshold
     }
 
     #[test]
-    fn rpw_ac08_param_declared_type_mapping() {
+    fn param_declared_type_mapping() {
         assert_eq!(
             ParamDeclaredType::from_param_node(&ParamNode::Value(SpecValue::Integer(42))),
             ParamDeclaredType::ScalarNumeric
@@ -2301,7 +2301,7 @@ as: $threshold
 
     // integrated analysis
     #[test]
-    fn rpw_ac09_analyse_spec_integration() {
+    fn analyse_spec_integration_subscriber_graph_and_dead_params() {
         let yaml = r#"
 params:
   category: { select: intersect }
@@ -2328,7 +2328,7 @@ vconcat:
 
     // empty spec produces empty analysis
     #[test]
-    fn rpw_ac10_empty_spec_no_warnings() {
+    fn empty_spec_no_warnings() {
         let yaml = r#"
 data:
   flights: { file: flights.parquet }
@@ -2346,7 +2346,7 @@ plot:
 
     // vendored specs with inputs parse correctly
     #[test]
-    fn rpw_ac02_vendored_specs_parse_with_typed_fields() {
+    fn vendored_specs_parse_with_typed_fields() {
         use std::path::PathBuf;
         let corpus = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("vendor")
@@ -2408,7 +2408,7 @@ plot:
 
     // filterBy on mark data referencing a missing param → error
     #[test]
-    fn cfs_ac01_filterby_mark_missing_param() {
+    fn filterby_mark_missing_param() {
         let yaml = r#"
 params:
   brush: { select: crossfilter }
@@ -2429,7 +2429,7 @@ plot:
 
     // filterBy on mark data referencing a value param → error
     #[test]
-    fn cfs_ac02_filterby_mark_value_param() {
+    fn filterby_mark_value_param() {
         let yaml = r#"
 params:
   threshold: 42
@@ -2450,7 +2450,7 @@ plot:
 
     // filterBy on input referencing a missing param → error
     #[test]
-    fn cfs_ac03_filterby_input_missing_param() {
+    fn filterby_input_missing_param() {
         let yaml = r#"
 params:
   brush: { select: crossfilter }
@@ -2469,7 +2469,7 @@ filterBy: $ghost
 
     // filterBy on input referencing a value param → error
     #[test]
-    fn cfs_ac04_filterby_input_value_param() {
+    fn filterby_input_value_param() {
         let yaml = r#"
 params:
   x: 1
@@ -2489,7 +2489,7 @@ filterBy: $x
 
     // interactor as: missing param → warning
     #[test]
-    fn cfs_ac05_interactor_binding_missing() {
+    fn interactor_binding_missing() {
         let yaml = r#"
 plot:
   - select: intervalX
@@ -2509,7 +2509,7 @@ plot:
 
     // interactor as: value param → warning
     #[test]
-    fn cfs_ac06_interactor_binding_non_selection() {
+    fn interactor_binding_non_selection() {
         let yaml = r#"
 params:
   count: 42
@@ -2531,7 +2531,7 @@ plot:
 
     // selection subscriber graph
     #[test]
-    fn cfs_ac07_selection_subscriber_graph() {
+    fn selection_subscriber_graph() {
         let yaml = r#"
 params:
   brush: { select: crossfilter }
@@ -2550,7 +2550,7 @@ vconcat:
     }
 
     #[test]
-    fn cfs_ac07_selection_subscriber_graph_excludes_value_params() {
+    fn selection_subscriber_graph_excludes_value_params() {
         let yaml = r#"
 params:
   threshold: 42
@@ -2570,7 +2570,7 @@ plot:
 
     // interactor bindings
     #[test]
-    fn cfs_ac08_interactor_bindings() {
+    fn interactor_bindings() {
         let yaml = r#"
 params:
   brush: { select: crossfilter }
@@ -2594,7 +2594,7 @@ vconcat:
 
     // SpecAnalysis integration with new fields
     #[test]
-    fn cfs_ac09_analyse_spec_integration() {
+    fn analyse_spec_integration_selection_subscribers_and_bindings() {
         let yaml = r#"
 params:
   brush: { select: crossfilter }
@@ -2627,7 +2627,7 @@ vconcat:
 
     // vendored corpus passes analyse_spec
     #[test]
-    fn cfs_ac10_vendored_corpus_passes_analyse() {
+    fn vendored_corpus_passes_analyse() {
         use std::path::PathBuf;
         let corpus = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("vendor")
@@ -2651,7 +2651,7 @@ vconcat:
 
     // round-trip preserved (filterBy on selection still round-trips)
     #[test]
-    fn cfs_ac11_round_trip_with_selection_filterby() {
+    fn round_trip_with_selection_filterby() {
         let yaml = r#"
 params:
   brush: { select: crossfilter }
@@ -2676,7 +2676,7 @@ plot:
     /// parent plot's resolved channel columns. Non-brushable interactors
     /// (panZoom etc.) are excluded.
     #[test]
-    fn cfs3_ac05_brushable_bindings_built() {
+    fn brushable_bindings_built() {
         let yaml = r#"
 params:
   brush: { select: crossfilter }
@@ -2722,7 +2722,7 @@ plot:
     /// brushable_bindings" without coupling to the UI-side BrushKind::Point
     /// naming.
     #[test]
-    fn cfs3_ac09_non_brushable_kinds_excluded() {
+    fn non_brushable_kinds_excluded() {
         let yaml = r#"
 params: {}
 plot:
@@ -2814,7 +2814,7 @@ hconcat:
     /// self-exclusion identity), whose colour column comes from that plot's
     /// first mark's fill channel, and whose legend path locates the node.
     #[test]
-    fn lcf_ac01_legend_as_binding_resolves_producer_fields() {
+    fn legend_as_binding_resolves_producer_fields() {
         let out = parse_spec(LEGEND_BINDING_SPEC, Format::Yaml).expect("parses");
         let analysis = analyse_spec(&out.spec).expect("analysis succeeds");
 
@@ -2842,7 +2842,7 @@ hconcat:
     /// graph — only marks subscribe (via filterBy). Before the fix the
     /// analysis arm registered `as: $sel` as a legend subscription.
     #[test]
-    fn lcf_ac01_legend_is_not_a_subscriber_of_its_selection() {
+    fn legend_is_not_a_subscriber_of_its_selection() {
         let out = parse_spec(LEGEND_BINDING_SPEC, Format::Yaml).expect("parses");
         let analysis = analyse_spec(&out.spec).expect("analysis succeeds");
 
@@ -2865,7 +2865,7 @@ hconcat:
     /// plot; with two colour-encoded plots the fallback is ambiguous and no
     /// binding forms. A legend without `as:` never binds (display-only).
     #[test]
-    fn lcf_ac01_sole_colour_plot_fallback_and_display_only() {
+    fn sole_colour_plot_fallback_and_display_only() {
         // for:-absent + one colour-encoded plot → binds to it.
         let sole = r#"
 params:
@@ -3222,7 +3222,7 @@ hconcat:
     /// parent-plot identity, the consumed selection, and the resolved style; and
     /// the plot's honouring dot becomes a subscriber to `$sel`.
     #[test]
-    fn ce_ac02_highlight_binding_and_subscriber() {
+    fn highlight_binding_and_subscriber() {
         let yaml = r#"
 params:
   brush: { select: single }
@@ -3258,7 +3258,7 @@ plot:
 
     /// `by:` a value param → `HighlightBindingNonSelection`, no binding.
     #[test]
-    fn ce_ac02_highlight_by_value_param_warns_non_selection() {
+    fn highlight_by_value_param_warns_non_selection() {
         let yaml = r#"
 params:
   notasel: 5
@@ -3285,7 +3285,7 @@ plot:
 
     /// `by:` an undeclared / unbound name → `HighlightBindingMissing`.
     #[test]
-    fn ce_ac02_highlight_by_unknown_warns_missing() {
+    fn highlight_by_unknown_warns_missing() {
         let yaml = r#"
 plot:
   - mark: dot
@@ -3312,7 +3312,7 @@ plot:
     /// is guarded out — `HighlightOnAggregate`, no binding — so the membership
     /// projection can't reference a dropped column and crash at runtime.
     #[test]
-    fn ce_ac09_highlight_on_aggregate_mark_guarded() {
+    fn highlight_on_aggregate_mark_guarded() {
         let yaml = r#"
 params:
   brush: { select: single }
@@ -3346,7 +3346,7 @@ plot:
     /// keeps the DOT's highlight (per-mark guard, matching emit) — the heatmap is
     /// still warned but does not veto the dot. Only the dot subscribes.
     #[test]
-    fn ce_ac09_mixed_plot_binds_honouring_mark_warns_aggregate() {
+    fn mixed_plot_binds_honouring_mark_warns_aggregate() {
         let yaml = r#"
 params:
   brush: { select: single }

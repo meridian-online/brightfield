@@ -171,7 +171,7 @@ fn menu_presentation(
             // handler, so a `toggle_open()` re-read of the now-Closed state
             // would always re-open, killing the toggle-to-close half of
             // the ▴ chevron advertises. Pinned headlessly by
-            // menu.rs `diw_ac07_composed_box_click_closes_after_capture_click_away`.
+            // menu.rs `composed_box_click_closes_after_capture_click_away`.
             let was_open = open;
             move |_ev, window, cx| {
                 state.update(cx, |w, _| {

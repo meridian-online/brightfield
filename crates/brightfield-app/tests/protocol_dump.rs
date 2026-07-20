@@ -45,8 +45,8 @@ fn parse_dump_line(stderr: &str) -> (u32, u32, f64) {
 /// dumping the vendored edgar_gleif Protocol writes a non-empty
 /// PNG, byte-identical across two runs (the determinism shape).
 #[test]
-fn pds_ac01_edgar_gleif_dump_is_deterministic() {
-    let dir = std::env::temp_dir().join(format!("bf-pds-ac01-{}", std::process::id()));
+fn edgar_gleif_dump_is_deterministic() {
+    let dir = std::env::temp_dir().join(format!("bf-protocol-dump-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
     let manifest = fixture("edgar_gleif/arcform.yaml");
 
@@ -99,8 +99,8 @@ fn pds_ac01_edgar_gleif_dump_is_deterministic() {
 /// unparseable middle statement — still dumps a non-empty PNG (the chip
 /// renders; the file is never black-boxed into a failed run).
 #[test]
-fn pds_ac04_degrade_fixture_dumps() {
-    let dir = std::env::temp_dir().join(format!("bf-pds-ac04-{}", std::process::id()));
+fn degrade_fixture_dumps() {
+    let dir = std::env::temp_dir().join(format!("bf-degrade-fixture-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
     let manifest = fixture("degrade.yaml");
     let png_path = dir.join("degrade.png");
@@ -170,7 +170,7 @@ fn pds_window_mode_malformed_manifest_exits_nonzero() {
 /// prints a clear later-card message and exits 0 — no crash, no partial
 /// window (a window would keep the run loop alive and hang this test).
 #[test]
-fn pds_ac07_window_mode_prints_later_card_message() {
+fn window_mode_prints_later_card_message() {
     let manifest = fixture("edgar_gleif/arcform.yaml");
     let output = Command::new(env!("CARGO_BIN_EXE_brightfield"))
         .arg(&manifest)

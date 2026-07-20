@@ -240,7 +240,7 @@ mod tests {
     /// (fill/stroke/size/text) bound to a param is still skipped (the deferred
     /// render-only case). Supersedes the old skip-everything behaviour.
     #[test]
-    fn pefr_ac04_from_mark_maps_positional_param_channel() {
+    fn from_mark_maps_positional_param_channel() {
         use brightfield_spec::ast::{Mark, ParamRef, SpecValue, ValueOrParamRef};
         use brightfield_spec::vocab::{ImplStatus, MarkKind};
 

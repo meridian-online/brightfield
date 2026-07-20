@@ -916,7 +916,7 @@ hconcat:
 /// - the quote-escaping case: `O'Hara` dispatches as `'O''Hara'` and matches
 ///   exactly its row.
 #[test]
-fn lcf_ac04_legend_click_filters_downstream_via_real_session() {
+fn legend_click_filters_downstream_via_real_session() {
     let parsed = parse_spec(SPEC_LEGEND, Format::Yaml).expect("spec parses");
     let spec = parsed.spec;
     let analysis = analyse_spec(&spec).expect("spec analyses");

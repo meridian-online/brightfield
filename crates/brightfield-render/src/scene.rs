@@ -596,7 +596,7 @@ mod tests {
     // render_slider draws exactly two shapes — the track
     // and the thumb — into the scene (headless proof the widget renders).
     #[test]
-    fn slw_ac10_render_slider_draws_track_and_thumb() {
+    fn render_slider_draws_track_and_thumb() {
         let mut scene = Scene::new();
         render_slider(&mut scene, 0.0, 400.0, 200.0, 32.0, 0.5);
         assert_eq!(
@@ -609,7 +609,7 @@ mod tests {
     // the resting menu twin draws the box (fill +
     // border) + the chevron affordance, and real glyphs for the label.
     #[test]
-    fn diw_ac11_render_menu_draws_box_chevron_and_label() {
+    fn render_menu_draws_box_chevron_and_label() {
         let mut scene = Scene::new();
         render_menu(&mut scene, 0.0, 400.0, 200.0, 32.0, "east");
         assert_eq!(
@@ -628,7 +628,7 @@ mod tests {
     // ring (fill + outline) per row plus ONE filled dot on the selected row —
     // and label glyphs for every option.
     #[test]
-    fn diw_ac11_render_radio_draws_rows_and_selected_dot() {
+    fn render_radio_draws_rows_and_selected_dot() {
         let labels: Vec<String> =
             ["circle", "square", "triangle"].iter().map(|s| s.to_string()).collect();
         let mut scene = Scene::new();
@@ -653,7 +653,7 @@ mod tests {
     // the checkbox twin draws box fill + border, PLUS the check
     // glyph exactly when checked; the label renders either way.
     #[test]
-    fn diw_ac11_render_checkbox_check_glyph_tracks_checked_state() {
+    fn render_checkbox_check_glyph_tracks_checked_state() {
         let mut checked = Scene::new();
         render_checkbox(&mut checked, 0.0, 400.0, 200.0, 32.0, true, "flag");
         let mut unchecked = Scene::new();
@@ -726,7 +726,7 @@ mod tests {
     // projected feature outline — no grid/axis ink — while a cartesian plot's
     // scene carries frame ink.
     #[test]
-    fn geo_ac07_frame_suppressed_for_geo_plot() {
+    fn frame_suppressed_for_geo_plot() {
         let square = r#"{"type":"Polygon","coordinates":[[[0,0],[10,0],[10,10],[0,10],[0,0]]]}"#;
         let geo_schema = Arc::new(Schema::new(vec![Field::new("geom", DataType::Utf8, true)]));
         let geo_batch =
@@ -838,7 +838,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_ac08_build_dot_chart_scene() {
+    fn build_dot_chart_scene() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("x", DataType::Float64, false),
             Field::new("y", DataType::Float64, false),
@@ -887,7 +887,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_ac08_build_bar_chart_scene() {
+    fn build_bar_chart_scene() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("category", DataType::Utf8, false),
             Field::new("value", DataType::Float64, false),
@@ -998,7 +998,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_ac08_build_line_chart_scene() {
+    fn build_line_chart_scene() {
         let schema = Arc::new(Schema::new(vec![
             Field::new(
                 "ts",
@@ -1044,7 +1044,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_ac03_view_extent_overrides_scale_domain() {
+    fn view_extent_overrides_scale_domain() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("x", DataType::Float64, false),
             Field::new("y", DataType::Float64, false),
@@ -1106,7 +1106,7 @@ mod tests {
     // --- build_multi_mark_scene ---
 
     #[test]
-    fn msv_ac03_multi_mark_scene_dot_and_line() {
+    fn multi_mark_scene_dot_and_line() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("x", DataType::Float64, false),
             Field::new("y", DataType::Float64, false),
@@ -1178,7 +1178,7 @@ mod tests {
     }
 
     #[test]
-    fn msv_ac03_multi_mark_scene_empty_entries() {
+    fn multi_mark_scene_empty_entries() {
         let (scene, scales) = build_multi_mark_scene(&[], true, &ResolvedTitles::default());
         let encoding = scene.encoding();
         assert_eq!(encoding.path_tags.len(), 0, "empty entries => empty scene");
@@ -1186,7 +1186,7 @@ mod tests {
     }
 
     #[test]
-    fn apt_ac08_titled_scene_carries_more_ink_and_anchored_reemits() {
+    fn titled_scene_carries_more_ink_and_anchored_reemits() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("x", DataType::Float64, false),
             Field::new("y", DataType::Float64, false),
@@ -1236,7 +1236,7 @@ mod tests {
     }
 
     #[test]
-    fn ifb_ac05_build_chart_scene_with_highlight() {
+    fn build_chart_scene_with_highlight() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("x", DataType::Float64, false),
             Field::new("y", DataType::Float64, false),

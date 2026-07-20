@@ -1613,7 +1613,7 @@ impl WorkspaceRoot {
         if !restored {
             Self::default_layout(&dock_area, &canvas, &editor, &sidebar, &log, &command_log, window, cx);
         } else {
-            // Normalise (correction, review F1): pre-round saves
+            // Normalise (correction): pre-round saves
             // serialised bare-Tabs dock roots, which this pin's drag
             // machinery treats as locked — re-root them under StackPanels,
             // preserving the author's arrangement.
@@ -2423,7 +2423,7 @@ impl WorkspaceRoot {
     }
 
     /// Re-root any restored dock item whose root is bare `Tabs` under a
-    /// StackPanel (correction, review F1): every pre-round save
+    /// StackPanel (correction): every pre-round save
     /// serialised bare-Tabs roots, which this pin's drag machinery treats
     /// as locked (no drop targets, no drag sources) and whose panel events
     /// their `subscribe_item` never wires into the save chain (review F2).
@@ -2935,7 +2935,7 @@ mod tests {
     /// with the untouched chart_view/element sources (the diff gate),
     /// that is the whole shim contract: hosting added, nothing transformed.
     #[gpui::test]
-    fn aws_ac02_canvas_panel_is_a_shim_around_the_chart_view(cx: &mut TestAppContext) {
+    fn canvas_panel_is_a_shim_around_the_chart_view(cx: &mut TestAppContext) {
         let (chart, presentation, panel) = cx.update(|cx| {
             let chart =
                 cx.new(|_| ChartView::new(320.0, 240.0, Vec::new(), Vec::new(), Vec::new(), Vec::new()));
@@ -2976,7 +2976,7 @@ mod tests {
     /// verbatim — profiled/failed/unsupported alike — the set-profiles refresh
     /// tap replaces them, and it hides under presentation per the mapping.
     #[gpui::test]
-    fn sbp_ac03_sidebar_panel_hosts_profiles_and_hides_in_presentation(cx: &mut TestAppContext) {
+    fn sidebar_panel_hosts_profiles_and_hides_in_presentation(cx: &mut TestAppContext) {
         use profile_model::ColumnProfile;
 
         let profiles = vec![
@@ -3060,7 +3060,7 @@ mod tests {
     /// Empty state: a zero-source spec renders without panicking —
     /// the existing empty-state placeholder survives.
     #[gpui::test]
-    fn sbp_ac03_sidebar_panel_handles_zero_sources(cx: &mut TestAppContext) {
+    fn sidebar_panel_handles_zero_sources(cx: &mut TestAppContext) {
         let (_presentation, panel) = cx.update(|cx| {
             let presentation = cx.new(|_| PresentationState {
                 mode: PresentationMode::default(),
@@ -3079,7 +3079,7 @@ mod tests {
     /// anchors the bottom dock), never zoomable, and follows the authoring
     /// chrome: visible while authoring, hidden under presentation.
     #[gpui::test]
-    fn wsc_ac02_log_panel_is_a_permanent_shim_over_the_feedback_log(cx: &mut TestAppContext) {
+    fn log_panel_is_a_permanent_shim_over_the_feedback_log(cx: &mut TestAppContext) {
         let (feedback_log, presentation, panel) = cx.update(|cx| {
             let feedback_log = cx.new(|_| FeedbackLog::default());
             let presentation = cx.new(|_| PresentationState {
@@ -3115,9 +3115,7 @@ mod tests {
     /// message pair in the feedback log that the notification carried
     /// (both come from the one reload_feedback decision).
     #[gpui::test]
-    fn wsc_ac02_reload_rejection_reaches_the_log_with_the_notification_message(
-        cx: &mut TestAppContext,
-    ) {
+    fn reload_rejection_reaches_the_log_with_the_notification_message(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
         let (feedback_log, presentation) = cx.update(|cx| {
             let feedback_log = cx.new(|_| FeedbackLog::default());
@@ -3151,7 +3149,7 @@ mod tests {
 
     /// A Root window hosting an EditorPanel over `spec_path` seeded with
     /// `seed`, plus the shared feedback log — the harness for the
-    /// editor-save tap tests (review F5).
+    /// editor-save tap tests.
     fn build_editor_shell(
         cx: &mut TestAppContext,
         spec_path: PathBuf,
@@ -3204,7 +3202,7 @@ mod tests {
     /// editor) appends the notification's exact message to the log at
     /// error severity.
     #[gpui::test]
-    fn wsc_ac02_editor_save_refusal_reaches_the_log(cx: &mut TestAppContext) {
+    fn editor_save_refusal_reaches_the_log(cx: &mut TestAppContext) {
         let (window, editor, feedback_log) = build_editor_shell(
             cx,
             PathBuf::from("/nonexistent/brightfield-test-spec.yaml"),
@@ -3224,11 +3222,11 @@ mod tests {
         });
     }
 
-    /// Editor-save tap, conflict arm — review F5: an external
+    /// Editor-save tap, conflict arm: an external
     /// change on disk under a dirty buffer defers the save with a warning,
     /// and the log receives the same warning message the toast carried.
     #[gpui::test]
-    fn wsc_ac02_editor_save_conflict_reaches_the_log(cx: &mut TestAppContext) {
+    fn editor_save_conflict_reaches_the_log(cx: &mut TestAppContext) {
         let dir = std::env::temp_dir().join(format!("bf-wsc-conflict-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("scratch dir");
         let path = dir.join("spec.yaml");
@@ -3269,12 +3267,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Editor-save tap, write-failure arm — review F5: a save
+    /// Editor-save tap, write-failure arm: a save
     /// whose atomic write fails (the spec path is a DIRECTORY, so the
     /// final rename cannot land) logs the same "Save failed" error the
     /// toast carried.
     #[gpui::test]
-    fn wsc_ac02_editor_save_write_failure_reaches_the_log(cx: &mut TestAppContext) {
+    fn editor_save_write_failure_reaches_the_log(cx: &mut TestAppContext) {
         let dir = std::env::temp_dir().join(format!("bf-wsc-writeerr-{}", std::process::id()));
         let spec_as_dir = dir.join("spec.yaml");
         std::fs::create_dir_all(&spec_as_dir).expect("dir standing where the file should be");
@@ -3308,12 +3306,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// No-clear-on-recovery, review F4: recovery clears the
+    /// No-clear-on-recovery: recovery clears the
     /// sticky error NOTIFICATION but never the log — driven through the
     /// same notify_reload_rejection + clear_reload_error pair the
     /// watcher's rejection and recovery arms use.
     #[gpui::test]
-    fn wsc_ac02_recovery_clears_the_notification_not_the_log(cx: &mut TestAppContext) {
+    fn recovery_clears_the_notification_not_the_log(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
         let (feedback_log, presentation) = cx.update(|cx| {
             let feedback_log = cx.new(|_| FeedbackLog::default());
@@ -3380,7 +3378,7 @@ mod tests {
     /// SaveSpec — scoped to the editor context, mirroring the shape
     /// for the workspace `p` binding.
     #[test]
-    fn aws_ac04_cmd_s_binds_save_spec_in_editor_context() {
+    fn cmd_s_binds_save_spec_in_editor_context() {
         let bindings = editor_key_bindings();
         assert_eq!(bindings.len(), 1, "one action, one binding");
         let binding = &bindings[0];
@@ -3482,7 +3480,7 @@ mod tests {
     /// watcher polls — the whole end-to-end reload is macOS-eyeball, but the
     /// handler's flag flip is headless. Ungated by presentation by design.
     #[gpui::test]
-    fn kbg_ac11b_cmd_r_flips_the_shared_reload_trigger(cx: &mut TestAppContext) {
+    fn cmd_r_flips_the_shared_reload_trigger(cx: &mut TestAppContext) {
         let shell = build_shell(cx, None);
         assert!(
             !cx.update(|cx| shell.workspace.read(cx).reload_requested()),
@@ -3668,7 +3666,7 @@ mod tests {
     /// and every dock item is stack-rooted (review F1: bare-Tabs roots
     /// render no drop targets and cannot source drags at this pin).
     #[gpui::test]
-    fn wsc_ac03_fresh_boot_seeds_closed_bottom_log_dock(cx: &mut TestAppContext) {
+    fn fresh_boot_seeds_closed_bottom_log_dock(cx: &mut TestAppContext) {
         let shell = build_shell(cx, None);
 
         let (has, open, size) = bottom_dock_state(cx, &shell.workspace);
@@ -3690,7 +3688,7 @@ mod tests {
     /// 250px CLOSED left dock — survives exactly. DOCK_STATE_VERSION is
     /// unchanged — the layout restores, it is not discarded.
     #[gpui::test]
-    fn wsc_ac03_pre_round_layout_is_backfilled_with_closed_bottom_dock(cx: &mut TestAppContext) {
+    fn pre_round_layout_is_backfilled_with_closed_bottom_dock(cx: &mut TestAppContext) {
         let raw = serde_json::to_string_pretty(&saved_layout_without_bottom()).unwrap();
         let shell = build_shell(cx, Some(raw));
 
@@ -3735,7 +3733,7 @@ mod tests {
     /// root is normalised to the stack-rooted shape (arrangement, not tree
     /// shape, is what "as saved" pins).
     #[gpui::test]
-    fn wsc_ac03_saved_bottom_dock_restores_as_saved(cx: &mut TestAppContext) {
+    fn saved_bottom_dock_restores_as_saved(cx: &mut TestAppContext) {
         let mut layout = saved_layout_without_bottom();
         layout["bottom_dock"] = serde_json::json!({
             "panel": {
@@ -3768,7 +3766,7 @@ mod tests {
     /// dock ENTIRELY (no 29px strip — there is no dock to paint one);
     /// exiting rebuilds it closed at the same size with the Log panel.
     #[gpui::test]
-    fn wsc_ac04_round_trip_preserves_a_closed_bottom_dock(cx: &mut TestAppContext) {
+    fn round_trip_preserves_a_closed_bottom_dock(cx: &mut TestAppContext) {
         let shell = build_shell(cx, None);
         assert_eq!(bottom_dock_state(cx, &shell.workspace).1, Some(false));
 
@@ -3796,7 +3794,7 @@ mod tests {
     /// open, same size, both panels — and a change to the REBUILT dock
     /// entity still schedules a layout save (the observer re-attached).
     #[gpui::test]
-    fn wsc_ac04_round_trip_preserves_open_dock_with_moved_in_panel(cx: &mut TestAppContext) {
+    fn round_trip_preserves_open_dock_with_moved_in_panel(cx: &mut TestAppContext) {
         let shell = build_shell(cx, None);
 
         // Author's arrangement: open the dock, resize it, move the editor
@@ -3943,7 +3941,7 @@ mod tests {
     /// emptied right dock; moving it back restores an open, stack-rooted
     /// right dock at its previous width and leaves the Log alone below.
     #[gpui::test]
-    fn wsc_ac07_menu_move_editor_to_bottom_and_back(cx: &mut TestAppContext) {
+    fn menu_move_editor_to_bottom_and_back(cx: &mut TestAppContext) {
         let shell = build_shell(cx, None);
         let editor: std::sync::Arc<dyn gpui_component::dock::PanelView> =
             std::sync::Arc::new(shell.editor.clone());

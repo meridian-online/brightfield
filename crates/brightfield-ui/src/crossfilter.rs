@@ -1423,8 +1423,8 @@ fn recolour_override(
     configured_renderer(m.kind, scheme, m.bandwidth, m.thresholds, m.bin_width, None)
 }
 
-/// Swap a `ScaleSet`'s Fill ramp stops in place, preserving its domain
-/// . Returns `true` when a `Scale::Sequential` Fill was present and
+/// Swap a `ScaleSet`'s Fill ramp stops in place, preserving its domain.
+/// Returns `true` when a `Scale::Sequential` Fill was present and
 /// recoloured; `false` for a categorical or absent Fill. The load-bearing half
 /// of a colour cycle: `anchor_scale` copies LAUNCH stops (scale.rs), so
 /// rewriting the launch Fill stops is what actually moves the on-screen ramp.
@@ -1558,7 +1558,7 @@ mod tests {
     /// This is the surface the silent-no-op lesson demands for a
     /// retype — a headless assertion the eyeball backstop could otherwise miss.
     #[test]
-    fn clg_ac05_change_mark_type_changes_the_scene_fingerprint() {
+    fn change_mark_type_changes_the_scene_fingerprint() {
         use arrow::array::Float64Array;
         use arrow::datatypes::{DataType, Field, Schema};
         use std::sync::Arc;
@@ -1613,9 +1613,9 @@ mod tests {
     /// data core of `rebuild_marks_and_maps` — LivePlot's non-Send
     /// `Entity<ChartState>` can't be built headless). The engine half
     /// (mark_index_map rebuild + resolve + execute) is pinned by
-    /// brightfield-engine's `clg_ac16_count_change_rebuilds_mark_index_map...`.
+    /// brightfield-engine's `count_change_rebuilds_mark_index_map...`.
     #[test]
-    fn clg_ac16_count_change_rebuilds_coordinator_mark_to_plot() {
+    fn count_change_rebuilds_coordinator_mark_to_plot() {
         use brightfield_spec::analysis::ComponentPath;
         use brightfield_spec::edit::{apply, SpecEdit};
         use brightfield_spec::{parse_spec, Format};
@@ -2041,7 +2041,7 @@ projectionType: albers
     /// the blues ramp (its `augment_scales` carries the scheme); the default
     /// override stays viridis. Render-only: no SQL / plan-hash.
     #[test]
-    fn fww_ac06_live_rebuild_uses_declared_scheme() {
+    fn live_rebuild_uses_declared_scheme() {
         let (batch, channels) = grid_batch();
         let renderers = default_renderers();
         let layout = ChartLayout::new(400.0, 300.0);
@@ -2080,7 +2080,7 @@ projectionType: albers
     /// copies launch stops). The mechanic `cycle_scheme` relies on — mirrors
     /// the launch-Fill-stops probe.
     #[test]
-    fn kbg_ac13_recolour_launch_stops_moves_the_anchored_ramp() {
+    fn recolour_launch_stops_moves_the_anchored_ramp() {
         let (batch, channels) = grid_batch();
         let renderers = default_renderers();
         let layout = ChartLayout::new(400.0, 300.0);
@@ -2166,7 +2166,7 @@ projectionType: albers
     /// keeps the coordinator alive for an otherwise-static sequential dashboard.
     /// (`new` itself can't run headlessly — a `LivePlot` holds a gpui `Entity`.)
     #[test]
-    fn kbg_ac13_sequential_fill_keeps_the_coordinator_live() {
+    fn sequential_fill_keeps_the_coordinator_live() {
         // (1) Detection over real ScaleSets: a Sequential Fill is seen; an empty
         // set and a categorical (non-Sequential) Fill are not.
         let mut seq = ScaleSet::new();
@@ -2231,7 +2231,7 @@ projectionType: albers
     /// load-bearing: `false` (the dump/embedding path) still yields `None`; `true`
     /// (the authoring window) yields `Some`.
     #[test]
-    fn clg_ac16_static_spec_gets_a_coordinator_for_the_command_log() {
+    fn static_spec_gets_a_coordinator_for_the_command_log() {
         use brightfield_engine::Engine;
         use brightfield_spec::analysis::analyse_spec;
         use brightfield_spec::{parse_spec, Format};
@@ -2305,7 +2305,7 @@ plot:
     /// regression that dropped the attrs (`configured_renderer(.., None, None,
     /// None)`) would make these render-identical and fail the `assert_ne`.
     #[test]
-    fn kbg_ac13_cycle_retains_bandwidth() {
+    fn cycle_retains_bandwidth() {
         let (batch, channels) = grid_batch();
         let renderers = default_renderers();
         let layout = ChartLayout::new(400.0, 300.0);
@@ -2346,7 +2346,7 @@ plot:
     /// batch. The anchored rebuild differs from the old re-inferring build (the
     /// axes would have jumped), and the anchored scales it stores equal launch.
     #[test]
-    fn cfr_ac01_rebuild_anchors_to_launch_not_reinferred() {
+    fn rebuild_anchors_to_launch_not_reinferred() {
         let coord = legend_toggle_coordinator();
         let mut c = coord.borrow_mut();
         let layout = ChartLayout::new(360.0, 300.0);
@@ -2394,7 +2394,7 @@ plot:
     /// colour, not the palette[0] a single-category re-inference would assign.
     /// Categorical Fill rides the same launch-pinned `ScaleSet` as x/y.
     #[test]
-    fn cfr_ac02_filtered_fill_keeps_launch_colour() {
+    fn filtered_fill_keeps_launch_colour() {
         use arrow::array::{Float64Array, StringArray};
         use arrow::datatypes::{DataType, Field, Schema};
         use peniko::Color;
@@ -2586,7 +2586,7 @@ plot:
     /// (via a real legend toggle) and a blues + bandwidth heatmap (via a
     /// batch-swap round-trip through its configured override).
     #[test]
-    fn cfr_ac03_round_trip_returns_to_launch_scene() {
+    fn round_trip_returns_to_launch_scene() {
         // --- Dot plot: real session, select then toggle off. ---
         {
             let coord = legend_toggle_coordinator();
@@ -2666,7 +2666,7 @@ plot:
     /// vs Silverman; contour keeps its thresholds (more levels ⇒ more iso-line
     /// paths); a dot mark with no override still renders through the registry.
     #[test]
-    fn cfr_ac04_live_rebuild_uses_configured_renderer() {
+    fn live_rebuild_uses_configured_renderer() {
         use brightfield_render::mark::count_scene_paths;
 
         let (batch, channels) = grid_batch();
@@ -3017,7 +3017,7 @@ plot:
     // no-op. An empty `plots` vec means no gpui App is needed: the rebuild loop
     // has nothing to repaint, and we assert on the swapped batch directly.
     #[test]
-    fn slw_ac06_apply_slider_reexecutes_on_release_only() {
+    fn apply_slider_reexecutes_on_release_only() {
         use brightfield_engine::Engine;
         use brightfield_spec::analysis::analyse_spec;
         use brightfield_spec::{parse_spec, Format};
@@ -3099,7 +3099,7 @@ plot:
     // its `input: slider` yields a binding via the layout join, and committing a
     // higher threshold through the coordinator drops points.
     #[test]
-    fn slw_ac09_example_slider_drives_the_mark() {
+    fn example_slider_drives_the_mark() {
         use brightfield_engine::Engine;
         use brightfield_spec::analysis::analyse_spec;
         use brightfield_spec::layout::placed_input_nodes;
@@ -3155,8 +3155,8 @@ plot:
     }
 
     // -----------------------------------------------------------------------
-    // the menu-family coordinator lane,
-    // against a REAL session — the pattern (an empty `plots` vec
+    // The menu-family coordinator lane, against a REAL session — the same
+    // headless pattern the slider lane uses (an empty `plots` vec
     // means no gpui App is needed; we assert on the swapped batch directly).
     // -----------------------------------------------------------------------
 
@@ -3232,7 +3232,7 @@ plot:
     /// predicted value. The silent-no-op defence at the
     /// gpui-free half of the commit split.
     #[test]
-    fn diw_ac08_apply_menu_reexecutes_subscriber_on_commit() {
+    fn apply_menu_reexecutes_subscriber_on_commit() {
         let coord = menu_coordinator();
         let mut c = coord.borrow_mut();
 
@@ -3258,7 +3258,7 @@ plot:
     /// binding index returns `None` with the batch unchanged, at the same
     /// apply_menu surface the positive test drives.
     #[test]
-    fn diw_ac08_negative_control_out_of_range_index_is_inert() {
+    fn negative_control_out_of_range_index_is_inert() {
         let coord = menu_coordinator();
         let mut c = coord.borrow_mut();
         let before = c.marks[0].batch.as_ref().map_or(0, |b| b.num_rows());
@@ -3285,7 +3285,7 @@ plot:
     /// real dispatch. The different-value pick at the end is the sensitivity
     /// control — the same probe MUST move when a dispatch happens.
     #[test]
-    fn diw_ac08_same_value_pick_no_requery() {
+    fn same_value_pick_no_requery() {
         use std::sync::Arc;
 
         let coord = menu_coordinator();
@@ -3329,7 +3329,7 @@ plot:
     /// correct filtered results, riding the shipped emit.rs escaping — no
     /// brightfield-sql change (the byte-untouched machine gate co-verifies).
     #[test]
-    fn diw_ac09_quoted_string_value_filters_correctly() {
+    fn quoted_string_value_filters_correctly() {
         let coord = menu_coordinator();
         let mut c = coord.borrow_mut();
 
@@ -3443,7 +3443,7 @@ hconcat:
     /// selected). The subscriber's batch (mark 1) is the observable; the
     /// engine's contributor slot (not a UI mirror) is the toggle state.
     #[test]
-    fn lcf_ac03_legend_toggle_state_machine_dispatches_and_clears() {
+    fn legend_toggle_state_machine_dispatches_and_clears() {
         let coord = legend_toggle_coordinator();
         let mut c = coord.borrow_mut();
         let rows = |c: &CrossfilterCoordinator| {
@@ -3570,7 +3570,7 @@ hconcat:
     /// off → empty; a brush replacing the slot → empty (the F1a scenario, now
     /// for display state); an external clear → empty. Unknown index → empty.
     #[test]
-    fn cfr_ac05_legend_selected_categories_reads_the_engine_slot() {
+    fn legend_selected_categories_reads_the_engine_slot() {
         let coord = legend_toggle_coordinator();
         let mut c = coord.borrow_mut();
         let categories: Vec<String> = ["adelie", "gentoo", "chinstrap"]
@@ -3631,7 +3631,7 @@ hconcat:
     /// shift-click on a member removes it. `slot_expr` is Display-formatted, so
     /// the ' OR ' substring is the real SQL, not the Debug variant tag.
     #[test]
-    fn lif_ac05_shift_click_builds_a_sorted_or_union() {
+    fn shift_click_builds_a_sorted_or_union() {
         let coord = legend_toggle_coordinator();
         let mut c = coord.borrow_mut();
         let cats: Vec<String> = ["adelie", "gentoo", "chinstrap"]
@@ -3687,7 +3687,7 @@ hconcat:
     /// contributor — never an empty `Or` (which Displays FALSE -> zero rows) —
     /// so the subscriber returns to its unfiltered baseline, not a blank plot.
     #[test]
-    fn lif_ac07_shift_removing_the_last_member_clears() {
+    fn shift_removing_the_last_member_clears() {
         let coord = legend_toggle_coordinator();
         let mut c = coord.borrow_mut();
         let cats: Vec<String> = ["adelie", "gentoo", "chinstrap"]
@@ -3711,7 +3711,7 @@ hconcat:
     /// starts a fresh set; and a shift-click that hits no entry (`None`) is a
     /// no-op that leaves an active union untouched.
     #[test]
-    fn lif_ac05_shift_ignores_a_foreign_slot_and_a_miss() {
+    fn shift_ignores_a_foreign_slot_and_a_miss() {
         let coord = legend_toggle_coordinator();
         let mut c = coord.borrow_mut();
         let cats: Vec<String> = ["adelie", "gentoo", "chinstrap"]
@@ -3798,7 +3798,7 @@ hconcat:
     /// proves the wire is load-bearing: the raw moved `Selected` fed straight to
     /// commit_brush_release_multi (the unchanged release path) dispatches NOTHING.
     #[test]
-    fn drb_ac07_release_redispatch_changes_the_data() {
+    fn release_redispatch_changes_the_data() {
         use crate::interaction::{
             redispatch_brushing_from, resize_brush, BrushEdge, BrushRegion,
         };

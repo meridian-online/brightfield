@@ -86,14 +86,14 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac07_table_is_a_faithful_projection_of_the_binding_vec() {
+    fn table_is_a_faithful_projection_of_the_binding_vec() {
         let bound = keymap_bindings(&registry());
         let table = resolution_table(&bound);
         assert_eq!(table.rows(), bound.as_slice(), "table must equal the shipped binding vec");
     }
 
     #[test]
-    fn kbg_ac07_global_bindings_resolve_from_both_workspace_and_editor() {
+    fn global_bindings_resolve_from_both_workspace_and_editor() {
         let t = table();
         // toggle-focus (cmd-e) is Global — fires from both contexts.
         assert!(t.resolves("cmd-e", DispatchContext::CanvasFocused).contains(&"toggle-focus"));
@@ -101,7 +101,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac07_editor_suppresses_every_workspace_bare_verb() {
+    fn editor_suppresses_every_workspace_bare_verb() {
         let bound = keymap_bindings(&registry());
         let t = resolution_table(&bound);
         // No workspace-scoped binding resolves while the editor is focused.
@@ -117,7 +117,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac07_no_bare_verb_resolves_under_an_open_overlay() {
+    fn no_bare_verb_resolves_under_an_open_overlay() {
         let bound = keymap_bindings(&registry());
         let t = resolution_table(&bound);
         for b in &bound {
@@ -132,7 +132,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac07_plot_focus_resolves_a_bare_verb() {
+    fn plot_focus_resolves_a_bare_verb() {
         let t = table();
         // A canvas-focused bare verb (p) resolves.
         assert!(t.resolves("p", DispatchContext::CanvasFocused).contains(&"toggle-presentation"));
@@ -140,7 +140,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac07_toggle_chord_is_unshadowed() {
+    fn toggle_chord_is_unshadowed() {
         let bound = keymap_bindings(&registry());
         // Exactly one binding claims cmd-e, and it is the focus toggle.
         let claimers: Vec<_> = bound.iter().filter(|b| b.keystrokes == "cmd-e").collect();

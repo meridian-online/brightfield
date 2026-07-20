@@ -124,7 +124,7 @@ mod tests {
     use crate::registry::registry;
 
     #[test]
-    fn kbg_ac05_query_colour_ranks_cycle_colour_scheme_first() {
+    fn query_colour_ranks_cycle_colour_scheme_first() {
         let reg = registry();
         let recency = RecencyCounter::new();
         let hits = palette_filter(&reg, Altitude::View, "colour", &recency);
@@ -132,7 +132,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac05_candidate_set_equals_scope_eligible_verbs() {
+    fn candidate_set_equals_scope_eligible_verbs() {
         let reg = registry();
         let recency = RecencyCounter::new();
         // Empty query at the view altitude → exactly the verbs applicable there.
@@ -149,7 +149,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac05_empty_query_orders_by_frequency_then_recency() {
+    fn empty_query_orders_by_frequency_then_recency() {
         let reg = registry();
         let mut recency = RecencyCounter::new();
         let ranked = palette_filter(&reg, Altitude::View, "", &recency);
@@ -167,7 +167,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac05_reserved_verbs_appear_flagged_with_their_bucket() {
+    fn reserved_verbs_appear_flagged_with_their_bucket() {
         let reg = registry();
         let recency = RecencyCounter::new();
         let hits = palette_filter(&reg, Altitude::View, "", &recency);

@@ -271,7 +271,7 @@ steps:
     }
 
     #[test]
-    fn pds_ac03_pairs_collapse_to_one_tile() {
+    fn pairs_collapse_to_one_tile() {
         let g = collapse_families(&family_graph());
         let tile = &g.nodes["family.fam.fetch_x+extract_x"];
         assert_eq!(tile.kind, AssetKind::Family);
@@ -292,7 +292,7 @@ steps:
     }
 
     #[test]
-    fn pds_ac03_collapse_is_pure_and_idempotent() {
+    fn collapse_is_pure_and_idempotent() {
         let g = family_graph();
         let once = collapse_families(&g);
         assert_eq!(once, collapse_families(&g), "pure: same input, same output");
@@ -300,7 +300,7 @@ steps:
     }
 
     #[test]
-    fn pds_ac03_distinct_singles_do_not_collapse() {
+    fn distinct_singles_do_not_collapse() {
         // fetch_edgar/fetch_gleif strip to the same prefix with distinct
         // tails but form no >=2-step cycle — they must survive.
         let yaml = r"
@@ -320,7 +320,7 @@ steps:
     }
 
     #[test]
-    fn pds_ac03_repeated_tails_do_not_collapse() {
+    fn repeated_tails_do_not_collapse() {
         // Instances must carry DISTINCT parameter tokens; a repeated tail is
         // not a parameterised family.
         let yaml = r"

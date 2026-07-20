@@ -16,7 +16,7 @@ use brightfield_spec::{parse_spec, ComponentKind, Format, ParseWarning};
 const LEGEND_AS_BINDING: &str = include_str!("../../../examples/legend-select.yaml");
 
 #[test]
-fn lcf_ac06_legend_as_binding_parses_and_preflights_implemented() {
+fn legend_as_binding_parses_and_preflights_implemented() {
     let parsed = parse_spec(LEGEND_AS_BINDING, Format::Yaml).expect("bound-legend spec parses");
 
     // No known-but-unimplemented vocabulary is flagged by the binding.
@@ -61,7 +61,7 @@ fn lcf_ac06_legend_as_binding_parses_and_preflights_implemented() {
 }
 
 #[test]
-fn lcf_ac06_symbol_legend_binding_still_channel_blocked() {
+fn symbol_legend_binding_still_channel_blocked() {
     // The replace below must rewrite exactly the ONE legend node — if the
     // example ever grows a second `legend: color` (or a comment containing
     // it), this fixture would silently stop testing what it claims to.

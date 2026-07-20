@@ -115,7 +115,7 @@ mod tests {
     /// the CanvasPanel's flex centring inside the DockArea
     /// (an eyeball check).
     #[test]
-    fn fww_ac01_initial_window_size_adds_chrome_extents() {
+    fn initial_window_size_adds_chrome_extents() {
         let (dash_w, dash_h) = (800.0, 600.0);
         let (win_w, win_h) = framed_window_size(dash_w, dash_h);
         assert_eq!(win_w, dash_w + 2.0 * CONTENT_PADDING);
@@ -127,7 +127,7 @@ mod tests {
     /// canvas panel's tab title consume this one resolver — see main.rs,
     /// one call site.)
     #[test]
-    fn fww_ac02_title_meta_wins_filename_falls_back() {
+    fn title_meta_wins_filename_falls_back() {
         assert_eq!(
             resolve_title(Some("Sales Overview"), "examples/dashboard.yaml"),
             "Sales Overview"
@@ -143,7 +143,7 @@ mod tests {
     /// State machine: toggle() flips Authoring ↔ Presentation and
     /// back; the type lives in this module, which imports no gpui.
     #[test]
-    fn fww_ac03_presentation_state_machine_toggles() {
+    fn presentation_state_machine_toggles() {
         let mut mode = PresentationMode::default();
         assert_eq!(mode, PresentationMode::Authoring);
         assert!(mode.chrome_visible());
@@ -162,7 +162,7 @@ mod tests {
     /// whichever side of a presentation toggle they are computed on, because
     /// shell state appears nowhere in the layout call chain.
     #[test]
-    fn fww_ac03_layout_ignores_presentation_state() {
+    fn layout_ignores_presentation_state() {
         use brightfield_spec::layout::{
             placed_input_nodes, placed_legend_nodes, placed_plots, Rect,
         };

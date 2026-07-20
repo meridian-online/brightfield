@@ -38,7 +38,7 @@ mod tests {
     /// is the only route to the workspace. Presentation/dock state appears
     /// nowhere in the decision, so shell work cannot affect PNG output.
     #[test]
-    fn aws_ac01_dump_mode_short_circuits_before_workspace() {
+    fn dump_mode_short_circuits_before_workspace() {
         assert_eq!(
             boot_mode(Some("/tmp/out.png".to_string())),
             BootMode::HeadlessDump("/tmp/out.png".to_string())

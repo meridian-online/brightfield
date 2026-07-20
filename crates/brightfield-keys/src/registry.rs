@@ -652,7 +652,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac01_longnames_unique_and_kebab_case() {
+    fn longnames_unique_and_kebab_case() {
         let reg = registry();
         let mut seen = std::collections::HashSet::new();
         for v in &reg {
@@ -662,7 +662,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac01_reserved_buckets_present_with_reasons() {
+    fn reserved_buckets_present_with_reasons() {
         let reg = registry();
         // The two named reserved vocab sets, exactly.
         let mut needs_log: Vec<&str> = reg
@@ -698,7 +698,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac01_longname_snapshot_is_stable() {
+    fn longname_snapshot_is_stable() {
         // A committed snapshot of longnames: any add/remove/rename is a deliberate
         // change that must update this list (stability guard).
         let got: Vec<&str> = registry().iter().map(|v| v.longname).collect();
@@ -795,7 +795,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac01_producers_take_only_the_registry() {
+    fn producers_take_only_the_registry() {
         // The three producers each derive purely from the registry.
         let reg = registry();
         let keys = keymap_bindings(&reg);
@@ -813,7 +813,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac01_cycle_colour_scheme_is_view_only_preview() {
+    fn cycle_colour_scheme_is_view_only_preview() {
         let reg = registry();
         let c = reg.iter().find(|v| v.longname == "cycle-colour-scheme").unwrap();
         assert_eq!(c.status, VerbStatus::Preview);

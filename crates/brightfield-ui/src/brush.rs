@@ -29,7 +29,7 @@ pub enum BrushKind {
     /// Point selection — a single (column, value) equality predicate
     /// produced by chart-side click-to-point or input-widget-driven
     /// selections (v3 surface). v3 lands the variant + adapter
-    /// only; no chart_view dispatch path is wired (/ decision 2).
+    /// only; no chart_view dispatch path is wired (decision 2).
     Point,
     /// X-channel point selection (toggleX) — `x = <clicked value>`.
     PointX,
@@ -231,7 +231,7 @@ mod tests {
     /// brush_rect_to_predicate on intervalX produces an And
     /// of two Expr clauses bounding the x channel column.
     #[test]
-    fn cfs2_ac10_brush_rect_to_predicate_interval_x() {
+    fn brush_rect_to_predicate_interval_x() {
         let rect = Rect::new(10.0, 50.0, 90.0, 250.0);
         let channels = ChannelColumns::xy("speed", "delay");
         let pred = brush_rect_to_predicate(rect, BrushKind::IntervalX, &channels);
@@ -255,7 +255,7 @@ mod tests {
 
     /// intervalY produces an And of two Expr clauses on y.
     #[test]
-    fn cfs2_ac10_brush_rect_to_predicate_interval_y() {
+    fn brush_rect_to_predicate_interval_y() {
         let rect = Rect::new(10.0, 50.0, 90.0, 250.0);
         let channels = ChannelColumns::xy("speed", "delay");
         let pred = brush_rect_to_predicate(rect, BrushKind::IntervalY, &channels);
@@ -278,7 +278,7 @@ mod tests {
     /// intervalXY combines all four bounds into a flat
     /// four-clause And.
     #[test]
-    fn cfs2_ac10_brush_rect_to_predicate_interval_xy() {
+    fn brush_rect_to_predicate_interval_xy() {
         let rect = Rect::new(10.0, 50.0, 90.0, 250.0);
         let channels = ChannelColumns::xy("speed", "delay");
         let pred = brush_rect_to_predicate(rect, BrushKind::IntervalXY, &channels);
@@ -305,7 +305,7 @@ mod tests {
 
     /// missing channel → degenerate Predicate::True.
     #[test]
-    fn cfs2_ac10_brush_rect_to_predicate_missing_channel() {
+    fn brush_rect_to_predicate_missing_channel() {
         let rect = Rect::new(10.0, 50.0, 90.0, 250.0);
         let channels = ChannelColumns::y_only("delay");
         // intervalX needs x channel — missing → True.
@@ -322,9 +322,9 @@ mod tests {
     /// returns a `Predicate::Expr` containing the column and the **already-
     /// formatted SQL literal** value (no quoting performed by the helper).
     /// The "non-brushable kinds excluded" sub-clause is asserted spec-side
-    /// in `cfs3_ac09_non_brushable_kinds_excluded` (analysis.rs).
+    /// in `non_brushable_kinds_excluded` (analysis.rs).
     #[test]
-    fn cfs3_ac09_brush_kind_point_constructs() {
+    fn brush_kind_point_constructs() {
         // (a) Sealed-enum coverage: Point is distinct from each interval.
         let p = BrushKind::Point;
         assert_ne!(p, BrushKind::IntervalX);

@@ -318,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn pds_ac04_middle_statement_degrades_alone() {
+    fn middle_statement_degrades_alone() {
         let sql = "CREATE TABLE a AS SELECT 1;\n\
                    SELEC every FORM here IS deliberately unparseable;\n\
                    CREATE TABLE b AS SELECT * FROM a;";

@@ -168,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac01_adapter_covers_every_new_registry_binding() {
+    fn adapter_covers_every_new_registry_binding() {
         // The adapter produces exactly the registry's chart-grammar bindings minus
         // the two shipped fixed points — no other longname is silently dropped.
         // Protocol-context verbs are excluded: that grammar is
@@ -185,7 +185,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac12_action_for_longname_covers_runnable_verbs_only() {
+    fn action_for_longname_covers_runnable_verbs_only() {
         // Every runnable, canvas-reachable verb maps to its CORRECT action (a
         // wrong arm — e.g. pop-out => DiveIn — fails, not just a missing one); the
         // two non-runnable classes map to None: reserved (palette-visible, unbound)
@@ -247,7 +247,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac07_fixed_points_are_left_to_their_shipped_binding_sites() {
+    fn fixed_points_are_left_to_their_shipped_binding_sites() {
         // The adapter does NOT re-bind p or cmd-s (covered elsewhere).
         let b = grammar_key_bindings();
         assert!(matches_complete(&b, "p").is_empty(), "p stays a workspace binding");
@@ -255,7 +255,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac09_focus_toggle_is_global_and_unshadowed() {
+    fn focus_toggle_is_global_and_unshadowed() {
         let b = grammar_key_bindings();
         // cmd-e → ToggleFocus, GLOBAL (no context predicate → fires from anywhere).
         let claimers = matches_complete(&b, "cmd-e");
@@ -265,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac13_bare_c_binds_cycle_colour_scheme_in_workspace() {
+    fn bare_c_binds_cycle_colour_scheme_in_workspace() {
         let b = grammar_key_bindings();
         let c = matches_complete(&b, "c");
         assert_eq!(c.len(), 1);
@@ -274,7 +274,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac10_nav_keys_are_workspace_scoped_with_alternates() {
+    fn nav_keys_are_workspace_scoped_with_alternates() {
         let b = grammar_key_bindings();
         // Both the home-row key and its alternate bind the same nav action.
         for (key, alt, action) in [

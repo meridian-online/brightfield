@@ -167,7 +167,7 @@ mod tests {
     // --- default overlay matrix (pure `overlay`) ---
 
     #[test]
-    fn axi_ac02_continuous_both_axes_inset_all_four_ends() {
+    fn continuous_both_axes_inset_all_four_ends() {
         // A scatter: both axes continuous, no zero baseline → 5px all round.
         let got = overlay(
             none(),
@@ -189,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    fn axi_ac02_band_axis_gets_no_default() {
+    fn band_axis_gets_no_default() {
         // Bars: x band (no default), y continuous with a zero baseline at the
         // range start (bottom) → only the top (non-zero continuous end) insets.
         let got = overlay(
@@ -212,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn axi_ac02_zero_baseline_exempts_only_its_end() {
+    fn zero_baseline_exempts_only_its_end() {
         // areaY: y continuous, baseline pinned at range start (bottom). Bottom
         // stays flush; top insets. x continuous → both x ends inset.
         let got = overlay(
@@ -235,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn axi_ac02_zero_baseline_at_end_exempts_top() {
+    fn zero_baseline_at_end_exempts_top() {
         // All-nonpositive value axis: 0 pins to the range End (top) → top flush.
         let got = overlay(
             none(),
@@ -250,14 +250,14 @@ mod tests {
     }
 
     #[test]
-    fn axi_ac02_absent_axis_no_default() {
+    fn absent_axis_no_default() {
         // Augment-only / absent axis (None class) → no default either end.
         let got = overlay(none(), None, None, None, None, D);
         assert_eq!(got, Insets::default());
     }
 
     #[test]
-    fn axi_ac02_explicit_overrides_default_including_zero() {
+    fn explicit_overrides_default_including_zero() {
         // Explicit values win over the default; an explicit 0 forces flush even
         // on a continuous non-baseline end (Mosaic-exact opt-out).
         let explicit = SideInsets {
@@ -286,7 +286,7 @@ mod tests {
     }
 
     #[test]
-    fn axi_ac02_explicit_applies_to_band_axis() {
+    fn explicit_applies_to_band_axis() {
         // Band gets no DEFAULT, but an explicit inset still applies.
         let explicit = SideInsets {
             left: Some(4.0),
@@ -367,7 +367,7 @@ mod tests {
         }
 
         #[test]
-        fn axi_ac02_scatter_fixture_insets_all_four_ends() {
+        fn scatter_fixture_insets_all_four_ends() {
             let batch = dot_batch();
             let cm = dot_channels();
             let dot = DotRenderer;
@@ -385,7 +385,7 @@ mod tests {
         }
 
         #[test]
-        fn axi_ac02_bar_fixture_stays_flush_at_baseline() {
+        fn bar_fixture_stays_flush_at_baseline() {
             // Band x → no inset; positive value y → baseline flush at the bottom
             // (range start), only the top continuous end insets.
             let batch = bar_batch();
@@ -405,7 +405,7 @@ mod tests {
         }
 
         #[test]
-        fn axi_ac02_multi_mark_exempts_baseline_if_any_mark_declares_it() {
+        fn multi_mark_exempts_baseline_if_any_mark_declares_it() {
             // A bar (declares a Y zero baseline) overlaid with a dot (does not).
             // The baseline end must stay flush because SOME mark declares it —
             // guards zero_pinned_end's `.any()` (an `.all()` would float the bar).
@@ -423,7 +423,7 @@ mod tests {
         }
 
         #[test]
-        fn axi_ac02_all_negative_value_axis_exempts_the_top_end() {
+        fn all_negative_value_axis_exempts_the_top_end() {
             // extend_domain_to_zero pins 0 to the range End (top) when the value
             // axis is all-nonpositive → top stays flush, bottom insets.
             let bar = bar_batch_vals(vec![-5.0, -3.0, -2.0]);
@@ -436,7 +436,7 @@ mod tests {
         }
 
         #[test]
-        fn axi_ac02_straddling_value_axis_insets_both_ends() {
+        fn straddling_value_axis_insets_both_ends() {
             // The composed domain crosses zero → 0 is interior, no end is pinned,
             // both continuous ends inset.
             let bar = bar_batch_vals(vec![-3.0, 2.0, 4.0]);
@@ -449,7 +449,7 @@ mod tests {
         }
 
         #[test]
-        fn axi_ac05_edge_dot_renders_whole_inside_frame() {
+        fn edge_dot_renders_whole_inside_frame() {
             // The finding closes, as a real before/after geometry contrast: a dot
             // at domain max, mapped through the resolved (inset) range vs the
             // un-inset range, and its outer disc edge measured against the frame.

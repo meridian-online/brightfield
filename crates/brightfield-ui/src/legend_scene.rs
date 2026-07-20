@@ -98,7 +98,7 @@ mod tests {
     /// the gradient bar, and the two scenes differ (swatches vs bar). This
     /// module imports no gpui, so the construction compiles gpui-free.
     #[test]
-    fn fww_ac04_legend_scenes_swatches_vs_gradient_bar() {
+    fn legend_scenes_swatches_vs_gradient_bar() {
         let (swatches, swatch_size) =
             build_legend_scene(&categorical(), &BTreeSet::new(), None)
                 .expect("categorical scale builds a scene");

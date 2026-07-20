@@ -880,7 +880,7 @@ mod query_tests {
 
     /// a `$param` placeholder is substituted with its concrete value.
     #[test]
-    fn pefr_ac01_interpolate_scalar_param() {
+    fn interpolate_scalar_param() {
         let mut params = ParamValues::new();
         params.insert("k".to_string(), SpecValue::Integer(20));
         let sql = interpolate_params("SELECT * FROM t WHERE x > $k", &params);
@@ -891,7 +891,7 @@ mod query_tests {
     /// interpolation), and identifier boundaries are respected — `$k` must not
     /// consume `$k2`.
     #[test]
-    fn pefr_ac01_interpolate_unknown_and_boundaries() {
+    fn interpolate_unknown_and_boundaries() {
         let mut params = ParamValues::new();
         params.insert("k".to_string(), SpecValue::Integer(1));
         let sql = interpolate_params("$k2 + $k + $unknown", &params);
@@ -901,7 +901,7 @@ mod query_tests {
     /// a string-valued param is emitted quoted and escaped
     /// (single-quote doubling) — never raw — so interpolation is injection-safe.
     #[test]
-    fn pefr_ac02_interpolation_escapes_string_param() {
+    fn interpolation_escapes_string_param() {
         let mut params = ParamValues::new();
         params.insert("s".to_string(), SpecValue::String("O'Brien".to_string()));
         let sql = interpolate_params("WHERE name = $s", &params);
@@ -932,7 +932,7 @@ mod query_tests {
     /// SELECT as `$param AS "<param>"`, and interpolation yields `<value> AS
     /// "<param>"` — the channel reaches the query rather than being dropped.
     #[test]
-    fn pefr_ac03_param_channel_projected() {
+    fn param_channel_projected() {
         let src = "params:\n  k: 3\ndata:\n  t: [{ x: 1 }, { x: 2 }]\nplot:\n  - mark: dot\n    data: { from: t }\n    x: x\n    y: $k\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
         let mut params = ParamValues::new();
@@ -958,7 +958,7 @@ mod query_tests {
     /// a `data.filter` expression lowers into a WHERE clause and
     /// its `$param` is interpolated (Decision 2).
     #[test]
-    fn pefr_ac07_data_filter_lowers_to_where() {
+    fn data_filter_lowers_to_where() {
         let src = "params:\n  k: 0\ndata:\n  t: [{ x: 1 }, { x: 5 }]\nplot:\n  - mark: dot\n    data: { from: t, filter: \"x > $k\" }\n    x: x\n    y: x\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
         let mut params = ParamValues::new();
@@ -1002,7 +1002,7 @@ mod query_tests {
     /// relies on for selection params (which route through concrete
     /// predicates carrying no `$name`).
     #[test]
-    fn pefr_ac10_sql_invariant_param_keeps_plan_hash() {
+    fn sql_invariant_param_keeps_plan_hash() {
         let src = "params:\n  k: 1\ndata:\n  t: [{ x: 1 }]\nplot:\n  - mark: dot\n    data: { from: t }\n    x: x\n    y: x\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
         let mut p1 = ParamValues::new();
@@ -1023,7 +1023,7 @@ mod query_tests {
     /// the literal string via the LRU sql_cache, so the value need not enter the
     /// hash — the earlier value-fold was removed as redundant + unbounded.
     #[test]
-    fn pefr_ac11_emit_channel_param_changes_sql_not_structural_hash() {
+    fn emit_channel_param_changes_sql_not_structural_hash() {
         let src = "params:\n  k: 3\ndata:\n  t: [{ x: 1 }]\nplot:\n  - mark: dot\n    data: { from: t }\n    x: x\n    y: $k\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
         let mut p3 = ParamValues::new();
@@ -1043,7 +1043,7 @@ mod query_tests {
     }
 
     #[test]
-    fn dfir_ac08_emit_query_unsupported_mark() {
+    fn emit_query_unsupported_mark() {
         // Use a mark kind that has no lowerer (voronoi is the unimplemented
         // stand-in now that geo is wired — the placeholder swap dance).
         let src = "plot:\n  - mark: voronoi\n    data: { from: flights }\ndata:\n  flights: { file: flights.parquet }\n";
@@ -1057,7 +1057,7 @@ mod query_tests {
     }
 
     #[test]
-    fn msv_ac01_emit_query_succeeds_for_from_data() {
+    fn emit_query_succeeds_for_from_data() {
         // SimpleLowerer handles line marks with data.from
         let src = "plot:\n  - mark: line\n    data: { from: flights }\ndata:\n  flights: { file: flights.parquet }\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
@@ -1071,7 +1071,7 @@ mod query_tests {
     }
 
     #[test]
-    fn dfir_ac08_emit_query_out_of_bounds() {
+    fn emit_query_out_of_bounds() {
         let src = "plot:\n  - mark: dot\n    data: { from: t }\ndata:\n  t: { file: t.parquet }\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
         let result = emit_query(&spec, 99, None, None);
@@ -1082,7 +1082,7 @@ mod query_tests {
     }
 
     #[test]
-    fn dfir_ac08_emit_all_queries_returns_per_mark_results() {
+    fn emit_all_queries_returns_per_mark_results() {
         let src = "plot:\n  - mark: line\n    data: { from: t }\n  - mark: dot\n    data: { from: t }\ndata:\n  t: { file: t.parquet }\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
         let results = emit_all_queries(&spec, None);
@@ -1094,7 +1094,7 @@ mod query_tests {
     }
 
     #[test]
-    fn dfir_ac08_emit_query_no_marks_spec() {
+    fn emit_query_no_marks_spec() {
         // A spec with no marks — just data
         let src = "data:\n  t: { file: t.parquet }\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
@@ -1113,7 +1113,7 @@ mod query_tests {
     // comparison if we ever snapshot rendered pixels).
 
     #[test]
-    fn gomb_ac13_density1d_x_snapshot() {
+    fn density1d_x_snapshot() {
         let src = r#"
 data:
   athletes: { file: athletes.parquet }
@@ -1142,7 +1142,7 @@ plot:
     }
 
     #[test]
-    fn gomb_ac13_density2d_snapshot() {
+    fn density2d_snapshot() {
         let src = r#"
 data:
   athletes: { file: athletes.parquet }
@@ -1168,7 +1168,7 @@ plot:
     }
 
     #[test]
-    fn gomb_ac13_linear_regression_snapshot() {
+    fn linear_regression_snapshot() {
         let src = r#"
 data:
   athletes: { file: athletes.parquet }
@@ -1218,7 +1218,7 @@ plot:
     /// `(<pred>) AS __bf_selected` — and does NOT wrap the plan in a WHERE, so
     /// the mark keeps its full batch and dims (highlight-not-filter).
     #[test]
-    fn ce_ac03_highlight_projects_membership_column() {
+    fn highlight_projects_membership_column() {
         let spec = parse_spec(HIGHLIGHT_SPEC, Format::Yaml).unwrap().spec;
         let selections = vec![(
             "brush".to_string(),
@@ -1242,7 +1242,7 @@ plot:
     /// byte-identical to the same plot without any highlight interactor — the
     /// at-rest look, so example PNGs don't move.
     #[test]
-    fn ce_ac07_empty_selection_no_projection() {
+    fn empty_selection_no_projection() {
         let spec = parse_spec(HIGHLIGHT_SPEC, Format::Yaml).unwrap().spec;
         let at_rest = emit_query(&spec, 0, None, None).expect("emit");
         assert!(
@@ -1267,7 +1267,7 @@ plot:
     /// another resolves per its explicit bindings — a WHERE for the filter AND a
     /// `__bf_selected` projection for the highlight, composed.
     #[test]
-    fn ce_ac05_filter_and_highlight_compose() {
+    fn filter_and_highlight_compose() {
         let yaml = r#"
 params:
   click: { select: single }
@@ -1302,7 +1302,7 @@ plot:
     /// projection is appended even with an active selection, so the query can't
     /// reference a grouped-away column and SQL-error.
     #[test]
-    fn ce_ac09_emit_skips_projection_for_aggregate() {
+    fn emit_skips_projection_for_aggregate() {
         let yaml = r#"
 params:
   brush: { select: single }
@@ -1331,7 +1331,7 @@ plot:
     /// never declared in `params:` (weather's `$range` shape) still projects the
     /// membership column — the emit gate must not require a `spec.params` entry.
     #[test]
-    fn ce_ac08_asbound_only_selection_projects() {
+    fn asbound_only_selection_projects() {
         let yaml = r#"
 plot:
   - mark: dot
@@ -1368,7 +1368,7 @@ plot:
     /// the mark's own plot as the contributor, the crossfilter self-exclusion that
     /// is correct for filterBy would (wrongly) drop it to empty → no projection.
     #[test]
-    fn ce_ac05_highlight_does_not_self_exclude() {
+    fn highlight_does_not_self_exclude() {
         let yaml = r#"
 params:
   sel: { select: crossfilter }

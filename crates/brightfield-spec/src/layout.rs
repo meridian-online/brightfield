@@ -841,7 +841,7 @@ vconcat:
     // placed_inputs surfaces a composition-level input's
     // rect + path (the rect the multi-view extraction used to drop).
     #[test]
-    fn slw_ac01_placed_inputs_path_and_rect() {
+    fn placed_inputs_path_and_rect() {
         let parsed = parse_spec(SLIDER_SPEC, Format::Yaml).expect("parse");
         let inputs = placed_inputs(&parsed.spec, Rect::new(0.0, 0.0, 0.0, 0.0));
         assert_eq!(inputs.len(), 1, "one composition-level input");
@@ -863,7 +863,7 @@ plot:
     // collect_input_nodes paths match placed_inputs, and
     // placed_input_nodes joins each rect to the Input that writes the param.
     #[test]
-    fn slw_ac02_collect_input_nodes_and_join() {
+    fn collect_input_nodes_and_join() {
         let parsed = parse_spec(SLIDER_SPEC, Format::Yaml).expect("parse");
         let spec = &parsed.spec;
 
@@ -978,7 +978,7 @@ hconcat:
 
     // Rect struct
     #[test]
-    fn mvdc_ac01_rect_fields() {
+    fn rect_fields() {
         let r = Rect::new(10.0, 20.0, 300.0, 200.0);
         assert_eq!(r.x, 10.0);
         assert_eq!(r.y, 20.0);
@@ -987,7 +987,7 @@ hconcat:
     }
 
     #[test]
-    fn mvdc_ac01_rect_zero() {
+    fn rect_zero() {
         let r = Rect::zero();
         assert_eq!(r.x, 0.0);
         assert_eq!(r.y, 0.0);
@@ -997,7 +997,7 @@ hconcat:
 
     // LayoutNode enum is exhaustive over Component variants
     #[test]
-    fn mvdc_ac02_layout_node_exhaustive_match() {
+    fn layout_node_exhaustive_match() {
         fn discriminator(n: &LayoutNode) -> &'static str {
             match n {
                 LayoutNode::Plot { .. } => "plot",
@@ -1019,7 +1019,7 @@ hconcat:
     }
 
     #[test]
-    fn mvdc_ac02_layout_node_rect_accessor() {
+    fn layout_node_rect_accessor() {
         let node = LayoutNode::Legend {
             rect: Rect::new(5.0, 10.0, 120.0, 24.0),
         };
@@ -1029,7 +1029,7 @@ hconcat:
 
     // compute_layout basic
     #[test]
-    fn mvdc_ac03_single_plot() {
+    fn single_plot() {
         let spec = Spec {
             root: Some(Component::Plot(PlotNode {
                 items: vec![],
@@ -1052,7 +1052,7 @@ hconcat:
     }
 
     #[test]
-    fn mvdc_ac03_no_root() {
+    fn no_root() {
         let spec = Spec::default();
         let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
         let tree = compute_layout(&spec, viewport);
@@ -1061,7 +1061,7 @@ hconcat:
 
     // hconcat stacks left-to-right
     #[test]
-    fn mvdc_ac04_hconcat_two_plots() {
+    fn hconcat_two_plots() {
         let spec = Spec {
             root: Some(Component::HConcat(ConcatNode {
                 items: vec![
@@ -1090,7 +1090,7 @@ hconcat:
 
     // vconcat stacks top-to-bottom
     #[test]
-    fn mvdc_ac05_vconcat_two_plots() {
+    fn vconcat_two_plots() {
         let spec = Spec {
             root: Some(Component::VConcat(ConcatNode {
                 items: vec![
@@ -1119,7 +1119,7 @@ hconcat:
 
     // hspace and vspace gaps
     #[test]
-    fn mvdc_ac06_hspace_gap() {
+    fn hspace_gap() {
         let spec = Spec {
             root: Some(Component::HConcat(ConcatNode {
                 items: vec![
@@ -1154,7 +1154,7 @@ hconcat:
     }
 
     #[test]
-    fn mvdc_ac06_vspace_gap() {
+    fn vspace_gap() {
         let spec = Spec {
             root: Some(Component::VConcat(ConcatNode {
                 items: vec![
@@ -1187,13 +1187,13 @@ hconcat:
 
     // resolve_space_value
     #[test]
-    fn mvdc_ac07_numeric_pixels() {
+    fn numeric_pixels() {
         assert_eq!(resolve_space_value(&SpecValue::Integer(35), 16.0), 35.0);
         assert_eq!(resolve_space_value(&SpecValue::Float(2.5), 16.0), 2.5);
     }
 
     #[test]
-    fn mvdc_ac07_em_units() {
+    fn em_units() {
         assert_eq!(
             resolve_space_value(&SpecValue::String("1em".to_string()), 16.0),
             16.0
@@ -1205,7 +1205,7 @@ hconcat:
     }
 
     #[test]
-    fn mvdc_ac07_invalid_returns_zero() {
+    fn invalid_returns_zero() {
         assert_eq!(
             resolve_space_value(&SpecValue::String("bogus".to_string()), 16.0),
             0.0
@@ -1215,7 +1215,7 @@ hconcat:
 
     // nested composition (grid)
     #[test]
-    fn mvdc_ac08_nested_grid() {
+    fn nested_grid() {
         // hconcat [ vconcat [A, B], vconcat [C, D] ]
         // A is at (0,0), B at (0, 400)
         // C is at (640, 0), D at (640, 400)
@@ -1265,7 +1265,7 @@ hconcat:
 
     // mixed component types
     #[test]
-    fn mvdc_ac09_mixed_types() {
+    fn mixed_types() {
         use crate::vocab::{InputKind, LegendChannel, ImplStatus};
         let spec = Spec {
             root: Some(Component::HConcat(ConcatNode {
@@ -1310,7 +1310,7 @@ hconcat:
 
     // plot attributes override defaults
     #[test]
-    fn mvdc_ac10_plot_declared_size() {
+    fn plot_declared_size() {
         let mut attrs = IndexMap::new();
         attrs.insert("height".to_string(), SpecValue::Integer(200));
         attrs.insert("width".to_string(), SpecValue::Integer(500));
@@ -1327,7 +1327,7 @@ hconcat:
     }
 
     #[test]
-    fn mvdc_ac10_plot_partial_override() {
+    fn plot_partial_override() {
         let mut attrs = IndexMap::new();
         attrs.insert("height".to_string(), SpecValue::Integer(200));
         // No width declared — should use default
@@ -1350,7 +1350,7 @@ hconcat:
     // (legend-as-subscriber); the fixed analysis arm skips the `as:` key and
     // surfaces the binding via `legend_bindings` instead.
     #[test]
-    fn mvdc_ac11_legend_subscriber_graph() {
+    fn legend_subscriber_graph() {
         use std::path::PathBuf;
         let legends_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("vendor")
@@ -1375,7 +1375,7 @@ hconcat:
 
     // vendored corpus specs with composition
     #[test]
-    fn mvdc_ac13_corpus_layout() {
+    fn corpus_layout() {
         use std::path::PathBuf;
         let corpus = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("vendor")
@@ -1422,7 +1422,7 @@ hconcat:
     }
 
     #[test]
-    fn axi_ac01_global_inset_sets_all_four_sides() {
+    fn global_inset_sets_all_four_sides() {
         let p = plot_with(&[("inset", SpecValue::Integer(5))]);
         assert_eq!(
             resolve_plot_insets(&p),
@@ -1436,7 +1436,7 @@ hconcat:
     }
 
     #[test]
-    fn axi_ac01_per_axis_overrides_global() {
+    fn per_axis_overrides_global() {
         // xInset governs left+right; yInset governs top+bottom; global fills gaps.
         let p = plot_with(&[
             ("inset", SpecValue::Integer(2)),
@@ -1454,7 +1454,7 @@ hconcat:
     }
 
     #[test]
-    fn axi_ac01_per_side_is_most_specific() {
+    fn per_side_is_most_specific() {
         // Per-side beats per-axis beats global, independently on each side.
         let p = plot_with(&[
             ("inset", SpecValue::Integer(1)),
@@ -1474,7 +1474,7 @@ hconcat:
     }
 
     #[test]
-    fn axi_ac01_explicit_zero_is_preserved_not_dropped() {
+    fn explicit_zero_is_preserved_not_dropped() {
         // Explicit 0 is Some(0.0) — the Mosaic-exact opt-out — not "absent".
         let p = plot_with(&[("xInsetRight", SpecValue::Integer(0))]);
         let got = resolve_plot_insets(&p);
@@ -1483,7 +1483,7 @@ hconcat:
     }
 
     #[test]
-    fn axi_ac01_absent_is_none_and_nonnumeric_falls_through() {
+    fn absent_is_none_and_nonnumeric_falls_through() {
         // No inset attrs at all → all None. A non-numeric per-side value degrades
         // to absent for that key and falls through to the next-most-specific.
         assert_eq!(resolve_plot_insets(&plot_with(&[])), SideInsets::default());
@@ -1496,7 +1496,7 @@ hconcat:
     }
 
     #[test]
-    fn apt_ac02_resolve_axis_titles_override_suppress_derive() {
+    fn resolve_axis_titles_override_suppress_derive() {
         // Override: a non-empty string is used verbatim.
         let p = plot_with(&[
             ("xLabel", SpecValue::String("Arrival Delay".into())),
@@ -1528,7 +1528,7 @@ hconcat:
     }
 
     #[test]
-    fn geo_ac04_resolve_projection_reads_projection_type() {
+    fn resolve_projection_reads_projection_type() {
         // Absent → default equirectangular.
         assert_eq!(
             resolve_projection(&plot_with(&[])),
@@ -1572,7 +1572,7 @@ hconcat:
     }
 
     #[test]
-    fn geo_ac04_resolve_geometry_column_defaults_to_geom() {
+    fn resolve_geometry_column_defaults_to_geom() {
         use crate::ast::{Mark, ValueOrParamRef};
         use crate::vocab::{ImplStatus, MarkKind};
 
@@ -1603,7 +1603,7 @@ hconcat:
     }
 
     #[test]
-    fn apt_ac04_resolve_plot_title_string_only() {
+    fn resolve_plot_title_string_only() {
         assert_eq!(
             resolve_plot_title(&plot_with(&[("title", SpecValue::String("Weather".into()))])),
             Some("Weather".to_string()),
@@ -1637,7 +1637,7 @@ hconcat:
     /// `RADIO_ROW_HEIGHT · N + RADIO_CHROME_PAD` — pinned against the SHARED
     /// constants (the SLIDER_* sync convention), not a recomputed value.
     #[test]
-    fn diw_ac05_radio_literal_height_formula() {
+    fn radio_literal_height_formula() {
         let rect = input_rect(
             r#"
 vconcat:
@@ -1659,7 +1659,7 @@ vconcat:
     /// layout time) is layout-sized as a menu; assembly degrades the
     /// presentation to match.
     #[test]
-    fn diw_ac05_radio_derived_options_menu_sized() {
+    fn radio_derived_options_menu_sized() {
         let rect = input_rect(
             r#"
 data:
@@ -1681,7 +1681,7 @@ vconcat:
 
     /// menu and checkbox presentations keep the fixed 200×32 box.
     #[test]
-    fn diw_ac05_menu_and_checkbox_unchanged_200x32() {
+    fn menu_and_checkbox_unchanged_200x32() {
         let menu = input_rect(
             r#"
 vconcat:
@@ -1707,7 +1707,7 @@ vconcat:
     /// carrying a stray `style: radio` + literal `options:` (both inert keys
     /// on a slider) keeps the fixed 200×32 box, never a radio-tall rect.
     #[test]
-    fn diw_ac05_non_menu_kind_ignores_style_keys() {
+    fn non_menu_kind_ignores_style_keys() {
         let slider = input_rect(
             r#"
 vconcat:

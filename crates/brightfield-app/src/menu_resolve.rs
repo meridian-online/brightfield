@@ -1,5 +1,4 @@
-//! Assembly-time menu options resolution + default reconciliation
-//! .
+//! Assembly-time menu options resolution + default reconciliation.
 //!
 //! Runs on BOTH the launch path and the watcher/reload rebuild path (both
 //! flow through `build_everything`), against the pass's own `Session`:
@@ -210,7 +209,7 @@ vconcat:
     /// distinct values (ordered), and the declared default — present in the
     /// column — is NOT prepended (strict equality found it).
     #[test]
-    fn diw_ac04_derived_options_resolve_from_column() {
+    fn derived_options_resolve_from_column() {
         let yaml = format!(
             r#"
 params:
@@ -242,7 +241,7 @@ params:
     /// in the column) AND a literal list omitting the default — the param is
     /// never snapped, the LIST moves.
     #[test]
-    fn diw_ac04_default_reconciliation_prepends_for_derived_and_literal() {
+    fn default_reconciliation_prepends_for_derived_and_literal() {
         // Derived: default "everywhere" is in no row.
         let yaml = format!(
             r#"
@@ -297,7 +296,7 @@ params:
     /// against a derived same-typed Integer list compares EQUAL (no prepend),
     /// with no cross-variant coercion in sight.
     #[test]
-    fn diw_ac04_strict_variant_equality_integer_default() {
+    fn strict_variant_equality_integer_default() {
         let yaml = format!(
             r#"
 params:
@@ -322,7 +321,7 @@ params:
     /// column earns one warning and is skipped; the sibling widgets resolve
     /// untouched.
     #[test]
-    fn diw_ac04_failure_isolation_broken_column_skips_one_widget() {
+    fn failure_isolation_broken_column_skips_one_widget() {
         let yaml = format!(
             r#"
 params:
@@ -352,7 +351,7 @@ params:
     /// unknown style value → menu presentation + exactly one
     /// warning + a usable widget (the model's surfaced reason, logged once).
     #[test]
-    fn diw_ac14_unknown_style_degrades_to_menu_with_one_warning() {
+    fn unknown_style_degrades_to_menu_with_one_warning() {
         let yaml = format!(
             r#"
 params:
@@ -376,7 +375,7 @@ params:
     /// menu showing 'maybe' selected (the decisions_locked ordering: the
     /// prepend runs FIRST, then the count rule judges 3).
     #[test]
-    fn diw_ac14_checkbox_foreign_default_degrades_post_reconciliation() {
+    fn checkbox_foreign_default_degrades_post_reconciliation() {
         let yaml = format!(
             r#"
 params:
@@ -408,7 +407,7 @@ params:
     /// a well-formed checkbox (declared [true, false] default pair,
     /// bool param) does NOT degrade — the flagship shape stays a checkbox.
     #[test]
-    fn diw_ac14_wellformed_checkbox_stays_checkbox() {
+    fn wellformed_checkbox_stays_checkbox() {
         let yaml = format!(
             r#"
 params:
@@ -430,7 +429,7 @@ params:
     /// reserved 3 rows → menu presentation + one warning. The geometry never
     /// overflows the 22·N + RADIO_CHROME_PAD rect.
     #[test]
-    fn diw_ac14_radio_prepend_exceeding_layout_rows_degrades() {
+    fn radio_prepend_exceeding_layout_rows_degrades() {
         let yaml = format!(
             r#"
 params:
@@ -458,7 +457,7 @@ params:
     /// style: radio with derived options → menu
     /// presentation (menu-sized rect) + one warning.
     #[test]
-    fn diw_ac14_derived_radio_degrades_to_menu() {
+    fn derived_radio_degrades_to_menu() {
         let yaml = format!(
             r#"
 params:
@@ -484,7 +483,7 @@ params:
     /// entries both the launch pass and the watcher pass append, mapped
     /// through `resolution_warning_entries`.
     #[test]
-    fn diw_ac14_warnings_append_to_feedback_log_once_each() {
+    fn warnings_append_to_feedback_log_once_each() {
         let yaml = format!(
             r#"
 params:
@@ -514,7 +513,7 @@ params:
     /// a derived list truncated at the cap keeps a usable
     /// (truncated) menu + one warning. 60 distinct values → 50 options.
     #[test]
-    fn diw_ac14_cap_truncation_warns_and_keeps_widget() {
+    fn cap_truncation_warns_and_keeps_widget() {
         let rows: String = (0..60)
             .map(|i| format!("    - {{ x: {i}, region: \"r{i:02}\", n: {i} }}\n"))
             .collect();

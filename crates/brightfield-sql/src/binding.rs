@@ -117,7 +117,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac10_prepared_mode_emits_placeholders() {
+    fn prepared_mode_emits_placeholders() {
         let expr = make_expr(&["x > ", " AND x < ", ""], &["lo", "hi"]);
         let mut bindings = Vec::new();
         let result = expression_to_sql(&expr, &mut bindings, &BindingMode::Prepared).unwrap();
@@ -140,7 +140,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac10_interpolated_mode_emits_literals() {
+    fn interpolated_mode_emits_literals() {
         let expr = make_expr(&["x > ", " AND x < ", ""], &["lo", "hi"]);
         let mut values = ParamValues::new();
         values.insert("lo".to_string(), SpecValue::Integer(42));
@@ -153,7 +153,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac10_invariant_violation_on_bad_spans() {
+    fn invariant_violation_on_bad_spans() {
         // 2 spans, 2 params — violates spans.len() == params.len() + 1
         let expr = make_expr(&["x > ", ""], &["lo", "hi"]);
         let mut bindings = Vec::new();
@@ -167,7 +167,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac06_binding_scalar_fields() {
+    fn binding_scalar_fields() {
         let b = Binding::Scalar {
             param: "threshold".to_string(),
             position: 0,
@@ -176,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac06_binding_selection_fields() {
+    fn binding_selection_fields() {
         let b = Binding::Selection {
             param: "brush".to_string(),
         };
@@ -184,7 +184,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac06_emitted_query_construction() {
+    fn emitted_query_construction() {
         let eq = EmittedQuery {
             sql: "SELECT * FROM t".to_string(),
             bindings: vec![],

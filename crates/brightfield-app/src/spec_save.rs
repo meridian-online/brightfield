@@ -187,7 +187,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn temp_spec(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("bf-aws-ac04-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("bf-spec-save-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         dir.join(name)
     }
@@ -196,7 +196,7 @@ mod tests {
     /// full, and no temp file survives the save — the temp+rename pair
     /// leaves exactly one artefact, the destination.
     #[test]
-    fn aws_ac04_save_replaces_file_atomically_via_temp_rename() {
+    fn save_replaces_file_atomically_via_temp_rename() {
         let path = temp_spec("replace.yaml");
         fs::write(&path, "plot:\n  - mark: dot\n").unwrap();
 
@@ -220,7 +220,7 @@ mod tests {
     /// Creation: saving to a not-yet-existing path writes it
     /// (the read-compare simply finds nothing to compare against).
     #[test]
-    fn aws_ac04_save_creates_a_missing_file() {
+    fn save_creates_a_missing_file() {
         let path = temp_spec("fresh.yaml");
         let _ = fs::remove_file(&path);
         let outcome = save_spec_atomic("data: {}\n", &path).expect("save succeeds");
@@ -233,7 +233,7 @@ mod tests {
     /// same mtime, `Unchanged` outcome — so cmd-s on a clean buffer never
     /// triggers a watcher reload.
     #[test]
-    fn aws_ac04_unchanged_buffer_is_a_no_op() {
+    fn unchanged_buffer_is_a_no_op() {
         let path = temp_spec("unchanged.yaml");
         let buffer = "plot:\n  - mark: dot\n";
         fs::write(&path, buffer).unwrap();
@@ -253,7 +253,7 @@ mod tests {
     /// matching last_synced (nothing external happened) writes; a file
     /// deleted under the editor rewrites from the buffer.
     #[test]
-    fn aws_ac04_decide_save_flags_external_conflict() {
+    fn decide_save_flags_external_conflict() {
         // External edit landed ("c") since we seeded ("a"): conflict.
         assert_eq!(
             decide_save("b", Some("c"), Some("a")),
@@ -271,7 +271,7 @@ mod tests {
     /// file it does not own (last_synced does not match the file) must
     /// never truncate it — the empty-seed data-loss window.
     #[test]
-    fn aws_ac04_decide_save_empty_buffer_refuses_truncation() {
+    fn decide_save_empty_buffer_refuses_truncation() {
         assert_eq!(
             decide_save("", Some("plot:\n  - mark: dot\n"), Some("something else")),
             SaveDecision::ExternalConflict,
@@ -290,7 +290,7 @@ mod tests {
     /// buffer, it never held the file's contents, so writing could only
     /// destroy them.
     #[test]
-    fn aws_ac04_decide_save_unseeded_editor_refuses() {
+    fn decide_save_unseeded_editor_refuses() {
         assert_eq!(
             decide_save("", Some("plot:\n"), None),
             SaveDecision::RefuseUnseeded,
@@ -310,7 +310,7 @@ mod tests {
     /// (file == buffer) never reseeds; a never-seeded editor adopts the
     /// contents only while still empty.
     #[test]
-    fn aws_ac04_should_reseed_only_pristine_buffers_follow_disk() {
+    fn should_reseed_only_pristine_buffers_follow_disk() {
         // Pristine (buffer == last synced) → follow the disk.
         assert!(should_reseed("a", Some("a"), "b"));
         // Dirty → keep the author's edits.
@@ -329,7 +329,7 @@ mod tests {
     /// never-synced editor refuses too. Distinct from decide_save (which returns
     /// Write for that same dirty buffer — the exact hole this gate closes).
     #[test]
-    fn clg_ac07_commit_gate_allows_pristine_refuses_dirty() {
+    fn commit_gate_allows_pristine_refuses_dirty() {
         // Pristine: the buffer is exactly what we last synced with -> commit.
         assert!(commit_is_allowed("plot:\n  - mark: dot\n", Some("plot:\n  - mark: dot\n")));
         // Dirty: hand-typed edits sit in the buffer -> refuse the commit.
@@ -349,7 +349,7 @@ mod tests {
     /// destination's permissions before the rename.
     #[cfg(unix)]
     #[test]
-    fn aws_ac04_save_preserves_owner_only_permissions() {
+    fn save_preserves_owner_only_permissions() {
         use std::os::unix::fs::PermissionsExt;
 
         let path = temp_spec("perms.yaml");
@@ -370,7 +370,7 @@ mod tests {
     /// target, never the link itself.
     #[cfg(unix)]
     #[test]
-    fn aws_ac04_save_through_symlink_updates_target_keeps_link() {
+    fn save_through_symlink_updates_target_keeps_link() {
         let target = temp_spec("link-target.yaml");
         fs::write(&target, "plot:\n  - mark: dot\n").unwrap();
         let link = temp_spec("link.yaml");

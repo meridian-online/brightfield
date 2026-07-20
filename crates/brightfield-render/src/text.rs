@@ -192,7 +192,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn apt_ac03_rotated_text_reads_bottom_to_top() {
+    fn rotated_text_reads_bottom_to_top() {
         // A point advancing +1 along the local run maps to 1px UP the screen
         // (decreasing y) at a fixed x — the y-axis title orientation.
         let t = quarter_turn_ccw(50.0, 200.0);

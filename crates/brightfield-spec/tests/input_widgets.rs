@@ -13,7 +13,7 @@ use brightfield_spec::{parse_spec, serialise_spec, Format, NameSurface, ParseErr
 /// no-new-vocab decision made falsifiable. Radio/checkbox exist only as
 /// `style:` presentations OF `input: menu`.
 #[test]
-fn diw_ac10_radio_and_checkbox_are_not_input_wire_names() {
+fn radio_and_checkbox_are_not_input_wire_names() {
     for name in ["radio", "checkbox"] {
         let yaml = format!(
             r#"
@@ -37,7 +37,7 @@ options: [a, b]
 /// catch-all) with no warning — the key rides the preserved options bag,
 /// untyped at parse time.
 #[test]
-fn diw_ac10_style_key_lands_verbatim_in_options_no_warning() {
+fn style_key_lands_verbatim_in_options_no_warning() {
     let yaml = r#"
 input: menu
 as: $kind
@@ -65,7 +65,7 @@ options: [circle, square]
 /// (Menu flipped Implemented), while the still-unbuilt kinds — search,
 /// table — keep warning honestly.
 #[test]
-fn diw_ac10_menu_no_longer_warns_search_and_table_still_do() {
+fn menu_no_longer_warns_search_and_table_still_do() {
     let menu = parse_spec(
         r#"
 input: menu
@@ -102,7 +102,7 @@ options: [a]
 /// construction made falsifiable (every widget this card enables serialises
 /// as plain Mosaic `input: menu`).
 #[test]
-fn diw_ac15_style_spec_serialises_verbatim_and_round_trips() {
+fn style_spec_serialises_verbatim_and_round_trips() {
     let yaml = r#"
 params:
   kind: circle
@@ -142,7 +142,7 @@ vconcat:
 /// the shipped example exercises all three presentations and
 /// parses warning-free (menu now Implemented; `style:` is an ordinary key).
 #[test]
-fn diw_ac13_param_menu_example_parses_warning_free() {
+fn param_menu_example_parses_warning_free() {
     let yaml = include_str!("../../../examples/param-menu.yaml");
     let out = parse_spec(yaml, Format::Yaml).expect("example parses");
     assert!(

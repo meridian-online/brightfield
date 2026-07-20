@@ -723,8 +723,8 @@ fn run_pipeline(
             &live.plots,
             &dashboard.menus,
         );
-        // Sidebar profiles from the throwaway session BEFORE it drops
-        // : pure data, so it crosses the watcher's Send return boundary
+        // Sidebar profiles from the throwaway session BEFORE it drops: pure
+        // data, so it crosses the watcher's Send return boundary
         // where the non-Send Session cannot. The Session is created, profiled,
         // and dropped entirely on the background executor — never handed out.
         let profiles = live.session.profile_sources();
@@ -842,7 +842,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
 
     // 4. Execute all marks, building per-mark inputs indexed by the flat mark
     //    order (= execution order). A failed mark keeps `batch: None` and is
-    //    skipped when rendering (AC-05: graceful failure); its channels/kind are
+    //    skipped when rendering (graceful failure); its channels/kind are
     //    still recorded so a later cross-filter re-execution can render it.
     //    Batches are concatenated so a >2048-row result isn't truncated.
     let results = session.execute_all();
@@ -977,8 +977,8 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
                 );
                 // Retain the render-config inputs so a live colour cycle can
                 // rebuild the override through the NEW scheme without losing the
-                // KDE bandwidth / contour thresholds / hexgrid binWidth
-                // . Inert on the first render and the dump path.
+                // KDE bandwidth / contour thresholds / hexgrid binWidth.
+                // Inert on the first render and the dump path.
                 m.bandwidth = bandwidth;
                 m.thresholds = thresholds;
                 m.bin_width = bin_width;
@@ -1175,7 +1175,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
     // moved into `LiveParts` (it borrows the per-plot scales).
     let legends = resolve_legends(&parsed.spec, &live_plots);
 
-    // Reconcile the producer bindings against the live placements (F4):
+    // Reconcile the producer bindings against the live placements:
     // drop phantom bindings with no hosted legend, and diagnose placed
     // `as:` legends whose clicks would be dead.
     let (legend_bindings, legend_binding_diags) =
@@ -2303,7 +2303,7 @@ mod tests {
     // a raster plot's Fill Sequential resolves for a standalone legend,
     // sized as a gradient bar.
     #[test]
-    fn scs_ac07_sequential_resolves_for_standalone_legend() {
+    fn sequential_resolves_for_standalone_legend() {
         use brightfield_render::legend::sequential_legend_size;
         use brightfield_render::scale::{Scale, ScaleSet, SequentialScheme};
         use brightfield_render::ChartLayout;
@@ -2372,7 +2372,7 @@ hconcat:
     // the assembly resolves a raster plot's colorScheme to a scheme,
     // and a RasterRenderer built with it produces the matching Fill ramp.
     #[test]
-    fn scs_ac08_colorscheme_selects_the_ramp() {
+    fn colorscheme_selects_the_ramp() {
         use arrow::array::Float64Array;
         use arrow::datatypes::{DataType, Field, Schema};
         use arrow::record_batch::RecordBatch;
@@ -2432,7 +2432,7 @@ hconcat:
     // RasterRenderer override, and threads it through augment_scales — so a key
     // typo or raster_boxes index drift can't silently render everything viridis.
     #[test]
-    fn scs_ac08_colorscheme_consumed_end_to_end() {
+    fn colorscheme_consumed_end_to_end() {
         use brightfield_render::scale::{Scale, SequentialScheme};
 
         const SRC: &str = r#"
@@ -2449,7 +2449,7 @@ plot:
 colorScheme: blues
 "#;
         // Write the spec to a temp file — build_everything takes a path.
-        let dir = std::env::temp_dir().join(format!("bf-scs-ac08-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("bf-colorscheme-e2e-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("raster-blues.yaml");
         std::fs::write(&path, SRC).unwrap();
@@ -2572,7 +2572,7 @@ colorRange: $ramp
     // over the descriptor list (no GPUI tree), through the same
     // `placed_legend_views` the live window path calls.
     #[test]
-    fn fww_ac05_one_legend_child_per_placement_at_its_rect() {
+    fn one_legend_child_per_placement_at_its_rect() {
         use brightfield_render::scale::Scale;
         use brightfield_spec::layout::Rect;
 
@@ -2617,7 +2617,7 @@ colorRange: $ramp
     // binding index (positioned by legend path against the analysis binding
     // list) — while Sequential and unbound placements stay display-only.
     #[test]
-    fn lcf_ac05_only_bound_colour_legends_carry_coordinator_and_index() {
+    fn only_bound_colour_legends_carry_coordinator_and_index() {
         use brightfield_render::scale::Scale;
         use brightfield_spec::analysis::{ComponentPath, LegendBinding};
         use brightfield_spec::layout::Rect;
@@ -2704,7 +2704,7 @@ plot:
     // coordinator threads into every live rebuild. Unknown schemes fall back to
     // viridis (warning path). Render-only: no SQL / plan-hash involvement.
     #[test]
-    fn fww_ac06_live_plot_meta_carries_declared_scheme() {
+    fn live_plot_meta_carries_declared_scheme() {
         use brightfield_render::scale::SequentialScheme;
 
         let build = |color_scheme: &str, file: &str| {
@@ -2722,7 +2722,7 @@ plot:
 colorScheme: {color_scheme}
 "#
             );
-            let dir = std::env::temp_dir().join(format!("bf-fww-ac06-{}", std::process::id()));
+            let dir = std::env::temp_dir().join(format!("bf-live-scheme-{}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
             let path = dir.join(file);
             std::fs::write(&path, src).unwrap();
@@ -2752,7 +2752,7 @@ colorScheme: {color_scheme}
     // heatmap (the live renderer-config seam, recorded as deferred in the
     // density-marks spec).
     #[test]
-    fn dmk_ac02_heatmap_colorscheme_consumed_end_to_end() {
+    fn heatmap_colorscheme_consumed_end_to_end() {
         use brightfield_render::scale::{Scale, SequentialScheme};
 
         const SRC: &str = r#"
@@ -2768,7 +2768,7 @@ plot:
     y: y
 colorScheme: blues
 "#;
-        let dir = std::env::temp_dir().join(format!("bf-dmk-ac02-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("bf-heatmap-scheme-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("heatmap-blues.yaml");
         std::fs::write(&path, SRC).unwrap();
@@ -2812,7 +2812,7 @@ colorScheme: blues
     // rebuild renders cell through the registry default (deferred: live
     // renderer-config seam, recorded in the density-marks spec).
     #[test]
-    fn dmk_ac03_cell_colorscheme_consumed_end_to_end() {
+    fn cell_colorscheme_consumed_end_to_end() {
         use brightfield_render::scale::{Scale, SequentialScheme};
 
         const SRC: &str = r#"
@@ -2830,7 +2830,7 @@ plot:
     fill: value
 colorScheme: blues
 "#;
-        let dir = std::env::temp_dir().join(format!("bf-dmk-ac03-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("bf-cell-scheme-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("cell-blues.yaml");
         std::fs::write(&path, SRC).unwrap();
@@ -2866,10 +2866,10 @@ colorScheme: blues
     // SQL half of the shield — thresholds NOT changing the emitted bin count —
     // is pinned in brightfield-sql's regression test.)
     #[test]
-    fn dmk_ac04_contour_thresholds_override_reaches_renderer_end_to_end() {
+    fn contour_thresholds_override_reaches_renderer_end_to_end() {
         use brightfield_render::mark::count_scene_paths;
 
-        let dir = std::env::temp_dir().join(format!("bf-dmk-ac04-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("bf-contour-thresh-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
         let build = |thresholds: usize, file: &str| {
@@ -2946,7 +2946,7 @@ colorScheme: blues
     /// the whole `run_pipeline` return tuple, profiles included, must be Send.
     /// (The non-Send `Session` never crosses; only this data does.)
     #[test]
-    fn sbp_ac04_profile_handoff_is_send() {
+    fn profile_handoff_is_send() {
         fn assert_send<T: Send>() {}
         assert_send::<Vec<super::SourceProfile>>();
         assert_send::<(super::Dashboard, super::ChromeSnapshot, Vec<super::SourceProfile>)>();
@@ -2958,10 +2958,10 @@ colorScheme: blues
     /// has real data to apply. A headless probe of the hand-off; the live
     /// mtime-watcher loop is confirmed in-app.
     #[test]
-    fn sbp_ac04_run_pipeline_returns_source_profiles() {
+    fn run_pipeline_returns_source_profiles() {
         use brightfield_engine::ProfileOutcome;
         let dir = std::env::temp_dir().join(format!(
-            "bf_sbp_ac04_{}_{}",
+            "bf_source_profiles_{}_{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -2993,7 +2993,7 @@ colorScheme: blues
         }
     }
 
-    /// Review (F2): the hot-reload chrome gate is a pure comparison —
+    /// The hot-reload chrome gate is a pure comparison —
     /// a plots-only rebuild passes, while a title / legend / render-metadata
     /// divergence names what changed so the watcher prints "restart to apply"
     /// instead of silently hot-swapping stale chrome.
@@ -3128,7 +3128,7 @@ colorScheme: blues
     /// menu whose data drifted diverges on ANY edit — honest-conservative by
     /// design (the resolved slice moved; the hosted widget IS stale).
     #[test]
-    fn diw_ac17_widget_slice_gates_menu_affecting_edits() {
+    fn widget_slice_gates_menu_affecting_edits() {
         use brightfield_render::layout::Insets;
         use brightfield_render::scale::SequentialScheme;
 
@@ -3205,7 +3205,7 @@ colorScheme: blues
     /// explicitly: a warning-producing edit that ALSO trips
     /// chrome_divergence still has its warning in hand when the gate fires.
     #[test]
-    fn diw_ac04_run_pipeline_returns_warnings_and_gated_case_composes() {
+    fn run_pipeline_returns_warnings_and_gated_case_composes() {
         // A derived-options radio: degrades to menu presentation with ONE
         // warning — a warning-producing spec.
         const BASE: &str = r#"
@@ -3242,7 +3242,7 @@ vconcat:
     from: t
     column: region
 "#;
-        let dir = std::env::temp_dir().join(format!("bf-diw-ac04-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("bf-menu-warnings-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let build = |name: &str, yaml: &str| {
             let path = dir.join(name);
@@ -3294,7 +3294,7 @@ vconcat:
     /// It also empirically confirms a `dot -> bar` retype and an `x` rebind are
     /// genuinely chrome-clean (the insets/titles reasoning behind the classifier).
     #[test]
-    fn clg_ac11_classifier_agrees_with_the_real_reload_gate() {
+    fn classifier_agrees_with_the_real_reload_gate() {
         use brightfield_spec::analysis::ComponentPath;
         use brightfield_spec::ast::{Component, SpecValue, ValueOrParamRef};
         use brightfield_spec::edit::{apply, classify_edit, SpecEdit};
@@ -3317,7 +3317,7 @@ plot:
     y: b
 xLabel: X axis
 "#;
-        let dir = std::env::temp_dir().join(format!("bf-clg-ac11-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("bf-reload-gate-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let build = |name: &str, yaml: &str| -> (super::Dashboard, super::ChromeSnapshot) {
             let path = dir.join(name);
@@ -3551,7 +3551,7 @@ vconcat:
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Review (F2): `ChromeSnapshot::capture` maps the launch parts
+    /// `ChromeSnapshot::capture` maps the launch parts
     /// into the gate's comparison keys — rect + scale Debug key per legend,
     /// the click-wiring key tuple per legend binding,
     /// path + scheme + inline flag per plot, and rect +
@@ -3661,7 +3661,7 @@ vconcat:
     /// mis-mapped production `widgets` slice would pass every hand-built
     /// snapshot test while the real gate silently hot-swapped stale widgets.
     #[test]
-    fn diw_ac17_production_capture_options_edit_gates_widget_slice() {
+    fn production_capture_options_edit_gates_widget_slice() {
         use brightfield_spec::ast::SpecValue;
 
         const BASE: &str = r#"
@@ -3703,7 +3703,7 @@ vconcat:
     as: $region
     options: [east, west, north]
 "#;
-        let dir = std::env::temp_dir().join(format!("bf-diw-ac17-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("bf-widget-slice-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let build = |name: &str, yaml: &str| {
             let path = dir.join(name);
@@ -3903,7 +3903,7 @@ hconcat:
     }
 
     #[test]
-    fn msv_ac05_graceful_failure_skips_invalid_mark() {
+    fn graceful_failure_skips_invalid_mark() {
         // Spec with one valid mark (dot, data.from) and one invalid (voronoi,
         // unsupported — the swap stand-in now that geo is wired).
         let yaml = r#"

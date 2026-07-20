@@ -43,7 +43,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn kbg_ac04_bare_resolver_and_palette_share_one_altitude_predicate() {
+    fn bare_resolver_and_palette_share_one_altitude_predicate() {
         // The verbs a bare key FIRES at an altitude equal the verbs the palette
         // ENABLES there (enabled = not-reserved, applicable) — one predicate.
         let reg = registry();

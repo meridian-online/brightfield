@@ -133,7 +133,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn clg_ac08_append_is_newest_first_and_counts_uncommitted() {
+    fn append_is_newest_first_and_counts_uncommitted() {
         let mut log = CommandLog::new();
         assert_eq!(log.uncommitted(), 0);
         log.record_edit("change-mark-type: -> bar");
@@ -144,7 +144,7 @@ mod tests {
     }
 
     #[test]
-    fn clg_ac08_commit_resets_the_count_and_inserts_a_barrier() {
+    fn commit_resets_the_count_and_inserts_a_barrier() {
         let mut log = CommandLog::new();
         log.record_edit("a");
         log.record_edit("b");
@@ -157,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn clg_ac08_undo_pops_the_last_edit() {
+    fn undo_pops_the_last_edit() {
         let mut log = CommandLog::new();
         log.record_edit("a");
         log.record_edit("b");
@@ -172,7 +172,7 @@ mod tests {
     }
 
     #[test]
-    fn clg_ac08_undo_does_not_cross_a_commit_barrier() {
+    fn undo_does_not_cross_a_commit_barrier() {
         let mut log = CommandLog::new();
         log.record_edit("a");
         log.commit();
@@ -186,7 +186,7 @@ mod tests {
     }
 
     #[test]
-    fn clg_ac08_refused_is_feedback_only() {
+    fn refused_is_feedback_only() {
         let mut log = CommandLog::new();
         log.record_refused("would empty the plot");
         assert_eq!(log.uncommitted(), 0, "a refusal does not count as an edit");

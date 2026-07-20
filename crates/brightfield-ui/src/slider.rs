@@ -259,7 +259,7 @@ mod tests {
     // A track pixel maps to a param value; endpoints and
     // mid are exact, step snaps, out-of-track clamps.
     #[test]
-    fn slw_ac04_value_at_maps_track_pixels() {
+    fn value_at_maps_track_pixels() {
         let b = binding(0.0, 10.0, Some(1.0)); // track x=100..300 (width 200)
         assert_eq!(value_at(100.0, 100.0, 200.0, &b), 0.0, "left = min");
         assert_eq!(value_at(300.0, 100.0, 200.0, &b), 10.0, "right = max");
@@ -275,7 +275,7 @@ mod tests {
 
     // thumb_fraction is the drawing-side inverse and clamps.
     #[test]
-    fn slw_ac04_thumb_fraction_inverts_value() {
+    fn thumb_fraction_inverts_value() {
         let b = binding(0.0, 10.0, Some(1.0));
         assert_eq!(thumb_fraction(0.0, &b), 0.0);
         assert_eq!(thumb_fraction(10.0, &b), 1.0);
@@ -348,7 +348,7 @@ mod tests {
     /// would require a live DuckDB session; the unit boundary here is the
     /// trait's forwarding shape.
     #[test]
-    fn rpw3_ac09_param_dispatcher_session_impl() {
+    fn param_dispatcher_session_impl() {
         // The Session impl forwards 1:1: dispatch(name, value) ==
         // propagate_param(name, value). We assert the trait method exists
         // with the expected signature by constructing a function pointer.
@@ -368,7 +368,7 @@ mod tests {
     /// SliderBinding::from_input captures param_name plus
     /// min/max/step from the Input.options block.
     #[test]
-    fn rpw3_ac10_slider_binding_from_input_options() {
+    fn slider_binding_from_input_options() {
         let input = input_fixture(
             SpecValue::Float(0.0),
             SpecValue::Float(100.0),
@@ -383,7 +383,7 @@ mod tests {
 
     /// integer-authored bounds are coerced to f64.
     #[test]
-    fn rpw3_ac10_slider_binding_integer_bounds_coerced() {
+    fn slider_binding_integer_bounds_coerced() {
         let input = input_fixture(SpecValue::Integer(0), SpecValue::Integer(100), None);
         let binding = SliderBinding::from_input(&input).expect("constructs");
         assert!((binding.min - 0.0).abs() < f64::EPSILON);
@@ -450,7 +450,7 @@ mod tests {
     /// commit_slider_release dispatches the binding's
     /// param_name + value as a SpecValue::Float, transitions Released → Idle.
     #[test]
-    fn rpw3_ac11_commit_slider_release_dispatches() {
+    fn commit_slider_release_dispatches() {
         let binding = SliderBinding {
             param_name: "threshold".to_string(),
             min: 0.0,
@@ -481,7 +481,7 @@ mod tests {
     /// drive the state machine from Idle → Dragging → Released and
     /// observe one dispatch.
     #[test]
-    fn rpw3_ac12_slider_on_mouse_up_dispatches() {
+    fn slider_on_mouse_up_dispatches() {
         let binding = SliderBinding {
             param_name: "threshold".to_string(),
             min: 0.0,
@@ -516,7 +516,7 @@ mod tests {
     /// mouse_down without a subsequent mouse_up does NOT
     /// dispatch. Mid-drag state is overlay-only on the widget.
     #[test]
-    fn rpw3_ac13_slider_no_drag_no_dispatch() {
+    fn slider_no_drag_no_dispatch() {
         let binding = SliderBinding {
             param_name: "threshold".to_string(),
             min: 0.0,

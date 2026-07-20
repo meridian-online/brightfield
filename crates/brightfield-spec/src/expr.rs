@@ -179,7 +179,7 @@ mod tests {
 
     /// test 1: `$ident` outside literal contexts lifts to a ParamRef.
     #[test]
-    fn dfspec_ac06_params_outside_literals() {
+    fn params_outside_literals() {
         let node = tokenise("x > $lo AND x < $hi");
         assert_eq!(node.spans, vec!["x > ", " AND x < ", ""]);
         assert_eq!(node.params.len(), 2);
@@ -191,7 +191,7 @@ mod tests {
     /// test 2: `$` inside a single-quoted string literal is preserved
     /// verbatim and does not lift to a ParamRef.
     #[test]
-    fn dfspec_ac06_dollar_in_single_quoted_literal() {
+    fn dollar_in_single_quoted_literal() {
         let node = tokenise("label = '$100 raised'");
         assert_eq!(node.spans, vec!["label = '$100 raised'"]);
         assert!(node.params.is_empty());
@@ -201,7 +201,7 @@ mod tests {
     /// test 3: `$` inside a double-quoted identifier is preserved
     /// verbatim and does not lift to a ParamRef.
     #[test]
-    fn dfspec_ac06_dollar_in_double_quoted_identifier() {
+    fn dollar_in_double_quoted_identifier() {
         let node = tokenise(r#"SELECT "col$name" FROM t"#);
         assert_eq!(node.spans, vec![r#"SELECT "col$name" FROM t"#]);
         assert!(node.params.is_empty());
@@ -210,7 +210,7 @@ mod tests {
     /// test 4: `$` inside a `-- line comment` is preserved verbatim
     /// through end-of-line.
     #[test]
-    fn dfspec_ac06_dollar_in_line_comment() {
+    fn dollar_in_line_comment() {
         let node = tokenise("x -- free $cash until eol\nAND $real");
         // The `$real` after the comment *is* a param ref; `$cash` inside is not.
         assert_eq!(node.params, vec![ParamRef::new("real")]);
@@ -222,7 +222,7 @@ mod tests {
 
     /// test 5: `$` inside a `/* block comment */` is preserved verbatim.
     #[test]
-    fn dfspec_ac06_dollar_in_block_comment() {
+    fn dollar_in_block_comment() {
         let node = tokenise("x /* ignore $this */ AND $that");
         assert_eq!(node.params, vec![ParamRef::new("that")]);
         assert_eq!(
@@ -234,7 +234,7 @@ mod tests {
     /// Extra sanity: unterminated single-quote runs to end-of-input without
     /// lifting an interior `$ident`.
     #[test]
-    fn dfspec_ac06_unterminated_single_quote_preserves_dollar() {
+    fn unterminated_single_quote_preserves_dollar() {
         let node = tokenise("'$oops");
         assert_eq!(node.spans, vec!["'$oops"]);
         assert!(node.params.is_empty());
@@ -243,7 +243,7 @@ mod tests {
     /// Extra sanity: a bare `$` with no identifier after it is literal, not
     /// a lift.
     #[test]
-    fn dfspec_ac06_bare_dollar_is_literal() {
+    fn bare_dollar_is_literal() {
         let node = tokenise("total = $");
         assert_eq!(node.spans, vec!["total = $"]);
         assert!(node.params.is_empty());
@@ -252,7 +252,7 @@ mod tests {
     /// Extra sanity: round-trip via `to_wire()` is exact when input uses only
     /// `$ident` lift form.
     #[test]
-    fn dfspec_ac06_to_wire_roundtrip() {
+    fn to_wire_roundtrip() {
         for src in [
             "",
             "plain text",

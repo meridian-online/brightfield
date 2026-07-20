@@ -22,7 +22,7 @@ the session transcript, not the repo.
 
 Every key bound in the shipped registry (`brightfield-keys`) traces to a row here — no key is bound by
 taste. The mechanical cross-ref `brightfield_keys::registry()` bound-longnames ↔ this table is asserted
-by the `kbg_ac08_*` provenance test; scores mirror `VerbEntry.scores` (frequency / mnemonic / convention,
+by the provenance test; scores mirror `VerbEntry.scores` (frequency / mnemonic / convention,
 1–5, with a motor-cost note).
 
 | longname | key(s) | freq / mnem / conv | motor note |

@@ -3684,7 +3684,7 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn gpu_ac03_dot_renderer_positions_circles() {
+    fn dot_renderer_positions_circles() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("x", DataType::Float64, false),
             Field::new("y", DataType::Float64, false),
@@ -3718,7 +3718,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_ac03_dot_renderer_with_colour() {
+    fn dot_renderer_with_colour() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("x", DataType::Float64, false),
             Field::new("y", DataType::Float64, false),
@@ -3753,7 +3753,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_ac04_bar_renderer_rects() {
+    fn bar_renderer_rects() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("category", DataType::Utf8, false),
             Field::new("value", DataType::Float64, false),
@@ -3785,7 +3785,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_ac04_bar_renderer_band_width_proportional() {
+    fn bar_renderer_band_width_proportional() {
         // Verify that band widths are proportional to the category count.
         let scale = Scale::Band {
             categories: vec!["a".to_string(), "b".to_string()],
@@ -3799,7 +3799,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_ac05_line_renderer_connected_path() {
+    fn line_renderer_connected_path() {
         let schema = Arc::new(Schema::new(vec![
             Field::new(
                 "ts",
@@ -4012,7 +4012,7 @@ mod tests {
     // --- HighlightState ---
 
     #[test]
-    fn ifb_ac03_highlight_state_predicate() {
+    fn highlight_state_predicate() {
         let hs = HighlightState {
             predicate: Box::new(|row| row == 1),
             otherwise: HighlightStyle {
@@ -4027,7 +4027,7 @@ mod tests {
     }
 
     #[test]
-    fn ifb_ac03_highlight_state_send_sync() {
+    fn highlight_state_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         // This won't compile if HighlightState's predicate isn't Send+Sync
         assert_send_sync::<Box<dyn Fn(usize) -> bool + Send + Sync>>();
@@ -4036,7 +4036,7 @@ mod tests {
     // --- MarkRenderer with highlight ---
 
     #[test]
-    fn ifb_ac04_dot_renderer_with_highlight() {
+    fn dot_renderer_with_highlight() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("x", DataType::Float64, false),
             Field::new("y", DataType::Float64, false),
@@ -4076,7 +4076,7 @@ mod tests {
     }
 
     #[test]
-    fn ifb_ac04_bar_renderer_with_highlight() {
+    fn bar_renderer_with_highlight() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("category", DataType::Utf8, false),
             Field::new("value", DataType::Float64, false),
@@ -4117,7 +4117,7 @@ mod tests {
     /// an empty `otherwise` style deemphasises to the Mosaic default
     /// alpha × 0.2; a matching row is untouched.
     #[test]
-    fn ce_ac06_deemphasise_default_alpha() {
+    fn deemphasise_default_alpha() {
         let base = Color::new([0.3, 0.5, 0.7, 1.0]);
         let out = deemphasise(base, &HighlightStyle::default());
         let [r, g, b, a] = out.components;
@@ -4127,7 +4127,7 @@ mod tests {
 
     /// `opacity` scales the resolved alpha (splom's `opacity: 0.1`).
     #[test]
-    fn ce_ac06_deemphasise_opacity_scales_alpha() {
+    fn deemphasise_opacity_scales_alpha() {
         let base = Color::new([0.3, 0.5, 0.7, 1.0]);
         let style = HighlightStyle {
             opacity: Some(0.1),
@@ -4140,7 +4140,7 @@ mod tests {
     /// `fill` replaces the RGB and `fillOpacity` sets the alpha
     /// (weather's `fill: '#ccc', fillOpacity: 0.2`).
     #[test]
-    fn ce_ac06_deemphasise_fill_and_fill_opacity() {
+    fn deemphasise_fill_and_fill_opacity() {
         let base = Color::new([0.3, 0.5, 0.7, 1.0]);
         let ccc = parse_css_hex("#ccc").unwrap();
         let style = HighlightStyle {
@@ -4156,7 +4156,7 @@ mod tests {
 
     /// a matching row (predicate true) is returned unchanged.
     #[test]
-    fn ce_ac06_apply_highlight_matching_row_untouched() {
+    fn apply_highlight_matching_row_untouched() {
         let base = Color::new([0.3, 0.5, 0.7, 1.0]);
         let hs = HighlightState {
             predicate: Box::new(|row| row == 0),
@@ -4188,7 +4188,7 @@ mod tests {
     /// a scene rendered WITH a non-trivial membership differs (some rows dimmed)
     /// from the same scene rendered without highlight.
     #[test]
-    fn ce_ac10_membership_column_drives_dim() {
+    fn membership_column_drives_dim() {
         use arrow::array::BooleanArray;
         let schema = Arc::new(Schema::new(vec![
             Field::new("x", DataType::Float64, false),
@@ -4257,7 +4257,7 @@ mod tests {
     // --- render_interpolated ---
 
     #[test]
-    fn ifb_ac07_dot_render_interpolated_at_zero() {
+    fn dot_render_interpolated_at_zero() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("x", DataType::Float64, false),
             Field::new("y", DataType::Float64, false),
@@ -4294,7 +4294,7 @@ mod tests {
     }
 
     #[test]
-    fn ifb_ac07_dot_render_interpolated_at_one() {
+    fn dot_render_interpolated_at_one() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("x", DataType::Float64, false),
             Field::new("y", DataType::Float64, false),
@@ -4355,7 +4355,7 @@ mod tests {
     }
 
     #[test]
-    fn gomb_ac03_density1d_x_renders_filled_path() {
+    fn density1d_x_renders_filled_path() {
         let batch = density_1d_batch();
         let mut cm = ChannelMap::new();
         cm.insert(Channel::X, "x_bin".to_string());
@@ -4377,7 +4377,7 @@ mod tests {
     }
 
     #[test]
-    fn gomb_ac03_density1d_y_renders_filled_path() {
+    fn density1d_y_renders_filled_path() {
         // For DensityY, y is the binned axis; x is density magnitude.
         let schema = Arc::new(Schema::new(vec![
             Field::new("y_bin", DataType::Float64, false),
@@ -4408,7 +4408,7 @@ mod tests {
     }
 
     #[test]
-    fn gomb_ac04_density2d_renders_circle_grid() {
+    fn density2d_renders_circle_grid() {
         // 3x3 bin grid with peak in centre.
         let schema = Arc::new(Schema::new(vec![
             Field::new("x_bin", DataType::Float64, false),
@@ -4453,7 +4453,7 @@ mod tests {
     // and asserting bitwise equality. (The byte-identical density example PNGs
     // are the end-to-end gate; this pins the seam headlessly.)
     #[test]
-    fn dmk_ac01_kde_grid_helper_matches_inline_path() {
+    fn kde_grid_helper_matches_inline_path() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("x_bin", DataType::Float64, false),
             Field::new("y_bin", DataType::Float64, false),
@@ -4532,7 +4532,7 @@ mod tests {
     // (the byte-identity guard for the shipped heatmap/contour examples); a
     // gapped axis densifies to fill the interior.
     #[test]
-    fn hex_ac07_build_kde_grid_dense_lattice_fills_interior_gaps() {
+    fn build_kde_grid_dense_lattice_fills_interior_gaps() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("x_bin", DataType::Float64, false),
             Field::new("y_bin", DataType::Float64, false),
@@ -4641,7 +4641,7 @@ mod tests {
     // the scene are the ramp samples — probed via draw_data, not re-derived from
     // the Scale. With no Fill scale it falls back to the legacy alpha path.
     #[test]
-    fn scs_ac05_raster_colours_cells_through_ramp() {
+    fn raster_colours_cells_through_ramp() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("x_bin", DataType::Float64, false),
             Field::new("y_bin", DataType::Float64, false),
@@ -4749,7 +4749,7 @@ mod tests {
     /// are those ramp samples — probed via draw_data, not re-derived. One filled
     /// hexagon per row.
     #[test]
-    fn hex_ac03_count_fills_ramp_through_sequential() {
+    fn count_fills_ramp_through_sequential() {
         let batch = hexbin_batch(DENSITY_COUNT_COL, vec![1.0, 100.0]);
         let cm = hexbin_cm(DENSITY_COUNT_COL);
         let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
@@ -4778,7 +4778,7 @@ mod tests {
     /// an AVG fill follows the cell anchoring rule and maps through
     /// the ramp WITHOUT the count floor.
     #[test]
-    fn hex_ac03_avg_fills_follow_cell_anchoring() {
+    fn avg_fills_follow_cell_anchoring() {
         let batch = hexbin_batch("v", vec![15.0, 100.0]);
         let cm = hexbin_cm("v");
         let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
@@ -4803,7 +4803,7 @@ mod tests {
     /// augment_scales widens x/y by half a hex (the constant in-band
     /// half-extents) and applies the cell anchoring rule for a signed avg fill.
     #[test]
-    fn hex_ac03_augment_scales_widens_and_anchors() {
+    fn augment_scales_widens_and_anchors() {
         // Signed avg fill ([-5, 10]) exercises the [min, max] branch.
         let batch = hexbin_batch("v", vec![-5.0, 10.0]);
         let cm = hexbin_cm("v");
@@ -4830,7 +4830,7 @@ mod tests {
     /// augment_scales MERGES the Fill scale — a sibling's categorical
     /// Colour Fill survives untouched (merge-not-clobber, raster/cell precedent).
     #[test]
-    fn hex_ac03_augment_scales_merges_not_clobber() {
+    fn augment_scales_merges_not_clobber() {
         let batch = hexbin_batch(DENSITY_COUNT_COL, vec![1.0, 100.0]);
         let cm = hexbin_cm(DENSITY_COUNT_COL);
         let mut scales = ScaleSet::new();
@@ -4852,7 +4852,7 @@ mod tests {
     /// draws a rebuild byte-identically — the same override renderer is used for
     /// the first render and every live rebuild, so output is stable.
     #[test]
-    fn hex_ac03_configured_renderer_rebuild_parity() {
+    fn configured_renderer_rebuild_parity() {
         let batch = hexbin_batch(DENSITY_COUNT_COL, vec![1.0, 100.0]);
         let cm = hexbin_cm(DENSITY_COUNT_COL);
         let renderer =
@@ -4895,7 +4895,7 @@ mod tests {
     const SQUARE: &str = r#"{"type":"Polygon","coordinates":[[[0,0],[10,0],[10,10],[0,10],[0,0]]]}"#;
 
     #[test]
-    fn geo_ac05_projection_equirect_identity_and_albers_reference() {
+    fn projection_equirect_identity_and_albers_reference() {
         // Equirectangular is the identity (u=lon, v=lat).
         assert_eq!(Projection::Equirectangular.project(12.0, -34.0), (12.0, -34.0));
 
@@ -4930,7 +4930,7 @@ mod tests {
     }
 
     #[test]
-    fn geo_ac05_augment_scales_aspect_fits_and_suppresses_frame() {
+    fn augment_scales_aspect_fits_and_suppresses_frame() {
         let batch = geo_batch(vec![SQUARE], None);
         let cm = ChannelMap::new(); // basemap — no fill channel
         let renderer = GeoRenderer::default();
@@ -4969,7 +4969,7 @@ mod tests {
     }
 
     #[test]
-    fn geo_ac06_choropleth_builds_sequential_fill_ramp() {
+    fn choropleth_builds_sequential_fill_ramp() {
         let batch = geo_batch(vec![SQUARE, SQUARE], Some(vec![2.0, 8.0]));
         let mut cm = ChannelMap::new();
         cm.insert(Channel::Fill, "rate".to_string());
@@ -5035,7 +5035,7 @@ mod tests {
     /// the mesh covers the plot rect with the right hex count for a
     /// known extent + binWidth (one stroked outline per lattice centre).
     #[test]
-    fn hex_ac04_hexgrid_mesh_covers_plot_extent() {
+    fn hexgrid_mesh_covers_plot_extent() {
         let renderer = HexgridRenderer { bin_width: 20.0 };
         // Plot rect 200×150 px (x range 40..240, y range 170..20).
         let scales = plot_scales((40.0, 240.0), (170.0, 20.0));
@@ -5183,7 +5183,7 @@ mod tests {
     }
 
     #[test]
-    fn hex_ac04_lattice_pitch_matches_hexbin_geometry() {
+    fn lattice_pitch_matches_hexbin_geometry() {
         // (a) Default binWidth, ISOTROPIC data-per-pixel (both axes ≈ 0.02).
         assert_hexbin_mesh_coincides(460.0, 370.0, 20.0, 0.0, 9.2, 0.0, 7.4);
         // (b) NON-default binWidth (30) on an ANISOTROPIC domain: x maps
@@ -5197,7 +5197,7 @@ mod tests {
     /// scales — augment_scales synthesises the unit x/y scales from the plot
     /// ranges, and render then produces mesh geometry.
     #[test]
-    fn hex_ac04_dataless_hexgrid_renders_headlessly() {
+    fn dataless_hexgrid_renders_headlessly() {
         let renderer = HexgridRenderer::default();
         let batch = hexgrid_batch();
         let cm = ChannelMap::new();
@@ -5215,7 +5215,7 @@ mod tests {
     /// (so a hexgrid + hexbin plot keeps the hexbin's real domain and the mesh
     /// rides it).
     #[test]
-    fn hex_ac04_hexgrid_augment_preserves_existing_scales() {
+    fn hexgrid_augment_preserves_existing_scales() {
         let renderer = HexgridRenderer::default();
         let mut scales = ScaleSet::new();
         scales.insert(Channel::X, Scale::Linear { domain_min: 5.0, domain_max: 50.0, range_start: 40.0, range_end: 600.0 });
@@ -5367,7 +5367,7 @@ mod tests {
     // augment_scales builds a Fill Sequential zero-anchored at
     // [0, max_count] with the scheme's stops, alongside the x/y half-bin widening.
     #[test]
-    fn scs_ac04_raster_augment_scales_builds_fill_sequential() {
+    fn raster_augment_scales_builds_fill_sequential() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("x_bin", DataType::Float64, false),
             Field::new("y_bin", DataType::Float64, false),
@@ -5437,7 +5437,7 @@ mod tests {
     // "every cell" claim is falsifiable: an occupied-bins-only regression draws
     // 8 cells and misses the unoccupied cell's smoothed colour.
     #[test]
-    fn dmk_ac02_heatmap_colours_cells_through_ramp() {
+    fn heatmap_colours_cells_through_ramp() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("x_bin", DataType::Float64, false),
             Field::new("y_bin", DataType::Float64, false),
@@ -5524,7 +5524,7 @@ mod tests {
     // grid extent, and merges rather than clobbers (a sibling's categorical
     // Colour Fill survives) — mirroring raster's augment_scales contract.
     #[test]
-    fn dmk_ac02_heatmap_augment_scales_builds_zero_anchored_fill() {
+    fn heatmap_augment_scales_builds_zero_anchored_fill() {
         let batch = heatmap_batch();
         let mut cm = ChannelMap::new();
         cm.insert(Channel::X, "x_bin".to_string());
@@ -5574,7 +5574,7 @@ mod tests {
     // renderer — an explicit bandwidth renders a DIFFERENT field than the
     // Silverman fallback, and exactly the field build_kde_grid produces for it.
     #[test]
-    fn dmk_ac02_heatmap_bandwidth_attr_reaches_kde() {
+    fn heatmap_bandwidth_attr_reaches_kde() {
         let batch = heatmap_batch();
         let mut cm = ChannelMap::new();
         cm.insert(Channel::X, "x_bin".to_string());
@@ -5694,7 +5694,7 @@ mod tests {
     // levels (the SQL-side half of the shield lives in brightfield-sql's
     // regression test).
     #[test]
-    fn dmk_ac04_contour_iso_line_count_follows_thresholds() {
+    fn contour_iso_line_count_follows_thresholds() {
         let batch = heatmap_batch();
         let mut cm = ChannelMap::new();
         cm.insert(Channel::X, "x_bin".to_string());
@@ -5764,7 +5764,7 @@ mod tests {
     // on the two Band scales, with distinct numeric fill values encoding
     // distinct ramp colours (probed via draw_data per the #36 precedent).
     #[test]
-    fn dmk_ac03_cell_renders_rect_per_category_pair() {
+    fn cell_renders_rect_per_category_pair() {
         let batch = cell_batch();
         let mut cm = ChannelMap::new();
         cm.insert(Channel::X, "slot".to_string());
@@ -5802,7 +5802,7 @@ mod tests {
     // numeric fill otherwise infers (the trap), unioning with a co-rendered
     // Sequential, and leaving a categorical Colour fill untouched.
     #[test]
-    fn dmk_ac03_cell_augment_scales_anchors_sequential_domain() {
+    fn cell_augment_scales_anchors_sequential_domain() {
         let batch = cell_batch();
         let mut cm = ChannelMap::new();
         cm.insert(Channel::X, "slot".to_string());
@@ -5890,7 +5890,7 @@ mod tests {
     // augment_scales leaves the inferred Colour scale alone and the rects draw
     // in palette colours through resolve_colour, exactly as before.
     #[test]
-    fn dmk_ac03_cell_utf8_fill_keeps_colour_path() {
+    fn cell_utf8_fill_keeps_colour_path() {
         let batch = cell_batch();
         let mut cm = ChannelMap::new();
         cm.insert(Channel::X, "slot".to_string());
@@ -5921,7 +5921,7 @@ mod tests {
     }
 
     #[test]
-    fn gomb_ac05_regression_renders_line_and_ci_band() {
+    fn regression_renders_line_and_ci_band() {
         // Anscombe Quartet I (the canonical OLS dataset).
         // n=11, slope=0.5, intercept=3, x_bar=9, sxx=110.
         // We compute syy and sxy from the data.
@@ -6008,7 +6008,7 @@ mod tests {
     }
 
     #[test]
-    fn gomb_ac08_default_renderers_finds_density_and_regression() {
+    fn default_renderers_finds_density_and_regression() {
         let registry = default_renderers();
         assert!(find_renderer(&registry, MarkKind::Dot).is_some());
         assert!(find_renderer(&registry, MarkKind::BarX).is_some());
@@ -6030,7 +6030,7 @@ mod tests {
     }
 
     #[test]
-    fn ifb_ac07_bar_default_render_interpolated_produces_content() {
+    fn bar_default_render_interpolated_produces_content() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("category", DataType::Utf8, false),
             Field::new("value", DataType::Float64, false),

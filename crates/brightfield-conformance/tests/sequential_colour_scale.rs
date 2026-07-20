@@ -23,7 +23,7 @@ colorScheme: viridis
 "#;
 
 #[test]
-fn scs_ac09_raster_colorscheme_parses_and_preflights_implemented() {
+fn raster_colorscheme_parses_and_preflights_implemented() {
     let parsed = parse_spec(RASTER_COLORSCHEME, Format::Yaml).expect("raster colorScheme parses");
 
     // No known-but-unimplemented vocabulary is flagged.

@@ -191,7 +191,7 @@ mod tests {
     /// the BEHAVIOURAL pin is dump_seam.rs's run-twice byte-identity test
     /// against the real binary, not a repeated-call assertion here.
     #[test]
-    fn aws_ac07_presentation_hides_authoring_panels_keeps_canvas() {
+    fn presentation_hides_authoring_panels_keeps_canvas() {
         use PanelRole::*;
         let authoring = PresentationMode::Authoring;
         let presentation = PresentationMode::Presentation;
@@ -221,7 +221,7 @@ mod tests {
     /// the whole bottom dock is removed anyway; the mapping is belt and
     /// braces for the panel's own `visible()`).
     #[test]
-    fn wsc_ac02_log_panel_visible_in_authoring_hidden_in_presentation() {
+    fn log_panel_visible_in_authoring_hidden_in_presentation() {
         assert!(panel_visible(PresentationMode::Authoring, PanelRole::Log));
         assert!(!panel_visible(PresentationMode::Presentation, PanelRole::Log));
     }
@@ -229,7 +229,7 @@ mod tests {
     /// the keyboard-grammar chrome (breadcrumb + focus ring) follows
     /// the authoring chrome — shown while authoring, hidden under presentation.
     #[test]
-    fn kbg_ac16_grammar_chrome_hidden_in_presentation() {
+    fn grammar_chrome_hidden_in_presentation() {
         assert!(grammar_chrome_visible(PresentationMode::Authoring), "shown while authoring");
         assert!(!grammar_chrome_visible(PresentationMode::Presentation), "hidden in presentation");
     }
@@ -238,7 +238,7 @@ mod tests {
     /// dock gets one backfilled; a layout that already carries one is left
     /// exactly as saved.
     #[test]
-    fn wsc_ac03_backfill_only_when_bottom_dock_missing() {
+    fn backfill_only_when_bottom_dock_missing() {
         assert!(bottom_dock_needs_backfill(false), "pre-round layouts backfill");
         assert!(!bottom_dock_needs_backfill(true), "saved bottom dock restores as-is");
     }
@@ -248,7 +248,7 @@ mod tests {
     /// enough); authoring rebuilds it from the stash. Toggle symmetry rides
     /// PresentationMode's tested machine.
     #[test]
-    fn wsc_ac04_presentation_removes_bottom_dock_authoring_rebuilds() {
+    fn presentation_removes_bottom_dock_authoring_rebuilds() {
         assert_eq!(
             bottom_dock_action(PresentationMode::Presentation),
             BottomDockAction::Remove
@@ -266,7 +266,7 @@ mod tests {
     /// Emptied-dock decision: a menu-move that empties its
     /// source dock closes it; any remaining visible panel keeps it open.
     #[test]
-    fn wsc_ac07_emptied_source_dock_closes() {
+    fn emptied_source_dock_closes() {
         assert!(dock_closes_when_emptied(0), "hollow docks collapse");
         assert!(!dock_closes_when_emptied(1), "an occupied dock stays");
         assert!(!dock_closes_when_emptied(3));
@@ -276,7 +276,7 @@ mod tests {
     /// authoring — presentation's own dock collapses never overwrite the
     /// saved authoring arrangement.
     #[test]
-    fn aws_ac03_presentation_layout_is_not_persisted() {
+    fn presentation_layout_is_not_persisted() {
         assert!(layout_persistable(PresentationMode::Authoring));
         assert!(!layout_persistable(PresentationMode::Presentation));
     }
@@ -285,7 +285,7 @@ mod tests {
     /// widths to the framed size — initial size only, per the
     /// superseded-invariant note above.
     #[test]
-    fn aws_ac03_initial_window_adds_dock_widths_to_framed_size() {
+    fn initial_window_adds_dock_widths_to_framed_size() {
         let (framed_w, framed_h) = framed_window_size(800.0, 600.0);
         let (w, h) = initial_window_size(800.0, 600.0);
         assert_eq!(w, framed_w + SIDEBAR_DOCK_WIDTH + EDITOR_DOCK_WIDTH);
@@ -298,7 +298,7 @@ mod tests {
     /// a fitting window is untouched, and headless (no display) passes
     /// through unclamped.
     #[test]
-    fn aws_ac03_initial_window_clamps_to_visible_display_bounds() {
+    fn initial_window_clamps_to_visible_display_bounds() {
         let laptop = Some((1512.0, 944.0));
 
         // Oversized on both axes → exactly the display size.

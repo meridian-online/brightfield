@@ -44,8 +44,8 @@ pub enum InteractionState {
         /// Opposite corner, in chart coordinates.
         current: Point,
     },
-    /// A persisted `Selected` rectangle under active direct manipulation
-    /// : the pointer grabbed `region` at `origin` and `{start, current}`
+    /// A persisted `Selected` rectangle under active direct manipulation:
+    /// the pointer grabbed `region` at `origin` and `{start, current}`
     /// is the LIVE moved/resized rectangle. `anchor` is the rect at grab time,
     /// so the release can tell a real move/resize from a zero-delta click (a
     /// click on the rect) and re-dispatch only the former. Renders exactly like
@@ -301,8 +301,8 @@ impl InteractionState {
         }
     }
 
-    /// Resolve a pointer press over this state into a [`PointerAction`]
-    /// : a hit on the persisted `Selected` rect (region !=
+    /// Resolve a pointer press over this state into a [`PointerAction`]:
+    /// a hit on the persisted `Selected` rect (region !=
     /// `Outside`) is a `Grab` — resolved BEFORE the plot-contains gate, so a
     /// handle in the rect's inset-band overhang above `plot_area.y0` still grabs;
     /// otherwise a press inside the plot `StartBrush`es (clearing/replacing any
@@ -712,7 +712,7 @@ mod tests {
     use kurbo::Point;
 
     #[test]
-    fn gpu_ac10_brush_state_tracks_rect() {
+    fn brush_state_tracks_rect() {
         let mut state = InteractionState::start_brush(Point::new(10.0, 20.0));
         state.update_brush(Point::new(100.0, 200.0));
 
@@ -724,7 +724,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_ac10_brush_overlay_renders_without_query() {
+    fn brush_overlay_renders_without_query() {
         let state = InteractionState::Brushing {
             start: Point::new(10.0, 20.0),
             current: Point::new(100.0, 200.0),
@@ -743,7 +743,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_ac10_hover_overlay_renders() {
+    fn hover_overlay_renders() {
         let state = InteractionState::Hovering {
             point: Point::new(50.0, 50.0),
             nearest: None,
@@ -762,7 +762,7 @@ mod tests {
     // --- NavigationConfig ---
 
     #[test]
-    fn nav_ac04_pan_config() {
+    fn pan_config() {
         let cfg = NavigationConfig::from_interactor_kind(InteractorKind::Pan).unwrap();
         assert!(cfg.pan);
         assert!(!cfg.zoom);
@@ -771,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_ac04_pan_x_config() {
+    fn pan_x_config() {
         let cfg = NavigationConfig::from_interactor_kind(InteractorKind::PanX).unwrap();
         assert!(cfg.pan);
         assert!(!cfg.zoom);
@@ -780,7 +780,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_ac04_pan_y_config() {
+    fn pan_y_config() {
         let cfg = NavigationConfig::from_interactor_kind(InteractorKind::PanY).unwrap();
         assert!(cfg.pan);
         assert!(!cfg.zoom);
@@ -789,7 +789,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_ac04_pan_zoom_config() {
+    fn pan_zoom_config() {
         let cfg = NavigationConfig::from_interactor_kind(InteractorKind::PanZoom).unwrap();
         assert!(cfg.pan);
         assert!(cfg.zoom);
@@ -798,7 +798,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_ac04_pan_zoom_x_config() {
+    fn pan_zoom_x_config() {
         let cfg = NavigationConfig::from_interactor_kind(InteractorKind::PanZoomX).unwrap();
         assert!(cfg.pan);
         assert!(cfg.zoom);
@@ -807,7 +807,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_ac04_pan_zoom_y_config() {
+    fn pan_zoom_y_config() {
         let cfg = NavigationConfig::from_interactor_kind(InteractorKind::PanZoomY).unwrap();
         assert!(cfg.pan);
         assert!(cfg.zoom);
@@ -816,7 +816,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_ac04_non_navigation_returns_none() {
+    fn non_navigation_returns_none() {
         assert!(NavigationConfig::from_interactor_kind(InteractorKind::Nearest).is_none());
         assert!(NavigationConfig::from_interactor_kind(InteractorKind::Highlight).is_none());
         assert!(NavigationConfig::from_interactor_kind(InteractorKind::Toggle).is_none());
@@ -825,7 +825,7 @@ mod tests {
     // --- Pan gesture handler ---
 
     #[test]
-    fn nav_ac05_pan_x_only() {
+    fn pan_x_only() {
         let config = NavigationConfig {
             pan: true,
             zoom: false,
@@ -850,7 +850,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_ac05_pan_both_axes() {
+    fn pan_both_axes() {
         let config = NavigationConfig {
             pan: true,
             zoom: false,
@@ -871,7 +871,7 @@ mod tests {
     // --- Zoom gesture handler ---
 
     #[test]
-    fn nav_ac06_zoom_in_center_narrows_symmetrically() {
+    fn zoom_in_center_narrows_symmetrically() {
         let config = NavigationConfig {
             pan: true,
             zoom: true,
@@ -893,7 +893,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_ac06_zoom_y_locked() {
+    fn zoom_y_locked() {
         let config = NavigationConfig {
             pan: true,
             zoom: true,
@@ -910,7 +910,7 @@ mod tests {
     // --- Reset ---
 
     #[test]
-    fn nav_ac07_reset_clears_extent() {
+    fn reset_clears_extent() {
         let config = NavigationConfig {
             pan: true,
             zoom: true,
@@ -930,7 +930,7 @@ mod tests {
     // --- Debounce ---
 
     #[test]
-    fn nav_ac08_debounce_not_settled_immediately() {
+    fn debounce_not_settled_immediately() {
         let config = NavigationConfig {
             pan: true,
             zoom: true,
@@ -946,7 +946,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_ac08_debounce_settles_after_duration() {
+    fn debounce_settles_after_duration() {
         let config = NavigationConfig {
             pan: true,
             zoom: true,
@@ -966,7 +966,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_ac08_debounce_resets_on_new_event() {
+    fn debounce_resets_on_new_event() {
         let config = NavigationConfig {
             pan: true,
             zoom: true,
@@ -984,7 +984,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_ac10_idle_overlay_is_empty() {
+    fn idle_overlay_is_empty() {
         let state = InteractionState::Idle;
         let mut scene = Scene::new();
         state.render_overlay(&mut scene);
@@ -1000,7 +1000,7 @@ mod tests {
     // --- Hovering with NearestHit ---
 
     #[test]
-    fn ifb_ac10_hovering_with_nearest_hit() {
+    fn hovering_with_nearest_hit() {
         use brightfield_render::nearest::NearestHit;
 
         let hit = NearestHit {
@@ -1024,7 +1024,7 @@ mod tests {
     }
 
     #[test]
-    fn ifb_ac10_hovering_without_nearest_backward_compatible() {
+    fn hovering_without_nearest_backward_compatible() {
         let state = InteractionState::Hovering {
             point: Point::new(50.0, 50.0),
             nearest: None,
@@ -1048,7 +1048,7 @@ mod tests {
     /// Selected rect into Interior / Edge / Corner / Outside with corner-over-edge
     /// precedence and a `tol` handle band.
     #[test]
-    fn drb_ac01_brush_region_classifier() {
+    fn brush_region_classifier() {
         let rect = Rect::new(100.0, 100.0, 200.0, 150.0);
 
         // Centre → Interior.
@@ -1111,7 +1111,7 @@ mod tests {
     /// Selected / Brushing / Dragging and None for Idle / Hovering — while the
     /// legacy `brush_rect` stays Brushing-only (the regression).
     #[test]
-    fn drb_ac02_selected_rect_accessor() {
+    fn selected_rect_accessor() {
         // Selected → Some, min/max normalised (x0<x1, y0<y1) even given reversed
         // corners.
         let sel = InteractionState::Selected {
@@ -1152,7 +1152,7 @@ mod tests {
     /// the translate transform moves all four corners by the delta,
     /// preserving SIZE, and clamps the TRANSLATION (not each corner) at the frame.
     #[test]
-    fn drb_ac03_translate_transform() {
+    fn translate_transform() {
         let rect = Rect::new(100.0, 100.0, 200.0, 150.0);
         let frame = Rect::new(0.0, 0.0, 640.0, 480.0);
 
@@ -1175,7 +1175,7 @@ mod tests {
     /// the resize transform moves only the grabbed side(s); the
     /// opposite side stays pinned; the result never inverts.
     #[test]
-    fn drb_ac04_resize_transform() {
+    fn resize_transform() {
         let rect = Rect::new(100.0, 100.0, 200.0, 150.0);
         let frame = Rect::new(0.0, 0.0, 640.0, 480.0);
 
@@ -1204,7 +1204,7 @@ mod tests {
     /// plot-contains check (case b — the inset-band overhang), and a Grab carries
     /// the pre-press rect intact (the anti-wipe invariant).
     #[test]
-    fn drb_ac05_pointer_down_grab_resolver() {
+    fn pointer_down_grab_resolver() {
         let sel = InteractionState::Selected {
             start: Point::new(100.0, 100.0),
             current: Point::new(200.0, 150.0),
@@ -1257,7 +1257,7 @@ mod tests {
     /// every non-grab state → None. Driven from the translate/resize transforms, not
     /// hand-built corners.
     #[test]
-    fn drb_ac12_redispatch_brushing_from() {
+    fn release_redispatch_resolves_moved_and_resized_grabs() {
         let anchor = Rect::new(100.0, 100.0, 200.0, 150.0);
         let frame = Rect::new(0.0, 0.0, 640.0, 480.0);
 
@@ -1334,7 +1334,7 @@ mod tests {
     /// (anti-wipe); a move at pointer_move applies the transform; pointer_up
     /// yields the moved Selected end-state the re-dispatch reads.
     #[test]
-    fn drb_ac13_pointer_shim_state_transitions() {
+    fn pointer_shim_state_transitions() {
         let frame = Rect::new(0.0, 0.0, 640.0, 480.0);
         let sel = InteractionState::Selected {
             start: Point::new(100.0, 100.0),

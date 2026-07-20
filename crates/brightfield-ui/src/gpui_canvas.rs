@@ -525,7 +525,7 @@ mod tests {
     /// `chart_element::overlay_cursor` (region → SurfaceCursor), this preserves
     /// the whole region → CursorStyle guarantee across the boundary.
     #[test]
-    fn drb_ac08_surface_cursor_glyph_mapping() {
+    fn surface_cursor_glyph_mapping() {
         assert_eq!(surface_cursor_to_gpui(SurfaceCursor::Grab), CursorStyle::OpenHand);
         assert_eq!(surface_cursor_to_gpui(SurfaceCursor::Grabbing), CursorStyle::ClosedHand);
         assert_eq!(

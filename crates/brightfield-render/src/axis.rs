@@ -320,7 +320,7 @@ mod tests {
     use crate::scale::Scale;
 
     #[test]
-    fn gpu_ac06_compute_linear_ticks() {
+    fn linear_scale_ticks_stay_within_range_and_are_labelled() {
         let scale = Scale::Linear {
             domain_min: 0.0,
             domain_max: 100.0,
@@ -341,7 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_ac06_compute_band_ticks() {
+    fn band_scale_yields_one_ordered_tick_per_category() {
         let scale = Scale::Band {
             categories: vec!["a".to_string(), "b".to_string(), "c".to_string()],
             range_start: 40.0,
@@ -359,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_ac06_compute_time_ticks() {
+    fn time_scale_ticks_stay_within_range() {
         let scale = Scale::Time {
             domain_min_us: 1_000_000,
             domain_max_us: 4_000_000,
@@ -388,7 +388,7 @@ mod tests {
     }
 
     #[test]
-    fn apt_ac03_render_y_axis_rotates_its_title_but_x_does_not() {
+    fn render_y_axis_rotates_its_title_but_x_does_not() {
         // Pinned AT THE RENDER SITE: render_y_axis must draw its title
         // rotated (a draw_text_rotated → draw_text refactor would ship a
         // horizontal, tick-colliding y-title otherwise). render_x_axis's title
@@ -422,7 +422,7 @@ mod tests {
     }
 
     #[test]
-    fn apt_ac01_axis_titles_render_and_clear_tick_labels() {
+    fn axis_titles_render_and_clear_tick_labels() {
         use crate::layout::{Insets, Margins};
         use crate::text::measure_width;
 
@@ -479,7 +479,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_ac06_render_x_axis_produces_scene_content() {
+    fn render_x_axis_produces_scene_content() {
         let layout = ChartLayout::new(640.0, 480.0);
         let scale = Scale::Linear {
             domain_min: 0.0,
@@ -500,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_ac06_render_y_axis_produces_scene_content() {
+    fn render_y_axis_produces_scene_content() {
         let layout = ChartLayout::new(640.0, 480.0);
         let scale = Scale::Linear {
             domain_min: 0.0,
@@ -521,7 +521,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_ac06_nice_step_produces_human_readable_intervals() {
+    fn nice_step_produces_human_readable_intervals() {
         // 0-100 with ~5 ticks should give step=20
         let step = nice_step(100.0, 5);
         assert!((step - 20.0).abs() < f64::EPSILON, "expected step 20, got {step}");

@@ -187,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn clg_ac09_add_mark_reaches_ready_after_one_kind_pick() {
+    fn add_mark_reaches_ready_after_one_kind_pick() {
         let mut c = ArgCollector::add_mark(cp("root"));
         assert_eq!(c.step(), &ArgStep::Kind);
         assert!(c.options(&[]).contains(&"dot".to_string()));
@@ -206,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn clg_ac09_set_channel_needs_a_channel_then_a_column() {
+    fn set_channel_needs_a_channel_then_a_column() {
         let mut c = ArgCollector::set_channel(cp("root"), 0);
         assert_eq!(c.step(), &ArgStep::Channel);
         assert_eq!(c.pick("x"), ArgOutcome::Pending, "channel pick advances to column");
@@ -226,14 +226,14 @@ mod tests {
     }
 
     #[test]
-    fn clg_ac09_an_unknown_channel_is_invalid() {
+    fn an_unknown_channel_is_invalid() {
         let mut c = ArgCollector::set_channel(cp("root"), 0);
         assert_eq!(c.pick("wobble"), ArgOutcome::Invalid);
         assert_eq!(c.step(), &ArgStep::Channel, "an invalid pick does not advance");
     }
 
     #[test]
-    fn clg_ac09_fill_is_offered_as_a_channel() {
+    fn fill_is_offered_as_a_channel() {
         // fill/stroke bind an inline colour encoding — offered and gate-clean.
         assert!(channel_options().contains(&"fill".to_string()));
         assert!(channel_options().contains(&"stroke".to_string()));

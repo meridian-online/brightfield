@@ -11,7 +11,7 @@ use brightfield_keys::{registry, VerbEntry};
 const RESEARCH: &str = include_str!("data/keymap-research.md");
 
 #[test]
-fn kbg_ac08_every_bound_longname_has_a_score_row() {
+fn every_bound_longname_has_a_score_row() {
     let reg = registry();
     let bound: Vec<&VerbEntry> = reg.iter().filter(|v| v.is_bound()).collect();
     assert!(!bound.is_empty(), "expected some bound verbs");
@@ -30,7 +30,7 @@ fn kbg_ac08_every_bound_longname_has_a_score_row() {
 }
 
 #[test]
-fn kbg_ac08_reserved_scope_decisions_are_recorded() {
+fn reserved_scope_decisions_are_recorded() {
     // The manual-review half: the load-bearing scope-model decisions appear in the doc.
     for decision in ["selection-first", "g` = dashboard-broadcast", "view-altitude floor"] {
         assert!(

@@ -387,7 +387,7 @@ mod tests {
 
     /// every node kind + a shielded edge renders real geometry.
     #[test]
-    fn pds_ac05_all_node_treatments_render() {
+    fn all_node_treatments_render() {
         let yaml = r"
 name: mini
 steps:

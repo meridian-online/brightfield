@@ -307,8 +307,9 @@ pub const ZERO_AREA_EPSILON: f64 = 0.5;
 /// Returns the next `InteractionState` (always `Idle` after a release) plus
 /// per-binding aggregated dispatch results.
 ///
-/// Single-binding consumers should call
-/// [`commit_brush_release`] (a 1-element-slice wrapper).
+/// Single-binding consumers should call [`commit_brush_release`] — a
+/// 1-element-slice wrapper kept so the single-binding call surface stays
+/// green (see its own docs).
 pub fn commit_brush_release_multi<D: SelectionDispatcher>(
     interaction: &InteractionState,
     bindings: &[BrushBinding],
@@ -572,7 +573,7 @@ fn brush_kind_from_spec(kind: brightfield_spec::analysis::BrushKind) -> BrushKin
     }
 }
 
-// --- AC-05 tests: coordinate transform and interaction state ---
+// --- Tests: coordinate transform and interaction state ---
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -584,7 +585,7 @@ mod tests {
     // a GPUI runtime, just the math.
 
     #[test]
-    fn gmr_ac05_coordinate_transform_inside_plot() {
+    fn coordinate_transform_inside_plot() {
         let layout = ChartLayout::new(640.0, 480.0);
         let element_origin = Point::new(100.0, 50.0);
         let window_pos = Point::new(400.0, 300.0);
@@ -596,7 +597,7 @@ mod tests {
     }
 
     #[test]
-    fn gmr_ac05_coordinate_transform_outside_plot() {
+    fn coordinate_transform_outside_plot() {
         let layout = ChartLayout::new(640.0, 480.0);
         let element_origin = Point::new(100.0, 50.0);
         // Point in the left margin area
@@ -608,7 +609,7 @@ mod tests {
     }
 
     #[test]
-    fn gmr_ac05_interaction_state_idle_to_brushing() {
+    fn interaction_state_idle_to_brushing() {
         let state = InteractionState::start_brush(Point::new(100.0, 200.0));
         assert!(
             matches!(state, InteractionState::Brushing { .. }),
@@ -617,7 +618,7 @@ mod tests {
     }
 
     #[test]
-    fn gmr_ac05_interaction_state_brushing_to_idle() {
+    fn interaction_state_brushing_to_idle() {
         let state = InteractionState::start_brush(Point::new(100.0, 200.0));
         assert!(matches!(state, InteractionState::Brushing { .. }));
 
@@ -627,7 +628,7 @@ mod tests {
     }
 
     #[test]
-    fn gmr_ac05_brush_update_during_drag() {
+    fn brush_update_during_drag() {
         let mut state = InteractionState::start_brush(Point::new(100.0, 200.0));
         state.update_brush(Point::new(300.0, 400.0));
 
@@ -641,7 +642,7 @@ mod tests {
     // --- Resize ---
 
     #[test]
-    fn gmr_ac07_layout_dimensions_change() {
+    fn layout_dimensions_change() {
         let layout = ChartLayout::new(640.0, 480.0);
         assert!((layout.width - 640.0).abs() < f64::EPSILON);
 
@@ -651,7 +652,7 @@ mod tests {
     }
 
     #[test]
-    fn gmr_ac07_render_respects_new_dimensions() {
+    fn render_respects_new_dimensions() {
         // Verify plot area scales with dimensions
         let layout = ChartLayout::new(1024.0, 768.0);
         let area = layout.plot_area();
@@ -701,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    fn cfs2_ac11_on_mouse_up_dispatches_selection() {
+    fn on_mouse_up_dispatches_selection() {
         // Simulate the mouse-down → drag → mouse-up sequence at the
         // InteractionState level, then drive commit_brush_release with a
         // recording dispatcher. The recorded call must carry the
@@ -747,7 +748,7 @@ mod tests {
     }
 
     #[test]
-    fn cfs2_ac11_on_mouse_up_no_brush_no_dispatch() {
+    fn on_mouse_up_no_brush_no_dispatch() {
         // If interaction is Idle (no active brush), mouse-up must not
         // dispatch — same partial-failure / no-op discipline as the
         // existing on_mouse_up.
@@ -816,7 +817,7 @@ mod tests {
     /// Brushing does NOT clear (that path is the drag-release, handled by
     /// commit_brush_release). Returns Idle as the next state on a clear.
     #[test]
-    fn cfs3_ac03_click_outside_active_brush_clears() {
+    fn click_outside_active_brush_clears() {
         let binding = BrushBinding {
             selection_name: "brush".to_string(),
             contributor: ComponentPath("root/plot[0]".to_string()),
@@ -878,7 +879,7 @@ mod tests {
     /// kind-compatibility filter — an IntervalX binding produces an x-only
     /// predicate even when the rect has a non-zero y extent.
     #[test]
-    fn cfs3_ac04_plot_drives_multiple_selections() {
+    fn plot_drives_multiple_selections() {
         // (a) Construct a Brushing state with a 100x200 rect (non-zero on
         //     both axes).
         let mut interaction = InteractionState::start_brush(Point::new(20.0, 30.0));
@@ -956,7 +957,7 @@ mod tests {
     /// channels — translating between the spec-side and ui-side mirror
     /// enums verbatim.
     #[test]
-    fn cfs3_ac06_brushable_binding_to_brush_binding() {
+    fn brushable_binding_to_brush_binding() {
         let spec_binding = BrushableBinding {
             interactor_path: ComponentPath(
                 "root/plot[0]/interactor[intervalXY]".to_string(),

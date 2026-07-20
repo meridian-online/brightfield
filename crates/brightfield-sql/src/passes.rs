@@ -35,7 +35,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac07_empty_passes_is_identity() {
+    fn empty_passes_is_identity() {
         let plan = QueryPlan::Source {
             table: "t".to_string(),
         };
@@ -45,7 +45,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac07_noop_pass_composes() {
+    fn noop_pass_composes() {
         let plan = QueryPlan::Filter {
             input: Box::new(QueryPlan::Source {
                 table: "t".to_string(),

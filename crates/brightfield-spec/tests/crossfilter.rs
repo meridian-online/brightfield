@@ -16,7 +16,7 @@ use brightfield_spec::{
 use brightfield_spec::ast::MarkData;
 
 #[test]
-fn dfspec_ac13_crossfilter_structural() {
+fn crossfilter_structural() {
     let path = corpus_path("crossfilter.yaml");
     let out = parse_spec_path(&path).expect("crossfilter.yaml must parse");
 

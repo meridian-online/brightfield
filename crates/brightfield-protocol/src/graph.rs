@@ -881,7 +881,7 @@ steps:
     }
 
     #[test]
-    fn pds_ac05_derivation_covers_every_kind() {
+    fn derivation_covers_every_kind() {
         let g = mini_graph();
         let kind = |id: &str| g.nodes.get(id).map(|n| n.kind);
         assert_eq!(kind("source.mini.https://example.com/data/a.csv"), Some(AssetKind::Source));
@@ -897,7 +897,7 @@ steps:
     }
 
     #[test]
-    fn pds_ac05_gate_is_a_shield_not_a_node() {
+    fn gate_is_a_shield_not_a_node() {
         let g = mini_graph();
         // The gate seam exists and is marked.
         assert!(g.seams["validate"].gate);

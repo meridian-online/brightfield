@@ -184,7 +184,7 @@ mod tests {
     /// exposes an accessible `span` and the public `SourceSpan` type is a
     /// plain struct defined here (not re-exported from miette).
     #[test]
-    fn dfspec_ac09_variants_expose_span() {
+    fn variants_expose_span() {
         let variants: Vec<ParseError> = vec![
             ParseError::YamlSyntax {
                 msg: "x".into(),
@@ -228,7 +228,7 @@ mod tests {
     }
 
     #[test]
-    fn dfspec_ac09_source_span_is_plain_struct() {
+    fn source_span_is_plain_struct() {
         // Constructing SourceSpan with named fields proves it is a plain struct
         // with public fields — not an opaque wrapper around a miette type.
         let s = SourceSpan { offset: 10, length: 5 };

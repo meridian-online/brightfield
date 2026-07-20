@@ -347,13 +347,13 @@ mod tests {
 
     // NearestMode variants are exhaustive
     #[test]
-    fn ifb_ac01_nearest_mode_variants() {
+    fn nearest_mode_variants() {
         let modes = [NearestMode::X, NearestMode::Y, NearestMode::XY];
         assert_eq!(modes.len(), 3);
     }
 
     #[test]
-    fn ifb_ac01_nearest_hit_fields() {
+    fn nearest_hit_fields() {
         let hit = NearestHit {
             row: 2,
             point: Point::new(100.0, 200.0),
@@ -367,7 +367,7 @@ mod tests {
 
     // find_nearest functionality
     #[test]
-    fn ifb_ac02_exact_hit_returns_some() {
+    fn exact_hit_returns_some() {
         let (batch, cm, scales) = test_batch();
 
         // Find the pixel position of point (3.0, 30.0)
@@ -391,7 +391,7 @@ mod tests {
     }
 
     #[test]
-    fn ifb_ac02_far_away_returns_none() {
+    fn far_away_returns_none() {
         let (batch, cm, scales) = test_batch();
 
         let hit = find_nearest(
@@ -406,7 +406,7 @@ mod tests {
     }
 
     #[test]
-    fn ifb_ac02_mode_x_ignores_y_distance() {
+    fn mode_x_ignores_y_distance() {
         let (batch, cm, scales) = test_batch();
 
         let x_scale = scales.get(Channel::X).unwrap();
@@ -425,7 +425,7 @@ mod tests {
     }
 
     #[test]
-    fn ifb_ac02_mode_y_ignores_x_distance() {
+    fn mode_y_ignores_x_distance() {
         let (batch, cm, scales) = test_batch();
 
         let y_scale = scales.get(Channel::Y).unwrap();
@@ -444,7 +444,7 @@ mod tests {
     }
 
     #[test]
-    fn ifb_ac02_custom_max_distance() {
+    fn custom_max_distance() {
         let (batch, cm, scales) = test_batch();
 
         let x_scale = scales.get(Channel::X).unwrap();

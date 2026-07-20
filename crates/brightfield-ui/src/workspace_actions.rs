@@ -37,7 +37,7 @@ mod tests {
     /// the workspace key context. (The handler's flip is the tested
     /// state machine; physical keypress delivery is the manual eyeball.)
     #[test]
-    fn fww_ac07_p_binds_toggle_presentation_in_workspace_context() {
+    fn p_binds_toggle_presentation_in_workspace_context() {
         let bindings = workspace_key_bindings();
         assert_eq!(bindings.len(), 1, "one action, one binding");
         let binding = &bindings[0];
