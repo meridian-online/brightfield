@@ -1,0 +1,28 @@
+name: public-hygiene
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Deliberately a workflow of its own rather than a job inside `test`:
+#
+# * `test` runs on `macos-15` with a 60-minute ceiling and a cold-ish GPUI build.
+#   This gate needs no toolchain, no cache and no build — it is `git grep` over
+#   tracked files and finishes in seconds. It should be the first thing to go
+#   red, and it should still report when the Rust suite is queued or cancelled.
+# * `test` cancels in-progress runs per ref. This gate is cheap enough that it
+#   never needs cancelling, and a leak must be reported on every pushed commit.
+jobs:
+  planning-identifiers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # fetch-depth 1 is enough: the gate reads the tracked files of this one
+      # commit, never history.
+      - uses: actions/checkout@v4
+
+      # No `working-directory`. The gate cd's to the repo root itself and scans
+      # every tracked file in the repository, workspace crates included.
+      - name: private planning identifiers
+        run: ./scripts/check-public-hygiene.sh

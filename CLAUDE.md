@@ -12,6 +12,10 @@ Analytics **consumers** (people who view and interact with published dashboards)
 
 Feature cards, specs, and decisions for Brightfield are tracked centrally, outside this repository — this repo holds the code, not the planning substrate.
 
+**This repo is public, and the planning substrate is not.** Identifiers from it — decision-record refs, task ids, milestone ids, acceptance-criterion shorthand, document ids, card ids, spec AC ids — resolve nowhere for a reader here and leak the shape of private work. Don't put them in code comments, doc comments, prose, commit messages, or PR text. If a pointer carried real meaning, write the actual rationale in plain English instead.
+
+`scripts/check-public-hygiene.sh` enforces this. It needs no arguments and no Rust build — run it before pushing; it is also the first CI job (`.github/workflows/public-hygiene.yml`) and goes red in seconds. It scans tracked files only and is deliberately tuned not to fire on legitimate Rust identifiers that embed a spec AC id, such as test function names. If it flags something genuinely legitimate, tighten the pattern rather than reaching for `scripts/public-hygiene-allowlist.txt` — every allowlist entry must explain itself or the check hard-fails.
+
 ## Previously Shipped
 
 - "First end-to-end render" — Spec → SQL → DuckDB → GPU render → native GPUI window. Shipped at 7cb7005 (2026-04-29).
