@@ -1819,9 +1819,14 @@ fn hint_ui(ui: &mut egui::Ui, model: &ProtocolModel, mode: Mode) {
         }
     };
     ui.horizontal(|ui| {
+        // Small and proportional — what this bar has always rendered. `main`
+        // wrote `.monospace().small()`, but `.small()` came last and both call
+        // `text_style()`, which overwrites unconditionally, so Small won and the
+        // mono never took effect. Making it mono would be a new design decision
+        // rather than a restoration, so it keeps the face it has today.
         ui.label(
             egui::RichText::new(hint)
-                .font(mono_font())
+                .small()
                 .color(chrome::colour(sem.text.muted)),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
