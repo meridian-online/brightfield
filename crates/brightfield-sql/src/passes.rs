@@ -1,4 +1,4 @@
-//! Optimisation pass pipeline (ac-07).
+//! Optimisation pass pipeline.
 //!
 //! V1 ships the pipeline shape with no passes registered. Each future
 //! optimisation (pre-aggregation, M4) adds a `Pass` impl.
@@ -35,7 +35,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac07_empty_passes_is_identity() {
+    fn empty_passes_is_identity() {
         let plan = QueryPlan::Source {
             table: "t".to_string(),
         };
@@ -45,7 +45,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac07_noop_pass_composes() {
+    fn noop_pass_composes() {
         let plan = QueryPlan::Filter {
             input: Box::new(QueryPlan::Source {
                 table: "t".to_string(),

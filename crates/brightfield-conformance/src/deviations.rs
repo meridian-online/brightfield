@@ -1,11 +1,11 @@
-//! Deviation registry (ac-09, ac-10).
+//! Deviation registry.
 //!
 //! The registry lives at repo-root `deviations.yaml` and is the single
 //! source of truth for deliberate divergences from Mosaic-web rendering.
 //! The loader is a pure file-level validator: YAML syntax, id uniqueness,
 //! id format, layer-range, field completeness. Cross-artefact integrity
-//! (affected-spec names referencing real curated files) is owned by
-//! AC-14's registry-integrity gate, not by this loader.
+//! (affected-spec names referencing real curated files) is owned by the
+//! registry-integrity gate, not by this loader.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -141,8 +141,8 @@ struct RegistryWire {
 
 /// Parse a `deviations.yaml` file. Enforces id-uniqueness, `DEV-NNNN`
 /// format, layer-range, and field completeness. Does NOT check that
-/// `affected_specs` names point at real curated files — that check is
-/// AC-14's.
+/// `affected_specs` names point at real curated files — that check belongs
+/// to the registry-integrity gate.
 pub fn load_deviations(path: &Path) -> Result<DeviationRegistry, RegistryError> {
     let source = fs::read_to_string(path).map_err(|source| RegistryError::Io {
         path: path.to_path_buf(),

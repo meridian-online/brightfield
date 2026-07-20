@@ -1,4 +1,4 @@
-# Cell mark (card 0008 density marks): a calendar-style value matrix. Each row
+# Cell mark (density marks): a calendar-style value matrix. Each row
 # of the pre-aggregated day x hour table becomes one Band x Band cell coloured
 # by its numeric `fill:` value through a sequential ramp (viridis default) -
 # the classic "activity by weekday and hour" grid. A categorical fill would

@@ -79,7 +79,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ifb_ac06_new_transition_is_running() {
+    fn new_transition_is_running() {
         let t = Transition::new(vec![(0.0, 0.0)], DEFAULT_TRANSITION_DURATION);
         let (factor, state) = t.tick(Instant::now());
         assert_eq!(state, TransitionState::Running);
@@ -87,7 +87,7 @@ mod tests {
     }
 
     #[test]
-    fn ifb_ac06_past_duration_is_complete() {
+    fn past_duration_is_complete() {
         let start = Instant::now() - Duration::from_millis(500);
         let t = Transition::new_at(
             vec![(0.0, 0.0)],
@@ -100,7 +100,7 @@ mod tests {
     }
 
     #[test]
-    fn ifb_ac06_midpoint_returns_half() {
+    fn midpoint_returns_half() {
         let start = Instant::now();
         let duration = Duration::from_millis(200);
         let t = Transition::new_at(vec![(0.0, 0.0)], duration, start);
@@ -117,7 +117,7 @@ mod tests {
     }
 
     #[test]
-    fn ifb_ac06_zero_elapsed_returns_zero() {
+    fn zero_elapsed_returns_zero() {
         let start = Instant::now();
         let t = Transition::new_at(
             vec![(10.0, 20.0)],
@@ -130,7 +130,7 @@ mod tests {
     }
 
     #[test]
-    fn ifb_ac06_prev_positions_stored() {
+    fn prev_positions_stored() {
         let positions = vec![(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)];
         let t = Transition::new(positions.clone(), DEFAULT_TRANSITION_DURATION);
         assert_eq!(t.prev_positions, positions);

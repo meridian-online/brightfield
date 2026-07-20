@@ -1,4 +1,4 @@
-//! The command-log model (card 0023, clg-ac08) — framework-free.
+//! The command-log model — framework-free.
 //!
 //! A dedicated, append-only history of the semantic edit results the keyboard
 //! command log produces ("change-mark-type: -> bar"), an "N uncommitted edits"
@@ -16,7 +16,7 @@ pub enum CommandLogEntry {
     /// A semantic edit that was applied live ("change-mark-type: -> bar").
     Edit(String),
     /// A commit barrier ("committed 3 edits to disk"). Constructed by
-    /// [`CommandLog::commit`] on the deliberate cmd-s commit action (card 0023).
+    /// [`CommandLog::commit`] on the deliberate cmd-s commit action.
     Commit(String),
     /// A refused edit or a no-op undo, with its reason (authoring feedback).
     Refused(String),
@@ -44,7 +44,7 @@ impl CommandLogEntry {
 }
 
 /// The append-only command log, newest first, tracking the uncommitted-edit
-/// count and commit barriers (clg-ac08). Deliberately separate from
+/// count and commit barriers. Deliberately separate from
 /// [`crate::log_model::FeedbackLog`].
 #[derive(Debug, Default)]
 pub struct CommandLog {
@@ -98,7 +98,7 @@ impl CommandLog {
 
     /// Commit: insert a barrier recording how many edits were flushed and reset
     /// the uncommitted count. A no-op (returns `false`) when there is nothing to
-    /// commit. Called on the cmd-s commit action (card 0023); unit-tested.
+    /// commit. Called on the cmd-s commit action; unit-tested.
     pub fn commit(&mut self) -> bool {
         if self.uncommitted == 0 {
             return false;
@@ -133,7 +133,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn clg_ac08_append_is_newest_first_and_counts_uncommitted() {
+    fn append_is_newest_first_and_counts_uncommitted() {
         let mut log = CommandLog::new();
         assert_eq!(log.uncommitted(), 0);
         log.record_edit("change-mark-type: -> bar");
@@ -144,7 +144,7 @@ mod tests {
     }
 
     #[test]
-    fn clg_ac08_commit_resets_the_count_and_inserts_a_barrier() {
+    fn commit_resets_the_count_and_inserts_a_barrier() {
         let mut log = CommandLog::new();
         log.record_edit("a");
         log.record_edit("b");
@@ -157,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn clg_ac08_undo_pops_the_last_edit() {
+    fn undo_pops_the_last_edit() {
         let mut log = CommandLog::new();
         log.record_edit("a");
         log.record_edit("b");
@@ -172,7 +172,7 @@ mod tests {
     }
 
     #[test]
-    fn clg_ac08_undo_does_not_cross_a_commit_barrier() {
+    fn undo_does_not_cross_a_commit_barrier() {
         let mut log = CommandLog::new();
         log.record_edit("a");
         log.commit();
@@ -186,7 +186,7 @@ mod tests {
     }
 
     #[test]
-    fn clg_ac08_refused_is_feedback_only() {
+    fn refused_is_feedback_only() {
         let mut log = CommandLog::new();
         log.record_refused("would empty the plot");
         assert_eq!(log.uncommitted(), 0, "a refusal does not count as an edit");

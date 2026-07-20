@@ -1,4 +1,4 @@
-# Legend click-to-filter (card 0009): the standalone legend is BOUND to a
+# Legend click-to-filter: the standalone legend is BOUND to a
 # selection — `as: $sel` — turning it into a producer. Clicking a species
 # swatch in the live window dispatches `species = '…'` and filters the right
 # plot to that species; clicking the same swatch again clears; clicking a

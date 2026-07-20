@@ -1,4 +1,4 @@
-//! Stable identities for AST components (ac-02).
+//! Stable identities for AST components.
 //!
 //! The deviation registry and the `SupportReport` both key against typed
 //! identities sourced from `brightfield-spec`'s kind-registry enums — never

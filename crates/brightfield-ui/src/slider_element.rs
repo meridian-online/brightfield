@@ -1,5 +1,5 @@
 //! SliderElement — GPUI Element that draws a slider and routes its drag into a
-//! param commit (card 0005). The model half (SliderBinding / SliderState /
+//! param commit. The model half (SliderBinding / SliderState /
 //! value_at / commit) lives in `slider.rs` and stays gpui-free; this file is the
 //! window layer, mirroring `chart_element.rs`.
 //!
@@ -31,7 +31,7 @@ const TRACK_THICKNESS: f32 = 4.0;
 
 /// Slider colours — kept in sync with the headless twin
 /// (brightfield-render scene.rs `SLIDER_TRACK_COLOUR`/`SLIDER_THUMB_COLOUR`)
-/// so the dumped PNG matches the window (card 0005). Both sides read the same
+/// so the dumped PNG matches the window. Both sides read the same
 /// Meridian tokens: track = warm gray step 5 (#dcdad8), thumb = Maritime
 /// focus ink (#4b7a9b).
 const TRACK_TOKEN: meridian_design::colour::Rgba = meridian_design::scales::GRAY_LIGHT[4];

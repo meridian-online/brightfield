@@ -1,4 +1,4 @@
-//! fww_ac05 (card 0016, framed window).
+//! Framed window.
 //!
 //! A spec with a standalone `legend: color` node preflights clean at the
 //! legend surface: `ComponentKind::Legend` is Implemented (the legend renders
@@ -26,7 +26,7 @@ hconcat:
 "#;
 
 #[test]
-fn fww_ac05_legend_color_preflights_clean() {
+fn legend_color_preflights_clean() {
     let parsed = parse_spec(LEGEND_COLOR, Format::Yaml).expect("legend spec parses");
 
     // No Legend component entry at all — preflight records only components

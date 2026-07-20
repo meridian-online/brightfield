@@ -1,4 +1,4 @@
-//! Cross-filter end-to-end (headless) — card 0006.
+//! Cross-filter end-to-end (headless).
 //!
 //! Proves the full producer→engine→results→scene chain that makes brushing a
 //! range in one plot of a multi-view dashboard filter another plot:
@@ -855,7 +855,7 @@ fn crossfilter_categorical_point_click_selects_clicked_category() {
     );
 }
 
-/// A legend bound `as: $sel for: scatter` (card 0009). The scatter plot ALSO
+/// A legend bound `as: $sel for: scatter`. The scatter plot ALSO
 /// subscribes to `$sel` (the self-exclusion case), plot B (mark 1) is the
 /// downstream subscriber, and plot C (mark 2) subscribes to an independent
 /// selection `$other`. One category — `O'Hara` — carries an embedded quote.
@@ -900,7 +900,7 @@ hconcat:
     height: 300
 "#;
 
-/// lcf_ac04 (card 0009) — the legend-click DATA path end-to-end through the
+/// The legend-click DATA path end-to-end through the
 /// real session, mirroring `crossfilter_point_toggle_x_filters_downstream`
 /// (analysis-derived binding → predicate → `propagate_selection`) and
 /// `crossfilter_plot_does_not_filter_itself` (the for:-plot is the
@@ -916,7 +916,7 @@ hconcat:
 /// - the quote-escaping case: `O'Hara` dispatches as `'O''Hara'` and matches
 ///   exactly its row.
 #[test]
-fn lcf_ac04_legend_click_filters_downstream_via_real_session() {
+fn legend_click_filters_downstream_via_real_session() {
     let parsed = parse_spec(SPEC_LEGEND, Format::Yaml).expect("spec parses");
     let spec = parsed.spec;
     let analysis = analyse_spec(&spec).expect("spec analyses");
@@ -1009,7 +1009,7 @@ fn lcf_ac04_legend_click_filters_downstream_via_real_session() {
     );
 }
 
-/// Card 0021 (ce-ac04/ce-ac08/ce-ac10) end-to-end: a highlight-bound plot's
+/// End-to-end: a highlight-bound plot's
 /// mark, on a brush, re-queries against a LIVE DuckDB Session and comes back
 /// with the reserved `__bf_selected` boolean — every source row present (dims,
 /// not filters) — its true/false pattern matching the brushed range.
@@ -1044,7 +1044,7 @@ plot:
     let spec = parse_spec(SPEC, Format::Yaml).expect("parses").spec;
     let analysis = analyse_spec(&spec).expect("analyses");
 
-    // The dot is registered as a highlight subscriber to `brush` (ce-ac05).
+    // The dot is registered as a highlight subscriber to `brush`.
     assert_eq!(analysis.highlight_bindings.len(), 1);
     let subs = analysis.selection_subscribers.get("brush").expect("subs");
     assert!(
@@ -1055,7 +1055,7 @@ plot:
     let engine = Engine::new();
     let mut session = engine.load_spec(spec, analysis, None).expect("loads").session;
 
-    // Baseline: no selection → no membership column (at-rest look, ce-ac07).
+    // Baseline: no selection → no membership column (at-rest look).
     let baseline = session.execute_all();
     let baseline_dot = baseline[0].as_ref().expect("dot executes");
     assert_eq!(total_rows(baseline_dot), 6);
@@ -1092,7 +1092,7 @@ plot:
     assert_eq!(selected, 2, "x∈[2.5,4.5] marks exactly rows x=3,4 as selected");
 }
 
-/// FIX B end-to-end (card 0021): a single plot that BRUSHES and HIGHLIGHTS the
+/// FIX B end-to-end: a single plot that BRUSHES and HIGHLIGHTS the
 /// same CROSSFILTER selection must grey its OWN rows on a brush. The mark's own
 /// plot is the contributor, so the crossfilter self-exclusion that is correct for
 /// filterBy would (wrongly) drop it to empty and the brushed plot would never dim
@@ -1151,7 +1151,7 @@ plot:
     assert_eq!(selected, 2, "the brushed plot greys itself: x∈{{3,4}} stay lit");
 }
 
-/// FIX A end-to-end (card 0021): weather's `$range` shape — a highlight `by:` a
+/// FIX A end-to-end: weather's `$range` shape — a highlight `by:` a
 /// selection created ONLY by `as:` (never declared in `params:`). The scatter
 /// must still project the membership boolean on a brush.
 #[test]

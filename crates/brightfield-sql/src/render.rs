@@ -174,7 +174,7 @@ fn split_args(s: &str) -> Vec<String> {
 /// Render a `QueryPlan` to DuckDB-dialect SQL, accumulating `Binding` entries
 /// for parameterised positions.
 ///
-/// Source renders as a bare table name (the VIEW created by card 0004's DDL).
+/// Source renders as a bare table name (the VIEW created by the DDL).
 /// Filter renders a WHERE clause. Aggregation uses DuckDB positional GROUP BY.
 /// Bin renders a `width_bucket()` call.
 pub fn render_query(plan: &QueryPlan, bindings: &mut Vec<Binding>) -> String {
@@ -347,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac04_render_source() {
+    fn render_source() {
         let plan = QueryPlan::Source {
             table: "flights".to_string(),
         };
@@ -359,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac04_render_filter() {
+    fn render_filter() {
         let plan = QueryPlan::Filter {
             input: Box::new(QueryPlan::Source {
                 table: "t".to_string(),
@@ -373,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac04_render_projection() {
+    fn render_projection() {
         let plan = QueryPlan::Projection {
             input: Box::new(QueryPlan::Source {
                 table: "t".to_string(),
@@ -387,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac04_render_aggregation() {
+    fn render_aggregation() {
         let plan = QueryPlan::Aggregation {
             input: Box::new(QueryPlan::Source {
                 table: "t".to_string(),
@@ -403,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac04_render_composed_plan() {
+    fn render_composed_plan() {
         // Source → Filter → Projection
         let plan = QueryPlan::Projection {
             input: Box::new(QueryPlan::Filter {
@@ -422,7 +422,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac04_render_param_predicate_records_binding() {
+    fn render_param_predicate_records_binding() {
         let plan = QueryPlan::Filter {
             input: Box::new(QueryPlan::Source {
                 table: "t".to_string(),
@@ -446,7 +446,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac04_render_order() {
+    fn render_order() {
         let plan = QueryPlan::Order {
             input: Box::new(QueryPlan::Source {
                 table: "t".to_string(),
@@ -463,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn gomb_ac01_aggregate_scalar_emits_no_group_by() {
+    fn aggregate_scalar_emits_no_group_by() {
         let plan = QueryPlan::AggregateScalar {
             input: Box::new(QueryPlan::Source {
                 table: "athletes".to_string(),
@@ -484,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac04_render_limit() {
+    fn render_limit() {
         let plan = QueryPlan::Limit {
             input: Box::new(QueryPlan::Source {
                 table: "t".to_string(),

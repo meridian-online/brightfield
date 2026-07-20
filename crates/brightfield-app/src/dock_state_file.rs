@@ -1,4 +1,4 @@
-//! Dock-layout persistence (card 0017, aws_ac03) — framework-free.
+//! Dock-layout persistence — framework-free.
 //!
 //! The DockArea's serialised layout (`DockAreaState` JSON, versioned) is
 //! SHELL-owned state: saved under the user config dir, never serialised into
@@ -15,7 +15,7 @@ use crate::shell_model::CANVAS_PANEL_NAME;
 
 /// Version stamped into the persisted layout. Bump when the panel set or
 /// dock structure changes incompatibly; a mismatch falls back to the
-/// default layout (no migration, no prompt). v2 (card 0023): the bottom dock
+/// default layout (no migration, no prompt). v2: the bottom dock
 /// gained the second CommandLog panel, so v1 layouts (Log-only bottom) are
 /// discarded and rebuilt with both.
 pub const DOCK_STATE_VERSION: usize = 2;
@@ -140,7 +140,7 @@ impl SavePolicy {
 
     /// Whether a debounced save is armed and not yet fired — the probe the
     /// shell tests use to assert a dock change reached the policy
-    /// (wsc_ac04's rebuilt-dock observer wiring).
+    /// (the rebuilt-dock observer wiring).
     #[cfg(test)]
     #[must_use]
     pub fn pending(&self) -> bool {
@@ -230,10 +230,10 @@ mod tests {
         })
     }
 
-    /// aws_ac03 (round-trip): a well-formed saved layout at the expected
+    /// Round-trip: a well-formed saved layout at the expected
     /// version restores exactly — serialise → decide_load → the same value.
     #[test]
-    fn aws_ac03_round_trip_restores_saved_layout() {
+    fn round_trip_restores_saved_layout() {
         let value = layout_json(DOCK_STATE_VERSION);
         let raw = serde_json::to_string_pretty(&value).unwrap();
         match decide_load(Some(&raw), DOCK_STATE_VERSION) {
@@ -242,11 +242,11 @@ mod tests {
         }
     }
 
-    /// aws_ac03 (fallback decisions): missing file, corrupt JSON, a
+    /// Fallback decisions: missing file, corrupt JSON, a
     /// non-object root, a missing version, and a version mismatch each
     /// fall back to the default layout with a distinct reason.
     #[test]
-    fn aws_ac03_missing_corrupt_or_mismatched_state_falls_back() {
+    fn missing_corrupt_or_mismatched_state_falls_back() {
         let cases: Vec<(Option<String>, &str)> = vec![
             (None, "no saved layout"),
             (Some("{ not json ".to_string()), "saved layout is not valid JSON"),
@@ -268,11 +268,11 @@ mod tests {
         }
     }
 
-    /// aws_ac03 (canvas exclusion): stripping replaces the canvas node's
+    /// Canvas exclusion: stripping replaces the canvas node's
     /// payload with an empty shell — no children, null info — wherever it
     /// sits in the tree, while every other panel's state survives intact.
     #[test]
-    fn aws_ac03_canvas_state_is_excluded_from_persistence() {
+    fn canvas_state_is_excluded_from_persistence() {
         let mut value = layout_json(DOCK_STATE_VERSION);
         strip_canvas_state(&mut value);
 
@@ -310,11 +310,11 @@ mod tests {
         assert_eq!(canvas["info"], serde_json::json!({ "panel": null }));
     }
 
-    /// aws_ac03 (save policy): LayoutChanged debounces — not due until the
+    /// Save policy: LayoutChanged debounces — not due until the
     /// window elapses, a second change pushes the deadline out, an
     /// unchanged state skips the write, and quit flushes immediately.
     #[test]
-    fn aws_ac03_save_policy_debounces_and_quit_flushes() {
+    fn save_policy_debounces_and_quit_flushes() {
         let mut policy = SavePolicy::default();
 
         // Nothing pending → the timer does nothing.
@@ -354,7 +354,7 @@ mod tests {
         assert_eq!(policy.quit("{b}"), SaveAction::Nothing);
     }
 
-    /// aws_ac03 (presentation suppression at FIRE time): a debounce timer
+    /// Presentation suppression at FIRE time: a debounce timer
     /// that lands while presenting writes NOTHING — pressing `p` inside the
     /// 10s window must not dump the collapsed presentation docks over the
     /// saved authoring arrangement. The deadline stays armed, so the same
@@ -362,7 +362,7 @@ mod tests {
     /// authoring mode (and the quit flush in authoring covers a quit that
     /// arrives first).
     #[test]
-    fn aws_ac03_timer_fired_while_presenting_writes_nothing() {
+    fn timer_fired_while_presenting_writes_nothing() {
         let mut policy = SavePolicy::default();
         policy.layout_changed(1_000);
         let due = 1_000 + SAVE_DEBOUNCE_MS;
@@ -378,10 +378,10 @@ mod tests {
         );
     }
 
-    /// aws_ac03 (path selection): the env override wins and the fallbacks
+    /// Path selection: the env override wins and the fallbacks
     /// choose a per-user config location; no home, no path.
     #[test]
-    fn aws_ac03_state_path_prefers_override_then_config_dir() {
+    fn state_path_prefers_override_then_config_dir() {
         let over = dock_state_path(Some("/tmp/bf-test"), None, Some("/Users/x"));
         assert_eq!(over, Some(PathBuf::from("/tmp/bf-test/dock-state.json")));
 

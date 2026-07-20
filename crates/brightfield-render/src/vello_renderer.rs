@@ -311,7 +311,7 @@ mod tests {
     use vello::Scene;
 
     #[test]
-    fn gmr_ac02_render_to_pixels_correct_buffer_size() {
+    fn render_to_pixels_correct_buffer_size() {
         let renderer = VelloRenderer::new();
         let mut renderer = renderer.lock().unwrap();
         let mut scene = Scene::new();
@@ -335,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn gmr_ac02_render_to_pixels_has_content() {
+    fn render_to_pixels_has_content() {
         let renderer = VelloRenderer::new();
         let mut renderer = renderer.lock().unwrap();
         let mut scene = Scene::new();
@@ -357,7 +357,7 @@ mod tests {
     }
 
     #[test]
-    fn gmr_ac02_empty_scene_produces_transparent_pixels() {
+    fn empty_scene_produces_transparent_pixels() {
         let renderer = VelloRenderer::new();
         let mut renderer = renderer.lock().unwrap();
         let scene = Scene::new();

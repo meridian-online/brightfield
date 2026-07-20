@@ -27,7 +27,7 @@ allow = [
   "MPL-2.0",
   # 0BSD (BSD Zero Clause) is OSI-approved and maximally permissive — public-
   # domain-equivalent, no attribution clause. Entrant: enum-iterator +
-  # enum-iterator-derive, via gpui-component (card 0017; approved 2026-07-06).
+  # enum-iterator-derive, via gpui-component (approved 2026-07-06).
   "0BSD",
   # Open-font licenses for egui's bundled default fonts (Ubuntu-Light + the
   # Noto/emoji fallbacks the egui default FontDefinitions ship). Both are

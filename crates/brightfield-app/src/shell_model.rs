@@ -1,14 +1,14 @@
-//! Workspace-shell model (card 0017) — the framework-free half of the
+//! Workspace-shell model — the framework-free half of the
 //! docked authoring workspace.
 //!
 //! Panel identities, default dock geometry, the initial-window-size formula,
-//! and the presentation-mode → panel-visibility mapping (aws_ac07) all live
+//! and the presentation-mode → panel-visibility mapping all live
 //! here as plain data and arithmetic; `shell.rs` is the thin GPUI/
 //! gpui-component translation shim over this module. No gpui import may
 //! enter this file (semantic-layer rule).
 //!
-//! [`PresentationMode`] itself stays in `brightfield_ui::workspace` (card
-//! 0016's gpui-free machine, deliberately unmoved); this module only maps it
+//! [`PresentationMode`] itself stays in `brightfield_ui::workspace` (the
+//! gpui-free machine, deliberately unmoved); this module only maps it
 //! onto the dock shell: which panels report `visible()` and whether the
 //! authoring docks are open.
 
@@ -27,7 +27,7 @@ pub const SIDEBAR_PANEL_NAME: &str = "BrightfieldSidebar";
 /// The reload/save feedback Log panel's stable serialisation name.
 pub const LOG_PANEL_NAME: &str = "BrightfieldLog";
 
-/// The keyboard command-log panel's stable serialisation name (card 0023) — the
+/// The keyboard command-log panel's stable serialisation name — the
 /// SECOND bottom-dock citizen, distinct from the diagnostics Log.
 pub const CMD_LOG_PANEL_NAME: &str = "BrightfieldCommandLog";
 
@@ -57,7 +57,7 @@ pub enum PanelRole {
     Log,
 }
 
-/// Whether a panel of `role` reports `visible()` under `mode` (aws_ac07).
+/// Whether a panel of `role` reports `visible()` under `mode`.
 ///
 /// Presentation hides every authoring panel; the canvas remains in both
 /// modes. A pure function of (mode, role) — the GPUI shell reads it, never
@@ -70,11 +70,11 @@ pub fn panel_visible(mode: PresentationMode, role: PanelRole) -> bool {
     }
 }
 
-/// Whether card 0018's keyboard-grammar chrome (the breadcrumb + focus ring) is
-/// visible under `mode` (ac-16). Mirrors [`panel_visible`]'s shape for chrome
+/// Whether the keyboard-grammar chrome (the breadcrumb + focus ring) is
+/// visible under `mode`. Mirrors [`panel_visible`]'s shape for chrome
 /// that is NOT a dock panel: presentation hides all authoring chrome; authoring
 /// shows it. A pure function of `mode` — the canvas reads it, never decides. The
-/// ac-15 byte gate is unaffected either way (this chrome never reaches the
+/// byte gate is unaffected either way (this chrome never reaches the
 /// headless render path).
 #[must_use]
 pub fn grammar_chrome_visible(mode: PresentationMode) -> bool {
@@ -82,7 +82,7 @@ pub fn grammar_chrome_visible(mode: PresentationMode) -> bool {
 }
 
 /// Whether a just-loaded layout needs the bottom Log dock appended
-/// (wsc_ac03's backfill decision): every pre-round saved layout lacks a
+/// (the backfill decision): every pre-round saved layout lacks a
 /// bottom dock and gets the same closed Log dock the default layout seeds;
 /// a layout that already carries one restores exactly as saved — no double
 /// dock, no forced state. Pure so the shell executes, never decides.
@@ -92,7 +92,7 @@ pub fn bottom_dock_needs_backfill(has_bottom_dock: bool) -> bool {
 }
 
 /// What the shell does with the BOTTOM dock when the presentation mode
-/// changes (wsc_ac04). Unlike the left/right rails — whose closed form is
+/// changes. Unlike the left/right rails — whose closed form is
 /// invisible, so `set_open(false)` suffices — a closed bottom dock still
 /// renders a 29px title-bar strip, which would break presentation's
 /// consumer-preview promise. It must be removed entirely, then rebuilt.
@@ -128,7 +128,7 @@ pub fn docks_open(mode: PresentationMode) -> bool {
 }
 
 /// Whether a dock that a menu-move just emptied of visible panels should
-/// close (wsc_ac07): an emptied dock's stack renders a hollow area (their
+/// close: an emptied dock's stack renders a hollow area (their
 /// TabPanel warns it is "visually empty and undroppable" once its last
 /// panel leaves), so the shell collapses it rather than leaving dead
 /// chrome. Pure so the shell executes, never decides.
@@ -147,12 +147,12 @@ pub fn layout_persistable(mode: PresentationMode) -> bool {
 }
 
 /// Initial window content size for a dashboard bounding box hosted in the
-/// docked workspace: the 0016 framed size (canvas + chrome margins) plus the
+/// docked workspace: the framed size (canvas + chrome margins) plus the
 /// default authoring dock widths, so the first boot shows the canvas
 /// unsqueezed beside the editor and sidebar.
 ///
-/// Initial size ONLY — the 0016 "window never resizes on toggle" invariant
-/// is superseded (recorded in the 0017 tabletop): once open, DockArea owns
+/// Initial size ONLY — the "window never resizes on toggle" invariant
+/// is superseded: once open, DockArea owns
 /// the layout and the user owns the window size.
 #[must_use]
 pub fn initial_window_size(dashboard_width: f64, dashboard_height: f64) -> (f64, f64) {
@@ -178,20 +178,20 @@ pub fn clamp_to_display(size: (f64, f64), display: Option<(f64, f64)>) -> (f64, 
 mod tests {
     use super::*;
 
-    /// aws_ac07: the mode → visibility mapping over both modes and all
+    /// the mode → visibility mapping over both modes and all
     /// three panel roles — authoring shows everything; presentation keeps
     /// ONLY the canvas. The docks-open bit follows the same flip.
     ///
     /// Layout invariance (the AC's other clause) rides on this mapping
     /// being a pure function of (mode, role): the PNG dump path returns
-    /// before any shell construction (aws_ac01's seam), and the
-    /// spec-derived layout takes no shell state (fww_ac03's pinned
+    /// before any shell construction (the seam), and the
+    /// spec-derived layout takes no shell state (the pinned
     /// invariance), so toggling presentation cannot affect PNG output.
     /// Purity is a property of the signature (no hidden state to probe) —
     /// the BEHAVIOURAL pin is dump_seam.rs's run-twice byte-identity test
     /// against the real binary, not a repeated-call assertion here.
     #[test]
-    fn aws_ac07_presentation_hides_authoring_panels_keeps_canvas() {
+    fn presentation_hides_authoring_panels_keeps_canvas() {
         use PanelRole::*;
         let authoring = PresentationMode::Authoring;
         let presentation = PresentationMode::Presentation;
@@ -216,39 +216,39 @@ mod tests {
         assert!(panel_visible(mode, Editor) && docks_open(mode));
     }
 
-    /// wsc_ac02 (visibility role): the Log panel follows the authoring
+    /// Visibility role: the Log panel follows the authoring
     /// chrome — visible while authoring, hidden under presentation (where
     /// the whole bottom dock is removed anyway; the mapping is belt and
     /// braces for the panel's own `visible()`).
     #[test]
-    fn wsc_ac02_log_panel_visible_in_authoring_hidden_in_presentation() {
+    fn log_panel_visible_in_authoring_hidden_in_presentation() {
         assert!(panel_visible(PresentationMode::Authoring, PanelRole::Log));
         assert!(!panel_visible(PresentationMode::Presentation, PanelRole::Log));
     }
 
-    /// kbg_ac16: the keyboard-grammar chrome (breadcrumb + focus ring) follows
+    /// the keyboard-grammar chrome (breadcrumb + focus ring) follows
     /// the authoring chrome — shown while authoring, hidden under presentation.
     #[test]
-    fn kbg_ac16_grammar_chrome_hidden_in_presentation() {
+    fn grammar_chrome_hidden_in_presentation() {
         assert!(grammar_chrome_visible(PresentationMode::Authoring), "shown while authoring");
         assert!(!grammar_chrome_visible(PresentationMode::Presentation), "hidden in presentation");
     }
 
-    /// wsc_ac03 (backfill decision): a restored layout without a bottom
+    /// Backfill decision: a restored layout without a bottom
     /// dock gets one backfilled; a layout that already carries one is left
     /// exactly as saved.
     #[test]
-    fn wsc_ac03_backfill_only_when_bottom_dock_missing() {
+    fn backfill_only_when_bottom_dock_missing() {
         assert!(bottom_dock_needs_backfill(false), "pre-round layouts backfill");
         assert!(!bottom_dock_needs_backfill(true), "saved bottom dock restores as-is");
     }
 
-    /// wsc_ac04 (presentation dock action): presentation removes the bottom
+    /// Presentation dock action: presentation removes the bottom
     /// dock (its closed form still paints a 29px strip — set_open is not
     /// enough); authoring rebuilds it from the stash. Toggle symmetry rides
     /// PresentationMode's tested machine.
     #[test]
-    fn wsc_ac04_presentation_removes_bottom_dock_authoring_rebuilds() {
+    fn presentation_removes_bottom_dock_authoring_rebuilds() {
         assert_eq!(
             bottom_dock_action(PresentationMode::Presentation),
             BottomDockAction::Remove
@@ -263,42 +263,42 @@ mod tests {
         assert_eq!(bottom_dock_action(mode), BottomDockAction::Rebuild);
     }
 
-    /// wsc_ac07 (emptied-dock decision): a menu-move that empties its
+    /// Emptied-dock decision: a menu-move that empties its
     /// source dock closes it; any remaining visible panel keeps it open.
     #[test]
-    fn wsc_ac07_emptied_source_dock_closes() {
+    fn emptied_source_dock_closes() {
         assert!(dock_closes_when_emptied(0), "hollow docks collapse");
         assert!(!dock_closes_when_emptied(1), "an occupied dock stays");
         assert!(!dock_closes_when_emptied(3));
     }
 
-    /// aws_ac03 (presentation guard): layout events persist only while
+    /// Presentation guard: layout events persist only while
     /// authoring — presentation's own dock collapses never overwrite the
     /// saved authoring arrangement.
     #[test]
-    fn aws_ac03_presentation_layout_is_not_persisted() {
+    fn presentation_layout_is_not_persisted() {
         assert!(layout_persistable(PresentationMode::Authoring));
         assert!(!layout_persistable(PresentationMode::Presentation));
     }
 
-    /// aws_ac03 (geometry): the initial window adds both default dock
-    /// widths to the 0016 framed size — initial size only, per the
-    /// superseded-invariant note in the 0017 tabletop.
+    /// Geometry: the initial window adds both default dock
+    /// widths to the framed size — initial size only, per the
+    /// superseded-invariant note above.
     #[test]
-    fn aws_ac03_initial_window_adds_dock_widths_to_framed_size() {
+    fn initial_window_adds_dock_widths_to_framed_size() {
         let (framed_w, framed_h) = framed_window_size(800.0, 600.0);
         let (w, h) = initial_window_size(800.0, 600.0);
         assert_eq!(w, framed_w + SIDEBAR_DOCK_WIDTH + EDITOR_DOCK_WIDTH);
         assert_eq!(h, framed_h);
     }
 
-    /// aws_ac03 (geometry clamp): the initial content size never exceeds
+    /// Geometry clamp: the initial content size never exceeds
     /// the display's visible bounds — an oversized dashboard clamps per
     /// axis (so `Bounds::centered` cannot push the titlebar off-screen),
     /// a fitting window is untouched, and headless (no display) passes
     /// through unclamped.
     #[test]
-    fn aws_ac03_initial_window_clamps_to_visible_display_bounds() {
+    fn initial_window_clamps_to_visible_display_bounds() {
         let laptop = Some((1512.0, 944.0));
 
         // Oversized on both axes → exactly the display size.

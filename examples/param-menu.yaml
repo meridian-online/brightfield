@@ -1,4 +1,4 @@
-# Discrete input widgets demo (card 0024 — menu / radio / checkbox).
+# Discrete input widgets demo (menu / radio / checkbox).
 #
 # One dot plot driven by three params, each bound to a different presentation
 # of `input: menu`:

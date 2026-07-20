@@ -43,7 +43,7 @@ mod tests {
     use crate::layout::ChartLayout;
 
     #[test]
-    fn gpu_ac06_grid_lines_render() {
+    fn grid_lines_render() {
         let layout = ChartLayout::new(640.0, 480.0);
         let ticks = vec![
             Tick { value: 0.0, label: "0".to_string(), position: 100.0 },

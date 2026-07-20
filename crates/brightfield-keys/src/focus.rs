@@ -1,5 +1,5 @@
-//! The focus state machine over the ComponentPath tree (ac-02) and the
-//! path↔plot(+rect) resolver — plus focus-jump path fuzzy-matching (ac-18).
+//! The focus state machine over the ComponentPath tree and the
+//! path↔plot(+rect) resolver — plus focus-jump path fuzzy-matching.
 //!
 //! Built gpui-free from the spec's layout tree: the focus tree carries the SAME
 //! plot-node path scheme as `brightfield_spec::layout::placed_plots` (and thus
@@ -273,7 +273,7 @@ impl FocusState {
 }
 
 // ---------------------------------------------------------------------------
-// Focus-jump path fuzzy-matching (ac-18)
+// Focus-jump path fuzzy-matching
 // ---------------------------------------------------------------------------
 
 /// A focus-jump candidate: a focusable path and its fuzzy score for `query`.
@@ -362,7 +362,7 @@ plot:
     }
 
     #[test]
-    fn kbg_ac02_dive_pop_sibling_land_on_expected_paths() {
+    fn dive_pop_sibling_land_on_expected_paths() {
         let spec = multi_view_spec();
         let tree = FocusTree::from_spec(&spec);
         let mut st = FocusState::new(&tree).expect("has root");
@@ -395,7 +395,7 @@ plot:
     }
 
     #[test]
-    fn kbg_ac02_dive_at_plot_and_pop_at_root_are_defined_noops() {
+    fn dive_at_plot_and_pop_at_root_are_defined_noops() {
         let spec = multi_view_spec();
         let tree = FocusTree::from_spec(&spec);
         let mut st = FocusState::new(&tree).unwrap();
@@ -412,7 +412,7 @@ plot:
     }
 
     #[test]
-    fn kbg_ac02_sibling_clamps_at_ends() {
+    fn sibling_clamps_at_ends() {
         let spec = multi_view_spec();
         let tree = FocusTree::from_spec(&spec);
         let mut st = FocusState::new(&tree).unwrap();
@@ -423,7 +423,7 @@ plot:
     }
 
     #[test]
-    fn kbg_ac02_resolver_returns_plot_and_rect_per_path() {
+    fn resolver_returns_plot_and_rect_per_path() {
         let spec = multi_view_spec();
         let tree = FocusTree::from_spec(&spec);
 
@@ -453,7 +453,7 @@ plot:
     }
 
     #[test]
-    fn kbg_ac02_single_plot_degenerate_leaves_nav_defined() {
+    fn single_plot_degenerate_leaves_nav_defined() {
         let spec = single_plot_spec();
         let tree = FocusTree::from_spec(&spec);
         let mut st = FocusState::new(&tree).expect("root plot");
@@ -467,7 +467,7 @@ plot:
     }
 
     #[test]
-    fn kbg_ac18_focus_jump_ranks_nodes_and_returns_focusable_paths() {
+    fn focus_jump_ranks_nodes_and_returns_focusable_paths() {
         let spec = multi_view_spec();
         let tree = FocusTree::from_spec(&spec);
 

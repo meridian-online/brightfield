@@ -1,4 +1,4 @@
-//! Curated corpus preflight gate (ac-16).
+//! Curated corpus preflight gate.
 //!
 //! For every curated entry:
 //!   (a) `parse_spec` succeeds without `ParseError`
@@ -7,7 +7,7 @@
 //!       `affected_specs` list names this spec's filename.
 //!
 //! The accounting discipline is name-level (affected_specs contains the
-//! filename) rather than identity-level — ac-16 specifies the spec filename
+//! filename) rather than identity-level — the spec filename
 //! is the accounting handle, which matches how the deviation registry keys
 //! against curated files.
 

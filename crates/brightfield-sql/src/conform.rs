@@ -1,4 +1,4 @@
-//! sqlparser-rs structural conformance utilities (ac-11).
+//! sqlparser-rs structural conformance utilities.
 //!
 //! Low-level parse + compare functions. `brightfield-conformance` calls these
 //! for layer-2 checks; the emitter's own tests also use them.
@@ -41,7 +41,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dfir_ac11_structural_eq_case_insensitive() {
+    fn structural_eq_case_insensitive() {
         let result = structural_eq(
             "SELECT * FROM t WHERE x > 1",
             "select * from t where x > 1",
@@ -51,7 +51,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac11_structural_eq_whitespace_tolerant() {
+    fn structural_eq_whitespace_tolerant() {
         let result = structural_eq(
             "SELECT  *  FROM  t  WHERE  x > 1",
             "SELECT * FROM t WHERE x > 1",
@@ -61,7 +61,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac11_structural_neq_different_clauses() {
+    fn structural_neq_different_clauses() {
         let result = structural_eq("SELECT * FROM t", "SELECT * FROM t WHERE TRUE").unwrap();
         assert!(
             !result,
@@ -70,7 +70,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac11_parse_error_on_invalid_sql() {
+    fn parse_error_on_invalid_sql() {
         let result = parse_and_normalise("SELCT * FORM");
         assert!(result.is_err());
     }

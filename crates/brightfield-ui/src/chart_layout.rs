@@ -36,7 +36,7 @@ pub struct ChartLayout {
     pub margin_right: f64,
     /// Bottom margin in pixels (space for x-axis labels).
     pub margin_bottom: f64,
-    /// Per-side range insets (card 0008 axis-inset round), carried identically
+    /// Per-side range insets (axis-inset round), carried identically
     /// to the render `ChartLayout` so hit-testing and brush inversion use the
     /// same inset pixels as the rendered scale range. Applied inside
     /// [`ChartLayout::plot_area`]; a cross-model agreement test pins render
@@ -92,7 +92,7 @@ impl ChartLayout {
     }
 
     /// Create a layout composing custom (title-grown) margins with range insets
-    /// — the title-aware runtime path (card 0019). Mirrors the render
+    /// — the title-aware runtime path. Mirrors the render
     /// `ChartLayout::with_margins_and_insets`: the grown margins reserve the
     /// title bands (outer budget) while the insets pull the positional range
     /// inward. Both models fed the same values keep `plot_area` == render
@@ -138,9 +138,9 @@ impl ChartLayout {
         )
     }
 
-    /// The frame rectangle — margins ONLY, with NO range insets (card 0022).
+    /// The frame rectangle — margins ONLY, with NO range insets.
     ///
-    /// `plot_area` pulls inward by the axis-inset band (card 0008 #55) so an edge
+    /// `plot_area` pulls inward by the axis-inset band (#55) so an edge
     /// mark renders whole inside the frame clip; a brush clamped to `plot_area`
     /// therefore can't reach into that band to enclose a boundary dot whose 4px
     /// disc overflows it. Clamping the move/resize/drag to `frame_area` instead
@@ -203,10 +203,10 @@ mod tests {
     use brightfield_render::layout::ChartLayout as RenderLayout;
     use kurbo::Point;
 
-    // --- gmr_ac08: Coordinate mapping pipeline ---
+    // --- Coordinate mapping pipeline ---
 
     #[test]
-    fn gmr_ac08_plot_area_with_default_margins() {
+    fn plot_area_with_default_margins() {
         let layout = ChartLayout::new(640.0, 480.0);
         let area = layout.plot_area();
         assert!((area.x0 - 40.0).abs() < f64::EPSILON);
@@ -216,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn gmr_ac08_plot_area_with_custom_margins() {
+    fn plot_area_with_custom_margins() {
         // margins: left=40, top=20, right=20, bottom=30
         let layout = ChartLayout::with_margins(640.0, 480.0, 40.0, 20.0, 20.0, 30.0);
         let area = layout.plot_area();
@@ -227,14 +227,14 @@ mod tests {
     }
 
     #[test]
-    fn gmr_ac08_plot_dimensions() {
+    fn plot_dimensions() {
         let layout = ChartLayout::with_margins(640.0, 480.0, 40.0, 20.0, 20.0, 30.0);
         assert!((layout.plot_width() - 580.0).abs() < f64::EPSILON);
         assert!((layout.plot_height() - 430.0).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn gmr_ac08_window_to_local_subtracts_origin() {
+    fn window_to_local_subtracts_origin() {
         let layout = ChartLayout::new(640.0, 480.0);
         let window_pos = Point::new(150.0, 250.0);
         let element_origin = Point::new(50.0, 100.0);
@@ -244,14 +244,14 @@ mod tests {
     }
 
     #[test]
-    fn gmr_ac08_contains_inside_plot_area() {
+    fn contains_inside_plot_area() {
         let layout = ChartLayout::new(640.0, 480.0);
         // Point inside plot area
         assert!(layout.contains(Point::new(300.0, 200.0)));
     }
 
     #[test]
-    fn gmr_ac08_contains_outside_plot_area() {
+    fn contains_outside_plot_area() {
         let layout = ChartLayout::new(640.0, 480.0);
         // Point in left margin (x=10 < margin_left=40)
         assert!(!layout.contains(Point::new(10.0, 200.0)));
@@ -260,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn gmr_ac08_local_to_normalised_inside() {
+    fn local_to_normalised_inside() {
         let layout = ChartLayout::with_margins(640.0, 480.0, 40.0, 20.0, 20.0, 30.0);
         // Midpoint of plot area: x=(40+620)/2=330, y=(20+450)/2=235
         let result = layout.local_to_normalised(Point::new(330.0, 235.0));
@@ -270,16 +270,16 @@ mod tests {
     }
 
     #[test]
-    fn gmr_ac08_local_to_normalised_outside() {
+    fn local_to_normalised_outside() {
         let layout = ChartLayout::new(640.0, 480.0);
         let result = layout.local_to_normalised(Point::new(10.0, 200.0));
         assert!(result.is_none());
     }
 
-    // --- axi_ac03: interaction parity under insets ---
+    // --- interaction parity under insets ---
 
     #[test]
-    fn axi_ac03_plot_area_pulls_inward_by_insets() {
+    fn plot_area_pulls_inward_by_insets() {
         let insets = Insets {
             left: 5.0,
             right: 7.0,
@@ -296,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn axi_ac03_cross_model_agreement() {
+    fn cross_model_agreement() {
         // The load-bearing pin: render x_range()/y_range() must equal the ui
         // plot-area-derived ranges for the same dims + insets, so the two
         // duplicated layout models can never agree-by-luck for insets. y_range
@@ -320,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn apt_ac05_cross_model_agreement_with_grown_title_margins() {
+    fn cross_model_agreement_with_grown_title_margins() {
         // The assembly glue: ONE ResolvedTitles → grow_margins → fed to BOTH
         // layout models must still agree per-side (render x_range/y_range == ui
         // plot_area) under per-side-DISTINCT grown margins + insets, so a titled
@@ -356,13 +356,13 @@ mod tests {
         assert!((ry1 - area.y0).abs() < f64::EPSILON);
     }
 
-    /// drb-ac06: `frame_area` is `plot_area` grown by the per-side insets exactly
+    /// `frame_area` is `plot_area` grown by the per-side insets exactly
     /// (margins only, no insets), so a boundary dot's 4px disc — overflowing UP
     /// into the 5px inset band — sits INSIDE frame_area and is enclosable when the
     /// per-side inset >= DOT_RADIUS. A zero-inset plot collapses frame_area onto
     /// plot_area (the conceded degenerate case, where the disc does not fit).
     #[test]
-    fn drb_ac06_frame_area_recovers_the_inset_band() {
+    fn frame_area_recovers_the_inset_band() {
         const DOT_RADIUS: f64 = 4.0; // mark.rs
         let insets = Insets {
             left: 5.0,
@@ -396,7 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn axi_ac03_inversion_round_trips_at_inset_ends() {
+    fn inversion_round_trips_at_inset_ends() {
         // A pixel at the inset range end inverts to the domain end — the brush
         // edge lands on the domain bound, not a sliver past it.
         use brightfield_render::scale::Scale;
@@ -432,7 +432,7 @@ mod tests {
     }
 
     #[test]
-    fn apt_ac06_titled_plot_area_inverts_on_the_grown_range() {
+    fn titled_plot_area_inverts_on_the_grown_range() {
         // The review HIGH, closed at the geometry level: with title-grown
         // margins the ui plot_area IS the render scale range, so a brush edge /
         // click at a plot-area bound inverts to the domain bound — hit-testing
@@ -467,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    fn gmr_ac08_inverse_scale_transform() {
+    fn inverse_scale_transform() {
         // Given a linear scale mapping [0, 100] → [40, 620] (plot area x range),
         // verify inverse transform produces correct data values.
         use brightfield_render::scale::Scale;

@@ -1,4 +1,4 @@
-//! Registry-integrity gate (ac-14).
+//! Registry-integrity gate.
 //!
 //! Bidirectional check:
 //!   (a) every `suppressed(DEV-ID)` reference in a curated `<name>.expected.yaml`

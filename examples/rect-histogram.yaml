@@ -1,4 +1,4 @@
-# Numeric-edged histogram (card 0008 — rectY mark).
+# Numeric-edged histogram (rectY mark).
 #
 # rectY draws one rectangle per row spanning an explicit x-interval [x1, x2]
 # from a zero y-baseline — a histogram with numeric (not categorical) bin edges,

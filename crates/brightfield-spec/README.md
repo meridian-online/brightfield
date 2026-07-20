@@ -36,8 +36,8 @@ version mismatches) surface as `ParseWarning`.
 
 - `Unimplemented { name, surface, status }` — a known vocabulary name whose
   implementation status is `Planned` or `Unimplemented`. The parser emits an
-  AST stub carrying the same `ImplStatus`, so downstream preflight (card
-  0002 `SupportReport`) can walk the tree and list gaps.
+  AST stub carrying the same `ImplStatus`, so downstream preflight (a
+  `SupportReport`) can walk the tree and list gaps.
 - `UnknownOption { path, key }` — an unknown key on a head that accepts
   unknown keys leniently (see [Option Z](#option-z-vocabulary-contract)).
 - `VersionMismatch { declared, supported }` — `meta.version` does not share
@@ -109,18 +109,17 @@ The v1 parser is deliberately narrow:
   syntactic errors; spans on semantic errors (unknown names, schema
   violations) are `None` in v1.
 - **No preflight support report generator.** `SupportReport` that walks a
-  parsed AST and enumerates unimplemented vocabulary is card 0002's
-  responsibility.
+  parsed AST and enumerates unimplemented vocabulary is out of scope here.
 
 ## Tests
 
 - Unit tests in each module, named `dfspec_acNN_<scenario>` keyed to the
   spec's acceptance criteria.
-- `tests/corpus_totality.rs` — ac-12 gate. Every YAML in
+- `tests/corpus_totality.rs` — corpus gate. Every YAML in
   `vendor/mosaic-specs/yaml/` must parse without `ParseError`.
-- `tests/crossfilter.rs` — ac-13 gate. Structural assertions on the
+- `tests/crossfilter.rs` — crossfilter gate. Structural assertions on the
   canonical crossfilter spec.
-- `tests/diagnostics.rs` — ac-14. Six malformed-spec cases each asserting
+- `tests/diagnostics.rs` — Six malformed-spec cases each asserting
   the expected `ParseError` variant.
 
 ## Vendor corpus

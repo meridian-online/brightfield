@@ -1,6 +1,6 @@
 //! The typed Rust AST for a parsed Mosaic 0.24.x spec.
 //!
-//! ## Structure vs enum split (per ac-02)
+//! ## Structure vs enum split
 //!
 //! - **Structs**: `Spec`, `Meta`, `Config`, `PlotDefaults`, `DataSource`,
 //!   `ParamNode`, `SelectionNode`, `Mark`, `Interactor`, `Input`, `PlotNode`,
@@ -58,7 +58,7 @@ pub struct Meta {
 /// `config:` — a newtype around an open bag. Spec constraint #4e narrowed
 /// `deny_unknown_fields` to `Meta` only; `config:` carries Mosaic's
 /// configuration library (e.g. `extensions: spatial`), not a
-/// brightfield-owned schema. The wrapping struct keeps AC-02's "Config is a
+/// brightfield-owned schema. The wrapping struct keeps the "Config is a
 /// struct" contract while the inner `IndexMap` admits the open shape.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Config(pub IndexMap<String, SpecValue>);
@@ -400,7 +400,7 @@ impl ExpressionNode {
 }
 
 /// A self-aggregating channel transform — the typed form of a channel value
-/// like `fill: {count:}` or `fill: {avg: score_value}` (card 0008 hexbin /
+/// like `fill: {count:}` or `fill: {avg: score_value}` (hexbin /
 /// self-aggregating cell). Mosaic marks such as hexbin carry the aggregate on
 /// the channel itself; the lowerer turns it into a `GROUP BY` with the matching
 /// SQL aggregate. Distinct from a plain column/literal/param channel — parsing
@@ -531,12 +531,12 @@ use self::{ComponentKind as _, InputKind as _, InteractorKind as _, LegendChanne
 mod tests {
     use super::*;
 
-    /// ac-02 verification: `Component` is a sealed enum with no `Other`
+    /// verification: `Component` is a sealed enum with no `Other`
     /// variant. Construction of each named variant compiles; no catch-all is
     /// available. The match below is exhaustive — adding a new variant
     /// without naming it here fails compilation.
     #[test]
-    fn dfspec_ac02_component_enum_is_sealed() {
+    fn component_enum_is_sealed() {
         fn discriminator(c: &Component) -> &'static str {
             match c {
                 Component::Plot(_) => "plot",
@@ -557,11 +557,11 @@ mod tests {
         assert_eq!(discriminator(&plot), "plot");
     }
 
-    /// ac-02 verification: Mark / Interactor / Input are *structs* keyed by
+    /// verification: Mark / Interactor / Input are *structs* keyed by
     /// their respective `*Kind` enums — constructable with named fields here
     /// which compiles only if they are structs, not enums.
     #[test]
-    fn dfspec_ac02_mark_interactor_input_are_structs() {
+    fn mark_interactor_input_are_structs() {
         let _m = Mark {
             kind: MarkKind::Line,
             status: ImplStatus::Unimplemented,
@@ -584,7 +584,7 @@ mod tests {
     }
 
     #[test]
-    fn dfspec_ac02_paramref_to_wire() {
+    fn paramref_to_wire() {
         assert_eq!(ParamRef::new("brush").to_wire(), "$brush");
     }
 }

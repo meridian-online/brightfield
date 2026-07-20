@@ -1,4 +1,4 @@
-//! The command registry (ac-01): every verb as data, the single source of truth
+//! The command registry: every verb as data, the single source of truth
 //! for the keymap-as-data vec, the palette corpus, and the help sheet.
 //!
 //! Framework-free by construction — no gpui types cross this boundary. The GPUI
@@ -36,7 +36,7 @@ pub enum BindingContext {
     Global,
 }
 
-/// Recorded provenance for a bound key (ac-08): the scores that DEFEND the key
+/// Recorded provenance for a bound key: the scores that DEFEND the key
 /// choice, traced to `keymap-research.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scores {
@@ -63,7 +63,7 @@ pub enum Drives {
     PaletteMeta,
     /// The transient colour-scheme preview.
     ColourPreview,
-    /// A structural spec edit through the command log (card 0023): change-mark-
+    /// A structural spec edit through the command log: change-mark-
     /// type / add-mark / set-channel / remove-mark / undo. NOT `g`-broadcast
     /// eligible (that is runtime-dispatch only, `scope::g_eligible`).
     SpecEdit,
@@ -139,7 +139,7 @@ pub struct VerbEntry {
     /// Framework-free keystroke descriptors; EMPTY for reserved (palette-only) verbs.
     pub binding_specs: Vec<BindingSpec>,
     /// The altitudes at which the verb is meaningful (`no mark in v1`). The SAME
-    /// set governs bare-key resolution and palette candidacy (ac-04).
+    /// set governs bare-key resolution and palette candidacy.
     pub scope_applicability: Vec<Altitude>,
     /// What the verb drives.
     pub drives: Drives,
@@ -154,7 +154,7 @@ pub struct VerbEntry {
     pub reserved_reason: Option<ReservedReason>,
     /// One-line description; part of the palette fuzzy corpus alongside the longname.
     pub help: &'static str,
-    /// Provenance for a bound key (ac-08). Present for every bound key; `None` for reserved.
+    /// Provenance for a bound key. Present for every bound key; `None` for reserved.
     pub scores: Option<Scores>,
 }
 
@@ -206,7 +206,7 @@ pub fn registry() -> Vec<VerbEntry> {
     let proto = |k: &'static str| BindingSpec { keystrokes: k, context: BindingContext::Protocol };
 
     vec![
-        // ---- navigation (ac-10) ----
+        // ---- navigation ----
         VerbEntry {
             longname: "dive-in",
             tier: CommandTier::View,
@@ -273,7 +273,7 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Fuzzy-jump focus to a component by name",
             scores: Some(Scores { frequency: 3, mnemonic: 4, convention: 5, motor_note: "/ = search/jump (vim, less)" }),
         },
-        // ---- palette + help (ac-12, ac-19) ----
+        // ---- palette + help ----
         VerbEntry {
             longname: "open-palette",
             tier: CommandTier::View,
@@ -296,7 +296,7 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Show the keyboard help sheet",
             scores: Some(Scores { frequency: 2, mnemonic: 4, convention: 5, motor_note: "? = help (near-universal convention)" }),
         },
-        // ---- runtime verbs (ac-11) ----
+        // ---- runtime verbs ----
         VerbEntry {
             longname: "clear-selection",
             tier: CommandTier::View,
@@ -319,7 +319,7 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Reload the spec from disk (guards unsaved editor edits)",
             scores: Some(Scores { frequency: 2, mnemonic: 4, convention: 4, motor_note: "cmd-r = reload (browser); bare r NOT bound (dirty-guard)" }),
         },
-        // ---- presentation (ac-16) + save: shipped fixed points, sourced here so
+        // ---- presentation + save: shipped fixed points, sourced here so
         //      the registry is the single binding source ----
         VerbEntry {
             longname: "toggle-presentation",
@@ -330,7 +330,7 @@ pub fn registry() -> Vec<VerbEntry> {
             status: VerbStatus::Built,
             reserved_reason: None,
             help: "Toggle presentation mode (hide authoring chrome)",
-            scores: Some(Scores { frequency: 2, mnemonic: 3, convention: 3, motor_note: "p = present (shipped fixed point, card 0016)" }),
+            scores: Some(Scores { frequency: 2, mnemonic: 3, convention: 3, motor_note: "p = present (shipped fixed point)" }),
         },
         VerbEntry {
             longname: "save-spec",
@@ -343,7 +343,7 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Save the spec (editor)",
             scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 5, motor_note: "cmd-s = save (universal; shipped, editor-scoped)" }),
         },
-        // ---- colour preview (ac-13): transient, view-scoped ----
+        // ---- colour preview: transient, view-scoped ----
         VerbEntry {
             longname: "cycle-colour-scheme",
             tier: CommandTier::View,
@@ -360,9 +360,9 @@ pub fn registry() -> Vec<VerbEntry> {
         reserved("cross-filter-all", vec![Dashboard], ReservedReason::NeedsKeyboardTarget, "Broadcast a cross-filter to every view (needs a keyboard target)"),
         reserved("toggle-point-select", vec![View], ReservedReason::NeedsKeyboardTarget, "Toggle a point selection (needs a keyboard target)"),
         reserved("set-param", DASHBOARD_AND_VIEW.to_vec(), ReservedReason::NeedsKeyboardTarget, "Set a parameter's value (needs a keyboard target)"),
-        // ---- command-log structural edits (card 0023): m/a/e/d at View, undo
+        // ---- command-log structural edits: m/a/e/d at View, undo
         //      at Dashboard+View. Flipped Reserved -> Built — the SpecEdit spine
-        //      + Session::reload_spec seam now back them (clg-ac03). ----
+        //      + Session::reload_spec seam now back them. ----
         VerbEntry {
             longname: "change-mark-type",
             tier: CommandTier::Data,
@@ -546,12 +546,12 @@ fn reserved(
 }
 
 // ---------------------------------------------------------------------------
-// Producers (ac-01): each takes the registry as its sole verb-metadata input
+// Producers: each takes the registry as its sole verb-metadata input
 // ---------------------------------------------------------------------------
 
 /// One bound key in the keymap-as-data vec: the projection the GPUI adapter
 /// consumes to build a `gpui::KeyBinding`, and the input to the
-/// dispatch-resolution table (ac-07).
+/// dispatch-resolution table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundKey {
     /// The verb this key runs.
@@ -562,7 +562,7 @@ pub struct BoundKey {
     pub context: BindingContext,
 }
 
-/// The keymap-as-data vec (ac-01): the SINGLE binding source. The adapter maps
+/// The keymap-as-data vec: the SINGLE binding source. The adapter maps
 /// `longname` → action and `context` → predicate to build `gpui::KeyBinding`s.
 #[must_use]
 pub fn keymap_bindings(reg: &[VerbEntry]) -> Vec<BoundKey> {
@@ -577,7 +577,7 @@ pub fn keymap_bindings(reg: &[VerbEntry]) -> Vec<BoundKey> {
         .collect()
 }
 
-/// One palette row derived from the registry (ac-01 / ac-05).
+/// One palette row derived from the registry.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PaletteEntry {
     /// The verb.
@@ -594,7 +594,7 @@ pub struct PaletteEntry {
     pub scope_applicability: Vec<Altitude>,
 }
 
-/// The full palette corpus (ac-01): one row per verb, reserved included. The
+/// The full palette corpus: one row per verb, reserved included. The
 /// scope filtering / fuzzy ranking is [`crate::palette::palette_filter`].
 #[must_use]
 pub fn palette_corpus(reg: &[VerbEntry]) -> Vec<PaletteEntry> {
@@ -610,7 +610,7 @@ pub fn palette_corpus(reg: &[VerbEntry]) -> Vec<PaletteEntry> {
         .collect()
 }
 
-/// One row of the help sheet (ac-01 / ac-19), grouped by scope in the overlay.
+/// One row of the help sheet, grouped by scope in the overlay.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HelpRow {
     /// The verb.
@@ -625,7 +625,7 @@ pub struct HelpRow {
     pub reserved_reason: Option<ReservedReason>,
 }
 
-/// The help sheet (ac-01): every verb with its keys, help, scope, and (if
+/// The help sheet: every verb with its keys, help, scope, and (if
 /// reserved) its bucket.
 #[must_use]
 pub fn help_sheet(reg: &[VerbEntry]) -> Vec<HelpRow> {
@@ -652,7 +652,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac01_longnames_unique_and_kebab_case() {
+    fn longnames_unique_and_kebab_case() {
         let reg = registry();
         let mut seen = std::collections::HashSet::new();
         for v in &reg {
@@ -662,7 +662,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac01_reserved_buckets_present_with_reasons() {
+    fn reserved_buckets_present_with_reasons() {
         let reg = registry();
         // The two named reserved vocab sets, exactly.
         let mut needs_log: Vec<&str> = reg
@@ -677,11 +677,11 @@ mod tests {
             .collect();
         needs_log.sort_unstable();
         needs_target.sort_unstable();
-        // Card 0023 flipped the 5 command-log verbs Reserved -> Built, so the
+        // The command log flipped the 5 verbs Reserved -> Built, so the
         // NeedsCommandLog bucket is now EMPTY (deliberate update; the enum
         // variant + its reason() surface are retained). NeedsKeyboardTarget is
         // unchanged.
-        assert!(needs_log.is_empty(), "NeedsCommandLog bucket is now empty (card 0023): {needs_log:?}");
+        assert!(needs_log.is_empty(), "NeedsCommandLog bucket is now empty: {needs_log:?}");
         assert_eq!(needs_target, ["cross-filter-all", "filter-view", "set-param", "toggle-point-select"]);
         // Every reserved verb is unbound and unscored; every bound verb is scored.
         for v in &reg {
@@ -698,7 +698,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac01_longname_snapshot_is_stable() {
+    fn longname_snapshot_is_stable() {
         // A committed snapshot of longnames: any add/remove/rename is a deliberate
         // change that must update this list (stability guard).
         let got: Vec<&str> = registry().iter().map(|v| v.longname).collect();
@@ -795,7 +795,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac01_producers_take_only_the_registry() {
+    fn producers_take_only_the_registry() {
         // The three producers each derive purely from the registry.
         let reg = registry();
         let keys = keymap_bindings(&reg);
@@ -813,7 +813,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac01_cycle_colour_scheme_is_view_only_preview() {
+    fn cycle_colour_scheme_is_view_only_preview() {
         let reg = registry();
         let c = reg.iter().find(|v| v.longname == "cycle-colour-scheme").unwrap();
         assert_eq!(c.status, VerbStatus::Preview);

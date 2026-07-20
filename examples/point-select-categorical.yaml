@@ -1,4 +1,4 @@
-# Categorical point selection (card 0006, type-aware predicates): clicking a bar
+# Categorical point selection (type-aware predicates): clicking a bar
 # resolves the clicked category from the band scale and dispatches `region = '…'`
 # — a quoted string literal — cross-filtering the right plot to that category.
 # The canonical Mosaic "click a bar to filter" interaction.

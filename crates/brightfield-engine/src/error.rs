@@ -43,7 +43,7 @@ pub enum EngineError {
         cause: EmitError,
     },
 
-    /// A distinct-values options query failed (card 0024 input widgets) —
+    /// A distinct-values options query failed (input widgets) —
     /// a bad column name, a vanished source, or a column type with no
     /// [`brightfield_spec::ast::SpecValue`] mapping. Per-input isolated:
     /// the caller warns and skips the one widget, never the dashboard.

@@ -310,7 +310,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn gomb_ac02_kde_1d_uniform_density() {
+    fn kde_1d_uniform_density() {
         // Single sample at bin 5 — peak should be at bin 5, symmetric.
         let bins: Vec<u32> = (0..11)
             .map(|i| if i == 5 { 1 } else { 0 })
@@ -332,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn gomb_ac02_kde_1d_zero_bandwidth_safe() {
+    fn kde_1d_zero_bandwidth_safe() {
         let bins = vec![0u32, 1, 0];
         let density = kde_1d(&bins, 0.0, 1.0);
         assert_eq!(density, vec![0.0, 0.0, 0.0]);
@@ -396,7 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn gomb_ac02_kde_2d_separable_peak() {
+    fn kde_2d_separable_peak() {
         // 5x5 grid, single sample at (2, 2); peak should be at (2, 2).
         let mut bins = vec![0u32; 25];
         bins[2 * 5 + 2] = 1;
@@ -417,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn gomb_ac02_silverman_1d_known_value() {
+    fn silverman_1d_known_value() {
         // n=100 samples from N(0,1)-like uniform sequence — sigma ≈ 1.
         // Silverman = 1.06 * sigma * n^(-1/5).
         let samples: Vec<f64> = (0..100).map(|i| (i as f64) / 99.0 - 0.5).collect();
@@ -431,14 +431,14 @@ mod tests {
     }
 
     #[test]
-    fn gomb_ac02_silverman_1d_degenerate_returns_zero() {
+    fn silverman_1d_degenerate_returns_zero() {
         assert_eq!(silverman_1d(&[]), 0.0);
         assert_eq!(silverman_1d(&[1.0]), 0.0);
         assert_eq!(silverman_1d(&[5.0, 5.0, 5.0, 5.0]), 0.0);
     }
 
     #[test]
-    fn gomb_ac02_silverman_2d_per_axis_independent() {
+    fn silverman_2d_per_axis_independent() {
         // x with wider spread than y → h_x > h_y.
         let xs: Vec<f64> = (0..50).map(|i| i as f64).collect();
         let ys: Vec<f64> = (0..50).map(|i| (i as f64) * 0.1).collect();

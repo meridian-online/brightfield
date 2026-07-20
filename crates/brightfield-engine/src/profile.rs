@@ -1,4 +1,4 @@
-//! Per-source DuckDB column profiles (card 0017 — sidebar profiling).
+//! Per-source DuckDB column profiles (sidebar profiling).
 //!
 //! Pure data types + framework-free helpers for [`Session::profile_sources`]
 //! (implemented in `lib.rs`, where the private `conn`/`spec` fields live). No

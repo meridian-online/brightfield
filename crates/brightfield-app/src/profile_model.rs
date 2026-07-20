@@ -1,4 +1,4 @@
-//! Sidebar profile formatting (card 0017 — sidebar profiling) —
+//! Sidebar profile formatting (sidebar profiling) —
 //! framework-free.
 //!
 //! The engine computes the raw per-source profiles ([`SourceProfile`], its
@@ -138,10 +138,10 @@ mod tests {
         }
     }
 
-    /// sbp_ac02 (thousands + row-count label): counts group with commas; the
+    /// Thousands + row-count label: counts group with commas; the
     /// header label is singular at 1 and plural (incl. 0) otherwise.
     #[test]
-    fn sbp_ac02_thousands_and_row_count_label() {
+    fn thousands_and_row_count_label() {
         assert_eq!(thousands(0), "0");
         assert_eq!(thousands(42), "42");
         assert_eq!(thousands(1_000), "1,000");
@@ -153,10 +153,10 @@ mod tests {
         assert_eq!(row_count_label(231_083), "231,083 rows");
     }
 
-    /// sbp_ac02 (trimmed bounds): floats lose trailing zeros; ints and
+    /// Trimmed bounds: floats lose trailing zeros; ints and
     /// temporal/string bounds pass through untouched.
     #[test]
-    fn sbp_ac02_trim_number_matrix() {
+    fn trim_number_matrix() {
         assert_eq!(trim_number("100.000"), "100");
         assert_eq!(trim_number("1.50"), "1.5");
         assert_eq!(trim_number("2.500"), "2.5"); // plain decimal still trims
@@ -172,10 +172,10 @@ mod tests {
         assert_eq!(trim_number("2020-01-15 10:30:00"), "2020-01-15 10:30:00");
     }
 
-    /// sbp_ac02 (stat line matrix): ints/floats/dates show a trimmed range;
+    /// Stat line matrix: ints/floats/dates show a trimmed range;
     /// strings and all-null columns show only distinct/nulls.
     #[test]
-    fn sbp_ac02_stat_line_by_type() {
+    fn stat_line_by_type() {
         // Integer column with a range.
         let ints = col("delay", "INTEGER", 231_080, 3, 1_400, Some("-99"), Some("1439"));
         assert_eq!(stat_line(&ints), "1,400 distinct · 3 nulls · -99 – 1439");
@@ -208,10 +208,10 @@ mod tests {
         assert_eq!(stat_line(&allnull), "0 distinct · 500 nulls");
     }
 
-    /// sbp_ac02 (cap boundary): at or under the cap shows everything with no
+    /// Cap boundary: at or under the cap shows everything with no
     /// tail; over the cap shows exactly the cap plus a "(+N more)" tail.
     #[test]
-    fn sbp_ac02_column_cap_boundary() {
+    fn column_cap_boundary() {
         assert_eq!(column_cap(0), (0, None));
         assert_eq!(column_cap(COLUMN_DISPLAY_CAP), (COLUMN_DISPLAY_CAP, None));
         let (shown, tail) = column_cap(COLUMN_DISPLAY_CAP + 7);
@@ -219,10 +219,10 @@ mod tests {
         assert_eq!(tail.as_deref(), Some("(+7 more)"));
     }
 
-    /// sbp_ac02 (fallback rows + warning): the muted fallback strings and the
+    /// Fallback rows + warning: the muted fallback strings and the
     /// log warning carry the source name / reason verbatim.
     #[test]
-    fn sbp_ac02_fallback_rows_and_warning() {
+    fn fallback_rows_and_warning() {
         assert_eq!(UNSUPPORTED_ROW, "(attached database — not profiled)");
         assert_eq!(
             unavailable_row("IO Error: No files found"),

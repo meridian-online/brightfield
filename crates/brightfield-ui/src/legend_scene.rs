@@ -1,4 +1,4 @@
-//! Standalone-legend scene construction (card 0016) — gpui-free.
+//! Standalone-legend scene construction — gpui-free.
 //!
 //! Builds the vello scene a hosted [`crate::legend_element::LegendElement`]
 //! paints, by REUSING the composite path's positioned legend renderers
@@ -27,9 +27,9 @@ use brightfield_render::scale::Scale;
 /// `None` for a scale no legend renderer draws (non-colour scales).
 ///
 /// `selected` is the set of currently-active categories of a bound categorical
-/// legend (card 0006 selected-state, extended to a multi-select union by card
-/// 0020): each member entry draws at full strength while the rest dim. `hovered`
-/// is the entry index under the pointer (the card 0020 pre-click hover
+/// legend (selected-state, extended to a multi-select union): each member
+/// entry draws at full strength while the rest dim. `hovered`
+/// is the entry index under the pointer (the pre-click hover
 /// affordance), lightened distinctly. An empty set + `None` hover — no
 /// selection, an unbound legend, or a Sequential legend — draws every entry at
 /// full strength, byte-identical to the plain renderer.
@@ -93,12 +93,12 @@ mod tests {
         }
     }
 
-    /// fww_ac04: scene construction is a plain function of the scale — the
+    /// scene construction is a plain function of the scale — the
     /// categorical scale yields swatch content, the sequential scale yields
     /// the gradient bar, and the two scenes differ (swatches vs bar). This
     /// module imports no gpui, so the construction compiles gpui-free.
     #[test]
-    fn fww_ac04_legend_scenes_swatches_vs_gradient_bar() {
+    fn legend_scenes_swatches_vs_gradient_bar() {
         let (swatches, swatch_size) =
             build_legend_scene(&categorical(), &BTreeSet::new(), None)
                 .expect("categorical scale builds a scene");

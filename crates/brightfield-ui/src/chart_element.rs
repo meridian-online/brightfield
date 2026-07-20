@@ -50,7 +50,7 @@ pub fn paint_chart(
     let _bounds = surface.present(size);
     draw_overlay(interaction, surface.overlay());
 
-    // Position-dependent cursor over the persisted selection (card 0022): the
+    // Position-dependent cursor over the persisted selection: the
     // grab region was tracked by the host's mouse-move listener; re-pick the
     // cursor from it each paint. No cursor over `Outside` or when nothing is
     // selected (`overlay_cursor` returns `None`).
@@ -111,7 +111,7 @@ fn norm_surface_rect(start: Point, current: Point) -> SurfaceRect {
     SurfaceRect::new(x0, y0, w, h)
 }
 
-/// Map a grab region to its surface cursor (card 0022, drb-ac08): an open hand
+/// Map a grab region to its surface cursor: an open hand
 /// over the interior (closed while dragging), a horizontal/vertical resize on an
 /// edge, a diagonal resize on a corner. `Outside` sets no cursor (the plot
 /// default). The host maps [`SurfaceCursor`] to its own cursor type.
@@ -181,7 +181,7 @@ pub fn route_pointer_move(input: &SurfaceInput, state: &mut ChartState, origin: 
 
 /// The interaction to commit on release. A move/resize that ends in `Dragging`
 /// is synthesised into a pixel-space `Brushing` from its NEW corners so the moved
-/// range re-dispatches (the card-0022 defence); every other state passes through
+/// range re-dispatches (the drag defence); every other state passes through
 /// unchanged. The host feeds the result into the cross-filter coordinator BEFORE
 /// `ChartState::pointer_up` clears the gesture.
 pub fn redispatch_target(state: &ChartState) -> InteractionState {
@@ -196,13 +196,13 @@ mod tests {
     use crate::interaction::{BrushCorner, BrushEdge, BrushRegion, InteractionState};
     use kurbo::Point;
 
-    /// drb-ac08 (mapping): the region→cursor mapping is a pure fn — open hand over
+    /// Mapping: the region→cursor mapping is a pure fn — open hand over
     /// the interior (closed while dragging), horizontal/vertical resize on edges,
     /// diagonal resize on corners, no cursor over Outside. (The host maps each
     /// `SurfaceCursor` to its own glyph — pinned in `gpui_canvas`; the live glyph
     /// and its change-on-motion are Hugh's in-app eyeball.)
     #[test]
-    fn drb_ac08_region_cursor_mapping() {
+    fn region_cursor_mapping() {
         assert_eq!(overlay_cursor(BrushRegion::Interior, false), Some(SurfaceCursor::Grab));
         assert_eq!(overlay_cursor(BrushRegion::Interior, true), Some(SurfaceCursor::Grabbing));
         assert_eq!(

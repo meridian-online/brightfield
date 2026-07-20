@@ -1,4 +1,4 @@
-//! The Esc precedence ladder (ac-06): a pure decision over the current surface
+//! The Esc precedence ladder: a pure decision over the current surface
 //! state. Strict order — dismiss an open overlay > cancel a pending prefix >
 //! clear the focused view's selection. It does NOT auto-pop the focus surface
 //! (pop is `h` / `q`).
@@ -56,7 +56,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac06_ladder_resolves_in_strict_order() {
+    fn ladder_resolves_in_strict_order() {
         // Overlay wins over everything.
         assert_eq!(esc_action(state(true, true, true)), EscAction::DismissOverlay);
         // Then pending prefix.
@@ -68,7 +68,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac06_overlay_beats_selection_and_pending_beats_selection() {
+    fn overlay_beats_selection_and_pending_beats_selection() {
         assert_eq!(esc_action(state(true, false, true)), EscAction::DismissOverlay);
         assert_eq!(esc_action(state(false, true, false)), EscAction::CancelPending);
     }

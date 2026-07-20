@@ -1,4 +1,4 @@
-# Heatmap mark (card 0008 density marks): the KDE-smoothed sibling of raster.
+# Heatmap mark (density marks): the KDE-smoothed sibling of raster.
 # The same two-blob cloud is binned into the same 20x20 grid, but instead of
 # colouring only the occupied bins by raw count, the renderer smooths the
 # histogram (Gaussian KDE, Silverman bandwidth) and ramps EVERY cell by its

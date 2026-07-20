@@ -76,7 +76,7 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn ifb_ac08_tooltip_from_row() {
+    fn tooltip_from_row() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("x", DataType::Float64, false),
             Field::new("y", DataType::Float64, false),
@@ -100,7 +100,7 @@ mod tests {
     }
 
     #[test]
-    fn ifb_ac08_tooltip_out_of_bounds() {
+    fn tooltip_out_of_bounds() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("x", DataType::Float64, false),
         ]));
@@ -114,7 +114,7 @@ mod tests {
     }
 
     #[test]
-    fn ifb_ac08_tooltip_field_names_match() {
+    fn tooltip_field_names_match() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("timestamp", DataType::Float64, false),
             Field::new("price", DataType::Float64, false),

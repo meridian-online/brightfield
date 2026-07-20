@@ -86,8 +86,7 @@ fn swatch_legend_size(colour_scale: &Scale) -> Option<(f64, f64)> {
 ///
 /// Pure geometry mirroring [`render_swatch_legend_at`]'s layout from the
 /// same private constants, so the hit-boxes cannot drift from the drawing.
-/// Empty for a non-`Colour` (or empty) scale. Card 0009 (legend
-/// click-to-filter), lcf ac-02.
+/// Empty for a non-`Colour` (or empty) scale.
 #[must_use]
 pub fn swatch_entry_rects(box_x: f64, box_y: f64, colour_scale: &Scale) -> Vec<Rect> {
     let categories = match colour_scale {
@@ -166,14 +165,14 @@ pub fn render_colour_legend_at(
 
 /// Alpha multiplier applied to every legend entry that is NOT the selected one,
 /// when a selection is active — dims the others so the active category reads as
-/// highlighted (card 0006, cfr_ac06). Applies to the swatch AND its label only;
+/// highlighted. Applies to the swatch AND its label only;
 /// the panel, border, entry rects, and sizes are untouched.
 const UNSELECTED_ENTRY_ALPHA: f32 = 0.35;
 
 /// Fraction by which a HOVERED legend entry is lightened toward white — the
-/// pre-click hover affordance for a bound legend (card 0020). Distinct from
+/// pre-click hover affordance for a bound legend. Distinct from
 /// both full strength and the [`UNSELECTED_ENTRY_ALPHA`] dim, and colour-only,
-/// so the panel/entry geometry (and the cfr_ac06 path_data invariant) is
+/// so the panel/entry geometry (and the path_data invariant) is
 /// untouched.
 const HOVER_LIGHTEN: f32 = 0.4;
 
@@ -190,7 +189,7 @@ fn hover_emphasis(colour: Color) -> Color {
 }
 
 /// Render a colour legend at `(box_x, box_y)` with an optional selected entry
-/// (card 0006 selected-state). `selected` is the index of the categorical entry
+/// (selected-state). `selected` is the index of the categorical entry
 /// drawn at full strength while every OTHER swatch and label dims to
 /// [`UNSELECTED_ENTRY_ALPHA`]; `None` draws every entry at full strength —
 /// byte-identical to the pre-selection output, since the `None` path multiplies
@@ -268,7 +267,7 @@ fn render_swatch_legend_at(
         let y = legend_y_start + i as f64 * ENTRY_SPACING;
 
         // Emphasis precedence, colour/alpha only (no geometry change): the
-        // HOVERED entry brightens toward white (the card 0020 pre-click
+        // HOVERED entry brightens toward white (the pre-click
         // affordance); otherwise, when a selection is active, every NON-member
         // dims to UNSELECTED_ENTRY_ALPHA; otherwise full strength. With no hover
         // and an empty selection nothing changes — byte-identical to the plain
@@ -400,7 +399,7 @@ mod tests {
     use crate::scale::Scale;
 
     #[test]
-    fn gpu_ac07_colour_legend_4_categories() {
+    fn colour_legend_4_categories() {
         let layout = ChartLayout::new(800.0, 480.0);
         let colour_scale = Scale::Colour {
             categories: vec![
@@ -428,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_ac07_legend_skips_non_colour_scale() {
+    fn legend_skips_non_colour_scale() {
         let layout = ChartLayout::new(800.0, 480.0);
         let linear_scale = Scale::Linear {
             domain_min: 0.0,
@@ -502,7 +501,7 @@ mod tests {
         assert!(colour_legend_size(&one).is_some());
     }
 
-    // --- scs_ac06: continuous gradient-bar legend ---
+    // --- continuous gradient-bar legend ---
 
     fn sequential_scale() -> Scale {
         Scale::Sequential {
@@ -517,7 +516,7 @@ mod tests {
     }
 
     #[test]
-    fn scs_ac06_sequential_legend_draws_bar_and_dispatches() {
+    fn sequential_legend_draws_bar_and_dispatches() {
         // The bar (sampled quads + border) produces scene content.
         let mut scene = Scene::new();
         render_sequential_legend_at(&mut scene, 40.0, 40.0, &sequential_scale());
@@ -560,14 +559,14 @@ mod tests {
         assert!(scene3.encoding().path_tags.len() > 0, "dispatch draws the bar");
     }
 
-    // --- lcf_ac02 (card 0009): swatch entry hit-geometry ---
+    // --- swatch entry hit-geometry ---
 
-    /// lcf_ac02: `swatch_entry_rects` yields one rect per category at exactly
+    /// `swatch_entry_rects` yields one rect per category at exactly
     /// the positions the layout constants place the drawn swatches — row i at
     /// padding + i*ENTRY_SPACING, SWATCH_SIZE tall, spanning swatch + gap +
     /// label extent — and is empty for Sequential/Band scales.
     #[test]
-    fn lcf_ac02_swatch_entry_rects_match_rendered_layout() {
+    fn swatch_entry_rects_match_rendered_layout() {
         let scale = colour_scale_3(); // categories "a", "bb", "ccc"
         let (box_x, box_y) = (640.0, 40.0);
         let rects = swatch_entry_rects(box_x, box_y, &scale);
@@ -603,15 +602,15 @@ mod tests {
         assert!(swatch_entry_rects(0.0, 0.0, &band).is_empty());
     }
 
-    // --- cfr_ac06 (card 0006): selected-state rendering ---
+    // --- selected-state rendering ---
 
-    /// cfr_ac06: a bound categorical legend with an active selection draws the
+    /// a bound categorical legend with an active selection draws the
     /// selected entry at full strength and dims every other swatch and label —
     /// changing the encoded COLOURS but not the geometry. The `None` path is
     /// checked against independently-computed packed colours (not against the
     /// delegating `render_colour_legend_at`, which would be circular).
     #[test]
-    fn cfr_ac06_selected_state_dims_others_without_moving_geometry() {
+    fn selected_state_dims_others_without_moving_geometry() {
         let scale = colour_scale_3(); // "a", "bb", "ccc"
 
         let mut none = Scene::new();
@@ -689,7 +688,7 @@ mod tests {
             "panel / swatch / entry-rect geometry is unchanged under selection"
         );
 
-        // Hover hot-state (card 0020): hovering entry 0 with NO selection active
+        // Hover hot-state: hovering entry 0 with NO selection active
         // encodes a NEW emphasis colour — in neither the full-strength nor the
         // 0.35-dim sets — and changes colour only, not geometry.
         let mut hover = Scene::new();

@@ -1,4 +1,4 @@
-# Raster mark (card 0008 mark breadth): a binned 2D COUNT heatmap. Points are
+# Raster mark (mark breadth): a binned 2D COUNT heatmap. Points are
 # binned into a grid (reusing the 2D density binning); each occupied cell is a
 # filled rectangle coloured by how many points fall in it through a sequential
 # colour ramp. With no `colorScheme`, the default is viridis (dark purple → bright

@@ -1,4 +1,4 @@
-# Reactive-param demo (card 0014 — param-effect routing).
+# Reactive-param demo (param-effect routing).
 #
 # The `threshold` param filters the scatter via `filter: "x > $threshold"`.
 # Changing the param — through `propagate_param`, or a slider once the input

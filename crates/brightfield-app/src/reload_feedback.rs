@@ -1,4 +1,4 @@
-//! Reload-feedback routing (card 0017, aws_ac05) — framework-free.
+//! Reload-feedback routing — framework-free.
 //!
 //! Maps the hot-reload watcher's EXISTING outcomes onto an in-workspace
 //! notification decision. The watcher's control flow is untouched: each
@@ -77,10 +77,10 @@ pub fn clears_errors(outcome: &ReloadOutcome<'_>) -> bool {
 mod tests {
     use super::*;
 
-    /// aws_ac05 (reject-parse): a failed pipeline surfaces as an error
+    /// Reject-parse: a failed pipeline surfaces as an error
     /// notification carrying the pipeline's own message.
     #[test]
-    fn aws_ac05_parse_failure_notifies_with_the_error() {
+    fn parse_failure_notifies_with_the_error() {
         let outcome = ReloadOutcome::PipelineFailed("parse error: mapping values are not allowed");
         let (severity, message) = reload_notification(&outcome).expect("rejections surface");
         assert_eq!(severity, Severity::Error);
@@ -91,11 +91,11 @@ mod tests {
         assert!(message.contains("last good chart"), "explains the kept chart");
     }
 
-    /// aws_ac05 (reject-chrome): the chrome-divergence gate's "restart to
+    /// Reject-chrome: the chrome-divergence gate's "restart to
     /// apply" surfaces as a warning naming the diverged facet; a structural
     /// layout change warns the same way.
     #[test]
-    fn aws_ac05_chrome_and_layout_divergence_notify_restart_to_apply() {
+    fn chrome_and_layout_divergence_notify_restart_to_apply() {
         let (severity, message) =
             reload_notification(&ReloadOutcome::ChromeDiverged("dashboard title"))
                 .expect("rejections surface");
@@ -109,27 +109,27 @@ mod tests {
         assert!(message.contains("restart to apply"), "{message}");
     }
 
-    /// aws_ac05 (success stays quiet): an applied reload produces NO
+    /// Success stays quiet: an applied reload produces NO
     /// notification — the repainted canvas is the feedback.
     #[test]
-    fn aws_ac05_successful_reload_stays_quiet() {
+    fn successful_reload_stays_quiet() {
         assert_eq!(reload_notification(&ReloadOutcome::Applied), None);
     }
 
-    /// aws_ac05 correction 2026-07-08: error notifications persist until
+    /// correction 2026-07-08: error notifications persist until
     /// the author resolves them (a transient toast was missed in product
     /// use); restart-to-apply warnings stay transient.
     #[test]
-    fn aws_ac05_errors_are_sticky_warnings_transient() {
+    fn errors_are_sticky_warnings_transient() {
         assert!(sticky(Severity::Error));
         assert!(!sticky(Severity::Warning));
     }
 
-    /// aws_ac05 correction 2026-07-08: recovery is self-cleaning — only a
+    /// correction 2026-07-08: recovery is self-cleaning — only a
     /// successful reload clears the outstanding error; rejections replace
     /// it (one live toast), and warnings never touch it.
     #[test]
-    fn aws_ac05_only_a_successful_reload_clears_the_error() {
+    fn only_a_successful_reload_clears_the_error() {
         assert!(clears_errors(&ReloadOutcome::Applied));
         assert!(!clears_errors(&ReloadOutcome::PipelineFailed("parse error")));
         assert!(!clears_errors(&ReloadOutcome::LayoutChanged));

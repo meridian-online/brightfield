@@ -1,4 +1,4 @@
-//! LegendElement — GPUI Element that paints one standalone legend (card 0016).
+//! LegendElement — GPUI Element that paints one standalone legend.
 //!
 //! The scene half (`legend_scene::build_legend_scene`) stays gpui-free; this
 //! file is the window layer, mirroring `chart_element.rs`'s raster path:
@@ -10,8 +10,8 @@
 //! composite shows, instead of clipping it at the buffer edge.
 //!
 //! **Display-only by default:** a legend without a selection binding has no
-//! mouse listeners, no coordinator, no hitbox — exactly as card 0016 shipped.
-//! A legend BOUND `as:` a selection (card 0009, click-to-filter) additionally
+//! mouse listeners, no coordinator, no hitbox.
+//! A legend BOUND `as:` a selection (click-to-filter) additionally
 //! registers a hitbox and a mouse-up hit-test: the click maps to a swatch
 //! entry via [`swatch_entry_rects`] and commits through
 //! [`CrossfilterCoordinator::commit_legend_click`]. Sequential (gradient)
@@ -54,16 +54,16 @@ pub struct PlacedLegend {
     pub scale: Scale,
     /// The legend's binding index into the coordinator's legend bindings plus
     /// the shared coordinator, present only for a legend bound `as:` a
-    /// selection (card 0009). `None` = display-only, exactly as 0016 shipped.
+    /// selection. `None` = display-only.
     pub binding: Option<(usize, Rc<RefCell<CrossfilterCoordinator>>)>,
     /// Whether the current mouse press originated inside this legend's panel
-    /// — the press-origin half of the click decision (card 0009 F6). Lives on
+    /// — the press-origin half of the click decision. Lives on
     /// the placement (not the per-frame element) so it survives element
     /// recreation between the press and the release; a drag that starts on a
     /// plot and releases over the legend must not dispatch.
     pressed: Rc<Cell<bool>>,
     /// Which swatch entry the pointer is over, `None` when off-panel or between
-    /// entries — the card 0020 pre-click hover hot-state. Lives on the placement
+    /// entries — the pre-click hover hot-state. Lives on the placement
     /// (not the per-frame element) so it survives element recreation, exactly
     /// like `pressed`; only ever set for a bound categorical legend.
     hovered_index: Rc<Cell<Option<usize>>>,
@@ -90,7 +90,7 @@ impl PlacedLegend {
     }
 
     /// Bind this legend to the shared coordinator as its legend binding
-    /// `index` (card 0009): a swatch click on the hosted element then commits
+    /// `index`: a swatch click on the hosted element then commits
     /// through [`CrossfilterCoordinator::commit_legend_click`]. Only
     /// meaningful for a categorical [`Scale::Colour`] legend — the element
     /// arms its hit-test for bound Colour legends exclusively.
@@ -114,7 +114,7 @@ impl PlacedLegend {
 /// (see [`legend_raster_geometry`]), but the paint offsets the image by the
 /// same pad so the panel INTERIOR stays exactly at the element's layout
 /// bounds — the pad cancels, and element-local coordinates map straight onto
-/// entry-rect space at origin (0, 0) with no offset. Card 0009, lcf ac-05.
+/// entry-rect space at origin (0, 0) with no offset.
 #[must_use]
 pub fn swatch_hit_category(local: Point, scale: &Scale) -> Option<String> {
     let categories = match scale {
@@ -126,7 +126,7 @@ pub fn swatch_hit_category(local: Point, scale: &Scale) -> Option<String> {
 
 /// The entry INDEX a pointer at `local` (element-local logical px) lands on —
 /// the `.position(contains)` pre-map of [`swatch_hit_category`], exposed so the
-/// card 0020 hover tracker and the click hit-test resolve the SAME entry (they
+/// hover tracker and the click hit-test resolve the SAME entry (they
 /// can never target different swatches). `None` between/outside entries or for a
 /// non-Colour scale.
 #[must_use]
@@ -139,7 +139,7 @@ pub fn swatch_hit_index(local: Point, scale: &Scale) -> Option<usize> {
         .position(|r| r.contains(local))
 }
 
-/// The press/release decision for a bound legend's click (card 0009 F6):
+/// The press/release decision for a bound legend's click:
 /// consume the recorded press-origin flag — so a stale press can never leak
 /// into a later gesture — and commit only when the press originated inside
 /// the panel AND the release lands inside it. A drag that starts on a plot
@@ -169,7 +169,7 @@ fn legend_raster_geometry(width: f64, height: f64, scale_factor: f64) -> (u32, u
 
 /// A cached device-resolution rasterisation of a legend scene (mirrors
 /// `chart_state::BaseRaster`). The selected category SET and the hovered entry
-/// are part of the cache key (card 0006 selected-state + card 0020 hover): a
+/// are part of the cache key (selected-state + hover): a
 /// bound categorical legend re-rasterises when the active set or the hovered
 /// swatch changes, but a static (unbound / Sequential) legend keeps an empty set
 /// and `None` hover, so it never re-runs Vello for a gesture elsewhere.
@@ -183,7 +183,7 @@ struct LegendRaster {
 
 /// Whether a cached legend raster is still valid for the requested device size,
 /// selected category SET, AND hovered entry. A pure predicate so the cache key
-/// is unit-testable without a window (card 0006 cfr_ac06, card 0020).
+/// is unit-testable without a window.
 fn raster_cache_hit(
     cached_dims: (u32, u32),
     cached_selected: &BTreeSet<String>,
@@ -198,7 +198,7 @@ fn raster_cache_hit(
 
 /// Whether a legend arms its click / cursor / hover affordances: it must be
 /// BOUND (`binding_present`) AND categorical (`Scale::Colour`). Sequential and
-/// unbound legends stay display-only (lcf ac-05 / card 0020 affordance). A pure
+/// unbound legends stay display-only. A pure
 /// predicate so the gate is unit-testable without constructing an element.
 fn legend_is_clickable(binding_present: bool, scale: &Scale) -> bool {
     binding_present && matches!(scale, Scale::Colour { .. })
@@ -214,11 +214,11 @@ pub struct LegendElement {
     /// Stable, per-legend element id (position in the hosted legend list —
     /// distinct from the coordinator binding index below).
     id: ElementId,
-    /// Coordinator + binding index for a bound legend (card 0009); `None`
+    /// Coordinator + binding index for a bound legend; `None`
     /// keeps the element display-only.
     binding: Option<(usize, Rc<RefCell<CrossfilterCoordinator>>)>,
     /// Shared press-origin flag (see [`PlacedLegend::pressed`]) — set on
-    /// mouse-down, consumed by the mouse-up decision (card 0009 F6).
+    /// mouse-down, consumed by the mouse-up decision.
     pressed: Rc<Cell<bool>>,
     /// Shared hover hot-state (see [`PlacedLegend::hovered_index`]) — set by the
     /// mouse-move listener, read each paint to highlight the hovered swatch.
@@ -247,7 +247,7 @@ impl LegendElement {
 
     /// Whether this element arms the click hit-test: bound AND categorical.
     /// Sequential (gradient) and unbound legends stay display-only — no
-    /// hitbox, no listeners (lcf ac-05).
+    /// hitbox, no listeners.
     fn is_clickable(&self) -> bool {
         legend_is_clickable(self.binding.is_some(), &self.scale)
     }
@@ -302,7 +302,7 @@ impl Element for LegendElement {
         _cx: &mut App,
     ) -> Self::PrepaintState {
         // A bound categorical legend registers a hitbox so the mouse-up
-        // listener can scope clicks to this element (card 0009). Unbound or
+        // listener can scope clicks to this element. Unbound or
         // Sequential legends stay display-only: no hitbox, no mouse events.
         self.is_clickable()
             .then(|| window.insert_hitbox(bounds, HitboxBehavior::Normal))
@@ -319,7 +319,7 @@ impl Element for LegendElement {
         _cx: &mut App,
     ) {
         // Bound categorical legend: register the press-origin recorder and
-        // the mouse-up hit-test (card 0009). GPUI clears per-frame listeners
+        // the mouse-up hit-test. GPUI clears per-frame listeners
         // each frame, so both are re-registered every paint (the
         // chart_element.rs pattern). The hitbox scopes the gesture to this
         // element; the element origin maps the window-space release to
@@ -361,7 +361,7 @@ impl Element for LegendElement {
                                 Scale::Colour { categories, .. } => categories,
                                 _ => &[],
                             };
-                            // Shift-click accumulates an OR'd union (card 0020);
+                            // Shift-click accumulates an OR'd union;
                             // a plain click is the single-select replace/toggle.
                             let committed = coordinator.borrow_mut().commit_legend_click(
                                 legend_index,
@@ -377,14 +377,14 @@ impl Element for LegendElement {
                     }
                 });
 
-                // Pointer cursor over a bound legend (card 0020): the first
+                // Pointer cursor over a bound legend: the first
                 // CursorStyle in the app (reused later by the draggable-brush
                 // card). Reuses the whole-legend hitbox, so it shows over the
                 // panel INCLUDING inter-row gaps — a "this legend is live"
                 // signal. Paint-phase only (set_cursor_style debug_asserts it).
                 window.set_cursor_style(CursorStyle::PointingHand, hitbox);
 
-                // Hover hot-state tracker (card 0020): the swatch under the
+                // Hover hot-state tracker: the swatch under the
                 // pointer, resolved via the SAME hit geometry as the click, and
                 // refreshed ONLY on a change so a mouse-move is not a repaint
                 // storm. Reset to None when the pointer leaves the panel.
@@ -419,7 +419,7 @@ impl Element for LegendElement {
         }
 
         // The active category for a bound categorical legend, read from the
-        // engine each paint (card 0006 selected-state) so the swatch dimming
+        // engine each paint (selected-state) so the swatch dimming
         // tracks the contributor slot — no new invalidation plumbing: the same
         // gesture that changes the slot already triggers this repaint, and the
         // borrow is free because commits release theirs before the refresh. An
@@ -432,7 +432,7 @@ impl Element for LegendElement {
                 .collect(),
             _ => BTreeSet::new(),
         };
-        // The swatch under the pointer (card 0020 hover), set by the move
+        // The swatch under the pointer (hover), set by the move
         // listener above; `None` for an unbound or Sequential legend (no
         // listener ever sets it).
         let hovered: Option<usize> = self.hovered_index.get();
@@ -539,14 +539,14 @@ mod tests {
         items.iter().map(|s| s.to_string()).collect()
     }
 
-    /// cfr_ac06 + lif-ac09 (cache key): a bound categorical legend's raster
+    /// Cache key: a bound categorical legend's raster
     /// cache keys on the selected category SET and the hovered entry as well as
     /// the device dims, so any gesture that changes the slot, the union, or the
     /// pointer swatch repaints on the refresh it already triggers. Same dims +
     /// same set + same hover hits; a different set, a widened union, or a new
     /// hover misses; a static legend (empty set, `None` hover) always hits.
     #[test]
-    fn cfr_ac06_raster_cache_keys_on_dims_selected_and_hover() {
+    fn raster_cache_keys_on_dims_selected_and_hover() {
         let g = set(&["gentoo"]);
         let a = set(&["adelie"]);
         let ga = set(&["adelie", "gentoo"]);
@@ -564,19 +564,19 @@ mod tests {
         assert!(!raster_cache_hit((100, 40), &empty, None, 100, 40, &g, None));
         // Different dims → miss regardless of selection.
         assert!(!raster_cache_hit((100, 40), &g, None, 200, 40, &g, None));
-        // Same dims + same selection but a NEW hovered swatch → miss: card 0020
+        // Same dims + same selection but a NEW hovered swatch → miss: the
         // hover is part of the key, so a hover repaints without a slot change.
         assert!(!raster_cache_hit((100, 40), &g, None, 100, 40, &g, Some(1)));
         // Same hover both sides → hit.
         assert!(raster_cache_hit((100, 40), &g, Some(1), 100, 40, &g, Some(1)));
     }
 
-    /// lif-ac01 (affordance gate): the cursor / hover affordance arms ONLY for a
+    /// Affordance gate: the cursor / hover affordance arms ONLY for a
     /// bound categorical legend — an unbound colour key and a bound Sequential
     /// (gradient) legend both stay inert, so a static key never invites a click
     /// it cannot honour.
     #[test]
-    fn lif_ac01_only_a_bound_colour_legend_is_clickable() {
+    fn only_a_bound_colour_legend_is_clickable() {
         let colour = colour_scale();
         let sequential = Scale::Sequential {
             domain_min: 0.0,
@@ -589,13 +589,13 @@ mod tests {
         assert!(!legend_is_clickable(false, &sequential), "unbound sequential → inert");
     }
 
-    /// lif-ac02 (hover geometry): the hover tracker resolves the SAME entry as
+    /// Hover geometry: the hover tracker resolves the SAME entry as
     /// the click hit-test — `swatch_hit_index` is the index pre-map of
     /// `swatch_hit_category`, so a hover can never highlight a different swatch
     /// than a click would select. Centres map to 0,1,2; a row gap and a
     /// Sequential scale resolve to no entry.
     #[test]
-    fn lif_ac02_swatch_hit_index_shares_click_geometry() {
+    fn swatch_hit_index_shares_click_geometry() {
         let scale = colour_scale();
         let rects = swatch_entry_rects(0.0, 0.0, &scale);
         for (i, rect) in rects.iter().enumerate() {
@@ -619,12 +619,12 @@ mod tests {
         assert_eq!(swatch_hit_index(Point::new(10.0, 10.0), &sequential), None);
     }
 
-    /// fww_ac04 (post-review, sub-pixel border parity): the raster buffer is
+    /// Post-review, sub-pixel border parity: the raster buffer is
     /// padded by the panel border's 0.25 logical-px overhang, ceiled to whole
     /// device pixels per side, so the window legend paints the full stroke
     /// the PNG composite shows.
     #[test]
-    fn fww_ac04_raster_buffer_pads_for_border_overhang() {
+    fn raster_buffer_pads_for_border_overhang() {
         // sf = 1: a 0.25px overhang ceils to a 1-device-px pad per side.
         assert_eq!(legend_raster_geometry(120.0, 24.0, 1.0), (122, 26, 1));
         // sf = 2 (Retina): 0.5 device px of overhang still ceils to 1.
@@ -636,7 +636,7 @@ mod tests {
         assert_eq!(legend_raster_geometry(120.5, 24.5, 2.0), (243, 51, 1));
     }
 
-    // --- lcf_ac05 (card 0009): element-local click → swatch category ---
+    // --- element-local click → swatch category ---
 
     fn colour_scale() -> Scale {
         Scale::Colour {
@@ -649,14 +649,14 @@ mod tests {
         }
     }
 
-    /// lcf_ac05: the hit-test maps element-local coordinates straight onto
+    /// the hit-test maps element-local coordinates straight onto
     /// the entry rects at origin — the panel interior sits exactly at the
     /// element's layout bounds (the raster's border-pad inflation cancels in
     /// paint), so a click at each entry's centre resolves its category, a
     /// click in the panel padding between/around entries resolves None, and
     /// a Sequential scale never resolves (no discrete entries).
     #[test]
-    fn lcf_ac05_swatch_hit_category_maps_local_click_to_entry() {
+    fn swatch_hit_category_maps_local_click_to_entry() {
         let scale = colour_scale();
         let rects = swatch_entry_rects(0.0, 0.0, &scale);
         assert_eq!(rects.len(), 3);
@@ -684,7 +684,7 @@ mod tests {
         assert_eq!(swatch_hit_category(Point::new(10.0, 10.0), &sequential), None);
     }
 
-    /// Card 0009 F6: the click decision requires the press to have
+    /// the click decision requires the press to have
     /// originated inside the panel AND the release to land inside it — all
     /// four press-in/out × release-in/out combinations — and always consumes
     /// the press flag so no stale press leaks into a later gesture (a brush

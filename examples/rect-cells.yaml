@@ -1,4 +1,4 @@
-# Explicit 2-D rectangles (card 0008 — bare `rect` mark).
+# Explicit 2-D rectangles (bare `rect` mark).
 #
 # Bare `rect` takes an explicit x-extent [x1, x2] AND y-extent [y1, y2] per row —
 # the substrate for binned 2-D charts (heatmap cells, treemaps). Both axes are

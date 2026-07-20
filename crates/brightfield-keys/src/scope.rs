@@ -1,5 +1,5 @@
-//! The scope resolver (ac-03) and the shared bare/palette applicability
-//! predicate (ac-04).
+//! The scope resolver and the shared bare/palette applicability
+//! predicate.
 //!
 //! Selection-first: a bare verb acts on the focused node; `g` broadcasts to the
 //! single root and is legal only for runtime verbs. Off-altitude and reserved
@@ -71,7 +71,7 @@ fn g_eligible(verb: &VerbEntry) -> bool {
     verb.drives == Drives::RuntimeDispatch
 }
 
-/// The shared applicability predicate (ac-04): whether a BARE key for `verb`
+/// The shared applicability predicate: whether a BARE key for `verb`
 /// fires at `altitude`. This is the exact same predicate the palette uses to
 /// decide which verbs it *enables* at that altitude — so a bare key and the
 /// palette agree, and an off-altitude verb rejects identically either way.
@@ -133,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac03_bare_clear_selection_at_a_view_resolves_the_focused_plot() {
+    fn bare_clear_selection_at_a_view_resolves_the_focused_plot() {
         let focused = ComponentPath("root/hconcat[1]".into());
         let root = ComponentPath("root".into());
         let res = resolve_scope(&verb("clear-selection"), ctx(&focused, Altitude::View, &root), false);
@@ -141,7 +141,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac03_g_resolves_to_the_single_root_for_a_runtime_verb() {
+    fn g_resolves_to_the_single_root_for_a_runtime_verb() {
         let focused = ComponentPath("root/hconcat[1]".into());
         let root = ComponentPath("root".into());
         // g is tested even though no g-key is wired in v1.
@@ -150,20 +150,20 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac03_g_on_a_structural_or_non_runtime_verb_is_rejected() {
+    fn g_on_a_structural_or_non_runtime_verb_is_rejected() {
         let focused = ComponentPath("root/hconcat[0]".into());
         let root = ComponentPath("root".into());
         // Presentation is not a runtime verb.
         let res = resolve_scope(&verb("toggle-presentation"), ctx(&focused, Altitude::View, &root), true);
         assert!(matches!(res, ScopeResolution::Rejected(RejectReason::GNotAllowed { .. })));
         // A structural (SpecEdit) verb under g is likewise rejected — it is
-        // Built (card 0023) but not runtime-dispatch, so not g-broadcast eligible.
+        // Built but not runtime-dispatch, so not g-broadcast eligible.
         let res2 = resolve_scope(&verb("change-mark-type"), ctx(&focused, Altitude::View, &root), true);
         assert!(matches!(res2, ScopeResolution::Rejected(RejectReason::GNotAllowed { .. })));
     }
 
     #[test]
-    fn kbg_ac03_bare_verb_off_its_altitude_is_rejected_with_reason() {
+    fn bare_verb_off_its_altitude_is_rejected_with_reason() {
         let focused = ComponentPath("root".into());
         let root = ComponentPath("root".into());
         // cycle-colour-scheme is view-only; at the dashboard altitude it rejects.
@@ -177,19 +177,19 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac03_bare_reserved_verb_rejects_with_its_bucket() {
+    fn bare_reserved_verb_rejects_with_its_bucket() {
         let focused = ComponentPath("root/hconcat[0]".into());
         let root = ComponentPath("root".into());
         let res = resolve_scope(&verb("filter-view"), ctx(&focused, Altitude::View, &root), false);
         assert_eq!(res, ScopeResolution::Rejected(RejectReason::Reserved(ReservedReason::NeedsKeyboardTarget)));
-        // The command-log verbs (undo etc.) are now Built (card 0023), so the
+        // The command-log verbs (undo etc.) are now Built, so the
         // second still-reserved bucket case uses another NeedsKeyboardTarget verb.
         let res2 = resolve_scope(&verb("set-param"), ctx(&focused, Altitude::View, &root), false);
         assert_eq!(res2, ScopeResolution::Rejected(RejectReason::Reserved(ReservedReason::NeedsKeyboardTarget)));
     }
 
     #[test]
-    fn kbg_ac04_bare_applicability_matches_altitude_gate_and_excludes_reserved() {
+    fn bare_applicability_matches_altitude_gate_and_excludes_reserved() {
         let reg = registry();
         for v in &reg {
             for altitude in [Altitude::Dashboard, Altitude::View] {

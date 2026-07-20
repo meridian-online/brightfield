@@ -1,4 +1,4 @@
-# Point selection via click (card 0006 — the toggleX gesture).
+# Point selection via click (the toggleX gesture).
 #
 # Two linked scatter plots over one table. The LEFT plot carries a `toggleX`
 # point interactor writing `$pick`; the RIGHT plot is filtered by it. CLICK a

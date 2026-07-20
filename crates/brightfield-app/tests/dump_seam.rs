@@ -1,4 +1,4 @@
-//! aws_ac01 (card 0017): the `BRIGHTFIELD_DUMP_PNG` path returns before any
+//! the `BRIGHTFIELD_DUMP_PNG` path returns before any
 //! workspace/dock construction — proven behaviourally against the REAL
 //! binary. The dump arm of `main` returns before the window path is
 //! reachable; if shell/dock construction leaked into it, the GPUI run loop
@@ -24,13 +24,13 @@ plot:
 "#;
 
 fn temp_dir() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("bf-aws-ac01-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("bf-dump-seam-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
     dir
 }
 
 #[test]
-fn aws_ac01_dump_mode_exits_before_workspace_construction() {
+fn dump_mode_exits_before_workspace_construction() {
     let dir = temp_dir();
     let spec_path = dir.join("seam.yaml");
     fs::write(&spec_path, SPEC).unwrap();
@@ -55,7 +55,7 @@ fn aws_ac01_dump_mode_exits_before_workspace_construction() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// aws_ac07 / aws_ac01 (determinism pin): the dump binary run TWICE on the
+/// Determinism pin: the dump binary run TWICE on the
 /// same spec writes byte-identical PNGs — the behavioural form of "no
 /// shell, presentation, or other ambient state can move a pixel in the
 /// dump path". This replaces a vacuous repeated-call purity probe on the
@@ -64,15 +64,15 @@ fn aws_ac01_dump_mode_exits_before_workspace_construction() {
 /// multi-plot example, deliberately NON-raster: the raster family's
 /// GROUP BY row order is not byte-stable run-to-run on this branch (the
 /// determinism chore lands separately).
-/// diw_ac12 (card 0024): the new widget example — a derived menu, a literal
+/// the new widget example — a derived menu, a literal
 /// radio, and a checkbox around a param-filtered dot plot — dumps a
-/// NON-EMPTY PNG and is byte-identical across two runs (the aws_ac07
+/// NON-EMPTY PNG and is byte-identical across two runs (the
 /// determinism shape). The resting twins (render_menu/render_radio/
 /// render_checkbox) ride the dump path, so this also pins that widget ink
 /// cannot wobble run-to-run.
 #[test]
-fn diw_ac12_param_menu_example_dump_deterministic() {
-    let dir = std::env::temp_dir().join(format!("bf-diw-ac12-{}", std::process::id()));
+fn param_menu_example_dump_deterministic() {
+    let dir = std::env::temp_dir().join(format!("bf-param-menu-dump-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
     let spec_path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/param-menu.yaml");
@@ -108,10 +108,10 @@ fn diw_ac12_param_menu_example_dump_deterministic() {
 }
 
 #[test]
-fn aws_ac07_dump_run_twice_is_byte_identical() {
-    // Own directory (not `temp_dir()`): the aws_ac01 test removes its
+fn dump_run_twice_is_byte_identical() {
+    // Own directory (not `temp_dir()`): the test removes its
     // directory on completion, and the two tests run in parallel.
-    let dir = std::env::temp_dir().join(format!("bf-aws-ac07-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("bf-dump-determinism-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
     let spec_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/dashboard.yaml");
     assert!(spec_path.exists(), "example spec present at {spec_path:?}");
@@ -145,22 +145,22 @@ fn aws_ac07_dump_run_twice_is_byte_identical() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// pds-ac08 (cross-branch pin): the Mosaic gallery output is byte-identical to
+/// Cross-branch pin: the Mosaic gallery output is byte-identical to
 /// a COMMITTED golden baseline — not just self-consistent run-to-run. The
-/// aws_ac07/diw_ac12 tests above compare the branch binary to ITSELF, so a
+/// tests above compare the branch binary to ITSELF, so a
 /// change that deterministically moved Mosaic pixels would still pass them;
 /// this test fails the moment `dashboard.yaml` renders a single byte
 /// differently from the checked-in `tests/goldens/dashboard.png` (captured on
 /// main's Mosaic path, which this environment reproduces bit-for-bit — the same
-/// determinism aws_ac07 already relies on). dashboard.yaml is the non-raster
-/// spec aws_ac07 uses precisely because it is deterministic.
+/// determinism the dump seam already relies on). dashboard.yaml is the
+/// non-raster spec used precisely because it is deterministic.
 #[test]
-fn aws_ac08_dashboard_matches_committed_golden() {
+fn dashboard_matches_committed_golden() {
     let golden = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/goldens/dashboard.png");
     assert!(golden.exists(), "committed golden present at {golden:?}");
     let spec_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/dashboard.yaml");
 
-    let dir = std::env::temp_dir().join(format!("bf-aws-ac08-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("bf-dashboard-golden-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
     let png_path = dir.join("dashboard.png");
     let _ = fs::remove_file(&png_path);

@@ -171,7 +171,7 @@ impl ChannelMap {
                     ValueOrParamRef::Param(param_ref) => {
                         // A positional channel bound to a `$param` is projected
                         // into the query as `$param AS "<param>"` by the lowerer
-                        // (card 0014, Decision 2), sourced from param_state at
+                        // (Decision 2), sourced from param_state at
                         // emit time. Map it to that param-named column so the
                         // renderer reads the interpolated value — and so a
                         // param change flows through to the render. Non-positional
@@ -234,13 +234,13 @@ mod tests {
         assert!(!cm.has(Channel::Y));
     }
 
-    /// pefr ac-04 (card 0014): a POSITIONAL channel bound to a `$param` maps to
+    /// a POSITIONAL channel bound to a `$param` maps to
     /// the param-named column (the lowerer projects `$param AS "<param>"`), so
     /// the renderer reads the interpolated value. A NON-positional channel
     /// (fill/stroke/size/text) bound to a param is still skipped (the deferred
-    /// render-only case). Supersedes the old msv_ac06 skip-everything behaviour.
+    /// render-only case). Supersedes the old skip-everything behaviour.
     #[test]
-    fn pefr_ac04_from_mark_maps_positional_param_channel() {
+    fn from_mark_maps_positional_param_channel() {
         use brightfield_spec::ast::{Mark, ParamRef, SpecValue, ValueOrParamRef};
         use brightfield_spec::vocab::{ImplStatus, MarkKind};
 

@@ -1,4 +1,4 @@
-//! AST → IR lowering (ac-03, ac-05).
+//! AST → IR lowering.
 //!
 //! The `MarkLower` trait is the extension point for per-mark lowering. V1
 //! ships no concrete implementations — every `MarkKind` returns
@@ -75,8 +75,8 @@ impl MarkLower for SimpleLowerer {
     }
 }
 
-/// Lowerer for the geo mark — projected GeoJSON basemap / choropleth (card
-/// 0008, last mark).
+/// Lowerer for the geo mark — projected GeoJSON basemap / choropleth
+/// (last mark).
 ///
 /// Geo is NOT an aggregation mark: this is a near-clone of [`SimpleLowerer`]
 /// (`SELECT *`, [`apply_data_filter`], [`project_param_channels`]) with ONE
@@ -160,7 +160,7 @@ fn source_is_spatial(ctx: &LowerCtx<'_>, source: &str) -> bool {
 }
 
 /// Positional-channel option keys whose `$param` binding is projected into the
-/// query (card 0014, Decision 2). Kept in sync with brightfield-render's
+/// query (Decision 2). Kept in sync with brightfield-render's
 /// positional `Channel` set (x/y/x1/y1/x2/y2); non-positional channels
 /// (fill/stroke/size/text) bound to a param are the deferred render-only case.
 const POSITIONAL_CHANNEL_KEYS: &[&str] = &["x", "y", "x1", "y1", "x2", "y2"];
@@ -197,7 +197,7 @@ fn project_param_channels(mark: &Mark, base: QueryPlan) -> QueryPlan {
 }
 
 /// If `extras` carries a `filter` (`data: { from, filter: "..." }`), wrap `plan`
-/// in a WHERE (card 0014, Decision 2). A no-op when there is no filter.
+/// in a WHERE (Decision 2). A no-op when there is no filter.
 ///
 /// A filter that references a `$param` parses to an `Expression` (rendered to raw
 /// SQL text with the `$name` preserved for emit-time interpolation, so the param
@@ -345,7 +345,7 @@ impl MarkLower for RegressionLowerer {
 ///
 /// The lowerer reads `bins` (or `thresholds`) from the mark's option bag.
 /// Default is 100 to match Mosaic's reference implementation (spec 2026-04-28
-/// statistical-marks ac-07 implementation note). The bin width is computed
+/// statistical-marks implementation note). The bin width is computed
 /// from the column extent at render time — for the SQL pass we use a fixed
 /// bucket count and let DuckDB compute extents via subqueries.
 pub struct DensityLowerer {
@@ -502,7 +502,7 @@ fn build_density_2d(table: &str, x_col: &str, y_col: &str, bins: i64) -> QueryPl
 /// BIN count. The shield strips `thresholds` from the option bag before
 /// delegating, so the collision can never reach the emitted SQL — `bins`
 /// stays available to size the grid. This is a registration-layer concern
-/// only; the parser is untouched (card 0008, density marks).
+/// only; the parser is untouched (density marks).
 pub struct ContourAttrShield {
     inner: DensityLowerer,
 }
@@ -927,7 +927,7 @@ pub fn default_lowerers() -> Vec<(MarkKind, Box<dyn MarkLower>)> {
         ),
         // Heatmap reuses the same 2D density binning; the renderer smooths the
         // reconstructed grid (kde_2d) and ramps EVERY cell — raster's smoothed
-        // sibling. Zero new SQL (card 0008, density marks).
+        // sibling. Zero new SQL (density marks).
         (
             MarkKind::Heatmap,
             Box::new(DensityLowerer {
@@ -945,7 +945,7 @@ pub fn default_lowerers() -> Vec<(MarkKind, Box<dyn MarkLower>)> {
             }),
         ),
         // Hexbin — Mosaic's flagship at-scale mark, pixel-space hex binning
-        // fully in SQL (card 0008 hexbin follow-up).
+        // fully in SQL (hexbin follow-up).
         (MarkKind::Hexbin, Box::new(HexbinLowerer)),
         // Hexgrid — decorative dataless mesh; emits a singleton row.
         (MarkKind::Hexgrid, Box::new(HexgridLowerer)),
@@ -1040,7 +1040,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac03_default_lowerer_returns_unsupported() {
+    fn default_lowerer_returns_unsupported() {
         let mark = make_mark(MarkKind::Line);
         let ctx = make_ctx();
         let result = DefaultLowerer.lower(&mark, &ctx);
@@ -1052,7 +1052,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac03_find_lowerer_falls_back_to_default() {
+    fn find_lowerer_falls_back_to_default() {
         let registry = default_lowerers();
         // Voronoi is not registered — should fall back to DefaultLowerer.
         // (Geo now has a GeoLowerer; voronoi is the always-unimplemented stand-in.)
@@ -1063,7 +1063,7 @@ mod tests {
         assert!(matches!(result, Err(EmitError::UnsupportedMark { .. })));
     }
 
-    // --- geo-ac03 tests: GeoLowerer ---
+    // --- tests: GeoLowerer ---
 
     /// A LowerCtx whose `data_sources` holds one named source (leaked for test
     /// convenience, like `make_ctx`).
@@ -1100,7 +1100,7 @@ mod tests {
     }
 
     #[test]
-    fn geo_ac03_spatial_source_wraps_geometry_in_st_asgeojson() {
+    fn spatial_source_wraps_geometry_in_st_asgeojson() {
         use brightfield_spec::ast::{DataSource, DataSourceKind};
         // A `type: spatial` source (both kind + extras carry the type, as the
         // parser records it) → the geom column is wrapped in ST_AsGeoJSON.
@@ -1123,7 +1123,7 @@ mod tests {
     }
 
     #[test]
-    fn geo_ac03_spatial_source_honours_geometry_channel() {
+    fn spatial_source_honours_geometry_channel() {
         use brightfield_spec::ast::{DataSource, DataSourceKind};
         let ds = DataSource {
             kind: DataSourceKind::Typed("spatial".to_string()),
@@ -1151,7 +1151,7 @@ mod tests {
     }
 
     #[test]
-    fn geo_ac03_inline_custom_geometry_column_renamed_to_canonical() {
+    fn inline_custom_geometry_column_renamed_to_canonical() {
         use brightfield_spec::ast::{DataSource, DataSourceKind};
         // An inline source under a custom `geometry: shape` column — no
         // ST_AsGeoJSON (already text), but renamed to canonical `geom` so the
@@ -1172,7 +1172,7 @@ mod tests {
     }
 
     #[test]
-    fn geo_ac03_inline_varchar_source_passes_through_unwrapped() {
+    fn inline_varchar_source_passes_through_unwrapped() {
         use brightfield_spec::ast::{DataSource, DataSourceKind};
         // An inline source (no `type: spatial`) — the geom column is already
         // VARCHAR GeoJSON text, so it must PASS THROUGH (no ST_AsGeoJSON, which
@@ -1196,7 +1196,7 @@ mod tests {
     }
 
     #[test]
-    fn geo_ac03_rejects_inline_mark_data() {
+    fn rejects_inline_mark_data() {
         let ctx = make_ctx();
         let mark = Mark {
             kind: MarkKind::Geo,
@@ -1210,10 +1210,10 @@ mod tests {
         ));
     }
 
-    // --- AC-01 tests: SimpleLowerer ---
+    // --- SimpleLowerer tests ---
 
     #[test]
-    fn msv_ac01_simple_lowerer_produces_source_for_from() {
+    fn simple_lowerer_produces_source_for_from() {
         let mark = make_mark(MarkKind::Dot);
         let ctx = make_ctx();
         let result = SimpleLowerer.lower(&mark, &ctx);
@@ -1226,7 +1226,7 @@ mod tests {
     }
 
     #[test]
-    fn msv_ac01_simple_lowerer_rejects_no_data() {
+    fn simple_lowerer_rejects_no_data() {
         let mark = Mark {
             kind: MarkKind::Dot,
             status: ImplStatus::Unimplemented,
@@ -1239,7 +1239,7 @@ mod tests {
     }
 
     #[test]
-    fn msv_ac01_simple_lowerer_rejects_inline_data() {
+    fn simple_lowerer_rejects_inline_data() {
         let mark = Mark {
             kind: MarkKind::Line,
             status: ImplStatus::Unimplemented,
@@ -1255,7 +1255,7 @@ mod tests {
     }
 
     #[test]
-    fn msv_ac01_default_lowerers_contains_all_registered_kinds() {
+    fn default_lowerers_contains_all_registered_kinds() {
         let registry = default_lowerers();
         let kinds: Vec<MarkKind> = registry.iter().map(|(k, _)| *k).collect();
         assert!(kinds.contains(&MarkKind::Dot));
@@ -1286,7 +1286,7 @@ mod tests {
     }
 
     #[test]
-    fn msv_ac01_find_lowerer_returns_simple_for_registered() {
+    fn find_lowerer_returns_simple_for_registered() {
         let registry = default_lowerers();
         let lowerer = find_lowerer(MarkKind::Dot, &registry);
         let mark = make_mark(MarkKind::Dot);
@@ -1303,7 +1303,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac05_crossfilter_excludes_self() {
+    fn crossfilter_excludes_self() {
         let selection = SelectionNode {
             select: AstRes::Crossfilter,
             status: ImplStatus::Unimplemented,
@@ -1328,7 +1328,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac05_crossfilter_includes_in_other_view() {
+    fn crossfilter_includes_in_other_view() {
         let selection = SelectionNode {
             select: AstRes::Crossfilter,
             status: ImplStatus::Unimplemented,
@@ -1353,7 +1353,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac05_empty_selection_is_true() {
+    fn empty_selection_is_true() {
         let selection = SelectionNode {
             select: AstRes::Intersect,
             status: ImplStatus::Unimplemented,
@@ -1365,7 +1365,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // gomb ac-06 / ac-07 — statistical-mark lowerers
+    // Statistical-mark lowerers
     // -----------------------------------------------------------------------
 
     fn make_mark_with_options(
@@ -1389,7 +1389,7 @@ mod tests {
     }
 
     #[test]
-    fn gomb_ac06_regression_lowerer_emits_aggregate_scalar() {
+    fn regression_lowerer_emits_aggregate_scalar() {
         let mark = make_mark_with_options(
             MarkKind::RegressionY,
             vec![
@@ -1419,7 +1419,7 @@ mod tests {
     }
 
     #[test]
-    fn gomb_ac06_regression_lowerer_with_stroke_groups_by() {
+    fn regression_lowerer_with_stroke_groups_by() {
         let mark = make_mark_with_options(
             MarkKind::RegressionY,
             vec![
@@ -1440,7 +1440,7 @@ mod tests {
     }
 
     #[test]
-    fn gomb_ac06_regression_lowerer_rejects_polynomial() {
+    fn regression_lowerer_rejects_polynomial() {
         let mark = make_mark_with_options(
             MarkKind::RegressionY,
             vec![
@@ -1460,7 +1460,7 @@ mod tests {
     }
 
     #[test]
-    fn gomb_ac07_density_lowerer_1d_x_uses_equiwidth_bucket() {
+    fn density_lowerer_1d_x_uses_equiwidth_bucket() {
         let mark = make_mark_with_options(
             MarkKind::DensityX,
             vec![("x", SpecValue::String("weight".to_string()))],
@@ -1500,7 +1500,7 @@ mod tests {
     }
 
     #[test]
-    fn gomb_ac07_density_lowerer_2d_uses_two_buckets() {
+    fn density_lowerer_2d_uses_two_buckets() {
         let mark = make_mark_with_options(
             MarkKind::Density,
             vec![
@@ -1542,13 +1542,13 @@ mod tests {
         }
     }
 
-    // dmk_ac04 (card 0008, density marks): the contour attr-shield keeps
+    // Density marks: the contour attr-shield keeps
     // `thresholds` (ISO-LEVEL count on a contour mark) out of the density
     // lowerer's BIN-count read — the emitted bucket count stays at the default
     // 100 — while `bins` still sizes the grid, and a plain density mark keeps
     // reading `thresholds` as bins.
     #[test]
-    fn dmk_ac04_contour_attr_shield_keeps_thresholds_out_of_sql() {
+    fn contour_attr_shield_keeps_thresholds_out_of_sql() {
         let ctx = make_ctx();
         let registry = default_lowerers();
         let group_by_of = |plan: QueryPlan| -> Vec<String> {
@@ -1628,7 +1628,7 @@ mod tests {
     }
 
     #[test]
-    fn gomb_ac06_default_lowerers_includes_statistical_kinds() {
+    fn default_lowerers_includes_statistical_kinds() {
         let registry = default_lowerers();
         let kinds: Vec<MarkKind> = registry.iter().map(|(k, _)| *k).collect();
         assert!(kinds.contains(&MarkKind::RegressionY));
@@ -1639,7 +1639,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // hex_ac02 — HexbinLowerer SQL shape
+    // HexbinLowerer SQL shape
     // -----------------------------------------------------------------------
 
     fn hexbin_mark() -> Mark {
@@ -1667,7 +1667,7 @@ mod tests {
     }
 
     #[test]
-    fn hex_ac02_hexbin_lowers_to_ordered_aggregation() {
+    fn hexbin_lowers_to_ordered_aggregation() {
         let plan = HexbinLowerer.lower(&hexbin_mark(), &make_ctx()).expect("lowers");
         // Outermost is Order on the emitted centres (x then y) — determinism.
         let QueryPlan::Order { input, keys } = plan else {
@@ -1693,7 +1693,7 @@ mod tests {
     }
 
     #[test]
-    fn hex_ac02_hexbin_sql_has_axial_and_cube_round() {
+    fn hexbin_sql_has_axial_and_cube_round() {
         let plan = HexbinLowerer.lower(&hexbin_mark(), &make_ctx()).expect("lowers");
         let mut bindings = Vec::new();
         let sql = crate::render::render_query(&plan, &mut bindings);
@@ -1710,7 +1710,7 @@ mod tests {
     }
 
     #[test]
-    fn hex_ac02_hexbin_avg_aliases_to_source_column() {
+    fn hexbin_avg_aliases_to_source_column() {
         let mut mark = hexbin_mark();
         mark.options.insert(
             "fill".into(),
@@ -1727,7 +1727,7 @@ mod tests {
     }
 
     #[test]
-    fn hex_ac02_hexbin_requires_x_y_and_data() {
+    fn hexbin_requires_x_y_and_data() {
         let ctx = make_ctx();
         // Missing y.
         let mut m = hexbin_mark();
@@ -1803,7 +1803,7 @@ mod tests {
     }
 
     #[test]
-    fn hex_ac05_cell_self_aggregating_count_groups_by_categories() {
+    fn cell_self_aggregating_count_groups_by_categories() {
         let mark = cell_mark(Some(ValueOrParamRef::Value(SpecValue::Aggregate {
             func: AggregateFunc::Count,
             column: None,
@@ -1821,7 +1821,7 @@ mod tests {
     }
 
     #[test]
-    fn hex_ac05_cell_self_aggregating_avg_aliases_column() {
+    fn cell_self_aggregating_avg_aliases_column() {
         let mark = cell_mark(Some(ValueOrParamRef::Value(SpecValue::Aggregate {
             func: AggregateFunc::Avg,
             column: Some("value".into()),
@@ -1853,7 +1853,7 @@ mod tests {
     }
 
     #[test]
-    fn hex_ac05_cell_pre_aggregated_path_unchanged() {
+    fn cell_pre_aggregated_path_unchanged() {
         // A cell with NO aggregate fill delegates to SimpleLowerer — the shipped
         // pre-aggregated path, byte-identical (cell.png gate).
         let mark = cell_mark(Some(ValueOrParamRef::Value(SpecValue::String("v".into()))));
@@ -1863,7 +1863,7 @@ mod tests {
     }
 
     #[test]
-    fn hex_ac04_hexgrid_lowers_to_singleton_row() {
+    fn hexgrid_lowers_to_singleton_row() {
         let mark = Mark {
             kind: MarkKind::Hexgrid,
             status: brightfield_spec::vocab::ImplStatus::Implemented,
@@ -1879,7 +1879,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac05_union_combines_with_or() {
+    fn union_combines_with_or() {
         let selection = SelectionNode {
             select: AstRes::Union,
             status: ImplStatus::Unimplemented,

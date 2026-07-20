@@ -11,7 +11,7 @@ pub struct ChartLayout {
     pub height: f64,
     /// Margins around the plot area.
     pub margins: Margins,
-    /// Per-side pixel insets pulled off the positional scale RANGES (card 0008
+    /// Per-side pixel insets pulled off the positional scale RANGES (the
     /// axis-inset round). Applied only in [`ChartLayout::x_range`] /
     /// [`ChartLayout::y_range`] so edge marks render whole inside the frame;
     /// the plot rect (`plot_x_start`..`plot_x_end`, used for the frame clip and
@@ -92,7 +92,7 @@ impl ChartLayout {
     }
 
     /// Create a chart layout composing custom margins with range insets — the
-    /// title-aware path (card 0019). Neither resets the other: `with_margins`
+    /// title-aware path. Neither resets the other: `with_margins`
     /// forces `Insets::default` and `with_insets` forces `Margins::default`, so
     /// a titled + inset plot needs this. Margins are the outer budget (grown to
     /// fit axis / plot titles); insets pull the positional RANGE inward. Both

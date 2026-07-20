@@ -1,7 +1,7 @@
-//! ac-08 (provenance doc check): every BOUND key in the shipped registry traces
+//! Provenance doc check: every BOUND key in the shipped registry traces
 //! to a recorded score row in `keymap-research.md` — no key is bound by taste.
 //!
-//! This is the mechanical half of ac-08 (the longname cross-ref). The scope-model
+//! This is the mechanical half of the check (the longname cross-ref). The scope-model
 //! decisions match (selection-first, g-broadcast, view floor) are a manual doc
 //! review, recorded in the same file.
 
@@ -11,7 +11,7 @@ use brightfield_keys::{registry, VerbEntry};
 const RESEARCH: &str = include_str!("data/keymap-research.md");
 
 #[test]
-fn kbg_ac08_every_bound_longname_has_a_score_row() {
+fn every_bound_longname_has_a_score_row() {
     let reg = registry();
     let bound: Vec<&VerbEntry> = reg.iter().filter(|v| v.is_bound()).collect();
     assert!(!bound.is_empty(), "expected some bound verbs");
@@ -21,7 +21,7 @@ fn kbg_ac08_every_bound_longname_has_a_score_row() {
         let needle = format!("`{}`", v.longname);
         assert!(
             RESEARCH.contains(&needle),
-            "bound verb `{}` has no score row in keymap-research.md (ac-08 provenance gap)",
+            "bound verb `{}` has no score row in keymap-research.md (provenance gap)",
             v.longname
         );
         // Sanity: a bound verb carries the scores the table records.
@@ -30,7 +30,7 @@ fn kbg_ac08_every_bound_longname_has_a_score_row() {
 }
 
 #[test]
-fn kbg_ac08_reserved_scope_decisions_are_recorded() {
+fn reserved_scope_decisions_are_recorded() {
     // The manual-review half: the load-bearing scope-model decisions appear in the doc.
     for decision in ["selection-first", "g` = dashboard-broadcast", "view-altitude floor"] {
         assert!(

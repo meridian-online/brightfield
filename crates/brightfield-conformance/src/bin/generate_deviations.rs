@@ -1,4 +1,4 @@
-//! `generate-deviations` binary (ac-11).
+//! `generate-deviations` binary.
 //!
 //! Reads a YAML deviation registry and writes `DEVIATIONS.md`. Output is
 //! stable-sorted by id, LF-terminated on every platform (we write bytes

@@ -1,4 +1,4 @@
-# Hexbin mark (card 0008 density marks): Mosaic's flagship at-scale mark. The
+# Hexbin mark (density marks): Mosaic's flagship at-scale mark. The
 # same two-blob cloud as raster.yaml / heatmap.yaml, self-aggregated into a
 # pointy-top hex lattice at binWidth 20px (Mosaic's default). Each hex bins the
 # points that fall in it and `fill: { count: }` colours it by that count through

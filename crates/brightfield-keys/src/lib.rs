@@ -1,4 +1,4 @@
-//! Framework-free semantic layer for the selection-first keyboard grammar (card 0018).
+//! Framework-free semantic layer for the selection-first keyboard grammar.
 //!
 //! Scope is where focus sits on the ComponentPath tree; a bare argumentless verb
 //! acts on the focused node; a fuzzy Space palette carries discoverability so
@@ -39,11 +39,11 @@ pub use scope::{bare_applicable, resolve_scope, RejectReason, ScopeContext, Scop
 
 #[cfg(test)]
 mod tests {
-    //! Cross-module wiring tests (ac-04 shared predicate; producers feed each other).
+    //! Cross-module wiring tests (shared predicate; producers feed each other).
     use super::*;
 
     #[test]
-    fn kbg_ac04_bare_resolver_and_palette_share_one_altitude_predicate() {
+    fn bare_resolver_and_palette_share_one_altitude_predicate() {
         // The verbs a bare key FIRES at an altitude equal the verbs the palette
         // ENABLES there (enabled = not-reserved, applicable) — one predicate.
         let reg = registry();

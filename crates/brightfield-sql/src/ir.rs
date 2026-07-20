@@ -90,7 +90,7 @@ pub enum SortDir {
 /// `input` source, a `Projection` wraps its input, etc.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum QueryPlan {
-    /// Leaf node referencing a named view (from card 0004's DDL).
+    /// Leaf node referencing a named view (from the DDL).
     Source {
         table: String,
     },
@@ -182,7 +182,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dfir_ac01_source_variant_constructs() {
+    fn source_variant_constructs() {
         let plan = QueryPlan::Source {
             table: "flights".to_string(),
         };
@@ -190,7 +190,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac01_filter_variant_constructs() {
+    fn filter_variant_constructs() {
         let plan = QueryPlan::Filter {
             input: Box::new(QueryPlan::Source {
                 table: "t".to_string(),
@@ -201,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac01_all_variants_construct() {
+    fn all_variants_construct() {
         let src = QueryPlan::Source {
             table: "t".to_string(),
         };
@@ -236,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac01_hash_stability() {
+    fn hash_stability() {
         let plan_a = QueryPlan::Filter {
             input: Box::new(QueryPlan::Source {
                 table: "t".to_string(),
@@ -248,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac01_selection_resolution_from_ast() {
+    fn selection_resolution_from_ast() {
         use brightfield_spec::vocab::SelectionResolution as AstRes;
         assert_eq!(
             SelectionResolution::from(AstRes::Crossfilter),
@@ -261,13 +261,13 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac02_predicate_display_expr() {
+    fn predicate_display_expr() {
         let p = Predicate::Expr("x > 1".to_string());
         assert_eq!(format!("{p}"), "x > 1");
     }
 
     #[test]
-    fn dfir_ac02_predicate_display_param() {
+    fn predicate_display_param() {
         let p = Predicate::Param {
             name: "lo".to_string(),
             placeholder_index: 0,
@@ -276,7 +276,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac02_predicate_display_and() {
+    fn predicate_display_and() {
         let p = Predicate::And(vec![
             Predicate::Expr("x > 1".to_string()),
             Predicate::Expr("x < 10".to_string()),
@@ -285,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac02_predicate_display_or() {
+    fn predicate_display_or() {
         let p = Predicate::Or(vec![
             Predicate::Expr("a = 1".to_string()),
             Predicate::Expr("b = 2".to_string()),
@@ -294,17 +294,17 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac02_predicate_empty_and_is_true() {
+    fn predicate_empty_and_is_true() {
         assert_eq!(format!("{}", Predicate::And(vec![])), "TRUE");
     }
 
     #[test]
-    fn dfir_ac02_predicate_empty_or_is_false() {
+    fn predicate_empty_or_is_false() {
         assert_eq!(format!("{}", Predicate::Or(vec![])), "FALSE");
     }
 
     #[test]
-    fn dfir_ac14_hash_structural_same_structure_same_hash() {
+    fn hash_structural_same_structure_same_hash() {
         let plan_a = QueryPlan::Filter {
             input: Box::new(QueryPlan::Source {
                 table: "t".to_string(),
@@ -320,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn dfir_ac14_hash_structural_different_structure_different_hash() {
+    fn hash_structural_different_structure_different_hash() {
         let plan_a = QueryPlan::Source {
             table: "t".to_string(),
         };

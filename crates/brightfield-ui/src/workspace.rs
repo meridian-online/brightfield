@@ -1,4 +1,4 @@
-//! Workspace shell model (card 0016) — the gpui-free half of the window shell.
+//! Workspace shell model — the gpui-free half of the window shell.
 //!
 //! Everything here is plain state and arithmetic so it runs headlessly (the
 //! semantic-layer rule: state machines and size formulas are framework-free;
@@ -6,14 +6,13 @@
 //! import may enter this file.
 //!
 //! - [`PresentationMode`] — the authoring/presentation state machine the
-//!   `TogglePresentation` action flips (hosted by the 0017 canvas panel).
+//!   `TogglePresentation` action flips (hosted by the canvas panel).
 //! - [`framed_window_size`] — dashboard bbox + chrome extents: the INITIAL
-//!   window-size formula. The 0016 "window never resizes on toggle"
-//!   invariant this formula once anchored is SUPERSEDED by card 0017
-//!   (recorded in the 0017 tabletop, not by editing the shipped 0016 spec):
+//!   window-size formula. The "window never resizes on toggle" invariant
+//!   this formula once anchored is SUPERSEDED by the DockArea shell:
 //!   the DockArea owns layout once the window is open, and the app's
 //!   `shell_model::initial_window_size` adds the default dock widths on top
-//!   of this formula. fww_ac01's oracle is revised to match.
+//!   of this formula. The oracle is revised to match.
 //! - [`resolve_title`] — `meta.title` wins, spec filename stem falls back.
 //!   The single resolver feeding both the native titlebar and the canvas
 //!   panel's tab title.
@@ -66,12 +65,12 @@ impl PresentationMode {
 /// Framed window content size for a dashboard bounding box: the canvas plus
 /// the chrome extents (header strip above, content padding on every side).
 ///
-/// INITIAL size only (card 0017): the docked workspace feeds this through
+/// INITIAL size only: the docked workspace feeds this through
 /// the app's `shell_model::initial_window_size` (adding the default dock
 /// widths) to choose the first-boot window size — once open, the DockArea
-/// owns layout and the user owns the window size. The 0016 "toggling
+/// owns layout and the user owns the window size. The "toggling
 /// presentation never resizes the window" invariant this formula once
-/// anchored is superseded (recorded in the 0017 tabletop). The formula
+/// anchored is superseded. The formula
 /// still takes no [`PresentationMode`], which now guarantees only that the
 /// initial size is mode-independent.
 #[must_use]
@@ -103,32 +102,32 @@ pub fn resolve_title(meta_title: Option<&str>, spec_path: &str) -> String {
 mod tests {
     use super::*;
 
-    /// fww_ac01 (revised for card 0017 — the ONE sanctioned oracle revision
-    /// the 0017 tabletop records): framed window size = dashboard bbox +
+    /// Revised for the DockArea shell — the ONE sanctioned oracle revision:
+    /// framed window size = dashboard bbox +
     /// chrome extents, as the INITIAL window-size formula. The formula
     /// takes no `PresentationMode`, which now pins only that the
-    /// first-boot size is mode-independent — the 0016 "window never
+    /// first-boot size is mode-independent — the "window never
     /// resizes on toggle" invariant is superseded (the DockArea owns
-    /// layout once the window is open, and the app's aws_ac03 tests pin
+    /// layout once the window is open, and the app's dock-layout tests pin
     /// the dock widths added on top). The historical `canvas_origin`
     /// re-centre oracle that mirrored `WorkspaceView`'s flex layout is
     /// deleted with the invariant it asserted; the live counterpart is
-    /// the 0017 CanvasPanel's flex centring inside the DockArea
-    /// (ac-08's eyeball).
+    /// the CanvasPanel's flex centring inside the DockArea
+    /// (an eyeball check).
     #[test]
-    fn fww_ac01_initial_window_size_adds_chrome_extents() {
+    fn initial_window_size_adds_chrome_extents() {
         let (dash_w, dash_h) = (800.0, 600.0);
         let (win_w, win_h) = framed_window_size(dash_w, dash_h);
         assert_eq!(win_w, dash_w + 2.0 * CONTENT_PADDING);
         assert_eq!(win_h, dash_h + HEADER_HEIGHT + 2.0 * CONTENT_PADDING);
     }
 
-    /// fww_ac02: title resolution — `meta.title` wins; a spec without one
+    /// Title resolution — `meta.title` wins; a spec without one
     /// resolves to its filename stem. (Both the native titlebar and the
     /// canvas panel's tab title consume this one resolver — see main.rs,
     /// one call site.)
     #[test]
-    fn fww_ac02_title_meta_wins_filename_falls_back() {
+    fn title_meta_wins_filename_falls_back() {
         assert_eq!(
             resolve_title(Some("Sales Overview"), "examples/dashboard.yaml"),
             "Sales Overview"
@@ -141,10 +140,10 @@ mod tests {
         assert_eq!(resolve_title(Some("   "), "examples/framed.yaml"), "framed");
     }
 
-    /// fww_ac03 (state machine): toggle() flips Authoring ↔ Presentation and
+    /// State machine: toggle() flips Authoring ↔ Presentation and
     /// back; the type lives in this module, which imports no gpui.
     #[test]
-    fn fww_ac03_presentation_state_machine_toggles() {
+    fn presentation_state_machine_toggles() {
         let mut mode = PresentationMode::default();
         assert_eq!(mode, PresentationMode::Authoring);
         assert!(mode.chrome_visible());
@@ -158,12 +157,12 @@ mod tests {
         assert_eq!(mode.toggled().toggled(), mode, "pure form round-trips");
     }
 
-    /// fww_ac03 (layout invariance): the spec-derived layout is computed from
+    /// Layout invariance: the spec-derived layout is computed from
     /// (spec, viewport) ONLY — the placed plot/input/legend rects are identical
     /// whichever side of a presentation toggle they are computed on, because
     /// shell state appears nowhere in the layout call chain.
     #[test]
-    fn fww_ac03_layout_ignores_presentation_state() {
+    fn layout_ignores_presentation_state() {
         use brightfield_spec::layout::{
             placed_input_nodes, placed_legend_nodes, placed_plots, Rect,
         };

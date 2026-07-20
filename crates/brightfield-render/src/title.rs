@@ -1,6 +1,6 @@
 //! Axis + plot titles — resolve the spec's Override/Suppress/Derive decisions
 //! against the plot's channel maps into concrete title text, and grow the plot
-//! margins to reserve a fixed band for each present title (card 0019).
+//! margins to reserve a fixed band for each present title.
 //!
 //! The DERIVE decision (from [`brightfield_spec::layout::resolve_axis_titles`])
 //! is turned into a field name HERE — where the channel map lives — because the
@@ -108,7 +108,7 @@ mod tests {
     }
 
     #[test]
-    fn apt_ac01_derive_override_suppress_and_interval() {
+    fn derive_override_suppress_and_interval() {
         // Bare plot, column-bound x/y → derived field names.
         let cm = map_cols(&[(Channel::X, "temp"), (Channel::Y, "power")]);
         let t = resolve_titles(&plot_with(&[]), &[&cm]);
@@ -134,7 +134,7 @@ mod tests {
     }
 
     #[test]
-    fn apt_ac01_multimark_first_column_bound_entry_names_the_axis() {
+    fn multimark_first_column_bound_entry_names_the_axis() {
         // First mark binds y to a literal only (no y column); the second binds
         // y to `level`. Derive must pick the bound sibling, not drop the title.
         let mut literal_first = ChannelMap::new();
@@ -147,7 +147,7 @@ mod tests {
     }
 
     #[test]
-    fn apt_ac05_grow_margins_reserves_a_band_per_present_title() {
+    fn grow_margins_reserves_a_band_per_present_title() {
         let base = Margins::default();
         // All three present → left/bottom/top each grow by the band; right holds.
         let all = ResolvedTitles {

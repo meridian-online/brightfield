@@ -1,4 +1,4 @@
-# Reactive slider demo (card 0005 — live input widget).
+# Reactive slider demo (live input widget).
 #
 # The `threshold` slider below the scatter re-executes its query on release:
 # drag the thumb and, when you let go, the filtered points drop or reappear. It

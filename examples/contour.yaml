@@ -1,4 +1,4 @@
-# Contour mark (card 0008 density marks): iso-lines over the same KDE-smoothed
+# Contour mark (density marks): iso-lines over the same KDE-smoothed
 # density field the heatmap shades. The two-blob cloud is binned into a 20x20
 # grid, smoothed, and traced with marching squares at 10 evenly-spaced levels -
 # nested rings around each blob core. NOTE: on a contour mark `thresholds` is

@@ -1,4 +1,4 @@
-# Raster mark with a single-hue colour scheme (card 0008 sequential colour scale).
+# Raster mark with a single-hue colour scheme (sequential colour scale).
 # Same two-blob data as raster.yaml, but `colorScheme: blues` maps count through
 # the ColorBrewer Blues ramp (near-white → navy): the dense blob cores read as
 # deep blue, the sparse background as pale blue. Demonstrates that a spec picks a

@@ -1,4 +1,4 @@
-//! The typed asset graph (card 0025): data states are nodes, steps shrink to
+//! The typed asset graph: data states are nodes, steps shrink to
 //! seams.
 //!
 //! Derivation rules (interim, from manifest + sql_assets — they swap with the
@@ -28,12 +28,12 @@
 //!   the terminal (a leaf sidecar) leaves it the sink.
 //! - `finetype_validate` steps produce NO node: `gate: true` on the seam and
 //!   `shield: true` on the edge into the asset named by `with.parquet`
-//!   (pds-ac05) — a shield on the lineage, not a box in it.
+//! — a shield on the lineage, not a box in it.
 //!
 //! Node ids: `asset.<protocol>.<relation>` / `file.<protocol>.<path>` /
 //! `source.<protocol>.<url>` / `stmt.<protocol>.<step>#<n>` (INTERNAL
 //! statement intermediates and opaque chips). Everything is
-//! `BTreeMap`/`BTreeSet`/`Vec` — deterministic end-to-end (pds-ac06).
+//! `BTreeMap`/`BTreeSet`/`Vec` — deterministic end-to-end.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -41,7 +41,7 @@ use std::path::Path;
 use crate::manifest::{Manifest, Step};
 use crate::sql_assets::{extract_statement_assets, StatementAssets};
 
-/// What a node IS — the visual class the renderer draws (pds-ac05).
+/// What a node IS — the visual class the renderer draws.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AssetKind {
     /// External origin (a fetched URL) — outside the build.
@@ -559,7 +559,7 @@ pub fn build_graph(
             }
         } else if let Some(error) = &ir.sql_error {
             // Step-level degrade: the whole model is one opaque chip wired
-            // from its depends_on (pds-ac04's file-read sibling).
+            // from its depends_on (the file-read sibling).
             let model = match &ir.seam.kind {
                 SeamKind::Sql { model } => model.clone(),
                 _ => String::new(),
@@ -669,7 +669,7 @@ pub fn build_graph(
         }
     }
 
-    // Gates: shield the edge into the guarded asset (pds-ac05).
+    // Gates: shield the edge into the guarded asset.
     for ir in &irs {
         if !ir.seam.gate {
             continue;
@@ -881,7 +881,7 @@ steps:
     }
 
     #[test]
-    fn pds_ac05_derivation_covers_every_kind() {
+    fn derivation_covers_every_kind() {
         let g = mini_graph();
         let kind = |id: &str| g.nodes.get(id).map(|n| n.kind);
         assert_eq!(kind("source.mini.https://example.com/data/a.csv"), Some(AssetKind::Source));
@@ -897,7 +897,7 @@ steps:
     }
 
     #[test]
-    fn pds_ac05_gate_is_a_shield_not_a_node() {
+    fn gate_is_a_shield_not_a_node() {
         let g = mini_graph();
         // The gate seam exists and is marked.
         assert!(g.seams["validate"].gate);

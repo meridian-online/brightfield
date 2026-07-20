@@ -1,4 +1,4 @@
-//! Per-spec per-layer expectations (ac-07, ac-12).
+//! Per-spec per-layer expectations.
 //!
 //! Each curated-corpus entry has a sibling `<name>.expected.yaml`
 //! declaring per-layer expectations. The parsed form is `LayerExpectations`
@@ -50,7 +50,7 @@ pub enum ExpectationError {
     },
     /// A deviation id referenced in a `suppressed(..)` expectation has a
     /// shape that isn't `DEV-NNNN`. Existence in the registry is checked
-    /// later by the integrity gate (ac-14), not here.
+    /// later by the integrity gate, not here.
     #[error("expectations at {path:?} reference deviation id {id:?} which is not in DEV-NNNN form")]
     UnknownDeviationId {
         /// File path.

@@ -8,4 +8,4 @@ its SQL models are vendored (no data, no build outputs); nothing has been
 modified. The fixture exists because it is the real shape a Protocol DAG render
 must handle: a 10-file fan-in, a four-quarter parameterised fetch+extract
 family, a long-running operator step, a validation gate, and one terminal
-Dataset sink (card 0025).
+Dataset sink.

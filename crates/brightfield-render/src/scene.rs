@@ -158,7 +158,7 @@ pub fn build_chart_scene(data: &ChartData<'_>) -> (Scene, ScaleSet) {
         }
     }
 
-    // A frame-suppressing mark (geo) drops the grid + axes (card 0008 geo).
+    // A frame-suppressing mark (geo) drops the grid + axes (geo).
     let suppress_frame = data.renderer.suppresses_frame();
 
     // Grid lines (behind marks).
@@ -306,7 +306,7 @@ fn draw_multi_mark_scene(
     render_background(&mut scene, layout);
 
     // A frame-suppressing mark (geo — it projects its own coordinate space and
-    // reads as a map) drops the grid + axes for the whole plot (card 0008 geo).
+    // reads as a map) drops the grid + axes for the whole plot (geo).
     let suppress_frame = entries.iter().any(|e| e.renderer.suppresses_frame());
 
     // Grid lines (behind marks).
@@ -414,7 +414,7 @@ pub fn compose_dashboard(width: f64, height: f64, plots: &[(f64, f64, &Scene)]) 
 
 /// Slider widget colours + geometry — kept in sync with the live GPUI
 /// `SliderElement` (crates/brightfield-ui/src/slider_element.rs) so the
-/// headless PNG matches the window (card 0005). Both sides read the same
+/// headless PNG matches the window. Both sides read the same
 /// Meridian tokens: track = warm gray step 5, thumb = Maritime focus ink.
 const SLIDER_TRACK_COLOUR: Color = ink(meridian_design::scales::GRAY_LIGHT[4]);
 const SLIDER_THUMB_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.focus);
@@ -446,7 +446,7 @@ pub fn render_slider(scene: &mut Scene, x: f64, y: f64, width: f64, height: f64,
     scene.fill(Fill::NonZero, Affine::IDENTITY, SLIDER_THUMB_COLOUR, None, &thumb);
 }
 
-/// Menu-family widget ink + geometry (card 0024) — kept in sync with the
+/// Menu-family widget ink + geometry — kept in sync with the
 /// live GPUI shim (crates/brightfield-ui/src/menu_element.rs `WIDGET_*`
 /// constants) so the headless PNG matches the window, exactly like the
 /// SLIDER_* pair above. Both sides read the same Meridian tokens: fill =
@@ -464,7 +464,7 @@ const WIDGET_TEXT_SIZE: f32 = 12.0;
 /// `WIDGET_TEXT_SIZE` (approximately half the cap height).
 const WIDGET_BASELINE_NUDGE: f64 = 4.0;
 
-/// Draw a resting `style: menu` widget (card 0024): a rounded box with the
+/// Draw a resting `style: menu` widget: a rounded box with the
 /// current value's label and a downward chevron affordance. Used by the
 /// headless PNG dump to preview the closed menu exactly as the window hosts
 /// it (the render_slider convention).
@@ -498,11 +498,11 @@ pub fn render_menu(scene: &mut Scene, x: f64, y: f64, width: f64, height: f64, l
     scene.fill(Fill::NonZero, Affine::IDENTITY, WIDGET_AFFORDANCE_COLOUR, None, &chevron);
 }
 
-/// Draw a resting `style: radio` widget (card 0024): one
+/// Draw a resting `style: radio` widget: one
 /// [`brightfield_spec::layout::RADIO_ROW_HEIGHT`] row per option — ring +
 /// filled-when-selected Maritime dot + label — inside the
 /// `22·N + RADIO_CHROME_PAD` rect the layout reserved (the shared-constant
-/// contract, diw-ac05).
+/// contract).
 pub fn render_radio(
     scene: &mut Scene,
     x: f64,
@@ -539,7 +539,7 @@ pub fn render_radio(
     }
 }
 
-/// Draw a resting `style: checkbox` widget (card 0024): a rounded box with
+/// Draw a resting `style: checkbox` widget: a rounded box with
 /// a Maritime check glyph when checked, plus a label (the bound param's
 /// name — widget `label:` rendering is its own polish item).
 pub fn render_checkbox(
@@ -593,10 +593,10 @@ mod tests {
     use crate::layout::ChartLayout;
     use crate::mark::{BarRenderer, DotRenderer, GeoRenderer, LineRenderer};
 
-    // slw ac-10 (card 0005): render_slider draws exactly two shapes — the track
+    // render_slider draws exactly two shapes — the track
     // and the thumb — into the scene (headless proof the widget renders).
     #[test]
-    fn slw_ac10_render_slider_draws_track_and_thumb() {
+    fn render_slider_draws_track_and_thumb() {
         let mut scene = Scene::new();
         render_slider(&mut scene, 0.0, 400.0, 200.0, 32.0, 0.5);
         assert_eq!(
@@ -606,10 +606,10 @@ mod tests {
         );
     }
 
-    // diw ac-11 (card 0024): the resting menu twin draws the box (fill +
+    // the resting menu twin draws the box (fill +
     // border) + the chevron affordance, and real glyphs for the label.
     #[test]
-    fn diw_ac11_render_menu_draws_box_chevron_and_label() {
+    fn render_menu_draws_box_chevron_and_label() {
         let mut scene = Scene::new();
         render_menu(&mut scene, 0.0, 400.0, 200.0, 32.0, "east");
         assert_eq!(
@@ -624,11 +624,11 @@ mod tests {
         );
     }
 
-    // diw ac-11: the resting radio twin draws one 22px row per option —
+    // the resting radio twin draws one 22px row per option —
     // ring (fill + outline) per row plus ONE filled dot on the selected row —
     // and label glyphs for every option.
     #[test]
-    fn diw_ac11_render_radio_draws_rows_and_selected_dot() {
+    fn render_radio_draws_rows_and_selected_dot() {
         let labels: Vec<String> =
             ["circle", "square", "triangle"].iter().map(|s| s.to_string()).collect();
         let mut scene = Scene::new();
@@ -650,10 +650,10 @@ mod tests {
         assert_eq!(crate::mark::count_scene_paths(&unselected), 3 * 2);
     }
 
-    // diw ac-11: the checkbox twin draws box fill + border, PLUS the check
+    // the checkbox twin draws box fill + border, PLUS the check
     // glyph exactly when checked; the label renders either way.
     #[test]
-    fn diw_ac11_render_checkbox_check_glyph_tracks_checked_state() {
+    fn render_checkbox_check_glyph_tracks_checked_state() {
         let mut checked = Scene::new();
         render_checkbox(&mut checked, 0.0, 400.0, 200.0, 32.0, true, "flag");
         let mut unchecked = Scene::new();
@@ -721,12 +721,12 @@ mod tests {
         );
     }
 
-    // geo-ac07: a frame-suppressing mark (geo) drops the grid + axes for the
+    // a frame-suppressing mark (geo) drops the grid + axes for the
     // whole plot, so a geo basemap scene carries only the background + the
     // projected feature outline — no grid/axis ink — while a cartesian plot's
     // scene carries frame ink.
     #[test]
-    fn geo_ac07_frame_suppressed_for_geo_plot() {
+    fn frame_suppressed_for_geo_plot() {
         let square = r#"{"type":"Polygon","coordinates":[[[0,0],[10,0],[10,10],[0,10],[0,0]]]}"#;
         let geo_schema = Arc::new(Schema::new(vec![Field::new("geom", DataType::Utf8, true)]));
         let geo_batch =
@@ -838,7 +838,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_ac08_build_dot_chart_scene() {
+    fn build_dot_chart_scene() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("x", DataType::Float64, false),
             Field::new("y", DataType::Float64, false),
@@ -887,7 +887,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_ac08_build_bar_chart_scene() {
+    fn build_bar_chart_scene() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("category", DataType::Utf8, false),
             Field::new("value", DataType::Float64, false),
@@ -998,7 +998,7 @@ mod tests {
     }
 
     #[test]
-    fn gpu_ac08_build_line_chart_scene() {
+    fn build_line_chart_scene() {
         let schema = Arc::new(Schema::new(vec![
             Field::new(
                 "ts",
@@ -1044,7 +1044,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_ac03_view_extent_overrides_scale_domain() {
+    fn view_extent_overrides_scale_domain() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("x", DataType::Float64, false),
             Field::new("y", DataType::Float64, false),
@@ -1103,10 +1103,10 @@ mod tests {
         assert!((y_zoomed.domain_max().unwrap() - 50.0).abs() < f64::EPSILON);
     }
 
-    // --- msv ac-03: build_multi_mark_scene ---
+    // --- build_multi_mark_scene ---
 
     #[test]
-    fn msv_ac03_multi_mark_scene_dot_and_line() {
+    fn multi_mark_scene_dot_and_line() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("x", DataType::Float64, false),
             Field::new("y", DataType::Float64, false),
@@ -1178,7 +1178,7 @@ mod tests {
     }
 
     #[test]
-    fn msv_ac03_multi_mark_scene_empty_entries() {
+    fn multi_mark_scene_empty_entries() {
         let (scene, scales) = build_multi_mark_scene(&[], true, &ResolvedTitles::default());
         let encoding = scene.encoding();
         assert_eq!(encoding.path_tags.len(), 0, "empty entries => empty scene");
@@ -1186,7 +1186,7 @@ mod tests {
     }
 
     #[test]
-    fn apt_ac08_titled_scene_carries_more_ink_and_anchored_reemits() {
+    fn titled_scene_carries_more_ink_and_anchored_reemits() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("x", DataType::Float64, false),
             Field::new("y", DataType::Float64, false),
@@ -1225,7 +1225,7 @@ mod tests {
             "titles add glyph ink to the assembled scene"
         );
 
-        // A widen-only anchored rebuild re-emits the same titles (apt-ac08 / apt-ac09).
+        // A widen-only anchored rebuild re-emits the same titles.
         let (anch_untitled, _) =
             build_multi_mark_scene_anchored(&[&data], true, &ResolvedTitles::default(), &launch);
         let (anch_titled, _) = build_multi_mark_scene_anchored(&[&data], true, &titles, &launch);
@@ -1236,7 +1236,7 @@ mod tests {
     }
 
     #[test]
-    fn ifb_ac05_build_chart_scene_with_highlight() {
+    fn build_chart_scene_with_highlight() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("x", DataType::Float64, false),
             Field::new("y", DataType::Float64, false),

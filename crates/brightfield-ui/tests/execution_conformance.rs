@@ -422,7 +422,7 @@ plot:
 
 #[test]
 fn geo_renders_geometry() {
-    // Full geo pipeline end-to-end (card 0008): the GeoLowerer passes the inline
+    // Full geo pipeline end-to-end: the GeoLowerer passes the inline
     // VARCHAR `geom` column through UNWRAPPED (no ST_AsGeoJSON, so no spatial
     // extension needed), execution returns the GeoJSON text, and the GeoRenderer
     // parses each Polygon, projects it (equirectangular), synthesizes its own

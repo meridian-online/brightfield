@@ -1,6 +1,6 @@
 //! Marching squares — iso-lines over a row-major scalar grid.
 //!
-//! The contour mark's geometry pass (card 0008, density marks): given the
+//! The contour mark's geometry pass (density marks): given the
 //! KDE-smoothed grid the density lowerer's batch reconstructs (see
 //! `mark::build_kde_grid`), extract the iso-lines at N levels as data-space
 //! polylines. Pure geometry, no scene or scale dependencies, so the topology
@@ -200,11 +200,11 @@ mod tests {
             + v11 * tx * ty
     }
 
-    // dmk_ac04: a single-Gaussian grid yields one CLOSED iso-loop per level —
+    // a single-Gaussian grid yields one CLOSED iso-loop per level —
     // loop count matches the requested threshold count — and every vertex
     // evaluates back to its level through the grid (it brackets the crossing).
     #[test]
-    fn dmk_ac04_single_gaussian_yields_closed_loops_at_each_level() {
+    fn single_gaussian_yields_closed_loops_at_each_level() {
         let (rows, cols) = (17, 17);
         let xs: Vec<f64> = (0..cols).map(|c| c as f64).collect();
         let ys: Vec<f64> = (0..rows).map(|r| r as f64).collect();
@@ -250,7 +250,7 @@ mod tests {
 
     // Iso-levels are evenly spaced strictly inside (0, max).
     #[test]
-    fn dmk_ac04_iso_levels_exclude_endpoints() {
+    fn iso_levels_exclude_endpoints() {
         let levels = iso_levels(8.0, 3);
         assert_eq!(levels, vec![2.0, 4.0, 6.0]);
         assert!(iso_levels(8.0, 0).is_empty());
@@ -259,7 +259,7 @@ mod tests {
     // A field crossing the grid boundary yields an OPEN polyline (the field is
     // unknown outside the lattice), still chained into a single line.
     #[test]
-    fn dmk_ac04_boundary_crossing_yields_open_polyline() {
+    fn boundary_crossing_yields_open_polyline() {
         // 2×3 ramp along x: one vertical iso-line crossing top and bottom.
         let values = vec![0.0, 1.0, 2.0, 0.0, 1.0, 2.0];
         let xs = vec![0.0, 1.0, 2.0];
@@ -275,7 +275,7 @@ mod tests {
 
     // Degenerate inputs return no geometry rather than panicking.
     #[test]
-    fn dmk_ac04_degenerate_grids_yield_nothing() {
+    fn degenerate_grids_yield_nothing() {
         assert!(contour_polylines(&[1.0, 2.0], 1, 2, &[0.0, 1.0], &[0.0], 1.5).is_empty());
         assert!(contour_polylines(&[], 0, 0, &[], &[], 0.5).is_empty());
         // Mismatched lengths.

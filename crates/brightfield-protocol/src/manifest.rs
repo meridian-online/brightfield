@@ -1,5 +1,5 @@
 // INTERIM CONTRACT
-//! Interim arcform-manifest parser (card 0025).
+//! Interim arcform-manifest parser.
 //!
 //! Serde model of arcform's Protocol manifest *as it exists today*
 //! (name/engine/params/defaults/steps; steps carry `op: name@version` +
@@ -104,7 +104,7 @@ const MOSAIC_KEYS: &[&str] = &[
     "meta", "config", "plotDefaults",
 ];
 
-/// The protocol sniff (pds-ac08's guard): a YAML document whose top level is a
+/// The protocol sniff (the guard): a YAML document whose top level is a
 /// mapping with a `steps:` **sequence** and NONE of the Mosaic keys is a
 /// Protocol manifest. Anything else — including every Mosaic spec, even one
 /// with a stray `steps:` key — is not, so Mosaic inputs reach the existing

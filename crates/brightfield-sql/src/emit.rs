@@ -1,5 +1,5 @@
-//! Public entry points: data-source DDL emission (card 0004) and per-mark
-//! query emission (card 0003).
+//! Public entry points: data-source DDL emission and per-mark
+//! query emission.
 
 use std::path::Path;
 
@@ -195,7 +195,7 @@ pub(crate) fn format_kwargs(
 pub(crate) fn spec_value_to_sql_literal(val: &SpecValue) -> String {
     match val {
         // Escape embedded single quotes (SQL-standard doubling) so string
-        // literals — including interpolated param values (card 0014, ac-02) and
+        // literals — including interpolated param values and
         // inline data — are injection-safe.
         SpecValue::String(s) => format!("'{}'", s.replace('\'', "''")),
         SpecValue::Integer(n) => format!("{n}"),
@@ -503,11 +503,11 @@ fn collect_plot_groups_in(
 /// Emit a query for a single mark in the spec.
 ///
 /// `param_values` carries current runtime values for param substitution
-/// (closes the `_param_values` LOW from card 0005 v2 review). `None` falls
+/// (closes the `_param_values` review finding). `None` falls
 /// back to `Prepared` mode with `?` placeholders.
 ///
 /// `selection_predicates` carries per-contributor predicates for any selection
-/// the mark's `filter_by` references (card 0006 v2 runtime coordinator). The
+/// the mark's `filter_by` references (v2 runtime coordinator). The
 /// outer slice is `(selection_name, contributors_for_that_selection)` —
 /// `compile_selection` is invoked when the mark's filter_by selection name
 /// matches an entry, and the mark's stable plot-node path is used as
@@ -541,7 +541,7 @@ pub fn emit_query_with_passes(
     extra_passes: &[Box<dyn crate::passes::Pass>],
 ) -> Result<EmittedQuery, EmitError> {
     // Use the path-aware mark walker so we can compute the parent plot
-    // identity for selection self-exclusion (card 0006 v2 decision 4).
+    // identity for selection self-exclusion (v2 decision 4).
     let marks_with_paths = collect_marks_with_paths(spec);
     let (mark, mark_path) = marks_with_paths
         .get(mark_index)
@@ -569,7 +569,7 @@ pub fn emit_query_with_passes(
     // `QueryPlan::Filter`. Self-exclusion identity is the stable plot-node path
     // (decision 4) — `plot_node_path`, NOT `parent_plot`, so a mark and the
     // brushing interactor in the same plot resolve to the same identity (else a
-    // plot filters itself; card 0006).
+    // plot filters itself).
     if let Some(selection_name) = mark_filter_by_name(mark) {
         if let Some(ParamNode::Selection(sel_node)) = spec.params.get(selection_name) {
             let self_source = brightfield_spec::analysis::plot_node_path(mark_path);
@@ -589,14 +589,14 @@ pub fn emit_query_with_passes(
         }
     }
 
-    // Highlight membership projection (card 0021): if this mark's plot carries a
+    // Highlight membership projection: if this mark's plot carries a
     // `highlight, by: $sel` interactor, project a per-row boolean
     // `(<pred>) AS __bf_selected` OUTSIDE the (possibly filtered) plan instead of
-    // filtering — the mark keeps its full batch and DIMS the non-matching rows
-    // (ce-ac04/ce-ac05). Membership evaluates against the source table (so a
+    // filtering — the mark keeps its full batch and DIMS the non-matching rows.
+    // Membership evaluates against the source table (so a
     // splom panel highlights on a column it does not plot). An empty selection
-    // compiles to `True` → no projection → the mark renders exactly as at rest
-    // (ce-ac07). An aggregate plan is guarded out (ce-ac09).
+    // compiles to `True` → no projection → the mark renders exactly as at rest.
+    // An aggregate plan is guarded out.
     //
     // Two departures from the filterBy path above:
     //   FIX A — the `by:` selection may be created ONLY by an `as:` binding and
@@ -607,7 +607,7 @@ pub fn emit_query_with_passes(
     //   FIX B — highlight NEVER self-excludes (`HIGHLIGHT_NO_SELF_EXCLUDE`): the
     //     brushed plot must dim its OWN rows.
     // (The filterBy gate above shares FIX A's blind spot — an as-bound-only
-    // `filterBy` is likewise inert there — but that is a pre-existing card-0006
+    // `filterBy` is likewise inert there — but that is a pre-existing
     // limitation, out of this card's scope; left untouched deliberately.)
     let mark_highlight_by = collect_mark_highlight_by(spec);
     if let Some(Some(selection_name)) = mark_highlight_by.get(mark_index) {
@@ -651,8 +651,8 @@ pub fn emit_query_with_passes(
     let mut bindings: Vec<Binding> = Vec::new();
     let rendered = render_query(&plan, &mut bindings);
 
-    // Interpolate scalar param values into the emitted SQL (card 0014,
-    // Decision 1). `$name` placeholders in lowerer-emitted projections / filter
+    // Interpolate scalar param values into the emitted SQL (Decision 1).
+    // `$name` placeholders in lowerer-emitted projections / filter
     // expressions are substituted with escaped literals via
     // `spec_value_to_sql_literal`; names absent from `param_values` are left
     // intact. `plan_hash` stays STRUCTURAL — `execute_emitted` runs this concrete
@@ -674,7 +674,7 @@ pub fn emit_query_with_passes(
 }
 
 /// Substitute `$name` param placeholders in `sql` with escaped literals drawn
-/// from `params` (card 0014, Decision 1). Matching is identifier-boundary aware
+/// from `params` (Decision 1). Matching is identifier-boundary aware
 /// (`$name` consumes a maximal `[A-Za-z0-9_]` run); a `$name` whose identifier
 /// is absent from `params` is emitted verbatim, mirroring binding.rs's
 /// Interpolated fallthrough.
@@ -801,7 +801,7 @@ fn plot_highlight_by_name(items: &[Component]) -> Option<String> {
 /// `compile_selection`'s crossfilter branch excludes NOTHING. Highlight passes
 /// this (unlike filterBy) because "brush a region, grey the rest" must dim the
 /// brushed plot's OWN rows too — a highlight-bound mark self-excluding its own
-/// plot's contribution would leave the brushed plot un-dimmed (card 0021, FIX B).
+/// plot's contribution would leave the brushed plot un-dimmed (FIX B).
 /// Real contributor paths are component paths (`root`, `root/hconcat[0]`, …), so
 /// this NUL-prefixed sentinel can never collide.
 const HIGHLIGHT_NO_SELF_EXCLUDE: &str = "\u{0}__bf_highlight_no_self_exclude";
@@ -828,7 +828,7 @@ fn default_highlight_selection() -> SelectionNode {
 /// aggregate restricts the output columns, so appending `(<pred>) AS
 /// __bf_selected` over it could reference a column the aggregate dropped and
 /// SQL-error. Highlight skips the membership projection for such a plan (the
-/// ce-ac09 runtime guard; analysis also warns `HighlightOnAggregate`). A
+/// runtime guard; analysis also warns `HighlightOnAggregate`). A
 /// row-level plan (Source / Filter / Projection over a source) exposes every
 /// source column, so the projection is always safe there.
 fn plan_aggregates(plan: &QueryPlan) -> bool {
@@ -875,33 +875,33 @@ mod query_tests {
     use brightfield_spec::{parse_spec, Format};
 
     // -----------------------------------------------------------------------
-    // Param-effect routing (card 0014) — interpolation + plan_hash fold
+    // Param-effect routing — interpolation + plan_hash fold
     // -----------------------------------------------------------------------
 
-    /// pefr ac-01: a `$param` placeholder is substituted with its concrete value.
+    /// a `$param` placeholder is substituted with its concrete value.
     #[test]
-    fn pefr_ac01_interpolate_scalar_param() {
+    fn interpolate_scalar_param() {
         let mut params = ParamValues::new();
         params.insert("k".to_string(), SpecValue::Integer(20));
         let sql = interpolate_params("SELECT * FROM t WHERE x > $k", &params);
         assert_eq!(sql, "SELECT * FROM t WHERE x > 20");
     }
 
-    /// pefr ac-01: a `$name` not in param_values is left intact (no partial
+    /// a `$name` not in param_values is left intact (no partial
     /// interpolation), and identifier boundaries are respected — `$k` must not
     /// consume `$k2`.
     #[test]
-    fn pefr_ac01_interpolate_unknown_and_boundaries() {
+    fn interpolate_unknown_and_boundaries() {
         let mut params = ParamValues::new();
         params.insert("k".to_string(), SpecValue::Integer(1));
         let sql = interpolate_params("$k2 + $k + $unknown", &params);
         assert_eq!(sql, "$k2 + 1 + $unknown", "only the exact known $k is inlined");
     }
 
-    /// pefr ac-02: a string-valued param is emitted quoted and escaped
+    /// a string-valued param is emitted quoted and escaped
     /// (single-quote doubling) — never raw — so interpolation is injection-safe.
     #[test]
-    fn pefr_ac02_interpolation_escapes_string_param() {
+    fn interpolation_escapes_string_param() {
         let mut params = ParamValues::new();
         params.insert("s".to_string(), SpecValue::String("O'Brien".to_string()));
         let sql = interpolate_params("WHERE name = $s", &params);
@@ -909,7 +909,7 @@ mod query_tests {
         assert!(!sql.contains("$s"), "raw placeholder must be gone");
     }
 
-    /// pefr review regression (card 0014): interpolation is string-literal aware —
+    /// pefr review regression: interpolation is string-literal aware —
     /// a `$name`-looking substring inside a single-quoted SQL string literal (e.g.
     /// a `data.filter` value) is left untouched, while a real placeholder in SQL
     /// code is still substituted. Doubled quotes (`''`) inside the literal do not
@@ -928,11 +928,11 @@ mod query_tests {
         assert_eq!(sql2, "WHERE a = 'x''$k y' AND b > 99");
     }
 
-    /// pefr ac-03: a bare `$param` positional channel is projected into the
+    /// a bare `$param` positional channel is projected into the
     /// SELECT as `$param AS "<param>"`, and interpolation yields `<value> AS
     /// "<param>"` — the channel reaches the query rather than being dropped.
     #[test]
-    fn pefr_ac03_param_channel_projected() {
+    fn param_channel_projected() {
         let src = "params:\n  k: 3\ndata:\n  t: [{ x: 1 }, { x: 2 }]\nplot:\n  - mark: dot\n    data: { from: t }\n    x: x\n    y: $k\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
         let mut params = ParamValues::new();
@@ -955,10 +955,10 @@ mod query_tests {
         );
     }
 
-    /// pefr ac-07: a `data.filter` expression lowers into a WHERE clause and
-    /// its `$param` is interpolated (card 0014, Decision 2).
+    /// a `data.filter` expression lowers into a WHERE clause and
+    /// its `$param` is interpolated (Decision 2).
     #[test]
-    fn pefr_ac07_data_filter_lowers_to_where() {
+    fn data_filter_lowers_to_where() {
         let src = "params:\n  k: 0\ndata:\n  t: [{ x: 1 }, { x: 5 }]\nplot:\n  - mark: dot\n    data: { from: t, filter: \"x > $k\" }\n    x: x\n    y: x\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
         let mut params = ParamValues::new();
@@ -976,7 +976,7 @@ mod query_tests {
         );
     }
 
-    /// pefr review regression (card 0014 #4): a filter with NO `$param` parses to
+    /// pefr review regression (#4): a filter with NO `$param` parses to
     /// a plain String and must still lower to a WHERE with the raw predicate —
     /// never quoted into a constant string (which would silently pass every row).
     #[test]
@@ -996,13 +996,13 @@ mod query_tests {
         );
     }
 
-    /// pefr ac-10: plan_hash is STRUCTURAL — a param that does NOT appear in a
+    /// plan_hash is STRUCTURAL — a param that does NOT appear in a
     /// mark's SQL (the SQL-invariant / pure tier) yields an identical plan_hash
     /// across values, so nothing perturbs the plan record. This is the property
-    /// gomb_ac12 relies on for selection params (which route through concrete
+    /// relies on for selection params (which route through concrete
     /// predicates carrying no `$name`).
     #[test]
-    fn pefr_ac10_sql_invariant_param_keeps_plan_hash() {
+    fn sql_invariant_param_keeps_plan_hash() {
         let src = "params:\n  k: 1\ndata:\n  t: [{ x: 1 }]\nplot:\n  - mark: dot\n    data: { from: t }\n    x: x\n    y: x\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
         let mut p1 = ParamValues::new();
@@ -1017,13 +1017,13 @@ mod query_tests {
         );
     }
 
-    /// pefr ac-11 (refined): a channel-param value change is reflected in the
+    /// Refined: a channel-param value change is reflected in the
     /// concrete emitted SQL (the data-shape effect), while plan_hash stays
     /// STRUCTURAL. execute_emitted runs this concrete SQL directly and dedups on
     /// the literal string via the LRU sql_cache, so the value need not enter the
     /// hash — the earlier value-fold was removed as redundant + unbounded.
     #[test]
-    fn pefr_ac11_emit_channel_param_changes_sql_not_structural_hash() {
+    fn emit_channel_param_changes_sql_not_structural_hash() {
         let src = "params:\n  k: 3\ndata:\n  t: [{ x: 1 }]\nplot:\n  - mark: dot\n    data: { from: t }\n    x: x\n    y: $k\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
         let mut p3 = ParamValues::new();
@@ -1043,7 +1043,7 @@ mod query_tests {
     }
 
     #[test]
-    fn dfir_ac08_emit_query_unsupported_mark() {
+    fn emit_query_unsupported_mark() {
         // Use a mark kind that has no lowerer (voronoi is the unimplemented
         // stand-in now that geo is wired — the placeholder swap dance).
         let src = "plot:\n  - mark: voronoi\n    data: { from: flights }\ndata:\n  flights: { file: flights.parquet }\n";
@@ -1057,7 +1057,7 @@ mod query_tests {
     }
 
     #[test]
-    fn msv_ac01_emit_query_succeeds_for_from_data() {
+    fn emit_query_succeeds_for_from_data() {
         // SimpleLowerer handles line marks with data.from
         let src = "plot:\n  - mark: line\n    data: { from: flights }\ndata:\n  flights: { file: flights.parquet }\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
@@ -1071,7 +1071,7 @@ mod query_tests {
     }
 
     #[test]
-    fn dfir_ac08_emit_query_out_of_bounds() {
+    fn emit_query_out_of_bounds() {
         let src = "plot:\n  - mark: dot\n    data: { from: t }\ndata:\n  t: { file: t.parquet }\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
         let result = emit_query(&spec, 99, None, None);
@@ -1082,7 +1082,7 @@ mod query_tests {
     }
 
     #[test]
-    fn dfir_ac08_emit_all_queries_returns_per_mark_results() {
+    fn emit_all_queries_returns_per_mark_results() {
         let src = "plot:\n  - mark: line\n    data: { from: t }\n  - mark: dot\n    data: { from: t }\ndata:\n  t: { file: t.parquet }\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
         let results = emit_all_queries(&spec, None);
@@ -1094,7 +1094,7 @@ mod query_tests {
     }
 
     #[test]
-    fn dfir_ac08_emit_query_no_marks_spec() {
+    fn emit_query_no_marks_spec() {
         // A spec with no marks — just data
         let src = "data:\n  t: { file: t.parquet }\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
@@ -1105,7 +1105,7 @@ mod query_tests {
         ));
     }
 
-    // ----- gomb ac-13 — conformance snapshots for statistical marks -----
+    // ----- Conformance snapshots for statistical marks -----
     //
     // Snapshots capture the emitted SQL string only. They do NOT capture
     // the rendered Vello scene — that's a future-card concern (cross-platform
@@ -1113,7 +1113,7 @@ mod query_tests {
     // comparison if we ever snapshot rendered pixels).
 
     #[test]
-    fn gomb_ac13_density1d_x_snapshot() {
+    fn density1d_x_snapshot() {
         let src = r#"
 data:
   athletes: { file: athletes.parquet }
@@ -1142,7 +1142,7 @@ plot:
     }
 
     #[test]
-    fn gomb_ac13_density2d_snapshot() {
+    fn density2d_snapshot() {
         let src = r#"
 data:
   athletes: { file: athletes.parquet }
@@ -1168,7 +1168,7 @@ plot:
     }
 
     #[test]
-    fn gomb_ac13_linear_regression_snapshot() {
+    fn linear_regression_snapshot() {
         let src = r#"
 data:
   athletes: { file: athletes.parquet }
@@ -1197,7 +1197,7 @@ plot:
     }
 
     // -----------------------------------------------------------------------
-    // Highlight membership projection (card 0021)
+    // Highlight membership projection
     // -----------------------------------------------------------------------
 
     const HIGHLIGHT_SPEC: &str = r#"
@@ -1214,11 +1214,11 @@ plot:
     by: $brush
 "#;
 
-    /// ce-ac03/ce-ac05: a highlight-bound mark with an ACTIVE selection projects
+    /// a highlight-bound mark with an ACTIVE selection projects
     /// `(<pred>) AS __bf_selected` — and does NOT wrap the plan in a WHERE, so
     /// the mark keeps its full batch and dims (highlight-not-filter).
     #[test]
-    fn ce_ac03_highlight_projects_membership_column() {
+    fn highlight_projects_membership_column() {
         let spec = parse_spec(HIGHLIGHT_SPEC, Format::Yaml).unwrap().spec;
         let selections = vec![(
             "brush".to_string(),
@@ -1238,11 +1238,11 @@ plot:
         );
     }
 
-    /// ce-ac07/ce-ac10: with NO live selection a highlight plot's mark emits SQL
+    /// with NO live selection a highlight plot's mark emits SQL
     /// byte-identical to the same plot without any highlight interactor — the
     /// at-rest look, so example PNGs don't move.
     #[test]
-    fn ce_ac07_empty_selection_no_projection() {
+    fn empty_selection_no_projection() {
         let spec = parse_spec(HIGHLIGHT_SPEC, Format::Yaml).unwrap().spec;
         let at_rest = emit_query(&spec, 0, None, None).expect("emit");
         assert!(
@@ -1263,11 +1263,11 @@ plot:
         assert_eq!(at_rest.sql, plain_sql, "at rest, highlight is invisible in the SQL");
     }
 
-    /// ce-ac05: a mark that is BOTH `filterBy` one selection and `highlight` on
+    /// a mark that is BOTH `filterBy` one selection and `highlight` on
     /// another resolves per its explicit bindings — a WHERE for the filter AND a
     /// `__bf_selected` projection for the highlight, composed.
     #[test]
-    fn ce_ac05_filter_and_highlight_compose() {
+    fn filter_and_highlight_compose() {
         let yaml = r#"
 params:
   click: { select: single }
@@ -1298,11 +1298,11 @@ plot:
         assert!(emitted.sql.contains("b > 2"), "highlight predicate");
     }
 
-    /// ce-ac09: an aggregate mark (heatmap) is guarded — no membership
+    /// an aggregate mark (heatmap) is guarded — no membership
     /// projection is appended even with an active selection, so the query can't
     /// reference a grouped-away column and SQL-error.
     #[test]
-    fn ce_ac09_emit_skips_projection_for_aggregate() {
+    fn emit_skips_projection_for_aggregate() {
         let yaml = r#"
 params:
   brush: { select: single }
@@ -1327,11 +1327,11 @@ plot:
         );
     }
 
-    /// FIX A (ce-ac08): a `by:` selection created ONLY by an `as:` binding and
+    /// FIX A: a `by:` selection created ONLY by an `as:` binding and
     /// never declared in `params:` (weather's `$range` shape) still projects the
     /// membership column — the emit gate must not require a `spec.params` entry.
     #[test]
-    fn ce_ac08_asbound_only_selection_projects() {
+    fn asbound_only_selection_projects() {
         let yaml = r#"
 plot:
   - mark: dot
@@ -1363,12 +1363,12 @@ plot:
         assert!(emitted.sql.contains("a > 1"));
     }
 
-    /// FIX B (ce-ac05): highlight does NOT self-exclude — a plot that BRUSHES and
+    /// FIX B: highlight does NOT self-exclude — a plot that BRUSHES and
     /// HIGHLIGHTS the same crossfilter selection must still dim its OWN rows. With
     /// the mark's own plot as the contributor, the crossfilter self-exclusion that
     /// is correct for filterBy would (wrongly) drop it to empty → no projection.
     #[test]
-    fn ce_ac05_highlight_does_not_self_exclude() {
+    fn highlight_does_not_self_exclude() {
         let yaml = r#"
 params:
   sel: { select: crossfilter }

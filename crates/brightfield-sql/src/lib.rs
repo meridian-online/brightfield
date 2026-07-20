@@ -5,7 +5,7 @@
 //! `ATTACH` for `.duckdb`/`.db` files) at spec-mount time.
 //!
 //! This crate performs **no I/O and holds no DuckDB connection** — it is a
-//! pure string-generation layer. Card 0003 extends it with per-plot SELECT
+//! pure string-generation layer. A later round extends it with per-plot SELECT
 //! emission.
 
 pub mod binding;

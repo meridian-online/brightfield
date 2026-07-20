@@ -17,7 +17,7 @@ use crate::parse::ParseWarning;
 use crate::vocab::{InputKind, InteractorKind, MarkKind};
 
 // ---------------------------------------------------------------------------
-// Type enums (ac-08)
+// Type enums
 // ---------------------------------------------------------------------------
 
 /// Classification of an input widget's output type.
@@ -87,7 +87,7 @@ impl ParamDeclaredType {
 }
 
 // ---------------------------------------------------------------------------
-// Subscriber graph (ac-03)
+// Subscriber graph
 // ---------------------------------------------------------------------------
 
 /// A component path identifying where a param is referenced.
@@ -97,12 +97,12 @@ pub struct ComponentPath(pub String);
 /// Return the longest prefix of `path` that ends in a `/plot[<digits>]`
 /// segment, or `path` unchanged if no such segment exists.
 ///
-/// Used by the runtime selection coordinator (card 0006 v2) for self-exclusion
+/// Used by the runtime selection coordinator (v2) for self-exclusion
 /// identity. A mark inside `root/vconcat[0]/plot[1]/mark[dot]` belongs to the
 /// plot at `root/vconcat[0]/plot[1]`; an interactor inside the same plot at
 /// `root/vconcat[0]/plot[1]/interactor[intervalX]` shares the same parent
 /// prefix. String equality on the result of `parent_plot` is the
-/// "view's own predicate" identity rule (card 0006 v2 decision 4).
+/// "view's own predicate" identity rule (v2 decision 4).
 ///
 /// Behaviour:
 /// - `parent_plot("root/vconcat[0]/plot[1]/mark[dot]")` → `"root/vconcat[0]/plot[1]"`
@@ -157,7 +157,7 @@ pub fn parent_plot(path: &str) -> &str {
 /// crossfilter self-exclusion must compare on: the contributor is an interactor
 /// and the subscriber is a mark, and they have to agree for a plot to recognise
 /// its own predicate. It equals the plot-node path `collect_plot_groups` keys
-/// on (card 0006).
+/// on.
 ///
 /// Behaviour:
 /// - `plot_node_path("root/hconcat[0]/plot[1]/mark[dot]")` → `"root/hconcat[0]"`
@@ -261,7 +261,7 @@ fn collect_subscribers(component: &Component, path: &str, graph: &mut Subscriber
         Component::Legend(l) => {
             for (k, v) in &l.options {
                 // `as: $sel` on a legend is a selection PRODUCER binding
-                // (card 0009, legend click-to-filter), not a subscription —
+                // (legend click-to-filter), not a subscription —
                 // registering it here wired the legend backwards, making
                 // `$sel` look consumed by the very legend that writes it.
                 // Producer bindings surface via [`build_legend_bindings`];
@@ -286,7 +286,7 @@ fn collect_mark_subscribers(mark: &Mark, path: &str, graph: &mut SubscriberGraph
     let mark_path = format!("{path}/mark[{}]", mark.kind.wire_name());
 
     // Mark data filterBy + any params in the `filter` expression (which lowers
-    // to a WHERE — card 0014). Only the `filter` extra affects the emitted query,
+    // to a WHERE). Only the `filter` extra affects the emitted query,
     // so subscribing on other extras would trigger re-executions that change
     // nothing; scope the walk to `filter`.
     if let Some(ref data) = mark.data {
@@ -361,7 +361,7 @@ fn collect_spec_value_subscribers(sv: &SpecValue, path: &str, graph: &mut Subscr
         }
         // A param referenced directly, or embedded in a SQL expression (e.g. a
         // `filter: "x > $k"` or an expression channel), subscribes the owning
-        // component to that param (card 0014, ac-06) — so a data-shape param
+        // component to that param — so a data-shape param
         // change re-executes the mark.
         SpecValue::Param(pr) => {
             graph
@@ -382,7 +382,7 @@ fn collect_spec_value_subscribers(sv: &SpecValue, path: &str, graph: &mut Subscr
 }
 
 // ---------------------------------------------------------------------------
-// Dependency DAG (ac-05, ac-06)
+// Dependency DAG
 // ---------------------------------------------------------------------------
 
 /// A directed edge in the param dependency DAG: consuming `from` produces `to`
@@ -487,8 +487,6 @@ pub fn build_dependency_dag(
 ///   over the descendant subgraph for determinism.
 /// - Self-edges are impossible by construction (`collect_dag_edges` skips
 ///   them — see `wnba-shots.yaml`).
-///
-/// rpw3 ac-01, ac-02, ac-03.
 #[must_use]
 pub fn topological_descendants(analysis: &SpecAnalysis, root: &str) -> Vec<String> {
     // Build adjacency over `analysis.dependency_edges` keyed by `from`.
@@ -618,7 +616,7 @@ fn collect_dag_edges(component: &Component, edges: &mut Vec<ParamEdge>) {
 }
 
 // ---------------------------------------------------------------------------
-// Type checking (ac-07, ac-08)
+// Type checking
 // ---------------------------------------------------------------------------
 
 /// Check for type mismatches between input widgets and their target params.
@@ -668,7 +666,7 @@ fn check_type_mismatches_in(
 }
 
 // ---------------------------------------------------------------------------
-// filterBy validation (cfs ac-01..ac-04)
+// filterBy validation
 // ---------------------------------------------------------------------------
 
 /// Collect all param/selection names that are created by `as:` bindings
@@ -806,7 +804,7 @@ fn check_filter_by_ref(
 }
 
 // ---------------------------------------------------------------------------
-// Interactor binding validation (cfs ac-05, ac-06)
+// Interactor binding validation
 // ---------------------------------------------------------------------------
 
 /// An interactor's write binding to a named selection.
@@ -874,14 +872,14 @@ fn validate_interactor_bindings_in(
 }
 
 // ---------------------------------------------------------------------------
-// Selection subscriber graph (cfs ac-07)
+// Selection subscriber graph
 // ---------------------------------------------------------------------------
 
 /// Map from selection name to component paths that subscribe via filterBy.
 pub type SelectionSubscriberGraph = HashMap<String, Vec<ComponentPath>>;
 
 /// Build the selection subscriber graph — only tracks filterBy subscriptions
-/// to selection params (distinct from the general subscriber graph in card 0005).
+/// to selection params (distinct from the general subscriber graph).
 /// Recognizes both declared selections and interactor-created implicit selections.
 pub fn build_selection_subscriber_graph(spec: &Spec) -> SelectionSubscriberGraph {
     let mut graph: SelectionSubscriberGraph = HashMap::new();
@@ -902,7 +900,7 @@ pub fn build_selection_subscriber_graph(spec: &Spec) -> SelectionSubscriberGraph
     let known_selections: HashSet<String> = graph.keys().cloned().collect();
     if let Some(root) = &spec.root {
         collect_selection_subscribers(root, "root", &known_selections, &mut graph);
-        // Card 0021: a `highlight, by: $sel` interactor makes its plot's
+        // a `highlight, by: $sel` interactor makes its plot's
         // honouring marks subscribers to `$sel` too — a selection change must
         // re-query them (to re-project `__bf_selected`), not just the filterBy
         // subscribers. Registered after the filterBy walk so both sets compose.
@@ -974,7 +972,7 @@ fn collect_selection_subscribers(
 }
 
 // ---------------------------------------------------------------------------
-// Interactor bindings graph (cfs ac-08)
+// Interactor bindings graph
 // ---------------------------------------------------------------------------
 
 /// Build the list of interactor-to-selection bindings.
@@ -1020,15 +1018,15 @@ fn collect_interactor_bindings(
 }
 
 // ---------------------------------------------------------------------------
-// Brushable interactor bindings (cfs3 ac-05, ac-09)
+// Brushable interactor bindings
 // ---------------------------------------------------------------------------
 
 /// Mirror of `brightfield_ui::brush::BrushKind`. Lives in brightfield-spec so
 /// `SpecAnalysis` can name brushable interactor variants without a reverse
 /// dependency on brightfield-ui. Variant order matches the UI-side enum.
 ///
-/// `Point` is forward-compat for input-widget-driven point selections (card
-/// 0005 v3); the spec-side analysis filters it out of `brushable_bindings`
+/// `Point` is forward-compat for input-widget-driven point selections;
+/// the spec-side analysis filters it out of `brushable_bindings`
 /// because no chart-side dispatch path exists for it in v3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BrushKind {
@@ -1038,7 +1036,7 @@ pub enum BrushKind {
     IntervalY,
     /// 2D interval brush (intervalXY).
     IntervalXY,
-    /// Point selection (forward-compat — card 0005 v3 input-widget surface).
+    /// Point selection (forward-compat — the input-widget surface).
     Point,
     /// X-channel point selection (toggleX): `x = <clicked value>`.
     PointX,
@@ -1147,7 +1145,7 @@ fn collect_brushable_bindings(
                             // both sides must use the stable plot identity —
                             // otherwise a plot's interactor (`…/plot[1]`) and its
                             // mark (`…/plot[0]`) never match and the plot filters
-                            // itself. (card 0006)
+                            // itself.
                             parent_plot: ComponentPath(path.to_string()),
                             selection: pr.0.clone(),
                             kind,
@@ -1198,7 +1196,7 @@ fn option_string(mark: &Mark, key: &str) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
-// Legend producer bindings (card 0009, lcf ac-01)
+// Legend producer bindings
 // ---------------------------------------------------------------------------
 
 /// A legend's producer binding to a selection — one entry per standalone
@@ -1246,7 +1244,7 @@ fn plot_colour_column(plot: &crate::ast::PlotNode) -> Option<String> {
     None
 }
 
-/// Walk the spec and build the legend producer bindings (card 0009).
+/// Walk the spec and build the legend producer bindings.
 ///
 /// `for:`-resolution mirrors the app's legend resolver (`resolve_legends`):
 /// an explicit `for: <name>` must match a colour-encoded plot's `name`
@@ -1293,7 +1291,7 @@ pub fn build_legend_bindings(spec: &Spec, warnings: &mut Vec<ParseWarning>) -> V
             continue;
         }
         let Some(ValueOrParamRef::Param(selection)) = node.options.get("as") else {
-            continue; // no `as:` — display-only, exactly as card 0016 shipped
+            continue; // no `as:` — display-only
         };
         // Self-exclusion gating: compile_selection self-excludes ONLY under
         // Crossfilter resolution, so a legend bound to any other target would
@@ -1342,12 +1340,12 @@ pub fn build_legend_bindings(spec: &Spec, warnings: &mut Vec<ParseWarning>) -> V
 }
 
 // ---------------------------------------------------------------------------
-// Highlight interactor bindings (card 0021, conditional encoding)
+// Highlight interactor bindings (conditional encoding)
 // ---------------------------------------------------------------------------
 
 /// Reserved output column carrying a highlight mark's per-row membership in its
 /// `by:` selection — the SQL emitter projects `(<pred>) AS __bf_selected` and the
-/// renderer reads the boolean back to dim non-matching rows (card 0021). The
+/// renderer reads the boolean back to dim non-matching rows. The
 /// `__bf_` prefix follows the density/hexbin geometry convention so it can't
 /// collide with a user column. Defined here in the shared base crate because
 /// both `brightfield-sql` (writer) and `brightfield-render` (reader) reference it.
@@ -1355,7 +1353,7 @@ pub const SELECTED_COLUMN: &str = "__bf_selected";
 
 /// The `otherwise` override surface a `highlight` interactor applies to the
 /// NON-matching (deemphasised) rows — the flat declarative fields from Mosaic's
-/// `Highlight.ts` (card 0021). Every field is optional; an all-`None` style
+/// `Highlight.ts`. Every field is optional; an all-`None` style
 /// means "use the default deemphasis" (opacity 0.2). `stroke`/`stroke_opacity`
 /// are MODELLED here for corpus fidelity but left unimplemented at the render
 /// site (no fill-vs-stroke discriminator, no driving fixture — see the spec's
@@ -1384,7 +1382,7 @@ pub struct HighlightStyle {
 /// its plot's marks per the live membership of `by:`. The membership is a
 /// per-row boolean the mark's query PROJECTS (`… AS __bf_selected`) rather than
 /// a WHERE that drops rows, so a highlight-bound mark keeps its FULL batch and
-/// DIMS (the ce-ac05 classification: highlight-not-filter).
+/// DIMS (the highlight-not-filter classification).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HighlightBinding {
     /// Component path of the highlight interactor
@@ -1405,7 +1403,7 @@ pub struct HighlightBinding {
 /// (`apply_highlight`) and therefore dims. Every one lowers via `SimpleLowerer`
 /// (row-level `SELECT * FROM table`), so the `__bf_selected` membership
 /// projection over them evaluates against the full source table and is always
-/// SQL-safe (the ce-ac05 / ce-ac09 correctness anchor). The other 12 families
+/// SQL-safe (the correctness anchor). The other 12 families
 /// stay highlight no-ops.
 pub fn mark_honours_highlight(kind: MarkKind) -> bool {
     matches!(
@@ -1424,7 +1422,7 @@ pub fn mark_honours_highlight(kind: MarkKind) -> bool {
 /// so a `SELECT *, (<pred>) AS __bf_selected` wrapper would evaluate the
 /// predicate against the grouped output — a non-group-key column reference would
 /// SQL-error. None of these is a honouring family, so guarding them out costs no
-/// visible dimming; it only prevents a runtime crash (ce-ac09). Kept
+/// visible dimming; it only prevents a runtime crash. Kept
 /// deliberately conservative (Cell aggregates only under a self-aggregating
 /// fill, but is guarded unconditionally — it never dims regardless).
 fn mark_kind_aggregates(kind: MarkKind) -> bool {
@@ -1490,14 +1488,14 @@ fn resolve_highlight_style(interactor: &Interactor) -> HighlightStyle {
     }
 }
 
-/// Walk the spec and build the highlight consumer bindings (card 0021).
+/// Walk the spec and build the highlight consumer bindings.
 ///
 /// One entry per `(Plot, highlight Interactor)` pair whose `by:` resolves to a
 /// known selection (declared in `params:` OR created by an `as:` binding),
 /// mirroring [`validate_filter_by_refs`]'s known-selection set. An unknown or
 /// value-param `by:` pushes a `HighlightBinding*` warning and forms no binding.
 /// A highlight on a plot whose data mark AGGREGATES in SQL pushes
-/// `HighlightOnAggregate` and forms no binding (ce-ac09 guard) — the row-level
+/// `HighlightOnAggregate` and forms no binding — the row-level
 /// honouring families (dot/bar/rect/text) are unaffected.
 pub fn build_highlight_bindings(
     spec: &Spec,
@@ -1560,7 +1558,7 @@ fn collect_highlight_bindings(
                             }
                             continue;
                         }
-                        // Aggregate guard (ce-ac09) — PER MARK, matching emit's
+                        // Aggregate guard — PER MARK, matching emit's
                         // per-plan `plan_aggregates` guard. An aggregating mark
                         // (density/cell/hexbin/…) can't carry the membership
                         // projection (it evaluates against grouped output), so it
@@ -1646,7 +1644,7 @@ fn collect_highlight_bindings(
 /// `propagate_selection` spine `filterBy` rides. Called by
 /// [`build_selection_subscriber_graph`] after the filterBy walk, so a mark that
 /// both `filterBy`-s one selection and highlights on another lands in both
-/// subscriber sets (ce-ac05: each binding resolved independently).
+/// subscriber sets (each binding resolved independently).
 ///
 /// Only the honouring, row-level families are registered. A honouring family
 /// never aggregates (the two kind sets are disjoint), so an aggregate mark is
@@ -1706,7 +1704,7 @@ fn collect_highlight_subscribers(
 }
 
 // ---------------------------------------------------------------------------
-// SpecAnalysis (ac-09, extended with cfs fields)
+// SpecAnalysis (extended with cfs fields)
 // ---------------------------------------------------------------------------
 
 /// Result of static analysis on a parsed Spec.
@@ -1724,15 +1722,15 @@ pub struct SpecAnalysis {
     pub interactor_bindings: Vec<InteractorBinding>,
     /// Brushable interactor bindings — derived view filtering
     /// `interactor_bindings` to brush-compatible kinds and pairing each with
-    /// resolved channel columns. Card 0006 v3 (cfs3) ac-05.
+    /// resolved channel columns.
     pub brushable_bindings: Vec<BrushableBinding>,
     /// Legend producer bindings — one per standalone `legend: color` node
-    /// bound `as:` a selection, resolved to its `for:` plot. Card 0009
-    /// (legend click-to-filter) lcf ac-01.
+    /// bound `as:` a selection, resolved to its `for:` plot (legend
+    /// click-to-filter).
     pub legend_bindings: Vec<LegendBinding>,
     /// Highlight consumer bindings — one per `highlight, by: $sel` interactor,
     /// carrying its parent plot, the consumed selection, and the `otherwise`
-    /// deemphasis style. Card 0021 (conditional encoding) ce-ac02.
+    /// deemphasis style (conditional encoding).
     pub highlight_bindings: Vec<HighlightBinding>,
     /// Diagnostics discovered during analysis.
     pub warnings: Vec<ParseWarning>,
@@ -1785,11 +1783,11 @@ fn collect_produced_params(spec: &Spec) -> HashSet<String> {
 pub fn analyse_spec(spec: &Spec) -> Result<SpecAnalysis, ParseError> {
     let subscriber_graph = build_subscriber_graph(spec);
 
-    // Dead param warnings (rpw ac-04). A param PRODUCED by an interactor or
+    // Dead param warnings. A param PRODUCED by an interactor or
     // legend `as:` is not dead even with zero subscribers: interactors
     // suppress the warning via their pseudo-subscriber push in
     // collect_subscribers, and legends (whose `as:` is deliberately NOT a
-    // subscription — card 0009) are covered by the produced set, keeping the
+    // subscription) are covered by the produced set, keeping the
     // two producer forms symmetric.
     let produced = collect_produced_params(spec);
     let mut warnings: Vec<ParseWarning> = Vec::new();
@@ -1801,33 +1799,33 @@ pub fn analyse_spec(spec: &Spec) -> Result<SpecAnalysis, ParseError> {
         }
     }
 
-    // DAG and topological order (rpw ac-05, ac-06).
+    // DAG and topological order.
     let (dependency_edges, topological_order) = build_dependency_dag(spec)?;
 
-    // Type mismatch warnings (rpw ac-07).
+    // Type mismatch warnings.
     warnings.extend(check_param_type_mismatches(spec));
 
-    // filterBy validation — hard error on missing or non-selection refs (cfs ac-01..ac-04).
+    // filterBy validation — hard error on missing or non-selection refs.
     validate_filter_by_refs(spec)?;
 
-    // Interactor binding warnings (cfs ac-05, ac-06).
+    // Interactor binding warnings.
     warnings.extend(validate_interactor_bindings(spec));
 
-    // Selection subscriber graph (cfs ac-07).
+    // Selection subscriber graph.
     let selection_subscribers = build_selection_subscriber_graph(spec);
 
-    // Interactor bindings (cfs ac-08).
+    // Interactor bindings.
     let interactor_bindings = build_interactor_bindings(spec);
 
-    // Brushable bindings (cfs3 ac-05): derived from interactor_bindings,
+    // Brushable bindings: derived from interactor_bindings,
     // filtered to brush-compatible kinds, paired with parent plot channels.
     let brushable_bindings = build_brushable_bindings(spec);
 
-    // Legend producer bindings (card 0009, lcf ac-01) — pushes LegendBinding*
+    // Legend producer bindings — pushes LegendBinding*
     // warnings for `as:` targets that fail the crossfilter precondition.
     let legend_bindings = build_legend_bindings(spec, &mut warnings);
 
-    // Highlight consumer bindings (card 0021, ce-ac02) — pushes
+    // Highlight consumer bindings — pushes
     // HighlightBinding* / HighlightOnAggregate warnings for invalid `by:` refs
     // and aggregate-mark guards.
     let highlight_bindings = build_highlight_bindings(spec, &mut warnings);
@@ -1876,23 +1874,23 @@ mod tests {
         }
     }
 
-    /// rpw3 ac-01: topological_descendants on a simple linear chain
+    /// topological_descendants on a simple linear chain
     /// A → B → C returns [A, B, C].
     #[test]
-    fn rpw3_ac01_topological_descendants_simple_chain() {
+    fn topological_descendants_simple_chain() {
         let analysis = analysis_with_edges(vec![("A", "B"), ("B", "C")]);
         let order = topological_descendants(&analysis, "A");
         assert_eq!(order, vec!["A".to_string(), "B".to_string(), "C".to_string()]);
     }
 
-    /// rpw3 ac-02: topological_descendants on the athletes.yaml corpus
+    /// topological_descendants on the athletes.yaml corpus
     /// chain returns the expected descendant ordering.
     ///
     /// athletes.yaml DAG: category → query → hover (search input writes
     /// $query and reads $category; table input writes $hover and reads
     /// $query).
     #[test]
-    fn rpw3_ac02_topological_descendants_athletes_yaml() {
+    fn topological_descendants_athletes_yaml() {
         let yaml = std::fs::read_to_string(
             "vendor/mosaic-specs/yaml/athletes.yaml",
         )
@@ -1933,10 +1931,10 @@ mod tests {
         );
     }
 
-    /// rpw3 ac-03: topological_descendants on a leaf root (no DAG edges
+    /// topological_descendants on a leaf root (no DAG edges
     /// out, possibly not in DAG at all) returns [root].
     #[test]
-    fn rpw3_ac03_topological_descendants_leaf_root() {
+    fn topological_descendants_leaf_root() {
         // Root with zero outgoing edges, but present as a target of
         // another edge — its descendants are just [itself].
         let analysis = analysis_with_edges(vec![("upstream", "root")]);
@@ -1950,9 +1948,9 @@ mod tests {
         assert_eq!(order, vec!["isolated".to_string()]);
     }
 
-    // ----- card 0006 v2 cfs2_ac04: parent_plot helper -----
+    // ----- v2 parent_plot helper -----
     #[test]
-    fn cfs2_ac04_parent_plot_helper() {
+    fn parent_plot_helper() {
         // mark inside vconcat → plot
         assert_eq!(
             parent_plot("root/vconcat[0]/plot[1]/mark[dot]"),
@@ -1983,7 +1981,7 @@ mod tests {
         );
     }
 
-    // ----- card 0006: plot_node_path stable plot identity -----
+    // ----- plot_node_path stable plot identity -----
     #[test]
     fn crossfilter_plot_node_path_is_item_index_stable() {
         // A plot's mark and its brushing interactor have different item
@@ -2013,9 +2011,9 @@ mod tests {
         );
     }
 
-    // ac-01: typed fields on Input
+    // typed fields on Input
     #[test]
-    fn rpw_ac01_input_typed_fields_extracted() {
+    fn input_typed_fields_extracted() {
         let yaml = r#"
 data:
   athletes: { file: athletes.csv }
@@ -2045,7 +2043,7 @@ filterBy: $category
     }
 
     #[test]
-    fn rpw_ac01_input_no_typed_fields() {
+    fn input_no_typed_fields() {
         let yaml = r#"
 input: slider
 min: 0
@@ -2062,9 +2060,9 @@ max: 100
         }
     }
 
-    // ac-03: subscriber graph
+    // subscriber graph
     #[test]
-    fn rpw_ac03_subscriber_graph_basic() {
+    fn subscriber_graph_basic() {
         let yaml = r#"
 params:
   threshold: 42
@@ -2079,11 +2077,11 @@ plot:
         assert!(!subs.is_empty(), "threshold should have subscribers");
     }
 
-    /// pefr ac-06 (card 0014): a param embedded in a `data.filter` SQL
+    /// a param embedded in a `data.filter` SQL
     /// expression subscribes the mark, so propagate_param re-executes it.
-    /// Before card 0014, collect_spec_value_subscribers ignored Expressions.
+    /// Previously, collect_spec_value_subscribers ignored Expressions.
     #[test]
-    fn pefr_ac06_expression_param_subscribes() {
+    fn expression_param_subscribes() {
         let yaml = r#"
 params:
   k: 0
@@ -2108,7 +2106,7 @@ plot:
     }
 
     #[test]
-    fn rpw_ac03_subscriber_graph_multiple_subscribers() {
+    fn subscriber_graph_multiple_subscribers() {
         let yaml = r#"
 params:
   brush: { select: crossfilter }
@@ -2126,9 +2124,9 @@ vconcat:
         assert!(subs.len() >= 2, "brush should have at least 2 subscribers, got {}", subs.len());
     }
 
-    // ac-04: dead param warning
+    // dead param warning
     #[test]
-    fn rpw_ac04_dead_param_warning() {
+    fn dead_param_warning() {
         let yaml = r#"
 params:
   unused: 42
@@ -2145,7 +2143,7 @@ plot:
     }
 
     #[test]
-    fn rpw_ac04_no_dead_param_when_referenced() {
+    fn no_dead_param_when_referenced() {
         let yaml = r#"
 params:
   brush: { select: crossfilter }
@@ -2161,9 +2159,9 @@ plot:
         );
     }
 
-    // ac-05: topological ordering
+    // topological ordering
     #[test]
-    fn rpw_ac05_topological_order_chain() {
+    fn topological_order_chain() {
         let yaml = r#"
 params:
   category: All
@@ -2191,9 +2189,9 @@ vconcat:
         );
     }
 
-    // ac-06: cycle detection
+    // cycle detection
     #[test]
-    fn rpw_ac06_cycle_detected() {
+    fn cycle_detected() {
         let yaml = r#"
 params:
   a: 1
@@ -2214,9 +2212,9 @@ vconcat:
         }
     }
 
-    // ac-07: type mismatch
+    // type mismatch
     #[test]
-    fn rpw_ac07_slider_to_selection_mismatch() {
+    fn slider_to_selection_mismatch() {
         let yaml = r#"
 params:
   brush: { select: crossfilter }
@@ -2232,7 +2230,7 @@ as: $brush
     }
 
     #[test]
-    fn rpw_ac07_table_to_scalar_mismatch() {
+    fn table_to_scalar_mismatch() {
         let yaml = r#"
 params:
   count: 42
@@ -2248,7 +2246,7 @@ as: $count
     }
 
     #[test]
-    fn rpw_ac07_slider_to_numeric_no_mismatch() {
+    fn slider_to_numeric_no_mismatch() {
         let yaml = r#"
 params:
   threshold: 42
@@ -2263,9 +2261,9 @@ as: $threshold
         );
     }
 
-    // ac-08: type enum constructors
+    // type enum constructors
     #[test]
-    fn rpw_ac08_widget_output_type_mapping() {
+    fn widget_output_type_mapping() {
         assert_eq!(WidgetOutputType::from_input_kind(InputKind::Slider), WidgetOutputType::ScalarNumeric);
         assert_eq!(WidgetOutputType::from_input_kind(InputKind::Menu), WidgetOutputType::ScalarString);
         assert_eq!(WidgetOutputType::from_input_kind(InputKind::Search), WidgetOutputType::ScalarString);
@@ -2273,7 +2271,7 @@ as: $threshold
     }
 
     #[test]
-    fn rpw_ac08_param_declared_type_mapping() {
+    fn param_declared_type_mapping() {
         assert_eq!(
             ParamDeclaredType::from_param_node(&ParamNode::Value(SpecValue::Integer(42))),
             ParamDeclaredType::ScalarNumeric
@@ -2301,9 +2299,9 @@ as: $threshold
         assert_eq!(ParamDeclaredType::from_param_node(brush), ParamDeclaredType::Selection);
     }
 
-    // ac-09: integrated analysis
+    // integrated analysis
     #[test]
-    fn rpw_ac09_analyse_spec_integration() {
+    fn analyse_spec_integration_subscriber_graph_and_dead_params() {
         let yaml = r#"
 params:
   category: { select: intersect }
@@ -2328,9 +2326,9 @@ vconcat:
         assert!(analysis.warnings.iter().any(|w| matches!(w, ParseWarning::DeadParam { name } if name == "unused")));
     }
 
-    // ac-10: empty spec produces empty analysis
+    // empty spec produces empty analysis
     #[test]
-    fn rpw_ac10_empty_spec_no_warnings() {
+    fn empty_spec_no_warnings() {
         let yaml = r#"
 data:
   flights: { file: flights.parquet }
@@ -2346,9 +2344,9 @@ plot:
         assert!(analysis.warnings.is_empty());
     }
 
-    // ac-02: vendored specs with inputs parse correctly
+    // vendored specs with inputs parse correctly
     #[test]
-    fn rpw_ac02_vendored_specs_parse_with_typed_fields() {
+    fn vendored_specs_parse_with_typed_fields() {
         use std::path::PathBuf;
         let corpus = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("vendor")
@@ -2408,9 +2406,9 @@ plot:
     // cfs (cross-filtered selections) tests
     // -----------------------------------------------------------------------
 
-    // ac-01: filterBy on mark data referencing a missing param → error
+    // filterBy on mark data referencing a missing param → error
     #[test]
-    fn cfs_ac01_filterby_mark_missing_param() {
+    fn filterby_mark_missing_param() {
         let yaml = r#"
 params:
   brush: { select: crossfilter }
@@ -2429,9 +2427,9 @@ plot:
         }
     }
 
-    // ac-02: filterBy on mark data referencing a value param → error
+    // filterBy on mark data referencing a value param → error
     #[test]
-    fn cfs_ac02_filterby_mark_value_param() {
+    fn filterby_mark_value_param() {
         let yaml = r#"
 params:
   threshold: 42
@@ -2450,9 +2448,9 @@ plot:
         }
     }
 
-    // ac-03: filterBy on input referencing a missing param → error
+    // filterBy on input referencing a missing param → error
     #[test]
-    fn cfs_ac03_filterby_input_missing_param() {
+    fn filterby_input_missing_param() {
         let yaml = r#"
 params:
   brush: { select: crossfilter }
@@ -2469,9 +2467,9 @@ filterBy: $ghost
         }
     }
 
-    // ac-04: filterBy on input referencing a value param → error
+    // filterBy on input referencing a value param → error
     #[test]
-    fn cfs_ac04_filterby_input_value_param() {
+    fn filterby_input_value_param() {
         let yaml = r#"
 params:
   x: 1
@@ -2489,9 +2487,9 @@ filterBy: $x
         }
     }
 
-    // ac-05: interactor as: missing param → warning
+    // interactor as: missing param → warning
     #[test]
-    fn cfs_ac05_interactor_binding_missing() {
+    fn interactor_binding_missing() {
         let yaml = r#"
 plot:
   - select: intervalX
@@ -2509,9 +2507,9 @@ plot:
         );
     }
 
-    // ac-06: interactor as: value param → warning
+    // interactor as: value param → warning
     #[test]
-    fn cfs_ac06_interactor_binding_non_selection() {
+    fn interactor_binding_non_selection() {
         let yaml = r#"
 params:
   count: 42
@@ -2531,9 +2529,9 @@ plot:
         );
     }
 
-    // ac-07: selection subscriber graph
+    // selection subscriber graph
     #[test]
-    fn cfs_ac07_selection_subscriber_graph() {
+    fn selection_subscriber_graph() {
         let yaml = r#"
 params:
   brush: { select: crossfilter }
@@ -2552,7 +2550,7 @@ vconcat:
     }
 
     #[test]
-    fn cfs_ac07_selection_subscriber_graph_excludes_value_params() {
+    fn selection_subscriber_graph_excludes_value_params() {
         let yaml = r#"
 params:
   threshold: 42
@@ -2570,9 +2568,9 @@ plot:
         assert!(graph.contains_key("brush"));
     }
 
-    // ac-08: interactor bindings
+    // interactor bindings
     #[test]
-    fn cfs_ac08_interactor_bindings() {
+    fn interactor_bindings() {
         let yaml = r#"
 params:
   brush: { select: crossfilter }
@@ -2594,9 +2592,9 @@ vconcat:
         assert!(bindings.iter().all(|b| b.selection == "brush"), "all bindings should target brush");
     }
 
-    // ac-09: SpecAnalysis integration with new fields
+    // SpecAnalysis integration with new fields
     #[test]
-    fn cfs_ac09_analyse_spec_integration() {
+    fn analyse_spec_integration_selection_subscribers_and_bindings() {
         let yaml = r#"
 params:
   brush: { select: crossfilter }
@@ -2627,9 +2625,9 @@ vconcat:
         // No errors — valid crossfilter spec
     }
 
-    // ac-10: vendored corpus passes analyse_spec
+    // vendored corpus passes analyse_spec
     #[test]
-    fn cfs_ac10_vendored_corpus_passes_analyse() {
+    fn vendored_corpus_passes_analyse() {
         use std::path::PathBuf;
         let corpus = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("vendor")
@@ -2651,9 +2649,9 @@ vconcat:
         assert!(tested > 0, "no vendored specs found");
     }
 
-    // ac-11: round-trip preserved (filterBy on selection still round-trips)
+    // round-trip preserved (filterBy on selection still round-trips)
     #[test]
-    fn cfs_ac11_round_trip_with_selection_filterby() {
+    fn round_trip_with_selection_filterby() {
         let yaml = r#"
 params:
   brush: { select: crossfilter }
@@ -2670,15 +2668,15 @@ plot:
     }
 
     // -----------------------------------------------------------------------
-    // cfs3 — brushable_bindings derived view (card 0006 v3)
+    // cfs3 — brushable_bindings derived view (v3)
     // -----------------------------------------------------------------------
 
-    /// cfs3_ac05: build_brushable_bindings filters interactor_bindings to
+    /// build_brushable_bindings filters interactor_bindings to
     /// brush-compatible kinds (IntervalX/Y/XY) and pairs each with the
     /// parent plot's resolved channel columns. Non-brushable interactors
     /// (panZoom etc.) are excluded.
     #[test]
-    fn cfs3_ac05_brushable_bindings_built() {
+    fn brushable_bindings_built() {
         let yaml = r#"
 params:
   brush: { select: crossfilter }
@@ -2718,13 +2716,13 @@ plot:
         assert_eq!(bb.channels.y.as_deref(), Some("delay"));
     }
 
-    /// cfs3_ac09 (sub-clause c — spec-side property): a plot containing only
+    /// Sub-clause c — spec-side property: a plot containing only
     /// non-brushable interactors (panZoom) produces zero brushable bindings.
     /// Asserts the property "non-brushable kinds excluded from
     /// brushable_bindings" without coupling to the UI-side BrushKind::Point
     /// naming.
     #[test]
-    fn cfs3_ac09_non_brushable_kinds_excluded() {
+    fn non_brushable_kinds_excluded() {
         let yaml = r#"
 params: {}
 plot:
@@ -2743,7 +2741,7 @@ plot:
         );
     }
 
-    /// cfs point-selection (card 0006): a `toggleX` interactor becomes a
+    /// cfs point-selection: a `toggleX` interactor becomes a
     /// brushable binding of kind `PointX` carrying the plot's x column; a
     /// `toggleY` becomes `PointY` on the y column. This wires point selections
     /// into the same binding pipeline the interval brushes use.
@@ -2781,11 +2779,11 @@ plot:
     }
 
     // -----------------------------------------------------------------------
-    // Legend producer bindings — card 0009 (legend click-to-filter), lcf ac-01
+    // Legend producer bindings — legend click-to-filter
     // -----------------------------------------------------------------------
 
     /// Two plots sharing a categorical column, with the legend bound
-    /// `as: $sel for: scatter` — the lcf_ac01 fixture.
+    /// `as: $sel for: scatter` — the fixture.
     const LEGEND_BINDING_SPEC: &str = r#"
 params:
   sel: { select: crossfilter }
@@ -2811,12 +2809,12 @@ hconcat:
       y: y
 "#;
 
-    /// lcf_ac01: analysing a `legend: color as: $sel for: scatter` spec yields
+    /// analysing a `legend: color as: $sel for: scatter` spec yields
     /// a LegendBinding whose contributor is the `for:` plot's NODE path (the
     /// self-exclusion identity), whose colour column comes from that plot's
     /// first mark's fill channel, and whose legend path locates the node.
     #[test]
-    fn lcf_ac01_legend_as_binding_resolves_producer_fields() {
+    fn legend_as_binding_resolves_producer_fields() {
         let out = parse_spec(LEGEND_BINDING_SPEC, Format::Yaml).expect("parses");
         let analysis = analyse_spec(&out.spec).expect("analysis succeeds");
 
@@ -2839,12 +2837,12 @@ hconcat:
         assert_eq!(b.legend_path.0, "root/hconcat[1]", "the legend node's own path");
     }
 
-    /// lcf_ac01 (the backwards-wiring trap, pinned): the legend's `as:` is a
+    /// The backwards-wiring trap, pinned: the legend's `as:` is a
     /// producer binding, so the legend must NOT appear in `$sel`'s subscriber
     /// graph — only marks subscribe (via filterBy). Before the fix the
     /// analysis arm registered `as: $sel` as a legend subscription.
     #[test]
-    fn lcf_ac01_legend_is_not_a_subscriber_of_its_selection() {
+    fn legend_is_not_a_subscriber_of_its_selection() {
         let out = parse_spec(LEGEND_BINDING_SPEC, Format::Yaml).expect("parses");
         let analysis = analyse_spec(&out.spec).expect("analysis succeeds");
 
@@ -2862,12 +2860,12 @@ hconcat:
         );
     }
 
-    /// lcf_ac01 (for:-resolution matches resolve_legends semantics): with
+    /// For:-resolution matches resolve_legends semantics: with
     /// `for:` absent, the legend binds to the dashboard's SOLE colour-encoded
     /// plot; with two colour-encoded plots the fallback is ambiguous and no
     /// binding forms. A legend without `as:` never binds (display-only).
     #[test]
-    fn lcf_ac01_sole_colour_plot_fallback_and_display_only() {
+    fn sole_colour_plot_fallback_and_display_only() {
         // for:-absent + one colour-encoded plot → binds to it.
         let sole = r#"
 params:
@@ -2916,7 +2914,7 @@ hconcat:
             analysis.legend_bindings
         );
 
-        // No `as:` → display-only, no binding (0016 behaviour preserved).
+        // No `as:` → display-only, no binding (behaviour preserved).
         let display_only = r#"
 hconcat:
   - plot:
@@ -3218,13 +3216,13 @@ hconcat:
         );
     }
 
-    // --- card 0021: highlight consumer bindings (ce-ac02) ---
+    // --- highlight consumer bindings ---
 
-    /// ce-ac02: a `highlight, by: $sel, opacity:` builds one binding carrying the
+    /// a `highlight, by: $sel, opacity:` builds one binding carrying the
     /// parent-plot identity, the consumed selection, and the resolved style; and
     /// the plot's honouring dot becomes a subscriber to `$sel`.
     #[test]
-    fn ce_ac02_highlight_binding_and_subscriber() {
+    fn highlight_binding_and_subscriber() {
         let yaml = r#"
 params:
   brush: { select: single }
@@ -3247,7 +3245,7 @@ plot:
         assert_eq!(b.parent_plot.0, "root");
         assert_eq!(b.style.opacity, Some(0.1));
         // The dot honours highlight → it subscribes to `brush` (so a brush change
-        // re-queries it with the __bf_selected projection). ce-ac05.
+        // re-queries it with the __bf_selected projection).
         let subs = analysis
             .selection_subscribers
             .get("brush")
@@ -3258,9 +3256,9 @@ plot:
         );
     }
 
-    /// ce-ac02: `by:` a value param → `HighlightBindingNonSelection`, no binding.
+    /// `by:` a value param → `HighlightBindingNonSelection`, no binding.
     #[test]
-    fn ce_ac02_highlight_by_value_param_warns_non_selection() {
+    fn highlight_by_value_param_warns_non_selection() {
         let yaml = r#"
 params:
   notasel: 5
@@ -3285,9 +3283,9 @@ plot:
         );
     }
 
-    /// ce-ac02: `by:` an undeclared / unbound name → `HighlightBindingMissing`.
+    /// `by:` an undeclared / unbound name → `HighlightBindingMissing`.
     #[test]
-    fn ce_ac02_highlight_by_unknown_warns_missing() {
+    fn highlight_by_unknown_warns_missing() {
         let yaml = r#"
 plot:
   - mark: dot
@@ -3310,11 +3308,11 @@ plot:
         );
     }
 
-    /// ce-ac09: a highlight on a plot whose mark AGGREGATES in SQL (a heatmap)
+    /// a highlight on a plot whose mark AGGREGATES in SQL (a heatmap)
     /// is guarded out — `HighlightOnAggregate`, no binding — so the membership
     /// projection can't reference a dropped column and crash at runtime.
     #[test]
-    fn ce_ac09_highlight_on_aggregate_mark_guarded() {
+    fn highlight_on_aggregate_mark_guarded() {
         let yaml = r#"
 params:
   brush: { select: single }
@@ -3344,11 +3342,11 @@ plot:
         );
     }
 
-    /// FIX C (ce-ac09): a plot mixing a honouring dot with an aggregating heatmap
+    /// FIX C: a plot mixing a honouring dot with an aggregating heatmap
     /// keeps the DOT's highlight (per-mark guard, matching emit) — the heatmap is
     /// still warned but does not veto the dot. Only the dot subscribes.
     #[test]
-    fn ce_ac09_mixed_plot_binds_honouring_mark_warns_aggregate() {
+    fn mixed_plot_binds_honouring_mark_warns_aggregate() {
         let yaml = r#"
 params:
   brush: { select: single }

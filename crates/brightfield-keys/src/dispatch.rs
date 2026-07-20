@@ -1,10 +1,10 @@
-//! The dispatch-resolution table (ac-07): a PROJECTION of the same keymap-as-data
+//! The dispatch-resolution table: a PROJECTION of the same keymap-as-data
 //! vec `main` feeds to `cx.bind_keys` — not a hand-maintained mirror. It encodes,
 //! and is tested for, the context/overlay resolution invariants.
 //!
 //! IMPORTANT (honesty): this proves the projection is faithful to the binding vec
 //! and internally consistent. It does NOT prove GPUI's live dispatch conforms to
-//! these invariants — that conformance is eyeball-verified by ac-09 / ac-12.
+//! these invariants — that conformance is eyeball-verified.
 
 use crate::registry::{BindingContext, BoundKey};
 
@@ -24,7 +24,7 @@ pub enum DispatchContext {
 
 /// Whether a binding in `binding` context resolves in the `dispatch` situation.
 ///
-/// The matrix that encodes every ac-07 invariant:
+/// The matrix that encodes every dispatch-resolution invariant:
 /// - a Global (`context = None`) binding resolves from BOTH canvas and editor;
 /// - a Workspace bare verb resolves ONLY when the canvas is focused — never under
 ///   the editor, never under an open overlay;
@@ -86,14 +86,14 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac07_table_is_a_faithful_projection_of_the_binding_vec() {
+    fn table_is_a_faithful_projection_of_the_binding_vec() {
         let bound = keymap_bindings(&registry());
         let table = resolution_table(&bound);
         assert_eq!(table.rows(), bound.as_slice(), "table must equal the shipped binding vec");
     }
 
     #[test]
-    fn kbg_ac07_global_bindings_resolve_from_both_workspace_and_editor() {
+    fn global_bindings_resolve_from_both_workspace_and_editor() {
         let t = table();
         // toggle-focus (cmd-e) is Global — fires from both contexts.
         assert!(t.resolves("cmd-e", DispatchContext::CanvasFocused).contains(&"toggle-focus"));
@@ -101,7 +101,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac07_editor_suppresses_every_workspace_bare_verb() {
+    fn editor_suppresses_every_workspace_bare_verb() {
         let bound = keymap_bindings(&registry());
         let t = resolution_table(&bound);
         // No workspace-scoped binding resolves while the editor is focused.
@@ -117,7 +117,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac07_no_bare_verb_resolves_under_an_open_overlay() {
+    fn no_bare_verb_resolves_under_an_open_overlay() {
         let bound = keymap_bindings(&registry());
         let t = resolution_table(&bound);
         for b in &bound {
@@ -132,7 +132,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac07_plot_focus_resolves_a_bare_verb() {
+    fn plot_focus_resolves_a_bare_verb() {
         let t = table();
         // A canvas-focused bare verb (p) resolves.
         assert!(t.resolves("p", DispatchContext::CanvasFocused).contains(&"toggle-presentation"));
@@ -140,7 +140,7 @@ mod tests {
     }
 
     #[test]
-    fn kbg_ac07_toggle_chord_is_unshadowed() {
+    fn toggle_chord_is_unshadowed() {
         let bound = keymap_bindings(&registry());
         // Exactly one binding claims cmd-e, and it is the focus toggle.
         let claimers: Vec<_> = bound.iter().filter(|b| b.keystrokes == "cmd-e").collect();

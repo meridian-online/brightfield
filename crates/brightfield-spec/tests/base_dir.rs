@@ -1,4 +1,4 @@
-//! Tests for ParseOutput.base_dir (ac-03).
+//! Tests for ParseOutput.base_dir.
 
 use brightfield_spec::parse::{parse_spec, parse_spec_path, Format};
 

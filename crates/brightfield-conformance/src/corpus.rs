@@ -1,4 +1,4 @@
-//! Corpus discovery (ac-07, ac-08).
+//! Corpus discovery.
 //!
 //! Two corpora are addressed:
 //!
@@ -6,7 +6,7 @@
 //!   `crates/brightfield-conformance/vendor/curated/yaml/`, each with a
 //!   sibling `<name>.expected.yaml`. The curated set gates all four
 //!   conformance layers.
-//! - **Observed** — card 0001's full vendored corpus at
+//! - **Observed** — the full vendored corpus at
 //!   `crates/brightfield-spec/vendor/mosaic-specs/yaml/`, referenced via
 //!   path const. Observed is layer-1 only.
 //!
@@ -24,7 +24,7 @@ use crate::expectations::{load_expectations, ExpectationError, LayerExpectations
 pub enum Corpus {
     /// Curated hand-picked set with per-layer expectations.
     Curated,
-    /// Full canon (card 0001's vendored corpus) — layer-1 only.
+    /// Full canon (the vendored corpus) — layer-1 only.
     Observed,
 }
 
@@ -39,7 +39,7 @@ impl Corpus {
     }
 }
 
-/// Crate-relative path to the observed corpus (card 0001's vendored set).
+/// Crate-relative path to the observed corpus (the vendored set).
 /// Resolved via `CARGO_MANIFEST_DIR` — stable across invocation contexts.
 pub const OBSERVED_CORPUS: &str = "../brightfield-spec/vendor/mosaic-specs/yaml";
 

@@ -1,4 +1,4 @@
-//! The argument-prompt collector (card 0023, clg-ac09) — framework-free.
+//! The argument-prompt collector — framework-free.
 //!
 //! Two of the five command-log verbs take arguments: `add-mark` collects a mark
 //! KIND, and `set-channel` collects a CHANNEL then a COLUMN. The Space palette's
@@ -12,7 +12,7 @@
 //!
 //! The palette argument-prompt overlay (shell's `Overlay::Arg`) drives this for
 //! the `a`/`e` verbs; the overlay itself is a macOS-eyeball surface, but the
-//! collector is unit-tested (clg-ac09).
+//! collector is unit-tested.
 
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_spec::edit::SpecEdit;
@@ -68,7 +68,7 @@ pub enum ArgOutcome {
 /// A running argument collection for one argument-taking verb. Created when the
 /// verb fires on a focused plot, advanced by [`ArgCollector::pick`], and dropped
 /// (by the overlay setting its slot to `None`) on Esc — the "cancel to Idle"
-/// leg (clg-ac09).
+/// leg.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArgCollector {
     plot: ComponentPath,
@@ -187,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn clg_ac09_add_mark_reaches_ready_after_one_kind_pick() {
+    fn add_mark_reaches_ready_after_one_kind_pick() {
         let mut c = ArgCollector::add_mark(cp("root"));
         assert_eq!(c.step(), &ArgStep::Kind);
         assert!(c.options(&[]).contains(&"dot".to_string()));
@@ -206,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn clg_ac09_set_channel_needs_a_channel_then_a_column() {
+    fn set_channel_needs_a_channel_then_a_column() {
         let mut c = ArgCollector::set_channel(cp("root"), 0);
         assert_eq!(c.step(), &ArgStep::Channel);
         assert_eq!(c.pick("x"), ArgOutcome::Pending, "channel pick advances to column");
@@ -226,14 +226,14 @@ mod tests {
     }
 
     #[test]
-    fn clg_ac09_an_unknown_channel_is_invalid() {
+    fn an_unknown_channel_is_invalid() {
         let mut c = ArgCollector::set_channel(cp("root"), 0);
         assert_eq!(c.pick("wobble"), ArgOutcome::Invalid);
         assert_eq!(c.step(), &ArgStep::Channel, "an invalid pick does not advance");
     }
 
     #[test]
-    fn clg_ac09_fill_is_offered_as_a_channel() {
+    fn fill_is_offered_as_a_channel() {
         // fill/stroke bind an inline colour encoding — offered and gate-clean.
         assert!(channel_options().contains(&"fill".to_string()));
         assert!(channel_options().contains(&"stroke".to_string()));

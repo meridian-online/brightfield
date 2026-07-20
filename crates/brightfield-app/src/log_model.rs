@@ -1,4 +1,4 @@
-//! Reload/save feedback log (card 0017, wsc_ac02) — framework-free.
+//! Reload/save feedback log — framework-free.
 //!
 //! The Log panel's model: an append-only, capacity-capped history of every
 //! feedback outcome the workspace notified about (reload rejections, editor
@@ -26,7 +26,7 @@ pub struct LogEntry {
 
 /// The append-only feedback log, newest first. There is deliberately NO
 /// clearing API: reload recovery clears the sticky error notification, never
-/// the history (wsc_ac02's no-clear-on-recovery rule).
+/// the history (the no-clear-on-recovery rule).
 #[derive(Debug, Default)]
 pub struct FeedbackLog {
     /// Entries, newest at index 0, at most [`LOG_CAP`].
@@ -58,10 +58,10 @@ impl FeedbackLog {
 mod tests {
     use super::*;
 
-    /// wsc_ac02 (append + order): appends land newest-first with the exact
+    /// Append + order: appends land newest-first with the exact
     /// severity + message pair they were given.
     #[test]
-    fn wsc_ac02_append_is_newest_first_verbatim() {
+    fn append_is_newest_first_verbatim() {
         let mut log = FeedbackLog::default();
         assert!(log.entries().is_empty());
 
@@ -86,10 +86,10 @@ mod tests {
         );
     }
 
-    /// wsc_ac02 (cap): the log holds at most LOG_CAP entries — the newest
+    /// Cap: the log holds at most LOG_CAP entries — the newest
     /// survive, the oldest fall off.
     #[test]
-    fn wsc_ac02_cap_drops_the_oldest() {
+    fn cap_drops_the_oldest() {
         let mut log = FeedbackLog::default();
         for i in 0..(LOG_CAP + 10) {
             log.append(Severity::Warning, format!("entry {i}"));
@@ -105,7 +105,7 @@ mod tests {
     }
 
     // The no-clear-on-recovery property is pinned at the SHELL level
-    // (shell.rs's wsc_ac02_recovery_clears_the_notification_not_the_log,
+    // (shell.rs's recovery_clears_the_notification_not_the_log,
     // review F4): it drives the real notify_reload_rejection +
     // clear_reload_error pair and asserts the notification cleared while
     // the log retained its entry. The model side of the guarantee is
