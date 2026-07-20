@@ -295,16 +295,13 @@ impl Workspace {
     /// which is the drift this whole file exists to end.
     #[must_use]
     pub fn tabbed_tiles(&self, view: ViewKind) -> HashSet<TileId> {
-        let mut tabbed = HashSet::new();
-        for (_, tile) in self.tree(view).tiles.iter() {
-            if let Tile::Container(Container::Tabs(tabs)) = tile {
-                tabbed.extend(tabs.children.iter().copied());
-            }
-        }
-        tabbed
+        tabbed_tiles_of(self.tree(view))
     }
 
     /// The tile a pane occupies in its own view, if it is still there.
+    ///
+    /// See also the free [`tile_of`], which answers the same question for a
+    /// bare tree.
     #[must_use]
     pub fn tile_of(&self, key: PaneKey) -> Option<TileId> {
         self.tree(key.view)
@@ -315,4 +312,56 @@ impl Workspace {
                 _ => None,
             })
     }
+}
+
+// ---------------------------------------------------------------------------
+// Tree queries, for a shell that has no workspace yet
+// ---------------------------------------------------------------------------
+
+/// The tiles in `tree` whose parent is a tab container — the header
+/// de-duplication rule [`crate::chrome::pane_frame`] takes as its `header`
+/// argument.
+///
+/// [`Workspace::tabbed_tiles`] is this over one view's tree, and delegates to
+/// it. Both exist because a view can be hosted before the window has a
+/// [`Workspace`]: the protocol panel keeps its own window while the one-app
+/// migration is pending, and it needs this rule now. A second hand-written
+/// spelling of it in that shell is exactly the drift the workbench exists to
+/// end, so the rule stays here and the shell borrows it.
+#[must_use]
+pub fn tabbed_tiles_of(tree: &Tree<PaneKey>) -> HashSet<TileId> {
+    let mut tabbed = HashSet::new();
+    for (_, tile) in tree.tiles.iter() {
+        if let Tile::Container(Container::Tabs(tabs)) = tile {
+            tabbed.extend(tabs.children.iter().copied());
+        }
+    }
+    tabbed
+}
+
+/// The tile `key` occupies in `tree`, if it is still there.
+///
+/// The free twin of [`Workspace::tile_of`], for the same reason
+/// [`tabbed_tiles_of`] is free.
+#[must_use]
+pub fn tile_of(tree: &Tree<PaneKey>, key: PaneKey) -> Option<TileId> {
+    tree.tiles.iter().find_map(|(id, tile)| match tile {
+        Tile::Pane(k) if *k == key => Some(*id),
+        Tile::Pane(_) | Tile::Container(_) => None,
+    })
+}
+
+/// The tab container in `tree` that holds `child`, if any.
+///
+/// A tab strip is the one container whose *active* child is state a view may
+/// need to drive — the protocol panel's steps sheet is a tab, and its `S` verb
+/// has to be able to activate it. Finding the strip by its child rather than by
+/// a remembered [`TileId`] means a layout reload, or a drag that re-parents the
+/// pane, cannot leave the shell holding an id that no longer names a strip.
+#[must_use]
+pub fn tabs_holding(tree: &Tree<PaneKey>, child: TileId) -> Option<TileId> {
+    tree.tiles.iter().find_map(|(id, tile)| match tile {
+        Tile::Container(Container::Tabs(tabs)) if tabs.children.contains(&child) => Some(*id),
+        Tile::Container(_) | Tile::Pane(_) => None,
+    })
 }

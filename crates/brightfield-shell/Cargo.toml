@@ -47,9 +47,10 @@ egui_tiles = { version = "0.16", features = ["serde"] }
 brightfield-protocol = { version = "0.1.0", path = "../brightfield-protocol" }
 brightfield-keys = { version = "0.1.0", path = "../brightfield-keys" }
 # The shell contract: Subject, Item, the registry, the one chrome file, the
-# workspace, and the Meridian -> egui Style/Visuals/fonts bridge. Only `design`
-# (re-exported from here as `brightfield_shell::design`) and `Mode` are consumed
-# so far — the views move onto the contract and the workspace in later steps.
+# workspace, and the Meridian -> egui Style/Visuals/fonts bridge. The protocol
+# view is expressed on it: four `Item`s, one `ItemRegistry`, and `PaneChrome`
+# drawing every pane's header, empty state and selection. The chart view and the
+# one-app `Workspace` follow in later steps.
 brightfield-workbench = { version = "0.1.0", path = "../brightfield-workbench" }
 
 [dev-dependencies]
