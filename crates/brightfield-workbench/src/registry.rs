@@ -252,3 +252,88 @@ impl<D: ?Sized> ItemRegistry<D> {
         egui_tiles::Tree::new(egui::Id::new(("brightfield-view", self.view)), root, tiles)
     }
 }
+
+// ---------------------------------------------------------------------------
+// The gate
+// ---------------------------------------------------------------------------
+
+/// Check every item in `reg` against the contract, over a document with
+/// nothing in it.
+///
+/// Each item is constructed, asked for its [`crate::Subject`] over
+/// `empty_doc`, and required to: report the id its spec claims; declare an
+/// empty state; write that empty state's prose to the house style; declare
+/// only registered verbs; and, unless it is the centre pane, name the verb
+/// that shows and hides it.
+///
+/// # Why this lives in the crate rather than in a test
+///
+/// [`crate::Subject::empty_state`] is an `Option` and returning `None`
+/// compiles cleanly, so nothing in the type system stops a pane from
+/// rendering a header and silence — which is the single most common defect in
+/// the shell this crate replaces, and the two worst instances of it were the
+/// two nobody had written at all. The gate is the thing that catches it, so
+/// shipping the gate as a test helper would mean every view re-implementing
+/// it, which is the per-surface drift this crate exists to end. One function,
+/// one call per view.
+///
+/// # Why it takes a document rather than requiring `Default`
+///
+/// A view's document may own something with no sensible `Default` — the
+/// charts document owns a canvas host. Requiring `D: Default` would make the
+/// gate inapplicable to exactly the view most worth gating, so the caller
+/// supplies whatever "empty" means for its own document.
+///
+/// # Errors
+///
+/// The reason the first failing item failed, naming the item and the rule, so
+/// a caller's assertion can pin *which* rule bit rather than merely that
+/// something did.
+pub fn audit<D: ?Sized>(reg: &ItemRegistry<D>, empty_doc: &D) -> Result<(), String> {
+    for spec in reg.specs() {
+        let id = spec.id;
+        let item = (spec.make)();
+        if item.item_id() != id {
+            return Err(format!(
+                "{id}: constructed item reports id {}",
+                item.item_id()
+            ));
+        }
+
+        let subject = item.subject(empty_doc);
+        let Some(empty) = &subject.empty_state else {
+            return Err(format!("{id}: shows no empty state on an empty document"));
+        };
+        if empty.headline.is_empty() {
+            return Err(format!("{id}: empty headline"));
+        }
+        if empty.headline.ends_with('.') {
+            return Err(format!("{id}: headline takes no terminal period"));
+        }
+        if !empty
+            .headline
+            .chars()
+            .next()
+            .is_some_and(char::is_uppercase)
+        {
+            return Err(format!("{id}: headline is sentence case"));
+        }
+        if empty.body.is_empty() {
+            return Err(format!("{id}: an empty state names what fills it"));
+        }
+
+        for verb in subject.declared_verbs() {
+            if !verb.is_registered() {
+                return Err(format!(
+                    "{id}: declares unregistered verb {:?}",
+                    verb.as_str()
+                ));
+            }
+        }
+
+        if spec.slot != Slot::Centre && spec.toggle.is_none() {
+            return Err(format!("{id}: a rail or tab with no toggle verb"));
+        }
+    }
+    Ok(())
+}

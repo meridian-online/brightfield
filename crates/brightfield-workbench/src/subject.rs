@@ -482,3 +482,66 @@ impl Subject {
         verbs
     }
 }
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+/// Unit tests rather than integration tests, for one reason: [`Verb`]'s field
+/// is private, so this is the only place in the workspace that can build the
+/// case the check exists to catch — a `Verb` that never went through
+/// [`Verb::new`] and names a command the registry does not have.
+///
+/// An integration test cannot construct that value, which is why the contract
+/// suite could assert `is_registered()` fifteen times over and still stay
+/// green with the function replaced by `true`: every verb it could reach had
+/// already been through `Verb::new`'s debug assertion.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A longname no keyboard registry will ever carry.
+    const INVENTED: &str = "summon-a-pony";
+
+    #[test]
+    fn the_keyboard_registry_really_does_not_have_the_invented_verb() {
+        // Otherwise the negative case below proves nothing.
+        assert!(!longnames().contains(INVENTED));
+    }
+
+    #[test]
+    fn a_verb_that_bypassed_the_constructor_is_not_registered() {
+        // Built by hand precisely as a release build could: the tuple
+        // constructor, no `Verb::new`, no debug assertion.
+        let smuggled = Verb(INVENTED);
+        assert!(
+            !smuggled.is_registered(),
+            "is_registered() accepted {INVENTED:?} — the release-mode backstop is gone"
+        );
+    }
+
+    #[test]
+    fn a_real_verb_is_registered() {
+        let real = *longnames()
+            .iter()
+            .next()
+            .expect("the keyboard registry is not empty");
+        assert!(Verb(real).is_registered());
+        assert!(Verb::new(real).is_registered());
+    }
+
+    #[test]
+    fn an_unregistered_verb_has_no_keystroke() {
+        assert_eq!(Verb(INVENTED).keys(), None);
+    }
+
+    /// `Verb::new` asserts with `debug_assert!`, so this holds only where
+    /// debug assertions are on — every normal test build, including CI's, but
+    /// not `--release`.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "the shell may not invent verbs")]
+    fn constructing_an_unregistered_verb_panics_in_debug() {
+        let _ = Verb::new(INVENTED);
+    }
+}

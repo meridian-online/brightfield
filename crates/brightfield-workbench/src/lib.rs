@@ -21,16 +21,26 @@
 //!
 //! Two properties make that a contract rather than a convention:
 //!
-//! - **A pane has no `Ui` to draw a header into.** [`Item::ui`] receives a
-//!   child `Ui` whose `max_rect` is the content rect the shell reserved
-//!   *below* the header band. Drawing a header is not discouraged; it is
-//!   unreachable.
-//! - **An empty state cannot be skipped.** [`Subject::empty_state`] is an
-//!   `Option`, and when it is `Some` the shell paints it and does **not**
-//!   call [`Item::ui`] at all. Forgetting one is not a silent blank pane; it
-//!   is a test failure, because [`EmptyState`] is a required struct with
-//!   required prose and the registry is the only route a pane has into a
-//!   layout.
+//! - **A pane's `Ui` is clipped below the header band.** [`Item::ui`]
+//!   receives a child `Ui` whose `max_rect` *and clip rect* are both the
+//!   content rect the shell reserved below the band, so a header drawn
+//!   through that `Ui` — its painter, its widgets, any `Ui` derived from it —
+//!   never reaches the pixels. The clip does not reach a pane that takes a
+//!   fresh layer from the `Context` (`egui::Area`, `ctx.layer_painter`), and
+//!   egui offers no way to withhold that from a `&mut Ui` holder; the honest
+//!   statement is *unreachable by accident, reviewable on purpose*. See
+//!   [`chrome::pane_frame`].
+//! - **A forgotten empty state is caught by an audit, not by the compiler.**
+//!   [`Subject::empty_state`] is an `Option` and returning `None` compiles
+//!   cleanly, so the type system does not catch one. [`audit`] does: it walks
+//!   a registry, asks every item for its subject over an empty document, and
+//!   rejects a missing empty state — along with prose that breaks the house
+//!   style, an unregistered verb, and a rail with no toggle. It ships in the
+//!   crate rather than as a helper each view's tests re-write, so a view gates
+//!   itself with one call; the registry being the only route a pane has into a
+//!   layout is what makes one call enough. And when `empty_state` is `Some`
+//!   the shell paints it and does **not** call [`Item::ui`], so a declared
+//!   empty state cannot then be skipped at draw time either.
 //!
 //! Because a `Subject` is plain data — no egui type, no colour, no GPU handle
 //! anywhere in it — the entire visible vocabulary of a surface can be
@@ -43,7 +53,8 @@
 //! - [`subject`] — [`Subject`] and its parts, plus [`Verb`]. No egui types.
 //! - [`item`] — [`Item`], [`ItemId`], [`PaneKey`], [`ItemCtx`].
 //! - [`registry`] — [`Slot`], [`ItemSpec`], [`ItemRegistry`]: the only route
-//!   from an item to a pane, and therefore the thing the contract tests gate.
+//!   from an item to a pane, and therefore the thing the contract tests gate;
+//!   plus [`audit`], the gate itself.
 //! - [`shell`] — the surfaces the *shell* owns rather than a pane:
 //!   [`ToolbarItem`], [`StatusItem`], [`ModalView`].
 //! - [`workspace`] — [`ViewKind`], the view a pane belongs to.
@@ -57,7 +68,7 @@ pub mod subject;
 pub mod workspace;
 
 pub use item::{Handled, Item, ItemCtx, ItemId, ItemMap, PaneKey, Request};
-pub use registry::{DockSide, ItemRegistry, ItemSpec, Slot};
+pub use registry::{audit, DockSide, ItemRegistry, ItemSpec, Slot};
 pub use shell::{ModalOutcome, ModalView, StatusItem, ToolbarItem, WorkspaceCtx, WorkspaceView};
 pub use subject::{
     Affordance, Crumb, Dirty, EmptyState, HideAffordance, Icon, StatusEntry, StatusSide, Subject,

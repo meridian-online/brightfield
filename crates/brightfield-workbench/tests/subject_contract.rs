@@ -6,9 +6,11 @@
 //!
 //! # What is being gated, and what is not
 //!
-//! The gate itself — [`gate`] — is the real thing, and later steps point it
-//! at the real registries as those views move onto the contract. Right now
-//! there are no real items, so it is pointed at a fixture registry. That is
+//! The gate itself is [`brightfield_workbench::audit`], which ships in the
+//! crate so that a view gates itself with one call rather than by
+//! re-implementing the rule; later steps point it at the real registries as
+//! those views move onto the contract. Right now there are no real items, so
+//! it is pointed at a fixture registry. That is
 //! not a self-fulfilling test: the fixture deliberately contains a *bad*
 //! registry as well as a good one, and the negative cases assert the gate
 //! rejects each specific defect. A gate that has never been shown to fail is
@@ -17,7 +19,7 @@
 use brightfield_keys::BindingContext;
 use brightfield_workbench::chrome;
 use brightfield_workbench::{
-    Affordance, DockSide, EmptyState, Handled, HideAffordance, Icon, Item, ItemCtx, ItemId,
+    audit, Affordance, DockSide, EmptyState, Handled, HideAffordance, Icon, Item, ItemCtx, ItemId,
     ItemRegistry, ItemSpec, Mode, PaneKey, Slot, StatusEntry, StatusSide, Subject, Tone,
     ToolbarEntry, ToolbarLocation, Verb, ViewKind,
 };
@@ -26,61 +28,15 @@ use brightfield_workbench::{
 // The gate
 // ---------------------------------------------------------------------------
 
-/// Every item in `reg`, asked for its subject over an empty document, must:
-/// declare an empty state; write that empty state's prose to the house style;
-/// declare only registered verbs; and, unless it is the centre pane, name the
-/// verb that shows and hides it.
+/// The gate, applied to the fixture through the crate's own [`audit`].
 ///
-/// Returns the reason it failed, so the negative cases can assert on *which*
-/// rule bit rather than merely that something did.
-fn gate<D: Default>(reg: &ItemRegistry<D>) -> Result<(), String> {
-    let empty_doc = D::default();
-    for spec in reg.specs() {
-        let id = spec.id;
-        let item = (spec.make)();
-        if item.item_id() != id {
-            return Err(format!(
-                "{id}: constructed item reports id {}",
-                item.item_id()
-            ));
-        }
-
-        let subject = item.subject(&empty_doc);
-        let Some(empty) = &subject.empty_state else {
-            return Err(format!("{id}: shows no empty state on an empty document"));
-        };
-        if empty.headline.is_empty() {
-            return Err(format!("{id}: empty headline"));
-        }
-        if empty.headline.ends_with('.') {
-            return Err(format!("{id}: headline takes no terminal period"));
-        }
-        if !empty
-            .headline
-            .chars()
-            .next()
-            .is_some_and(char::is_uppercase)
-        {
-            return Err(format!("{id}: headline is sentence case"));
-        }
-        if empty.body.is_empty() {
-            return Err(format!("{id}: an empty state names what fills it"));
-        }
-
-        for verb in subject.declared_verbs() {
-            if !verb.is_registered() {
-                return Err(format!(
-                    "{id}: declares unregistered verb {:?}",
-                    verb.as_str()
-                ));
-            }
-        }
-
-        if spec.slot != Slot::Centre && spec.toggle.is_none() {
-            return Err(format!("{id}: a rail or tab with no toggle verb"));
-        }
-    }
-    Ok(())
+/// It used to be a private copy of the rule living here in the test file,
+/// which meant every downstream view would have had to re-write it — the
+/// per-surface drift the crate exists to end. It is now
+/// [`brightfield_workbench::audit`], and this is a thin adapter that supplies
+/// the fixture's empty document.
+fn gate(reg: &ItemRegistry<Doc>) -> Result<(), String> {
+    audit(reg, &Doc::default())
 }
 
 // ---------------------------------------------------------------------------
@@ -345,6 +301,14 @@ fn a_rail_with_no_toggle_verb_fails_the_gate() {
 // Verbs
 // ---------------------------------------------------------------------------
 
+/// Note what this does and does not prove. It walks the fixture's declared
+/// verbs and finds them registered — but every one of them came from
+/// [`Verb::new`], which already asserted as much in this (debug) build, so it
+/// cannot fail while `is_registered` is intact. Its real job is to pin
+/// [`Subject::declared_verbs`]'s reach: that the walk visits toolbar entries,
+/// the empty state's affordance and a status entry's dismiss verb, so a new
+/// verb-bearing field cannot escape the gate by being forgotten here. The
+/// check that `is_registered` still *works* is in `subject.rs`'s unit tests.
 #[test]
 fn every_verb_the_fixture_declares_is_a_real_command() {
     let reg = good_registry();
@@ -362,10 +326,17 @@ fn every_verb_the_fixture_declares_is_a_real_command() {
     );
 }
 
+/// The *negative* half of the verb gate — a `Verb` that never went through
+/// [`Verb::new`] and names nothing in the registry — cannot be built from
+/// here: `Verb`'s field is private, so an integration test can only reach
+/// verbs that already passed the constructor's debug assertion and therefore
+/// cannot fail `is_registered()`. It lives in `subject.rs`'s unit tests,
+/// which are inside the module and can construct it.
+///
+/// What this test can honestly claim is the assumption that one rests on:
+/// the longname it smuggles in really is absent from the keyboard registry.
 #[test]
-fn an_invented_verb_is_not_registered() {
-    // Constructed without `Verb::new`'s debug assertion, which is exactly the
-    // release-mode hole `is_registered` exists to cover.
+fn the_longname_the_unit_test_smuggles_in_is_genuinely_unregistered() {
     let reg = brightfield_keys::registry();
     assert!(!reg.iter().any(|v| v.longname == "summon-a-pony"));
 }
@@ -523,7 +494,12 @@ fn an_item_id_deserialises_only_from_the_published_vocabulary() {
     assert!(serde_json::from_str::<PaneKey>(json).is_err());
 
     static VOCAB: &[ItemId] = &[LIST, DETAIL, NOTES];
-    assert!(ItemId::publish(VOCAB), "nothing else may have published");
+    ItemId::publish(VOCAB);
+    assert_eq!(
+        ItemId::known(),
+        VOCAB,
+        "nothing else in this binary may have published"
+    );
 
     let key = PaneKey::new(ViewKind::Protocol, DETAIL);
     assert_eq!(serde_json::to_string(&key).unwrap(), json);

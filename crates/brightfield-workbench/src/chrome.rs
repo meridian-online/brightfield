@@ -3,9 +3,11 @@
 //! Every pixel of chrome in the workbench is painted here: the pane frame and
 //! its header band, the breadcrumb, the toolbar row, the status rail, the
 //! empty state, the focus ring and the selection wash. Nowhere else in the
-//! workspace may draw any of those, and the type system helps: an
-//! [`crate::Item`] is handed a `Ui` that starts *below* the header band, so
-//! it has no surface to draw one on.
+//! workspace may draw any of those, and the framework helps as far as it can:
+//! an [`crate::Item`] is handed a `Ui` whose `max_rect` *and* clip rect both
+//! start below the header band, so anything the item paints through that `Ui`
+//! is clipped away. That is a clip, not a capability boundary — see
+//! [`pane_frame`] for what it does and does not reach.
 //!
 //! # The rules this file encodes
 //!
@@ -84,6 +86,21 @@ pub fn tone_colour(tone: Tone, mode: Mode) -> egui::Color32 {
     }
 }
 
+/// The label ink a toggled-on toolbar entry takes.
+///
+/// Split out because it is the whole of the disabled-toggle rule and a rule
+/// worth naming: the on-state is drawn *after* the button, so it is the last
+/// thing to touch those pixels and it alone decides whether the control still
+/// reads as unavailable.
+fn toggle_ink(enabled: bool, mode: Mode) -> Rgba {
+    let sem = semantic(mode.is_dark());
+    if enabled {
+        sem.text.primary
+    } else {
+        sem.text.disabled
+    }
+}
+
 fn ui_font() -> egui::FontId {
     egui::FontId::proportional(typography::UI_SIZE)
 }
@@ -98,10 +115,29 @@ fn ui_font() -> egui::FontId {
 /// when the pane's parent is a tab container, because the strip above it is
 /// already showing the title.
 ///
-/// The returned `Ui`'s `max_rect` is the content rect *below* the header band
-/// and inside the panel padding. That is the enforcement of "items do not
-/// draw their own headers" — it is not that drawing one is discouraged, it is
-/// that the item is never handed a surface that covers the band.
+/// The returned `Ui`'s `max_rect` **and** its clip rect are both the content
+/// rect *below* the header band and inside the panel padding. Two different
+/// strengths of guarantee follow, and it is worth being precise about which
+/// is which:
+///
+/// - **Enforced.** Anything painted through the returned `Ui` — `ui.painter()`,
+///   every widget added to it, every nested `Ui` derived from it — is clipped
+///   to the content rect and cannot land in the header band. `max_rect` alone
+///   would not do this: `Ui::new_child` clones the parent's painter and leaves
+///   its clip rect untouched (`egui::Ui::new_child`), so `max_rect` seeds
+///   layout only. The [`Ui::shrink_clip_rect`](egui::Ui::shrink_clip_rect)
+///   below is what makes the statement true.
+/// - **Not enforced.** An item that reaches around its `Ui` — `egui::Area`,
+///   `egui::Window`, `ctx.layer_painter`, anything that takes a fresh layer
+///   from the `Context` — is not clipped by this and can paint anywhere on
+///   screen. egui offers no way to withhold that from a `&mut Ui` holder.
+///   Against *that* the rule is a review rule, backed by the fact that a pane
+///   has no reason to want one and by there being no [`Subject`] field that
+///   could ask for it.
+///
+/// So: a pane cannot draw a header by accident, and the contract tests pin
+/// that. A pane that sets out to draw one through a new layer can, and the
+/// answer to that is code review, not the type system.
 pub fn pane_frame(ui: &mut egui::Ui, subject: &Subject, header: bool, mode: Mode) -> egui::Ui {
     let sem = semantic(mode.is_dark());
     let outer = ui.max_rect();
@@ -133,11 +169,17 @@ pub fn pane_frame(ui: &mut egui::Ui, subject: &Subject, header: bool, mode: Mode
     let pad = spacing::PANEL_PADDING.max(focus::RING_BLEED);
     let content = content.shrink(pad);
 
-    ui.new_child(
+    let mut child = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(content)
             .layout(*ui.layout()),
-    )
+    );
+    // `max_rect` seeds the `Placer` and nothing else — `new_child` clones the
+    // parent's painter, clip rect included, so without this line a pane could
+    // paint straight over the header band with `ui.painter()`. Shrinking the
+    // clip is what turns the doc comment above into a measured fact.
+    child.shrink_clip_rect(content);
+    child
 }
 
 /// The pane header: icon, title, dirty marker.
@@ -349,13 +391,29 @@ fn draw_toolbar_entry(
     let response = ui.add_enabled(entry.enabled, button);
 
     if entry.on {
-        selection_wash(ui, response.rect, mode);
+        // A disabled toggle still has to say it is on, but it must not come
+        // back looking available. `add_enabled(false, …)` greys the button and
+        // painting the full selection treatment on top put it straight back —
+        // a wash at selected strength and a label at primary ink is exactly
+        // what an *enabled* toggle looks like. So the on-state steps down with
+        // the control: outline instead of wash, disabled ink instead of
+        // primary.
+        if entry.enabled {
+            selection_wash(ui, response.rect, mode);
+        } else {
+            ui.painter().rect_stroke(
+                response.rect,
+                radius::CHIP,
+                egui::Stroke::new(1.0, colour(sem.borders.subtle)),
+                egui::StrokeKind::Inside,
+            );
+        }
         ui.painter().text(
             response.rect.center(),
             egui::Align2::CENTER_CENTER,
             &entry.label,
             ui_font(),
-            colour(sem.text.primary),
+            colour(toggle_ink(entry.enabled, mode)),
         );
     }
 

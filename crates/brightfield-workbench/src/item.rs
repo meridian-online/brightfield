@@ -29,7 +29,7 @@
 //! list instead of three that drift.
 
 use std::collections::BTreeMap;
-use std::sync::OnceLock;
+use std::sync::{PoisonError, RwLock};
 
 use serde::{Deserialize, Serialize};
 
@@ -48,7 +48,16 @@ use crate::Mode;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ItemId(&'static str);
 
-static KNOWN: OnceLock<&'static [ItemId]> = OnceLock::new();
+/// The process's item vocabulary, accumulated across every registry that
+/// publishes into it.
+///
+/// A `RwLock` rather than a `OnceLock` because there is one registry *per
+/// view* and [`ViewKind::ALL`] has more than one, so "publish" is inherently
+/// plural. The first draft of this was a `OnceLock` whose `set` result was
+/// dropped, which meant the second view's ids were discarded in silence and
+/// its saved layout failed to load forever — the exact failure the custom
+/// [`Deserialize`] was written to make loud.
+static KNOWN: RwLock<&'static [ItemId]> = RwLock::new(&[]);
 
 impl ItemId {
     /// An item id.
@@ -63,28 +72,53 @@ impl ItemId {
         self.0
     }
 
-    /// Publish this process's item vocabulary.
+    /// Add a registry's ids to this process's item vocabulary.
     ///
-    /// Called once at boot from the registries, before any layout file is
-    /// read, so that deserialising an id can check it against something. This
-    /// is a process global and that is a deliberate trade, not an oversight:
-    /// `egui_tiles::Tree<PaneKey>`'s derived `Deserialize` offers nowhere to
-    /// thread a context, and `DeserializeSeed` does not reach a nested
-    /// generic parameter. If it ever bites — two workspaces in one process,
-    /// say — the escape is to make the id owned and validate after load by
-    /// walking the tiles, which costs `Copy` on [`PaneKey`] and nothing else.
+    /// Called at boot **once per view registry** — [`ViewKind::ALL`] has more
+    /// than one — before any layout file is read, so that deserialising an id
+    /// can check it against something. Calls accumulate: every id ever
+    /// published stays published, and re-publishing an id already present is
+    /// a no-op, so a test binary that boots twice neither falls over nor
+    /// grows.
     ///
-    /// Returns whether this call was the one that published; a second call is
-    /// a no-op rather than a panic, so a test binary that boots twice does
-    /// not fall over.
-    pub fn publish(ids: &'static [ItemId]) -> bool {
-        KNOWN.set(ids).is_ok()
+    /// This is a process global and that is a deliberate trade, not an
+    /// oversight: `egui_tiles::Tree<PaneKey>`'s derived `Deserialize` offers
+    /// nowhere to thread a context, and `DeserializeSeed` does not reach a
+    /// nested generic parameter. If it ever bites — two workspaces in one
+    /// process wanting *different* vocabularies, say — the escape is to make
+    /// the id owned and validate after load by walking the tiles, which costs
+    /// `Copy` on [`PaneKey`] and nothing else.
+    ///
+    /// # Why this leaks
+    ///
+    /// Merging two `&'static [ItemId]` needs a new allocation that outlives
+    /// both, so a merge leaks one `Vec`. That is bounded by the number of
+    /// `publish` calls — one per view, at boot — and buys [`ItemId::known`]
+    /// its `&'static [ItemId]` return, which is what lets `Deserialize` look
+    /// an id up without allocating on every pane in a layout file. Publishing
+    /// the first registry does not allocate at all.
+    pub fn publish(ids: &'static [ItemId]) {
+        let mut known = KNOWN.write().unwrap_or_else(PoisonError::into_inner);
+        if known.is_empty() {
+            *known = ids;
+            return;
+        }
+        if ids.iter().all(|id| known.contains(id)) {
+            return;
+        }
+        let mut merged: Vec<ItemId> = known.to_vec();
+        for id in ids {
+            if !merged.contains(id) {
+                merged.push(*id);
+            }
+        }
+        *known = Vec::leak(merged);
     }
 
     /// The published vocabulary, empty until [`ItemId::publish`] is called.
     #[must_use]
     pub fn known() -> &'static [ItemId] {
-        KNOWN.get().copied().unwrap_or(&[])
+        *KNOWN.read().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -285,11 +319,18 @@ pub trait Item<D: ?Sized> {
 
     /// Draw the body.
     ///
-    /// `ui` is a child `Ui` whose `max_rect` is the content rect the shell
-    /// reserved *below* the header band. That is the enforcement of "panes do
-    /// not draw their own headers", and it is structural rather than a
-    /// convention: an item is handed no `Ui` that covers the header, so it
-    /// cannot draw one there even if it tries.
+    /// `ui` is a child `Ui` whose `max_rect` *and clip rect* are both the
+    /// content rect the shell reserved **below** the header band. Anything
+    /// drawn through this `Ui` — its painter, its widgets, any `Ui` derived
+    /// from it — is clipped to that rect, so a pane cannot put a header of its
+    /// own where the shell's goes.
+    ///
+    /// That is a clip, not a capability: `egui::Area`, `egui::Window` and
+    /// `ctx.layer_painter` take a fresh layer from the `Context` and are not
+    /// clipped by it. egui gives no way to withhold those from a `&mut Ui`
+    /// holder, so against a pane that sets out to bypass the contract the
+    /// backstop is review, not the type system. See
+    /// [`crate::chrome::pane_frame`].
     ///
     /// Not called at all when `subject(doc).empty_state` is `Some`.
     fn ui(&mut self, doc: &mut D, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>);
@@ -308,3 +349,71 @@ pub trait Item<D: ?Sized> {
 /// order and therefore stable — a test that walks every pane should not
 /// depend on hash seeding.
 pub type ItemMap<D> = BTreeMap<PaneKey, Box<dyn Item<D>>>;
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CHARTS_CANVAS: ItemId = ItemId::new("test-charts-canvas");
+    const PROTOCOL_OUTLINE: ItemId = ItemId::new("test-protocol-outline");
+
+    /// Deliberately **one** test covering the whole publish lifecycle rather
+    /// than the four it wants to be. The vocabulary is a process global (see
+    /// [`ItemId::publish`] for why), so separate tests in this binary would
+    /// share it and pass or fail depending on which ran first. Ordering-
+    /// dependent tests are a way of learning nothing slowly, so the ordering
+    /// is made explicit here instead.
+    #[test]
+    fn publishing_each_view_in_turn_keeps_every_view_loadable() {
+        // Nothing published: every id is unknown, which is the safe
+        // direction — a layout read before boot finishes is discarded rather
+        // than trusted.
+        assert!(ItemId::known().is_empty());
+
+        ItemId::publish(&[CHARTS_CANVAS]);
+        assert_eq!(ItemId::known(), &[CHARTS_CANVAS]);
+
+        // The second view. This is the case the first draft lost in silence:
+        // a `OnceLock::set` whose result was dropped kept Charts and threw
+        // Protocol away, so the protocol view's saved layout could never load
+        // again.
+        ItemId::publish(&[PROTOCOL_OUTLINE]);
+        assert!(
+            ItemId::known().contains(&CHARTS_CANVAS),
+            "publishing the second view discarded the first"
+        );
+        assert!(
+            ItemId::known().contains(&PROTOCOL_OUTLINE),
+            "publishing the second view was silently dropped"
+        );
+
+        // Both views' pane keys survive a round trip, which is the thing the
+        // vocabulary exists to make possible.
+        for (view, item) in [
+            (ViewKind::Charts, CHARTS_CANVAS),
+            (ViewKind::Protocol, PROTOCOL_OUTLINE),
+        ] {
+            let key = PaneKey::new(view, item);
+            let json = serde_json::to_string(&key).expect("a pane key serialises");
+            assert_eq!(
+                serde_json::from_str::<PaneKey>(&json).expect("and round trips"),
+                key
+            );
+        }
+
+        // Re-publishing is idempotent rather than a panic or a duplicate, so
+        // a binary that boots twice neither falls over nor grows.
+        let before = ItemId::known().len();
+        ItemId::publish(&[CHARTS_CANVAS]);
+        ItemId::publish(&[CHARTS_CANVAS, PROTOCOL_OUTLINE]);
+        assert_eq!(ItemId::known().len(), before);
+
+        // An id no view published is still a load failure.
+        let unknown = r#"{"view":"Charts","item":"a-pane-from-the-future"}"#;
+        assert!(serde_json::from_str::<PaneKey>(unknown).is_err());
+    }
+}
