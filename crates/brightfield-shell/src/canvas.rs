@@ -14,7 +14,42 @@
 //! texture into it), draws the transient interaction overlay as egui shapes on
 //! top, and sets the pointer cursor. [`surface_input`] maps egui pointer state
 //! over the reserved rect into the framework-free [`SurfaceInput`].
+//!
+//! # One texture slot per pane
+//!
+//! The host keys its live textures by [`PaneKey`]. It used to hold exactly one —
+//! a `current: Option<(Texture, TextureId)>` that each present freed before
+//! replacing. That was correct only while the app could show one canvas at a
+//! time: with two canvas panes visible in the same frame, the second present
+//! would free the first's registration *before* the frame was drawn, and
+//! `egui_wgpu::Renderer::render` resolves a mesh's bind group by id at render
+//! time — so the first pane would silently paint nothing (a `Missing texture`
+//! warning is all egui emits). The dock tree makes two canvases reachable, so
+//! the slot map is a precondition for it, not a tidy-up after it.
+//!
+//! Each slot owns its texture, its view and its registered id. On a size change
+//! the texture is rebuilt but the **id is re-pointed rather than replaced**, so
+//! a caller may hold an id across frames and across resizes.
+//!
+//! # Liveness is declared, not inferred
+//!
+//! [`EguiCanvasHost::end_frame`] takes the set of panes that were on screen. It
+//! deliberately does *not* infer liveness from "did anyone touch this slot this
+//! frame". That would be a contract every caller has to remember on every paint
+//! path, and both surfaces in the tree today would already break it: `ShellState`
+//! and `ProtocolShell` each cache the [`egui::TextureId`] in a field of their own
+//! and, on an unchanged frame, paint from that field without coming back to the
+//! host at all. A sweep keyed on "was I asked" would free the texture of a pane
+//! that is visibly on screen — the same silent blank the slot map exists to
+//! abolish, arriving one frame later. Taking the set makes the statement explicit
+//! and puts it in one place, the frame loop that knows its dock tree, rather than
+//! on every path that paints.
+//!
+//! No shell code calls `end_frame` yet — this increment has no consumers — so the
+//! sweep, and the ordering it is safe at, are exercised only by the
+//! `keyed_canvas` integration test.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use brightfield_render::canvas_host::{
@@ -22,6 +57,7 @@ use brightfield_render::canvas_host::{
     SurfaceCursor, SurfaceInput, SurfaceRect,
 };
 use brightfield_render::vello_renderer::VelloRenderer;
+use brightfield_workbench::{ItemId, PaneKey, ViewKind};
 use kurbo::{Point, Vec2};
 use vello::{wgpu, Scene};
 
@@ -29,17 +65,47 @@ use vello::{wgpu, Scene};
 /// `RenderState` hands out (and the offscreen shot builds itself).
 pub type SharedEguiRenderer = Arc<egui::mutex::RwLock<egui_wgpu::Renderer>>;
 
+/// The single slot every [`CanvasHost::present_scene`] call routes through.
+///
+/// The trait is also implemented by the dying gpui host, which has no notion of
+/// a pane, so its signature stays key-free and the egui implementation forwards
+/// here. Today's `ShellState` and `ProtocolShell` each own their own host, so one
+/// legacy key per host is one slot per surface — the pre-existing behaviour
+/// exactly. The migration replaces those calls with real pane keys.
+pub const LEGACY_CANVAS: PaneKey =
+    PaneKey::new(ViewKind::Charts, ItemId::new("legacy-canvas-host"));
+
+/// One pane's live canvas: the Vello target, the view egui samples through, the
+/// registered id, and the size it was built at.
+struct Slot {
+    /// The Vello target. Kept as a handle — not merely as the `view` below —
+    /// because [`EguiCanvasHost::slot_texture`] reads its pixels back, and
+    /// because the slot has to *own* it for the sweep's drop to release the
+    /// memory. (Holding it is not what keeps the pixels alive during a frame: a
+    /// `TextureView` keeps its `Texture` alive on its own, and only an explicit
+    /// `Texture::destroy` would pull them out from under a bound view.)
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    id: egui::TextureId,
+    size: PixelSize,
+    /// Rastered during the frame in progress. Set by
+    /// [`EguiCanvasHost::present_keyed`], cleared by
+    /// [`EguiCanvasHost::end_frame`].
+    presented: bool,
+}
+
 /// The egui [`CanvasHost`]: owns the shared wgpu device/queue, the Vello
 /// renderer pointed at that device, and the egui_wgpu renderer that registers
-/// Vello's texture for zero-copy sampling.
+/// Vello's textures for zero-copy sampling — one slot per pane.
 pub struct EguiCanvasHost {
     device: wgpu::Device,
     queue: wgpu::Queue,
     vello: Arc<Mutex<VelloRenderer>>,
     egui_renderer: SharedEguiRenderer,
-    /// The live Vello texture, kept alive while egui samples it, plus its
-    /// registered id — freed and replaced on the next present.
-    current: Option<(wgpu::Texture, egui::TextureId)>,
+    /// One live texture per pane. A `BTreeMap` rather than a hash map so
+    /// [`Self::end_frame`]'s sweep runs in a fixed order — the frees it issues
+    /// are observable, through the renderer's texture table.
+    slots: BTreeMap<PaneKey, Slot>,
 }
 
 impl EguiCanvasHost {
@@ -56,35 +122,143 @@ impl EguiCanvasHost {
             queue,
             vello,
             egui_renderer,
-            current: None,
+            slots: BTreeMap::new(),
         }
     }
 
-    /// The most recently presented texture id, if any.
-    pub fn texture_id(&self) -> Option<egui::TextureId> {
-        self.current.as_ref().map(|(_, id)| *id)
-    }
-}
-
-impl CanvasHost for EguiCanvasHost {
-    type Surface = egui::TextureId;
-
-    fn device(&self) -> wgpu::Device {
-        self.device.clone()
-    }
-
-    fn queue(&self) -> wgpu::Queue {
-        self.queue.clone()
-    }
-
-    fn present_scene(&mut self, scene: &Scene, size: PixelSize, base: Color) -> egui::TextureId {
-        // Release the previous frame's registration before replacing it.
-        if let Some((_, id)) = self.current.take() {
-            self.egui_renderer.write().free_texture(&id);
+    /// Rasterise `scene` at `size` over `base` into `key`'s slot and return the
+    /// texture id to paint.
+    ///
+    /// The slot's texture is **reused** when `size` is unchanged, so a re-present
+    /// at a steady size allocates nothing. On a size change the texture is
+    /// rebuilt and the same [`egui::TextureId`] is re-pointed at the new view, so
+    /// an id held across frames stays valid through a resize.
+    ///
+    /// Presenting marks the slot as rastered this frame, so a pane that presents
+    /// survives [`Self::end_frame`] whether or not the caller also names it in
+    /// the visible set. The reverse is not true: a cached pane that does not
+    /// present must be named. See [`Self::end_frame`].
+    pub fn present_keyed(
+        &mut self,
+        key: PaneKey,
+        scene: &Scene,
+        size: PixelSize,
+        base: Color,
+    ) -> egui::TextureId {
+        match self.slots.get(&key).map(|s| (s.id, s.size)) {
+            Some((_, have)) if have == size => {}
+            Some((id, _)) => {
+                let (texture, view) = self.create_target(key, size);
+                // Re-point the existing id rather than registering a new one:
+                // a caller may be holding this id from an earlier frame.
+                self.egui_renderer
+                    .write()
+                    .update_egui_texture_from_wgpu_texture(
+                        &self.device,
+                        &view,
+                        wgpu::FilterMode::Linear,
+                        id,
+                    );
+                let slot = self.slots.get_mut(&key).expect("slot looked up above");
+                slot.texture = texture;
+                slot.view = view;
+                slot.size = size;
+            }
+            None => {
+                let (texture, view) = self.create_target(key, size);
+                let id = self.egui_renderer.write().register_native_texture(
+                    &self.device,
+                    &view,
+                    wgpu::FilterMode::Linear,
+                );
+                self.slots.insert(
+                    key,
+                    Slot {
+                        texture,
+                        view,
+                        id,
+                        size,
+                        presented: false,
+                    },
+                );
+            }
         }
 
+        let vello = Arc::clone(&self.vello);
+        let slot = self.slots.get_mut(&key).expect("slot created above");
+        slot.presented = true;
+        vello
+            .lock()
+            .expect("VelloRenderer mutex poisoned")
+            .render_to_texture(
+                scene,
+                &slot.view,
+                size.width,
+                size.height,
+                base.into_peniko(),
+            );
+        slot.id
+    }
+
+    /// `key`'s texture id, if it has a live slot.
+    ///
+    /// A plain getter with no lifetime meaning: asking does **not** keep a slot
+    /// alive across [`Self::end_frame`], because a pane that caches the id in a
+    /// field of its own never asks again and would be swept. Declare visibility
+    /// to `end_frame` instead.
+    #[must_use]
+    pub fn texture_id(&self, key: PaneKey) -> Option<egui::TextureId> {
+        self.slots.get(&key).map(|s| s.id)
+    }
+
+    /// Drop every slot that neither presented this frame nor appears in
+    /// `visible`, freeing its egui registration.
+    ///
+    /// `visible` is the set of panes the frame just laid out — for the dock tree,
+    /// the panes it actually drew. A pane that presented this frame is kept
+    /// regardless, so forgetting one in `visible` can only leak, never blank.
+    ///
+    /// Safe to call after the frame's UI has run and before eframe paints (the
+    /// end of `App::update`): a slot that is neither presented nor declared
+    /// visible was not painted either, so the frame's tessellated shapes carry no
+    /// mesh pointing at its id, and freeing it cannot strand the render pass that
+    /// follows.
+    ///
+    /// Without this a pane that is closed, or tabbed out of view, keeps its
+    /// texture and its registration for the life of the process.
+    pub fn end_frame(&mut self, visible: &BTreeSet<PaneKey>) {
+        let renderer = Arc::clone(&self.egui_renderer);
+        let mut r = renderer.write();
+        self.slots.retain(|key, slot| {
+            if slot.presented || visible.contains(key) {
+                slot.presented = false;
+                true
+            } else {
+                r.free_texture(&slot.id);
+                false
+            }
+        });
+    }
+
+    /// How many slots are live. Test-facing; the shell never asks.
+    #[must_use]
+    pub fn slot_count(&self) -> usize {
+        self.slots.len()
+    }
+
+    /// `key`'s Vello target, for reading its pixels back. Test-facing — the
+    /// shell paints through the [`egui::TextureId`] and never touches the
+    /// texture — but "which slot did these pixels land in" is not answerable
+    /// from the id alone, and that is the question the slot map exists to get
+    /// right.
+    #[must_use]
+    pub fn slot_texture(&self, key: PaneKey) -> Option<&wgpu::Texture> {
+        self.slots.get(&key).map(|s| &s.texture)
+    }
+
+    fn create_target(&self, key: PaneKey, size: PixelSize) -> (wgpu::Texture, wgpu::TextureView) {
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("brightfield-vello-egui-target"),
+            label: Some(&format!("brightfield-vello-egui-target:{key}")),
             size: wgpu::Extent3d {
                 width: size.width,
                 height: size.height,
@@ -103,19 +277,43 @@ impl CanvasHost for EguiCanvasHost {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        (texture, view)
+    }
+}
 
-        self.vello
-            .lock()
-            .expect("VelloRenderer mutex poisoned")
-            .render_to_texture(scene, &view, size.width, size.height, base.into_peniko());
+/// Give every remaining slot's registration back to the shared renderer.
+///
+/// The `egui_wgpu::Renderer` outlives the host (eframe owns it; the offscreen
+/// shot builds both together), so a registration the host never frees is a bind
+/// group and a sampler kept for the renderer's life. With one slot that was one
+/// leak; with a slot per pane it is one per pane the host ever showed.
+impl Drop for EguiCanvasHost {
+    fn drop(&mut self) {
+        let mut r = self.egui_renderer.write();
+        for slot in self.slots.values() {
+            r.free_texture(&slot.id);
+        }
+    }
+}
 
-        let id = self.egui_renderer.write().register_native_texture(
-            &self.device,
-            &view,
-            wgpu::FilterMode::Linear,
-        );
-        self.current = Some((texture, id));
-        id
+impl CanvasHost for EguiCanvasHost {
+    type Surface = egui::TextureId;
+
+    fn device(&self) -> wgpu::Device {
+        self.device.clone()
+    }
+
+    fn queue(&self) -> wgpu::Queue {
+        self.queue.clone()
+    }
+
+    /// The key-free trait present: [`LEGACY_CANVAS`]'s slot.
+    ///
+    /// A thin forward on purpose. `CanvasHost` is also implemented by the gpui
+    /// host, so keying belongs on the inherent API rather than in the shared
+    /// seam.
+    fn present_scene(&mut self, scene: &Scene, size: PixelSize, base: Color) -> egui::TextureId {
+        self.present_keyed(LEGACY_CANVAS, scene, size, base)
     }
 }
 
