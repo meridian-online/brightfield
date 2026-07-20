@@ -12,6 +12,12 @@ Analytics **consumers** (people who view and interact with published dashboards)
 
 Feature cards, specs, and decisions for Brightfield are tracked centrally, outside this repository — this repo holds the code, not the planning substrate.
 
+**This repo is public, and the planning substrate is not.** Identifiers from it — decision-record refs, task ids, milestone ids, acceptance-criterion shorthand, document ids, card ids, spec AC ids — resolve nowhere for a reader here and leak the shape of private work. Don't put them in code comments, doc comments, prose, commit messages, or PR text. If a pointer carried real meaning, write the actual rationale in plain English instead.
+
+`scripts/check-public-hygiene.sh` catches **part** of this, and it is worth being exact about which part, because the rest is on you. It is `git grep` over the tracked files of the current checkout, so it sees code, comments and prose — and nothing else. It does **not** read commit messages, PR titles or descriptions, review comments, branch names, or history that is no longer in the tree, and those are historically where the leaks actually happened. Treat the script as a floor, not as coverage.
+
+It needs no arguments and no Rust build — run it before pushing; it is also the first CI job (`.github/workflows/public-hygiene.yml`) and goes red in seconds. Identifiers embedded in Rust identifiers are caught too: a test function or temp-dir literal that carries a spec AC id is a leak like any other, and the fix is to rename it. If the gate flags something genuinely legitimate, tighten the pattern and add the innocent string to `scripts/public-hygiene-innocent-strings.txt` (a tracked fixture the gate must stay silent on) rather than reaching for `scripts/public-hygiene-allowlist.txt` — an allowlist entry that does not parse, or that no longer suppresses anything, is a hard failure. `scripts/check-public-hygiene-selftest.sh` is the gate's own regression test; run it after touching a pattern.
+
 ## Previously Shipped
 
 - "First end-to-end render" — Spec → SQL → DuckDB → GPU render → native GPUI window. Shipped at 7cb7005 (2026-04-29).
