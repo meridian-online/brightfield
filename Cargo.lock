@@ -4295,7 +4295,7 @@ dependencies = [
 [[package]]
 name = "meridian-design"
 version = "0.1.0"
-source = "git+https://github.com/meridian-online/design?rev=9dd5d3882a38aa665d74544f87d412dab5129c24#9dd5d3882a38aa665d74544f87d412dab5129c24"
+source = "git+https://github.com/meridian-online/design?rev=539c579c43897fdd0c7d5c141221201d5e97a910#539c579c43897fdd0c7d5c141221201d5e97a910"
 
 [[package]]
 name = "metal"
