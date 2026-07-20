@@ -9,7 +9,20 @@
 //! migration and no prompt, which is the policy the gpui-era shell already
 //! settled on and had no reason to revisit.
 //!
-//! The last of those failure modes is not this module's doing.
+//! One failure mode is **not** on that list, and it is the one that would have
+//! taken the window down. [`Workspace`] derives `Deserialize`, so a load never
+//! runs `Workspace::new`'s completeness assertion, and `trees` is a map: a
+//! file that parses, carries the current version and is simply short a view —
+//! an empty map, or one written before a third
+//! [`ViewKind`](crate::ViewKind) existed — deserialises without complaint and
+//! then panics on the first `tree()` for the view it lacks. [`from_json`]
+//! therefore checks completeness itself and fills what is missing from the
+//! default arrangement, reporting [`LoadOutcome::Incomplete`]. It is the
+//! module's one repair, and it is here because the alternative to repairing is
+//! not "discard the file": it is a shell that comes up after an upgrade and
+//! dies on the first switch to the new view.
+//!
+//! The pane-naming failure mode is not this module's doing.
 //! [`ItemId`](crate::ItemId)'s `Deserialize` rejects an id no registry
 //! published, so a layout naming a renamed pane fails to *load* rather than
 //! materialising a pane nothing can draw. It surfaces here as
@@ -70,12 +83,38 @@ pub const SAVE_DEBOUNCE_MS: u64 = 10_000;
 /// `position` is optional because a first boot has none and because a display
 /// that has since been unplugged should not pin the window off-screen; the
 /// shell is free to ignore a position it cannot honour.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+///
+/// # Why equality is at whole-point resolution
+///
+/// This type is inside the [`PartialEq`] the [`DirtyTracker`] compares, and
+/// the shell will feed it live window size and position every frame. Window
+/// geometry arrives through a scale factor, so a window nobody is touching
+/// can report `819.9999` one frame and `820.0001` the next; compared exactly,
+/// that is a layout change, and a layout change that never settles is a write
+/// every debounce window for the rest of the session.
+///
+/// So equality is on the values rounded to whole points — an exact
+/// equivalence on the rounded value, not a tolerance, so it stays transitive.
+/// It bounds the damage to sub-point jitter and nothing more: a window
+/// genuinely in motion produces real point-sized changes and *should*
+/// eventually be written. That case is the debounce's, not this one's — a
+/// drag writes once, when it stops.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct WindowGeometry {
     /// Inner size, in points.
     pub size: [f32; 2],
     /// Outer position, in points, if known.
     pub position: Option<[f32; 2]>,
+}
+
+impl PartialEq for WindowGeometry {
+    fn eq(&self, other: &Self) -> bool {
+        fn points(v: [f32; 2]) -> [i64; 2] {
+            [v[0].round() as i64, v[1].round() as i64]
+        }
+        points(self.size) == points(other.size)
+            && self.position.map(points) == other.position.map(points)
+    }
 }
 
 impl Default for WindowGeometry {
@@ -122,6 +161,19 @@ impl SavedLayout {
 
     /// Write to `path`, creating the directory.
     ///
+    /// Written to a temporary file beside `path` and renamed over it, so the
+    /// file at `path` is only ever the whole of some layout. `std::fs::write`
+    /// truncates in place, which means a crash or a full disk part-way
+    /// through leaves a half-written file — recoverable, since the load path
+    /// degrades to [`LoadOutcome::Corrupt`] and the default arrangement, but
+    /// recoverable by discarding the *previous* good layout, which a rename
+    /// keeps. `rename` is atomic within a filesystem on every platform this
+    /// ships to, and the temporary sits in the same directory to stay on the
+    /// same filesystem.
+    ///
+    /// A failure leaves the temporary behind; it is a fixed name, so the next
+    /// successful write reuses and consumes it rather than accumulating.
+    ///
     /// # Errors
     ///
     /// On any serialisation or I/O failure, with the path in the message —
@@ -131,7 +183,14 @@ impl SavedLayout {
             std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
         let json = self.to_json().map_err(|e| e.to_string())?;
-        std::fs::write(path, json).map_err(|e| format!("{}: {e}", path.display()))
+        let mut name = path.file_name().unwrap_or_default().to_os_string();
+        name.push(".tmp");
+        let tmp = path.with_file_name(name);
+        std::fs::write(&tmp, json).map_err(|e| format!("{}: {e}", tmp.display()))?;
+        std::fs::rename(&tmp, path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            format!("{}: {e}", path.display())
+        })
     }
 }
 
@@ -143,6 +202,11 @@ impl SavedLayout {
 pub enum LoadOutcome {
     /// The file was restored as saved.
     Restored,
+    /// The file parsed and every view it held was restored, but it was
+    /// missing at least one view, which was rebuilt from the default
+    /// arrangement. What a layout written before a
+    /// [`ViewKind`](crate::ViewKind) was added looks like.
+    Incomplete,
     /// There is no file yet — a first boot.
     NoFile,
     /// The file exists but could not be read.
@@ -156,7 +220,11 @@ pub enum LoadOutcome {
 }
 
 impl LoadOutcome {
-    /// Whether the saved arrangement was used.
+    /// Whether the saved arrangement was used **as saved**.
+    ///
+    /// [`LoadOutcome::Incomplete`] reports `false` even though most of the
+    /// file survived: something the user did not arrange is now on screen,
+    /// which is the thing a caller asking this question wants to know.
     #[must_use]
     pub const fn restored(self) -> bool {
         matches!(self, LoadOutcome::Restored)
@@ -167,6 +235,9 @@ impl LoadOutcome {
     pub const fn reason(self) -> &'static str {
         match self {
             LoadOutcome::Restored => "restored the saved layout",
+            LoadOutcome::Incomplete => {
+                "the saved layout was missing a view, rebuilt from the default"
+            }
             LoadOutcome::NoFile => "no saved layout",
             LoadOutcome::Unreadable => "the saved layout could not be read",
             LoadOutcome::Corrupt => "the saved layout did not parse",
@@ -180,6 +251,22 @@ impl LoadOutcome {
 /// `default` is a closure rather than a value so a healthy load costs nothing
 /// to build the arrangement it is not going to use — and building one means
 /// instantiating every view's default tree.
+///
+/// The version is read out of the raw JSON *before* the envelope is
+/// deserialised. Checking `saved.version` after a successful parse only works
+/// while every version shares a shape: the day one does not, the parse fails
+/// first and reports [`LoadOutcome::Corrupt`], which is the wrong answer and
+/// the wrong log line for a file that is merely from another build. Reading
+/// the field first is what makes [`LoadOutcome::VersionMismatch`] mean
+/// anything.
+///
+/// `default` must return a layout with a tree for every
+/// [`ViewKind`](crate::ViewKind) — as one built through
+/// [`Workspace::new`](crate::Workspace::new) does, which asserts it. A
+/// `default` that does not cannot repair an incomplete file: the outcome is
+/// [`LoadOutcome::Corrupt`] and the layout handed back is `default`'s own,
+/// still short a view. Nothing downstream can fix that, which is exactly why
+/// `Workspace::new` asserts.
 #[must_use]
 pub fn from_json(
     raw: Option<&str>,
@@ -188,10 +275,32 @@ pub fn from_json(
     let Some(raw) = raw else {
         return (default(), LoadOutcome::NoFile);
     };
-    match serde_json::from_str::<SavedLayout>(raw) {
-        Ok(saved) if saved.version == LAYOUT_VERSION => (saved, LoadOutcome::Restored),
-        Ok(_) => (default(), LoadOutcome::VersionMismatch),
-        Err(_) => (default(), LoadOutcome::Corrupt),
+    // Version first, off the raw value: a future shape may not parse as this
+    // build's envelope at all, and "from another version" is the honest
+    // reason for it rather than "did not parse".
+    match serde_json::from_str::<serde_json::Value>(raw) {
+        Err(_) => return (default(), LoadOutcome::Corrupt),
+        Ok(value) => match value.get("version").and_then(serde_json::Value::as_u64) {
+            Some(v) if v == u64::from(LAYOUT_VERSION) => {}
+            Some(_) => return (default(), LoadOutcome::VersionMismatch),
+            // No version field at all is not a version this build understands
+            // either, but it is also not a well-formed envelope — a file
+            // written by something that is not this program. Corrupt.
+            None => return (default(), LoadOutcome::Corrupt),
+        },
+    }
+    let Ok(mut saved) = serde_json::from_str::<SavedLayout>(raw) else {
+        return (default(), LoadOutcome::Corrupt);
+    };
+    if saved.workspace.missing_views().is_empty() {
+        return (saved, LoadOutcome::Restored);
+    }
+    let fallback = default();
+    saved.workspace.fill_missing_views_from(&fallback.workspace);
+    if saved.workspace.missing_views().is_empty() {
+        (saved, LoadOutcome::Incomplete)
+    } else {
+        (fallback, LoadOutcome::Corrupt)
     }
 }
 
@@ -322,6 +431,16 @@ impl DirtyTracker {
     /// A failure re-arms the countdown rather than leaving the deadline in
     /// the past, so a disk that is full or read-only is retried once per
     /// debounce window instead of once per frame.
+    ///
+    /// There is **no maximum-staleness cap**: because the countdown restarts
+    /// on every observed change, a layout that keeps moving is never written,
+    /// however long it keeps moving. A drag held for a minute writes nothing
+    /// until the mouse stops. That is deliberate rather than overlooked — a
+    /// cap would write a layout mid-drag, which is a state the user never
+    /// chose and would be restored into if the process died a moment later —
+    /// and it is survivable because the only thing that loses the pending
+    /// change is a crash *during* the drag: [`DirtyTracker::flush`] covers
+    /// quitting, and any ordinary pause writes.
     ///
     /// Costs one clone of the layout per tick while the layout is moving, and
     /// nothing at all while it is still — that clone is the price of not

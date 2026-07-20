@@ -6,21 +6,33 @@
 //! cannot say different things about the same pane, which is precisely what
 //! happened in the shell this replaces.
 //!
-//! # This is the case the no-document-handle design exists to permit
+//! # What the no-document-handle design buys here, and what it does not
 //!
 //! `tab_title_for_pane` is called for *every* tab in a strip, including the
-//! ones not being drawn. Its title comes from the document. If an item held
-//! its own handle to the document, answering that question for four tabs
-//! would need four simultaneous handles to one document, two of which mutate
-//! on click — four `&mut`, which is not a thing, or an `Rc<RefCell<_>>` whose
-//! `borrow_mut` panics the first time a title is asked for while a pane is
-//! mid-draw.
+//! ones not being drawn, and its title comes from the document. It is worth
+//! being exact about the borrow that permits that, because the loose version
+//! of the argument — that four tabs would need four simultaneous handles to
+//! one document — is not true, and was written down here before anyone
+//! checked it. `egui_tiles` 0.16 draws a tab bar *before* the active child's
+//! `pane_ui`, never nested inside it, so the calls are sequential.
+//! Instrumenting a real frame gives `title, title, pane-in, pane-out,
+//! pane-in, pane-out`: no title is ever asked for while a pane is mid-draw,
+//! so an `Rc<RefCell<_>>` would not panic here, and "it compiles" would prove
+//! only that four sequential `&mut self` calls compile, which nearly any
+//! ownership shape manages.
 //!
-//! Because an [`Item`] holds nothing, [`PaneChrome`] holds `&mut D` and
-//! `&mut ItemMap<D>` as two disjoint fields, and both `tab_title_for_pane`
-//! and `pane_ui` reach the document through them. Exactly one `&mut D` exists
-//! at a time and it lives for one call. That this compiles at all is the
-//! proof the shape works; nothing else about it needs arguing.
+//! What the shape does buy is a level down, and is about aliasing *within*
+//! one call rather than across several. [`PaneChrome`] holds the document and
+//! the item map as two fields, and `pane_ui` destructures `&mut self` so the
+//! borrow checker sees them as disjoint: an item is borrowed mutably out of
+//! `items` and handed `&mut **doc` in the same expression. Were the document
+//! reached *through* the item, that line would be `item.ui(&mut item.doc, …)`
+//! — one `&mut` to the item and a second reaching through it — which does not
+//! compile, and the usual escape is an `Rc<RefCell<_>>` whose discipline is
+//! then checked at runtime instead of by the compiler. That is the whole
+//! claim: smaller than the one it replaces, and the one the code actually
+//! supports. Delete the destructure in `pane_ui` and the borrow error is
+//! immediate.
 
 use std::collections::HashSet;
 
@@ -132,6 +144,17 @@ impl<D: ?Sized> egui_tiles::Behavior<PaneKey> for PaneChrome<'_, D> {
         // consumed: `Ui::interact` over the whole pane would sit in front of
         // every widget the item just drew and swallow their clicks, so this
         // reads the pointer state the item has already had its chance at.
+        //
+        // Known imprecision, written down before anything is built on it:
+        // `any_pressed` is global and `outer` is this pane's rect as it was
+        // before the body drew, so a press inside a floating `egui::Area` — a
+        // popup, a context menu, a tooltip with a button in it — that happens
+        // to overlap this pane also raises `Request::Focus` for the pane
+        // underneath. The effect is that window chrome follows the pane the
+        // popup covers rather than the pane that opened it. Cosmetic while
+        // the views have no popups; the fix, when one of them does, is to ask
+        // egui which layer the press landed in rather than only where it was.
+
         if ui.rect_contains_pointer(outer)
             && ui.input(|i| i.pointer.any_pressed())
             && *focused != Some(key)

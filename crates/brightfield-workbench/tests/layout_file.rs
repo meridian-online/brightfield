@@ -255,6 +255,113 @@ fn the_layout_file_survives_a_restart_and_every_way_it_can_be_broken() {
         "the fallback is the arranged layout, so this proves nothing"
     );
 
+    // A future version whose *shape* also differs — which is the only kind of
+    // version bump there is a reason to make, and the case the field exists
+    // for. Bumping `version` on an otherwise-current envelope, as above, is
+    // not it: that one parses, so a version check made after the parse would
+    // still pass it.
+    //
+    // Would catch: reading the version off the deserialised envelope instead
+    // of off the raw JSON, which reports a file from a later build as
+    // `Corrupt` — a wrong log line, and one that sends whoever reads it
+    // looking for a disk fault instead of an upgrade.
+    std::fs::write(
+        &path,
+        serde_json::json!({
+            "version": LAYOUT_VERSION + 1,
+            "windows": [{ "size": [800.0, 600.0] }],
+            "workspaces": []
+        })
+        .to_string(),
+    )
+    .expect("writes");
+    let (fallback, outcome) = persist::load(&path, defaults);
+    assert_eq!(
+        outcome,
+        LoadOutcome::VersionMismatch,
+        "a later version this build cannot even parse was reported as {}",
+        outcome.reason()
+    );
+    assert_eq!(fallback, defaults());
+
+    // JSON with no version field at all is not a layout file, whatever else
+    // it is.
+    std::fs::write(&path, serde_json::json!({ "hello": "world" }).to_string()).expect("writes");
+    let (fallback, outcome) = persist::load(&path, defaults);
+    assert_eq!(outcome, LoadOutcome::Corrupt, "{}", outcome.reason());
+    assert_eq!(fallback, defaults());
+
+    // -----------------------------------------------------------------
+    // A file that parses, is current, and is still short a view.
+    //
+    // This is the shape a layout written before a `ViewKind` was added will
+    // have on the day one is: `trees` is a map, so it simply lacks the new
+    // key, and no version bump is warranted for adding an enum variant.
+    // `Workspace` derives `Deserialize`, so `Workspace::new`'s completeness
+    // assertion never runs on this path.
+    //
+    // Would catch: trusting the parse. Without the completeness check the
+    // outcome below is `Restored` and the *next* `tree()` for the missing
+    // view panics — a well-formed file taking the window down, on the first
+    // view switch after an upgrade, for every existing user at once.
+    // -----------------------------------------------------------------
+    let mut short: serde_json::Value =
+        serde_json::from_str(&saved.to_json().expect("serialises")).expect("valid json");
+    short["workspace"]["trees"]
+        .as_object_mut()
+        .expect("trees is a map")
+        .remove("Protocol")
+        .expect("Protocol was in the file");
+    std::fs::write(&path, short.to_string()).expect("writes");
+    let (repaired, outcome) = persist::load(&path, defaults);
+    assert_eq!(outcome, LoadOutcome::Incomplete, "{}", outcome.reason());
+    assert!(
+        !outcome.restored(),
+        "a partial restore reported as a full one"
+    );
+    assert!(
+        repaired.workspace.missing_views().is_empty(),
+        "the load handed back a workspace that panics on its next tree()"
+    );
+    // The repair is a repair, not a reset: what the file *did* hold is still
+    // there, and the view it did not is the default one.
+    assert!(
+        (share_of(&repaired) - 0.37).abs() < 1e-6,
+        "filling a missing view threw away the arrangement of the views the file had"
+    );
+    assert_eq!(
+        repaired.workspace.panes(ViewKind::Protocol),
+        defaults().workspace.panes(ViewKind::Protocol),
+        "the filled view is not the default arrangement"
+    );
+    // …and it is reachable, which is the whole point.
+    let mut switched = repaired;
+    switched.workspace.set_active(ViewKind::Protocol);
+    assert_eq!(
+        switched.workspace.active_tree().tiles.iter().count(),
+        defaults()
+            .workspace
+            .tree(ViewKind::Protocol)
+            .tiles
+            .iter()
+            .count()
+    );
+
+    // The degenerate case of the same thing: every view missing.
+    let mut empty: serde_json::Value =
+        serde_json::from_str(&saved.to_json().expect("serialises")).expect("valid json");
+    empty["workspace"]["trees"] = serde_json::json!({});
+    std::fs::write(&path, empty.to_string()).expect("writes");
+    let (repaired, outcome) = persist::load(&path, defaults);
+    assert_eq!(outcome, LoadOutcome::Incomplete, "{}", outcome.reason());
+    assert!(repaired.workspace.missing_views().is_empty());
+    for view in ViewKind::ALL {
+        assert_eq!(
+            repaired.workspace.panes(view),
+            defaults().workspace.panes(view)
+        );
+    }
+
     // Valid JSON of the right version naming a pane this build has not got.
     let ghost = saved
         .to_json()
@@ -365,6 +472,110 @@ fn the_layout_file_survives_a_restart_and_every_way_it_can_be_broken() {
 
     // Flushing a clean tracker writes nothing at all.
     assert!(tracker.flush(&write_path).is_none());
+
+    // -----------------------------------------------------------------
+    // A failed write must not take the layout that was already on disk
+    // down with it.
+    //
+    // Would catch: `std::fs::write`, which truncates the destination before
+    // it writes a byte. Half a write then leaves a file that loads as
+    // `Corrupt` — survivable, but it survives by discarding the *last good*
+    // arrangement, which a temp-file-and-rename keeps. Blocking the temp
+    // rather than the destination is what makes this a claim about the
+    // destination: the write fails, and the good file was never opened.
+    // -----------------------------------------------------------------
+    let temp_blocker = {
+        let mut name = write_path.file_name().expect("a file name").to_os_string();
+        name.push(".tmp");
+        write_path.with_file_name(name)
+    };
+    std::fs::create_dir_all(&temp_blocker).expect("a directory where the temp file goes");
+    arrange(tracker.live_mut(), 0.33);
+    assert!(
+        tracker
+            .flush(&write_path)
+            .expect("dirty, so a flush attempts a write")
+            .is_err(),
+        "the write went somewhere other than a temp file beside the destination"
+    );
+    let (survivor, outcome) = persist::load(&write_path, defaults);
+    assert_eq!(outcome, LoadOutcome::Restored, "{}", outcome.reason());
+    assert!(
+        (share_of(&survivor) - 0.32).abs() < 1e-6,
+        "a failed write destroyed the good layout that was already on disk"
+    );
+    std::fs::remove_dir_all(&temp_blocker).expect("removes");
+
+    // With the way clear it writes, and leaves no temp file behind.
+    assert_eq!(tracker.flush(&write_path), Some(Ok(())));
+    assert!(
+        !temp_blocker.exists(),
+        "the temp file was left beside the layout"
+    );
+    let (after, _) = persist::load(&write_path, defaults);
+    assert!((share_of(&after) - 0.33).abs() < 1e-6);
+
+    // -----------------------------------------------------------------
+    // Sub-point jitter in the window geometry is not a layout change.
+    //
+    // Would catch: a derived `PartialEq` on `WindowGeometry`. The shell
+    // feeds live size and position every frame, through a scale factor, so
+    // an untouched window can report 819.9999 then 820.0001 — compared
+    // exactly, a change that never settles, and therefore a write every
+    // debounce window for the rest of the session.
+    // -----------------------------------------------------------------
+    let mut settled = defaults();
+    settled.window = WindowGeometry {
+        size: [1280.0, 820.0],
+        position: Some([0.0, 0.0]),
+    };
+    let mut jitter = DirtyTracker::new(settled);
+    jitter.live_mut().window = WindowGeometry {
+        size: [1280.0004, 819.9997],
+        position: Some([0.0002, -0.0003]),
+    };
+    assert!(
+        !jitter.is_dirty(),
+        "sub-point window jitter was read as a layout change"
+    );
+    jitter.live_mut().window.size = [1281.0, 820.0];
+    assert!(
+        jitter.is_dirty(),
+        "a window that actually moved by a whole point was not noticed"
+    );
+
+    // -----------------------------------------------------------------
+    // A drag longer than one debounce window writes nothing until it stops.
+    //
+    // Not a bug and not an oversight: the countdown restarts on every
+    // observed change, so there is no maximum-staleness cap, and the only
+    // thing that loses the pending change is a crash mid-drag. Asserted so
+    // that the behaviour is a decision on the record rather than something
+    // discovered later.
+    // -----------------------------------------------------------------
+    let long_drag = scratch.0.join("long-drag.json");
+    let mut dragging = DirtyTracker::new(defaults());
+    let mut share = 0.10_f32;
+    let mut now = 0;
+    while now < SAVE_DEBOUNCE_MS * 3 {
+        share += 0.001;
+        arrange(dragging.live_mut(), share);
+        assert!(
+            dragging.poll(now, &long_drag).is_none(),
+            "a moving layout was written at {now}ms"
+        );
+        now += 100;
+    }
+    assert!(
+        !long_drag.exists(),
+        "three debounce windows of continuous movement produced a write"
+    );
+    assert_eq!(
+        dragging.poll(now + SAVE_DEBOUNCE_MS, &long_drag),
+        Some(Ok(())),
+        "the drag stopped and the layout was still not written"
+    );
+    assert!(!dragging.is_dirty());
 
     // -----------------------------------------------------------------
     // Where the file goes.

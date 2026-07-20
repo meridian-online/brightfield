@@ -15,9 +15,14 @@ description = "The shell contract: what a pane declares about itself, and the on
 # carries no GPU handle, and why the whole contract can be asserted in a unit
 # test with no adapter, no window and no renderer.
 egui = "0.35"
-# `serde` is egui_tiles' only feature and its default; naming it explicitly
-# stops a future `default-features = false` from silently removing the ability
-# to persist a layout.
+# `serde` is egui_tiles' only feature and its default, and a `Tree` that cannot
+# serialise takes the whole arrangement out of the layout file. Naming it here
+# states a requirement rather than fixes a live break: this crate would get the
+# feature from the default anyway, and it declares it, so it builds correctly
+# on its own. It is named because Cargo unifies features across a workspace in
+# one direction only — a `default-features = false` elsewhere cannot remove
+# what this crate asks for, but relying on *another* crate's default to supply
+# it would be the version of this that does break.
 egui_tiles = { version = "0.16", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 # JSON is the layout file's format: human-readable, diffable, and already in the

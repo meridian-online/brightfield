@@ -9,7 +9,7 @@
 //! vocabulary. The tests that do are in `layout_file.rs`, deliberately as one
 //! ordered test — see that file.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use brightfield_keys::BindingContext;
 use brightfield_workbench::persist::SavedLayout;
@@ -39,6 +39,10 @@ struct Doc {
     /// Incremented by every `Item::ui` that actually ran. The observable for
     /// "did the shell draw the empty state instead of the pane".
     draws: u32,
+    /// Which items drew, not merely how many. A bare count comparison passes
+    /// if the extra draw came from somewhere else entirely — a second frame,
+    /// a different pane becoming active — so the assertions name the pane.
+    drew: BTreeSet<ItemId>,
 }
 
 fn toggle() -> brightfield_workbench::Verb {
@@ -55,6 +59,7 @@ impl Item<Doc> for Canvas {
     }
     fn ui(&mut self, doc: &mut Doc, ui: &mut egui::Ui, _cx: &mut ItemCtx<'_>) {
         doc.draws += 1;
+        doc.drew.insert(CANVAS);
         ui.label("canvas");
     }
 }
@@ -69,6 +74,7 @@ impl Item<Doc> for Notes {
     }
     fn ui(&mut self, doc: &mut Doc, _ui: &mut egui::Ui, _cx: &mut ItemCtx<'_>) {
         doc.draws += 1;
+        doc.drew.insert(NOTES);
     }
 }
 
@@ -93,6 +99,7 @@ impl Item<Doc> for Rail {
     }
     fn ui(&mut self, doc: &mut Doc, _ui: &mut egui::Ui, _cx: &mut ItemCtx<'_>) {
         doc.draws += 1;
+        doc.drew.insert(RAIL);
     }
 }
 
@@ -137,6 +144,40 @@ fn key(view: ViewKind, item: ItemId) -> PaneKey {
     PaneKey::new(view, item)
 }
 
+/// Put a container with exactly one child into the Charts tree, so the tree
+/// has something `SimplificationOptions`' defaults would rewrite.
+///
+/// `prune_single_child_containers` is on by default, and `Tree::ui` simplifies
+/// before it draws. Without a shape like this in the fixture, "simplification
+/// is off" is asserted against a tree that cannot exhibit the failure it is
+/// meant to catch.
+fn wrap_the_rail_in_a_single_child_container(ws: &mut Workspace) {
+    let tree = ws.tree_mut(ViewKind::Charts);
+    let root = tree.root().expect("a root");
+    let rail = match tree.tiles.get(root) {
+        Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(lin))) => lin.children[1],
+        _ => panic!("the fixture's root is a linear container"),
+    };
+    let wrapper = tree.tiles.insert_vertical_tile(vec![rail]);
+    // The shares are fixed up here rather than left to the layout pass: a
+    // linear container fills in a missing `Shares` entry and drops a stale one
+    // the first time it lays out, and both *are* changes to the tree. A
+    // fixture that skipped this would fail the assertion below for a reason
+    // that has nothing to do with simplification.
+    if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(lin))) =
+        tree.tiles.get_mut(wrapper)
+    {
+        lin.shares.set_share(rail, 1.0);
+    }
+    match tree.tiles.get_mut(root) {
+        Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(lin))) => {
+            lin.children[1] = wrapper;
+            lin.shares.replace_with(rail, wrapper);
+        }
+        _ => unreachable!("checked immediately above"),
+    }
+}
+
 const SCREEN: egui::Rect = egui::Rect {
     min: egui::pos2(0.0, 0.0),
     max: egui::pos2(900.0, 600.0),
@@ -144,13 +185,19 @@ const SCREEN: egui::Rect = egui::Rect {
 
 /// Draw the active view of `ws` for one real frame, and hand back the
 /// requests the panes raised plus the tessellated output.
+///
+/// The `Context` is a parameter rather than built here so a caller can run
+/// *consecutive* frames. A fresh `egui::Context` per call is a fresh
+/// `egui::Memory`, so a loop over it is N first frames, not N frames — and a
+/// first frame is exactly the one where nothing has settled, which is the
+/// opposite of what a "drawing does not disturb the tree" claim needs.
 fn draw(
+    ctx: &egui::Context,
     ws: &mut Workspace,
     doc: &mut Doc,
     items: &mut ItemMap<Doc>,
     input: egui::RawInput,
 ) -> (Vec<Request>, Vec<egui::ClippedPrimitive>) {
-    let ctx = egui::Context::default();
     let mut requests = Vec::new();
     let view = ws.active();
     let tabbed = ws.tabbed_tiles(view);
@@ -298,15 +345,19 @@ fn the_tabbed_set_is_the_children_of_tab_containers_and_nothing_else() {
 // The behaviour
 // ---------------------------------------------------------------------------
 
-/// The case the no-document-handle design exists to permit: a title for a
-/// pane that is *not* drawing, read live from the document.
+/// A title for a pane that is *not* drawing, read live from the document.
 ///
 /// Would catch: a title cached at construction, or one derived from the
 /// `PaneKey` rather than the `Subject` — both of which stop tracking the
 /// document and would show a stale name on every tab but the active one.
-/// That it compiles at all is the other half of the proof: `PaneChrome` holds
-/// `&mut D` and `&mut ItemMap<D>` at once, which is what an item holding its
-/// own document handle could not have done.
+///
+/// It does **not** demonstrate anything about simultaneous borrows, and the
+/// version of this comment that claimed it did was wrong twice over: the two
+/// `PaneChrome`s below are built one after the other, and `egui_tiles` calls
+/// `tab_title_for_pane` before `pane_ui` rather than during it, so nothing in
+/// this crate ever asks for a title mid-draw. The borrow the design actually
+/// buys is inside `pane_ui` and is a compile-time fact, not a testable one —
+/// see the module docs on `behavior.rs`.
 #[test]
 fn a_tab_title_is_read_from_the_document_for_a_pane_that_is_not_drawing() {
     let ws = workspace();
@@ -375,7 +426,7 @@ fn a_pane_under_a_tab_strip_gets_no_header_band() {
     let mut doc = Doc {
         title: "Chart".into(),
         rows: vec!["a"],
-        draws: 0,
+        ..Doc::default()
     };
     let mut items = registry(ViewKind::Charts).instantiate();
     let tabbed = ws.tabbed_tiles(ViewKind::Charts);
@@ -471,8 +522,14 @@ fn a_pane_under_a_tab_strip_gets_no_header_band() {
 /// Would catch: `pane_ui` calling `item.ui` unconditionally and leaving the
 /// empty state to the item — which is what every pane in the shell this
 /// replaces did, and why two of them had no empty state at all.
+///
+/// Asserted on *which* item drew rather than on how many did. A count going
+/// from 1 to 2 is also what a second pane becoming active, or a frame drawing
+/// twice, looks like; naming the rail is what makes this a claim about the
+/// empty state.
 #[test]
 fn an_empty_pane_is_drawn_by_the_shell_instead_of_by_the_item() {
+    let ctx = egui::Context::default();
     let mut ws = workspace();
     let mut items = registry(ViewKind::Charts).instantiate();
 
@@ -481,15 +538,41 @@ fn an_empty_pane_is_drawn_by_the_shell_instead_of_by_the_item() {
     let mut doc = Doc {
         title: "Chart".into(),
         rows: Vec::new(),
-        draws: 0,
+        ..Doc::default()
     };
-    draw(&mut ws, &mut doc, &mut items, egui::RawInput::default());
+    draw(
+        &ctx,
+        &mut ws,
+        &mut doc,
+        &mut items,
+        egui::RawInput::default(),
+    );
     let empty_draws = doc.draws;
+    assert!(
+        !doc.drew.contains(&RAIL),
+        "the rail declared itself empty and its item drew anyway"
+    );
+    assert!(
+        doc.drew.contains(&CANVAS),
+        "no pane drew at all, so the rail's silence proves nothing"
+    );
 
     // Rows: the rail is no longer empty and its item draws too.
     doc.rows.push("a row");
     doc.draws = 0;
-    draw(&mut ws, &mut doc, &mut items, egui::RawInput::default());
+    doc.drew.clear();
+    draw(
+        &ctx,
+        &mut ws,
+        &mut doc,
+        &mut items,
+        egui::RawInput::default(),
+    );
+    assert!(
+        doc.drew.contains(&RAIL),
+        "a pane that stopped being empty did not start drawing (drew {:?})",
+        doc.drew
+    );
     assert!(
         doc.draws > empty_draws,
         "a pane that stopped being empty did not start drawing ({} then {})",
@@ -503,16 +586,23 @@ fn an_empty_pane_is_drawn_by_the_shell_instead_of_by_the_item() {
 /// than queued — the re-entrancy `Request` exists to avoid.
 #[test]
 fn a_press_in_a_pane_asks_the_workspace_for_focus() {
+    let ctx = egui::Context::default();
     let mut ws = workspace();
     let mut items = registry(ViewKind::Charts).instantiate();
     let mut doc = Doc {
         title: "Chart".into(),
         rows: vec!["a"],
-        draws: 0,
+        ..Doc::default()
     };
 
     // A frame with no pointer at all raises nothing.
-    let (quiet, _) = draw(&mut ws, &mut doc, &mut items, egui::RawInput::default());
+    let (quiet, _) = draw(
+        &ctx,
+        &mut ws,
+        &mut doc,
+        &mut items,
+        egui::RawInput::default(),
+    );
     assert!(
         !quiet.iter().any(|r| matches!(r, Request::Focus(_))),
         "focus was claimed with no pointer in the window: {quiet:?}"
@@ -529,7 +619,7 @@ fn a_press_in_a_pane_asks_the_workspace_for_focus() {
         }],
         ..Default::default()
     };
-    let (requests, _) = draw(&mut ws, &mut doc, &mut items, input);
+    let (requests, _) = draw(&ctx, &mut ws, &mut doc, &mut items, input);
     let asked: Vec<PaneKey> = requests
         .iter()
         .filter_map(|r| match r {
@@ -570,23 +660,39 @@ fn a_press_in_a_pane_asks_the_workspace_for_focus() {
 /// Would catch: turning `SimplificationOptions` back on (it prunes containers
 /// mid-draw), widening `Workspace`'s `PartialEq` to include focus, or an
 /// `egui_tiles` upgrade that starts comparing transient state.
+///
+/// The simplification half is only a real claim because of
+/// [`wrap_the_rail_in_a_single_child_container`]. The registry's own
+/// arrangement — a linear root over a tab strip and a rail — has nothing the
+/// default options can touch: no empty container, no single-child container,
+/// no nested linear. Drawn against `OFF` and against `SimplificationOptions::
+/// default()` it comes out byte-identical, so asserted against that fixture
+/// alone this test holds whichever is configured, and the premise the whole
+/// `live != saved` signal rests on would be untested.
+///
+/// Frames also run through **one** `egui::Context`. A fresh context per frame
+/// is a fresh `Memory`, so a loop over it is three first frames rather than
+/// three consecutive ones, and settling is exactly what the claim is about.
 #[test]
 fn drawing_the_tree_does_not_by_itself_dirty_the_layout() {
+    let ctx = egui::Context::default();
     let mut items = registry(ViewKind::Charts).instantiate();
     let mut doc = Doc {
         title: "Chart".into(),
         rows: vec!["a"],
-        draws: 0,
+        ..Doc::default()
     };
-    let mut tracker = DirtyTracker::new(SavedLayout::new(workspace()));
+    let mut layout = SavedLayout::new(workspace());
+    wrap_the_rail_in_a_single_child_container(&mut layout.workspace);
+    let mut tracker = DirtyTracker::new(layout);
     assert!(!tracker.is_dirty(), "a fresh tracker is not dirty");
 
-    for _ in 0..3 {
+    for frame in 0..3 {
         let ws = tracker.workspace_mut();
-        draw(ws, &mut doc, &mut items, egui::RawInput::default());
+        draw(&ctx, ws, &mut doc, &mut items, egui::RawInput::default());
         assert!(
             !tracker.is_dirty(),
-            "drawing a frame was read as a layout change"
+            "drawing frame {frame} was read as a layout change"
         );
     }
 

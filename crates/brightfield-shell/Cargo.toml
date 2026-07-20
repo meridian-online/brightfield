@@ -37,11 +37,12 @@ arrow = { version = "58", default-features = false }
 # --script ndjson parsing for the headless shot's scripted RawInput.
 serde_json = "1"
 # `serde` is egui_tiles' only feature and its default, and it is the whole of
-# what makes a dock layout persistable. `default-features = false` here took it
-# away silently; the workbench names the feature explicitly for that reason and
-# this now matches, rather than leaving the two to be reconciled by Cargo's
-# feature unification — which would stop working the moment they stop being
-# built together.
+# what makes a dock layout persistable. This crate builds a `Tree` and never
+# serialises one, so `default-features = false` was costing it nothing today
+# and could not have reached the workbench, which declares the feature itself.
+# Matched anyway, because the shell is about to take the workbench's layout
+# persistence over and a dependency that opts out of the feature its successor
+# is built on is a trap laid for the increment after this one.
 egui_tiles = { version = "0.16", features = ["serde"] }
 brightfield-protocol = { version = "0.1.0", path = "../brightfield-protocol" }
 brightfield-keys = { version = "0.1.0", path = "../brightfield-keys" }

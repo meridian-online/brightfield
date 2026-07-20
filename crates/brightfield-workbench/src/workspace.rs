@@ -143,12 +143,56 @@ impl Workspace {
         self.active = view;
     }
 
+    /// The views this workspace holds no tree for.
+    ///
+    /// Empty for a workspace built through [`Workspace::new`], which asserts
+    /// it. **Not** empty in general: `trees` is a map and `Workspace` derives
+    /// `Deserialize`, so a load never passes through `new`, and a file whose
+    /// map is short one key parses perfectly well. That is why
+    /// [`crate::persist::from_json`] checks this and repairs it — see
+    /// [`Workspace::fill_missing_views_from`].
+    #[must_use]
+    pub fn missing_views(&self) -> Vec<ViewKind> {
+        ViewKind::ALL
+            .into_iter()
+            .filter(|view| !self.trees.contains_key(view))
+            .collect()
+    }
+
+    /// Copy a tree from `donor` for every view this workspace lacks, and
+    /// return the views that were filled.
+    ///
+    /// The repair path for a layout file written before a [`ViewKind`] was
+    /// added. Discarding the whole file is the other option, and it would
+    /// throw away the arrangement of every view that *is* in it for the sake
+    /// of one that could not have been: a `BTreeMap` simply lacks the new
+    /// key, and no plausible reading of
+    /// [`crate::persist::LAYOUT_VERSION`]'s own rule — bump it "when the
+    /// persisted shape changes incompatibly" — makes adding an enum variant
+    /// a bump.
+    ///
+    /// Views already present are left exactly as they were.
+    pub fn fill_missing_views_from(&mut self, donor: &Self) -> Vec<ViewKind> {
+        let mut filled = Vec::new();
+        for view in self.missing_views() {
+            if let Some(tree) = donor.trees.get(&view) {
+                self.trees.insert(view, tree.clone());
+                filled.push(view);
+            }
+        }
+        filled
+    }
+
     /// One view's tile tree.
     ///
     /// # Panics
     ///
-    /// Never, for a workspace built through [`Workspace::new`] or loaded
-    /// through [`crate::persist`] — both require every view present.
+    /// If `view` has no tree. Both routes to a `Workspace` that the shell
+    /// uses guarantee there is one: [`Workspace::new`] asserts completeness,
+    /// and [`crate::persist::from_json`] fills any view the file lacked
+    /// before handing the workspace back. Neither guarantee reaches a
+    /// `Workspace` deserialised directly with `serde`, bypassing `persist` —
+    /// [`Workspace::missing_views`] is how such a caller checks.
     #[must_use]
     pub fn tree(&self, view: ViewKind) -> &Tree<PaneKey> {
         self.trees.get(&view).expect("every view has a tree")
@@ -238,6 +282,17 @@ impl Workspace {
     /// rather than looked up during the draw, because an
     /// `egui_tiles::Behavior` cannot hold a reference to the tree it is being
     /// run against.
+    ///
+    /// Pre-computing it costs one frame of accuracy, and it is worth writing
+    /// down rather than implying it is free: a drag that re-parents a pane
+    /// into or out of a tab strip changes the tree *during* `Tree::ui`, after
+    /// this set was taken, so for that one frame the moved pane's header band
+    /// is wrong — missing if it just left a strip, doubled with the tab title
+    /// if it just joined one. The next frame recomputes and it is right. A
+    /// header that flickers for 16ms at the end of a drag is a smaller price
+    /// than either handing the `Behavior` a second borrow of the tree or
+    /// letting a tab title and a header band be answered from two places,
+    /// which is the drift this whole file exists to end.
     #[must_use]
     pub fn tabbed_tiles(&self, view: ViewKind) -> HashSet<TileId> {
         let mut tabbed = HashSet::new();
