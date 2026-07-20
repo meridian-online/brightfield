@@ -39,6 +39,11 @@ serde_json = "1"
 egui_tiles = { version = "0.16", default-features = false }
 brightfield-protocol = { version = "0.1.0", path = "../brightfield-protocol" }
 brightfield-keys = { version = "0.1.0", path = "../brightfield-keys" }
+# The shell contract: Subject, Item, the registry, and the one chrome file.
+# Only `Mode` is consumed so far — the views move onto the contract in later
+# steps — but the edge is here now so `design::Mode` can be a re-export rather
+# than a second definition of the same two-variant enum.
+brightfield-workbench = { version = "0.1.0", path = "../brightfield-workbench" }
 
 [dev-dependencies]
 # Tier-1 real-UI snapshot loop: egui_kittest renders the real app headlessly on

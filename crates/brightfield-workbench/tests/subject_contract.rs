@@ -1,0 +1,558 @@
+//! The contract gate, and the fixture that proves it bites.
+//!
+//! Everything here is headless: no adapter, no window, no renderer. That is
+//! the payoff of [`Subject`] being plain data, and it is why these assertions
+//! can be cheap enough to run on every push.
+//!
+//! # What is being gated, and what is not
+//!
+//! The gate itself — [`gate`] — is the real thing, and later steps point it
+//! at the real registries as those views move onto the contract. Right now
+//! there are no real items, so it is pointed at a fixture registry. That is
+//! not a self-fulfilling test: the fixture deliberately contains a *bad*
+//! registry as well as a good one, and the negative cases assert the gate
+//! rejects each specific defect. A gate that has never been shown to fail is
+//! not a gate.
+
+use brightfield_keys::BindingContext;
+use brightfield_workbench::chrome;
+use brightfield_workbench::{
+    Affordance, DockSide, EmptyState, Handled, HideAffordance, Icon, Item, ItemCtx, ItemId,
+    ItemRegistry, ItemSpec, Mode, PaneKey, Slot, StatusEntry, StatusSide, Subject, Tone,
+    ToolbarEntry, ToolbarLocation, Verb, ViewKind,
+};
+
+// ---------------------------------------------------------------------------
+// The gate
+// ---------------------------------------------------------------------------
+
+/// Every item in `reg`, asked for its subject over an empty document, must:
+/// declare an empty state; write that empty state's prose to the house style;
+/// declare only registered verbs; and, unless it is the centre pane, name the
+/// verb that shows and hides it.
+///
+/// Returns the reason it failed, so the negative cases can assert on *which*
+/// rule bit rather than merely that something did.
+fn gate<D: Default>(reg: &ItemRegistry<D>) -> Result<(), String> {
+    let empty_doc = D::default();
+    for spec in reg.specs() {
+        let id = spec.id;
+        let item = (spec.make)();
+        if item.item_id() != id {
+            return Err(format!(
+                "{id}: constructed item reports id {}",
+                item.item_id()
+            ));
+        }
+
+        let subject = item.subject(&empty_doc);
+        let Some(empty) = &subject.empty_state else {
+            return Err(format!("{id}: shows no empty state on an empty document"));
+        };
+        if empty.headline.is_empty() {
+            return Err(format!("{id}: empty headline"));
+        }
+        if empty.headline.ends_with('.') {
+            return Err(format!("{id}: headline takes no terminal period"));
+        }
+        if !empty
+            .headline
+            .chars()
+            .next()
+            .is_some_and(char::is_uppercase)
+        {
+            return Err(format!("{id}: headline is sentence case"));
+        }
+        if empty.body.is_empty() {
+            return Err(format!("{id}: an empty state names what fills it"));
+        }
+
+        for verb in subject.declared_verbs() {
+            if !verb.is_registered() {
+                return Err(format!(
+                    "{id}: declares unregistered verb {:?}",
+                    verb.as_str()
+                ));
+            }
+        }
+
+        if spec.slot != Slot::Centre && spec.toggle.is_none() {
+            return Err(format!("{id}: a rail or tab with no toggle verb"));
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// A fixture view
+// ---------------------------------------------------------------------------
+
+/// A stand-in document. `Default` is the empty document the gate probes with.
+#[derive(Default)]
+struct Doc {
+    rows: Vec<&'static str>,
+    edits: u32,
+}
+
+const LIST: ItemId = ItemId::new("fixture-list");
+const DETAIL: ItemId = ItemId::new("fixture-detail");
+const NOTES: ItemId = ItemId::new("fixture-notes");
+
+/// Real registry longnames, so the verb gate is checked against the actual
+/// keyboard grammar rather than a stub of it.
+fn open_verb() -> Verb {
+    Verb::new("open-palette")
+}
+fn toggle_verb() -> Verb {
+    Verb::new("toggle-focus")
+}
+fn reload_verb() -> Verb {
+    Verb::new("reload-spec")
+}
+
+/// The centre pane.
+#[derive(Default)]
+struct ListItem {
+    /// View-local state, which is the only kind an item is allowed to hold.
+    scroll: f32,
+}
+
+impl Item<Doc> for ListItem {
+    fn item_id(&self) -> ItemId {
+        LIST
+    }
+
+    fn subject(&self, doc: &Doc) -> Subject {
+        let mut s = Subject::new("Rows", Icon("list"), BindingContext::Workspace)
+            .with_toolbar(ToolbarEntry::button("reload", "Reload", reload_verb()))
+            .with_toolbar(
+                ToolbarEntry::button("hidden", "Not offered", open_verb())
+                    .at(ToolbarLocation::Hidden),
+            )
+            .with_status(StatusEntry {
+                id: "count",
+                side: StatusSide::Trailing,
+                text: format!("{} rows", doc.rows.len()),
+                tone: Tone::Neutral,
+                hide: HideAffordance::WithRail,
+            });
+        if doc.rows.is_empty() {
+            s = s.empty(
+                EmptyState::new(
+                    Icon("list"),
+                    "No rows yet",
+                    "Rows appear here once a protocol has run",
+                )
+                .with_next(Affordance::new("Reload", reload_verb())),
+            );
+        }
+        s
+    }
+
+    fn ui(&mut self, doc: &mut Doc, ui: &mut egui::Ui, _cx: &mut ItemCtx<'_>) {
+        self.scroll = ui.max_rect().top();
+        for row in &doc.rows {
+            ui.label(*row);
+        }
+    }
+
+    fn perform(&mut self, doc: &mut Doc, verb: Verb, _cx: &mut ItemCtx<'_>) -> Handled {
+        if verb == reload_verb() {
+            doc.edits += 1;
+            Handled::Yes
+        } else {
+            Handled::No
+        }
+    }
+}
+
+/// A right rail.
+#[derive(Default)]
+struct DetailItem;
+
+impl Item<Doc> for DetailItem {
+    fn item_id(&self) -> ItemId {
+        DETAIL
+    }
+    fn subject(&self, doc: &Doc) -> Subject {
+        let s = Subject::new("Detail", Icon("inspector"), BindingContext::Workspace);
+        if doc.rows.is_empty() {
+            s.empty(EmptyState::new(
+                Icon("inspector"),
+                "Nothing selected",
+                "Pick a row to see what it is made of",
+            ))
+        } else {
+            s
+        }
+    }
+    fn ui(&mut self, _doc: &mut Doc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
+        if ui.button("focus me").clicked() {
+            cx.take_focus();
+        }
+    }
+}
+
+/// A centre tab.
+#[derive(Default)]
+struct NotesItem;
+
+impl Item<Doc> for NotesItem {
+    fn item_id(&self) -> ItemId {
+        NOTES
+    }
+    fn subject(&self, _doc: &Doc) -> Subject {
+        Subject::new("Notes", Icon("note"), BindingContext::Editor).empty(EmptyState::new(
+            Icon("note"),
+            "No notes",
+            "Notes you write against a run are kept here",
+        ))
+    }
+    fn ui(&mut self, _doc: &mut Doc, _ui: &mut egui::Ui, _cx: &mut ItemCtx<'_>) {}
+}
+
+fn good_registry() -> ItemRegistry<Doc> {
+    ItemRegistry::new(
+        ViewKind::Protocol,
+        vec![
+            ItemSpec {
+                id: LIST,
+                slot: Slot::Centre,
+                toggle: None,
+                make: || Box::new(ListItem::default()),
+            },
+            ItemSpec {
+                id: DETAIL,
+                slot: Slot::Rail {
+                    side: DockSide::Right,
+                    share: 0.22,
+                },
+                toggle: Some(toggle_verb()),
+                make: || Box::new(DetailItem),
+            },
+            ItemSpec {
+                id: NOTES,
+                slot: Slot::CentreTab,
+                toggle: Some(toggle_verb()),
+                make: || Box::new(NotesItem),
+            },
+        ],
+    )
+}
+
+// ---------------------------------------------------------------------------
+// The gate passes on a well-formed view
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_well_formed_view_passes_the_gate() {
+    assert_eq!(gate(&good_registry()), Ok(()));
+}
+
+// ---------------------------------------------------------------------------
+// …and bites on each specific defect
+// ---------------------------------------------------------------------------
+
+/// The defect the whole `EmptyState`-is-required design exists to catch: a
+/// pane that renders a header and silence when it has nothing to show.
+#[derive(Default)]
+struct NoEmptyState;
+impl Item<Doc> for NoEmptyState {
+    fn item_id(&self) -> ItemId {
+        LIST
+    }
+    fn subject(&self, _doc: &Doc) -> Subject {
+        Subject::new("Rows", Icon("list"), BindingContext::Workspace)
+    }
+    fn ui(&mut self, _doc: &mut Doc, _ui: &mut egui::Ui, _cx: &mut ItemCtx<'_>) {}
+}
+
+#[test]
+fn a_pane_with_no_empty_state_fails_the_gate() {
+    let reg = ItemRegistry::new(
+        ViewKind::Charts,
+        vec![ItemSpec {
+            id: LIST,
+            slot: Slot::Centre,
+            toggle: None,
+            make: || Box::new(NoEmptyState),
+        }],
+    );
+    let err = gate(&reg).unwrap_err();
+    assert!(err.contains("shows no empty state"), "{err}");
+}
+
+#[derive(Default)]
+struct SloppyProse;
+impl Item<Doc> for SloppyProse {
+    fn item_id(&self) -> ItemId {
+        LIST
+    }
+    fn subject(&self, _doc: &Doc) -> Subject {
+        Subject::new("Rows", Icon("list"), BindingContext::Workspace).empty(EmptyState::new(
+            Icon("list"),
+            "no rows yet.",
+            "",
+        ))
+    }
+    fn ui(&mut self, _doc: &mut Doc, _ui: &mut egui::Ui, _cx: &mut ItemCtx<'_>) {}
+}
+
+#[test]
+fn empty_state_prose_is_held_to_the_house_style() {
+    let reg = ItemRegistry::new(
+        ViewKind::Charts,
+        vec![ItemSpec {
+            id: LIST,
+            slot: Slot::Centre,
+            toggle: None,
+            make: || Box::new(SloppyProse),
+        }],
+    );
+    // The gate reports the first rule that bites; the terminal period is
+    // checked before the case, and both before the body.
+    let err = gate(&reg).unwrap_err();
+    assert!(err.contains("terminal period"), "{err}");
+}
+
+#[test]
+fn a_rail_with_no_toggle_verb_fails_the_gate() {
+    let reg = ItemRegistry::new(
+        ViewKind::Charts,
+        vec![
+            ItemSpec {
+                id: LIST,
+                slot: Slot::Centre,
+                toggle: None,
+                make: || Box::new(ListItem::default()),
+            },
+            ItemSpec {
+                id: DETAIL,
+                slot: Slot::Rail {
+                    side: DockSide::Left,
+                    share: 0.2,
+                },
+                toggle: None,
+                make: || Box::new(DetailItem),
+            },
+        ],
+    );
+    let err = gate(&reg).unwrap_err();
+    assert!(err.contains("no toggle verb"), "{err}");
+}
+
+// ---------------------------------------------------------------------------
+// Verbs
+// ---------------------------------------------------------------------------
+
+#[test]
+fn every_verb_the_fixture_declares_is_a_real_command() {
+    let reg = good_registry();
+    let doc = Doc::default();
+    let mut seen = 0;
+    for spec in reg.specs() {
+        for verb in (spec.make)().subject(&doc).declared_verbs() {
+            assert!(verb.is_registered(), "{:?}", verb.as_str());
+            seen += 1;
+        }
+    }
+    assert!(
+        seen > 0,
+        "the fixture declares no verbs, so this proves nothing"
+    );
+}
+
+#[test]
+fn an_invented_verb_is_not_registered() {
+    // Constructed without `Verb::new`'s debug assertion, which is exactly the
+    // release-mode hole `is_registered` exists to cover.
+    let reg = brightfield_keys::registry();
+    assert!(!reg.iter().any(|v| v.longname == "summon-a-pony"));
+}
+
+#[test]
+fn a_verbs_keystroke_comes_from_the_registry_not_from_a_stored_copy() {
+    let verb = reload_verb();
+    let expected = brightfield_keys::registry()
+        .iter()
+        .find(|v| v.longname == verb.as_str())
+        .and_then(brightfield_keys::VerbEntry::primary_key);
+    assert_eq!(verb.keys(), expected);
+}
+
+// ---------------------------------------------------------------------------
+// Structural invariants
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_view_needs_exactly_one_centre_pane() {
+    let two_centres = std::panic::catch_unwind(|| {
+        ItemRegistry::new(
+            ViewKind::Charts,
+            vec![
+                ItemSpec {
+                    id: LIST,
+                    slot: Slot::Centre,
+                    toggle: None,
+                    make: || Box::new(ListItem::default()) as Box<dyn Item<Doc>>,
+                },
+                ItemSpec {
+                    id: DETAIL,
+                    slot: Slot::Centre,
+                    toggle: None,
+                    make: || Box::new(DetailItem) as Box<dyn Item<Doc>>,
+                },
+            ],
+        )
+    });
+    assert!(two_centres.is_err());
+}
+
+#[test]
+fn duplicate_item_ids_are_refused() {
+    let dup = std::panic::catch_unwind(|| {
+        ItemRegistry::new(
+            ViewKind::Charts,
+            vec![
+                ItemSpec {
+                    id: LIST,
+                    slot: Slot::Centre,
+                    toggle: None,
+                    make: || Box::new(ListItem::default()) as Box<dyn Item<Doc>>,
+                },
+                ItemSpec {
+                    id: LIST,
+                    slot: Slot::CentreTab,
+                    toggle: Some(toggle_verb()),
+                    make: || Box::new(NotesItem) as Box<dyn Item<Doc>>,
+                },
+            ],
+        )
+    });
+    assert!(dup.is_err());
+}
+
+/// A crude but effective tripwire against someone putting a model handle in
+/// the pane identity. `PaneKey` is a view discriminant and a `&'static str`;
+/// anything that pushes it past a couple of words is a document sneaking back
+/// in, which is the shape this crate exists to prevent.
+#[test]
+fn a_pane_key_stays_small_and_copy() {
+    assert!(
+        std::mem::size_of::<PaneKey>() <= 24,
+        "PaneKey grew to {} bytes",
+        std::mem::size_of::<PaneKey>()
+    );
+    fn assert_copy<T: Copy>() {}
+    assert_copy::<PaneKey>();
+}
+
+#[test]
+fn the_registry_instantiates_one_item_per_spec_keyed_by_pane() {
+    let reg = good_registry();
+    let items = reg.instantiate();
+    assert_eq!(items.len(), reg.specs().len());
+    for spec in reg.specs() {
+        let key = PaneKey::new(ViewKind::Protocol, spec.id);
+        assert_eq!(items[&key].item_id(), spec.id);
+    }
+}
+
+#[test]
+fn the_default_tree_holds_exactly_the_registered_panes() {
+    let reg = good_registry();
+    let tree = reg.default_tree();
+    let mut panes: Vec<PaneKey> = tree.tiles.tiles().filter_map(tile_pane).copied().collect();
+    panes.sort_unstable();
+    let mut want: Vec<PaneKey> = reg.ids().into_iter().map(|i| reg.pane_key(i)).collect();
+    want.sort_unstable();
+    assert_eq!(panes, want);
+}
+
+fn tile_pane(tile: &egui_tiles::Tile<PaneKey>) -> Option<&PaneKey> {
+    match tile {
+        egui_tiles::Tile::Pane(p) => Some(p),
+        egui_tiles::Tile::Container(_) => None,
+    }
+}
+
+/// Two views' trees are built from separate arenas, so their tile ids may
+/// coincide without the two layouts ever being confused: a tile id is only
+/// meaningful inside the tree that issued it, and the pane it resolves to
+/// carries its own view.
+#[test]
+fn two_views_can_hold_the_same_tile_ids_without_colliding() {
+    let a = good_registry().default_tree();
+    let b = ItemRegistry::new(
+        ViewKind::Charts,
+        vec![ItemSpec {
+            id: LIST,
+            slot: Slot::Centre,
+            toggle: None,
+            make: || Box::new(ListItem::default()),
+        }],
+    )
+    .default_tree();
+
+    let a_panes: Vec<PaneKey> = a.tiles.tiles().filter_map(tile_pane).copied().collect();
+    let b_panes: Vec<PaneKey> = b.tiles.tiles().filter_map(tile_pane).copied().collect();
+    assert!(a_panes.iter().all(|p| p.view == ViewKind::Protocol));
+    assert!(b_panes.iter().all(|p| p.view == ViewKind::Charts));
+}
+
+// ---------------------------------------------------------------------------
+// Serialisation
+// ---------------------------------------------------------------------------
+
+/// Deliberately **one** test covering both the before-publish and
+/// after-publish behaviour, rather than the two it obviously wants to be.
+///
+/// The published vocabulary is a process global (see `ItemId::publish` for
+/// why: `Tree<PaneKey>`'s derived `Deserialize` has nowhere to thread a
+/// context). Two tests in one binary would therefore share it, and which one
+/// passed would depend on which ran first — green under the default
+/// thread-per-test scheduler and red, or worse intermittently green, under
+/// `--test-threads=1`. Ordering-dependent tests are a way of learning nothing
+/// slowly, so the ordering is made explicit instead.
+#[test]
+fn an_item_id_deserialises_only_from_the_published_vocabulary() {
+    // Before publishing, the vocabulary is empty and every id is unknown —
+    // which is the safe direction: a layout read before boot finishes is
+    // discarded rather than trusted.
+    let json = r#"{"view":"Protocol","item":"fixture-detail"}"#;
+    assert!(serde_json::from_str::<PaneKey>(json).is_err());
+
+    static VOCAB: &[ItemId] = &[LIST, DETAIL, NOTES];
+    assert!(ItemId::publish(VOCAB), "nothing else may have published");
+
+    let key = PaneKey::new(ViewKind::Protocol, DETAIL);
+    assert_eq!(serde_json::to_string(&key).unwrap(), json);
+    assert_eq!(serde_json::from_str::<PaneKey>(json).unwrap(), key);
+
+    // An id this build does not have is a load failure, not a pane nothing
+    // can draw.
+    let unknown = r#"{"view":"Protocol","item":"a-pane-from-the-future"}"#;
+    assert!(serde_json::from_str::<PaneKey>(unknown).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Tone, and the reserved accent
+// ---------------------------------------------------------------------------
+
+/// The one-accent rule, as an assertion rather than a comment: the focus
+/// border is what `Tone::Accent` resolves to, and no other tone may reach it.
+#[test]
+fn only_the_accent_tone_paints_the_interaction_colour() {
+    for mode in [Mode::Light, Mode::Dark] {
+        let accent = chrome::tone_colour(Tone::Accent, mode);
+        let focus = chrome::colour(meridian_design::semantic(mode.is_dark()).borders.focus);
+        assert_eq!(accent, focus);
+        for tone in [Tone::Neutral, Tone::Good, Tone::Warning, Tone::Critical] {
+            assert_ne!(
+                chrome::tone_colour(tone, mode),
+                accent,
+                "{tone:?} reaches the interaction accent in {mode:?}"
+            );
+        }
+    }
+}
