@@ -3312,11 +3312,11 @@ plot:
         );
 
         // Add a dynamic param.
-        let results = session.propagate_param("dynamic", SpecValue::Float(3.14));
+        let results = session.propagate_param("dynamic", SpecValue::Float(2.5));
         assert!(results.is_empty(), "no subscribers for dynamic param");
         assert_eq!(
             session.current_params().get("dynamic"),
-            Some(&SpecValue::Float(3.14))
+            Some(&SpecValue::Float(2.5))
         );
 
         // Final state should have all 3 params.

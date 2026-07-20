@@ -2377,7 +2377,7 @@ as: $threshold
             ParamDeclaredType::ScalarNumeric
         );
         assert_eq!(
-            ParamDeclaredType::from_param_node(&ParamNode::Value(SpecValue::Float(3.14))),
+            ParamDeclaredType::from_param_node(&ParamNode::Value(SpecValue::Float(2.5))),
             ParamDeclaredType::ScalarNumeric
         );
         assert_eq!(
