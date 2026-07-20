@@ -16,6 +16,15 @@
 pub mod app;
 pub mod canvas;
 pub mod capture;
-pub mod design;
 pub mod pipeline;
 pub mod protocol;
+
+/// The Meridian Design System → egui bridge.
+///
+/// It lives in `brightfield-workbench` now: the workbench draws every pixel of
+/// chrome from `meridian_design` tokens, so leaving the `Style`/`Visuals`/font
+/// bridge downstream of it meant a workbench frame rendered in egui's default
+/// type and widget ink. Re-exported here because `brightfield_shell::design`
+/// is the path this crate, its snapshot tier and the headless shot binary all
+/// already spell, and renaming them would bury the change worth reading.
+pub use brightfield_workbench::design;
