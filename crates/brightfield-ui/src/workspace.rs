@@ -212,6 +212,9 @@ hconcat:
             before, after,
             "same inputs, same outputs: layout takes (spec, viewport), never {mode:?}"
         );
-        assert!(!before.is_empty(), "the probe spec places at least one rect");
+        assert!(
+            !before.is_empty(),
+            "the probe spec places at least one rect"
+        );
     }
 }

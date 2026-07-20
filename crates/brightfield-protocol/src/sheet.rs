@@ -58,7 +58,11 @@ impl StepsSheet {
             .steps
             .values()
             .map(|s| {
-                let order = view.graph.seams.get(&s.name).map_or(usize::MAX, |seam| seam.index);
+                let order = view
+                    .graph
+                    .seams
+                    .get(&s.name)
+                    .map_or(usize::MAX, |seam| seam.index);
                 StepRow {
                     order,
                     name: s.name.clone(),

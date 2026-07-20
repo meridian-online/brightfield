@@ -25,9 +25,7 @@ fn main() -> ExitCode {
         Ok(v) => v,
         Err(msg) => {
             eprintln!("error: {msg}");
-            eprintln!(
-                "usage: conformance [--layers 1,2,3,4] [--corpus curated|observed]"
-            );
+            eprintln!("usage: conformance [--layers 1,2,3,4] [--corpus curated|observed]");
             return ExitCode::from(2);
         }
     };

@@ -265,8 +265,16 @@ mod tests {
         assert_eq!(value_at(300.0, 100.0, 200.0, &b), 10.0, "right = max");
         assert_eq!(value_at(200.0, 100.0, 200.0, &b), 5.0, "mid = 5");
         assert_eq!(value_at(160.0, 100.0, 200.0, &b), 3.0, "0.3 -> snapped 3");
-        assert_eq!(value_at(50.0, 100.0, 200.0, &b), 0.0, "left of track clamps");
-        assert_eq!(value_at(400.0, 100.0, 200.0, &b), 10.0, "right of track clamps");
+        assert_eq!(
+            value_at(50.0, 100.0, 200.0, &b),
+            0.0,
+            "left of track clamps"
+        );
+        assert_eq!(
+            value_at(400.0, 100.0, 200.0, &b),
+            10.0,
+            "right of track clamps"
+        );
 
         // Continuous (no step): exact fractional value.
         let c = binding(0.0, 1.0, None);

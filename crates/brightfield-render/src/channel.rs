@@ -297,7 +297,10 @@ mod tests {
             "x".to_string(),
             ValueOrParamRef::Value(SpecValue::String("col_x".to_string())),
         );
-        options.insert("y".to_string(), ValueOrParamRef::Value(SpecValue::Integer(0)));
+        options.insert(
+            "y".to_string(),
+            ValueOrParamRef::Value(SpecValue::Integer(0)),
+        );
 
         let mark = Mark {
             kind: MarkKind::RuleY,
@@ -309,7 +312,11 @@ mod tests {
         let cm = ChannelMap::from_mark(&mark);
         assert_eq!(cm.get(Channel::X), Some("col_x"), "x is a column");
         assert_eq!(cm.get(Channel::Y), None, "a literal y is not a column");
-        assert_eq!(cm.literal(Channel::Y), Some(0.0), "literal y captured as 0.0");
+        assert_eq!(
+            cm.literal(Channel::Y),
+            Some(0.0),
+            "literal y captured as 0.0"
+        );
         assert_eq!(cm.literal(Channel::X), None, "x has no literal");
     }
 }

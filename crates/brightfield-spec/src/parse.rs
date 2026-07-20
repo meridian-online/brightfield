@@ -14,8 +14,8 @@
 use std::path::Path;
 
 use indexmap::IndexMap;
-use serde::{Serialize, Serializer};
 use serde::ser::{SerializeMap, SerializeSeq};
+use serde::{Serialize, Serializer};
 
 use crate::ast::{
     AggregateFunc, Component, ConcatNode, Config, DataSource, DataSourceKind, Input, Interactor,
@@ -391,12 +391,11 @@ pub fn parse_spec(source: &str, format: Format) -> Result<ParseOutput, ParseErro
         Format::Json => {
             // Route JSON through serde_json first to get JSON-shaped error messages,
             // then convert into a serde_yaml::Value for unified walking.
-            let jv: serde_json::Value = serde_json::from_str(source).map_err(|e| {
-                ParseError::JsonSyntax {
+            let jv: serde_json::Value =
+                serde_json::from_str(source).map_err(|e| ParseError::JsonSyntax {
                     msg: e.to_string(),
                     span: None,
-                }
-            })?;
+                })?;
             json_to_yaml_value(&jv)
         }
     };
@@ -711,18 +710,15 @@ impl Walker {
         Ok(out)
     }
 
-    fn walk_param(
-        &mut self,
-        name: &str,
-        v: &serde_yaml::Value,
-    ) -> Result<ParamNode, ParseError> {
+    fn walk_param(&mut self, name: &str, v: &serde_yaml::Value) -> Result<ParamNode, ParseError> {
         if let serde_yaml::Value::Mapping(m) = v {
             if let Some(sel) = m.get(serde_yaml::Value::String("select".into())) {
-                let resolution_name = sel.as_str().ok_or_else(|| ParseError::MalformedParamDef {
-                    name: name.to_string(),
-                    span: None,
-                    detail: "select must be a string resolution name".into(),
-                })?;
+                let resolution_name =
+                    sel.as_str().ok_or_else(|| ParseError::MalformedParamDef {
+                        name: name.to_string(),
+                        span: None,
+                        detail: "select must be a string resolution name".into(),
+                    })?;
                 let (kind, status) = match SelectionResolution::from_wire(resolution_name) {
                     Some(k) => (k, k.status()),
                     None => {
@@ -857,8 +853,9 @@ impl Walker {
                     SpecValue::Integer(_) | SpecValue::Float(_) | SpecValue::Param(_)
                 )
             {
-                self.warnings
-                    .push(ParseWarning::NonNumericInset { attribute: key.clone() });
+                self.warnings.push(ParseWarning::NonNumericInset {
+                    attribute: key.clone(),
+                });
             }
             // A plot-level axis / plot title attribute. A valid
             // label is a string (override), or `null` / `""` (suppress); a
@@ -867,10 +864,14 @@ impl Walker {
             // sees the typo rather than silently losing the label.
             const PLOT_LABEL_KEYS: [&str; 3] = ["xLabel", "yLabel", "title"];
             if PLOT_LABEL_KEYS.contains(&key.as_str())
-                && !matches!(value, SpecValue::String(_) | SpecValue::Null | SpecValue::Param(_))
+                && !matches!(
+                    value,
+                    SpecValue::String(_) | SpecValue::Null | SpecValue::Param(_)
+                )
             {
-                self.warnings
-                    .push(ParseWarning::NonStringLabel { attribute: key.clone() });
+                self.warnings.push(ParseWarning::NonStringLabel {
+                    attribute: key.clone(),
+                });
             }
             // A plot-level `projectionType` (geo) that names a
             // projection v1 can't render (or a non-string value) degrades to the
@@ -1219,7 +1220,10 @@ impl Walker {
                     serde_yaml::Value::Null => None,
                     other => other.as_str().map(str::to_string),
                 };
-                Some(ValueOrParamRef::Value(SpecValue::Aggregate { func, column }))
+                Some(ValueOrParamRef::Value(SpecValue::Aggregate {
+                    func,
+                    column,
+                }))
             }
             None => {
                 self.warnings.push(ParseWarning::UnknownAggregate {
@@ -1295,9 +1299,7 @@ fn maybe_lift(v: &serde_yaml::Value) -> Option<ParamRef> {
             for (k, val) in m {
                 let key = k.as_str().unwrap_or("");
                 if (key == "param" || key == "selection") && val.as_str().is_some() {
-                    return val
-                        .as_str()
-                        .map(|n| ParamRef::new(n.to_string()));
+                    return val.as_str().map(|n| ParamRef::new(n.to_string()));
                 }
             }
             None
@@ -1343,7 +1345,10 @@ fn string_to_spec_value(s: &str) -> SpecValue {
 /// comparison purposes.
 fn version_matches(declared: &str) -> bool {
     let (maj_sup, min_sup) = crate::SUPPORTED_MOSAIC_MAJOR_MINOR;
-    let stem = declared.split(|c: char| c == '-' || c == '+').next().unwrap_or("");
+    let stem = declared
+        .split(|c: char| c == '-' || c == '+')
+        .next()
+        .unwrap_or("");
     let mut parts = stem.split('.');
     let maj = parts.next().and_then(|x| x.parse::<u16>().ok());
     let min = parts.next().and_then(|x| x.parse::<u16>().ok());
@@ -1354,17 +1359,15 @@ fn json_to_yaml_value(j: &serde_json::Value) -> serde_yaml::Value {
     match j {
         serde_json::Value::Null => serde_yaml::Value::Null,
         serde_json::Value::Bool(b) => serde_yaml::Value::Bool(*b),
-        serde_json::Value::Number(n) => serde_yaml::Value::Number(
-            if let Some(i) = n.as_i64() {
-                serde_yaml::Number::from(i)
-            } else if let Some(u) = n.as_u64() {
-                serde_yaml::Number::from(u)
-            } else if let Some(f) = n.as_f64() {
-                serde_yaml::Number::from(f)
-            } else {
-                serde_yaml::Number::from(0)
-            },
-        ),
+        serde_json::Value::Number(n) => serde_yaml::Value::Number(if let Some(i) = n.as_i64() {
+            serde_yaml::Number::from(i)
+        } else if let Some(u) = n.as_u64() {
+            serde_yaml::Number::from(u)
+        } else if let Some(f) = n.as_f64() {
+            serde_yaml::Number::from(f)
+        } else {
+            serde_yaml::Number::from(0)
+        }),
         serde_json::Value::String(s) => serde_yaml::Value::String(s.clone()),
         serde_json::Value::Array(a) => {
             serde_yaml::Value::Sequence(a.iter().map(json_to_yaml_value).collect())
@@ -1372,10 +1375,7 @@ fn json_to_yaml_value(j: &serde_json::Value) -> serde_yaml::Value {
         serde_json::Value::Object(o) => {
             let mut m = serde_yaml::Mapping::new();
             for (k, v) in o {
-                m.insert(
-                    serde_yaml::Value::String(k.clone()),
-                    json_to_yaml_value(v),
-                );
+                m.insert(serde_yaml::Value::String(k.clone()), json_to_yaml_value(v));
             }
             serde_yaml::Value::Mapping(m)
         }
@@ -1612,10 +1612,7 @@ impl Serialize for SerValueOrParamRef<'_> {
     }
 }
 
-fn emit_component_into<S>(
-    map: &mut S,
-    c: &Component,
-) -> Result<(), S::Error>
+fn emit_component_into<S>(map: &mut S, c: &Component) -> Result<(), S::Error>
 where
     S: SerializeMap,
 {
@@ -1630,9 +1627,7 @@ where
                 // With an explicit colorRange ALSO present the sugar is
                 // dropped instead (never emit a duplicate key; the explicit
                 // range already wins consumption-side).
-                if k == "colorScheme"
-                    && matches!(v, SpecValue::String(s) if s == "meridian")
-                {
+                if k == "colorScheme" && matches!(v, SpecValue::String(s) if s == "meridian") {
                     if !p.attributes.contains_key("colorRange") {
                         map.serialize_entry("colorRange", &MERIDIAN_COLOR_RANGE_HEX)?;
                     }
@@ -1744,7 +1739,10 @@ mod tests {
     fn parse_spec_yaml_entry() {
         let src = "meta:\n  title: hello\n";
         let out = parse_spec(src, Format::Yaml).expect("parses");
-        assert_eq!(out.spec.meta.as_ref().unwrap().title.as_deref(), Some("hello"));
+        assert_eq!(
+            out.spec.meta.as_ref().unwrap().title.as_deref(),
+            Some("hello")
+        );
     }
 
     #[test]
@@ -1922,7 +1920,10 @@ plot:
             let src = format!("mark: dot\n{field}: $foo\n");
             let out = parse_spec(&src, Format::Yaml)
                 .unwrap_or_else(|e| panic!("parse failed for field `{field}`: {e}"));
-            let root = out.spec.root.unwrap_or_else(|| panic!("no root for field `{field}`"));
+            let root = out
+                .spec
+                .root
+                .unwrap_or_else(|| panic!("no root for field `{field}`"));
             let m = match root {
                 Component::Mark(m) => m,
                 other => panic!("root was not a Mark for field `{field}`: {other:?}"),
@@ -1939,9 +1940,9 @@ plot:
                         "field `{field}` lifted, but wrong name"
                     );
                 }
-                ValueOrParamRef::Value(v) => panic!(
-                    "field `{field}` did not lift from string form: kept as Value {v:?}"
-                ),
+                ValueOrParamRef::Value(v) => {
+                    panic!("field `{field}` did not lift from string form: kept as Value {v:?}")
+                }
             }
         }
     }
@@ -1968,11 +1969,15 @@ plot:
                 .unwrap_or_else(|| panic!("mark options has no `{field}` entry"));
             match entry {
                 ValueOrParamRef::Param(r) => {
-                    assert_eq!(r.to_wire(), "$foo", "field `{field}` lifted, but wrong name");
+                    assert_eq!(
+                        r.to_wire(),
+                        "$foo",
+                        "field `{field}` lifted, but wrong name"
+                    );
                 }
-                ValueOrParamRef::Value(v) => panic!(
-                    "field `{field}` did not lift from object form: kept as Value {v:?}"
-                ),
+                ValueOrParamRef::Value(v) => {
+                    panic!("field `{field}` did not lift from object form: kept as Value {v:?}")
+                }
             }
         }
     }
@@ -1995,7 +2000,12 @@ plot:
                 )
             })
             .collect();
-        assert_eq!(matches.len(), 1, "expected one UnknownOption warning for meta.credit; got {:?}", out.warnings);
+        assert_eq!(
+            matches.len(),
+            1,
+            "expected one UnknownOption warning for meta.credit; got {:?}",
+            out.warnings
+        );
         // Typed accessor still filled.
         assert_eq!(out.spec.meta.as_ref().unwrap().title.as_deref(), Some("x"));
     }
@@ -2011,7 +2021,11 @@ plot:
             .iter()
             .filter(|w| matches!(w, ParseWarning::NonNumericInset { attribute } if attribute == "inset"))
             .count();
-        assert_eq!(n, 1, "one NonNumericInset naming `inset`; got {:?}", out.warnings);
+        assert_eq!(
+            n, 1,
+            "one NonNumericInset naming `inset`; got {:?}",
+            out.warnings
+        );
 
         // Numeric inset: silent.
         let good = "data:\n  t:\n    - { x: 1, y: 2 }\nplot:\n  - { mark: dot, data: { from: t }, x: x, y: y }\ninset: 5\n";
@@ -2049,7 +2063,11 @@ plot:
             .iter()
             .filter(|w| matches!(w, ParseWarning::NonStringLabel { attribute } if attribute == "xLabel"))
             .count();
-        assert_eq!(n, 1, "one NonStringLabel naming `xLabel`; got {:?}", out.warnings);
+        assert_eq!(
+            n, 1,
+            "one NonStringLabel naming `xLabel`; got {:?}",
+            out.warnings
+        );
 
         // A string override, an explicit null (suppress), and a lifted $param
         // (recorded deferral) all pass silently — for xLabel/yLabel AND title.
@@ -2069,7 +2087,9 @@ plot:
             );
             let o = parse_spec(&src, Format::Yaml).expect("parses");
             assert!(
-                !o.warnings.iter().any(|w| matches!(w, ParseWarning::NonStringLabel { .. })),
+                !o.warnings
+                    .iter()
+                    .any(|w| matches!(w, ParseWarning::NonStringLabel { .. })),
                 "`{ok}` must not warn; got {:?}",
                 o.warnings
             );
@@ -2078,9 +2098,9 @@ plot:
         let bt = "data:\n  t:\n    - { x: 1, y: 2 }\nplot:\n  - { mark: dot, data: { from: t }, x: x, y: y }\ntitle: true\n";
         let obt = parse_spec(bt, Format::Yaml).expect("parses");
         assert!(
-            obt.warnings
-                .iter()
-                .any(|w| matches!(w, ParseWarning::NonStringLabel { attribute } if attribute == "title")),
+            obt.warnings.iter().any(
+                |w| matches!(w, ParseWarning::NonStringLabel { attribute } if attribute == "title")
+            ),
             "a boolean title warns naming `title`; got {:?}",
             obt.warnings
         );
@@ -2093,21 +2113,28 @@ plot:
         let bad = "data:\n  t:\n    - { x: 1, y: 2 }\nplot:\n  - { mark: dot, data: { from: t }, x: x, y: y }\nprojectionType: mercator\n";
         let out = parse_spec(bad, Format::Yaml).expect("parses despite unsupported projection");
         assert!(
-            out.warnings
-                .iter()
-                .any(|w| matches!(w, ParseWarning::UnknownProjection { value } if value == "mercator")),
+            out.warnings.iter().any(
+                |w| matches!(w, ParseWarning::UnknownProjection { value } if value == "mercator")
+            ),
             "one UnknownProjection naming `mercator`; got {:?}",
             out.warnings
         );
 
         // Supported projections and a lifted $param pass silently.
-        for ok in ["projectionType: albers", "projectionType: albers-usa", "projectionType: equirectangular", "projectionType: $p"] {
+        for ok in [
+            "projectionType: albers",
+            "projectionType: albers-usa",
+            "projectionType: equirectangular",
+            "projectionType: $p",
+        ] {
             let src = format!(
                 "params:\n  p: 1\ndata:\n  t:\n    - {{ x: 1, y: 2 }}\nplot:\n  - {{ mark: dot, data: {{ from: t }}, x: x, y: y }}\n{ok}\n"
             );
             let o = parse_spec(&src, Format::Yaml).expect("parses");
             assert!(
-                !o.warnings.iter().any(|w| matches!(w, ParseWarning::UnknownProjection { .. })),
+                !o.warnings
+                    .iter()
+                    .any(|w| matches!(w, ParseWarning::UnknownProjection { .. })),
                 "`{ok}` must not warn; got {:?}",
                 o.warnings
             );
@@ -2127,9 +2154,9 @@ plot:
         let src = "data:\n  t:\n    - { x: 1, y: 2 }\nplot:\n  - { mark: dot, data: { from: t }, x: x, y: y }\nxLabel: Cost in $usd\n";
         let out = parse_spec(src, Format::Yaml).expect("parses");
         assert!(
-            out.warnings
-                .iter()
-                .any(|w| matches!(w, ParseWarning::NonStringLabel { attribute } if attribute == "xLabel")),
+            out.warnings.iter().any(
+                |w| matches!(w, ParseWarning::NonStringLabel { attribute } if attribute == "xLabel")
+            ),
             "a $-in-text label warns; got {:?}",
             out.warnings
         );
@@ -2276,8 +2303,7 @@ plot:
     /// key. The renderer's channel extraction ignores the object.
     #[test]
     fn unknown_aggregate_warns_and_degrades() {
-        let out =
-            parse_spec("mark: hexbin\nfill: { stdev: v }\n", Format::Yaml).expect("parses");
+        let out = parse_spec("mark: hexbin\nfill: { stdev: v }\n", Format::Yaml).expect("parses");
         assert!(
             out.warnings.iter().any(|w| matches!(
                 w,
@@ -2327,8 +2353,7 @@ plot:
                 "{}/vendor/mosaic-specs/yaml/{name}.yaml",
                 env!("CARGO_MANIFEST_DIR")
             );
-            let src = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("read {path}: {e}"));
+            let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
             parse_spec(&src, Format::Yaml)
                 .unwrap_or_else(|e| panic!("corpus {name} failed to parse: {e}"));
         }
@@ -2345,8 +2370,7 @@ plot:
                 "{}/vendor/mosaic-specs/yaml/{name}.yaml",
                 env!("CARGO_MANIFEST_DIR")
             );
-            let src = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("read {path}: {e}"));
+            let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
             let out = parse_spec(&src, Format::Yaml)
                 .unwrap_or_else(|e| panic!("corpus {name} failed to parse: {e}"));
             let unknown: Vec<_> = out

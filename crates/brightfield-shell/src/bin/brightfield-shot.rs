@@ -173,8 +173,18 @@ fn parse_args() -> Result<Args, String> {
         match a.as_str() {
             "--spec" => spec = Some(next()?),
             "--out" => out = Some(PathBuf::from(next()?)),
-            "--scale" => scale = next()?.parse().map_err(|_| "--scale not a number".to_string())?,
-            "--theme" => mode = if next()? == "dark" { Mode::Dark } else { Mode::Light },
+            "--scale" => {
+                scale = next()?
+                    .parse()
+                    .map_err(|_| "--scale not a number".to_string())?
+            }
+            "--theme" => {
+                mode = if next()? == "dark" {
+                    Mode::Dark
+                } else {
+                    Mode::Light
+                }
+            }
             "--vello-only" => vello_only = true,
             "--script" => script = Some(PathBuf::from(next()?)),
             "--flow" => {

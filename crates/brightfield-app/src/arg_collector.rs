@@ -81,14 +81,24 @@ impl ArgCollector {
     /// Start collecting for `add-mark` on the focused plot (a single KIND).
     #[must_use]
     pub fn add_mark(plot: ComponentPath) -> Self {
-        Self { plot, mark_ordinal: 0, verb: ArgVerb::AddMark, step: ArgStep::Kind }
+        Self {
+            plot,
+            mark_ordinal: 0,
+            verb: ArgVerb::AddMark,
+            step: ArgStep::Kind,
+        }
     }
 
     /// Start collecting for `set-channel` on the focused plot's `mark_ordinal`-th
     /// mark (a CHANNEL then a COLUMN).
     #[must_use]
     pub fn set_channel(plot: ComponentPath, mark_ordinal: usize) -> Self {
-        Self { plot, mark_ordinal, verb: ArgVerb::SetChannel, step: ArgStep::Channel }
+        Self {
+            plot,
+            mark_ordinal,
+            verb: ArgVerb::SetChannel,
+            step: ArgStep::Channel,
+        }
     }
 
     /// The verb being collected for. A public accessor for parity with
@@ -131,7 +141,9 @@ impl ArgCollector {
             },
             ArgStep::Channel => {
                 if channel_options().iter().any(|c| c == choice) {
-                    self.step = ArgStep::Column { channel: choice.to_string() };
+                    self.step = ArgStep::Column {
+                        channel: choice.to_string(),
+                    };
                     ArgOutcome::Pending
                 } else {
                     ArgOutcome::Invalid
@@ -209,13 +221,27 @@ mod tests {
     fn set_channel_needs_a_channel_then_a_column() {
         let mut c = ArgCollector::set_channel(cp("root"), 0);
         assert_eq!(c.step(), &ArgStep::Channel);
-        assert_eq!(c.pick("x"), ArgOutcome::Pending, "channel pick advances to column");
-        assert_eq!(c.step(), &ArgStep::Column { channel: "x".to_string() });
+        assert_eq!(
+            c.pick("x"),
+            ArgOutcome::Pending,
+            "channel pick advances to column"
+        );
+        assert_eq!(
+            c.step(),
+            &ArgStep::Column {
+                channel: "x".to_string()
+            }
+        );
         // The column list comes from the caller (source profile).
         let cols = vec!["temp".to_string(), "depth".to_string()];
         assert_eq!(c.options(&cols), cols);
         match c.pick("depth") {
-            ArgOutcome::Ready(SpecEdit::SetChannel { plot, mark_ordinal, channel, column }) => {
+            ArgOutcome::Ready(SpecEdit::SetChannel {
+                plot,
+                mark_ordinal,
+                channel,
+                column,
+            }) => {
                 assert_eq!(plot, cp("root"));
                 assert_eq!(mark_ordinal, 0);
                 assert_eq!(channel, "x");
@@ -229,7 +255,11 @@ mod tests {
     fn an_unknown_channel_is_invalid() {
         let mut c = ArgCollector::set_channel(cp("root"), 0);
         assert_eq!(c.pick("wobble"), ArgOutcome::Invalid);
-        assert_eq!(c.step(), &ArgStep::Channel, "an invalid pick does not advance");
+        assert_eq!(
+            c.step(),
+            &ArgStep::Channel,
+            "an invalid pick does not advance"
+        );
     }
 
     #[test]

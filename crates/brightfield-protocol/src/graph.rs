@@ -215,13 +215,19 @@ struct StepIr {
     seam: Seam,
 }
 
-fn decode_step(step: &Step, index: usize, sources: &BTreeMap<StepId, Result<String, String>>) -> StepIr {
+fn decode_step(
+    step: &Step,
+    index: usize,
+    sources: &BTreeMap<StepId, Result<String, String>>,
+) -> StepIr {
     let op_parts = step.op_parts();
     let op_name = op_parts.as_ref().map(|(n, _)| n.clone());
     let seam_kind = if let Some((name, version)) = op_parts {
         SeamKind::Op { name, version }
     } else if let Some(model) = &step.sql {
-        SeamKind::Sql { model: model.clone() }
+        SeamKind::Sql {
+            model: model.clone(),
+        }
     } else if step.command.is_some() {
         SeamKind::Command
     } else {
@@ -268,7 +274,12 @@ fn decode_step(step: &Step, index: usize, sources: &BTreeMap<StepId, Result<Stri
         stmts,
         sql_error,
         gate_target: step.with_str("parquet").map(str::to_string),
-        seam: Seam { step: step.name.clone(), index, kind: seam_kind, gate },
+        seam: Seam {
+            step: step.name.clone(),
+            index,
+            kind: seam_kind,
+            gate,
+        },
     }
 }
 
@@ -287,7 +298,12 @@ fn classify_relations(proto: &str, irs: &[StepIr]) -> BTreeMap<String, RelInfo> 
     let mut producers: BTreeMap<String, (usize, usize)> = BTreeMap::new();
     for ir in irs {
         for stmt in &ir.stmts {
-            if let StatementAssets::Parsed { index, produced: Some(rel), .. } = stmt {
+            if let StatementAssets::Parsed {
+                index,
+                produced: Some(rel),
+                ..
+            } = stmt
+            {
                 producers.insert(rel.clone(), (ir.index, *index));
             }
         }
@@ -310,11 +326,21 @@ fn classify_relations(proto: &str, irs: &[StepIr]) -> BTreeMap<String, RelInfo> 
         let internal = consumed_later_same_file && !referenced_elsewhere;
         let step_name = &irs[*step_idx].name;
         let (id, kind) = if internal {
-            (format!("stmt.{proto}.{step_name}#{stmt_idx}"), AssetKind::Internal)
+            (
+                format!("stmt.{proto}.{step_name}#{stmt_idx}"),
+                AssetKind::Internal,
+            )
         } else {
             (format!("asset.{proto}.{rel}"), AssetKind::Table)
         };
-        out.insert(rel.clone(), RelInfo { id, kind, producer: step_name.clone() });
+        out.insert(
+            rel.clone(),
+            RelInfo {
+                id,
+                kind,
+                producer: step_name.clone(),
+            },
+        );
     }
     out
 }
@@ -417,7 +443,10 @@ impl Builder {
     }
 
     fn record_strict(&mut self, id: &AssetId, step: &StepId) {
-        self.strict_consumers.entry(id.clone()).or_default().insert(step.clone());
+        self.strict_consumers
+            .entry(id.clone())
+            .or_default()
+            .insert(step.clone());
     }
 }
 
@@ -616,7 +645,10 @@ pub fn build_graph(
                         }
                     }
                     StatementAssets::Parsed {
-                        produced, consumed_relations, consumed_files, ..
+                        produced,
+                        consumed_relations,
+                        consumed_files,
+                        ..
                     } => {
                         // A targetless statement (INSERT/COPY/UPDATE — no
                         // CREATE TABLE/VIEW) produces no relation node in the
@@ -704,7 +736,10 @@ pub fn build_graph(
         .collect();
     let mut forward: BTreeMap<AssetId, BTreeSet<AssetId>> = BTreeMap::new();
     for edge in &b.edges {
-        forward.entry(edge.from.clone()).or_default().insert(edge.to.clone());
+        forward
+            .entry(edge.from.clone())
+            .or_default()
+            .insert(edge.to.clone());
     }
     let feeds_another_export = |start: &AssetId| -> bool {
         let mut stack = vec![start.clone()];
@@ -742,7 +777,10 @@ pub fn build_graph(
     AssetGraph {
         protocol: proto,
         nodes: b.nodes,
-        seams: irs.into_iter().map(|ir| (ir.name.clone(), ir.seam)).collect(),
+        seams: irs
+            .into_iter()
+            .map(|ir| (ir.name.clone(), ir.seam))
+            .collect(),
         edges: b.edges,
     }
 }
@@ -835,7 +873,12 @@ pub fn induced_subgraph(graph: &AssetGraph, keep: &BTreeSet<AssetId>) -> AssetGr
         .filter(|(step, _)| kept_steps.contains(step))
         .map(|(s, seam)| (s.clone(), seam.clone()))
         .collect();
-    AssetGraph { protocol: graph.protocol.clone(), nodes, seams, edges }
+    AssetGraph {
+        protocol: graph.protocol.clone(),
+        nodes,
+        seams,
+        edges,
+    }
 }
 
 #[cfg(test)]
@@ -873,9 +916,11 @@ steps:
         let mut sources = BTreeMap::new();
         sources.insert(
             "transform".to_string(),
-            Ok("CREATE TABLE staging AS SELECT * FROM read_csv('build/a.csv', header=true);\n\
+            Ok(
+                "CREATE TABLE staging AS SELECT * FROM read_csv('build/a.csv', header=true);\n\
                 CREATE TABLE t_out AS SELECT * FROM staging;"
-                .to_string()),
+                    .to_string(),
+            ),
         );
         build_graph(&manifest, &sources)
     }
@@ -884,7 +929,10 @@ steps:
     fn derivation_covers_every_kind() {
         let g = mini_graph();
         let kind = |id: &str| g.nodes.get(id).map(|n| n.kind);
-        assert_eq!(kind("source.mini.https://example.com/data/a.csv"), Some(AssetKind::Source));
+        assert_eq!(
+            kind("source.mini.https://example.com/data/a.csv"),
+            Some(AssetKind::Source)
+        );
         assert_eq!(kind("file.mini.build/a.csv"), Some(AssetKind::File));
         // staging is consumed later in the same file and referenced by no
         // other step -> INTERNAL under a stmt id; t_out is exported -> TABLE.
@@ -893,7 +941,10 @@ steps:
         // The export dest is read by nothing -> Dataset sink.
         assert_eq!(kind("file.mini.build/t.parquet"), Some(AssetKind::Dataset));
         // The SOURCE label is the host.
-        assert_eq!(g.nodes["source.mini.https://example.com/data/a.csv"].label, "example.com");
+        assert_eq!(
+            g.nodes["source.mini.https://example.com/data/a.csv"].label,
+            "example.com"
+        );
     }
 
     #[test]
@@ -902,12 +953,21 @@ steps:
         // The gate seam exists and is marked.
         assert!(g.seams["validate"].gate);
         // No node belongs to the validate step.
-        assert!(g.nodes.values().all(|n| n.step.as_deref() != Some("validate")));
+        assert!(g
+            .nodes
+            .values()
+            .all(|n| n.step.as_deref() != Some("validate")));
         // The edge INTO the guarded parquet carries the shield.
-        let shielded: Vec<&Edge> =
-            g.edges.iter().filter(|e| e.to == "file.mini.build/t.parquet").collect();
+        let shielded: Vec<&Edge> = g
+            .edges
+            .iter()
+            .filter(|e| e.to == "file.mini.build/t.parquet")
+            .collect();
         assert!(!shielded.is_empty());
-        assert!(shielded.iter().all(|e| e.shield), "guarded edge carries shield: {shielded:?}");
+        assert!(
+            shielded.iter().all(|e| e.shield),
+            "guarded edge carries shield: {shielded:?}"
+        );
         // No other edge is shielded.
         assert!(g
             .edges
@@ -920,7 +980,10 @@ steps:
     fn pds_lineage_chain_source_to_dataset() {
         let g = mini_graph();
         let has_edge = |from: &str, to: &str| g.edges.iter().any(|e| e.from == from && e.to == to);
-        assert!(has_edge("source.mini.https://example.com/data/a.csv", "file.mini.build/a.csv"));
+        assert!(has_edge(
+            "source.mini.https://example.com/data/a.csv",
+            "file.mini.build/a.csv"
+        ));
         assert!(has_edge("file.mini.build/a.csv", "stmt.mini.transform#0"));
         assert!(has_edge("stmt.mini.transform#0", "asset.mini.t_out"));
         assert!(has_edge("asset.mini.t_out", "file.mini.build/t.parquet"));
@@ -944,7 +1007,10 @@ steps:
         let mut sources = BTreeMap::new();
         sources.insert(
             "load".to_string(),
-            Ok("CREATE TABLE loaded AS SELECT * FROM read_csv('build/out/*/part.tsv');".to_string()),
+            Ok(
+                "CREATE TABLE loaded AS SELECT * FROM read_csv('build/out/*/part.tsv');"
+                    .to_string(),
+            ),
         );
         let g = build_graph(&manifest, &sources);
         // Neither the deep depends_on path nor the glob fabricates a node —
@@ -996,11 +1062,19 @@ steps:
         let manifest = parse_manifest_str(yaml).unwrap();
         let g = build_graph(&manifest, &BTreeMap::new());
         let wired = |from: &str| {
-            g.edges.iter().any(|e| e.from == from && e.to == "file.mixdepth.build/loaded.parquet")
+            g.edges
+                .iter()
+                .any(|e| e.from == from && e.to == "file.mixdepth.build/loaded.parquet")
         };
         // Equal-depth siblings both wire (the invariant the fix must preserve).
-        assert!(wired("file.mixdepth.build/ncen/q1"), "shallow sibling q1 wired");
-        assert!(wired("file.mixdepth.build/ncen/q2"), "shallow sibling q2 wired");
+        assert!(
+            wired("file.mixdepth.build/ncen/q1"),
+            "shallow sibling q1 wired"
+        );
+        assert!(
+            wired("file.mixdepth.build/ncen/q2"),
+            "shallow sibling q2 wired"
+        );
         // The DEEPER independent producer wires too (the regression this guards).
         assert!(
             wired("file.mixdepth.build/ncen/2023/q3"),
@@ -1016,12 +1090,21 @@ steps:
         let yaml = "name: deg\nsteps:\n  - name: broken\n    sql: models/missing.sql\n    depends_on: [in.csv]\n";
         let manifest = parse_manifest_str(yaml).unwrap();
         let mut sources = BTreeMap::new();
-        sources.insert("broken".to_string(), Err("models/missing.sql: not found".to_string()));
+        sources.insert(
+            "broken".to_string(),
+            Err("models/missing.sql: not found".to_string()),
+        );
         let g = build_graph(&manifest, &sources);
         let chip = &g.nodes["stmt.deg.broken#0"];
         assert_eq!(chip.kind, AssetKind::Opaque);
-        assert!(chip.issue.as_deref().is_some_and(|e| e.contains("not found")));
-        assert!(g.edges.iter().any(|e| e.to == "stmt.deg.broken#0"), "depends_on wires the chip");
+        assert!(chip
+            .issue
+            .as_deref()
+            .is_some_and(|e| e.contains("not found")));
+        assert!(
+            g.edges.iter().any(|e| e.to == "stmt.deg.broken#0"),
+            "depends_on wires the chip"
+        );
     }
 
     #[test]
@@ -1062,8 +1145,10 @@ steps:
         );
         sources.insert(
             "tier".to_string(),
-            Ok("CREATE TABLE edges_out AS SELECT * FROM read_parquet('build/resolved.parquet');"
-                .to_string()),
+            Ok(
+                "CREATE TABLE edges_out AS SELECT * FROM read_parquet('build/resolved.parquet');"
+                    .to_string(),
+            ),
         );
         let g = build_graph(&manifest, &sources);
         let datasets: Vec<&str> = g
@@ -1072,15 +1157,21 @@ steps:
             .filter(|n| n.kind == AssetKind::Dataset)
             .map(|n| n.label.as_str())
             .collect();
-        assert_eq!(datasets, vec!["build/final.parquet"], "exactly the terminal export is the sink");
+        assert_eq!(
+            datasets,
+            vec!["build/final.parquet"],
+            "exactly the terminal export is the sink"
+        );
         assert_eq!(
             g.nodes["file.f.build/sec_entities.parquet"].kind,
             AssetKind::File,
             "the mid-pipeline export stays FILE (it has an outgoing lineage edge)"
         );
         assert!(
-            g.edges.iter().any(|e| e.from == "file.f.build/sec_entities.parquet"
-                && e.to == "file.f.build/resolved.parquet"),
+            g.edges
+                .iter()
+                .any(|e| e.from == "file.f.build/sec_entities.parquet"
+                    && e.to == "file.f.build/resolved.parquet"),
             "the named `with:` consumption still draws the lineage edge"
         );
     }
@@ -1106,9 +1197,15 @@ steps:
 ";
         let manifest = parse_manifest_str(yaml).unwrap();
         let mut sources = BTreeMap::new();
-        sources.insert("load".to_string(), Ok("CREATE TABLE loaded AS SELECT 1;".to_string()));
+        sources.insert(
+            "load".to_string(),
+            Ok("CREATE TABLE loaded AS SELECT 1;".to_string()),
+        );
         let g = build_graph(&manifest, &sources);
-        assert!(!g.nodes.contains_key("file.x.build/ncen"), "no fabricated ancestor node");
+        assert!(
+            !g.nodes.contains_key("file.x.build/ncen"),
+            "no fabricated ancestor node"
+        );
         assert!(g
             .edges
             .iter()
@@ -1128,15 +1225,20 @@ steps:
         let mut sources = BTreeMap::new();
         sources.insert(
             "t".to_string(),
-            Ok("CREATE TABLE agg AS SELECT 1 AS n;\nINSERT INTO agg SELECT * FROM extra_src;"
-                .to_string()),
+            Ok(
+                "CREATE TABLE agg AS SELECT 1 AS n;\nINSERT INTO agg SELECT * FROM extra_src;"
+                    .to_string(),
+            ),
         );
         let g = build_graph(&manifest, &sources);
         assert!(
             !g.nodes.keys().any(|k| k.contains("extra_src")),
             "the INSERT's consumed relation is not fabricated as an orphan node"
         );
-        assert!(g.nodes.contains_key("asset.d.agg"), "the CREATE target still exists");
+        assert!(
+            g.nodes.contains_key("asset.d.agg"),
+            "the CREATE target still exists"
+        );
     }
 
     #[test]
@@ -1148,10 +1250,12 @@ steps:
         let mut sources = BTreeMap::new();
         sources.insert(
             "t".to_string(),
-            Ok("CREATE TABLE a AS SELECT * FROM read_csv('build/raw.csv');\n\
+            Ok(
+                "CREATE TABLE a AS SELECT * FROM read_csv('build/raw.csv');\n\
                 SELEC broken here;\n\
                 CREATE TABLE b AS SELECT * FROM a;"
-                .to_string()),
+                    .to_string(),
+            ),
         );
         let g = build_graph(&manifest, &sources);
         assert_eq!(g.nodes["stmt.d.t#1"].kind, AssetKind::Opaque);
@@ -1198,7 +1302,10 @@ steps:
         let g = build_graph(&manifest, &sources);
         let focus = "file.d.build/a.csv".to_string();
         let hood = neighbourhood(&g, &focus);
-        assert!(hood.contains(&focus), "the focus is in its own neighbourhood");
+        assert!(
+            hood.contains(&focus),
+            "the focus is in its own neighbourhood"
+        );
         // Every node adjacent to the focus is included; nothing two hops out.
         for edge in &g.edges {
             if edge.from == focus {
@@ -1209,9 +1316,15 @@ steps:
             }
         }
         let sub = induced_subgraph(&g, &hood);
-        assert_eq!(sub.nodes.len(), hood.len(), "the slice has exactly the kept nodes");
+        assert_eq!(
+            sub.nodes.len(),
+            hood.len(),
+            "the slice has exactly the kept nodes"
+        );
         assert!(
-            sub.edges.iter().all(|e| hood.contains(&e.from) && hood.contains(&e.to)),
+            sub.edges
+                .iter()
+                .all(|e| hood.contains(&e.from) && hood.contains(&e.to)),
             "only internal edges survive the slice"
         );
         // Unknown focus yields an empty scope.
@@ -1247,7 +1360,11 @@ steps:
         );
         // Focusing the sink pulls in every ancestor but adds no descendant.
         let sink = lineage(&g, &"file.mini.build/t.parquet".to_string());
-        assert_eq!(sink.len(), g.nodes.len(), "the sink's lineage is the whole chain");
+        assert_eq!(
+            sink.len(),
+            g.nodes.len(),
+            "the sink's lineage is the whole chain"
+        );
         // An unknown focus yields an empty lineage.
         assert!(lineage(&g, &"file.mini.nope".to_string()).is_empty());
     }
@@ -1293,7 +1410,10 @@ steps:
         // `a` upstream, `x` on the cycle, and `y` — the descendant reachable
         // only through the cycle node — are all in the focus's lineage.
         for id in ["a", "focus", "x", "y"] {
-            assert!(full.contains(id), "lineage keeps {id} across the focus cycle");
+            assert!(
+                full.contains(id),
+                "lineage keeps {id} across the focus cycle"
+            );
         }
     }
 }

@@ -48,14 +48,23 @@ fn parse_args() -> Args {
             }
             "--flow" => {
                 if let Some(v) = it.next() {
-                    flow = if v == "horizontal" { Flow::Horizontal } else { Flow::Vertical };
+                    flow = if v == "horizontal" {
+                        Flow::Horizontal
+                    } else {
+                        Flow::Vertical
+                    };
                 }
             }
             other if !other.starts_with("--") => spec = other.to_string(),
             other => eprintln!("ignoring unknown flag {other}"),
         }
     }
-    Args { spec, mode, shot_out, flow }
+    Args {
+        spec,
+        mode,
+        shot_out,
+        flow,
+    }
 }
 
 /// The shared F12 → live-screenshot latch (request in `ui`, capture next frame).
@@ -66,7 +75,10 @@ struct ShotLatch {
 
 impl ShotLatch {
     fn new(shot_out: PathBuf) -> Self {
-        Self { shot_out, pending: false }
+        Self {
+            shot_out,
+            pending: false,
+        }
     }
 
     /// Request on F12, then save the image handed back on a later frame.
@@ -167,7 +179,10 @@ fn main() -> Result<(), String> {
 fn run_mosaic_window(args: Args) -> Result<(), String> {
     let composed = compose_spec(&args.spec)?;
     let (win_w, win_h) = (composed.width as f32 + 200.0, composed.height as f32 + 56.0);
-    let title = composed.title.clone().unwrap_or_else(|| "Brightfield".to_string());
+    let title = composed
+        .title
+        .clone()
+        .unwrap_or_else(|| "Brightfield".to_string());
 
     let options = native_options(win_w, win_h);
     let mode = args.mode;
@@ -178,7 +193,10 @@ fn run_mosaic_window(args: Args) -> Result<(), String> {
         Box::new(move |cc| {
             let host = host_from_frame(cc)?;
             let state = ShellState::new(composed, host, mode);
-            Ok(Box::new(ShellApp { state, shot: ShotLatch::new(shot_out) }) as Box<dyn eframe::App>)
+            Ok(Box::new(ShellApp {
+                state,
+                shot: ShotLatch::new(shot_out),
+            }) as Box<dyn eframe::App>)
         }),
     )
     .map_err(|e| format!("eframe run failed: {e}"))
@@ -205,7 +223,10 @@ fn run_protocol_window(args: Args) -> Result<(), String> {
         Box::new(move |cc| {
             let host = host_from_frame(cc)?;
             let shell = ProtocolShell::new(inputs, host, mode, flow);
-            Ok(Box::new(ProtocolApp { shell, shot: ShotLatch::new(shot_out) }) as Box<dyn eframe::App>)
+            Ok(Box::new(ProtocolApp {
+                shell,
+                shot: ShotLatch::new(shot_out),
+            }) as Box<dyn eframe::App>)
         }),
     )
     .map_err(|e| format!("eframe run failed: {e}"))

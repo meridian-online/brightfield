@@ -167,12 +167,20 @@ fn read_fn_paths(args: &TableFunctionArgs) -> BTreeSet<String> {
                     positional_seen = true;
                 }
             }
-            FunctionArg::Named { name, arg: FunctionArgExpr::Expr(expr), .. } => {
+            FunctionArg::Named {
+                name,
+                arg: FunctionArgExpr::Expr(expr),
+                ..
+            } => {
                 if is_path_arg(&name.value) {
                     collect_string_paths(expr, &mut out);
                 }
             }
-            FunctionArg::ExprNamed { name: Expr::Identifier(name), arg: FunctionArgExpr::Expr(expr), .. } => {
+            FunctionArg::ExprNamed {
+                name: Expr::Identifier(name),
+                arg: FunctionArgExpr::Expr(expr),
+                ..
+            } => {
                 if is_path_arg(&name.value) {
                     collect_string_paths(expr, &mut out);
                 }
@@ -251,8 +259,11 @@ pub fn extract_statement_assets(sql: &str) -> Vec<StatementAssets> {
                     }
                     let _ = stmt.visit(&mut collector);
                 }
-                let mut consumed_relations: BTreeSet<String> =
-                    collector.relations.difference(&collector.ctes).cloned().collect();
+                let mut consumed_relations: BTreeSet<String> = collector
+                    .relations
+                    .difference(&collector.ctes)
+                    .cloned()
+                    .collect();
                 if let Some(p) = &produced {
                     consumed_relations.remove(p);
                 }
@@ -314,7 +325,10 @@ mod tests {
         assert_eq!(frags[0].text, sql);
         let assets = extract_statement_assets(sql);
         assert_eq!(assets.len(), 1);
-        assert!(matches!(assets[0], StatementAssets::Opaque { index: 0, .. }));
+        assert!(matches!(
+            assets[0],
+            StatementAssets::Opaque { index: 0, .. }
+        ));
     }
 
     #[test]
@@ -327,9 +341,16 @@ mod tests {
         assert!(
             matches!(&assets[0], StatementAssets::Parsed { produced: Some(p), .. } if p == "a")
         );
-        assert!(matches!(&assets[1], StatementAssets::Opaque { index: 1, .. }));
+        assert!(matches!(
+            &assets[1],
+            StatementAssets::Opaque { index: 1, .. }
+        ));
         match &assets[2] {
-            StatementAssets::Parsed { produced, consumed_relations, .. } => {
+            StatementAssets::Parsed {
+                produced,
+                consumed_relations,
+                ..
+            } => {
                 assert_eq!(produced.as_deref(), Some("b"));
                 assert!(consumed_relations.contains("a"), "sibling still explodes");
             }
@@ -344,7 +365,12 @@ mod tests {
         let assets = extract_statement_assets(sql);
         assert_eq!(assets.len(), 1);
         match &assets[0] {
-            StatementAssets::Parsed { produced, consumed_relations, consumed_files, .. } => {
+            StatementAssets::Parsed {
+                produced,
+                consumed_relations,
+                consumed_files,
+                ..
+            } => {
                 assert_eq!(produced.as_deref(), Some("t"));
                 assert_eq!(
                     consumed_relations.iter().collect::<Vec<_>>(),
@@ -364,7 +390,8 @@ mod tests {
         // The DuckDB list form read_parquet(['a','b']) must yield BOTH file
         // edges, not silently drop the lineage (only the unnamed single-string
         // form was matched before).
-        let sql = "CREATE TABLE t AS SELECT * FROM read_parquet(['build/a.parquet', 'build/b.parquet'])";
+        let sql =
+            "CREATE TABLE t AS SELECT * FROM read_parquet(['build/a.parquet', 'build/b.parquet'])";
         let assets = extract_statement_assets(sql);
         match &assets[0] {
             StatementAssets::Parsed { consumed_files, .. } => {
@@ -384,7 +411,10 @@ mod tests {
         let assets = extract_statement_assets(sql);
         match &assets[0] {
             StatementAssets::Parsed { consumed_files, .. } => {
-                assert!(consumed_files.contains("build/c.csv"), "named path captured: {consumed_files:?}");
+                assert!(
+                    consumed_files.contains("build/c.csv"),
+                    "named path captured: {consumed_files:?}"
+                );
             }
             other => panic!("expected Parsed, got {other:?}"),
         }
@@ -411,7 +441,11 @@ mod tests {
                     !consumed_files.contains("meta/label.txt"),
                     "a path-like string OPTION value is not lineage: {consumed_files:?}"
                 );
-                assert_eq!(consumed_files.len(), 1, "only the real path: {consumed_files:?}");
+                assert_eq!(
+                    consumed_files.len(),
+                    1,
+                    "only the real path: {consumed_files:?}"
+                );
             }
             other => panic!("expected Parsed, got {other:?}"),
         }
@@ -423,10 +457,15 @@ mod tests {
                    SELECT * FROM c JOIN other ON c.id = other.id";
         let assets = extract_statement_assets(sql);
         match &assets[0] {
-            StatementAssets::Parsed { consumed_relations, .. } => {
+            StatementAssets::Parsed {
+                consumed_relations, ..
+            } => {
                 assert!(consumed_relations.contains("real_table"));
                 assert!(consumed_relations.contains("other"));
-                assert!(!consumed_relations.contains("c"), "CTE names are statement-local");
+                assert!(
+                    !consumed_relations.contains("c"),
+                    "CTE names are statement-local"
+                );
             }
             other => panic!("expected Parsed, got {other:?}"),
         }

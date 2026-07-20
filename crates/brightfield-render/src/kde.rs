@@ -312,9 +312,7 @@ mod tests {
     #[test]
     fn kde_1d_uniform_density() {
         // Single sample at bin 5 — peak should be at bin 5, symmetric.
-        let bins: Vec<u32> = (0..11)
-            .map(|i| if i == 5 { 1 } else { 0 })
-            .collect();
+        let bins: Vec<u32> = (0..11).map(|i| if i == 5 { 1 } else { 0 }).collect();
         let density = kde_1d(&bins, 1.0, 1.0);
         assert_eq!(density.len(), 11);
         // Peak at bin 5.
@@ -362,8 +360,14 @@ mod tests {
         let grid: Vec<f64> = (0..=10).map(|i| i as f64).collect();
         let density = kde_1d_weighted(&samples, 1.0, &grid);
         assert!(density.iter().all(|d| d.is_finite() && *d >= 0.0));
-        assert!(density[5] < density[1], "gap should be lower than left cluster");
-        assert!(density[9] > density[5], "right cluster should rise above the gap");
+        assert!(
+            density[5] < density[1],
+            "gap should be lower than left cluster"
+        );
+        assert!(
+            density[9] > density[5],
+            "right cluster should rise above the gap"
+        );
         // Heavier-weighted left cluster (5 vs 5 here is equal) — total mass split
         // by weight: both clusters present.
         assert!(density[1] > 0.0 && density[9] > 0.0);
@@ -391,7 +395,10 @@ mod tests {
     fn kde_1d_weighted_degenerate_inputs() {
         // Empty grid → empty; zero bandwidth / empty samples → zeros.
         assert!(kde_1d_weighted(&[(1.0, 1.0)], 1.0, &[]).is_empty());
-        assert_eq!(kde_1d_weighted(&[(1.0, 1.0)], 0.0, &[0.0, 1.0]), vec![0.0, 0.0]);
+        assert_eq!(
+            kde_1d_weighted(&[(1.0, 1.0)], 0.0, &[0.0, 1.0]),
+            vec![0.0, 0.0]
+        );
         assert_eq!(kde_1d_weighted(&[], 1.0, &[0.0, 1.0]), vec![0.0, 0.0]);
     }
 
@@ -405,10 +412,7 @@ mod tests {
         let peak = density[2 * 5 + 2];
         for r in 0..5 {
             for c in 0..5 {
-                assert!(
-                    density[r * 5 + c] <= peak + 1e-12,
-                    "({r},{c}) > peak"
-                );
+                assert!(density[r * 5 + c] <= peak + 1e-12, "({r},{c}) > peak");
             }
         }
         // Symmetry across both axes.
@@ -424,10 +428,7 @@ mod tests {
         let h = silverman_1d(&samples);
         // Variance of uniform on [-0.5, 0.5] ≈ 1/12 ⇒ σ ≈ 0.289.
         // Expected ≈ 1.06 * 0.289 * 100^(-0.2) ≈ 0.122.
-        assert!(
-            h > 0.05 && h < 0.30,
-            "silverman_1d unexpected: {h}"
-        );
+        assert!(h > 0.05 && h < 0.30, "silverman_1d unexpected: {h}");
     }
 
     #[test]

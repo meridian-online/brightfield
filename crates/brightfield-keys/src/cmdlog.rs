@@ -107,7 +107,11 @@ impl ProtocolCmdLog {
         if !tier.is_logged() {
             return Err(RecordRejection::ViewTierNeverLogs);
         }
-        self.rows.push(DataCommand { longname, address: address.into(), input });
+        self.rows.push(DataCommand {
+            longname,
+            address: address.into(),
+            input,
+        });
         Ok(self.rows.last().expect("just pushed"))
     }
 
@@ -120,7 +124,11 @@ impl ProtocolCmdLog {
     /// The whole log as JSONL — one row per line, the `:export-protocol` feed.
     #[must_use]
     pub fn to_jsonl(&self) -> String {
-        self.rows.iter().map(DataCommand::to_jsonl).collect::<Vec<_>>().join("\n")
+        self.rows
+            .iter()
+            .map(DataCommand::to_jsonl)
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -161,14 +169,22 @@ mod tests {
             .record(CommandTier::View, "protocol-consumer", "asset.p.x", None)
             .unwrap_err();
         assert_eq!(err, RecordRejection::ViewTierNeverLogs);
-        assert!(log.rows().is_empty(), "a view command leaves no trace in the log");
+        assert!(
+            log.rows().is_empty(),
+            "a view command leaves no trace in the log"
+        );
     }
 
     #[test]
     fn data_command_carries_typed_input_when_present() {
         let mut log = ProtocolCmdLog::new();
-        log.record(CommandTier::Data, "change-mark-type", "view.dashboard.plot0", Some("bar".into()))
-            .unwrap();
+        log.record(
+            CommandTier::Data,
+            "change-mark-type",
+            "view.dashboard.plot0",
+            Some("bar".into()),
+        )
+        .unwrap();
         assert_eq!(
             log.rows()[0].to_jsonl(),
             r#"{"longname":"change-mark-type","address":"view.dashboard.plot0","input":"bar"}"#
@@ -178,8 +194,10 @@ mod tests {
     #[test]
     fn jsonl_is_one_row_per_line() {
         let mut log = ProtocolCmdLog::new();
-        log.record(CommandTier::Data, "yank-address", "asset.p.a", None).unwrap();
-        log.record(CommandTier::Data, "yank-address", "asset.p.b", None).unwrap();
+        log.record(CommandTier::Data, "yank-address", "asset.p.a", None)
+            .unwrap();
+        log.record(CommandTier::Data, "yank-address", "asset.p.b", None)
+            .unwrap();
         assert_eq!(log.to_jsonl().lines().count(), 2);
     }
 }

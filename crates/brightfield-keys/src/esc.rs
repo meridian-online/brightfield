@@ -52,24 +52,43 @@ mod tests {
     use super::*;
 
     fn state(overlay: bool, pending: bool, selection: bool) -> EscState {
-        EscState { overlay_open: overlay, prefix_pending: pending, selection_present: selection }
+        EscState {
+            overlay_open: overlay,
+            prefix_pending: pending,
+            selection_present: selection,
+        }
     }
 
     #[test]
     fn ladder_resolves_in_strict_order() {
         // Overlay wins over everything.
-        assert_eq!(esc_action(state(true, true, true)), EscAction::DismissOverlay);
+        assert_eq!(
+            esc_action(state(true, true, true)),
+            EscAction::DismissOverlay
+        );
         // Then pending prefix.
-        assert_eq!(esc_action(state(false, true, true)), EscAction::CancelPending);
+        assert_eq!(
+            esc_action(state(false, true, true)),
+            EscAction::CancelPending
+        );
         // Then clear selection.
-        assert_eq!(esc_action(state(false, false, true)), EscAction::ClearSelection);
+        assert_eq!(
+            esc_action(state(false, false, true)),
+            EscAction::ClearSelection
+        );
         // Idle → no-op (never auto-pops focus).
         assert_eq!(esc_action(state(false, false, false)), EscAction::Noop);
     }
 
     #[test]
     fn overlay_beats_selection_and_pending_beats_selection() {
-        assert_eq!(esc_action(state(true, false, true)), EscAction::DismissOverlay);
-        assert_eq!(esc_action(state(false, true, false)), EscAction::CancelPending);
+        assert_eq!(
+            esc_action(state(true, false, true)),
+            EscAction::DismissOverlay
+        );
+        assert_eq!(
+            esc_action(state(false, true, false)),
+            EscAction::CancelPending
+        );
     }
 }

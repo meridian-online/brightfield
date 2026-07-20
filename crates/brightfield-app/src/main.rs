@@ -7,9 +7,9 @@
 //! which needs full Xcode + Metal compiler). Without it, the pipeline runs
 //! headlessly and prints a summary.
 
-mod boot;
 #[cfg(any(target_os = "macos", test))]
 mod arg_collector;
+mod boot;
 #[cfg(any(target_os = "macos", test))]
 mod command_log;
 #[cfg(any(target_os = "macos", test))]
@@ -22,11 +22,11 @@ mod menu_resolve;
 #[cfg(any(target_os = "macos", test))]
 mod meridian_theme;
 #[cfg(any(target_os = "macos", test))]
+mod profile_model;
+#[cfg(any(target_os = "macos", test))]
 mod reload_feedback;
 #[cfg(any(target_os = "macos", test))]
 mod shell;
-#[cfg(any(target_os = "macos", test))]
-mod profile_model;
 #[cfg(any(target_os = "macos", test))]
 mod shell_model;
 #[cfg(any(target_os = "macos", test))]
@@ -40,7 +40,6 @@ use std::process;
 use brightfield_engine::{Engine, Session, SourceProfile};
 use brightfield_render::channel::{Channel, ChannelMap};
 use brightfield_render::layout::{ChartLayout, Insets, Margins};
-use brightfield_render::title::ResolvedTitles;
 use brightfield_render::legend::{colour_legend_size, render_colour_legend_at};
 use brightfield_render::mark::{
     configured_renderer, default_renderers, find_renderer, owned_default_renderer, parse_css_hex,
@@ -48,6 +47,7 @@ use brightfield_render::mark::{
 };
 use brightfield_render::scale::{ColourOverride, Scale, ScaleSet, SequentialScheme};
 use brightfield_render::scene::{build_multi_mark_scene, compose_dashboard, ChartData};
+use brightfield_render::title::ResolvedTitles;
 use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::layout::{
     collect_legend_nodes, collect_plot_nodes, placed_input_nodes, placed_legend_nodes,
@@ -57,7 +57,9 @@ use brightfield_spec::parse_spec_path;
 use brightfield_spec::vocab::{InputKind, LegendChannel, MarkKind};
 use brightfield_sql::{collect_marks, collect_plot_groups};
 use brightfield_ui::chart_view::BrushBinding;
-use brightfield_ui::{CrossfilterCoordinator, LivePlot, MarkInput, MenuBinding, MenuStyle, SliderBinding};
+use brightfield_ui::{
+    CrossfilterCoordinator, LivePlot, MarkInput, MenuBinding, MenuStyle, SliderBinding,
+};
 
 use crate::menu_resolve::{resolve_menu_placements, MenuPlacement};
 
@@ -356,7 +358,10 @@ fn legend_for(node: &brightfield_spec::ast::LegendNode) -> LegendFor {
 /// or names a non-`color` channel (opacity/symbol are unimplemented) — is
 /// skipped with a diagnostic. Multi-colour-scale disambiguation and `for:`
 /// validation errors are a follow-up.
-fn resolve_legends(spec: &brightfield_spec::ast::Spec, live_plots: &[LivePlotMeta]) -> Vec<LegendPlacement> {
+fn resolve_legends(
+    spec: &brightfield_spec::ast::Spec,
+    live_plots: &[LivePlotMeta],
+) -> Vec<LegendPlacement> {
     // path → colour scale, for every colour-encoded plot.
     let mut by_path: HashMap<&str, Scale> = HashMap::new();
     for lp in live_plots {
@@ -421,7 +426,9 @@ fn resolve_legends(spec: &brightfield_spec::ast::Spec, live_plots: &[LivePlotMet
                 sole.clone()
             }
             LegendFor::Unresolvable => {
-                eprintln!("warning: standalone legend `for:` must be a literal plot name — skipping");
+                eprintln!(
+                    "warning: standalone legend `for:` must be a literal plot name — skipping"
+                );
                 None
             }
         };
@@ -1008,11 +1015,16 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
 
         // Highlight states, parallel to `chart_data` — declared FIRST so it
         // outlives the `ChartData` that borrow into it.
-        let mut highlight_states: Vec<Option<brightfield_render::mark::HighlightState>> = Vec::new();
+        let mut highlight_states: Vec<Option<brightfield_render::mark::HighlightState>> =
+            Vec::new();
         let mut chart_data: Vec<ChartData<'_>> = Vec::new();
         for &mi in &group.mark_indices {
-            let Some(m) = mark_inputs.get(mi) else { continue };
-            let Some(batch) = m.batch.as_ref() else { continue };
+            let Some(m) = mark_inputs.get(mi) else {
+                continue;
+            };
+            let Some(batch) = m.batch.as_ref() else {
+                continue;
+            };
             let renderer: &dyn MarkRenderer = match m.renderer_override.as_deref() {
                 Some(r) => r,
                 None => match find_renderer(&registry, m.kind) {
@@ -1093,8 +1105,12 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
         drop(title_maps);
         let margins = brightfield_render::grow_margins(Margins::default(), &titles);
 
-        let layout =
-            ChartLayout::with_margins_and_insets(plot.rect.width, plot.rect.height, margins, insets);
+        let layout = ChartLayout::with_margins_and_insets(
+            plot.rect.width,
+            plot.rect.height,
+            margins,
+            insets,
+        );
         for d in &mut chart_data {
             d.layout = layout.clone();
         }
@@ -1393,8 +1409,11 @@ fn spawn_spec_watcher(
                     }
                     // Swap each plot's new scene into its state (matched by path),
                     // then repaint once.
-                    let mut scenes: std::collections::HashMap<String, vello::Scene> =
-                        dashboard.plots.into_iter().map(|p| (p.path, p.scene)).collect();
+                    let mut scenes: std::collections::HashMap<String, vello::Scene> = dashboard
+                        .plots
+                        .into_iter()
+                        .map(|p| (p.path, p.scene))
+                        .collect();
                     cx.update(|app| {
                         for w in &watched {
                             if let Some(scene) = scenes.remove(&w.path) {
@@ -1435,8 +1454,7 @@ fn spawn_spec_watcher(
                     // The routing decision is total: Applied maps to NO
                     // notification — successful reloads stay quiet,
                     // through the same fn the rejections use.
-                    if let Some((severity, message)) =
-                        reload_notification(&ReloadOutcome::Applied)
+                    if let Some((severity, message)) = reload_notification(&ReloadOutcome::Applied)
                     {
                         shell::notify_reload_rejection(
                             &workspace_window,
@@ -1494,7 +1512,10 @@ fn dump_asset_graph_png(
     let dev_w = ((layout.width as f32) * scale).round() as u32;
     let dev_h = ((layout.height as f32) * scale).round() as u32;
     let mut scaled = vello::Scene::new();
-    scaled.append(&composite, Some(vello::kurbo::Affine::scale(f64::from(scale))));
+    scaled.append(
+        &composite,
+        Some(vello::kurbo::Affine::scale(f64::from(scale))),
+    );
 
     let renderer = brightfield_ui::VelloRenderer::new();
     let pixels = renderer
@@ -1503,7 +1524,8 @@ fn dump_asset_graph_png(
         .render_to_pixels(&scaled, dev_w, dev_h);
     let img = image::RgbaImage::from_raw(dev_w, dev_h, pixels)
         .ok_or_else(|| "pixel buffer size mismatch".to_string())?;
-    img.save(dump_path).map_err(|e| format!("failed to write PNG: {e}"))?;
+    img.save(dump_path)
+        .map_err(|e| format!("failed to write PNG: {e}"))?;
     let non_zero = img.as_raw().iter().filter(|&&b| b != 0).count();
     let total = img.as_raw().len();
     eprintln!(
@@ -1543,7 +1565,9 @@ fn dump_contract_png(contract_path: &str, dump_path: &str) -> Result<(), String>
 fn dump_protocol_png(spec_path: &str, text: &str, dump_path: &str) -> Result<(), String> {
     let manifest = brightfield_protocol::parse_manifest_str(text)
         .map_err(|e| format!("protocol parse error: {e}"))?;
-    let manifest_dir = Path::new(spec_path).parent().unwrap_or_else(|| Path::new("."));
+    let manifest_dir = Path::new(spec_path)
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
     let sources = brightfield_protocol::graph::load_model_sources(&manifest, manifest_dir);
     let graph = brightfield_protocol::graph::build_graph(&manifest, &sources);
     let graph = brightfield_protocol::collapse_families(&graph);
@@ -1672,8 +1696,11 @@ fn main() {
             .and_then(|s| s.parse().ok())
             .filter(|s: &f32| *s > 0.0)
             .unwrap_or(1.0);
-        let placements: Vec<(f64, f64, &vello::Scene)> =
-            dashboard.plots.iter().map(|p| (p.x, p.y, &p.scene)).collect();
+        let placements: Vec<(f64, f64, &vello::Scene)> = dashboard
+            .plots
+            .iter()
+            .map(|p| (p.x, p.y, &p.scene))
+            .collect();
         let mut composite = compose_dashboard(
             f64::from(dashboard.width),
             f64::from(dashboard.height),
@@ -1712,8 +1739,12 @@ fn main() {
                     &brightfield_ui::option_label(&m.value),
                 ),
                 MenuStyle::Radio => {
-                    let labels: Vec<String> =
-                        m.binding.options.iter().map(brightfield_ui::option_label).collect();
+                    let labels: Vec<String> = m
+                        .binding
+                        .options
+                        .iter()
+                        .map(brightfield_ui::option_label)
+                        .collect();
                     let selected = m.binding.options.iter().position(|o| *o == m.value);
                     brightfield_render::scene::render_radio(
                         &mut composite,
@@ -1744,15 +1775,18 @@ fn main() {
         let dev_w = ((dashboard.width as f32) * scale).round() as u32;
         let dev_h = ((dashboard.height as f32) * scale).round() as u32;
         let mut scaled = vello::Scene::new();
-        scaled.append(&composite, Some(vello::kurbo::Affine::scale(f64::from(scale))));
+        scaled.append(
+            &composite,
+            Some(vello::kurbo::Affine::scale(f64::from(scale))),
+        );
 
         let renderer = brightfield_ui::VelloRenderer::new();
         let pixels = renderer
             .lock()
             .expect("renderer mutex poisoned")
             .render_to_pixels(&scaled, dev_w, dev_h);
-        let img = image::RgbaImage::from_raw(dev_w, dev_h, pixels)
-            .expect("pixel buffer size mismatch");
+        let img =
+            image::RgbaImage::from_raw(dev_w, dev_h, pixels).expect("pixel buffer size mismatch");
         img.save(&dump_path).expect("failed to write PNG");
         let non_zero = img.as_raw().iter().filter(|&&b| b != 0).count();
         let total = img.as_raw().len();
@@ -1780,8 +1814,16 @@ fn main() {
         let app = gpui::Application::with_platform(Rc::new(gpui_macos::MacPlatform::new(false)))
             .with_assets(gpui_component_assets::Assets);
         let spec_path = spec_path.to_string();
-        let Dashboard { width, height, plots, sliders, menus, legends, meta_title, focus_tree } =
-            dashboard;
+        let Dashboard {
+            width,
+            height,
+            plots,
+            sliders,
+            menus,
+            legends,
+            meta_title,
+            focus_tree,
+        } = dashboard;
         // The dashboard's display title — the ONE resolver call feeding both
         // the native titlebar and the canvas panel's tab title below.
         let title = brightfield_ui::resolve_title(meta_title.as_deref(), &spec_path);
@@ -1859,8 +1901,7 @@ fn main() {
             // reimplementing it. Created here so both the window closure (→
             // WorkspaceRoot) and the watcher each get a clone, mirroring
             // feedback_log / feedback_log_for_editor.
-            let reload_trigger =
-                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let reload_trigger = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
             // A source whose launch profiling failed surfaces in the Log dock
             // at Warning (no toast — the sidebar already shows a muted row for
@@ -1901,7 +1942,14 @@ fn main() {
                 // against (axis-inset + titles), and survive
                 // a window resize.
                 state.update(cx, |s, _| s.set_margins_and_insets(margins, insets));
-                watched.push(WatchedPlot { path: p.path, x, y, width: w, height: h, state });
+                watched.push(WatchedPlot {
+                    path: p.path,
+                    x,
+                    y,
+                    width: w,
+                    height: h,
+                    state,
+                });
             }
 
             // Build the live cross-filter coordinator, joining each plot's
@@ -1941,8 +1989,7 @@ fn main() {
             // hosted menu widgets below (both derived from `menus`), so a
             // widget's element index matches its binding — the registration-
             // order contract.
-            let menu_bindings: Vec<MenuBinding> =
-                menus.iter().map(|m| m.binding.clone()).collect();
+            let menu_bindings: Vec<MenuBinding> = menus.iter().map(|m| m.binding.clone()).collect();
             // Coordinator legend bindings, in analysis order — the
             // same slice `placed_legend_views` positions against, so a hosted
             // legend's index matches its binding.
@@ -2103,7 +2150,13 @@ fn main() {
                         mode: brightfield_ui::PresentationMode::default(),
                     });
                     let canvas = cx.new(|cx| {
-                        shell::CanvasPanel::new(chart_view, title, presentation.clone(), focus_tree, cx)
+                        shell::CanvasPanel::new(
+                            chart_view,
+                            title,
+                            presentation.clone(),
+                            focus_tree,
+                            cx,
+                        )
                     });
                     // the SHARED command-log model — the canvas writes
                     // structural edits/commits/refusals to it; the dedicated
@@ -2146,7 +2199,11 @@ fn main() {
                     // The second bottom-dock citizen: the command-log panel over
                     // the shared command-log model.
                     let command_log_panel = cx.new(|cx| {
-                        shell::CommandLogPanel::new(command_log_model.clone(), presentation.clone(), cx)
+                        shell::CommandLogPanel::new(
+                            command_log_model.clone(),
+                            presentation.clone(),
+                            cx,
+                        )
                     });
                     let workspace = cx.new(|cx| {
                         shell::WorkspaceRoot::new(
@@ -2258,7 +2315,11 @@ mod tests {
 
         // Multiple chunks -> concatenated (2 + 3 = 5), NOT truncated to the first.
         let combined = super::concat_result_batches(vec![chunk1, chunk2]).unwrap();
-        assert_eq!(combined.num_rows(), 5, "all chunks must be retained, not just the first");
+        assert_eq!(
+            combined.num_rows(),
+            5,
+            "all chunks must be retained, not just the first"
+        );
     }
 
     #[test]
@@ -2288,11 +2349,17 @@ mod tests {
         let mut both = ScaleSet::new();
         both.insert(
             Channel::Fill,
-            Scale::Colour { categories: vec!["f".into()], palette: vec![[0.1, 0.1, 0.1, 1.0]] },
+            Scale::Colour {
+                categories: vec!["f".into()],
+                palette: vec![[0.1, 0.1, 0.1, 1.0]],
+            },
         );
         both.insert(
             Channel::Stroke,
-            Scale::Colour { categories: vec!["s".into()], palette: vec![[0.2, 0.2, 0.2, 1.0]] },
+            Scale::Colour {
+                categories: vec!["s".into()],
+                palette: vec![[0.2, 0.2, 0.2, 1.0]],
+            },
         );
         match super::colour_scale_of(&both) {
             Some(Scale::Colour { categories, .. }) => assert_eq!(categories, vec!["f".to_string()]),
@@ -2342,7 +2409,10 @@ hconcat:
             },
         );
         assert!(
-            matches!(super::colour_scale_of(&scales), Some(Scale::Sequential { .. })),
+            matches!(
+                super::colour_scale_of(&scales),
+                Some(Scale::Sequential { .. })
+            ),
             "colour_scale_of surfaces the Fill Sequential"
         );
 
@@ -2387,7 +2457,10 @@ hconcat:
         // The opt-in Brightfield-local meridian scheme resolves by name too
         // (design phase 4 PR B); the default below stays viridis.
         let meridian = SpecValue::String("meridian".into());
-        assert_eq!(super::raster_scheme(Some(&meridian)), SequentialScheme::Meridian);
+        assert_eq!(
+            super::raster_scheme(Some(&meridian)),
+            SequentialScheme::Meridian
+        );
         let bad = SpecValue::String("notascheme".into());
         assert_eq!(
             super::raster_scheme(Some(&bad)),
@@ -2417,11 +2490,22 @@ hconcat:
         cm.insert(Channel::X, "x_bin".to_string());
         cm.insert(Channel::Y, "y_bin".to_string());
         let mut scales = ScaleSet::new();
-        RasterRenderer { scheme }.augment_scales(&mut scales, &batch, &cm, (0.0, 100.0), (100.0, 0.0));
+        RasterRenderer { scheme }.augment_scales(
+            &mut scales,
+            &batch,
+            &cm,
+            (0.0, 100.0),
+            (100.0, 0.0),
+        );
         match scales.get(Channel::Fill) {
-            Some(Scale::Sequential { stops, domain_max, .. }) => {
+            Some(Scale::Sequential {
+                stops, domain_max, ..
+            }) => {
                 assert_eq!(stops, &SequentialScheme::Blues.stops(), "blues ramp stops");
-                assert!((domain_max - 9.0).abs() < f64::EPSILON, "domain_max == max count");
+                assert!(
+                    (domain_max - 9.0).abs() < f64::EPSILON,
+                    "domain_max == max count"
+                );
             }
             other => panic!("expected a blues Fill Sequential, got {other:?}"),
         }
@@ -2512,7 +2596,10 @@ colorRange: ['#112233', '#445566']
             .get(Channel::Fill)
             .expect("dot plot has a Fill scale");
         match fill {
-            Scale::Colour { categories, palette } => {
+            Scale::Colour {
+                categories,
+                palette,
+            } => {
                 assert_eq!(
                     categories,
                     &vec!["a".to_string(), "b".to_string()],
@@ -2603,7 +2690,10 @@ colorRange: $ramp
             assert_eq!(view.y, placement.rect.y);
             assert_eq!(view.width, placement.rect.width);
             assert_eq!(view.height, placement.rect.height);
-            assert!(view.binding.is_none(), "no bindings, no coordinator: display-only");
+            assert!(
+                view.binding.is_none(),
+                "no bindings, no coordinator: display-only"
+            );
         }
         assert!(
             matches!(views[0].scale, Scale::Colour { .. })
@@ -2618,12 +2708,12 @@ colorRange: $ramp
     // list) — while Sequential and unbound placements stay display-only.
     #[test]
     fn only_bound_colour_legends_carry_coordinator_and_index() {
+        use brightfield_engine::Engine;
         use brightfield_render::scale::Scale;
+        use brightfield_spec::analysis::analyse_spec;
         use brightfield_spec::analysis::{ComponentPath, LegendBinding};
         use brightfield_spec::layout::Rect;
         use brightfield_ui::{CrossfilterCoordinator, LegendSelectBinding, MarkInput};
-        use brightfield_engine::Engine;
-        use brightfield_spec::analysis::analyse_spec;
 
         // A real (legend-only) coordinator over a minimal live session.
         let yaml = r#"
@@ -2650,9 +2740,16 @@ plot:
             contributor: ComponentPath("root".into()),
             column: "g".into(),
         };
-        let coordinator =
-            CrossfilterCoordinator::new(session, Vec::<MarkInput>::new(), vec![], vec![], vec![], vec![ui_binding], false)
-                .expect("legend-only liveness keeps the coordinator");
+        let coordinator = CrossfilterCoordinator::new(
+            session,
+            Vec::<MarkInput>::new(),
+            vec![],
+            vec![],
+            vec![],
+            vec![ui_binding],
+            false,
+        )
+        .expect("legend-only liveness keeps the coordinator");
 
         let colour = Scale::Colour {
             categories: vec!["a".into()],
@@ -2695,8 +2792,14 @@ plot:
             Some((index, _)) => assert_eq!(*index, 0, "bound legend carries its binding index"),
             None => panic!("the bound categorical legend must carry the coordinator"),
         }
-        assert!(views[1].binding.is_none(), "Sequential legends stay display-only");
-        assert!(views[2].binding.is_none(), "unbound legends stay display-only");
+        assert!(
+            views[1].binding.is_none(),
+            "Sequential legends stay display-only"
+        );
+        assert!(
+            views[2].binding.is_none(),
+            "unbound legends stay display-only"
+        );
     }
 
     // colorScheme reaches the LIVE path — build_everything
@@ -2782,7 +2885,9 @@ colorScheme: blues
             .get(Channel::Fill)
             .expect("heatmap plot has a Fill scale");
         match fill {
-            Scale::Sequential { domain_min, stops, .. } => {
+            Scale::Sequential {
+                domain_min, stops, ..
+            } => {
                 assert_eq!(
                     stops,
                     &SequentialScheme::Blues.stops(),
@@ -2842,13 +2947,20 @@ colorScheme: blues
             .get(Channel::Fill)
             .expect("cell plot has a Fill scale");
         match fill {
-            Scale::Sequential { domain_min, domain_max, stops } => {
+            Scale::Sequential {
+                domain_min,
+                domain_max,
+                stops,
+            } => {
                 assert_eq!(
                     stops,
                     &SequentialScheme::Blues.stops(),
                     "colorScheme: blues must reach the cell's numeric-fill ramp"
                 );
-                assert!((domain_min - 0.0).abs() < f64::EPSILON, "min >= 0 anchors at zero");
+                assert!(
+                    (domain_min - 0.0).abs() < f64::EPSILON,
+                    "min >= 0 anchors at zero"
+                );
                 assert!((domain_max - 8.0).abs() < f64::EPSILON);
             }
             other => panic!("expected a blues Fill Sequential, got {other:?}"),
@@ -2877,9 +2989,15 @@ colorScheme: blues
             // centre 16 — so equiwidth binning reconstructs the 3x3 histogram.
             let mut rows = String::new();
             for (x, y, n) in [
-                (1, 1, 1), (2, 1, 4), (3, 1, 1),
-                (1, 2, 4), (2, 2, 16), (3, 2, 4),
-                (1, 3, 1), (2, 3, 4), (3, 3, 1),
+                (1, 1, 1),
+                (2, 1, 4),
+                (3, 1, 1),
+                (1, 2, 4),
+                (2, 2, 16),
+                (3, 2, 4),
+                (1, 3, 1),
+                (2, 3, 4),
+                (3, 3, 1),
             ] {
                 for _ in 0..n {
                     rows.push_str(&format!("    - {{ x: {x}, y: {y} }}\n"));
@@ -2919,7 +3037,10 @@ colorScheme: blues
             options: opts.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
         };
 
-        assert!(matches!(super::legend_for(&node(vec![])), super::LegendFor::Absent));
+        assert!(matches!(
+            super::legend_for(&node(vec![])),
+            super::LegendFor::Absent
+        ));
         assert!(matches!(
             super::legend_for(&node(vec![("for", ValueOrParamRef::Value(SpecValue::String("p".into())))])),
             super::LegendFor::Named(ref n) if n == "p"
@@ -2927,7 +3048,10 @@ colorScheme: blues
         // A param-valued `for:` is unresolvable — it must NOT fall through to the
         // sole-plot fallback (that would silently borrow another plot's scale).
         assert!(matches!(
-            super::legend_for(&node(vec![("for", ValueOrParamRef::Param(ParamRef::new("sel")))])),
+            super::legend_for(&node(vec![(
+                "for",
+                ValueOrParamRef::Param(ParamRef::new("sel"))
+            )])),
             super::LegendFor::Unresolvable
         ));
     }
@@ -2949,7 +3073,11 @@ colorScheme: blues
     fn profile_handoff_is_send() {
         fn assert_send<T: Send>() {}
         assert_send::<Vec<super::SourceProfile>>();
-        assert_send::<(super::Dashboard, super::ChromeSnapshot, Vec<super::SourceProfile>)>();
+        assert_send::<(
+            super::Dashboard,
+            super::ChromeSnapshot,
+            Vec<super::SourceProfile>,
+        )>();
     }
 
     /// Hand-off carries real profiles: `run_pipeline` — the exact
@@ -2980,7 +3108,10 @@ colorScheme: blues
             super::run_pipeline(spec_path.to_str().unwrap()).expect("pipeline ok");
         let _ = std::fs::remove_dir_all(&dir);
 
-        let t = profiles.iter().find(|p| p.name == "t").expect("source t profiled");
+        let t = profiles
+            .iter()
+            .find(|p| p.name == "t")
+            .expect("source t profiled");
         match &t.outcome {
             ProfileOutcome::Profiled { row_count, columns } => {
                 assert_eq!(*row_count, 3);
@@ -3132,8 +3263,8 @@ colorScheme: blues
         use brightfield_render::layout::Insets;
         use brightfield_render::scale::SequentialScheme;
 
-        let snapshot = |widgets: Vec<(f64, f64, f64, f64, String, String, String)>| {
-            super::ChromeSnapshot {
+        let snapshot =
+            |widgets: Vec<(f64, f64, f64, f64, String, String, String)>| super::ChromeSnapshot {
                 title: "framed".to_string(),
                 legends: vec![],
                 legend_bindings: vec![],
@@ -3145,8 +3276,7 @@ colorScheme: blues
                     brightfield_render::title::ResolvedTitles::default(),
                 )],
                 widgets,
-            }
-        };
+            };
         let widget = |style: &str, options: &str| {
             (
                 0.0,
@@ -3260,14 +3390,21 @@ vconcat:
 
         // (1) The warnings crossed run_pipeline's Send boundary.
         assert_eq!(warnings.len(), 1, "one degrade, one warning: {warnings:?}");
-        assert!(warnings[0].contains("literal options list"), "{}", warnings[0]);
+        assert!(
+            warnings[0].contains("literal options list"),
+            "{}",
+            warnings[0]
+        );
 
         // (2) Exactly one Log entry per warning, Warning severity — appended
         // once per assembly pass by construction (the watcher calls this
         // once, before the gates).
         let entries = super::resolution_warning_entries(&warnings);
         assert_eq!(entries.len(), 1);
-        assert!(matches!(entries[0].0, crate::reload_feedback::Severity::Warning));
+        assert!(matches!(
+            entries[0].0,
+            crate::reload_feedback::Severity::Warning
+        ));
         assert_eq!(entries[0].1, warnings[0]);
 
         // (3) The GATED case: the same edit also trips chrome_divergence
@@ -3351,26 +3488,52 @@ xLabel: X axis
         // CLEAN edits: classifier Ok, and the real build agrees the gate is clean.
         let clean: Vec<(SpecEdit, &str)> = vec![
             (
-                SpecEdit::SetChannel { plot: cp("root"), mark_ordinal: 0, channel: "x".into(), column: "b".into() },
+                SpecEdit::SetChannel {
+                    plot: cp("root"),
+                    mark_ordinal: 0,
+                    channel: "x".into(),
+                    column: "b".into(),
+                },
                 "setx.yaml",
             ),
             (
-                SpecEdit::ChangeMarkType { plot: cp("root"), mark_ordinal: 0, new_kind: MarkKind::Line },
+                SpecEdit::ChangeMarkType {
+                    plot: cp("root"),
+                    mark_ordinal: 0,
+                    new_kind: MarkKind::Line,
+                },
                 "retype.yaml",
             ),
-            (SpecEdit::AddMark { plot: cp("root"), kind: MarkKind::Line }, "addmark.yaml"),
+            (
+                SpecEdit::AddMark {
+                    plot: cp("root"),
+                    kind: MarkKind::Line,
+                },
+                "addmark.yaml",
+            ),
             // An inline colour fill is gate-clean (not captured by the gate).
             (
-                SpecEdit::SetChannel { plot: cp("root"), mark_ordinal: 0, channel: "fill".into(), column: "cat".into() },
+                SpecEdit::SetChannel {
+                    plot: cp("root"),
+                    mark_ordinal: 0,
+                    channel: "fill".into(),
+                    column: "cat".into(),
+                },
                 "fill.yaml",
             ),
         ];
         for (edit, name) in &clean {
-            assert!(classify_edit(&base_spec, edit).is_ok(), "classifier should pass {edit:?}");
+            assert!(
+                classify_edit(&base_spec, edit).is_ok(),
+                "classifier should pass {edit:?}"
+            );
             let mut m = base_spec.clone();
             apply(&mut m, edit).expect("apply clean edit");
             let yaml = serialise_spec(&m).expect("serialise");
-            assert!(real_gate_clean(&yaml, name), "the real reload gate must be CLEAN for {edit:?}");
+            assert!(
+                real_gate_clean(&yaml, name),
+                "the real reload gate must be CLEAN for {edit:?}"
+            );
         }
 
         // REFUSED edit: rebinding the DERIVED y axis (no yLabel) changes the
@@ -3392,7 +3555,10 @@ xLabel: X axis
             if let Some(Component::Mark(m)) =
                 p.items.iter_mut().find(|c| matches!(c, Component::Mark(_)))
             {
-                m.options.insert("y".into(), ValueOrParamRef::Value(SpecValue::String("a".into())));
+                m.options.insert(
+                    "y".into(),
+                    ValueOrParamRef::Value(SpecValue::String("a".into())),
+                );
             }
         }
         let ry_yaml = serialise_spec(&ry_spec).expect("serialise ry");
@@ -3452,7 +3618,9 @@ vconcat:
     xLabel: X axis
     yLabel: Y axis
 "#;
-        let legend_base_spec = parse_spec(LEGEND_BASE, Format::Yaml).expect("parse legend base").spec;
+        let legend_base_spec = parse_spec(LEGEND_BASE, Format::Yaml)
+            .expect("parse legend base")
+            .spec;
         let (legend_launch_dash, legend_launch_chrome) = build("legend_base.yaml", LEGEND_BASE);
         let fill_rebind = SpecEdit::SetChannel {
             plot: cp("root/vconcat[1]"),
@@ -3473,7 +3641,10 @@ vconcat:
                 if let Some(Component::Mark(m)) =
                     p.items.iter_mut().find(|c| matches!(c, Component::Mark(_)))
                 {
-                    m.options.insert("fill".into(), ValueOrParamRef::Value(SpecValue::String("b".into())));
+                    m.options.insert(
+                        "fill".into(),
+                        ValueOrParamRef::Value(SpecValue::String("b".into())),
+                    );
                 }
             }
         }
@@ -3513,7 +3684,9 @@ vconcat:
     xLabel: X axis
     yLabel: Y axis
 "#;
-        let nofor_spec = parse_spec(NO_FOR_LEGEND_BASE, Format::Yaml).expect("parse no-for base").spec;
+        let nofor_spec = parse_spec(NO_FOR_LEGEND_BASE, Format::Yaml)
+            .expect("parse no-for base")
+            .spec;
         let (nofor_launch_dash, nofor_launch_chrome) = build("nofor_base.yaml", NO_FOR_LEGEND_BASE);
         let nofor_fill = SpecEdit::SetChannel {
             plot: cp("root/vconcat[1]"),
@@ -3532,7 +3705,10 @@ vconcat:
                 if let Some(Component::Mark(m)) =
                     p.items.iter_mut().find(|c| matches!(c, Component::Mark(_)))
                 {
-                    m.options.insert("fill".into(), ValueOrParamRef::Value(SpecValue::String("cat".into())));
+                    m.options.insert(
+                        "fill".into(),
+                        ValueOrParamRef::Value(SpecValue::String("cat".into())),
+                    );
                 }
             }
         }
@@ -3828,8 +4004,16 @@ hconcat:
         let legend_select: Vec<LegendSelectBinding> =
             live.legend_bindings.iter().map(Into::into).collect();
         assert!(
-            CrossfilterCoordinator::new(live.session, live.marks, vec![], vec![], vec![], legend_select, false)
-                .is_none(),
+            CrossfilterCoordinator::new(
+                live.session,
+                live.marks,
+                vec![],
+                vec![],
+                vec![],
+                legend_select,
+                false
+            )
+            .is_none(),
             "no placement → no binding → no coordinator"
         );
 
@@ -3895,7 +4079,9 @@ hconcat:
         );
         assert!(retained.is_empty());
         assert!(
-            diags.iter().any(|d| d.contains("clicks on it will not filter")),
+            diags
+                .iter()
+                .any(|d| d.contains("clicks on it will not filter")),
             "the placed-but-unbound `as:` legend is diagnosed: {diags:?}"
         );
 
@@ -3974,8 +4160,11 @@ plot:
             highlight: None,
         }];
         let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
-        let (scene, scales) =
-            build_multi_mark_scene(&refs, true, &brightfield_render::title::ResolvedTitles::default());
+        let (scene, scales) = build_multi_mark_scene(
+            &refs,
+            true,
+            &brightfield_render::title::ResolvedTitles::default(),
+        );
 
         // Scene should be non-empty (the valid dot mark rendered).
         let encoding = scene.encoding();

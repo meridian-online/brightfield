@@ -82,7 +82,13 @@ pub fn compute_ticks(scale: &Scale, target_count: usize) -> Vec<Tick> {
             domain_max,
             range_start,
             range_end,
-        } => compute_linear_ticks(*domain_min, *domain_max, *range_start, *range_end, target_count),
+        } => compute_linear_ticks(
+            *domain_min,
+            *domain_max,
+            *range_start,
+            *range_end,
+            target_count,
+        ),
         Scale::Band {
             categories,
             range_start,
@@ -94,7 +100,13 @@ pub fn compute_ticks(scale: &Scale, target_count: usize) -> Vec<Tick> {
             domain_max_us,
             range_start,
             range_end,
-        } => compute_time_ticks(*domain_min_us, *domain_max_us, *range_start, *range_end, target_count),
+        } => compute_time_ticks(
+            *domain_min_us,
+            *domain_max_us,
+            *range_start,
+            *range_end,
+            target_count,
+        ),
         // Colour ramps (categorical or sequential) have no positional axis ticks.
         Scale::Colour { .. } | Scale::Sequential { .. } => Vec::new(),
     }
@@ -148,7 +160,10 @@ fn compute_band_ticks(
         .iter()
         .enumerate()
         .map(|(i, cat)| {
-            let centre = range_start + band * (padding / 2.0) + band * i as f64 + band * (1.0 - padding) / 2.0;
+            let centre = range_start
+                + band * (padding / 2.0)
+                + band * i as f64
+                + band * (1.0 - padding) / 2.0;
             Tick {
                 value: i as f64,
                 label: cat.clone(),
@@ -331,8 +346,16 @@ mod tests {
         assert!(!ticks.is_empty(), "should produce ticks");
         // All tick positions should be within the range.
         for tick in &ticks {
-            assert!(tick.position >= 40.0 - 0.1, "tick at {:.1} below range start", tick.position);
-            assert!(tick.position <= 600.0 + 0.1, "tick at {:.1} above range end", tick.position);
+            assert!(
+                tick.position >= 40.0 - 0.1,
+                "tick at {:.1} below range start",
+                tick.position
+            );
+            assert!(
+                tick.position <= 600.0 + 0.1,
+                "tick at {:.1} above range end",
+                tick.position
+            );
         }
         // Labels should be numeric strings.
         for tick in &ticks {
@@ -371,7 +394,11 @@ mod tests {
         for tick in &ticks {
             assert!(tick.position >= 40.0 - 0.1);
             assert!(tick.position <= 600.0 + 0.1);
-            assert!(tick.label.contains('s'), "time tick label should contain 's': {}", tick.label);
+            assert!(
+                tick.label.contains('s'),
+                "time tick label should contain 's': {}",
+                tick.label
+            );
         }
     }
 
@@ -411,7 +438,10 @@ mod tests {
 
         let mut y_plain = Scene::new();
         render_y_axis(&mut y_plain, &layout, &ticks, None);
-        assert!(!scene_has_quarter_turn(&y_plain), "no rotation without a y-title");
+        assert!(
+            !scene_has_quarter_turn(&y_plain),
+            "no rotation without a y-title"
+        );
 
         let mut x_titled = Scene::new();
         render_x_axis(&mut x_titled, &layout, &ticks, Some("weight"));
@@ -435,8 +465,16 @@ mod tests {
         };
         let layout = ChartLayout::with_margins_and_insets(400.0, 300.0, margins, Insets::default());
         let ticks = vec![
-            Tick { value: 10.0, label: "10".into(), position: layout.plot_y_end() },
-            Tick { value: 20.0, label: "20".into(), position: layout.plot_y_start() },
+            Tick {
+                value: 10.0,
+                label: "10".into(),
+                position: layout.plot_y_end(),
+            },
+            Tick {
+                value: 20.0,
+                label: "20".into(),
+                position: layout.plot_y_start(),
+            },
         ];
 
         // Drawing WITH a title adds ink over drawing without.
@@ -524,10 +562,16 @@ mod tests {
     fn nice_step_produces_human_readable_intervals() {
         // 0-100 with ~5 ticks should give step=20
         let step = nice_step(100.0, 5);
-        assert!((step - 20.0).abs() < f64::EPSILON, "expected step 20, got {step}");
+        assert!(
+            (step - 20.0).abs() < f64::EPSILON,
+            "expected step 20, got {step}"
+        );
 
         // 0-1000 with ~5 ticks should give step=200
         let step = nice_step(1000.0, 5);
-        assert!((step - 200.0).abs() < f64::EPSILON, "expected step 200, got {step}");
+        assert!(
+            (step - 200.0).abs() < f64::EPSILON,
+            "expected step 200, got {step}"
+        );
     }
 }

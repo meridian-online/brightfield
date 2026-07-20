@@ -56,7 +56,8 @@ fn render_spec(yaml: &str) -> (usize, usize) {
 
     // Scales inferred across all marks, so e.g. a rule's perpendicular axis has
     // a scale even when a sibling mark provides it.
-    let entries: Vec<(&RecordBatch, &ChannelMap)> = metas.iter().map(|(cm, _, b)| (b, cm)).collect();
+    let entries: Vec<(&RecordBatch, &ChannelMap)> =
+        metas.iter().map(|(cm, _, b)| (b, cm)).collect();
     let mut scales = infer_scales_multi(&entries, layout.x_range(), layout.y_range());
 
     // Mirror the real scene builders: let each mark contribute positional scales

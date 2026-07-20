@@ -46,9 +46,21 @@ mod tests {
     fn grid_lines_render() {
         let layout = ChartLayout::new(640.0, 480.0);
         let ticks = vec![
-            Tick { value: 0.0, label: "0".to_string(), position: 100.0 },
-            Tick { value: 50.0, label: "50".to_string(), position: 300.0 },
-            Tick { value: 100.0, label: "100".to_string(), position: 500.0 },
+            Tick {
+                value: 0.0,
+                label: "0".to_string(),
+                position: 100.0,
+            },
+            Tick {
+                value: 50.0,
+                label: "50".to_string(),
+                position: 300.0,
+            },
+            Tick {
+                value: 100.0,
+                label: "100".to_string(),
+                position: 500.0,
+            },
         ];
 
         let mut scene = Scene::new();

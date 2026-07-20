@@ -122,7 +122,13 @@ fn column_as_f64(batch: &RecordBatch, col_name: &str) -> Option<Vec<Option<f64>>
             let arr = col.as_any().downcast_ref::<$arr_ty>()?;
             Some(
                 (0..arr.len())
-                    .map(|i| if arr.is_null(i) { None } else { Some(arr.value(i) as f64) })
+                    .map(|i| {
+                        if arr.is_null(i) {
+                            None
+                        } else {
+                            Some(arr.value(i) as f64)
+                        }
+                    })
                     .collect(),
             )
         }};
@@ -273,15 +279,24 @@ pub fn column_typed_value_at(
         DataType::UInt16 => int_val!(UInt16Array),
         DataType::UInt8 => int_val!(UInt8Array),
         DataType::Utf8 => Some(SelectionValue::Text(
-            col.as_any().downcast_ref::<StringArray>()?.value(row).to_string(),
+            col.as_any()
+                .downcast_ref::<StringArray>()?
+                .value(row)
+                .to_string(),
         )),
         DataType::LargeUtf8 => Some(SelectionValue::Text(
-            col.as_any().downcast_ref::<LargeStringArray>()?.value(row).to_string(),
+            col.as_any()
+                .downcast_ref::<LargeStringArray>()?
+                .value(row)
+                .to_string(),
         )),
         // A tz field (TIMESTAMPTZ) stores UTC microseconds and needs a tz-anchored
         // literal; a naive TIMESTAMP (no tz) uses the plain form.
         DataType::Timestamp(TimeUnit::Microsecond, tz) => {
-            let us = col.as_any().downcast_ref::<TimestampMicrosecondArray>()?.value(row);
+            let us = col
+                .as_any()
+                .downcast_ref::<TimestampMicrosecondArray>()?
+                .value(row);
             Some(if tz.is_some() {
                 SelectionValue::TimestampTz(us)
             } else {
@@ -387,7 +402,11 @@ mod tests {
         assert!(hit.is_some(), "cursor on point should return Some");
         let hit = hit.unwrap();
         assert_eq!(hit.row, 2, "should match row index 2 (value 3.0, 30.0)");
-        assert!(hit.distance < 1.0, "distance should be ~0, got {}", hit.distance);
+        assert!(
+            hit.distance < 1.0,
+            "distance should be ~0, got {}",
+            hit.distance
+        );
     }
 
     #[test]
@@ -420,7 +439,10 @@ mod tests {
             NearestMode::X,
             None,
         );
-        assert!(hit.is_some(), "X mode should find point at same x regardless of y");
+        assert!(
+            hit.is_some(),
+            "X mode should find point at same x regardless of y"
+        );
         assert_eq!(hit.unwrap().row, 2);
     }
 
@@ -439,7 +461,10 @@ mod tests {
             NearestMode::Y,
             None,
         );
-        assert!(hit.is_some(), "Y mode should find point at same y regardless of x");
+        assert!(
+            hit.is_some(),
+            "Y mode should find point at same y regardless of x"
+        );
         assert_eq!(hit.unwrap().row, 2);
     }
 
@@ -470,7 +495,10 @@ mod tests {
             Some(5.0),
         );
         // 10px offset in X mode with 5px max → miss
-        assert!(miss_x.is_none(), "10px offset with 5px max should miss in X mode");
+        assert!(
+            miss_x.is_none(),
+            "10px offset with 5px max should miss in X mode"
+        );
 
         // With max_distance=15, should hit
         let hit = find_nearest(
@@ -481,7 +509,10 @@ mod tests {
             NearestMode::X,
             Some(15.0),
         );
-        assert!(hit.is_some(), "10px offset with 15px max should hit in X mode");
+        assert!(
+            hit.is_some(),
+            "10px offset with 15px max should hit in X mode"
+        );
     }
 
     #[test]
@@ -491,7 +522,10 @@ mod tests {
         // Whole floats print without a decimal point (matches point_predicate tests).
         assert_eq!(SelectionValue::Number(3.0).literal(), "3");
         // Strings are quoted; embedded single quotes are doubled.
-        assert_eq!(SelectionValue::Text("Athletics".into()).literal(), "'Athletics'");
+        assert_eq!(
+            SelectionValue::Text("Athletics".into()).literal(),
+            "'Athletics'"
+        );
         assert_eq!(SelectionValue::Text("O'Hara".into()).literal(), "'O''Hara'");
         // Naive timestamp → make_timestamp, never a bare integer.
         assert_eq!(
@@ -526,7 +560,10 @@ mod tests {
         .unwrap();
 
         // Int32 (DuckDB's inline-int type) → exact Int, not a rounded f64.
-        assert_eq!(column_typed_value_at(&batch, "i", 0), Some(SelectionValue::Int(7)));
+        assert_eq!(
+            column_typed_value_at(&batch, "i", 0),
+            Some(SelectionValue::Int(7))
+        );
         // Utf8 → Text.
         assert_eq!(
             column_typed_value_at(&batch, "s", 0),

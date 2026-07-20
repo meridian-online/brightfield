@@ -60,7 +60,10 @@ impl ShellState {
     /// so the whole UI fits without clipping.
     pub fn window_size(&self) -> (f32, f32) {
         // chart + CentralPanel margins + the 180px side panel + header band.
-        (self.composed.width as f32 + 214.0, self.composed.height as f32 + 60.0)
+        (
+            self.composed.width as f32 + 214.0,
+            self.composed.height as f32 + 60.0,
+        )
     }
 
     /// The window/spec title.
@@ -150,13 +153,20 @@ pub fn draw_shell(ui: &mut egui::Ui, state: &mut ShellState) {
             ui.checkbox(&mut state.overlay_on, "hover overlay");
             ui.add_space(6.0);
             let (w, h) = state.size();
-            ui.label(egui::RichText::new(format!("{w}×{h} logical")).weak().monospace());
+            ui.label(
+                egui::RichText::new(format!("{w}×{h} logical"))
+                    .weak()
+                    .monospace(),
+            );
         });
 
     CentralPanel::default().show(ui, |ui| {
         let mut frame = EguiChartFrame::new(ui, texture);
         let (w, h) = state.size();
-        frame.present(PixelSize { width: w, height: h });
+        frame.present(PixelSize {
+            width: w,
+            height: h,
+        });
 
         // Drive the overlay/hit-test seam from egui pointer input: a crosshair
         // marker at the pointer while it's over the chart, with a grab cursor.

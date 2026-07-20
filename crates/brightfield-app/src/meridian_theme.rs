@@ -97,8 +97,14 @@ mod meridian_theme_schema {
         assert!(light.colors.primary.is_some(), "primary.background missing");
         assert!(light.colors.ring.is_some(), "ring missing");
         assert!(light.colors.sidebar.is_some(), "sidebar.background missing");
-        assert!(light.colors.tab_active.is_some(), "tab.active.background missing");
-        assert!(light.colors.title_bar.is_some(), "title_bar.background missing");
+        assert!(
+            light.colors.tab_active.is_some(),
+            "tab.active.background missing"
+        );
+        assert!(
+            light.colors.title_bar.is_some(),
+            "title_bar.background missing"
+        );
         // Maritime primary, verbatim (web decision 0010: hsl(205, 35%, 45%)).
         assert_eq!(light.colors.primary.as_deref(), Some("#4b7a9b"));
     }

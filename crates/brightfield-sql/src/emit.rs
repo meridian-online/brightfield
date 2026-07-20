@@ -61,10 +61,7 @@ pub struct EmitOutput {
 ///
 /// Returns [`EmitError`] if any data source cannot be emitted (unknown format,
 /// inline row limit exceeded, invariant violation).
-pub fn emit_sources(
-    spec: &Spec,
-    base_dir: Option<&Path>,
-) -> Result<EmitOutput, EmitError> {
+pub fn emit_sources(spec: &Spec, base_dir: Option<&Path>) -> Result<EmitOutput, EmitError> {
     let mut results = Vec::with_capacity(spec.data.len());
     let mut warnings = Vec::new();
 
@@ -108,7 +105,13 @@ pub fn emit_sources(
             DataSourceKind::Typed(type_name) => {
                 // Typed without a file: key — check if there's a file in extras
                 if let Some(SpecValue::String(file_value)) = data_source.extras.get("file") {
-                    source::emit_file_typed(name, file_value, type_name, &data_source.extras, base_dir)?
+                    source::emit_file_typed(
+                        name,
+                        file_value,
+                        type_name,
+                        &data_source.extras,
+                        base_dir,
+                    )?
                 } else {
                     return Err(EmitError::InvariantViolation {
                         detail: format!(
@@ -137,9 +140,8 @@ pub fn emit_sources(
 }
 
 /// CSV option allow-list. Extras outside this list produce a warning, not an error.
-pub(crate) const CSV_ALLOW_LIST: &[&str] = &[
-    "columns", "delim", "header", "nullstr", "skip", "types",
-];
+pub(crate) const CSV_ALLOW_LIST: &[&str] =
+    &["columns", "delim", "header", "nullstr", "skip", "types"];
 
 /// Resolve a file path against a base directory.
 ///
@@ -188,7 +190,10 @@ pub(crate) fn format_kwargs(
     }
 
     kwargs.sort_by(|a, b| a.0.cmp(&b.0));
-    kwargs.into_iter().map(|(k, v)| format!("{k}={v}")).collect()
+    kwargs
+        .into_iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect()
 }
 
 /// Convert a `SpecValue` to a SQL literal for use in kwargs.
@@ -526,7 +531,13 @@ pub fn emit_query(
     selection_predicates: Option<&[(String, Vec<(String, Predicate)>)]>,
 ) -> Result<EmittedQuery, EmitError> {
     let passes: Vec<Box<dyn crate::passes::Pass>> = vec![];
-    emit_query_with_passes(spec, mark_index, param_values, selection_predicates, &passes)
+    emit_query_with_passes(
+        spec,
+        mark_index,
+        param_values,
+        selection_predicates,
+        &passes,
+    )
 }
 
 /// Emit a query for a single mark, applying the given passes to the plan.
@@ -543,15 +554,16 @@ pub fn emit_query_with_passes(
     // Use the path-aware mark walker so we can compute the parent plot
     // identity for selection self-exclusion (v2 decision 4).
     let marks_with_paths = collect_marks_with_paths(spec);
-    let (mark, mark_path) = marks_with_paths
-        .get(mark_index)
-        .ok_or_else(|| EmitError::InvariantViolation {
-            detail: format!(
-                "mark_index {} out of bounds (spec has {} marks)",
-                mark_index,
-                marks_with_paths.len()
-            ),
-        })?;
+    let (mark, mark_path) =
+        marks_with_paths
+            .get(mark_index)
+            .ok_or_else(|| EmitError::InvariantViolation {
+                detail: format!(
+                    "mark_index {} out of bounds (spec has {} marks)",
+                    mark_index,
+                    marks_with_paths.len()
+                ),
+            })?;
 
     let lowerers = default_lowerers();
     let ctx = LowerCtx {
@@ -574,7 +586,11 @@ pub fn emit_query_with_passes(
         if let Some(ParamNode::Selection(sel_node)) = spec.params.get(selection_name) {
             let self_source = brightfield_spec::analysis::plot_node_path(mark_path);
             let contributors: &[(String, Predicate)] = selection_predicates
-                .and_then(|all| all.iter().find(|(n, _)| n == selection_name).map(|(_, c)| c.as_slice()))
+                .and_then(|all| {
+                    all.iter()
+                        .find(|(n, _)| n == selection_name)
+                        .map(|(_, c)| c.as_slice())
+                })
                 .unwrap_or(&[]);
             let predicate = compile_selection(sel_node, self_source, contributors);
             // Skip wrapping in Predicate::True case so unfiltered queries
@@ -895,7 +911,10 @@ mod query_tests {
         let mut params = ParamValues::new();
         params.insert("k".to_string(), SpecValue::Integer(1));
         let sql = interpolate_params("$k2 + $k + $unknown", &params);
-        assert_eq!(sql, "$k2 + 1 + $unknown", "only the exact known $k is inlined");
+        assert_eq!(
+            sql, "$k2 + 1 + $unknown",
+            "only the exact known $k is inlined"
+        );
     }
 
     /// a string-valued param is emitted quoted and escaped
@@ -1075,10 +1094,7 @@ mod query_tests {
         let src = "plot:\n  - mark: dot\n    data: { from: t }\ndata:\n  t: { file: t.parquet }\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
         let result = emit_query(&spec, 99, None, None);
-        assert!(matches!(
-            result,
-            Err(EmitError::InvariantViolation { .. })
-        ));
+        assert!(matches!(result, Err(EmitError::InvariantViolation { .. })));
     }
 
     #[test]
@@ -1089,7 +1105,10 @@ mod query_tests {
         assert_eq!(results.len(), 2, "should have one result per mark");
         // SimpleLowerer handles both line and dot with data.from
         for result in &results {
-            assert!(result.is_ok(), "line and dot with data.from should succeed via SimpleLowerer");
+            assert!(
+                result.is_ok(),
+                "line and dot with data.from should succeed via SimpleLowerer"
+            );
         }
     }
 
@@ -1099,10 +1118,7 @@ mod query_tests {
         let src = "data:\n  t: { file: t.parquet }\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
         let result = emit_query(&spec, 0, None, None);
-        assert!(matches!(
-            result,
-            Err(EmitError::InvariantViolation { .. })
-        ));
+        assert!(matches!(result, Err(EmitError::InvariantViolation { .. })));
     }
 
     // ----- Conformance snapshots for statistical marks -----
@@ -1164,7 +1180,9 @@ plot:
         assert!(emitted.sql.contains("16"));
         assert!(emitted.sql.contains("GROUP BY 1, 2"));
         // Deterministic row order: x centre, then y centre.
-        assert!(emitted.sql.contains("ORDER BY \"weight\" ASC, \"height\" ASC"));
+        assert!(emitted
+            .sql
+            .contains("ORDER BY \"weight\" ASC, \"height\" ASC"));
     }
 
     #[test]
@@ -1222,7 +1240,10 @@ plot:
         let spec = parse_spec(HIGHLIGHT_SPEC, Format::Yaml).unwrap().spec;
         let selections = vec![(
             "brush".to_string(),
-            vec![("root/other".to_string(), Predicate::Expr("a > 1".to_string()))],
+            vec![(
+                "root/other".to_string(),
+                Predicate::Expr("a > 1".to_string()),
+            )],
         )];
         let emitted = emit_query(&spec, 0, None, Some(&selections)).expect("emit");
         assert!(
@@ -1260,7 +1281,10 @@ plot:
 "#;
         let plain = parse_spec(plain_yaml, Format::Yaml).unwrap().spec;
         let plain_sql = emit_query(&plain, 0, None, None).expect("emit").sql;
-        assert_eq!(at_rest.sql, plain_sql, "at rest, highlight is invisible in the SQL");
+        assert_eq!(
+            at_rest.sql, plain_sql,
+            "at rest, highlight is invisible in the SQL"
+        );
     }
 
     /// a mark that is BOTH `filterBy` one selection and `highlight` on
@@ -1292,9 +1316,17 @@ plot:
             ),
         ];
         let emitted = emit_query(&spec, 0, None, Some(&selections)).expect("emit");
-        assert!(emitted.sql.to_uppercase().contains("WHERE"), "filter applied: {}", emitted.sql);
+        assert!(
+            emitted.sql.to_uppercase().contains("WHERE"),
+            "filter applied: {}",
+            emitted.sql
+        );
         assert!(emitted.sql.contains("a = 1"), "filter predicate");
-        assert!(emitted.sql.contains(SELECTED_COLUMN), "highlight projection: {}", emitted.sql);
+        assert!(
+            emitted.sql.contains(SELECTED_COLUMN),
+            "highlight projection: {}",
+            emitted.sql
+        );
         assert!(emitted.sql.contains("b > 2"), "highlight predicate");
     }
 
@@ -1317,7 +1349,10 @@ plot:
         let spec = parse_spec(yaml, Format::Yaml).unwrap().spec;
         let selections = vec![(
             "brush".to_string(),
-            vec![("root/other".to_string(), Predicate::Expr("a > 1".to_string()))],
+            vec![(
+                "root/other".to_string(),
+                Predicate::Expr("a > 1".to_string()),
+            )],
         )];
         let emitted = emit_query(&spec, 0, None, Some(&selections)).expect("emit");
         assert!(
@@ -1352,7 +1387,10 @@ plot:
         );
         let selections = vec![(
             "range".to_string(),
-            vec![("root/other".to_string(), Predicate::Expr("a > 1".to_string()))],
+            vec![(
+                "root/other".to_string(),
+                Predicate::Expr("a > 1".to_string()),
+            )],
         )];
         let emitted = emit_query(&spec, 0, None, Some(&selections)).expect("emit");
         assert!(

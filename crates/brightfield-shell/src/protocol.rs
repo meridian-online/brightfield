@@ -79,14 +79,15 @@ pub struct ProtocolInputs {
 /// A human-readable message if the file cannot be read or is not a protocol
 /// manifest.
 pub fn load_protocol_offline(spec_path: &str) -> Result<ProtocolInputs, String> {
-    let text = std::fs::read_to_string(spec_path)
-        .map_err(|e| format!("read {spec_path}: {e}"))?;
+    let text = std::fs::read_to_string(spec_path).map_err(|e| format!("read {spec_path}: {e}"))?;
     if !brightfield_protocol::is_protocol_manifest(&text) {
         return Err(format!("{spec_path} is not a protocol manifest"));
     }
     let manifest = brightfield_protocol::parse_manifest_str(&text)
         .map_err(|e| format!("protocol parse error: {e}"))?;
-    let dir = Path::new(spec_path).parent().unwrap_or_else(|| Path::new("."));
+    let dir = Path::new(spec_path)
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
     let sources = brightfield_protocol::graph::load_model_sources(&manifest, dir);
     let graph_full = brightfield_protocol::graph::build_graph(&manifest, &sources);
     let graph_collapsed = collapse_families(&graph_full);
@@ -230,7 +231,10 @@ impl ProtocolModel {
             .map(|(id, _)| id.clone())
             .collect();
         // The initial canvas shows the collapsed graph.
-        let cfg = LayoutConfig { flow, ..LayoutConfig::default() };
+        let cfg = LayoutConfig {
+            flow,
+            ..LayoutConfig::default()
+        };
         let layout = brightfield_protocol::layout(&inputs.graph_collapsed, &cfg);
         let mut model = Self {
             protocol: inputs.protocol,
@@ -267,7 +271,10 @@ impl ProtocolModel {
     /// always walks the collapsed graph, so this is its geometry regardless of a
     /// fold or drill scope; only a flow change alters it.
     fn sync_nav_geometry(&mut self) {
-        let cfg = LayoutConfig { flow: self.flow, ..LayoutConfig::default() };
+        let cfg = LayoutConfig {
+            flow: self.flow,
+            ..LayoutConfig::default()
+        };
         let geom = brightfield_protocol::layout(&self.graph_collapsed, &cfg);
         self.nav.set_geometry(self.flow, &geom);
     }
@@ -337,7 +344,11 @@ impl ProtocolModel {
     /// The outline rows in topological order (over the collapsed graph).
     #[must_use]
     pub fn outline(&self) -> Vec<OutlineRow> {
-        outline_rows(&self.graph_collapsed, &self.statuses, self.selected.as_ref())
+        outline_rows(
+            &self.graph_collapsed,
+            &self.statuses,
+            self.selected.as_ref(),
+        )
     }
 
     /// The inspector facts for the current selection.
@@ -399,7 +410,13 @@ impl ProtocolModel {
     pub fn feed_events(&mut self, events: &[egui::Event]) -> bool {
         let mut changed = false;
         for event in events {
-            if let egui::Event::Key { key, pressed: true, modifiers, .. } = event {
+            if let egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } = event
+            {
                 changed |= self.feed_key(*key, *modifiers);
             }
         }
@@ -436,7 +453,9 @@ impl ProtocolModel {
         if key == egui::Key::Backspace {
             return self.drill_out();
         }
-        let Some(token) = key_token(key, mods) else { return false };
+        let Some(token) = key_token(key, mods) else {
+            return false;
+        };
         match self.key_table.get(token).copied() {
             Some(verb) => self.dispatch(verb),
             None => false,
@@ -521,8 +540,10 @@ impl ProtocolModel {
         }
         if let Some(focus) = self.nav.cursor().cloned() {
             let keep = brightfield_protocol::graph::lineage(&self.graph_collapsed, &focus);
-            self.scope_graph =
-                Some(brightfield_protocol::graph::induced_subgraph(&self.graph_collapsed, &keep));
+            self.scope_graph = Some(brightfield_protocol::graph::induced_subgraph(
+                &self.graph_collapsed,
+                &keep,
+            ));
             self.selected = Some(focus);
             self.yank_flash = None;
         }
@@ -589,7 +610,10 @@ impl ProtocolModel {
     /// Recompute the layout for the current displayed graph (scope / expand) +
     /// flow, and bump the generation so the raster cache invalidates.
     fn recompute_layout(&mut self) {
-        let cfg = LayoutConfig { flow: self.flow, ..LayoutConfig::default() };
+        let cfg = LayoutConfig {
+            flow: self.flow,
+            ..LayoutConfig::default()
+        };
         let laid = {
             let graph = self.displayed_graph();
             brightfield_protocol::layout(graph, &cfg)
@@ -733,8 +757,13 @@ impl ProtocolShell {
     /// Before rendering: make the active Canvas/Steps tab authoritative from the
     /// model's `show_sheet` (so the `S`/`Esc` keys drive it).
     fn set_active_tab(&mut self) {
-        let want = if self.model.show_sheet { self.steps_id } else { self.canvas_id };
-        if let Some(Tile::Container(Container::Tabs(tabs))) = self.dock.tiles.get_mut(self.tabs_id) {
+        let want = if self.model.show_sheet {
+            self.steps_id
+        } else {
+            self.canvas_id
+        };
+        if let Some(Tile::Container(Container::Tabs(tabs))) = self.dock.tiles.get_mut(self.tabs_id)
+        {
             tabs.set_active(want);
         }
     }
@@ -810,7 +839,11 @@ impl ProtocolShell {
             }
             for crumb in self.model.breadcrumb() {
                 ui.label(egui::RichText::new("»").color(ink(INK_LIGHT.ink_muted)));
-                ui.label(egui::RichText::new(crumb).color(ink(INK_LIGHT.ink_secondary)).small());
+                ui.label(
+                    egui::RichText::new(crumb)
+                        .color(ink(INK_LIGHT.ink_secondary))
+                        .small(),
+                );
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let (word, next) = match self.model.flow() {
@@ -966,8 +999,7 @@ fn canvas_ui(
                     // so manual scrolling is never fought.
                     let frame_gen = model.frame_gen();
                     let framed_id = egui::Id::new(("proto-canvas-framed-gen", canvas_id));
-                    let last_framed =
-                        ui.ctx().data(|d| d.get_temp::<u64>(framed_id)).unwrap_or(0);
+                    let last_framed = ui.ctx().data(|d| d.get_temp::<u64>(framed_id)).unwrap_or(0);
                     if frame_gen != last_framed {
                         let margin = 28.0;
                         let vis = ui.clip_rect();
@@ -1017,39 +1049,45 @@ fn hit_test(layout: &Layout, lx: f64, ly: f64) -> Option<AssetId> {
 /// select.
 fn outline_ui(ui: &mut egui::Ui, model: &mut ProtocolModel) {
     ui.add_space(4.0);
-    ui.label(egui::RichText::new("OUTLINE").color(ink(INK_LIGHT.ink_muted)).small());
+    ui.label(
+        egui::RichText::new("OUTLINE")
+            .color(ink(INK_LIGHT.ink_muted))
+            .small(),
+    );
     ui.separator();
     let rows = model.outline();
     let mut clicked: Option<AssetId> = None;
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        for row in rows {
-            ui.horizontal(|ui| {
-                let (dot, _) =
-                    ui.allocate_exact_size(egui::vec2(12.0, ROW_H), egui::Sense::hover());
-                ui.painter()
-                    .circle_filled(dot.center(), 3.5, status_color(row.status));
-                let ink_c = if row.selected {
-                    ink(INK_LIGHT.ink_primary)
-                } else {
-                    ink(INK_LIGHT.ink_secondary)
-                };
-                let resp = ui.selectable_label(
-                    row.selected,
-                    egui::RichText::new(truncate(&row.label, 26)).color(ink_c),
-                );
-                if resp.clicked() {
-                    clicked = Some(row.id.clone());
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
-                        egui::RichText::new(kind_label(row.kind))
-                            .color(ink(INK_LIGHT.ink_muted))
-                            .small(),
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            for row in rows {
+                ui.horizontal(|ui| {
+                    let (dot, _) =
+                        ui.allocate_exact_size(egui::vec2(12.0, ROW_H), egui::Sense::hover());
+                    ui.painter()
+                        .circle_filled(dot.center(), 3.5, status_color(row.status));
+                    let ink_c = if row.selected {
+                        ink(INK_LIGHT.ink_primary)
+                    } else {
+                        ink(INK_LIGHT.ink_secondary)
+                    };
+                    let resp = ui.selectable_label(
+                        row.selected,
+                        egui::RichText::new(truncate(&row.label, 26)).color(ink_c),
                     );
+                    if resp.clicked() {
+                        clicked = Some(row.id.clone());
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            egui::RichText::new(kind_label(row.kind))
+                                .color(ink(INK_LIGHT.ink_muted))
+                                .small(),
+                        );
+                    });
                 });
-            });
-        }
-    });
+            }
+        });
     if let Some(id) = clicked {
         model.select_id(id);
     }
@@ -1070,7 +1108,12 @@ fn inspector_ui(ui: &mut egui::Ui, model: &ProtocolModel) {
     egui::Frame::new()
         .inner_margin(egui::Margin::symmetric(INSPECTOR_PAD_X, INSPECTOR_PAD_Y))
         .show(ui, |ui| {
-            ui.label(egui::RichText::new("INSPECTOR").color(ink(INK_LIGHT.ink_muted)).small().strong());
+            ui.label(
+                egui::RichText::new("INSPECTOR")
+                    .color(ink(INK_LIGHT.ink_muted))
+                    .small()
+                    .strong(),
+            );
             ui.separator();
             let facts = model.inspector();
             if !facts.present {
@@ -1091,13 +1134,33 @@ fn inspector_ui(ui: &mut egui::Ui, model: &ProtocolModel) {
 fn inspector_body(ui: &mut egui::Ui, facts: &InspectorFacts) {
     ui.add_space(FIELD_GAP);
     // Heading: the asset's label + a plain-language gloss of its kind.
-    ui.label(egui::RichText::new(&facts.label).color(ink(INK_LIGHT.ink_primary)).heading());
-    ui.label(egui::RichText::new(kind_gloss(facts.kind)).color(ink(INK_LIGHT.ink_secondary)).small());
+    ui.label(
+        egui::RichText::new(&facts.label)
+            .color(ink(INK_LIGHT.ink_primary))
+            .heading(),
+    );
+    ui.label(
+        egui::RichText::new(kind_gloss(facts.kind))
+            .color(ink(INK_LIGHT.ink_secondary))
+            .small(),
+    );
 
-    field(ui, "Address", &facts.address, "Stable dotted id for this asset — press y to copy it.", true);
+    field(
+        ui,
+        "Address",
+        &facts.address,
+        "Stable dotted id for this asset — press y to copy it.",
+        true,
+    );
 
     match &facts.producing_step {
-        Some(step) => field(ui, "Produced by", step, "The step / operator that builds this asset.", false),
+        Some(step) => field(
+            ui,
+            "Produced by",
+            step,
+            "The step / operator that builds this asset.",
+            false,
+        ),
         None => field(
             ui,
             "Produced by",
@@ -1108,20 +1171,45 @@ fn inspector_body(ui: &mut egui::Ui, facts: &InspectorFacts) {
     }
 
     if let Some(t) = &facts.transform {
-        field(ui, "Transform", t, "How that step derives the asset (operator or SQL model).", false);
+        field(
+            ui,
+            "Transform",
+            t,
+            "How that step derives the asset (operator or SQL model).",
+            false,
+        );
     }
 
-    field(ui, "Status", status_word(facts.status), status_gloss(facts.status), false);
+    field(
+        ui,
+        "Status",
+        status_word(facts.status),
+        status_gloss(facts.status),
+        false,
+    );
 
     // Measured values exist only after a real run; the offline manifest carries
     // lineage only, so say that rather than show blank rows.
-    let measured = facts.row_count.is_some() || facts.bytes.is_some() || facts.materialized.is_some();
+    let measured =
+        facts.row_count.is_some() || facts.bytes.is_some() || facts.materialized.is_some();
     if measured {
         if let Some(rc) = facts.row_count {
-            field(ui, "Rows", &rc.to_string(), "Row count measured on the last run.", false);
+            field(
+                ui,
+                "Rows",
+                &rc.to_string(),
+                "Row count measured on the last run.",
+                false,
+            );
         }
         if let Some(b) = facts.bytes {
-            field(ui, "Size", &human_bytes(b), "Bytes written on the last run.", false);
+            field(
+                ui,
+                "Size",
+                &human_bytes(b),
+                "Bytes written on the last run.",
+                false,
+            );
         }
         if let Some(m) = facts.materialized {
             field(
@@ -1146,20 +1234,35 @@ fn inspector_body(ui: &mut egui::Ui, facts: &InspectorFacts) {
     }
 
     if let Some(issue) = &facts.issue {
-        field(ui, "Issue", issue, "Why this step is degraded / opaque.", false);
+        field(
+            ui,
+            "Issue",
+            issue,
+            "Why this step is degraded / opaque.",
+            false,
+        );
     }
 }
 
 /// One inspector field: a muted caption, the value, and a one-line explainer.
 fn field(ui: &mut egui::Ui, label: &str, value: &str, explain: &str, mono: bool) {
     ui.add_space(FIELD_GAP);
-    ui.label(egui::RichText::new(label.to_uppercase()).color(ink(INK_LIGHT.ink_muted)).small().strong());
+    ui.label(
+        egui::RichText::new(label.to_uppercase())
+            .color(ink(INK_LIGHT.ink_muted))
+            .small()
+            .strong(),
+    );
     let mut value_text = egui::RichText::new(value).color(ink(INK_LIGHT.ink_primary));
     if mono {
         value_text = value_text.monospace();
     }
     ui.label(value_text);
-    ui.label(egui::RichText::new(explain).color(ink(INK_LIGHT.ink_muted)).small());
+    ui.label(
+        egui::RichText::new(explain)
+            .color(ink(INK_LIGHT.ink_muted))
+            .small(),
+    );
 }
 
 /// A plain-language gloss of an [`AssetKind`] for the inspector subtitle.
@@ -1211,36 +1314,71 @@ fn steps_ui(ui: &mut egui::Ui, model: &ProtocolModel) {
     );
     ui.separator();
     let cursor = model.sheet().cursor();
-    egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
-        egui::Grid::new("proto-steps-grid")
-            .striped(true)
-            .num_columns(6)
-            .spacing(egui::vec2(16.0, 4.0))
-            .show(ui, |ui| {
-                for h in brightfield_protocol::sheet::COLUMNS {
-                    ui.label(egui::RichText::new(h).color(ink(INK_LIGHT.ink_muted)).strong().small());
-                }
-                ui.end_row();
-                for (i, row) in model.sheet().rows().iter().enumerate() {
-                    let sel = i == cursor;
-                    let c = if sel { ink(INK_LIGHT.ink_primary) } else { ink(INK_LIGHT.ink_secondary) };
-                    let name = if row.gate {
-                        format!("{} ◈", row.name)
-                    } else {
-                        row.name.clone()
-                    };
-                    let mark = if sel { "▸ " } else { "  " };
-                    ui.label(egui::RichText::new(format!("{mark}{}", row.order)).color(c).monospace());
-                    ui.label(egui::RichText::new(name).color(c));
-                    ui.label(egui::RichText::new(row.kind).color(ink(INK_LIGHT.ink_secondary)).small());
-                    ui.label(egui::RichText::new(truncate(&row.detail, 40)).color(ink(INK_LIGHT.ink_secondary)).small());
-                    ui.label(egui::RichText::new(row.status).color(ink(INK_LIGHT.ink_secondary)).small());
-                    let live = row.live_state.clone().or_else(|| row.skip_reason.clone()).unwrap_or_default();
-                    ui.label(egui::RichText::new(live).color(ink(INK_LIGHT.ink_muted)).small());
+    egui::ScrollArea::both()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            egui::Grid::new("proto-steps-grid")
+                .striped(true)
+                .num_columns(6)
+                .spacing(egui::vec2(16.0, 4.0))
+                .show(ui, |ui| {
+                    for h in brightfield_protocol::sheet::COLUMNS {
+                        ui.label(
+                            egui::RichText::new(h)
+                                .color(ink(INK_LIGHT.ink_muted))
+                                .strong()
+                                .small(),
+                        );
+                    }
                     ui.end_row();
-                }
-            });
-    });
+                    for (i, row) in model.sheet().rows().iter().enumerate() {
+                        let sel = i == cursor;
+                        let c = if sel {
+                            ink(INK_LIGHT.ink_primary)
+                        } else {
+                            ink(INK_LIGHT.ink_secondary)
+                        };
+                        let name = if row.gate {
+                            format!("{} ◈", row.name)
+                        } else {
+                            row.name.clone()
+                        };
+                        let mark = if sel { "▸ " } else { "  " };
+                        ui.label(
+                            egui::RichText::new(format!("{mark}{}", row.order))
+                                .color(c)
+                                .monospace(),
+                        );
+                        ui.label(egui::RichText::new(name).color(c));
+                        ui.label(
+                            egui::RichText::new(row.kind)
+                                .color(ink(INK_LIGHT.ink_secondary))
+                                .small(),
+                        );
+                        ui.label(
+                            egui::RichText::new(truncate(&row.detail, 40))
+                                .color(ink(INK_LIGHT.ink_secondary))
+                                .small(),
+                        );
+                        ui.label(
+                            egui::RichText::new(row.status)
+                                .color(ink(INK_LIGHT.ink_secondary))
+                                .small(),
+                        );
+                        let live = row
+                            .live_state
+                            .clone()
+                            .or_else(|| row.skip_reason.clone())
+                            .unwrap_or_default();
+                        ui.label(
+                            egui::RichText::new(live)
+                                .color(ink(INK_LIGHT.ink_muted))
+                                .small(),
+                        );
+                        ui.end_row();
+                    }
+                });
+        });
 }
 
 /// The bottom key-hint bar + a flow/state indicator (read-only — no model
@@ -1263,7 +1401,12 @@ fn hint_ui(ui: &mut egui::Ui, model: &ProtocolModel) {
         }
     };
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(hint).color(ink(INK_LIGHT.ink_muted)).monospace().small());
+        ui.label(
+            egui::RichText::new(hint)
+                .color(ink(INK_LIGHT.ink_muted))
+                .monospace()
+                .small(),
+        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if let Some(addr) = model.yank_flash() {
                 ui.label(
@@ -1278,8 +1421,16 @@ fn hint_ui(ui: &mut egui::Ui, model: &ProtocolModel) {
                         .small(),
                 );
             } else {
-                let state = if model.is_expanded() { "family: expanded" } else { "family: collapsed" };
-                ui.label(egui::RichText::new(state).color(ink(INK_LIGHT.ink_muted)).small());
+                let state = if model.is_expanded() {
+                    "family: expanded"
+                } else {
+                    "family: collapsed"
+                };
+                ui.label(
+                    egui::RichText::new(state)
+                        .color(ink(INK_LIGHT.ink_muted))
+                        .small(),
+                );
             }
         });
     });
@@ -1373,7 +1524,10 @@ mod tests {
             physical_key: None,
             pressed: true,
             repeat: false,
-            modifiers: egui::Modifiers { shift: true, ..Default::default() },
+            modifiers: egui::Modifiers {
+                shift: true,
+                ..Default::default()
+            },
         }
     }
 
@@ -1386,7 +1540,10 @@ mod tests {
 
     /// An edgar_gleif model at a chosen reading flow.
     fn model_flow(flow: Flow) -> ProtocolModel {
-        ProtocolModel::new(load_protocol_offline(EDGAR).expect("load edgar_gleif"), flow)
+        ProtocolModel::new(
+            load_protocol_offline(EDGAR).expect("load edgar_gleif"),
+            flow,
+        )
     }
 
     /// Vertical flow, from the default selection: `j`/`k` run the
@@ -1407,27 +1564,49 @@ mod tests {
         assert!(m.feed_events(&[key(egui::Key::J)]), "j moved down the flow");
         let down = m.selected().cloned().unwrap();
         assert_ne!(down, start, "the selection advanced");
-        assert!(centre(&m, &down).1 > sy + 0.5, "j landed strictly below: {down}");
-        assert_eq!(m.outline().iter().filter(|r| r.selected).count(), 1, "one row marked");
+        assert!(
+            centre(&m, &down).1 > sy + 0.5,
+            "j landed strictly below: {down}"
+        );
+        assert_eq!(
+            m.outline().iter().filter(|r| r.selected).count(),
+            1,
+            "one row marked"
+        );
 
         // k = up from the top row: a wall (nothing above), else strictly above.
         let mut m = model_flow(Flow::Vertical);
         if m.feed_events(&[key(egui::Key::K)]) {
             let up = m.selected().cloned().unwrap();
-            assert!(centre(&m, &up).1 < sy - 0.5, "k landed strictly above: {up}");
+            assert!(
+                centre(&m, &up).1 < sy - 0.5,
+                "k landed strictly above: {up}"
+            );
         }
 
         // l = right: a same-row sibling strictly to the RIGHT.
         let mut m = model_flow(Flow::Vertical);
-        assert!(m.feed_events(&[key(egui::Key::L)]), "l stepped a sibling right");
+        assert!(
+            m.feed_events(&[key(egui::Key::L)]),
+            "l stepped a sibling right"
+        );
         let right = m.selected().cloned().unwrap();
-        assert!(centre(&m, &right).0 > sx + 0.5, "l landed strictly right: {right}");
+        assert!(
+            centre(&m, &right).0 > sx + 0.5,
+            "l landed strictly right: {right}"
+        );
 
         // h = left: a same-row sibling strictly to the LEFT.
         let mut m = model_flow(Flow::Vertical);
-        assert!(m.feed_events(&[key(egui::Key::H)]), "h stepped a sibling left");
+        assert!(
+            m.feed_events(&[key(egui::Key::H)]),
+            "h stepped a sibling left"
+        );
         let left = m.selected().cloned().unwrap();
-        assert!(centre(&m, &left).0 < sx - 0.5, "h landed strictly left: {left}");
+        assert!(
+            centre(&m, &left).0 < sx - 0.5,
+            "h landed strictly left: {left}"
+        );
     }
 
     /// Horizontal flow rotates the axes: `l`/`h` become producer/consumer and
@@ -1442,15 +1621,27 @@ mod tests {
         let (sx, sy) = centre(&m, &start);
 
         // l = right: a consumer down the flow, strictly to the RIGHT.
-        assert!(m.feed_events(&[key(egui::Key::L)]), "l consumed down the flow");
+        assert!(
+            m.feed_events(&[key(egui::Key::L)]),
+            "l consumed down the flow"
+        );
         let right = m.selected().cloned().unwrap();
-        assert!(centre(&m, &right).0 > sx + 0.5, "l landed strictly right: {right}");
+        assert!(
+            centre(&m, &right).0 > sx + 0.5,
+            "l landed strictly right: {right}"
+        );
 
         // j = down: a sibling across the flow, strictly BELOW.
         let mut m = model_flow(Flow::Horizontal);
-        assert!(m.feed_events(&[key(egui::Key::J)]), "j stepped a sibling down");
+        assert!(
+            m.feed_events(&[key(egui::Key::J)]),
+            "j stepped a sibling down"
+        );
         let down = m.selected().cloned().unwrap();
-        assert!(centre(&m, &down).1 > sy + 0.5, "j landed strictly below: {down}");
+        assert!(
+            centre(&m, &down).1 > sy + 0.5,
+            "j landed strictly below: {down}"
+        );
     }
 
     /// `S` opens the steps sheet; `Esc` closes it.
@@ -1485,11 +1676,21 @@ mod tests {
         assert!(m.feed_events(&[key(egui::Key::Enter)]), "Enter drilled in");
         assert!(m.is_drilled(), "the canvas is now scoped");
         assert_eq!(m.breadcrumb().len(), 1);
-        assert!(m.displayed_graph().nodes.len() <= full, "the lineage slice fits the graph");
-        assert_ne!(m.layout_gen(), before_gen, "the raster cache key changed (a re-layout)");
+        assert!(
+            m.displayed_graph().nodes.len() <= full,
+            "the lineage slice fits the graph"
+        );
+        assert_ne!(
+            m.layout_gen(),
+            before_gen,
+            "the raster cache key changed (a re-layout)"
+        );
 
         // A repeat Enter on the same node is a no-op — no duplicate crumb.
-        assert!(!m.feed_events(&[key(egui::Key::Enter)]), "a repeat Enter does nothing");
+        assert!(
+            !m.feed_events(&[key(egui::Key::Enter)]),
+            "a repeat Enter does nothing"
+        );
         assert_eq!(m.breadcrumb().len(), 1, "no consecutive-duplicate crumb");
 
         // Esc widens back to the whole graph.
@@ -1559,7 +1760,10 @@ mod tests {
         // Walk to a node that has a producer (so it is not the top source) and
         // a consumer (so it is not the sink): step down once, then the lineage
         // must reach back up to the origin and forward to the dataset.
-        assert!(m.feed_events(&[key(egui::Key::J)]), "j advanced off the top row");
+        assert!(
+            m.feed_events(&[key(egui::Key::J)]),
+            "j advanced off the top row"
+        );
         let sel = m.selected().cloned().expect("a selection");
         let want = brightfield_protocol::graph::lineage(&m.graph_collapsed, &sel);
         assert!(m.feed_events(&[key(egui::Key::Enter)]), "Enter drilled in");
@@ -1595,12 +1799,21 @@ mod tests {
         let mut m = model();
         assert!(m.feed_events(&[key(egui::Key::Enter)]), "Enter drilled in");
         assert!(m.is_drilled());
-        assert!(m.feed_events(&[key(egui::Key::Backspace)]), "Backspace widened");
-        assert!(!m.is_drilled(), "Backspace popped the drill exactly as Esc does");
+        assert!(
+            m.feed_events(&[key(egui::Key::Backspace)]),
+            "Backspace widened"
+        );
+        assert!(
+            !m.is_drilled(),
+            "Backspace popped the drill exactly as Esc does"
+        );
         // And it still closes the steps sheet, matching Esc's dual role.
         m.feed_events(&[key_shift(egui::Key::S)]);
         assert!(m.show_sheet());
-        assert!(m.feed_events(&[key(egui::Key::Backspace)]), "Backspace closed the sheet");
+        assert!(
+            m.feed_events(&[key(egui::Key::Backspace)]),
+            "Backspace closed the sheet"
+        );
         assert!(!m.show_sheet());
     }
 
@@ -1611,7 +1824,10 @@ mod tests {
         let mut m = model_flow(Flow::Vertical);
         let before = m.frame_gen();
         assert!(m.feed_events(&[key(egui::Key::J)]), "j moved the selection");
-        assert!(m.frame_gen() > before, "a keyboard move asks the canvas to reframe");
+        assert!(
+            m.frame_gen() > before,
+            "a keyboard move asks the canvas to reframe"
+        );
     }
 
     /// `y` requests a yank of the selected dotted address (never a screen

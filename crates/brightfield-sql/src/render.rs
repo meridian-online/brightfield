@@ -36,10 +36,7 @@ pub fn canonicalise_ddl(statements: &[SourceDdl]) -> String {
 /// - Sorts kwargs inside function calls alphabetically.
 fn canonicalise_statement(sql: &str) -> String {
     // Normalise whitespace: collapse runs to single space, trim
-    let normalised: String = sql
-        .split_whitespace()
-        .collect::<Vec<&str>>()
-        .join(" ");
+    let normalised: String = sql.split_whitespace().collect::<Vec<&str>>().join(" ");
 
     // Sort kwargs inside function calls like read_csv('path', auto_detect=true, delim='|')
     // We look for patterns like func_name('first_arg', key=val, key=val)
@@ -52,12 +49,7 @@ fn canonicalise_statement(sql: &str) -> String {
 /// Sorts kwargs after the first positional arg.
 fn canonicalise_kwargs(sql: &str) -> String {
     // Find function calls with kwargs: look for read_csv, read_parquet, etc.
-    let func_names = [
-        "read_csv(",
-        "read_parquet(",
-        "read_json_auto(",
-        "ST_Read(",
-    ];
+    let func_names = ["read_csv(", "read_parquet(", "read_json_auto(", "ST_Read("];
 
     let mut result = sql.to_string();
 
@@ -237,7 +229,10 @@ pub fn render_query(plan: &QueryPlan, bindings: &mut Vec<Binding>) -> String {
                     format!("{col} {d}")
                 })
                 .collect();
-            format!("SELECT * FROM ({inner}) AS _o ORDER BY {}", order_parts.join(", "))
+            format!(
+                "SELECT * FROM ({inner}) AS _o ORDER BY {}",
+                order_parts.join(", ")
+            )
         }
         QueryPlan::Limit {
             input,

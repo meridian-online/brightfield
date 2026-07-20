@@ -27,9 +27,9 @@ impl CommandLogEntry {
     #[must_use]
     pub fn text(&self) -> &str {
         match self {
-            CommandLogEntry::Edit(s)
-            | CommandLogEntry::Commit(s)
-            | CommandLogEntry::Refused(s) => s,
+            CommandLogEntry::Edit(s) | CommandLogEntry::Commit(s) | CommandLogEntry::Refused(s) => {
+                s
+            }
         }
     }
 
@@ -105,7 +105,9 @@ impl CommandLog {
         }
         let n = self.uncommitted;
         let plural = if n == 1 { "edit" } else { "edits" };
-        self.push(CommandLogEntry::Commit(format!("committed {n} {plural} to disk")));
+        self.push(CommandLogEntry::Commit(format!(
+            "committed {n} {plural} to disk"
+        )));
         self.uncommitted = 0;
         true
     }
@@ -139,7 +141,11 @@ mod tests {
         log.record_edit("change-mark-type: -> bar");
         log.record_edit("set-channel: x -> temp");
         assert_eq!(log.uncommitted(), 2, "count tracks edits");
-        assert_eq!(log.entries()[0].text(), "set-channel: x -> temp", "newest at index 0");
+        assert_eq!(
+            log.entries()[0].text(),
+            "set-channel: x -> temp",
+            "newest at index 0"
+        );
         assert_eq!(log.entries()[1].text(), "change-mark-type: -> bar");
     }
 
@@ -150,7 +156,10 @@ mod tests {
         log.record_edit("b");
         assert!(log.commit(), "commit with pending edits succeeds");
         assert_eq!(log.uncommitted(), 0, "commit resets the count");
-        assert!(log.entries()[0].is_barrier(), "a barrier is inserted newest-first");
+        assert!(
+            log.entries()[0].is_barrier(),
+            "a barrier is inserted newest-first"
+        );
         assert!(log.entries()[0].text().contains("committed 2 edits"));
         // A second commit with nothing pending is a no-op.
         assert!(!log.commit());
@@ -168,7 +177,10 @@ mod tests {
         // Undo the last one, then undo on empty is a no-op.
         assert!(log.record_undo());
         assert_eq!(log.uncommitted(), 0);
-        assert!(!log.record_undo(), "undo with nothing uncommitted is a no-op");
+        assert!(
+            !log.record_undo(),
+            "undo with nothing uncommitted is a no-op"
+        );
     }
 
     #[test]

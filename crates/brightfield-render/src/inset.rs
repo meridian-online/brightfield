@@ -415,10 +415,12 @@ mod tests {
             let dcm = dot_channels();
             let barr = BarRenderer;
             let dot = DotRenderer;
-            let entries: Vec<MarkInsetEntry> =
-                vec![(&bar, &bcm, &barr), (&dotb, &dcm, &dot)];
+            let entries: Vec<MarkInsetEntry> = vec![(&bar, &bcm, &barr), (&dotb, &dcm, &dot)];
             let insets = resolve_insets_for_marks(SideInsets::default(), &entries, D);
-            assert_eq!(insets.bottom, 0.0, "Y baseline stays flush across a multi-mark plot");
+            assert_eq!(
+                insets.bottom, 0.0,
+                "Y baseline stays flush across a multi-mark plot"
+            );
             assert_eq!(insets.top, D, "the non-baseline Y end still insets");
         }
 
@@ -431,7 +433,10 @@ mod tests {
             let barr = BarRenderer;
             let entries: Vec<MarkInsetEntry> = vec![(&bar, &bcm, &barr)];
             let insets = resolve_insets_for_marks(SideInsets::default(), &entries, D);
-            assert_eq!(insets.top, 0.0, "0 pins to the top (range end) → flush there");
+            assert_eq!(
+                insets.top, 0.0,
+                "0 pins to the top (range end) → flush there"
+            );
             assert_eq!(insets.bottom, D);
         }
 
@@ -445,7 +450,10 @@ mod tests {
             let entries: Vec<MarkInsetEntry> = vec![(&bar, &bcm, &barr)];
             let insets = resolve_insets_for_marks(SideInsets::default(), &entries, D);
             assert_eq!(insets.top, D);
-            assert_eq!(insets.bottom, D, "straddle-zero → baseline is interior, both ends inset");
+            assert_eq!(
+                insets.bottom, D,
+                "straddle-zero → baseline is interior, both ends inset"
+            );
         }
 
         #[test]
@@ -496,7 +504,10 @@ mod tests {
             );
 
             // The contrast is real only because the inset moved the edge inward.
-            assert!(c_after < c_before, "inset pulled the edge dot inside the frame");
+            assert!(
+                c_after < c_before,
+                "inset pulled the edge dot inside the frame"
+            );
         }
     }
 }

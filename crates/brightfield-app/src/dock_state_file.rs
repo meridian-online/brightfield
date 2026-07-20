@@ -44,10 +44,17 @@ pub fn dock_state_path(
                 .join("dock-state.json")
         })
     } else if let Some(xdg) = xdg_config_home.filter(|s| !s.is_empty()) {
-        Some(PathBuf::from(xdg).join("brightfield").join("dock-state.json"))
+        Some(
+            PathBuf::from(xdg)
+                .join("brightfield")
+                .join("dock-state.json"),
+        )
     } else {
-        home.filter(|s| !s.is_empty())
-            .map(|h| PathBuf::from(h).join(".config/brightfield").join("dock-state.json"))
+        home.filter(|s| !s.is_empty()).map(|h| {
+            PathBuf::from(h)
+                .join(".config/brightfield")
+                .join("dock-state.json")
+        })
     }
 }
 
@@ -90,8 +97,8 @@ pub fn decide_load(raw: Option<&str>, expected_version: usize) -> LoadDecision {
 pub fn strip_canvas_state(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(map) => {
-            let is_canvas =
-                map.get("panel_name").and_then(serde_json::Value::as_str) == Some(CANVAS_PANEL_NAME);
+            let is_canvas = map.get("panel_name").and_then(serde_json::Value::as_str)
+                == Some(CANVAS_PANEL_NAME);
             if is_canvas {
                 map.insert("children".to_string(), serde_json::Value::Array(Vec::new()));
                 map.insert("info".to_string(), serde_json::json!({ "panel": null }));
@@ -277,7 +284,10 @@ mod tests {
         strip_canvas_state(&mut value);
 
         let canvas = &value["center"];
-        assert_eq!(canvas["panel_name"], CANVAS_PANEL_NAME, "the node itself remains");
+        assert_eq!(
+            canvas["panel_name"], CANVAS_PANEL_NAME,
+            "the node itself remains"
+        );
         assert_eq!(canvas["children"], serde_json::json!([]));
         assert_eq!(
             canvas["info"],
@@ -368,7 +378,10 @@ mod tests {
         let due = 1_000 + SAVE_DEBOUNCE_MS;
 
         // Timer fires while presenting → suppressed, nothing written.
-        assert_eq!(policy.timer_fired(due, "{collapsed}", false), SaveAction::Nothing);
+        assert_eq!(
+            policy.timer_fired(due, "{collapsed}", false),
+            SaveAction::Nothing
+        );
 
         // The deadline survived the suppression: polled again in authoring
         // mode, the (authoring) state writes.

@@ -15,8 +15,8 @@ use meridian_design::chrome::OVERLAY_LIGHT;
 
 use brightfield_engine::error::EngineError;
 use brightfield_engine::RecordBatch;
-use brightfield_render::channel::ChannelMap;
 use brightfield_render::channel::Channel;
+use brightfield_render::channel::ChannelMap;
 use brightfield_render::nearest::{
     band_category_at, column_typed_value_at, find_nearest, NearestMode, SelectionValue,
 };
@@ -518,7 +518,14 @@ fn resolve_point_value(
     // OUTSIDE the band's pixel range (e.g. in the axis margin) resolves to `None`
     // so it clears — otherwise every click snaps to the nearest category and the
     // filter could never be retracted (full toggle-off is a follow-up).
-    if let Some(scale @ Scale::Band { range_start, range_end, .. }) = scales.get(axis) {
+    if let Some(
+        scale @ Scale::Band {
+            range_start,
+            range_end,
+            ..
+        },
+    ) = scales.get(axis)
+    {
         let (lo, hi) = (range_start.min(*range_end), range_start.max(*range_end));
         if cursor_on_axis < lo || cursor_on_axis > hi {
             return None;
@@ -605,7 +612,10 @@ mod tests {
 
         let local = layout.window_to_local(window_pos, element_origin);
         assert!((local.x - 10.0).abs() < f64::EPSILON);
-        assert!(!layout.contains(local), "point should be outside plot area (in left margin)");
+        assert!(
+            !layout.contains(local),
+            "point should be outside plot area (in left margin)"
+        );
     }
 
     #[test]
@@ -723,8 +733,7 @@ mod tests {
         };
         let mut dispatcher = RecordingDispatcher::new();
 
-        let (next_state, _results) =
-            commit_brush_release(&interaction, &binding, &mut dispatcher);
+        let (next_state, _results) = commit_brush_release(&interaction, &binding, &mut dispatcher);
 
         // Exactly one dispatch.
         assert_eq!(
@@ -761,8 +770,7 @@ mod tests {
         };
         let mut dispatcher = RecordingDispatcher::new();
 
-        let (next_state, results) =
-            commit_brush_release(&interaction, &binding, &mut dispatcher);
+        let (next_state, results) = commit_brush_release(&interaction, &binding, &mut dispatcher);
 
         assert!(dispatcher.calls.is_empty(), "no brush → no dispatch");
         assert!(results.is_empty());
@@ -850,8 +858,7 @@ mod tests {
             s.update_brush(Point::new(p.x + 0.1, p.y - 0.1));
             s
         };
-        let (next_state, _) =
-            commit_brush_clear(&zero_area, &binding, &mut dispatcher);
+        let (next_state, _) = commit_brush_clear(&zero_area, &binding, &mut dispatcher);
         assert_eq!(
             dispatcher.clear_calls.len(),
             1,
@@ -959,9 +966,7 @@ mod tests {
     #[test]
     fn brushable_binding_to_brush_binding() {
         let spec_binding = BrushableBinding {
-            interactor_path: ComponentPath(
-                "root/plot[0]/interactor[intervalXY]".to_string(),
-            ),
+            interactor_path: ComponentPath("root/plot[0]/interactor[intervalXY]".to_string()),
             parent_plot: ComponentPath("root/plot[0]".to_string()),
             selection: "brush".to_string(),
             kind: brightfield_spec::analysis::BrushKind::IntervalXY,

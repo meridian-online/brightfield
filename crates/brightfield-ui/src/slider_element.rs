@@ -104,7 +104,11 @@ impl SliderElement {
     /// Track geometry in element-local pixels: `(left, width, center_y)`.
     fn track(&self) -> (f64, f64, f64) {
         let inset = THUMB_RADIUS as f64;
-        (inset, (self.width - inset * 2.0).max(0.0), self.height / 2.0)
+        (
+            inset,
+            (self.width - inset * 2.0).max(0.0),
+            self.height / 2.0,
+        )
     }
 }
 
@@ -179,9 +183,7 @@ impl Element for SliderElement {
             let hitbox = prepaint.clone();
             let binding = self.binding.clone();
             move |event: &MouseDownEvent, phase, window, cx| {
-                if phase.bubble()
-                    && event.button == MouseButton::Left
-                    && hitbox.is_hovered(window)
+                if phase.bubble() && event.button == MouseButton::Left && hitbox.is_hovered(window)
                 {
                     let v = value_at(event.position.x.to_f64(), track_left_win, track_w, &binding);
                     state.update(cx, |w, _| w.gesture = SliderState::start_drag(v));

@@ -26,7 +26,13 @@ const BACKGROUND_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.surface)
 /// geometry added to the scene so everything else draws on top.
 fn render_background(scene: &mut Scene, layout: &ChartLayout) {
     let rect = Rect::new(0.0, 0.0, layout.width, layout.height);
-    scene.fill(Fill::NonZero, Affine::IDENTITY, BACKGROUND_COLOUR, None, &rect);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        BACKGROUND_COLOUR,
+        None,
+        &rect,
+    );
 }
 
 /// Input data for building a chart scene.
@@ -176,8 +182,13 @@ pub fn build_chart_scene(data: &ChartData<'_>) -> (Scene, ScaleSet) {
     // Marks, clipped to the plot area so geometry can't spill onto axes/margins.
     let plot_clip = plot_area_rect(&data.layout);
     scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &plot_clip);
-    data.renderer
-        .render(&mut scene, data.batch, data.channel_map, &scales, data.highlight);
+    data.renderer.render(
+        &mut scene,
+        data.batch,
+        data.channel_map,
+        &scales,
+        data.highlight,
+    );
     scene.pop_layer();
 
     // Axes (on top of grid/marks). The legacy single-mark path carries no
@@ -235,10 +246,8 @@ fn infer_multi_mark_scales(entries: &[&ChartData<'_>]) -> ScaleSet {
     let layout = &entries[0].layout;
 
     // Collect (batch, channel_map) pairs for multi-scale inference.
-    let pairs: Vec<(&RecordBatch, &ChannelMap)> = entries
-        .iter()
-        .map(|d| (d.batch, d.channel_map))
-        .collect();
+    let pairs: Vec<(&RecordBatch, &ChannelMap)> =
+        entries.iter().map(|d| (d.batch, d.channel_map)).collect();
 
     let mut scales = infer_scales_multi(&pairs, layout.x_range(), layout.y_range());
 
@@ -439,11 +448,23 @@ pub fn render_slider(scene: &mut Scene, x: f64, y: f64, width: f64, height: f64,
         cy + SLIDER_TRACK_THICKNESS / 2.0,
         SLIDER_TRACK_THICKNESS / 2.0,
     );
-    scene.fill(Fill::NonZero, Affine::IDENTITY, SLIDER_TRACK_COLOUR, None, &track);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        SLIDER_TRACK_COLOUR,
+        None,
+        &track,
+    );
 
     let thumb_cx = track_left + track_w * frac.clamp(0.0, 1.0);
     let thumb = Circle::new((thumb_cx, cy), SLIDER_THUMB_RADIUS);
-    scene.fill(Fill::NonZero, Affine::IDENTITY, SLIDER_THUMB_COLOUR, None, &thumb);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        SLIDER_THUMB_COLOUR,
+        None,
+        &thumb,
+    );
 }
 
 /// Menu-family widget ink + geometry — kept in sync with the
@@ -470,7 +491,13 @@ const WIDGET_BASELINE_NUDGE: f64 = 4.0;
 /// it (the render_slider convention).
 pub fn render_menu(scene: &mut Scene, x: f64, y: f64, width: f64, height: f64, label: &str) {
     let bx = RoundedRect::new(x + 0.5, y + 0.5, x + width - 0.5, y + height - 0.5, 4.0);
-    scene.fill(Fill::NonZero, Affine::IDENTITY, WIDGET_FILL_COLOUR, None, &bx);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        WIDGET_FILL_COLOUR,
+        None,
+        &bx,
+    );
     scene.stroke(
         &Stroke::new(1.0),
         Affine::IDENTITY,
@@ -495,7 +522,13 @@ pub fn render_menu(scene: &mut Scene, x: f64, y: f64, width: f64, height: f64, l
     chevron.line_to((cx1, cy - 2.5));
     chevron.line_to(((cx0 + cx1) / 2.0, cy + 3.5));
     chevron.close_path();
-    scene.fill(Fill::NonZero, Affine::IDENTITY, WIDGET_AFFORDANCE_COLOUR, None, &chevron);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        WIDGET_AFFORDANCE_COLOUR,
+        None,
+        &chevron,
+    );
 }
 
 /// Draw a resting `style: radio` widget: one
@@ -515,7 +548,13 @@ pub fn render_radio(
     for (i, label) in labels.iter().enumerate() {
         let cy = y + RADIO_CHROME_PAD / 2.0 + RADIO_ROW_HEIGHT * (i as f64 + 0.5);
         let ring = Circle::new((x + 10.0, cy), 6.0);
-        scene.fill(Fill::NonZero, Affine::IDENTITY, WIDGET_FILL_COLOUR, None, &ring);
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            WIDGET_FILL_COLOUR,
+            None,
+            &ring,
+        );
         scene.stroke(
             &Stroke::new(1.0),
             Affine::IDENTITY,
@@ -525,7 +564,13 @@ pub fn render_radio(
         );
         if selected == Some(i) {
             let dot = Circle::new((x + 10.0, cy), 3.0);
-            scene.fill(Fill::NonZero, Affine::IDENTITY, WIDGET_ACTIVE_COLOUR, None, &dot);
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                WIDGET_ACTIVE_COLOUR,
+                None,
+                &dot,
+            );
         }
         crate::text::draw_text(
             scene,
@@ -554,7 +599,13 @@ pub fn render_checkbox(
     let cy = y + height / 2.0;
     let (bx0, by0) = (x + 4.0, cy - 7.0);
     let bx = RoundedRect::new(bx0, by0, bx0 + 14.0, by0 + 14.0, 3.0);
-    scene.fill(Fill::NonZero, Affine::IDENTITY, WIDGET_FILL_COLOUR, None, &bx);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        WIDGET_FILL_COLOUR,
+        None,
+        &bx,
+    );
     scene.stroke(
         &Stroke::new(1.0),
         Affine::IDENTITY,
@@ -629,8 +680,10 @@ mod tests {
     // and label glyphs for every option.
     #[test]
     fn render_radio_draws_rows_and_selected_dot() {
-        let labels: Vec<String> =
-            ["circle", "square", "triangle"].iter().map(|s| s.to_string()).collect();
+        let labels: Vec<String> = ["circle", "square", "triangle"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let mut scene = Scene::new();
         render_radio(&mut scene, 0.0, 400.0, 200.0, &labels, Some(1));
         assert_eq!(
@@ -668,7 +721,11 @@ mod tests {
             2,
             "no check stroke when unchecked"
         );
-        assert_eq!(crate::mark::count_scene_glyphs(&checked), 4, "the label renders");
+        assert_eq!(
+            crate::mark::count_scene_glyphs(&checked),
+            4,
+            "the label renders"
+        );
         assert_eq!(crate::mark::count_scene_glyphs(&unchecked), 4);
     }
     use arrow::array::{Float64Array, StringArray, TimestampMicrosecondArray};
@@ -742,8 +799,7 @@ mod tests {
             view_extent: None,
             highlight: None,
         };
-        let (geo_scene, _) =
-            build_multi_mark_scene(&[&geo_data], true, &ResolvedTitles::default());
+        let (geo_scene, _) = build_multi_mark_scene(&[&geo_data], true, &ResolvedTitles::default());
         let geo_paths = crate::mark::count_scene_paths(&geo_scene);
 
         // Contrast: the SAME plot rect + a single cartesian mark carries grid +
@@ -773,8 +829,7 @@ mod tests {
             view_extent: None,
             highlight: None,
         };
-        let (dot_scene, _) =
-            build_multi_mark_scene(&[&dot_data], true, &ResolvedTitles::default());
+        let (dot_scene, _) = build_multi_mark_scene(&[&dot_data], true, &ResolvedTitles::default());
         // The geo plot (one outline, no frame) draws strictly fewer paths than a
         // one-mark cartesian plot (one circle + grid + axes) — the frame gating.
         assert!(
@@ -883,7 +938,10 @@ mod tests {
         // Scales should include x, y, and fill.
         assert!(scales.get(Channel::X).is_some(), "x scale should exist");
         assert!(scales.get(Channel::Y).is_some(), "y scale should exist");
-        assert!(scales.get(Channel::Fill).is_some(), "fill scale should exist");
+        assert!(
+            scales.get(Channel::Fill).is_some(),
+            "fill scale should exist"
+        );
     }
 
     #[test]
@@ -1169,12 +1227,24 @@ mod tests {
 
         // Scales should span the union of both batches.
         let x = scales.get(Channel::X).expect("x scale should exist");
-        assert!((x.domain_min().unwrap() - 1.0).abs() < f64::EPSILON, "x min = union min");
-        assert!((x.domain_max().unwrap() - 8.0).abs() < f64::EPSILON, "x max = union max");
+        assert!(
+            (x.domain_min().unwrap() - 1.0).abs() < f64::EPSILON,
+            "x min = union min"
+        );
+        assert!(
+            (x.domain_max().unwrap() - 8.0).abs() < f64::EPSILON,
+            "x max = union max"
+        );
 
         let y = scales.get(Channel::Y).expect("y scale should exist");
-        assert!((y.domain_min().unwrap() - 10.0).abs() < f64::EPSILON, "y min = union min");
-        assert!((y.domain_max().unwrap() - 80.0).abs() < f64::EPSILON, "y max = union max");
+        assert!(
+            (y.domain_min().unwrap() - 10.0).abs() < f64::EPSILON,
+            "y min = union min"
+        );
+        assert!(
+            (y.domain_max().unwrap() - 80.0).abs() < f64::EPSILON,
+            "y max = union max"
+        );
     }
 
     #[test]

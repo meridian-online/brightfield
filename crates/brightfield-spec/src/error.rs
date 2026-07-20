@@ -93,7 +93,9 @@ pub enum ParseError {
 
     /// `parse_spec_path` was called with a path whose extension is neither
     /// `.yaml`, `.yml`, nor `.json`.
-    #[error("unknown spec format: extension `{ext}` not recognised (expected .yaml, .yml, or .json)")]
+    #[error(
+        "unknown spec format: extension `{ext}` not recognised (expected .yaml, .yml, or .json)"
+    )]
     UnknownFormat {
         /// The offending extension (without leading dot), or empty if absent.
         ext: String,
@@ -188,7 +190,10 @@ mod tests {
         let variants: Vec<ParseError> = vec![
             ParseError::YamlSyntax {
                 msg: "x".into(),
-                span: Some(SourceSpan { offset: 1, length: 2 }),
+                span: Some(SourceSpan {
+                    offset: 1,
+                    length: 2,
+                }),
             },
             ParseError::JsonSyntax {
                 msg: "x".into(),
@@ -231,7 +236,10 @@ mod tests {
     fn source_span_is_plain_struct() {
         // Constructing SourceSpan with named fields proves it is a plain struct
         // with public fields — not an opaque wrapper around a miette type.
-        let s = SourceSpan { offset: 10, length: 5 };
+        let s = SourceSpan {
+            offset: 10,
+            length: 5,
+        };
         assert_eq!(s.offset, 10);
         assert_eq!(s.length, 5);
     }

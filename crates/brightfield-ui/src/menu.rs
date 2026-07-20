@@ -263,7 +263,11 @@ pub fn checkbox_toggle_index(options: &[SpecValue], current: Option<&SpecValue>)
     if options.len() < 2 {
         return None;
     }
-    Some(if checkbox_checked(options, current) { 1 } else { 0 })
+    Some(if checkbox_checked(options, current) {
+        1
+    } else {
+        0
+    })
 }
 
 /// Display label for an option value (and the menu box's current-value
@@ -372,7 +376,11 @@ mod tests {
     }
 
     fn str_options(vals: &[&str]) -> SpecValue {
-        SpecValue::Array(vals.iter().map(|v| SpecValue::String((*v).to_string())).collect())
+        SpecValue::Array(
+            vals.iter()
+                .map(|v| SpecValue::String((*v).to_string()))
+                .collect(),
+        )
     }
 
     fn binding(style: MenuStyle, options: Vec<SpecValue>) -> MenuBinding {
@@ -631,8 +639,12 @@ mod tests {
         let current = SpecValue::String("west".to_string());
         let mut d = RecordingDispatcher::new();
 
-        let (next, results) =
-            commit_menu_release(&MenuState::Committed { index: 1 }, &b, Some(&current), &mut d);
+        let (next, results) = commit_menu_release(
+            &MenuState::Committed { index: 1 },
+            &b,
+            Some(&current),
+            &mut d,
+        );
 
         assert!(d.calls.is_empty(), "same-value pick must not dispatch");
         assert!(results.is_empty());
@@ -721,7 +733,10 @@ mod tests {
         assert_eq!(MenuState::Closed.pick(0), MenuState::Committed { index: 0 });
 
         // Click-away closes an open list WITHOUT dispatch; other states pass.
-        assert_eq!(MenuState::Open { hover: Some(1) }.click_away(), MenuState::Closed);
+        assert_eq!(
+            MenuState::Open { hover: Some(1) }.click_away(),
+            MenuState::Closed
+        );
         assert_eq!(
             MenuState::Committed { index: 1 }.click_away(),
             MenuState::Committed { index: 1 }

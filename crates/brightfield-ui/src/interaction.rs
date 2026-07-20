@@ -146,10 +146,7 @@ fn norm_rect(a: Point, b: Point) -> Rect {
 /// handle in the rect's inset-band overhang still grabs.
 #[must_use]
 pub fn brush_region(local: Point, rect: Rect, tol: f64) -> BrushRegion {
-    let rect = norm_rect(
-        Point::new(rect.x0, rect.y0),
-        Point::new(rect.x1, rect.y1),
-    );
+    let rect = norm_rect(Point::new(rect.x0, rect.y0), Point::new(rect.x1, rect.y1));
     // Beyond the tolerance-expanded rect on any side → Outside.
     if local.x < rect.x0 - tol
         || local.x > rect.x1 + tol
@@ -355,7 +352,13 @@ impl InteractionState {
     /// each clamped to `frame`. Non-`Dragging` states pass through unchanged.
     #[must_use]
     pub fn on_grab_move(self, pointer: Point, frame: Rect) -> Self {
-        if let Self::Dragging { region, origin, anchor, .. } = self {
+        if let Self::Dragging {
+            region,
+            origin,
+            anchor,
+            ..
+        } = self
+        {
             let moved = match region {
                 BrushRegion::Interior => {
                     translate_brush(anchor, pointer.x - origin.x, pointer.y - origin.y, frame)
@@ -453,9 +456,21 @@ impl InteractionState {
                     start.x.max(current.x),
                     start.y.max(current.y),
                 );
-                scene.fill(Fill::NonZero, Affine::IDENTITY, SELECTED_COLOUR, None, &rect);
+                scene.fill(
+                    Fill::NonZero,
+                    Affine::IDENTITY,
+                    SELECTED_COLOUR,
+                    None,
+                    &rect,
+                );
                 let stroke = kurbo::Stroke::new(1.5);
-                scene.stroke(&stroke, Affine::IDENTITY, SELECTED_BORDER_COLOUR, None, &rect);
+                scene.stroke(
+                    &stroke,
+                    Affine::IDENTITY,
+                    SELECTED_BORDER_COLOUR,
+                    None,
+                    &rect,
+                );
             }
             Self::Hovering { point, .. } => {
                 let circle = kurbo::Circle::new(*point, HOVER_RADIUS);
@@ -484,7 +499,12 @@ impl InteractionState {
 #[must_use]
 pub fn redispatch_brushing_from(end_state: &InteractionState) -> Option<InteractionState> {
     match end_state {
-        InteractionState::Dragging { start, current, anchor, .. } => {
+        InteractionState::Dragging {
+            start,
+            current,
+            anchor,
+            ..
+        } => {
             let moved = norm_rect(*start, *current);
             let unmoved = (moved.x0 - anchor.x0).abs() < crate::chart_view::ZERO_AREA_EPSILON
                 && (moved.y0 - anchor.y0).abs() < crate::chart_view::ZERO_AREA_EPSILON
@@ -611,20 +631,14 @@ impl NavigationState {
     ) {
         if self.config.pan && self.config.x_navigable {
             let x_span = x_domain.1 - x_domain.0;
-            let (x_min, x_max) = self
-                .view_extent
-                .x
-                .unwrap_or(x_domain);
+            let (x_min, x_max) = self.view_extent.x.unwrap_or(x_domain);
             let new_min = x_min - dx_norm * x_span;
             let new_max = x_max - dx_norm * x_span;
             self.view_extent.x = Some((new_min, new_max));
         }
         if self.config.pan && self.config.y_navigable {
             let y_span = y_domain.1 - y_domain.0;
-            let (y_min, y_max) = self
-                .view_extent
-                .y
-                .unwrap_or(y_domain);
+            let (y_min, y_max) = self.view_extent.y.unwrap_or(y_domain);
             let new_min = y_min - dy_norm * y_span;
             let new_max = y_max - dy_norm * y_span;
             self.view_extent.y = Some((new_min, new_max));
@@ -1052,7 +1066,10 @@ mod tests {
         let rect = Rect::new(100.0, 100.0, 200.0, 150.0);
 
         // Centre → Interior.
-        assert_eq!(brush_region(Point::new(150.0, 125.0), rect, TOL), BrushRegion::Interior);
+        assert_eq!(
+            brush_region(Point::new(150.0, 125.0), rect, TOL),
+            BrushRegion::Interior
+        );
 
         // Each corner (within tol) → the matching Corner.
         assert_eq!(
@@ -1091,8 +1108,14 @@ mod tests {
         );
 
         // Beyond tol on every side → Outside.
-        assert_eq!(brush_region(Point::new(300.0, 300.0), rect, TOL), BrushRegion::Outside);
-        assert_eq!(brush_region(Point::new(150.0, 50.0), rect, TOL), BrushRegion::Outside);
+        assert_eq!(
+            brush_region(Point::new(300.0, 300.0), rect, TOL),
+            BrushRegion::Outside
+        );
+        assert_eq!(
+            brush_region(Point::new(150.0, 50.0), rect, TOL),
+            BrushRegion::Outside
+        );
         // Just inside the band above the top edge is still the Top edge, not Outside.
         assert_eq!(
             brush_region(Point::new(150.0, 100.0 - TOL + 0.5), rect, TOL),
@@ -1128,7 +1151,10 @@ mod tests {
             current: Point::new(100.0, 200.0),
         };
         assert!(brushing.selected_rect().is_some());
-        assert!(brushing.brush_rect().is_some(), "brush_rect Brushing semantics unchanged");
+        assert!(
+            brushing.brush_rect().is_some(),
+            "brush_rect Brushing semantics unchanged"
+        );
 
         // Dragging → Some (the live moved rect).
         let dragging = InteractionState::Dragging {
@@ -1143,10 +1169,16 @@ mod tests {
         // Idle / Hovering → None (both accessors). brush_rect stays None for
         // Selected (the documented gap — a hit-test on it never fired).
         assert!(InteractionState::Idle.selected_rect().is_none());
-        assert!(InteractionState::Hovering { point: Point::new(1.0, 1.0), nearest: None }
-            .selected_rect()
-            .is_none());
-        assert!(sel.brush_rect().is_none(), "legacy brush_rect is still None for Selected");
+        assert!(InteractionState::Hovering {
+            point: Point::new(1.0, 1.0),
+            nearest: None
+        }
+        .selected_rect()
+        .is_none());
+        assert!(
+            sel.brush_rect().is_none(),
+            "legacy brush_rect is still None for Selected"
+        );
     }
 
     /// the translate transform moves all four corners by the delta,
@@ -1166,7 +1198,10 @@ mod tests {
         // PRESERVED (not shrunk): dx = 1000 → x1 pinned at 640, width still 100.
         let butted = translate_brush(rect, 1000.0, 0.0, frame);
         assert!((butted.x1 - 640.0).abs() < f64::EPSILON);
-        assert!((butted.width() - 100.0).abs() < f64::EPSILON, "size preserved at the frame edge");
+        assert!(
+            (butted.width() - 100.0).abs() < f64::EPSILON,
+            "size preserved at the frame edge"
+        );
 
         // Zero delta → identity.
         assert_eq!(translate_brush(rect, 0.0, 0.0, frame), rect);
@@ -1180,22 +1215,45 @@ mod tests {
         let frame = Rect::new(0.0, 0.0, 640.0, 480.0);
 
         // Right edge dragged right → widens x1 only.
-        let r = resize_brush(rect, BrushRegion::Edge(BrushEdge::Right), Point::new(260.0, 400.0), frame);
+        let r = resize_brush(
+            rect,
+            BrushRegion::Edge(BrushEdge::Right),
+            Point::new(260.0, 400.0),
+            frame,
+        );
         assert_eq!(r, Rect::new(100.0, 100.0, 260.0, 150.0));
 
         // TopLeft corner → moves x0, y0 only (x1, y1 pinned).
-        let r = resize_brush(rect, BrushRegion::Corner(BrushCorner::TopLeft), Point::new(80.0, 90.0), frame);
+        let r = resize_brush(
+            rect,
+            BrushRegion::Corner(BrushCorner::TopLeft),
+            Point::new(80.0, 90.0),
+            frame,
+        );
         assert_eq!(r, Rect::new(80.0, 90.0, 200.0, 150.0));
 
         // Right edge dragged LEFT past x0 → normalised, x0<x1, the pinned side
         // (old x0 = 100) is now the right bound.
-        let r = resize_brush(rect, BrushRegion::Edge(BrushEdge::Right), Point::new(50.0, 125.0), frame);
+        let r = resize_brush(
+            rect,
+            BrushRegion::Edge(BrushEdge::Right),
+            Point::new(50.0, 125.0),
+            frame,
+        );
         assert!(r.x0 < r.x1);
-        assert!((r.x1 - 100.0).abs() < f64::EPSILON, "the pinned side is still old x0");
+        assert!(
+            (r.x1 - 100.0).abs() < f64::EPSILON,
+            "the pinned side is still old x0"
+        );
         assert!((r.x0 - 50.0).abs() < f64::EPSILON);
 
         // A corner dragged past its diagonal opposite normalises likewise.
-        let r = resize_brush(rect, BrushRegion::Corner(BrushCorner::BottomRight), Point::new(50.0, 50.0), frame);
+        let r = resize_brush(
+            rect,
+            BrushRegion::Corner(BrushCorner::BottomRight),
+            Point::new(50.0, 50.0),
+            frame,
+        );
         assert_eq!(r, Rect::new(50.0, 50.0, 100.0, 100.0));
     }
 
@@ -1215,8 +1273,14 @@ mod tests {
         let action = sel.resolve_press(Point::new(150.0, 125.0), true, TOL);
         assert_eq!(action, PointerAction::Grab(BrushRegion::Interior));
         let grabbed = sel.clone().on_press(action, Point::new(150.0, 125.0));
-        let r = grabbed.selected_rect().expect("the grab preserves the rect");
-        assert_eq!(r, Rect::new(100.0, 100.0, 200.0, 150.0), "a Grab never wipes the rect");
+        let r = grabbed
+            .selected_rect()
+            .expect("the grab preserves the rect");
+        assert_eq!(
+            r,
+            Rect::new(100.0, 100.0, 200.0, 150.0),
+            "a Grab never wipes the rect"
+        );
 
         // (b) A press on a Selected rect whose TOP EDGE is above plot_area.y0 —
         // in the inset band where contains() is FALSE — still Grabs, NOT Ignore:
@@ -1274,14 +1338,23 @@ mod tests {
         match redispatch_brushing_from(&dragged) {
             Some(InteractionState::Brushing { start, current }) => {
                 assert_eq!(norm_rect(start, current), moved);
-                assert_ne!(norm_rect(start, current), anchor, "moved corners differ from the original");
+                assert_ne!(
+                    norm_rect(start, current),
+                    anchor,
+                    "moved corners differ from the original"
+                );
             }
             other => panic!("expected Some(Brushing) for a moved grab, got {other:?}"),
         }
 
         // A Dragging resized by the resize → Some(Brushing) with the
         // resized corners.
-        let resized = resize_brush(anchor, BrushRegion::Edge(BrushEdge::Right), Point::new(260.0, 400.0), frame);
+        let resized = resize_brush(
+            anchor,
+            BrushRegion::Edge(BrushEdge::Right),
+            Point::new(260.0, 400.0),
+            frame,
+        );
         let dragged = InteractionState::Dragging {
             region: BrushRegion::Edge(BrushEdge::Right),
             origin: Point::new(200.0, 125.0),
@@ -1305,7 +1378,10 @@ mod tests {
             current: Point::new(anchor.x1, anchor.y1),
             anchor,
         };
-        assert!(redispatch_brushing_from(&click).is_none(), "a zero-delta grab re-dispatches nothing");
+        assert!(
+            redispatch_brushing_from(&click).is_none(),
+            "a zero-delta grab re-dispatches nothing"
+        );
 
         // Every non-grab state → None (a persisted Selected on an untouched
         // sibling never re-dispatches; a fresh Brushing dispatches through the
@@ -1366,11 +1442,17 @@ mod tests {
         // pointer_up: the moved sub-state yields the moved Selected end-state.
         let released = moved.clone().on_grab_release();
         assert!(matches!(released, InteractionState::Selected { .. }));
-        assert_eq!(released.selected_rect().unwrap(), Rect::new(130.0, 120.0, 230.0, 170.0));
+        assert_eq!(
+            released.selected_rect().unwrap(),
+            Rect::new(130.0, 120.0, 230.0, 170.0)
+        );
 
         // The end-state feeds the re-dispatch: the in-flight Dragging read at
         // release re-dispatches the moved corners (Some), a zero-delta would not.
-        assert!(redispatch_brushing_from(&moved).is_some(), "a moved grab re-dispatches on release");
+        assert!(
+            redispatch_brushing_from(&moved).is_some(),
+            "a moved grab re-dispatches on release"
+        );
     }
 
     /// Review finding 1: a MISSED mouse-up during a grab (the `!button_held`
@@ -1405,7 +1487,10 @@ mod tests {
         // Contrast: the NORMAL release (on_grab_release) keeps the moved range —
         // because the mouse-up listener re-dispatches it first.
         let released = dragging.on_grab_release();
-        assert_eq!(released.selected_rect().unwrap(), Rect::new(230.0, 220.0, 330.0, 270.0));
+        assert_eq!(
+            released.selected_rect().unwrap(),
+            Rect::new(230.0, 220.0, 330.0, 270.0)
+        );
         // Non-Dragging states pass through unchanged.
         assert!(matches!(
             InteractionState::Idle.on_grab_cancel(),
@@ -1431,8 +1516,14 @@ mod tests {
             current: Point::new(220.0, 160.0),
             anchor: Rect::new(100.0, 100.0, 200.0, 150.0),
         };
-        assert!(sel.has_persistent_selection(), "a committed Selected clears");
-        assert!(dragging.has_persistent_selection(), "an in-flight Dragging also clears");
+        assert!(
+            sel.has_persistent_selection(),
+            "a committed Selected clears"
+        );
+        assert!(
+            dragging.has_persistent_selection(),
+            "an in-flight Dragging also clears"
+        );
         assert!(!InteractionState::Idle.has_persistent_selection());
         assert!(!InteractionState::Brushing {
             start: Point::new(1.0, 1.0),

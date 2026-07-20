@@ -162,10 +162,9 @@ impl ChartSurface for EguiChartFrame<'_> {
         // Reserve the chart rect at logical size and paint the (device-res)
         // Vello texture into it — egui downsamples for crisp HiDPI output.
         let logical = egui::vec2(size.width as f32, size.height as f32);
-        let (rect, _resp) = self.ui.allocate_exact_size(
-            logical,
-            egui::Sense::click_and_drag(),
-        );
+        let (rect, _resp) = self
+            .ui
+            .allocate_exact_size(logical, egui::Sense::click_and_drag());
         egui::Image::new((self.texture, rect.size()))
             .tint(egui::Color32::WHITE)
             .paint_at(self.ui, rect);
@@ -197,9 +196,7 @@ impl OverlayPainter for EguiChartFrame<'_> {
             egui::pos2(r.x as f32 + o.x, r.y as f32 + o.y),
             egui::vec2(r.width as f32, r.height as f32),
         );
-        self.ui
-            .painter()
-            .rect_filled(rect, 0.0, to_color32(c));
+        self.ui.painter().rect_filled(rect, 0.0, to_color32(c));
     }
 
     fn stroke_rect(&mut self, r: SurfaceRect, c: Color, w: f32) {
@@ -223,9 +220,10 @@ impl OverlayPainter for EguiChartFrame<'_> {
     }
 
     fn line(&mut self, a: Point, b: Point, c: Color, w: f32) {
-        self.ui
-            .painter()
-            .line_segment([self.pt(a), self.pt(b)], egui::Stroke::new(w, to_color32(c)));
+        self.ui.painter().line_segment(
+            [self.pt(a), self.pt(b)],
+            egui::Stroke::new(w, to_color32(c)),
+        );
     }
 
     fn text(&mut self, at: Point, s: &str, c: Color, size: f32) {
@@ -304,7 +302,10 @@ mod tests {
 
     #[test]
     fn cursor_glyph_mapping() {
-        assert_eq!(surface_cursor_to_egui(SurfaceCursor::Grab), egui::CursorIcon::Grab);
+        assert_eq!(
+            surface_cursor_to_egui(SurfaceCursor::Grab),
+            egui::CursorIcon::Grab
+        );
         assert_eq!(
             surface_cursor_to_egui(SurfaceCursor::ResizeNwSe),
             egui::CursorIcon::ResizeNwSe
@@ -313,7 +314,12 @@ mod tests {
 
     #[test]
     fn color_boundary_unmultiplied() {
-        let c = to_color32(Color { r: 1.0, g: 0.0, b: 0.0, a: 0.5 });
+        let c = to_color32(Color {
+            r: 1.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.5,
+        });
         assert_eq!(c.a(), 128);
     }
 }

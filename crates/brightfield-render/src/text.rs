@@ -199,16 +199,45 @@ mod tests {
         let base = t * kurbo::Point::new(0.0, 0.0);
         let advanced = t * kurbo::Point::new(1.0, 0.0);
         assert!((base.x - 50.0).abs() < 1e-9 && (base.y - 200.0).abs() < 1e-9);
-        assert!((advanced.x - 50.0).abs() < 1e-9, "screen x fixed along the run");
-        assert!((advanced.y - 199.0).abs() < 1e-9, "advancing the run moves UP the screen");
+        assert!(
+            (advanced.x - 50.0).abs() < 1e-9,
+            "screen x fixed along the run"
+        );
+        assert!(
+            (advanced.y - 199.0).abs() < 1e-9,
+            "advancing the run moves UP the screen"
+        );
 
         // Renders geometry; empty is a no-op (mirrors draw_text).
         let mut s = Scene::new();
-        draw_text_rotated(&mut s, "kWh", 10.0, 100.0, TITLE_SIZE, TITLE_COLOUR, TextAnchor::Middle);
-        assert!(s.encoding().draw_tags.len() > 0, "rotated text adds geometry");
+        draw_text_rotated(
+            &mut s,
+            "kWh",
+            10.0,
+            100.0,
+            TITLE_SIZE,
+            TITLE_COLOUR,
+            TextAnchor::Middle,
+        );
+        assert!(
+            s.encoding().draw_tags.len() > 0,
+            "rotated text adds geometry"
+        );
         let mut e = Scene::new();
-        draw_text_rotated(&mut e, "", 0.0, 0.0, TITLE_SIZE, TITLE_COLOUR, TextAnchor::Start);
-        assert_eq!(e.encoding().draw_tags.len(), 0, "empty rotated text draws nothing");
+        draw_text_rotated(
+            &mut e,
+            "",
+            0.0,
+            0.0,
+            TITLE_SIZE,
+            TITLE_COLOUR,
+            TextAnchor::Start,
+        );
+        assert_eq!(
+            e.encoding().draw_tags.len(),
+            0,
+            "empty rotated text draws nothing"
+        );
     }
 
     #[test]
@@ -230,13 +259,25 @@ mod tests {
         let big = measure_width("1000", 20.0);
         assert!(big > small, "larger size should be wider");
 
-        assert_eq!(measure_width("", LABEL_SIZE), 0.0, "empty string has no width");
+        assert_eq!(
+            measure_width("", LABEL_SIZE),
+            0.0,
+            "empty string has no width"
+        );
     }
 
     #[test]
     fn draw_text_emits_glyph_geometry() {
         let mut scene = Scene::new();
-        draw_text(&mut scene, "42", 100.0, 100.0, LABEL_SIZE, LABEL_COLOUR, TextAnchor::Middle);
+        draw_text(
+            &mut scene,
+            "42",
+            100.0,
+            100.0,
+            LABEL_SIZE,
+            LABEL_COLOUR,
+            TextAnchor::Middle,
+        );
         // Glyph runs encode as draw tags in the scene.
         assert!(
             scene.encoding().draw_tags.len() > 0,
@@ -245,7 +286,19 @@ mod tests {
 
         // Empty string is a no-op.
         let mut empty = Scene::new();
-        draw_text(&mut empty, "", 0.0, 0.0, LABEL_SIZE, LABEL_COLOUR, TextAnchor::Start);
-        assert_eq!(empty.encoding().draw_tags.len(), 0, "empty text draws nothing");
+        draw_text(
+            &mut empty,
+            "",
+            0.0,
+            0.0,
+            LABEL_SIZE,
+            LABEL_COLOUR,
+            TextAnchor::Start,
+        );
+        assert_eq!(
+            empty.encoding().draw_tags.len(),
+            0,
+            "empty text draws nothing"
+        );
     }
 }

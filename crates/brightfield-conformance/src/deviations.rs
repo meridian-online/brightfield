@@ -148,23 +148,24 @@ pub fn load_deviations(path: &Path) -> Result<DeviationRegistry, RegistryError> 
         path: path.to_path_buf(),
         source,
     })?;
-    let wire: RegistryWire = serde_yaml::from_str(&source).map_err(|e| RegistryError::YamlSyntax {
-        error: e.to_string(),
-    })?;
+    let wire: RegistryWire =
+        serde_yaml::from_str(&source).map_err(|e| RegistryError::YamlSyntax {
+            error: e.to_string(),
+        })?;
     let mut entries: IndexMap<String, Deviation> = IndexMap::new();
     for w in wire.deviations {
         check_id_format(&w.id)?;
         let surface = required(w.surface, &w.id, "surface")?;
         let mosaic_behaviour = required(w.mosaic_behaviour, &w.id, "mosaic_behaviour")?;
-        let brightfield_behaviour = required(w.brightfield_behaviour, &w.id, "brightfield_behaviour")?;
+        let brightfield_behaviour =
+            required(w.brightfield_behaviour, &w.id, "brightfield_behaviour")?;
         let rationale = required(w.rationale, &w.id, "rationale")?;
         let mut layers: Vec<ConformanceLayer> = Vec::new();
         for n in w.conformance_layers_suppressed {
-            let layer =
-                ConformanceLayer::try_from(n).map_err(|_| RegistryError::InvalidLayer {
-                    id: w.id.clone(),
-                    layer: n,
-                })?;
+            let layer = ConformanceLayer::try_from(n).map_err(|_| RegistryError::InvalidLayer {
+                id: w.id.clone(),
+                layer: n,
+            })?;
             layers.push(layer);
         }
         let dev = Deviation {
@@ -189,9 +190,7 @@ fn check_id_format(id: &str) -> Result<(), RegistryError> {
             return Ok(());
         }
     }
-    Err(RegistryError::InvalidIdFormat {
-        id: id.to_string(),
-    })
+    Err(RegistryError::InvalidIdFormat { id: id.to_string() })
 }
 
 fn required<T>(value: Option<T>, id: &str, field: &'static str) -> Result<T, RegistryError> {
@@ -303,7 +302,10 @@ mod tests {
         let err = load_deviations(&p).unwrap_err();
         assert!(matches!(
             err,
-            RegistryError::MissingField { field: "rationale", .. }
+            RegistryError::MissingField {
+                field: "rationale",
+                ..
+            }
         ));
     }
 

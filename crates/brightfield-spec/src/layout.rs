@@ -5,7 +5,7 @@
 //! model: sequential stacking with fixed sizes, no flex negotiation.
 
 use crate::ast::{
-    Component, ConcatNode, Input, Mark, PlotNode, Spec, SpaceNode, SpecValue, ValueOrParamRef,
+    Component, ConcatNode, Input, Mark, PlotNode, SpaceNode, Spec, SpecValue, ValueOrParamRef,
 };
 use crate::vocab::InputKind;
 
@@ -26,13 +26,23 @@ impl Rect {
     /// Construct a new Rect.
     #[must_use]
     pub fn new(x: f64, y: f64, width: f64, height: f64) -> Self {
-        Self { x, y, width, height }
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 
     /// A zero-sized rect at the origin.
     #[must_use]
     pub fn zero() -> Self {
-        Self { x: 0.0, y: 0.0, width: 0.0, height: 0.0 }
+        Self {
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+        }
     }
 }
 
@@ -162,9 +172,9 @@ pub fn resolve_space_value(value: &SpecValue, base_font_size: f64) -> f64 {
 /// (typically `(0, 0)` with the desired container size).
 #[must_use]
 pub fn compute_layout(spec: &Spec, viewport: Rect) -> LayoutTree {
-    spec.root.as_ref().map(|root| {
-        layout_component(root, viewport.x, viewport.y)
-    })
+    spec.root
+        .as_ref()
+        .map(|root| layout_component(root, viewport.x, viewport.y))
 }
 
 /// Recursively lay out a component, placing it at the given (x, y) origin.
@@ -1241,7 +1251,12 @@ hconcat:
         let tree = compute_layout(&spec, Rect::new(0.0, 0.0, 1600.0, 1200.0)).unwrap();
         if let LayoutNode::HConcat { children, .. } = &tree {
             // First column (vconcat)
-            if let LayoutNode::VConcat { children: col1, rect: col1_rect, .. } = &children[0] {
+            if let LayoutNode::VConcat {
+                children: col1,
+                rect: col1_rect,
+                ..
+            } = &children[0]
+            {
                 assert_eq!(col1[0].rect().x, 0.0);
                 assert_eq!(col1[0].rect().y, 0.0);
                 assert_eq!(col1[1].rect().y, DEFAULT_PLOT_HEIGHT);
@@ -1266,7 +1281,7 @@ hconcat:
     // mixed component types
     #[test]
     fn mixed_types() {
-        use crate::vocab::{InputKind, LegendChannel, ImplStatus};
+        use crate::vocab::{ImplStatus, InputKind, LegendChannel};
         let spec = Spec {
             root: Some(Component::HConcat(ConcatNode {
                 items: vec![
@@ -1301,7 +1316,10 @@ hconcat:
             assert_eq!(children[1].rect().x, DEFAULT_PLOT_WIDTH);
             assert!(children[1].rect().width > 0.0);
             // Legend at x=plot_width+input_width
-            assert_eq!(children[2].rect().x, DEFAULT_PLOT_WIDTH + DEFAULT_INPUT_WIDTH);
+            assert_eq!(
+                children[2].rect().x,
+                DEFAULT_PLOT_WIDTH + DEFAULT_INPUT_WIDTH
+            );
             assert!(children[2].rect().width > 0.0);
         } else {
             panic!("expected HConcat");
@@ -1401,7 +1419,11 @@ hconcat:
             // Should not panic.
             let tree = compute_layout(&out.spec, viewport);
             if out.spec.root.is_some() {
-                assert!(tree.is_some(), "{}: spec has root but layout returned None", path.display());
+                assert!(
+                    tree.is_some(),
+                    "{}: spec has root but layout returned None",
+                    path.display()
+                );
             }
             tested += 1;
         }
@@ -1479,7 +1501,10 @@ hconcat:
         let p = plot_with(&[("xInsetRight", SpecValue::Integer(0))]);
         let got = resolve_plot_insets(&p);
         assert_eq!(got.right, Some(0.0));
-        assert_eq!(got.left, None, "unspecified side stays absent (default applies)");
+        assert_eq!(
+            got.left, None,
+            "unspecified side stays absent (default applies)"
+        );
     }
 
     #[test]
@@ -1521,8 +1546,11 @@ hconcat:
             "a non-string label degrades to Derive here (no warning in the resolver)",
         );
         assert_eq!(
-            resolve_axis_titles(&plot_with(&[("xLabel", SpecValue::Param(crate::ast::ParamRef::new("p")))]))
-                .x,
+            resolve_axis_titles(&plot_with(&[(
+                "xLabel",
+                SpecValue::Param(crate::ast::ParamRef::new("p"))
+            )]))
+            .x,
             AxisTitle::Derive,
         );
     }
@@ -1605,7 +1633,10 @@ hconcat:
     #[test]
     fn resolve_plot_title_string_only() {
         assert_eq!(
-            resolve_plot_title(&plot_with(&[("title", SpecValue::String("Weather".into()))])),
+            resolve_plot_title(&plot_with(&[(
+                "title",
+                SpecValue::String("Weather".into())
+            )])),
             Some("Weather".to_string()),
         );
         // Absent, empty, null, and non-string all → None (no title, no band).
@@ -1614,7 +1645,10 @@ hconcat:
             resolve_plot_title(&plot_with(&[("title", SpecValue::String(String::new()))])),
             None,
         );
-        assert_eq!(resolve_plot_title(&plot_with(&[("title", SpecValue::Null)])), None);
+        assert_eq!(
+            resolve_plot_title(&plot_with(&[("title", SpecValue::Null)])),
+            None
+        );
         assert_eq!(
             resolve_plot_title(&plot_with(&[("title", SpecValue::Integer(3))])),
             None,

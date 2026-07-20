@@ -9,13 +9,7 @@ use std::path::Path;
 /// Helper: build a Spec with a single data source.
 fn spec_with_source(name: &str, kind: DataSourceKind, extras: IndexMap<String, SpecValue>) -> Spec {
     let mut data = IndexMap::new();
-    data.insert(
-        name.to_string(),
-        DataSource {
-            kind,
-            extras,
-        },
-    );
+    data.insert(name.to_string(), DataSource { kind, extras });
     Spec {
         data,
         ..Spec::default()
@@ -30,16 +24,28 @@ fn dfsql_emit_error_variants() {
         path: "data.xlsx".to_string(),
         extension: "xlsx".to_string(),
     };
-    assert!(e1.to_string().contains("xlsx"), "Display should mention extension");
-    assert!(e1.to_string().contains("data.xlsx"), "Display should mention path");
+    assert!(
+        e1.to_string().contains("xlsx"),
+        "Display should mention extension"
+    );
+    assert!(
+        e1.to_string().contains("data.xlsx"),
+        "Display should mention path"
+    );
 
     let e2 = EmitError::InlineRowLimit { count: 1500 };
-    assert!(e2.to_string().contains("1500"), "Display should mention count");
+    assert!(
+        e2.to_string().contains("1500"),
+        "Display should mention count"
+    );
 
     let e3 = EmitError::InvariantViolation {
         detail: "test detail".to_string(),
     };
-    assert!(e3.to_string().contains("test detail"), "Display should mention detail");
+    assert!(
+        e3.to_string().contains("test detail"),
+        "Display should mention detail"
+    );
 }
 
 // ── emit_sources entry point ────────────────────────────────────────
@@ -47,20 +53,32 @@ fn dfsql_emit_error_variants() {
 #[test]
 fn dfsql_emit_sources_returns_one_ddl_per_data_entry() {
     let mut data = IndexMap::new();
-    data.insert("flights".to_string(), DataSource {
-        kind: DataSourceKind::File("flights.parquet".to_string()),
-        extras: IndexMap::new(),
-    });
-    data.insert("weather".to_string(), DataSource {
-        kind: DataSourceKind::File("weather.csv".to_string()),
-        extras: IndexMap::new(),
-    });
-    data.insert("src".to_string(), DataSource {
-        kind: DataSourceKind::Query("SELECT * FROM t".to_string()),
-        extras: IndexMap::new(),
-    });
+    data.insert(
+        "flights".to_string(),
+        DataSource {
+            kind: DataSourceKind::File("flights.parquet".to_string()),
+            extras: IndexMap::new(),
+        },
+    );
+    data.insert(
+        "weather".to_string(),
+        DataSource {
+            kind: DataSourceKind::File("weather.csv".to_string()),
+            extras: IndexMap::new(),
+        },
+    );
+    data.insert(
+        "src".to_string(),
+        DataSource {
+            kind: DataSourceKind::Query("SELECT * FROM t".to_string()),
+            extras: IndexMap::new(),
+        },
+    );
 
-    let spec = Spec { data, ..Spec::default() };
+    let spec = Spec {
+        data,
+        ..Spec::default()
+    };
     let output = emit_sources(&spec, None).unwrap();
     assert_eq!(output.statements.len(), 3);
     assert_eq!(output.statements[0].view_name, "flights");
@@ -80,7 +98,9 @@ fn dfsql_parquet_emission() {
     let output = emit_sources(&spec, Some(Path::new("/data"))).unwrap();
     assert_eq!(output.statements.len(), 1);
     assert_eq!(output.statements[0].source_kind, SourceKindTag::Parquet);
-    assert!(output.statements[0].sql.contains("read_parquet('/data/flights.parquet')"));
+    assert!(output.statements[0]
+        .sql
+        .contains("read_parquet('/data/flights.parquet')"));
 }
 
 #[test]
@@ -91,7 +111,9 @@ fn dfsql_parquet_http_url_passthrough() {
         IndexMap::new(),
     );
     let output = emit_sources(&spec, Some(Path::new("/data"))).unwrap();
-    assert!(output.statements[0].sql.contains("https://example.com/data.parquet"));
+    assert!(output.statements[0]
+        .sql
+        .contains("https://example.com/data.parquet"));
 }
 
 // ── CSV emission ────────────────────────────────────────────────────
@@ -102,11 +124,7 @@ fn dfsql_csv_emission_with_extras() {
     extras.insert("delim".to_string(), SpecValue::String("|".to_string()));
     extras.insert("skip".to_string(), SpecValue::Integer(1));
 
-    let spec = spec_with_source(
-        "data",
-        DataSourceKind::File("data.csv".to_string()),
-        extras,
-    );
+    let spec = spec_with_source("data", DataSourceKind::File("data.csv".to_string()), extras);
     let output = emit_sources(&spec, None).unwrap();
     assert_eq!(output.statements[0].source_kind, SourceKindTag::Csv);
     assert!(output.statements[0].sql.contains("auto_detect=true"));
@@ -118,18 +136,21 @@ fn dfsql_csv_emission_with_extras() {
 fn dfsql_csv_unknown_extra_warns() {
     // Unknown extras like 'encoding' produce a ParseWarning::UnknownOption
     let mut extras = IndexMap::new();
-    extras.insert("encoding".to_string(), SpecValue::String("utf8".to_string()));
-
-    let spec = spec_with_source(
-        "data",
-        DataSourceKind::File("data.csv".to_string()),
-        extras,
+    extras.insert(
+        "encoding".to_string(),
+        SpecValue::String("utf8".to_string()),
     );
+
+    let spec = spec_with_source("data", DataSourceKind::File("data.csv".to_string()), extras);
     let output = emit_sources(&spec, None).unwrap();
     // encoding should NOT appear in the SQL
     assert!(!output.statements[0].sql.contains("encoding"));
     // But a warning should be emitted
-    assert_eq!(output.warnings.len(), 1, "Expected 1 warning for unknown CSV extra");
+    assert_eq!(
+        output.warnings.len(),
+        1,
+        "Expected 1 warning for unknown CSV extra"
+    );
 }
 
 // ── JSON emission ───────────────────────────────────────────────────
@@ -241,8 +262,14 @@ fn dfsql_inline_object_rows() {
 #[test]
 fn dfsql_inline_array_rows() {
     let rows = vec![
-        SpecValue::Array(vec![SpecValue::Integer(1), SpecValue::String("a".to_string())]),
-        SpecValue::Array(vec![SpecValue::Integer(2), SpecValue::String("b".to_string())]),
+        SpecValue::Array(vec![
+            SpecValue::Integer(1),
+            SpecValue::String("a".to_string()),
+        ]),
+        SpecValue::Array(vec![
+            SpecValue::Integer(2),
+            SpecValue::String("b".to_string()),
+        ]),
     ];
 
     let spec = spec_with_source("data", DataSourceKind::InlineRows(rows), IndexMap::new());
@@ -283,7 +310,9 @@ fn dfsql_query_emission() {
     );
     let output = emit_sources(&spec, None).unwrap();
     assert_eq!(output.statements[0].source_kind, SourceKindTag::Query);
-    assert!(output.statements[0].sql.contains("CREATE OR REPLACE VIEW \"src\" AS SELECT * FROM t"));
+    assert!(output.statements[0]
+        .sql
+        .contains("CREATE OR REPLACE VIEW \"src\" AS SELECT * FROM t"));
 }
 
 #[test]
@@ -295,7 +324,9 @@ fn dfsql_shorthand_emission() {
     );
     let output = emit_sources(&spec, None).unwrap();
     assert_eq!(output.statements[0].source_kind, SourceKindTag::Query);
-    assert!(output.statements[0].sql.contains("CREATE OR REPLACE VIEW \"src\" AS my_table"));
+    assert!(output.statements[0]
+        .sql
+        .contains("CREATE OR REPLACE VIEW \"src\" AS my_table"));
 }
 
 // ── Error-path dispatch ─────────────────────────────────────────────
@@ -347,9 +378,9 @@ fn dfsql_unknown_extension_errors() {
 
 #[test]
 fn mvdash_collect_plot_groups_hconcat_two_plots() {
-    use brightfield_sql::{collect_marks, collect_plot_groups};
-    use brightfield_spec::parse_spec;
     use brightfield_spec::parse::Format;
+    use brightfield_spec::parse_spec;
+    use brightfield_sql::{collect_marks, collect_plot_groups};
 
     // hconcat of two plots: the first owns two marks, the second one.
     let yaml = r#"
@@ -369,7 +400,11 @@ hconcat:
     assert_eq!(groups.len(), 2, "two plots → two groups");
     // Marks in the SAME plot stay grouped (the per-mark plot[i] segment is an
     // item index, not the plot's identity).
-    assert_eq!(groups[0].mark_indices, vec![0, 1], "first plot owns marks 0,1");
+    assert_eq!(
+        groups[0].mark_indices,
+        vec![0, 1],
+        "first plot owns marks 0,1"
+    );
     assert_eq!(groups[1].mark_indices, vec![2], "second plot owns mark 2");
     // Plot path = the plot node's container path (joins to the layout tree).
     assert_eq!(groups[0].plot_path, "root/hconcat[0]");
@@ -380,9 +415,9 @@ hconcat:
 
 #[test]
 fn mvdash_collect_plot_groups_single_top_level_plot() {
-    use brightfield_sql::collect_plot_groups;
-    use brightfield_spec::parse_spec;
     use brightfield_spec::parse::Format;
+    use brightfield_spec::parse_spec;
+    use brightfield_sql::collect_plot_groups;
 
     let yaml = r#"
 data:

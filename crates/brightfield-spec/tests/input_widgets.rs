@@ -24,7 +24,9 @@ options: [a, b]
         );
         let err = parse_spec(&yaml, Format::Yaml).expect_err("must be rejected");
         match err {
-            ParseError::UnknownName { name: got, surface, .. } => {
+            ParseError::UnknownName {
+                name: got, surface, ..
+            } => {
                 assert_eq!(got, name);
                 assert_eq!(surface, NameSurface::Input);
             }
@@ -56,7 +58,9 @@ options: [circle, square]
     };
     assert_eq!(
         input.options.get("style"),
-        Some(&ValueOrParamRef::Value(SpecValue::String("radio".to_string()))),
+        Some(&ValueOrParamRef::Value(SpecValue::String(
+            "radio".to_string()
+        ))),
         "style: radio preserved verbatim in the options bag"
     );
 }
@@ -161,7 +165,10 @@ fn param_menu_example_parses_warning_free() {
         .collect();
     assert_eq!(styles.len(), 3, "three input widgets");
     assert!(styles.contains(&None), "a plain (derived) menu");
-    assert!(styles.contains(&Some("radio".to_string())), "a literal radio");
+    assert!(
+        styles.contains(&Some("radio".to_string())),
+        "a literal radio"
+    );
     assert!(styles.contains(&Some("checkbox".to_string())), "a checkbox");
 }
 

@@ -99,9 +99,8 @@ mod tests {
     /// module imports no gpui, so the construction compiles gpui-free.
     #[test]
     fn legend_scenes_swatches_vs_gradient_bar() {
-        let (swatches, swatch_size) =
-            build_legend_scene(&categorical(), &BTreeSet::new(), None)
-                .expect("categorical scale builds a scene");
+        let (swatches, swatch_size) = build_legend_scene(&categorical(), &BTreeSet::new(), None)
+            .expect("categorical scale builds a scene");
         assert!(
             swatches.encoding().path_tags.len() > 0,
             "swatch legend draws content"
@@ -109,10 +108,12 @@ mod tests {
         let expected = colour_legend_size(&categorical()).unwrap();
         assert_eq!(swatch_size, expected, "sized by colour_legend_size");
 
-        let (bar, bar_size) =
-            build_legend_scene(&sequential(), &BTreeSet::new(), None)
-                .expect("sequential scale builds a scene");
-        assert!(bar.encoding().path_tags.len() > 0, "gradient bar draws content");
+        let (bar, bar_size) = build_legend_scene(&sequential(), &BTreeSet::new(), None)
+            .expect("sequential scale builds a scene");
+        assert!(
+            bar.encoding().path_tags.len() > 0,
+            "gradient bar draws content"
+        );
         let expected = sequential_legend_size(&sequential()).unwrap();
         assert_eq!(bar_size, expected, "sized by sequential_legend_size");
 

@@ -17,7 +17,13 @@ use gpui::Hsla;
 /// Convert a Meridian token colour (sRGB, straight alpha, 0–1) to a GPUI
 /// colour, keeping the token's own alpha.
 pub(crate) fn rgba(c: meridian_design::Rgba) -> Hsla {
-    gpui::Rgba { r: c.r, g: c.g, b: c.b, a: c.a }.into()
+    gpui::Rgba {
+        r: c.r,
+        g: c.g,
+        b: c.b,
+        a: c.a,
+    }
+    .into()
 }
 
 #[cfg(test)]

@@ -28,9 +28,7 @@ pub fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
             }
             // Word-boundary bonus: a match at the start, or just after a
             // non-alphanumeric char, reads as an initialism hit.
-            let at_boundary = ti == 0
-                || t.get(ti - 1)
-                    .is_some_and(|c| !c.is_alphanumeric());
+            let at_boundary = ti == 0 || t.get(ti - 1).is_some_and(|c| !c.is_alphanumeric());
             score += 1 + run + i32::from(at_boundary) * 3;
             run += 1;
             qi += 1;
@@ -75,6 +73,9 @@ mod tests {
         // "cc" hits two word-starts (c@0, c@"colour"); "yl" is buried inside "cycle".
         let boundary = fuzzy_score("cc", "cycle-colour-scheme").unwrap();
         let buried = fuzzy_score("yl", "cycle-colour-scheme").unwrap();
-        assert!(boundary > buried, "boundary {boundary} should beat buried {buried}");
+        assert!(
+            boundary > buried,
+            "boundary {boundary} should beat buried {buried}"
+        );
     }
 }

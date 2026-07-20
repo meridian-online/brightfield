@@ -18,7 +18,9 @@ use vello::Scene;
 use crate::canvas_host::{CanvasHost, Color, PixelSize};
 use crate::chart_layout::ChartLayout;
 use crate::gpui_canvas::GpuiCanvasHost;
-use crate::interaction::{brush_region, BrushRegion, InteractionState, NavigationState, PointerAction, HANDLE_TOL};
+use crate::interaction::{
+    brush_region, BrushRegion, InteractionState, NavigationState, PointerAction, HANDLE_TOL,
+};
 use crate::vello_renderer::VelloRenderer;
 use brightfield_render::layout::{Insets, Margins};
 use brightfield_render::transition::Transition;
@@ -127,14 +129,20 @@ impl ChartState {
         let scale_x = f64::from(dev_w) / f64::from(self.width.max(1));
         let scale_y = f64::from(dev_h) / f64::from(self.height.max(1));
         let mut scaled = Scene::new();
-        scaled.append(&self.scene, Some(Affine::scale_non_uniform(scale_x, scale_y)));
+        scaled.append(
+            &self.scene,
+            Some(Affine::scale_non_uniform(scale_x, scale_y)),
+        );
 
         // Present through the CanvasHost boundary: scene → device-resolution
         // RenderImage (GPU readback + BGRA swap). The chart clears to a
         // transparent base — the overlay and ink carry their own alpha.
         let image = GpuiCanvasHost::new(self.renderer.clone()).present_scene(
             &scaled,
-            PixelSize { width: dev_w, height: dev_h },
+            PixelSize {
+                width: dev_w,
+                height: dev_h,
+            },
             Color::TRANSPARENT,
         );
         *self.base_cache.borrow_mut() = Some(BaseRaster {
@@ -277,7 +285,12 @@ impl ChartState {
     /// button is no longer held (a release that never reached us). While idle or
     /// hovering, sets a hover at the point if it is inside the plot area, or
     /// clears a hover when the pointer leaves it. Returns `true` on any change.
-    pub fn pointer_move(&mut self, window_pos: Point, element_origin: Point, button_held: bool) -> bool {
+    pub fn pointer_move(
+        &mut self,
+        window_pos: Point,
+        element_origin: Point,
+        button_held: bool,
+    ) -> bool {
         let local = self.layout.window_to_local(window_pos, element_origin);
         match &self.interaction {
             // An in-flight move/resize of a persisted selection:
@@ -298,7 +311,10 @@ impl ChartState {
                     self.interaction = self.interaction.clone().on_grab_cancel();
                     return true;
                 }
-                self.interaction = self.interaction.clone().on_grab_move(local, self.layout.frame_area());
+                self.interaction = self
+                    .interaction
+                    .clone()
+                    .on_grab_move(local, self.layout.frame_area());
                 true
             }
             InteractionState::Brushing { .. } => {
@@ -521,7 +537,10 @@ mod tests {
         let mut state = ChartState::new(Scene::new(), 640, 480, renderer);
 
         state.set_interaction(InteractionState::start_brush(kurbo::Point::new(10.0, 20.0)));
-        assert!(matches!(state.interaction(), InteractionState::Brushing { .. }));
+        assert!(matches!(
+            state.interaction(),
+            InteractionState::Brushing { .. }
+        ));
     }
 
     #[cfg(feature = "gpu-tests")]
@@ -532,7 +551,10 @@ mod tests {
 
         // Inside the plot area (default margins 40/20/20/30) at origin (0,0).
         assert!(state.pointer_down(Point::new(300.0, 200.0), Point::new(0.0, 0.0)));
-        assert!(matches!(state.interaction(), InteractionState::Brushing { .. }));
+        assert!(matches!(
+            state.interaction(),
+            InteractionState::Brushing { .. }
+        ));
 
         // In the left margin (x=10 < 40) — no brush.
         let mut state2 = ChartState::new(Scene::new(), 640, 480, VelloRenderer::new());
@@ -548,7 +570,10 @@ mod tests {
 
         // Hover inside the plot area (no button held).
         assert!(state.pointer_move(Point::new(300.0, 200.0), Point::new(0.0, 0.0), false));
-        assert!(matches!(state.interaction(), InteractionState::Hovering { .. }));
+        assert!(matches!(
+            state.interaction(),
+            InteractionState::Hovering { .. }
+        ));
 
         // Begin a brush and drag with the button held — the rect tracks the pointer.
         state.pointer_down(Point::new(100.0, 100.0), Point::new(0.0, 0.0));

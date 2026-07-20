@@ -23,7 +23,9 @@ fn main() -> ExitCode {
         Ok(a) => a,
         Err(e) => {
             eprintln!("error: {e}");
-            eprintln!("usage: bf-imgdiff A.png B.png [--threshold T] [--fail-ratio R] [--out D.png]");
+            eprintln!(
+                "usage: bf-imgdiff A.png B.png [--threshold T] [--fail-ratio R] [--out D.png]"
+            );
             return ExitCode::from(2);
         }
     };

@@ -32,9 +32,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::contract::{
-    Asset, Contract, ContractAssetKind, Outcome, Step, StepKind, StepState,
-};
+use crate::contract::{Asset, Contract, ContractAssetKind, Outcome, Step, StepKind, StepState};
 use crate::graph::{
     AssetGraph, AssetId, AssetKind, AssetNode, Edge, Seam, SeamKind, StepId, EXPORT_OP, GATE_OP,
 };
@@ -166,7 +164,10 @@ impl ContractView {
     /// interactive view. Keyed by step name, matching [`Edge::via`].
     #[must_use]
     pub fn seam_statuses(&self) -> BTreeMap<StepId, SeamStatus> {
-        self.steps.iter().map(|(name, s)| (name.clone(), s.seam_status())).collect()
+        self.steps
+            .iter()
+            .map(|(name, s)| (name.clone(), s.seam_status()))
+            .collect()
     }
 }
 
@@ -197,9 +198,12 @@ fn crate_asset_id(proto: &str, asset: &Asset) -> AssetId {
 /// relation name.
 fn node_label(asset: &Asset) -> String {
     match asset.kind {
-        ContractAssetKind::Source => {
-            host_of(asset.path.as_deref().unwrap_or_else(|| flat_tail(&asset.id)))
-        }
+        ContractAssetKind::Source => host_of(
+            asset
+                .path
+                .as_deref()
+                .unwrap_or_else(|| flat_tail(&asset.id)),
+        ),
         ContractAssetKind::File => flat_tail(&asset.id).to_string(),
         _ => asset.name.clone(),
     }
@@ -209,7 +213,10 @@ fn node_label(asset: &Asset) -> String {
 fn seam_kind(step: &Step) -> SeamKind {
     match step.kind {
         StepKind::Op => match &step.op_ref {
-            Some(op) => SeamKind::Op { name: op.name.clone(), version: op.version() },
+            Some(op) => SeamKind::Op {
+                name: op.name.clone(),
+                version: op.version(),
+            },
             None => SeamKind::Opaque,
         },
         StepKind::Sql => SeamKind::Sql {
@@ -228,7 +235,10 @@ fn seam_kind(step: &Step) -> SeamKind {
 /// model file and no other step consumes it (mirrors the manifest path's
 /// statement-level INTERNAL rule, read from the contract's `statements`).
 fn is_internal(asset: &Asset, step_by_name: &BTreeMap<&str, &Step>) -> bool {
-    if !matches!(asset.kind, ContractAssetKind::Table | ContractAssetKind::Model) {
+    if !matches!(
+        asset.kind,
+        ContractAssetKind::Table | ContractAssetKind::Model
+    ) {
         return false;
     }
     let Some(producer) = asset.produced_by.as_deref() else {
@@ -304,8 +314,11 @@ fn resolve_read(
 pub fn build_contract_view(contract: &Contract) -> ContractView {
     let proto = contract.run.protocol.name.clone();
 
-    let step_by_name: BTreeMap<&str, &Step> =
-        contract.steps.iter().map(|s| (s.name.as_str(), s)).collect();
+    let step_by_name: BTreeMap<&str, &Step> = contract
+        .steps
+        .iter()
+        .map(|s| (s.name.as_str(), s))
+        .collect();
 
     // Contract id -> crate id, and relation name -> crate id (statements speak
     // in relation names). First asset for a name wins (deterministic order).
@@ -483,12 +496,19 @@ pub fn build_contract_view(contract: &Contract) -> ContractView {
     let export_dests: BTreeSet<AssetId> = contract
         .assets
         .iter()
-        .filter(|a| a.produced_by.as_deref().is_some_and(|p| export_steps.contains(p)))
+        .filter(|a| {
+            a.produced_by
+                .as_deref()
+                .is_some_and(|p| export_steps.contains(p))
+        })
         .map(|a| id_of[a.id.as_str()].clone())
         .collect();
     let mut forward: BTreeMap<AssetId, BTreeSet<AssetId>> = BTreeMap::new();
     for edge in &edges {
-        forward.entry(edge.from.clone()).or_default().insert(edge.to.clone());
+        forward
+            .entry(edge.from.clone())
+            .or_default()
+            .insert(edge.to.clone());
     }
     let reaches_other_export = |start: &AssetId| -> bool {
         let mut stack = vec![start.clone()];
@@ -548,7 +568,12 @@ pub fn build_contract_view(contract: &Contract) -> ContractView {
 
     let order = topological_order(&nodes, &edges);
 
-    let graph = AssetGraph { protocol: proto.clone(), nodes, seams, edges };
+    let graph = AssetGraph {
+        protocol: proto.clone(),
+        nodes,
+        seams,
+        edges,
+    };
 
     let run = RunView {
         run_id: contract.run.run_id.clone(),
@@ -559,7 +584,13 @@ pub fn build_contract_view(contract: &Contract) -> ContractView {
         complete: contract.run.finished_at.is_some(),
     };
 
-    ContractView { graph, run, order, steps, assets }
+    ContractView {
+        graph,
+        run,
+        order,
+        steps,
+        assets,
+    }
 }
 
 /// A deterministic topological order over the graph's nodes (Kahn's algorithm,
@@ -571,19 +602,21 @@ fn topological_order(nodes: &BTreeMap<AssetId, AssetNode>, edges: &[Edge]) -> Ve
         nodes.keys().map(|k| (k.clone(), 0usize)).collect();
     let mut pair_seen: BTreeSet<(AssetId, AssetId)> = BTreeSet::new();
     for edge in edges {
-        if edge.from == edge.to
-            || !nodes.contains_key(&edge.from)
-            || !nodes.contains_key(&edge.to)
+        if edge.from == edge.to || !nodes.contains_key(&edge.from) || !nodes.contains_key(&edge.to)
         {
             continue;
         }
         if pair_seen.insert((edge.from.clone(), edge.to.clone())) {
-            succ.entry(edge.from.clone()).or_default().insert(edge.to.clone());
+            succ.entry(edge.from.clone())
+                .or_default()
+                .insert(edge.to.clone());
             *indegree.get_mut(&edge.to).expect("edge target is a node") += 1;
         }
     }
-    let mut ready: BTreeSet<AssetId> =
-        indegree.iter().filter_map(|(k, d)| (*d == 0).then(|| k.clone())).collect();
+    let mut ready: BTreeSet<AssetId> = indegree
+        .iter()
+        .filter_map(|(k, d)| (*d == 0).then(|| k.clone()))
+        .collect();
     let mut out: Vec<AssetId> = Vec::with_capacity(nodes.len());
     while let Some(id) = ready.iter().next().cloned() {
         ready.remove(&id);

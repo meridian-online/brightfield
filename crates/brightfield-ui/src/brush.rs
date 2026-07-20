@@ -10,8 +10,8 @@
 use brightfield_engine::error::EngineError;
 use brightfield_engine::RecordBatch;
 use brightfield_render::nearest::SelectionValue;
-use brightfield_sql::ir::Predicate;
 use brightfield_spec::analysis::ComponentPath;
+use brightfield_sql::ir::Predicate;
 use kurbo::Rect;
 
 /// Selection kind for a brush — mirrors the corresponding
@@ -371,7 +371,10 @@ mod tests {
         // PointX numeric → `speed = 3`.
         match point_to_predicate(&SelectionValue::Int(3), BrushKind::PointX, &channels) {
             Predicate::Expr(s) => {
-                assert_eq!(s, "speed = 3", "PointX equality on x column, integer literal");
+                assert_eq!(
+                    s, "speed = 3",
+                    "PointX equality on x column, integer literal"
+                );
             }
             other => panic!("expected Expr, got {other:?}"),
         }
@@ -386,7 +389,9 @@ mod tests {
             BrushKind::PointX,
             &channels,
         ) {
-            Predicate::Expr(s) => assert_eq!(s, "speed = 'O''Hara'", "string literal is quoted+escaped"),
+            Predicate::Expr(s) => {
+                assert_eq!(s, "speed = 'O''Hara'", "string literal is quoted+escaped")
+            }
             other => panic!("expected Expr, got {other:?}"),
         }
         // Temporal → make_timestamp, not a bare integer.
@@ -396,19 +401,30 @@ mod tests {
             &channels,
         ) {
             Predicate::Expr(s) => {
-                assert_eq!(s, "speed = make_timestamp(1700000000000000)", "temporal literal")
+                assert_eq!(
+                    s, "speed = make_timestamp(1700000000000000)",
+                    "temporal literal"
+                )
             }
             other => panic!("expected Expr, got {other:?}"),
         }
         // Missing channel → True.
         assert_eq!(
-            point_to_predicate(&SelectionValue::Number(1.0), BrushKind::PointY, &ChannelColumns::x_only("speed")),
+            point_to_predicate(
+                &SelectionValue::Number(1.0),
+                BrushKind::PointY,
+                &ChannelColumns::x_only("speed")
+            ),
             Predicate::True,
             "PointY with no y channel is a degenerate no-op"
         );
         // Non-point kind → True (this helper only produces point predicates).
         assert_eq!(
-            point_to_predicate(&SelectionValue::Number(1.0), BrushKind::IntervalX, &channels),
+            point_to_predicate(
+                &SelectionValue::Number(1.0),
+                BrushKind::IntervalX,
+                &channels
+            ),
             Predicate::True
         );
     }

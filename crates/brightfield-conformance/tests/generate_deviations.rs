@@ -25,11 +25,7 @@ fn bin_path() -> PathBuf {
 }
 
 fn tmp_dir(suffix: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "dfconf-gen-{}-{}",
-        std::process::id(),
-        suffix
-    ));
+    let dir = std::env::temp_dir().join(format!("dfconf-gen-{}-{}", std::process::id(), suffix));
     fs::create_dir_all(&dir).unwrap();
     dir
 }

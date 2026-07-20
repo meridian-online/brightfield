@@ -117,7 +117,10 @@ pub fn outline_order(graph: &AssetGraph) -> Vec<AssetId> {
             continue;
         }
         if seen.insert((edge.from.clone(), edge.to.clone()))
-            && succs.get_mut(&edge.from).expect("node").insert(edge.to.clone())
+            && succs
+                .get_mut(&edge.from)
+                .expect("node")
+                .insert(edge.to.clone())
         {
             *indeg.get_mut(&edge.to).expect("node") += 1;
         }
@@ -161,7 +164,11 @@ pub fn outline_order(graph: &AssetGraph) -> Vec<AssetId> {
 
 /// The producing step's execution status for `id` (`NotRun` when the node has
 /// no producer or the status map has no entry).
-fn status_of(graph: &AssetGraph, statuses: &BTreeMap<StepId, SeamStatus>, id: &AssetId) -> SeamStatus {
+fn status_of(
+    graph: &AssetGraph,
+    statuses: &BTreeMap<StepId, SeamStatus>,
+    id: &AssetId,
+) -> SeamStatus {
     graph
         .nodes
         .get(id)
@@ -213,8 +220,7 @@ pub fn inspector_for(
     };
     let step_view = node.step.as_ref().and_then(|s| steps.get(s));
     let transform = step_view.and_then(|s| {
-        s.op
-            .clone()
+        s.op.clone()
             .or_else(|| s.sql_text.as_ref().map(|_| "SQL model".to_string()))
     });
     let meta = assets.get(id);
@@ -262,7 +268,8 @@ mod tests {
         let unique: BTreeSet<_> = order.iter().collect();
         assert_eq!(unique.len(), order.len(), "no duplicates");
         // Producer precedes consumer for every real edge.
-        let pos: BTreeMap<&AssetId, usize> = order.iter().enumerate().map(|(i, id)| (id, i)).collect();
+        let pos: BTreeMap<&AssetId, usize> =
+            order.iter().enumerate().map(|(i, id)| (id, i)).collect();
         for edge in &graph.edges {
             if edge.from == edge.to {
                 continue;
@@ -297,14 +304,17 @@ mod tests {
 
         // Nothing selected → empty inspector, no marked row.
         assert!(!inspector_for(&graph, &assets, &steps, &statuses, None).present);
-        assert!(outline_rows(&graph, &statuses, None).iter().all(|r| !r.selected));
+        assert!(outline_rows(&graph, &statuses, None)
+            .iter()
+            .all(|r| !r.selected));
     }
 
     /// On the contract path the inspector carries the measured row count +
     /// materialised flag (the S/R/C/E/D detail the offline path can't show).
     #[test]
     fn inspector_carries_contract_measurements() {
-        let contract = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/sample_run.contract.json");
+        let contract =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/sample_run.contract.json");
         let view = load_contract_with_stream(&contract, None).expect("contract");
         let graph = collapse_families(&view.graph);
         let statuses = view.seam_statuses();

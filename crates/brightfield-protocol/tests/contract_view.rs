@@ -14,7 +14,9 @@ use brightfield_protocol::{
 };
 
 fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures").join(name)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("fixtures")
+        .join(name)
 }
 
 const CONTRACT: &str = "sample_run.contract.json";
@@ -32,7 +34,10 @@ fn real_sample_deserializes_and_maps_to_asset_graph() {
     // (1) Node ids are namespaced by protocol + kind + name (flat contract ids
     //     `table:widgets` → `asset.widgets_demo.widgets`).
     assert!(view.graph.nodes.contains_key("asset.widgets_demo.widgets"));
-    assert!(view.graph.nodes.contains_key("asset.widgets_demo.widget_tally"));
+    assert!(view
+        .graph
+        .nodes
+        .contains_key("asset.widgets_demo.widget_tally"));
     let widgets = &view.graph.nodes["asset.widgets_demo.widgets"];
     assert_eq!(widgets.kind, AssetKind::Table);
     assert_eq!(widgets.label, "widgets");
@@ -41,16 +46,24 @@ fn real_sample_deserializes_and_maps_to_asset_graph() {
     // (2) produced_by / consumed_by + statement reads become an asset->asset
     //     edge through the producing step's seam.
     assert!(
-        view.graph.edges.iter().any(|e| e.from == "asset.widgets_demo.widgets"
-            && e.to == "asset.widgets_demo.widget_tally"
-            && e.via.as_deref() == Some("tally")),
+        view.graph
+            .edges
+            .iter()
+            .any(|e| e.from == "asset.widgets_demo.widgets"
+                && e.to == "asset.widgets_demo.widget_tally"
+                && e.via.as_deref() == Some("tally")),
         "widgets -> widget_tally via tally: {:?}",
         view.graph.edges
     );
 
     // (3) The order is topological — a producer precedes its consumer even
     //     though the contract lists assets alphabetically (tally before widgets).
-    let pos = |id: &str| view.order.iter().position(|x| x == id).expect("id in order");
+    let pos = |id: &str| {
+        view.order
+            .iter()
+            .position(|x| x == id)
+            .expect("id in order")
+    };
     assert!(
         pos("asset.widgets_demo.widgets") < pos("asset.widgets_demo.widget_tally"),
         "topological: {:?}",
@@ -62,7 +75,10 @@ fn real_sample_deserializes_and_maps_to_asset_graph() {
     assert_eq!(load.kind, brightfield_protocol::contract::StepKind::Sql);
     assert_eq!(load.state, StepState::Success);
     let sql = load.sql_text.as_deref().expect("sql step carries sql_text");
-    assert!(sql.contains("CREATE OR REPLACE TABLE widgets"), "sql_text is the real body: {sql}");
+    assert!(
+        sql.contains("CREATE OR REPLACE TABLE widgets"),
+        "sql_text is the real body: {sql}"
+    );
 
     // (5) Measured row_count rides the sidecar; a successful producer is
     //     materialised.
@@ -111,13 +127,25 @@ fn view_kinds_internal_table_and_dataset_are_rederived() {
 
     assert_eq!(view.graph.nodes["asset.p.staged"].kind, AssetKind::Internal);
     assert_eq!(view.graph.nodes["asset.p.cleaned"].kind, AssetKind::Table);
-    assert_eq!(view.graph.nodes["file.p.build/out.parquet"].kind, AssetKind::Dataset);
+    assert_eq!(
+        view.graph.nodes["file.p.build/out.parquet"].kind,
+        AssetKind::Dataset
+    );
 
     let has = |from: &str, to: &str, via: &str| {
-        view.graph.edges.iter().any(|e| e.from == from && e.to == to && e.via.as_deref() == Some(via))
+        view.graph
+            .edges
+            .iter()
+            .any(|e| e.from == from && e.to == to && e.via.as_deref() == Some(via))
     };
-    assert!(has("asset.p.staged", "asset.p.cleaned", "transform"), "intra-step internal chain");
-    assert!(has("asset.p.cleaned", "file.p.build/out.parquet", "export"), "export consumes cleaned");
+    assert!(
+        has("asset.p.staged", "asset.p.cleaned", "transform"),
+        "intra-step internal chain"
+    );
+    assert!(
+        has("asset.p.cleaned", "file.p.build/out.parquet", "export"),
+        "export consumes cleaned"
+    );
 }
 
 /// A `finetype_validate` step is a shield on the edge into the asset it
@@ -142,9 +170,16 @@ fn finetype_validate_is_a_shield_not_a_node() {
     // The gate seam exists and is marked; no node belongs to it.
     assert!(view.graph.seams["validate"].gate);
     assert!(view.steps["validate"].gate);
-    assert!(view.graph.nodes.values().all(|n| n.step.as_deref() != Some("validate")));
+    assert!(view
+        .graph
+        .nodes
+        .values()
+        .all(|n| n.step.as_deref() != Some("validate")));
     // The parquet, read only by the gate + validate sidecar, is still the sink.
-    assert_eq!(view.graph.nodes["file.p.build/out.parquet"].kind, AssetKind::Dataset);
+    assert_eq!(
+        view.graph.nodes["file.p.build/out.parquet"].kind,
+        AssetKind::Dataset
+    );
 }
 
 /// An asset whose `produced_by` step was SKIPPED is not treated as materialised
@@ -169,12 +204,22 @@ fn skipped_producer_asset_is_not_materialised() {
     let view = view_from_contract_bytes(json.as_bytes()).expect("build");
 
     let meta = &view.assets["file.p.build/out.parquet"];
-    assert!(!meta.materialized, "a skipped producer leaves the asset unmaterialised");
+    assert!(
+        !meta.materialized,
+        "a skipped producer leaves the asset unmaterialised"
+    );
     assert_eq!(meta.row_count, None);
 
     let node = &view.graph.nodes["file.p.build/out.parquet"];
-    assert!(node.issue.is_some(), "the unmaterialised asset carries an issue");
-    assert_ne!(node.kind, AssetKind::Dataset, "a skipped export is never the materialised sink");
+    assert!(
+        node.issue.is_some(),
+        "the unmaterialised asset carries an issue"
+    );
+    assert_ne!(
+        node.kind,
+        AssetKind::Dataset,
+        "a skipped export is never the materialised sink"
+    );
 }
 
 #[test]
@@ -182,7 +227,10 @@ fn live_stream_folds_onto_step_state_authoritative_json_wins() {
     // The `.json` is the authoritative complete step set; the thinner `.jsonl`
     // only overlays live per-step state (last-line-wins) + the run outcome.
     let mut view = load_contract(&fixture(CONTRACT)).expect("load contract");
-    assert!(view.steps.values().all(|s| s.live_state.is_none()), "no live state before fold");
+    assert!(
+        view.steps.values().all(|s| s.live_state.is_none()),
+        "no live state before fold"
+    );
 
     let content = std::fs::read_to_string(fixture(STREAM)).expect("read stream");
     let stream = fold_stream(&content);
@@ -194,7 +242,8 @@ fn live_stream_folds_onto_step_state_authoritative_json_wins() {
     assert_eq!(view.run.outcome, Outcome::Success);
 
     // The one-shot loader wires the same fold.
-    let loaded = load_contract_with_stream(&fixture(CONTRACT), Some(&fixture(STREAM))).expect("load");
+    let loaded =
+        load_contract_with_stream(&fixture(CONTRACT), Some(&fixture(STREAM))).expect("load");
     assert_eq!(loaded.steps["load"].live_state.as_deref(), Some("success"));
 }
 
@@ -202,5 +251,8 @@ fn live_stream_folds_onto_step_state_authoritative_json_wins() {
 fn unsupported_contract_version_is_rejected() {
     let json = r#"{"contract_version":"z9/0","run":{"run_id":"r","protocol":{"name":"p"},"outcome":"success"},"assets":[],"steps":[]}"#;
     let err = view_from_contract_bytes(json.as_bytes()).expect_err("bad version rejected");
-    assert!(matches!(err, Error::UnsupportedVersion { .. }), "got {err:?}");
+    assert!(
+        matches!(err, Error::UnsupportedVersion { .. }),
+        "got {err:?}"
+    );
 }

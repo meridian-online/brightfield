@@ -559,16 +559,40 @@ mod tests {
         // A single member vs a two-member union → miss (multi-select re-raster).
         assert!(!raster_cache_hit((100, 40), &g, None, 100, 40, &ga, None));
         // No selection either side (unbound / Sequential) → hit.
-        assert!(raster_cache_hit((100, 40), &empty, None, 100, 40, &empty, None));
+        assert!(raster_cache_hit(
+            (100, 40),
+            &empty,
+            None,
+            100,
+            40,
+            &empty,
+            None
+        ));
         // A selection where there was none → miss.
-        assert!(!raster_cache_hit((100, 40), &empty, None, 100, 40, &g, None));
+        assert!(!raster_cache_hit(
+            (100, 40),
+            &empty,
+            None,
+            100,
+            40,
+            &g,
+            None
+        ));
         // Different dims → miss regardless of selection.
         assert!(!raster_cache_hit((100, 40), &g, None, 200, 40, &g, None));
         // Same dims + same selection but a NEW hovered swatch → miss: the
         // hover is part of the key, so a hover repaints without a slot change.
         assert!(!raster_cache_hit((100, 40), &g, None, 100, 40, &g, Some(1)));
         // Same hover both sides → hit.
-        assert!(raster_cache_hit((100, 40), &g, Some(1), 100, 40, &g, Some(1)));
+        assert!(raster_cache_hit(
+            (100, 40),
+            &g,
+            Some(1),
+            100,
+            40,
+            &g,
+            Some(1)
+        ));
     }
 
     /// Affordance gate: the cursor / hover affordance arms ONLY for a
@@ -583,10 +607,22 @@ mod tests {
             domain_max: 1.0,
             stops: vec![[0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0, 1.0]],
         };
-        assert!(legend_is_clickable(true, &colour), "bound colour → clickable");
-        assert!(!legend_is_clickable(false, &colour), "unbound colour → inert");
-        assert!(!legend_is_clickable(true, &sequential), "bound sequential → inert");
-        assert!(!legend_is_clickable(false, &sequential), "unbound sequential → inert");
+        assert!(
+            legend_is_clickable(true, &colour),
+            "bound colour → clickable"
+        );
+        assert!(
+            !legend_is_clickable(false, &colour),
+            "unbound colour → inert"
+        );
+        assert!(
+            !legend_is_clickable(true, &sequential),
+            "bound sequential → inert"
+        );
+        assert!(
+            !legend_is_clickable(false, &sequential),
+            "unbound sequential → inert"
+        );
     }
 
     /// Hover geometry: the hover tracker resolves the SAME entry as
@@ -603,13 +639,21 @@ mod tests {
             // Index and category agree entry-for-entry.
             assert_eq!(
                 swatch_hit_index(rect.center(), &scale),
-                swatch_hit_category(rect.center(), &scale)
-                    .and_then(|c| ["adelie", "gentoo", "chinstrap"].iter().position(|x| *x == c)),
+                swatch_hit_category(rect.center(), &scale).and_then(|c| [
+                    "adelie",
+                    "gentoo",
+                    "chinstrap"
+                ]
+                .iter()
+                .position(|x| *x == c)),
             );
         }
         // A gap between rows resolves to no entry.
         let gap_y = (rects[0].y1 + rects[1].y0) / 2.0;
-        assert_eq!(swatch_hit_index(Point::new(rects[0].center().x, gap_y), &scale), None);
+        assert_eq!(
+            swatch_hit_index(Point::new(rects[0].center().x, gap_y), &scale),
+            None
+        );
         // A Sequential scale has no discrete entries.
         let sequential = Scale::Sequential {
             domain_min: 0.0,
@@ -671,7 +715,10 @@ mod tests {
         assert_eq!(swatch_hit_category(Point::new(1.0, 1.0), &scale), None);
         // Between row 0 and row 1 (below the swatch, above the next row).
         let gap_y = (rects[0].y1 + rects[1].y0) / 2.0;
-        assert_eq!(swatch_hit_category(Point::new(rects[0].center().x, gap_y), &scale), None);
+        assert_eq!(
+            swatch_hit_category(Point::new(rects[0].center().x, gap_y), &scale),
+            None
+        );
         // Far outside the panel.
         assert_eq!(swatch_hit_category(Point::new(1e4, 1e4), &scale), None);
 
@@ -681,7 +728,10 @@ mod tests {
             domain_max: 1.0,
             stops: vec![[0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0, 1.0]],
         };
-        assert_eq!(swatch_hit_category(Point::new(10.0, 10.0), &sequential), None);
+        assert_eq!(
+            swatch_hit_category(Point::new(10.0, 10.0), &sequential),
+            None
+        );
     }
 
     /// the click decision requires the press to have

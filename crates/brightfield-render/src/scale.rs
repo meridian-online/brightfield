@@ -443,24 +443,26 @@ pub fn apply_colour_override(set: &mut ScaleSet, ov: &ColourOverride) {
     for ch in [Channel::Fill, Channel::Stroke] {
         let Some(scale) = set.get(ch) else { continue };
         let new = match scale {
-            Scale::Colour { categories, palette } => {
-                let categories = ov
-                    .categories
-                    .clone()
-                    .unwrap_or_else(|| categories.clone());
+            Scale::Colour {
+                categories,
+                palette,
+            } => {
+                let categories = ov.categories.clone().unwrap_or_else(|| categories.clone());
                 let palette = ov.range.clone().unwrap_or_else(|| palette.clone());
                 if categories.is_empty() || palette.is_empty() {
                     continue;
                 }
-                Scale::Colour { categories, palette }
+                Scale::Colour {
+                    categories,
+                    palette,
+                }
             }
             Scale::Sequential {
                 domain_min,
                 domain_max,
                 stops,
             } => {
-                let (domain_min, domain_max) =
-                    ov.domain.unwrap_or((*domain_min, *domain_max));
+                let (domain_min, domain_max) = ov.domain.unwrap_or((*domain_min, *domain_max));
                 let stops = match &ov.range {
                     // A ramp needs at least two stops to interpolate.
                     Some(r) if r.len() >= 2 => r.clone(),
@@ -571,15 +573,15 @@ const VIRIDIS_STOPS: &[[f32; 4]] = &[
 
 /// Blues control points (ColorBrewer sequential, 9-class), near-white → navy.
 const BLUES_STOPS: &[[f32; 4]] = &[
-    [0.969, 0.984, 1.000, 1.0], // #f7fbff
-    [0.871, 0.922, 0.969, 1.0], // #deebf7
-    [0.776, 0.859, 0.937, 1.0], // #c6dbef
-    [0.620, 0.792, 0.882, 1.0], // #9ecae1
-    [0.420, 0.682, 0.839, 1.0], // #6baed6
-    [0.259, 0.573, 0.776, 1.0], // #4292c6
-    [0.129, 0.443, 0.710, 1.0], // #2171b5
+    [0.969, 0.984, 1.000, 1.0],  // #f7fbff
+    [0.871, 0.922, 0.969, 1.0],  // #deebf7
+    [0.776, 0.859, 0.937, 1.0],  // #c6dbef
+    [0.620, 0.792, 0.882, 1.0],  // #9ecae1
+    [0.420, 0.682, 0.839, 1.0],  // #6baed6
+    [0.259, 0.573, 0.776, 1.0],  // #4292c6
+    [0.129, 0.443, 0.710, 1.0],  // #2171b5
     [0.031, 0.3176, 0.612, 1.0], // #08519c
-    [0.031, 0.188, 0.420, 1.0], // #08306b
+    [0.031, 0.188, 0.420, 1.0],  // #08306b
 ];
 
 /// Turbo control points (Google turbo, 9-sample), purple → blue → green →
@@ -973,7 +975,9 @@ pub fn positional_axis_class(
     let mut saw_band = false;
     for (batch, cm) in entries {
         for ch in family {
-            let Some(col_name) = cm.get(*ch) else { continue };
+            let Some(col_name) = cm.get(*ch) else {
+                continue;
+            };
             let Ok(idx) = batch.schema().index_of(col_name) else {
                 continue;
             };
@@ -1126,9 +1130,7 @@ fn infer_column_scale(
             }
         }
         DataType::Timestamp(TimeUnit::Microsecond, _) => {
-            let arr = col
-                .as_any()
-                .downcast_ref::<TimestampMicrosecondArray>()?;
+            let arr = col.as_any().downcast_ref::<TimestampMicrosecondArray>()?;
             let (mut min, mut max) = (i64::MAX, i64::MIN);
             for i in 0..arr.len() {
                 if !arr.is_null(i) {
@@ -1206,10 +1208,7 @@ mod tests {
             schema,
             vec![
                 Arc::new(TimestampMicrosecondArray::from(vec![
-                    1_000_000,
-                    2_000_000,
-                    3_000_000,
-                    4_000_000,
+                    1_000_000, 2_000_000, 3_000_000, 4_000_000,
                 ])),
                 Arc::new(Float64Array::from(vec![10.0, 20.0, 15.0, 25.0])),
             ],
@@ -1303,7 +1302,10 @@ mod tests {
 
         let fill = scales.get(Channel::Fill).expect("fill scale should exist");
         match fill {
-            Scale::Colour { categories, palette } => {
+            Scale::Colour {
+                categories,
+                palette,
+            } => {
                 assert_eq!(categories, &["a", "b", "c"]);
                 assert!(!palette.is_empty());
             }
@@ -1498,8 +1500,14 @@ mod tests {
                 domain_max,
                 ..
             } => {
-                assert!((domain_min - 1.0).abs() < f64::EPSILON, "x min should be 1.0");
-                assert!((domain_max - 8.0).abs() < f64::EPSILON, "x max should be 8.0");
+                assert!(
+                    (domain_min - 1.0).abs() < f64::EPSILON,
+                    "x min should be 1.0"
+                );
+                assert!(
+                    (domain_max - 8.0).abs() < f64::EPSILON,
+                    "x max should be 8.0"
+                );
             }
             other => panic!("expected Linear scale for x, got: {other:?}"),
         }
@@ -1511,8 +1519,14 @@ mod tests {
                 domain_max,
                 ..
             } => {
-                assert!((domain_min - 5.0).abs() < f64::EPSILON, "y min should be 5.0");
-                assert!((domain_max - 50.0).abs() < f64::EPSILON, "y max should be 50.0");
+                assert!(
+                    (domain_min - 5.0).abs() < f64::EPSILON,
+                    "y min should be 5.0"
+                );
+                assert!(
+                    (domain_max - 50.0).abs() < f64::EPSILON,
+                    "y max should be 50.0"
+                );
             }
             other => panic!("expected Linear scale for y, got: {other:?}"),
         }
@@ -1520,18 +1534,22 @@ mod tests {
 
     #[test]
     fn multi_unions_categorical_fill() {
-        let schema1 = Arc::new(Schema::new(vec![
-            Field::new("category", DataType::Utf8, false),
-        ]));
+        let schema1 = Arc::new(Schema::new(vec![Field::new(
+            "category",
+            DataType::Utf8,
+            false,
+        )]));
         let batch1 = RecordBatch::try_new(
             schema1,
             vec![Arc::new(StringArray::from(vec!["red", "blue"]))],
         )
         .unwrap();
 
-        let schema2 = Arc::new(Schema::new(vec![
-            Field::new("category", DataType::Utf8, false),
-        ]));
+        let schema2 = Arc::new(Schema::new(vec![Field::new(
+            "category",
+            DataType::Utf8,
+            false,
+        )]));
         let batch2 = RecordBatch::try_new(
             schema2,
             vec![Arc::new(StringArray::from(vec!["blue", "green"]))],
@@ -1694,7 +1712,10 @@ mod tests {
             assert!(stops.len() >= 5, "{scheme:?} has >= 5 stops");
             for s in &stops {
                 for &c in s {
-                    assert!((0.0..=1.0).contains(&c), "{scheme:?} component {c} in range");
+                    assert!(
+                        (0.0..=1.0).contains(&c),
+                        "{scheme:?} component {c} in range"
+                    );
                 }
             }
             assert_eq!(
@@ -1726,7 +1747,11 @@ mod tests {
             SequentialScheme::Turbo,
             SequentialScheme::Meridian,
         ] {
-            assert_eq!(start.next().next().next().next(), start, "{start:?} cycles in 4");
+            assert_eq!(
+                start.next().next().next().next(),
+                start,
+                "{start:?} cycles in 4"
+            );
         }
     }
 
@@ -1782,7 +1807,11 @@ mod tests {
         let src = meridian_design::viz::SEQUENTIAL_MERIDIAN;
         assert_eq!(hex.len(), src.len());
         for (i, (h, token)) in hex.iter().zip(src.iter()).enumerate() {
-            assert_eq!(*h, token.hex(), "export hex stop {i} equals the design token");
+            assert_eq!(
+                *h,
+                token.hex(),
+                "export hex stop {i} equals the design token"
+            );
         }
     }
 
@@ -1806,10 +1835,7 @@ mod tests {
         let ov = ColourOverride {
             categories: Some(vec!["a".into(), "b".into()]),
             domain: None,
-            range: Some(vec![
-                [c1[0], c1[1], c1[2], 1.0],
-                [c2[0], c2[1], c2[2], 1.0],
-            ]),
+            range: Some(vec![[c1[0], c1[1], c1[2], 1.0], [c2[0], c2[1], c2[2], 1.0]]),
         };
         apply_colour_override(&mut set, &ov);
         let scale = set.get(Channel::Fill).expect("fill scale kept");
@@ -1840,8 +1866,16 @@ mod tests {
         apply_colour_override(&mut set, &ov);
         let scale = set.get(Channel::Fill).expect("fill scale kept");
         match scale {
-            Scale::Sequential { domain_min, domain_max, stops } => {
-                assert_eq!((*domain_min, *domain_max), (0.0, 100.0), "explicit domain wins");
+            Scale::Sequential {
+                domain_min,
+                domain_max,
+                stops,
+            } => {
+                assert_eq!(
+                    (*domain_min, *domain_max),
+                    (0.0, 100.0),
+                    "explicit domain wins"
+                );
                 assert_eq!(stops.len(), 2, "two-stop ramp");
             }
             other => panic!("expected Sequential, got {other:?}"),
@@ -1854,7 +1888,15 @@ mod tests {
         // A partial override leaves the untouched facets alone: a positional
         // scale is never touched.
         let mut pos = ScaleSet::new();
-        pos.insert(Channel::X, Scale::Linear { domain_min: 0.0, domain_max: 1.0, range_start: 0.0, range_end: 10.0 });
+        pos.insert(
+            Channel::X,
+            Scale::Linear {
+                domain_min: 0.0,
+                domain_max: 1.0,
+                range_start: 0.0,
+                range_end: 10.0,
+            },
+        );
         apply_colour_override(&mut pos, &ov);
         assert!(
             matches!(
@@ -1949,24 +1991,48 @@ mod tests {
         below.insert(Channel::X, linear(-5.0, 40.0));
         let a = anchor_scales(&launch, below);
         assert_eq!(a.get(Channel::X).unwrap().domain_min(), Some(-5.0));
-        assert_eq!(a.get(Channel::X).unwrap().domain_max(), Some(100.0), "upper bound stays launch");
+        assert_eq!(
+            a.get(Channel::X).unwrap().domain_max(),
+            Some(100.0),
+            "upper bound stays launch"
+        );
 
         // Sequential widens domain but keeps the LAUNCH ramp stops (colours
         // never re-anchor — the F3 regression class).
         let mut lseq = ScaleSet::new();
         lseq.insert(
             Channel::Fill,
-            Scale::Sequential { domain_min: 0.0, domain_max: 100.0, stops: SequentialScheme::Blues.stops() },
+            Scale::Sequential {
+                domain_min: 0.0,
+                domain_max: 100.0,
+                stops: SequentialScheme::Blues.stops(),
+            },
         );
         let mut fseq = ScaleSet::new();
         fseq.insert(
             Channel::Fill,
-            Scale::Sequential { domain_min: 0.0, domain_max: 40.0, stops: SequentialScheme::Viridis.stops() },
+            Scale::Sequential {
+                domain_min: 0.0,
+                domain_max: 40.0,
+                stops: SequentialScheme::Viridis.stops(),
+            },
         );
         match anchor_scales(&lseq, fseq).get(Channel::Fill) {
-            Some(Scale::Sequential { domain_min, domain_max, stops }) => {
-                assert_eq!((*domain_min, *domain_max), (0.0, 100.0), "subset density → launch domain");
-                assert_eq!(*stops, SequentialScheme::Blues.stops(), "launch stops, not fresh's");
+            Some(Scale::Sequential {
+                domain_min,
+                domain_max,
+                stops,
+            }) => {
+                assert_eq!(
+                    (*domain_min, *domain_max),
+                    (0.0, 100.0),
+                    "subset density → launch domain"
+                );
+                assert_eq!(
+                    *stops,
+                    SequentialScheme::Blues.stops(),
+                    "launch stops, not fresh's"
+                );
             }
             other => panic!("expected Sequential, got {other:?}"),
         }
@@ -1984,7 +2050,10 @@ mod tests {
         let mut fcat = ScaleSet::new();
         fcat.insert(
             Channel::Fill,
-            Scale::Colour { categories: vec!["c".into()], palette: CATEGORICAL_PALETTE.to_vec() },
+            Scale::Colour {
+                categories: vec!["c".into()],
+                palette: CATEGORICAL_PALETTE.to_vec(),
+            },
         );
         match anchor_scales(&lcat, fcat).get(Channel::Fill) {
             Some(Scale::Colour { categories, .. }) => {
@@ -2001,11 +2070,18 @@ mod tests {
         let mut fresh_fill = ScaleSet::new();
         fresh_fill.insert(
             Channel::Fill,
-            Scale::Sequential { domain_min: 0.0, domain_max: 9.0, stops: SequentialScheme::Blues.stops() },
+            Scale::Sequential {
+                domain_min: 0.0,
+                domain_max: 9.0,
+                stops: SequentialScheme::Blues.stops(),
+            },
         );
         let a = anchor_scales(&launch_y, fresh_fill);
         assert!(a.get(Channel::Y).is_some(), "only-in-launch kept");
-        assert!(a.get(Channel::Fill).is_some(), "only-in-fresh adopted (F2: late raster ramp)");
+        assert!(
+            a.get(Channel::Fill).is_some(),
+            "only-in-fresh adopted (F2: late raster ramp)"
+        );
     }
 
     // --- a launch-baked inset survives every anchored rebuild ---
@@ -2086,7 +2162,10 @@ mod tests {
         ccm.insert(Channel::X, "category".into());
         ccm.insert(Channel::Y, "value".into());
         let cp = [(&cat, &ccm)];
-        assert_eq!(positional_axis_class(&cp, Channel::X), Some(AxisClass::Band));
+        assert_eq!(
+            positional_axis_class(&cp, Channel::X),
+            Some(AxisClass::Band)
+        );
         assert_eq!(
             positional_axis_class(&cp, Channel::Y),
             Some(AxisClass::Continuous)

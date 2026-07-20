@@ -11,7 +11,9 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn fixture(rel: &str) -> PathBuf {
-    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/protocol").join(rel);
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/protocol")
+        .join(rel);
     assert!(p.exists(), "fixture present at {p:?}");
     p
 }
@@ -89,8 +91,14 @@ fn edgar_gleif_dump_is_deterministic() {
         "the graph was built from the fixture: {last_stderr}"
     );
     let (w, h, coverage) = parse_dump_line(&last_stderr);
-    assert!(w > 500 && h > 100, "graph-scale render, not an empty/degenerate layout: {w}x{h}");
-    assert!(coverage > 0.0, "the composed scene carries real ink, not a blank/transparent render");
+    assert!(
+        w > 500 && h > 100,
+        "graph-scale render, not an empty/degenerate layout: {w}x{h}"
+    );
+    assert!(
+        coverage > 0.0,
+        "the composed scene carries real ink, not a blank/transparent render"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -124,10 +132,19 @@ fn degrade_fixture_dumps() {
     // The chip and its lineage actually reached the scene — graph-scale render
     // with real coverage, not a vacuously-passing blank canvas.
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Protocol parsed: degrade"), "graph built: {stderr}");
+    assert!(
+        stderr.contains("Protocol parsed: degrade"),
+        "graph built: {stderr}"
+    );
     let (w, h, coverage) = parse_dump_line(&stderr);
-    assert!(w > 200 && h > 60, "graph-scale render, not an empty layout: {w}x{h}");
-    assert!(coverage > 0.0, "the composed scene carries real ink, not a blank render");
+    assert!(
+        w > 200 && h > 60,
+        "graph-scale render, not an empty layout: {w}x{h}"
+    );
+    assert!(
+        coverage > 0.0,
+        "the composed scene carries real ink, not a blank render"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -233,9 +250,15 @@ fn contract_is_the_default_input_and_dumps_a_dag() {
         "the run was built from the contract (default path): {stderr}"
     );
     let (w, h, coverage) = parse_dump_line(&stderr);
-    assert!(w > 40 && h > 40, "graph-scale render, not an empty layout: {w}x{h}");
+    assert!(
+        w > 40 && h > 40,
+        "graph-scale render, not an empty layout: {w}x{h}"
+    );
     assert!(coverage > 0.0, "the composed scene carries real ink");
-    assert!(fs::metadata(&png_path).map(|m| m.len()).unwrap_or(0) > 0, "PNG written");
+    assert!(
+        fs::metadata(&png_path).map(|m| m.len()).unwrap_or(0) > 0,
+        "PNG written"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -252,7 +275,10 @@ fn manifest_without_offline_flag_is_gated() {
         .env_remove("BRIGHTFIELD_PARAM_OVERRIDE")
         .output()
         .expect("binary runs");
-    assert!(output.status.success(), "the gate is guidance, not an error");
+    assert!(
+        output.status.success(),
+        "the gate is guidance, not an error"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("BRIGHTFIELD_PROTOCOL_OFFLINE"),

@@ -200,10 +200,22 @@ pub fn registry() -> Vec<VerbEntry> {
     use BindingContext::{Editor, Global, Workspace};
     use Drives as D;
 
-    let ws = |k: &'static str| BindingSpec { keystrokes: k, context: Workspace };
-    let global = |k: &'static str| BindingSpec { keystrokes: k, context: Global };
-    let editor = |k: &'static str| BindingSpec { keystrokes: k, context: Editor };
-    let proto = |k: &'static str| BindingSpec { keystrokes: k, context: BindingContext::Protocol };
+    let ws = |k: &'static str| BindingSpec {
+        keystrokes: k,
+        context: Workspace,
+    };
+    let global = |k: &'static str| BindingSpec {
+        keystrokes: k,
+        context: Global,
+    };
+    let editor = |k: &'static str| BindingSpec {
+        keystrokes: k,
+        context: Editor,
+    };
+    let proto = |k: &'static str| BindingSpec {
+        keystrokes: k,
+        context: BindingContext::Protocol,
+    };
 
     vec![
         // ---- navigation ----
@@ -646,7 +658,8 @@ mod tests {
 
     fn is_kebab_case(s: &str) -> bool {
         !s.is_empty()
-            && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+            && s.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
             && !s.starts_with('-')
             && !s.ends_with('-')
     }
@@ -657,7 +670,11 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for v in &reg {
             assert!(is_kebab_case(v.longname), "not kebab-case: {}", v.longname);
-            assert!(seen.insert(v.longname), "duplicate longname: {}", v.longname);
+            assert!(
+                seen.insert(v.longname),
+                "duplicate longname: {}",
+                v.longname
+            );
         }
     }
 
@@ -681,18 +698,41 @@ mod tests {
         // NeedsCommandLog bucket is now EMPTY (deliberate update; the enum
         // variant + its reason() surface are retained). NeedsKeyboardTarget is
         // unchanged.
-        assert!(needs_log.is_empty(), "NeedsCommandLog bucket is now empty: {needs_log:?}");
-        assert_eq!(needs_target, ["cross-filter-all", "filter-view", "set-param", "toggle-point-select"]);
+        assert!(
+            needs_log.is_empty(),
+            "NeedsCommandLog bucket is now empty: {needs_log:?}"
+        );
+        assert_eq!(
+            needs_target,
+            [
+                "cross-filter-all",
+                "filter-view",
+                "set-param",
+                "toggle-point-select"
+            ]
+        );
         // Every reserved verb is unbound and unscored; every bound verb is scored.
         for v in &reg {
             if v.is_reserved() {
-                assert!(v.binding_specs.is_empty(), "reserved {} is bound", v.longname);
+                assert!(
+                    v.binding_specs.is_empty(),
+                    "reserved {} is bound",
+                    v.longname
+                );
                 assert!(v.scores.is_none(), "reserved {} is scored", v.longname);
-                assert!(v.reserved_reason.is_some(), "reserved {} has no reason", v.longname);
+                assert!(
+                    v.reserved_reason.is_some(),
+                    "reserved {} has no reason",
+                    v.longname
+                );
             } else {
                 assert!(v.is_bound(), "active {} is unbound", v.longname);
                 assert!(v.scores.is_some(), "bound {} is unscored", v.longname);
-                assert!(v.reserved_reason.is_none(), "active {} has a reserved reason", v.longname);
+                assert!(
+                    v.reserved_reason.is_none(),
+                    "active {} has a reserved reason",
+                    v.longname
+                );
             }
         }
     }
@@ -744,8 +784,11 @@ mod tests {
         // exactly the Data tier is logged. Navigation/fold/pane/meta verbs are
         // View; the spec-edit + object verbs that name a dotted address are Data.
         let reg = registry();
-        let logged: Vec<&str> =
-            reg.iter().filter(|v| v.tier.is_logged()).map(|v| v.longname).collect();
+        let logged: Vec<&str> = reg
+            .iter()
+            .filter(|v| v.tier.is_logged())
+            .map(|v| v.longname)
+            .collect();
         // The Data-tier set is exactly the addressed verbs.
         let mut got = logged.clone();
         got.sort_unstable();
@@ -774,7 +817,11 @@ mod tests {
             "open-steps-sheet",
         ] {
             let v = reg.iter().find(|v| v.longname == name).unwrap();
-            assert_eq!(v.tier, CommandTier::View, "{name} is a view command, never logged");
+            assert_eq!(
+                v.tier,
+                CommandTier::View,
+                "{name} is a view command, never logged"
+            );
         }
     }
 
@@ -783,14 +830,28 @@ mod tests {
         // Protocol verbs never leak into the chart grammar: they apply at
         // Protocol and nowhere else.
         let reg = registry();
-        for v in reg.iter().filter(|v| v.longname.starts_with("protocol-")
-            || v.longname == "toggle-fold-family"
-            || v.longname == "open-steps-sheet"
-            || v.longname == "yank-address")
-        {
-            assert_eq!(v.scope_applicability, vec![Altitude::Protocol], "{} is protocol-only", v.longname);
-            assert!(!v.applies_at(Altitude::View), "{} must not fire at View", v.longname);
-            assert!(!v.applies_at(Altitude::Dashboard), "{} must not fire at Dashboard", v.longname);
+        for v in reg.iter().filter(|v| {
+            v.longname.starts_with("protocol-")
+                || v.longname == "toggle-fold-family"
+                || v.longname == "open-steps-sheet"
+                || v.longname == "yank-address"
+        }) {
+            assert_eq!(
+                v.scope_applicability,
+                vec![Altitude::Protocol],
+                "{} is protocol-only",
+                v.longname
+            );
+            assert!(
+                !v.applies_at(Altitude::View),
+                "{} must not fire at View",
+                v.longname
+            );
+            assert!(
+                !v.applies_at(Altitude::Dashboard),
+                "{} must not fire at Dashboard",
+                v.longname
+            );
         }
     }
 
@@ -808,14 +869,20 @@ mod tests {
         let bound_count: usize = reg.iter().map(|v| v.binding_specs.len()).sum();
         assert_eq!(keys.len(), bound_count);
         // open-palette contributes its two-key twin (bare space + cmd-shift-p).
-        let palette_keys: Vec<_> = keys.iter().filter(|k| k.longname == "open-palette").collect();
+        let palette_keys: Vec<_> = keys
+            .iter()
+            .filter(|k| k.longname == "open-palette")
+            .collect();
         assert_eq!(palette_keys.len(), 2);
     }
 
     #[test]
     fn cycle_colour_scheme_is_view_only_preview() {
         let reg = registry();
-        let c = reg.iter().find(|v| v.longname == "cycle-colour-scheme").unwrap();
+        let c = reg
+            .iter()
+            .find(|v| v.longname == "cycle-colour-scheme")
+            .unwrap();
         assert_eq!(c.status, VerbStatus::Preview);
         assert_eq!(c.scope_applicability, vec![Altitude::View]);
         assert!(!c.applies_at(Altitude::Dashboard));

@@ -128,7 +128,10 @@ mod tests {
         let reg = registry();
         let recency = RecencyCounter::new();
         let hits = palette_filter(&reg, Altitude::View, "colour", &recency);
-        assert_eq!(hits.first().map(|c| c.longname), Some("cycle-colour-scheme"));
+        assert_eq!(
+            hits.first().map(|c| c.longname),
+            Some("cycle-colour-scheme")
+        );
     }
 
     #[test]
@@ -137,13 +140,22 @@ mod tests {
         let recency = RecencyCounter::new();
         // Empty query at the view altitude → exactly the verbs applicable there.
         let got: std::collections::HashSet<&str> =
-            palette_filter(&reg, Altitude::View, "", &recency).iter().map(|c| c.longname).collect();
-        let want: std::collections::HashSet<&str> =
-            reg.iter().filter(|v| v.applies_at(Altitude::View)).map(|v| v.longname).collect();
+            palette_filter(&reg, Altitude::View, "", &recency)
+                .iter()
+                .map(|c| c.longname)
+                .collect();
+        let want: std::collections::HashSet<&str> = reg
+            .iter()
+            .filter(|v| v.applies_at(Altitude::View))
+            .map(|v| v.longname)
+            .collect();
         assert_eq!(got, want);
         // cycle-colour-scheme is view-only, so it appears at View but NOT at Dashboard.
         let dash: std::collections::HashSet<&str> =
-            palette_filter(&reg, Altitude::Dashboard, "", &recency).iter().map(|c| c.longname).collect();
+            palette_filter(&reg, Altitude::Dashboard, "", &recency)
+                .iter()
+                .map(|c| c.longname)
+                .collect();
         assert!(got.contains("cycle-colour-scheme"));
         assert!(!dash.contains("cycle-colour-scheme"));
     }
@@ -154,16 +166,31 @@ mod tests {
         let mut recency = RecencyCounter::new();
         let ranked = palette_filter(&reg, Altitude::View, "", &recency);
         // Frequency is non-increasing across the list.
-        let freqs: Vec<u8> = ranked.iter().map(|c| frequency_of(&reg, c.longname)).collect();
-        assert!(freqs.windows(2).all(|w| w[0] >= w[1]), "not frequency-ordered: {freqs:?}");
+        let freqs: Vec<u8> = ranked
+            .iter()
+            .map(|c| frequency_of(&reg, c.longname))
+            .collect();
+        assert!(
+            freqs.windows(2).all(|w| w[0] >= w[1]),
+            "not frequency-ordered: {freqs:?}"
+        );
 
         // Recency breaks ties: two freq-5 nav verbs; recording one lifts it above
         // its equal-frequency peers.
         recency.record("focus-prev-sibling");
         let ranked2 = palette_filter(&reg, Altitude::View, "", &recency);
-        let pos_prev = ranked2.iter().position(|c| c.longname == "focus-prev-sibling").unwrap();
-        let pos_next = ranked2.iter().position(|c| c.longname == "focus-next-sibling").unwrap();
-        assert!(pos_prev < pos_next, "recorded verb should rank above its equal-frequency peer");
+        let pos_prev = ranked2
+            .iter()
+            .position(|c| c.longname == "focus-prev-sibling")
+            .unwrap();
+        let pos_next = ranked2
+            .iter()
+            .position(|c| c.longname == "focus-next-sibling")
+            .unwrap();
+        assert!(
+            pos_prev < pos_next,
+            "recorded verb should rank above its equal-frequency peer"
+        );
     }
 
     #[test]
@@ -171,9 +198,18 @@ mod tests {
         let reg = registry();
         let recency = RecencyCounter::new();
         let hits = palette_filter(&reg, Altitude::View, "", &recency);
-        let filter = hits.iter().find(|c| c.longname == "filter-view").expect("reserved verb is present");
+        let filter = hits
+            .iter()
+            .find(|c| c.longname == "filter-view")
+            .expect("reserved verb is present");
         assert!(!filter.enabled, "reserved verb is not enabled");
-        assert_eq!(filter.reserved_reason, Some(ReservedReason::NeedsKeyboardTarget));
-        assert!(filter.primary_key.is_none(), "reserved verb shows no bound key");
+        assert_eq!(
+            filter.reserved_reason,
+            Some(ReservedReason::NeedsKeyboardTarget)
+        );
+        assert!(
+            filter.primary_key.is_none(),
+            "reserved verb shows no bound key"
+        );
     }
 }

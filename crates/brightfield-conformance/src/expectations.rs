@@ -43,7 +43,9 @@ pub enum ExpectationError {
     },
     /// `layer_1: pending` — layer 1 machinery ships in v1 so `Pending` is
     /// not a valid state for layer 1.
-    #[error("expectations at {path:?} declare `layer_1: pending` — layer 1 does not admit pending")]
+    #[error(
+        "expectations at {path:?} declare `layer_1: pending` — layer 1 does not admit pending"
+    )]
     InvalidLayer1Pending {
         /// File path.
         path: PathBuf,
@@ -51,7 +53,9 @@ pub enum ExpectationError {
     /// A deviation id referenced in a `suppressed(..)` expectation has a
     /// shape that isn't `DEV-NNNN`. Existence in the registry is checked
     /// later by the integrity gate, not here.
-    #[error("expectations at {path:?} reference deviation id {id:?} which is not in DEV-NNNN form")]
+    #[error(
+        "expectations at {path:?} reference deviation id {id:?} which is not in DEV-NNNN form"
+    )]
     UnknownDeviationId {
         /// File path.
         path: PathBuf,

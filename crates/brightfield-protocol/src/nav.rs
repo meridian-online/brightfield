@@ -101,8 +101,14 @@ impl ProtocolNav {
                 continue;
             }
             if pair_seen.insert((edge.from.clone(), edge.to.clone())) {
-                succs.get_mut(&edge.from).expect("node").push(edge.to.clone());
-                preds.get_mut(&edge.to).expect("node").push(edge.from.clone());
+                succs
+                    .get_mut(&edge.from)
+                    .expect("node")
+                    .push(edge.to.clone());
+                preds
+                    .get_mut(&edge.to)
+                    .expect("node")
+                    .push(edge.from.clone());
             }
         }
         // Sorted adjacency → deterministic `h`/`l` landing.
@@ -199,7 +205,9 @@ impl ProtocolNav {
     }
 
     fn step_edge(&mut self, upstream: bool) -> bool {
-        let Some(cur) = &self.cursor else { return false };
+        let Some(cur) = &self.cursor else {
+            return false;
+        };
         let table = if upstream { &self.preds } else { &self.succs };
         if let Some(next) = table.get(cur).and_then(|v| v.first()) {
             self.cursor = Some(next.clone());
@@ -220,10 +228,16 @@ impl ProtocolNav {
     }
 
     fn step_sibling(&mut self, delta: isize) -> bool {
-        let Some(cur) = &self.cursor else { return false };
-        let Some(&l) = self.layer.get(cur) else { return false };
+        let Some(cur) = &self.cursor else {
+            return false;
+        };
+        let Some(&l) = self.layer.get(cur) else {
+            return false;
+        };
         let rank = &self.ranks[l];
-        let Some(pos) = rank.iter().position(|id| id == cur) else { return false };
+        let Some(pos) = rank.iter().position(|id| id == cur) else {
+            return false;
+        };
         let next = pos as isize + delta;
         if next < 0 || next as usize >= rank.len() {
             return false; // edge of the layer — no wrap (a wall the user feels)
@@ -263,7 +277,9 @@ impl ProtocolNav {
     /// directly ahead. Falls back to id order when geometry is unset (headless
     /// callers that never call [`set_geometry`](ProtocolNav::set_geometry)).
     fn edge_move(&mut self, upstream: bool, dir: Dir) -> bool {
-        let Some(cur) = self.cursor.clone() else { return false };
+        let Some(cur) = self.cursor.clone() else {
+            return false;
+        };
         let table = if upstream { &self.preds } else { &self.succs };
         let neighbours = table.get(&cur).cloned().unwrap_or_default();
         if neighbours.is_empty() {
@@ -293,9 +309,15 @@ impl ProtocolNav {
     /// overrides the drawn position. Needs geometry; without an on-screen
     /// direction to honour it is a no-op.
     fn sibling_move(&mut self, dir: Dir) -> bool {
-        let Some(cur) = self.cursor.clone() else { return false };
-        let Some(&l) = self.layer.get(&cur) else { return false };
-        let Some(origin) = self.center(&cur) else { return false };
+        let Some(cur) = self.cursor.clone() else {
+            return false;
+        };
+        let Some(&l) = self.layer.get(&cur) else {
+            return false;
+        };
+        let Some(origin) = self.center(&cur) else {
+            return false;
+        };
         let pick = self.ranks[l]
             .iter()
             .filter(|id| **id != cur)
@@ -324,7 +346,9 @@ impl ProtocolNav {
     /// (returns [`FoldOutcome::NotAFamily`]) when the cursor is not on a Family
     /// tile — folds only ever act on collapsible nodes.
     pub fn toggle_fold(&mut self) -> FoldOutcome {
-        let Some(cur) = self.cursor.clone() else { return FoldOutcome::NotAFamily };
+        let Some(cur) = self.cursor.clone() else {
+            return FoldOutcome::NotAFamily;
+        };
         if !self.families.contains(&cur) {
             return FoldOutcome::NotAFamily;
         }
@@ -347,7 +371,9 @@ impl ProtocolNav {
     /// drilling the already-current node (a repeated `Enter`) is a no-op, so the
     /// crumb never stacks `fetch › fetch › …`. Returns whether a node was pushed.
     pub fn drill_in(&mut self) -> bool {
-        let Some(cur) = self.cursor.clone() else { return false };
+        let Some(cur) = self.cursor.clone() else {
+            return false;
+        };
         if self.breadcrumb.last() == Some(&cur) {
             return false;
         }
@@ -384,11 +410,17 @@ fn longest_path_layers(
     succs: &BTreeMap<AssetId, Vec<AssetId>>,
     preds: &BTreeMap<AssetId, Vec<AssetId>>,
 ) -> BTreeMap<AssetId, usize> {
-    let mut layer: BTreeMap<AssetId, usize> = graph.nodes.keys().map(|id| (id.clone(), 0)).collect();
-    let mut indegree: BTreeMap<AssetId, usize> =
-        graph.nodes.keys().map(|id| (id.clone(), preds.get(id).map_or(0, Vec::len))).collect();
-    let mut ready: BTreeSet<AssetId> =
-        indegree.iter().filter_map(|(id, d)| (*d == 0).then(|| id.clone())).collect();
+    let mut layer: BTreeMap<AssetId, usize> =
+        graph.nodes.keys().map(|id| (id.clone(), 0)).collect();
+    let mut indegree: BTreeMap<AssetId, usize> = graph
+        .nodes
+        .keys()
+        .map(|id| (id.clone(), preds.get(id).map_or(0, Vec::len)))
+        .collect();
+    let mut ready: BTreeSet<AssetId> = indegree
+        .iter()
+        .filter_map(|(id, d)| (*d == 0).then(|| id.clone()))
+        .collect();
     while let Some(id) = ready.iter().next().cloned() {
         ready.remove(&id);
         let l = layer[&id];
@@ -476,7 +508,10 @@ steps:
         let mut nav = ProtocolNav::new(&g);
         // The entry cursor is a root (the source, no producer).
         let start = nav.cursor().cloned().unwrap();
-        assert!(nav.preds[&start].is_empty(), "entry cursor is a root: {start}");
+        assert!(
+            nav.preds[&start].is_empty(),
+            "entry cursor is a root: {start}"
+        );
         // Walking `l` reaches strictly deeper layers; each hop moves.
         let mut prev_layer = nav.layer[&start];
         let mut hops = 0;
@@ -660,11 +695,23 @@ steps:
     fn vertical_flow_maps_updown_to_flow_leftright_to_siblings() {
         use crate::layout::{layout, Flow, LayoutConfig};
         let g = diamond_graph();
-        let l = layout(&g, &LayoutConfig { flow: Flow::Vertical, ..LayoutConfig::default() });
-        let (left, right) = ("file.diamond.build/l".to_string(), "file.diamond.build/r".to_string());
+        let l = layout(
+            &g,
+            &LayoutConfig {
+                flow: Flow::Vertical,
+                ..LayoutConfig::default()
+            },
+        );
+        let (left, right) = (
+            "file.diamond.build/l".to_string(),
+            "file.diamond.build/r".to_string(),
+        );
         let base_layer = {
             let n = ProtocolNav::new(&g);
-            assert_eq!(n.layer[&left], n.layer[&right], "the two extracts are rank siblings");
+            assert_eq!(
+                n.layer[&left], n.layer[&right],
+                "the two extracts are rank siblings"
+            );
             n.layer[&left]
         };
 
@@ -673,18 +720,31 @@ steps:
         nav.set_geometry(Flow::Vertical, &l);
         nav.focus(&left);
         assert!(nav.move_dir(Dir::Up), "up reaches the producer");
-        assert!(nav.layer[nav.cursor().unwrap()] < base_layer, "up climbed upstream");
+        assert!(
+            nav.layer[nav.cursor().unwrap()] < base_layer,
+            "up climbed upstream"
+        );
         nav.focus(&left);
         assert!(nav.move_dir(Dir::Down), "down reaches the consumer");
-        assert!(nav.layer[nav.cursor().unwrap()] > base_layer, "down descended downstream");
+        assert!(
+            nav.layer[nav.cursor().unwrap()] > base_layer,
+            "down descended downstream"
+        );
 
         // Left/Right = the rank sibling (same layer), picked by rendered side.
         let (cl, cr) = (center(&l, &left), center(&l, &right));
         let to_r = if cr.0 > cl.0 { Dir::Right } else { Dir::Left };
         nav.focus(&left);
-        assert!(nav.move_dir(to_r), "the horizontal key steps to the sibling");
+        assert!(
+            nav.move_dir(to_r),
+            "the horizontal key steps to the sibling"
+        );
         assert_eq!(nav.cursor().unwrap(), &right);
-        assert_eq!(nav.layer[nav.cursor().unwrap()], base_layer, "sibling stays in the layer");
+        assert_eq!(
+            nav.layer[nav.cursor().unwrap()],
+            base_layer,
+            "sibling stays in the layer"
+        );
     }
 
     /// Horizontal flow rotates the axes: `h`/`l` (left/right) become the
@@ -694,8 +754,17 @@ steps:
     fn horizontal_flow_maps_leftright_to_flow_updown_to_siblings() {
         use crate::layout::{layout, Flow, LayoutConfig};
         let g = diamond_graph();
-        let l = layout(&g, &LayoutConfig { flow: Flow::Horizontal, ..LayoutConfig::default() });
-        let (left, right) = ("file.diamond.build/l".to_string(), "file.diamond.build/r".to_string());
+        let l = layout(
+            &g,
+            &LayoutConfig {
+                flow: Flow::Horizontal,
+                ..LayoutConfig::default()
+            },
+        );
+        let (left, right) = (
+            "file.diamond.build/l".to_string(),
+            "file.diamond.build/r".to_string(),
+        );
         let base_layer = ProtocolNav::new(&g).layer[&left];
 
         // Left = producer, Right = consumer.

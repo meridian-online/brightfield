@@ -100,8 +100,19 @@ pub fn parse_manifest_str(text: &str) -> Result<Manifest, serde_yaml::Error> {
 /// of these present vetoes the sniff. (`params:` is deliberately absent — a
 /// Protocol manifest legitimately carries it too.)
 const MOSAIC_KEYS: &[&str] = &[
-    "plot", "data", "vconcat", "hconcat", "hspace", "vspace", "legend", "mark", "select", "input",
-    "meta", "config", "plotDefaults",
+    "plot",
+    "data",
+    "vconcat",
+    "hconcat",
+    "hspace",
+    "vspace",
+    "legend",
+    "mark",
+    "select",
+    "input",
+    "meta",
+    "config",
+    "plotDefaults",
 ];
 
 /// The protocol sniff (the guard): a YAML document whose top level is a
@@ -166,7 +177,10 @@ steps:
         );
         // op without `@` degrades to version "?".
         let step: Step = serde_yaml::from_str("{ name: x, op: http_fetch }").unwrap();
-        assert_eq!(step.op_parts(), Some(("http_fetch".to_string(), "?".to_string())));
+        assert_eq!(
+            step.op_parts(),
+            Some(("http_fetch".to_string(), "?".to_string()))
+        );
         // A step with none of op/sql/command still parses (opaque step).
         let opaque = &m.steps[3];
         assert!(opaque.op.is_none() && opaque.sql.is_none() && opaque.command.is_none());
@@ -193,7 +207,9 @@ steps:
         // A Mosaic spec whose root is a component discriminator (no top-level
         // plot/data) plus a stray `steps:` sequence must still route to the
         // spec pipeline, not the protocol arm.
-        for root in ["vconcat", "hconcat", "hspace", "vspace", "legend", "mark", "select", "input"] {
+        for root in [
+            "vconcat", "hconcat", "hspace", "vspace", "legend", "mark", "select", "input",
+        ] {
             let spec = format!("{root}:\n  - a\nsteps:\n  - name: x\n");
             assert!(
                 !is_protocol_manifest(&spec),
@@ -201,6 +217,8 @@ steps:
             );
         }
         // meta/config roots likewise veto.
-        assert!(!is_protocol_manifest("meta:\n  title: t\nsteps:\n  - name: x\n"));
+        assert!(!is_protocol_manifest(
+            "meta:\n  title: t\nsteps:\n  - name: x\n"
+        ));
     }
 }

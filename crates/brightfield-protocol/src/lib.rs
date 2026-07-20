@@ -41,7 +41,9 @@ use std::fs;
 use std::path::Path;
 
 pub use collapse::collapse_families;
-pub use contract::{parse_contract, Contract, SUPPORTED_CONTRACT_FAMILY, SUPPORTED_CONTRACT_VERSION};
+pub use contract::{
+    parse_contract, Contract, SUPPORTED_CONTRACT_FAMILY, SUPPORTED_CONTRACT_VERSION,
+};
 pub use contract_graph::{
     apply_stream, build_contract_view, AssetMeta, ContractView, RunView, SeamStatus, StepView,
 };
@@ -50,7 +52,9 @@ pub use graph::{AssetGraph, AssetKind, AssetNode, Edge, Seam, SeamKind};
 pub use layout::{layout, Flow, Layout, LayoutConfig};
 pub use manifest::{is_protocol_manifest, parse_manifest_str, Manifest, Step};
 pub use nav::{Dir, FoldOutcome, ProtocolNav};
-pub use panel::{inspector_for, kind_label, outline_order, outline_rows, InspectorFacts, OutlineRow};
+pub use panel::{
+    inspector_for, kind_label, outline_order, outline_rows, InspectorFacts, OutlineRow,
+};
 pub use sheet::{StepRow, StepsSheet};
 pub use stream::{fold_stream, StreamReader, StreamState};
 
@@ -64,7 +68,9 @@ pub use stream::{fold_stream, StreamReader, StreamState};
 pub fn view_from_contract_bytes(bytes: &[u8]) -> Result<ContractView, Error> {
     let contract = parse_contract(bytes)?;
     if !contract.is_supported_version() {
-        return Err(Error::UnsupportedVersion { found: contract.contract_version });
+        return Err(Error::UnsupportedVersion {
+            found: contract.contract_version,
+        });
     }
     Ok(build_contract_view(&contract))
 }
@@ -75,7 +81,10 @@ pub fn view_from_contract_bytes(bytes: &[u8]) -> Result<ContractView, Error> {
 /// [`Error::Io`] if the file cannot be read, else the errors of
 /// [`view_from_contract_bytes`].
 pub fn load_contract(path: &Path) -> Result<ContractView, Error> {
-    let bytes = fs::read(path).map_err(|source| Error::Io { path: path.to_path_buf(), source })?;
+    let bytes = fs::read(path).map_err(|source| Error::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
     view_from_contract_bytes(&bytes)
 }
 
@@ -93,9 +102,10 @@ pub fn load_contract_with_stream(
     let mut view = load_contract(contract_path)?;
     if let Some(stream_path) = stream_path {
         let mut reader = StreamReader::open(stream_path);
-        let state = reader
-            .poll()
-            .map_err(|source| Error::Io { path: stream_path.to_path_buf(), source })?;
+        let state = reader.poll().map_err(|source| Error::Io {
+            path: stream_path.to_path_buf(),
+            source,
+        })?;
         apply_stream(&mut view, state);
     }
     Ok(view)

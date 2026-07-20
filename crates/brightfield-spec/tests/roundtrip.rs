@@ -59,7 +59,10 @@ fn every_corpus_spec_round_trips() {
     if !failures.is_empty() {
         let mut msg = String::from("corpus round-trip failures:\n");
         for (p, detail) in &failures {
-            msg.push_str(&format!("  {:?}: {detail}\n", p.file_name().unwrap_or_default()));
+            msg.push_str(&format!(
+                "  {:?}: {detail}\n",
+                p.file_name().unwrap_or_default()
+            ));
         }
         panic!("{msg}");
     }

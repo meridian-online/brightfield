@@ -91,9 +91,7 @@ pub enum SortDir {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum QueryPlan {
     /// Leaf node referencing a named view (from the DDL).
-    Source {
-        table: String,
-    },
+    Source { table: String },
 
     /// A constant single-row select with no `FROM` — the minimal named
     /// dataless-mark pathway (hexgrid). Renders `SELECT <columns>`, yielding one

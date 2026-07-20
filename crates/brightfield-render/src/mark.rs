@@ -124,7 +124,12 @@ pub fn parse_css_hex(s: &str) -> Option<Color> {
     let b = hex.as_bytes();
     match b.len() {
         3 => Some(Color::new([dup(b[0])?, dup(b[1])?, dup(b[2])?, 1.0])),
-        6 => Some(Color::new([to(&b[0..2])?, to(&b[2..4])?, to(&b[4..6])?, 1.0])),
+        6 => Some(Color::new([
+            to(&b[0..2])?,
+            to(&b[2..4])?,
+            to(&b[4..6])?,
+            1.0,
+        ])),
         8 => Some(Color::new([
             to(&b[0..2])?,
             to(&b[2..4])?,
@@ -266,7 +271,13 @@ fn column_as_f64(batch: &RecordBatch, col_name: &str) -> Option<Vec<Option<f64>>
             let arr = col.as_any().downcast_ref::<$arr_ty>()?;
             Some(
                 (0..arr.len())
-                    .map(|i| if arr.is_null(i) { None } else { Some(arr.value(i) as f64) })
+                    .map(|i| {
+                        if arr.is_null(i) {
+                            None
+                        } else {
+                            Some(arr.value(i) as f64)
+                        }
+                    })
                     .collect(),
             )
         }};
@@ -295,24 +306,24 @@ fn column_as_string(batch: &RecordBatch, col_name: &str) -> Option<Vec<Option<St
         return None;
     }
     let arr = col.as_any().downcast_ref::<StringArray>().unwrap();
-    Some((0..arr.len()).map(|i| {
-        if arr.is_null(i) { None } else { Some(arr.value(i).to_string()) }
-    }).collect())
+    Some(
+        (0..arr.len())
+            .map(|i| {
+                if arr.is_null(i) {
+                    None
+                } else {
+                    Some(arr.value(i).to_string())
+                }
+            })
+            .collect(),
+    )
 }
 
 /// Resolve the pixel position for a value given a channel's scale.
-fn resolve_position(
-    scale: &Scale,
-    value_f64: Option<f64>,
-    value_str: Option<&str>,
-) -> Option<f64> {
+fn resolve_position(scale: &Scale, value_f64: Option<f64>, value_str: Option<&str>) -> Option<f64> {
     match scale {
-        Scale::Linear { .. } | Scale::Time { .. } => {
-            value_f64.map(|v| scale.map_f64(v))
-        }
-        Scale::Band { .. } => {
-            value_str.and_then(|s| scale.map_category(s))
-        }
+        Scale::Linear { .. } | Scale::Time { .. } => value_f64.map(|v| scale.map_f64(v)),
+        Scale::Band { .. } => value_str.and_then(|s| scale.map_category(s)),
         // Colour ramps (categorical or sequential) don't position on an axis.
         Scale::Colour { .. } | Scale::Sequential { .. } => None,
     }
@@ -1151,8 +1162,17 @@ impl MarkRenderer for TextRenderer {
                 Some(p) => p,
                 None => continue,
             };
-            let colour = apply_highlight(resolve_colour(scales, channel_map, batch, i), i, highlight);
-            draw_text(scene, label, px, py, TEXT_MARK_SIZE, colour, TextAnchor::Middle);
+            let colour =
+                apply_highlight(resolve_colour(scales, channel_map, batch, i), i, highlight);
+            draw_text(
+                scene,
+                label,
+                px,
+                py,
+                TEXT_MARK_SIZE,
+                colour,
+                TextAnchor::Middle,
+            );
         }
     }
 }
@@ -1630,10 +1650,7 @@ fn bin_step(centres: &[f64]) -> Option<f64> {
         .map(|w| w[1] - w[0])
         .filter(|d| *d > 1e-9)
         .collect();
-    let min_gap = gaps
-        .iter()
-        .copied()
-        .fold(f64::INFINITY, f64::min);
+    let min_gap = gaps.iter().copied().fold(f64::INFINITY, f64::min);
     if !min_gap.is_finite() {
         return None;
     }
@@ -1678,13 +1695,11 @@ impl MarkRenderer for RasterRenderer {
         scales: &ScaleSet,
         _highlight: Option<&HighlightState>,
     ) {
-        let (Some(x_col), Some(y_col)) =
-            (channel_map.get(Channel::X), channel_map.get(Channel::Y))
+        let (Some(x_col), Some(y_col)) = (channel_map.get(Channel::X), channel_map.get(Channel::Y))
         else {
             return;
         };
-        let (Some(x_scale), Some(y_scale)) =
-            (scales.get(Channel::X), scales.get(Channel::Y))
+        let (Some(x_scale), Some(y_scale)) = (scales.get(Channel::X), scales.get(Channel::Y))
         else {
             return;
         };
@@ -1862,13 +1877,11 @@ impl MarkRenderer for HeatmapRenderer {
         scales: &ScaleSet,
         _highlight: Option<&HighlightState>,
     ) {
-        let (Some(x_col), Some(y_col)) =
-            (channel_map.get(Channel::X), channel_map.get(Channel::Y))
+        let (Some(x_col), Some(y_col)) = (channel_map.get(Channel::X), channel_map.get(Channel::Y))
         else {
             return;
         };
-        let (Some(x_scale), Some(y_scale)) =
-            (scales.get(Channel::X), scales.get(Channel::Y))
+        let (Some(x_scale), Some(y_scale)) = (scales.get(Channel::X), scales.get(Channel::Y))
         else {
             return;
         };
@@ -1906,10 +1919,7 @@ impl MarkRenderer for HeatmapRenderer {
                 let yb = y_scale.map_f64(cy + draw_dy / 2.0);
                 let (left, right) = (xa.min(xb), xa.max(xb));
                 let (top, bottom) = (ya.min(yb), ya.max(yb));
-                if !(left.is_finite()
-                    && right.is_finite()
-                    && top.is_finite()
-                    && bottom.is_finite())
+                if !(left.is_finite() && right.is_finite() && top.is_finite() && bottom.is_finite())
                 {
                     continue;
                 }
@@ -1945,8 +1955,7 @@ impl MarkRenderer for HeatmapRenderer {
         x_range: (f64, f64),
         y_range: (f64, f64),
     ) {
-        let (Some(x_col), Some(y_col)) =
-            (channel_map.get(Channel::X), channel_map.get(Channel::Y))
+        let (Some(x_col), Some(y_col)) = (channel_map.get(Channel::X), channel_map.get(Channel::Y))
         else {
             return;
         };
@@ -2032,22 +2041,21 @@ impl MarkRenderer for CellRenderer {
         scales: &ScaleSet,
         _highlight: Option<&HighlightState>,
     ) {
-        let (Some(x_col), Some(y_col)) =
-            (channel_map.get(Channel::X), channel_map.get(Channel::Y))
+        let (Some(x_col), Some(y_col)) = (channel_map.get(Channel::X), channel_map.get(Channel::Y))
         else {
             return;
         };
-        let (Some(x_scale), Some(y_scale)) =
-            (scales.get(Channel::X), scales.get(Channel::Y))
+        let (Some(x_scale), Some(y_scale)) = (scales.get(Channel::X), scales.get(Channel::Y))
         else {
             return;
         };
         // Cell v1 is categorical × categorical: both axes must be Band scales
         // with string categories. band_width is None on non-Band scales, so a
         // numeric axis degrades to rendering nothing rather than misplacing.
-        let (Some(x_strs), Some(y_strs)) =
-            (column_as_string(batch, x_col), column_as_string(batch, y_col))
-        else {
+        let (Some(x_strs), Some(y_strs)) = (
+            column_as_string(batch, x_col),
+            column_as_string(batch, y_col),
+        ) else {
             return;
         };
         let (Some(bw), Some(bh)) = (x_scale.band_width(), y_scale.band_width()) else {
@@ -2065,14 +2073,10 @@ impl MarkRenderer for CellRenderer {
         };
 
         for i in 0..batch.num_rows() {
-            let (Some(xc), Some(yc)) = (
-                x_strs[i].as_deref(),
-                y_strs[i].as_deref(),
-            ) else {
+            let (Some(xc), Some(yc)) = (x_strs[i].as_deref(), y_strs[i].as_deref()) else {
                 continue;
             };
-            let (Some(cx), Some(cy)) = (x_scale.map_category(xc), y_scale.map_category(yc))
-            else {
+            let (Some(cx), Some(cy)) = (x_scale.map_category(xc), y_scale.map_category(yc)) else {
                 continue;
             };
             let colour = match (&fill_ramp, fill_vals.as_ref().and_then(|v| v[i])) {
@@ -2111,7 +2115,11 @@ impl MarkRenderer for CellRenderer {
             return;
         };
         let lo = vals.iter().flatten().cloned().fold(f64::INFINITY, f64::min);
-        let hi = vals.iter().flatten().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let hi = vals
+            .iter()
+            .flatten()
+            .cloned()
+            .fold(f64::NEG_INFINITY, f64::max);
         if !(lo.is_finite() && hi.is_finite()) {
             return;
         }
@@ -2177,13 +2185,11 @@ impl MarkRenderer for ContourRenderer {
         scales: &ScaleSet,
         _highlight: Option<&HighlightState>,
     ) {
-        let (Some(x_col), Some(y_col)) =
-            (channel_map.get(Channel::X), channel_map.get(Channel::Y))
+        let (Some(x_col), Some(y_col)) = (channel_map.get(Channel::X), channel_map.get(Channel::Y))
         else {
             return;
         };
-        let (Some(x_scale), Some(y_scale)) =
-            (scales.get(Channel::X), scales.get(Channel::Y))
+        let (Some(x_scale), Some(y_scale)) = (scales.get(Channel::X), scales.get(Channel::Y))
         else {
             return;
         };
@@ -2286,13 +2292,11 @@ impl MarkRenderer for HexbinRenderer {
         scales: &ScaleSet,
         _highlight: Option<&HighlightState>,
     ) {
-        let (Some(x_col), Some(y_col)) =
-            (channel_map.get(Channel::X), channel_map.get(Channel::Y))
+        let (Some(x_col), Some(y_col)) = (channel_map.get(Channel::X), channel_map.get(Channel::Y))
         else {
             return;
         };
-        let (Some(x_scale), Some(y_scale)) =
-            (scales.get(Channel::X), scales.get(Channel::Y))
+        let (Some(x_scale), Some(y_scale)) = (scales.get(Channel::X), scales.get(Channel::Y))
         else {
             return;
         };
@@ -2351,7 +2355,10 @@ impl MarkRenderer for HexbinRenderer {
             let value = fill_vals.as_ref().and_then(|v| v[i]);
             let colour = match (fill_ramp, value) {
                 (Some(ramp), Some(v)) => {
-                    let dmax = ramp.domain_max().filter(|d| *d > 0.0).unwrap_or(max_fill.max(1.0));
+                    let dmax = ramp
+                        .domain_max()
+                        .filter(|d| *d > 0.0)
+                        .unwrap_or(max_fill.max(1.0));
                     if is_count {
                         // Zero-anchored count ramp, floored so the sparsest hex
                         // stays visible (raster's RASTER_MIN_T precedent).
@@ -2422,10 +2429,18 @@ impl MarkRenderer for HexbinRenderer {
                 (Some(a), Some(b)) => (a, b),
                 _ => {
                     // Fallback: occupied-centre span from the channel column.
-                    let Some(col) = channel_map.get(channel) else { continue };
-                    let Some(vals) = column_as_f64(batch, col) else { continue };
+                    let Some(col) = channel_map.get(channel) else {
+                        continue;
+                    };
+                    let Some(vals) = column_as_f64(batch, col) else {
+                        continue;
+                    };
                     let lo = vals.iter().flatten().cloned().fold(f64::INFINITY, f64::min);
-                    let hi = vals.iter().flatten().cloned().fold(f64::NEG_INFINITY, f64::max);
+                    let hi = vals
+                        .iter()
+                        .flatten()
+                        .cloned()
+                        .fold(f64::NEG_INFINITY, f64::max);
                     (lo, hi)
                 }
             };
@@ -2442,13 +2457,21 @@ impl MarkRenderer for HexbinRenderer {
             return;
         };
         let lo = vals.iter().flatten().cloned().fold(f64::INFINITY, f64::min);
-        let hi = vals.iter().flatten().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let hi = vals
+            .iter()
+            .flatten()
+            .cloned()
+            .fold(f64::NEG_INFINITY, f64::max);
         if !(lo.is_finite() && hi.is_finite()) {
             return;
         }
         let is_count = fill_col == DENSITY_COUNT_COL;
         // Count: [0, max] (counts are ≥ 0). Avg: [0, max] iff min ≥ 0 else [min, max].
-        let (d0, d1) = if is_count || lo >= 0.0 { (0.0, hi) } else { (lo, hi) };
+        let (d0, d1) = if is_count || lo >= 0.0 {
+            (0.0, hi)
+        } else {
+            (lo, hi)
+        };
 
         let merged = match scales.get(Channel::Fill) {
             Some(Scale::Sequential {
@@ -2516,9 +2539,21 @@ impl Default for HexgridRenderer {
 /// The pixel range `(start, end)` a scale maps onto, for the positional scales.
 fn scale_pixel_range(scale: &Scale) -> Option<(f64, f64)> {
     match scale {
-        Scale::Linear { range_start, range_end, .. }
-        | Scale::Time { range_start, range_end, .. }
-        | Scale::Band { range_start, range_end, .. } => Some((*range_start, *range_end)),
+        Scale::Linear {
+            range_start,
+            range_end,
+            ..
+        }
+        | Scale::Time {
+            range_start,
+            range_end,
+            ..
+        }
+        | Scale::Band {
+            range_start,
+            range_end,
+            ..
+        } => Some((*range_start, *range_end)),
         _ => None,
     }
 }
@@ -2528,9 +2563,12 @@ fn scale_pixel_range(scale: &Scale) -> Option<(f64, f64)> {
 /// scale kind (the hexgrid then falls back to its plot-corner pixel mesh).
 fn linear_parts(scale: &Scale) -> Option<(f64, f64, f64, f64)> {
     match scale {
-        Scale::Linear { domain_min, domain_max, range_start, range_end } => {
-            Some((*domain_min, *domain_max, *range_start, *range_end))
-        }
+        Scale::Linear {
+            domain_min,
+            domain_max,
+            range_start,
+            range_end,
+        } => Some((*domain_min, *domain_max, *range_start, *range_end)),
         _ => None,
     }
 }
@@ -2694,8 +2732,7 @@ impl MarkRenderer for HexgridRenderer {
         scales: &ScaleSet,
         _highlight: Option<&HighlightState>,
     ) {
-        let (Some(x_scale), Some(y_scale)) =
-            (scales.get(Channel::X), scales.get(Channel::Y))
+        let (Some(x_scale), Some(y_scale)) = (scales.get(Channel::X), scales.get(Channel::Y))
         else {
             return;
         };
@@ -3252,7 +3289,9 @@ impl MarkRenderer for GeoRenderer {
         let stroke = kurbo::Stroke::new(GEO_STROKE_WIDTH);
 
         for (row, geom) in geoms.iter().enumerate() {
-            let Some(text) = geom.as_deref() else { continue };
+            let Some(text) = geom.as_deref() else {
+                continue;
+            };
             let rings = parse_geojson_rings(text);
             if rings.is_empty() {
                 continue;
@@ -3470,21 +3509,46 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
     v.push((MarkKind::Line, Box::new(LineRenderer)));
     v.push((MarkKind::LineX, Box::new(LineRenderer)));
     v.push((MarkKind::LineY, Box::new(LineRenderer)));
-    v.push((MarkKind::AreaY, Box::new(AreaRenderer { axis: AreaAxis::Y })));
-    v.push((MarkKind::AreaX, Box::new(AreaRenderer { axis: AreaAxis::X })));
-    v.push((MarkKind::RuleX, Box::new(RuleRenderer { axis: RuleAxis::X })));
-    v.push((MarkKind::RuleY, Box::new(RuleRenderer { axis: RuleAxis::Y })));
-    v.push((MarkKind::Rect, Box::new(RectRenderer { kind: RectKind::Xy })));
-    v.push((MarkKind::RectX, Box::new(RectRenderer { kind: RectKind::X })));
-    v.push((MarkKind::RectY, Box::new(RectRenderer { kind: RectKind::Y })));
+    v.push((
+        MarkKind::AreaY,
+        Box::new(AreaRenderer { axis: AreaAxis::Y }),
+    ));
+    v.push((
+        MarkKind::AreaX,
+        Box::new(AreaRenderer { axis: AreaAxis::X }),
+    ));
+    v.push((
+        MarkKind::RuleX,
+        Box::new(RuleRenderer { axis: RuleAxis::X }),
+    ));
+    v.push((
+        MarkKind::RuleY,
+        Box::new(RuleRenderer { axis: RuleAxis::Y }),
+    ));
+    v.push((
+        MarkKind::Rect,
+        Box::new(RectRenderer { kind: RectKind::Xy }),
+    ));
+    v.push((
+        MarkKind::RectX,
+        Box::new(RectRenderer { kind: RectKind::X }),
+    ));
+    v.push((
+        MarkKind::RectY,
+        Box::new(RectRenderer { kind: RectKind::Y }),
+    ));
     v.push((MarkKind::Text, Box::new(TextRenderer)));
     v.push((
         MarkKind::DensityX,
-        Box::new(Density1DRenderer { axis: DensityAxis::X }),
+        Box::new(Density1DRenderer {
+            axis: DensityAxis::X,
+        }),
     ));
     v.push((
         MarkKind::DensityY,
-        Box::new(Density1DRenderer { axis: DensityAxis::Y }),
+        Box::new(Density1DRenderer {
+            axis: DensityAxis::Y,
+        }),
     ));
     v.push((MarkKind::Density, Box::new(Density2DRenderer)));
     v.push((MarkKind::Raster, Box::new(RasterRenderer::default())));
@@ -3493,8 +3557,14 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
     v.push((MarkKind::Contour, Box::new(ContourRenderer::default())));
     v.push((MarkKind::Hexbin, Box::new(HexbinRenderer::default())));
     v.push((MarkKind::Hexgrid, Box::new(HexgridRenderer::default())));
-    v.push((MarkKind::RegressionY, Box::new(RegressionRenderer::default())));
-    v.push((MarkKind::RegressionX, Box::new(RegressionRenderer::default())));
+    v.push((
+        MarkKind::RegressionY,
+        Box::new(RegressionRenderer::default()),
+    ));
+    v.push((
+        MarkKind::RegressionX,
+        Box::new(RegressionRenderer::default()),
+    ));
     // Geo — projected GeoJSON basemap / choropleth. The default (equirectangular)
     // projection; `configured_renderer` swaps in the plot's resolved projection.
     v.push((MarkKind::Geo, Box::new(GeoRenderer::default())));
@@ -3571,7 +3641,8 @@ impl MarkRenderer for ColourOverrideRenderer {
         scales: &ScaleSet,
         highlight: Option<&HighlightState>,
     ) {
-        self.inner.render(scene, batch, channel_map, scales, highlight);
+        self.inner
+            .render(scene, batch, channel_map, scales, highlight);
     }
 
     fn render_interpolated(
@@ -3584,8 +3655,15 @@ impl MarkRenderer for ColourOverrideRenderer {
         t: f64,
         highlight: Option<&HighlightState>,
     ) {
-        self.inner
-            .render_interpolated(scene, batch, channel_map, scales, prev_positions, t, highlight);
+        self.inner.render_interpolated(
+            scene,
+            batch,
+            channel_map,
+            scales,
+            prev_positions,
+            t,
+            highlight,
+        );
     }
 
     fn zero_baseline_channel(&self) -> Option<Channel> {
@@ -3795,7 +3873,10 @@ mod tests {
         };
         let bw = scale.band_width().expect("should compute band width");
         // 2 categories in 200px: each band is 100px, with 10% padding = 90px
-        assert!((bw - 90.0).abs() < f64::EPSILON, "band width should be 90.0, got {bw}");
+        assert!(
+            (bw - 90.0).abs() < f64::EPSILON,
+            "band width should be 90.0, got {bw}"
+        );
     }
 
     #[test]
@@ -3812,10 +3893,7 @@ mod tests {
             schema,
             vec![
                 Arc::new(TimestampMicrosecondArray::from(vec![
-                    1_000_000,
-                    2_000_000,
-                    3_000_000,
-                    4_000_000,
+                    1_000_000, 2_000_000, 3_000_000, 4_000_000,
                 ])),
                 Arc::new(Float64Array::from(vec![10.0, 20.0, 15.0, 25.0])),
             ],
@@ -3875,7 +3953,11 @@ mod tests {
         let mut scene_x = Scene::new();
         let area_x = AreaRenderer { axis: AreaAxis::X };
         area_x.render(&mut scene_x, &batch, &cm, &scales, None);
-        assert_eq!(count_scene_paths(&scene_x), 1, "areaX emits one filled path");
+        assert_eq!(
+            count_scene_paths(&scene_x),
+            1,
+            "areaX emits one filled path"
+        );
         assert_eq!(area_x.zero_baseline_channel(), Some(Channel::X));
     }
 
@@ -3900,7 +3982,11 @@ mod tests {
 
         let mut scene = Scene::new();
         AreaRenderer { axis: AreaAxis::Y }.render(&mut scene, &batch, &cm, &scales, None);
-        assert_eq!(count_scene_paths(&scene), 0, "a single point can't form an area");
+        assert_eq!(
+            count_scene_paths(&scene),
+            0,
+            "a single point can't form an area"
+        );
     }
 
     // --- mark breadth: rule (with literal channel values) ---
@@ -3909,9 +3995,11 @@ mod tests {
     fn rule_renderer_literal_y_draws_one_line() {
         // x column gives the span scale; y is a constant literal (the position).
         let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Float64, false)]));
-        let batch =
-            RecordBatch::try_new(schema, vec![Arc::new(Float64Array::from(vec![0.0, 1.0, 2.0, 3.0]))])
-                .unwrap();
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Float64Array::from(vec![0.0, 1.0, 2.0, 3.0]))],
+        )
+        .unwrap();
         let mut cm = ChannelMap::new();
         cm.insert(Channel::X, "x".to_string());
         cm.insert_literal(Channel::Y, 5.0);
@@ -4006,7 +4094,11 @@ mod tests {
         let mut scene = Scene::new();
         TextRenderer.render(&mut scene, &batch, &cm, &scales, None);
         // "AB" + "CDE" = 5 glyphs. Glyphs encode into resources, not n_paths.
-        assert_eq!(count_scene_glyphs(&scene), 5, "one glyph per label character");
+        assert_eq!(
+            count_scene_glyphs(&scene),
+            5,
+            "one glyph per label character"
+        );
     }
 
     // --- HighlightState ---
@@ -4150,7 +4242,10 @@ mod tests {
         };
         let out = deemphasise(base, &style);
         let [r, g, b, a] = out.components;
-        assert!((r - 0.8).abs() < 1e-2 && (g - 0.8).abs() < 1e-2 && (b - 0.8).abs() < 1e-2, "#ccc grey");
+        assert!(
+            (r - 0.8).abs() < 1e-2 && (g - 0.8).abs() < 1e-2 && (b - 0.8).abs() < 1e-2,
+            "#ccc grey"
+        );
         assert!((a - 0.2).abs() < 1e-6, "fillOpacity sets alpha");
     }
 
@@ -4174,8 +4269,14 @@ mod tests {
 
     #[test]
     fn ce_parse_css_hex_forms() {
-        assert_eq!(parse_css_hex("#000000").unwrap().components, [0.0, 0.0, 0.0, 1.0]);
-        assert_eq!(parse_css_hex("#ffffff").unwrap().components, [1.0, 1.0, 1.0, 1.0]);
+        assert_eq!(
+            parse_css_hex("#000000").unwrap().components,
+            [0.0, 0.0, 0.0, 1.0]
+        );
+        assert_eq!(
+            parse_css_hex("#ffffff").unwrap().components,
+            [1.0, 1.0, 1.0, 1.0]
+        );
         // #ccc expands to #cccccc = 0xcc/255.
         let g = 0xCC as f32 / 255.0;
         assert_eq!(parse_css_hex("#ccc").unwrap().components, [g, g, g, 1.0]);
@@ -4281,10 +4382,7 @@ mod tests {
 
         let mut scene = Scene::new();
         let renderer = DotRenderer;
-        renderer.render_interpolated(
-            &mut scene, &batch, &cm, &scales,
-            &prev_positions, 0.0, None,
-        );
+        renderer.render_interpolated(&mut scene, &batch, &cm, &scales, &prev_positions, 0.0, None);
 
         let encoding = scene.encoding();
         assert!(
@@ -4318,10 +4416,7 @@ mod tests {
 
         let mut scene = Scene::new();
         let renderer = DotRenderer;
-        renderer.render_interpolated(
-            &mut scene, &batch, &cm, &scales,
-            &prev_positions, 1.0, None,
-        );
+        renderer.render_interpolated(&mut scene, &batch, &cm, &scales, &prev_positions, 1.0, None);
 
         let encoding = scene.encoding();
         assert!(
@@ -4362,7 +4457,9 @@ mod tests {
         // Perpendicular density axis + padded bin axis come from augment_scales,
         // mirroring the real pipeline (the batch has no perpendicular column).
         let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
-        let renderer = Density1DRenderer { axis: DensityAxis::X };
+        let renderer = Density1DRenderer {
+            axis: DensityAxis::X,
+        };
         renderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
 
         let mut scene = Scene::new();
@@ -4396,7 +4493,9 @@ mod tests {
         cm.insert(Channel::Y, "y_bin".to_string());
         // Perpendicular density axis (x) synthesised by augment_scales.
         let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
-        let renderer = Density1DRenderer { axis: DensityAxis::Y };
+        let renderer = Density1DRenderer {
+            axis: DensityAxis::Y,
+        };
         renderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
 
         let mut scene = Scene::new();
@@ -4558,8 +4657,16 @@ mod tests {
             vec![1.0, 2.0, 3.0, 4.0],
         );
         let g = build_kde_grid(&dense, "x_bin", "y_bin", None).expect("grid builds");
-        assert_eq!(g.x_centres, vec![0.0, 1.0], "contiguous x lattice unchanged");
-        assert_eq!(g.y_centres, vec![0.0, 1.0], "contiguous y lattice unchanged");
+        assert_eq!(
+            g.x_centres,
+            vec![0.0, 1.0],
+            "contiguous x lattice unchanged"
+        );
+        assert_eq!(
+            g.y_centres,
+            vec![0.0, 1.0],
+            "contiguous y lattice unchanged"
+        );
 
         // Gapped x axis: bins occupied at 0, 1, 4 (interior 2 and 3 empty). The
         // pitch recovers to 1 and the lattice fills 0..4 — five columns, the two
@@ -4589,9 +4696,15 @@ mod tests {
         // No adjacent occupied pair: centres 2 & 3 buckets apart → gaps {0.9, 1.35}.
         // Min-gap alone would say 0.9 (2× too wide); the GCD recovers the true 0.45.
         let step = bin_step(&[0.0, 0.9, 2.25]).expect("recovers pitch");
-        assert!((step - 0.45).abs() < 1e-9, "GCD of {{0.9, 1.35}} is 0.45, got {step}");
+        assert!(
+            (step - 0.45).abs() < 1e-9,
+            "GCD of {{0.9, 1.35}} is 0.45, got {step}"
+        );
         assert_eq!(bin_step(&[10.0]), None, "one centre → no step");
-        assert_eq!(sorted_unique(&[Some(2.0), None, Some(2.0), Some(1.0)]), vec![1.0, 2.0]);
+        assert_eq!(
+            sorted_unique(&[Some(2.0), None, Some(2.0), Some(1.0)]),
+            vec![1.0, 2.0]
+        );
     }
 
     // A raster draws one filled cell per occupied bin — a 3×3 grid → ≥9 fills.
@@ -4618,7 +4731,13 @@ mod tests {
         cm.insert(Channel::X, "x_bin".to_string());
         cm.insert(Channel::Y, "y_bin".to_string());
         let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
-        RasterRenderer::default().augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        RasterRenderer::default().augment_scales(
+            &mut scales,
+            &batch,
+            &cm,
+            (40.0, 600.0),
+            (450.0, 20.0),
+        );
 
         let mut scene = Scene::new();
         RasterRenderer::default().render(&mut scene, &batch, &cm, &scales, None);
@@ -4662,7 +4781,13 @@ mod tests {
         cm.insert(Channel::X, "x_bin".to_string());
         cm.insert(Channel::Y, "y_bin".to_string());
         let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
-        RasterRenderer::default().augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        RasterRenderer::default().augment_scales(
+            &mut scales,
+            &batch,
+            &cm,
+            (40.0, 600.0),
+            (450.0, 20.0),
+        );
 
         // Expected ramp samples, computed the way render does: floor the position
         // at RASTER_MIN_T in the ramp's own domain, then map_continuous.
@@ -4677,7 +4802,10 @@ mod tests {
         // Both ramp samples carry full alpha (byte 255) and DIFFER in RGB.
         assert_eq!(expect_low[3], 1.0, "ramp colours are full-alpha");
         assert_eq!(expect_high[3], 1.0, "ramp colours are full-alpha");
-        assert!(expect_low != expect_high, "ramp maps the two counts to distinct colours");
+        assert!(
+            expect_low != expect_high,
+            "ramp maps the two counts to distinct colours"
+        );
 
         // Probe the colours ACTUALLY encoded into the scene: exactly the two cell
         // fills, and they equal the expected ramp samples byte-for-byte.
@@ -4704,7 +4832,10 @@ mod tests {
             scene2.encoding().draw_data.iter().copied().collect();
         assert_eq!(
             fallback,
-            std::collections::HashSet::from([packed([cr, cg, cb, alpha_low]), packed([cr, cg, cb, 1.0])]),
+            std::collections::HashSet::from([
+                packed([cr, cg, cb, alpha_low]),
+                packed([cr, cg, cb, 1.0])
+            ]),
             "fallback keeps the default-blue hue with count-proportional alpha"
         );
     }
@@ -4753,10 +4884,20 @@ mod tests {
         let batch = hexbin_batch(DENSITY_COUNT_COL, vec![1.0, 100.0]);
         let cm = hexbin_cm(DENSITY_COUNT_COL);
         let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
-        HexbinRenderer::default().augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        HexbinRenderer::default().augment_scales(
+            &mut scales,
+            &batch,
+            &cm,
+            (40.0, 600.0),
+            (450.0, 20.0),
+        );
 
         let ramp = scales.get(Channel::Fill).expect("count ramp built");
-        assert_eq!(ramp.domain_max(), Some(100.0), "count ramp zero-anchored [0,max]");
+        assert_eq!(
+            ramp.domain_max(),
+            Some(100.0),
+            "count ramp zero-anchored [0,max]"
+        );
         let dmax = ramp.domain_max().unwrap();
         let sample = |count: f64| {
             let pos = (count / dmax).clamp(0.0, 1.0).max(RASTER_MIN_T);
@@ -4782,7 +4923,13 @@ mod tests {
         let batch = hexbin_batch("v", vec![15.0, 100.0]);
         let cm = hexbin_cm("v");
         let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
-        HexbinRenderer::default().augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        HexbinRenderer::default().augment_scales(
+            &mut scales,
+            &batch,
+            &cm,
+            (40.0, 600.0),
+            (450.0, 20.0),
+        );
         let ramp = scales.get(Channel::Fill).expect("avg ramp built");
         // min ≥ 0 ⇒ [0, max].
         assert_eq!(ramp.domain_max(), Some(100.0));
@@ -4808,12 +4955,24 @@ mod tests {
         let batch = hexbin_batch("v", vec![-5.0, 10.0]);
         let cm = hexbin_cm("v");
         let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
-        HexbinRenderer::default().augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        HexbinRenderer::default().augment_scales(
+            &mut scales,
+            &batch,
+            &cm,
+            (40.0, 600.0),
+            (450.0, 20.0),
+        );
 
         // x/y centres [0,10] widened by dx=dy=2 → [-2, 12].
         let x = scales.get(Channel::X).unwrap();
-        assert!((x.domain_min().unwrap() - (-2.0)).abs() < 1e-9, "x widened lo");
-        assert!((x.domain_max().unwrap() - 12.0).abs() < 1e-9, "x widened hi");
+        assert!(
+            (x.domain_min().unwrap() - (-2.0)).abs() < 1e-9,
+            "x widened lo"
+        );
+        assert!(
+            (x.domain_max().unwrap() - 12.0).abs() < 1e-9,
+            "x widened hi"
+        );
         let y = scales.get(Channel::Y).unwrap();
         assert!((y.domain_min().unwrap() - (-2.0)).abs() < 1e-9);
         assert!((y.domain_max().unwrap() - 12.0).abs() < 1e-9);
@@ -4841,7 +5000,13 @@ mod tests {
                 palette: vec![[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
             },
         );
-        HexbinRenderer::default().augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        HexbinRenderer::default().augment_scales(
+            &mut scales,
+            &batch,
+            &cm,
+            (40.0, 600.0),
+            (450.0, 20.0),
+        );
         assert!(
             matches!(scales.get(Channel::Fill), Some(Scale::Colour { .. })),
             "a sibling's categorical Colour fill must survive"
@@ -4855,9 +5020,15 @@ mod tests {
     fn configured_renderer_rebuild_parity() {
         let batch = hexbin_batch(DENSITY_COUNT_COL, vec![1.0, 100.0]);
         let cm = hexbin_cm(DENSITY_COUNT_COL);
-        let renderer =
-            configured_renderer(MarkKind::Hexbin, SequentialScheme::Turbo, None, None, None, None)
-                .expect("hexbin has a configured renderer");
+        let renderer = configured_renderer(
+            MarkKind::Hexbin,
+            SequentialScheme::Turbo,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("hexbin has a configured renderer");
         let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
         renderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
 
@@ -4867,14 +5038,26 @@ mod tests {
         renderer.render(&mut b, &batch, &cm, &scales, None);
         let da: Vec<u32> = a.encoding().draw_data.iter().copied().collect();
         let db: Vec<u32> = b.encoding().draw_data.iter().copied().collect();
-        assert_eq!(da, db, "the override renderer draws the rebuild identically");
+        assert_eq!(
+            da, db,
+            "the override renderer draws the rebuild identically"
+        );
         // Turbo scheme actually rides through (distinct from the viridis default).
         let mut viridis_scene = Scene::new();
         let mut vscales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
-        HexbinRenderer::default().augment_scales(&mut vscales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        HexbinRenderer::default().augment_scales(
+            &mut vscales,
+            &batch,
+            &cm,
+            (40.0, 600.0),
+            (450.0, 20.0),
+        );
         HexbinRenderer::default().render(&mut viridis_scene, &batch, &cm, &vscales, None);
         let dv: Vec<u32> = viridis_scene.encoding().draw_data.iter().copied().collect();
-        assert_ne!(da, dv, "the configured scheme (turbo) differs from the viridis default");
+        assert_ne!(
+            da, dv,
+            "the configured scheme (turbo) differs from the viridis default"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -4892,18 +5075,25 @@ mod tests {
         RecordBatch::try_new(Arc::new(Schema::new(fields)), cols).unwrap()
     }
 
-    const SQUARE: &str = r#"{"type":"Polygon","coordinates":[[[0,0],[10,0],[10,10],[0,10],[0,0]]]}"#;
+    const SQUARE: &str =
+        r#"{"type":"Polygon","coordinates":[[[0,0],[10,0],[10,10],[0,10],[0,0]]]}"#;
 
     #[test]
     fn projection_equirect_identity_and_albers_reference() {
         // Equirectangular is the identity (u=lon, v=lat).
-        assert_eq!(Projection::Equirectangular.project(12.0, -34.0), (12.0, -34.0));
+        assert_eq!(
+            Projection::Equirectangular.project(12.0, -34.0),
+            (12.0, -34.0)
+        );
 
         // Albers reference point (−96°, 23°) projects to ≈ (0, 0): λ=λ0 → θ=0 → x=0;
         // φ=φ0 → ρ=ρ0 → y=0. (Structurally insensitive to the parallels on its
         // own — the non-reference point below pins the conic constants.)
         let (rx, ry) = Projection::Albers.project(-96.0, 23.0);
-        assert!(rx.abs() < 1e-9 && ry.abs() < 1e-9, "reference point ≈ origin: ({rx}, {ry})");
+        assert!(
+            rx.abs() < 1e-9 && ry.abs() < 1e-9,
+            "reference point ≈ origin: ({rx}, {ry})"
+        );
 
         // A NON-reference point pins the standard-parallel / conic math. The
         // expected value is computed INDEPENDENTLY by hand from the d3-geo
@@ -4921,11 +5111,17 @@ mod tests {
         // North is up in math coords: a more-northern point has a LARGER v.
         let (_, y_south) = Projection::Albers.project(-96.0, 30.0);
         let (_, y_north) = Projection::Albers.project(-96.0, 45.0);
-        assert!(y_north > y_south, "albers v increases north: {y_north} !> {y_south}");
+        assert!(
+            y_north > y_south,
+            "albers v increases north: {y_north} !> {y_south}"
+        );
 
         // ResolvedProjection → Projection conversion is faithful.
         use brightfield_spec::layout::ResolvedProjection as R;
-        assert_eq!(Projection::from(R::Equirectangular), Projection::Equirectangular);
+        assert_eq!(
+            Projection::from(R::Equirectangular),
+            Projection::Equirectangular
+        );
         assert_eq!(Projection::from(R::Albers), Projection::Albers);
     }
 
@@ -4940,8 +5136,18 @@ mod tests {
 
         // augment_scales CREATES the x/y linear scales (no inferable column).
         let (
-            Some(Scale::Linear { domain_min: xd0, domain_max: xd1, range_start: xr0, range_end: xr1 }),
-            Some(Scale::Linear { domain_min: yd0, domain_max: yd1, range_start: yr0, range_end: yr1 }),
+            Some(Scale::Linear {
+                domain_min: xd0,
+                domain_max: xd1,
+                range_start: xr0,
+                range_end: xr1,
+            }),
+            Some(Scale::Linear {
+                domain_min: yd0,
+                domain_max: yd1,
+                range_start: yr0,
+                range_end: yr1,
+            }),
         ) = (scales.get(Channel::X), scales.get(Channel::Y))
         else {
             panic!("geo augment_scales must synthesize linear x/y scales");
@@ -4956,8 +5162,14 @@ mod tests {
         // Centred: the data centroid (5, 5) maps to the plot-rect centre.
         let cx = scales.get(Channel::X).unwrap().map_f64(5.0);
         let cy = scales.get(Channel::Y).unwrap().map_f64(5.0);
-        assert!((cx - (x_range.0 + x_range.1) / 2.0).abs() < 1e-6, "x centred: {cx}");
-        assert!((cy - (y_range.0 + y_range.1) / 2.0).abs() < 1e-6, "y centred: {cy}");
+        assert!(
+            (cx - (x_range.0 + x_range.1) / 2.0).abs() < 1e-6,
+            "x centred: {cx}"
+        );
+        assert!(
+            (cy - (y_range.0 + y_range.1) / 2.0).abs() < 1e-6,
+            "y centred: {cy}"
+        );
 
         // Geo suppresses the cartesian frame.
         assert!(renderer.suppresses_frame(), "geo drops grid + axes");
@@ -4965,7 +5177,10 @@ mod tests {
         // A basemap (no fill) strokes each feature — non-empty scene.
         let mut scene = Scene::new();
         renderer.render(&mut scene, &batch, &cm, &scales, None);
-        assert!(count_scene_paths(&scene) > 0, "basemap strokes the polygon outline");
+        assert!(
+            count_scene_paths(&scene) > 0,
+            "basemap strokes the polygon outline"
+        );
     }
 
     #[test]
@@ -4980,7 +5195,11 @@ mod tests {
 
         // A numeric fill builds a Sequential ramp anchored [0, max] (min >= 0).
         match scales.get(Channel::Fill) {
-            Some(Scale::Sequential { domain_min, domain_max, .. }) => {
+            Some(Scale::Sequential {
+                domain_min,
+                domain_max,
+                ..
+            }) => {
                 assert_eq!(*domain_min, 0.0);
                 assert_eq!(*domain_max, 8.0);
             }
@@ -4989,7 +5208,10 @@ mod tests {
         // Render fills the features (does not early-return).
         let mut scene = Scene::new();
         renderer.render(&mut scene, &batch, &cm, &scales, None);
-        assert!(count_scene_paths(&scene) > 0, "choropleth fills the features");
+        assert!(
+            count_scene_paths(&scene) > 0,
+            "choropleth fills the features"
+        );
     }
 
     #[test]
@@ -5020,15 +5242,34 @@ mod tests {
             DataType::Int64,
             false,
         )]));
-        RecordBatch::try_new(schema, vec![Arc::new(arrow::array::Int64Array::from(vec![1]))])
-            .unwrap()
+        RecordBatch::try_new(
+            schema,
+            vec![Arc::new(arrow::array::Int64Array::from(vec![1]))],
+        )
+        .unwrap()
     }
 
     /// A ScaleSet with linear x/y scales over a known plot-area pixel rect.
     fn plot_scales(x: (f64, f64), y: (f64, f64)) -> ScaleSet {
         let mut s = ScaleSet::new();
-        s.insert(Channel::X, Scale::Linear { domain_min: 0.0, domain_max: 1.0, range_start: x.0, range_end: x.1 });
-        s.insert(Channel::Y, Scale::Linear { domain_min: 0.0, domain_max: 1.0, range_start: y.0, range_end: y.1 });
+        s.insert(
+            Channel::X,
+            Scale::Linear {
+                domain_min: 0.0,
+                domain_max: 1.0,
+                range_start: x.0,
+                range_end: x.1,
+            },
+        );
+        s.insert(
+            Channel::Y,
+            Scale::Linear {
+                domain_min: 0.0,
+                domain_max: 1.0,
+                range_start: y.0,
+                range_end: y.1,
+            },
+        );
         s
     }
 
@@ -5044,7 +5285,13 @@ mod tests {
         assert!(expected_centres > 0, "lattice must cover the rect");
 
         let mut scene = Scene::new();
-        renderer.render(&mut scene, &hexgrid_batch(), &ChannelMap::new(), &scales, None);
+        renderer.render(
+            &mut scene,
+            &hexgrid_batch(),
+            &ChannelMap::new(),
+            &scales,
+            None,
+        );
         assert_eq!(
             count_scene_paths(&scene),
             expected_centres,
@@ -5218,8 +5465,22 @@ mod tests {
     fn hexgrid_augment_preserves_existing_scales() {
         let renderer = HexgridRenderer::default();
         let mut scales = ScaleSet::new();
-        scales.insert(Channel::X, Scale::Linear { domain_min: 5.0, domain_max: 50.0, range_start: 40.0, range_end: 600.0 });
-        renderer.augment_scales(&mut scales, &hexgrid_batch(), &ChannelMap::new(), (40.0, 600.0), (450.0, 20.0));
+        scales.insert(
+            Channel::X,
+            Scale::Linear {
+                domain_min: 5.0,
+                domain_max: 50.0,
+                range_start: 40.0,
+                range_end: 600.0,
+            },
+        );
+        renderer.augment_scales(
+            &mut scales,
+            &hexgrid_batch(),
+            &ChannelMap::new(),
+            (40.0, 600.0),
+            (450.0, 20.0),
+        );
         // The existing x scale's data domain survives (not reset to [0,1]).
         assert_eq!(scales.get(Channel::X).unwrap().domain_max(), Some(50.0));
     }
@@ -5258,7 +5519,13 @@ mod tests {
                 palette: vec![[0.1, 0.2, 0.3, 1.0], [0.4, 0.5, 0.6, 1.0]],
             },
         );
-        RasterRenderer::default().augment_scales(&mut scales, &make(vec![1.0, 9.0]), &cm, (0.0, 100.0), (100.0, 0.0));
+        RasterRenderer::default().augment_scales(
+            &mut scales,
+            &make(vec![1.0, 9.0]),
+            &cm,
+            (0.0, 100.0),
+            (100.0, 0.0),
+        );
         match scales.get(Channel::Fill) {
             Some(Scale::Colour { categories, .. }) => assert_eq!(categories, &["a", "b"]),
             other => panic!("categorical Fill must survive a raster augment_scales, got {other:?}"),
@@ -5266,12 +5533,31 @@ mod tests {
 
         // (b) Two rasters union their zero-anchored domains (maxes 10 and 100).
         let mut scales = ScaleSet::new();
-        RasterRenderer::default().augment_scales(&mut scales, &make(vec![3.0, 10.0]), &cm, (0.0, 100.0), (100.0, 0.0));
-        RasterRenderer::default().augment_scales(&mut scales, &make(vec![50.0, 100.0]), &cm, (0.0, 100.0), (100.0, 0.0));
+        RasterRenderer::default().augment_scales(
+            &mut scales,
+            &make(vec![3.0, 10.0]),
+            &cm,
+            (0.0, 100.0),
+            (100.0, 0.0),
+        );
+        RasterRenderer::default().augment_scales(
+            &mut scales,
+            &make(vec![50.0, 100.0]),
+            &cm,
+            (0.0, 100.0),
+            (100.0, 0.0),
+        );
         match scales.get(Channel::Fill) {
-            Some(Scale::Sequential { domain_min, domain_max, .. }) => {
+            Some(Scale::Sequential {
+                domain_min,
+                domain_max,
+                ..
+            }) => {
                 assert!((domain_min - 0.0).abs() < f64::EPSILON, "zero-anchored");
-                assert!((domain_max - 100.0).abs() < f64::EPSILON, "union to the larger max");
+                assert!(
+                    (domain_max - 100.0).abs() < f64::EPSILON,
+                    "union to the larger max"
+                );
             }
             other => panic!("expected a unioned Sequential Fill, got {other:?}"),
         }
@@ -5307,8 +5593,20 @@ mod tests {
         let big = make(vec![50.0, 100.0]);
         let small = make(vec![1.0, 40.0]);
         let mut scales = infer_scales(&small, &cm, (40.0, 600.0), (450.0, 20.0));
-        RasterRenderer::default().augment_scales(&mut scales, &big, &cm, (40.0, 600.0), (450.0, 20.0));
-        RasterRenderer::default().augment_scales(&mut scales, &small, &cm, (40.0, 600.0), (450.0, 20.0));
+        RasterRenderer::default().augment_scales(
+            &mut scales,
+            &big,
+            &cm,
+            (40.0, 600.0),
+            (450.0, 20.0),
+        );
+        RasterRenderer::default().augment_scales(
+            &mut scales,
+            &small,
+            &cm,
+            (40.0, 600.0),
+            (450.0, 20.0),
+        );
         let ramp = scales.get(Channel::Fill).expect("shared ramp");
         assert_eq!(ramp.domain_max(), Some(100.0), "domain unioned to 100");
 
@@ -5320,7 +5618,10 @@ mod tests {
         let expect_floor = ramp.map_continuous(RASTER_MIN_T * 100.0);
         let expect_hi = ramp.map_continuous(40.0);
         // Guard against a domain that would collapse the two cells to one colour.
-        assert!(expect_floor != expect_hi, "the two cells are distinct under the shared domain");
+        assert!(
+            expect_floor != expect_hi,
+            "the two cells are distinct under the shared domain"
+        );
         let drawn: std::collections::HashSet<u32> =
             scene.encoding().draw_data.iter().copied().collect();
         assert_eq!(
@@ -5353,12 +5654,28 @@ mod tests {
         cm.insert(Channel::X, "x_bin".to_string());
         cm.insert(Channel::Y, "y_bin".to_string());
         let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
-        RasterRenderer::default().augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
+        RasterRenderer::default().augment_scales(
+            &mut scales,
+            &batch,
+            &cm,
+            (40.0, 600.0),
+            (450.0, 20.0),
+        );
 
         match scales.get(Channel::X) {
-            Some(Scale::Linear { domain_min, domain_max, .. }) => {
-                assert!((domain_min - (-0.5)).abs() < 1e-9, "x domain min widened to -0.5");
-                assert!((domain_max - 2.5).abs() < 1e-9, "x domain max widened to 2.5");
+            Some(Scale::Linear {
+                domain_min,
+                domain_max,
+                ..
+            }) => {
+                assert!(
+                    (domain_min - (-0.5)).abs() < 1e-9,
+                    "x domain min widened to -0.5"
+                );
+                assert!(
+                    (domain_max - 2.5).abs() < 1e-9,
+                    "x domain max widened to 2.5"
+                );
             }
             other => panic!("expected a widened linear x scale, got {other:?}"),
         }
@@ -5387,14 +5704,30 @@ mod tests {
         cm.insert(Channel::X, "x_bin".to_string());
         cm.insert(Channel::Y, "y_bin".to_string());
         let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
-        let renderer = RasterRenderer { scheme: SequentialScheme::Blues };
+        let renderer = RasterRenderer {
+            scheme: SequentialScheme::Blues,
+        };
         renderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
 
         match scales.get(Channel::Fill) {
-            Some(Scale::Sequential { domain_min, domain_max, stops }) => {
-                assert!((domain_min - 0.0).abs() < f64::EPSILON, "domain zero-anchored");
-                assert!((domain_max - 7.0).abs() < f64::EPSILON, "domain_max == max count");
-                assert_eq!(stops, &SequentialScheme::Blues.stops(), "stops match the scheme");
+            Some(Scale::Sequential {
+                domain_min,
+                domain_max,
+                stops,
+            }) => {
+                assert!(
+                    (domain_min - 0.0).abs() < f64::EPSILON,
+                    "domain zero-anchored"
+                );
+                assert!(
+                    (domain_max - 7.0).abs() < f64::EPSILON,
+                    "domain_max == max count"
+                );
+                assert_eq!(
+                    stops,
+                    &SequentialScheme::Blues.stops(),
+                    "stops match the scheme"
+                );
             }
             other => panic!("expected a Fill Sequential scale, got {other:?}"),
         }
@@ -5446,9 +5779,15 @@ mod tests {
         let batch = RecordBatch::try_new(
             schema,
             vec![
-                Arc::new(Float64Array::from(vec![1.0, 0.0, 2.0, 0.0, 1.0, 2.0, 1.0, 0.0])),
-                Arc::new(Float64Array::from(vec![1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 2.0, 2.0])),
-                Arc::new(Float64Array::from(vec![16.0, 1.0, 1.0, 4.0, 4.0, 4.0, 4.0, 1.0])),
+                Arc::new(Float64Array::from(vec![
+                    1.0, 0.0, 2.0, 0.0, 1.0, 2.0, 1.0, 0.0,
+                ])),
+                Arc::new(Float64Array::from(vec![
+                    1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 2.0, 2.0,
+                ])),
+                Arc::new(Float64Array::from(vec![
+                    16.0, 1.0, 1.0, 4.0, 4.0, 4.0, 4.0, 1.0,
+                ])),
             ],
         )
         .unwrap();
@@ -5469,7 +5808,10 @@ mod tests {
             .collect();
         let centre = packed(ramp.map_continuous(grid.density[1 * 3 + 1]));
         let corner = packed(ramp.map_continuous(grid.density[0]));
-        assert_ne!(centre, corner, "distinct densities encode distinct ramp colours");
+        assert_ne!(
+            centre, corner,
+            "distinct densities encode distinct ramp colours"
+        );
         // The UNOCCUPIED bin (2, 2): zero count, but the smoothed field is
         // positive there, so its ramp colour must be drawn like any other cell.
         let unoccupied_density = grid.density[2 * 3 + 2];
@@ -5538,13 +5880,24 @@ mod tests {
 
         let grid = build_kde_grid(&batch, "x_bin", "y_bin", None).expect("grid builds");
         match scales.get(Channel::Fill) {
-            Some(Scale::Sequential { domain_min, domain_max, stops }) => {
-                assert!((domain_min - 0.0).abs() < f64::EPSILON, "domain zero-anchored");
+            Some(Scale::Sequential {
+                domain_min,
+                domain_max,
+                stops,
+            }) => {
+                assert!(
+                    (domain_min - 0.0).abs() < f64::EPSILON,
+                    "domain zero-anchored"
+                );
                 assert!(
                     (domain_max - grid.max_density).abs() < f64::EPSILON,
                     "domain_max == max smoothed density"
                 );
-                assert_eq!(stops, &SequentialScheme::Blues.stops(), "stops match the scheme");
+                assert_eq!(
+                    stops,
+                    &SequentialScheme::Blues.stops(),
+                    "stops match the scheme"
+                );
             }
             other => panic!("expected a Fill Sequential scale, got {other:?}"),
         }
@@ -5566,7 +5919,9 @@ mod tests {
         renderer.augment_scales(&mut with_colour, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
         match with_colour.get(Channel::Fill) {
             Some(Scale::Colour { categories, .. }) => assert_eq!(categories, &["a", "b"]),
-            other => panic!("categorical Fill must survive a heatmap augment_scales, got {other:?}"),
+            other => {
+                panic!("categorical Fill must survive a heatmap augment_scales, got {other:?}")
+            }
         }
     }
 
@@ -5590,7 +5945,10 @@ mod tests {
             (drawn, scales)
         };
 
-        let explicit = HeatmapRenderer { scheme: SequentialScheme::default(), bandwidth: Some(0.5) };
+        let explicit = HeatmapRenderer {
+            scheme: SequentialScheme::default(),
+            bandwidth: Some(0.5),
+        };
         let (drawn_explicit, scales_explicit) = render_with(&explicit);
         let (drawn_silverman, _) = render_with(&HeatmapRenderer::default());
         assert_ne!(
@@ -5606,7 +5964,10 @@ mod tests {
             .iter()
             .map(|v| packed(ramp.map_continuous(*v)))
             .collect();
-        assert_eq!(drawn_explicit, expected, "bandwidth threads through to the drawn field");
+        assert_eq!(
+            drawn_explicit, expected,
+            "bandwidth threads through to the drawn field"
+        );
     }
 
     // build_kde_grid materialises a DENSE first..last lattice at the
@@ -5637,9 +5998,20 @@ mod tests {
         cm.insert(Channel::Y, "y_bin".to_string());
 
         let grid = build_kde_grid(&batch, "x_bin", "y_bin", None).expect("grid builds");
-        assert_eq!(grid.dx, 1.0, "the dense lattice carries the recovered pitch 1");
-        assert_eq!(grid.x_centres.len(), 17, "dense first..last lattice materialises the gap bins");
-        assert_eq!(bin_step(&grid.x_centres), Some(1.0), "the dense lattice is uniform at the true pitch");
+        assert_eq!(
+            grid.dx, 1.0,
+            "the dense lattice carries the recovered pitch 1"
+        );
+        assert_eq!(
+            grid.x_centres.len(),
+            17,
+            "dense first..last lattice materialises the gap bins"
+        );
+        assert_eq!(
+            bin_step(&grid.x_centres),
+            Some(1.0),
+            "the dense lattice is uniform at the true pitch"
+        );
 
         // Identity scales (domain == pixel range), so drawn coordinates ARE data
         // units and the encoded f32 coordinate stream can be read back directly.
@@ -5665,13 +6037,22 @@ mod tests {
         let has = |v: f64| coords.contains(&((v * 4.0).round() as i64));
         // Every cell spans its centre ± half the recovered pitch: the first cell
         // (centre 0.5) has edges 0 and 1, the sparse cells keep 1-wide edges too.
-        assert!(has(0.0) && has(1.0), "first cell drawn at the recovered pitch 1");
-        assert!(has(15.0) && has(17.0), "sparse cells drawn at the recovered pitch 1");
+        assert!(
+            has(0.0) && has(1.0),
+            "first cell drawn at the recovered pitch 1"
+        );
+        assert!(
+            has(15.0) && has(17.0),
+            "sparse cells drawn at the recovered pitch 1"
+        );
         // The dense lattice tiles the whole span at unit pitch: interior gap bins
         // are materialised (zero mass) and drawn, so an interior edge like 8.0
         // is a genuine cell boundary now — but nothing spills past the [0, 17]
         // lattice bounds (the old gap-naive smear reached 0.5 ± 7.5 → -7 and 8).
-        assert!(has(8.0), "interior gap bins are materialised in the dense lattice");
+        assert!(
+            has(8.0),
+            "interior gap bins are materialised in the dense lattice"
+        );
         assert!(
             !has(-7.0) && !has(24.0),
             "no cell spills past the dense lattice bounds"
@@ -5732,7 +6113,11 @@ mod tests {
 
         let (two, five) = (paths_at(2), paths_at(5));
         assert_eq!(two, expected_at(2), "one stroked path per chained iso-line");
-        assert_eq!(five, expected_at(5), "one stroked path per chained iso-line");
+        assert_eq!(
+            five,
+            expected_at(5),
+            "one stroked path per chained iso-line"
+        );
         assert!(
             five > two && two >= 2,
             "thresholds drives the iso-line count ({two} at 2 vs {five} at 5)"
@@ -5791,10 +6176,17 @@ mod tests {
             .iter()
             .map(|v| packed(ramp.map_continuous(*v)))
             .collect();
-        assert_eq!(expected.len(), 4, "the four values encode four distinct colours");
+        assert_eq!(
+            expected.len(),
+            4,
+            "the four values encode four distinct colours"
+        );
         let drawn: std::collections::HashSet<u32> =
             scene.encoding().draw_data.iter().copied().collect();
-        assert_eq!(drawn, expected, "cell fills are the ramp samples of the values");
+        assert_eq!(
+            drawn, expected,
+            "cell fills are the ramp samples of the values"
+        );
     }
 
     // augment_scales anchors the Fill Sequential domain per the v1
@@ -5808,7 +6200,9 @@ mod tests {
         cm.insert(Channel::X, "slot".to_string());
         cm.insert(Channel::Y, "day".to_string());
         cm.insert(Channel::Fill, "value".to_string());
-        let renderer = CellRenderer { scheme: SequentialScheme::Blues };
+        let renderer = CellRenderer {
+            scheme: SequentialScheme::Blues,
+        };
 
         // min >= 0 (values 1..8): the inferred Linear is replaced by a
         // zero-anchored Sequential with the scheme's stops.
@@ -5819,10 +6213,21 @@ mod tests {
         );
         renderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
         match scales.get(Channel::Fill) {
-            Some(Scale::Sequential { domain_min, domain_max, stops }) => {
-                assert!((domain_min - 0.0).abs() < f64::EPSILON, "min >= 0 anchors at zero");
+            Some(Scale::Sequential {
+                domain_min,
+                domain_max,
+                stops,
+            }) => {
+                assert!(
+                    (domain_min - 0.0).abs() < f64::EPSILON,
+                    "min >= 0 anchors at zero"
+                );
                 assert!((domain_max - 8.0).abs() < f64::EPSILON);
-                assert_eq!(stops, &SequentialScheme::Blues.stops(), "stops match the scheme");
+                assert_eq!(
+                    stops,
+                    &SequentialScheme::Blues.stops(),
+                    "stops match the scheme"
+                );
             }
             other => panic!("expected a Fill Sequential, got {other:?}"),
         }
@@ -5845,8 +6250,15 @@ mod tests {
         let mut neg_scales = infer_scales(&neg, &cm, (40.0, 600.0), (450.0, 20.0));
         renderer.augment_scales(&mut neg_scales, &neg, &cm, (40.0, 600.0), (450.0, 20.0));
         match neg_scales.get(Channel::Fill) {
-            Some(Scale::Sequential { domain_min, domain_max, .. }) => {
-                assert!((domain_min - (-3.0)).abs() < f64::EPSILON, "min < 0 keeps the data min");
+            Some(Scale::Sequential {
+                domain_min,
+                domain_max,
+                ..
+            }) => {
+                assert!(
+                    (domain_min - (-3.0)).abs() < f64::EPSILON,
+                    "min < 0 keeps the data min"
+                );
                 assert!((domain_max - 5.0).abs() < f64::EPSILON);
             }
             other => panic!("expected a Fill Sequential, got {other:?}"),
@@ -5865,9 +6277,15 @@ mod tests {
         );
         renderer.augment_scales(&mut union, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
         match union.get(Channel::Fill) {
-            Some(Scale::Sequential { domain_max, stops, .. }) => {
+            Some(Scale::Sequential {
+                domain_max, stops, ..
+            }) => {
                 assert_eq!(*domain_max, 100.0, "union keeps the wider domain");
-                assert_eq!(stops, &SequentialScheme::Viridis.stops(), "first scale's stops win");
+                assert_eq!(
+                    stops,
+                    &SequentialScheme::Viridis.stops(),
+                    "first scale's stops win"
+                );
             }
             other => panic!("expected a unioned Sequential, got {other:?}"),
         }
@@ -6000,7 +6418,10 @@ mod tests {
             count_scene_paths(&scene)
         );
         // Sanity-check the slope/intercept on Anscombe I.
-        assert!((slope - 0.5).abs() < 0.01, "Anscombe I slope ≈ 0.5 ({slope})");
+        assert!(
+            (slope - 0.5).abs() < 0.01,
+            "Anscombe I slope ≈ 0.5 ({slope})"
+        );
         assert!(
             (intercept - 3.0).abs() < 0.05,
             "Anscombe I intercept ≈ 3.0 ({intercept})"
@@ -6055,10 +6476,7 @@ mod tests {
         let mut scene = Scene::new();
         let renderer = BarRenderer;
         // Default impl should forward to render()
-        renderer.render_interpolated(
-            &mut scene, &batch, &cm, &scales,
-            &prev_positions, 0.5, None,
-        );
+        renderer.render_interpolated(&mut scene, &batch, &cm, &scales, &prev_positions, 0.5, None);
 
         let encoding = scene.encoding();
         assert!(
@@ -6387,10 +6805,7 @@ mod tests {
             scene.encoding().draw_data.iter().copied().collect();
         assert_eq!(
             drawn,
-            std::collections::HashSet::from([
-                packed(ramp_at_10),
-                packed(NULL_INK.components),
-            ]),
+            std::collections::HashSet::from([packed(ramp_at_10), packed(NULL_INK.components),]),
             "the valued cell samples the ramp; the NULL cell renders NULL ink"
         );
         assert!(

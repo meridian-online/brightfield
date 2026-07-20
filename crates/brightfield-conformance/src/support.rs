@@ -168,9 +168,7 @@ mod tests {
     use brightfield_spec::{parse_spec, Format};
 
     fn parse(source: &str) -> Spec {
-        parse_spec(source, Format::Yaml)
-            .expect("valid yaml")
-            .spec
+        parse_spec(source, Format::Yaml).expect("valid yaml").spec
     }
 
     #[test]
@@ -266,7 +264,8 @@ mod tests {
 
     #[test]
     fn dfconf_preflight_is_deterministic() {
-        let src = "plot:\n  - mark: line\n    data: { from: t }\n  - mark: dot\n    data: { from: t }\n";
+        let src =
+            "plot:\n  - mark: line\n    data: { from: t }\n  - mark: dot\n    data: { from: t }\n";
         let spec = parse(src);
         let a = preflight(&spec);
         let b = preflight(&spec);
