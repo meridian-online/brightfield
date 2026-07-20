@@ -6,7 +6,7 @@
 //! ships. It presents the composited Vello dashboard as a zero-copy egui texture
 //! in a real `CentralPanel`, wraps it in native egui chrome (header + a side
 //! panel with a legend and a slider — the widgets the render trait does *not*
-//! cover), and drives the T46 overlay/hit-test seam from egui pointer input.
+//! cover), and drives the overlay/hit-test seam from egui pointer input.
 
 use brightfield_render::canvas_host::{CanvasHost, ChartSurface, Color, PixelSize, SurfaceCursor};
 use meridian_design::chrome::{INK_DARK, INK_LIGHT};
@@ -29,7 +29,8 @@ pub struct ShellState {
     mode: Mode,
     /// A native egui slider (a shell widget, not part of the chart trait).
     demo_value: f32,
-    /// Whether to draw the hover crosshair overlay (the T46 overlay seam demo).
+    /// Whether to draw the hover crosshair overlay — the worked example that keeps
+/// the overlay seam exercised end to end.
     overlay_on: bool,
     fonts_installed: bool,
 }

@@ -1,7 +1,9 @@
 //! `bf-imgdiff` — a perceptual PNG diff (pixelmatch / dify-style YIQ metric).
 //!
-//! Replaces the byte-exact `cmp -s` example-PNG gate (decision-68: egui text AA
-//! isn't bit-stable, so byte identity is dead). Two images are "the same" when
+//! Replaces the byte-exact `cmp -s` example-PNG gate: egui rasterises text with
+//! antialiasing that is not bit-stable across platforms, drivers or even glyph
+//! atlas packing, so byte identity reports a diff on every run and is useless as
+//! a regression gate. Two images are "the same" when
 //! the fraction of perceptually-different pixels is within tolerance; a per-pixel
 //! YIQ colour distance decides each pixel, exactly as pixelmatch/dify do.
 //!

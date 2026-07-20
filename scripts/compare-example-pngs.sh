@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Perceptual example-PNG gate (decision-68: byte-exact `cmp -s` is dead — egui
-# text AA isn't bit-stable, and the render path is migrating to egui/Vello).
+# Perceptual example-PNG gate. Byte-exact `cmp -s` no longer works: egui text
+# antialiasing is not bit-stable across platforms/drivers, and the render path is
+# migrating to egui/Vello, so byte identity flags a diff on every run.
 #
 # Renders every example spec headlessly (BRIGHTFIELD_DUMP_PNG) and compares each
 # against a baseline directory with a pixelmatch/dify-style perceptual diff

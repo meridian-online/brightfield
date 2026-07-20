@@ -98,8 +98,11 @@ impl VelloRenderer {
     /// Build a Vello renderer on an **externally owned** wgpu device/queue —
     /// the egui/eframe path (the shared `egui_wgpu::RenderState` device), so a
     /// Vello scene rasterises straight onto a texture egui samples, with no
-    /// second device and no CPU readback (decision-68). The gpui path keeps
-    /// [`Self::new`]'s dedicated device.
+    /// second device and no CPU readback. Sharing the host's device is the whole
+    /// point: a texture written by one device cannot be sampled by another, so a
+    /// renderer-owned device would force every frame back through host memory.
+    /// The gpui path, which has no device to borrow, keeps [`Self::new`]'s
+    /// dedicated device.
     ///
     /// # Panics
     ///

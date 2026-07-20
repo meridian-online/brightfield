@@ -17,8 +17,12 @@ brightfield-sql = { path = "../brightfield-sql" }
 # Meridian design tokens, bridged into egui Style/Visuals/FontDefinitions.
 meridian-design = { git = "https://github.com/meridian-online/design", rev = "9dd5d3882a38aa665d74544f87d412dab5129c24" }
 
-# egui 0.35 rides wgpu 29 — the same major Vello 0.9 uses — so egui-wgpu's device
-# and vello::wgpu are one crate and one device (decision-63 version lock).
+# VERSION LOCK — egui 0.35 rides wgpu 29, the same wgpu major Vello 0.9 uses, so
+# `egui_wgpu`'s wgpu and `vello::wgpu` resolve to ONE crate instance and therefore
+# one `wgpu::Device`. That is what lets a Vello scene rasterise onto a texture egui
+# samples directly, with no second device and no CPU readback. Two wgpu majors in
+# the graph would make the device types incompatible and force the readback back.
+# Bump egui and vello TOGETHER, and only to versions that still share a wgpu major.
 egui = "0.35"
 eframe = { version = "0.35", default-features = false, features = ["wgpu"] }
 egui-wgpu = "0.35"
