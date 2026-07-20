@@ -4,6 +4,12 @@
 # Local real-UI capture artifacts (brightfield-shot / parity PNGs); regenerable.
 /render-proof
 
+# egui_kittest failure output: the actual render (*.new.png) and the perceptual
+# diff (*.diff.png) it writes next to a baseline when a snapshot test fails.
+# Only the baseline itself is committed (per the egui_kittest README).
+**/tests/snapshots/**/*.diff.png
+**/tests/snapshots/**/*.new.png
+
 # User-supplied geo data for examples/live/ (download per each spec's header;
 # never committed — see examples/live/us-states.yaml).
 /examples/live/*.json

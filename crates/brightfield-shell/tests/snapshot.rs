@@ -9,6 +9,17 @@
 //!
 //! Regenerate baselines with: `UPDATE_SNAPSHOTS=1 cargo +1.95.0 test -p
 //! brightfield-shell --test snapshot`.
+//!
+//! Thresholds come from `kittest.toml` at the workspace root — read the policy
+//! comment there before reaching for any per-test override.
+//!
+//! This tier needs a real wgpu adapter, so it is the one part of the suite a
+//! GPU-less machine cannot run. There is deliberately no skip switch: every
+//! machine that runs the suite today (the local loop and the macOS CI runner)
+//! has an adapter, and an env-var opt-out would render "no GPU here" as a
+//! passing test — the exact silently-green outcome this tier exists to prevent.
+//! If a GPU-less runner is ever added, mark these `#[ignore]` and opt in
+//! explicitly on the runners that can render, so a skip reads as a skip.
 
 use brightfield_shell::design::{self, Mode};
 use egui_kittest::{Harness, SnapshotOptions};
@@ -33,7 +44,8 @@ fn chrome_sheet(ui: &mut egui::Ui, mode: Mode, demo: &mut f32, checked: &mut boo
             ui.horizontal(|ui| {
                 let (rect, _) =
                     ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
-                ui.painter().rect_filled(rect, 2.0, design::to_color32(token));
+                ui.painter()
+                    .rect_filled(rect, 2.0, design::to_color32(token));
                 ui.label(name);
             });
         }
@@ -44,13 +56,28 @@ fn chrome_sheet(ui: &mut egui::Ui, mode: Mode, demo: &mut f32, checked: &mut boo
     });
 }
 
-/// A lenient perceptual gate: allow GPU/AA jitter across machines while still
-/// catching a real chrome regression (a wrong colour, missing widget, font
-/// swap covers far more than this many pixels).
+/// The repo-default perceptual gate, straight from `kittest.toml`: `dify`
+/// per-pixel delta `0.6`, and `failed_pixel_count_threshold = 0` so no pixel may
+/// exceed that delta.
+///
+/// Read the second number honestly: zero pixels of *budget*, not zero
+/// difference. `0.6` is itself a perceptual tolerance, so a render that differs
+/// from the baseline everywhere by less than it still passes. Measured on this
+/// harness, nudging the swatch corner rounding 2.0 → 3.0 does **not** trip the
+/// gate — sub-pixel geometry on a 12x12 square stays under the per-pixel delta.
+/// What does trip it is a change with real ink behind it: swapping one swatch to
+/// the adjacent shade of the same scale marks 536 pixels.
+///
+/// This used to carry `.threshold(2.5).failed_pixel_count_threshold(400)`, a
+/// pre-emptive loosening against cross-machine AA jitter that had never been
+/// shown to be necessary. Re-measured at the library floor, both baselines pass
+/// with zero differing pixels on the reference machine, so the slack bought
+/// nothing here and is gone.
+///
+/// If a future machine genuinely jitters, override per test and say in the
+/// comment which jitter, and where you saw it.
 fn options() -> SnapshotOptions {
     SnapshotOptions::default()
-        .threshold(2.5)
-        .failed_pixel_count_threshold(400)
 }
 
 #[test]
