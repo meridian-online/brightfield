@@ -10,6 +10,10 @@
 //! seam chevrons on their edges; a validation gate is a shield glyph on the
 //! guarded edge, never a node. Edges route orthogonally along the layout's
 //! dummy-node lanes.
+//!
+//! Every colour is resolved for the caller's mode through [`AssetInk`], which
+//! reads the same [`meridian_design::semantic`] layer the workbench chrome
+//! reads. Nothing in this module names a light-mode token any more.
 
 use kurbo::{Affine, BezPath, Circle, Rect, RoundedRect, Stroke};
 use peniko::{Color, Fill};
@@ -24,51 +28,120 @@ use brightfield_protocol::layout::{EdgeRoute, Flow, Layout};
 use crate::ink::ink;
 use crate::text::{draw_text, TextAnchor, LABEL_SIZE};
 
-/// Canvas behind the graph — the Meridian page tone, one step warmer than
-/// the node cards so cards read as cards.
-const CANVAS_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.page);
-/// Node card fill — the chart surface.
-const NODE_FILL: Color = ink(meridian_design::chrome::INK_LIGHT.surface);
-/// Quiet card border (sources, files).
-const NODE_BORDER: Color = ink(meridian_design::scales::GRAY_LIGHT[4]);
-/// Stronger border for TABLE cards.
-const TABLE_BORDER: Color = ink(meridian_design::chrome::INK_LIGHT.ink_secondary);
-/// Edge ink.
-const EDGE_COLOUR: Color = ink(meridian_design::scales::GRAY_LIGHT[5]);
-/// Accent (Dataset double-ring, shield, family count) — Maritime focus ink.
-const ACCENT_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.focus);
-/// Issue badge on an opaque chip.
-const ISSUE_COLOUR: Color = ink(meridian_design::scales::AMBER_LIGHT[8]);
-/// Glyph drawn on the amber issue badge — the light surface tone through the
-/// ink() boundary (not an ad-hoc `Color::WHITE`), so a future dark-ink theme
-/// pass tracks it with every other chrome constant.
-const BADGE_GLYPH_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.surface);
-/// Muted fill for INTERNAL statement intermediates.
-const INTERNAL_FILL: Color = ink(meridian_design::scales::GRAY_LIGHT[1]);
-/// Chip fill for degraded statements.
-const CHIP_FILL: Color = ink(meridian_design::scales::GRAY_LIGHT[2]);
-/// Primary label ink.
-const LABEL_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.ink_primary);
-/// Muted label ink (internal/chip labels).
-const MUTED_LABEL_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.ink_muted);
-/// Execution-status tints for a seam — the reserved Meridian status
-/// inks, never reused as series colour. `NotRun` keeps the quiet edge ink so an
+/// Every colour this module paints, resolved for one mode.
+///
+/// The scene used to hold thirteen `const Color`s read straight off
+/// `chrome::INK_LIGHT` and the `*_LIGHT` scales, which is why the DAG raster
+/// stayed a white sheet inside a dark window: nothing in this file could see
+/// the mode. This struct is the same list, resolved through
+/// [`meridian_design::semantic`] the way `brightfield_workbench::chrome` does
+/// — the panel's chrome and the raster inside it now ask the same layer the
+/// same question, so they cannot drift.
+///
+/// Where a slot names the thing being painted, the semantic layer is used and
+/// the field says which slot. Four values sit off the semantic layer's named
+/// slots and take the mode's raw gray scale instead — the crate docs sanction
+/// exactly that ("drop to a raw scale only when the thing being coloured
+/// genuinely has no semantic name yet"), and each says why at the field. In
+/// light mode every field resolves to the byte-identical value its `const`
+/// predecessor held, which is why this change moves no light-mode pixel.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AssetInk {
+    /// Canvas behind the graph — the app plane, one step away from the node
+    /// cards so cards read as cards.
+    pub canvas: Color,
+    /// Node card fill — the raised reading surface.
+    pub node_fill: Color,
+    /// Quiet card border (sources, files). Gray step 5 (index 4): **below**
+    /// the semantic border band (6–8) on purpose. A card hairline that repeats
+    /// at every node in a dense DAG reads as a lattice at the band's weight —
+    /// the same argument `Borders::divider` makes for gridlines, one step
+    /// quieter still.
+    pub node_border: Color,
+    /// Stronger border for TABLE cards — the secondary ink, because a TABLE's
+    /// edge is doing the work of a label here, not of a hairline.
+    pub table_border: Color,
+    /// Edge ink — the default hairline (`borders.subtle`).
+    pub edge: Color,
+    /// Accent (Dataset double-ring, shield, family count) — the focus border,
+    /// the one accent, exactly as `chrome::tone_colour` resolves `Tone::Accent`.
+    pub accent: Color,
+    /// Issue badge on an opaque chip — the Warning role's resting solid.
+    /// Amber step 9 is byte-identical in both scales, so like
+    /// [`Self::badge_glyph`] this one does not move with the mode: a bright
+    /// solid is a paint, not a plane.
+    pub issue: Color,
+    /// Glyph drawn on the amber issue badge. `text.on_solid` is the light
+    /// surface tone in **both** modes by design ("a paint, not a
+    /// mode-dependent slot"), so this is one value that legitimately does not
+    /// move with the mode.
+    pub badge_glyph: Color,
+    /// Muted fill for INTERNAL statement intermediates — the sunken plane.
+    pub internal_fill: Color,
+    /// Chip fill for degraded statements. Gray step 3 (index 2): one step up
+    /// from [`Self::internal_fill`], so a degraded chip reads as *more*
+    /// recessed than a plain intermediate. The semantic layer has no slot for
+    /// "the next step up from sunken".
+    pub chip_fill: Color,
+    /// Primary label ink.
+    pub label: Color,
+    /// Muted label ink (internal/chip labels) — `text.placeholder`, which is
+    /// the same step as chrome's `ink_muted` this replaces.
+    pub muted_label: Color,
+    /// Skipped-seam tint. Gray step 7 (index 6): the only status tint with no
+    /// reserved status colour, and it must sit clearly above [`Self::edge`]
+    /// (step 6) without becoming ink.
+    pub skipped: Color,
+}
+
+/// Execution-status tints for a seam — the reserved Meridian status inks,
+/// **fixed across modes by definition** (`viz::STATUS`: "reserved, never
+/// reused as series, fixed across modes"), so they are the one part of this
+/// palette that does not take a mode. `NotRun` keeps the quiet edge ink so an
 /// unrun seam is never green.
 const STATUS_OK: Color = ink(meridian_design::viz::STATUS.good);
 const STATUS_RUNNING: Color = ink(meridian_design::viz::STATUS.warning);
-const STATUS_SKIPPED: Color = ink(meridian_design::scales::GRAY_LIGHT[6]);
 const STATUS_FAILED: Color = ink(meridian_design::viz::STATUS.critical);
 
-/// The ink a seam chevron takes for its execution status — the two-channel rule
-/// (execution status is its own colour channel). `NotRun` falls back to the
-/// quiet edge ink, so unmeasured never reads green.
-fn status_ink(status: SeamStatus) -> Color {
-    match status {
-        SeamStatus::Ok => STATUS_OK,
-        SeamStatus::Running => STATUS_RUNNING,
-        SeamStatus::Skipped => STATUS_SKIPPED,
-        SeamStatus::Failed => STATUS_FAILED,
-        SeamStatus::NotRun => EDGE_COLOUR,
+impl AssetInk {
+    /// Resolve the palette for a mode — `dark` is the same flag
+    /// [`meridian_design::semantic`] takes, and callers pass `mode.is_dark()`.
+    #[must_use]
+    pub fn for_mode(dark: bool) -> Self {
+        let sem = meridian_design::semantic(dark);
+        let gray = if dark {
+            meridian_design::scales::GRAY_DARK
+        } else {
+            meridian_design::scales::GRAY_LIGHT
+        };
+        Self {
+            canvas: ink(sem.surfaces.app),
+            node_fill: ink(sem.surfaces.raised),
+            node_border: ink(gray[4]),
+            table_border: ink(sem.text.secondary),
+            edge: ink(sem.borders.subtle),
+            accent: ink(sem.borders.focus),
+            issue: ink(sem.role(meridian_design::Role::Warning).background.base),
+            badge_glyph: ink(sem.text.on_solid),
+            internal_fill: ink(sem.surfaces.sunken),
+            chip_fill: ink(gray[2]),
+            label: ink(sem.text.primary),
+            muted_label: ink(sem.text.placeholder),
+            skipped: ink(gray[6]),
+        }
+    }
+
+    /// The ink a seam chevron takes for its execution status — the two-channel
+    /// rule (execution status is its own colour channel). `NotRun` falls back
+    /// to the quiet edge ink, so unmeasured never reads green.
+    fn status(self, status: SeamStatus) -> Color {
+        match status {
+            SeamStatus::Ok => STATUS_OK,
+            SeamStatus::Running => STATUS_RUNNING,
+            SeamStatus::Skipped => self.skipped,
+            SeamStatus::Failed => STATUS_FAILED,
+            SeamStatus::NotRun => self.edge,
+        }
     }
 }
 /// Vertical offset from a card's centre to the label baseline (the
@@ -150,7 +223,7 @@ fn draw_chevron(scene: &mut Scene, cx: f64, cy: f64, flow: Flow, colour: Color) 
 }
 
 /// The gate-as-shield glyph near the guarded edge's target.
-fn draw_shield(scene: &mut Scene, cx: f64, cy: f64) {
+fn draw_shield(scene: &mut Scene, cx: f64, cy: f64, accent: Color) {
     let (w, h) = (9.0, 11.0);
     let mut shield = BezPath::new();
     shield.move_to((cx - w / 2.0, cy - h / 2.0));
@@ -159,13 +232,7 @@ fn draw_shield(scene: &mut Scene, cx: f64, cy: f64) {
     shield.line_to((cx, cy + h / 2.0));
     shield.line_to((cx - w / 2.0, cy + h / 6.0));
     shield.close_path();
-    scene.fill(
-        Fill::NonZero,
-        Affine::IDENTITY,
-        ACCENT_COLOUR,
-        None,
-        &shield,
-    );
+    scene.fill(Fill::NonZero, Affine::IDENTITY, accent, None, &shield);
 }
 
 /// The chevron site on the route's middle segment. The right-pointing glyph
@@ -203,12 +270,18 @@ fn route_midpoint(points: &[(f64, f64)], flow: Flow) -> (f64, f64) {
     }
 }
 
-fn draw_edge(scene: &mut Scene, route: &EdgeRoute, flow: Flow, seam_status: SeamStatus) {
+fn draw_edge(
+    scene: &mut Scene,
+    route: &EdgeRoute,
+    flow: Flow,
+    seam_status: SeamStatus,
+    palette: AssetInk,
+) {
     let path = orthogonal_path(&route.points, flow);
     scene.stroke(
         &Stroke::new(1.0),
         Affine::IDENTITY,
-        EDGE_COLOUR,
+        palette.edge,
         None,
         &path,
     );
@@ -230,14 +303,14 @@ fn draw_edge(scene: &mut Scene, route: &EdgeRoute, flow: Flow, seam_status: Seam
         scene.stroke(
             &Stroke::new(1.0),
             Affine::IDENTITY,
-            EDGE_COLOUR,
+            palette.edge,
             None,
             &head,
         );
     }
     if route.via.is_some() {
         let (cx, cy) = route_midpoint(&route.points, flow);
-        draw_chevron(scene, cx, cy, flow, status_ink(seam_status));
+        draw_chevron(scene, cx, cy, flow, palette.status(seam_status));
     }
     if route.shield {
         // Shield sits just before the target so the guard reads as "what
@@ -245,29 +318,40 @@ fn draw_edge(scene: &mut Scene, route: &EdgeRoute, flow: Flow, seam_status: Seam
         // vertically.
         if let Some(&(tx, ty)) = route.points.last() {
             match flow {
-                Flow::Horizontal => draw_shield(scene, tx - 14.0, ty - 9.0),
-                Flow::Vertical => draw_shield(scene, tx - 9.0, ty - 14.0),
+                Flow::Horizontal => draw_shield(scene, tx - 14.0, ty - 9.0, palette.accent),
+                Flow::Vertical => draw_shield(scene, tx - 9.0, ty - 14.0, palette.accent),
             }
         }
     }
 }
 
-fn draw_node(scene: &mut Scene, node: &AssetNode, rect: &brightfield_protocol::layout::Rect) {
+fn draw_node(
+    scene: &mut Scene,
+    node: &AssetNode,
+    rect: &brightfield_protocol::layout::Rect,
+    palette: AssetInk,
+) {
     let (x, y, w, h) = (rect.x, rect.y, rect.width, rect.height);
     let (cx, cy) = (x + w / 2.0, y + h / 2.0);
-    let mut label_colour = LABEL_COLOUR;
+    let mut label_colour = palette.label;
     match node.kind {
         AssetKind::Source => {
             let pill = RoundedRect::new(x, y, x + w, y + h, h / 2.0);
-            scene.fill(Fill::NonZero, Affine::IDENTITY, NODE_FILL, None, &pill);
-            scene.stroke(
-                &Stroke::new(1.0),
+            scene.fill(
+                Fill::NonZero,
                 Affine::IDENTITY,
-                NODE_BORDER,
+                palette.node_fill,
                 None,
                 &pill,
             );
-            label_colour = MUTED_LABEL_COLOUR;
+            scene.stroke(
+                &Stroke::new(1.0),
+                Affine::IDENTITY,
+                palette.node_border,
+                None,
+                &pill,
+            );
+            label_colour = palette.muted_label;
         }
         AssetKind::File => {
             // Document silhouette: a rect with a folded top-right corner.
@@ -279,8 +363,20 @@ fn draw_node(scene: &mut Scene, node: &AssetNode, rect: &brightfield_protocol::l
             doc.line_to((x + w, y + h));
             doc.line_to((x, y + h));
             doc.close_path();
-            scene.fill(Fill::NonZero, Affine::IDENTITY, NODE_FILL, None, &doc);
-            scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, NODE_BORDER, None, &doc);
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                palette.node_fill,
+                None,
+                &doc,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                Affine::IDENTITY,
+                palette.node_border,
+                None,
+                &doc,
+            );
             let mut crease = BezPath::new();
             crease.move_to((x + w - fold, y));
             crease.line_to((x + w - fold, y + fold));
@@ -288,50 +384,68 @@ fn draw_node(scene: &mut Scene, node: &AssetNode, rect: &brightfield_protocol::l
             scene.stroke(
                 &Stroke::new(1.0),
                 Affine::IDENTITY,
-                NODE_BORDER,
+                palette.node_border,
                 None,
                 &crease,
             );
         }
         AssetKind::Table => {
             let card = RoundedRect::new(x, y, x + w, y + h, 4.0);
-            scene.fill(Fill::NonZero, Affine::IDENTITY, NODE_FILL, None, &card);
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                palette.node_fill,
+                None,
+                &card,
+            );
             scene.stroke(
                 &Stroke::new(1.2),
                 Affine::IDENTITY,
-                TABLE_BORDER,
+                palette.table_border,
                 None,
                 &card,
             );
         }
         AssetKind::Internal => {
             let card = RoundedRect::new(x, y, x + w, y + h, 3.0);
-            scene.fill(Fill::NonZero, Affine::IDENTITY, INTERNAL_FILL, None, &card);
-            scene.stroke(
-                &Stroke::new(0.8),
+            scene.fill(
+                Fill::NonZero,
                 Affine::IDENTITY,
-                NODE_BORDER,
+                palette.internal_fill,
                 None,
                 &card,
             );
-            label_colour = MUTED_LABEL_COLOUR;
+            scene.stroke(
+                &Stroke::new(0.8),
+                Affine::IDENTITY,
+                palette.node_border,
+                None,
+                &card,
+            );
+            label_colour = palette.muted_label;
         }
         AssetKind::Dataset => {
             // Double ring: the sink is THE artefact.
             let outer = RoundedRect::new(x, y, x + w, y + h, 6.0);
             let inner = RoundedRect::new(x + 3.0, y + 3.0, x + w - 3.0, y + h - 3.0, 4.0);
-            scene.fill(Fill::NonZero, Affine::IDENTITY, NODE_FILL, None, &outer);
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                palette.node_fill,
+                None,
+                &outer,
+            );
             scene.stroke(
                 &Stroke::new(1.4),
                 Affine::IDENTITY,
-                ACCENT_COLOUR,
+                palette.accent,
                 None,
                 &outer,
             );
             scene.stroke(
                 &Stroke::new(1.0),
                 Affine::IDENTITY,
-                ACCENT_COLOUR,
+                palette.accent,
                 None,
                 &inner,
             );
@@ -339,20 +453,32 @@ fn draw_node(scene: &mut Scene, node: &AssetNode, rect: &brightfield_protocol::l
         AssetKind::Family => {
             // A stacked back card hints at the collapsed instances.
             let back = RoundedRect::new(x + 4.0, y + 4.0, x + w, y + h, 5.0);
-            scene.fill(Fill::NonZero, Affine::IDENTITY, INTERNAL_FILL, None, &back);
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                palette.internal_fill,
+                None,
+                &back,
+            );
             scene.stroke(
                 &Stroke::new(1.0),
                 Affine::IDENTITY,
-                NODE_BORDER,
+                palette.node_border,
                 None,
                 &back,
             );
             let front = RoundedRect::new(x, y, x + w - 4.0, y + h - 4.0, 5.0);
-            scene.fill(Fill::NonZero, Affine::IDENTITY, NODE_FILL, None, &front);
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                palette.node_fill,
+                None,
+                &front,
+            );
             scene.stroke(
                 &Stroke::new(1.0),
                 Affine::IDENTITY,
-                NODE_BORDER,
+                palette.node_border,
                 None,
                 &front,
             );
@@ -363,7 +489,7 @@ fn draw_node(scene: &mut Scene, node: &AssetNode, rect: &brightfield_protocol::l
                     x + w - 10.0,
                     y + h - 10.0,
                     LABEL_SIZE,
-                    ACCENT_COLOUR,
+                    palette.accent,
                     TextAnchor::End,
                 );
             }
@@ -374,7 +500,7 @@ fn draw_node(scene: &mut Scene, node: &AssetNode, rect: &brightfield_protocol::l
                 cx - 2.0,
                 cy - 2.0 + BASELINE_NUDGE,
                 LABEL_SIZE,
-                LABEL_COLOUR,
+                palette.label,
                 TextAnchor::Middle,
             );
             return; // family draws its own label (offset for the badge)
@@ -382,21 +508,27 @@ fn draw_node(scene: &mut Scene, node: &AssetNode, rect: &brightfield_protocol::l
         AssetKind::Opaque => {
             // Issue-badged chip: dashed outline, amber badge.
             let chip = RoundedRect::new(x, y, x + w, y + h, 3.0);
-            scene.fill(Fill::NonZero, Affine::IDENTITY, CHIP_FILL, None, &chip);
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                palette.chip_fill,
+                None,
+                &chip,
+            );
             let dashed = Stroke::new(1.0).with_dashes(0.0, [3.0, 2.0]);
-            scene.stroke(&dashed, Affine::IDENTITY, NODE_BORDER, None, &chip);
+            scene.stroke(&dashed, Affine::IDENTITY, palette.node_border, None, &chip);
             let badge = Circle::new((x + w - 2.0, y + 2.0), 5.0);
-            scene.fill(Fill::NonZero, Affine::IDENTITY, ISSUE_COLOUR, None, &badge);
+            scene.fill(Fill::NonZero, Affine::IDENTITY, palette.issue, None, &badge);
             draw_text(
                 scene,
                 "!",
                 x + w - 2.0,
                 y + 5.5,
                 9.0,
-                BADGE_GLYPH_COLOUR,
+                palette.badge_glyph,
                 TextAnchor::Middle,
             );
-            label_colour = MUTED_LABEL_COLOUR;
+            label_colour = palette.muted_label;
         }
     }
     let label = fit_label(&node.label, w);
@@ -414,8 +546,12 @@ fn draw_node(scene: &mut Scene, node: &AssetNode, rect: &brightfield_protocol::l
 /// Draw the laid-out asset graph into `scene` with no execution-status tint —
 /// the headless / offline (manifest) path, where no run status exists. Seams
 /// draw in the quiet edge ink.
-pub fn render_asset_graph(scene: &mut Scene, layout: &Layout, graph: &AssetGraph) {
-    render_asset_graph_with_status(scene, layout, graph, &BTreeMap::new());
+///
+/// `dark` selects the mode's ink, and it is the same flag
+/// [`meridian_design::semantic`] takes: callers holding a workbench `Mode` pass
+/// `mode.is_dark()`.
+pub fn render_asset_graph(scene: &mut Scene, layout: &Layout, graph: &AssetGraph, dark: bool) {
+    render_asset_graph_with_status(scene, layout, graph, &BTreeMap::new(), dark);
 }
 
 /// Draw the laid-out asset graph into `scene`, tinting each seam chevron by its
@@ -428,12 +564,14 @@ pub fn render_asset_graph_with_status(
     layout: &Layout,
     graph: &AssetGraph,
     status: &BTreeMap<StepId, SeamStatus>,
+    dark: bool,
 ) {
+    let palette = AssetInk::for_mode(dark);
     let canvas = Rect::new(0.0, 0.0, layout.width, layout.height);
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
-        CANVAS_COLOUR,
+        palette.canvas,
         None,
         &canvas,
     );
@@ -444,11 +582,11 @@ pub fn render_asset_graph_with_status(
             .and_then(|v| status.get(v))
             .copied()
             .unwrap_or(SeamStatus::NotRun);
-        draw_edge(scene, route, layout.flow, seam_status);
+        draw_edge(scene, route, layout.flow, seam_status, palette);
     }
     for (id, rect) in &layout.positions {
         if let Some(node) = graph.nodes.get(id) {
-            draw_node(scene, node, rect);
+            draw_node(scene, node, rect, palette);
         }
     }
 }
@@ -495,7 +633,7 @@ steps:
         let l = compute_layout(&graph, &LayoutConfig::default());
 
         let mut scene = Scene::new();
-        render_asset_graph(&mut scene, &l, &graph);
+        render_asset_graph(&mut scene, &l, &graph, false);
         let tags = scene.encoding().draw_tags.len();
         assert!(
             tags > graph.nodes.len(),
@@ -508,7 +646,7 @@ steps:
         let empty = build_graph(&empty_manifest, &BTreeMap::new());
         let le = compute_layout(&empty, &LayoutConfig::default());
         let mut empty_scene = Scene::new();
-        render_asset_graph(&mut empty_scene, &le, &empty);
+        render_asset_graph(&mut empty_scene, &le, &empty, false);
         assert_eq!(empty_scene.encoding().draw_tags.len(), 1, "canvas only");
     }
 
@@ -542,9 +680,9 @@ steps:
         failed.insert("fetch".to_string(), SeamStatus::Ok);
 
         let mut plain = Scene::new();
-        render_asset_graph(&mut plain, &l, &graph);
+        render_asset_graph(&mut plain, &l, &graph, false);
         let mut tinted = Scene::new();
-        render_asset_graph_with_status(&mut tinted, &l, &graph, &failed);
+        render_asset_graph_with_status(&mut tinted, &l, &graph, &failed, false);
 
         // Same number of draw ops (only colour changed), different draw data.
         assert_eq!(
@@ -645,7 +783,7 @@ steps:
         let l = compute_layout(&graph, &cfg);
         assert_eq!(l.flow, Flow::Vertical);
         let mut scene = Scene::new();
-        render_asset_graph(&mut scene, &l, &graph);
+        render_asset_graph(&mut scene, &l, &graph, false);
         assert!(
             scene.encoding().draw_tags.len() > graph.nodes.len(),
             "real geometry drawn"
@@ -655,11 +793,165 @@ steps:
     #[test]
     fn pds_badge_glyph_is_an_ink_token_not_raw_white() {
         // The issue-badge glyph colour goes through the meridian-design ink()
-        // boundary, not an ad-hoc peniko Color::WHITE.
+        // boundary, not an ad-hoc peniko Color::WHITE. It is `text.on_solid`,
+        // which is the light surface tone in BOTH modes by design — so this
+        // holds for dark too, and the assertion says so rather than assuming.
+        for dark in [false, true] {
+            let p = AssetInk::for_mode(dark);
+            assert_eq!(
+                p.badge_glyph,
+                ink(meridian_design::chrome::INK_LIGHT.surface)
+            );
+            assert_ne!(p.badge_glyph, Color::WHITE);
+        }
+    }
+
+    /// The light palette is **exactly** the thirteen `const Color`s this struct
+    /// replaced, value for value.
+    ///
+    /// This is the whole light-mode-is-untouched claim, and it is checkable
+    /// rather than asserted in a commit message: the right-hand sides here are
+    /// the literal token expressions the deleted constants held. Any of them
+    /// drifting is a light baseline that moves.
+    #[test]
+    fn pds_light_palette_matches_the_const_palette_it_replaced() {
+        use meridian_design::chrome::INK_LIGHT;
+        use meridian_design::scales::{AMBER_LIGHT, GRAY_LIGHT};
+        let p = AssetInk::for_mode(false);
+        assert_eq!(p.canvas, ink(INK_LIGHT.page), "canvas");
+        assert_eq!(p.node_fill, ink(INK_LIGHT.surface), "node_fill");
+        assert_eq!(p.node_border, ink(GRAY_LIGHT[4]), "node_border");
+        assert_eq!(p.table_border, ink(INK_LIGHT.ink_secondary), "table_border");
+        assert_eq!(p.edge, ink(GRAY_LIGHT[5]), "edge");
+        assert_eq!(p.accent, ink(INK_LIGHT.focus), "accent");
+        assert_eq!(p.issue, ink(AMBER_LIGHT[8]), "issue");
+        assert_eq!(p.badge_glyph, ink(INK_LIGHT.surface), "badge_glyph");
+        assert_eq!(p.internal_fill, ink(GRAY_LIGHT[1]), "internal_fill");
+        assert_eq!(p.chip_fill, ink(GRAY_LIGHT[2]), "chip_fill");
+        assert_eq!(p.label, ink(INK_LIGHT.ink_primary), "label");
+        assert_eq!(p.muted_label, ink(INK_LIGHT.ink_muted), "muted_label");
+        assert_eq!(p.skipped, ink(GRAY_LIGHT[6]), "skipped");
+    }
+
+    /// Every mode-dependent field actually moves, and `badge_glyph` — the one
+    /// field documented as mode-invariant — actually does not.
+    ///
+    /// A palette that read the mode for *some* fields and kept a hardcoded
+    /// light token for the rest is precisely the half-fix this increment
+    /// exists to avoid, and it would pass a "the dark scene differs" test.
+    #[test]
+    fn pds_every_mode_dependent_field_moves_with_the_mode() {
+        let l = AssetInk::for_mode(false);
+        let d = AssetInk::for_mode(true);
+        for (name, a, b) in [
+            ("canvas", l.canvas, d.canvas),
+            ("node_fill", l.node_fill, d.node_fill),
+            ("node_border", l.node_border, d.node_border),
+            ("table_border", l.table_border, d.table_border),
+            ("edge", l.edge, d.edge),
+            ("accent", l.accent, d.accent),
+            ("internal_fill", l.internal_fill, d.internal_fill),
+            ("chip_fill", l.chip_fill, d.chip_fill),
+            ("label", l.label, d.label),
+            ("muted_label", l.muted_label, d.muted_label),
+            ("skipped", l.skipped, d.skipped),
+        ] {
+            assert_ne!(a, b, "{name} is the same in both modes");
+        }
+        // The issue badge is the one *pair* that is mode-invariant, and it was
+        // this test failing that established it: Amber step 9 is byte-identical
+        // in AMBER_LIGHT and AMBER_DARK (#da950b), because a bright solid is a
+        // paint rather than a plane, and `text.on_solid` is likewise the light
+        // surface tone in both modes. So an amber warning badge with near-white
+        // ink on it is the same badge in either theme — which is right, and is
+        // asserted here rather than assumed.
         assert_eq!(
-            BADGE_GLYPH_COLOUR,
-            ink(meridian_design::chrome::INK_LIGHT.surface)
+            l.issue, d.issue,
+            "the Warning solid is one paint, both modes"
         );
-        assert_ne!(BADGE_GLYPH_COLOUR, Color::WHITE);
+        assert_eq!(
+            l.badge_glyph, d.badge_glyph,
+            "badge_glyph is documented as a paint, not a mode-dependent slot"
+        );
+    }
+
+    /// The bug, stated as a property: in dark mode the canvas is darker than
+    /// the ink on it; in light mode it is lighter. The white-sheet raster
+    /// failed this — its canvas was `INK_LIGHT.page` on a dark window.
+    #[test]
+    fn pds_dark_canvas_is_darker_than_its_ink() {
+        // Relative luminance is monotone in each channel, so the plain channel
+        // sum orders these tones correctly without a colour-space detour.
+        let lum = |c: Color| -> f32 { c.components[0] + c.components[1] + c.components[2] };
+        let d = AssetInk::for_mode(true);
+        assert!(
+            lum(d.canvas) < lum(d.label),
+            "dark canvas {:?} is not darker than its primary ink {:?}",
+            d.canvas,
+            d.label
+        );
+        assert!(
+            lum(d.canvas) < lum(d.node_fill),
+            "dark cards must sit above the page, not below it"
+        );
+        // And the page tone is genuinely dark, not merely darker than white.
+        assert!(
+            lum(d.canvas) < 0.3,
+            "dark canvas is not dark: {:?}",
+            d.canvas
+        );
+        let l = AssetInk::for_mode(false);
+        assert!(lum(l.canvas) > lum(l.label), "light canvas must be light");
+        assert!(
+            lum(l.canvas) > 2.7,
+            "light canvas is not light: {:?}",
+            l.canvas
+        );
+    }
+
+    /// End to end: the same graph rastered in the two modes produces two
+    /// different draw streams with the same geometry — colour changed, nothing
+    /// else. A `dark` flag that never reached the scene would fail this.
+    #[test]
+    fn pds_the_scene_takes_its_ink_from_the_mode() {
+        let yaml = r"
+name: m
+steps:
+  - name: fetch
+    op: http_fetch@1
+    with: { url: 'https://example.com/a.csv', out: build/a.csv }
+  - name: transform
+    sql: models/t.sql
+    depends_on: [build/a.csv]
+";
+        let manifest = parse_manifest_str(yaml).unwrap();
+        let mut sources = BTreeMap::new();
+        sources.insert(
+            "transform".to_string(),
+            Ok("CREATE TABLE t_out AS SELECT * FROM read_csv('build/a.csv');".to_string()),
+        );
+        let graph = build_graph(&manifest, &sources);
+        let l = compute_layout(&graph, &LayoutConfig::default());
+
+        let mut light = Scene::new();
+        render_asset_graph(&mut light, &l, &graph, false);
+        let mut dark = Scene::new();
+        render_asset_graph(&mut dark, &l, &graph, true);
+
+        assert_eq!(
+            light.encoding().draw_tags.len(),
+            dark.encoding().draw_tags.len(),
+            "the mode changes colour, not geometry"
+        );
+        assert_eq!(
+            light.encoding().path_data,
+            dark.encoding().path_data,
+            "the mode changes colour, not geometry"
+        );
+        assert_ne!(
+            light.encoding().draw_data,
+            dark.encoding().draw_data,
+            "the two modes produced the same ink — the flag never reached the scene"
+        );
     }
 }
