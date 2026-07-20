@@ -96,7 +96,11 @@ mod tests {
         }
         assert_eq!(log.entries().len(), LOG_CAP, "capped at {LOG_CAP}");
         let last = LOG_CAP + 9;
-        assert_eq!(log.entries()[0].message, format!("entry {last}"), "newest kept");
+        assert_eq!(
+            log.entries()[0].message,
+            format!("entry {last}"),
+            "newest kept"
+        );
         assert_eq!(
             log.entries()[LOG_CAP - 1].message,
             "entry 10",

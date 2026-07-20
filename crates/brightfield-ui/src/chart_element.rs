@@ -74,8 +74,15 @@ pub fn draw_overlay(interaction: &InteractionState, painter: &mut dyn OverlayPai
             // Meridian design rule: interactive/focus/selection = Maritime,
             // chrome stays warm-neutral) — the focus-ring token as a light wash
             // for the fill and stronger for the border.
-            painter.fill_rect(rect, Color::from_token_alpha(OVERLAY_LIGHT.focus_ring, 0.15));
-            painter.stroke_rect(rect, Color::from_token_alpha(OVERLAY_LIGHT.focus_ring, 0.75), 1.5);
+            painter.fill_rect(
+                rect,
+                Color::from_token_alpha(OVERLAY_LIGHT.focus_ring, 0.15),
+            );
+            painter.stroke_rect(
+                rect,
+                Color::from_token_alpha(OVERLAY_LIGHT.focus_ring, 0.75),
+                1.5,
+            );
         }
         // A committed selection and an in-flight move/resize paint identically —
         // a neutral ink wash, so it reads as settled vs the active Maritime drag
@@ -95,7 +102,12 @@ pub fn draw_overlay(interaction: &InteractionState, painter: &mut dyn OverlayPai
             painter.fill_circle(
                 *p,
                 HOVER_RADIUS,
-                Color { r: slot2.r, g: slot2.g, b: slot2.b, a: 0.376 },
+                Color {
+                    r: slot2.r,
+                    g: slot2.g,
+                    b: slot2.b,
+                    a: 0.376,
+                },
             );
         }
     }
@@ -125,7 +137,9 @@ pub fn overlay_cursor(region: BrushRegion, dragging: bool) -> Option<SurfaceCurs
         BrushRegion::Edge(BrushEdge::Left | BrushEdge::Right) => {
             Some(SurfaceCursor::ResizeHorizontal)
         }
-        BrushRegion::Edge(BrushEdge::Top | BrushEdge::Bottom) => Some(SurfaceCursor::ResizeVertical),
+        BrushRegion::Edge(BrushEdge::Top | BrushEdge::Bottom) => {
+            Some(SurfaceCursor::ResizeVertical)
+        }
         BrushRegion::Corner(BrushCorner::TopLeft | BrushCorner::BottomRight) => {
             Some(SurfaceCursor::ResizeNwSe)
         }
@@ -169,9 +183,16 @@ pub fn route_pointer_down(input: &SurfaceInput, state: &mut ChartState, origin: 
 /// Route a pointer-move: extend the brush / move-resize the grab while the
 /// primary button is held, or update hover; and re-classify the pointer over any
 /// persisted selection so the paint-phase cursor tracks the region under it.
-pub fn route_pointer_move(input: &SurfaceInput, state: &mut ChartState, origin: Point) -> MoveOutcome {
+pub fn route_pointer_move(
+    input: &SurfaceInput,
+    state: &mut ChartState,
+    origin: Point,
+) -> MoveOutcome {
     let Some(pos) = input.pointer_pos else {
-        return MoveOutcome { changed: false, region: BrushRegion::Outside };
+        return MoveOutcome {
+            changed: false,
+            region: BrushRegion::Outside,
+        };
     };
     let held = input.pointer_primary.is_down();
     let changed = state.pointer_move(pos, origin, held);
@@ -203,8 +224,14 @@ mod tests {
     /// and its change-on-motion are Hugh's in-app eyeball.)
     #[test]
     fn region_cursor_mapping() {
-        assert_eq!(overlay_cursor(BrushRegion::Interior, false), Some(SurfaceCursor::Grab));
-        assert_eq!(overlay_cursor(BrushRegion::Interior, true), Some(SurfaceCursor::Grabbing));
+        assert_eq!(
+            overlay_cursor(BrushRegion::Interior, false),
+            Some(SurfaceCursor::Grab)
+        );
+        assert_eq!(
+            overlay_cursor(BrushRegion::Interior, true),
+            Some(SurfaceCursor::Grabbing)
+        );
         assert_eq!(
             overlay_cursor(BrushRegion::Edge(BrushEdge::Left), false),
             Some(SurfaceCursor::ResizeHorizontal)
@@ -287,7 +314,10 @@ mod tests {
         assert_eq!(p.rects.len(), 1);
         assert_eq!(p.strokes.len(), 1);
         let (rect, _) = p.rects[0];
-        assert_eq!((rect.x, rect.y, rect.width, rect.height), (20.0, 40.0, 100.0, 50.0));
+        assert_eq!(
+            (rect.x, rect.y, rect.width, rect.height),
+            (20.0, 40.0, 100.0, 50.0)
+        );
         assert_eq!(p.strokes[0].2, 1.5);
         assert!(p.circles.is_empty());
 
@@ -306,7 +336,10 @@ mod tests {
         // Hovering → one 8px-radius disc at the point, alpha 0.376.
         let mut p = RecordingPainter::default();
         draw_overlay(
-            &InteractionState::Hovering { point: Point::new(64.0, 48.0), nearest: None },
+            &InteractionState::Hovering {
+                point: Point::new(64.0, 48.0),
+                nearest: None,
+            },
             &mut p,
         );
         assert_eq!(p.circles.len(), 1);

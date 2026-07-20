@@ -93,7 +93,12 @@ pub struct LayoutConfig {
 
 impl Default for LayoutConfig {
     fn default() -> Self {
-        Self { margin: 32.0, col_gap: 64.0, row_gap: 20.0, flow: Flow::Horizontal }
+        Self {
+            margin: 32.0,
+            col_gap: 64.0,
+            row_gap: 20.0,
+            flow: Flow::Horizontal,
+        }
     }
 }
 
@@ -155,8 +160,11 @@ pub fn layout(graph: &AssetGraph, config: &LayoutConfig) -> Layout {
     // Longest-path layering via Kahn's algorithm in id order. Nodes caught in
     // a cycle (malformed input) fall deterministically into layer 0.
     let mut layer: BTreeMap<&AssetId, usize> = graph.nodes.keys().map(|id| (id, 0)).collect();
-    let mut indegree: BTreeMap<&AssetId, usize> =
-        graph.nodes.keys().map(|id| (id, preds.get(id).map_or(0, BTreeSet::len))).collect();
+    let mut indegree: BTreeMap<&AssetId, usize> = graph
+        .nodes
+        .keys()
+        .map(|id| (id, preds.get(id).map_or(0, BTreeSet::len)))
+        .collect();
     let mut ready: BTreeSet<&AssetId> = indegree
         .iter()
         .filter_map(|(id, d)| (*d == 0).then_some(*id))
@@ -182,7 +190,10 @@ pub fn layout(graph: &AssetGraph, config: &LayoutConfig) -> Layout {
     #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
     enum Slot {
         Real(AssetId),
-        Dummy { edge: (AssetId, AssetId), hop: usize },
+        Dummy {
+            edge: (AssetId, AssetId),
+            hop: usize,
+        },
     }
     let slot_id = |slot: &Slot| -> String {
         match slot {
@@ -198,8 +209,10 @@ pub fn layout(graph: &AssetGraph, config: &LayoutConfig) -> Layout {
     // Dummy chains + the slot-level adjacency used by the median sweeps.
     let mut slot_succs: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut slot_preds: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let link = |a: &Slot, b: &Slot, succs: &mut BTreeMap<String, BTreeSet<String>>,
-                    preds: &mut BTreeMap<String, BTreeSet<String>>| {
+    let link = |a: &Slot,
+                b: &Slot,
+                succs: &mut BTreeMap<String, BTreeSet<String>>,
+                preds: &mut BTreeMap<String, BTreeSet<String>>| {
         succs.entry(slot_id(a)).or_default().insert(slot_id(b));
         preds.entry(slot_id(b)).or_default().insert(slot_id(a));
     };
@@ -209,7 +222,10 @@ pub fn layout(graph: &AssetGraph, config: &LayoutConfig) -> Layout {
         let mut chain = Vec::new();
         if lt > lf + 1 {
             for (hop, l) in (lf + 1..lt).enumerate() {
-                let dummy = Slot::Dummy { edge: (from.clone(), to.clone()), hop };
+                let dummy = Slot::Dummy {
+                    edge: (from.clone(), to.clone()),
+                    hop,
+                };
                 layers[l].push(dummy.clone());
                 chain.push(dummy);
             }
@@ -219,7 +235,12 @@ pub fn layout(graph: &AssetGraph, config: &LayoutConfig) -> Layout {
             link(&prev, d, &mut slot_succs, &mut slot_preds);
             prev = d.clone();
         }
-        link(&prev, &Slot::Real(to.clone()), &mut slot_succs, &mut slot_preds);
+        link(
+            &prev,
+            &Slot::Real(to.clone()),
+            &mut slot_succs,
+            &mut slot_preds,
+        );
         routes_chain.insert((from.clone(), to.clone()), chain);
     }
     for l in &mut layers {
@@ -295,7 +316,11 @@ pub fn layout(graph: &AssetGraph, config: &LayoutConfig) -> Layout {
         match slot {
             Slot::Real(_) => {
                 let (w, h) = size_of(slot);
-                if vertical { (h, w) } else { (w, h) }
+                if vertical {
+                    (h, w)
+                } else {
+                    (w, h)
+                }
             }
             Slot::Dummy { .. } => (0.0, 10.0),
         }
@@ -332,7 +357,12 @@ pub fn layout(graph: &AssetGraph, config: &LayoutConfig) -> Layout {
                     let (x, y) = if vertical { (c, centred) } else { (centred, c) };
                     positions.insert(
                         id.clone(),
-                        Rect { x: x.round(), y: y.round(), width: w.round(), height: h.round() },
+                        Rect {
+                            x: x.round(),
+                            y: y.round(),
+                            width: w.round(),
+                            height: h.round(),
+                        },
                     );
                 }
                 Slot::Dummy { .. } => {
@@ -340,7 +370,11 @@ pub fn layout(graph: &AssetGraph, config: &LayoutConfig) -> Layout {
                     // slot.
                     let along_c = a + thick / 2.0;
                     let cross_c = c + c_ext / 2.0;
-                    let (px, py) = if vertical { (cross_c, along_c) } else { (along_c, cross_c) };
+                    let (px, py) = if vertical {
+                        (cross_c, along_c)
+                    } else {
+                        (along_c, cross_c)
+                    };
                     lane_points.insert(slot_id(slot), (px.round(), py.round()));
                 }
             }
@@ -350,8 +384,11 @@ pub fn layout(graph: &AssetGraph, config: &LayoutConfig) -> Layout {
     }
     let along_total = (a - config.col_gap + config.margin).round();
     let cross_total = (longest + 2.0 * config.margin).round();
-    let (width, height) =
-        if vertical { (cross_total, along_total) } else { (along_total, cross_total) };
+    let (width, height) = if vertical {
+        (cross_total, along_total)
+    } else {
+        (along_total, cross_total)
+    };
 
     // Routes: exit the producer's downstream edge -> dummy lane points -> enter
     // the consumer's upstream edge. Horizontal exits the right edge / enters the
@@ -386,7 +423,13 @@ pub fn layout(graph: &AssetGraph, config: &LayoutConfig) -> Layout {
         })
         .collect();
 
-    Layout { width, height, positions, lanes, flow: config.flow }
+    Layout {
+        width,
+        height,
+        positions,
+        lanes,
+        flow: config.flow,
+    }
 }
 
 #[cfg(test)]
@@ -414,9 +457,12 @@ mod tests {
         };
         AssetGraph {
             protocol: "p".to_string(),
-            nodes: [("file.p.a".to_string(), node("file.p.a")), ("file.p.b".to_string(), node("file.p.b"))]
-                .into_iter()
-                .collect(),
+            nodes: [
+                ("file.p.a".to_string(), node("file.p.a")),
+                ("file.p.b".to_string(), node("file.p.b")),
+            ]
+            .into_iter()
+            .collect(),
             seams: BTreeMap::new(),
             edges: vec![edge(via_first), edge(via_second)],
         }
@@ -429,7 +475,11 @@ mod tests {
         let g = parallel_edges(None, Some("transform"));
         let l = layout(&g, &LayoutConfig::default());
         assert_eq!(l.lanes.len(), 1);
-        assert_eq!(l.lanes[0].via.as_deref(), Some("transform"), "the seam via survives the merge");
+        assert_eq!(
+            l.lanes[0].via.as_deref(),
+            Some("transform"),
+            "the seam via survives the merge"
+        );
     }
 
     fn diamond() -> AssetGraph {
@@ -519,7 +569,10 @@ steps:
         // Vertical transposes the SAME graph: every downstream node sits strictly
         // BELOW its producer, edges exit the bottom edge and enter the top.
         let g = diamond();
-        let cfg = LayoutConfig { flow: Flow::Vertical, ..LayoutConfig::default() };
+        let cfg = LayoutConfig {
+            flow: Flow::Vertical,
+            ..LayoutConfig::default()
+        };
         let l = layout(&g, &cfg);
         assert_eq!(l.flow, Flow::Vertical);
         for lane in &l.lanes {
@@ -547,9 +600,23 @@ steps:
         // is WIDE and strictly narrower than the horizontal render's width.
         let g = diamond();
         let h = layout(&g, &LayoutConfig::default());
-        let v = layout(&g, &LayoutConfig { flow: Flow::Vertical, ..LayoutConfig::default() });
-        assert!(v.height > v.width, "vertical is taller than wide: {}x{}", v.width, v.height);
-        assert!(v.width < h.width, "vertical bounds width below the horizontal render");
+        let v = layout(
+            &g,
+            &LayoutConfig {
+                flow: Flow::Vertical,
+                ..LayoutConfig::default()
+            },
+        );
+        assert!(
+            v.height > v.width,
+            "vertical is taller than wide: {}x{}",
+            v.width,
+            v.height
+        );
+        assert!(
+            v.width < h.width,
+            "vertical bounds width below the horizontal render"
+        );
         // The transpose swaps which axis is long: horizontal is wider than tall,
         // vertical is taller than wide (the layouts are near-mirror dimensions,
         // not byte-identical — per-node width != height shifts the packing).
@@ -559,7 +626,10 @@ steps:
     #[test]
     fn vertical_layout_is_deterministic_and_whole_pixel() {
         let g = diamond();
-        let cfg = LayoutConfig { flow: Flow::Vertical, ..LayoutConfig::default() };
+        let cfg = LayoutConfig {
+            flow: Flow::Vertical,
+            ..LayoutConfig::default()
+        };
         assert_eq!(layout(&g, &cfg), layout(&g, &cfg));
         let l = layout(&g, &cfg);
         for r in l.positions.values() {

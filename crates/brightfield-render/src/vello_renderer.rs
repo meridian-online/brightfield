@@ -44,24 +44,21 @@ impl VelloRenderer {
     pub fn new() -> Arc<Mutex<Self>> {
         let instance = wgpu::Instance::default();
 
-        let adapter = pollster::block_on(instance.request_adapter(
-            &wgpu::RequestAdapterOptions::default(),
-        ))
-        .expect(
-            "VelloRenderer: failed to find a suitable GPU adapter. \
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+                .expect(
+                    "VelloRenderer: failed to find a suitable GPU adapter. \
              Ensure a Metal-capable GPU is available (macOS) or \
              Vulkan is supported (Linux/Windows).",
-        );
+                );
 
-        let (device, queue) = pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("brightfield-vello"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::default(),
-                ..Default::default()
-            },
-        ))
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("brightfield-vello"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::default(),
+            ..Default::default()
+        }))
         .expect(
             "VelloRenderer: failed to create wgpu device. \
              GPU adapter was found but device creation failed.",
@@ -142,7 +139,10 @@ impl VelloRenderer {
         height: u32,
         base: vello::peniko::Color,
     ) {
-        assert!(width > 0 && height > 0, "render dimensions must be non-zero");
+        assert!(
+            width > 0 && height > 0,
+            "render dimensions must be non-zero"
+        );
         self.renderer
             .render_to_texture(
                 &self.device,
@@ -196,7 +196,10 @@ impl VelloRenderer {
         height: u32,
         base: vello::peniko::Color,
     ) -> Vec<u8> {
-        assert!(width > 0 && height > 0, "render dimensions must be non-zero");
+        assert!(
+            width > 0 && height > 0,
+            "render dimensions must be non-zero"
+        );
 
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("vello-target"),
@@ -365,6 +368,9 @@ mod tests {
         assert_eq!(pixels.len(), 64 * 64 * 4);
         // With TRANSPARENT base color, all pixels should be zero
         let all_zero = pixels.iter().all(|&b| b == 0);
-        assert!(all_zero, "empty scene with transparent base should be all zeros");
+        assert!(
+            all_zero,
+            "empty scene with transparent base should be all zeros"
+        );
     }
 }

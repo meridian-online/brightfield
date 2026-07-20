@@ -14,10 +14,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 // Re-export duckdb's Arrow types so consumers don't need a separate arrow dep.
-pub use duckdb::arrow::record_batch::RecordBatch;
-pub use profile::{ColumnProfile, ProfileOutcome, SourceProfile};
 pub use brightfield_sql::ir::Predicate as SqlPredicate;
+pub use duckdb::arrow::record_batch::RecordBatch;
 use duckdb::Connection;
+pub use profile::{ColumnProfile, ProfileOutcome, SourceProfile};
 
 /// Concatenate a query's result chunks into a single [`RecordBatch`], or `None`
 /// if empty. A DuckDB result arrives as one batch per ~2048 rows; renderers and
@@ -118,11 +118,20 @@ use brightfield_spec::vocab::MarkKind;
 
 use brightfield_sql::binding::{Binding, EmittedQuery, ParamValues};
 use brightfield_sql::emit::{emit_query, emit_query_with_passes, emit_sources, SourceKindTag};
-use brightfield_sql::ir::Predicate;
+use brightfield_sql::ir::{Predicate, SelectionPredicate};
 use brightfield_sql::navigation_filter_pass::NavigationFilterPass;
 use brightfield_sql::passes::Pass;
 
 use crate::error::EngineError;
+
+/// One dispatched mark's re-query outcome: the mark's depth-first index paired
+/// with the batches it produced, or the error that stopped it.
+///
+/// Named because the bare tuple is the return element of every propagate/
+/// dispatch entry point in this crate and of every widget dispatcher in
+/// `brightfield-ui`; spelling it out inline obscured that they are the same
+/// thing.
+pub type DispatchResult = (usize, Result<Vec<RecordBatch>, EngineError>);
 
 /// Result of loading a spec into a session.
 pub struct LoadResult {
@@ -429,7 +438,7 @@ impl Session {
     /// inner contributor strings are the `ComponentPath` payloads — already
     /// stored as parent plot paths so `compile_selection`'s `self_source`
     /// equality fires correctly for crossfilter self-exclusion.
-    fn selection_predicates_for_emit(&self) -> Vec<(String, Vec<(String, Predicate)>)> {
+    fn selection_predicates_for_emit(&self) -> Vec<SelectionPredicate> {
         self.selection_state
             .iter()
             .map(|(name, contribs)| {
@@ -459,7 +468,7 @@ impl Session {
         name: &str,
         contributor: ComponentPath,
         predicate: Predicate,
-    ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
+    ) -> Vec<DispatchResult> {
         // 1. Update selection_state. A re-contribution from an existing source
         // moves to the TAIL (retain-then-push), so vec order reflects recency:
         // SelectionResolution::Single resolves via `.last()`, so the "most
@@ -502,8 +511,7 @@ impl Session {
         // mark's outcome is independent; an emit error on one mark does
         // not halt dispatch.
         let selections = self.selection_predicates_for_emit();
-        let selections_ref: Option<&[(String, Vec<(String, Predicate)>)]> =
-            Some(selections.as_slice());
+        let selections_ref: Option<&[SelectionPredicate]> = Some(selections.as_slice());
 
         // Clone param_state into an owned snapshot so we hold no borrow on
         // self while looping (execute_emitted needs &mut self for the
@@ -554,7 +562,7 @@ impl Session {
         &mut self,
         name: &str,
         contributor: ComponentPath,
-    ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
+    ) -> Vec<DispatchResult> {
         // 1. Locate and remove the contributor's slot. Silent no-op on miss.
         let removed = match self.selection_state.get_mut(name) {
             Some(entries) => {
@@ -597,8 +605,7 @@ impl Session {
         // 4. Per-subscriber emit + execute against the reduced selection set.
         //    Same shape as propagate_selection's dispatch loop.
         let selections = self.selection_predicates_for_emit();
-        let selections_ref: Option<&[(String, Vec<(String, Predicate)>)]> =
-            Some(selections.as_slice());
+        let selections_ref: Option<&[SelectionPredicate]> = Some(selections.as_slice());
 
         let params_owned: ParamValues = self.param_state.clone();
         let params_ref = if params_owned.is_empty() {
@@ -637,7 +644,7 @@ impl Session {
             Some(&self.param_state)
         };
         let selections = self.selection_predicates_for_emit();
-        let selections_ref: Option<&[(String, Vec<(String, Predicate)>)]> = if selections.is_empty() {
+        let selections_ref: Option<&[SelectionPredicate]> = if selections.is_empty() {
             None
         } else {
             Some(selections.as_slice())
@@ -660,11 +667,7 @@ impl Session {
     ///
     /// Only mark components are dispatched — inputs, interactors, and legends
     /// in the subscriber graph are filtered out. Partial failure is possible.
-    pub fn update_param(
-        &mut self,
-        name: &str,
-        value: SpecValue,
-    ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
+    pub fn update_param(&mut self, name: &str, value: SpecValue) -> Vec<DispatchResult> {
         let subscriber_paths: Vec<ComponentPath> = self
             .analysis
             .subscriber_graph
@@ -686,7 +689,7 @@ impl Session {
         param_values.insert(name.to_string(), value);
 
         let selections = self.selection_predicates_for_emit();
-        let selections_ref: Option<&[(String, Vec<(String, Predicate)>)]> = if selections.is_empty() {
+        let selections_ref: Option<&[SelectionPredicate]> = if selections.is_empty() {
             None
         } else {
             Some(selections.as_slice())
@@ -742,11 +745,7 @@ impl Session {
     /// fire — returns an empty results vector. Partial failure: each mark's
     /// result is independent and a per-mark emit/execute error never halts
     /// the walk (decision 4).
-    pub fn propagate_param(
-        &mut self,
-        name: &str,
-        value: SpecValue,
-    ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
+    pub fn propagate_param(&mut self, name: &str, value: SpecValue) -> Vec<DispatchResult> {
         // 1. Update param_state for the named root only.
         //    (Decision 2 case iii — downstream params are read, never written.)
         self.param_state.insert(name.to_string(), value);
@@ -763,17 +762,16 @@ impl Session {
         //    behavioural difference today, but a foot-gun if a future change
         //    accidentally mutates selection_state mid-walk.
         let selections = self.selection_predicates_for_emit();
-        let selections_ref: Option<&[(String, Vec<(String, Predicate)>)]> =
-            if selections.is_empty() {
-                None
-            } else {
-                Some(selections.as_slice())
-            };
+        let selections_ref: Option<&[SelectionPredicate]> = if selections.is_empty() {
+            None
+        } else {
+            Some(selections.as_slice())
+        };
 
         // 4. Walk the order. `dispatched` carries cross-level state for the
         //    first-level-wins dedup invariant.
         let mut dispatched: HashSet<usize> = HashSet::new();
-        let mut results: Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> = Vec::new();
+        let mut results: Vec<DispatchResult> = Vec::new();
 
         for level in &order {
             // Look up subscribers for this level's param.
@@ -806,19 +804,14 @@ impl Session {
                 if !dispatched.insert(idx) {
                     continue;
                 }
-                let emitted = match emit_query(
-                    &self.spec,
-                    idx,
-                    Some(&self.param_state),
-                    selections_ref,
-                ) {
-                    Ok(eq) => eq,
-                    Err(e) => {
-                        results
-                            .push((idx, Err(EngineError::EmitFailed { cause: e })));
-                        continue;
-                    }
-                };
+                let emitted =
+                    match emit_query(&self.spec, idx, Some(&self.param_state), selections_ref) {
+                        Ok(eq) => eq,
+                        Err(e) => {
+                            results.push((idx, Err(EngineError::EmitFailed { cause: e })));
+                            continue;
+                        }
+                    };
 
                 let mark_kind = self.mark_kind_at(idx);
                 let result = self.execute_emitted(idx, &mark_kind, &emitted);
@@ -843,7 +836,7 @@ impl Session {
         &mut self,
         x_extent: Option<(&str, f64, f64)>,
         y_extent: Option<(&str, f64, f64)>,
-    ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
+    ) -> Vec<DispatchResult> {
         // Only register the pass when at least one axis has an extent —
         // at full extent (None, None) no pass is needed.
         let passes: Vec<Box<dyn Pass>> = if x_extent.is_some() || y_extent.is_some() {
@@ -857,7 +850,7 @@ impl Session {
         let mut results = Vec::new();
 
         let selections = self.selection_predicates_for_emit();
-        let selections_ref: Option<&[(String, Vec<(String, Predicate)>)]> = if selections.is_empty() {
+        let selections_ref: Option<&[SelectionPredicate]> = if selections.is_empty() {
             None
         } else {
             Some(selections.as_slice())
@@ -971,10 +964,7 @@ impl Session {
 
     /// Execute a raw SQL query and return Arrow batches. Test-only.
     #[cfg(test)]
-    pub fn execute_raw_sql(
-        &self,
-        sql: &str,
-    ) -> Result<Vec<RecordBatch>, duckdb::Error> {
+    pub fn execute_raw_sql(&self, sql: &str) -> Result<Vec<RecordBatch>, duckdb::Error> {
         let mut stmt = self.conn.prepare(sql)?;
         let arrow = stmt.query_arrow(duckdb::params![])?;
         Ok(arrow.collect())
@@ -1214,7 +1204,7 @@ impl Session {
 
     /// Look up the wire name of the mark at a given depth-first index.
     fn mark_kind_at(&self, index: usize) -> String {
-        for (_, &(idx, kind)) in &self.mark_index_map {
+        for &(idx, kind) in self.mark_index_map.values() {
             if idx == index {
                 return kind.wire_name().to_string();
             }
@@ -1528,7 +1518,12 @@ plot:
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("bf_profile_{}_{}_{}", std::process::id(), nanos, suffix))
+        std::env::temp_dir().join(format!(
+            "bf_profile_{}_{}_{}",
+            std::process::id(),
+            nanos,
+            suffix
+        ))
     }
 
     fn profiled_columns(outcome: &ProfileOutcome) -> &[ColumnProfile] {
@@ -1554,7 +1549,10 @@ plot:
     y: i
 "#;
         let (spec, analysis) = parse_and_analyse(yaml);
-        let session = Engine::new().load_spec(spec, analysis, None).unwrap().session;
+        let session = Engine::new()
+            .load_spec(spec, analysis, None)
+            .unwrap()
+            .session;
         let profiles = session.profile_sources();
 
         assert_eq!(profiles.len(), 1);
@@ -1620,7 +1618,10 @@ plot:
     y: a
 "#;
         let (spec, analysis) = parse_and_analyse(yaml);
-        let session = Engine::new().load_spec(spec, analysis, None).unwrap().session;
+        let session = Engine::new()
+            .load_spec(spec, analysis, None)
+            .unwrap()
+            .session;
         let profiles = session.profile_sources();
 
         assert_eq!(
@@ -1666,17 +1667,26 @@ plot:
             db_path.display()
         );
         let (spec, analysis) = parse_and_analyse(&yaml);
-        let session = Engine::new().load_spec(spec, analysis, None).unwrap().session;
+        let session = Engine::new()
+            .load_spec(spec, analysis, None)
+            .unwrap()
+            .session;
         let profiles = session.profile_sources();
         let _ = std::fs::remove_file(&db_path);
 
-        let mydb = profiles.iter().find(|p| p.name == "mydb").expect("mydb profiled");
+        let mydb = profiles
+            .iter()
+            .find(|p| p.name == "mydb")
+            .expect("mydb profiled");
         assert_eq!(
             mydb.outcome,
             ProfileOutcome::Unsupported,
             "attached DB is not profiled"
         );
-        let base = profiles.iter().find(|p| p.name == "base").expect("base profiled");
+        let base = profiles
+            .iter()
+            .find(|p| p.name == "base")
+            .expect("base profiled");
         assert!(
             matches!(base.outcome, ProfileOutcome::Profiled { .. }),
             "sibling view still profiles: {:?}",
@@ -1707,12 +1717,18 @@ plot:
         );
         let (spec, analysis) = parse_and_analyse(&yaml);
         // The view binds the CSV at load (auto_detect sniffs the header).
-        let session = Engine::new().load_spec(spec, analysis, None).unwrap().session;
+        let session = Engine::new()
+            .load_spec(spec, analysis, None)
+            .unwrap()
+            .session;
         // Now the file vanishes: profiling the view must fail gracefully.
         std::fs::remove_file(&csv_path).expect("remove fixture csv");
         let profiles = session.profile_sources();
 
-        let gone = profiles.iter().find(|p| p.name == "gone").expect("gone listed");
+        let gone = profiles
+            .iter()
+            .find(|p| p.name == "gone")
+            .expect("gone listed");
         match &gone.outcome {
             ProfileOutcome::Failed(reason) => {
                 assert!(!reason.is_empty(), "failure carries a reason");
@@ -1786,8 +1802,15 @@ vconcat:
         let (spec, analysis) = parse_and_analyse(yaml);
 
         // Verify the subscriber graph has mark entries for 'brush'.
-        let subs = analysis.subscriber_graph.get("brush").expect("brush should have subscribers");
-        assert!(subs.len() >= 2, "expected at least 2 subscribers for brush, got {}", subs.len());
+        let subs = analysis
+            .subscriber_graph
+            .get("brush")
+            .expect("brush should have subscribers");
+        assert!(
+            subs.len() >= 2,
+            "expected at least 2 subscribers for brush, got {}",
+            subs.len()
+        );
 
         let engine = Engine::new();
         let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
@@ -1798,11 +1821,17 @@ vconcat:
 
         // Key assertions:
         // 1. Results are non-empty — the param has mark subscribers.
-        assert!(!results.is_empty(), "expected results for subscribing marks");
+        assert!(
+            !results.is_empty(),
+            "expected results for subscribing marks"
+        );
         // 2. Each result succeeds — SimpleLowerer handles dot and line with data.from.
         //    The important thing is we got results, proving the subscriber graph was consulted.
         for (idx, result) in &results {
-            assert!(result.is_ok(), "mark {idx} should succeed via SimpleLowerer");
+            assert!(
+                result.is_ok(),
+                "mark {idx} should succeed via SimpleLowerer"
+            );
         }
         // 3. Result count matches mark subscribers, not all subscribers.
         assert_eq!(results.len(), 2, "expected exactly 2 mark results");
@@ -1834,7 +1863,11 @@ plot:
         };
         let result = session.test_execute_emitted(0, "dot", &emitted);
         assert!(result.is_ok());
-        assert_eq!(session.cache_len(), 1, "cache should have 1 entry after first execute");
+        assert_eq!(
+            session.cache_len(),
+            1,
+            "cache should have 1 entry after first execute"
+        );
 
         // Same plan_hash — cache hit (no new entry).
         let emitted2 = EmittedQuery {
@@ -1844,7 +1877,11 @@ plot:
         };
         let result2 = session.test_execute_emitted(0, "dot", &emitted2);
         assert!(result2.is_ok());
-        assert_eq!(session.cache_len(), 1, "cache should still have 1 entry (reused)");
+        assert_eq!(
+            session.cache_len(),
+            1,
+            "cache should still have 1 entry (reused)"
+        );
 
         // Different plan_hash — cache miss (new entry).
         let emitted3 = EmittedQuery {
@@ -1854,7 +1891,11 @@ plot:
         };
         let result3 = session.test_execute_emitted(0, "dot", &emitted3);
         assert!(result3.is_ok());
-        assert_eq!(session.cache_len(), 2, "cache should have 2 entries (new plan_hash)");
+        assert_eq!(
+            session.cache_len(),
+            2,
+            "cache should have 2 entries (new plan_hash)"
+        );
     }
 
     // --- renderer-side SQL cache + duckdb_execute_count ---
@@ -2014,13 +2055,20 @@ plot:
         assert_eq!(r1.len(), 1, "subscriber should be dispatched");
         assert!(r1[0].1.is_ok(), "first execute must succeed: {:?}", r1[0].1);
         let baseline = session.duckdb_execute_count();
-        assert!(baseline >= 1, "first call must trigger at least one execute");
+        assert!(
+            baseline >= 1,
+            "first call must trigger at least one execute"
+        );
 
         // Second propagate — different value but selection_state unchanged,
         // so the emitted SQL is byte-identical → cache hit, no new execute.
         let r2 = session.propagate_param("brush", SpecValue::Integer(2));
         assert_eq!(r2.len(), 1);
-        assert!(r2[0].1.is_ok(), "second execute must succeed: {:?}", r2[0].1);
+        assert!(
+            r2[0].1.is_ok(),
+            "second execute must succeed: {:?}",
+            r2[0].1
+        );
         assert_eq!(
             session.duckdb_execute_count(),
             baseline,
@@ -2123,7 +2171,11 @@ height: 150
         for (i, (ex, ey, ec)) in expected.iter().enumerate() {
             assert!((xs[i] - ex).abs() < 1e-6, "row {i} x: {} != {ex}", xs[i]);
             assert!((ys[i] - ey).abs() < 1e-6, "row {i} y: {} != {ey}", ys[i]);
-            assert!((counts[i] - ec).abs() < 1e-9, "row {i} count: {} != {ec}", counts[i]);
+            assert!(
+                (counts[i] - ec).abs() < 1e-9,
+                "row {i} count: {} != {ec}",
+                counts[i]
+            );
         }
         // Total occupancy == input rows.
         assert!((counts.iter().sum::<f64>() - 7.0).abs() < 1e-9);
@@ -2196,8 +2248,14 @@ height: 150
         let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
         let batches = session.execute_mark(0).expect("hexbin avg executes");
         let avgs = column_as_f64_vec(&batches, "v");
-        assert!(avgs.iter().any(|a| (a - 15.0).abs() < 1e-9), "avg 15 hex: {avgs:?}");
-        assert!(avgs.iter().any(|a| (a - 100.0).abs() < 1e-9), "avg 100 hex: {avgs:?}");
+        assert!(
+            avgs.iter().any(|a| (a - 15.0).abs() < 1e-9),
+            "avg 15 hex: {avgs:?}"
+        );
+        assert!(
+            avgs.iter().any(|a| (a - 100.0).abs() < 1e-9),
+            "avg 100 hex: {avgs:?}"
+        );
         // No count column when the fill is an avg aggregate.
         assert!(batches[0].schema().index_of("__bf_count").is_err());
     }
@@ -2223,7 +2281,9 @@ plot:
         let (spec, analysis) = parse_and_analyse(yaml);
         let engine = Engine::new();
         let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
-        let batches = session.execute_mark(0).expect("self-aggregating cell executes");
+        let batches = session
+            .execute_mark(0)
+            .expect("self-aggregating cell executes");
         let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         assert_eq!(total_rows, 3, "three distinct (x, y) cells");
         let mut counts = column_as_f64_vec(&batches, "__bf_count");
@@ -2259,15 +2319,29 @@ height: 150
         let (spec, analysis) = parse_and_analyse(yaml);
         let engine = Engine::new();
         let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
-        let batches = session.execute_mark(0).expect("degenerate-x hexbin executes");
+        let batches = session
+            .execute_mark(0)
+            .expect("degenerate-x hexbin executes");
         let xs = column_as_f64_vec(&batches, "x");
         let ys = column_as_f64_vec(&batches, "y");
         let counts = column_as_f64_vec(&batches, "__bf_count");
-        assert!(!xs.is_empty(), "degenerate x must still emit hexes, not a blank mark");
+        assert!(
+            !xs.is_empty(),
+            "degenerate x must still emit hexes, not a blank mark"
+        );
         // Every centre collapses to the constant x (non-NULL); y still varies.
-        assert!(xs.iter().all(|x| (x - 5.0).abs() < 1e-9), "x centres == constant 5: {xs:?}");
-        assert!(ys.iter().all(|y| y.is_finite()), "y centres are real, not NULL: {ys:?}");
-        assert!((counts.iter().sum::<f64>() - 4.0).abs() < 1e-9, "all 4 rows binned");
+        assert!(
+            xs.iter().all(|x| (x - 5.0).abs() < 1e-9),
+            "x centres == constant 5: {xs:?}"
+        );
+        assert!(
+            ys.iter().all(|y| y.is_finite()),
+            "y centres are real, not NULL: {ys:?}"
+        );
+        assert!(
+            (counts.iter().sum::<f64>() - 4.0).abs() < 1e-9,
+            "all 4 rows binned"
+        );
     }
 
     /// F3 (review): a SINGLE-ROW source (both axes degenerate) bins to one hex at
@@ -2296,7 +2370,10 @@ height: 150
         let ys = column_as_f64_vec(&batches, "y");
         let counts = column_as_f64_vec(&batches, "__bf_count");
         assert_eq!(xs.len(), 1, "one hex for one row");
-        assert!((xs[0] - 5.0).abs() < 1e-9 && (ys[0] - 7.0).abs() < 1e-9, "centre at the point");
+        assert!(
+            (xs[0] - 5.0).abs() < 1e-9 && (ys[0] - 7.0).abs() < 1e-9,
+            "centre at the point"
+        );
         assert!((counts[0] - 1.0).abs() < 1e-9, "count 1");
     }
 
@@ -2337,7 +2414,10 @@ height: 150
         );
         // The filtered-out (0, *) rows leave no hex behind: the extent is [50,100],
         // so every centre sits well away from x = 0.
-        assert!(xs.iter().all(|x| *x >= 40.0), "no hex from the filtered (0,*) rows: {xs:?}");
+        assert!(
+            xs.iter().all(|x| *x >= 40.0),
+            "no hex from the filtered (0,*) rows: {xs:?}"
+        );
     }
 
     /// F4 (review): a self-aggregating cell honours `data: { filter }` — filtered
@@ -2364,7 +2444,10 @@ plot:
         let batches = session.execute_mark(0).expect("filtered cell executes");
         let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         let counts = column_as_f64_vec(&batches, "__bf_count");
-        assert_eq!(total_rows, 1, "only (a,p) survives v > 2 — (b,q) is fully filtered");
+        assert_eq!(
+            total_rows, 1,
+            "only (a,p) survives v > 2 — (b,q) is fully filtered"
+        );
         assert_eq!(counts, vec![2.0], "(a,p) counts the two rows with v > 2");
     }
 
@@ -2402,7 +2485,11 @@ plot:
 
         // Change the param — the subscribing mark re-executes with the new value.
         let results = session.propagate_param("k", SpecValue::Integer(20));
-        assert_eq!(results.len(), 1, "the $k-channel mark must be re-dispatched");
+        assert_eq!(
+            results.len(),
+            1,
+            "the $k-channel mark must be re-dispatched"
+        );
         let batch_after = results[0].1.as_ref().expect("re-execute succeeds");
         assert_eq!(
             column_as_f64_vec(batch_after, "k"),
@@ -2452,7 +2539,10 @@ plot:
             .iter()
             .map(|b| b.num_rows())
             .sum();
-        assert_eq!(rows_after, 2, "k=2: only x=3,4 pass x > 2 — the filter tightened");
+        assert_eq!(
+            rows_after, 2,
+            "k=2: only x=3,4 pass x > 2 — the filter tightened"
+        );
     }
 
     /// a data-shape param change (new WHERE value)
@@ -2494,7 +2584,10 @@ plot:
             .iter()
             .map(|b| b.num_rows())
             .sum();
-        assert_eq!(rows, 1, "k=3: only x=4 passes x > 3 — fresh (not stale) batch");
+        assert_eq!(
+            rows, 1,
+            "k=3: only x=4 passes x > 3 — fresh (not stale) batch"
+        );
     }
 
     /// the shipped example spec is reactive — raising
@@ -2721,10 +2814,7 @@ plot:
 
         // update_extent should attempt to emit with the navigation filter.
         // SimpleLowerer handles dot with data.from, so the query succeeds.
-        let results = session.update_extent(
-            Some(("x", 2.0, 4.0)),
-            None,
-        );
+        let results = session.update_extent(Some(("x", 2.0, 4.0)), None);
 
         // There should be exactly 1 mark result (the dot).
         assert_eq!(results.len(), 1, "expected 1 mark result");
@@ -2741,10 +2831,7 @@ plot:
         use brightfield_sql::navigation_filter_pass::NavigationFilterPass;
         use brightfield_sql::passes::Pass;
 
-        let pass = NavigationFilterPass::from_extents(
-            Some(("x", 2.0, 4.0)),
-            None,
-        );
+        let pass = NavigationFilterPass::from_extents(Some(("x", 2.0, 4.0)), None);
 
         // Build a simple plan and apply the pass.
         use brightfield_sql::ir::QueryPlan;
@@ -2779,8 +2866,14 @@ plot:
 
         let mut bindings = Vec::new();
         let sql = brightfield_sql::render::render_query(&filtered, &mut bindings);
-        assert!(sql.contains("\"ts\""), "SQL should filter on ts column, got: {sql}");
-        assert!(sql.contains("\"price\""), "SQL should filter on price column, got: {sql}");
+        assert!(
+            sql.contains("\"ts\""),
+            "SQL should filter on ts column, got: {sql}"
+        );
+        assert!(
+            sql.contains("\"price\""),
+            "SQL should filter on price column, got: {sql}"
+        );
     }
 
     #[test]
@@ -2910,8 +3003,14 @@ plot:
         let (spec, analysis) = parse_and_analyse(yaml);
 
         // Verify the subscriber graph actually links the mark to "brush".
-        let subs = analysis.subscriber_graph.get("brush").expect("brush should have subscribers");
-        assert!(!subs.is_empty(), "dot mark should subscribe to brush via filterBy");
+        let subs = analysis
+            .subscriber_graph
+            .get("brush")
+            .expect("brush should have subscribers");
+        assert!(
+            !subs.is_empty(),
+            "dot mark should subscribe to brush via filterBy"
+        );
 
         let engine = Engine::new();
         let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
@@ -2988,7 +3087,10 @@ plot:
 
         // "orphan" has no subscribers (no mark references it).
         let results = session.propagate_param("orphan", SpecValue::Integer(99));
-        assert!(results.is_empty(), "unsubscribed param should return empty results");
+        assert!(
+            results.is_empty(),
+            "unsubscribed param should return empty results"
+        );
 
         // But param_state should be updated.
         assert_eq!(
@@ -3025,7 +3127,10 @@ plot:
         let (spec, analysis) = parse_and_analyse(yaml);
 
         // Verify both marks subscribe.
-        let subs = analysis.subscriber_graph.get("brush").expect("brush subscribers");
+        let subs = analysis
+            .subscriber_graph
+            .get("brush")
+            .expect("brush subscribers");
         assert!(subs.len() >= 2, "both marks should subscribe to brush");
 
         let engine = Engine::new();
@@ -3034,7 +3139,11 @@ plot:
         let results = session.propagate_param("brush", SpecValue::Integer(42));
 
         // Both marks dispatched — independent of each other's success/failure.
-        assert_eq!(results.len(), 2, "both subscriber marks should be dispatched");
+        assert_eq!(
+            results.len(),
+            2,
+            "both subscriber marks should be dispatched"
+        );
 
         // Count successes and failures.
         let ok_count = results.iter().filter(|(_, r)| r.is_ok()).count();
@@ -3046,7 +3155,10 @@ plot:
         let (_, ok_result) = results.iter().find(|(_, r)| r.is_ok()).unwrap();
         let batches = ok_result.as_ref().unwrap();
         let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-        assert_eq!(total_rows, 2, "dot mark should return 2 rows from inline data");
+        assert_eq!(
+            total_rows, 2,
+            "dot mark should return 2 rows from inline data"
+        );
 
         // param_state updated regardless of mixed results.
         assert_eq!(
@@ -3187,8 +3299,7 @@ plot:
         );
 
         // Propagate param change — label.
-        let results =
-            session.propagate_param("label", SpecValue::String("updated".to_string()));
+        let results = session.propagate_param("label", SpecValue::String("updated".to_string()));
         assert!(results.is_empty(), "no subscribers for label");
         assert_eq!(
             session.current_params().get("label"),
@@ -3196,12 +3307,11 @@ plot:
         );
 
         // Add a dynamic param.
-        let results =
-            session.propagate_param("dynamic", SpecValue::Float(3.14));
+        let results = session.propagate_param("dynamic", SpecValue::Float(2.5));
         assert!(results.is_empty(), "no subscribers for dynamic param");
         assert_eq!(
             session.current_params().get("dynamic"),
-            Some(&SpecValue::Float(3.14))
+            Some(&SpecValue::Float(2.5))
         );
 
         // Final state should have all 3 params.
@@ -3326,11 +3436,8 @@ hconcat:
         // DIFFERENT parent plot than where the marks live, so
         // self-exclusion does not strip the predicate.
         let contributor = ComponentPath("root/hconcat[0]".to_string());
-        let _ = session.propagate_selection(
-            "brush",
-            contributor,
-            Predicate::Expr("1 = 0".to_string()),
-        );
+        let _ =
+            session.propagate_selection("brush", contributor, Predicate::Expr("1 = 0".to_string()));
 
         // Now propagate A. Walk should reach both A and B levels, and
         // dispatch m_A at A's level and m_B at B's level. Both emit_query
@@ -3341,7 +3448,10 @@ hconcat:
             results.len(),
             2,
             "chained walk must dispatch both m_A (level A) and m_B (level B); got {:?}",
-            results.iter().map(|(idx, r)| (*idx, r.is_ok())).collect::<Vec<_>>()
+            results
+                .iter()
+                .map(|(idx, r)| (*idx, r.is_ok()))
+                .collect::<Vec<_>>()
         );
 
         // Both marks should be Ok (dot lowerer is supported).
@@ -3428,7 +3538,9 @@ hconcat:
         let a_subs = analysis.subscriber_graph.get("A").unwrap();
         let b_subs = analysis.subscriber_graph.get("B").unwrap();
         assert!(
-            a_subs.iter().any(|p| p.0.ends_with("mark[dot]") && !p.0.contains("plot[1]")),
+            a_subs
+                .iter()
+                .any(|p| p.0.ends_with("mark[dot]") && !p.0.contains("plot[1]")),
             "subscriber_graph[A] should contain at least one mark; got {:?}",
             a_subs
         );
@@ -3691,8 +3803,14 @@ data:
         let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
 
         // Initial state.
-        assert_eq!(session.current_params().get("A"), Some(&SpecValue::Integer(100)));
-        assert_eq!(session.current_params().get("B"), Some(&SpecValue::Integer(200)));
+        assert_eq!(
+            session.current_params().get("A"),
+            Some(&SpecValue::Integer(100))
+        );
+        assert_eq!(
+            session.current_params().get("B"),
+            Some(&SpecValue::Integer(200))
+        );
 
         // Propagate A with a new value. No subscribers to dispatch (no
         // marks in this minimal spec) — but the walk still iterates the
@@ -3845,7 +3963,11 @@ plot:
         // Same contributor twice → still exactly one entry.
         let state = session.current_selections();
         let entries = state.get("brush").unwrap();
-        assert_eq!(entries.len(), 1, "same-contributor calls must replace, not append");
+        assert_eq!(
+            entries.len(),
+            1,
+            "same-contributor calls must replace, not append"
+        );
         assert_eq!(entries[0].1, Predicate::Expr("x < 100".to_string()));
 
         // Different contributor → accumulates.
@@ -3900,15 +4022,12 @@ vconcat:
         // its own mark is self-excluded.
         let contributor = ComponentPath("root/vconcat[0]".to_string());
         let pred_text = "x > 99999".to_string(); // distinctive marker in SQL
-        let _ = session.propagate_selection(
-            "brush",
-            contributor,
-            Predicate::Expr(pred_text.clone()),
-        );
+        let _ =
+            session.propagate_selection("brush", contributor, Predicate::Expr(pred_text.clone()));
 
         // Re-emit each mark's SQL with the live selection_state and inspect.
         let selections = session.selection_predicates_for_emit();
-        let selections_ref: Option<&[(String, Vec<(String, Predicate)>)]> = Some(&selections);
+        let selections_ref: Option<&[SelectionPredicate]> = Some(&selections);
 
         let emitted_idx_0 =
             emit_query(&session.spec, 0, None, selections_ref).expect("emit mark 0");
@@ -4053,9 +4172,21 @@ plot:
 
         // A contributes, then B (B is now "most recent"), then A re-contributes
         // a NEW predicate — A must now be the most recent.
-        let _ = session.propagate_selection("brush", source_a.clone(), Predicate::Expr("a_old = 1".to_string()));
-        let _ = session.propagate_selection("brush", source_b.clone(), Predicate::Expr("b_marker = 2".to_string()));
-        let _ = session.propagate_selection("brush", source_a.clone(), Predicate::Expr("a_new = 3".to_string()));
+        let _ = session.propagate_selection(
+            "brush",
+            source_a.clone(),
+            Predicate::Expr("a_old = 1".to_string()),
+        );
+        let _ = session.propagate_selection(
+            "brush",
+            source_b.clone(),
+            Predicate::Expr("b_marker = 2".to_string()),
+        );
+        let _ = session.propagate_selection(
+            "brush",
+            source_a.clone(),
+            Predicate::Expr("a_new = 3".to_string()),
+        );
 
         let selections = session.selection_predicates_for_emit();
         let emitted = emit_query(&session.spec, 0, None, Some(&selections)).unwrap();
@@ -4188,7 +4319,7 @@ plot:
         );
 
         // With a selection predicate, the SQL must contain the predicate text.
-        let predicates: Vec<(String, Vec<(String, Predicate)>)> = vec![(
+        let predicates: Vec<SelectionPredicate> = vec![(
             "brush".to_string(),
             vec![(
                 "root/plot[100]".to_string(),
@@ -4258,10 +4389,8 @@ hconcat:
 
         // Brush originates in the first plot (plot-node path root/hconcat[0])
         // — picks rows where distance is 100..=300 (3 of 5).
-        let contributor =
-            ComponentPath("root/hconcat[0]".to_string());
-        let predicate =
-            Predicate::Expr("distance >= 100 AND distance <= 300".to_string());
+        let contributor = ComponentPath("root/hconcat[0]".to_string());
+        let predicate = Predicate::Expr("distance >= 100 AND distance <= 300".to_string());
         let results = session.propagate_selection("brush", contributor, predicate);
 
         // The contributing plot's mark is self-excluded (crossfilter), so
@@ -4378,8 +4507,8 @@ plot:
         let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
 
         // (a) Unknown selection name on an empty session.
-        let results = session
-            .clear_selection("does_not_exist", ComponentPath("root/plot[0]".to_string()));
+        let results =
+            session.clear_selection("does_not_exist", ComponentPath("root/plot[0]".to_string()));
         assert!(results.is_empty(), "unknown name → empty result vec");
         assert!(
             session.current_selections().is_empty(),
@@ -4403,10 +4532,7 @@ plot:
         // (b) Known name, but a contributor that is NOT in the list.
         let stranger = ComponentPath("root/plot[99]".to_string());
         let results = session.clear_selection("brush", stranger);
-        assert!(
-            results.is_empty(),
-            "unknown contributor → empty result vec"
-        );
+        assert!(results.is_empty(), "unknown contributor → empty result vec");
         let after = session
             .current_selections()
             .get("brush")
@@ -4453,10 +4579,7 @@ plot:
         let snapshot = session.current_selections().clone();
 
         // (c) Propagate a param change.
-        let _ = session.propagate_param(
-            "threshold",
-            brightfield_spec::ast::SpecValue::Float(5.0),
-        );
+        let _ = session.propagate_param("threshold", brightfield_spec::ast::SpecValue::Float(5.0));
 
         // (d) Selection state equality field-by-field.
         assert_eq!(
@@ -4472,13 +4595,8 @@ plot:
             "brush".to_string(),
             vec![("root/plot[99]".to_string(), pred.clone())],
         )];
-        let emitted = emit_query(
-            &spec_for_emit,
-            0,
-            None,
-            Some(selections.as_slice()),
-        )
-        .expect("emit must succeed");
+        let emitted = emit_query(&spec_for_emit, 0, None, Some(selections.as_slice()))
+            .expect("emit must succeed");
         assert!(
             emitted.sql.to_uppercase().contains("WHERE"),
             "emitted SQL must contain WHERE after param change with active brush: {}",
@@ -4532,14 +4650,8 @@ plot:
         );
 
         // (c) Two propagate_param calls — first-walk + re-entry.
-        let _ = session.propagate_param(
-            "threshold",
-            brightfield_spec::ast::SpecValue::Float(1.0),
-        );
-        let _ = session.propagate_param(
-            "threshold",
-            brightfield_spec::ast::SpecValue::Float(2.0),
-        );
+        let _ = session.propagate_param("threshold", brightfield_spec::ast::SpecValue::Float(1.0));
+        let _ = session.propagate_param("threshold", brightfield_spec::ast::SpecValue::Float(2.0));
 
         // (d) selection_state byte-equal to snapshot.
         assert_eq!(
@@ -4590,11 +4702,20 @@ xLabel: X axis
     fn reload_spec_reemits_new_sql_on_the_same_session() {
         let (spec_a, analysis_a) = parse_and_analyse(DENSITY_SPEC);
         let engine = Engine::new();
-        let mut session = engine.load_spec(spec_a.clone(), analysis_a, None).unwrap().session;
+        let mut session = engine
+            .load_spec(spec_a.clone(), analysis_a, None)
+            .unwrap()
+            .session;
 
         let before = session.execute_mark(0).expect("density executes");
-        assert!(batch_has_column(&before, "a"), "launch batch carries column a");
-        assert!(!batch_has_column(&before, "b"), "launch batch does not carry b");
+        assert!(
+            batch_has_column(&before, "a"),
+            "launch batch carries column a"
+        );
+        assert!(
+            !batch_has_column(&before, "b"),
+            "launch batch does not carry b"
+        );
 
         // Rebind x: a -> b on the mutated working Spec, re-analyse, reload.
         let mut spec_b = spec_a.clone();
@@ -4612,9 +4733,17 @@ xLabel: X axis
         session.reload_spec(spec_b, analysis_b);
 
         // The SAME session re-emits the NEW SQL: the batch now carries column b.
-        let after = session.execute_mark(0).expect("re-emitted density executes");
-        assert!(batch_has_column(&after, "b"), "post-reload batch carries the NEW column b");
-        assert!(!batch_has_column(&after, "a"), "post-reload batch no longer carries a");
+        let after = session
+            .execute_mark(0)
+            .expect("re-emitted density executes");
+        assert!(
+            batch_has_column(&after, "b"),
+            "post-reload batch carries the NEW column b"
+        );
+        assert!(
+            !batch_has_column(&after, "a"),
+            "post-reload batch no longer carries a"
+        );
     }
 
     /// SetChannel, on the RIGHT surface: the re-lowered QueryPlan SQL
@@ -4641,10 +4770,16 @@ xLabel: X axis
 
         // Drive the production reload path and assert the batch column changed.
         let engine = Engine::new();
-        let mut session = engine.load_spec(spec_a.clone(), analysis_a, None).unwrap().session;
+        let mut session = engine
+            .load_spec(spec_a.clone(), analysis_a, None)
+            .unwrap()
+            .session;
         let analysis_b = analyse_spec(&spec_b).expect("re-analyse B");
         session.reload_spec(spec_b, analysis_b);
-        assert!(batch_has_column(&session.execute_mark(0).unwrap(), "b"), "batch carries new column");
+        assert!(
+            batch_has_column(&session.execute_mark(0).unwrap(), "b"),
+            "batch carries new column"
+        );
 
         // Undo == reload the pre-edit spec: the SQL + column revert.
         let analysis_a2 = analyse_spec(&spec_a).expect("re-analyse A");
@@ -4652,7 +4787,11 @@ xLabel: X axis
         let reverted = session.execute_mark(0).unwrap();
         assert!(batch_has_column(&reverted, "a"), "undo reverts to column a");
         assert!(!batch_has_column(&reverted, "b"), "undo drops column b");
-        assert_eq!(emit_query(&spec_a, 0, None, None).unwrap().sql, sql_a, "undo reverts the SQL");
+        assert_eq!(
+            emit_query(&spec_a, 0, None, None).unwrap().sql,
+            sql_a,
+            "undo reverts the SQL"
+        );
     }
 
     /// Engine: an AddMark grows the plot's mark cardinality by exactly
@@ -4675,22 +4814,52 @@ plot:
         assert_eq!(build_mark_index_map(&spec).len(), 1);
 
         // AddMark a SECOND dot: cardinality +1, two DISTINCT keys.
-        apply(&mut spec, &SpecEdit::AddMark { plot: cp("root"), kind: MarkKind::Dot })
-            .expect("clean");
+        apply(
+            &mut spec,
+            &SpecEdit::AddMark {
+                plot: cp("root"),
+                kind: MarkKind::Dot,
+            },
+        )
+        .expect("clean");
         let map = build_mark_index_map(&spec);
-        assert_eq!(map.len(), 2, "AddMark grows the mark cardinality by exactly one");
+        assert_eq!(
+            map.len(),
+            2,
+            "AddMark grows the mark cardinality by exactly one"
+        );
         // Distinct keys (item-ordinal disambiguates the duplicate `dot`).
         let keys: HashSet<&String> = map.keys().collect();
-        assert_eq!(keys.len(), 2, "two distinct mark_index_map keys for two dots");
+        assert_eq!(
+            keys.len(),
+            2,
+            "two distinct mark_index_map keys for two dots"
+        );
 
         // RemoveMark (primary) then AddMark: the map still resolves cleanly.
-        apply(&mut spec, &SpecEdit::RemoveMark { plot: cp("root"), mark_ordinal: 0 })
-            .expect("clean");
-        apply(&mut spec, &SpecEdit::AddMark { plot: cp("root"), kind: MarkKind::Line })
-            .expect("clean");
+        apply(
+            &mut spec,
+            &SpecEdit::RemoveMark {
+                plot: cp("root"),
+                mark_ordinal: 0,
+            },
+        )
+        .expect("clean");
+        apply(
+            &mut spec,
+            &SpecEdit::AddMark {
+                plot: cp("root"),
+                kind: MarkKind::Line,
+            },
+        )
+        .expect("clean");
         let map2 = build_mark_index_map(&spec);
         assert_eq!(map2.len(), 2, "remove-then-add nets two marks");
-        assert_eq!(map2.keys().collect::<HashSet<_>>().len(), 2, "keys stay unique");
+        assert_eq!(
+            map2.keys().collect::<HashSet<_>>().len(),
+            2,
+            "keys stay unique"
+        );
     }
 
     /// Engine half: a count-changing AddMark, pushed through
@@ -4717,24 +4886,42 @@ vconcat:
 "#;
         let (spec_a, analysis_a) = parse_and_analyse(yaml);
         let engine = Engine::new();
-        let mut session = engine.load_spec(spec_a.clone(), analysis_a, None).unwrap().session;
+        let mut session = engine
+            .load_spec(spec_a.clone(), analysis_a, None)
+            .unwrap()
+            .session;
         assert_eq!(session.mark_count(), 2);
 
         // AddMark to the SECOND plot; reload.
         let mut spec_b = spec_a.clone();
-        apply(&mut spec_b, &SpecEdit::AddMark { plot: cp("root/vconcat[1]"), kind: MarkKind::Line })
-            .expect("clean");
+        apply(
+            &mut spec_b,
+            &SpecEdit::AddMark {
+                plot: cp("root/vconcat[1]"),
+                kind: MarkKind::Line,
+            },
+        )
+        .expect("clean");
         let analysis_b = analyse_spec(&spec_b).expect("re-analyse");
         session.reload_spec(spec_b, analysis_b);
 
         // The map rebuilt: three marks, and each resolves + executes.
-        assert_eq!(session.mark_count(), 3, "reload_spec rebuilds the flat mark space");
+        assert_eq!(
+            session.mark_count(),
+            3,
+            "reload_spec rebuilds the flat mark space"
+        );
         for idx in 0..3 {
-            assert!(session.execute_mark(idx).is_ok(), "mark {idx} resolves + executes post-reload");
+            assert!(
+                session.execute_mark(idx).is_ok(),
+                "mark {idx} resolves + executes post-reload"
+            );
         }
         // The pre-existing first plot's dot still resolves to its original path.
         assert!(
-            session.mark_index_for_path("root/vconcat[0]/plot[0]/mark[dot]").is_some(),
+            session
+                .mark_index_for_path("root/vconcat[0]/plot[0]/mark[dot]")
+                .is_some(),
             "a pre-existing mark still resolves to its ORIGINAL path"
         );
     }
@@ -4762,7 +4949,10 @@ plot:
     y: n
 "#;
         let (spec, analysis) = parse_and_analyse(yaml);
-        Engine::new().load_spec(spec, analysis, None).unwrap().session
+        Engine::new()
+            .load_spec(spec, analysis, None)
+            .unwrap()
+            .session
     }
 
     /// values arrive ordered (ORDER BY value), de-duplicated, NULL
@@ -4770,7 +4960,9 @@ plot:
     #[test]
     fn distinct_values_ordered_deduped_null_excluded() {
         let session = distinct_fixture_session();
-        let dv = session.distinct_values("t", "region", 50).expect("resolves");
+        let dv = session
+            .distinct_values("t", "region", 50)
+            .expect("resolves");
         assert_eq!(
             dv.values,
             vec![
@@ -4792,7 +4984,11 @@ plot:
         let dv = session.distinct_values("t", "n", 50).expect("resolves");
         assert_eq!(
             dv.values,
-            vec![SpecValue::Integer(1), SpecValue::Integer(2), SpecValue::Integer(3)],
+            vec![
+                SpecValue::Integer(1),
+                SpecValue::Integer(2),
+                SpecValue::Integer(3)
+            ],
             "an integer column yields Integer, never a stringified value"
         );
     }
@@ -4828,14 +5024,20 @@ plot:
             .distinct_values("t", "no_such_column", 50)
             .expect_err("a bad column errors");
         match err {
-            EngineError::DistinctFailed { source_name, column, .. } => {
+            EngineError::DistinctFailed {
+                source_name,
+                column,
+                ..
+            } => {
                 assert_eq!(source_name, "t");
                 assert_eq!(column, "no_such_column");
             }
             other => panic!("expected DistinctFailed, got {other:?}"),
         }
         // The session is not poisoned: the next call succeeds.
-        let dv = session.distinct_values("t", "region", 50).expect("session still usable");
+        let dv = session
+            .distinct_values("t", "region", 50)
+            .expect("session still usable");
         assert_eq!(dv.values.len(), 3);
     }
 }

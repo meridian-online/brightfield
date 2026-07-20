@@ -45,7 +45,7 @@ pub fn kde_1d(bins: &[u32], bandwidth: f64, bin_size: f64) -> Vec<f64> {
 
     // Convolve.
     let mut out = vec![0.0; n];
-    for i in 0..n {
+    for (i, o) in out.iter_mut().enumerate() {
         let mut acc = 0.0;
         for (k_idx, &kw) in kernel.iter().enumerate() {
             let k = k_idx as isize - radius_bins;
@@ -58,7 +58,7 @@ pub fn kde_1d(bins: &[u32], bandwidth: f64, bin_size: f64) -> Vec<f64> {
             // We multiply by bin_size so that out has units of "samples per data unit".
             acc += (bins[j as usize] as f64) * kw * bin_size;
         }
-        out[i] = acc;
+        *o = acc;
     }
     out
 }
@@ -267,7 +267,7 @@ fn silverman_axis(samples: &[f64]) -> f64 {
         / (n_f - 1.0);
     let sigma = var.sqrt();
 
-    let mut sorted: Vec<f64> = samples.iter().copied().collect();
+    let mut sorted: Vec<f64> = samples.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let q1 = quantile(&sorted, 0.25);
     let q3 = quantile(&sorted, 0.75);
@@ -312,19 +312,13 @@ mod tests {
     #[test]
     fn kde_1d_uniform_density() {
         // Single sample at bin 5 — peak should be at bin 5, symmetric.
-        let bins: Vec<u32> = (0..11)
-            .map(|i| if i == 5 { 1 } else { 0 })
-            .collect();
+        let bins: Vec<u32> = (0..11).map(|i| if i == 5 { 1 } else { 0 }).collect();
         let density = kde_1d(&bins, 1.0, 1.0);
         assert_eq!(density.len(), 11);
         // Peak at bin 5.
         let peak = density[5];
-        for i in 0..11 {
-            assert!(
-                density[i] <= peak + 1e-12,
-                "bin {i} density {} > peak {peak}",
-                density[i]
-            );
+        for (i, d) in density.iter().enumerate() {
+            assert!(*d <= peak + 1e-12, "bin {i} density {d} > peak {peak}");
         }
         // Symmetry: bin 4 ≈ bin 6, bin 3 ≈ bin 7.
         assert!((density[4] - density[6]).abs() < 1e-9);
@@ -362,8 +356,14 @@ mod tests {
         let grid: Vec<f64> = (0..=10).map(|i| i as f64).collect();
         let density = kde_1d_weighted(&samples, 1.0, &grid);
         assert!(density.iter().all(|d| d.is_finite() && *d >= 0.0));
-        assert!(density[5] < density[1], "gap should be lower than left cluster");
-        assert!(density[9] > density[5], "right cluster should rise above the gap");
+        assert!(
+            density[5] < density[1],
+            "gap should be lower than left cluster"
+        );
+        assert!(
+            density[9] > density[5],
+            "right cluster should rise above the gap"
+        );
         // Heavier-weighted left cluster (5 vs 5 here is equal) — total mass split
         // by weight: both clusters present.
         assert!(density[1] > 0.0 && density[9] > 0.0);
@@ -391,10 +391,17 @@ mod tests {
     fn kde_1d_weighted_degenerate_inputs() {
         // Empty grid → empty; zero bandwidth / empty samples → zeros.
         assert!(kde_1d_weighted(&[(1.0, 1.0)], 1.0, &[]).is_empty());
-        assert_eq!(kde_1d_weighted(&[(1.0, 1.0)], 0.0, &[0.0, 1.0]), vec![0.0, 0.0]);
+        assert_eq!(
+            kde_1d_weighted(&[(1.0, 1.0)], 0.0, &[0.0, 1.0]),
+            vec![0.0, 0.0]
+        );
         assert_eq!(kde_1d_weighted(&[], 1.0, &[0.0, 1.0]), vec![0.0, 0.0]);
     }
 
+    // `1 * 5 + 2` is `row * width + col` for a 5-wide grid, not arithmetic to
+    // be folded. Collapsing the `1 *` (clippy::identity_op) hides which cell is
+    // being read and breaks the symmetry with the `3 * 5 + 2` it is compared to.
+    #[allow(clippy::identity_op)]
     #[test]
     fn kde_2d_separable_peak() {
         // 5x5 grid, single sample at (2, 2); peak should be at (2, 2).
@@ -405,10 +412,7 @@ mod tests {
         let peak = density[2 * 5 + 2];
         for r in 0..5 {
             for c in 0..5 {
-                assert!(
-                    density[r * 5 + c] <= peak + 1e-12,
-                    "({r},{c}) > peak"
-                );
+                assert!(density[r * 5 + c] <= peak + 1e-12, "({r},{c}) > peak");
             }
         }
         // Symmetry across both axes.
@@ -424,10 +428,7 @@ mod tests {
         let h = silverman_1d(&samples);
         // Variance of uniform on [-0.5, 0.5] ≈ 1/12 ⇒ σ ≈ 0.289.
         // Expected ≈ 1.06 * 0.289 * 100^(-0.2) ≈ 0.122.
-        assert!(
-            h > 0.05 && h < 0.30,
-            "silverman_1d unexpected: {h}"
-        );
+        assert!(h > 0.05 && h < 0.30, "silverman_1d unexpected: {h}");
     }
 
     #[test]

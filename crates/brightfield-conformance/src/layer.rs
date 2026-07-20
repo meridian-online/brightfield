@@ -138,15 +138,19 @@ impl LayerCheck for AstRoundTripCheck {
     ) -> LayerOutcome {
         let serialised = match serde_yaml::to_string(spec) {
             Ok(s) => s,
-            Err(e) => return LayerOutcome::Fail {
-                details: format!("serialise error: {e}"),
-            },
+            Err(e) => {
+                return LayerOutcome::Fail {
+                    details: format!("serialise error: {e}"),
+                }
+            }
         };
         let reparsed = match parse_spec(&serialised, Format::Yaml) {
             Ok(o) => o,
-            Err(e) => return LayerOutcome::Fail {
-                details: format!("second parse failed: {e}"),
-            },
+            Err(e) => {
+                return LayerOutcome::Fail {
+                    details: format!("second parse failed: {e}"),
+                }
+            }
         };
         if *spec == reparsed.spec {
             LayerOutcome::Pass
@@ -202,7 +206,10 @@ impl LayerCheck for SqlEquivalenceCheck {
             Ok(s) => s,
             Err(e) => {
                 return LayerOutcome::Fail {
-                    details: format!("failed to read expected SQL at {}: {e}", expected_path.display()),
+                    details: format!(
+                        "failed to read expected SQL at {}: {e}",
+                        expected_path.display()
+                    ),
                 };
             }
         };
@@ -226,17 +233,22 @@ impl LayerCheck for SqlEquivalenceCheck {
         } else {
             // Produce a readable diff
             let mut diff = String::from("DDL mismatch:\n--- expected\n+++ actual\n");
-            for (i, (exp_line, act_line)) in
-                expected.lines().zip(actual.lines()).enumerate()
-            {
+            for (i, (exp_line, act_line)) in expected.lines().zip(actual.lines()).enumerate() {
                 if exp_line != act_line {
-                    diff.push_str(&format!("line {}: expected '{}', got '{}'\n", i + 1, exp_line, act_line));
+                    diff.push_str(&format!(
+                        "line {}: expected '{}', got '{}'\n",
+                        i + 1,
+                        exp_line,
+                        act_line
+                    ));
                 }
             }
             let exp_count = expected.lines().count();
             let act_count = actual.lines().count();
             if exp_count != act_count {
-                diff.push_str(&format!("line count: expected {exp_count}, actual {act_count}\n"));
+                diff.push_str(&format!(
+                    "line count: expected {exp_count}, actual {act_count}\n"
+                ));
             }
             LayerOutcome::Fail { details: diff }
         }

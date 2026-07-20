@@ -110,7 +110,11 @@ pub enum SaveDecision {
 /// The two-writer guard for cmd-s: refuse an unseeded editor, flag a file
 /// that changed under us, and otherwise write/no-op as before.
 #[must_use]
-pub fn decide_save(buffer: &str, file_now: Option<&str>, last_synced: Option<&str>) -> SaveDecision {
+pub fn decide_save(
+    buffer: &str,
+    file_now: Option<&str>,
+    last_synced: Option<&str>,
+) -> SaveDecision {
     let Some(last_synced) = last_synced else {
         return SaveDecision::RefuseUnseeded;
     };
@@ -203,7 +207,11 @@ mod tests {
         let new_buffer = "plot:\n  - mark: line\n    stroke: steelblue\n";
         let outcome = save_spec_atomic(new_buffer, &path).expect("save succeeds");
         assert_eq!(outcome, SaveOutcome::Written);
-        assert_eq!(fs::read_to_string(&path).unwrap(), new_buffer, "full buffer lands");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            new_buffer,
+            "full buffer lands"
+        );
 
         // No `.bf-save` temp remnant beside the destination.
         let dir = path.parent().unwrap();
@@ -212,7 +220,10 @@ mod tests {
             .filter_map(Result::ok)
             .filter(|e| e.file_name().to_string_lossy().contains(".bf-save-"))
             .collect();
-        assert!(leftovers.is_empty(), "temp file renamed away, not left behind");
+        assert!(
+            leftovers.is_empty(),
+            "temp file renamed away, not left behind"
+        );
 
         let _ = fs::remove_file(&path);
     }
@@ -260,7 +271,10 @@ mod tests {
             SaveDecision::ExternalConflict
         );
         // File already holds the buffer's text: nothing to write.
-        assert_eq!(decide_save("b", Some("b"), Some("a")), SaveDecision::Unchanged);
+        assert_eq!(
+            decide_save("b", Some("b"), Some("a")),
+            SaveDecision::Unchanged
+        );
         // File is exactly what we last synced with: normal write.
         assert_eq!(decide_save("b", Some("a"), Some("a")), SaveDecision::Write);
         // File vanished under us: the buffer recreates it.
@@ -331,14 +345,24 @@ mod tests {
     #[test]
     fn commit_gate_allows_pristine_refuses_dirty() {
         // Pristine: the buffer is exactly what we last synced with -> commit.
-        assert!(commit_is_allowed("plot:\n  - mark: dot\n", Some("plot:\n  - mark: dot\n")));
+        assert!(commit_is_allowed(
+            "plot:\n  - mark: dot\n",
+            Some("plot:\n  - mark: dot\n")
+        ));
         // Dirty: hand-typed edits sit in the buffer -> refuse the commit.
-        assert!(!commit_is_allowed("plot:\n  - mark: bar\n", Some("plot:\n  - mark: dot\n")));
+        assert!(!commit_is_allowed(
+            "plot:\n  - mark: bar\n",
+            Some("plot:\n  - mark: dot\n")
+        ));
         // Never synced (boot seed failed) -> refuse.
         assert!(!commit_is_allowed("anything", None));
         // The hole this closes: decide_save would WRITE that same dirty buffer.
         assert_eq!(
-            decide_save("plot:\n  - mark: bar\n", Some("plot:\n  - mark: dot\n"), Some("plot:\n  - mark: dot\n")),
+            decide_save(
+                "plot:\n  - mark: bar\n",
+                Some("plot:\n  - mark: dot\n"),
+                Some("plot:\n  - mark: dot\n")
+            ),
             SaveDecision::Write,
             "decide_save is NOT the dirty-buffer guard — the commit gate is"
         );
@@ -382,7 +406,10 @@ mod tests {
         assert_eq!(outcome, SaveOutcome::Written);
 
         assert!(
-            fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
             "the link survives the save"
         );
         assert_eq!(

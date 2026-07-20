@@ -49,14 +49,21 @@ mod tests {
         let reg = registry();
         let recency = RecencyCounter::new();
         for altitude in [Altitude::Dashboard, Altitude::View] {
-            let bare_fires: std::collections::HashSet<&str> =
-                reg.iter().filter(|v| bare_applicable(v, altitude)).map(|v| v.longname).collect();
-            let palette_enables: std::collections::HashSet<&str> = palette_filter(&reg, altitude, "", &recency)
-                .into_iter()
-                .filter(|c| c.enabled)
-                .map(|c| c.longname)
+            let bare_fires: std::collections::HashSet<&str> = reg
+                .iter()
+                .filter(|v| bare_applicable(v, altitude))
+                .map(|v| v.longname)
                 .collect();
-            assert_eq!(bare_fires, palette_enables, "predicate diverged at {altitude:?}");
+            let palette_enables: std::collections::HashSet<&str> =
+                palette_filter(&reg, altitude, "", &recency)
+                    .into_iter()
+                    .filter(|c| c.enabled)
+                    .map(|c| c.longname)
+                    .collect();
+            assert_eq!(
+                bare_fires, palette_enables,
+                "predicate diverged at {altitude:?}"
+            );
         }
     }
 

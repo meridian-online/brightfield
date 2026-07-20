@@ -31,6 +31,14 @@ impl From<brightfield_spec::vocab::SelectionResolution> for SelectionResolution 
     }
 }
 
+/// One selection's compiled predicates: the selection's name, paired with the
+/// predicates it contributes per source table (`(table, predicate)`).
+///
+/// Named because the bare tuple appears in a dozen signatures across
+/// `brightfield-sql` and `brightfield-engine`, where it read as noise rather
+/// than as "the selection filters to apply".
+pub type SelectionPredicate = (String, Vec<(String, Predicate)>);
+
 /// A predicate in the IR — used in `Filter` and selection compilation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Predicate {
@@ -91,9 +99,7 @@ pub enum SortDir {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum QueryPlan {
     /// Leaf node referencing a named view (from the DDL).
-    Source {
-        table: String,
-    },
+    Source { table: String },
 
     /// A constant single-row select with no `FROM` — the minimal named
     /// dataless-mark pathway (hexgrid). Renders `SELECT <columns>`, yielding one

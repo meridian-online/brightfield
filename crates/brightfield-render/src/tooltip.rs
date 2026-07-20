@@ -101,14 +101,9 @@ mod tests {
 
     #[test]
     fn tooltip_out_of_bounds() {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("x", DataType::Float64, false),
-        ]));
-        let batch = RecordBatch::try_new(
-            schema,
-            vec![Arc::new(Float64Array::from(vec![1.0]))],
-        )
-        .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Float64, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Float64Array::from(vec![1.0]))]).unwrap();
 
         assert!(TooltipContent::from_row(&batch, 5).is_none());
     }

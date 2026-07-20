@@ -22,7 +22,9 @@ pub use crate::ast::{
     PlotNode, SelectionNode, Spec, SpecValue, ValueOrParamRef,
 };
 pub use crate::error::{NameSurface, ParseError, SourceSpan};
-pub use crate::parse::{parse_spec, parse_spec_path, serialise_spec, Format, ParseOutput, ParseWarning};
+pub use crate::parse::{
+    parse_spec, parse_spec_path, serialise_spec, Format, ParseOutput, ParseWarning,
+};
 pub use crate::vocab::{ComponentKind, ImplStatus, InputKind, InteractorKind, MarkKind};
 
 /// Mosaic spec version this crate targets. The parser accepts any spec whose

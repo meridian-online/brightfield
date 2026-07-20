@@ -80,7 +80,12 @@ pub fn grow_margins(base: Margins, titles: &ResolvedTitles) -> Margins {
     Margins {
         left: base.left + if titles.y.is_some() { TITLE_BAND } else { 0.0 },
         bottom: base.bottom + if titles.x.is_some() { TITLE_BAND } else { 0.0 },
-        top: base.top + if titles.plot.is_some() { TITLE_BAND } else { 0.0 },
+        top: base.top
+            + if titles.plot.is_some() {
+                TITLE_BAND
+            } else {
+                0.0
+            },
         right: base.right,
     }
 }
@@ -96,7 +101,10 @@ mod tests {
         for (k, v) in attrs {
             attributes.insert((*k).to_string(), v.clone());
         }
-        PlotNode { items: vec![], attributes }
+        PlotNode {
+            items: vec![],
+            attributes,
+        }
     }
 
     fn map_cols(cols: &[(Channel, &str)]) -> ChannelMap {
@@ -127,9 +135,16 @@ mod tests {
         assert_eq!(t.y, None);
 
         // Interval-only axis (x1/x2, no plain x) → no derived title.
-        let interval = map_cols(&[(Channel::X1, "lo"), (Channel::X2, "hi"), (Channel::Y, "count")]);
+        let interval = map_cols(&[
+            (Channel::X1, "lo"),
+            (Channel::X2, "hi"),
+            (Channel::Y, "count"),
+        ]);
         let t = resolve_titles(&plot_with(&[]), &[&interval]);
-        assert_eq!(t.x, None, "interval-only x names no single field → no title");
+        assert_eq!(
+            t.x, None,
+            "interval-only x names no single field → no title"
+        );
         assert_eq!(t.y.as_deref(), Some("count"));
     }
 
@@ -142,7 +157,11 @@ mod tests {
         literal_first.insert_literal(Channel::Y, 30.0);
         let bound = map_cols(&[(Channel::X, "date"), (Channel::Y, "level")]);
         let t = resolve_titles(&plot_with(&[]), &[&literal_first, &bound]);
-        assert_eq!(t.y.as_deref(), Some("level"), "first column-bound entry names y");
+        assert_eq!(
+            t.y.as_deref(),
+            Some("level"),
+            "first column-bound entry names y"
+        );
         assert_eq!(t.x.as_deref(), Some("date"));
     }
 
@@ -159,7 +178,10 @@ mod tests {
         assert!((g.left - (base.left + TITLE_BAND)).abs() < f64::EPSILON);
         assert!((g.bottom - (base.bottom + TITLE_BAND)).abs() < f64::EPSILON);
         assert!((g.top - (base.top + TITLE_BAND)).abs() < f64::EPSILON);
-        assert!((g.right - base.right).abs() < f64::EPSILON, "right never grows");
+        assert!(
+            (g.right - base.right).abs() < f64::EPSILON,
+            "right never grows"
+        );
 
         // No titles → margins unchanged (an untitled plot is byte-identical).
         let none = ResolvedTitles::default();

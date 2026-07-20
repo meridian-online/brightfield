@@ -31,13 +31,15 @@ plot:
 }
 
 /// 3. Strict-context `$param` under `meta.title` →
-/// StrictContextUnresolvedRef.
+///    StrictContextUnresolvedRef.
 #[test]
 fn strict_context_dollar_in_meta() {
     let src = "meta:\n  title: $live\n";
     let err = parse_spec(src, Format::Yaml).expect_err("should fail");
     match err {
-        ParseError::StrictContextUnresolvedRef { field_path, name, .. } => {
+        ParseError::StrictContextUnresolvedRef {
+            field_path, name, ..
+        } => {
             assert_eq!(field_path, "meta.title");
             assert_eq!(name, "live");
         }

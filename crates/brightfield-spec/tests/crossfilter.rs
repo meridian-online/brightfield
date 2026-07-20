@@ -10,10 +10,10 @@
 
 use std::path::PathBuf;
 
+use brightfield_spec::ast::MarkData;
 use brightfield_spec::{
     parse_spec_path, Component, Mark, ParamNode, SelectionNode, ValueOrParamRef,
 };
-use brightfield_spec::ast::MarkData;
 
 #[test]
 fn crossfilter_structural() {
@@ -38,13 +38,13 @@ fn crossfilter_structural() {
     let mut saw_as = false;
     walk(root, &mut |c| match c {
         Component::Mark(Mark {
-            data: Some(MarkData::From { filter_by, .. }),
+            data: Some(MarkData::From {
+                filter_by: Some(r), ..
+            }),
             ..
         }) => {
-            if let Some(r) = filter_by {
-                assert_eq!(r.to_wire(), "$brush");
-                saw_filter_by = true;
-            }
+            assert_eq!(r.to_wire(), "$brush");
+            saw_filter_by = true;
         }
         Component::Interactor(i) => {
             if let Some(ValueOrParamRef::Param(r)) = i.options.get("as") {
@@ -55,7 +55,10 @@ fn crossfilter_structural() {
         _ => {}
     });
 
-    assert!(saw_filter_by, "expected mark.data.filterBy to lift to ParamRef");
+    assert!(
+        saw_filter_by,
+        "expected mark.data.filterBy to lift to ParamRef"
+    );
     assert!(saw_as, "expected interactor.as to lift to ParamRef");
 }
 

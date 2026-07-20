@@ -45,7 +45,6 @@ use gpui_component::menu::PopupMenu;
 use gpui_component::notification::Notification;
 use gpui_component::{ActiveTheme as _, Root};
 
-use brightfield_ui::{ChartView, PresentationMode, TogglePresentation, WORKSPACE_KEY_CONTEXT};
 use brightfield_keys::{
     focus_jump_candidates, help_sheet, palette_filter, registry, Altitude, FocusState, FocusTree,
     JumpCandidate, PaletteCandidate, RecencyCounter,
@@ -56,26 +55,27 @@ use brightfield_spec::edit::{
     apply as apply_spec_edit, classify_edit, plot_at_path, SpecEdit, UndoOutcome, UndoStack,
 };
 use brightfield_spec::vocab::{ImplStatus, MarkKind};
+use brightfield_ui::{ChartView, PresentationMode, TogglePresentation, WORKSPACE_KEY_CONTEXT};
 
 use crate::arg_collector::{ArgCollector, ArgOutcome, ArgStep};
 use crate::command_log::CommandLog;
 use crate::dock_state_file::{
     self, LoadDecision, SaveAction, SavePolicy, DOCK_STATE_VERSION, SAVE_DEBOUNCE_MS,
 };
-use crate::log_model::FeedbackLog;
-use crate::reload_feedback::{self, Severity};
-use crate::shell_model::{
-    bottom_dock_action, bottom_dock_needs_backfill, dock_closes_when_emptied, docks_open,
-    grammar_chrome_visible, layout_persistable, panel_visible, BottomDockAction, PanelRole,
-    BOTTOM_DOCK_HEIGHT, CANVAS_PANEL_NAME, CMD_LOG_PANEL_NAME, EDITOR_DOCK_WIDTH, EDITOR_PANEL_NAME,
-    LOG_PANEL_NAME, SIDEBAR_DOCK_WIDTH, SIDEBAR_PANEL_NAME,
-};
 use crate::keymap::{
     action_for_longname, AddMark, ChangeMarkType, ClearSelection, CycleColourScheme, DiveIn,
     FocusJump, FocusNextSibling, FocusPrevSibling, OpenHelp, OpenPalette, PopOut, ReloadSpec,
     RemoveMark, SetChannel, ToggleFocus, Undo,
 };
+use crate::log_model::FeedbackLog;
 use crate::profile_model::{self, ProfileOutcome, SourceProfile};
+use crate::reload_feedback::{self, Severity};
+use crate::shell_model::{
+    bottom_dock_action, bottom_dock_needs_backfill, dock_closes_when_emptied, docks_open,
+    grammar_chrome_visible, layout_persistable, panel_visible, BottomDockAction, PanelRole,
+    BOTTOM_DOCK_HEIGHT, CANVAS_PANEL_NAME, CMD_LOG_PANEL_NAME, EDITOR_DOCK_WIDTH,
+    EDITOR_PANEL_NAME, LOG_PANEL_NAME, SIDEBAR_DOCK_WIDTH, SIDEBAR_PANEL_NAME,
+};
 use crate::spec_save;
 
 actions!(
@@ -122,7 +122,11 @@ pub fn editor_key_bindings() -> Vec<KeyBinding> {
 /// deliberately OUTSIDE the registry-sourced set (`grammar_key_bindings`), so the
 /// "cmd-s stays an editor binding" invariant on that set still holds.
 pub fn workspace_command_bindings() -> Vec<KeyBinding> {
-    vec![KeyBinding::new("cmd-s", CommitEdits, Some(WORKSPACE_KEY_CONTEXT))]
+    vec![KeyBinding::new(
+        "cmd-s",
+        CommitEdits,
+        Some(WORKSPACE_KEY_CONTEXT),
+    )]
 }
 
 /// The one bit of shared shell mode: the gpui-free
@@ -392,7 +396,12 @@ impl CanvasPanel {
 
     /// `ChangeMarkType` handler (bare `m`, View-scoped): cycle the
     /// focused View's primary mark to the next gate-clean kind, applied live.
-    fn change_mark_type(&mut self, _: &ChangeMarkType, window: &mut Window, cx: &mut Context<Self>) {
+    fn change_mark_type(
+        &mut self,
+        _: &ChangeMarkType,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match self.next_retype_edit() {
             Some(edit) => self.apply_command_edit(&edit, window, cx),
             None => self.log_command(
@@ -409,7 +418,10 @@ impl CanvasPanel {
         let Some(path) = self.focused_view_path() else {
             return;
         };
-        let edit = SpecEdit::RemoveMark { plot: ComponentPath(path), mark_ordinal: 0 };
+        let edit = SpecEdit::RemoveMark {
+            plot: ComponentPath(path),
+            mark_ordinal: 0,
+        };
         self.apply_command_edit(&edit, window, cx);
     }
 
@@ -417,6 +429,13 @@ impl CanvasPanel {
     /// the working spec, and reload every plot from it. A no-op past a commit
     /// barrier / on an empty stack is logged with its reason.
     fn undo(&mut self, _: &Undo, window: &mut Window, cx: &mut Context<Self>) {
+        // A `Spec` + its analysis is much larger than a `String`, so
+        // clippy::large_enum_variant wants the big variant boxed. This enum is a
+        // function-local control-flow carrier: it is constructed once per undo
+        // keystroke and matched immediately on the next line, so the size
+        // difference buys one stack move that boxing would trade for a heap
+        // allocation plus an indirection. Not worth obscuring the pattern.
+        #[allow(clippy::large_enum_variant)]
         enum UndoAction {
             Reload(Spec, brightfield_spec::analysis::SpecAnalysis),
             Refused(String),
@@ -434,7 +453,9 @@ impl CanvasPanel {
                         Err(e) => UndoAction::Refused(format!("undo: re-analysis failed: {e}")),
                     }
                 }
-                UndoOutcome::NothingToUndo => UndoAction::Refused("undo: nothing to undo".to_string()),
+                UndoOutcome::NothingToUndo => {
+                    UndoAction::Refused("undo: nothing to undo".to_string())
+                }
                 UndoOutcome::PastCommitBarrier => {
                     UndoAction::Refused("undo: nothing to undo (past the last commit)".to_string())
                 }
@@ -495,7 +516,11 @@ impl CanvasPanel {
     /// Move focus to `path`: the overlay's chosen jump target. No-op if
     /// the path is not in the tree.
     pub fn jump_focus_to(&mut self, path: &ComponentPath, cx: &mut Context<Self>) {
-        if self.focus_state.as_mut().is_some_and(|s| s.jump_to(&self.focus_tree, path)) {
+        if self
+            .focus_state
+            .as_mut()
+            .is_some_and(|s| s.jump_to(&self.focus_tree, path))
+        {
             self.apply_focus(cx);
         }
     }
@@ -511,13 +536,21 @@ impl CanvasPanel {
 
     /// Dispatch a nav move (`DiveIn`/`PopOut`/sibling) and refresh focus chrome.
     fn dive_in(&mut self, _: &DiveIn, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.focus_state.as_mut().is_some_and(|s| s.dive(&self.focus_tree)) {
+        if self
+            .focus_state
+            .as_mut()
+            .is_some_and(|s| s.dive(&self.focus_tree))
+        {
             self.apply_focus(cx);
         }
     }
 
     fn pop_out(&mut self, _: &PopOut, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.focus_state.as_mut().is_some_and(|s| s.pop(&self.focus_tree)) {
+        if self
+            .focus_state
+            .as_mut()
+            .is_some_and(|s| s.pop(&self.focus_tree))
+        {
             self.apply_focus(cx);
         }
     }
@@ -528,7 +561,11 @@ impl CanvasPanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.focus_state.as_mut().is_some_and(|s| s.next_sibling(&self.focus_tree)) {
+        if self
+            .focus_state
+            .as_mut()
+            .is_some_and(|s| s.next_sibling(&self.focus_tree))
+        {
             self.apply_focus(cx);
         }
     }
@@ -539,7 +576,11 @@ impl CanvasPanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.focus_state.as_mut().is_some_and(|s| s.prev_sibling(&self.focus_tree)) {
+        if self
+            .focus_state
+            .as_mut()
+            .is_some_and(|s| s.prev_sibling(&self.focus_tree))
+        {
             self.apply_focus(cx);
         }
     }
@@ -552,10 +593,12 @@ impl CanvasPanel {
         let Some(coord) = self.chart_view.read(cx).coordinator() else {
             return;
         };
-        let target = self
-            .focus_state
-            .as_ref()
-            .map(|s| (s.altitude(&self.focus_tree), s.path(&self.focus_tree).0.clone()));
+        let target = self.focus_state.as_ref().map(|s| {
+            (
+                s.altitude(&self.focus_tree),
+                s.path(&self.focus_tree).0.clone(),
+            )
+        });
         let cleared = match target {
             Some((Altitude::View, path)) => coord.borrow_mut().clear_plot(&path, cx),
             _ => coord.borrow_mut().clear_all(cx),
@@ -580,10 +623,12 @@ impl CanvasPanel {
         let Some(coord) = self.chart_view.read(cx).coordinator() else {
             return;
         };
-        let target = self
-            .focus_state
-            .as_ref()
-            .map(|s| (s.altitude(&self.focus_tree), s.path(&self.focus_tree).0.clone()));
+        let target = self.focus_state.as_ref().map(|s| {
+            (
+                s.altitude(&self.focus_tree),
+                s.path(&self.focus_tree).0.clone(),
+            )
+        });
         let changed = match target {
             Some((Altitude::View, path)) => coord.borrow_mut().cycle_scheme(&path, cx),
             _ => false,
@@ -693,11 +738,12 @@ impl Render for CanvasPanel {
         // A lightweight inline "uncommitted edits" badge, authoring-
         // only — an at-a-glance cue right where the author works. The full
         // history lives in the dedicated bottom-dock CommandLog panel.
-        let command_readout: Option<usize> = (grammar_chrome_visible(self.presentation.read(cx).mode))
-            .then(|| self.command.as_ref())
-            .flatten()
-            .map(|s| s.log.read(cx).uncommitted())
-            .filter(|n| *n > 0);
+        let command_readout: Option<usize> =
+            (grammar_chrome_visible(self.presentation.read(cx).mode))
+                .then_some(self.command.as_ref())
+                .flatten()
+                .map(|s| s.log.read(cx).uncommitted())
+                .filter(|n| *n > 0);
         div()
             .relative()
             .size_full()
@@ -844,7 +890,11 @@ impl EditorPanel {
             // saved again, so the buffer wins.
             spec_save::SaveDecision::Write
         } else {
-            spec_save::decide_save(buffer.as_ref(), file_now.as_deref(), self.last_synced.as_deref())
+            spec_save::decide_save(
+                buffer.as_ref(),
+                file_now.as_deref(),
+                self.last_synced.as_deref(),
+            )
         };
         self.conflict_pending = false;
         match decision {
@@ -867,8 +917,8 @@ impl EditorPanel {
             }
             spec_save::SaveDecision::ExternalConflict => {
                 self.conflict_pending = true;
-                let message =
-                    "Spec changed on disk since it was loaded — save again to overwrite".to_string();
+                let message = "Spec changed on disk since it was loaded — save again to overwrite"
+                    .to_string();
                 eprintln!("Save deferred: {message}");
                 self.log_feedback(Severity::Warning, &message, cx);
                 Root::update(window, cx, |root, window, cx| {
@@ -885,7 +935,11 @@ impl EditorPanel {
                         eprintln!("{message}");
                         self.log_feedback(Severity::Error, &message, cx);
                         Root::update(window, cx, |root, window, cx| {
-                            root.push_notification(Notification::error(message.clone()), window, cx);
+                            root.push_notification(
+                                Notification::error(message.clone()),
+                                window,
+                                cx,
+                            );
                         });
                     }
                 }
@@ -899,13 +953,19 @@ impl EditorPanel {
     /// guard. A dirty buffer is left alone (cmd-s then routes through the
     /// conflict path); our own save's echo is a no-op. The decision is
     /// `spec_save::should_reseed`, framework-free.
-    pub fn reseed_from_disk(&mut self, contents: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn reseed_from_disk(
+        &mut self,
+        contents: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let buffer = self.state.read(cx).value();
         if !spec_save::should_reseed(buffer.as_ref(), self.last_synced.as_deref(), contents) {
             return;
         }
-        self.state
-            .update(cx, |state, cx| state.set_value(contents.to_string(), window, cx));
+        self.state.update(cx, |state, cx| {
+            state.set_value(contents.to_string(), window, cx)
+        });
         self.last_synced = Some(contents.to_string());
         self.conflict_pending = false;
     }
@@ -927,8 +987,9 @@ impl EditorPanel {
         if !spec_save::commit_is_allowed(buffer.as_ref(), self.last_synced.as_deref()) {
             return Err(spec_save::DIRTY_BUFFER_COMMIT_REFUSAL.to_string());
         }
-        self.state
-            .update(cx, |state, cx| state.set_value(yaml.to_string(), window, cx));
+        self.state.update(cx, |state, cx| {
+            state.set_value(yaml.to_string(), window, cx)
+        });
         match spec_save::save_spec_atomic(yaml, &self.spec_path) {
             Ok(_) => {
                 self.last_synced = Some(yaml.to_string());
@@ -1116,11 +1177,9 @@ impl Render for SidebarPanel {
                         .child(SharedString::from(source.name.clone())),
                 );
                 if let ProfileOutcome::Profiled { row_count, .. } = &source.outcome {
-                    header = header.child(
-                        div()
-                            .text_color(muted)
-                            .child(SharedString::from(profile_model::row_count_label(*row_count))),
-                    );
+                    header = header.child(div().text_color(muted).child(SharedString::from(
+                        profile_model::row_count_label(*row_count),
+                    )));
                 }
                 let mut block = div().mb_3().child(header);
                 match &source.outcome {
@@ -1154,7 +1213,10 @@ impl Render for SidebarPanel {
                         }));
                         if let Some(tail) = more {
                             block = block.child(
-                                div().pl_2().text_color(muted).child(SharedString::from(tail)),
+                                div()
+                                    .pl_2()
+                                    .text_color(muted)
+                                    .child(SharedString::from(tail)),
                             );
                         }
                     }
@@ -1260,7 +1322,11 @@ impl Render for LogPanel {
         let muted = cx.theme().muted_foreground;
         let foreground = cx.theme().foreground;
         let entries = self.log.read(cx).entries().to_vec();
-        let list = div().size_full().p_3().text_size(px(12.0)).overflow_hidden();
+        let list = div()
+            .size_full()
+            .p_3()
+            .text_size(px(12.0))
+            .overflow_hidden();
         if entries.is_empty() {
             return list.child(
                 div()
@@ -1373,11 +1439,9 @@ impl Render for CommandLogPanel {
             .overflow_hidden()
             .child(header);
         if entries.is_empty() {
-            return list.child(
-                div()
-                    .text_color(muted)
-                    .child(SharedString::from("(no command-log edits yet — try m / a / e / d / u)")),
-            );
+            return list.child(div().text_color(muted).child(SharedString::from(
+                "(no command-log edits yet — try m / a / e / d / u)",
+            )));
         }
         list.children(entries.into_iter().map(move |entry| {
             use crate::command_log::CommandLogEntry;
@@ -1511,6 +1575,12 @@ impl WorkspaceRoot {
     /// Assemble the dock over the four panels, restoring the saved layout
     /// when usable (missing/corrupt/version-mismatch → default), and wire
     /// the save triggers.
+    // 9 arguments: the five panels this root docks, the presentation state they
+    // share, the reload flag, and gpui's `window`/`cx` — which every gpui
+    // constructor carries and which alone put this two over clippy's threshold.
+    // There is no grouping of the panels that is not just a struct named
+    // "the arguments to new".
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         canvas: Entity<CanvasPanel>,
         editor: Entity<EditorPanel>,
@@ -1533,7 +1603,16 @@ impl WorkspaceRoot {
         // with_saved_layout defaults the trigger (its test callers
         // never drives the watcher); the live wiring is injected here.
         let mut this = Self::with_saved_layout(
-            canvas, editor, sidebar, log, command_log, presentation, state_path, raw, window, cx,
+            canvas,
+            editor,
+            sidebar,
+            log,
+            command_log,
+            presentation,
+            state_path,
+            raw,
+            window,
+            cx,
         );
         this.reload_trigger = reload_trigger;
         this
@@ -1594,12 +1673,16 @@ impl WorkspaceRoot {
                 Ok(state) => {
                     let loaded = dock_area.update(cx, |area, cx| area.load(state, window, cx));
                     if let Err(e) = &loaded {
-                        eprintln!("dock layout: failed to restore saved layout ({e}); using default");
+                        eprintln!(
+                            "dock layout: failed to restore saved layout ({e}); using default"
+                        );
                     }
                     loaded.is_ok()
                 }
                 Err(e) => {
-                    eprintln!("dock layout: saved layout does not deserialise ({e}); using default");
+                    eprintln!(
+                        "dock layout: saved layout does not deserialise ({e}); using default"
+                    );
                     false
                 }
             },
@@ -1611,7 +1694,16 @@ impl WorkspaceRoot {
             }
         };
         if !restored {
-            Self::default_layout(&dock_area, &canvas, &editor, &sidebar, &log, &command_log, window, cx);
+            Self::default_layout(
+                &dock_area,
+                &canvas,
+                &editor,
+                &sidebar,
+                &log,
+                &command_log,
+                window,
+                cx,
+            );
         } else {
             // Normalise (correction): pre-round saves
             // serialised bare-Tabs dock roots, which this pin's drag
@@ -1688,7 +1780,8 @@ impl WorkspaceRoot {
         cx.observe_in(&presentation, window, |this: &mut Self, _, window, cx| {
             this.sync_bottom_dock_to_mode(window, cx);
             // Presentation hides authoring chrome — dismiss any open overlay.
-            if !grammar_chrome_visible(this.presentation.read(cx).mode) && this.overlay != Overlay::Closed
+            if !grammar_chrome_visible(this.presentation.read(cx).mode)
+                && this.overlay != Overlay::Closed
             {
                 this.overlay = Overlay::Closed;
                 cx.notify();
@@ -1865,7 +1958,9 @@ impl WorkspaceRoot {
             .update(cx, |editor, cx| editor.commit_buffer(&yaml, window, cx));
         match result {
             Ok(()) => self.canvas.update(cx, |c, cx| c.mark_committed(cx)),
-            Err(reason) => self.canvas.update(cx, |c, cx| c.log_command_refusal(&reason, cx)),
+            Err(reason) => self
+                .canvas
+                .update(cx, |c, cx| c.log_command_refusal(&reason, cx)),
         }
         cx.notify();
     }
@@ -1898,7 +1993,9 @@ impl WorkspaceRoot {
         };
         let all = collector.options(&columns);
         let q = self.arg_query.to_lowercase();
-        all.into_iter().filter(|o| o.to_lowercase().contains(&q)).collect()
+        all.into_iter()
+            .filter(|o| o.to_lowercase().contains(&q))
+            .collect()
     }
 
     /// The distinct, non-internal column names across every PROFILED source in
@@ -1927,7 +2024,10 @@ impl WorkspaceRoot {
     /// `Invalid` leaves the overlay open.
     fn run_arg(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let filtered = self.arg_options(cx);
-        let is_column = matches!(self.arg.as_ref().map(ArgCollector::step), Some(ArgStep::Column { .. }));
+        let is_column = matches!(
+            self.arg.as_ref().map(ArgCollector::step),
+            Some(ArgStep::Column { .. })
+        );
         let choice = filtered
             .get(self.arg_selected)
             .cloned()
@@ -1946,7 +2046,8 @@ impl WorkspaceRoot {
                 // Refocus the canvas BEFORE applying (the run_palette ordering
                 // note): apply_command_edit reads the focused plot's coordinator.
                 self.close_overlay(window, cx);
-                self.canvas.update(cx, |c, cx| c.apply_command_edit(&edit, window, cx));
+                self.canvas
+                    .update(cx, |c, cx| c.apply_command_edit(&edit, window, cx));
             }
             ArgOutcome::Invalid => {
                 cx.notify();
@@ -2033,9 +2134,13 @@ impl WorkspaceRoot {
     fn palette_nav(&mut self, down: bool, cx: &mut Context<Self>) {
         if down {
             let altitude = self.canvas.read(cx).current_altitude();
-            let n =
-                palette_filter(&registry(), altitude, &self.palette_query, &self.palette_recency)
-                    .len();
+            let n = palette_filter(
+                &registry(),
+                altitude,
+                &self.palette_query,
+                &self.palette_recency,
+            )
+            .len();
             self.palette_selected =
                 (self.palette_selected + 1).min(n.min(PALETTE_MAX_ROWS).saturating_sub(1));
         } else {
@@ -2048,7 +2153,12 @@ impl WorkspaceRoot {
     /// `/` finder — up/down move the selection, Enter runs it, and printable keys
     /// edit the query. Bare canvas verbs cannot fire here (the overlay holds
     /// focus).
-    fn on_overlay_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_overlay_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let key = event.keystroke.key.as_str();
         match self.overlay {
             Overlay::Closed => {}
@@ -2140,19 +2250,31 @@ impl WorkspaceRoot {
         let sheet = help_sheet(&reg);
         let mut sections = div().flex().flex_col().gap_3();
         for altitude in [Altitude::Dashboard, Altitude::View] {
-            let rows: Vec<_> = sheet.iter().filter(|r| r.altitudes.contains(&altitude)).collect();
-            let mut section = div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(div().text_size(px(11.0)).text_color(rgb(0x8a93a6)).child(altitude.label().to_uppercase()));
+            let rows: Vec<_> = sheet
+                .iter()
+                .filter(|r| r.altitudes.contains(&altitude))
+                .collect();
+            let mut section = div().flex().flex_col().gap_1().child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(rgb(0x8a93a6))
+                    .child(altitude.label().to_uppercase()),
+            );
             for r in rows {
-                let keys = if r.keys.is_empty() { "—".to_string() } else { r.keys.join(" / ") };
+                let keys = if r.keys.is_empty() {
+                    "—".to_string()
+                } else {
+                    r.keys.join(" / ")
+                };
                 let mut line = format!("{keys}   {}", r.help);
                 if let Some(reason) = r.reserved_reason {
                     line.push_str(&format!("   · reserved: {}", reason.reason()));
                 }
-                let colour = if r.reserved_reason.is_some() { rgb(0x6b7280) } else { rgb(0xd7dae0) };
+                let colour = if r.reserved_reason.is_some() {
+                    rgb(0x6b7280)
+                } else {
+                    rgb(0xd7dae0)
+                };
                 section = section.child(div().text_size(px(13.0)).text_color(colour).child(line));
             }
             sections = sections.child(section);
@@ -2169,7 +2291,12 @@ impl WorkspaceRoot {
             .flex()
             .flex_col()
             .gap_2()
-            .child(div().text_size(px(15.0)).text_color(rgb(0xf0f2f6)).child("Keyboard grammar — help  (Esc to close)"))
+            .child(
+                div()
+                    .text_size(px(15.0))
+                    .text_color(rgb(0xf0f2f6))
+                    .child("Keyboard grammar — help  (Esc to close)"),
+            )
             .child(sections)
     }
 
@@ -2186,9 +2313,17 @@ impl WorkspaceRoot {
                     .px_2()
                     .py_1()
                     .rounded(px(4.0))
-                    .bg(if selected { rgb(0x2f6feb) } else { rgb(0x161a22) })
+                    .bg(if selected {
+                        rgb(0x2f6feb)
+                    } else {
+                        rgb(0x161a22)
+                    })
                     .text_size(px(13.0))
-                    .text_color(if selected { rgb(0xffffff) } else { rgb(0xd7dae0) })
+                    .text_color(if selected {
+                        rgb(0xffffff)
+                    } else {
+                        rgb(0xd7dae0)
+                    })
                     .child(format!("{marker}  {}", c.path.0)),
             );
         }
@@ -2228,7 +2363,10 @@ impl WorkspaceRoot {
         for (i, c) in cands.iter().take(PALETTE_MAX_ROWS).enumerate() {
             let selected = i == self.palette_selected;
             let runnable = palette_runnable(c);
-            let key = c.primary_key.map(|k| format!("  [{k}]")).unwrap_or_default();
+            let key = c
+                .primary_key
+                .map(|k| format!("  [{k}]"))
+                .unwrap_or_default();
             let mut label = format!("{}{}   {}", c.longname, key, c.help);
             if let Some(reason) = c.reserved_reason {
                 label.push_str(&format!("   · reserved: {}", reason.reason()));
@@ -2249,7 +2387,11 @@ impl WorkspaceRoot {
                     .px_2()
                     .py_1()
                     .rounded(px(4.0))
-                    .bg(if selected { rgb(0x2f6feb) } else { rgb(0x161a22) })
+                    .bg(if selected {
+                        rgb(0x2f6feb)
+                    } else {
+                        rgb(0x161a22)
+                    })
                     .text_size(px(13.0))
                     .text_color(colour)
                     .child(label),
@@ -2291,7 +2433,11 @@ impl WorkspaceRoot {
                     ArgStep::Kind => "add-mark",
                     ArgStep::Channel | ArgStep::Column { .. } => "set-channel",
                 };
-                (v, c.step().prompt(), matches!(c.step(), ArgStep::Column { .. }))
+                (
+                    v,
+                    c.step().prompt(),
+                    matches!(c.step(), ArgStep::Column { .. }),
+                )
             }
             None => ("", "", false),
         };
@@ -2314,9 +2460,17 @@ impl WorkspaceRoot {
                     .px_2()
                     .py_1()
                     .rounded(px(4.0))
-                    .bg(if selected { rgb(0x2f6feb) } else { rgb(0x161a22) })
+                    .bg(if selected {
+                        rgb(0x2f6feb)
+                    } else {
+                        rgb(0x161a22)
+                    })
                     .text_size(px(13.0))
-                    .text_color(if selected { rgb(0xffffff) } else { rgb(0xd7dae0) })
+                    .text_color(if selected {
+                        rgb(0xffffff)
+                    } else {
+                        rgb(0xd7dae0)
+                    })
                     .child(o.clone()),
             );
         }
@@ -2371,6 +2525,9 @@ impl WorkspaceRoot {
     /// Center canvas + left sidebar + right editor at their default sizes,
     /// plus the closed bottom Log dock. Every item is
     /// stack-rooted (see [`Self::stack_rooted_tab`]).
+    // 8 arguments, for the same reason as `new`: the dock area, the five panels
+    // being placed into it, and gpui's `window`/`cx`.
+    #[allow(clippy::too_many_arguments)]
     fn default_layout(
         dock_area: &Entity<DockArea>,
         canvas: &Entity<CanvasPanel>,
@@ -2418,7 +2575,13 @@ impl WorkspaceRoot {
         );
         let bottom = DockItem::v_split(vec![tabs], &weak, window, cx);
         dock_area.update(cx, |area, cx| {
-            area.set_bottom_dock(bottom, Some(px(BOTTOM_DOCK_HEIGHT as f32)), false, window, cx);
+            area.set_bottom_dock(
+                bottom,
+                Some(px(BOTTOM_DOCK_HEIGHT as f32)),
+                false,
+                window,
+                cx,
+            );
         });
     }
 
@@ -2447,7 +2610,11 @@ impl WorkspaceRoot {
             dock_area.update(cx, |area, cx| area.set_center(item, window, cx));
         }
 
-        for placement in [DockPlacement::Left, DockPlacement::Right, DockPlacement::Bottom] {
+        for placement in [
+            DockPlacement::Left,
+            DockPlacement::Right,
+            DockPlacement::Bottom,
+        ] {
             let dock = {
                 let area = dock_area.read(cx);
                 match placement {
@@ -2531,9 +2698,7 @@ impl WorkspaceRoot {
                 // rebuild ever collapse to bare Tabs, re-wrap it — a
                 // bare-Tabs dock is locked at this pin.
                 let item = match item {
-                    DockItem::Tabs { .. } => {
-                        DockItem::v_split(vec![item], &weak, window, cx)
-                    }
+                    DockItem::Tabs { .. } => DockItem::v_split(vec![item], &weak, window, cx),
                     other => other,
                 };
                 self.dock_area.update(cx, |area, cx| {
@@ -2633,11 +2798,22 @@ impl WorkspaceRoot {
             None => {
                 // No dock at the destination (not reachable from our
                 // shell's invariants, but total): create it stack-rooted.
-                Self::set_edge_dock(&self.dock_area, destination, panel.clone(), None, window, cx);
+                Self::set_edge_dock(
+                    &self.dock_area,
+                    destination,
+                    panel.clone(),
+                    None,
+                    window,
+                    cx,
+                );
             }
         }
 
-        for placement in [DockPlacement::Left, DockPlacement::Right, DockPlacement::Bottom] {
+        for placement in [
+            DockPlacement::Left,
+            DockPlacement::Right,
+            DockPlacement::Bottom,
+        ] {
             if placement == destination {
                 continue;
             }
@@ -2937,22 +3113,37 @@ mod tests {
     #[gpui::test]
     fn canvas_panel_is_a_shim_around_the_chart_view(cx: &mut TestAppContext) {
         let (chart, presentation, panel) = cx.update(|cx| {
-            let chart =
-                cx.new(|_| ChartView::new(320.0, 240.0, Vec::new(), Vec::new(), Vec::new(), Vec::new()));
+            let chart = cx.new(|_| {
+                ChartView::new(320.0, 240.0, Vec::new(), Vec::new(), Vec::new(), Vec::new())
+            });
             let presentation = cx.new(|_| PresentationState {
                 mode: PresentationMode::default(),
             });
             let panel = cx.new(|cx| {
-                CanvasPanel::new(chart.clone(), "Flight Delays", presentation.clone(), FocusTree::empty(), cx)
+                CanvasPanel::new(
+                    chart.clone(),
+                    "Flight Delays",
+                    presentation.clone(),
+                    FocusTree::empty(),
+                    cx,
+                )
             });
             (chart, presentation, panel)
         });
 
         cx.update(|cx| {
             let p = panel.read(cx);
-            assert_eq!(p.panel_name(), CANVAS_PANEL_NAME, "stable serialisation name");
+            assert_eq!(
+                p.panel_name(),
+                CANVAS_PANEL_NAME,
+                "stable serialisation name"
+            );
             assert!(!p.closable(cx), "the canvas is locked");
-            assert_eq!(p.title_text().as_ref(), "Flight Delays", "resolved dashboard title");
+            assert_eq!(
+                p.title_text().as_ref(),
+                "Flight Delays",
+                "resolved dashboard title"
+            );
             assert_eq!(
                 p.chart_view().entity_id(),
                 chart.entity_id(),
@@ -3019,8 +3210,7 @@ mod tests {
             let presentation = cx.new(|_| PresentationState {
                 mode: PresentationMode::default(),
             });
-            let panel =
-                cx.new(|cx| SidebarPanel::new(profiles.clone(), presentation.clone(), cx));
+            let panel = cx.new(|cx| SidebarPanel::new(profiles.clone(), presentation.clone(), cx));
             (presentation, panel)
         });
 
@@ -3029,7 +3219,10 @@ mod tests {
             assert_eq!(p.panel_name(), SIDEBAR_PANEL_NAME);
             assert_eq!(p.profiles(), &profiles[..], "hosts the profiles verbatim");
             // The failed and unsupported variants ride through as rows.
-            assert!(matches!(p.profiles()[1].outcome, ProfileOutcome::Unsupported));
+            assert!(matches!(
+                p.profiles()[1].outcome,
+                ProfileOutcome::Unsupported
+            ));
             assert!(matches!(p.profiles()[2].outcome, ProfileOutcome::Failed(_)));
             assert!(p.visible(cx));
         });
@@ -3046,7 +3239,11 @@ mod tests {
             panel.update(cx, |p, cx| p.set_profiles(refreshed.clone(), cx));
         });
         cx.update(|cx| {
-            assert_eq!(panel.read(cx).profiles(), &refreshed[..], "refresh replaced the set");
+            assert_eq!(
+                panel.read(cx).profiles(),
+                &refreshed[..],
+                "refresh replaced the set"
+            );
         });
 
         cx.update(|cx| {
@@ -3085,8 +3282,7 @@ mod tests {
             let presentation = cx.new(|_| PresentationState {
                 mode: PresentationMode::default(),
             });
-            let panel =
-                cx.new(|cx| LogPanel::new(feedback_log.clone(), presentation.clone(), cx));
+            let panel = cx.new(|cx| LogPanel::new(feedback_log.clone(), presentation.clone(), cx));
             (feedback_log, presentation, panel)
         });
 
@@ -3136,7 +3332,13 @@ mod tests {
         )
         .expect("rejections surface");
         let mut async_cx = cx.to_async();
-        notify_reload_rejection(&window, &mut async_cx, severity, message.clone(), &feedback_log);
+        notify_reload_rejection(
+            &window,
+            &mut async_cx,
+            severity,
+            message.clone(),
+            &feedback_log,
+        );
         cx.run_until_parked();
 
         cx.update(|cx| {
@@ -3154,7 +3356,11 @@ mod tests {
         cx: &mut TestAppContext,
         spec_path: PathBuf,
         seed: Option<&str>,
-    ) -> (gpui::WindowHandle<Root>, Entity<EditorPanel>, Entity<FeedbackLog>) {
+    ) -> (
+        gpui::WindowHandle<Root>,
+        Entity<EditorPanel>,
+        Entity<FeedbackLog>,
+    ) {
         cx.update(gpui_component::init);
         let (feedback_log, presentation) = cx.update(|cx| {
             let feedback_log = cx.new(|_| FeedbackLog::default());
@@ -3189,7 +3395,11 @@ mod tests {
 
     /// Drive cmd-s from window scope WITHOUT a lease on Root (the handler
     /// itself calls Root::update, as the real action dispatch does).
-    fn drive_save(cx: &mut TestAppContext, window: gpui::WindowHandle<Root>, editor: &Entity<EditorPanel>) {
+    fn drive_save(
+        cx: &mut TestAppContext,
+        window: gpui::WindowHandle<Root>,
+        editor: &Entity<EditorPanel>,
+    ) {
         let editor = editor.clone();
         cx.update_window(window.into(), |_, window, cx| {
             editor.update(cx, |editor, cx| editor.save(&SaveSpec, window, cx));
@@ -3252,7 +3462,11 @@ mod tests {
         cx.update(|cx| {
             let log = feedback_log.read(cx);
             assert_eq!(log.entries().len(), 1, "the conflict was logged");
-            assert_eq!(log.entries()[0].severity, Severity::Warning, "warning, like the toast");
+            assert_eq!(
+                log.entries()[0].severity,
+                Severity::Warning,
+                "warning, like the toast"
+            );
             assert_eq!(
                 log.entries()[0].message,
                 "Spec changed on disk since it was loaded — save again to overwrite",
@@ -3296,7 +3510,11 @@ mod tests {
         cx.update(|cx| {
             let log = feedback_log.read(cx);
             assert_eq!(log.entries().len(), 1, "the write failure was logged");
-            assert_eq!(log.entries()[0].severity, Severity::Error, "error, like the toast");
+            assert_eq!(
+                log.entries()[0].severity,
+                Severity::Error,
+                "error, like the toast"
+            );
             assert!(
                 log.entries()[0].message.starts_with("Save failed: "),
                 "the toast's message shape: {}",
@@ -3333,7 +3551,13 @@ mod tests {
         )
         .expect("rejections surface");
         let mut async_cx = cx.to_async();
-        notify_reload_rejection(&window, &mut async_cx, severity, message.clone(), &feedback_log);
+        notify_reload_rejection(
+            &window,
+            &mut async_cx,
+            severity,
+            message.clone(),
+            &feedback_log,
+        );
         cx.run_until_parked();
 
         let notifications = window
@@ -3350,7 +3574,9 @@ mod tests {
 
         // The recovery arm (a successful reload): main.rs consults
         // clears_errors(Applied) and calls clear_reload_error.
-        assert!(reload_feedback::clears_errors(&reload_feedback::ReloadOutcome::Applied));
+        assert!(reload_feedback::clears_errors(
+            &reload_feedback::ReloadOutcome::Applied
+        ));
         let mut async_cx = cx.to_async();
         clear_reload_error(&window, &mut async_cx);
         // Their dismissal is animated: the entry leaves the list 0.15s
@@ -3390,7 +3616,10 @@ mod tests {
             "cmd-s is a complete match"
         );
         let plain_s = gpui::Keystroke::parse("s").expect("parses");
-        assert_eq!(binding.match_keystrokes(std::slice::from_ref(&plain_s)), None);
+        assert_eq!(
+            binding.match_keystrokes(std::slice::from_ref(&plain_s)),
+            None
+        );
 
         assert_eq!(binding.action().name(), "brightfield::SaveSpec");
         assert!(
@@ -3414,6 +3643,11 @@ mod tests {
     /// Assemble the full four-panel WorkspaceRoot in a test window, with the
     /// persistence inputs injected (`raw` = the saved layout JSON; state
     /// path off so no file I/O races other tests).
+    // The `Rc<RefCell<Option<(Entity<_>, Entity<_>)>>>` slot below is the plain
+    // spelling of "a cell two gpui closures write their handles into". Naming it
+    // via a `type` would hide the shape that makes the pattern legible, in a
+    // test helper with one call site for it.
+    #[allow(clippy::type_complexity)]
     fn build_shell(cx: &mut TestAppContext, raw: Option<String>) -> TestShell {
         cx.update(gpui_component::init);
         let (feedback_log, presentation) = cx.update(|cx| {
@@ -3429,10 +3663,18 @@ mod tests {
         let slot = slots.clone();
         let presentation_in = presentation.clone();
         let window: gpui::WindowHandle<Root> = cx.add_window(move |window, cx| {
-            let chart =
-                cx.new(|_| ChartView::new(320.0, 240.0, Vec::new(), Vec::new(), Vec::new(), Vec::new()));
-            let canvas =
-                cx.new(|cx| CanvasPanel::new(chart, "Test", presentation_in.clone(), FocusTree::empty(), cx));
+            let chart = cx.new(|_| {
+                ChartView::new(320.0, 240.0, Vec::new(), Vec::new(), Vec::new(), Vec::new())
+            });
+            let canvas = cx.new(|cx| {
+                CanvasPanel::new(
+                    chart,
+                    "Test",
+                    presentation_in.clone(),
+                    FocusTree::empty(),
+                    cx,
+                )
+            });
             let editor = cx.new(|cx| {
                 EditorPanel::new(
                     PathBuf::from("/tmp/brightfield-wsc-test-spec.yaml"),
@@ -3447,8 +3689,8 @@ mod tests {
             let log_panel =
                 cx.new(|cx| LogPanel::new(feedback_log.clone(), presentation_in.clone(), cx));
             let command_log_model = cx.new(|_| crate::command_log::CommandLog::new());
-            let command_log_panel = cx
-                .new(|cx| CommandLogPanel::new(command_log_model, presentation_in.clone(), cx));
+            let command_log_panel =
+                cx.new(|cx| CommandLogPanel::new(command_log_model, presentation_in.clone(), cx));
             let workspace = cx.new(|cx| {
                 WorkspaceRoot::with_saved_layout(
                     canvas,
@@ -3500,10 +3742,7 @@ mod tests {
 
     /// Flip the shared presentation mode (the same entity notify the canvas
     /// `p` handler produces) and flush the observers.
-    fn toggle_presentation_mode(
-        cx: &mut TestAppContext,
-        presentation: &Entity<PresentationState>,
-    ) {
+    fn toggle_presentation_mode(cx: &mut TestAppContext, presentation: &Entity<PresentationState>) {
         presentation.update(cx, |state, cx| {
             state.mode.toggle();
             cx.notify();
@@ -3605,7 +3844,11 @@ mod tests {
 
     /// Every dock root (left/right/bottom) AND the center are stack-rooted.
     fn assert_all_roots_stack_rooted(cx: &mut TestAppContext, workspace: &Entity<WorkspaceRoot>) {
-        for placement in [DockPlacement::Left, DockPlacement::Right, DockPlacement::Bottom] {
+        for placement in [
+            DockPlacement::Left,
+            DockPlacement::Right,
+            DockPlacement::Bottom,
+        ] {
             assert!(
                 dock_root_is_stack_rooted(cx, workspace, placement),
                 "{placement:?} dock root must be stack-rooted (bare Tabs are locked at this pin)"
@@ -3671,8 +3914,16 @@ mod tests {
 
         let (has, open, size) = bottom_dock_state(cx, &shell.workspace);
         assert!(has, "fresh boot has a bottom dock");
-        assert_eq!(open, Some(false), "seeded CLOSED — the strip is the affordance");
-        assert_eq!(size, Some(px(BOTTOM_DOCK_HEIGHT as f32)), "default open height");
+        assert_eq!(
+            open,
+            Some(false),
+            "seeded CLOSED — the strip is the affordance"
+        );
+        assert_eq!(
+            size,
+            Some(px(BOTTOM_DOCK_HEIGHT as f32)),
+            "default open height"
+        );
         assert_eq!(
             bottom_dock_panel_names(cx, &shell.workspace),
             vec![LOG_PANEL_NAME.to_string(), CMD_LOG_PANEL_NAME.to_string()],
@@ -3698,7 +3949,11 @@ mod tests {
         cx.update(|cx| {
             let area = shell.workspace.read(cx).dock_area().read(cx);
             let right = area.right_dock().expect("restored right dock").read(cx);
-            assert_eq!(right.size(), px(300.0), "right width restored, not defaulted");
+            assert_eq!(
+                right.size(),
+                px(300.0),
+                "right width restored, not defaulted"
+            );
             assert!(right.is_open(), "right open bit restored");
             let left = area.left_dock().expect("restored left dock").read(cx);
             assert_eq!(left.size(), px(250.0), "left width restored, not defaulted");
@@ -3752,7 +4007,11 @@ mod tests {
 
         let (has, open, size) = bottom_dock_state(cx, &shell.workspace);
         assert!(has);
-        assert_eq!(open, Some(true), "saved OPEN state kept — not forced closed");
+        assert_eq!(
+            open,
+            Some(true),
+            "saved OPEN state kept — not forced closed"
+        );
         assert_eq!(size, Some(px(240.0)), "saved height kept — not the default");
         assert_eq!(
             bottom_dock_panel_names(cx, &shell.workspace),
@@ -3857,7 +4116,9 @@ mod tests {
 
         // The save observer re-attached to the NEW dock entity: an isolated
         // post-round-trip Dock-entity change (resize) reaches the policy.
-        shell.workspace.update(cx, |workspace, _| workspace.reset_save_probe());
+        shell
+            .workspace
+            .update(cx, |workspace, _| workspace.reset_save_probe());
         shell
             .window
             .update(cx, |_root, window, cx| {
@@ -3887,7 +4148,9 @@ mod tests {
         // stack-rooted (their subscribe_item skips bare-Tabs items, and
         // nothing else observes the TabPanel). Resize alone no longer
         // counts: it rides the direct dock-entity observer above.
-        shell.workspace.update(cx, |workspace, _| workspace.reset_save_probe());
+        shell
+            .workspace
+            .update(cx, |workspace, _| workspace.reset_save_probe());
         shell
             .window
             .update(cx, |_root, window, cx| {

@@ -115,10 +115,7 @@ pub(crate) fn read_count(batch: &RecordBatch, col: usize) -> u64 {
 /// Read a nullable VARCHAR cell (min/max cast to VARCHAR) from row 0. `None`
 /// on SQL NULL (all-null gated column) or a non-string array.
 pub(crate) fn read_text(batch: &RecordBatch, col: usize) -> Option<String> {
-    let arr = batch
-        .column(col)
-        .as_any()
-        .downcast_ref::<StringArray>()?;
+    let arr = batch.column(col).as_any().downcast_ref::<StringArray>()?;
     if arr.is_null(0) {
         None
     } else {

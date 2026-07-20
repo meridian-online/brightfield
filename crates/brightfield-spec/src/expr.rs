@@ -214,10 +214,7 @@ mod tests {
         let node = tokenise("x -- free $cash until eol\nAND $real");
         // The `$real` after the comment *is* a param ref; `$cash` inside is not.
         assert_eq!(node.params, vec![ParamRef::new("real")]);
-        assert_eq!(
-            node.spans,
-            vec!["x -- free $cash until eol\nAND ", ""]
-        );
+        assert_eq!(node.spans, vec!["x -- free $cash until eol\nAND ", ""]);
     }
 
     /// test 5: `$` inside a `/* block comment */` is preserved verbatim.
@@ -225,10 +222,7 @@ mod tests {
     fn dollar_in_block_comment() {
         let node = tokenise("x /* ignore $this */ AND $that");
         assert_eq!(node.params, vec![ParamRef::new("that")]);
-        assert_eq!(
-            node.spans,
-            vec!["x /* ignore $this */ AND ", ""]
-        );
+        assert_eq!(node.spans, vec!["x /* ignore $this */ AND ", ""]);
     }
 
     /// Extra sanity: unterminated single-quote runs to end-of-input without

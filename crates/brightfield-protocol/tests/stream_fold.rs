@@ -10,19 +10,25 @@ use brightfield_protocol::contract::Outcome;
 use brightfield_protocol::{fold_stream, StreamReader};
 
 fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures").join(name)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("fixtures")
+        .join(name)
 }
 
 #[test]
 fn fold_collapses_to_latest_state_per_step() {
-    let content = std::fs::read_to_string(fixture("sample_run.jsonl")).expect("read stream fixture");
+    let content =
+        std::fs::read_to_string(fixture("sample_run.jsonl")).expect("read stream fixture");
     let state = fold_stream(&content);
 
     // One entry per distinct step; last-valid-line-wins (load went
     // running -> success).
     assert_eq!(state.steps.len(), 2);
     assert_eq!(state.steps["load"].state, "success");
-    assert_eq!(state.steps["load"].ts.as_deref(), Some("2026-07-18T10:01:07Z"));
+    assert_eq!(
+        state.steps["load"].ts.as_deref(),
+        Some("2026-07-18T10:01:07Z")
+    );
     assert_eq!(state.steps["tally"].state, "success");
 
     // Terminal event captured — the reconcile signal.
@@ -60,15 +66,28 @@ fn tailing_reader_picks_up_appends_and_buffers_partial_lines() {
         .unwrap();
     }
     let state = reader.poll().expect("poll 1");
-    assert_eq!(state.steps["load"].state, "running", "partial line held back");
+    assert_eq!(
+        state.steps["load"].state, "running",
+        "partial line held back"
+    );
 
     // Complete the partial line and add the terminal event.
     {
-        let mut f = std::fs::OpenOptions::new().append(true).open(&path).expect("append");
-        write!(f, "ess\"}}\n{{\"event\":\"run_complete\",\"outcome\":\"success\"}}\n").unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("append");
+        write!(
+            f,
+            "ess\"}}\n{{\"event\":\"run_complete\",\"outcome\":\"success\"}}\n"
+        )
+        .unwrap();
     }
     let state = reader.poll().expect("poll 2");
-    assert_eq!(state.steps["load"].state, "success", "buffered line completed");
+    assert_eq!(
+        state.steps["load"].state, "success",
+        "buffered line completed"
+    );
     assert!(state.complete);
     assert_eq!(state.outcome, Some(Outcome::Success));
 

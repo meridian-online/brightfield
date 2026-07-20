@@ -13,9 +13,7 @@ use crate::error::EmitError;
 /// # Errors
 ///
 /// Returns `EmitError::SqlParseError` if the SQL is not valid DuckDB syntax.
-pub fn parse_and_normalise(
-    sql: &str,
-) -> Result<Vec<sqlparser::ast::Statement>, EmitError> {
+pub fn parse_and_normalise(sql: &str) -> Result<Vec<sqlparser::ast::Statement>, EmitError> {
     let dialect = DuckDbDialect {};
     Parser::parse_sql(&dialect, sql).map_err(|e| EmitError::SqlParseError {
         detail: e.to_string(),
@@ -42,11 +40,8 @@ mod tests {
 
     #[test]
     fn structural_eq_case_insensitive() {
-        let result = structural_eq(
-            "SELECT * FROM t WHERE x > 1",
-            "select * from t where x > 1",
-        )
-        .unwrap();
+        let result =
+            structural_eq("SELECT * FROM t WHERE x > 1", "select * from t where x > 1").unwrap();
         assert!(result, "case-insensitive SQL should be structurally equal");
     }
 
@@ -63,10 +58,7 @@ mod tests {
     #[test]
     fn structural_neq_different_clauses() {
         let result = structural_eq("SELECT * FROM t", "SELECT * FROM t WHERE TRUE").unwrap();
-        assert!(
-            !result,
-            "structurally different SQL should not be equal"
-        );
+        assert!(!result, "structurally different SQL should not be equal");
     }
 
     #[test]

@@ -56,7 +56,12 @@ pub struct SurfaceRect {
 impl SurfaceRect {
     /// Construct a rectangle from its origin and size.
     pub fn new(x: f64, y: f64, width: f64, height: f64) -> Self {
-        Self { x, y, width, height }
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 }
 
@@ -78,18 +83,33 @@ pub struct Color {
 impl Color {
     /// Fully transparent — the base colour the transitional gpui present clears
     /// to (the overlay and chart ink carry their own alpha).
-    pub const TRANSPARENT: Color = Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
+    pub const TRANSPARENT: Color = Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.0,
+    };
 
     /// A Meridian design token, keeping the token's own alpha.
     pub fn from_token(c: meridian_design::Rgba) -> Self {
-        Self { r: c.r, g: c.g, b: c.b, a: c.a }
+        Self {
+            r: c.r,
+            g: c.g,
+            b: c.b,
+            a: c.a,
+        }
     }
 
     /// A Meridian design token at an overridden alpha (a token reused at several
     /// strengths — e.g. the active drag rect wears the focus-ring token as a
     /// light fill and a stronger border).
     pub fn from_token_alpha(c: meridian_design::Rgba, a: f32) -> Self {
-        Self { r: c.r, g: c.g, b: c.b, a }
+        Self {
+            r: c.r,
+            g: c.g,
+            b: c.b,
+            a,
+        }
     }
 
     /// Convert to a Vello `peniko::Color` (for the base clear colour).

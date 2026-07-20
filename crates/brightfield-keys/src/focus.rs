@@ -71,7 +71,11 @@ impl FocusTree {
     /// a shim/test that needs a tree value.
     #[must_use]
     pub fn empty() -> Self {
-        Self { nodes: Vec::new(), index: HashMap::new(), root: None }
+        Self {
+            nodes: Vec::new(),
+            index: HashMap::new(),
+            root: None,
+        }
     }
 
     /// Build the focus tree from a spec (uses the same layout walk + path scheme
@@ -144,15 +148,25 @@ fn walk(
     let (kind, rect, container_children, prefix) = match node {
         // A plot is a LEAF in the focus tree — the view floor (no mark descent).
         LayoutNode::Plot { rect, .. } => (NodeKind::Plot, *rect, None, ""),
-        LayoutNode::HConcat { rect, children } => (NodeKind::Container, *rect, Some(children), "hconcat"),
-        LayoutNode::VConcat { rect, children } => (NodeKind::Container, *rect, Some(children), "vconcat"),
+        LayoutNode::HConcat { rect, children } => {
+            (NodeKind::Container, *rect, Some(children), "hconcat")
+        }
+        LayoutNode::VConcat { rect, children } => {
+            (NodeKind::Container, *rect, Some(children), "vconcat")
+        }
         // Non-plot leaves are not focus nodes (mirrors collect_placed_plots).
         _ => return None,
     };
 
     let my_index = nodes.len();
     let path_key = ComponentPath(path.clone());
-    nodes.push(FocusNode { path: path_key.clone(), kind, rect, parent, children: Vec::new() });
+    nodes.push(FocusNode {
+        path: path_key.clone(),
+        kind,
+        rect,
+        parent,
+        children: Vec::new(),
+    });
     index.insert(path_key, my_index);
 
     if let Some(children) = container_children {
@@ -304,7 +318,7 @@ pub fn focus_jump_candidates(tree: &FocusTree, query: &str) -> Vec<JumpCandidate
         })
         .collect();
     // Best score first; ties keep arena (dashboard) order for stability.
-    out.sort_by(|a, b| b.score.cmp(&a.score));
+    out.sort_by_key(|c| std::cmp::Reverse(c.score));
     out
 }
 
@@ -407,7 +421,10 @@ plot:
         // Dive to a plot, then dive again → floored no-op.
         assert!(st.dive(&tree));
         assert_eq!(st.altitude(&tree), Altitude::View);
-        assert!(!st.dive(&tree), "dive at a plot must be a no-op (view floor)");
+        assert!(
+            !st.dive(&tree),
+            "dive at a plot must be a no-op (view floor)"
+        );
         assert_eq!(st.path(&tree).0, "root/vconcat[0]");
     }
 
@@ -441,8 +458,10 @@ plot:
         assert!(tree.rect_of(&container).is_some());
 
         // The tree's plot paths match the layout's placed_plots paths exactly.
-        let placed: Vec<String> =
-            brightfield_spec::layout::placed_plots(&spec, Rect::zero()).into_iter().map(|p| p.path).collect();
+        let placed: Vec<String> = brightfield_spec::layout::placed_plots(&spec, Rect::zero())
+            .into_iter()
+            .map(|p| p.path)
+            .collect();
         let tree_plots: Vec<String> = tree
             .nodes()
             .iter()

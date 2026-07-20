@@ -131,7 +131,9 @@ impl SpecEdit {
                 format!("change-mark-type: -> {}", new_kind.wire_name())
             }
             SpecEdit::AddMark { kind, .. } => format!("add-mark: {}", kind.wire_name()),
-            SpecEdit::SetChannel { channel, column, .. } => {
+            SpecEdit::SetChannel {
+                channel, column, ..
+            } => {
                 format!("set-channel: {channel} -> {column}")
             }
             SpecEdit::RemoveMark { .. } => "remove-mark".to_string(),
@@ -218,7 +220,11 @@ fn apply_unchecked(spec: &mut Spec, edit: &SpecEdit) {
         return;
     };
     match edit {
-        SpecEdit::ChangeMarkType { mark_ordinal, new_kind, .. } => {
+        SpecEdit::ChangeMarkType {
+            mark_ordinal,
+            new_kind,
+            ..
+        } => {
             if let Some(item) = nth_mark_item_index(p, *mark_ordinal) {
                 if let Component::Mark(m) = &mut p.items[item] {
                     m.kind = *new_kind;
@@ -244,7 +250,12 @@ fn apply_unchecked(spec: &mut Spec, edit: &SpecEdit) {
                 options,
             }));
         }
-        SpecEdit::SetChannel { mark_ordinal, channel, column, .. } => {
+        SpecEdit::SetChannel {
+            mark_ordinal,
+            channel,
+            column,
+            ..
+        } => {
             if let Some(item) = nth_mark_item_index(p, *mark_ordinal) {
                 if let Component::Mark(m) = &mut p.items[item] {
                     m.options.insert(
@@ -284,7 +295,11 @@ fn apply_unchecked(spec: &mut Spec, edit: &SpecEdit) {
 /// over-refuse, which is the safe side (never a silent bounce).
 pub fn classify_edit(spec: &Spec, edit: &SpecEdit) -> Result<(), RefuseReason> {
     let plot = plot_at_path(spec, edit.plot_path()).ok_or(RefuseReason::PlotNotFound)?;
-    let mark_count = plot.items.iter().filter(|c| matches!(c, Component::Mark(_))).count();
+    let mark_count = plot
+        .items
+        .iter()
+        .filter(|c| matches!(c, Component::Mark(_)))
+        .count();
 
     // Structural preconditions.
     match edit {
@@ -320,10 +335,13 @@ pub fn classify_edit(spec: &Spec, edit: &SpecEdit) -> Result<(), RefuseReason> {
     // `binding_an_inline_fill_is_clean`).
     let colour_edit = match edit {
         SpecEdit::SetChannel { channel, .. } => is_colour_channel(channel),
-        SpecEdit::ChangeMarkType { new_kind, mark_ordinal, .. } => {
+        SpecEdit::ChangeMarkType {
+            new_kind,
+            mark_ordinal,
+            ..
+        } => {
             let current = nth_mark_kind(plot, *mark_ordinal);
-            kind_carries_colour_scale(*new_kind)
-                || current.is_some_and(kind_carries_colour_scale)
+            kind_carries_colour_scale(*new_kind) || current.is_some_and(kind_carries_colour_scale)
         }
         _ => false,
     };
@@ -506,8 +524,7 @@ fn for_each_legend(component: Option<&Component>, f: &mut impl FnMut(&LegendNode
 fn plot_is_colour_encoded(plot: &PlotNode) -> bool {
     plot.items.iter().any(|c| match c {
         Component::Mark(m) => {
-            kind_carries_colour_scale(m.kind)
-                || m.options.keys().any(|k| is_colour_channel(k))
+            kind_carries_colour_scale(m.kind) || m.options.keys().any(|k| is_colour_channel(k))
         }
         _ => false,
     })
@@ -516,7 +533,11 @@ fn plot_is_colour_encoded(plot: &PlotNode) -> bool {
 /// Resolve an axis title DECISION to its concrete text, mirroring the
 /// render-side `resolve_axis`: Override -> the string, Suppress -> None, Derive
 /// -> the first mark's column for the channel.
-fn resolve_derived_title(decision: &AxisTitle, plot: &PlotNode, channel_key: &str) -> Option<String> {
+fn resolve_derived_title(
+    decision: &AxisTitle,
+    plot: &PlotNode,
+    channel_key: &str,
+) -> Option<String> {
     match decision {
         AxisTitle::Override(s) => Some(s.clone()),
         AxisTitle::Suppress => None,
@@ -592,12 +613,16 @@ pub fn plot_at_path<'a>(spec: &'a Spec, path: &str) -> Option<&'a PlotNode> {
 fn descend<'a>(component: &'a Component, here: &str, target: &str) -> Option<&'a PlotNode> {
     match component {
         Component::Plot(p) if here == target => Some(p),
-        Component::HConcat(c) => c.items.iter().enumerate().find_map(|(i, child)| {
-            descend(child, &format!("{here}/hconcat[{i}]"), target)
-        }),
-        Component::VConcat(c) => c.items.iter().enumerate().find_map(|(i, child)| {
-            descend(child, &format!("{here}/vconcat[{i}]"), target)
-        }),
+        Component::HConcat(c) => c
+            .items
+            .iter()
+            .enumerate()
+            .find_map(|(i, child)| descend(child, &format!("{here}/hconcat[{i}]"), target)),
+        Component::VConcat(c) => c
+            .items
+            .iter()
+            .enumerate()
+            .find_map(|(i, child)| descend(child, &format!("{here}/vconcat[{i}]"), target)),
         _ => None,
     }
 }
@@ -616,12 +641,16 @@ fn descend_mut<'a>(
 ) -> Option<&'a mut PlotNode> {
     match component {
         Component::Plot(p) if here == target => Some(p),
-        Component::HConcat(c) => c.items.iter_mut().enumerate().find_map(|(i, child)| {
-            descend_mut(child, &format!("{here}/hconcat[{i}]"), target)
-        }),
-        Component::VConcat(c) => c.items.iter_mut().enumerate().find_map(|(i, child)| {
-            descend_mut(child, &format!("{here}/vconcat[{i}]"), target)
-        }),
+        Component::HConcat(c) => c
+            .items
+            .iter_mut()
+            .enumerate()
+            .find_map(|(i, child)| descend_mut(child, &format!("{here}/hconcat[{i}]"), target)),
+        Component::VConcat(c) => c
+            .items
+            .iter_mut()
+            .enumerate()
+            .find_map(|(i, child)| descend_mut(child, &format!("{here}/vconcat[{i}]"), target)),
         _ => None,
     }
 }
@@ -813,10 +842,14 @@ vconcat:
         )
         .expect("clean");
         let p = plot_at_path(&spec, "root").unwrap();
-        let m = p.items.iter().find_map(|c| match c {
-            Component::Mark(m) => Some(m),
-            _ => None,
-        }).unwrap();
+        let m = p
+            .items
+            .iter()
+            .find_map(|c| match c {
+                Component::Mark(m) => Some(m),
+                _ => None,
+            })
+            .unwrap();
         assert_eq!(
             m.options.get("x"),
             Some(&ValueOrParamRef::Value(SpecValue::String("c".to_string())))
@@ -827,28 +860,58 @@ vconcat:
     fn add_mark_appends_and_inherits_data() {
         let mut spec = parse(SINGLE);
         assert_eq!(mark_count(&spec, "root"), 1);
-        apply(&mut spec, &SpecEdit::AddMark { plot: cp("root"), kind: MarkKind::Line })
-            .expect("clean");
-        assert_eq!(mark_count(&spec, "root"), 2, "AddMark grows the item count by one");
+        apply(
+            &mut spec,
+            &SpecEdit::AddMark {
+                plot: cp("root"),
+                kind: MarkKind::Line,
+            },
+        )
+        .expect("clean");
+        assert_eq!(
+            mark_count(&spec, "root"),
+            2,
+            "AddMark grows the item count by one"
+        );
         // The appended mark inherits the primary's data source + x/y.
         let p = plot_at_path(&spec, "root").unwrap();
-        let last = p.items.iter().rev().find_map(|c| match c {
-            Component::Mark(m) => Some(m),
-            _ => None,
-        }).unwrap();
+        let last = p
+            .items
+            .iter()
+            .rev()
+            .find_map(|c| match c {
+                Component::Mark(m) => Some(m),
+                _ => None,
+            })
+            .unwrap();
         assert_eq!(last.kind, MarkKind::Line);
-        assert!(last.data.is_some(), "added mark inherits the primary's data source");
+        assert!(
+            last.data.is_some(),
+            "added mark inherits the primary's data source"
+        );
         assert!(last.options.contains_key("x"), "added mark inherits x");
     }
 
     #[test]
     fn remove_mark_drops_primary_in_multi_mark_plot() {
         let mut spec = parse(SINGLE);
-        apply(&mut spec, &SpecEdit::AddMark { plot: cp("root"), kind: MarkKind::Line })
-            .expect("clean");
+        apply(
+            &mut spec,
+            &SpecEdit::AddMark {
+                plot: cp("root"),
+                kind: MarkKind::Line,
+            },
+        )
+        .expect("clean");
         assert_eq!(mark_count(&spec, "root"), 2);
-        apply(&mut spec, &SpecEdit::RemoveMark { plot: cp("root"), mark_ordinal: 0 })
-            .expect("clean");
+        apply(
+            &mut spec,
+            &SpecEdit::RemoveMark {
+                plot: cp("root"),
+                mark_ordinal: 0,
+            },
+        )
+        .expect("clean");
         assert_eq!(mark_count(&spec, "root"), 1);
         // The remaining primary is the line we added (the dot was removed).
         assert_eq!(primary_kind(&spec, "root"), MarkKind::Line);
@@ -859,8 +922,14 @@ vconcat:
         // RemoveMark that would empty the plot: Err, Spec byte-identical.
         let mut spec = parse(SINGLE);
         let before = spec.clone();
-        let err = apply(&mut spec, &SpecEdit::RemoveMark { plot: cp("root"), mark_ordinal: 0 })
-            .unwrap_err();
+        let err = apply(
+            &mut spec,
+            &SpecEdit::RemoveMark {
+                plot: cp("root"),
+                mark_ordinal: 0,
+            },
+        )
+        .unwrap_err();
         assert_eq!(err, RefuseReason::WouldEmptyPlot);
         assert_eq!(spec, before, "a refused edit must not mutate the Spec");
 
@@ -876,7 +945,10 @@ vconcat:
         )
         .unwrap_err();
         assert_eq!(err, RefuseReason::WouldChangeAxisTitle);
-        assert_eq!(spec, before, "a refused derived-axis edit must not mutate the Spec");
+        assert_eq!(
+            spec, before,
+            "a refused derived-axis edit must not mutate the Spec"
+        );
     }
 
     #[test]
@@ -920,15 +992,33 @@ vconcat:
         // A RemoveMark then AddMark must leave the primary-mark resolution
         // correct — no stale positional path corruption.
         let mut spec = parse(SINGLE);
-        apply(&mut spec, &SpecEdit::AddMark { plot: cp("root"), kind: MarkKind::Line })
-            .expect("clean");
+        apply(
+            &mut spec,
+            &SpecEdit::AddMark {
+                plot: cp("root"),
+                kind: MarkKind::Line,
+            },
+        )
+        .expect("clean");
         // Two marks: dot (primary), line.
-        apply(&mut spec, &SpecEdit::RemoveMark { plot: cp("root"), mark_ordinal: 0 })
-            .expect("clean");
+        apply(
+            &mut spec,
+            &SpecEdit::RemoveMark {
+                plot: cp("root"),
+                mark_ordinal: 0,
+            },
+        )
+        .expect("clean");
         // Now line is primary. AddMark a dot (same non-baseline class as line, so
         // gate-clean); the re-walk finds line as primary.
-        apply(&mut spec, &SpecEdit::AddMark { plot: cp("root"), kind: MarkKind::Dot })
-            .expect("clean");
+        apply(
+            &mut spec,
+            &SpecEdit::AddMark {
+                plot: cp("root"),
+                kind: MarkKind::Dot,
+            },
+        )
+        .expect("clean");
         assert_eq!(mark_count(&spec, "root"), 2);
         assert_eq!(primary_kind(&spec, "root"), MarkKind::Line);
         // Retype the primary once more: still resolves to line, not a stale dot.
@@ -949,8 +1039,14 @@ vconcat:
         // A second `dot` in one plot stays uniquely addressable by item ordinal
         // (analysis walks item positions, not kind).
         let mut spec = parse(SINGLE);
-        apply(&mut spec, &SpecEdit::AddMark { plot: cp("root"), kind: MarkKind::Dot })
-            .expect("clean");
+        apply(
+            &mut spec,
+            &SpecEdit::AddMark {
+                plot: cp("root"),
+                kind: MarkKind::Dot,
+            },
+        )
+        .expect("clean");
         assert_eq!(mark_count(&spec, "root"), 2);
         // Analysis still succeeds on the two-dot plot.
         analyse_spec(&spec).expect("analysis on a two-dot plot");
@@ -990,7 +1086,11 @@ vconcat:
             undo.push(spec.clone());
             apply(
                 &mut spec,
-                &SpecEdit::ChangeMarkType { plot: cp("root"), mark_ordinal: 0, new_kind: kind },
+                &SpecEdit::ChangeMarkType {
+                    plot: cp("root"),
+                    mark_ordinal: 0,
+                    new_kind: kind,
+                },
             )
             .expect("clean");
         }
@@ -1013,7 +1113,11 @@ vconcat:
         undo.push(spec.clone());
         apply(
             &mut spec,
-            &SpecEdit::ChangeMarkType { plot: cp("root"), mark_ordinal: 0, new_kind: MarkKind::Line },
+            &SpecEdit::ChangeMarkType {
+                plot: cp("root"),
+                mark_ordinal: 0,
+                new_kind: MarkKind::Line,
+            },
         )
         .expect("clean");
         undo.commit_barrier();
@@ -1038,15 +1142,31 @@ vconcat:
         // inset baseline / derived title / colour facet).
         assert!(classify_edit(
             &spec,
-            &SpecEdit::ChangeMarkType { plot: cp("root"), mark_ordinal: 0, new_kind: MarkKind::Line }
+            &SpecEdit::ChangeMarkType {
+                plot: cp("root"),
+                mark_ordinal: 0,
+                new_kind: MarkKind::Line
+            }
         )
         .is_ok());
-        assert!(classify_edit(&spec, &SpecEdit::AddMark { plot: cp("root"), kind: MarkKind::Line }).is_ok());
+        assert!(classify_edit(
+            &spec,
+            &SpecEdit::AddMark {
+                plot: cp("root"),
+                kind: MarkKind::Line
+            }
+        )
+        .is_ok());
         // Rechannel on a LABELLED (Override) axis is title-stable -> clean.
         let labelled = parse(SINGLE_LABELLED);
         assert!(classify_edit(
             &labelled,
-            &SpecEdit::SetChannel { plot: cp("root"), mark_ordinal: 0, channel: "x".to_string(), column: "c".to_string() }
+            &SpecEdit::SetChannel {
+                plot: cp("root"),
+                mark_ordinal: 0,
+                channel: "x".to_string(),
+                column: "c".to_string()
+            }
         )
         .is_ok());
     }
@@ -1059,14 +1179,24 @@ vconcat:
         assert_eq!(
             classify_edit(
                 &spec,
-                &SpecEdit::SetChannel { plot: cp("root"), mark_ordinal: 0, channel: "x".to_string(), column: "c".to_string() }
+                &SpecEdit::SetChannel {
+                    plot: cp("root"),
+                    mark_ordinal: 0,
+                    channel: "x".to_string(),
+                    column: "c".to_string()
+                }
             ),
             Err(RefuseReason::WouldChangeAxisTitle)
         );
         // Rebinding to the SAME column it already derives is a no-op title-wise -> clean.
         assert!(classify_edit(
             &spec,
-            &SpecEdit::SetChannel { plot: cp("root"), mark_ordinal: 0, channel: "x".to_string(), column: "a".to_string() }
+            &SpecEdit::SetChannel {
+                plot: cp("root"),
+                mark_ordinal: 0,
+                channel: "x".to_string(),
+                column: "a".to_string()
+            }
         )
         .is_ok());
     }
@@ -1079,13 +1209,21 @@ vconcat:
         assert_eq!(
             classify_edit(
                 &spec,
-                &SpecEdit::ChangeMarkType { plot: cp("root"), mark_ordinal: 0, new_kind: MarkKind::BarY }
+                &SpecEdit::ChangeMarkType {
+                    plot: cp("root"),
+                    mark_ordinal: 0,
+                    new_kind: MarkKind::BarY
+                }
             ),
             Err(RefuseReason::WouldChangeInset)
         );
         assert!(classify_edit(
             &spec,
-            &SpecEdit::ChangeMarkType { plot: cp("root"), mark_ordinal: 0, new_kind: MarkKind::Circle }
+            &SpecEdit::ChangeMarkType {
+                plot: cp("root"),
+                mark_ordinal: 0,
+                new_kind: MarkKind::Circle
+            }
         )
         .is_ok());
     }
@@ -1094,7 +1232,13 @@ vconcat:
     fn emptying_a_plot_is_refused() {
         let spec = parse(SINGLE);
         assert_eq!(
-            classify_edit(&spec, &SpecEdit::RemoveMark { plot: cp("root"), mark_ordinal: 0 }),
+            classify_edit(
+                &spec,
+                &SpecEdit::RemoveMark {
+                    plot: cp("root"),
+                    mark_ordinal: 0
+                }
+            ),
             Err(RefuseReason::WouldEmptyPlot)
         );
     }
@@ -1107,7 +1251,12 @@ vconcat:
         let spec = parse(SINGLE);
         assert!(classify_edit(
             &spec,
-            &SpecEdit::SetChannel { plot: cp("root"), mark_ordinal: 0, channel: "fill".to_string(), column: "c".to_string() }
+            &SpecEdit::SetChannel {
+                plot: cp("root"),
+                mark_ordinal: 0,
+                channel: "fill".to_string(),
+                column: "c".to_string()
+            }
         )
         .is_ok());
     }
@@ -1115,9 +1264,22 @@ vconcat:
     #[test]
     fn remove_is_clean_when_plot_keeps_a_mark() {
         let mut spec = parse(SINGLE);
-        apply(&mut spec, &SpecEdit::AddMark { plot: cp("root"), kind: MarkKind::Line })
-            .expect("clean");
-        assert!(classify_edit(&spec, &SpecEdit::RemoveMark { plot: cp("root"), mark_ordinal: 0 }).is_ok());
+        apply(
+            &mut spec,
+            &SpecEdit::AddMark {
+                plot: cp("root"),
+                kind: MarkKind::Line,
+            },
+        )
+        .expect("clean");
+        assert!(classify_edit(
+            &spec,
+            &SpecEdit::RemoveMark {
+                plot: cp("root"),
+                mark_ordinal: 0
+            }
+        )
+        .is_ok());
     }
 
     // A dashboard with a STANDALONE colour legend `for: scatter` referencing a
@@ -1194,7 +1356,12 @@ vconcat:
         let spec = parse(SINGLE);
         assert!(classify_edit(
             &spec,
-            &SpecEdit::SetChannel { plot: cp("root"), mark_ordinal: 0, channel: "fill".to_string(), column: "c".to_string() }
+            &SpecEdit::SetChannel {
+                plot: cp("root"),
+                mark_ordinal: 0,
+                channel: "fill".to_string(),
+                column: "c".to_string()
+            }
         )
         .is_ok());
     }
@@ -1350,9 +1517,30 @@ vconcat:
         // Each edit is applied to a fixture on which it is gate-clean (the
         // labelled fixture makes the set-channel rebind title-stable).
         let cases: Vec<(&str, SpecEdit)> = vec![
-            (SINGLE, SpecEdit::ChangeMarkType { plot: cp("root"), mark_ordinal: 0, new_kind: MarkKind::Line }),
-            (SINGLE_LABELLED, SpecEdit::SetChannel { plot: cp("root"), mark_ordinal: 0, channel: "x".to_string(), column: "c".to_string() }),
-            (SINGLE, SpecEdit::AddMark { plot: cp("root"), kind: MarkKind::Line }),
+            (
+                SINGLE,
+                SpecEdit::ChangeMarkType {
+                    plot: cp("root"),
+                    mark_ordinal: 0,
+                    new_kind: MarkKind::Line,
+                },
+            ),
+            (
+                SINGLE_LABELLED,
+                SpecEdit::SetChannel {
+                    plot: cp("root"),
+                    mark_ordinal: 0,
+                    channel: "x".to_string(),
+                    column: "c".to_string(),
+                },
+            ),
+            (
+                SINGLE,
+                SpecEdit::AddMark {
+                    plot: cp("root"),
+                    kind: MarkKind::Line,
+                },
+            ),
         ];
         for (fixture, edit) in &cases {
             let mut spec = parse(fixture);

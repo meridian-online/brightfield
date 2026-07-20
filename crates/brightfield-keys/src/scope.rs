@@ -55,7 +55,10 @@ impl RejectReason {
     pub fn message(&self) -> String {
         match self {
             RejectReason::OffAltitude { verb, altitude } => {
-                format!("`{verb}` does not apply at the {} altitude", altitude.label())
+                format!(
+                    "`{verb}` does not apply at the {} altitude",
+                    altitude.label()
+                )
             }
             RejectReason::Reserved(reason) => reason.reason().to_string(),
             RejectReason::GNotAllowed { verb } => {
@@ -98,7 +101,9 @@ pub fn resolve_scope(verb: &VerbEntry, ctx: ScopeContext, g_prefix: bool) -> Sco
         return if g_eligible(verb) {
             ScopeResolution::Resolved(ctx.root_path.clone())
         } else {
-            ScopeResolution::Rejected(RejectReason::GNotAllowed { verb: verb.longname })
+            ScopeResolution::Rejected(RejectReason::GNotAllowed {
+                verb: verb.longname,
+            })
         };
     }
 
@@ -121,7 +126,10 @@ mod tests {
     use crate::registry::registry;
 
     fn verb(longname: &str) -> VerbEntry {
-        registry().into_iter().find(|v| v.longname == longname).unwrap()
+        registry()
+            .into_iter()
+            .find(|v| v.longname == longname)
+            .unwrap()
     }
 
     fn ctx<'a>(
@@ -129,14 +137,22 @@ mod tests {
         altitude: Altitude,
         root: &'a ComponentPath,
     ) -> ScopeContext<'a> {
-        ScopeContext { focused_path: focused, focused_altitude: altitude, root_path: root }
+        ScopeContext {
+            focused_path: focused,
+            focused_altitude: altitude,
+            root_path: root,
+        }
     }
 
     #[test]
     fn bare_clear_selection_at_a_view_resolves_the_focused_plot() {
         let focused = ComponentPath("root/hconcat[1]".into());
         let root = ComponentPath("root".into());
-        let res = resolve_scope(&verb("clear-selection"), ctx(&focused, Altitude::View, &root), false);
+        let res = resolve_scope(
+            &verb("clear-selection"),
+            ctx(&focused, Altitude::View, &root),
+            false,
+        );
         assert_eq!(res, ScopeResolution::Resolved(focused));
     }
 
@@ -145,7 +161,11 @@ mod tests {
         let focused = ComponentPath("root/hconcat[1]".into());
         let root = ComponentPath("root".into());
         // g is tested even though no g-key is wired in v1.
-        let res = resolve_scope(&verb("clear-selection"), ctx(&focused, Altitude::View, &root), true);
+        let res = resolve_scope(
+            &verb("clear-selection"),
+            ctx(&focused, Altitude::View, &root),
+            true,
+        );
         assert_eq!(res, ScopeResolution::Resolved(root));
     }
 
@@ -154,12 +174,26 @@ mod tests {
         let focused = ComponentPath("root/hconcat[0]".into());
         let root = ComponentPath("root".into());
         // Presentation is not a runtime verb.
-        let res = resolve_scope(&verb("toggle-presentation"), ctx(&focused, Altitude::View, &root), true);
-        assert!(matches!(res, ScopeResolution::Rejected(RejectReason::GNotAllowed { .. })));
+        let res = resolve_scope(
+            &verb("toggle-presentation"),
+            ctx(&focused, Altitude::View, &root),
+            true,
+        );
+        assert!(matches!(
+            res,
+            ScopeResolution::Rejected(RejectReason::GNotAllowed { .. })
+        ));
         // A structural (SpecEdit) verb under g is likewise rejected — it is
         // Built but not runtime-dispatch, so not g-broadcast eligible.
-        let res2 = resolve_scope(&verb("change-mark-type"), ctx(&focused, Altitude::View, &root), true);
-        assert!(matches!(res2, ScopeResolution::Rejected(RejectReason::GNotAllowed { .. })));
+        let res2 = resolve_scope(
+            &verb("change-mark-type"),
+            ctx(&focused, Altitude::View, &root),
+            true,
+        );
+        assert!(matches!(
+            res2,
+            ScopeResolution::Rejected(RejectReason::GNotAllowed { .. })
+        ));
     }
 
     #[test]
@@ -167,7 +201,11 @@ mod tests {
         let focused = ComponentPath("root".into());
         let root = ComponentPath("root".into());
         // cycle-colour-scheme is view-only; at the dashboard altitude it rejects.
-        let res = resolve_scope(&verb("cycle-colour-scheme"), ctx(&focused, Altitude::Dashboard, &root), false);
+        let res = resolve_scope(
+            &verb("cycle-colour-scheme"),
+            ctx(&focused, Altitude::Dashboard, &root),
+            false,
+        );
         match res {
             ScopeResolution::Rejected(reason @ RejectReason::OffAltitude { .. }) => {
                 assert!(reason.message().contains("dashboard"));
@@ -180,12 +218,26 @@ mod tests {
     fn bare_reserved_verb_rejects_with_its_bucket() {
         let focused = ComponentPath("root/hconcat[0]".into());
         let root = ComponentPath("root".into());
-        let res = resolve_scope(&verb("filter-view"), ctx(&focused, Altitude::View, &root), false);
-        assert_eq!(res, ScopeResolution::Rejected(RejectReason::Reserved(ReservedReason::NeedsKeyboardTarget)));
+        let res = resolve_scope(
+            &verb("filter-view"),
+            ctx(&focused, Altitude::View, &root),
+            false,
+        );
+        assert_eq!(
+            res,
+            ScopeResolution::Rejected(RejectReason::Reserved(ReservedReason::NeedsKeyboardTarget))
+        );
         // The command-log verbs (undo etc.) are now Built, so the
         // second still-reserved bucket case uses another NeedsKeyboardTarget verb.
-        let res2 = resolve_scope(&verb("set-param"), ctx(&focused, Altitude::View, &root), false);
-        assert_eq!(res2, ScopeResolution::Rejected(RejectReason::Reserved(ReservedReason::NeedsKeyboardTarget)));
+        let res2 = resolve_scope(
+            &verb("set-param"),
+            ctx(&focused, Altitude::View, &root),
+            false,
+        );
+        assert_eq!(
+            res2,
+            ScopeResolution::Rejected(RejectReason::Reserved(ReservedReason::NeedsKeyboardTarget))
+        );
     }
 
     #[test]

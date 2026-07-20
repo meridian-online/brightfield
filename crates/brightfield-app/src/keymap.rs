@@ -147,7 +147,10 @@ pub fn action_for_longname(longname: &str) -> Option<Box<dyn gpui::Action>> {
 /// registry keymap. Each binding carries its own context predicate.
 #[must_use]
 pub fn grammar_key_bindings() -> Vec<KeyBinding> {
-    keymap_bindings(&registry()).iter().filter_map(keybinding_for).collect()
+    keymap_bindings(&registry())
+        .iter()
+        .filter_map(keybinding_for)
+        .collect()
 }
 
 #[cfg(test)]
@@ -179,9 +182,16 @@ mod tests {
             .filter(|bk| bk.context != BindingContext::Protocol)
             .filter(|bk| !SHIPPED_FIXED_POINTS.contains(&bk.longname))
             .count();
-        assert_eq!(grammar_key_bindings().len(), want, "adapter dropped a new registry binding");
+        assert_eq!(
+            grammar_key_bindings().len(),
+            want,
+            "adapter dropped a new registry binding"
+        );
         // The command log added m/a/e/d/u (5 keys): 23 registry keys − p − cmd-s = 21.
-        assert_eq!(want, 21, "21 new grammar bindings (23 registry keys − p − cmd-s)");
+        assert_eq!(
+            want, 21,
+            "21 new grammar bindings (23 registry keys − p − cmd-s)"
+        );
     }
 
     #[test]
@@ -251,8 +261,14 @@ mod tests {
         // The adapter does NOT re-bind p or cmd-s — both keep the binding sites
         // they shipped with, covered by the workspace and spec-save tests.
         let b = grammar_key_bindings();
-        assert!(matches_complete(&b, "p").is_empty(), "p stays a workspace binding");
-        assert!(matches_complete(&b, "cmd-s").is_empty(), "cmd-s stays an editor binding");
+        assert!(
+            matches_complete(&b, "p").is_empty(),
+            "p stays a workspace binding"
+        );
+        assert!(
+            matches_complete(&b, "cmd-s").is_empty(),
+            "cmd-s stays an editor binding"
+        );
     }
 
     #[test]
@@ -262,7 +278,10 @@ mod tests {
         let claimers = matches_complete(&b, "cmd-e");
         assert_eq!(claimers.len(), 1, "exactly one binding claims cmd-e");
         assert_eq!(claimers[0].action().name(), "brightfield::ToggleFocus");
-        assert!(claimers[0].predicate().is_none(), "toggle-focus is global (context=None)");
+        assert!(
+            claimers[0].predicate().is_none(),
+            "toggle-focus is global (context=None)"
+        );
     }
 
     #[test]

@@ -27,10 +27,9 @@ use crate::protocol::{host_on_device, ProtocolInputs, ProtocolShell};
 /// Returns a message if no adapter or device is available.
 pub fn headless_device() -> Result<(wgpu::Device, wgpu::Queue), String> {
     let instance = wgpu::Instance::default();
-    let adapter = pollster::block_on(
-        instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
-    )
-    .map_err(|e| format!("no suitable GPU adapter: {e}"))?;
+    let adapter =
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+            .map_err(|e| format!("no suitable GPU adapter: {e}"))?;
     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("brightfield-shot"),
         required_features: wgpu::Features::empty(),
@@ -67,11 +66,29 @@ pub fn capture_png(
     ctx.set_pixels_per_point(scale);
     let screen = egui::vec2(win_w, win_h);
 
-    let full = run_ui_frames(&ctx, &egui_renderer, &device, &queue, screen, script, |ui| {
-        draw_shell(ui, &mut state);
-    });
+    let full = run_ui_frames(
+        &ctx,
+        &egui_renderer,
+        &device,
+        &queue,
+        screen,
+        script,
+        |ui| {
+            draw_shell(ui, &mut state);
+        },
+    );
     finish_capture(
-        &ctx, &egui_renderer, &device, &queue, full, win_w, win_h, scale, mode, target_format, out,
+        &ctx,
+        &egui_renderer,
+        &device,
+        &queue,
+        full,
+        win_w,
+        win_h,
+        scale,
+        mode,
+        target_format,
+        out,
     )
 }
 
@@ -107,11 +124,29 @@ pub fn capture_protocol_png(
     ctx.set_pixels_per_point(scale);
     let screen = egui::vec2(win_w, win_h);
 
-    let full = run_ui_frames(&ctx, &egui_renderer, &device, &queue, screen, script, |ui| {
-        shell.draw(ui);
-    });
+    let full = run_ui_frames(
+        &ctx,
+        &egui_renderer,
+        &device,
+        &queue,
+        screen,
+        script,
+        |ui| {
+            shell.draw(ui);
+        },
+    );
     finish_capture(
-        &ctx, &egui_renderer, &device, &queue, full, win_w, win_h, scale, mode, target_format, out,
+        &ctx,
+        &egui_renderer,
+        &device,
+        &queue,
+        full,
+        win_w,
+        win_h,
+        scale,
+        mode,
+        target_format,
+        out,
     )
 }
 
@@ -253,12 +288,17 @@ fn finish_capture(
         let r = egui_renderer.read();
         r.render(&mut pass, &clipped, &screen_desc);
     }
-    queue.submit(user_cmds.into_iter().chain(std::iter::once(encoder.finish())));
+    queue.submit(
+        user_cmds
+            .into_iter()
+            .chain(std::iter::once(encoder.finish())),
+    );
 
     let pixels = read_texture(device, queue, &target, size_px[0], size_px[1]);
     let img = image::RgbaImage::from_raw(size_px[0], size_px[1], pixels)
         .ok_or_else(|| "readback pixel buffer size mismatch".to_string())?;
-    img.save(out).map_err(|e| format!("failed to write {}: {e}", out.display()))?;
+    img.save(out)
+        .map_err(|e| format!("failed to write {}: {e}", out.display()))?;
     Ok((size_px[0], size_px[1]))
 }
 
@@ -277,7 +317,10 @@ pub fn capture_vello_only(
     let dev_w = ((composed.width as f32) * scale).round().max(1.0) as u32;
     let dev_h = ((composed.height as f32) * scale).round().max(1.0) as u32;
     let mut scaled = vello::Scene::new();
-    scaled.append(&composed.scene, Some(kurbo::Affine::scale(f64::from(scale))));
+    scaled.append(
+        &composed.scene,
+        Some(kurbo::Affine::scale(f64::from(scale))),
+    );
     let renderer = VelloRenderer::new();
     let pixels = renderer
         .lock()
@@ -285,7 +328,8 @@ pub fn capture_vello_only(
         .render_to_pixels(&scaled, dev_w, dev_h);
     let img = image::RgbaImage::from_raw(dev_w, dev_h, pixels)
         .ok_or_else(|| "vello pixel buffer size mismatch".to_string())?;
-    img.save(out).map_err(|e| format!("write {}: {e}", out.display()))?;
+    img.save(out)
+        .map_err(|e| format!("write {}: {e}", out.display()))?;
     Ok((dev_w, dev_h))
 }
 
@@ -305,8 +349,9 @@ fn read_texture(
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
-    let mut encoder =
-        device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("readback") });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("readback"),
+    });
     encoder.copy_texture_to_buffer(
         texture.as_image_copy(),
         wgpu::TexelCopyBufferInfo {
@@ -331,7 +376,9 @@ fn read_texture(
     device
         .poll(wgpu::PollType::wait_indefinitely())
         .expect("GPU poll failed during readback");
-    rx.recv().expect("readback channel closed").expect("readback failed");
+    rx.recv()
+        .expect("readback channel closed")
+        .expect("readback failed");
 
     let data = slice.get_mapped_range();
     if padded == bytes_per_row {
@@ -360,7 +407,8 @@ fn read_texture(
 /// # Errors
 /// Returns a message if the file cannot be read.
 pub fn parse_script(path: &Path) -> Result<Vec<Vec<egui::Event>>, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
     let mut frames = Vec::new();
     for (n, line) in text.lines().enumerate() {
         let line = line.trim();
@@ -391,8 +439,14 @@ pub fn parse_script(path: &Path) -> Result<Vec<Vec<egui::Event>>, String> {
         } else if let Some(k) = v.get("key").and_then(|k| k.as_str()) {
             if let Some(key) = egui::Key::from_name(k) {
                 // Optional `"shift": true` for chorded verbs (e.g. shift-S).
-                let shift = v.get("shift").and_then(serde_json::Value::as_bool).unwrap_or(false);
-                let modifiers = egui::Modifiers { shift, ..Default::default() };
+                let shift = v
+                    .get("shift")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                let modifiers = egui::Modifiers {
+                    shift,
+                    ..Default::default()
+                };
                 for pressed in [true, false] {
                     events.push(egui::Event::Key {
                         key,

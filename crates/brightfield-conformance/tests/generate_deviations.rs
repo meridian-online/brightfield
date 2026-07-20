@@ -18,18 +18,13 @@ fn repo_root() -> PathBuf {
 }
 
 fn bin_path() -> PathBuf {
-    let target = PathBuf::from(
+    PathBuf::from(
         std::env::var("CARGO_BIN_EXE_generate-deviations").expect("cargo exposes bin path"),
-    );
-    target
+    )
 }
 
 fn tmp_dir(suffix: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "dfconf-gen-{}-{}",
-        std::process::id(),
-        suffix
-    ));
+    let dir = std::env::temp_dir().join(format!("dfconf-gen-{}-{}", std::process::id(), suffix));
     fs::create_dir_all(&dir).unwrap();
     dir
 }

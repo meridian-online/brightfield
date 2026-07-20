@@ -164,7 +164,11 @@ pub fn resolve_menu_placements(
             Some(v) => v,
             None => binding.options[0].clone(),
         };
-        placements.push(MenuPlacement { rect, binding, value });
+        placements.push(MenuPlacement {
+            rect,
+            binding,
+            value,
+        });
     }
 
     (placements, warnings)
@@ -312,7 +316,11 @@ params:
         assert!(warnings.is_empty());
         assert_eq!(
             placements[0].binding.options,
-            vec![SpecValue::Integer(1), SpecValue::Integer(2), SpecValue::Integer(3)],
+            vec![
+                SpecValue::Integer(1),
+                SpecValue::Integer(2),
+                SpecValue::Integer(3)
+            ],
             "Integer(2) == Integer(2) strict-variant — the default was found, no prepend"
         );
     }
@@ -338,7 +346,11 @@ params:
         );
         let (spec, session) = session_for(&yaml);
         let (placements, warnings) = resolve_menu_placements(&spec, &session);
-        assert_eq!(placements.len(), 1, "the broken widget is skipped, the sibling lives");
+        assert_eq!(
+            placements.len(),
+            1,
+            "the broken widget is skipped, the sibling lives"
+        );
         assert_eq!(placements[0].binding.style, MenuStyle::Checkbox);
         assert_eq!(warnings.len(), 1, "exactly one warning: {warnings:?}");
         assert!(
@@ -399,9 +411,17 @@ params:
             ],
             "prepend first, THEN the ≠2 rule fires — an honest 3-option menu"
         );
-        assert_eq!(p.value, SpecValue::String("maybe".to_string()), "'maybe' shows selected");
+        assert_eq!(
+            p.value,
+            SpecValue::String("maybe".to_string()),
+            "'maybe' shows selected"
+        );
         assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains("exactly two options"), "{}", warnings[0]);
+        assert!(
+            warnings[0].contains("exactly two options"),
+            "{}",
+            warnings[0]
+        );
     }
 
     /// a well-formed checkbox (declared [true, false] default pair,
@@ -444,8 +464,16 @@ params:
         let (placements, warnings) = resolve_menu_placements(&spec, &session);
         assert_eq!(placements.len(), 1);
         let p = &placements[0];
-        assert_eq!(p.binding.style, MenuStyle::Menu, "radio degrades — layout reserved 3 rows");
-        assert_eq!(p.binding.options.len(), 4, "the prepended default rides along");
+        assert_eq!(
+            p.binding.style,
+            MenuStyle::Menu,
+            "radio degrades — layout reserved 3 rows"
+        );
+        assert_eq!(
+            p.binding.options.len(),
+            4,
+            "the prepended default rides along"
+        );
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("reserved 3 rows"), "{}", warnings[0]);
         // The layout rect stayed radio-tall for 3 literal rows — cosmetic
@@ -475,7 +503,11 @@ params:
         assert_eq!(placements[0].binding.style, MenuStyle::Menu);
         assert_eq!(placements[0].rect.height, 32.0, "menu-sized");
         assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains("literal options list"), "{}", warnings[0]);
+        assert!(
+            warnings[0].contains("literal options list"),
+            "{}",
+            warnings[0]
+        );
     }
 
     /// the resolution warnings land in the FeedbackLog as exactly
@@ -502,7 +534,11 @@ params:
         for (severity, message) in crate::resolution_warning_entries(&warnings) {
             log.append(severity, message);
         }
-        assert_eq!(log.entries().len(), 1, "exactly one entry per warning per pass");
+        assert_eq!(
+            log.entries().len(),
+            1,
+            "exactly one entry per warning per pass"
+        );
         assert!(matches!(
             log.entries()[0].severity,
             crate::reload_feedback::Severity::Warning

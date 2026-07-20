@@ -27,7 +27,7 @@ use gpui::{App, Entity};
 use kurbo::{Point, Rect};
 use vello::Scene;
 
-use brightfield_engine::error::EngineError;
+use brightfield_engine::DispatchResult;
 use brightfield_engine::{concat_batches, RecordBatch, Session};
 use brightfield_render::channel::{Channel, ChannelMap};
 use brightfield_render::layout::ChartLayout;
@@ -37,7 +37,9 @@ use brightfield_render::mark::{
 };
 use brightfield_render::nearest::SelectionValue;
 use brightfield_render::scale::{Scale, ScaleSet, SequentialScheme};
-use brightfield_render::scene::{build_multi_mark_scene, build_multi_mark_scene_anchored, ChartData};
+use brightfield_render::scene::{
+    build_multi_mark_scene, build_multi_mark_scene_anchored, ChartData,
+};
 use brightfield_render::title::ResolvedTitles;
 use brightfield_spec::analysis::{
     mark_honours_highlight, ComponentPath, HighlightBinding, LegendBinding, SpecAnalysis,
@@ -539,7 +541,12 @@ impl CrossfilterCoordinator {
     /// re-executes every mark, resets every launch anchor, and re-scenes every
     /// plot. Heavier than a per-edit apply, but undo is a deliberate, infrequent
     /// action. Returns `true` (the caller refreshes the window).
-    pub fn reload_all_from_spec(&mut self, spec: Spec, analysis: SpecAnalysis, cx: &mut App) -> bool {
+    pub fn reload_all_from_spec(
+        &mut self,
+        spec: Spec,
+        analysis: SpecAnalysis,
+        cx: &mut App,
+    ) -> bool {
         // Capture the highlight bindings BEFORE reload_spec MOVES `analysis`, so a
         // rebuilt mark keeps its dimming (finding 1/2/4).
         let highlight_bindings = analysis.highlight_bindings.clone();
@@ -550,8 +557,11 @@ impl CrossfilterCoordinator {
         // consistent with the reloaded session's mark_index_map — re-deriving
         // each plot's highlight style + projection from its render context so an
         // undo never silently drops highlight dimming or a geo projection.
-        let plot_meta: Vec<(String, SequentialScheme)> =
-            self.plots.iter().map(|p| (p.path.clone(), p.scheme)).collect();
+        let plot_meta: Vec<(String, SequentialScheme)> = self
+            .plots
+            .iter()
+            .map(|p| (p.path.clone(), p.scheme))
+            .collect();
         let plot_nodes = collect_plot_nodes(&spec);
         let mut new_marks: Vec<MarkInput> = Vec::new();
         let mut new_indices: HashMap<String, Vec<usize>> = HashMap::new();
@@ -646,15 +656,16 @@ impl CrossfilterCoordinator {
         } else {
             // (3, count-stable) In-place mutate the mark at the edit's ORDINAL
             // (finding 7 — was hardcoded `.first()`) then re-execute.
-            let (plot_hl, plot_proj) = affected_ctx.clone().unwrap_or((None, Projection::default()));
+            let (plot_hl, plot_proj) = affected_ctx
+                .clone()
+                .unwrap_or((None, Projection::default()));
             if let Some(&mi) = self.plots[pi].mark_indices.get(edit.mark_ordinal()) {
                 match edit {
                     SpecEdit::ChangeMarkType { new_kind, .. } => {
                         if let Some(m) = self.marks.get_mut(mi) {
                             m.kind = *new_kind;
                             // Geo carries the plot's projection (finding 1/2/4).
-                            let mark_projection =
-                                (*new_kind == MarkKind::Geo).then_some(plot_proj);
+                            let mark_projection = (*new_kind == MarkKind::Geo).then_some(plot_proj);
                             m.renderer_override = configured_renderer(
                                 *new_kind,
                                 self.plots[pi].scheme,
@@ -672,7 +683,9 @@ impl CrossfilterCoordinator {
                                 .flatten();
                         }
                     }
-                    SpecEdit::SetChannel { channel, column, .. } => {
+                    SpecEdit::SetChannel {
+                        channel, column, ..
+                    } => {
                         if let (Some(m), Some(ch)) =
                             (self.marks.get_mut(mi), Channel::from_wire(channel))
                         {
@@ -811,8 +824,13 @@ impl CrossfilterCoordinator {
             .map(|p| (p.path.clone(), p.mark_indices.clone(), p.scheme))
             .collect();
         let old_marks = std::mem::take(&mut self.marks);
-        let (new_marks, mut new_indices, mark_to_plot) =
-            rebuild_flat_index_space(&plot_meta, old_marks, spec, highlight_bindings, affected_path);
+        let (new_marks, mut new_indices, mark_to_plot) = rebuild_flat_index_space(
+            &plot_meta,
+            old_marks,
+            spec,
+            highlight_bindings,
+            affected_path,
+        );
         self.marks = new_marks;
         self.mark_to_plot = mark_to_plot;
         for plot in self.plots.iter_mut() {
@@ -905,7 +923,11 @@ impl CrossfilterCoordinator {
         let binding = self.menu_bindings.get(menu_index)?.clone();
         // The live param value decides the same-value no-op — read from the
         // session (the source of truth), never a widget-side mirror.
-        let current = self.session.current_params().get(&binding.param_name).cloned();
+        let current = self
+            .session
+            .current_params()
+            .get(&binding.param_name)
+            .cloned();
         let (_next, results) =
             commit_menu_release(state, &binding, current.as_ref(), &mut self.session);
         let mut to_rebuild: HashSet<usize> = HashSet::new();
@@ -1122,11 +1144,7 @@ impl CrossfilterCoordinator {
 
     /// Fold re-execution results into the per-mark batch store, recording which
     /// plots need their scene rebuilt. A failed mark keeps its previous batch.
-    fn absorb(
-        &mut self,
-        results: Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>,
-        to_rebuild: &mut HashSet<usize>,
-    ) {
+    fn absorb(&mut self, results: Vec<DispatchResult>, to_rebuild: &mut HashSet<usize>) {
         for (mark_index, result) in results {
             match result {
                 Ok(batches) => {
@@ -1153,7 +1171,7 @@ impl CrossfilterCoordinator {
         // Own the inputs up front so no `self.plots` borrow is held across the
         // later `self.plots[..].scales = …` write.
         let mark_indices = self.plots[plot_index].mark_indices.clone();
-        let layout = self.plots[plot_index].layout.clone();
+        let layout = self.plots[plot_index].layout;
         let draw_inline_legend = self.plots[plot_index].draw_inline_legend;
         let titles = self.plots[plot_index].titles.clone();
         let launch = self.plots[plot_index].launch_scales.clone();
@@ -1284,13 +1302,24 @@ fn has_sequential_fill(scales: &ScaleSet) -> bool {
 /// integrity is unit-testable WITHOUT a gpui window (LivePlot carries a non-Send
 /// `Entity<ChartState>` no headless test can build) — mirroring the
 /// `apply_slider` / `apply_spec_edit_data` data-half split.
+// Returns the three things the caller must swap in together: the rebuilt marks,
+// the per-plot flat-index map, and the old→new index remap. They are a tuple
+// rather than a named struct because the caller destructures all three on the
+// spot and never stores them; a `type` alias would name the tuple without
+// telling the reader what the three positions are, which the doc comment above
+// already does.
+#[allow(clippy::type_complexity)]
 fn rebuild_flat_index_space(
     plot_meta: &[(String, Vec<usize>, SequentialScheme)],
     old_marks: Vec<MarkInput>,
     spec: &Spec,
     highlight_bindings: &[HighlightBinding],
     affected_path: &str,
-) -> (Vec<MarkInput>, HashMap<String, Vec<usize>>, HashMap<usize, usize>) {
+) -> (
+    Vec<MarkInput>,
+    HashMap<String, Vec<usize>>,
+    HashMap<usize, usize>,
+) {
     let mut old_slots: Vec<Option<MarkInput>> = old_marks.into_iter().map(Some).collect();
     let plot_nodes = collect_plot_nodes(spec);
     let mut new_marks: Vec<MarkInput> = Vec::new();
@@ -1304,8 +1333,7 @@ fn rebuild_flat_index_space(
             continue; // a plot the coordinator does not track
         };
         let (_, old_flat, scheme) = &plot_meta[pi];
-        let (highlight_style, projection) =
-            plot_render_context(path, plot, highlight_bindings);
+        let (highlight_style, projection) = plot_render_context(path, plot, highlight_bindings);
         let marks_in_plot: Vec<&Mark> = plot
             .items
             .iter()
@@ -1321,9 +1349,12 @@ fn rebuild_flat_index_space(
             } else {
                 // Preserve by (plot, position) — unaffected plots keep their
                 // batches/renderers/channels/highlight/projection.
-                old_flat.get(j).and_then(|&oi| old_slots.get_mut(oi).and_then(Option::take)).unwrap_or_else(
-                    || build_fresh_mark_input(mark, *scheme, highlight_style.as_ref(), projection),
-                )
+                old_flat
+                    .get(j)
+                    .and_then(|&oi| old_slots.get_mut(oi).and_then(Option::take))
+                    .unwrap_or_else(|| {
+                        build_fresh_mark_input(mark, *scheme, highlight_style.as_ref(), projection)
+                    })
             };
             new_marks.push(input);
             new_indices.entry(path.clone()).or_default().push(new_flat);
@@ -1372,8 +1403,9 @@ fn build_fresh_mark_input(
     // Geo carries the plot's projection; every other kind ignores it.
     let mark_projection = (mark.kind == MarkKind::Geo).then_some(projection);
     // Only the honouring families dim, so a non-honouring mark stays `None`.
-    let highlight_style =
-        mark_honours_highlight(mark.kind).then(|| plot_highlight.cloned()).flatten();
+    let highlight_style = mark_honours_highlight(mark.kind)
+        .then(|| plot_highlight.cloned())
+        .flatten();
     MarkInput {
         batch: None,
         channels: ChannelMap::from_mark(mark),
@@ -1429,7 +1461,12 @@ fn recolour_override(
 /// of a colour cycle: `anchor_scale` copies LAUNCH stops (scale.rs), so
 /// rewriting the launch Fill stops is what actually moves the on-screen ramp.
 fn recolour_fill(scales: &mut ScaleSet, stops: Vec<[f32; 4]>) -> bool {
-    if let Some(Scale::Sequential { domain_min, domain_max, .. }) = scales.get(Channel::Fill) {
+    if let Some(Scale::Sequential {
+        domain_min,
+        domain_max,
+        ..
+    }) = scales.get(Channel::Fill)
+    {
         let (domain_min, domain_max) = (*domain_min, *domain_max);
         scales.insert(
             Channel::Fill,
@@ -1582,8 +1619,10 @@ mod tests {
 
         let fingerprint = |kind: MarkKind| -> (Vec<u32>, Vec<u32>) {
             let ro = configured_renderer(kind, SequentialScheme::default(), None, None, None, None);
-            let renderer: &dyn MarkRenderer =
-                ro.as_deref().or_else(|| find_renderer(&renderers, kind)).unwrap();
+            let renderer: &dyn MarkRenderer = ro
+                .as_deref()
+                .or_else(|| find_renderer(&renderers, kind))
+                .unwrap();
             let cd = ChartData {
                 batch: &batch,
                 channel_map: &channels,
@@ -1598,9 +1637,15 @@ mod tests {
 
         let dot = fingerprint(MarkKind::Dot);
         let bar = fingerprint(MarkKind::BarY);
-        assert_ne!(dot, bar, "dot->bar retype changes the scene geometry (circles vs bars)");
+        assert_ne!(
+            dot, bar,
+            "dot->bar retype changes the scene geometry (circles vs bars)"
+        );
         let dot_again = fingerprint(MarkKind::Dot);
-        assert_eq!(dot, dot_again, "retype back to dot reverts the scene fingerprint");
+        assert_eq!(
+            dot, dot_again,
+            "retype back to dot reverts the scene fingerprint"
+        );
     }
 
     /// Count-changing flat-index integrity, COORDINATOR half: an
@@ -1654,15 +1699,29 @@ vconcat:
         };
         // Old flat space: plot0 -> [0] (bw 0.11), plot1 -> [1] (bw 0.42).
         let plot_meta = vec![
-            ("root/vconcat[0]".to_string(), vec![0usize], SequentialScheme::default()),
-            ("root/vconcat[1]".to_string(), vec![1usize], SequentialScheme::default()),
+            (
+                "root/vconcat[0]".to_string(),
+                vec![0usize],
+                SequentialScheme::default(),
+            ),
+            (
+                "root/vconcat[1]".to_string(),
+                vec![1usize],
+                SequentialScheme::default(),
+            ),
         ];
         let old_marks = vec![sentinel(0.11), sentinel(0.42)];
 
         // AddMark a line to plot 0 (the affected plot).
         let mut spec_b = spec.clone();
-        apply(&mut spec_b, &SpecEdit::AddMark { plot: cp("root/vconcat[0]"), kind: MarkKind::Line })
-            .expect("clean");
+        apply(
+            &mut spec_b,
+            &SpecEdit::AddMark {
+                plot: cp("root/vconcat[0]"),
+                kind: MarkKind::Line,
+            },
+        )
+        .expect("clean");
         let (new_marks, new_indices, mark_to_plot) =
             rebuild_flat_index_space(&plot_meta, old_marks, &spec_b, &[], "root/vconcat[0]");
 
@@ -1674,34 +1733,69 @@ vconcat:
         assert_eq!(p1.len(), 1, "the unaffected plot keeps its one mark");
         // (a)+(b) every flat index maps to the RIGHT plot.
         for &mi in &p0 {
-            assert_eq!(mark_to_plot[&mi], 0, "plot 0's marks (incl. the new one) map to plot 0");
+            assert_eq!(
+                mark_to_plot[&mi], 0,
+                "plot 0's marks (incl. the new one) map to plot 0"
+            );
         }
         for &mi in &p1 {
-            assert_eq!(mark_to_plot[&mi], 1, "the pre-existing plot-1 mark still maps to plot 1");
+            assert_eq!(
+                mark_to_plot[&mi], 1,
+                "the pre-existing plot-1 mark still maps to plot 1"
+            );
         }
         // (c) the affected plot's marks were REBUILT fresh (no sentinel bandwidth);
         // the unaffected plot's mark was MOVED verbatim (its 0.42 sentinel survives).
         for &mi in &p0 {
-            assert_eq!(new_marks[mi].bandwidth, None, "affected plot's marks rebuilt fresh");
+            assert_eq!(
+                new_marks[mi].bandwidth, None,
+                "affected plot's marks rebuilt fresh"
+            );
         }
-        assert_eq!(new_marks[p1[0]].bandwidth, Some(0.42), "unaffected plot's mark moved verbatim");
+        assert_eq!(
+            new_marks[p1[0]].bandwidth,
+            Some(0.42),
+            "unaffected plot's mark moved verbatim"
+        );
 
         // RemoveMark the primary from plot 0: re-check integrity (one mark each).
         let mut spec_c = spec_b.clone();
-        apply(&mut spec_c, &SpecEdit::RemoveMark { plot: cp("root/vconcat[0]"), mark_ordinal: 0 })
-            .expect("clean");
+        apply(
+            &mut spec_c,
+            &SpecEdit::RemoveMark {
+                plot: cp("root/vconcat[0]"),
+                mark_ordinal: 0,
+            },
+        )
+        .expect("clean");
         let post_add_meta = vec![
-            ("root/vconcat[0]".to_string(), p0, SequentialScheme::default()),
-            ("root/vconcat[1]".to_string(), p1, SequentialScheme::default()),
+            (
+                "root/vconcat[0]".to_string(),
+                p0,
+                SequentialScheme::default(),
+            ),
+            (
+                "root/vconcat[1]".to_string(),
+                p1,
+                SequentialScheme::default(),
+            ),
         ];
         let (nm2, ni2, mtp2) =
             rebuild_flat_index_space(&post_add_meta, new_marks, &spec_c, &[], "root/vconcat[0]");
-        assert_eq!(nm2.len(), 2, "RemoveMark shrinks the flat space back to two");
+        assert_eq!(
+            nm2.len(),
+            2,
+            "RemoveMark shrinks the flat space back to two"
+        );
         assert_eq!(ni2["root/vconcat[0]"].len(), 1);
         assert_eq!(ni2["root/vconcat[1]"].len(), 1);
         let q2 = ni2["root/vconcat[1]"][0];
         assert_eq!(mtp2[&q2], 1, "plot 1 still maps to plot 1 after the remove");
-        assert_eq!(nm2[q2].bandwidth, Some(0.42), "plot 1's mark still moved verbatim, not corrupted");
+        assert_eq!(
+            nm2[q2].bandwidth,
+            Some(0.42),
+            "plot 1's mark still moved verbatim, not corrupted"
+        );
     }
 
     /// Finding 1/2/4: `plot_render_context` re-derives a plot's highlight
@@ -1725,7 +1819,11 @@ projectionType: albers
         let nodes = collect_plot_nodes(&spec);
         let (path, node) = nodes.first().expect("one plot");
         let (hl, proj) = plot_render_context(path, node, &[]);
-        assert_eq!(proj, Projection::Albers, "projectionType: albers resolves to Albers");
+        assert_eq!(
+            proj,
+            Projection::Albers,
+            "projectionType: albers resolves to Albers"
+        );
         assert!(hl.is_none(), "no highlight binding on this plot → no style");
 
         // A dot plot with a highlight binding → context carries the style.
@@ -1754,8 +1852,15 @@ plot:
             },
         }];
         let (hl, proj) = plot_render_context(path, node, &bindings);
-        assert!(hl.is_some(), "a highlight binding on this plot yields a render style");
-        assert_eq!(proj, Projection::Equirectangular, "no projectionType → the default fit");
+        assert!(
+            hl.is_some(),
+            "a highlight binding on this plot yields a render style"
+        );
+        assert_eq!(
+            proj,
+            Projection::Equirectangular,
+            "no projectionType → the default fit"
+        );
     }
 
     /// Finding 1/2/4: `build_fresh_mark_input` gates highlight by the honouring
@@ -1766,25 +1871,57 @@ plot:
     fn findings124_build_fresh_mark_input_gates_by_kind() {
         use brightfield_spec::ast::Mark;
         use brightfield_spec::vocab::MarkKind as K;
-        let mk = |kind: K| Mark { kind, status: kind.status(), data: None, options: Default::default() };
-        let style = HighlightStyle { opacity: Some(0.2), ..Default::default() };
+        let mk = |kind: K| Mark {
+            kind,
+            status: kind.status(),
+            data: None,
+            options: Default::default(),
+        };
+        let style = HighlightStyle {
+            opacity: Some(0.2),
+            ..Default::default()
+        };
 
         // A honouring dot with a plot highlight style → the mark dims.
-        let dot = build_fresh_mark_input(&mk(K::Dot), SequentialScheme::default(), Some(&style), Projection::Albers);
-        assert!(dot.highlight_style.is_some(), "a honouring mark carries the plot highlight style");
-        assert!(dot.renderer_override.is_none(), "a non-geo dot ignores the projection (registry renderer)");
+        let dot = build_fresh_mark_input(
+            &mk(K::Dot),
+            SequentialScheme::default(),
+            Some(&style),
+            Projection::Albers,
+        );
+        assert!(
+            dot.highlight_style.is_some(),
+            "a honouring mark carries the plot highlight style"
+        );
+        assert!(
+            dot.renderer_override.is_none(),
+            "a non-geo dot ignores the projection (registry renderer)"
+        );
 
         // A non-honouring line with the SAME plot style → no highlight (the 12
         // non-honouring families never dim).
-        let line = build_fresh_mark_input(&mk(K::Line), SequentialScheme::default(), Some(&style), Projection::Albers);
-        assert!(line.highlight_style.is_none(), "a non-honouring mark never carries a highlight style");
+        let line = build_fresh_mark_input(
+            &mk(K::Line),
+            SequentialScheme::default(),
+            Some(&style),
+            Projection::Albers,
+        );
+        assert!(
+            line.highlight_style.is_none(),
+            "a non-honouring mark never carries a highlight style"
+        );
 
         // A geo mark threads the projection into its configured renderer — and
         // it must be the ALBERS we passed, not the equirectangular default: the
         // finding-1/2/4 regression was the rebuild dropping the projection, which
         // `unwrap_or_default()` silently masks as equirectangular. Read it back
         // through the renderer's `projection()` seam so the guard has teeth.
-        let geo = build_fresh_mark_input(&mk(K::Geo), SequentialScheme::default(), None, Projection::Albers);
+        let geo = build_fresh_mark_input(
+            &mk(K::Geo),
+            SequentialScheme::default(),
+            None,
+            Projection::Albers,
+        );
         assert_eq!(
             geo.renderer_override.as_ref().and_then(|r| r.projection()),
             Some(Projection::Albers),
@@ -1793,10 +1930,17 @@ plot:
 
         // And the equirectangular default threads through as itself (a sanity
         // pin that `projection()` is not hardwired to Albers).
-        let geo_default =
-            build_fresh_mark_input(&mk(K::Geo), SequentialScheme::default(), None, Projection::Equirectangular);
+        let geo_default = build_fresh_mark_input(
+            &mk(K::Geo),
+            SequentialScheme::default(),
+            None,
+            Projection::Equirectangular,
+        );
         assert_eq!(
-            geo_default.renderer_override.as_ref().and_then(|r| r.projection()),
+            geo_default
+                .renderer_override
+                .as_ref()
+                .and_then(|r| r.projection()),
             Some(Projection::Equirectangular),
             "the equirectangular default threads through unchanged"
         );
@@ -1835,11 +1979,25 @@ vconcat:
             interactor_path: ComponentPath("root/vconcat[0]/interactor[highlight]".to_string()),
             parent_plot: ComponentPath("root/vconcat[0]".to_string()),
             selection: "sel".to_string(),
-            style: SpecHl { opacity: Some(0.2), fill: None, fill_opacity: None, stroke: None, stroke_opacity: None },
+            style: SpecHl {
+                opacity: Some(0.2),
+                fill: None,
+                fill_opacity: None,
+                stroke: None,
+                stroke_opacity: None,
+            },
         }];
         let plot_meta = vec![
-            ("root/vconcat[0]".to_string(), vec![0usize, 1usize], SequentialScheme::default()),
-            ("root/vconcat[1]".to_string(), vec![2usize], SequentialScheme::default()),
+            (
+                "root/vconcat[0]".to_string(),
+                vec![0usize, 1usize],
+                SequentialScheme::default(),
+            ),
+            (
+                "root/vconcat[1]".to_string(),
+                vec![2usize],
+                SequentialScheme::default(),
+            ),
         ];
         let blank = |_i: usize| MarkInput {
             batch: None,
@@ -1853,13 +2011,8 @@ vconcat:
         };
         let old_marks = vec![blank(0), blank(1), blank(2)];
         // Rebuild the AFFECTED plot0 (as a RemoveMark/AddMark on it would).
-        let (new_marks, new_indices, _) = rebuild_flat_index_space(
-            &plot_meta,
-            old_marks,
-            &spec,
-            &bindings,
-            "root/vconcat[0]",
-        );
+        let (new_marks, new_indices, _) =
+            rebuild_flat_index_space(&plot_meta, old_marks, &spec, &bindings, "root/vconcat[0]");
         for &mi in &new_indices["root/vconcat[0]"] {
             assert!(
                 new_marks[mi].highlight_style.is_some(),
@@ -1896,7 +2049,11 @@ projectionType: albers
         let nodes = collect_plot_nodes(&spec);
         let (path, _) = nodes.first().expect("one plot");
         let path = path.clone();
-        let plot_meta = vec![(path.clone(), vec![0usize, 1usize], SequentialScheme::default())];
+        let plot_meta = vec![(
+            path.clone(),
+            vec![0usize, 1usize],
+            SequentialScheme::default(),
+        )];
         let blank = |_i: usize| MarkInput {
             batch: None,
             channels: ChannelMap::new(),
@@ -2021,9 +2178,24 @@ projectionType: albers
         // no-op — anchored == launch).
         let launch = launch_scales(&marks, &renderers, &[0], &layout);
 
-        let (with_legend, _) = render_plot_scene(&marks, &renderers, &[0], &layout, true, &ResolvedTitles::default(), &launch);
-        let (without_legend, _) =
-            render_plot_scene(&marks, &renderers, &[0], &layout, false, &ResolvedTitles::default(), &launch);
+        let (with_legend, _) = render_plot_scene(
+            &marks,
+            &renderers,
+            &[0],
+            &layout,
+            true,
+            &ResolvedTitles::default(),
+            &launch,
+        );
+        let (without_legend, _) = render_plot_scene(
+            &marks,
+            &renderers,
+            &[0],
+            &layout,
+            false,
+            &ResolvedTitles::default(),
+            &launch,
+        );
         assert!(
             count_scene_paths(&with_legend) > count_scene_paths(&without_legend),
             "the inline gradient legend adds paths when draw_inline_legend is true \
@@ -2051,7 +2223,14 @@ projectionType: albers
                 batch: Some(batch.clone()),
                 channels: channels.clone(),
                 kind: MarkKind::Raster,
-                renderer_override: configured_renderer(MarkKind::Raster, scheme, None, None, None, None),
+                renderer_override: configured_renderer(
+                    MarkKind::Raster,
+                    scheme,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
                 bandwidth: None,
                 thresholds: None,
                 bin_width: None,
@@ -2106,7 +2285,11 @@ projectionType: albers
         let mut launch = launch_scales(&viridis_marks, &renderers, &[0], &layout);
         match launch.get(Channel::Fill) {
             Some(Scale::Sequential { stops, .. }) => {
-                assert_eq!(*stops, SequentialScheme::Viridis.stops(), "launch starts viridis")
+                assert_eq!(
+                    *stops,
+                    SequentialScheme::Viridis.stops(),
+                    "launch starts viridis"
+                )
             }
             other => panic!("expected a launch Fill Sequential, got {other:?}"),
         }
@@ -2132,8 +2315,15 @@ projectionType: albers
 
         // Negative: the override swap alone is inert — anchor_scale copies launch
         // stops, so the anchored ramp stays viridis.
-        let (_, override_only) =
-            render_plot_scene(&blues_override_marks, &renderers, &[0], &layout, false, &ResolvedTitles::default(), &launch);
+        let (_, override_only) = render_plot_scene(
+            &blues_override_marks,
+            &renderers,
+            &[0],
+            &layout,
+            false,
+            &ResolvedTitles::default(),
+            &launch,
+        );
         match override_only.get(Channel::Fill) {
             Some(Scale::Sequential { stops, .. }) => assert_eq!(
                 *stops,
@@ -2146,8 +2336,15 @@ projectionType: albers
         // Positive: recolour the launch Fill stops → the anchored rebuild renders
         // the blues ramp (the load-bearing step cycle_scheme performs).
         assert!(recolour_fill(&mut launch, SequentialScheme::Blues.stops()));
-        let (_, anchored) =
-            render_plot_scene(&blues_override_marks, &renderers, &[0], &layout, false, &ResolvedTitles::default(), &launch);
+        let (_, anchored) = render_plot_scene(
+            &blues_override_marks,
+            &renderers,
+            &[0],
+            &layout,
+            false,
+            &ResolvedTitles::default(),
+            &launch,
+        );
         match anchored.get(Channel::Fill) {
             Some(Scale::Sequential { stops, .. }) => assert_eq!(
                 *stops,
@@ -2179,11 +2376,17 @@ projectionType: albers
             },
         );
         assert!(has_sequential_fill(&seq), "a Sequential Fill is cyclable");
-        assert!(!has_sequential_fill(&ScaleSet::new()), "no Fill → not cyclable");
+        assert!(
+            !has_sequential_fill(&ScaleSet::new()),
+            "no Fill → not cyclable"
+        );
         let mut categorical = ScaleSet::new();
         categorical.insert(
             Channel::Fill,
-            Scale::Colour { categories: vec!["a".into()], palette: vec![[0.0, 0.0, 0.0, 1.0]] },
+            Scale::Colour {
+                categories: vec!["a".into()],
+                palette: vec![[0.0, 0.0, 0.0, 1.0]],
+            },
         );
         assert!(
             !has_sequential_fill(&categorical),
@@ -2204,22 +2407,41 @@ projectionType: albers
             bin_width: None,
             highlight_style: None,
         }];
-        assert!(has_sequential_fill(&launch_scales(&raster, &renderers, &[0], &layout)));
+        assert!(has_sequential_fill(&launch_scales(
+            &raster,
+            &renderers,
+            &[0],
+            &layout
+        )));
         // (2) The gate OR-folds every driving surface, including sequential-Fill.
-        assert!(!coordinator_has_live_surface(false, false, false, false, false, false));
-        assert!(coordinator_has_live_surface(false, false, false, false, true, false));
-        assert!(coordinator_has_live_surface(true, false, false, false, false, false));
-        assert!(coordinator_has_live_surface(false, true, false, false, false, false));
-        assert!(coordinator_has_live_surface(false, false, false, true, false, false));
+        assert!(!coordinator_has_live_surface(
+            false, false, false, false, false, false
+        ));
+        assert!(coordinator_has_live_surface(
+            false, false, false, false, true, false
+        ));
+        assert!(coordinator_has_live_surface(
+            true, false, false, false, false, false
+        ));
+        assert!(coordinator_has_live_surface(
+            false, true, false, false, false, false
+        ));
+        assert!(coordinator_has_live_surface(
+            false, false, false, true, false, false
+        ));
         // a menu-family widget is a live surface of its own — a
         // menu-only dashboard must keep the coordinator alive.
-        assert!(coordinator_has_live_surface(false, false, true, false, false, false));
+        assert!(coordinator_has_live_surface(
+            false, false, true, false, false, false
+        ));
         // the command log is itself a live surface. Without this
         // disjunct a static spec (categorical/absent fill, no selection — e.g.
         // scatter.yaml) built no coordinator, so m/a/e/d/u mutated the working
         // spec + filled the log but never re-rendered — the silent-no-op
         // class, on the simplest possible spec.
-        assert!(coordinator_has_live_surface(false, false, false, false, false, true));
+        assert!(coordinator_has_live_surface(
+            false, false, false, false, false, true
+        ));
     }
 
     /// regression (the scatter silent-no-op): a STATIC spec — a plain
@@ -2283,7 +2505,8 @@ plot:
         // exactly as before.
         let (session, marks) = build_marks();
         assert!(
-            CrossfilterCoordinator::new(session, marks, vec![], vec![], vec![], vec![], false).is_none(),
+            CrossfilterCoordinator::new(session, marks, vec![], vec![], vec![], vec![], false)
+                .is_none(),
             "a static spec with no command log stays coordinator-free (dump path)"
         );
 
@@ -2291,7 +2514,8 @@ plot:
         // now gets a coordinator, so a structural edit can re-render (scatter fix).
         let (session, marks) = build_marks();
         assert!(
-            CrossfilterCoordinator::new(session, marks, vec![], vec![], vec![], vec![], true).is_some(),
+            CrossfilterCoordinator::new(session, marks, vec![], vec![], vec![], vec![], true)
+                .is_some(),
             "the command log is a live surface: a static scatter's m/a/e/d/u must \
              re-render, not silently no-op"
         );
@@ -2323,15 +2547,36 @@ plot:
                 highlight_style: None,
             };
             let ovr = recolour_override(&m, SequentialScheme::Blues);
-            vec![MarkInput { renderer_override: ovr, ..m }]
+            vec![MarkInput {
+                renderer_override: ovr,
+                ..m
+            }]
         };
         // One fixed scale set (union of both bandwidths' inferences) so only the
         // retained bandwidth varies.
         let l1 = launch_scales(&cycled(Some(2.0)), &renderers, &[0], &layout);
         let l2 = launch_scales(&cycled(None), &renderers, &[0], &layout);
         let fixed = anchor_scales(&l1, l2);
-        let kept = render_plot_scene(&cycled(Some(2.0)), &renderers, &[0], &layout, false, &ResolvedTitles::default(), &fixed).0;
-        let dropped = render_plot_scene(&cycled(None), &renderers, &[0], &layout, false, &ResolvedTitles::default(), &fixed).0;
+        let kept = render_plot_scene(
+            &cycled(Some(2.0)),
+            &renderers,
+            &[0],
+            &layout,
+            false,
+            &ResolvedTitles::default(),
+            &fixed,
+        )
+        .0;
+        let dropped = render_plot_scene(
+            &cycled(None),
+            &renderers,
+            &[0],
+            &layout,
+            false,
+            &ResolvedTitles::default(),
+            &fixed,
+        )
+        .0;
         assert_ne!(
             scene_bytes(&kept),
             scene_bytes(&dropped),
@@ -2363,7 +2608,10 @@ plot:
         // Re-inferring over the now-filtered batch yields a NARROWER x-domain —
         // exactly the axis jump anchoring suppresses.
         let reinferred = launch_scales(&c.marks, &c.renderers, &[1], &layout);
-        let reinferred_x = reinferred.get(Channel::X).and_then(|s| s.domain_max()).unwrap();
+        let reinferred_x = reinferred
+            .get(Channel::X)
+            .and_then(|s| s.domain_max())
+            .unwrap();
         assert!(
             reinferred_x < launch_x,
             "re-inference would shrink the x-domain: {reinferred_x} < {launch_x}"
@@ -2372,8 +2620,15 @@ plot:
         // The launch-anchored rebuild: a subset folds to exactly launch, so the
         // stored (displayed) scales equal launch and the scene differs from the
         // old re-inferring build.
-        let (anchored_scene, anchored) =
-            render_plot_scene(&c.marks, &c.renderers, &[1], &layout, true, &ResolvedTitles::default(), &launch);
+        let (anchored_scene, anchored) = render_plot_scene(
+            &c.marks,
+            &c.renderers,
+            &[1],
+            &layout,
+            true,
+            &ResolvedTitles::default(),
+            &launch,
+        );
         assert_eq!(
             anchored.get(Channel::X).and_then(|s| s.domain_max()),
             Some(launch_x),
@@ -2417,7 +2672,12 @@ plot:
             vec![
                 Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0, 4.0])),
                 Arc::new(Float64Array::from(vec![10.0, 20.0, 30.0, 40.0])),
-                Arc::new(StringArray::from(vec!["adelie", "chinstrap", "gentoo", "gentoo"])),
+                Arc::new(StringArray::from(vec![
+                    "adelie",
+                    "chinstrap",
+                    "gentoo",
+                    "gentoo",
+                ])),
             ],
         )
         .unwrap();
@@ -2463,8 +2723,16 @@ plot:
             highlight_style: None,
         }];
         let reinferred = launch_scales(&filtered_marks, &renderers, &[0], &layout);
-        let launch_gentoo = launch.get(Channel::Fill).unwrap().map_colour("gentoo").unwrap();
-        let reinferred_gentoo = reinferred.get(Channel::Fill).unwrap().map_colour("gentoo").unwrap();
+        let launch_gentoo = launch
+            .get(Channel::Fill)
+            .unwrap()
+            .map_colour("gentoo")
+            .unwrap();
+        let reinferred_gentoo = reinferred
+            .get(Channel::Fill)
+            .unwrap()
+            .map_colour("gentoo")
+            .unwrap();
         assert_ne!(
             launch_gentoo, reinferred_gentoo,
             "re-inference recolours gentoo (palette[2] launch vs palette[0] alone)"
@@ -2475,10 +2743,21 @@ plot:
         // so the colour probe sees only the dots: the swatch legend would draw
         // every category (including adelie at palette[0] == reinferred_gentoo),
         // masking whether a dot was recoloured.
-        let (anchored_scene, _) =
-            render_plot_scene(&filtered_marks, &renderers, &[0], &layout, false, &ResolvedTitles::default(), &launch);
-        let drawn: std::collections::HashSet<u32> =
-            anchored_scene.encoding().draw_data.iter().copied().collect();
+        let (anchored_scene, _) = render_plot_scene(
+            &filtered_marks,
+            &renderers,
+            &[0],
+            &layout,
+            false,
+            &ResolvedTitles::default(),
+            &launch,
+        );
+        let drawn: std::collections::HashSet<u32> = anchored_scene
+            .encoding()
+            .draw_data
+            .iter()
+            .copied()
+            .collect();
         assert!(
             drawn.contains(&packed(launch_gentoo)),
             "the filtered dots keep the launch palette colour for gentoo"
@@ -2530,8 +2809,8 @@ plot:
                     SequentialScheme::default(),
                     None,
                     None,
-                None,
-                None,
+                    None,
+                    None,
                 ),
                 bandwidth: None,
                 thresholds: None,
@@ -2559,8 +2838,15 @@ plot:
         );
 
         // The anchored rebuild pins the Fill Sequential to the LAUNCH domain...
-        let (hanchored_scene, hanchored) =
-            render_plot_scene(&hfiltered_marks, &renderers, &[0], &layout, false, &ResolvedTitles::default(), &hlaunch);
+        let (hanchored_scene, hanchored) = render_plot_scene(
+            &hfiltered_marks,
+            &renderers,
+            &[0],
+            &layout,
+            false,
+            &ResolvedTitles::default(),
+            &hlaunch,
+        );
         match hanchored.get(Channel::Fill) {
             Some(Scale::Sequential { domain_max, .. }) => assert_eq!(
                 *domain_max, launch_fill_max,
@@ -2593,8 +2879,15 @@ plot:
             let mut c = coord.borrow_mut();
             let layout = ChartLayout::new(360.0, 300.0);
             let launch = launch_scales(&c.marks, &c.renderers, &[1], &layout);
-            let (launch_scene, _) =
-                render_plot_scene(&c.marks, &c.renderers, &[1], &layout, true, &ResolvedTitles::default(), &launch);
+            let (launch_scene, _) = render_plot_scene(
+                &c.marks,
+                &c.renderers,
+                &[1],
+                &layout,
+                true,
+                &ResolvedTitles::default(),
+                &launch,
+            );
 
             assert!(c.apply_legend_click(0, Some("gentoo")).is_some());
             assert_eq!(c.marks[1].batch.as_ref().unwrap().num_rows(), 3);
@@ -2602,7 +2895,15 @@ plot:
             assert!(c.apply_legend_click(0, Some("gentoo")).is_some());
             assert_eq!(c.marks[1].batch.as_ref().unwrap().num_rows(), 6);
 
-            let (rebuilt, _) = render_plot_scene(&c.marks, &c.renderers, &[1], &layout, true, &ResolvedTitles::default(), &launch);
+            let (rebuilt, _) = render_plot_scene(
+                &c.marks,
+                &c.renderers,
+                &[1],
+                &layout,
+                true,
+                &ResolvedTitles::default(),
+                &launch,
+            );
             assert_eq!(
                 scene_bytes(&rebuilt),
                 scene_bytes(&launch_scene),
@@ -2618,7 +2919,16 @@ plot:
             // A filtered subset (drop the peak row) stands in for a gesture.
             let filtered = full.slice(0, 6);
 
-            let override_of = || configured_renderer(MarkKind::Heatmap, SequentialScheme::Blues, Some(0.8), None, None, None);
+            let override_of = || {
+                configured_renderer(
+                    MarkKind::Heatmap,
+                    SequentialScheme::Blues,
+                    Some(0.8),
+                    None,
+                    None,
+                    None,
+                )
+            };
             let marks_for = |batch: RecordBatch| {
                 vec![MarkInput {
                     batch: Some(batch),
@@ -2634,13 +2944,27 @@ plot:
 
             let launch_marks = marks_for(full.clone());
             let launch = launch_scales(&launch_marks, &renderers, &[0], &layout);
-            let (launch_scene, _) =
-                render_plot_scene(&launch_marks, &renderers, &[0], &layout, true, &ResolvedTitles::default(), &launch);
+            let (launch_scene, _) = render_plot_scene(
+                &launch_marks,
+                &renderers,
+                &[0],
+                &layout,
+                true,
+                &ResolvedTitles::default(),
+                &launch,
+            );
 
             // Filter (rebuild launch-anchored, same override).
             let filtered_marks = marks_for(filtered);
-            let (filtered_scene, _) =
-                render_plot_scene(&filtered_marks, &renderers, &[0], &layout, true, &ResolvedTitles::default(), &launch);
+            let (filtered_scene, _) = render_plot_scene(
+                &filtered_marks,
+                &renderers,
+                &[0],
+                &layout,
+                true,
+                &ResolvedTitles::default(),
+                &launch,
+            );
             assert_ne!(
                 scene_bytes(&filtered_scene),
                 scene_bytes(&launch_scene),
@@ -2650,8 +2974,15 @@ plot:
             // Return to the full batch → byte-identical to launch (scheme,
             // bandwidth, and scales all held; a subset anchors back to launch).
             let restored_marks = marks_for(full);
-            let (restored_scene, _) =
-                render_plot_scene(&restored_marks, &renderers, &[0], &layout, true, &ResolvedTitles::default(), &launch);
+            let (restored_scene, _) = render_plot_scene(
+                &restored_marks,
+                &renderers,
+                &[0],
+                &layout,
+                true,
+                &ResolvedTitles::default(),
+                &launch,
+            );
             assert_eq!(
                 scene_bytes(&restored_scene),
                 scene_bytes(&launch_scene),
@@ -2683,8 +3014,8 @@ plot:
                 SequentialScheme::Blues,
                 None,
                 None,
-            None,
-            None,
+                None,
+                None,
             ),
             bandwidth: None,
             thresholds: None,
@@ -2693,7 +3024,11 @@ plot:
         }];
         match launch_scales(&blues, &renderers, &[0], &layout).get(Channel::Fill) {
             Some(Scale::Sequential { stops, .. }) => {
-                assert_eq!(*stops, SequentialScheme::Blues.stops(), "heatmap keeps blues stops")
+                assert_eq!(
+                    *stops,
+                    SequentialScheme::Blues.stops(),
+                    "heatmap keeps blues stops"
+                )
             }
             other => panic!("expected a Fill Sequential, got {other:?}"),
         }
@@ -2717,8 +3052,8 @@ plot:
                     SequentialScheme::default(),
                     bandwidth,
                     None,
-                None,
-                None,
+                    None,
+                    None,
                 ),
                 bandwidth: None,
                 thresholds: None,
@@ -2731,10 +3066,28 @@ plot:
         let fixed = anchor_scales(&l1, l2);
         assert_ne!(
             scene_bytes(
-                &render_plot_scene(&marks_bw(Some(2.0)), &renderers, &[0], &layout, true, &ResolvedTitles::default(), &fixed).0
+                &render_plot_scene(
+                    &marks_bw(Some(2.0)),
+                    &renderers,
+                    &[0],
+                    &layout,
+                    true,
+                    &ResolvedTitles::default(),
+                    &fixed
+                )
+                .0
             ),
             scene_bytes(
-                &render_plot_scene(&marks_bw(None), &renderers, &[0], &layout, true, &ResolvedTitles::default(), &fixed).0
+                &render_plot_scene(
+                    &marks_bw(None),
+                    &renderers,
+                    &[0],
+                    &layout,
+                    true,
+                    &ResolvedTitles::default(),
+                    &fixed
+                )
+                .0
             ),
             "an explicit bandwidth changes the heatmap vs Silverman's rule"
         );
@@ -2750,8 +3103,8 @@ plot:
                     SequentialScheme::default(),
                     None,
                     thresholds,
-                None,
-                None,
+                    None,
+                    None,
                 ),
                 bandwidth: None,
                 thresholds: None,
@@ -2759,7 +3112,18 @@ plot:
                 highlight_style: None,
             }];
             let scales = launch_scales(&marks, &renderers, &[0], &layout);
-            count_scene_paths(&render_plot_scene(&marks, &renderers, &[0], &layout, true, &ResolvedTitles::default(), &scales).0)
+            count_scene_paths(
+                &render_plot_scene(
+                    &marks,
+                    &renderers,
+                    &[0],
+                    &layout,
+                    true,
+                    &ResolvedTitles::default(),
+                    &scales,
+                )
+                .0,
+            )
         };
         assert!(
             render_contour(Some(8)) > render_contour(Some(2)),
@@ -2780,7 +3144,16 @@ plot:
         let scales = launch_scales(&dot, &renderers, &[0], &layout);
         assert!(
             count_scene_paths(
-                &render_plot_scene(&dot, &renderers, &[0], &layout, true, &ResolvedTitles::default(), &scales).0
+                &render_plot_scene(
+                    &dot,
+                    &renderers,
+                    &[0],
+                    &layout,
+                    true,
+                    &ResolvedTitles::default(),
+                    &scales
+                )
+                .0
             ) > 0,
             "an unconfigured dot mark still renders via the registry"
         );
@@ -2839,20 +3212,43 @@ plot:
         // from superset.
         let launch_marks = dot_marks(dot_batch(vec![0.0, 1.0, 2.0], vec![0.0, 1.0, 2.0]));
         let launch = launch_scales(&launch_marks, &renderers, &[0], &layout);
-        let (launch_scene, _) =
-            render_plot_scene(&launch_marks, &renderers, &[0], &layout, true, &ResolvedTitles::default(), &launch);
-        let launch_x = launch.get(Channel::X).cloned().expect("launch has an x scale");
+        let (launch_scene, _) = render_plot_scene(
+            &launch_marks,
+            &renderers,
+            &[0],
+            &layout,
+            true,
+            &ResolvedTitles::default(),
+            &launch,
+        );
+        let launch_x = launch
+            .get(Channel::X)
+            .cloned()
+            .expect("launch has an x scale");
         let launch_x_max = launch_x.domain_max().expect("linear x has a domain max");
-        assert!(launch_x_max < 10.0, "the new point is outside the launch domain");
+        assert!(
+            launch_x_max < 10.0,
+            "the new point is outside the launch domain"
+        );
 
         // Slider widens → superset batch adds the point at x = 10.
         let superset_marks = dot_marks(dot_batch(
             vec![0.0, 1.0, 2.0, 10.0],
             vec![0.0, 1.0, 2.0, 10.0],
         ));
-        let (superset_scene, anchored) =
-            render_plot_scene(&superset_marks, &renderers, &[0], &layout, true, &ResolvedTitles::default(), &launch);
-        let anchored_x = anchored.get(Channel::X).cloned().expect("anchored has an x scale");
+        let (superset_scene, anchored) = render_plot_scene(
+            &superset_marks,
+            &renderers,
+            &[0],
+            &layout,
+            true,
+            &ResolvedTitles::default(),
+            &launch,
+        );
+        let anchored_x = anchored
+            .get(Channel::X)
+            .cloned()
+            .expect("anchored has an x scale");
 
         // The domain WIDENED to include the new point (a pinned rebuild would
         // have left it at launch_x_max).
@@ -2883,8 +3279,15 @@ plot:
         );
 
         // Round-trip: slider back to the launch batch → byte-identical to launch.
-        let (restored_scene, _) =
-            render_plot_scene(&launch_marks, &renderers, &[0], &layout, true, &ResolvedTitles::default(), &launch);
+        let (restored_scene, _) = render_plot_scene(
+            &launch_marks,
+            &renderers,
+            &[0],
+            &layout,
+            true,
+            &ResolvedTitles::default(),
+            &launch,
+        );
         assert_eq!(
             scene_bytes(&restored_scene),
             scene_bytes(&launch_scene),
@@ -2940,8 +3343,8 @@ plot:
                     SequentialScheme::Blues,
                     None,
                     None,
-                None,
-                None,
+                    None,
+                    None,
                 ),
                 bandwidth: None,
                 thresholds: None,
@@ -2962,7 +3365,15 @@ plot:
         marks[1].batch = Some(grid);
 
         // Rebuild adopts the raster's fresh Fill ramp (the blues scheme).
-        let (_, anchored) = render_plot_scene(&marks, &renderers, &[0, 1], &layout, false, &ResolvedTitles::default(), &launch);
+        let (_, anchored) = render_plot_scene(
+            &marks,
+            &renderers,
+            &[0, 1],
+            &layout,
+            false,
+            &ResolvedTitles::default(),
+            &launch,
+        );
         match anchored.get(Channel::Fill) {
             Some(Scale::Sequential { stops, .. }) => assert_eq!(
                 *stops,
@@ -2977,8 +3388,15 @@ plot:
         // default-blue dots can't be mistaken for a fallback cell. The peak cell
         // (count 9 == the ramp's domain max) samples the ramp's top stop; the
         // fallback would have painted it full-alpha default blue (DEFAULT_COLOUR).
-        let (raster_scene, _) =
-            render_plot_scene(&marks, &renderers, &[1], &layout, false, &ResolvedTitles::default(), &launch);
+        let (raster_scene, _) = render_plot_scene(
+            &marks,
+            &renderers,
+            &[1],
+            &layout,
+            false,
+            &ResolvedTitles::default(),
+            &launch,
+        );
         let drawn: std::collections::HashSet<u32> =
             raster_scene.encoding().draw_data.iter().copied().collect();
         let blues_top = *SequentialScheme::Blues.stops().last().unwrap();
@@ -3071,8 +3489,16 @@ plot:
             max: 6.0,
             step: Some(1.0),
         };
-        let coord = CrossfilterCoordinator::new(session, marks, vec![], vec![binding], vec![], vec![], false)
-            .expect("a slider binding keeps the coordinator alive with no brushes");
+        let coord = CrossfilterCoordinator::new(
+            session,
+            marks,
+            vec![],
+            vec![binding],
+            vec![],
+            vec![],
+            false,
+        )
+        .expect("a slider binding keeps the coordinator alive with no brushes");
         let mut c = coord.borrow_mut();
 
         // threshold=2 default → x in {3,4,5,6} = 4 rows.
@@ -3085,13 +3511,19 @@ plot:
                 .is_none(),
             "Dragging is a no-op"
         );
-        assert_eq!(c.marks[0].batch.as_ref().map_or(0, |b| b.num_rows()), before);
+        assert_eq!(
+            c.marks[0].batch.as_ref().map_or(0, |b| b.num_rows()),
+            before
+        );
 
         // release at threshold=5 re-executes → x in {6} = 1 row.
         let rebuilt = c.apply_slider(0, &SliderState::Released { value: 5.0 });
         assert!(rebuilt.is_some(), "Released commits");
         let after = c.marks[0].batch.as_ref().map_or(0, |b| b.num_rows());
-        assert!(after < before, "raising threshold drops rows: {before} -> {after}");
+        assert!(
+            after < before,
+            "raising threshold drops rows: {before} -> {after}"
+        );
         assert_eq!(after, 1);
     }
 
@@ -3142,8 +3574,16 @@ plot:
             })
             .collect();
 
-        let coord = CrossfilterCoordinator::new(session, marks, vec![], vec![binding], vec![], vec![], false)
-            .expect("coordinator");
+        let coord = CrossfilterCoordinator::new(
+            session,
+            marks,
+            vec![],
+            vec![binding],
+            vec![],
+            vec![],
+            false,
+        )
+        .expect("coordinator");
         let mut c = coord.borrow_mut();
         let before = c.marks[0].batch.as_ref().map_or(0, |b| b.num_rows());
         c.apply_slider(0, &SliderState::Released { value: 7.0 });
@@ -3241,7 +3681,9 @@ plot:
 
         // Non-committed states never re-query (open/hover are overlay-only).
         assert!(c.apply_menu(0, &MenuState::Closed).is_none());
-        assert!(c.apply_menu(0, &MenuState::Open { hover: Some(1) }).is_none());
+        assert!(c
+            .apply_menu(0, &MenuState::Open { hover: Some(1) })
+            .is_none());
         assert_eq!(c.marks[0].batch.as_ref().map_or(0, |b| b.num_rows()), 2);
 
         // Commit "west" (index 2) → exactly the 1 west row.
@@ -3265,7 +3707,8 @@ plot:
         assert_eq!(before, 2);
 
         assert!(
-            c.apply_menu(7, &MenuState::Committed { index: 0 }).is_none(),
+            c.apply_menu(7, &MenuState::Committed { index: 0 })
+                .is_none(),
             "an out-of-range widget index commits nothing"
         );
         assert_eq!(
@@ -3423,8 +3866,16 @@ hconcat:
             })
             .collect();
 
-        CrossfilterCoordinator::new(session, marks, vec![], vec![], vec![], legend_bindings, false)
-            .expect("liveness: a bound legend alone keeps the coordinator alive")
+        CrossfilterCoordinator::new(
+            session,
+            marks,
+            vec![],
+            vec![],
+            vec![],
+            legend_bindings,
+            false,
+        )
+        .expect("liveness: a bound legend alone keeps the coordinator alive")
     }
 
     /// The predicate the legend's contributor slot currently holds, read
@@ -3446,9 +3897,8 @@ hconcat:
     fn legend_toggle_state_machine_dispatches_and_clears() {
         let coord = legend_toggle_coordinator();
         let mut c = coord.borrow_mut();
-        let rows = |c: &CrossfilterCoordinator| {
-            c.marks[1].batch.as_ref().map_or(0, |b| b.num_rows())
-        };
+        let rows =
+            |c: &CrossfilterCoordinator| c.marks[1].batch.as_ref().map_or(0, |b| b.num_rows());
         let baseline = rows(&c);
         assert_eq!(baseline, 6, "all rows before any click");
 
@@ -3477,7 +3927,10 @@ hconcat:
         // EMPTY after a select: select then click empty panel → cleared.
         assert!(c.apply_legend_click(0, Some("chinstrap")).is_some());
         assert_eq!(rows(&c), 1);
-        assert!(c.apply_legend_click(0, None).is_some(), "empty click clears");
+        assert!(
+            c.apply_legend_click(0, None).is_some(),
+            "empty click clears"
+        );
         assert_eq!(slot_expr(&c), None);
         assert_eq!(rows(&c), baseline);
 
@@ -3495,9 +3948,8 @@ hconcat:
     fn lcf_f1a_brush_replacing_the_slot_does_not_invert_the_toggle() {
         let coord = legend_toggle_coordinator();
         let mut c = coord.borrow_mut();
-        let rows = |c: &CrossfilterCoordinator| {
-            c.marks[1].batch.as_ref().map_or(0, |b| b.num_rows())
-        };
+        let rows =
+            |c: &CrossfilterCoordinator| c.marks[1].batch.as_ref().map_or(0, |b| b.num_rows());
 
         // Legend click: species = 'gentoo' → 3 rows downstream.
         assert!(c.apply_legend_click(0, Some("gentoo")).is_some());
@@ -3538,9 +3990,8 @@ hconcat:
     fn lcf_f1b_external_clear_does_not_eat_the_next_swatch_click() {
         let coord = legend_toggle_coordinator();
         let mut c = coord.borrow_mut();
-        let rows = |c: &CrossfilterCoordinator| {
-            c.marks[1].batch.as_ref().map_or(0, |b| b.num_rows())
-        };
+        let rows =
+            |c: &CrossfilterCoordinator| c.marks[1].batch.as_ref().map_or(0, |b| b.num_rows());
         let baseline = rows(&c);
 
         // Legend click: species = 'gentoo' → 3 rows downstream.
@@ -3644,7 +4095,10 @@ hconcat:
         // Shift-click gentoo → a bare Expr, 3 rows (single-select parity).
         assert!(c.apply_legend_toggle(0, Some("gentoo"), &cats).is_some());
         let s = slot_expr(&c).unwrap();
-        assert!(s.contains("'gentoo'") && !s.contains(" OR "), "one member is a bare Expr: {s}");
+        assert!(
+            s.contains("'gentoo'") && !s.contains(" OR "),
+            "one member is a bare Expr: {s}"
+        );
         assert_eq!(rows(&c), 3);
 
         // Shift-click adelie → the union of both → 5 rows (3 + 2).
@@ -3679,7 +4133,10 @@ hconcat:
         // Remove one member → back to the other as a bare Expr.
         assert!(c.apply_legend_toggle(0, Some("adelie"), &cats).is_some());
         let s = slot_expr(&c).unwrap();
-        assert!(s.contains("'gentoo'") && !s.contains(" OR "), "back to a single member: {s}");
+        assert!(
+            s.contains("'gentoo'") && !s.contains(" OR "),
+            "back to a single member: {s}"
+        );
         assert_eq!(rows(&c), 3);
     }
 
@@ -3702,7 +4159,11 @@ hconcat:
         assert_eq!(rows(&c), 3);
         assert!(c.apply_legend_toggle(0, Some("gentoo"), &cats).is_some());
         assert_eq!(slot_expr(&c), None, "the last member out clears the slot");
-        assert_eq!(rows(&c), baseline, "cleared, not an empty Or (which is zero rows)");
+        assert_eq!(
+            rows(&c),
+            baseline,
+            "cleared, not an empty Or (which is zero rows)"
+        );
         assert!(c.legend_selected_categories(0, &cats).is_empty());
     }
 
@@ -3749,7 +4210,11 @@ hconcat:
             None,
             "a shift-click resolving to no entry is a no-op"
         );
-        assert_eq!(slot_expr(&c).unwrap(), before, "the union is untouched by a miss");
+        assert_eq!(
+            slot_expr(&c).unwrap(),
+            before,
+            "the union is untouched by a miss"
+        );
         assert_eq!(rows(&c), before_rows);
     }
 
@@ -3799,9 +4264,7 @@ hconcat:
     /// commit_brush_release_multi (the unchanged release path) dispatches NOTHING.
     #[test]
     fn release_redispatch_changes_the_data() {
-        use crate::interaction::{
-            redispatch_brushing_from, resize_brush, BrushEdge, BrushRegion,
-        };
+        use crate::interaction::{redispatch_brushing_from, resize_brush, BrushEdge, BrushRegion};
         use brightfield_engine::Engine;
         use brightfield_spec::analysis::analyse_spec;
         use brightfield_spec::{parse_spec, Format};
@@ -3809,7 +4272,11 @@ hconcat:
         let parsed = parse_spec(DRB_BRUSH_SPEC, Format::Yaml).expect("parse");
         let analysis = analyse_spec(&parsed.spec).expect("analyse");
         // The brush SOURCE: a real analysis-derived binding, not hand-built.
-        assert_eq!(analysis.brushable_bindings.len(), 1, "one intervalX binding");
+        assert_eq!(
+            analysis.brushable_bindings.len(),
+            1,
+            "one intervalX binding"
+        );
         let binding: BrushBinding = (&analysis.brushable_bindings[0]).into();
         assert_eq!(binding.selection_name, "brush");
         assert_eq!(binding.channels.x.as_deref(), Some("temp"));
@@ -3837,9 +4304,7 @@ hconcat:
         );
 
         // Sum subscriber rows across a commit's aggregated results.
-        fn subscriber_rows(
-            aggregated: &[(String, Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>)],
-        ) -> usize {
+        fn subscriber_rows(aggregated: &[(String, Vec<DispatchResult>)]) -> usize {
             aggregated
                 .iter()
                 .flat_map(|(_, results)| results.iter())
@@ -3895,8 +4360,8 @@ hconcat:
 
         // --- (b) DRIVE the production redispatch fn; feed ONLY its Brushing
         // through invert_pixel_brush → commit_brush_release_multi. ---
-        let brushing = redispatch_brushing_from(&end_state)
-            .expect("a moved grab synthesises a Brushing");
+        let brushing =
+            redispatch_brushing_from(&end_state).expect("a moved grab synthesises a Brushing");
         match &brushing {
             InteractionState::Brushing { current, .. } => assert!(
                 (current.x - 280.0).abs() < f64::EPSILON,
@@ -3913,7 +4378,10 @@ hconcat:
             .contributor_predicate("brush", &contributor)
             .map(|p| format!("{p}"))
             .expect("the re-dispatch rewrote the slot");
-        assert_ne!(p2, p1, "the re-dispatched predicate differs from the original");
+        assert_ne!(
+            p2, p1,
+            "the re-dispatched predicate differs from the original"
+        );
         assert_ne!(n2, n1, "the re-dispatch changes the downstream row count");
         assert_eq!(n2, 6, "temp∈[8.6,28.4] keeps 6 of 12 rows downstream");
 
@@ -3924,11 +4392,8 @@ hconcat:
             start: Point::new(moved.x0, moved.y0),
             current: Point::new(moved.x1, moved.y1),
         };
-        let (_next, aggregated) = commit_brush_release_multi(
-            &raw_selected,
-            std::slice::from_ref(&binding),
-            &mut session,
-        );
+        let (_next, aggregated) =
+            commit_brush_release_multi(&raw_selected, std::slice::from_ref(&binding), &mut session);
         assert!(
             aggregated.is_empty(),
             "a raw Selected through the unchanged path dispatches nothing (the wire is load-bearing)"

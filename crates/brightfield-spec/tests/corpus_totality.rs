@@ -29,7 +29,11 @@ fn corpus_totality() {
     if !failed.is_empty() {
         let mut msg = String::from("corpus totality failed:\n");
         for (p, e) in &failed {
-            msg.push_str(&format!("  {:?}: {}\n", p.file_name().unwrap_or_default(), e));
+            msg.push_str(&format!(
+                "  {:?}: {}\n",
+                p.file_name().unwrap_or_default(),
+                e
+            ));
         }
         panic!("{msg}");
     }

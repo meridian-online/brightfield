@@ -89,7 +89,9 @@ pub fn menu_element(
     cx: &App,
 ) -> AnyElement {
     match placed.binding.style {
-        MenuStyle::Menu => menu_presentation(placed, index, dashboard_height, cx).into_any_element(),
+        MenuStyle::Menu => {
+            menu_presentation(placed, index, dashboard_height, cx).into_any_element()
+        }
         MenuStyle::Radio => radio_presentation(placed, index, cx).into_any_element(),
         MenuStyle::Checkbox => checkbox_presentation(placed, index, cx).into_any_element(),
     }
@@ -238,11 +240,7 @@ fn menu_presentation(
         )
     });
 
-    div()
-        .relative()
-        .size_full()
-        .child(box_row)
-        .children(popup)
+    div().relative().size_full().child(box_row).children(popup)
 }
 
 /// `style: radio` — all options rendered expanded (one 22px row each);

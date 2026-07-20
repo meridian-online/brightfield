@@ -9,8 +9,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use indexmap::IndexMap;
 
 use crate::ast::{
-    Component, Input, Interactor, Mark, ParamNode, ParamRef, Spec, SpecValue,
-    ValueOrParamRef,
+    Component, Input, Interactor, Mark, ParamNode, ParamRef, Spec, SpecValue, ValueOrParamRef,
 };
 use crate::error::ParseError;
 use crate::parse::ParseWarning;
@@ -60,8 +59,10 @@ impl ParamDeclaredType {
                 SpecValue::String(_) => ParamDeclaredType::ScalarString,
                 SpecValue::Bool(_) => ParamDeclaredType::ScalarBool,
                 SpecValue::Array(_) => ParamDeclaredType::Array,
-                SpecValue::Object(_) | SpecValue::Null
-                | SpecValue::Param(_) | SpecValue::Expression(_)
+                SpecValue::Object(_)
+                | SpecValue::Null
+                | SpecValue::Param(_)
+                | SpecValue::Expression(_)
                 | SpecValue::Aggregate { .. } => ParamDeclaredType::ScalarString,
             },
             ParamNode::Selection(_) => ParamDeclaredType::Selection,
@@ -289,20 +290,18 @@ fn collect_mark_subscribers(mark: &Mark, path: &str, graph: &mut SubscriberGraph
     // to a WHERE). Only the `filter` extra affects the emitted query,
     // so subscribing on other extras would trigger re-executions that change
     // nothing; scope the walk to `filter`.
-    if let Some(ref data) = mark.data {
-        if let crate::ast::MarkData::From {
-            filter_by, extras, ..
-        } = data
-        {
-            if let Some(pr) = filter_by {
-                graph
-                    .entry(pr.0.clone())
-                    .or_default()
-                    .push(ComponentPath(mark_path.clone()));
-            }
-            if let Some(filter) = extras.get("filter") {
-                collect_spec_value_subscribers(filter, &mark_path, graph);
-            }
+    if let Some(crate::ast::MarkData::From {
+        filter_by, extras, ..
+    }) = &mark.data
+    {
+        if let Some(pr) = filter_by {
+            graph
+                .entry(pr.0.clone())
+                .or_default()
+                .push(ComponentPath(mark_path.clone()));
+        }
+        if let Some(filter) = extras.get("filter") {
+            collect_spec_value_subscribers(filter, &mark_path, graph);
         }
     }
 
@@ -395,9 +394,7 @@ pub struct ParamEdge {
 
 /// Build the dependency DAG and return a topological order.
 /// Returns Err if a cycle is detected.
-pub fn build_dependency_dag(
-    spec: &Spec,
-) -> Result<(Vec<ParamEdge>, Vec<String>), ParseError> {
+pub fn build_dependency_dag(spec: &Spec) -> Result<(Vec<ParamEdge>, Vec<String>), ParseError> {
     let mut edges: Vec<ParamEdge> = Vec::new();
 
     // Find input widgets that both consume and produce params.
@@ -416,7 +413,9 @@ pub fn build_dependency_dag(
     }
 
     for edge in &edges {
-        adj.entry(edge.from.clone()).or_default().push(edge.to.clone());
+        adj.entry(edge.from.clone())
+            .or_default()
+            .push(edge.to.clone());
         *in_degree.entry(edge.to.clone()).or_insert(0) += 1;
         in_degree.entry(edge.from.clone()).or_insert(0);
     }
@@ -525,9 +524,7 @@ pub fn topological_descendants(analysis: &SpecAnalysis, root: &str) -> Vec<Strin
         in_degree.insert(node, 0);
     }
     for edge in &analysis.dependency_edges {
-        if descendants.contains(edge.from.as_str())
-            && descendants.contains(edge.to.as_str())
-        {
+        if descendants.contains(edge.from.as_str()) && descendants.contains(edge.to.as_str()) {
             *in_degree.entry(edge.to.as_str()).or_insert(0) += 1;
         }
     }
@@ -620,9 +617,7 @@ fn collect_dag_edges(component: &Component, edges: &mut Vec<ParamEdge>) {
 // ---------------------------------------------------------------------------
 
 /// Check for type mismatches between input widgets and their target params.
-pub fn check_param_type_mismatches(
-    spec: &Spec,
-) -> Vec<ParseWarning> {
+pub fn check_param_type_mismatches(spec: &Spec) -> Vec<ParseWarning> {
     let mut warnings = Vec::new();
     if let Some(root) = &spec.root {
         check_type_mismatches_in(root, &spec.params, &mut warnings);
@@ -735,21 +730,36 @@ fn validate_filter_by_in(
 ) -> Result<(), ParseError> {
     match component {
         Component::Mark(m) => {
-            if let Some(ref data) = m.data {
-                if let crate::ast::MarkData::From { filter_by, .. } = data {
-                    if let Some(pr) = filter_by {
-                        check_filter_by_ref(&pr.0, params, known_selections, &format!("{path}/mark[{}].data.filterBy", m.kind.wire_name()))?;
-                    }
-                }
+            if let Some(crate::ast::MarkData::From {
+                filter_by: Some(pr),
+                ..
+            }) = &m.data
+            {
+                check_filter_by_ref(
+                    &pr.0,
+                    params,
+                    known_selections,
+                    &format!("{path}/mark[{}].data.filterBy", m.kind.wire_name()),
+                )?;
             }
             // Also check filterBy in mark options (direct mark-level filterBy)
             if let Some(ValueOrParamRef::Param(pr)) = m.options.get("filterBy") {
-                check_filter_by_ref(&pr.0, params, known_selections, &format!("{path}/mark[{}].filterBy", m.kind.wire_name()))?;
+                check_filter_by_ref(
+                    &pr.0,
+                    params,
+                    known_selections,
+                    &format!("{path}/mark[{}].filterBy", m.kind.wire_name()),
+                )?;
             }
         }
         Component::Input(inp) => {
             if let Some(ref pr) = inp.filter_by {
-                check_filter_by_ref(&pr.0, params, known_selections, &format!("{path}/input[{}].filterBy", inp.kind.wire_name()))?;
+                check_filter_by_ref(
+                    &pr.0,
+                    params,
+                    known_selections,
+                    &format!("{path}/input[{}].filterBy", inp.kind.wire_name()),
+                )?;
             }
         }
         Component::Interactor(_) => {
@@ -757,17 +767,32 @@ fn validate_filter_by_in(
         }
         Component::Plot(p) => {
             for (i, item) in p.items.iter().enumerate() {
-                validate_filter_by_in(item, params, known_selections, &format!("{path}/plot[{i}]"))?;
+                validate_filter_by_in(
+                    item,
+                    params,
+                    known_selections,
+                    &format!("{path}/plot[{i}]"),
+                )?;
             }
         }
         Component::HConcat(c) => {
             for (i, item) in c.items.iter().enumerate() {
-                validate_filter_by_in(item, params, known_selections, &format!("{path}/hconcat[{i}]"))?;
+                validate_filter_by_in(
+                    item,
+                    params,
+                    known_selections,
+                    &format!("{path}/hconcat[{i}]"),
+                )?;
             }
         }
         Component::VConcat(c) => {
             for (i, item) in c.items.iter().enumerate() {
-                validate_filter_by_in(item, params, known_selections, &format!("{path}/vconcat[{i}]"))?;
+                validate_filter_by_in(
+                    item,
+                    params,
+                    known_selections,
+                    &format!("{path}/vconcat[{i}]"),
+                )?;
             }
         }
         _ => {}
@@ -818,9 +843,7 @@ pub struct InteractorBinding {
 
 /// Validate interactor `as:` bindings and collect warnings for missing or
 /// non-selection targets.
-pub fn validate_interactor_bindings(
-    spec: &Spec,
-) -> Vec<ParseWarning> {
+pub fn validate_interactor_bindings(spec: &Spec) -> Vec<ParseWarning> {
     let mut warnings = Vec::new();
     if let Some(root) = &spec.root {
         validate_interactor_bindings_in(root, &spec.params, "root", &mut warnings);
@@ -839,9 +862,8 @@ fn validate_interactor_bindings_in(
             if let Some(ValueOrParamRef::Param(pr)) = i.options.get("as") {
                 match params.get(&pr.0) {
                     None => {
-                        warnings.push(ParseWarning::InteractorBindingMissing {
-                            name: pr.0.clone(),
-                        });
+                        warnings
+                            .push(ParseWarning::InteractorBindingMissing { name: pr.0.clone() });
                     }
                     Some(ParamNode::Value(_)) => {
                         warnings.push(ParseWarning::InteractorBindingNonSelection {
@@ -854,17 +876,32 @@ fn validate_interactor_bindings_in(
         }
         Component::Plot(p) => {
             for (i, item) in p.items.iter().enumerate() {
-                validate_interactor_bindings_in(item, params, &format!("{path}/plot[{i}]"), warnings);
+                validate_interactor_bindings_in(
+                    item,
+                    params,
+                    &format!("{path}/plot[{i}]"),
+                    warnings,
+                );
             }
         }
         Component::HConcat(c) => {
             for (i, item) in c.items.iter().enumerate() {
-                validate_interactor_bindings_in(item, params, &format!("{path}/hconcat[{i}]"), warnings);
+                validate_interactor_bindings_in(
+                    item,
+                    params,
+                    &format!("{path}/hconcat[{i}]"),
+                    warnings,
+                );
             }
         }
         Component::VConcat(c) => {
             for (i, item) in c.items.iter().enumerate() {
-                validate_interactor_bindings_in(item, params, &format!("{path}/vconcat[{i}]"), warnings);
+                validate_interactor_bindings_in(
+                    item,
+                    params,
+                    &format!("{path}/vconcat[{i}]"),
+                    warnings,
+                );
             }
         }
         _ => {}
@@ -920,16 +957,16 @@ fn collect_selection_subscribers(
         Component::Mark(m) => {
             let mark_path = format!("{path}/mark[{}]", m.kind.wire_name());
             // Mark data filterBy
-            if let Some(ref data) = m.data {
-                if let crate::ast::MarkData::From { filter_by, .. } = data {
-                    if let Some(pr) = filter_by {
-                        if known_selections.contains(&pr.0) {
-                            graph
-                                .entry(pr.0.clone())
-                                .or_default()
-                                .push(ComponentPath(mark_path.clone()));
-                        }
-                    }
+            if let Some(crate::ast::MarkData::From {
+                filter_by: Some(pr),
+                ..
+            }) = &m.data
+            {
+                if known_selections.contains(&pr.0) {
+                    graph
+                        .entry(pr.0.clone())
+                        .or_default()
+                        .push(ComponentPath(mark_path.clone()));
                 }
             }
             // Direct mark-level filterBy
@@ -948,23 +985,41 @@ fn collect_selection_subscribers(
                     graph
                         .entry(pr.0.clone())
                         .or_default()
-                        .push(ComponentPath(format!("{path}/input[{}]", inp.kind.wire_name())));
+                        .push(ComponentPath(format!(
+                            "{path}/input[{}]",
+                            inp.kind.wire_name()
+                        )));
                 }
             }
         }
         Component::Plot(p) => {
             for (i, item) in p.items.iter().enumerate() {
-                collect_selection_subscribers(item, &format!("{path}/plot[{i}]"), known_selections, graph);
+                collect_selection_subscribers(
+                    item,
+                    &format!("{path}/plot[{i}]"),
+                    known_selections,
+                    graph,
+                );
             }
         }
         Component::HConcat(c) => {
             for (i, item) in c.items.iter().enumerate() {
-                collect_selection_subscribers(item, &format!("{path}/hconcat[{i}]"), known_selections, graph);
+                collect_selection_subscribers(
+                    item,
+                    &format!("{path}/hconcat[{i}]"),
+                    known_selections,
+                    graph,
+                );
             }
         }
         Component::VConcat(c) => {
             for (i, item) in c.items.iter().enumerate() {
-                collect_selection_subscribers(item, &format!("{path}/vconcat[{i}]"), known_selections, graph);
+                collect_selection_subscribers(
+                    item,
+                    &format!("{path}/vconcat[{i}]"),
+                    known_selections,
+                    graph,
+                );
             }
         }
         _ => {}
@@ -1513,7 +1568,14 @@ pub fn build_highlight_bindings(
 
     let mut bindings = Vec::new();
     if let Some(root) = &spec.root {
-        collect_highlight_bindings(root, "root", spec, &known_selections, &mut bindings, warnings);
+        collect_highlight_bindings(
+            root,
+            "root",
+            spec,
+            &known_selections,
+            &mut bindings,
+            warnings,
+        );
     }
     bindings
 }
@@ -1532,9 +1594,7 @@ fn collect_highlight_bindings(
             for (i, item) in p.items.iter().enumerate() {
                 let item_path = format!("{path}/plot[{i}]");
                 match item {
-                    Component::Interactor(intc)
-                        if intc.kind == InteractorKind::Highlight =>
-                    {
+                    Component::Interactor(intc) if intc.kind == InteractorKind::Highlight => {
                         let Some(ValueOrParamRef::Param(pr)) = intc.options.get("by") else {
                             // A highlight with no `by:` selection has nothing to
                             // dim against — inert, no binding (no warning: an
@@ -1578,9 +1638,9 @@ fn collect_highlight_bindings(
                                 }
                             }
                         }
-                        let has_honouring = p.items.iter().any(|it| {
-                            matches!(it, Component::Mark(m) if mark_honours_highlight(m.kind))
-                        });
+                        let has_honouring = p.items.iter().any(
+                            |it| matches!(it, Component::Mark(m) if mark_honours_highlight(m.kind)),
+                        );
                         if !has_honouring {
                             // Nothing in this plot can dim → no binding (a bare
                             // aggregate-only highlight is inert, already warned).
@@ -1793,9 +1853,7 @@ pub fn analyse_spec(spec: &Spec) -> Result<SpecAnalysis, ParseError> {
     let mut warnings: Vec<ParseWarning> = Vec::new();
     for (name, subscribers) in &subscriber_graph {
         if subscribers.is_empty() && spec.params.contains_key(name) && !produced.contains(name) {
-            warnings.push(ParseWarning::DeadParam {
-                name: name.clone(),
-            });
+            warnings.push(ParseWarning::DeadParam { name: name.clone() });
         }
     }
 
@@ -1880,7 +1938,10 @@ mod tests {
     fn topological_descendants_simple_chain() {
         let analysis = analysis_with_edges(vec![("A", "B"), ("B", "C")]);
         let order = topological_descendants(&analysis, "A");
-        assert_eq!(order, vec!["A".to_string(), "B".to_string(), "C".to_string()]);
+        assert_eq!(
+            order,
+            vec!["A".to_string(), "B".to_string(), "C".to_string()]
+        );
     }
 
     /// topological_descendants on the athletes.yaml corpus
@@ -1891,10 +1952,8 @@ mod tests {
     /// $query).
     #[test]
     fn topological_descendants_athletes_yaml() {
-        let yaml = std::fs::read_to_string(
-            "vendor/mosaic-specs/yaml/athletes.yaml",
-        )
-        .expect("athletes.yaml fixture must be readable");
+        let yaml = std::fs::read_to_string("vendor/mosaic-specs/yaml/athletes.yaml")
+            .expect("athletes.yaml fixture must be readable");
         let parsed = parse_spec(&yaml, Format::Yaml).expect("parse athletes.yaml");
         let analysis = analyse_spec(&parsed.spec).expect("analyse athletes.yaml");
 
@@ -1923,8 +1982,7 @@ mod tests {
             .iter()
             .filter(|n| descendant_set.contains(n.as_str()))
             .collect();
-        let projected_strs: Vec<String> =
-            projected.into_iter().cloned().collect();
+        let projected_strs: Vec<String> = projected.into_iter().cloned().collect();
         assert_eq!(
             order, projected_strs,
             "topological_descendants must agree with analysis.topological_order projection"
@@ -1968,10 +2026,7 @@ mod tests {
         // root only — no plot in path
         assert_eq!(parent_plot("root"), "root");
         // multi-digit plot index
-        assert_eq!(
-            parent_plot("root/plot[12]/mark[line]"),
-            "root/plot[12]"
-        );
+        assert_eq!(parent_plot("root/plot[12]/mark[line]"), "root/plot[12]");
         // no /plot[ but contains substring "plot" — must not match
         assert_eq!(parent_plot("root/plotter[0]"), "root/plotter[0]");
         // nested concat hierarchy
@@ -1998,8 +2053,14 @@ mod tests {
         // Root-level plot → the plot node is `root`.
         assert_eq!(plot_node_path("root/plot[2]/mark[bar]"), "root");
         // Distinct plots in a concat stay distinct.
-        assert_eq!(plot_node_path("root/vconcat[0]/plot[0]/mark[dot]"), "root/vconcat[0]");
-        assert_eq!(plot_node_path("root/vconcat[1]/plot[0]/mark[line]"), "root/vconcat[1]");
+        assert_eq!(
+            plot_node_path("root/vconcat[0]/plot[0]/mark[dot]"),
+            "root/vconcat[0]"
+        );
+        assert_eq!(
+            plot_node_path("root/vconcat[1]/plot[0]/mark[line]"),
+            "root/vconcat[1]"
+        );
         // No /plot[ segment → unchanged. "plotter" must not match.
         assert_eq!(plot_node_path("root/mark[dot]"), "root/mark[dot]");
         assert_eq!(plot_node_path("root/plotter[0]"), "root/plotter[0]");
@@ -2028,9 +2089,15 @@ filterBy: $category
         let out = parse_spec(yaml, Format::Yaml).expect("parses");
         let root = out.spec.root.as_ref().expect("has root");
         if let Component::Input(inp) = root {
-            assert_eq!(inp.as_param.as_ref().map(|p| p.0.as_str()), Some("category"));
+            assert_eq!(
+                inp.as_param.as_ref().map(|p| p.0.as_str()),
+                Some("category")
+            );
             assert_eq!(inp.from_source.as_deref(), Some("athletes"));
-            assert_eq!(inp.filter_by.as_ref().map(|p| p.0.as_str()), Some("category"));
+            assert_eq!(
+                inp.filter_by.as_ref().map(|p| p.0.as_str()),
+                Some("category")
+            );
             // `as`, `from`, `filterBy` should NOT be in options
             assert!(!inp.options.contains_key("as"));
             assert!(!inp.options.contains_key("from"));
@@ -2121,7 +2188,11 @@ vconcat:
         let out = parse_spec(yaml, Format::Yaml).expect("parses");
         let graph = build_subscriber_graph(&out.spec);
         let subs = graph.get("brush").expect("has brush");
-        assert!(subs.len() >= 2, "brush should have at least 2 subscribers, got {}", subs.len());
+        assert!(
+            subs.len() >= 2,
+            "brush should have at least 2 subscribers, got {}",
+            subs.len()
+        );
     }
 
     // dead param warning
@@ -2137,7 +2208,10 @@ plot:
         let out = parse_spec(yaml, Format::Yaml).expect("parses");
         let analysis = analyse_spec(&out.spec).expect("analysis succeeds");
         assert!(
-            analysis.warnings.iter().any(|w| matches!(w, ParseWarning::DeadParam { name } if name == "unused")),
+            analysis
+                .warnings
+                .iter()
+                .any(|w| matches!(w, ParseWarning::DeadParam { name } if name == "unused")),
             "should warn about dead param 'unused'"
         );
     }
@@ -2154,7 +2228,10 @@ plot:
         let out = parse_spec(yaml, Format::Yaml).expect("parses");
         let analysis = analyse_spec(&out.spec).expect("analysis succeeds");
         assert!(
-            !analysis.warnings.iter().any(|w| matches!(w, ParseWarning::DeadParam { .. })),
+            !analysis
+                .warnings
+                .iter()
+                .any(|w| matches!(w, ParseWarning::DeadParam { .. })),
             "should not warn about referenced param"
         );
     }
@@ -2208,7 +2285,10 @@ vconcat:
         let result = build_dependency_dag(&out.spec);
         assert!(result.is_err(), "should detect cycle");
         if let Err(ParseError::SchemaViolation { detail, .. }) = result {
-            assert!(detail.contains("circular"), "error should mention circular: {detail}");
+            assert!(
+                detail.contains("circular"),
+                "error should mention circular: {detail}"
+            );
         }
     }
 
@@ -2224,7 +2304,9 @@ as: $brush
         let out = parse_spec(yaml, Format::Yaml).expect("parses");
         let warnings = check_param_type_mismatches(&out.spec);
         assert!(
-            warnings.iter().any(|w| matches!(w, ParseWarning::ParamTypeMismatch { param, .. } if param == "brush")),
+            warnings.iter().any(
+                |w| matches!(w, ParseWarning::ParamTypeMismatch { param, .. } if param == "brush")
+            ),
             "slider writing to selection param should produce mismatch"
         );
     }
@@ -2240,7 +2322,9 @@ as: $count
         let out = parse_spec(yaml, Format::Yaml).expect("parses");
         let warnings = check_param_type_mismatches(&out.spec);
         assert!(
-            warnings.iter().any(|w| matches!(w, ParseWarning::ParamTypeMismatch { param, .. } if param == "count")),
+            warnings.iter().any(
+                |w| matches!(w, ParseWarning::ParamTypeMismatch { param, .. } if param == "count")
+            ),
             "table writing to scalar param should produce mismatch"
         );
     }
@@ -2256,7 +2340,9 @@ as: $threshold
         let out = parse_spec(yaml, Format::Yaml).expect("parses");
         let warnings = check_param_type_mismatches(&out.spec);
         assert!(
-            !warnings.iter().any(|w| matches!(w, ParseWarning::ParamTypeMismatch { .. })),
+            !warnings
+                .iter()
+                .any(|w| matches!(w, ParseWarning::ParamTypeMismatch { .. })),
             "slider writing to numeric param should not produce mismatch"
         );
     }
@@ -2264,10 +2350,22 @@ as: $threshold
     // type enum constructors
     #[test]
     fn widget_output_type_mapping() {
-        assert_eq!(WidgetOutputType::from_input_kind(InputKind::Slider), WidgetOutputType::ScalarNumeric);
-        assert_eq!(WidgetOutputType::from_input_kind(InputKind::Menu), WidgetOutputType::ScalarString);
-        assert_eq!(WidgetOutputType::from_input_kind(InputKind::Search), WidgetOutputType::ScalarString);
-        assert_eq!(WidgetOutputType::from_input_kind(InputKind::Table), WidgetOutputType::Selection);
+        assert_eq!(
+            WidgetOutputType::from_input_kind(InputKind::Slider),
+            WidgetOutputType::ScalarNumeric
+        );
+        assert_eq!(
+            WidgetOutputType::from_input_kind(InputKind::Menu),
+            WidgetOutputType::ScalarString
+        );
+        assert_eq!(
+            WidgetOutputType::from_input_kind(InputKind::Search),
+            WidgetOutputType::ScalarString
+        );
+        assert_eq!(
+            WidgetOutputType::from_input_kind(InputKind::Table),
+            WidgetOutputType::Selection
+        );
     }
 
     #[test]
@@ -2277,7 +2375,7 @@ as: $threshold
             ParamDeclaredType::ScalarNumeric
         );
         assert_eq!(
-            ParamDeclaredType::from_param_node(&ParamNode::Value(SpecValue::Float(3.14))),
+            ParamDeclaredType::from_param_node(&ParamNode::Value(SpecValue::Float(2.5))),
             ParamDeclaredType::ScalarNumeric
         );
         assert_eq!(
@@ -2296,7 +2394,10 @@ as: $threshold
         let yaml = "params:\n  brush: { select: crossfilter }\n";
         let out = parse_spec(yaml, Format::Yaml).expect("parses");
         let brush = out.spec.params.get("brush").expect("has brush");
-        assert_eq!(ParamDeclaredType::from_param_node(brush), ParamDeclaredType::Selection);
+        assert_eq!(
+            ParamDeclaredType::from_param_node(brush),
+            ParamDeclaredType::Selection
+        );
     }
 
     // integrated analysis
@@ -2323,7 +2424,10 @@ vconcat:
         // topological order present
         assert!(!analysis.topological_order.is_empty());
         // dead param warning for 'unused'
-        assert!(analysis.warnings.iter().any(|w| matches!(w, ParseWarning::DeadParam { name } if name == "unused")));
+        assert!(analysis
+            .warnings
+            .iter()
+            .any(|w| matches!(w, ParseWarning::DeadParam { name } if name == "unused")));
     }
 
     // empty spec produces empty analysis
@@ -2353,7 +2457,10 @@ plot:
             .join("mosaic-specs")
             .join("yaml");
         let mut tested = 0;
-        for entry in std::fs::read_dir(&corpus).expect("corpus dir exists").flatten() {
+        for entry in std::fs::read_dir(&corpus)
+            .expect("corpus dir exists")
+            .flatten()
+        {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
                 continue;
@@ -2420,8 +2527,14 @@ plot:
         let err = analyse_spec(&out.spec).unwrap_err();
         match err {
             ParseError::SchemaViolation { detail, .. } => {
-                assert!(detail.contains("missing"), "error should name the param: {detail}");
-                assert!(detail.contains("undeclared"), "error should say undeclared: {detail}");
+                assert!(
+                    detail.contains("missing"),
+                    "error should name the param: {detail}"
+                );
+                assert!(
+                    detail.contains("undeclared"),
+                    "error should say undeclared: {detail}"
+                );
             }
             other => panic!("expected SchemaViolation, got {other:?}"),
         }
@@ -2441,8 +2554,14 @@ plot:
         let err = analyse_spec(&out.spec).unwrap_err();
         match err {
             ParseError::SchemaViolation { detail, .. } => {
-                assert!(detail.contains("threshold"), "error should name the param: {detail}");
-                assert!(detail.contains("selection"), "error should mention selection: {detail}");
+                assert!(
+                    detail.contains("threshold"),
+                    "error should name the param: {detail}"
+                );
+                assert!(
+                    detail.contains("selection"),
+                    "error should mention selection: {detail}"
+                );
             }
             other => panic!("expected SchemaViolation, got {other:?}"),
         }
@@ -2461,7 +2580,10 @@ filterBy: $ghost
         let err = analyse_spec(&out.spec).unwrap_err();
         match err {
             ParseError::SchemaViolation { detail, .. } => {
-                assert!(detail.contains("ghost"), "error should name the param: {detail}");
+                assert!(
+                    detail.contains("ghost"),
+                    "error should name the param: {detail}"
+                );
             }
             other => panic!("expected SchemaViolation, got {other:?}"),
         }
@@ -2480,8 +2602,14 @@ filterBy: $x
         let err = analyse_spec(&out.spec).unwrap_err();
         match err {
             ParseError::SchemaViolation { detail, .. } => {
-                assert!(detail.contains("x"), "error should name the param: {detail}");
-                assert!(detail.contains("selection"), "error should mention selection: {detail}");
+                assert!(
+                    detail.contains("x"),
+                    "error should name the param: {detail}"
+                );
+                assert!(
+                    detail.contains("selection"),
+                    "error should mention selection: {detail}"
+                );
             }
             other => panic!("expected SchemaViolation, got {other:?}"),
         }
@@ -2546,7 +2674,11 @@ vconcat:
         let out = parse_spec(yaml, Format::Yaml).expect("parses");
         let graph = build_selection_subscriber_graph(&out.spec);
         let subs = graph.get("brush").expect("has brush");
-        assert!(subs.len() >= 2, "brush should have at least 2 subscribers, got {}", subs.len());
+        assert!(
+            subs.len() >= 2,
+            "brush should have at least 2 subscribers, got {}",
+            subs.len()
+        );
     }
 
     #[test]
@@ -2563,7 +2695,10 @@ plot:
         let out = parse_spec(yaml, Format::Yaml).expect("parses");
         let graph = build_selection_subscriber_graph(&out.spec);
         // threshold is a value param, should NOT appear in selection subscriber graph
-        assert!(!graph.contains_key("threshold"), "value param should not be in selection subscriber graph");
+        assert!(
+            !graph.contains_key("threshold"),
+            "value param should not be in selection subscriber graph"
+        );
         // brush is a selection, should appear
         assert!(graph.contains_key("brush"));
     }
@@ -2589,7 +2724,10 @@ vconcat:
         let out = parse_spec(yaml, Format::Yaml).expect("parses");
         let bindings = build_interactor_bindings(&out.spec);
         assert_eq!(bindings.len(), 2, "should have 2 interactor bindings");
-        assert!(bindings.iter().all(|b| b.selection == "brush"), "all bindings should target brush");
+        assert!(
+            bindings.iter().all(|b| b.selection == "brush"),
+            "all bindings should target brush"
+        );
     }
 
     // SpecAnalysis integration with new fields
@@ -2616,11 +2754,17 @@ vconcat:
         // selection_subscribers present
         assert!(analysis.selection_subscribers.contains_key("brush"));
         let subs = analysis.selection_subscribers.get("brush").unwrap();
-        assert!(subs.len() >= 2, "brush should have at least 2 selection subscribers");
+        assert!(
+            subs.len() >= 2,
+            "brush should have at least 2 selection subscribers"
+        );
 
         // interactor_bindings present
         assert_eq!(analysis.interactor_bindings.len(), 2);
-        assert!(analysis.interactor_bindings.iter().all(|b| b.selection == "brush"));
+        assert!(analysis
+            .interactor_bindings
+            .iter()
+            .all(|b| b.selection == "brush"));
 
         // No errors — valid crossfilter spec
     }
@@ -2634,7 +2778,10 @@ vconcat:
             .join("mosaic-specs")
             .join("yaml");
         let mut tested = 0;
-        for entry in std::fs::read_dir(&corpus).expect("corpus dir exists").flatten() {
+        for entry in std::fs::read_dir(&corpus)
+            .expect("corpus dir exists")
+            .flatten()
+        {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
                 continue;
@@ -2834,7 +2981,10 @@ hconcat:
             b.colour_column, "species",
             "colour column from the for:-plot's first mark's fill channel"
         );
-        assert_eq!(b.legend_path.0, "root/hconcat[1]", "the legend node's own path");
+        assert_eq!(
+            b.legend_path.0, "root/hconcat[1]",
+            "the legend node's own path"
+        );
     }
 
     /// The backwards-wiring trap, pinned: the legend's `as:` is a
@@ -2882,7 +3032,11 @@ hconcat:
 "#;
         let out = parse_spec(sole, Format::Yaml).expect("parses");
         let analysis = analyse_spec(&out.spec).expect("analysis succeeds");
-        assert_eq!(analysis.legend_bindings.len(), 1, "sole-colour-plot fallback binds");
+        assert_eq!(
+            analysis.legend_bindings.len(),
+            1,
+            "sole-colour-plot fallback binds"
+        );
         assert_eq!(analysis.legend_bindings[0].plot_path.0, "root/hconcat[0]");
         assert_eq!(analysis.legend_bindings[0].colour_column, "grp");
 

@@ -70,8 +70,8 @@ fn detect_families(ordered: &[&Seam]) -> Vec<Family> {
     let mut i = 0;
     while i < n {
         let mut found: Option<(usize, usize)> = None; // (cycle len k, repeats r)
-        // Smallest viable cycle wins; k starts at 2 (a single repeated step
-        // is not a *pair* family — `fetch_edgar`/`fetch_gleif` must survive).
+                                                      // Smallest viable cycle wins; k starts at 2 (a single repeated step
+                                                      // is not a *pair* family — `fetch_edgar`/`fetch_gleif` must survive).
         let max_k = (n - i) / 2;
         'k: for k in 2..=max_k {
             // Every step of an instance must strip and share one tail.
@@ -90,13 +90,18 @@ fn detect_families(ordered: &[&Seam]) -> Vec<Family> {
             let mut r = 1;
             while i + (r + 1) * k <= n {
                 let block = &ordered[i + r * k..i + (r + 1) * k];
-                let Some(tail) = common_tail(block) else { break };
-                let matches = block.iter().zip(pattern.iter()).all(|(s, (stripped, sig))| {
-                    strip_tail(&s.step).is_some_and(|(st, _)| st == stripped) && {
-                        let (class, op) = seam_signature(s);
-                        (class, op.to_string()) == *sig
-                    }
-                });
+                let Some(tail) = common_tail(block) else {
+                    break;
+                };
+                let matches = block
+                    .iter()
+                    .zip(pattern.iter())
+                    .all(|(s, (stripped, sig))| {
+                        strip_tail(&s.step).is_some_and(|(st, _)| st == stripped) && {
+                            let (class, op) = seam_signature(s);
+                            (class, op.to_string()) == *sig
+                        }
+                    });
                 if !matches {
                     break;
                 }
@@ -111,7 +116,10 @@ fn detect_families(ordered: &[&Seam]) -> Vec<Family> {
         }
         if let Some((k, r)) = found {
             families.push(Family {
-                members: ordered[i..i + k * r].iter().map(|s| s.step.clone()).collect(),
+                members: ordered[i..i + k * r]
+                    .iter()
+                    .map(|s| s.step.clone())
+                    .collect(),
                 cycle_names: ordered[i..i + k]
                     .iter()
                     .map(|s| strip_tail(&s.step).expect("checked").0.to_string())
@@ -159,19 +167,13 @@ pub fn collapse_families(graph: &AssetGraph) -> AssetGraph {
     // member step -> its family's tile id.
     let mut member_tile: BTreeMap<StepId, String> = BTreeMap::new();
     for family in &families {
-        let tile_id = format!(
-            "family.{}.{}",
-            graph.protocol,
-            family.cycle_names.join("+")
-        );
+        let tile_id = format!("family.{}.{}", graph.protocol, family.cycle_names.join("+"));
         let anchor_index = seams[&family.members[0]].index;
         for member in &family.members {
             member_tile.insert(member.clone(), tile_id.clone());
             seams.remove(member);
         }
-        nodes.retain(|_, n| {
-            n.step.as_ref().is_none_or(|s| !member_tile.contains_key(s))
-        });
+        nodes.retain(|_, n| n.step.as_ref().is_none_or(|s| !member_tile.contains_key(s)));
         nodes.insert(
             tile_id.clone(),
             AssetNode {
@@ -224,11 +226,21 @@ pub fn collapse_families(graph: &AssetGraph) -> AssetGraph {
         let via = edge.via.clone().filter(|v| !member_tile.contains_key(v));
         let key = (from.clone(), to.clone(), via.clone(), edge.shield);
         if seen.insert(key) {
-            edges.push(Edge { from, to, via, shield: edge.shield });
+            edges.push(Edge {
+                from,
+                to,
+                via,
+                shield: edge.shield,
+            });
         }
     }
 
-    AssetGraph { protocol: graph.protocol.clone(), nodes, seams, edges }
+    AssetGraph {
+        protocol: graph.protocol.clone(),
+        nodes,
+        seams,
+        edges,
+    }
 }
 
 #[cfg(test)]
@@ -282,8 +294,7 @@ steps:
         assert!(!g.nodes.contains_key("file.fam.build/x/q2"));
         assert!(!g.nodes.keys().any(|k| k.starts_with("source.fam.")));
         // External edges re-target the tile, deduplicated: one tile->loaded.
-        let tile_out: Vec<&Edge> =
-            g.edges.iter().filter(|e| e.from == tile.id).collect();
+        let tile_out: Vec<&Edge> = g.edges.iter().filter(|e| e.from == tile.id).collect();
         assert_eq!(tile_out.len(), 1);
         assert_eq!(tile_out[0].to, "asset.fam.loaded");
         // Member seams folded away.
@@ -374,11 +385,17 @@ steps:
 ";
         let manifest = parse_manifest_str(yaml).unwrap();
         let mut sources = BTreeMap::new();
-        sources.insert("load".to_string(), Ok("CREATE TABLE loaded AS SELECT 1;".to_string()));
+        sources.insert(
+            "load".to_string(),
+            Ok("CREATE TABLE loaded AS SELECT 1;".to_string()),
+        );
         let g = build_graph(&manifest, &sources);
         let collapsed = collapse_families(&g);
         assert!(
-            !collapsed.nodes.values().any(|n| n.kind == AssetKind::Family),
+            !collapsed
+                .nodes
+                .values()
+                .any(|n| n.kind == AssetKind::Family),
             "different-host sources are not one parameterised family"
         );
         assert!(collapsed

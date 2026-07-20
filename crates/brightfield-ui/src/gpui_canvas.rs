@@ -38,7 +38,9 @@ use crate::canvas_host::{
     ButtonState, CanvasHost, ChartSurface, Color, Modifiers, OverlayPainter, PixelSize,
     SurfaceCursor, SurfaceInput, SurfaceRect,
 };
-use crate::chart_element::{paint_chart, redispatch_target, route_pointer_down, route_pointer_move};
+use crate::chart_element::{
+    paint_chart, redispatch_target, route_pointer_down, route_pointer_move,
+};
 use crate::chart_state::ChartState;
 use crate::crossfilter::CrossfilterCoordinator;
 use crate::interaction::BrushRegion;
@@ -93,7 +95,10 @@ impl CanvasHost for GpuiCanvasHost {
         }
         let buffer = image::RgbaImage::from_raw(size.width, size.height, pixels)
             .expect("pixel buffer size mismatch");
-        Arc::new(RenderImage::new(SmallVec::from_elem(image::Frame::new(buffer), 1)))
+        Arc::new(RenderImage::new(SmallVec::from_elem(
+            image::Frame::new(buffer),
+            1,
+        )))
     }
 }
 
@@ -171,8 +176,7 @@ impl GpuiChartSurface {
                         modifiers: modifiers_from(event.modifiers),
                         hovered: hitbox.is_hovered(window),
                     };
-                    let changed =
-                        state.update(cx, |s, _| route_pointer_down(&input, s, origin));
+                    let changed = state.update(cx, |s, _| route_pointer_down(&input, s, origin));
                     if changed {
                         window.refresh();
                     }
@@ -275,14 +279,16 @@ impl Element for GpuiChartSurface {
             let state = self.state.read(cx);
             (state.width(), state.height())
         };
-        let mut style = Style::default();
-        style.size = Size {
-            width: gpui::Length::Definite(gpui::DefiniteLength::Absolute(
-                gpui::AbsoluteLength::Pixels(px(width as f32)),
-            )),
-            height: gpui::Length::Definite(gpui::DefiniteLength::Absolute(
-                gpui::AbsoluteLength::Pixels(px(height as f32)),
-            )),
+        let style = Style {
+            size: Size {
+                width: gpui::Length::Definite(gpui::DefiniteLength::Absolute(
+                    gpui::AbsoluteLength::Pixels(px(width as f32)),
+                )),
+                height: gpui::Length::Definite(gpui::DefiniteLength::Absolute(
+                    gpui::AbsoluteLength::Pixels(px(height as f32)),
+                )),
+            },
+            ..Default::default()
         };
         let layout_id = window.request_layout(style, [], cx);
         (layout_id, ())
@@ -321,7 +327,10 @@ impl Element for GpuiChartSurface {
             let s = self.state.read(cx);
             (
                 s.interaction().clone(),
-                PixelSize { width: s.width(), height: s.height() },
+                PixelSize {
+                    width: s.width(),
+                    height: s.height(),
+                },
             )
         };
         let region = self.region.get();
@@ -391,7 +400,8 @@ impl ChartSurface for GpuiFrame<'_> {
 
 impl OverlayPainter for GpuiFrame<'_> {
     fn fill_rect(&mut self, r: SurfaceRect, c: Color) {
-        self.window.paint_quad(fill(self.rect_to_bounds(r), to_hsla(c)));
+        self.window
+            .paint_quad(fill(self.rect_to_bounds(r), to_hsla(c)));
     }
 
     fn stroke_rect(&mut self, r: SurfaceRect, c: Color, w: f32) {
@@ -437,7 +447,14 @@ impl OverlayPainter for GpuiFrame<'_> {
         };
         let shaped = text_system.shape_line(s.to_string().into(), px(size), &[run], None);
         let origin = self.local_point(at);
-        let _ = shaped.paint(origin, px(size), TextAlign::Left, None, self.window, self.cx);
+        let _ = shaped.paint(
+            origin,
+            px(size),
+            TextAlign::Left,
+            None,
+            self.window,
+            self.cx,
+        );
     }
 }
 
@@ -485,7 +502,13 @@ fn surface_cursor_to_gpui(cursor: SurfaceCursor) -> CursorStyle {
 /// Convert a framework-free straight-alpha colour to a gpui `Hsla` (the
 /// `theme_bridge::rgba` conversion — a straight component copy into `gpui::Rgba`).
 fn to_hsla(c: Color) -> Hsla {
-    gpui::Rgba { r: c.r, g: c.g, b: c.b, a: c.a }.into()
+    gpui::Rgba {
+        r: c.r,
+        g: c.g,
+        b: c.b,
+        a: c.a,
+    }
+    .into()
 }
 
 /// A gpui window-space position → a surface-local `kurbo::Point`. (The element
@@ -526,8 +549,14 @@ mod tests {
     /// the whole region → CursorStyle guarantee across the boundary.
     #[test]
     fn surface_cursor_glyph_mapping() {
-        assert_eq!(surface_cursor_to_gpui(SurfaceCursor::Grab), CursorStyle::OpenHand);
-        assert_eq!(surface_cursor_to_gpui(SurfaceCursor::Grabbing), CursorStyle::ClosedHand);
+        assert_eq!(
+            surface_cursor_to_gpui(SurfaceCursor::Grab),
+            CursorStyle::OpenHand
+        );
+        assert_eq!(
+            surface_cursor_to_gpui(SurfaceCursor::Grabbing),
+            CursorStyle::ClosedHand
+        );
         assert_eq!(
             surface_cursor_to_gpui(SurfaceCursor::ResizeHorizontal),
             CursorStyle::ResizeLeftRight

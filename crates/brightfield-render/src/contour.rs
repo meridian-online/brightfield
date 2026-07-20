@@ -18,9 +18,7 @@
 /// for `i in 1..=n`. Both endpoints are excluded — a level at 0 traces the
 /// (degenerate) empty background and a level at `max` collapses to the peak.
 pub fn iso_levels(max: f64, n: usize) -> Vec<f64> {
-    (1..=n)
-        .map(|i| max * i as f64 / (n as f64 + 1.0))
-        .collect()
+    (1..=n).map(|i| max * i as f64 / (n as f64 + 1.0)).collect()
 }
 
 /// One endpoint of a marching-squares segment, on a cell edge.
@@ -42,8 +40,7 @@ pub fn contour_polylines(
     ys: &[f64],
     level: f64,
 ) -> Vec<Vec<Point>> {
-    if rows < 2 || cols < 2 || values.len() != rows * cols || xs.len() != cols || ys.len() != rows
-    {
+    if rows < 2 || cols < 2 || values.len() != rows * cols || xs.len() != cols || ys.len() != rows {
         return Vec::new();
     }
 
@@ -137,10 +134,7 @@ fn chain_segments(segments: &[(Point, Point)]) -> Vec<Vec<Point>> {
     let mut polylines: Vec<Vec<Point>> = Vec::new();
 
     // Extend from `point` away from segment `from`, appending to `out`.
-    let extend = |start: Point,
-                  from: usize,
-                  visited: &mut Vec<bool>,
-                  out: &mut Vec<Point>| {
+    let extend = |start: Point, from: usize, visited: &mut Vec<bool>, out: &mut Vec<Point>| {
         let (mut point, mut prev) = (start, from);
         loop {
             let next = touching
@@ -185,7 +179,14 @@ mod tests {
     /// marching-squares vertices sit on cell edges, where bilinear reduces to
     /// the same linear interpolation that placed them, so a correct vertex
     /// evaluates back to the level (up to float rounding).
-    fn bilinear(values: &[f64], rows: usize, cols: usize, xs: &[f64], ys: &[f64], p: (f64, f64)) -> f64 {
+    fn bilinear(
+        values: &[f64],
+        rows: usize,
+        cols: usize,
+        xs: &[f64],
+        ys: &[f64],
+        p: (f64, f64),
+    ) -> f64 {
         let c = xs.iter().rposition(|x| *x <= p.0).unwrap().min(cols - 2);
         let r = ys.iter().rposition(|y| *y <= p.1).unwrap().min(rows - 2);
         let tx = (p.0 - xs[c]) / (xs[c + 1] - xs[c]);
@@ -230,7 +231,11 @@ mod tests {
                 "a radial Gaussian has exactly one iso-line at level {level}"
             );
             let line = &lines[0];
-            assert!(line.len() >= 8, "the loop has real extent ({} vertices)", line.len());
+            assert!(
+                line.len() >= 8,
+                "the loop has real extent ({} vertices)",
+                line.len()
+            );
             assert_eq!(
                 line.first(),
                 line.last(),
@@ -245,7 +250,10 @@ mod tests {
             }
             total_loops += lines.len();
         }
-        assert_eq!(total_loops, thresholds, "one closed loop per requested level");
+        assert_eq!(
+            total_loops, thresholds,
+            "one closed loop per requested level"
+        );
     }
 
     // Iso-levels are evenly spaced strictly inside (0, max).

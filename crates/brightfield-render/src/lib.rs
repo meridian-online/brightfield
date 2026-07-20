@@ -31,7 +31,6 @@ pub mod vello_renderer;
 // Re-exports for downstream consumers.
 pub use canvas_host::{CanvasHost, ChartSurface, OverlayPainter};
 pub use channel::ChannelMap;
-pub use vello_renderer::VelloRenderer;
 pub use layout::ChartLayout;
 pub use mark::{HighlightState, MarkRenderer};
 pub use nearest::{find_nearest, NearestHit, NearestMode};
@@ -40,3 +39,4 @@ pub use scene::{build_chart_scene, build_multi_mark_scene};
 pub use title::{grow_margins, resolve_titles, ResolvedTitles};
 pub use tooltip::TooltipContent;
 pub use transition::{Transition, TransitionState};
+pub use vello_renderer::VelloRenderer;

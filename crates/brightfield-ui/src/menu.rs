@@ -19,8 +19,7 @@
 //! a String, an Integer an Integer — because the variant identity is
 //! load-bearing at SQL emit (quoting/escaping, emit.rs).
 
-use brightfield_engine::error::EngineError;
-use brightfield_engine::RecordBatch;
+use brightfield_engine::DispatchResult;
 use brightfield_spec::ast::{Input, SpecValue, ValueOrParamRef};
 use brightfield_spec::vocab::InputKind;
 
@@ -263,7 +262,11 @@ pub fn checkbox_toggle_index(options: &[SpecValue], current: Option<&SpecValue>)
     if options.len() < 2 {
         return None;
     }
-    Some(if checkbox_checked(options, current) { 1 } else { 0 })
+    Some(if checkbox_checked(options, current) {
+        1
+    } else {
+        0
+    })
 }
 
 /// Display label for an option value (and the menu box's current-value
@@ -296,10 +299,7 @@ pub fn commit_menu_release<D: ParamDispatcher>(
     binding: &MenuBinding,
     current: Option<&SpecValue>,
     dispatcher: &mut D,
-) -> (
-    MenuState,
-    Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>,
-) {
+) -> (MenuState, Vec<DispatchResult>) {
     if let MenuState::Committed { index } = *state {
         let Some(value) = binding.options.get(index) else {
             return (MenuState::Closed, Vec::new());
@@ -335,11 +335,7 @@ mod tests {
     }
 
     impl ParamDispatcher for RecordingDispatcher {
-        fn dispatch(
-            &mut self,
-            name: &str,
-            value: SpecValue,
-        ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
+        fn dispatch(&mut self, name: &str, value: SpecValue) -> Vec<DispatchResult> {
             self.calls.push((name.to_string(), value));
             Vec::new()
         }
@@ -372,7 +368,11 @@ mod tests {
     }
 
     fn str_options(vals: &[&str]) -> SpecValue {
-        SpecValue::Array(vals.iter().map(|v| SpecValue::String((*v).to_string())).collect())
+        SpecValue::Array(
+            vals.iter()
+                .map(|v| SpecValue::String((*v).to_string()))
+                .collect(),
+        )
     }
 
     fn binding(style: MenuStyle, options: Vec<SpecValue>) -> MenuBinding {
@@ -631,8 +631,12 @@ mod tests {
         let current = SpecValue::String("west".to_string());
         let mut d = RecordingDispatcher::new();
 
-        let (next, results) =
-            commit_menu_release(&MenuState::Committed { index: 1 }, &b, Some(&current), &mut d);
+        let (next, results) = commit_menu_release(
+            &MenuState::Committed { index: 1 },
+            &b,
+            Some(&current),
+            &mut d,
+        );
 
         assert!(d.calls.is_empty(), "same-value pick must not dispatch");
         assert!(results.is_empty());
@@ -721,7 +725,10 @@ mod tests {
         assert_eq!(MenuState::Closed.pick(0), MenuState::Committed { index: 0 });
 
         // Click-away closes an open list WITHOUT dispatch; other states pass.
-        assert_eq!(MenuState::Open { hover: Some(1) }.click_away(), MenuState::Closed);
+        assert_eq!(
+            MenuState::Open { hover: Some(1) }.click_away(),
+            MenuState::Closed
+        );
         assert_eq!(
             MenuState::Committed { index: 1 }.click_away(),
             MenuState::Committed { index: 1 }

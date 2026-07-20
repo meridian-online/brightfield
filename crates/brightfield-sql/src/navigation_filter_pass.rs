@@ -43,10 +43,7 @@ impl NavigationFilterPass {
     ///
     /// This is the primary constructor used by the engine layer, translating
     /// ViewExtent's `Option<(f64, f64)>` per axis into filter specs.
-    pub fn from_extents(
-        x: Option<(&str, f64, f64)>,
-        y: Option<(&str, f64, f64)>,
-    ) -> Self {
+    pub fn from_extents(x: Option<(&str, f64, f64)>, y: Option<(&str, f64, f64)>) -> Self {
         let mut filters = Vec::new();
         if let Some((col, min, max)) = x {
             filters.push(AxisFilter {
@@ -103,10 +100,7 @@ mod tests {
 
     #[test]
     fn x_only_inserts_one_filter() {
-        let pass = NavigationFilterPass::from_extents(
-            Some(("x", 2.0, 4.0)),
-            None,
-        );
+        let pass = NavigationFilterPass::from_extents(Some(("x", 2.0, 4.0)), None);
         let result = pass.apply(source_plan());
 
         match &result {
@@ -124,10 +118,7 @@ mod tests {
 
     #[test]
     fn y_only_inserts_one_filter() {
-        let pass = NavigationFilterPass::from_extents(
-            None,
-            Some(("y", 10.0, 50.0)),
-        );
+        let pass = NavigationFilterPass::from_extents(None, Some(("y", 10.0, 50.0)));
         let result = pass.apply(source_plan());
 
         match &result {
@@ -142,23 +133,30 @@ mod tests {
 
     #[test]
     fn both_axes_inserts_two_nested_filters() {
-        let pass = NavigationFilterPass::from_extents(
-            Some(("x", 1.0, 3.0)),
-            Some(("y", 10.0, 30.0)),
-        );
+        let pass =
+            NavigationFilterPass::from_extents(Some(("x", 1.0, 3.0)), Some(("y", 10.0, 30.0)));
         let result = pass.apply(source_plan());
 
         // Outermost should be y filter (applied second).
         match &result {
             QueryPlan::Filter { input, predicate } => {
                 let outer_pred = format!("{predicate}");
-                assert!(outer_pred.contains("\"y\""), "outer should be y filter, got: {outer_pred}");
+                assert!(
+                    outer_pred.contains("\"y\""),
+                    "outer should be y filter, got: {outer_pred}"
+                );
 
                 // Inner should be x filter.
                 match input.as_ref() {
-                    QueryPlan::Filter { input: inner_input, predicate: inner_pred } => {
+                    QueryPlan::Filter {
+                        input: inner_input,
+                        predicate: inner_pred,
+                    } => {
                         let inner_pred_str = format!("{inner_pred}");
-                        assert!(inner_pred_str.contains("\"x\""), "inner should be x filter, got: {inner_pred_str}");
+                        assert!(
+                            inner_pred_str.contains("\"x\""),
+                            "inner should be x filter, got: {inner_pred_str}"
+                        );
                         assert!(matches!(inner_input.as_ref(), QueryPlan::Source { .. }));
                     }
                     other => panic!("expected inner Filter, got: {other:?}"),
@@ -178,8 +176,14 @@ mod tests {
         let result = pass.apply(source_plan());
 
         let debug = format!("{result:?}");
-        assert!(debug.contains("timestamp"), "should use channel-mapped column name 'timestamp'");
-        assert!(debug.contains("price"), "should use channel-mapped column name 'price'");
+        assert!(
+            debug.contains("timestamp"),
+            "should use channel-mapped column name 'timestamp'"
+        );
+        assert!(
+            debug.contains("price"),
+            "should use channel-mapped column name 'price'"
+        );
     }
 
     #[test]

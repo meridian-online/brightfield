@@ -207,7 +207,10 @@ mod tests {
         assert!(!panel_visible(presentation, Sidebar), "sidebar hides");
 
         assert!(docks_open(authoring), "authoring docks open");
-        assert!(!docks_open(presentation), "presentation collapses the docks");
+        assert!(
+            !docks_open(presentation),
+            "presentation collapses the docks"
+        );
 
         // Toggle symmetry rides PresentationMode's own tested machine: the
         // mapping is pure, so toggling back restores the exact same bits.
@@ -223,15 +226,24 @@ mod tests {
     #[test]
     fn log_panel_visible_in_authoring_hidden_in_presentation() {
         assert!(panel_visible(PresentationMode::Authoring, PanelRole::Log));
-        assert!(!panel_visible(PresentationMode::Presentation, PanelRole::Log));
+        assert!(!panel_visible(
+            PresentationMode::Presentation,
+            PanelRole::Log
+        ));
     }
 
     /// the keyboard-grammar chrome (breadcrumb + focus ring) follows
     /// the authoring chrome — shown while authoring, hidden under presentation.
     #[test]
     fn grammar_chrome_hidden_in_presentation() {
-        assert!(grammar_chrome_visible(PresentationMode::Authoring), "shown while authoring");
-        assert!(!grammar_chrome_visible(PresentationMode::Presentation), "hidden in presentation");
+        assert!(
+            grammar_chrome_visible(PresentationMode::Authoring),
+            "shown while authoring"
+        );
+        assert!(
+            !grammar_chrome_visible(PresentationMode::Presentation),
+            "hidden in presentation"
+        );
     }
 
     /// Backfill decision: a restored layout without a bottom
@@ -239,8 +251,14 @@ mod tests {
     /// exactly as saved.
     #[test]
     fn backfill_only_when_bottom_dock_missing() {
-        assert!(bottom_dock_needs_backfill(false), "pre-round layouts backfill");
-        assert!(!bottom_dock_needs_backfill(true), "saved bottom dock restores as-is");
+        assert!(
+            bottom_dock_needs_backfill(false),
+            "pre-round layouts backfill"
+        );
+        assert!(
+            !bottom_dock_needs_backfill(true),
+            "saved bottom dock restores as-is"
+        );
     }
 
     /// Presentation dock action: presentation removes the bottom
@@ -314,6 +332,9 @@ mod tests {
         // The real caller feeds initial_window_size through the clamp: the
         // result is always <= the display on both axes.
         let (w, h) = clamp_to_display(initial_window_size(2400.0, 1200.0), laptop);
-        assert!(w <= 1512.0 && h <= 944.0, "clamped ({w}, {h}) fits the display");
+        assert!(
+            w <= 1512.0 && h <= 944.0,
+            "clamped ({w}, {h}) fits the display"
+        );
     }
 }

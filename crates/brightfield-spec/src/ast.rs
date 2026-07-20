@@ -518,14 +518,18 @@ impl SpecValue {
 
 // Re-exports so downstream code that imports only from crate::ast doesn't
 // also need to reach into crate::vocab.
-pub use crate::vocab::{ComponentKind as ComponentKindRef, InputKind as InputKindRef,
-                       InteractorKind as InteractorKindRef, LegendChannel as LegendChannelRef,
-                       MarkKind as MarkKindRef, SelectionResolution as SelectionResolutionRef};
+pub use crate::vocab::{
+    ComponentKind as ComponentKindRef, InputKind as InputKindRef,
+    InteractorKind as InteractorKindRef, LegendChannel as LegendChannelRef,
+    MarkKind as MarkKindRef, SelectionResolution as SelectionResolutionRef,
+};
 
 // Unused imports are unused; silence the trivial warning deterministically.
 #[allow(unused_imports)]
-use self::{ComponentKind as _, InputKind as _, InteractorKind as _, LegendChannel as _,
-           MarkKind as _, SelectionResolution as _};
+use self::{
+    ComponentKind as _, InputKind as _, InteractorKind as _, LegendChannel as _, MarkKind as _,
+    SelectionResolution as _,
+};
 
 #[cfg(test)]
 mod tests {

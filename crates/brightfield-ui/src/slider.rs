@@ -32,8 +32,7 @@
 //! Search / Table remain Unimplemented in
 //! [`brightfield_spec::vocab::InputKind`].
 
-use brightfield_engine::error::EngineError;
-use brightfield_engine::RecordBatch;
+use brightfield_engine::DispatchResult;
 use brightfield_spec::ast::{Input, SpecValue, ValueOrParamRef};
 
 /// Selection-dispatch surface mirror — the param half of the same pattern
@@ -48,19 +47,11 @@ pub trait ParamDispatcher {
     /// Dispatch a new value for `name`. Returns one (mark_index, Result)
     /// tuple per subscriber that re-executed during the topological
     /// walk, mirroring `Session::propagate_param`'s return shape.
-    fn dispatch(
-        &mut self,
-        name: &str,
-        value: SpecValue,
-    ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>;
+    fn dispatch(&mut self, name: &str, value: SpecValue) -> Vec<DispatchResult>;
 }
 
 impl ParamDispatcher for brightfield_engine::Session {
-    fn dispatch(
-        &mut self,
-        name: &str,
-        value: SpecValue,
-    ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
+    fn dispatch(&mut self, name: &str, value: SpecValue) -> Vec<DispatchResult> {
         self.propagate_param(name, value)
     }
 }
@@ -191,10 +182,7 @@ pub fn commit_slider_release<D: ParamDispatcher>(
     state: &SliderState,
     binding: &SliderBinding,
     dispatcher: &mut D,
-) -> (
-    SliderState,
-    Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>,
-) {
+) -> (SliderState, Vec<DispatchResult>) {
     if let SliderState::Released { value } = *state {
         let results = dispatcher.dispatch(&binding.param_name, SpecValue::Float(value));
         (SliderState::Idle, results)
@@ -265,8 +253,16 @@ mod tests {
         assert_eq!(value_at(300.0, 100.0, 200.0, &b), 10.0, "right = max");
         assert_eq!(value_at(200.0, 100.0, 200.0, &b), 5.0, "mid = 5");
         assert_eq!(value_at(160.0, 100.0, 200.0, &b), 3.0, "0.3 -> snapped 3");
-        assert_eq!(value_at(50.0, 100.0, 200.0, &b), 0.0, "left of track clamps");
-        assert_eq!(value_at(400.0, 100.0, 200.0, &b), 10.0, "right of track clamps");
+        assert_eq!(
+            value_at(50.0, 100.0, 200.0, &b),
+            0.0,
+            "left of track clamps"
+        );
+        assert_eq!(
+            value_at(400.0, 100.0, 200.0, &b),
+            10.0,
+            "right of track clamps"
+        );
 
         // Continuous (no step): exact fractional value.
         let c = binding(0.0, 1.0, None);
@@ -299,11 +295,7 @@ mod tests {
     }
 
     impl ParamDispatcher for RecordingDispatcher {
-        fn dispatch(
-            &mut self,
-            name: &str,
-            value: SpecValue,
-        ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
+        fn dispatch(&mut self, name: &str, value: SpecValue) -> Vec<DispatchResult> {
             self.calls.push((name.to_string(), value));
             // Stub return: subscribers, if any, are mocked as zero — the
             // double's contract is "did dispatch get called?".
@@ -352,11 +344,7 @@ mod tests {
         // The Session impl forwards 1:1: dispatch(name, value) ==
         // propagate_param(name, value). We assert the trait method exists
         // with the expected signature by constructing a function pointer.
-        let _f: fn(
-            &mut brightfield_engine::Session,
-            &str,
-            SpecValue,
-        ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> =
+        let _f: fn(&mut brightfield_engine::Session, &str, SpecValue) -> Vec<DispatchResult> =
             <brightfield_engine::Session as ParamDispatcher>::dispatch;
         // The signature equality above proves the trait is implemented for
         // Session. End-to-end forwarding equivalence is exercised inside

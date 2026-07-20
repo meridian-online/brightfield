@@ -166,10 +166,16 @@ pub fn meridian_style(mode: Mode) -> egui::Style {
 
     let ui = UI_SIZE;
     style.text_styles = [
-        (TextStyle::Small, FontId::new(CHART_LABEL_SIZE, FontFamily::Proportional)),
+        (
+            TextStyle::Small,
+            FontId::new(CHART_LABEL_SIZE, FontFamily::Proportional),
+        ),
         (TextStyle::Body, FontId::new(ui, FontFamily::Proportional)),
         (TextStyle::Button, FontId::new(ui, FontFamily::Proportional)),
-        (TextStyle::Heading, FontId::new(ui + 4.0, FontFamily::Proportional)),
+        (
+            TextStyle::Heading,
+            FontId::new(ui + 4.0, FontFamily::Proportional),
+        ),
         (TextStyle::Monospace, FontId::new(ui, FontFamily::Monospace)),
     ]
     .into();
@@ -187,8 +193,10 @@ pub fn install_fonts(ctx: &egui::Context) {
 
     let mut defs = egui::FontDefinitions::default();
     let add = |defs: &mut egui::FontDefinitions, name: &str, bytes: &'static [u8]| {
-        defs.font_data
-            .insert(name.to_owned(), Arc::new(egui::FontData::from_static(bytes)));
+        defs.font_data.insert(
+            name.to_owned(),
+            Arc::new(egui::FontData::from_static(bytes)),
+        );
     };
 
     add(&mut defs, "Inter", fonts::INTER_REGULAR);
@@ -253,8 +261,14 @@ mod tests {
         assert_eq!(v.extreme_bg_color, to_color32(INK_LIGHT.surface));
         assert_eq!(v.hyperlink_color, to_color32(MARITIME));
         assert_eq!(v.selection.stroke.color, to_color32(MARITIME_LIGHT[8]));
-        assert_eq!(v.widgets.active.bg_stroke.color, to_color32(MARITIME_LIGHT[8]));
-        assert_eq!(v.widgets.noninteractive.fg_stroke.color, to_color32(GRAY_LIGHT[11]));
+        assert_eq!(
+            v.widgets.active.bg_stroke.color,
+            to_color32(MARITIME_LIGHT[8])
+        );
+        assert_eq!(
+            v.widgets.noninteractive.fg_stroke.color,
+            to_color32(GRAY_LIGHT[11])
+        );
     }
 
     /// The one colour boundary round-trips a known opaque token exactly, and

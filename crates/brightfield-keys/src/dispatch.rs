@@ -31,13 +31,13 @@ pub enum DispatchContext {
 /// - an Editor binding resolves only when the editor is focused.
 #[must_use]
 pub fn fires(binding: BindingContext, dispatch: DispatchContext) -> bool {
-    match (binding, dispatch) {
-        (BindingContext::Global, _) => true,
-        (BindingContext::Workspace, DispatchContext::CanvasFocused) => true,
-        (BindingContext::Editor, DispatchContext::EditorFocused) => true,
-        (BindingContext::Protocol, DispatchContext::ProtocolFocused) => true,
-        _ => false,
-    }
+    matches!(
+        (binding, dispatch),
+        (BindingContext::Global, _)
+            | (BindingContext::Workspace, DispatchContext::CanvasFocused)
+            | (BindingContext::Editor, DispatchContext::EditorFocused)
+            | (BindingContext::Protocol, DispatchContext::ProtocolFocused)
+    )
 }
 
 /// The dispatch-resolution table — a projection of the keymap-as-data vec.
@@ -66,14 +66,20 @@ impl ResolutionTable {
     /// The verbs that resolve in `dispatch` (any keystroke).
     #[must_use]
     pub fn resolving_in(&self, dispatch: DispatchContext) -> Vec<&'static str> {
-        self.rows.iter().filter(|r| fires(r.context, dispatch)).map(|r| r.longname).collect()
+        self.rows
+            .iter()
+            .filter(|r| fires(r.context, dispatch))
+            .map(|r| r.longname)
+            .collect()
     }
 }
 
 /// Project a dispatch-resolution table from the keymap-as-data vec.
 #[must_use]
 pub fn resolution_table(bound: &[BoundKey]) -> ResolutionTable {
-    ResolutionTable { rows: bound.to_vec() }
+    ResolutionTable {
+        rows: bound.to_vec(),
+    }
 }
 
 #[cfg(test)]
@@ -89,15 +95,23 @@ mod tests {
     fn table_is_a_faithful_projection_of_the_binding_vec() {
         let bound = keymap_bindings(&registry());
         let table = resolution_table(&bound);
-        assert_eq!(table.rows(), bound.as_slice(), "table must equal the shipped binding vec");
+        assert_eq!(
+            table.rows(),
+            bound.as_slice(),
+            "table must equal the shipped binding vec"
+        );
     }
 
     #[test]
     fn global_bindings_resolve_from_both_workspace_and_editor() {
         let t = table();
         // toggle-focus (cmd-e) is Global — fires from both contexts.
-        assert!(t.resolves("cmd-e", DispatchContext::CanvasFocused).contains(&"toggle-focus"));
-        assert!(t.resolves("cmd-e", DispatchContext::EditorFocused).contains(&"toggle-focus"));
+        assert!(t
+            .resolves("cmd-e", DispatchContext::CanvasFocused)
+            .contains(&"toggle-focus"));
+        assert!(t
+            .resolves("cmd-e", DispatchContext::EditorFocused)
+            .contains(&"toggle-focus"));
     }
 
     #[test]
@@ -108,7 +122,8 @@ mod tests {
         for b in &bound {
             if b.context == BindingContext::Workspace {
                 assert!(
-                    !t.resolves(b.keystrokes, DispatchContext::EditorFocused).contains(&b.longname),
+                    !t.resolves(b.keystrokes, DispatchContext::EditorFocused)
+                        .contains(&b.longname),
                     "workspace verb {} leaked into editor focus",
                     b.longname
                 );
@@ -123,7 +138,8 @@ mod tests {
         for b in &bound {
             if b.context == BindingContext::Workspace {
                 assert!(
-                    !t.resolves(b.keystrokes, DispatchContext::OverlayOpen).contains(&b.longname),
+                    !t.resolves(b.keystrokes, DispatchContext::OverlayOpen)
+                        .contains(&b.longname),
                     "workspace verb {} resolved under an overlay",
                     b.longname
                 );
@@ -135,8 +151,12 @@ mod tests {
     fn plot_focus_resolves_a_bare_verb() {
         let t = table();
         // A canvas-focused bare verb (p) resolves.
-        assert!(t.resolves("p", DispatchContext::CanvasFocused).contains(&"toggle-presentation"));
-        assert!(t.resolves("c", DispatchContext::CanvasFocused).contains(&"cycle-colour-scheme"));
+        assert!(t
+            .resolves("p", DispatchContext::CanvasFocused)
+            .contains(&"toggle-presentation"));
+        assert!(t
+            .resolves("c", DispatchContext::CanvasFocused)
+            .contains(&"cycle-colour-scheme"));
     }
 
     #[test]

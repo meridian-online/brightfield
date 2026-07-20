@@ -83,17 +83,13 @@ mod tests {
         let t = Transition::new(vec![(0.0, 0.0)], DEFAULT_TRANSITION_DURATION);
         let (factor, state) = t.tick(Instant::now());
         assert_eq!(state, TransitionState::Running);
-        assert!(factor >= 0.0 && factor < 1.0);
+        assert!((0.0..1.0).contains(&factor));
     }
 
     #[test]
     fn past_duration_is_complete() {
         let start = Instant::now() - Duration::from_millis(500);
-        let t = Transition::new_at(
-            vec![(0.0, 0.0)],
-            Duration::from_millis(300),
-            start,
-        );
+        let t = Transition::new_at(vec![(0.0, 0.0)], Duration::from_millis(300), start);
         let (factor, state) = t.tick(Instant::now());
         assert_eq!(state, TransitionState::Complete);
         assert!((factor - 1.0).abs() < f64::EPSILON);
@@ -119,11 +115,7 @@ mod tests {
     #[test]
     fn zero_elapsed_returns_zero() {
         let start = Instant::now();
-        let t = Transition::new_at(
-            vec![(10.0, 20.0)],
-            Duration::from_millis(300),
-            start,
-        );
+        let t = Transition::new_at(vec![(10.0, 20.0)], Duration::from_millis(300), start);
         let (factor, state) = t.tick(start);
         assert_eq!(state, TransitionState::Running);
         assert!(factor < 0.01, "at start, t should be ~0, got {}", factor);

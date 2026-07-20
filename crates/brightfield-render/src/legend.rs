@@ -117,7 +117,11 @@ pub fn swatch_entry_rects(box_x: f64, box_y: f64, colour_scale: &Scale) -> Vec<R
 #[must_use]
 pub fn sequential_legend_size(scale: &Scale) -> Option<(f64, f64)> {
     let (dmin, dmax) = match scale {
-        Scale::Sequential { domain_min, domain_max, .. } => (*domain_min, *domain_max),
+        Scale::Sequential {
+            domain_min,
+            domain_max,
+            ..
+        } => (*domain_min, *domain_max),
         _ => return None,
     };
     let max_label = [dmin, (dmin + dmax) / 2.0, dmax]
@@ -133,11 +137,7 @@ pub fn sequential_legend_size(scale: &Scale) -> Option<(f64, f64)> {
 /// area's top-right corner (the right margin is too narrow to hold the legend,
 /// and an inside panel reads as intentional). This is the plot's *inline*
 /// legend; a standalone `legend:` node uses [`render_colour_legend_at`].
-pub fn render_colour_legend(
-    scene: &mut Scene,
-    layout: &ChartLayout,
-    colour_scale: &Scale,
-) {
+pub fn render_colour_legend(scene: &mut Scene, layout: &ChartLayout, colour_scale: &Scale) {
     let Some((box_width, _)) = colour_legend_size(colour_scale) else {
         return;
     };
@@ -154,12 +154,7 @@ pub fn render_colour_legend(
 /// the swatch/bar choice lives in one place. Delegates to
 /// [`render_colour_legend_at_selected`] with no active selection, so its output
 /// is byte-identical to the pre-selected-state renderer.
-pub fn render_colour_legend_at(
-    scene: &mut Scene,
-    box_x: f64,
-    box_y: f64,
-    colour_scale: &Scale,
-) {
+pub fn render_colour_legend_at(scene: &mut Scene, box_x: f64, box_y: f64, colour_scale: &Scale) {
     render_colour_legend_at_selected(scene, box_x, box_y, colour_scale, &BTreeSet::new(), None);
 }
 
@@ -291,7 +286,13 @@ fn render_swatch_legend_at(
 
         // Colour swatch.
         let swatch = Rect::new(legend_x, y, legend_x + SWATCH_SIZE, y + SWATCH_SIZE);
-        scene.fill(Fill::NonZero, Affine::IDENTITY, swatch_colour, None, &swatch);
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            swatch_colour,
+            None,
+            &swatch,
+        );
 
         // Entry label, vertically centred on the swatch.
         draw_text(
@@ -311,14 +312,13 @@ fn render_swatch_legend_at(
 /// top — drawn as [`BAR_SAMPLES`] stacked sampled quads (no gradient-brush
 /// dependency), with min / mid / max numeric tick labels beside it read from the
 /// scale's domain extent. No-op for any non-Sequential scale.
-pub fn render_sequential_legend_at(
-    scene: &mut Scene,
-    box_x: f64,
-    box_y: f64,
-    scale: &Scale,
-) {
+pub fn render_sequential_legend_at(scene: &mut Scene, box_x: f64, box_y: f64, scale: &Scale) {
     let (dmin, dmax) = match scale {
-        Scale::Sequential { domain_min, domain_max, .. } => (*domain_min, *domain_max),
+        Scale::Sequential {
+            domain_min,
+            domain_max,
+            ..
+        } => (*domain_min, *domain_max),
         _ => return,
     };
     let Some((box_width, box_height)) = sequential_legend_size(scale) else {
@@ -375,11 +375,7 @@ pub fn render_sequential_legend_at(
     // Min / mid / max tick labels beside the bar (max at top, min at bottom).
     let label_x = bar_x + BAR_WIDTH + LEGEND_LABEL_GAP;
     let baseline_nudge = f64::from(LABEL_SIZE) / 3.0;
-    for (frac, value) in [
-        (0.0, dmax),
-        (0.5, (dmin + dmax) / 2.0),
-        (1.0, dmin),
-    ] {
+    for (frac, value) in [(0.0, dmax), (0.5, (dmin + dmax) / 2.0), (1.0, dmin)] {
         draw_text(
             scene,
             &format_number(value),
@@ -421,7 +417,7 @@ mod tests {
 
         let encoding = scene.encoding();
         assert!(
-            encoding.path_tags.len() > 0,
+            !encoding.path_tags.is_empty(),
             "legend should produce scene content for 4 categories"
         );
     }
@@ -465,7 +461,7 @@ mod tests {
         let mut scene = Scene::new();
         render_colour_legend_at(&mut scene, 640.0, 40.0, &colour_scale_3());
         assert!(
-            scene.encoding().path_tags.len() > 0,
+            !scene.encoding().path_tags.is_empty(),
             "positioned legend should draw swatches + panel at its origin"
         );
     }
@@ -521,7 +517,7 @@ mod tests {
         let mut scene = Scene::new();
         render_sequential_legend_at(&mut scene, 40.0, 40.0, &sequential_scale());
         assert!(
-            scene.encoding().path_tags.len() > 0,
+            !scene.encoding().path_tags.is_empty(),
             "gradient bar should draw sampled quads at its origin"
         );
 
@@ -534,7 +530,11 @@ mod tests {
             range_end: 1.0,
         };
         render_sequential_legend_at(&mut scene2, 10.0, 10.0, &linear);
-        assert_eq!(scene2.encoding().path_tags.len(), 0, "no bar for a linear scale");
+        assert_eq!(
+            scene2.encoding().path_tags.len(),
+            0,
+            "no bar for a linear scale"
+        );
 
         // sequential_legend_size is Some for Sequential, None for Band.
         assert!(sequential_legend_size(&sequential_scale()).is_some());
@@ -556,7 +556,10 @@ mod tests {
         // The shared entry point routes a Sequential to the bar (draws content).
         let mut scene3 = Scene::new();
         render_colour_legend_at(&mut scene3, 40.0, 40.0, &sequential_scale());
-        assert!(scene3.encoding().path_tags.len() > 0, "dispatch draws the bar");
+        assert!(
+            !scene3.encoding().path_tags.is_empty(),
+            "dispatch draws the bar"
+        );
     }
 
     // --- swatch entry hit-geometry ---
@@ -585,7 +588,10 @@ mod tests {
             );
         }
         // Wider label → wider clickable rect (the label extent is included).
-        assert!(rects[2].width() > rects[0].width(), "\"ccc\" entry wider than \"a\"");
+        assert!(
+            rects[2].width() > rects[0].width(),
+            "\"ccc\" entry wider than \"a\""
+        );
 
         // Rows are ENTRY_SPACING apart, so consecutive rects never overlap
         // (SWATCH_SIZE < ENTRY_SPACING) — a click resolves to at most one entry.
@@ -661,8 +667,9 @@ mod tests {
         );
         for i in [0usize, 2] {
             assert!(
-                sel_data
-                    .contains(&pack(Color::new(palette[i]).multiply_alpha(UNSELECTED_ENTRY_ALPHA))),
+                sel_data.contains(&pack(
+                    Color::new(palette[i]).multiply_alpha(UNSELECTED_ENTRY_ALPHA)
+                )),
                 "non-selected swatch {i} dims to {UNSELECTED_ENTRY_ALPHA}"
             );
         }
@@ -704,8 +711,9 @@ mod tests {
             "the emphasis colour never appears without hover"
         );
         assert!(
-            !hover_data
-                .contains(&pack(Color::new(palette[0]).multiply_alpha(UNSELECTED_ENTRY_ALPHA))),
+            !hover_data.contains(&pack(
+                Color::new(palette[0]).multiply_alpha(UNSELECTED_ENTRY_ALPHA)
+            )),
             "hover emphasis is distinct from the 0.35 dim"
         );
         assert_eq!(

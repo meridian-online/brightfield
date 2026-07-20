@@ -88,7 +88,10 @@ mod tests {
             message.contains("parse error: mapping values are not allowed"),
             "the reason reaches the notification: {message}"
         );
-        assert!(message.contains("last good chart"), "explains the kept chart");
+        assert!(
+            message.contains("last good chart"),
+            "explains the kept chart"
+        );
     }
 
     /// Reject-chrome: the chrome-divergence gate's "restart to
@@ -100,7 +103,10 @@ mod tests {
             reload_notification(&ReloadOutcome::ChromeDiverged("dashboard title"))
                 .expect("rejections surface");
         assert_eq!(severity, Severity::Warning);
-        assert!(message.contains("dashboard title"), "names what diverged: {message}");
+        assert!(
+            message.contains("dashboard title"),
+            "names what diverged: {message}"
+        );
         assert!(message.contains("restart to apply"));
 
         let (severity, message) =
@@ -131,7 +137,9 @@ mod tests {
     #[test]
     fn only_a_successful_reload_clears_the_error() {
         assert!(clears_errors(&ReloadOutcome::Applied));
-        assert!(!clears_errors(&ReloadOutcome::PipelineFailed("parse error")));
+        assert!(!clears_errors(&ReloadOutcome::PipelineFailed(
+            "parse error"
+        )));
         assert!(!clears_errors(&ReloadOutcome::LayoutChanged));
         assert!(!clears_errors(&ReloadOutcome::ChromeDiverged("title")));
     }

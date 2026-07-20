@@ -26,7 +26,7 @@ pub fn thousands(n: u64) -> String {
     let len = digits.len();
     let mut out = String::with_capacity(len + len / 3);
     for (i, ch) in digits.char_indices() {
-        if i > 0 && (len - i) % 3 == 0 {
+        if i > 0 && (len - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(ch);
@@ -163,8 +163,8 @@ mod tests {
         assert_eq!(trim_number("0.0"), "0");
         assert_eq!(trim_number("-1.50"), "-1.5");
         assert_eq!(trim_number("42"), "42"); // int, no dot
-        // Scientific notation passes through untouched — trimming would eat the
-        // exponent's trailing zero and corrupt the value by orders of magnitude.
+                                             // Scientific notation passes through untouched — trimming would eat the
+                                             // exponent's trailing zero and corrupt the value by orders of magnitude.
         assert_eq!(trim_number("1.5e+20"), "1.5e+20");
         assert_eq!(trim_number("1.5e-10"), "1.5e-10");
         assert_eq!(trim_number("1.5E+20"), "1.5E+20"); // uppercase E too
@@ -177,7 +177,15 @@ mod tests {
     #[test]
     fn stat_line_by_type() {
         // Integer column with a range.
-        let ints = col("delay", "INTEGER", 231_080, 3, 1_400, Some("-99"), Some("1439"));
+        let ints = col(
+            "delay",
+            "INTEGER",
+            231_080,
+            3,
+            1_400,
+            Some("-99"),
+            Some("1439"),
+        );
         assert_eq!(stat_line(&ints), "1,400 distinct · 3 nulls · -99 – 1439");
 
         // Float column: bounds are trimmed.

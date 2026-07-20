@@ -7,11 +7,10 @@
 //! into a Session without depending on the engine at the ChartView call
 //! site. The trait keeps the test double cheap.
 
-use brightfield_engine::error::EngineError;
-use brightfield_engine::RecordBatch;
+use brightfield_engine::DispatchResult;
 use brightfield_render::nearest::SelectionValue;
-use brightfield_sql::ir::Predicate;
 use brightfield_spec::analysis::ComponentPath;
+use brightfield_sql::ir::Predicate;
 use kurbo::Rect;
 
 /// Selection kind for a brush — mirrors the corresponding
@@ -177,18 +176,14 @@ pub trait SelectionDispatcher {
         name: &str,
         contributor: ComponentPath,
         predicate: Predicate,
-    ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>;
+    ) -> Vec<DispatchResult>;
 
     /// Retract a contributor's predicate from the named selection — the
     /// click-outside-active-brush path. Mirrors
     /// `Session::clear_selection`'s shape: returns one
     /// `(mark_index, Result)` per subscriber that re-executes against the
     /// reduced selection state.
-    fn clear(
-        &mut self,
-        name: &str,
-        contributor: ComponentPath,
-    ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>;
+    fn clear(&mut self, name: &str, contributor: ComponentPath) -> Vec<DispatchResult>;
 }
 
 impl SelectionDispatcher for brightfield_engine::Session {
@@ -197,15 +192,11 @@ impl SelectionDispatcher for brightfield_engine::Session {
         name: &str,
         contributor: ComponentPath,
         predicate: Predicate,
-    ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
+    ) -> Vec<DispatchResult> {
         self.propagate_selection(name, contributor, predicate)
     }
 
-    fn clear(
-        &mut self,
-        name: &str,
-        contributor: ComponentPath,
-    ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
+    fn clear(&mut self, name: &str, contributor: ComponentPath) -> Vec<DispatchResult> {
         self.clear_selection(name, contributor)
     }
 }
@@ -371,7 +362,10 @@ mod tests {
         // PointX numeric → `speed = 3`.
         match point_to_predicate(&SelectionValue::Int(3), BrushKind::PointX, &channels) {
             Predicate::Expr(s) => {
-                assert_eq!(s, "speed = 3", "PointX equality on x column, integer literal");
+                assert_eq!(
+                    s, "speed = 3",
+                    "PointX equality on x column, integer literal"
+                );
             }
             other => panic!("expected Expr, got {other:?}"),
         }
@@ -386,7 +380,9 @@ mod tests {
             BrushKind::PointX,
             &channels,
         ) {
-            Predicate::Expr(s) => assert_eq!(s, "speed = 'O''Hara'", "string literal is quoted+escaped"),
+            Predicate::Expr(s) => {
+                assert_eq!(s, "speed = 'O''Hara'", "string literal is quoted+escaped")
+            }
             other => panic!("expected Expr, got {other:?}"),
         }
         // Temporal → make_timestamp, not a bare integer.
@@ -396,19 +392,30 @@ mod tests {
             &channels,
         ) {
             Predicate::Expr(s) => {
-                assert_eq!(s, "speed = make_timestamp(1700000000000000)", "temporal literal")
+                assert_eq!(
+                    s, "speed = make_timestamp(1700000000000000)",
+                    "temporal literal"
+                )
             }
             other => panic!("expected Expr, got {other:?}"),
         }
         // Missing channel → True.
         assert_eq!(
-            point_to_predicate(&SelectionValue::Number(1.0), BrushKind::PointY, &ChannelColumns::x_only("speed")),
+            point_to_predicate(
+                &SelectionValue::Number(1.0),
+                BrushKind::PointY,
+                &ChannelColumns::x_only("speed")
+            ),
             Predicate::True,
             "PointY with no y channel is a degenerate no-op"
         );
         // Non-point kind → True (this helper only produces point predicates).
         assert_eq!(
-            point_to_predicate(&SelectionValue::Number(1.0), BrushKind::IntervalX, &channels),
+            point_to_predicate(
+                &SelectionValue::Number(1.0),
+                BrushKind::IntervalX,
+                &channels
+            ),
             Predicate::True
         );
     }

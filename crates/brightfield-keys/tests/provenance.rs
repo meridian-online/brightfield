@@ -25,14 +25,22 @@ fn every_bound_longname_has_a_score_row() {
             v.longname
         );
         // Sanity: a bound verb carries the scores the table records.
-        assert!(v.scores.is_some(), "bound verb `{}` is unscored in the registry", v.longname);
+        assert!(
+            v.scores.is_some(),
+            "bound verb `{}` is unscored in the registry",
+            v.longname
+        );
     }
 }
 
 #[test]
 fn reserved_scope_decisions_are_recorded() {
     // The manual-review half: the load-bearing scope-model decisions appear in the doc.
-    for decision in ["selection-first", "g` = dashboard-broadcast", "view-altitude floor"] {
+    for decision in [
+        "selection-first",
+        "g` = dashboard-broadcast",
+        "view-altitude floor",
+    ] {
         assert!(
             RESEARCH.contains(decision),
             "scope-model decision '{decision}' not recorded in keymap-research.md"

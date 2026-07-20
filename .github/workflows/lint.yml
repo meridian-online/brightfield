@@ -1,0 +1,70 @@
+name: lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+# A workflow of its own, alongside `public-hygiene` rather than a job inside
+# `test`:
+#
+# * `test` runs the whole suite behind a 60-minute ceiling, including the
+#   egui_kittest pixel tier. These two gates run no tests and render nothing,
+#   so a formatting slip or a lint regression should report in minutes without
+#   waiting on it — and should still report when the suite is red.
+# * `test` cancels in-progress runs per ref. This one is cheap enough not to
+#   need cancelling, and a lint regression should be reported on every pushed
+#   commit.
+#
+# The tree was made clean under both gates in the three commits preceding this
+# file: `cargo fmt --all` over the workspace, then a warning-by-warning clippy
+# triage in which every lint is either fixed or carries an `#[allow]` with a
+# written reason. This gate is green on arrival, not aspirational.
+jobs:
+  fmt-clippy:
+    # macos-15, matching `test`, and NOT the ubuntu-latest that `public-hygiene`
+    # uses. Not a copy-paste: `brightfield-app` depends on gpui unconditionally,
+    # and clippy has to build the dependency graph to lint it. Standing gpui up
+    # on Linux needs the system-dependency matrix (Vulkan, wayland/X11,
+    # xkbcommon, fontconfig) that `test.yml` records as unvalidated in this
+    # repo, so an ubuntu runner here would be a gate nobody had seen pass. The
+    # cheap-runner win is real but it belongs to whoever validates that matrix;
+    # until then this job is honest about needing the same host as `test`.
+    #
+    # It is still far cheaper than `test`: no test executes, nothing renders,
+    # and `cargo clippy` stops at check.
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The same exact pin as `test`, for the same reason: a red gate here has
+      # to be reproducible with the `cargo +1.95.0 ...` the local loop uses.
+      # Clippy's lint set moves between releases, so an unpinned toolchain would
+      # let a newer rustc turn this red on a commit that changed nothing.
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: rustfmt, clippy
+
+      # Shared with `test`'s cache. The git dependencies (zed/GPUI,
+      # gpui-component) dominate a cold run.
+      - uses: Swatinem/rust-cache@v2
+
+      # `fmt` first: it builds nothing, so a formatting slip reports before
+      # clippy has checked a single crate.
+      - name: cargo fmt --all --check
+        run: cargo fmt --all --check
+
+      # `--all-targets` so tests, benches and examples are linted too. This is
+      # load-bearing: the deny-by-default lint that used to make clippy exit 101
+      # in this repo lived in a `brightfield-spec` test, and a lib-only run
+      # would never have seen it.
+      #
+      # NOT `--locked`, deliberately: `test` already fails on lockfile drift, so
+      # repeating it here would only report the same problem twice.
+      - name: cargo clippy --workspace --all-targets -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings

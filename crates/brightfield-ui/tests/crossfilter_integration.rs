@@ -269,8 +269,11 @@ fn crossfilter_brush_in_plot_a_filters_plot_b() {
         view_extent: None,
         highlight: None,
     };
-    let (scene, _scales) =
-        build_multi_mark_scene(&[&chart_data], true, &brightfield_render::ResolvedTitles::default());
+    let (scene, _scales) = build_multi_mark_scene(
+        &[&chart_data],
+        true,
+        &brightfield_render::ResolvedTitles::default(),
+    );
     assert!(
         count_scene_paths(&scene) > 0,
         "rebuilt plot B scene draws the filtered marks"
@@ -479,7 +482,11 @@ fn crossfilter_point_toggle_x_filters_downstream() {
     assert_eq!(baseline_rows, 6);
 
     // A click on data value x=3 → point predicate `x = 3` (inline ints are Int32).
-    let pred = point_to_predicate(&SelectionValue::Int(3), ui_binding.kind, &ui_binding.channels);
+    let pred = point_to_predicate(
+        &SelectionValue::Int(3),
+        ui_binding.kind,
+        &ui_binding.channels,
+    );
     let results = session.propagate_selection(
         &ui_binding.selection_name,
         ui_binding.contributor.clone(),
@@ -487,7 +494,11 @@ fn crossfilter_point_toggle_x_filters_downstream() {
     );
     let (mark_index, result) = &results[0];
     assert_eq!(*mark_index, 1, "plot B (index 1) is the subscriber");
-    let rows = total_rows(result.as_ref().expect("plot B re-executes under point selection"));
+    let rows = total_rows(
+        result
+            .as_ref()
+            .expect("plot B re-executes under point selection"),
+    );
     assert_eq!(rows, 1, "x = 3 selects exactly one row");
 }
 
@@ -572,13 +583,17 @@ fn crossfilter_two_selections_stay_independent() {
     // $pt = x=5 (its row has y=50, OUTSIDE the interval) and $iv = y∈[25,45]
     // (rows y=30,40 → x=3,4, none of which is x=5). So x=5 AND y∈[25,45] = 0.
     let pt_pred = point_to_predicate(&SelectionValue::Int(5), pt_b.kind, &pt_b.channels);
-    let iv_pred = brush_rect_to_predicate(Rect::new(0.0, 25.0, 100.0, 45.0), iv_b.kind, &iv_b.channels);
+    let iv_pred =
+        brush_rect_to_predicate(Rect::new(0.0, 25.0, 100.0, 45.0), iv_b.kind, &iv_b.channels);
 
     // Populate BOTH selections first, so each subscriber is later measured with
     // both predicates live — otherwise a leak from the not-yet-active selection
     // could never show up in a row count.
-    let pt_first =
-        session.propagate_selection(&pt_b.selection_name, pt_b.contributor.clone(), pt_pred.clone());
+    let pt_first = session.propagate_selection(
+        &pt_b.selection_name,
+        pt_b.contributor.clone(),
+        pt_pred.clone(),
+    );
     let iv_results =
         session.propagate_selection(&iv_b.selection_name, iv_b.contributor.clone(), iv_pred);
 
@@ -647,7 +662,12 @@ fn crossfilter_point_click_resolves_and_selects_nearest_datum() {
     // Scales for plot A over the spec's 360×300 plot. The click pixel is the x=3
     // datum mapped THROUGH these scales, so it lands exactly on that point.
     let layout = ChartLayout::new(360.0, 300.0);
-    let scales = infer_scales(&batch_a, &plot_a_channels, layout.x_range(), layout.y_range());
+    let scales = infer_scales(
+        &batch_a,
+        &plot_a_channels,
+        layout.x_range(),
+        layout.y_range(),
+    );
     let x3_px = scales.get(Channel::X).expect("x scale").map_f64(3.0);
     let y3_px = scales.get(Channel::Y).expect("y scale").map_f64(30.0);
 
@@ -667,7 +687,11 @@ fn crossfilter_point_click_resolves_and_selects_nearest_datum() {
     let (mark_index, result) = &results[0];
     assert_eq!(*mark_index, 1, "plot B (index 1) is the subscriber");
     assert_eq!(
-        total_rows(result.as_ref().expect("plot B re-executes under point select")),
+        total_rows(
+            result
+                .as_ref()
+                .expect("plot B re-executes under point select")
+        ),
         1,
         "click resolves to x=3 and selects exactly that datum"
     );
@@ -725,7 +749,12 @@ fn crossfilter_interval_click_clears_via_shared_path() {
 
     // Now a click (any pixel) on the interval plot → clears → plot B full again.
     let layout = ChartLayout::new(360.0, 300.0);
-    let scales = infer_scales(&batch_a, &plot_a_channels, layout.x_range(), layout.y_range());
+    let scales = infer_scales(
+        &batch_a,
+        &plot_a_channels,
+        layout.x_range(),
+        layout.y_range(),
+    );
     let marks_meta = [(&batch_a, &plot_a_channels)];
     let (_n2, agg2) = commit_click_multi(
         Point::new(180.0, 150.0),
@@ -779,7 +808,11 @@ fn crossfilter_categorical_point_click_selects_clicked_category() {
     let analysis = analyse_spec(&spec).expect("spec analyses");
     let binding = BrushBinding::from(&analysis.brushable_bindings[0]);
     assert_eq!(binding.kind, BrushKind::PointX, "toggleX → PointX");
-    assert_eq!(binding.channels.x.as_deref(), Some("cat"), "x is the string column");
+    assert_eq!(
+        binding.channels.x.as_deref(),
+        Some("cat"),
+        "x is the string column"
+    );
 
     let marks = collect_marks(&spec);
     let plot_a_channels = ChannelMap::from_mark(marks[0]);
@@ -796,7 +829,12 @@ fn crossfilter_categorical_point_click_selects_clicked_category() {
     drop(baseline);
 
     let layout = ChartLayout::new(360.0, 300.0);
-    let scales = infer_scales(&batch_a, &plot_a_channels, layout.x_range(), layout.y_range());
+    let scales = infer_scales(
+        &batch_a,
+        &plot_a_channels,
+        layout.x_range(),
+        layout.y_range(),
+    );
     let bindings = [binding];
     let marks_meta = [(&batch_a, &plot_a_channels)];
 
@@ -812,19 +850,30 @@ fn crossfilter_categorical_point_click_selects_clicked_category() {
         &bindings,
         &mut session,
     );
-    assert_eq!(aggregated.len(), 1, "the categorical click dispatches one selection");
+    assert_eq!(
+        aggregated.len(),
+        1,
+        "the categorical click dispatches one selection"
+    );
     let (name, results) = &aggregated[0];
     assert_eq!(name, "pick");
     let (mark_index, result) = &results[0];
     assert_eq!(*mark_index, 1, "plot B (index 1) is the subscriber");
     assert_eq!(
-        total_rows(result.as_ref().expect("plot B re-executes under the categorical selection")),
+        total_rows(
+            result
+                .as_ref()
+                .expect("plot B re-executes under the categorical selection")
+        ),
         1,
         "cat = 'B' selects exactly B's row"
     );
 
     // A click at category A's centre re-selects A (a different category).
-    let ax = scales.get(Channel::X).and_then(|s| s.map_category("A")).unwrap();
+    let ax = scales
+        .get(Channel::X)
+        .and_then(|s| s.map_category("A"))
+        .unwrap();
     let (_n2, agg2) = commit_click_multi(
         Point::new(ax, 100.0),
         &marks_meta,
@@ -944,9 +993,18 @@ fn legend_click_filters_downstream_via_real_session() {
         assert_eq!(*i, idx);
         total_rows(res.as_ref().expect("mark re-executes ok"))
     };
-    assert_eq!(total_rows(baseline[0].as_ref().expect("scatter executes")), 6);
-    assert_eq!(total_rows(baseline[1].as_ref().expect("plot B executes")), 6);
-    assert_eq!(total_rows(baseline[2].as_ref().expect("plot C executes")), 6);
+    assert_eq!(
+        total_rows(baseline[0].as_ref().expect("scatter executes")),
+        6
+    );
+    assert_eq!(
+        total_rows(baseline[1].as_ref().expect("plot B executes")),
+        6
+    );
+    assert_eq!(
+        total_rows(baseline[2].as_ref().expect("plot C executes")),
+        6
+    );
     drop(baseline);
 
     // A pre-existing selection on ANOTHER column: $other keeps y >= 35
@@ -969,13 +1027,21 @@ fn legend_click_filters_downstream_via_real_session() {
         &SelectionValue::Text("gentoo".into()).literal(),
     );
     let results = session.propagate_selection("sel", binding.plot_path.clone(), gentoo);
-    assert_eq!(results.len(), 2, "both $sel subscribers re-execute (marks 0 and 1)");
+    assert_eq!(
+        results.len(),
+        2,
+        "both $sel subscribers re-execute (marks 0 and 1)"
+    );
     assert_eq!(
         rows_at(&results, 0),
         6,
         "the for:-plot is NOT filtered by its own legend (self-exclusion)"
     );
-    assert_eq!(rows_at(&results, 1), 3, "species = 'gentoo' keeps 3 rows downstream");
+    assert_eq!(
+        rows_at(&results, 1),
+        3,
+        "species = 'gentoo' keeps 3 rows downstream"
+    );
 
     // Independence: re-propagate $other while $sel is live — plot C still
     // sees ONLY the y-predicate (3 rows, not the contaminated 2).
@@ -1053,7 +1119,10 @@ plot:
     );
 
     let engine = Engine::new();
-    let mut session = engine.load_spec(spec, analysis, None).expect("loads").session;
+    let mut session = engine
+        .load_spec(spec, analysis, None)
+        .expect("loads")
+        .session;
 
     // Baseline: no selection → no membership column (at-rest look).
     let baseline = session.execute_all();
@@ -1070,14 +1139,17 @@ plot:
         BrushKind::IntervalXY,
         &brightfield_ui::brush::ChannelColumns::xy("x", "y"),
     );
-    let results =
-        session.propagate_selection("brush", ComponentPath("root".into()), predicate);
+    let results = session.propagate_selection("brush", ComponentPath("root".into()), predicate);
 
     // The dot (mark 0) re-executed: ALL 6 rows present (highlight dims, never
     // filters), with a boolean membership column.
     let (_, result) = results.iter().find(|(i, _)| *i == 0).expect("dot re-ran");
     let batch = &result.as_ref().expect("dot re-executes ok")[0];
-    assert_eq!(batch.num_rows(), 6, "highlight keeps every row (dims, not filters)");
+    assert_eq!(
+        batch.num_rows(),
+        6,
+        "highlight keeps every row (dims, not filters)"
+    );
     let idx = batch
         .schema()
         .index_of(SELECTED_COLUMN)
@@ -1089,7 +1161,10 @@ plot:
         .expect("__bf_selected is boolean");
     // Exactly the two brushed rows (x ∈ {3,4}) are members; the rest are not.
     let selected = (0..flags.len()).filter(|&i| flags.value(i)).count();
-    assert_eq!(selected, 2, "x∈[2.5,4.5] marks exactly rows x=3,4 as selected");
+    assert_eq!(
+        selected, 2,
+        "x∈[2.5,4.5] marks exactly rows x=3,4 as selected"
+    );
 }
 
 /// FIX B end-to-end: a single plot that BRUSHES and HIGHLIGHTS the
@@ -1126,7 +1201,10 @@ plot:
     let spec = parse_spec(SPEC, Format::Yaml).expect("parses").spec;
     let analysis = analyse_spec(&spec).expect("analyses");
     let engine = Engine::new();
-    let mut session = engine.load_spec(spec, analysis, None).expect("loads").session;
+    let mut session = engine
+        .load_spec(spec, analysis, None)
+        .expect("loads")
+        .session;
 
     // The brush is contributed BY this plot ("root") — the same plot that
     // highlights (the self-source filterBy would exclude).
@@ -1148,7 +1226,10 @@ plot:
         .downcast_ref::<BooleanArray>()
         .expect("boolean");
     let selected = (0..flags.len()).filter(|&i| flags.value(i)).count();
-    assert_eq!(selected, 2, "the brushed plot greys itself: x∈{{3,4}} stay lit");
+    assert_eq!(
+        selected, 2,
+        "the brushed plot greys itself: x∈{{3,4}} stay lit"
+    );
 }
 
 /// FIX A end-to-end: weather's `$range` shape — a highlight `by:` a
@@ -1193,7 +1274,10 @@ plot:
         "as-bound selection has the dot as a highlight subscriber"
     );
     let engine = Engine::new();
-    let mut session = engine.load_spec(spec, analysis, None).expect("loads").session;
+    let mut session = engine
+        .load_spec(spec, analysis, None)
+        .expect("loads")
+        .session;
 
     let results = session.propagate_selection(
         "range",
@@ -1213,5 +1297,8 @@ plot:
         .downcast_ref::<BooleanArray>()
         .expect("boolean");
     let selected = (0..flags.len()).filter(|&i| flags.value(i)).count();
-    assert_eq!(selected, 2, "x∈{{3,4}} selected under the as-bound highlight");
+    assert_eq!(
+        selected, 2,
+        "x∈{{3,4}} selected under the as-bound highlight"
+    );
 }

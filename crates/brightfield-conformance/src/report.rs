@@ -14,9 +14,7 @@ use brightfield_spec::{parse_spec, Format};
 
 use crate::corpus::{curated_entries, observed_entries, Corpus, CorpusEntry};
 use crate::deviations::DeviationRegistry;
-use crate::layer::{
-    default_layer_checks, ConformanceLayer, LayerCheck, LayerOutcome,
-};
+use crate::layer::{default_layer_checks, ConformanceLayer, LayerCheck, LayerOutcome};
 
 /// One `(spec, layer)` record in a [`ConformanceReport`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -176,9 +174,7 @@ mod tests {
         s.bump(&LayerOutcome::Suppressed {
             deviation_id: "DEV-0001".to_string(),
         });
-        s.bump(&LayerOutcome::Pending {
-            reason: "pending",
-        });
+        s.bump(&LayerOutcome::Pending { reason: "pending" });
         assert_eq!(s.passed, 1);
         assert_eq!(s.failed, 1);
         assert_eq!(s.suppressed, 1);
@@ -188,11 +184,7 @@ mod tests {
     #[test]
     fn dfconf_run_conformance_layer_1_curated_all_pass() {
         let reg = DeviationRegistry::default();
-        let report = run_conformance(
-            Corpus::Curated,
-            &[ConformanceLayer::AstRoundTrip],
-            &reg,
-        );
+        let report = run_conformance(Corpus::Curated, &[ConformanceLayer::AstRoundTrip], &reg);
         assert_eq!(report.summary.failed, 0);
         assert_eq!(report.summary.pending, 0);
         assert_eq!(report.summary.suppressed, 0);
@@ -207,7 +199,10 @@ mod tests {
         let reg = DeviationRegistry::default();
         let report = run_conformance(
             Corpus::Observed,
-            &[ConformanceLayer::AstRoundTrip, ConformanceLayer::SqlEquivalence],
+            &[
+                ConformanceLayer::AstRoundTrip,
+                ConformanceLayer::SqlEquivalence,
+            ],
             &reg,
         );
         assert!(report.summary.failed == 0);

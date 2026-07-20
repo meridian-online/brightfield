@@ -159,7 +159,13 @@ fn draw_shield(scene: &mut Scene, cx: f64, cy: f64) {
     shield.line_to((cx, cy + h / 2.0));
     shield.line_to((cx - w / 2.0, cy + h / 6.0));
     shield.close_path();
-    scene.fill(Fill::NonZero, Affine::IDENTITY, ACCENT_COLOUR, None, &shield);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        ACCENT_COLOUR,
+        None,
+        &shield,
+    );
 }
 
 /// The chevron site on the route's middle segment. The right-pointing glyph
@@ -199,7 +205,13 @@ fn route_midpoint(points: &[(f64, f64)], flow: Flow) -> (f64, f64) {
 
 fn draw_edge(scene: &mut Scene, route: &EdgeRoute, flow: Flow, seam_status: SeamStatus) {
     let path = orthogonal_path(&route.points, flow);
-    scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, EDGE_COLOUR, None, &path);
+    scene.stroke(
+        &Stroke::new(1.0),
+        Affine::IDENTITY,
+        EDGE_COLOUR,
+        None,
+        &path,
+    );
     // Arrowhead into the target, pointing along the flow (right / down).
     if let Some(&(tx, ty)) = route.points.last() {
         let mut head = BezPath::new();
@@ -215,7 +227,13 @@ fn draw_edge(scene: &mut Scene, route: &EdgeRoute, flow: Flow, seam_status: Seam
                 head.line_to((tx + 3.0, ty - 5.0));
             }
         }
-        scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, EDGE_COLOUR, None, &head);
+        scene.stroke(
+            &Stroke::new(1.0),
+            Affine::IDENTITY,
+            EDGE_COLOUR,
+            None,
+            &head,
+        );
     }
     if route.via.is_some() {
         let (cx, cy) = route_midpoint(&route.points, flow);
@@ -234,11 +252,7 @@ fn draw_edge(scene: &mut Scene, route: &EdgeRoute, flow: Flow, seam_status: Seam
     }
 }
 
-fn draw_node(
-    scene: &mut Scene,
-    node: &AssetNode,
-    rect: &brightfield_protocol::layout::Rect,
-) {
+fn draw_node(scene: &mut Scene, node: &AssetNode, rect: &brightfield_protocol::layout::Rect) {
     let (x, y, w, h) = (rect.x, rect.y, rect.width, rect.height);
     let (cx, cy) = (x + w / 2.0, y + h / 2.0);
     let mut label_colour = LABEL_COLOUR;
@@ -246,7 +260,13 @@ fn draw_node(
         AssetKind::Source => {
             let pill = RoundedRect::new(x, y, x + w, y + h, h / 2.0);
             scene.fill(Fill::NonZero, Affine::IDENTITY, NODE_FILL, None, &pill);
-            scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, NODE_BORDER, None, &pill);
+            scene.stroke(
+                &Stroke::new(1.0),
+                Affine::IDENTITY,
+                NODE_BORDER,
+                None,
+                &pill,
+            );
             label_colour = MUTED_LABEL_COLOUR;
         }
         AssetKind::File => {
@@ -265,17 +285,35 @@ fn draw_node(
             crease.move_to((x + w - fold, y));
             crease.line_to((x + w - fold, y + fold));
             crease.line_to((x + w, y + fold));
-            scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, NODE_BORDER, None, &crease);
+            scene.stroke(
+                &Stroke::new(1.0),
+                Affine::IDENTITY,
+                NODE_BORDER,
+                None,
+                &crease,
+            );
         }
         AssetKind::Table => {
             let card = RoundedRect::new(x, y, x + w, y + h, 4.0);
             scene.fill(Fill::NonZero, Affine::IDENTITY, NODE_FILL, None, &card);
-            scene.stroke(&Stroke::new(1.2), Affine::IDENTITY, TABLE_BORDER, None, &card);
+            scene.stroke(
+                &Stroke::new(1.2),
+                Affine::IDENTITY,
+                TABLE_BORDER,
+                None,
+                &card,
+            );
         }
         AssetKind::Internal => {
             let card = RoundedRect::new(x, y, x + w, y + h, 3.0);
             scene.fill(Fill::NonZero, Affine::IDENTITY, INTERNAL_FILL, None, &card);
-            scene.stroke(&Stroke::new(0.8), Affine::IDENTITY, NODE_BORDER, None, &card);
+            scene.stroke(
+                &Stroke::new(0.8),
+                Affine::IDENTITY,
+                NODE_BORDER,
+                None,
+                &card,
+            );
             label_colour = MUTED_LABEL_COLOUR;
         }
         AssetKind::Dataset => {
@@ -283,17 +321,41 @@ fn draw_node(
             let outer = RoundedRect::new(x, y, x + w, y + h, 6.0);
             let inner = RoundedRect::new(x + 3.0, y + 3.0, x + w - 3.0, y + h - 3.0, 4.0);
             scene.fill(Fill::NonZero, Affine::IDENTITY, NODE_FILL, None, &outer);
-            scene.stroke(&Stroke::new(1.4), Affine::IDENTITY, ACCENT_COLOUR, None, &outer);
-            scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, ACCENT_COLOUR, None, &inner);
+            scene.stroke(
+                &Stroke::new(1.4),
+                Affine::IDENTITY,
+                ACCENT_COLOUR,
+                None,
+                &outer,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                Affine::IDENTITY,
+                ACCENT_COLOUR,
+                None,
+                &inner,
+            );
         }
         AssetKind::Family => {
             // A stacked back card hints at the collapsed instances.
             let back = RoundedRect::new(x + 4.0, y + 4.0, x + w, y + h, 5.0);
             scene.fill(Fill::NonZero, Affine::IDENTITY, INTERNAL_FILL, None, &back);
-            scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, NODE_BORDER, None, &back);
+            scene.stroke(
+                &Stroke::new(1.0),
+                Affine::IDENTITY,
+                NODE_BORDER,
+                None,
+                &back,
+            );
             let front = RoundedRect::new(x, y, x + w - 4.0, y + h - 4.0, 5.0);
             scene.fill(Fill::NonZero, Affine::IDENTITY, NODE_FILL, None, &front);
-            scene.stroke(&Stroke::new(1.0), Affine::IDENTITY, NODE_BORDER, None, &front);
+            scene.stroke(
+                &Stroke::new(1.0),
+                Affine::IDENTITY,
+                NODE_BORDER,
+                None,
+                &front,
+            );
             if let Some(count) = node.family_count {
                 draw_text(
                     scene,
@@ -338,7 +400,15 @@ fn draw_node(
         }
     }
     let label = fit_label(&node.label, w);
-    draw_text(scene, &label, cx, cy + BASELINE_NUDGE, LABEL_SIZE, label_colour, TextAnchor::Middle);
+    draw_text(
+        scene,
+        &label,
+        cx,
+        cy + BASELINE_NUDGE,
+        LABEL_SIZE,
+        label_colour,
+        TextAnchor::Middle,
+    );
 }
 
 /// Draw the laid-out asset graph into `scene` with no execution-status tint —
@@ -360,7 +430,13 @@ pub fn render_asset_graph_with_status(
     status: &BTreeMap<StepId, SeamStatus>,
 ) {
     let canvas = Rect::new(0.0, 0.0, layout.width, layout.height);
-    scene.fill(Fill::NonZero, Affine::IDENTITY, CANVAS_COLOUR, None, &canvas);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        CANVAS_COLOUR,
+        None,
+        &canvas,
+    );
     for route in &layout.lanes {
         let seam_status = route
             .via
@@ -408,10 +484,12 @@ steps:
         let mut sources = BTreeMap::new();
         sources.insert(
             "transform".to_string(),
-            Ok("CREATE TABLE staging AS SELECT * FROM read_csv('build/a.csv');\n\
+            Ok(
+                "CREATE TABLE staging AS SELECT * FROM read_csv('build/a.csv');\n\
                 SELEC deliberately broken;\n\
                 CREATE TABLE t_out AS SELECT * FROM staging;"
-                .to_string()),
+                    .to_string(),
+            ),
         );
         let graph = build_graph(&manifest, &sources);
         let l = compute_layout(&graph, &LayoutConfig::default());
@@ -469,14 +547,18 @@ steps:
         render_asset_graph_with_status(&mut tinted, &l, &graph, &failed);
 
         // Same number of draw ops (only colour changed), different draw data.
-        assert_eq!(plain.encoding().draw_tags.len(), tinted.encoding().draw_tags.len());
+        assert_eq!(
+            plain.encoding().draw_tags.len(),
+            tinted.encoding().draw_tags.len()
+        );
         assert_ne!(
             plain.encoding().draw_data.len() + plain.encoding().draw_tags.len(),
             0,
             "something was drawn"
         );
         assert_ne!(
-            plain.encoding().draw_data, tinted.encoding().draw_data,
+            plain.encoding().draw_data,
+            tinted.encoding().draw_data,
             "the status tint changes the seam colour in the draw stream"
         );
     }
@@ -498,9 +580,15 @@ steps:
         let a = (100.0, 40.0);
         let b = (200.0, 120.0); // different row
         let (cx, cy) = route_midpoint(&[a, b], Flow::Horizontal);
-        assert_eq!(cy, a.1, "chevron y is on the horizontal leg, not mid-way up the vertical");
+        assert_eq!(
+            cy, a.1,
+            "chevron y is on the horizontal leg, not mid-way up the vertical"
+        );
         let mid_x = ((a.0 + b.0) / 2.0).round();
-        assert!(a.0 <= cx && cx <= mid_x, "chevron x is on the first horizontal leg: {cx}");
+        assert!(
+            a.0 <= cx && cx <= mid_x,
+            "chevron x is on the first horizontal leg: {cx}"
+        );
         // A same-row segment keeps the true midpoint.
         let (hx, hy) = route_midpoint(&[(10.0, 50.0), (30.0, 50.0)], Flow::Horizontal);
         assert_eq!((hx, hy), (20.0, 50.0));
@@ -514,9 +602,15 @@ steps:
         let a = (40.0, 100.0);
         let b = (120.0, 200.0); // different column
         let (cx, cy) = route_midpoint(&[a, b], Flow::Vertical);
-        assert_eq!(cx, a.0, "chevron x is on the vertical leg, not mid-way across the horizontal");
+        assert_eq!(
+            cx, a.0,
+            "chevron x is on the vertical leg, not mid-way across the horizontal"
+        );
         let mid_y = ((a.1 + b.1) / 2.0).round();
-        assert!(a.1 <= cy && cy <= mid_y, "chevron y is on the first vertical leg: {cy}");
+        assert!(
+            a.1 <= cy && cy <= mid_y,
+            "chevron y is on the first vertical leg: {cy}"
+        );
         // A same-column segment keeps the true midpoint.
         let (vx, vy) = route_midpoint(&[(50.0, 10.0), (50.0, 30.0)], Flow::Vertical);
         assert_eq!((vx, vy), (50.0, 20.0));
@@ -544,19 +638,28 @@ steps:
             Ok("CREATE TABLE t_out AS SELECT * FROM read_csv('build/a.csv');".to_string()),
         );
         let graph = build_graph(&manifest, &sources);
-        let cfg = LayoutConfig { flow: Flow::Vertical, ..LayoutConfig::default() };
+        let cfg = LayoutConfig {
+            flow: Flow::Vertical,
+            ..LayoutConfig::default()
+        };
         let l = compute_layout(&graph, &cfg);
         assert_eq!(l.flow, Flow::Vertical);
         let mut scene = Scene::new();
         render_asset_graph(&mut scene, &l, &graph);
-        assert!(scene.encoding().draw_tags.len() > graph.nodes.len(), "real geometry drawn");
+        assert!(
+            scene.encoding().draw_tags.len() > graph.nodes.len(),
+            "real geometry drawn"
+        );
     }
 
     #[test]
     fn pds_badge_glyph_is_an_ink_token_not_raw_white() {
         // The issue-badge glyph colour goes through the meridian-design ink()
         // boundary, not an ad-hoc peniko Color::WHITE.
-        assert_eq!(BADGE_GLYPH_COLOUR, ink(meridian_design::chrome::INK_LIGHT.surface));
+        assert_eq!(
+            BADGE_GLYPH_COLOUR,
+            ink(meridian_design::chrome::INK_LIGHT.surface)
+        );
         assert_ne!(BADGE_GLYPH_COLOUR, Color::WHITE);
     }
 }

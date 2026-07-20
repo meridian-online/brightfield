@@ -148,7 +148,7 @@ pub fn compose_spec(spec_path: &str) -> Result<Composed, String> {
             insets,
         );
         for d in &mut chart_data {
-            d.layout = layout.clone();
+            d.layout = layout;
         }
 
         let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();

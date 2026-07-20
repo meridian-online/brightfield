@@ -224,9 +224,7 @@ fn apply_data_filter(extras: &IndexMap<String, SpecValue>, plan: QueryPlan) -> Q
 /// subqueries as well as the row WHERE.
 fn data_filter_sql(extras: &IndexMap<String, SpecValue>) -> Option<String> {
     match extras.get("filter") {
-        Some(expr @ SpecValue::Expression(_)) => {
-            Some(crate::emit::spec_value_to_sql_literal(expr))
-        }
+        Some(expr @ SpecValue::Expression(_)) => Some(crate::emit::spec_value_to_sql_literal(expr)),
         Some(SpecValue::String(s)) => Some(s.clone()),
         _ => None,
     }
@@ -266,7 +264,11 @@ impl MarkLower for RegressionLowerer {
         if let Some(t) = opt_string(&mark.options, "type") {
             if t != "linear" {
                 return Err(EmitError::UnsupportedMark {
-                    kind: format!("{} (type='{}' — only linear is supported)", mark.kind.wire_name(), t),
+                    kind: format!(
+                        "{} (type='{}' — only linear is supported)",
+                        mark.kind.wire_name(),
+                        t
+                    ),
                 });
             }
         }
@@ -469,8 +471,14 @@ fn build_density_1d(table: &str, col: &str, bins: i64) -> QueryPlan {
 /// Build a 2D density plan: equiwidth-bin both x and y, group by both, and emit
 /// each axis's bucket centre aliased to its channel column name (plus `count`).
 fn build_density_2d(table: &str, x_col: &str, y_col: &str, bins: i64) -> QueryPlan {
-    let x_centre = format!("{} AS \"{x_col}\"", equiwidth_bin_centre(table, x_col, bins));
-    let y_centre = format!("{} AS \"{y_col}\"", equiwidth_bin_centre(table, y_col, bins));
+    let x_centre = format!(
+        "{} AS \"{x_col}\"",
+        equiwidth_bin_centre(table, x_col, bins)
+    );
+    let y_centre = format!(
+        "{} AS \"{y_col}\"",
+        equiwidth_bin_centre(table, y_col, bins)
+    );
     // Reserved occupancy alias — see build_density_1d.
     let count_expr = "CAST(COUNT(*) AS DOUBLE) AS __bf_count".to_string();
 
@@ -640,9 +648,7 @@ fn build_hexbin_plan(
     // the extent subqueries — binning over the unfiltered extent would shift
     // every centre and let filtered-out rows widen the plot (F4). Push it into
     // the extent WHERE and AND it into the row predicate.
-    let extent_where = filter
-        .map(|f| format!(" WHERE ({f})"))
-        .unwrap_or_default();
+    let extent_where = filter.map(|f| format!(" WHERE ({f})")).unwrap_or_default();
 
     // Raw-table extents as correlated scalar subqueries (density precedent).
     let xmin = format!("(SELECT min(\"{x_col}\") FROM \"{table}\"{extent_where})");
@@ -668,15 +674,18 @@ fn build_hexbin_plan(
     );
 
     // Pixel → axial (pointy-top), hex size `size`.
-    let qf = format!("(({frac} * {px} - {third} * {py}) / {size})",
-        frac = sqrt3 / 3.0, third = 1.0 / 3.0);
+    let qf = format!(
+        "(({frac} * {px} - {third} * {py}) / {size})",
+        frac = sqrt3 / 3.0,
+        third = 1.0 / 3.0
+    );
     let rf = format!("(({twothirds} * {py}) / {size})", twothirds = 2.0 / 3.0);
 
-    let row_filter = filter
-        .map(|f| format!(" AND ({f})"))
-        .unwrap_or_default();
+    let row_filter = filter.map(|f| format!(" AND ({f})")).unwrap_or_default();
     let filtered = QueryPlan::Filter {
-        input: Box::new(QueryPlan::Source { table: table.to_string() }),
+        input: Box::new(QueryPlan::Source {
+            table: table.to_string(),
+        }),
         predicate: Predicate::Expr(format!(
             "\"{x_col}\" IS NOT NULL AND \"{y_col}\" IS NOT NULL{row_filter}"
         )),
@@ -705,9 +714,8 @@ fn build_hexbin_plan(
     let xd = "abs(__bf_rx - __bf_qf)";
     let yd = "abs(__bf_ry - (-__bf_qf - __bf_rf))";
     let zd = "abs(__bf_rz - __bf_rf)";
-    let q_expr = format!(
-        "CASE WHEN {xd} > {yd} AND {xd} > {zd} THEN (-__bf_ry - __bf_rz) ELSE __bf_rx END"
-    );
+    let q_expr =
+        format!("CASE WHEN {xd} > {yd} AND {xd} > {zd} THEN (-__bf_ry - __bf_rz) ELSE __bf_rx END");
     let r_expr = format!(
         "CASE WHEN {xd} > {yd} AND {xd} > {zd} THEN __bf_rz \
          WHEN {yd} > {zd} THEN __bf_rz ELSE (-__bf_rx - __bf_ry) END"
@@ -722,8 +730,10 @@ fn build_hexbin_plan(
     };
 
     // Hex centre in pixel space, then back to data units (inverse of px/py).
-    let cx_px = format!("({size} * ({sqrt3} * __bf_q + {half_sqrt3} * __bf_r))",
-        half_sqrt3 = sqrt3 / 2.0);
+    let cx_px = format!(
+        "({size} * ({sqrt3} * __bf_q + {half_sqrt3} * __bf_r))",
+        half_sqrt3 = sqrt3 / 2.0
+    );
     let cy_px = format!("({size} * ({onehalf} * __bf_r))", onehalf = 1.5);
     let cx_data = format!("({xmin} + {cx_px} / {plot_w} * ({xmax} - {xmin}))");
     let cy_data = format!("({ymin} + {cy_px} / {plot_h} * ({ymax} - {ymin}))");
@@ -734,9 +744,7 @@ fn build_hexbin_plan(
         "CAST({half_bw} / {plot_w} * ({xmax} - {xmin}) AS DOUBLE)",
         half_bw = bin_width / 2.0
     );
-    let dy_data = format!(
-        "CAST({size} / {plot_h} * ({ymax} - {ymin}) AS DOUBLE)"
-    );
+    let dy_data = format!("CAST({size} / {plot_h} * ({ymax} - {ymin}) AS DOUBLE)");
 
     // The aggregate: count → reserved column; column-taking aggregates → the
     // source column aliased to itself (so the fill channel reads it).
@@ -806,9 +814,7 @@ impl MarkLower for CellLowerer {
         // The data filter scopes the aggregated rows (F4). Cell GROUP BYs the
         // category columns — no pixel extents to scope, so the row WHERE is the
         // only place it applies.
-        let row_filter = filter
-            .map(|f| format!(" AND ({f})"))
-            .unwrap_or_default();
+        let row_filter = filter.map(|f| format!(" AND ({f})")).unwrap_or_default();
         let filtered = QueryPlan::Filter {
             input: Box::new(QueryPlan::Source { table: source }),
             predicate: Predicate::Expr(format!(
@@ -956,10 +962,7 @@ pub fn default_lowerers() -> Vec<(MarkKind, Box<dyn MarkLower>)> {
 }
 
 /// Look up a lowerer for a given `MarkKind`, falling back to `DefaultLowerer`.
-pub fn find_lowerer<'a>(
-    kind: MarkKind,
-    registry: &'a [(MarkKind, Box<dyn MarkLower>)],
-) -> &'a dyn MarkLower {
+pub fn find_lowerer(kind: MarkKind, registry: &[(MarkKind, Box<dyn MarkLower>)]) -> &dyn MarkLower {
     registry
         .iter()
         .find(|(k, _)| *k == kind)
@@ -997,9 +1000,7 @@ pub fn compile_selection(
 
     match resolution {
         SelectionResolution::Union => Predicate::Or(active),
-        SelectionResolution::Intersect | SelectionResolution::Crossfilter => {
-            Predicate::And(active)
-        }
+        SelectionResolution::Intersect | SelectionResolution::Crossfilter => Predicate::And(active),
         SelectionResolution::Single => {
             // Single: take the last predicate
             active.into_iter().last().unwrap()
@@ -1030,8 +1031,7 @@ mod tests {
         // Use leaked static for test convenience
         let data_sources: &'static IndexMap<String, brightfield_spec::ast::DataSource> =
             Box::leak(Box::new(IndexMap::new()));
-        let params: &'static IndexMap<String, ParamNode> =
-            Box::leak(Box::new(IndexMap::new()));
+        let params: &'static IndexMap<String, ParamNode> = Box::leak(Box::new(IndexMap::new()));
         LowerCtx {
             data_sources,
             params,
@@ -1137,7 +1137,10 @@ mod tests {
         // A non-default `geometry:` channel reads the custom SOURCE column but
         // canonicalises the OUTPUT to `geom`, so the renderer's fixed column name
         // always matches (EXCLUDE the source, re-add it as geom).
-        let mark = geo_mark_from("world", vec![("geometry", SpecValue::String("shape".into()))]);
+        let mark = geo_mark_from(
+            "world",
+            vec![("geometry", SpecValue::String("shape".into()))],
+        );
         let plan = GeoLowerer.lower(&mark, &ctx).expect("lowers");
         match plan {
             QueryPlan::Projection { columns, .. } => {
@@ -1161,7 +1164,10 @@ mod tests {
             extras: IndexMap::new(),
         };
         let ctx = make_ctx_with_source("areas", ds);
-        let mark = geo_mark_from("areas", vec![("geometry", SpecValue::String("shape".into()))]);
+        let mark = geo_mark_from(
+            "areas",
+            vec![("geometry", SpecValue::String("shape".into()))],
+        );
         let plan = GeoLowerer.lower(&mark, &ctx).expect("lowers");
         match plan {
             QueryPlan::Projection { columns, .. } => {
@@ -1310,14 +1316,8 @@ mod tests {
             options: IndexMap::new(),
         };
         let predicates = vec![
-            (
-                "view_a".to_string(),
-                Predicate::Expr("x > 1".to_string()),
-            ),
-            (
-                "view_b".to_string(),
-                Predicate::Expr("y < 10".to_string()),
-            ),
+            ("view_a".to_string(), Predicate::Expr("x > 1".to_string())),
+            ("view_b".to_string(), Predicate::Expr("y < 10".to_string())),
         ];
         let result = compile_selection(&selection, "view_a", &predicates);
         // view_a's predicate should be excluded
@@ -1335,14 +1335,8 @@ mod tests {
             options: IndexMap::new(),
         };
         let predicates = vec![
-            (
-                "view_a".to_string(),
-                Predicate::Expr("x > 1".to_string()),
-            ),
-            (
-                "view_b".to_string(),
-                Predicate::Expr("y < 10".to_string()),
-            ),
+            ("view_a".to_string(), Predicate::Expr("x > 1".to_string())),
+            ("view_b".to_string(), Predicate::Expr("y < 10".to_string())),
         ];
         let result = compile_selection(&selection, "view_b", &predicates);
         // view_b's predicate excluded, view_a's included
@@ -1368,10 +1362,7 @@ mod tests {
     // Statistical-mark lowerers
     // -----------------------------------------------------------------------
 
-    fn make_mark_with_options(
-        kind: MarkKind,
-        opts: Vec<(&str, SpecValue)>,
-    ) -> Mark {
+    fn make_mark_with_options(kind: MarkKind, opts: Vec<(&str, SpecValue)>) -> Mark {
         let mut options: IndexMap<String, ValueOrParamRef<SpecValue>> = IndexMap::new();
         for (k, v) in opts {
             options.insert(k.to_string(), ValueOrParamRef::Value(v));
@@ -1644,8 +1635,14 @@ mod tests {
 
     fn hexbin_mark() -> Mark {
         let mut options: IndexMap<String, ValueOrParamRef<SpecValue>> = IndexMap::new();
-        options.insert("x".into(), ValueOrParamRef::Value(SpecValue::String("time".into())));
-        options.insert("y".into(), ValueOrParamRef::Value(SpecValue::String("delay".into())));
+        options.insert(
+            "x".into(),
+            ValueOrParamRef::Value(SpecValue::String("time".into())),
+        );
+        options.insert(
+            "y".into(),
+            ValueOrParamRef::Value(SpecValue::String("delay".into())),
+        );
         options.insert(
             "fill".into(),
             ValueOrParamRef::Value(SpecValue::Aggregate {
@@ -1653,7 +1650,10 @@ mod tests {
                 column: None,
             }),
         );
-        options.insert("binWidth".into(), ValueOrParamRef::Value(SpecValue::Integer(20)));
+        options.insert(
+            "binWidth".into(),
+            ValueOrParamRef::Value(SpecValue::Integer(20)),
+        );
         Mark {
             kind: MarkKind::Hexbin,
             status: brightfield_spec::vocab::ImplStatus::Implemented,
@@ -1668,7 +1668,9 @@ mod tests {
 
     #[test]
     fn hexbin_lowers_to_ordered_aggregation() {
-        let plan = HexbinLowerer.lower(&hexbin_mark(), &make_ctx()).expect("lowers");
+        let plan = HexbinLowerer
+            .lower(&hexbin_mark(), &make_ctx())
+            .expect("lowers");
         // Outermost is Order on the emitted centres (x then y) — determinism.
         let QueryPlan::Order { input, keys } = plan else {
             panic!("expected Order-wrapped Aggregation");
@@ -1680,21 +1682,30 @@ mod tests {
                 ("\"delay\"".to_string(), SortDir::Asc),
             ]
         );
-        let QueryPlan::Aggregation { group_by, aggregates, .. } = *input else {
+        let QueryPlan::Aggregation {
+            group_by,
+            aggregates,
+            ..
+        } = *input
+        else {
             panic!("expected Aggregation under Order");
         };
         // Centres are emitted in DATA units aliased to the x/y channel columns.
         assert!(group_by[0].contains("AS \"time\""), "{group_by:?}");
         assert!(group_by[1].contains("AS \"delay\""), "{group_by:?}");
         // Count → reserved column; constant hex half-extents travel in-band.
-        assert!(aggregates.iter().any(|a| a.contains("COUNT(*)") && a.contains("__bf_count")));
+        assert!(aggregates
+            .iter()
+            .any(|a| a.contains("COUNT(*)") && a.contains("__bf_count")));
         assert!(aggregates.iter().any(|a| a.contains("__bf_hex_dx")));
         assert!(aggregates.iter().any(|a| a.contains("__bf_hex_dy")));
     }
 
     #[test]
     fn hexbin_sql_has_axial_and_cube_round() {
-        let plan = HexbinLowerer.lower(&hexbin_mark(), &make_ctx()).expect("lowers");
+        let plan = HexbinLowerer
+            .lower(&hexbin_mark(), &make_ctx())
+            .expect("lowers");
         let mut bindings = Vec::new();
         let sql = crate::render::render_query(&plan, &mut bindings);
         // Axial transform (pixel → hex) and the three cube-round coordinates.
@@ -1704,9 +1715,15 @@ mod tests {
         // Cube-round resolution CASE.
         assert!(sql.contains("CASE WHEN"), "{sql}");
         // Pixel-space binning reads the plot extent (fallback 580×350 area).
-        assert!(sql.contains("580") || sql.contains("350"), "plot px extent absent: {sql}");
+        assert!(
+            sql.contains("580") || sql.contains("350"),
+            "plot px extent absent: {sql}"
+        );
         // Extents via correlated subqueries over the raw table.
-        assert!(sql.contains("SELECT min(\"time\") FROM \"flights\""), "{sql}");
+        assert!(
+            sql.contains("SELECT min(\"time\") FROM \"flights\""),
+            "{sql}"
+        );
     }
 
     #[test]
@@ -1722,8 +1739,14 @@ mod tests {
         let plan = HexbinLowerer.lower(&mark, &make_ctx()).expect("lowers");
         let mut bindings = Vec::new();
         let sql = crate::render::render_query(&plan, &mut bindings);
-        assert!(sql.contains("avg(\"score\")") && sql.contains("AS \"score\""), "{sql}");
-        assert!(!sql.contains("__bf_count"), "avg fill must not emit count: {sql}");
+        assert!(
+            sql.contains("avg(\"score\")") && sql.contains("AS \"score\""),
+            "{sql}"
+        );
+        assert!(
+            !sql.contains("__bf_count"),
+            "avg fill must not emit count: {sql}"
+        );
     }
 
     #[test]
@@ -1745,10 +1768,15 @@ mod tests {
     /// centres instead of the whole mark vanishing on a NULL centre.
     #[test]
     fn f3_hexbin_degenerate_axis_maps_to_plot_midpoint() {
-        let plan = HexbinLowerer.lower(&hexbin_mark(), &make_ctx()).expect("lowers");
+        let plan = HexbinLowerer
+            .lower(&hexbin_mark(), &make_ctx())
+            .expect("lowers");
         let mut bindings = Vec::new();
         let sql = crate::render::render_query(&plan, &mut bindings);
-        assert!(!sql.contains("nullif"), "degenerate axis must not NULL the pixel: {sql}");
+        assert!(
+            !sql.contains("nullif"),
+            "degenerate axis must not NULL the pixel: {sql}"
+        );
         assert!(
             sql.contains("= 0 THEN 290") && sql.contains("= 0 THEN 175"),
             "degenerate-axis midpoint mapping absent: {sql}"
@@ -1769,7 +1797,12 @@ mod tests {
         let sql = crate::render::render_query(&plan, &mut bindings);
         // Every extent subquery (min/max on each axis) is scoped by the filter —
         // no bare `... FROM "flights")` extent survives.
-        for agg in ["min(\"time\")", "max(\"time\")", "min(\"delay\")", "max(\"delay\")"] {
+        for agg in [
+            "min(\"time\")",
+            "max(\"time\")",
+            "min(\"delay\")",
+            "max(\"delay\")",
+        ] {
             assert!(
                 sql.contains(&format!("{agg} FROM \"flights\" WHERE (delay > 10)")),
                 "extent {agg} not filtered: {sql}"
@@ -1785,8 +1818,14 @@ mod tests {
 
     fn cell_mark(fill: Option<ValueOrParamRef<SpecValue>>) -> Mark {
         let mut options: IndexMap<String, ValueOrParamRef<SpecValue>> = IndexMap::new();
-        options.insert("x".into(), ValueOrParamRef::Value(SpecValue::String("day".into())));
-        options.insert("y".into(), ValueOrParamRef::Value(SpecValue::String("hour".into())));
+        options.insert(
+            "x".into(),
+            ValueOrParamRef::Value(SpecValue::String("day".into())),
+        );
+        options.insert(
+            "y".into(),
+            ValueOrParamRef::Value(SpecValue::String("hour".into())),
+        );
         if let Some(f) = fill {
             options.insert("fill".into(), f);
         }
@@ -1813,10 +1852,18 @@ mod tests {
             panic!("expected Order-wrapped Aggregation");
         };
         assert_eq!(keys.len(), 2, "deterministic order over both categories");
-        let QueryPlan::Aggregation { group_by, aggregates, .. } = *input else {
+        let QueryPlan::Aggregation {
+            group_by,
+            aggregates,
+            ..
+        } = *input
+        else {
             panic!("expected Aggregation");
         };
-        assert_eq!(group_by, vec!["\"day\"".to_string(), "\"hour\"".to_string()]);
+        assert_eq!(
+            group_by,
+            vec!["\"day\"".to_string(), "\"hour\"".to_string()]
+        );
         assert!(aggregates[0].contains("COUNT(*)") && aggregates[0].contains("__bf_count"));
     }
 
@@ -1829,7 +1876,10 @@ mod tests {
         let plan = CellLowerer.lower(&mark, &make_ctx()).expect("lowers");
         let mut bindings = Vec::new();
         let sql = crate::render::render_query(&plan, &mut bindings);
-        assert!(sql.contains("avg(\"value\")") && sql.contains("AS \"value\""), "{sql}");
+        assert!(
+            sql.contains("avg(\"value\")") && sql.contains("AS \"value\""),
+            "{sql}"
+        );
         assert!(sql.contains("GROUP BY 1, 2"), "{sql}");
     }
 
@@ -1849,7 +1899,10 @@ mod tests {
         let plan = CellLowerer.lower(&mark, &make_ctx()).expect("lowers");
         let mut bindings = Vec::new();
         let sql = crate::render::render_query(&plan, &mut bindings);
-        assert!(sql.contains("AND (value > 5)"), "cell row filter absent: {sql}");
+        assert!(
+            sql.contains("AND (value > 5)"),
+            "cell row filter absent: {sql}"
+        );
     }
 
     #[test]
@@ -1859,7 +1912,12 @@ mod tests {
         let mark = cell_mark(Some(ValueOrParamRef::Value(SpecValue::String("v".into()))));
         let plan = CellLowerer.lower(&mark, &make_ctx()).expect("lowers");
         // SimpleLowerer produces a bare Source (no GROUP BY).
-        assert_eq!(plan, QueryPlan::Source { table: "events".to_string() });
+        assert_eq!(
+            plan,
+            QueryPlan::Source {
+                table: "events".to_string()
+            }
+        );
     }
 
     #[test]
@@ -1870,7 +1928,9 @@ mod tests {
             data: None, // DATALESS
             options: IndexMap::new(),
         };
-        let plan = HexgridLowerer.lower(&mark, &make_ctx()).expect("dataless lowers");
+        let plan = HexgridLowerer
+            .lower(&mark, &make_ctx())
+            .expect("dataless lowers");
         assert!(matches!(plan, QueryPlan::Singleton { .. }));
         let mut bindings = Vec::new();
         let sql = crate::render::render_query(&plan, &mut bindings);
@@ -1886,14 +1946,8 @@ mod tests {
             options: IndexMap::new(),
         };
         let predicates = vec![
-            (
-                "view_a".to_string(),
-                Predicate::Expr("x > 1".to_string()),
-            ),
-            (
-                "view_b".to_string(),
-                Predicate::Expr("y < 10".to_string()),
-            ),
+            ("view_a".to_string(), Predicate::Expr("x > 1".to_string())),
+            ("view_b".to_string(), Predicate::Expr("y < 10".to_string())),
         ];
         let result = compile_selection(&selection, "view_a", &predicates);
         assert_eq!(

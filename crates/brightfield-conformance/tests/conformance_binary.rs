@@ -61,10 +61,7 @@ fn dfconf_cli_layer_2_curated_all_pass() {
         .lines()
         .find(|l| l.starts_with("SUMMARY:"))
         .expect("missing SUMMARY footer");
-    assert!(
-        summary.contains("failed=0"),
-        "expected failed=0: {summary}"
-    );
+    assert!(summary.contains("failed=0"), "expected failed=0: {summary}");
     assert!(
         summary.contains("passed=10"),
         "expected passed=10 on layer-2 curated: {summary}"

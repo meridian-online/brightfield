@@ -345,7 +345,13 @@ mod tests {
 
         let render = RL::with_margins_and_insets(640.0, 480.0, grown, insets);
         let ui = ChartLayout::with_margins_and_insets(
-            640.0, 480.0, grown.left, grown.top, grown.right, grown.bottom, insets,
+            640.0,
+            480.0,
+            grown.left,
+            grown.top,
+            grown.right,
+            grown.bottom,
+            insets,
         );
         let area = ui.plot_area();
         let (rx0, rx1) = render.x_range();
@@ -424,7 +430,9 @@ mod tests {
         // edge is the range end and would invert to exactly 100.0, so this
         // assertion fails if insets no-op.
         let frame_x_end = 640.0 - DEFAULT_MARGIN_RIGHT; // 620, pre-inset edge
-        let v_frame = scale.inverse_f64(frame_x_end).expect("linear is invertible");
+        let v_frame = scale
+            .inverse_f64(frame_x_end)
+            .expect("linear is invertible");
         assert!(
             v_frame > 100.0,
             "un-inset frame edge {frame_x_end} inverts to {v_frame}, must be past domain max"
@@ -448,7 +456,13 @@ mod tests {
         };
         let grown = grow_margins(Margins::default(), &titles);
         let ui = ChartLayout::with_margins_and_insets(
-            640.0, 480.0, grown.left, grown.top, grown.right, grown.bottom, Insets::default(),
+            640.0,
+            480.0,
+            grown.left,
+            grown.top,
+            grown.right,
+            grown.bottom,
+            Insets::default(),
         );
         let render = RL::with_margins_and_insets(640.0, 480.0, grown, Insets::default());
         let area = ui.plot_area();
@@ -463,7 +477,10 @@ mod tests {
         assert!((scale.inverse_f64(area.x0).unwrap() - 0.0).abs() < 1e-9);
         assert!((scale.inverse_f64(area.x1).unwrap() - 100.0).abs() < 1e-9);
         // The y-title grew the left margin, shifting the range start off default 40.
-        assert!(area.x0 > 40.0, "grown left margin moved the range start inward");
+        assert!(
+            area.x0 > 40.0,
+            "grown left margin moved the range start inward"
+        );
     }
 
     #[test]

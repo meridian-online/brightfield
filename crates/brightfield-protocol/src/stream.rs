@@ -85,14 +85,14 @@ impl StreamState {
         };
         if raw.event.as_deref() == Some("run_complete") {
             self.complete = true;
-            self.outcome = raw
-                .outcome
-                .as_deref()
-                .and_then(|o| serde_json::from_value(serde_json::Value::String(o.to_string())).ok());
+            self.outcome = raw.outcome.as_deref().and_then(|o| {
+                serde_json::from_value(serde_json::Value::String(o.to_string())).ok()
+            });
             return true;
         }
         if let (Some(step), Some(state)) = (raw.step, raw.state) {
-            self.steps.insert(step, StepStreamEntry { state, ts: raw.ts });
+            self.steps
+                .insert(step, StepStreamEntry { state, ts: raw.ts });
             return true;
         }
         false
