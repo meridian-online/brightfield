@@ -766,10 +766,12 @@ pub struct CanvasSlot {
 ///
 /// The generation catches a drill/scope re-layout an (expanded, flow) pair
 /// alone would miss; the device size catches a resize or a scale change; and
-/// `dark` catches a theme switch, which since this increment changes **every
-/// colour in the raster**, not just the page tone behind it. Held as a named
-/// struct rather than an anonymous tuple because [`CanvasKey::differs_only_by`]
-/// is what a test can hold the mode component to — a bare tuple can lose a
+/// `dark` catches a theme switch, which since this increment changes most of
+/// the raster's colours rather than only the page tone behind them — a few
+/// solids (the issue badge, its glyph, the status tints) are paints and stay
+/// put in both modes. Held as a named struct rather than an anonymous tuple
+/// because `differs_only_by_mode` is what a test can hold the mode component
+/// to — a bare tuple can lose a
 /// field to a refactor and stay compiling and green.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CanvasKey {

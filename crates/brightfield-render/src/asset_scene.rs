@@ -13,7 +13,9 @@
 //!
 //! Every colour is resolved for the caller's mode through [`AssetInk`], which
 //! reads the same [`meridian_design::semantic`] layer the workbench chrome
-//! reads. Nothing in this module names a light-mode token any more.
+//! reads. No colour here is resolved without asking the mode first — the
+//! light scales still appear, but only as the light branch of that question,
+//! never as a value settled before it is asked.
 
 use kurbo::{Affine, BezPath, Circle, Rect, RoundedRect, Stroke};
 use peniko::{Color, Fill};
@@ -39,7 +41,7 @@ use crate::text::{draw_text, TextAnchor, LABEL_SIZE};
 /// same question, so they cannot drift.
 ///
 /// Where a slot names the thing being painted, the semantic layer is used and
-/// the field says which slot. Four values sit off the semantic layer's named
+/// the field says which slot. Three values sit off the semantic layer's named
 /// slots and take the mode's raw gray scale instead — the crate docs sanction
 /// exactly that ("drop to a raw scale only when the thing being coloured
 /// genuinely has no semantic name yet"), and each says why at the field. In
@@ -71,10 +73,12 @@ pub struct AssetInk {
     /// [`Self::badge_glyph`] this one does not move with the mode: a bright
     /// solid is a paint, not a plane.
     pub issue: Color,
-    /// Glyph drawn on the amber issue badge. `text.on_solid` is the light
-    /// surface tone in **both** modes by design ("a paint, not a
-    /// mode-dependent slot"), so this is one value that legitimately does not
-    /// move with the mode.
+    /// Glyph drawn on the amber issue badge — the Warning role's own
+    /// foreground, which is dark ink rather than the near-white every other
+    /// role takes. The design crate says so twice, and means it: near-white on
+    /// amber step 9 measures 2.47:1, dark ink on it 6.45:1. Like
+    /// [`Self::issue`] it does not move with the mode, because a bright solid
+    /// and the ink chosen to sit on it are both paints rather than planes.
     pub badge_glyph: Color,
     /// Muted fill for INTERNAL statement intermediates — the sunken plane.
     pub internal_fill: Color,
@@ -122,7 +126,7 @@ impl AssetInk {
             edge: ink(sem.borders.subtle),
             accent: ink(sem.borders.focus),
             issue: ink(sem.role(meridian_design::Role::Warning).background.base),
-            badge_glyph: ink(sem.text.on_solid),
+            badge_glyph: ink(sem.role(meridian_design::Role::Warning).foreground.base),
             internal_fill: ink(sem.surfaces.sunken),
             chip_fill: ink(gray[2]),
             label: ink(sem.text.primary),
@@ -791,18 +795,28 @@ steps:
     }
 
     #[test]
-    fn pds_badge_glyph_is_an_ink_token_not_raw_white() {
-        // The issue-badge glyph colour goes through the meridian-design ink()
-        // boundary, not an ad-hoc peniko Color::WHITE. It is `text.on_solid`,
-        // which is the light surface tone in BOTH modes by design — so this
-        // holds for dark too, and the assertion says so rather than assuming.
+    fn pds_badge_glyph_is_the_warning_roles_own_foreground() {
+        // Amber is the one role whose foreground is dark ink rather than the
+        // near-white every other role takes, because near-white on amber step 9
+        // measures 2.47:1 and the dark ink 6.45:1. Taking `text.on_solid` here
+        // would resolve through the semantic layer and still be wrong, which is
+        // the failure this pins. Invariant across modes for the same reason the
+        // badge itself is: a solid and the ink chosen for it are both paints.
+        let warning_fg = |dark| {
+            ink(meridian_design::semantic(dark)
+                .role(meridian_design::Role::Warning)
+                .foreground
+                .base)
+        };
         for dark in [false, true] {
             let p = AssetInk::for_mode(dark);
-            assert_eq!(
-                p.badge_glyph,
-                ink(meridian_design::chrome::INK_LIGHT.surface)
-            );
+            assert_eq!(p.badge_glyph, warning_fg(dark), "dark={dark}");
             assert_ne!(p.badge_glyph, Color::WHITE);
+            assert_ne!(
+                p.badge_glyph,
+                ink(meridian_design::semantic(dark).text.on_solid),
+                "dark={dark}: on_solid is the slot this must NOT take"
+            );
         }
     }
 
@@ -825,7 +839,13 @@ steps:
         assert_eq!(p.edge, ink(GRAY_LIGHT[5]), "edge");
         assert_eq!(p.accent, ink(INK_LIGHT.focus), "accent");
         assert_eq!(p.issue, ink(AMBER_LIGHT[8]), "issue");
-        assert_eq!(p.badge_glyph, ink(INK_LIGHT.surface), "badge_glyph");
+        // badge_glyph is the ONE field that deliberately does not match the
+        // const it replaced. The old `BADGE_GLYPH_COLOUR` was the near-white
+        // surface tone, which measures 2.47:1 on amber step 9; the Warning
+        // role's own foreground measures 6.45:1, and the design crate names it
+        // as the badge ink twice. Everything else here is byte-parity, so this
+        // exception is stated rather than quietly dropped from the list.
+        assert_ne!(p.badge_glyph, ink(INK_LIGHT.surface), "badge_glyph");
         assert_eq!(p.internal_fill, ink(GRAY_LIGHT[1]), "internal_fill");
         assert_eq!(p.chip_fill, ink(GRAY_LIGHT[2]), "chip_fill");
         assert_eq!(p.label, ink(INK_LIGHT.ink_primary), "label");
@@ -861,10 +881,11 @@ steps:
         // The issue badge is the one *pair* that is mode-invariant, and it was
         // this test failing that established it: Amber step 9 is byte-identical
         // in AMBER_LIGHT and AMBER_DARK (#da950b), because a bright solid is a
-        // paint rather than a plane, and `text.on_solid` is likewise the light
-        // surface tone in both modes. So an amber warning badge with near-white
-        // ink on it is the same badge in either theme — which is right, and is
-        // asserted here rather than assumed.
+        // paint rather than a plane. The glyph on it is invariant for the same
+        // reason — and it is the Warning role's own dark foreground, not the
+        // near-white every other role takes, because near-white on amber
+        // measures 2.47:1 against the dark ink's 6.45:1. Asserted rather than
+        // assumed; a contrast gate covers the ratio itself.
         assert_eq!(
             l.issue, d.issue,
             "the Warning solid is one paint, both modes"
