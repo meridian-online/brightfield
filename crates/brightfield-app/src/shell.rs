@@ -429,6 +429,13 @@ impl CanvasPanel {
     /// the working spec, and reload every plot from it. A no-op past a commit
     /// barrier / on an empty stack is logged with its reason.
     fn undo(&mut self, _: &Undo, window: &mut Window, cx: &mut Context<Self>) {
+        // A `Spec` + its analysis is much larger than a `String`, so
+        // clippy::large_enum_variant wants the big variant boxed. This enum is a
+        // function-local control-flow carrier: it is constructed once per undo
+        // keystroke and matched immediately on the next line, so the size
+        // difference buys one stack move that boxing would trade for a heap
+        // allocation plus an indirection. Not worth obscuring the pattern.
+        #[allow(clippy::large_enum_variant)]
         enum UndoAction {
             Reload(Spec, brightfield_spec::analysis::SpecAnalysis),
             Refused(String),
@@ -733,7 +740,7 @@ impl Render for CanvasPanel {
         // history lives in the dedicated bottom-dock CommandLog panel.
         let command_readout: Option<usize> =
             (grammar_chrome_visible(self.presentation.read(cx).mode))
-                .then(|| self.command.as_ref())
+                .then_some(self.command.as_ref())
                 .flatten()
                 .map(|s| s.log.read(cx).uncommitted())
                 .filter(|n| *n > 0);
@@ -1568,6 +1575,12 @@ impl WorkspaceRoot {
     /// Assemble the dock over the four panels, restoring the saved layout
     /// when usable (missing/corrupt/version-mismatch → default), and wire
     /// the save triggers.
+    // 9 arguments: the five panels this root docks, the presentation state they
+    // share, the reload flag, and gpui's `window`/`cx` — which every gpui
+    // constructor carries and which alone put this two over clippy's threshold.
+    // There is no grouping of the panels that is not just a struct named
+    // "the arguments to new".
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         canvas: Entity<CanvasPanel>,
         editor: Entity<EditorPanel>,
@@ -2512,6 +2525,9 @@ impl WorkspaceRoot {
     /// Center canvas + left sidebar + right editor at their default sizes,
     /// plus the closed bottom Log dock. Every item is
     /// stack-rooted (see [`Self::stack_rooted_tab`]).
+    // 8 arguments, for the same reason as `new`: the dock area, the five panels
+    // being placed into it, and gpui's `window`/`cx`.
+    #[allow(clippy::too_many_arguments)]
     fn default_layout(
         dock_area: &Entity<DockArea>,
         canvas: &Entity<CanvasPanel>,
@@ -3627,6 +3643,11 @@ mod tests {
     /// Assemble the full four-panel WorkspaceRoot in a test window, with the
     /// persistence inputs injected (`raw` = the saved layout JSON; state
     /// path off so no file I/O races other tests).
+    // The `Rc<RefCell<Option<(Entity<_>, Entity<_>)>>>` slot below is the plain
+    // spelling of "a cell two gpui closures write their handles into". Naming it
+    // via a `type` would hide the shape that makes the pattern legible, in a
+    // test helper with one call site for it.
+    #[allow(clippy::type_complexity)]
     fn build_shell(cx: &mut TestAppContext, raw: Option<String>) -> TestShell {
         cx.update(gpui_component::init);
         let (feedback_log, presentation) = cx.update(|cx| {

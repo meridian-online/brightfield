@@ -19,8 +19,7 @@
 //! a String, an Integer an Integer — because the variant identity is
 //! load-bearing at SQL emit (quoting/escaping, emit.rs).
 
-use brightfield_engine::error::EngineError;
-use brightfield_engine::RecordBatch;
+use brightfield_engine::DispatchResult;
 use brightfield_spec::ast::{Input, SpecValue, ValueOrParamRef};
 use brightfield_spec::vocab::InputKind;
 
@@ -300,10 +299,7 @@ pub fn commit_menu_release<D: ParamDispatcher>(
     binding: &MenuBinding,
     current: Option<&SpecValue>,
     dispatcher: &mut D,
-) -> (
-    MenuState,
-    Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>,
-) {
+) -> (MenuState, Vec<DispatchResult>) {
     if let MenuState::Committed { index } = *state {
         let Some(value) = binding.options.get(index) else {
             return (MenuState::Closed, Vec::new());
@@ -339,11 +335,7 @@ mod tests {
     }
 
     impl ParamDispatcher for RecordingDispatcher {
-        fn dispatch(
-            &mut self,
-            name: &str,
-            value: SpecValue,
-        ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
+        fn dispatch(&mut self, name: &str, value: SpecValue) -> Vec<DispatchResult> {
             self.calls.push((name.to_string(), value));
             Vec::new()
         }

@@ -13,7 +13,7 @@ use std::rc::Rc;
 use gpui::{div, px, Context, Entity, IntoElement, ParentElement, Render, Styled, Window};
 use meridian_design::chrome::OVERLAY_LIGHT;
 
-use brightfield_engine::error::EngineError;
+use brightfield_engine::DispatchResult;
 use brightfield_engine::RecordBatch;
 use brightfield_render::channel::Channel;
 use brightfield_render::channel::ChannelMap;
@@ -314,10 +314,7 @@ pub fn commit_brush_release_multi<D: SelectionDispatcher>(
     interaction: &InteractionState,
     bindings: &[BrushBinding],
     dispatcher: &mut D,
-) -> (
-    InteractionState,
-    Vec<(String, Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>)>,
-) {
+) -> (InteractionState, Vec<(String, Vec<DispatchResult>)>) {
     if let InteractionState::Brushing { start, current } = interaction {
         let rect = kurbo::Rect::new(
             start.x.min(current.x),
@@ -365,10 +362,7 @@ pub fn commit_brush_release<D: SelectionDispatcher>(
     interaction: &InteractionState,
     binding: &BrushBinding,
     dispatcher: &mut D,
-) -> (
-    InteractionState,
-    Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>,
-) {
+) -> (InteractionState, Vec<DispatchResult>) {
     let (next_state, mut aggregated) =
         commit_brush_release_multi(interaction, std::slice::from_ref(binding), dispatcher);
     let results = aggregated.pop().map(|(_, r)| r).unwrap_or_default();
@@ -385,10 +379,7 @@ pub fn commit_brush_clear<D: SelectionDispatcher>(
     interaction: &InteractionState,
     binding: &BrushBinding,
     dispatcher: &mut D,
-) -> (
-    InteractionState,
-    Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>,
-) {
+) -> (InteractionState, Vec<DispatchResult>) {
     let should_clear = match interaction {
         InteractionState::Idle => true,
         InteractionState::Brushing { start, current } => {
@@ -437,10 +428,7 @@ pub fn commit_click_multi<D: SelectionDispatcher>(
     scales: &ScaleSet,
     bindings: &[BrushBinding],
     dispatcher: &mut D,
-) -> (
-    InteractionState,
-    Vec<(String, Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>)>,
-) {
+) -> (InteractionState, Vec<(String, Vec<DispatchResult>)>) {
     // (selection, contributor) pairs a point binding SELECTED this click, so a
     // sibling interval (or point-miss) on the SAME target doesn't clear the point
     // we just set — a plot may carry both a toggle and an interval interactor.
@@ -544,7 +532,7 @@ fn resolve_point_value(
             Some(v) => v,
             None => continue,
         };
-        if best.as_ref().map_or(true, |(d, _)| hit.distance < *d) {
+        if best.as_ref().is_none_or(|(d, _)| hit.distance < *d) {
             best = Some((hit.distance, value));
         }
     }
@@ -694,18 +682,14 @@ mod tests {
             name: &str,
             contributor: ComponentPath,
             predicate: Predicate,
-        ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
+        ) -> Vec<DispatchResult> {
             self.calls.push((name.to_string(), contributor, predicate));
             // Stub return: subscribers, if any, are mocked as zero —
             // this double's contract is "did dispatch get called?".
             Vec::new()
         }
 
-        fn clear(
-            &mut self,
-            name: &str,
-            contributor: ComponentPath,
-        ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
+        fn clear(&mut self, name: &str, contributor: ComponentPath) -> Vec<DispatchResult> {
             self.clear_calls.push((name.to_string(), contributor));
             Vec::new()
         }

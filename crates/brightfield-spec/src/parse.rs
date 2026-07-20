@@ -1345,10 +1345,7 @@ fn string_to_spec_value(s: &str) -> SpecValue {
 /// comparison purposes.
 fn version_matches(declared: &str) -> bool {
     let (maj_sup, min_sup) = crate::SUPPORTED_MOSAIC_MAJOR_MINOR;
-    let stem = declared
-        .split(|c: char| c == '-' || c == '+')
-        .next()
-        .unwrap_or("");
+    let stem = declared.split(['-', '+']).next().unwrap_or("");
     let mut parts = stem.split('.');
     let maj = parts.next().and_then(|x| x.parse::<u16>().ok());
     let min = parts.next().and_then(|x| x.parse::<u16>().ok());

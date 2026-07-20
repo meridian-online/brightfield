@@ -279,14 +279,16 @@ impl Element for GpuiChartSurface {
             let state = self.state.read(cx);
             (state.width(), state.height())
         };
-        let mut style = Style::default();
-        style.size = Size {
-            width: gpui::Length::Definite(gpui::DefiniteLength::Absolute(
-                gpui::AbsoluteLength::Pixels(px(width as f32)),
-            )),
-            height: gpui::Length::Definite(gpui::DefiniteLength::Absolute(
-                gpui::AbsoluteLength::Pixels(px(height as f32)),
-            )),
+        let style = Style {
+            size: Size {
+                width: gpui::Length::Definite(gpui::DefiniteLength::Absolute(
+                    gpui::AbsoluteLength::Pixels(px(width as f32)),
+                )),
+                height: gpui::Length::Definite(gpui::DefiniteLength::Absolute(
+                    gpui::AbsoluteLength::Pixels(px(height as f32)),
+                )),
+            },
+            ..Default::default()
         };
         let layout_id = window.request_layout(style, [], cx);
         (layout_id, ())

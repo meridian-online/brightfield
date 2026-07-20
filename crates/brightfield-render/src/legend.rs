@@ -417,7 +417,7 @@ mod tests {
 
         let encoding = scene.encoding();
         assert!(
-            encoding.path_tags.len() > 0,
+            !encoding.path_tags.is_empty(),
             "legend should produce scene content for 4 categories"
         );
     }
@@ -461,7 +461,7 @@ mod tests {
         let mut scene = Scene::new();
         render_colour_legend_at(&mut scene, 640.0, 40.0, &colour_scale_3());
         assert!(
-            scene.encoding().path_tags.len() > 0,
+            !scene.encoding().path_tags.is_empty(),
             "positioned legend should draw swatches + panel at its origin"
         );
     }
@@ -517,7 +517,7 @@ mod tests {
         let mut scene = Scene::new();
         render_sequential_legend_at(&mut scene, 40.0, 40.0, &sequential_scale());
         assert!(
-            scene.encoding().path_tags.len() > 0,
+            !scene.encoding().path_tags.is_empty(),
             "gradient bar should draw sampled quads at its origin"
         );
 
@@ -557,7 +557,7 @@ mod tests {
         let mut scene3 = Scene::new();
         render_colour_legend_at(&mut scene3, 40.0, 40.0, &sequential_scale());
         assert!(
-            scene3.encoding().path_tags.len() > 0,
+            !scene3.encoding().path_tags.is_empty(),
             "dispatch draws the bar"
         );
     }

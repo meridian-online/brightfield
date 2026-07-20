@@ -532,7 +532,7 @@ mod tests {
 
         let encoding = scene.encoding();
         assert!(
-            encoding.path_tags.len() > 0,
+            !encoding.path_tags.is_empty(),
             "x-axis should produce scene content"
         );
     }
@@ -553,7 +553,7 @@ mod tests {
 
         let encoding = scene.encoding();
         assert!(
-            encoding.path_tags.len() > 0,
+            !encoding.path_tags.is_empty(),
             "y-axis should produce scene content"
         );
     }

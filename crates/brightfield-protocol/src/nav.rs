@@ -419,7 +419,8 @@ fn longest_path_layers(
         .collect();
     let mut ready: BTreeSet<AssetId> = indegree
         .iter()
-        .filter_map(|(id, d)| (*d == 0).then(|| id.clone()))
+        .filter(|&(_id, d)| *d == 0)
+        .map(|(id, _d)| id.clone())
         .collect();
     while let Some(id) = ready.iter().next().cloned() {
         ready.remove(&id);
@@ -628,7 +629,7 @@ steps:
         assert!(nav.breadcrumb().is_empty());
         let root = nav.cursor().cloned().unwrap();
         assert!(nav.drill_in());
-        assert_eq!(nav.breadcrumb(), &[root.clone()]);
+        assert_eq!(nav.breadcrumb(), std::slice::from_ref(&root));
         // Move down, drill again — the breadcrumb tracks the path.
         nav.to_consumer();
         let child = nav.cursor().cloned().unwrap();
@@ -636,7 +637,7 @@ steps:
         assert_eq!(nav.breadcrumb(), &[root.clone(), child.clone()]);
         // Esc pops one level and returns the cursor to the parent.
         assert!(nav.drill_out());
-        assert_eq!(nav.breadcrumb(), &[root.clone()]);
+        assert_eq!(nav.breadcrumb(), std::slice::from_ref(&root));
         assert_eq!(nav.cursor().unwrap(), &root);
         // Esc to empty, then Esc on an empty stack is a wall.
         assert!(nav.drill_out());

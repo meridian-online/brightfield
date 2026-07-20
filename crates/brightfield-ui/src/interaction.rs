@@ -749,7 +749,7 @@ mod tests {
 
         let encoding = scene.encoding();
         assert!(
-            encoding.path_tags.len() > 0,
+            !encoding.path_tags.is_empty(),
             "brush overlay should produce scene content"
         );
         // Key assertion: this test proves overlay renders without any engine
@@ -768,7 +768,7 @@ mod tests {
 
         let encoding = scene.encoding();
         assert!(
-            encoding.path_tags.len() > 0,
+            !encoding.path_tags.is_empty(),
             "hover overlay should produce scene content"
         );
     }
@@ -1049,7 +1049,7 @@ mod tests {
 
         let encoding = scene.encoding();
         assert!(
-            encoding.path_tags.len() > 0,
+            !encoding.path_tags.is_empty(),
             "hovering without nearest should still render highlight circle"
         );
     }

@@ -145,8 +145,8 @@ struct Dashboard {
     height: u32,
     plots: Vec<PlotRender>,
     sliders: Vec<SliderPlacement>,
-    /// Resolved menu-family widget placements — options resolved
-    /// + reconciled at assembly. The window hosts each as a menu element; the
+    /// Resolved menu-family widget placements — options resolved and
+    /// reconciled at assembly. The window hosts each as a menu element; the
     /// headless/PNG path draws the resting twins.
     menus: Vec<MenuPlacement>,
     legends: Vec<LegendPlacement>,
@@ -1049,7 +1049,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
                 batch,
                 channel_map: &m.channels,
                 renderer,
-                layout: layout.clone(),
+                layout,
                 view_extent: None,
                 // Filled in after the loop, once `highlight_states` is stable
                 // (pushing into the Vec would invalidate a borrow taken here).
@@ -1112,7 +1112,7 @@ fn build_everything(spec_path: &str) -> Result<(Dashboard, LiveParts), String> {
             insets,
         );
         for d in &mut chart_data {
-            d.layout = layout.clone();
+            d.layout = layout;
         }
 
         let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
@@ -4151,7 +4151,7 @@ plot:
         let layout = ChartLayout::new(640.0, 480.0);
         let renderer: Box<dyn MarkRenderer> = Box::new(DotRenderer);
 
-        let chart_data = vec![ChartData {
+        let chart_data = [ChartData {
             batch,
             channel_map: &cm,
             renderer: renderer.as_ref(),
@@ -4169,7 +4169,7 @@ plot:
         // Scene should be non-empty (the valid dot mark rendered).
         let encoding = scene.encoding();
         assert!(
-            encoding.path_tags.len() > 0,
+            !encoding.path_tags.is_empty(),
             "scene should have content from the valid mark"
         );
 

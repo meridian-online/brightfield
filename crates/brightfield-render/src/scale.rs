@@ -1662,8 +1662,8 @@ mod tests {
 
         // Midpoint of a 2-stop ramp is the channel-wise average.
         let mid = scale.map_continuous(5.0);
-        for c in 0..3 {
-            assert!((mid[c] - 0.5).abs() < 1e-6, "channel {c} mid = {}", mid[c]);
+        for (c, v) in mid.iter().take(3).enumerate() {
+            assert!((v - 0.5).abs() < 1e-6, "channel {c} mid = {v}");
         }
 
         // Out-of-domain values clamp to the endpoints.

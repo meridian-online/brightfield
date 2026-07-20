@@ -18,10 +18,9 @@ fn repo_root() -> PathBuf {
 }
 
 fn bin_path() -> PathBuf {
-    let target = PathBuf::from(
+    PathBuf::from(
         std::env::var("CARGO_BIN_EXE_generate-deviations").expect("cargo exposes bin path"),
-    );
-    target
+    )
 }
 
 fn tmp_dir(suffix: &str) -> PathBuf {

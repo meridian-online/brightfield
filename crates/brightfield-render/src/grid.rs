@@ -69,7 +69,7 @@ mod tests {
 
         let encoding = scene.encoding();
         assert!(
-            encoding.path_tags.len() > 0,
+            !encoding.path_tags.is_empty(),
             "grid should produce scene content"
         );
     }

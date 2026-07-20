@@ -163,6 +163,13 @@ pub trait MarkRenderer {
     /// `prev_positions` are pixel (x, y) pairs from the previous frame.
     /// `t` is the interpolation factor (0.0 = prev, 1.0 = current).
     /// Default implementation forwards to `render()`, ignoring interpolation.
+    ///
+    /// 8 arguments against clippy's threshold of 7. Every one is a distinct
+    /// input the renderer needs, and the two extra over `render` are precisely
+    /// what "interpolated" means (`prev_positions` and `t`). Bundling them into
+    /// a context struct would change every implementor and every call site of a
+    /// public trait to satisfy an arbitrary count.
+    #[allow(clippy::too_many_arguments)]
     fn render_interpolated(
         &self,
         scene: &mut Scene,
@@ -864,6 +871,11 @@ impl RectRenderer {
     /// Per-row data-space edges `(a, b)` for one axis. For a ranged axis these
     /// are the two interval columns; for a value axis they are the zero baseline
     /// and the value column. `None` when a required channel/column is absent.
+    // The return type IS the documentation here: two per-row columns of
+    // optional f64, one per edge. A `type` alias would name it something like
+    // `AxisEdges` and force the reader to jump to find out it means exactly
+    // what it already says. Single call site, private to the impl.
+    #[allow(clippy::type_complexity)]
     fn axis_edges(
         &self,
         ranged: bool,
@@ -885,6 +897,14 @@ impl RectRenderer {
 }
 
 impl MarkRenderer for RectRenderer {
+    // clippy::float_equality_without_abs fires on the `(right - left) <
+    // f64::EPSILON` degeneracy guards below. Taking its advice would change what
+    // the guard rejects: `(right - left).abs() < EPSILON` skips only a rect that
+    // is degenerate, and KEEPS one whose edges are inverted (right < left), which
+    // is exactly the malformed path the guard exists to drop before it reaches
+    // the rasteriser. The unsigned comparison is deliberate — it means "no
+    // positive extent", not "the two edges are equal".
+    #[allow(clippy::float_equality_without_abs)]
     fn render(
         &self,
         scene: &mut Scene,
@@ -2677,6 +2697,11 @@ impl HexgridRenderer {
     /// cross-mark seam we deliberately do not build here; the ratified use is
     /// hexgrid + hexbin, where this is correct. Revisit if hexgrid-over-non-
     /// hexbin becomes a supported composition.
+    // clippy::neg_cmp_op_on_partial_ord flags `!(b > 0.0)`. That form is the
+    // point: these are f64s that reach here from scale inversion and from a
+    // user-supplied `binWidth`, so NaN is reachable. `!(b > 0.0)` rejects NaN;
+    // the suggested `b <= 0.0` accepts it and lets a NaN lattice pitch through.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
     fn sibling_lattice(&self, x_scale: &Scale, y_scale: &Scale) -> Option<SiblingLattice> {
         let (x0d, x1d, rsx, rex) = linear_parts(x_scale)?;
         let (y0d, y1d, rsy, rey) = linear_parts(y_scale)?;
@@ -3499,76 +3524,76 @@ fn collect_polygon_rings(coords: &serde_json::Value, out: &mut Vec<Vec<(f64, f64
 /// TODO(card-runtime-reactivity): downstream registry will own per-mark
 /// lifecycle and re-render policy; for now this is a stateless lookup.
 pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>)> {
-    let mut v: Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>)> = Vec::new();
-    v.push((MarkKind::Dot, Box::new(DotRenderer)));
-    v.push((MarkKind::DotX, Box::new(DotRenderer)));
-    v.push((MarkKind::DotY, Box::new(DotRenderer)));
-    v.push((MarkKind::Circle, Box::new(DotRenderer)));
-    v.push((MarkKind::BarX, Box::new(BarRenderer)));
-    v.push((MarkKind::BarY, Box::new(BarRenderer)));
-    v.push((MarkKind::Line, Box::new(LineRenderer)));
-    v.push((MarkKind::LineX, Box::new(LineRenderer)));
-    v.push((MarkKind::LineY, Box::new(LineRenderer)));
-    v.push((
-        MarkKind::AreaY,
-        Box::new(AreaRenderer { axis: AreaAxis::Y }),
-    ));
-    v.push((
-        MarkKind::AreaX,
-        Box::new(AreaRenderer { axis: AreaAxis::X }),
-    ));
-    v.push((
-        MarkKind::RuleX,
-        Box::new(RuleRenderer { axis: RuleAxis::X }),
-    ));
-    v.push((
-        MarkKind::RuleY,
-        Box::new(RuleRenderer { axis: RuleAxis::Y }),
-    ));
-    v.push((
-        MarkKind::Rect,
-        Box::new(RectRenderer { kind: RectKind::Xy }),
-    ));
-    v.push((
-        MarkKind::RectX,
-        Box::new(RectRenderer { kind: RectKind::X }),
-    ));
-    v.push((
-        MarkKind::RectY,
-        Box::new(RectRenderer { kind: RectKind::Y }),
-    ));
-    v.push((MarkKind::Text, Box::new(TextRenderer)));
-    v.push((
-        MarkKind::DensityX,
-        Box::new(Density1DRenderer {
-            axis: DensityAxis::X,
-        }),
-    ));
-    v.push((
-        MarkKind::DensityY,
-        Box::new(Density1DRenderer {
-            axis: DensityAxis::Y,
-        }),
-    ));
-    v.push((MarkKind::Density, Box::new(Density2DRenderer)));
-    v.push((MarkKind::Raster, Box::new(RasterRenderer::default())));
-    v.push((MarkKind::Heatmap, Box::new(HeatmapRenderer::default())));
-    v.push((MarkKind::Cell, Box::new(CellRenderer::default())));
-    v.push((MarkKind::Contour, Box::new(ContourRenderer::default())));
-    v.push((MarkKind::Hexbin, Box::new(HexbinRenderer::default())));
-    v.push((MarkKind::Hexgrid, Box::new(HexgridRenderer::default())));
-    v.push((
-        MarkKind::RegressionY,
-        Box::new(RegressionRenderer::default()),
-    ));
-    v.push((
-        MarkKind::RegressionX,
-        Box::new(RegressionRenderer::default()),
-    ));
-    // Geo — projected GeoJSON basemap / choropleth. The default (equirectangular)
-    // projection; `configured_renderer` swaps in the plot's resolved projection.
-    v.push((MarkKind::Geo, Box::new(GeoRenderer::default())));
-    v
+    vec![
+        (MarkKind::Dot, Box::new(DotRenderer)),
+        (MarkKind::DotX, Box::new(DotRenderer)),
+        (MarkKind::DotY, Box::new(DotRenderer)),
+        (MarkKind::Circle, Box::new(DotRenderer)),
+        (MarkKind::BarX, Box::new(BarRenderer)),
+        (MarkKind::BarY, Box::new(BarRenderer)),
+        (MarkKind::Line, Box::new(LineRenderer)),
+        (MarkKind::LineX, Box::new(LineRenderer)),
+        (MarkKind::LineY, Box::new(LineRenderer)),
+        (
+            MarkKind::AreaY,
+            Box::new(AreaRenderer { axis: AreaAxis::Y }),
+        ),
+        (
+            MarkKind::AreaX,
+            Box::new(AreaRenderer { axis: AreaAxis::X }),
+        ),
+        (
+            MarkKind::RuleX,
+            Box::new(RuleRenderer { axis: RuleAxis::X }),
+        ),
+        (
+            MarkKind::RuleY,
+            Box::new(RuleRenderer { axis: RuleAxis::Y }),
+        ),
+        (
+            MarkKind::Rect,
+            Box::new(RectRenderer { kind: RectKind::Xy }),
+        ),
+        (
+            MarkKind::RectX,
+            Box::new(RectRenderer { kind: RectKind::X }),
+        ),
+        (
+            MarkKind::RectY,
+            Box::new(RectRenderer { kind: RectKind::Y }),
+        ),
+        (MarkKind::Text, Box::new(TextRenderer)),
+        (
+            MarkKind::DensityX,
+            Box::new(Density1DRenderer {
+                axis: DensityAxis::X,
+            }),
+        ),
+        (
+            MarkKind::DensityY,
+            Box::new(Density1DRenderer {
+                axis: DensityAxis::Y,
+            }),
+        ),
+        (MarkKind::Density, Box::new(Density2DRenderer)),
+        (MarkKind::Raster, Box::new(RasterRenderer::default())),
+        (MarkKind::Heatmap, Box::new(HeatmapRenderer::default())),
+        (MarkKind::Cell, Box::new(CellRenderer::default())),
+        (MarkKind::Contour, Box::new(ContourRenderer::default())),
+        (MarkKind::Hexbin, Box::new(HexbinRenderer::default())),
+        (MarkKind::Hexgrid, Box::new(HexgridRenderer::default())),
+        (
+            MarkKind::RegressionY,
+            Box::new(RegressionRenderer::default()),
+        ),
+        (
+            MarkKind::RegressionX,
+            Box::new(RegressionRenderer::default()),
+        ),
+        // Geo — projected GeoJSON basemap / choropleth. The default (equirectangular)
+        // projection; `configured_renderer` swaps in the plot's resolved projection.
+        (MarkKind::Geo, Box::new(GeoRenderer::default())),
+    ]
 }
 
 /// Build the scheme/attribute-configured renderer for a ramp-fill or contour
@@ -3707,10 +3732,10 @@ pub fn owned_default_renderer(kind: MarkKind) -> Option<Box<dyn MarkRenderer + S
 ///
 /// Returns `None` for kinds with no registered renderer — caller should
 /// log and skip rather than silently falling back to a default.
-pub fn find_renderer<'a>(
-    registry: &'a [(MarkKind, Box<dyn MarkRenderer + Send + Sync>)],
+pub fn find_renderer(
+    registry: &[(MarkKind, Box<dyn MarkRenderer + Send + Sync>)],
     kind: MarkKind,
-) -> Option<&'a (dyn MarkRenderer + Send + Sync)> {
+) -> Option<&(dyn MarkRenderer + Send + Sync)> {
     registry
         .iter()
         .find(|(k, _)| *k == kind)
@@ -3790,7 +3815,7 @@ mod tests {
         // Vello's Scene encoding grows with each fill operation.
         let encoding = scene.encoding();
         assert!(
-            encoding.path_tags.len() > 0,
+            !encoding.path_tags.is_empty(),
             "scene should have path tags after rendering 3 dots"
         );
     }
@@ -3825,7 +3850,7 @@ mod tests {
 
         let encoding = scene.encoding();
         assert!(
-            encoding.path_tags.len() > 0,
+            !encoding.path_tags.is_empty(),
             "scene should have path tags after rendering 3 coloured dots"
         );
     }
@@ -3857,7 +3882,7 @@ mod tests {
 
         let encoding = scene.encoding();
         assert!(
-            encoding.path_tags.len() > 0,
+            !encoding.path_tags.is_empty(),
             "scene should have path tags after rendering 2 bar rects"
         );
     }
@@ -3913,7 +3938,7 @@ mod tests {
         // Line renderer should produce stroke operations for 3 line segments (4 points).
         let encoding = scene.encoding();
         assert!(
-            encoding.path_tags.len() > 0,
+            !encoding.path_tags.is_empty(),
             "scene should have path tags after rendering 4-point line"
         );
     }
@@ -4162,7 +4187,7 @@ mod tests {
 
         let encoding = scene.encoding();
         assert!(
-            encoding.path_tags.len() > 0,
+            !encoding.path_tags.is_empty(),
             "dot scene with highlight should have content"
         );
     }
@@ -4199,7 +4224,7 @@ mod tests {
 
         let encoding = scene.encoding();
         assert!(
-            encoding.path_tags.len() > 0,
+            !encoding.path_tags.is_empty(),
             "bar scene with highlight should have content"
         );
     }
@@ -4386,7 +4411,7 @@ mod tests {
 
         let encoding = scene.encoding();
         assert!(
-            encoding.path_tags.len() > 0,
+            !encoding.path_tags.is_empty(),
             "interpolated scene at t=0 should have content"
         );
     }
@@ -4420,7 +4445,7 @@ mod tests {
 
         let encoding = scene.encoding();
         assert!(
-            encoding.path_tags.len() > 0,
+            !encoding.path_tags.is_empty(),
             "interpolated scene at t=1 should have content"
         );
     }
@@ -5036,8 +5061,8 @@ mod tests {
         renderer.render(&mut a, &batch, &cm, &scales, None);
         let mut b = Scene::new();
         renderer.render(&mut b, &batch, &cm, &scales, None);
-        let da: Vec<u32> = a.encoding().draw_data.iter().copied().collect();
-        let db: Vec<u32> = b.encoding().draw_data.iter().copied().collect();
+        let da: Vec<u32> = a.encoding().draw_data.to_vec();
+        let db: Vec<u32> = b.encoding().draw_data.to_vec();
         assert_eq!(
             da, db,
             "the override renderer draws the rebuild identically"
@@ -5053,7 +5078,7 @@ mod tests {
             (450.0, 20.0),
         );
         HexbinRenderer::default().render(&mut viridis_scene, &batch, &cm, &vscales, None);
-        let dv: Vec<u32> = viridis_scene.encoding().draw_data.iter().copied().collect();
+        let dv: Vec<u32> = viridis_scene.encoding().draw_data.to_vec();
         assert_ne!(
             da, dv,
             "the configured scheme (turbo) differs from the viridis default"
@@ -5769,6 +5794,10 @@ mod tests {
     // the fixture — 8 SCRAMBLED rows with cell (2, 2) OMITTED — so the
     // "every cell" claim is falsifiable: an occupied-bins-only regression draws
     // 8 cells and misses the unoccupied cell's smoothed colour.
+    // `1 * 3 + 1` is `row * width + col` for a 3-wide grid, not arithmetic to be
+    // folded. Collapsing the `1 *` (clippy::identity_op) hides which cell the
+    // "centre" is.
+    #[allow(clippy::identity_op)]
     #[test]
     fn heatmap_colours_cells_through_ramp() {
         let schema = Arc::new(Schema::new(vec![
@@ -6480,7 +6509,7 @@ mod tests {
 
         let encoding = scene.encoding();
         assert!(
-            encoding.path_tags.len() > 0,
+            !encoding.path_tags.is_empty(),
             "bar default render_interpolated should forward to render"
         );
     }

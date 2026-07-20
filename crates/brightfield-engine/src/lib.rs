@@ -118,11 +118,20 @@ use brightfield_spec::vocab::MarkKind;
 
 use brightfield_sql::binding::{Binding, EmittedQuery, ParamValues};
 use brightfield_sql::emit::{emit_query, emit_query_with_passes, emit_sources, SourceKindTag};
-use brightfield_sql::ir::Predicate;
+use brightfield_sql::ir::{Predicate, SelectionPredicate};
 use brightfield_sql::navigation_filter_pass::NavigationFilterPass;
 use brightfield_sql::passes::Pass;
 
 use crate::error::EngineError;
+
+/// One dispatched mark's re-query outcome: the mark's depth-first index paired
+/// with the batches it produced, or the error that stopped it.
+///
+/// Named because the bare tuple is the return element of every propagate/
+/// dispatch entry point in this crate and of every widget dispatcher in
+/// `brightfield-ui`; spelling it out inline obscured that they are the same
+/// thing.
+pub type DispatchResult = (usize, Result<Vec<RecordBatch>, EngineError>);
 
 /// Result of loading a spec into a session.
 pub struct LoadResult {
@@ -429,7 +438,7 @@ impl Session {
     /// inner contributor strings are the `ComponentPath` payloads — already
     /// stored as parent plot paths so `compile_selection`'s `self_source`
     /// equality fires correctly for crossfilter self-exclusion.
-    fn selection_predicates_for_emit(&self) -> Vec<(String, Vec<(String, Predicate)>)> {
+    fn selection_predicates_for_emit(&self) -> Vec<SelectionPredicate> {
         self.selection_state
             .iter()
             .map(|(name, contribs)| {
@@ -459,7 +468,7 @@ impl Session {
         name: &str,
         contributor: ComponentPath,
         predicate: Predicate,
-    ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
+    ) -> Vec<DispatchResult> {
         // 1. Update selection_state. A re-contribution from an existing source
         // moves to the TAIL (retain-then-push), so vec order reflects recency:
         // SelectionResolution::Single resolves via `.last()`, so the "most
@@ -502,8 +511,7 @@ impl Session {
         // mark's outcome is independent; an emit error on one mark does
         // not halt dispatch.
         let selections = self.selection_predicates_for_emit();
-        let selections_ref: Option<&[(String, Vec<(String, Predicate)>)]> =
-            Some(selections.as_slice());
+        let selections_ref: Option<&[SelectionPredicate]> = Some(selections.as_slice());
 
         // Clone param_state into an owned snapshot so we hold no borrow on
         // self while looping (execute_emitted needs &mut self for the
@@ -554,7 +562,7 @@ impl Session {
         &mut self,
         name: &str,
         contributor: ComponentPath,
-    ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
+    ) -> Vec<DispatchResult> {
         // 1. Locate and remove the contributor's slot. Silent no-op on miss.
         let removed = match self.selection_state.get_mut(name) {
             Some(entries) => {
@@ -597,8 +605,7 @@ impl Session {
         // 4. Per-subscriber emit + execute against the reduced selection set.
         //    Same shape as propagate_selection's dispatch loop.
         let selections = self.selection_predicates_for_emit();
-        let selections_ref: Option<&[(String, Vec<(String, Predicate)>)]> =
-            Some(selections.as_slice());
+        let selections_ref: Option<&[SelectionPredicate]> = Some(selections.as_slice());
 
         let params_owned: ParamValues = self.param_state.clone();
         let params_ref = if params_owned.is_empty() {
@@ -637,8 +644,7 @@ impl Session {
             Some(&self.param_state)
         };
         let selections = self.selection_predicates_for_emit();
-        let selections_ref: Option<&[(String, Vec<(String, Predicate)>)]> = if selections.is_empty()
-        {
+        let selections_ref: Option<&[SelectionPredicate]> = if selections.is_empty() {
             None
         } else {
             Some(selections.as_slice())
@@ -661,11 +667,7 @@ impl Session {
     ///
     /// Only mark components are dispatched — inputs, interactors, and legends
     /// in the subscriber graph are filtered out. Partial failure is possible.
-    pub fn update_param(
-        &mut self,
-        name: &str,
-        value: SpecValue,
-    ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
+    pub fn update_param(&mut self, name: &str, value: SpecValue) -> Vec<DispatchResult> {
         let subscriber_paths: Vec<ComponentPath> = self
             .analysis
             .subscriber_graph
@@ -687,8 +689,7 @@ impl Session {
         param_values.insert(name.to_string(), value);
 
         let selections = self.selection_predicates_for_emit();
-        let selections_ref: Option<&[(String, Vec<(String, Predicate)>)]> = if selections.is_empty()
-        {
+        let selections_ref: Option<&[SelectionPredicate]> = if selections.is_empty() {
             None
         } else {
             Some(selections.as_slice())
@@ -744,11 +745,7 @@ impl Session {
     /// fire — returns an empty results vector. Partial failure: each mark's
     /// result is independent and a per-mark emit/execute error never halts
     /// the walk (decision 4).
-    pub fn propagate_param(
-        &mut self,
-        name: &str,
-        value: SpecValue,
-    ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
+    pub fn propagate_param(&mut self, name: &str, value: SpecValue) -> Vec<DispatchResult> {
         // 1. Update param_state for the named root only.
         //    (Decision 2 case iii — downstream params are read, never written.)
         self.param_state.insert(name.to_string(), value);
@@ -765,8 +762,7 @@ impl Session {
         //    behavioural difference today, but a foot-gun if a future change
         //    accidentally mutates selection_state mid-walk.
         let selections = self.selection_predicates_for_emit();
-        let selections_ref: Option<&[(String, Vec<(String, Predicate)>)]> = if selections.is_empty()
-        {
+        let selections_ref: Option<&[SelectionPredicate]> = if selections.is_empty() {
             None
         } else {
             Some(selections.as_slice())
@@ -775,7 +771,7 @@ impl Session {
         // 4. Walk the order. `dispatched` carries cross-level state for the
         //    first-level-wins dedup invariant.
         let mut dispatched: HashSet<usize> = HashSet::new();
-        let mut results: Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> = Vec::new();
+        let mut results: Vec<DispatchResult> = Vec::new();
 
         for level in &order {
             // Look up subscribers for this level's param.
@@ -840,7 +836,7 @@ impl Session {
         &mut self,
         x_extent: Option<(&str, f64, f64)>,
         y_extent: Option<(&str, f64, f64)>,
-    ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
+    ) -> Vec<DispatchResult> {
         // Only register the pass when at least one axis has an extent —
         // at full extent (None, None) no pass is needed.
         let passes: Vec<Box<dyn Pass>> = if x_extent.is_some() || y_extent.is_some() {
@@ -854,8 +850,7 @@ impl Session {
         let mut results = Vec::new();
 
         let selections = self.selection_predicates_for_emit();
-        let selections_ref: Option<&[(String, Vec<(String, Predicate)>)]> = if selections.is_empty()
-        {
+        let selections_ref: Option<&[SelectionPredicate]> = if selections.is_empty() {
             None
         } else {
             Some(selections.as_slice())
@@ -1209,7 +1204,7 @@ impl Session {
 
     /// Look up the wire name of the mark at a given depth-first index.
     fn mark_kind_at(&self, index: usize) -> String {
-        for (_, &(idx, kind)) in &self.mark_index_map {
+        for &(idx, kind) in self.mark_index_map.values() {
             if idx == index {
                 return kind.wire_name().to_string();
             }
@@ -4032,7 +4027,7 @@ vconcat:
 
         // Re-emit each mark's SQL with the live selection_state and inspect.
         let selections = session.selection_predicates_for_emit();
-        let selections_ref: Option<&[(String, Vec<(String, Predicate)>)]> = Some(&selections);
+        let selections_ref: Option<&[SelectionPredicate]> = Some(&selections);
 
         let emitted_idx_0 =
             emit_query(&session.spec, 0, None, selections_ref).expect("emit mark 0");
@@ -4324,7 +4319,7 @@ plot:
         );
 
         // With a selection predicate, the SQL must contain the predicate text.
-        let predicates: Vec<(String, Vec<(String, Predicate)>)> = vec![(
+        let predicates: Vec<SelectionPredicate> = vec![(
             "brush".to_string(),
             vec![(
                 "root/plot[100]".to_string(),

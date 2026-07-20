@@ -220,7 +220,7 @@ mod tests {
             TextAnchor::Middle,
         );
         assert!(
-            s.encoding().draw_tags.len() > 0,
+            !s.encoding().draw_tags.is_empty(),
             "rotated text adds geometry"
         );
         let mut e = Scene::new();
@@ -280,7 +280,7 @@ mod tests {
         );
         // Glyph runs encode as draw tags in the scene.
         assert!(
-            scene.encoding().draw_tags.len() > 0,
+            !scene.encoding().draw_tags.is_empty(),
             "drawing text should add geometry to the scene"
         );
 

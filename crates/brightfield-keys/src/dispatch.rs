@@ -31,13 +31,13 @@ pub enum DispatchContext {
 /// - an Editor binding resolves only when the editor is focused.
 #[must_use]
 pub fn fires(binding: BindingContext, dispatch: DispatchContext) -> bool {
-    match (binding, dispatch) {
-        (BindingContext::Global, _) => true,
-        (BindingContext::Workspace, DispatchContext::CanvasFocused) => true,
-        (BindingContext::Editor, DispatchContext::EditorFocused) => true,
-        (BindingContext::Protocol, DispatchContext::ProtocolFocused) => true,
-        _ => false,
-    }
+    matches!(
+        (binding, dispatch),
+        (BindingContext::Global, _)
+            | (BindingContext::Workspace, DispatchContext::CanvasFocused)
+            | (BindingContext::Editor, DispatchContext::EditorFocused)
+            | (BindingContext::Protocol, DispatchContext::ProtocolFocused)
+    )
 }
 
 /// The dispatch-resolution table — a projection of the keymap-as-data vec.

@@ -7,8 +7,7 @@
 //! into a Session without depending on the engine at the ChartView call
 //! site. The trait keeps the test double cheap.
 
-use brightfield_engine::error::EngineError;
-use brightfield_engine::RecordBatch;
+use brightfield_engine::DispatchResult;
 use brightfield_render::nearest::SelectionValue;
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_sql::ir::Predicate;
@@ -177,18 +176,14 @@ pub trait SelectionDispatcher {
         name: &str,
         contributor: ComponentPath,
         predicate: Predicate,
-    ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>;
+    ) -> Vec<DispatchResult>;
 
     /// Retract a contributor's predicate from the named selection — the
     /// click-outside-active-brush path. Mirrors
     /// `Session::clear_selection`'s shape: returns one
     /// `(mark_index, Result)` per subscriber that re-executes against the
     /// reduced selection state.
-    fn clear(
-        &mut self,
-        name: &str,
-        contributor: ComponentPath,
-    ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>;
+    fn clear(&mut self, name: &str, contributor: ComponentPath) -> Vec<DispatchResult>;
 }
 
 impl SelectionDispatcher for brightfield_engine::Session {
@@ -197,15 +192,11 @@ impl SelectionDispatcher for brightfield_engine::Session {
         name: &str,
         contributor: ComponentPath,
         predicate: Predicate,
-    ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
+    ) -> Vec<DispatchResult> {
         self.propagate_selection(name, contributor, predicate)
     }
 
-    fn clear(
-        &mut self,
-        name: &str,
-        contributor: ComponentPath,
-    ) -> Vec<(usize, Result<Vec<RecordBatch>, EngineError>)> {
+    fn clear(&mut self, name: &str, contributor: ComponentPath) -> Vec<DispatchResult> {
         self.clear_selection(name, contributor)
     }
 }

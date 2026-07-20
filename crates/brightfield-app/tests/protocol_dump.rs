@@ -38,7 +38,7 @@ fn parse_dump_line(stderr: &str) -> (u32, u32, f64) {
     let coverage: f64 = inner
         .split("% coverage")
         .next()
-        .and_then(|s| s.rsplit(|c: char| c == ' ' || c == ',').next())
+        .and_then(|s| s.rsplit([' ', ',']).next())
         .and_then(|s| s.trim().parse().ok())
         .expect("coverage percent");
     (w, h, coverage)

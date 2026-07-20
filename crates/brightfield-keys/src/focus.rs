@@ -318,7 +318,7 @@ pub fn focus_jump_candidates(tree: &FocusTree, query: &str) -> Vec<JumpCandidate
         })
         .collect();
     // Best score first; ties keep arena (dashboard) order for stability.
-    out.sort_by(|a, b| b.score.cmp(&a.score));
+    out.sort_by_key(|c| std::cmp::Reverse(c.score));
     out
 }
 

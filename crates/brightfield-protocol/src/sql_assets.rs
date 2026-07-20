@@ -161,29 +161,23 @@ fn read_fn_paths(args: &TableFunctionArgs) -> BTreeSet<String> {
     let mut positional_seen = false;
     for arg in &args.args {
         match arg {
-            FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) => {
-                if !positional_seen {
-                    collect_string_paths(expr, &mut out);
-                    positional_seen = true;
-                }
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) if !positional_seen => {
+                collect_string_paths(expr, &mut out);
+                positional_seen = true;
             }
             FunctionArg::Named {
                 name,
                 arg: FunctionArgExpr::Expr(expr),
                 ..
-            } => {
-                if is_path_arg(&name.value) {
-                    collect_string_paths(expr, &mut out);
-                }
+            } if is_path_arg(&name.value) => {
+                collect_string_paths(expr, &mut out);
             }
             FunctionArg::ExprNamed {
                 name: Expr::Identifier(name),
                 arg: FunctionArgExpr::Expr(expr),
                 ..
-            } => {
-                if is_path_arg(&name.value) {
-                    collect_string_paths(expr, &mut out);
-                }
+            } if is_path_arg(&name.value) => {
+                collect_string_paths(expr, &mut out);
             }
             _ => {}
         }

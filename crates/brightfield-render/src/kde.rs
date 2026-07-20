@@ -45,7 +45,7 @@ pub fn kde_1d(bins: &[u32], bandwidth: f64, bin_size: f64) -> Vec<f64> {
 
     // Convolve.
     let mut out = vec![0.0; n];
-    for i in 0..n {
+    for (i, o) in out.iter_mut().enumerate() {
         let mut acc = 0.0;
         for (k_idx, &kw) in kernel.iter().enumerate() {
             let k = k_idx as isize - radius_bins;
@@ -58,7 +58,7 @@ pub fn kde_1d(bins: &[u32], bandwidth: f64, bin_size: f64) -> Vec<f64> {
             // We multiply by bin_size so that out has units of "samples per data unit".
             acc += (bins[j as usize] as f64) * kw * bin_size;
         }
-        out[i] = acc;
+        *o = acc;
     }
     out
 }
@@ -267,7 +267,7 @@ fn silverman_axis(samples: &[f64]) -> f64 {
         / (n_f - 1.0);
     let sigma = var.sqrt();
 
-    let mut sorted: Vec<f64> = samples.iter().copied().collect();
+    let mut sorted: Vec<f64> = samples.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let q1 = quantile(&sorted, 0.25);
     let q3 = quantile(&sorted, 0.75);
@@ -317,12 +317,8 @@ mod tests {
         assert_eq!(density.len(), 11);
         // Peak at bin 5.
         let peak = density[5];
-        for i in 0..11 {
-            assert!(
-                density[i] <= peak + 1e-12,
-                "bin {i} density {} > peak {peak}",
-                density[i]
-            );
+        for (i, d) in density.iter().enumerate() {
+            assert!(*d <= peak + 1e-12, "bin {i} density {d} > peak {peak}");
         }
         // Symmetry: bin 4 ≈ bin 6, bin 3 ≈ bin 7.
         assert!((density[4] - density[6]).abs() < 1e-9);
@@ -402,6 +398,10 @@ mod tests {
         assert_eq!(kde_1d_weighted(&[], 1.0, &[0.0, 1.0]), vec![0.0, 0.0]);
     }
 
+    // `1 * 5 + 2` is `row * width + col` for a 5-wide grid, not arithmetic to
+    // be folded. Collapsing the `1 *` (clippy::identity_op) hides which cell is
+    // being read and breaks the symmetry with the `3 * 5 + 2` it is compared to.
+    #[allow(clippy::identity_op)]
     #[test]
     fn kde_2d_separable_peak() {
         // 5x5 grid, single sample at (2, 2); peak should be at (2, 2).

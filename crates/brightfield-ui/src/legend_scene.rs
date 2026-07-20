@@ -102,7 +102,7 @@ mod tests {
         let (swatches, swatch_size) = build_legend_scene(&categorical(), &BTreeSet::new(), None)
             .expect("categorical scale builds a scene");
         assert!(
-            swatches.encoding().path_tags.len() > 0,
+            !swatches.encoding().path_tags.is_empty(),
             "swatch legend draws content"
         );
         let expected = colour_legend_size(&categorical()).unwrap();
@@ -111,7 +111,7 @@ mod tests {
         let (bar, bar_size) = build_legend_scene(&sequential(), &BTreeSet::new(), None)
             .expect("sequential scale builds a scene");
         assert!(
-            bar.encoding().path_tags.len() > 0,
+            !bar.encoding().path_tags.is_empty(),
             "gradient bar draws content"
         );
         let expected = sequential_legend_size(&sequential()).unwrap();

@@ -290,20 +290,18 @@ fn collect_mark_subscribers(mark: &Mark, path: &str, graph: &mut SubscriberGraph
     // to a WHERE). Only the `filter` extra affects the emitted query,
     // so subscribing on other extras would trigger re-executions that change
     // nothing; scope the walk to `filter`.
-    if let Some(ref data) = mark.data {
-        if let crate::ast::MarkData::From {
-            filter_by, extras, ..
-        } = data
-        {
-            if let Some(pr) = filter_by {
-                graph
-                    .entry(pr.0.clone())
-                    .or_default()
-                    .push(ComponentPath(mark_path.clone()));
-            }
-            if let Some(filter) = extras.get("filter") {
-                collect_spec_value_subscribers(filter, &mark_path, graph);
-            }
+    if let Some(crate::ast::MarkData::From {
+        filter_by, extras, ..
+    }) = &mark.data
+    {
+        if let Some(pr) = filter_by {
+            graph
+                .entry(pr.0.clone())
+                .or_default()
+                .push(ComponentPath(mark_path.clone()));
+        }
+        if let Some(filter) = extras.get("filter") {
+            collect_spec_value_subscribers(filter, &mark_path, graph);
         }
     }
 
@@ -732,17 +730,17 @@ fn validate_filter_by_in(
 ) -> Result<(), ParseError> {
     match component {
         Component::Mark(m) => {
-            if let Some(ref data) = m.data {
-                if let crate::ast::MarkData::From { filter_by, .. } = data {
-                    if let Some(pr) = filter_by {
-                        check_filter_by_ref(
-                            &pr.0,
-                            params,
-                            known_selections,
-                            &format!("{path}/mark[{}].data.filterBy", m.kind.wire_name()),
-                        )?;
-                    }
-                }
+            if let Some(crate::ast::MarkData::From {
+                filter_by: Some(pr),
+                ..
+            }) = &m.data
+            {
+                check_filter_by_ref(
+                    &pr.0,
+                    params,
+                    known_selections,
+                    &format!("{path}/mark[{}].data.filterBy", m.kind.wire_name()),
+                )?;
             }
             // Also check filterBy in mark options (direct mark-level filterBy)
             if let Some(ValueOrParamRef::Param(pr)) = m.options.get("filterBy") {
@@ -959,16 +957,16 @@ fn collect_selection_subscribers(
         Component::Mark(m) => {
             let mark_path = format!("{path}/mark[{}]", m.kind.wire_name());
             // Mark data filterBy
-            if let Some(ref data) = m.data {
-                if let crate::ast::MarkData::From { filter_by, .. } = data {
-                    if let Some(pr) = filter_by {
-                        if known_selections.contains(&pr.0) {
-                            graph
-                                .entry(pr.0.clone())
-                                .or_default()
-                                .push(ComponentPath(mark_path.clone()));
-                        }
-                    }
+            if let Some(crate::ast::MarkData::From {
+                filter_by: Some(pr),
+                ..
+            }) = &m.data
+            {
+                if known_selections.contains(&pr.0) {
+                    graph
+                        .entry(pr.0.clone())
+                        .or_default()
+                        .push(ComponentPath(mark_path.clone()));
                 }
             }
             // Direct mark-level filterBy

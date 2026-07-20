@@ -887,7 +887,7 @@ mod tests {
         // An empty dashboard still paints its background.
         let empty = compose_dashboard(600.0, 200.0, &[]);
         assert!(
-            empty.encoding().path_tags.len() > 0,
+            !empty.encoding().path_tags.is_empty(),
             "dashboard background fills even with no plots"
         );
     }
@@ -931,7 +931,7 @@ mod tests {
         // Scene should be non-empty.
         let encoding = scene.encoding();
         assert!(
-            encoding.path_tags.len() > 0,
+            !encoding.path_tags.is_empty(),
             "dot chart scene should have content"
         );
 
@@ -979,7 +979,7 @@ mod tests {
 
         let encoding = scene.encoding();
         assert!(
-            encoding.path_tags.len() > 0,
+            !encoding.path_tags.is_empty(),
             "bar chart scene should have content"
         );
     }
@@ -1096,7 +1096,7 @@ mod tests {
 
         let encoding = scene.encoding();
         assert!(
-            encoding.path_tags.len() > 0,
+            !encoding.path_tags.is_empty(),
             "line chart scene should have content"
         );
     }
@@ -1128,7 +1128,7 @@ mod tests {
             batch: &batch,
             channel_map: &cm,
             renderer: &renderer,
-            layout: layout.clone(),
+            layout,
             view_extent: None,
             highlight: None,
         };
@@ -1202,7 +1202,7 @@ mod tests {
             batch: &batch1,
             channel_map: &cm1,
             renderer: &dot_renderer,
-            layout: layout.clone(),
+            layout,
             view_extent: None,
             highlight: None,
         };
@@ -1221,7 +1221,7 @@ mod tests {
         // Scene should be non-empty.
         let encoding = scene.encoding();
         assert!(
-            encoding.path_tags.len() > 0,
+            !encoding.path_tags.is_empty(),
             "multi-mark scene should have content"
         );
 
@@ -1340,14 +1340,14 @@ mod tests {
             batch: &batch,
             channel_map: &cm,
             renderer: &renderer,
-            layout: layout.clone(),
+            layout,
             view_extent: None,
             highlight: Some(&hs),
         };
         let (scene, _scales) = build_chart_scene(&data);
         let encoding = scene.encoding();
         assert!(
-            encoding.path_tags.len() > 0,
+            !encoding.path_tags.is_empty(),
             "scene with highlight should have content"
         );
 
@@ -1363,7 +1363,7 @@ mod tests {
         let (scene2, _) = build_chart_scene(&data_no_hl);
         let encoding2 = scene2.encoding();
         assert!(
-            encoding2.path_tags.len() > 0,
+            !encoding2.path_tags.is_empty(),
             "scene without highlight should also work"
         );
     }

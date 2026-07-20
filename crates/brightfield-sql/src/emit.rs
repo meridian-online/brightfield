@@ -13,7 +13,7 @@ use brightfield_spec::vocab::{ImplStatus, InteractorKind, SelectionResolution};
 
 use crate::binding::{Binding, EmittedQuery, ParamValues};
 use crate::error::EmitError;
-use crate::ir::{Predicate, QueryPlan};
+use crate::ir::{Predicate, QueryPlan, SelectionPredicate};
 use crate::lower::{compile_selection, default_lowerers, find_lowerer, LowerCtx};
 use crate::passes::apply_passes;
 use crate::render::render_query;
@@ -528,7 +528,7 @@ pub fn emit_query(
     spec: &Spec,
     mark_index: usize,
     param_values: Option<&ParamValues>,
-    selection_predicates: Option<&[(String, Vec<(String, Predicate)>)]>,
+    selection_predicates: Option<&[SelectionPredicate]>,
 ) -> Result<EmittedQuery, EmitError> {
     let passes: Vec<Box<dyn crate::passes::Pass>> = vec![];
     emit_query_with_passes(
@@ -548,7 +548,7 @@ pub fn emit_query_with_passes(
     spec: &Spec,
     mark_index: usize,
     param_values: Option<&ParamValues>,
-    selection_predicates: Option<&[(String, Vec<(String, Predicate)>)]>,
+    selection_predicates: Option<&[SelectionPredicate]>,
     extra_passes: &[Box<dyn crate::passes::Pass>],
 ) -> Result<EmittedQuery, EmitError> {
     // Use the path-aware mark walker so we can compute the parent plot

@@ -80,8 +80,8 @@ fn find_matching_paren(s: &str, start: usize) -> Option<usize> {
     let mut depth = 1u32;
     let mut in_quote = false;
 
-    for i in start..bytes.len() {
-        match bytes[i] {
+    for (i, &b) in bytes.iter().enumerate().skip(start) {
+        match b {
             b'\'' if !in_quote => in_quote = true,
             b'\'' if in_quote => in_quote = false,
             b'(' if !in_quote => depth += 1,

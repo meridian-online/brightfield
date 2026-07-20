@@ -27,7 +27,7 @@ use gpui::{App, Entity};
 use kurbo::{Point, Rect};
 use vello::Scene;
 
-use brightfield_engine::error::EngineError;
+use brightfield_engine::DispatchResult;
 use brightfield_engine::{concat_batches, RecordBatch, Session};
 use brightfield_render::channel::{Channel, ChannelMap};
 use brightfield_render::layout::ChartLayout;
@@ -1144,11 +1144,7 @@ impl CrossfilterCoordinator {
 
     /// Fold re-execution results into the per-mark batch store, recording which
     /// plots need their scene rebuilt. A failed mark keeps its previous batch.
-    fn absorb(
-        &mut self,
-        results: Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>,
-        to_rebuild: &mut HashSet<usize>,
-    ) {
+    fn absorb(&mut self, results: Vec<DispatchResult>, to_rebuild: &mut HashSet<usize>) {
         for (mark_index, result) in results {
             match result {
                 Ok(batches) => {
@@ -1175,7 +1171,7 @@ impl CrossfilterCoordinator {
         // Own the inputs up front so no `self.plots` borrow is held across the
         // later `self.plots[..].scales = …` write.
         let mark_indices = self.plots[plot_index].mark_indices.clone();
-        let layout = self.plots[plot_index].layout.clone();
+        let layout = self.plots[plot_index].layout;
         let draw_inline_legend = self.plots[plot_index].draw_inline_legend;
         let titles = self.plots[plot_index].titles.clone();
         let launch = self.plots[plot_index].launch_scales.clone();
@@ -1306,6 +1302,13 @@ fn has_sequential_fill(scales: &ScaleSet) -> bool {
 /// integrity is unit-testable WITHOUT a gpui window (LivePlot carries a non-Send
 /// `Entity<ChartState>` no headless test can build) — mirroring the
 /// `apply_slider` / `apply_spec_edit_data` data-half split.
+// Returns the three things the caller must swap in together: the rebuilt marks,
+// the per-plot flat-index map, and the old→new index remap. They are a tuple
+// rather than a named struct because the caller destructures all three on the
+// spot and never stores them; a `type` alias would name the tuple without
+// telling the reader what the three positions are, which the doc comment above
+// already does.
+#[allow(clippy::type_complexity)]
 fn rebuild_flat_index_space(
     plot_meta: &[(String, Vec<usize>, SequentialScheme)],
     old_marks: Vec<MarkInput>,
@@ -4301,9 +4304,7 @@ hconcat:
         );
 
         // Sum subscriber rows across a commit's aggregated results.
-        fn subscriber_rows(
-            aggregated: &[(String, Vec<(usize, Result<Vec<RecordBatch>, EngineError>)>)],
-        ) -> usize {
+        fn subscriber_rows(aggregated: &[(String, Vec<DispatchResult>)]) -> usize {
             aggregated
                 .iter()
                 .flat_map(|(_, results)| results.iter())

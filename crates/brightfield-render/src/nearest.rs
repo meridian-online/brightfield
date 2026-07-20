@@ -83,14 +83,12 @@ pub fn find_nearest(
             NearestMode::XY => ((px - cursor.x).powi(2) + (py - cursor.y).powi(2)).sqrt(),
         };
 
-        if dist <= max_dist {
-            if best.as_ref().map_or(true, |b| dist < b.distance) {
-                best = Some(NearestHit {
-                    row: i,
-                    point: Point::new(px, py),
-                    distance: dist,
-                });
-            }
+        if dist <= max_dist && best.as_ref().is_none_or(|b| dist < b.distance) {
+            best = Some(NearestHit {
+                row: i,
+                point: Point::new(px, py),
+                distance: dist,
+            });
         }
     }
 

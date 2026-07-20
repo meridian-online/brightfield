@@ -31,7 +31,7 @@ plot:
 }
 
 /// 3. Strict-context `$param` under `meta.title` →
-/// StrictContextUnresolvedRef.
+///    StrictContextUnresolvedRef.
 #[test]
 fn strict_context_dollar_in_meta() {
     let src = "meta:\n  title: $live\n";

@@ -138,14 +138,16 @@ impl Element for SliderElement {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let mut style = Style::default();
-        style.size = Size {
-            width: gpui::Length::Definite(gpui::DefiniteLength::Absolute(
-                gpui::AbsoluteLength::Pixels(px(self.width as f32)),
-            )),
-            height: gpui::Length::Definite(gpui::DefiniteLength::Absolute(
-                gpui::AbsoluteLength::Pixels(px(self.height as f32)),
-            )),
+        let style = Style {
+            size: Size {
+                width: gpui::Length::Definite(gpui::DefiniteLength::Absolute(
+                    gpui::AbsoluteLength::Pixels(px(self.width as f32)),
+                )),
+                height: gpui::Length::Definite(gpui::DefiniteLength::Absolute(
+                    gpui::AbsoluteLength::Pixels(px(self.height as f32)),
+                )),
+            },
+            ..Default::default()
         };
         (window.request_layout(style, [], cx), ())
     }

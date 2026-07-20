@@ -28,7 +28,7 @@
 //!   the terminal (a leaf sidecar) leaves it the sink.
 //! - `finetype_validate` steps produce NO node: `gate: true` on the seam and
 //!   `shield: true` on the edge into the asset named by `with.parquet`
-//! — a shield on the lineage, not a box in it.
+//!   — a shield on the lineage, not a box in it.
 //!
 //! Node ids: `asset.<protocol>.<relation>` / `file.<protocol>.<path>` /
 //! `source.<protocol>.<url>` / `stmt.<protocol>.<step>#<n>` (INTERNAL

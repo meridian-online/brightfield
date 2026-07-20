@@ -256,12 +256,12 @@ fn is_internal(asset: &Asset, step_by_name: &BTreeMap<&str, &Step>) -> bool {
     };
     let mut produced_at: Option<usize> = None;
     for (i, stmt) in sql.statements.iter().enumerate() {
-        if produced_at.is_none() && stmt.produces.iter().any(|p| *p == asset.name) {
+        if produced_at.is_none() && stmt.produces.contains(&asset.name) {
             produced_at = Some(i);
             continue;
         }
         if let Some(pi) = produced_at {
-            if i > pi && stmt.reads.iter().any(|r| *r == asset.name) {
+            if i > pi && stmt.reads.contains(&asset.name) {
                 return true;
             }
         }
@@ -424,7 +424,7 @@ pub fn build_contract_view(contract: &Contract) -> ContractView {
         let consumed: BTreeSet<AssetId> = contract
             .assets
             .iter()
-            .filter(|a| a.consumed_by.iter().any(|c| *c == step.name))
+            .filter(|a| a.consumed_by.contains(&step.name))
             .map(|a| id_of[a.id.as_str()].clone())
             .collect();
 
@@ -473,7 +473,7 @@ pub fn build_contract_view(contract: &Contract) -> ContractView {
         let guarded: BTreeSet<AssetId> = contract
             .assets
             .iter()
-            .filter(|a| a.consumed_by.iter().any(|c| *c == step.name))
+            .filter(|a| a.consumed_by.contains(&step.name))
             .map(|a| id_of[a.id.as_str()].clone())
             .collect();
         for edge in &mut edges {
@@ -615,7 +615,8 @@ fn topological_order(nodes: &BTreeMap<AssetId, AssetNode>, edges: &[Edge]) -> Ve
     }
     let mut ready: BTreeSet<AssetId> = indegree
         .iter()
-        .filter_map(|(k, d)| (*d == 0).then(|| k.clone()))
+        .filter(|&(_k, d)| *d == 0)
+        .map(|(k, _d)| k.clone())
         .collect();
     let mut out: Vec<AssetId> = Vec::with_capacity(nodes.len());
     while let Some(id) = ready.iter().next().cloned() {

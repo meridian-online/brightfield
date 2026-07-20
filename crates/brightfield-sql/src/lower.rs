@@ -962,10 +962,7 @@ pub fn default_lowerers() -> Vec<(MarkKind, Box<dyn MarkLower>)> {
 }
 
 /// Look up a lowerer for a given `MarkKind`, falling back to `DefaultLowerer`.
-pub fn find_lowerer<'a>(
-    kind: MarkKind,
-    registry: &'a [(MarkKind, Box<dyn MarkLower>)],
-) -> &'a dyn MarkLower {
+pub fn find_lowerer(kind: MarkKind, registry: &[(MarkKind, Box<dyn MarkLower>)]) -> &dyn MarkLower {
     registry
         .iter()
         .find(|(k, _)| *k == kind)

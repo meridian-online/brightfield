@@ -661,7 +661,7 @@ fn collect_input_nodes_in<'a>(
 ///
 /// [`SliderBinding`]: (see brightfield-ui)
 #[must_use]
-pub fn placed_input_nodes<'a>(spec: &'a Spec, viewport: Rect) -> Vec<(Rect, &'a Input)> {
+pub fn placed_input_nodes(spec: &Spec, viewport: Rect) -> Vec<(Rect, &Input)> {
     let placed = placed_inputs(spec, viewport);
     let nodes = collect_input_nodes(spec);
     placed
@@ -802,10 +802,7 @@ fn collect_legend_nodes_in<'a>(
 /// per composition-level legend. The app-facing view — resolve each legend's
 /// `for:` plot and draw its colour scale at `rect`.
 #[must_use]
-pub fn placed_legend_nodes<'a>(
-    spec: &'a Spec,
-    viewport: Rect,
-) -> Vec<(Rect, &'a crate::ast::LegendNode)> {
+pub fn placed_legend_nodes(spec: &Spec, viewport: Rect) -> Vec<(Rect, &crate::ast::LegendNode)> {
     let placed = placed_legends(spec, viewport);
     let nodes = collect_legend_nodes(spec);
     placed

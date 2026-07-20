@@ -83,7 +83,7 @@ mod tests {
         let t = Transition::new(vec![(0.0, 0.0)], DEFAULT_TRANSITION_DURATION);
         let (factor, state) = t.tick(Instant::now());
         assert_eq!(state, TransitionState::Running);
-        assert!(factor >= 0.0 && factor < 1.0);
+        assert!((0.0..1.0).contains(&factor));
     }
 
     #[test]
