@@ -1,0 +1,104 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+# A push to a PR branch supersedes the run already in flight for that ref.
+# Worth having here specifically: every run is a cold-ish `macos-15` build of the
+# zed/GPUI git dependencies with a 60-minute ceiling, so stacked pushes otherwise
+# burn expensive minutes on results nobody will read.
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # ---------------------------------------------------------------------
+    # One canonical runner, on purpose.
+    #
+    # macOS is brightfield's primary (and today only) live-window target — the
+    # GPUI window backend is Metal-only, and `brightfield-app` pulls a
+    # macOS-gated dependency. It is also the only hosted runner where the
+    # egui_kittest pixel tier has a real wgpu adapter to render through, so
+    # running here means the *whole* suite runs, snapshots included, with
+    # nothing quietly opted out.
+    #
+    # A Linux job is deliberately not added yet: building GPUI there needs a
+    # system-dependency matrix (Vulkan, wayland/X11, xkbcommon, fontconfig)
+    # nobody in this repo has validated, and standing one up just to skip the
+    # visual gate would add build minutes without adding a gate. There is no
+    # skip switch for the pixel tier to reach for either — see the module
+    # comment in crates/brightfield-shell/tests/snapshot.rs for why, and for the
+    # `#[ignore]` + explicit-opt-in shape to use if a GPU-less runner is added.
+    #
+    # HONESTY NOTE: this workflow file has never executed on GitHub Actions.
+    # The commands below were verified locally on macOS (Apple silicon); the
+    # first real run is the first proof that the hosted runner's paravirtualised
+    # GPU produces pixel-identical chrome. If it does not, read the uploaded
+    # diff artifact and fix the baseline or add a documented per-OS threshold in
+    # kittest.toml — do NOT blanket-loosen the floor to make it green.
+    # ---------------------------------------------------------------------
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # An exact toolchain PIN — not an MSRV check. Cargo.toml's
+      # `rust-version = "1.95"` is a *floor* (the oldest toolchain allowed to
+      # compile the workspace); this line instead nails CI to the one patch
+      # release the local loop uses (`cargo +1.95.0 ...`), so a CI failure is
+      # reproducible on a dev machine. There is no rust-toolchain.toml in the
+      # repo; this is the pin.
+      #
+      # The consequence, stated plainly: nothing here ever compiles on current
+      # stable, so a regression introduced by a newer rustc goes unnoticed until
+      # someone bumps this. Widening to a matrix (pin + stable) is the fix when
+      # that matters; it is deliberately out of scope for this workflow.
+      #
+      # `1.95.0` is a real ref in dtolnay/rust-toolchain (a branch, alongside
+      # `1.95`) — confirmed with `git ls-remote`, which is also the form that
+      # action documents for exact versions.
+      - uses: dtolnay/rust-toolchain@1.95.0
+
+      # Caches ~/.cargo (registry + git checkouts, which matter a lot here: the
+      # zed/GPUI and gpui-component pins are git dependencies) plus ./target.
+      - uses: Swatinem/rust-cache@v2
+
+      # No `cargo fmt --check` / `cargo clippy -D warnings` step yet, and that
+      # is not an oversight: as of this commit the tree is not clean under
+      # either (115 files differ from default rustfmt, and clippy stops on a
+      # deny-by-default lint in a brightfield-spec test). Adding them now would
+      # mean landing a workflow that is red on arrival. Formatting/linting the
+      # tree once, then gating it, is a separate change — this one exists to get
+      # `cargo test` enforced at all, which it never has been.
+
+      # --test-threads=1 is the project's standing invocation: it keeps the
+      # GPU-backed suites (GPUI's TestAppContext, and the shared wgpu device the
+      # shell's snapshot harness builds) off each other's toes. At this suite
+      # size the serialisation costs little and buys determinism.
+      #
+      # `--locked` because Cargo.lock is tracked: without it CI would happily
+      # re-resolve around the committed lock and go green on a dependency graph
+      # nobody reviewed, and lockfile drift would never be caught. With it, a
+      # stale lock is a hard error here.
+      - name: cargo test --workspace
+        run: cargo test --locked --workspace -- --test-threads=1
+
+      # On failure, hand back what the pixel tier actually rendered plus its
+      # perceptual diff, so a red visual gate is diagnosable without a Mac.
+      - name: upload snapshot diffs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kittest-snapshot-output
+          path: |
+            crates/**/tests/snapshots/**/*.new.png
+            crates/**/tests/snapshots/**/*.diff.png
+          if-no-files-found: ignore
+          retention-days: 7

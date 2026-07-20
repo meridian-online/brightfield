@@ -1,0 +1,30 @@
+# Snapshot-test floor for the egui_kittest pixel tier
+# (`crates/brightfield-shell/tests/snapshot.rs`).
+#
+#   threshold                    — max per-pixel perceptual delta (dify) tolerated
+#   failed_pixel_count_threshold — how many pixels may exceed it before the test fails
+#
+# These are the egui_kittest library defaults, restated here on purpose: the
+# strictness of the visual gate should be a deliberate, reviewable repo decision,
+# not an accident of whatever the dependency happens to default to this release.
+# Both committed baselines pass at this floor with zero differing pixels on the
+# reference machine, so nothing in the tree needs a looser setting today.
+#
+# Policy: do not loosen these to make a red test green. A per-test
+# `SnapshotOptions` override is allowed only when its comment names the specific
+# rendering jitter it tolerates and the machine/driver where that jitter was
+# observed. A bare `.threshold(...)` with no such comment is a review blocker —
+# it silently buys back exactly the regressions this tier exists to catch.
+#
+# If a second platform ever renders the chrome slightly differently, prefer a
+# per-OS override here over raising the global floor. The table keys are
+# `windows`, `mac`, `linux`. Note that the egui_kittest 0.35 README documents the
+# macOS table as `[macos]`, but the config struct's field is `mac` and it is
+# parsed with `deny_unknown_fields` — `[macos]` panics at load time.
+#
+#   [mac]
+#   threshold = 0.6
+#   failed_pixel_count_threshold = 0
+
+threshold = 0.6
+failed_pixel_count_threshold = 0
