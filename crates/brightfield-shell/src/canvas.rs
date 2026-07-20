@@ -1,10 +1,13 @@
-//! egui host for the T46 `CanvasHost` / `ChartSurface` / `OverlayPainter` seam.
+//! egui host for the framework-free `CanvasHost` / `ChartSurface` /
+//! `OverlayPainter` render seam defined in `brightfield-render`.
 //!
 //! [`EguiCanvasHost`] realises [`CanvasHost`] with `Surface = egui::TextureId`:
 //! a `vello::Scene` is rasterised straight onto a wgpu texture on eframe's
 //! **shared** device (`VelloRenderer::render_to_texture`, no readback) and then
 //! handed to egui **zero-copy** via `egui_wgpu::Renderer::register_native_texture`
-//! — deleting the Metal↔wgpu readback the gpui host needed (decision-68).
+//! — deleting the Metal↔wgpu readback the gpui host needed, which existed only
+//! because that host rendered on its own device and had to copy pixels through
+//! host memory to hand them over.
 //!
 //! [`EguiChartFrame`] realises [`ChartSurface`] + [`OverlayPainter`] for one
 //! egui frame: it reserves the chart's on-screen rect (painting the registered
@@ -237,7 +240,8 @@ impl OverlayPainter for EguiChartFrame<'_> {
 }
 
 /// Map egui pointer state over `rect` into the framework-free [`SurfaceInput`]
-/// (surface-local logical pixels). The T46 seam's egui input boundary.
+/// (surface-local logical pixels). The render seam's egui input boundary: past
+/// this point nothing downstream knows egui exists.
 pub fn surface_input(ctx: &egui::Context, rect: egui::Rect) -> SurfaceInput {
     ctx.input(|i| {
         let hovered = i.pointer.hover_pos().is_some_and(|p| rect.contains(p));

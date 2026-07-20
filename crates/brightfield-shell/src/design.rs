@@ -1,4 +1,4 @@
-//! Meridian Design System → egui bridge (decision-68, deliverable 1).
+//! Meridian Design System → egui bridge.
 //!
 //! The design crate is deliberately framework-free (`meridian_design::Rgba` is
 //! plain sRGB straight-alpha data — ADR 0003), so every consumer converts at its
