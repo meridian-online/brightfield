@@ -941,8 +941,8 @@ fn union_scales(scales: &[Scale], range_start: f64, range_end: f64) -> Option<Sc
 }
 
 /// The kind of a positional axis, classified from its bound columns' Arrow
-/// types WITHOUT building scales — a datatype peek mirroring
-/// [`infer_column_scale`]'s arms. Used to decide the default axis inset
+/// types WITHOUT building scales — a datatype peek mirroring the private
+/// `infer_column_scale`'s arms. Used to decide the default axis inset
 /// (axis-inset round) before ranges are fed to scale inference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AxisClass {

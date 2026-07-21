@@ -610,7 +610,7 @@ impl CanvasPanel {
 
     /// `CycleColourScheme` handler (bare `c`, canvas-scoped):
     /// cycle the FOCUSED VIEW's sequential colour scheme, transiently (no spec
-    /// write). View-scoped (registry scope = [View]): a clean no-op at the
+    /// write). View-scoped (registry scope `[View]`): a clean no-op at the
     /// dashboard altitude, unlike `clear_selection` which falls through to
     /// clear_all. The coordinator recolours the plot's launch Fill ramp and
     /// re-renders that one plot's scene; `window.refresh()` repaints.

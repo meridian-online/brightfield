@@ -73,10 +73,12 @@ pub struct ProtocolNav {
     cursor: Option<AssetId>,
     /// The drill path — `Enter` pushes the cursor, `Esc` pops.
     breadcrumb: Vec<AssetId>,
-    /// The reading axis the spatial keys resolve against ([`set_geometry`]).
+    /// The reading axis the spatial keys resolve against
+    /// ([`set_geometry`](ProtocolNav::set_geometry)).
     flow: Flow,
     /// Rendered node centres — the geometry `move_dir` honours. Empty until the
-    /// shell calls [`set_geometry`]; the topological primitives work without it.
+    /// shell calls [`set_geometry`](ProtocolNav::set_geometry); the topological
+    /// primitives work without it.
     centers: BTreeMap<AssetId, (f64, f64)>,
 }
 

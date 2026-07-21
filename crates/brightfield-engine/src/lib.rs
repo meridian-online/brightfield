@@ -391,8 +391,9 @@ impl Session {
     /// re-emit the STALE SQL, or take the full disk rebuild. After a structural
     /// [`brightfield_spec::edit::SpecEdit`] the app re-analyses the mutated
     /// working `Spec` and hands both here; the private state is replaced (the
-    /// `mark_index_map` REBUILT via [`build_mark_index_map`] so an added/removed
-    /// mark's flat index resolves + the count-changing renumber lands),
+    /// `mark_index_map` REBUILT via the private `build_mark_index_map` so an
+    /// added/removed mark's flat index resolves + the count-changing renumber
+    /// lands),
     /// and the statement/SQL caches are INVALIDATED so the SAME
     /// [`Session::execute_mark`] re-emits the NEW SQL from the swapped spec
     /// against the live views — no new [`Engine`], no new DuckDB views, no disk.

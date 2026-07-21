@@ -33,11 +33,11 @@
 //! # Not here yet
 //!
 //! Icon glyphs. [`Icon`] is a name, and the Meridian icon set has not landed
-//! in this workspace; [`icon_slot`] therefore reserves the icon's box from
-//! the row's binding without painting into it, so layout is already correct
-//! and adding the set is a paint change rather than a reflow. The shell-level
-//! `top_bar`, the modal card, and the list/grid row primitives land with
-//! their first callers rather than being written speculatively here.
+//! in this workspace; the private `icon_slot` helper therefore reserves the
+//! icon's box from the row's binding without painting into it, so layout is
+//! already correct and adding the set is a paint change rather than a reflow.
+//! The shell-level `top_bar`, the modal card, and the list/grid row primitives
+//! land with their first callers rather than being written speculatively here.
 
 use meridian_design::{control, focus, radius, semantic, spacing, typography, Elevation, Rgba};
 

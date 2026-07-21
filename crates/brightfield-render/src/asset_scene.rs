@@ -12,7 +12,7 @@
 //! dummy-node lanes.
 //!
 //! Every colour is resolved for the caller's mode through [`AssetInk`], which
-//! reads the same [`meridian_design::semantic`] layer the workbench chrome
+//! reads the same [`mod@meridian_design::semantic`] layer the workbench chrome
 //! reads. No colour here is resolved without asking the mode first — the
 //! light scales still appear, but only as the light branch of that question,
 //! never as a value settled before it is asked.
@@ -36,7 +36,7 @@ use crate::text::{draw_text, TextAnchor, LABEL_SIZE};
 /// `chrome::INK_LIGHT` and the `*_LIGHT` scales, which is why the DAG raster
 /// stayed a white sheet inside a dark window: nothing in this file could see
 /// the mode. This struct is the same list, resolved through
-/// [`meridian_design::semantic`] the way `brightfield_workbench::chrome` does
+/// [`meridian_design::semantic()`] the way `brightfield_workbench::chrome` does
 /// — the panel's chrome and the raster inside it now ask the same layer the
 /// same question, so they cannot drift.
 ///
@@ -109,7 +109,7 @@ const STATUS_FAILED: Color = ink(meridian_design::viz::STATUS.critical);
 
 impl AssetInk {
     /// Resolve the palette for a mode — `dark` is the same flag
-    /// [`meridian_design::semantic`] takes, and callers pass `mode.is_dark()`.
+    /// [`meridian_design::semantic()`] takes, and callers pass `mode.is_dark()`.
     #[must_use]
     pub fn for_mode(dark: bool) -> Self {
         let sem = meridian_design::semantic(dark);
@@ -552,7 +552,7 @@ fn draw_node(
 /// draw in the quiet edge ink.
 ///
 /// `dark` selects the mode's ink, and it is the same flag
-/// [`meridian_design::semantic`] takes: callers holding a workbench `Mode` pass
+/// [`meridian_design::semantic()`] takes: callers holding a workbench `Mode` pass
 /// `mode.is_dark()`.
 pub fn render_asset_graph(scene: &mut Scene, layout: &Layout, graph: &AssetGraph, dark: bool) {
     render_asset_graph_with_status(scene, layout, graph, &BTreeMap::new(), dark);

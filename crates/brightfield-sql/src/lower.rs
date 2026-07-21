@@ -79,15 +79,15 @@ impl MarkLower for SimpleLowerer {
 /// (last mark).
 ///
 /// Geo is NOT an aggregation mark: this is a near-clone of [`SimpleLowerer`]
-/// (`SELECT *`, [`apply_data_filter`], [`project_param_channels`]) with ONE
-/// projection. When the mark's source is a SPATIAL source (`type: spatial` →
-/// `ST_Read`, a DuckDB `GEOMETRY` column), the geometry column is wrapped in
-/// `ST_AsGeoJSON(...)` so the `GEOMETRY` crosses `query_arrow` as GeoJSON
-/// `VARCHAR` (the renderer parses it with serde_json). An INLINE source whose
-/// geom column is already `VARCHAR` GeoJSON text passes through unwrapped —
-/// `ST_AsGeoJSON` on a `VARCHAR` errors and would need the spatial extension
-/// anyway; that pass-through is exactly what lets the hermetic inline example
-/// baseline with no spatial extension / network.
+/// (`SELECT *`, the private `apply_data_filter` / `project_param_channels`)
+/// with ONE projection. When the mark's source is a SPATIAL source
+/// (`type: spatial` → `ST_Read`, a DuckDB `GEOMETRY` column), the geometry
+/// column is wrapped in `ST_AsGeoJSON(...)` so the `GEOMETRY` crosses
+/// `query_arrow` as GeoJSON `VARCHAR` (the renderer parses it with serde_json).
+/// An INLINE source whose geom column is already `VARCHAR` GeoJSON text passes
+/// through unwrapped — `ST_AsGeoJSON` on a `VARCHAR` errors and would need the
+/// spatial extension anyway; that pass-through is exactly what lets the
+/// hermetic inline example baseline with no spatial extension / network.
 ///
 /// The SOURCE geometry column is
 /// [`resolve_geometry_column`](brightfield_spec::layout::resolve_geometry_column)

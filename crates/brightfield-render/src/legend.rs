@@ -84,7 +84,7 @@ fn swatch_legend_size(colour_scale: &Scale) -> Option<(f64, f64)> {
 /// panel top, is `SWATCH_SIZE` tall, and spans the swatch plus the gap and
 /// the label's measured extent, so clicking the category text also hits.
 ///
-/// Pure geometry mirroring [`render_swatch_legend_at`]'s layout from the
+/// Pure geometry mirroring `render_swatch_legend_at`'s layout from the
 /// same private constants, so the hit-boxes cannot drift from the drawing.
 /// Empty for a non-`Colour` (or empty) scale.
 #[must_use]
@@ -186,11 +186,11 @@ fn hover_emphasis(colour: Color) -> Color {
 /// Render a colour legend at `(box_x, box_y)` with an optional selected entry
 /// (selected-state). `selected` is the index of the categorical entry
 /// drawn at full strength while every OTHER swatch and label dims to
-/// [`UNSELECTED_ENTRY_ALPHA`]; `None` draws every entry at full strength —
-/// byte-identical to the pre-selection output, since the `None` path multiplies
-/// no alpha. Panel geometry, entry rects, and sizes are untouched (selected
-/// state is colour/alpha only). Sequential (gradient) legends have no discrete
-/// entries and ignore `selected`.
+/// the private `UNSELECTED_ENTRY_ALPHA`; `None` draws every entry at full
+/// strength — byte-identical to the pre-selection output, since the `None`
+/// path multiplies no alpha. Panel geometry, entry rects, and sizes are
+/// untouched (selected state is colour/alpha only). Sequential (gradient)
+/// legends have no discrete entries and ignore `selected`.
 pub fn render_colour_legend_at_selected(
     scene: &mut Scene,
     box_x: f64,
@@ -309,7 +309,7 @@ fn render_swatch_legend_at(
 
 /// Render a continuous gradient-bar legend for a [`Scale::Sequential`], panel
 /// top-left at `(box_x, box_y)`. The bar is a vertical ramp — high value at the
-/// top — drawn as [`BAR_SAMPLES`] stacked sampled quads (no gradient-brush
+/// top — drawn as `BAR_SAMPLES` stacked sampled quads (no gradient-brush
 /// dependency), with min / mid / max numeric tick labels beside it read from the
 /// scale's domain extent. No-op for any non-Sequential scale.
 pub fn render_sequential_legend_at(scene: &mut Scene, box_x: f64, box_y: f64, scale: &Scale) {

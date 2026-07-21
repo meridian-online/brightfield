@@ -284,11 +284,12 @@ impl InteractionState {
     /// The rectangle of any rect-bearing state — the active `Brushing` drag, the
     /// persisted `Selected` overlay, or an in-flight `Dragging` — as a min/max
     /// normalised `Rect`; `None` for `Idle`/`Hovering`.
-    /// Unlike [`brush_rect`] (Brushing only), this ALSO exposes the persisted
-    /// `Selected` rect, so the grab hit-test ([`brush_region`]) and the
-    /// `pointer_down` decision ([`resolve_press`](Self::resolve_press)) can key
-    /// off it — today's `brush_rect` returning `None` for `Selected` made any
-    /// such hit-test silently never fire.
+    /// Unlike [`brush_rect`](Self::brush_rect) (Brushing only), this ALSO
+    /// exposes the persisted `Selected` rect, so the grab hit-test
+    /// ([`brush_region`]) and the `pointer_down` decision
+    /// ([`resolve_press`](Self::resolve_press)) can key off it — today's
+    /// `brush_rect` returning `None` for `Selected` made any such hit-test
+    /// silently never fire.
     pub fn selected_rect(&self) -> Option<Rect> {
         match self {
             Self::Brushing { start, current }
@@ -490,8 +491,8 @@ impl InteractionState {
 /// - `Some(Brushing { new corners })` for a `Dragging` whose rect actually moved
 ///   from its `anchor` — the corners `invert_pixel_brush` then inverts downstream;
 /// - `None` for a zero-delta grab (a click on the rect, the moved rect within
-///   [`ZERO_AREA_EPSILON`] of the anchor) — so a click never fires a redundant
-///   re-query, the selection intact;
+///   [`ZERO_AREA_EPSILON`](crate::chart_view::ZERO_AREA_EPSILON) of the anchor)
+///   — so a click never fires a redundant re-query, the selection intact;
 /// - `None` for every other state (a persisted `Selected`, a fresh `Brushing`
 ///   which already dispatches through the unchanged path, `Idle`, `Hovering`) —
 ///   in particular a persisted `Selected` on an untouched sibling plot yields

@@ -1,7 +1,7 @@
 //! Axis rendering — tick computation, tick marks, labels, and axis lines.
 //!
-//! Tick computation is a pure function: compute_ticks(scale, target_count) ->
-//! Vec<Tick>. The scene builder draws ticks as lines and labels as text.
+//! Tick computation is a pure function: `compute_ticks(scale, target_count) ->
+//! Vec<Tick>`. The scene builder draws ticks as lines and labels as text.
 
 use kurbo::{Affine, Line, Point};
 use peniko::Color;

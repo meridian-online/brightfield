@@ -729,8 +729,8 @@ pub enum AreaAxis {
 
 /// Renders an area mark: the band between a zero baseline and the value line,
 /// filled. Points are taken in order along the position axis (like
-/// [`LineRenderer`]); the fill is the resolved colour softened by
-/// [`AREA_FILL_ALPHA`].
+/// [`LineRenderer`]); the fill is the resolved colour softened by the private
+/// `AREA_FILL_ALPHA`.
 pub struct AreaRenderer {
     /// Orientation — `Y` for areaY, `X` for areaX.
     pub axis: AreaAxis,
@@ -1576,8 +1576,8 @@ pub(crate) fn build_kde_grid(
 /// Renders 2D density as a grid of circles whose alpha encodes density value.
 ///
 /// The lowerer emits `(x_bin, y_bin, count)`; this renderer reconstructs the
-/// rectangular histogram via the shared [`build_kde_grid`] helper and draws a
-/// circle per cell with alpha proportional to normalised density.
+/// rectangular histogram via the shared crate-private `build_kde_grid` helper
+/// and draws a circle per cell with alpha proportional to normalised density.
 pub struct Density2DRenderer;
 
 impl MarkRenderer for Density2DRenderer {
@@ -1868,7 +1868,7 @@ impl MarkRenderer for RasterRenderer {
 
 /// Renders the KDE-smoothed 2D density field as ramp-filled grid cells — the
 /// smoothed sibling of raster (density marks). Raster ramps the raw
-/// `__bf_count` of each OCCUPIED bin; heatmap ramps the [`build_kde_grid`]
+/// `__bf_count` of each OCCUPIED bin; heatmap ramps the `build_kde_grid`
 /// field over EVERY grid cell, so the plot reads as a continuous density
 /// surface rather than discrete count tiles. Both register against the same
 /// 2D density lowerer.
@@ -2178,7 +2178,7 @@ impl MarkRenderer for CellRenderer {
 const DEFAULT_CONTOUR_LEVELS: usize = 10;
 
 /// Renders density iso-lines: marching squares over the same
-/// [`build_kde_grid`] field the heatmap shades, at N evenly-spaced levels
+/// `build_kde_grid` field the heatmap shades, at N evenly-spaced levels
 /// (density marks).
 ///
 /// `thresholds` here is the ISO-LEVEL COUNT (Mosaic semantics) — the lowerer
@@ -2278,7 +2278,7 @@ const HEX_Y1_COL: &str = "__bf_hex_y1";
 /// shared scales and draws the six vertices from the half-extents.
 ///
 /// A count fill ramps the configured Sequential scheme zero-anchored `[0,max]`
-/// (with the [`RASTER_MIN_T`] visibility floor so the sparsest hex stays
+/// (with the private `RASTER_MIN_T` visibility floor so the sparsest hex stays
 /// visible); an avg fill follows the cell anchoring rule. The scheme rides
 /// `MarkInput::renderer_override` (live-rebuild parity — the cfr seam). A
 /// missing / non-Sequential Fill scale falls back to alpha-on-default-blue.
@@ -2535,8 +2535,9 @@ const HEXGRID_STROKE_WIDTH: f64 = 0.75;
 ///
 /// - **Sibling** — when a hexbin has established RAW-anchored widened data
 ///   scales, the mesh is the hexbin lattice reconstructed from those scales and
-///   drawn through them ([`Self::sibling_lattice`]), so the hexbin overlays it
-///   EXACTLY on-lattice (same pitch and phase, not merely the same `binWidth`).
+///   drawn through them (the private `sibling_lattice`), so the hexbin overlays
+///   it EXACTLY on-lattice (same pitch and phase, not merely the same
+///   `binWidth`).
 ///   Drawing the mesh in raw pixel space at `binWidth` would drift, because the
 ///   hexbin's centres travel through the half-hex-widened scales.
 /// - **Standalone** — a dataless hexgrid-only spec has no widening to invert:
@@ -2818,7 +2819,7 @@ impl MarkRenderer for HexgridRenderer {
     /// hexgrid-only spec still has a plot-area pixel rect to draw the mesh in.
     /// When a sibling mark (e.g. hexbin) has already established data-driven x/y
     /// scales, this is a no-op — `render` then reconstructs the mesh from those
-    /// scales ([`Self::sibling_lattice`]) so it stays exactly on-lattice.
+    /// scales (the private `sibling_lattice`) so it stays exactly on-lattice.
     fn augment_scales(
         &self,
         scales: &mut ScaleSet,
