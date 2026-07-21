@@ -5,10 +5,14 @@
 //! This is the capability the gpui host never had: an agent edits the UI and
 //! sees the actual pixels, including scripted keystrokes driving the view.
 //!
-//! Two surfaces, auto-routed by the spec:
-//! - a **Mosaic dashboard** (`--spec dashboard.yaml`) → the chart shell;
+//! The window holds both views; the spec decides which of them opens:
+//! - a **Mosaic dashboard** (`--spec dashboard.yaml`) → the chart workbench;
 //! - a **Protocol manifest** (`arcform.yaml`, with `BRIGHTFIELD_PROTOCOL_OFFLINE=1`)
-//!   → the egui Protocol panel (dock + DAG + outline + inspector + steps).
+//!   → the Protocol panel (dock + DAG + outline + inspector + steps).
+//!
+//! One capture path serves both. This binary used to sniff the spec itself and
+//! branch into a second capture function over a second shell — the same fork
+//! the live window carried, spelled again.
 //!
 //! Usage:
 //!
@@ -27,12 +31,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use brightfield_protocol::layout::Flow;
-use brightfield_shell::capture::{
-    capture_png, capture_protocol_png, capture_vello_only, parse_script,
-};
+use brightfield_shell::capture::{capture_png, capture_vello_only, parse_script};
 use brightfield_shell::design::Mode;
-use brightfield_shell::pipeline::compose_spec;
-use brightfield_shell::protocol::load_protocol_offline;
+use brightfield_shell::window::Boot;
+use brightfield_workbench::ViewKind;
 
 struct Args {
     spec: String,
@@ -75,76 +77,45 @@ fn main() -> ExitCode {
         std::fs::create_dir_all(parent).ok();
     }
 
-    // Route a Protocol manifest to the egui Protocol panel.
-    let text = std::fs::read_to_string(&args.spec).unwrap_or_default();
-    if brightfield_protocol::is_protocol_manifest(&text) {
-        return run_protocol(&args, script);
-    }
-
-    // Otherwise the Mosaic dashboard path.
-    let composed = match compose_spec(&args.spec) {
-        Ok(c) => c,
+    let boot = match Boot::open(&args.spec, args.flow, args.focus.clone()) {
+        Ok(b) => b,
         Err(e) => {
-            eprintln!("pipeline error: {e}");
+            eprintln!("error: {e}");
             return ExitCode::from(1);
         }
     };
-    eprintln!(
-        "composed {}x{} dashboard from {}",
-        composed.width, composed.height, args.spec
-    );
+    eprintln!("{} from {}", boot.describe(), args.spec);
+    if boot.view == ViewKind::Protocol {
+        // Surface the family tile ids so `--focus` has a target for a scripted `za`.
+        for (id, node) in &boot.protocol.graph_collapsed.nodes {
+            if node.kind == brightfield_protocol::graph::AssetKind::Family {
+                eprintln!("  family tile: {id}");
+            }
+        }
+    }
 
-    let _ = args.size; // reserved override; the shell auto-sizes today.
-    let result = if args.vello_only {
-        capture_vello_only(composed, args.scale, &args.out)
-    } else {
-        capture_png(composed, args.mode, args.scale, &args.out, script)
-    };
-    report(result, &args.out)
-}
-
-/// Build the Protocol inputs (gated offline) and capture the panel.
-fn run_protocol(args: &Args, script: Vec<Vec<egui::Event>>) -> ExitCode {
-    if std::env::var("BRIGHTFIELD_PROTOCOL_OFFLINE").is_err() {
-        eprintln!(
-            "{} is a Protocol manifest, not an emitted Protocol+Run contract. \
-             To render it offline without a run, set BRIGHTFIELD_PROTOCOL_OFFLINE=1.",
-            args.spec
+    let _ = args.size; // reserved override; the window auto-sizes today.
+    if args.vello_only {
+        // The Vello-only raster is the *dashboard* composite with no egui around
+        // it, and there is no protocol analogue of it. Collapsing the fork made
+        // this combination reachable for the first time, so it gets an answer
+        // rather than an empty PNG.
+        if boot.view != ViewKind::Charts {
+            eprintln!(
+                "error: --vello-only renders a composed dashboard; {} opens the Protocol view",
+                args.spec
+            );
+            return ExitCode::from(2);
+        }
+        return report(
+            capture_vello_only(boot.composed, args.scale, &args.out),
+            &args.out,
         );
-        return ExitCode::from(1);
     }
-    let inputs = match load_protocol_offline(&args.spec) {
-        Ok(i) => i,
-        Err(e) => {
-            eprintln!("protocol pipeline error: {e}");
-            return ExitCode::from(1);
-        }
-    };
-    eprintln!(
-        "protocol {} ({} collapsed / {} full nodes, {} steps, {:?} flow) from {}",
-        inputs.protocol,
-        inputs.graph_collapsed.nodes.len(),
-        inputs.graph_full.nodes.len(),
-        inputs.sheet_rows.len(),
-        args.flow,
-        args.spec
-    );
-    // Surface the family tile ids so `--focus` has a target for a scripted `za`.
-    for (id, node) in &inputs.graph_collapsed.nodes {
-        if node.kind == brightfield_protocol::graph::AssetKind::Family {
-            eprintln!("  family tile: {id}");
-        }
-    }
-    let result = capture_protocol_png(
-        inputs,
-        args.mode,
-        args.flow,
-        args.focus.clone(),
-        args.scale,
+    report(
+        capture_png(boot, args.mode, args.scale, &args.out, script),
         &args.out,
-        script,
-    );
-    report(result, &args.out)
+    )
 }
 
 fn report(result: Result<(u32, u32), String>, out: &std::path::Path) -> ExitCode {

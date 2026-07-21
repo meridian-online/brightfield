@@ -6,18 +6,22 @@
 //! to exist first is the loop — every later UI change is verifiable because the
 //! real window can be captured headlessly:
 //!
-//! - [`app::draw_shell`] — the single frame logic all tiers share.
+//! - [`window::MeridianApp`] — the one window, and the single frame logic all
+//!   tiers share.
 //! - [`canvas`] — [`canvas::EguiCanvasHost`] / [`canvas::EguiChartFrame`], the
 //!   egui realisation of the `CanvasHost`/`ChartSurface`/`OverlayPainter` seam.
 //! - [`design`] — the Meridian Design System → egui `Visuals`/`Style`/fonts.
 //! - [`pipeline`] — spec → composited Vello scene (gpui-free).
 //! - [`capture`] — headless egui_wgpu → PNG (the `brightfield-shot` binary).
+//! - [`app`] / [`protocol`] — the two views, each declared as `Item`s on the
+//!   `brightfield-workbench` shell contract.
 
 pub mod app;
 pub mod canvas;
 pub mod capture;
 pub mod pipeline;
 pub mod protocol;
+pub mod window;
 
 /// The Meridian Design System → egui bridge.
 ///

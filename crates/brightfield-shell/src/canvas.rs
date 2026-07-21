@@ -36,18 +36,22 @@
 //! [`EguiCanvasHost::end_frame`] takes the set of panes that were on screen. It
 //! deliberately does *not* infer liveness from "did anyone touch this slot this
 //! frame". That would be a contract every caller has to remember on every paint
-//! path, and both surfaces in the tree today would already break it: `ShellState`
-//! and `ProtocolShell` each cache the [`egui::TextureId`] in a field of their own
-//! and, on an unchanged frame, paint from that field without coming back to the
-//! host at all. A sweep keyed on "was I asked" would free the texture of a pane
+//! path, and both views in the tree today would already break it: each caches
+//! the [`egui::TextureId`] in its own [`CanvasSlot`] and, on an unchanged frame,
+//! paints from that field without coming back to the host at all. A sweep keyed
+//! on "was I asked" would free the texture of a pane
 //! that is visibly on screen — the same silent blank the slot map exists to
 //! abolish, arriving one frame later. Taking the set makes the statement explicit
 //! and puts it in one place, the frame loop that knows its dock tree, rather than
 //! on every path that paints.
 //!
-//! No shell code calls `end_frame` yet — this increment has no consumers — so the
-//! sweep, and the ordering it is safe at, are exercised only by the
-//! `keyed_canvas` integration test.
+//! [`crate::window::MeridianApp`] is the caller, and it declares **every** pane
+//! of **every** view each frame — including the whole of the view it did not
+//! draw. Presenting alone also retains, so a frame that forgets a pane leaks
+//! rather than blanks; a frame that names only the view it drew would free the
+//! other view's texture and leave a dangling id the moment the user switched
+//! back. The `keyed_canvas` integration test exercises the sweep itself, and the
+//! ordering it is safe at.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -69,9 +73,9 @@ pub type SharedEguiRenderer = Arc<egui::mutex::RwLock<egui_wgpu::Renderer>>;
 ///
 /// The trait is also implemented by the dying gpui host, which has no notion of
 /// a pane, so its signature stays key-free and the egui implementation forwards
-/// here. Today's `ShellState` and `ProtocolShell` each own their own host, so one
-/// legacy key per host is one slot per surface — the pre-existing behaviour
-/// exactly. The migration replaces those calls with real pane keys.
+/// here. Each view's document owns its own host, so one legacy key per host is
+/// one slot per view. Neither view reaches this constant: both present under
+/// their own pane's key.
 pub const LEGACY_CANVAS: PaneKey =
     PaneKey::new(ViewKind::Charts, ItemId::new("legacy-canvas-host"));
 
