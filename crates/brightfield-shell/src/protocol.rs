@@ -795,7 +795,6 @@ impl ProtocolDoc {
     }
 
     /// A document with no device behind it — the [`CanvasSlot`] holds no host.
-
     #[must_use]
     pub fn headless(model: ProtocolModel) -> Self {
         Self {
