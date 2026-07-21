@@ -42,6 +42,27 @@ pub struct Composed {
     pub title: Option<String>,
 }
 
+impl Composed {
+    /// A dashboard with no plots on it: an empty scene, no area, no title.
+    ///
+    /// [`compose_spec`] never produces this — it returns `Err` when nothing
+    /// rendered, and a dashboard's size is the union of its placed plots' rects,
+    /// so any success has area. This exists for
+    /// [`brightfield_workbench::audit`], which constructs every pane of a view
+    /// and asks it what it shows over a document with nothing in it, and so
+    /// needs "nothing in it" to be a value that can be built without a spec, a
+    /// device or a window.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            scene: Scene::new(),
+            width: 0,
+            height: 0,
+            title: None,
+        }
+    }
+}
+
 /// Run a Mosaic spec at `spec_path` through parse → analyse → engine → execute →
 /// per-plot scene → composite, returning the [`Composed`] dashboard.
 ///

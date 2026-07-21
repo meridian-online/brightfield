@@ -40,16 +40,18 @@
 //! Every input is fixed: checked-in spec fixtures, a fixed logical window size
 //! (each surface's own `window_size()`, which is a pure function of the fixture),
 //! a fixed `pixels_per_point`, and no wall-clock or randomness anywhere on
-//! either path. No pointer is ever moved, so the chart's hover crosshair overlay
-//! is never armed; the only scripted input in this file is one keypress, and it
-//! is a keypress with no cursor-position component. The capture path already runs
-//! a warm-up frame (font atlas + layout settle), then the scripted frames, then a
-//! final settle frame which is the one captured — that is what makes a
-//! first-frame layout pass invisible to the baseline. Measured on the reference
-//! machine, five consecutive runs of all five tests produced byte-identical PNGs.
+//! either path. **No baseline capture moves a pointer**, so the chart's hover
+//! crosshair overlay is never armed in one; the only scripted input a baseline
+//! takes is one keypress, and it is a keypress with no cursor-position
+//! component. The one test here that does move a pointer —
+//! [`the_overlay_toggle_still_reaches_the_chart_pane`] — has no baseline at all:
+//! it compares three captures against each other, so nothing about it is stored.
+//! The capture path already runs a warm-up frame (font atlas + layout settle),
+//! then the scripted frames, then a final settle frame which is the one captured
+//! — that is what makes a first-frame layout pass invisible to the baseline.
 //!
 //! Scale is **1.0** here, against the sheet tier's 2.0. The chart window is
-//! 934×360 logical points and the protocol window 1642×1250, so at 2.0 these
+//! 947×396 logical points and the protocol window 1642×1250, so at 2.0 these
 //! five baselines would cost roughly 3 MB of repo; at 1.0 they cost 0.8 MB for
 //! the same coverage. The perceptual gate is a per-pixel delta, not a per-image
 //! one, so the lower raster does not buy any slack — it just stores less of it.
@@ -64,6 +66,7 @@
 use std::path::PathBuf;
 
 use brightfield_protocol::layout::Flow;
+use brightfield_shell::app::{draw_shell, window_size_for, ShellState};
 use brightfield_shell::capture::{capture_png, capture_protocol_png};
 use brightfield_shell::design::Mode;
 use brightfield_shell::pipeline::compose_spec;
@@ -96,18 +99,155 @@ fn read_rgba(path: &PathBuf) -> image::RgbaImage {
         .to_rgba8()
 }
 
-/// Capture the **chart shell** — `draw_shell` over `ShellState`: the top header
-/// band, the right controls panel, and the composited Vello dashboard in the
-/// central panel.
-fn shell_surface(mode: Mode, name: &str) {
+/// Capture the **chart shell** — `draw_shell` over `ShellState`: the top bar,
+/// and the dock's two panes (the composited Vello dashboard, and the controls
+/// rail), each in the header band `PaneChrome` draws from its `Subject`.
+fn shell_capture(mode: Mode, name: &str, script: Vec<Vec<egui::Event>>) -> image::RgbaImage {
     let spec = fixture("examples/dashboard.yaml");
     let composed = compose_spec(spec.to_str().expect("utf-8 fixture path"))
         .unwrap_or_else(|e| panic!("compose {}: {e}", spec.display()));
     let out = scratch(name);
-    let (w, h) = capture_png(composed, mode, SCALE, &out, Vec::new())
+    let (w, h) = capture_png(composed, mode, SCALE, &out, script)
         .unwrap_or_else(|e| panic!("capture {name}: {e}"));
     assert!(w > 0 && h > 0, "{name}: empty capture");
-    egui_kittest::image_snapshot(&read_rgba(&out), name);
+    read_rgba(&out)
+}
+
+/// The same, diffed against the committed baseline.
+fn shell_surface(mode: Mode, name: &str) {
+    egui_kittest::image_snapshot(&shell_capture(mode, name, Vec::new()), name);
+}
+
+/// One frame that moves the pointer to a logical position.
+fn move_to(x: f32, y: f32) -> Vec<egui::Event> {
+    vec![egui::Event::PointerMoved(egui::pos2(x, y))]
+}
+
+/// One frame that moves the pointer and clicks the primary button there — the
+/// same event triple `capture::parse_script` synthesises for a `{"click":[x,y]}`
+/// line.
+fn click_at(x: f32, y: f32) -> Vec<egui::Event> {
+    let pos = egui::pos2(x, y);
+    let mut events = move_to(x, y);
+    for pressed in [true, false] {
+        events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        });
+    }
+    events
+}
+
+/// A rectangle of a capture, in pixels. Half-open: `x0..x1`, `y0..y1`.
+#[derive(Clone, Copy, Debug)]
+struct Region {
+    x0: u32,
+    y0: u32,
+    x1: u32,
+    y1: u32,
+}
+
+impl Region {
+    /// The whole of an egui rect, shrunk by `margin` logical points on every
+    /// side and rounded inwards — a region strictly *inside* something the
+    /// layout gave us, at [`SCALE`] 1.0 where a logical point is a pixel.
+    fn inside(rect: egui::Rect, margin: f32) -> Self {
+        let r = rect.shrink(margin);
+        Self {
+            x0: r.min.x.ceil() as u32,
+            y0: r.min.y.ceil() as u32,
+            x1: r.max.x.floor() as u32,
+            y1: r.max.y.floor() as u32,
+        }
+    }
+}
+
+/// How two captures differ over one [`Region`] — a summary a human can read.
+///
+/// This comparison used to be an `assert_eq!` over two `Vec<u8>` of raw pixels,
+/// so any failure printed 614,400 decimal bytes twice: a 5.7 MB panic message
+/// whose entire content was "something in here moved". This says how much moved
+/// and where it starts, which is the part a reader can act on.
+#[derive(PartialEq, Eq)]
+struct RegionDiff {
+    /// Pixels whose RGBA differs, out of `total`.
+    differing: u32,
+    total: u32,
+    /// The first differing pixel in raster order, in capture coordinates.
+    first: (u32, u32),
+}
+
+impl std::fmt::Debug for RegionDiff {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}/{} pixels differ, first at ({}, {})",
+            self.differing, self.total, self.first.0, self.first.1
+        )
+    }
+}
+
+/// How `a` and `b` differ over `r`, or `None` if they are identical there.
+fn region_diff(a: &image::RgbaImage, b: &image::RgbaImage, r: Region) -> Option<RegionDiff> {
+    for img in [a, b] {
+        assert!(
+            r.x1 <= img.width() && r.y1 <= img.height(),
+            "region {r:?} is outside a {}×{} capture",
+            img.width(),
+            img.height()
+        );
+    }
+    let mut differing = 0;
+    let mut first = None;
+    for y in r.y0..r.y1 {
+        for x in r.x0..r.x1 {
+            if a.get_pixel(x, y) != b.get_pixel(x, y) {
+                differing += 1;
+                first.get_or_insert((x, y));
+            }
+        }
+    }
+    first.map(|first| RegionDiff {
+        differing,
+        total: (r.x1 - r.x0) * (r.y1 - r.y0),
+        first,
+    })
+}
+
+/// The rects the chart shell's layout produces at the window size it asks for:
+/// the chart pane's content box, and the overlay checkbox in the controls rail.
+///
+/// A real layout pass over a **headless** document — no GPU, no capture — run
+/// for the same two frames `capture_png` runs before the one it photographs, so
+/// the rects are the settled ones. This is how the pixel test below aims: the
+/// checkbox coordinate was `(800.0, 125.0)`, pinned against a layout nothing
+/// derived it from. It landed, but it would have gone on being green while
+/// clicking empty rail the first time the rail's share or a row height moved.
+fn chart_layout(mode: Mode) -> (egui::Rect, egui::Rect) {
+    let spec = fixture("examples/dashboard.yaml");
+    let composed = compose_spec(spec.to_str().expect("utf-8 fixture path"))
+        .unwrap_or_else(|e| panic!("compose {}: {e}", spec.display()));
+    let (w, h) = window_size_for(&composed);
+    let mut state = ShellState::headless(composed, mode);
+    let ctx = egui::Context::default();
+    let raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(w, h),
+        )),
+        ..Default::default()
+    };
+    for _ in 0..2 {
+        let _ = ctx.run_ui(raw.clone(), |ui| draw_shell(ui, &mut state));
+    }
+    (
+        state.chart_viewport().expect("the chart pane drew"),
+        state
+            .overlay_checkbox()
+            .expect("the controls rail drew its overlay checkbox"),
+    )
 }
 
 /// Capture the **protocol shell** — `ProtocolShell::draw`: the outline rail, the
@@ -217,4 +357,79 @@ fn protocol_steps_light_surface() {
 #[test]
 fn protocol_dark_surface() {
     protocol_surface(Mode::Dark, "protocol_dark", Vec::new());
+}
+
+/// The overlay toggle still reaches the canvas across the dock.
+///
+/// The chart pane and the controls rail are two `egui_tiles` panes now, and the
+/// flag one writes and the other reads lives on the document between them. That
+/// is exactly the kind of wiring a re-expression can drop in silence: the
+/// checkbox would still tick, the crosshair would simply never appear again, and
+/// no baseline in this file would notice — none of the five moves a pointer.
+///
+/// Three captures, compared over a rectangle **strictly inside the chart raster**
+/// so the controls rail's own change of state is out of frame:
+///
+/// - pointer nowhere (the baseline capture's input),
+/// - pointer over the chart, overlay armed as it boots,
+/// - the "hover overlay" checkbox clicked off, *then* the pointer over the chart.
+///
+/// The first two must differ — that is the crosshair being drawn. The first and
+/// third must be identical — that is the toggle actually suppressing it. Light
+/// only: the plumbing is mode-independent and a dark twin would cost three more
+/// GPU captures to re-photograph the same wire.
+///
+/// Both rectangles and the click are derived from a headless layout pass
+/// ([`chart_layout`]) rather than typed in, and the click is *verified to have
+/// landed* before the chart region is read: a miss and a broken seam produce the
+/// same failure otherwise, and the message would have to guess between them.
+#[test]
+fn the_overlay_toggle_still_reaches_the_chart_pane() {
+    let (chart, checkbox) = chart_layout(Mode::Light);
+    // Strictly inside the Vello raster, clear of the pane's frame, its header
+    // band and the rail beside it.
+    let inside_chart = Region::inside(chart, 20.0);
+    // The checkbox and its label, and nothing else in the rail.
+    let on_checkbox = Region::inside(checkbox, 1.0);
+    // The middle of the chart, so both crosshair lines cross `inside_chart`.
+    let over_chart = chart.center();
+
+    let idle = shell_capture(Mode::Light, "overlay_idle", Vec::new());
+    let hovered = shell_capture(
+        Mode::Light,
+        "overlay_on",
+        vec![move_to(over_chart.x, over_chart.y)],
+    );
+    let toggled_off = shell_capture(
+        Mode::Light,
+        "overlay_off",
+        vec![
+            click_at(checkbox.center().x, checkbox.center().y),
+            move_to(over_chart.x, over_chart.y),
+        ],
+    );
+
+    // The click landed on the checkbox and changed it. Asserted first, and over
+    // the checkbox alone, so that the two assertions below mean exactly one
+    // thing each: a missed click cannot masquerade as a broken overlay seam.
+    assert!(
+        region_diff(&idle, &toggled_off, on_checkbox).is_some(),
+        "the checkbox at {:?} looks identical before and after being clicked at \
+         {:?} — the click did not land on it, so this test proves nothing about \
+         the overlay seam",
+        checkbox,
+        checkbox.center(),
+    );
+
+    assert!(
+        region_diff(&idle, &hovered, inside_chart).is_some(),
+        "hovering the chart drew nothing — the overlay seam no longer reaches the pane"
+    );
+    assert_eq!(
+        region_diff(&idle, &toggled_off, inside_chart),
+        None,
+        "the crosshair drew inside the chart with the overlay checkbox off (and \
+         the click did land — see above), so the flag the rail writes is not the \
+         flag the chart pane reads"
+    );
 }

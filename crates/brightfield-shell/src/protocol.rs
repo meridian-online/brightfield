@@ -67,7 +67,7 @@ use brightfield_workbench::{
 
 use meridian_design::{control, semantic, spacing};
 
-use crate::canvas::EguiCanvasHost;
+use crate::canvas::{CanvasSlot, EguiCanvasHost};
 use crate::design::{self, Mode};
 
 // ---------------------------------------------------------------------------
@@ -741,25 +741,7 @@ pub struct ProtocolDoc {
     pub model: ProtocolModel,
     /// The DAG raster: the host, the presented texture, and the key it was
     /// presented at.
-    pub canvas: CanvasSlot,
-}
-
-/// The canvas half of the document: a Vello raster of the displayed graph,
-/// re-rendered only when the view it depicts has changed.
-pub struct CanvasSlot {
-    /// `None` on a headless document — a model with no device behind it.
-    ///
-    /// Optional rather than required because a `ProtocolDoc` has to be
-    /// constructible without a GPU: [`brightfield_workbench::audit`] builds
-    /// every pane and asks it for a [`Subject`] over an empty document, and a
-    /// gate that needed an adapter would be a gate that does not run in a unit
-    /// test. Every pane's *chrome* is a pure function of the model, so nothing
-    /// a subject says depends on this being `Some`.
-    host: Option<EguiCanvasHost>,
-    texture: Option<egui::TextureId>,
-    /// What the texture in [`Self::texture`] was last presented at — see
-    /// [`CanvasKey`].
-    presented_key: Option<CanvasKey>,
+    pub canvas: CanvasSlot<CanvasKey>,
 }
 
 /// Everything the DAG raster's pixels depend on.
@@ -773,8 +755,14 @@ pub struct CanvasSlot {
 /// because `differs_only_by_mode` is what a test can hold the mode component
 /// to — a bare tuple can lose a
 /// field to a refactor and stay compiling and green.
+///
+/// **Deliberately not shared with the chart view's key of the same name**,
+/// though [`CanvasSlot`] itself now is. A composed dashboard is composed once
+/// before the window opens and never re-laid-out, so three of these six fields
+/// would be constants over there — and a cache-key field nobody ever changes is
+/// a cache that silently never invalidates. The same note is on the chart side.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct CanvasKey {
+pub struct CanvasKey {
     expanded: bool,
     flow: Flow,
     generation: u64,
@@ -802,25 +790,16 @@ impl ProtocolDoc {
     pub fn new(model: ProtocolModel, host: EguiCanvasHost) -> Self {
         Self {
             model,
-            canvas: CanvasSlot {
-                host: Some(host),
-                texture: None,
-                presented_key: None,
-            },
+            canvas: CanvasSlot::new(host),
         }
     }
 
-    /// A document with no device behind it — its private `CanvasSlot::host` is
-    /// `None`.
+    /// A document with no device behind it — the [`CanvasSlot`] holds no host.
     #[must_use]
     pub fn headless(model: ProtocolModel) -> Self {
         Self {
             model,
-            canvas: CanvasSlot {
-                host: None,
-                texture: None,
-                presented_key: None,
-            },
+            canvas: CanvasSlot::headless(),
         }
     }
 
@@ -857,10 +836,10 @@ impl ProtocolDoc {
     /// hand the canvas pane the texture to paint.
     fn ensure_presented(&mut self, ppp: f32, mode: Mode) {
         let (key, dev) = self.canvas_key(ppp, mode);
-        if self.canvas.presented_key == Some(key) && self.canvas.texture.is_some() {
+        if self.canvas.presented(&key) {
             return;
         }
-        let Some(host) = self.canvas.host.as_mut() else {
+        let Some(host) = self.canvas.host_mut() else {
             return;
         };
         // The raster's own page tone. The asset scene paints its own canvas
@@ -885,8 +864,7 @@ impl ProtocolDoc {
             scaled
         };
         let id = host.present_keyed(CANVAS_PANE, &scene, dev, base);
-        self.canvas.texture = Some(id);
-        self.canvas.presented_key = Some(key);
+        self.canvas.record(key, id);
     }
 }
 
@@ -1100,7 +1078,7 @@ impl Item<ProtocolDoc> for CanvasPane {
     }
 
     fn ui(&mut self, doc: &mut ProtocolDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
-        let Some(texture) = doc.canvas.texture else {
+        let Some(texture) = doc.canvas.texture() else {
             // No device behind this document. The pane is blank rather than
             // apologetic: a headless document is a test fixture, never a state
             // a user reaches, so a message here would be chrome nobody sees.
@@ -1777,7 +1755,7 @@ impl ProtocolShell {
     /// on an unchanged view, so a slot freed while the canvas was behind the
     /// steps tab would leave a dangling id the moment the user tabbed back.
     fn sweep_canvas(&mut self) {
-        let Some(host) = self.doc.canvas.host.as_mut() else {
+        let Some(host) = self.doc.canvas.host_mut() else {
             return;
         };
         let visible: BTreeSet<PaneKey> = self
@@ -1830,7 +1808,7 @@ impl ProtocolShell {
                     .clicked()
                 {
                     self.doc.model.toggle_flow();
-                    self.doc.canvas.presented_key = None;
+                    self.doc.canvas.invalidate();
                 }
             });
         });

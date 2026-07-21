@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use brightfield_protocol::layout::Flow;
 use brightfield_render::vello_renderer::VelloRenderer;
-use brightfield_shell::app::{draw_shell, ShellState};
+use brightfield_shell::app::{draw_shell, window_size_for, ShellState};
 use brightfield_shell::canvas::EguiCanvasHost;
 use brightfield_shell::design::Mode;
 use brightfield_shell::pipeline::compose_spec;
@@ -178,7 +178,11 @@ fn main() -> Result<(), String> {
 
 fn run_mosaic_window(args: Args) -> Result<(), String> {
     let composed = compose_spec(&args.spec)?;
-    let (win_w, win_h) = (composed.width as f32 + 200.0, composed.height as f32 + 56.0);
+    // The same function `ShellState::window_size` reads. This line used to be
+    // `+ 200.0 / + 56.0`, against a `ShellState::window_size` that said 214/60
+    // and a side panel declared at 180 — three numbers for one layout, already
+    // drifted.
+    let (win_w, win_h) = window_size_for(&composed);
     let title = composed
         .title
         .clone()

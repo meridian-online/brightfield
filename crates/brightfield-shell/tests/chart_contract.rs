@@ -1,0 +1,361 @@
+//! The chart view against the shell contract, without a GPU.
+//!
+//! The sibling of `protocol_contract.rs`, and deliberately its shape:
+//! everything asserted here is a property of the view's *declaration* — its
+//! registry, its two subjects, its default arrangement, the window it asks for —
+//! and none of it needs a device. That is the payoff of a
+//! [`Subject`](brightfield_workbench::Subject) being plain data: the pane
+//! headers, the empty states and the key context of a whole surface can be
+//! pinned in a unit test that runs in milliseconds, where before the only thing
+//! on this surface that could see them was a full-window pixel baseline on a
+//! GPU.
+//!
+//! The pixel tier (`surfaces.rs`) still covers what this cannot: what the shell
+//! *looks* like.
+
+use std::collections::BTreeMap;
+
+use brightfield_shell::app::{
+    chart_registry, draw_shell, publish_item_ids, window_size_for, ChartDoc, ShellState, CHART,
+    CONTROLS, DOCK_INSET, TOP_BAR,
+};
+use brightfield_shell::design::Mode;
+use brightfield_shell::pipeline::{compose_spec, Composed};
+use brightfield_workbench::behavior::TILE_GAP;
+use brightfield_workbench::registry::{DockSide, Slot};
+use brightfield_workbench::{audit, chrome, ItemId, PaneKey, Subject, ViewKind};
+
+const DASHBOARD: &str = "../../examples/dashboard.yaml";
+
+/// The real fixture, as a document with no device behind it.
+fn loaded() -> ChartDoc {
+    ChartDoc::headless(compose_spec(DASHBOARD).expect("compose examples/dashboard.yaml"))
+}
+
+/// Every pane's subject over one document, keyed by item id.
+fn subjects(doc: &ChartDoc) -> BTreeMap<ItemId, Subject> {
+    chart_registry()
+        .specs()
+        .iter()
+        .map(|spec| (spec.id, (spec.make)().subject(doc)))
+        .collect()
+}
+
+/// The controls rail's declared share, read out of the registry.
+fn controls_share() -> f32 {
+    let registry = chart_registry();
+    let spec = registry
+        .specs()
+        .iter()
+        .find(|s| s.id == CONTROLS)
+        .expect("the controls rail is in the registry");
+    match spec.slot {
+        Slot::Rail { side, share } => {
+            assert_eq!(side, DockSide::Right, "the controls rail docks right");
+            share
+        }
+        other => panic!("the controls rail is not a rail: {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The gate
+// ---------------------------------------------------------------------------
+
+/// The workbench audit, over the chart view.
+///
+/// This is the one assertion that replaces "somebody remembered to write an
+/// empty state" — and on this surface nobody had: before this increment a spec
+/// that composed nothing rendered a header, a side panel and a blank rectangle.
+/// It constructs both panes, asks each for its subject over an empty document,
+/// and rejects a missing empty state, prose that breaks the house style, a verb
+/// the keyboard registry does not have, and a rail that names no verb to show
+/// and hide it.
+#[test]
+fn every_chart_pane_passes_the_contract_audit() {
+    audit(&chart_registry(), &ChartDoc::empty()).expect("the chart view is on the contract");
+}
+
+/// An empty document really is empty, so the audit above is asserting on the
+/// branch it thinks it is.
+///
+/// Without this, `Composed::empty` could quietly grow area and every
+/// empty-state assertion in the file would pass by never reaching one.
+#[test]
+fn the_empty_document_has_nothing_in_it() {
+    let composed = Composed::empty();
+    assert_eq!(composed.width, 0, "an empty dashboard has width");
+    assert_eq!(composed.height, 0, "an empty dashboard has height");
+    assert!(composed.title.is_none(), "an empty dashboard has a title");
+
+    let doc = ChartDoc::empty();
+    assert!(doc.is_empty(), "an empty document reports content");
+    for (id, subject) in subjects(&doc) {
+        assert!(
+            subject.empty_state.is_some(),
+            "{id} shows content over an empty document"
+        );
+    }
+}
+
+/// The mirror of the audit, and the half that actually catches an inverted
+/// predicate: over the **real** fixture, no pane is empty.
+///
+/// An `empty_state` that is always `Some` passes the audit perfectly and blanks
+/// the whole window — the shell draws the empty state *instead of* the pane's
+/// own body, so `doc.is_empty()` written without the `!` on the other branch
+/// would ship two panes with two apologies in them and no chart at all.
+#[test]
+fn no_pane_is_empty_over_a_real_dashboard() {
+    let doc = loaded();
+    assert!(
+        !doc.is_empty(),
+        "the fixture composed nothing, so this test proves nothing"
+    );
+    for (id, subject) in subjects(&doc) {
+        assert!(
+            subject.empty_state.is_none(),
+            "{id} claims to be empty over examples/dashboard.yaml: {:?}",
+            subject.empty_state
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// What the panes declare
+// ---------------------------------------------------------------------------
+
+/// Each pane names itself once, and resolves its keys in the chart grammar's
+/// context.
+///
+/// The title is the whole of the pane's name now. Before this increment the
+/// controls rail's own body opened with a bold `Controls` label and the chart
+/// had no name at all; the only heading on the surface was the window's.
+#[test]
+fn each_pane_names_itself_once_and_binds_in_the_workspace_context() {
+    let names: BTreeMap<ItemId, String> = subjects(&loaded())
+        .into_iter()
+        .map(|(id, s)| {
+            assert_eq!(
+                s.key_context,
+                brightfield_keys::BindingContext::Workspace,
+                "{id} resolves keys somewhere other than the chart context"
+            );
+            (id, s.title)
+        })
+        .collect();
+    assert_eq!(names[&CHART], "Chart");
+    assert_eq!(names[&CONTROLS], "Controls");
+}
+
+/// A pane declares no chrome it cannot be held to: no toolbar control and no
+/// status line, because the shell's top bar is still its own.
+///
+/// A statement about *this* increment rather than a rule for all time — the top
+/// bar's mode line becomes a status entry when the one-app shell lands. Until
+/// then, an entry appearing here would be an entry nothing draws, which is worse
+/// than none.
+#[test]
+fn no_pane_declares_chrome_the_shell_does_not_yet_draw() {
+    for (id, subject) in subjects(&loaded()) {
+        assert!(
+            subject.toolbar.is_empty(),
+            "{id} declares a toolbar control"
+        );
+        assert!(subject.status.is_empty(), "{id} declares a status line");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The default arrangement
+// ---------------------------------------------------------------------------
+
+/// The registry is the single declaration of the view's shape: the chart is the
+/// centre pane and the controls are a right rail.
+///
+/// Neither pane is under a tab strip, which is the load-bearing part: a pane in
+/// a tab strip has its header band suppressed because the strip already names
+/// it, so if either of these became a tab it would silently lose its name rather
+/// than grow a second one.
+#[test]
+fn the_default_dock_is_a_chart_with_a_controls_rail() {
+    let registry = chart_registry();
+    let slots: BTreeMap<ItemId, Slot> = registry
+        .specs()
+        .iter()
+        .map(|spec| (spec.id, spec.slot))
+        .collect();
+    assert_eq!(slots[&CHART], Slot::Centre, "the chart is the centre pane");
+    assert!(
+        matches!(
+            slots[&CONTROLS],
+            Slot::Rail {
+                side: DockSide::Right,
+                ..
+            }
+        ),
+        "the controls are a right rail, got {:?}",
+        slots[&CONTROLS]
+    );
+
+    let tree = registry.default_tree();
+    let tabbed = brightfield_workbench::workspace::tabbed_tiles_of(&tree);
+    for item in [CHART, CONTROLS] {
+        let tile =
+            brightfield_workbench::workspace::tile_of(&tree, PaneKey::new(ViewKind::Charts, item))
+                .unwrap_or_else(|| panic!("{item} is in the default tree"));
+        assert!(
+            !tabbed.contains(&tile),
+            "{item} is under a tab strip, so its header band is suppressed"
+        );
+    }
+}
+
+/// The published id vocabulary is derived from the registry, not written beside
+/// it.
+///
+/// The protocol view shipped a hand-written `static [ItemId; 4]` next to its
+/// registry, which is a second declaration by definition: a pane added to the
+/// registry and forgotten in the array compiled, ran, and produced a pane whose
+/// saved layout could never load. This asserts the two agree — and, because
+/// `publish` is additive and process-global, that every id this binary has
+/// published came from the registry.
+#[test]
+fn the_published_vocabulary_is_the_registry_and_nothing_else() {
+    publish_item_ids();
+    let declared = chart_registry().ids();
+    let known = ItemId::known();
+    for id in &declared {
+        assert!(known.contains(id), "{id} is declared but never published");
+    }
+    for id in known {
+        assert!(
+            declared.contains(id),
+            "{id} was published by something other than the chart registry"
+        );
+    }
+
+    // The point of the vocabulary: a saved layout naming these panes loads.
+    for item in declared {
+        let key = PaneKey::new(ViewKind::Charts, item);
+        let json = serde_json::to_string(&key).expect("a pane key serialises");
+        assert_eq!(
+            serde_json::from_str::<PaneKey>(&json).expect("and round trips"),
+            key
+        );
+    }
+}
+
+/// The window the shell asks for is sized from the *same* share the dock lays
+/// the rail out with, and the chart pane's content box it produces fits the
+/// dashboard — **in both axes**.
+///
+/// This is the test for the deletion that mattered most here. Three numbers used
+/// to describe one layout — a side panel pinned at 180 logical points, a
+/// `window_size` that budgeted 214 for it, and a `main.rs` that budgeted 200 —
+/// and no test could see that they disagreed, because each was correct on its
+/// own terms. Now the share is the single declaration and this walks the
+/// arithmetic that depends on it.
+///
+/// It walked the *width* only, and said in its own doc that it walked "the
+/// arithmetic". The height line was `h > composed.height`, which one point of
+/// chrome budget satisfies — and one point of chrome budget for a top bar, a
+/// header band and two pane frames is 95 points short. It was mutated to
+/// `composed.height + 1.0` and all eight tests here stayed green while the
+/// window clipped the bottom seventeen rows of its own raster. Both axes are
+/// walked the same way now: outward from the raster through every component
+/// that consumes space, with the leftover slack named and bounded.
+#[test]
+fn the_window_is_sized_from_the_rail_share_it_lays_out() {
+    let composed = compose_spec(DASHBOARD).expect("compose examples/dashboard.yaml");
+    let (w, h) = window_size_for(&composed);
+    let centre = 1.0 - controls_share();
+    let inset = chrome::pane_content_inset();
+
+    // Across: the window insets to the dock, the dock gives up the gap between
+    // the two tiles, the chart takes `centre` of what is left, and the pane
+    // frame insets it again on both sides.
+    let content_w = (w - 2.0 * DOCK_INSET - TILE_GAP) * centre - 2.0 * inset;
+    let dashboard_w = composed.width as f32;
+    assert!(
+        content_w >= dashboard_w,
+        "the chart pane's content box is {content_w:.2}pt across for a \
+         {dashboard_w:.0}pt dashboard — the raster will be clipped"
+    );
+
+    // Down: the window gives up the top bar, insets to the dock, and the pane
+    // frame takes its header band and its padding above and below.
+    let content_h = h - TOP_BAR - 2.0 * DOCK_INSET - chrome::header_band_height() - 2.0 * inset;
+    let dashboard_h = composed.height as f32;
+    assert!(
+        content_h >= dashboard_h,
+        "the chart pane's content box is {content_h:.2}pt tall for a \
+         {dashboard_h:.0}pt dashboard — the raster will be clipped"
+    );
+
+    // And in neither axis is the leftover a fudge factor. Every term above is
+    // read from the component that consumes it, so the *only* slack
+    // `window_size_for` may have is its rounding up to whole logical points:
+    // strictly less than one point, per axis. An inequality that any positive
+    // number satisfies is what let the height budget be 95 points short.
+    for (axis, slack) in [
+        ("across", content_w - dashboard_w),
+        ("down", content_h - dashboard_h),
+    ] {
+        assert!(
+            slack < 1.0,
+            "the chart pane's content box has {slack:.2}pt of slack {axis} — \
+             more than the sub-point rounding `window_size_for` is allowed, so \
+             some of the budget is a fudge factor rather than a component"
+        );
+    }
+}
+
+/// The window `window_size_for` asks for really does fit the raster the chart
+/// pane presents — checked by laying a **real frame** out, not by re-running the
+/// same arithmetic.
+///
+/// The sibling above walks the budget term by term, and a walk can only ever be
+/// as right as its author's model of the dock. This one has no model: it runs
+/// `draw_shell` through `egui::Context::run_ui` at exactly the window size the
+/// shell asks for, and reads back the content box `egui_tiles` and
+/// `chrome::pane_frame` between them actually handed the chart pane. If any of
+/// the four components in that budget changes its height, this reddens whether
+/// or not anyone remembered to update the arithmetic.
+///
+/// GPU-free: `ShellState::headless` has no device, so the pane paints nothing —
+/// but it is handed the same rect either way, and `ChartPane::ui` records it
+/// before it looks for a texture. Two frames, because the first installs the
+/// font atlas and settles the layout, exactly as the capture path does.
+#[test]
+fn the_window_it_asks_for_fits_the_raster_it_presents() {
+    let composed = compose_spec(DASHBOARD).expect("compose examples/dashboard.yaml");
+    let (dash_w, dash_h) = (composed.width as f32, composed.height as f32);
+    let (w, h) = window_size_for(&composed);
+
+    let mut state = ShellState::headless(composed, Mode::Light);
+    let ctx = egui::Context::default();
+    let raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(w, h),
+        )),
+        ..Default::default()
+    };
+    for _ in 0..2 {
+        let _ = ctx.run_ui(raw.clone(), |ui| draw_shell(ui, &mut state));
+    }
+
+    let box_ = state
+        .chart_viewport()
+        .expect("the chart pane drew, so it recorded the box it was given");
+    assert!(
+        box_.width() >= dash_w && box_.height() >= dash_h,
+        "a {w}×{h} window gives the chart pane a {:.2}×{:.2} content box, \
+         and it presents a {dash_w:.0}×{dash_h:.0} raster into it — \
+         {:.2}pt of it is outside the pane's clip rect and never reaches the window",
+        box_.width(),
+        box_.height(),
+        (dash_h - box_.height()).max(dash_w - box_.width()),
+    );
+}

@@ -53,6 +53,32 @@ use crate::Mode;
 /// menu), and the dense rung's 18px control misses the pointer-target floor.
 const HEADER_ROW: f32 = spacing::ROW_GRID;
 
+/// The height [`pane_frame`] gives a pane's header band, in logical points.
+///
+/// Public because a shell that sizes a window around a pane's *content* has to
+/// know what the chrome above that content costs, and the alternative — a shell
+/// keeping its own copy of this number — is exactly the drift this crate exists
+/// to end. [`pane_frame`] reads it too, so there is one declaration.
+#[must_use]
+pub const fn header_band_height() -> f32 {
+    control::binding(HEADER_ROW).row
+}
+
+/// The inset [`pane_frame`] leaves between a pane's outer rect and the content
+/// rect it hands the item, on **every** side.
+///
+/// The panel padding, widened to the focus ring's bleed if that were ever the
+/// larger of the two — the ring is painted inside the pane, so its bleed is
+/// reserved here rather than clipped away at the moment it matters.
+///
+/// Public for the same reason [`header_band_height`] is: a window sized to fit
+/// a fixed-size raster has to budget for it, and budgeting for it by writing
+/// `12.0` at the call site is how the two answers drift apart.
+#[must_use]
+pub fn pane_content_inset() -> f32 {
+    spacing::PANEL_PADDING.max(focus::RING_BLEED)
+}
+
 // ---------------------------------------------------------------------------
 // The colour boundary
 // ---------------------------------------------------------------------------
@@ -146,10 +172,8 @@ pub fn pane_frame(ui: &mut egui::Ui, subject: &Subject, header: bool, mode: Mode
 
     let mut content = outer;
     if header {
-        let band = egui::Rect::from_min_size(
-            outer.min,
-            egui::vec2(outer.width(), control::binding(HEADER_ROW).row),
-        );
+        let band =
+            egui::Rect::from_min_size(outer.min, egui::vec2(outer.width(), header_band_height()));
         header_band(ui, band, subject, mode);
         content.min.y += band.height();
     }
@@ -163,10 +187,7 @@ pub fn pane_frame(ui: &mut egui::Ui, subject: &Subject, header: bool, mode: Mode
         );
     }
 
-    // The focus ring is painted inside the pane, so its bleed is reserved
-    // here rather than being clipped away at the moment it matters.
-    let pad = spacing::PANEL_PADDING.max(focus::RING_BLEED);
-    let content = content.shrink(pad);
+    let content = content.shrink(pane_content_inset());
 
     let mut child = ui.new_child(
         egui::UiBuilder::new()

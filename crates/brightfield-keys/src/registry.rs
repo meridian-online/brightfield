@@ -542,7 +542,7 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Yank the focused asset's dotted address to the clipboard",
             scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 4, motor_note: "y = yank (vim); a Data verb — logged by longname + dotted address" }),
         },
-        // ---- protocol panes: the show/hide verbs the item registry names.
+        // ---- pane toggles: the show/hide verbs the item registries name.
         //      Reserved rather than bound: the pane toggles cannot be performed
         //      until the workspace shell owns the window and its layout, and a
         //      keystroke that silently does nothing is worse than no keystroke.
@@ -572,6 +572,21 @@ pub fn registry() -> Vec<VerbEntry> {
             status: VerbStatus::Reserved,
             reserved_reason: Some(ReservedReason::NeedsWorkspaceShell),
             help: "Show or hide the protocol inspector rail",
+            scores: None,
+        },
+        // The chart view's rail, on the same terms. It sits at Dashboard and
+        // View rather than Protocol: the controls rail belongs to the chart
+        // grammar, and a rail toggle that fired inside the protocol panel would
+        // be a verb reaching into a view that does not have the pane.
+        VerbEntry {
+            longname: "toggle-controls-rail",
+            tier: CommandTier::View,
+            binding_specs: Vec::new(),
+            scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
+            drives: D::Reserved,
+            status: VerbStatus::Reserved,
+            reserved_reason: Some(ReservedReason::NeedsWorkspaceShell),
+            help: "Show or hide the chart controls rail",
             scores: None,
         },
     ]
@@ -753,9 +768,9 @@ mod tests {
                 "toggle-point-select"
             ]
         );
-        // The pane toggles: named by the protocol view's item registry, which
-        // requires every rail to name the verb that shows and hides it, and
-        // unbound until the workspace shell can perform one.
+        // The pane toggles: named by each view's item registry, which requires
+        // every rail to name the verb that shows and hides it, and unbound
+        // until the workspace shell can perform one.
         let mut needs_shell: Vec<&str> = reg
             .iter()
             .filter(|v| v.reserved_reason == Some(ReservedReason::NeedsWorkspaceShell))
@@ -764,7 +779,11 @@ mod tests {
         needs_shell.sort_unstable();
         assert_eq!(
             needs_shell,
-            ["toggle-inspector-rail", "toggle-outline-rail"]
+            [
+                "toggle-controls-rail",
+                "toggle-inspector-rail",
+                "toggle-outline-rail"
+            ]
         );
         // Every reserved verb is unbound and unscored; every bound verb is scored.
         for v in &reg {
@@ -831,6 +850,7 @@ mod tests {
             "yank-address",
             "toggle-outline-rail",
             "toggle-inspector-rail",
+            "toggle-controls-rail",
         ];
         assert_eq!(got, expected);
     }

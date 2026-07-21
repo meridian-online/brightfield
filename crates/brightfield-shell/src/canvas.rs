@@ -317,6 +317,98 @@ impl CanvasHost for EguiCanvasHost {
     }
 }
 
+// ---------------------------------------------------------------------------
+// CanvasSlot — the canvas half of a view's document.
+// ---------------------------------------------------------------------------
+
+/// The canvas half of a view's document: the host, the texture it last
+/// presented, and the key that texture was presented at.
+///
+/// One declaration for both canvas views. `app.rs` and `protocol.rs` each grew
+/// their own copy of this struct — same three fields, same optionality, same
+/// two constructors, same "is it still current?" question — which is the exact
+/// duplication this milestone exists to remove, and the two copies had already
+/// drifted in their docs.
+///
+/// Generic over the key because the key is the half that legitimately differs:
+/// what a chart raster's pixels depend on is not what a DAG raster's depend on.
+/// See [`CanvasSlot::presented`].
+pub struct CanvasSlot<K> {
+    /// `None` on a headless document — a view's model with no device behind it.
+    ///
+    /// Optional rather than required because a document has to be constructible
+    /// without a GPU: [`brightfield_workbench::audit`] builds every pane and
+    /// asks it for a `Subject` over an empty document, and a gate that needed an
+    /// adapter would be a gate that does not run in a unit test. Every pane's
+    /// *chrome* is a pure function of its view's model, so nothing a subject
+    /// says depends on this being `Some`.
+    host: Option<EguiCanvasHost>,
+    texture: Option<egui::TextureId>,
+    presented_key: Option<K>,
+}
+
+impl<K> CanvasSlot<K> {
+    /// A slot rastering through `host`.
+    #[must_use]
+    pub fn new(host: EguiCanvasHost) -> Self {
+        Self {
+            host: Some(host),
+            texture: None,
+            presented_key: None,
+        }
+    }
+
+    /// A slot with no device behind it.
+    #[must_use]
+    pub fn headless() -> Self {
+        Self {
+            host: None,
+            texture: None,
+            presented_key: None,
+        }
+    }
+
+    /// The texture to paint, if one has been presented.
+    #[must_use]
+    pub fn texture(&self) -> Option<egui::TextureId> {
+        self.texture
+    }
+
+    /// The host, for presenting through or for sweeping. `None` when headless.
+    pub fn host_mut(&mut self) -> Option<&mut EguiCanvasHost> {
+        self.host.as_mut()
+    }
+
+    /// Record what was just presented, and the key it was presented at.
+    pub fn record(&mut self, key: K, texture: egui::TextureId) {
+        self.texture = Some(texture);
+        self.presented_key = Some(key);
+    }
+
+    /// Forget what was presented, so the next frame re-rasters. The texture
+    /// stays, so the pane paints the previous raster for the rest of *this*
+    /// frame rather than blanking.
+    pub fn invalidate(&mut self) {
+        self.presented_key = None;
+    }
+}
+
+impl<K: PartialEq> CanvasSlot<K> {
+    /// Whether the live texture was presented at exactly `key`.
+    ///
+    /// The only place the key type is used, and the reason it is a parameter
+    /// rather than a third shared struct: the two views' keys name different
+    /// dependencies. The chart raster's depend on the device size and the mode;
+    /// the DAG raster's depend on those *and* on expansion, flow and a layout
+    /// generation. A union of the two would hand each view fields it has to
+    /// remember to hold constant, and a cache-key field nobody sets is a cache
+    /// that silently never invalidates.
+    #[must_use]
+    pub fn presented(&self, key: &K) -> bool {
+        self.presented_key.as_ref() == Some(key) && self.texture.is_some()
+    }
+}
+
 /// One egui frame's realisation of [`ChartSurface`] + [`OverlayPainter`].
 /// Borrows the live `egui::Ui`; presents the registered Vello texture into a
 /// reserved rect, paints the overlay on top, and records the desired cursor.
