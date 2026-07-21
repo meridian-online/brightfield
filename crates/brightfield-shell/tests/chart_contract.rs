@@ -16,11 +16,14 @@
 use std::collections::BTreeMap;
 
 use brightfield_shell::app::{
-    chart_registry, publish_item_ids, window_size_for, ChartDoc, CHART, CONTROLS,
+    chart_registry, draw_shell, publish_item_ids, window_size_for, ChartDoc, ShellState, CHART,
+    CONTROLS, DOCK_INSET, TOP_BAR,
 };
+use brightfield_shell::design::Mode;
 use brightfield_shell::pipeline::{compose_spec, Composed};
+use brightfield_workbench::behavior::TILE_GAP;
 use brightfield_workbench::registry::{DockSide, Slot};
-use brightfield_workbench::{audit, ItemId, PaneKey, Subject, ViewKind};
+use brightfield_workbench::{audit, chrome, ItemId, PaneKey, Subject, ViewKind};
 
 const DASHBOARD: &str = "../../examples/dashboard.yaml";
 
@@ -244,7 +247,8 @@ fn the_published_vocabulary_is_the_registry_and_nothing_else() {
 }
 
 /// The window the shell asks for is sized from the *same* share the dock lays
-/// the rail out with, and it is big enough for the dashboard.
+/// the rail out with, and the chart pane's content box it produces fits the
+/// dashboard — **in both axes**.
 ///
 /// This is the test for the deletion that mattered most here. Three numbers used
 /// to describe one layout — a side panel pinned at 180 logical points, a
@@ -252,26 +256,106 @@ fn the_published_vocabulary_is_the_registry_and_nothing_else() {
 /// and no test could see that they disagreed, because each was correct on its
 /// own terms. Now the share is the single declaration and this walks the
 /// arithmetic that depends on it.
+///
+/// It walked the *width* only, and said in its own doc that it walked "the
+/// arithmetic". The height line was `h > composed.height`, which one point of
+/// chrome budget satisfies — and one point of chrome budget for a top bar, a
+/// header band and two pane frames is 95 points short. It was mutated to
+/// `composed.height + 1.0` and all eight tests here stayed green while the
+/// window clipped the bottom seventeen rows of its own raster. Both axes are
+/// walked the same way now: outward from the raster through every component
+/// that consumes space, with the leftover slack named and bounded.
 #[test]
 fn the_window_is_sized_from_the_rail_share_it_lays_out() {
     let composed = compose_spec(DASHBOARD).expect("compose examples/dashboard.yaml");
     let (w, h) = window_size_for(&composed);
     let centre = 1.0 - controls_share();
+    let inset = chrome::pane_content_inset();
 
-    let chart_tile = w * centre;
-    let dashboard = composed.width as f32;
+    // Across: the window insets to the dock, the dock gives up the gap between
+    // the two tiles, the chart takes `centre` of what is left, and the pane
+    // frame insets it again on both sides.
+    let content_w = (w - 2.0 * DOCK_INSET - TILE_GAP) * centre - 2.0 * inset;
+    let dashboard_w = composed.width as f32;
     assert!(
-        chart_tile >= dashboard,
-        "the chart tile is {chart_tile:.1}pt for a {dashboard:.1}pt dashboard — it will clip"
+        content_w >= dashboard_w,
+        "the chart pane's content box is {content_w:.2}pt across for a \
+         {dashboard_w:.0}pt dashboard — the raster will be clipped"
     );
-    // And not absurdly wide: the slack is pane chrome, not a fudge factor.
+
+    // Down: the window gives up the top bar, insets to the dock, and the pane
+    // frame takes its header band and its padding above and below.
+    let content_h = h - TOP_BAR - 2.0 * DOCK_INSET - chrome::header_band_height() - 2.0 * inset;
+    let dashboard_h = composed.height as f32;
     assert!(
-        chart_tile - dashboard < 64.0,
-        "the chart tile has {:.1}pt of slack over the dashboard",
-        chart_tile - dashboard
+        content_h >= dashboard_h,
+        "the chart pane's content box is {content_h:.2}pt tall for a \
+         {dashboard_h:.0}pt dashboard — the raster will be clipped"
     );
+
+    // And in neither axis is the leftover a fudge factor. Every term above is
+    // read from the component that consumes it, so the *only* slack
+    // `window_size_for` may have is its rounding up to whole logical points:
+    // strictly less than one point, per axis. An inequality that any positive
+    // number satisfies is what let the height budget be 95 points short.
+    for (axis, slack) in [
+        ("across", content_w - dashboard_w),
+        ("down", content_h - dashboard_h),
+    ] {
+        assert!(
+            slack < 1.0,
+            "the chart pane's content box has {slack:.2}pt of slack {axis} — \
+             more than the sub-point rounding `window_size_for` is allowed, so \
+             some of the budget is a fudge factor rather than a component"
+        );
+    }
+}
+
+/// The window `window_size_for` asks for really does fit the raster the chart
+/// pane presents — checked by laying a **real frame** out, not by re-running the
+/// same arithmetic.
+///
+/// The sibling above walks the budget term by term, and a walk can only ever be
+/// as right as its author's model of the dock. This one has no model: it runs
+/// `draw_shell` through `egui::Context::run_ui` at exactly the window size the
+/// shell asks for, and reads back the content box `egui_tiles` and
+/// `chrome::pane_frame` between them actually handed the chart pane. If any of
+/// the four components in that budget changes its height, this reddens whether
+/// or not anyone remembered to update the arithmetic.
+///
+/// GPU-free: `ShellState::headless` has no device, so the pane paints nothing —
+/// but it is handed the same rect either way, and `ChartPane::ui` records it
+/// before it looks for a texture. Two frames, because the first installs the
+/// font atlas and settles the layout, exactly as the capture path does.
+#[test]
+fn the_window_it_asks_for_fits_the_raster_it_presents() {
+    let composed = compose_spec(DASHBOARD).expect("compose examples/dashboard.yaml");
+    let (dash_w, dash_h) = (composed.width as f32, composed.height as f32);
+    let (w, h) = window_size_for(&composed);
+
+    let mut state = ShellState::headless(composed, Mode::Light);
+    let ctx = egui::Context::default();
+    let raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(w, h),
+        )),
+        ..Default::default()
+    };
+    for _ in 0..2 {
+        let _ = ctx.run_ui(raw.clone(), |ui| draw_shell(ui, &mut state));
+    }
+
+    let box_ = state
+        .chart_viewport()
+        .expect("the chart pane drew, so it recorded the box it was given");
     assert!(
-        h > composed.height as f32,
-        "the window is shorter than the dashboard"
+        box_.width() >= dash_w && box_.height() >= dash_h,
+        "a {w}×{h} window gives the chart pane a {:.2}×{:.2} content box, \
+         and it presents a {dash_w:.0}×{dash_h:.0} raster into it — \
+         {:.2}pt of it is outside the pane's clip rect and never reaches the window",
+        box_.width(),
+        box_.height(),
+        (dash_h - box_.height()).max(dash_w - box_.width()),
     );
 }

@@ -23,8 +23,20 @@
 //!   200, and both were pixel constants beside a panel declared at 180. All
 //!   three are gone: [`window_size_for`] derives the window from
 //!   the controls rail's declared share, and both callers read it.
-//! - **It no longer spells its own spacing.** Two bare `add_space(6.0)` calls
-//!   are gone; the pane frame's padding comes from the spacing ladder.
+//! - **It no longer guesses what its own chrome costs.** The first cut of
+//!   [`window_size_for`] replaced those three constants with two more —
+//!   `SPACE_8` across and `SPACE_9 + SPACE_8` down — hand-tuned to look about
+//!   right and 5.6pt and 17pt short respectively, so the window clipped the
+//!   bottom seventeen rows of its own chart raster and the re-photographed
+//!   baseline preserved the clipping. Every term of the budget is read from the
+//!   component that consumes it now: [`chrome::header_band_height`],
+//!   [`chrome::pane_content_inset`], [`TILE_GAP`], and this file's own
+//!   [`TOP_BAR`] and [`DOCK_INSET`] — the two egui would otherwise decide for
+//!   us, pinned so that they can be subtracted.
+//! - **It no longer spells its own spacing.** Two bare `add_space(6.0)` calls in
+//!   the rail are gone (the pane frame's padding comes from the spacing ladder),
+//!   and so are the two that padded the top bar — the band has a declared height
+//!   and centres its row in it.
 //! - **The top bar is no longer a heading.** `ui.heading` was a second type size
 //!   on a surface whose other text is the 12px UI size — the four-pixel drift
 //!   the workbench exists to end. It is the UI size in chrome ink now, which is
@@ -59,6 +71,7 @@ use egui_tiles::{Tile, Tree};
 
 use brightfield_keys::BindingContext;
 use brightfield_render::canvas_host::{ChartSurface, Color, PixelSize, SurfaceCursor};
+use brightfield_workbench::behavior::TILE_GAP;
 use brightfield_workbench::registry::{DockSide, Slot};
 use brightfield_workbench::workspace::tabbed_tiles_of;
 use brightfield_workbench::{
@@ -69,7 +82,7 @@ use brightfield_workbench::{
 use meridian_design::chrome::{INK_DARK, INK_LIGHT};
 use meridian_design::{semantic, spacing};
 
-use crate::canvas::{surface_input, EguiCanvasHost, EguiChartFrame};
+use crate::canvas::{surface_input, CanvasSlot, EguiCanvasHost, EguiChartFrame};
 use crate::design::{self, Mode};
 use crate::pipeline::Composed;
 
@@ -99,24 +112,26 @@ pub struct ChartDoc {
     /// Whether the hover crosshair overlay is armed — the worked example that
     /// keeps the overlay seam exercised end to end.
     pub overlay: bool,
-    canvas: CanvasSlot,
-}
-
-/// The canvas half of the document: a Vello raster of the composited dashboard,
-/// re-rendered only when what it depicts has changed.
-struct CanvasSlot {
-    /// `None` on a headless document — a composed dashboard with no device
-    /// behind it.
+    /// The content box the chart pane was last handed, in window-space logical
+    /// points — `None` until a frame has been laid out.
     ///
-    /// Optional rather than required for the same reason the protocol
-    /// document's is: [`brightfield_workbench::audit`] builds every pane and
-    /// asks it for a [`Subject`] over an empty document, and a gate that needed
-    /// a GPU adapter would be a gate that does not run in a unit test. Every
-    /// pane's chrome is a pure function of the composed dashboard, so nothing a
-    /// subject says depends on this being `Some`.
-    host: Option<EguiCanvasHost>,
-    texture: Option<egui::TextureId>,
-    presented_key: Option<CanvasKey>,
+    /// Written by the chart pane before it looks for a texture, so it is
+    /// observable on a *headless* document. That is what lets a GPU-free test
+    /// hold [`window_size_for`] to the box the dock actually produces, rather
+    /// than to a second copy of the same arithmetic — which is the only kind of
+    /// assertion that could have caught this window clipping its own raster.
+    pub viewport: Option<egui::Rect>,
+    /// The rect the controls rail's overlay checkbox last occupied, in
+    /// window-space logical points — `None` until a frame has been laid out.
+    ///
+    /// Recorded for the same reason as [`Self::viewport`], and it buys the same
+    /// thing one level in. The pixel test that proves the overlay seam still
+    /// crosses the dock has to *click* this checkbox, and it used to aim at a
+    /// coordinate typed against a layout nothing derived it from: it landed
+    /// today, and would have silently stopped landing the first time the rail's
+    /// share or a row height moved. It aims from a headless layout pass now.
+    pub overlay_checkbox: Option<egui::Rect>,
+    canvas: CanvasSlot<CanvasKey>,
 }
 
 /// Everything the dashboard raster's pixels depend on.
@@ -130,6 +145,14 @@ struct CanvasSlot {
 ///
 /// The scene itself is not in the key because it is composed once, before the
 /// window opens, and never rebuilt.
+///
+/// **Deliberately not shared with the protocol view's key of the same name**,
+/// though [`CanvasSlot`] itself now is. That one carries `expanded`, `flow` and
+/// a layout `generation` as well, because a DAG re-lays-out under the user's
+/// hands and a composed dashboard does not. Merging them would hand this view
+/// three fields it has to remember to hold constant forever, and a cache-key
+/// field nobody sets is a cache that silently never invalidates. The same note
+/// is on the protocol side.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CanvasKey {
     dev_width: u32,
@@ -145,11 +168,9 @@ impl ChartDoc {
             composed,
             param: 0.5,
             overlay: true,
-            canvas: CanvasSlot {
-                host: Some(host),
-                texture: None,
-                presented_key: None,
-            },
+            viewport: None,
+            overlay_checkbox: None,
+            canvas: CanvasSlot::new(host),
         }
     }
 
@@ -160,11 +181,9 @@ impl ChartDoc {
             composed,
             param: 0.5,
             overlay: true,
-            canvas: CanvasSlot {
-                host: None,
-                texture: None,
-                presented_key: None,
-            },
+            viewport: None,
+            overlay_checkbox: None,
+            canvas: CanvasSlot::headless(),
         }
     }
 
@@ -204,10 +223,10 @@ impl ChartDoc {
             dev_height: dev.height,
             dark: mode.is_dark(),
         };
-        if self.canvas.presented_key == Some(key) && self.canvas.texture.is_some() {
+        if self.canvas.presented(&key) {
             return;
         }
-        let Some(host) = self.canvas.host.as_mut() else {
+        let Some(host) = self.canvas.host_mut() else {
             return;
         };
         // The raster's base tone, under the composited scene. It used to be
@@ -224,8 +243,7 @@ impl ChartDoc {
             Some(kurbo::Affine::scale(f64::from(ppp))),
         );
         let id = host.present_keyed(CHART_PANE, &scaled, dev, base);
-        self.canvas.texture = Some(id);
-        self.canvas.presented_key = Some(key);
+        self.canvas.record(key, id);
     }
 }
 
@@ -331,7 +349,10 @@ impl Item<ChartDoc> for ChartPane {
     }
 
     fn ui(&mut self, doc: &mut ChartDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
-        let Some(texture) = doc.canvas.texture else {
+        // Recorded *before* the texture check, so a headless document still
+        // reports the box the dock gave this pane. See `ChartDoc::viewport`.
+        doc.viewport = Some(ui.max_rect());
+        let Some(texture) = doc.canvas.texture() else {
             // No device behind this document. The pane is blank rather than
             // apologetic: a headless document is a test fixture, never a state a
             // user reaches, so a message here would be chrome nobody sees.
@@ -422,7 +443,7 @@ impl Item<ChartDoc> for ControlsPane {
         // (it is currently baked into the Vello scene by `build_multi_mark_scene`).
         ui.label("param");
         ui.add(egui::Slider::new(&mut doc.param, 0.0..=1.0));
-        ui.checkbox(&mut doc.overlay, "hover overlay");
+        doc.overlay_checkbox = Some(ui.checkbox(&mut doc.overlay, "hover overlay").rect);
         ui.add_space(spacing::CONTROL_GAP);
         let sem = semantic(cx.mode.is_dark());
         ui.label(
@@ -474,10 +495,52 @@ impl ShellState {
         }
     }
 
+    /// The same shell over a document with no device behind it.
+    ///
+    /// Everything except the raster is a pure function of the composed
+    /// dashboard, so this lays out identically to [`Self::new`] — the chart pane
+    /// reserves and paints nothing, and every rect around it is the same. That
+    /// is what makes the window arithmetic assertable without a GPU: a test can
+    /// run a real frame through `egui::Context::run_ui` and read the box the
+    /// dock gave the chart pane back out of [`ChartDoc::viewport`].
+    #[must_use]
+    pub fn headless(composed: Composed, mode: Mode) -> Self {
+        publish_item_ids();
+        let registry = chart_registry();
+        Self {
+            doc: ChartDoc::headless(composed),
+            items: registry.instantiate(),
+            dock: registry.default_tree(),
+            focus: None,
+            mode,
+            fonts_installed: false,
+        }
+    }
+
     /// The shell's natural window size in logical points.
     #[must_use]
     pub fn window_size(&self) -> (f32, f32) {
         window_size_for(&self.doc.composed)
+    }
+
+    /// The content box the chart pane was handed by the last frame this shell
+    /// drew, or `None` if it has not drawn one. See [`ChartDoc::viewport`].
+    #[must_use]
+    pub fn chart_viewport(&self) -> Option<egui::Rect> {
+        self.doc.viewport
+    }
+
+    /// The rect the controls rail's overlay checkbox occupied in the last frame
+    /// this shell drew. See [`ChartDoc::overlay_checkbox`].
+    #[must_use]
+    pub fn overlay_checkbox(&self) -> Option<egui::Rect> {
+        self.doc.overlay_checkbox
+    }
+
+    /// The dashboard this shell is showing, in logical points.
+    #[must_use]
+    pub fn dashboard_size(&self) -> (u32, u32) {
+        (self.doc.composed.width, self.doc.composed.height)
     }
 
     /// The window/spec title.
@@ -493,8 +556,10 @@ impl ShellState {
     /// the drift `brightfield_workbench::chrome` names in its own docs.
     fn top_bar(&self, ui: &mut egui::Ui) {
         let sem = semantic(self.mode.is_dark());
-        ui.add_space(spacing::SPACE_2);
-        ui.horizontal(|ui| {
+        // Centred in the band rather than pushed down it with `add_space`: the
+        // band's height is `TOP_BAR` now, so the padding above and below is
+        // whatever that leaves, and two hand-placed gaps cannot disagree with it.
+        ui.horizontal_centered(|ui| {
             ui.label(
                 egui::RichText::new(self.title().to_string())
                     .color(chrome::colour(sem.text.primary)),
@@ -511,7 +576,6 @@ impl ShellState {
                 );
             });
         });
-        ui.add_space(spacing::SPACE_2);
     }
 
     /// Perform the requests the frame's panes raised, now that the tile tree's
@@ -534,7 +598,7 @@ impl ShellState {
     /// Declare which panes this frame laid out, so the host can free the canvas
     /// slot of any pane that has gone.
     fn sweep_canvas(&mut self) {
-        let Some(host) = self.doc.canvas.host.as_mut() else {
+        let Some(host) = self.doc.canvas.host_mut() else {
             return;
         };
         let visible: BTreeSet<PaneKey> = self
@@ -550,9 +614,50 @@ impl ShellState {
     }
 }
 
-/// The natural window size in logical points for a composed dashboard: wide
-/// enough that the chart pane's *share* of it fits the dashboard, plus the top
-/// bar and the pane frames.
+/// The top bar's height in logical points: a grid row for its labels, with the
+/// panel's own vertical padding above and below.
+///
+/// **Declared, not measured.** A content-sized `Panel::top` is a component that
+/// does not expose its height until a frame has run, and [`window_size_for`] is
+/// called before any frame exists — `main.rs` sizes the window from it. The
+/// previous answer to that was to guess (a spacing constant that happened to be
+/// close), and the guess was 17 logical points short, so the window clipped the
+/// bottom of its own chart. Pinning the band with
+/// [`Panel::exact_size`](egui::containers::Panel::exact_size) turns the guess
+/// into a fact: the bar is this tall, and the arithmetic below can subtract it.
+pub const TOP_BAR: f32 = spacing::ROW_GRID + 2.0 * spacing::SPACE_2;
+
+/// The inset between the window edge and the dock.
+///
+/// The value `egui::Frame::central_panel` would have used anyway, said on the
+/// spacing ladder and passed in explicitly, for the same reason as [`TOP_BAR`]:
+/// a term the window arithmetic has to subtract cannot be a number that lives
+/// only inside egui.
+pub const DOCK_INSET: f32 = spacing::SPACE_4;
+
+/// The natural window size in logical points for a composed dashboard: exactly
+/// big enough that the chart pane's content box fits the dashboard's raster,
+/// with every term of the chrome budget derived from the thing that consumes it.
+///
+/// Reading outwards from the raster, in each axis:
+///
+/// - the pane's content box is its tile inset by
+///   [`chrome::pane_content_inset`] on all four sides, and, vertically, below a
+///   [`chrome::header_band_height`] header band;
+/// - the chart's tile is `1 - CONTROLS_SHARE` of the dock's width, after the
+///   [`TILE_GAP`] between it and the rail is taken out;
+/// - the dock is the window inset by [`DOCK_INSET`], below the [`TOP_BAR`].
+///
+/// Every one of those is read from the component that draws it. The pair of
+/// hand-tuned spacing constants this replaces (`SPACE_8` across, `SPACE_9 +
+/// SPACE_8` down) were 5.6pt short across and 17pt short down, which is why the
+/// presented raster overflowed the pane's clip rect and the last seventeen rows
+/// of the chart never reached the window.
+///
+/// Rounded **up** to whole logical points: the share is an `f32` division, and a
+/// window a quarter of a point short would clip a row of the raster just as
+/// surely as one seventeen points short. `the_window_it_asks_for_fits_the_raster_it_presents`
+/// lays a real frame out and holds this to the box the dock actually produces.
 ///
 /// A free function because `main.rs` sizes the window before it can build a
 /// [`ShellState`] — and because it having been open-coded there, with different
@@ -560,12 +665,14 @@ impl ShellState {
 #[must_use]
 pub fn window_size_for(composed: &Composed) -> (f32, f32) {
     let centre = 1.0 - CONTROLS_SHARE;
-    // The chart pane's content box is its tile minus the header band and the
-    // panel padding on each side; the tile is `centre` of the window. SPACE_8
-    // covers that chrome and the tile gap; SPACE_9 + SPACE_8 covers the header
-    // band, the padding and the top bar above it.
-    let w = (composed.width as f32 + spacing::SPACE_8) / centre;
-    let h = composed.height as f32 + spacing::SPACE_9 + spacing::SPACE_8;
+    let inset = chrome::pane_content_inset();
+
+    let tile_w = composed.width as f32 + 2.0 * inset;
+    let w = (tile_w / centre + TILE_GAP + 2.0 * DOCK_INSET).ceil();
+
+    let tile_h = composed.height as f32 + 2.0 * inset + chrome::header_band_height();
+    let h = (tile_h + 2.0 * DOCK_INSET + TOP_BAR).ceil();
+
     (w, h)
 }
 
@@ -584,16 +691,23 @@ pub fn draw_shell(ui: &mut egui::Ui, state: &mut ShellState) {
         .ensure_presented(ctx.pixels_per_point(), state.mode);
 
     // Orientation chrome: the window's own top bar. Still the shell's own, still
-    // not a `Subject` — see the module docs.
+    // not a `Subject` — see the module docs. Pinned to `TOP_BAR` rather than
+    // sized by its text, so that `window_size_for` can subtract it.
     Panel::top("bf-shell-header")
         .resizable(false)
+        .exact_size(TOP_BAR)
         .show(ui, |ui| state.top_bar(ui));
 
     // The dock fills the rest. Every pane's chrome comes from its subject,
-    // through the one `egui_tiles::Behavior` in the product.
+    // through the one `egui_tiles::Behavior` in the product. The frame is
+    // `Frame::central_panel`'s, restated with `DOCK_INSET` in place of egui's
+    // internal `8` — same pixels, one declaration the window arithmetic reads.
     let tabbed = tabbed_tiles_of(&state.dock);
     let mut requests: Vec<Request> = Vec::new();
-    CentralPanel::default().show(ui, |ui| {
+    let dock_frame = egui::Frame::new()
+        .inner_margin(DOCK_INSET)
+        .fill(ui.visuals().panel_fill);
+    CentralPanel::default().frame(dock_frame).show(ui, |ui| {
         let mut behavior = PaneChrome::new(
             &mut state.doc,
             &mut state.items,

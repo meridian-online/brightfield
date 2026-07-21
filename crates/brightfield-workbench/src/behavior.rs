@@ -58,6 +58,16 @@ use crate::chrome;
 use crate::item::{ItemCtx, ItemMap, PaneKey, Request};
 use crate::Mode;
 
+/// The gap `egui_tiles` leaves between two sibling tiles, in logical points.
+///
+/// A hairline — the same 1px rule [`Elevation::hairline`](meridian_design::Elevation::hairline)
+/// draws pane borders with — and the value `egui_tiles`' own `Behavior` default
+/// already returns, so declaring it moves no pixels. It is declared because it
+/// is a term in the window arithmetic on the other side of the crate boundary:
+/// a shell sizing a window so that a fixed-size raster fits its centre tile has
+/// to subtract the gaps first, and it cannot subtract a number nobody named.
+pub const TILE_GAP: f32 = 1.0;
+
 /// Draws every pane in one view's tree, and names every tab in it.
 ///
 /// Borrowed rather than owning, and built fresh each frame: it holds the
@@ -181,6 +191,12 @@ impl<D: ?Sized> egui_tiles::Behavior<PaneKey> for PaneChrome<'_, D> {
         }
 
         UiResponse::None
+    }
+
+    /// The gap between sibling tiles — [`TILE_GAP`], stated rather than
+    /// inherited, because a shell's window arithmetic has to subtract it.
+    fn gap_width(&self, _style: &egui::Style) -> f32 {
+        TILE_GAP
     }
 
     /// Simplification stays **off**, and that is load-bearing twice.
