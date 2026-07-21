@@ -306,26 +306,69 @@ pub struct StatusEntry {
     pub hide: HideAffordance,
 }
 
+/// What activating an [`Affordance`] does.
+///
+/// # Why this is an enum, and why it is not a hole in "the shell may not
+/// invent verbs"
+///
+/// [`Verb`]'s rule is about **commands**: a thing with a keystroke, a help
+/// line and a palette entry, so that an action offered in one corner of the UI
+/// is reachable from everywhere. That rule is why [`Action::Verb`] exists and
+/// why the audit checks it.
+///
+/// It does not fit an affordance whose whole content is *which object to
+/// open*. A shipped starting point has nothing to bind — a verb minted to
+/// carry one would be a palette entry meaning "open the thing I happen to be
+/// standing next to", and the keyboard registry would grow an entry per
+/// fixture. So [`Action::Open`] names the object instead, and the two
+/// consequences are deliberate: it renders **no keystroke** (see
+/// [`crate::chrome::empty_state`]), so a button cannot claim a key that does
+/// not exist; and [`Subject::declared_verbs`] does not see it, so it neither
+/// weakens nor bypasses the registration gate — there is simply no verb to
+/// check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Action {
+    /// Run a registered command.
+    Verb(Verb),
+    /// Open something the shell can name and the keyboard cannot: a starting
+    /// point that ships with the binary, addressed by a stable id.
+    ///
+    /// The id is opaque to this crate. A shell handed one it does not
+    /// recognise should do nothing, which is the same thing it does for a
+    /// pane id it does not recognise.
+    Open(&'static str),
+}
+
 /// The action that resolves an empty state.
 ///
-/// Deliberately without a `keys` field: the keystroke is derivable from the
-/// verb ([`Verb::keys`]), and storing a second copy is an invitation for the
-/// two to disagree after a rebinding.
+/// Deliberately without a `keys` field: for an [`Action::Verb`] the keystroke
+/// is derivable from the verb ([`Verb::keys`]), and storing a second copy is an
+/// invitation for the two to disagree after a rebinding. An [`Action::Open`]
+/// has no keystroke at all.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Affordance {
     /// What the action is called.
     pub label: String,
-    /// The command it runs.
-    pub verb: Verb,
+    /// What activating it does.
+    pub action: Action,
 }
 
 impl Affordance {
-    /// An affordance for `verb`.
+    /// An affordance that runs `verb`.
     #[must_use]
     pub fn new(label: impl Into<String>, verb: Verb) -> Self {
         Self {
             label: label.into(),
-            verb,
+            action: Action::Verb(verb),
+        }
+    }
+
+    /// An affordance that opens the shipped starting point `id`.
+    #[must_use]
+    pub fn open(label: impl Into<String>, id: &'static str) -> Self {
+        Self {
+            label: label.into(),
+            action: Action::Open(id),
         }
     }
 }
@@ -474,8 +517,10 @@ impl Subject {
     pub fn declared_verbs(&self) -> Vec<Verb> {
         let mut verbs: Vec<Verb> = self.toolbar.iter().map(|t| t.verb).collect();
         if let Some(empty) = &self.empty_state {
-            if let Some(next) = &empty.next {
-                verbs.push(next.verb);
+            // An `Action::Open` declares no verb — there is nothing here to
+            // check against the registry, which is the point of it.
+            if let Some(Action::Verb(v)) = empty.next.as_ref().map(|next| next.action) {
+                verbs.push(v);
             }
         }
         for entry in &self.status {

@@ -19,6 +19,7 @@ use crate::design::Mode;
 use crate::pipeline::Composed;
 use crate::protocol::host_on_device;
 use crate::window::{Boot, MeridianApp};
+use brightfield_workbench::ViewKind;
 
 /// Create a headless (surface-less) wgpu device on the default adapter.
 ///
@@ -68,7 +69,12 @@ pub fn capture_png(
     let chart_host = host_on_device(device.clone(), queue.clone(), egui_renderer.clone());
     let protocol_host = host_on_device(device.clone(), queue.clone(), egui_renderer.clone());
 
-    let (win_w, win_h) = boot.window_size();
+    // Every boot that reaches here came through `Boot::open`, `Boot::charts`
+    // or `Boot::protocol`, each of which names a view, so the fallback below
+    // is unreachable. It is spelled out at the call site rather than hidden
+    // inside the getter — a baked-in default is how a boot that named no view
+    // once answered `main`'s title and summary for the wrong document.
+    let (win_w, win_h) = boot.window_size(boot.view_or(ViewKind::Charts));
     let mut app = MeridianApp::new(boot, chart_host, protocol_host, mode);
 
     let ctx = egui::Context::default();

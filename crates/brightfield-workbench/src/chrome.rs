@@ -43,8 +43,8 @@ use meridian_design::{control, focus, radius, semantic, spacing, typography, Ele
 
 use crate::item::PaneKey;
 use crate::subject::{
-    Affordance, Crumb, EmptyState, HideAffordance, Icon, StatusEntry, StatusSide, Subject, Tone,
-    ToolbarEntry, ToolbarLocation, Verb,
+    Action, Affordance, Crumb, EmptyState, HideAffordance, Icon, StatusEntry, StatusSide, Subject,
+    Tone, ToolbarEntry, ToolbarLocation, Verb,
 };
 use crate::Mode;
 
@@ -534,10 +534,20 @@ fn draw_status_entry(ui: &mut egui::Ui, entry: &StatusEntry, mode: Mode, out: &m
 // ---------------------------------------------------------------------------
 
 /// What an empty state did this frame.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct EmptyStateDrawn {
     /// Set when the user took the resolving action.
-    pub activated: Option<Verb>,
+    pub activated: Option<Action>,
+    /// Where the resolving action's button drew, in window-space logical
+    /// points — `None` when the empty state offers none.
+    ///
+    /// Reported for the reason a top bar reports its switcher's rect: the test
+    /// that proves a user can actually take this action has to *click* the
+    /// button, and the empty state is drawn by the chrome rather than by the
+    /// pane, so no [`crate::Item`] can record it. A coordinate typed against a
+    /// layout nothing derived it from lands today and goes on being green
+    /// while clicking empty pane the first time a headline wraps.
+    pub affordance: Option<egui::Rect>,
 }
 
 /// Paint an empty state, centred in the pane.
@@ -563,8 +573,10 @@ pub fn empty_state(ui: &mut egui::Ui, empty: &EmptyState, mode: Mode) -> EmptySt
         );
         if let Some(next) = &empty.next {
             ui.add_space(spacing::CONTROL_GAP);
-            if affordance_button(ui, next).clicked() {
-                out.activated = Some(next.verb);
+            let button = affordance_button(ui, next);
+            out.affordance = Some(button.rect);
+            if button.clicked() {
+                out.activated = Some(next.action);
             }
         }
     });
@@ -573,13 +585,16 @@ pub fn empty_state(ui: &mut egui::Ui, empty: &EmptyState, mode: Mode) -> EmptySt
 
 fn affordance_button(ui: &mut egui::Ui, next: &Affordance) -> egui::Response {
     let b = control::binding(spacing::ROW_GRID);
-    // The keystroke is rendered from the registry, never stored on the
+    // A verb's keystroke is rendered from the registry, never stored on the
     // affordance — one source of truth, so a rebinding cannot make the label
-    // lie.
-    let label = next
-        .verb
-        .keys()
-        .map_or_else(|| next.label.clone(), |k| format!("{}  {k}", next.label));
+    // lie. An `Action::Open` has no keystroke to render and gets none, which
+    // is what stops it borrowing an unrelated verb's key to look bindable.
+    let label = match next.action {
+        Action::Verb(verb) => verb
+            .keys()
+            .map_or_else(|| next.label.clone(), |k| format!("{}  {k}", next.label)),
+        Action::Open(_) => next.label.clone(),
+    };
     ui.add(
         egui::Button::new(egui::RichText::new(label).font(ui_font()))
             .corner_radius(radius::CONTROL)

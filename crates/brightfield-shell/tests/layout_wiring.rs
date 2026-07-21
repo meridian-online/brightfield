@@ -1,0 +1,812 @@
+//! The layout file, wired to a real frame.
+//!
+//! `brightfield-workbench`'s `layout_file.rs` covers the machinery: the
+//! envelope, every way a load can fail, the debounce, the failed-write
+//! back-off. None of it can cover the wiring, because the wiring is the shell
+//! driving that machinery from inside `MeridianApp::draw` — and the two claims
+//! that matter are claims about what a **real laid-out frame** does:
+//!
+//! - a frame in which nobody touched anything must leave the layout clean, or
+//!   the debounce fires every ten seconds forever and the file is rewritten
+//!   for the rest of the session;
+//! - a frame in which something moved must actually reach the disk.
+//!
+//! Both were argued statically before this file existed — `egui_tiles`' own
+//! `PartialEq` skips the per-frame rects, `Linear::layout` only garbage-
+//! collects shares — and neither had ever been run through `PaneChrome`,
+//! `set_active_tab`'s per-frame `tabs.set_active`, or `sweep`.
+//!
+//! Its own binary rather than a module of `startup.rs`: that file's one test
+//! asserts the item vocabulary is empty on entry, and anything here that built
+//! a window first would void it. Ordering-dependent tests are a way of
+//! learning nothing slowly.
+
+use brightfield_protocol::layout::Flow;
+use brightfield_shell::app::{CHART, CONTROLS};
+use brightfield_shell::design::Mode;
+use brightfield_shell::protocol::{CANVAS, STEPS};
+use brightfield_shell::startup::{default_layout, kept_window_geometry, opening_boot};
+use brightfield_shell::window::{Boot, MeridianApp};
+use brightfield_workbench::persist::{self, LoadOutcome, LAYOUT_FILE, SAVE_DEBOUNCE_MS};
+use brightfield_workbench::workspace::{tabs_holding, tile_of};
+use brightfield_workbench::{PaneKey, ViewKind};
+
+/// A scratch directory that removes itself, so a failing run cannot poison the
+/// next one with a file it left behind.
+struct Scratch(std::path::PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!(
+            "brightfield-shell-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        Self(dir)
+    }
+
+    fn file(&self) -> std::path::PathBuf {
+        self.0.join(LAYOUT_FILE)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The harness window, at a size that is **not** `WindowGeometry::default()`.
+///
+/// Deliberately: while it was `1280×820`, so was the production default, and
+/// `assert_eq!(restored.window.size, [SCREEN.max.x, SCREEN.max.y])` was
+/// `f(x) == f(x)` — it held whether `observe_window` ran or had never been
+/// written. Every size in this file is now distinct from every other, so an
+/// equality between two of them means something.
+const SCREEN: egui::Rect = egui::Rect {
+    min: egui::Pos2::ZERO,
+    max: egui::pos2(1100.0, 764.0),
+};
+
+/// The default arrangement, already sitting at [`SCREEN`]'s size.
+///
+/// A window's geometry is fed to the tracker on every frame, so a layout that
+/// starts at a *different* size than the harness draws at is dirty from the
+/// first frame — correctly, and uninterestingly, since nothing a user did
+/// caused it. Tests that ask what a *quiet* frame does start from here, so the
+/// geometry feed is settled before the question is put.
+fn seated_layout() -> brightfield_workbench::persist::SavedLayout {
+    let mut layout = default_layout();
+    layout.window.size = [SCREEN.max.x, SCREEN.max.y];
+    layout
+}
+
+/// The share `a_rearranged_dock_survives_the_file_and_reaches_the_frame` drags
+/// the chart view's controls rail out to, against the `0.2` its registry
+/// declares. Far enough out that the chart pane's laid-out width cannot be
+/// mistaken for the declared one.
+const WIDENED_RAIL: f32 = 0.6;
+
+/// The share the chart view's controls rail holds in `layout`.
+fn rail_share(layout: &brightfield_workbench::persist::SavedLayout) -> f32 {
+    let rail = layout
+        .workspace
+        .tile_of(PaneKey::new(ViewKind::Charts, CONTROLS))
+        .expect("the chart view has a controls rail");
+    let tree = layout.workspace.tree(ViewKind::Charts);
+    let root = tree.root().expect("the chart view has a root");
+    match tree.tiles.get(root) {
+        Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(lin))) => lin.shares[rail],
+        _ => panic!("the chart view's root is a linear container"),
+    }
+}
+
+/// Widen the chart view's controls rail — the arrangement a user makes by
+/// dragging one splitter, and the smallest change that is unmistakably theirs.
+fn set_rail_share(layout: &mut brightfield_workbench::persist::SavedLayout, share: f32) {
+    let rail = layout
+        .workspace
+        .tile_of(PaneKey::new(ViewKind::Charts, CONTROLS))
+        .expect("the chart view has a controls rail");
+    let tree = layout.workspace.tree_mut(ViewKind::Charts);
+    let root = tree.root().expect("the chart view has a root");
+    match tree.tiles.get_mut(root) {
+        Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(lin))) => {
+            lin.shares.set_share(rail, share);
+        }
+        _ => panic!("the chart view's root is a linear container"),
+    }
+}
+
+/// The pane the protocol view's Canvas/Steps strip has in front, or `None` if
+/// the strip has no active tab.
+///
+/// Read straight out of the serialised tree rather than off the model, because
+/// the strip's `active` is the thing that is *in the file* — the model's sheet
+/// flag is not persisted at all.
+fn front_tab(layout: &brightfield_workbench::persist::SavedLayout) -> Option<PaneKey> {
+    let tree = layout.workspace.tree(ViewKind::Protocol);
+    let canvas = tile_of(tree, PaneKey::new(ViewKind::Protocol, CANVAS))?;
+    let tabs_id = tabs_holding(tree, canvas)?;
+    match tree.tiles.get(tabs_id) {
+        Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(tabs))) => {
+            match tree.tiles.get(tabs.active?) {
+                Some(egui_tiles::Tile::Pane(key)) => Some(*key),
+                _ => None,
+            }
+        }
+        _ => panic!("the protocol view's canvas sits in a tab strip"),
+    }
+}
+
+/// Bring `pane` to the front of the protocol view's tab strip — what a user
+/// does by clicking the Steps tab, or by pressing `shift-S`.
+fn set_front_tab(layout: &mut brightfield_workbench::persist::SavedLayout, pane: PaneKey) {
+    let tree = layout.workspace.tree_mut(ViewKind::Protocol);
+    let canvas =
+        tile_of(tree, PaneKey::new(ViewKind::Protocol, CANVAS)).expect("the canvas pane exists");
+    let want = tile_of(tree, pane).unwrap_or_else(|| panic!("{pane} exists"));
+    let tabs_id = tabs_holding(tree, canvas).expect("the canvas sits in a tab strip");
+    match tree.tiles.get_mut(tabs_id) {
+        Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(tabs))) => {
+            tabs.set_active(want);
+        }
+        _ => panic!("the protocol view's canvas sits in a tab strip"),
+    }
+}
+
+/// Run one frame per entry, feeding that entry's events and then handing the
+/// window's own geometry back in exactly as the live host does.
+fn run(app: &mut MeridianApp, ctx: &egui::Context, frames: Vec<Vec<egui::Event>>) {
+    for events in frames {
+        let raw = egui::RawInput {
+            screen_rect: Some(SCREEN),
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(raw, |ui| app.draw(ui));
+        app.observe_window(ctx);
+    }
+}
+
+/// `frames` frames of nothing happening.
+fn settle(app: &mut MeridianApp, ctx: &egui::Context, frames: usize) {
+    run(app, ctx, vec![Vec::new(); frames]);
+}
+
+/// One frame's worth of a pointer move and a primary click at `pos`.
+fn click_at(pos: egui::Pos2) -> Vec<egui::Event> {
+    let mut events = vec![egui::Event::PointerMoved(pos)];
+    for pressed in [true, false] {
+        events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        });
+    }
+    events
+}
+
+/// Frames in which nobody rearranged anything leave the layout exactly as it
+/// was on disk — including frames in which the user clicked.
+///
+/// The failure is a write every ten seconds for the rest of the session, and
+/// the way into it here is **clicking**: a press anywhere in a pane raises
+/// `Request::Focus`, and focus is excluded from `Workspace`'s equality
+/// precisely so that moving it is not a layout change — put it back in and
+/// every click rewrites the file.
+///
+/// **Not** the protocol view's tab strip, which this once claimed. It is true
+/// that `set_active_tab` writes to the tile tree on every frame that view is
+/// drawn, and true that the frames below draw it — but they draw it from
+/// [`seated_layout`], where Canvas is already the strip's active tab, so the
+/// only value this fixture can watch `set_active_tab` write is the one that
+/// was already there. That is the one input the mechanism cannot get wrong.
+/// A saved layout with the Steps sheet in front is a reachable arrangement it
+/// *did* get wrong, and `a_restored_steps_tab_survives_the_first_frame` is
+/// what holds that.
+///
+/// **Not** the geometry feed, which this once claimed. `observe_window` hands
+/// the tracker the same size on every frame of a window nobody resized, and
+/// these windows start at that size ([`seated_layout`]), so a feed that
+/// recorded nothing at all would look identical from here. What a broken feed
+/// does is pinned by `a_layout_that_moved_is_written_and_reads_back`; the
+/// sub-point jitter a live window really produces is pinned by
+/// `brightfield-workbench`'s `layout_file.rs`, against `WindowGeometry`'s
+/// rounded equality.
+///
+/// The last block restates the quiet claim through `poll` rather than
+/// `flush`, on a window that was never handed a change: a clean tracker that
+/// is polled twice, once before the debounce and once past it, must still not
+/// have created the file.
+///
+/// It is **not** evidence that a headless window cannot write — this test
+/// writes one twenty lines above, `poll_layout` and `flush_layout` are `pub`
+/// and take any `&Path`, and starting that block from `default_layout()`
+/// instead of [`seated_layout`] makes it write a real file (the geometry feed
+/// hands it a size the fixture was not seeded at, so it is legitimately
+/// dirty). What actually keeps `cargo test` and the PNG capture tier off the
+/// developer's real `workspace-layout.json` is that nothing but `main` calls
+/// `startup::layout_path` — a property of the call graph, checkable with
+/// `git grep -n 'layout_path()' -- crates/`, and stated where it lives rather
+/// than claimed from here.
+///
+/// Watched redden, one mutation: putting `focus` back into `Workspace`'s
+/// hand-written `PartialEq` fails here at "a click changed the layout".
+///
+/// Watched **stay green**, and therefore not claimed: returning
+/// `SimplificationOptions::default()` from `PaneChrome::simplification_options`
+/// changes nothing here. Both views' declared trees are already in the shape
+/// simplification would leave them in, so this test cannot see that option's
+/// value — the reason to keep it `OFF` is the one written on it, not this.
+#[test]
+fn frames_nobody_rearranged_write_nothing() {
+    let scratch = Scratch::new("quiet");
+    let path = scratch.file();
+    let ctx = egui::Context::default();
+    let mut app = MeridianApp::headless_with_layout(Boot::empty(), seated_layout(), Mode::Light);
+
+    settle(&mut app, &ctx, 4);
+    assert!(
+        app.flush_layout(&path).is_none(),
+        "a frame nobody touched changed the layout, so the file is rewritten \
+         every debounce window for the rest of the session"
+    );
+
+    // A click in the controls rail — empty, and offering no button, so this
+    // reaches nothing but the focus machinery.
+    let rail = egui::pos2(SCREEN.max.x - 40.0, SCREEN.max.y / 2.0);
+    run(&mut app, &ctx, vec![click_at(rail), Vec::new()]);
+    assert!(
+        app.flush_layout(&path).is_none(),
+        "a click changed the layout, so every click a user makes rewrites the \
+         layout file for the rest of the session"
+    );
+
+    // The protocol view. Switching views *is* a change, so it is written first
+    // and the quiet claim is made about the frames after it. What this cannot
+    // see is `set_active_tab` — see the note above, and the Steps-tab test.
+    let target = app
+        .switcher_rect(ViewKind::Protocol)
+        .expect("the top bar drew a switcher control");
+    run(&mut app, &ctx, vec![click_at(target.center()), Vec::new()]);
+    assert_eq!(app.active(), ViewKind::Protocol);
+    app.flush_layout(&path)
+        .expect("switching views is a change worth keeping")
+        .expect("the write succeeded");
+    settle(&mut app, &ctx, 6);
+    assert!(
+        app.flush_layout(&path).is_none(),
+        "drawing the protocol view changed the layout every frame"
+    );
+
+    // And a window nothing ever changed writes nothing when it is *polled*
+    // either — not only when it is flushed. The debounce is the path the live
+    // host takes on every frame, so a tracker that armed on a quiet window
+    // would rewrite the file every ten seconds without anybody flushing.
+    let mut fresh = MeridianApp::headless_with_layout(Boot::empty(), seated_layout(), Mode::Light);
+    let unwritten = scratch.0.join("never-written.json");
+    settle(&mut fresh, &ctx, 4);
+    assert!(fresh.poll_layout(0, &unwritten).is_none());
+    assert!(fresh
+        .poll_layout(SAVE_DEBOUNCE_MS + 1, &unwritten)
+        .is_none());
+    assert!(
+        !unwritten.exists(),
+        "a window nobody touched wrote its layout on the host's own debounce \
+         tick, so every idle session rewrites the file"
+    );
+}
+
+/// A layout that moved is armed, then written, and reads back as saved.
+///
+/// The whole round trip through the shell rather than through the tracker:
+/// switching views is a real change a user makes, `poll` is called the way the
+/// host calls it, and the file is read back through the same `persist::load`
+/// the next boot uses.
+///
+/// `layout_armed` is asserted because the live host has nothing else to ask.
+/// eframe paints on input, not continuously, so without a
+/// `request_repaint_after` while a save is armed a user who rearranges panes
+/// and then leaves the window alone generates no more frames, the countdown
+/// never reaches its deadline, and the change survives only as far as
+/// `on_exit`.
+///
+/// Watched redden, one mutation: deleting the
+/// `self.layout.live_mut().opened = …` line from `MeridianApp::open_start`
+/// fails at "a changed layout armed no countdown" — which is the honest shape
+/// of that bug and not the one it was expected to take. Opening a document is
+/// not by itself a *layout* change; recording what was opened is the only
+/// thing about the second click that reaches the file at all, so without it
+/// there is nothing to save and nothing ever arms.
+#[test]
+fn a_layout_that_moved_is_written_and_reads_back() {
+    let scratch = Scratch::new("moved");
+    let path = scratch.file();
+    let ctx = egui::Context::default();
+    // Seated at the harness's own size, so the click below is the *only*
+    // change in this window's life and every arming assertion is about it.
+    // What the geometry feed does is a separate question, asked separately by
+    // `the_window_geometry_the_user_left_is_what_the_next_boot_reads`.
+    let mut app = MeridianApp::headless_with_layout(Boot::empty(), seated_layout(), Mode::Light);
+    settle(&mut app, &ctx, 3);
+    assert_eq!(app.active(), ViewKind::Charts);
+    assert!(
+        app.poll_layout(SAVE_DEBOUNCE_MS + 1, &path).is_none(),
+        "the window was dirty before anyone touched it, so nothing below can \
+         tell the click apart from the boot"
+    );
+
+    // A change a user makes, made the way a user makes it: the front door's
+    // own button, clicked where the last frame recorded it.
+    let target = app
+        .affordance_rect(PaneKey::new(ViewKind::Charts, CHART))
+        .expect("the chart view's front door drew a way in");
+    run(&mut app, &ctx, vec![click_at(target.center())]);
+    settle(&mut app, &ctx, 2);
+    assert_eq!(app.active(), ViewKind::Charts);
+    assert!(!app.chart_doc().is_empty());
+
+    // Armed, and not yet written: the debounce collapses a burst of changes
+    // into one write at the end rather than one per frame.
+    assert!(app.poll_layout(0, &path).is_none());
+    assert!(
+        app.layout_armed(),
+        "a changed layout armed no countdown, so nothing will ever write it \
+         and the host has nothing to schedule a repaint for"
+    );
+    assert!(!path.exists(), "the layout was written before the debounce");
+
+    // Due, and written.
+    assert!(app.poll_layout(0, &path).is_none(), "still moving");
+    let result = app
+        .poll_layout(SAVE_DEBOUNCE_MS + 1, &path)
+        .expect("the debounce expired, so a write was attempted");
+    result.expect("the write succeeded");
+    assert!(!app.layout_armed(), "the countdown outlived its write");
+
+    // And the next boot reads back what this one left.
+    let (restored, outcome) = persist::load(&path, default_layout);
+    assert_eq!(outcome, LoadOutcome::Restored, "{}", outcome.reason());
+    assert_eq!(restored.workspace.active(), ViewKind::Charts);
+    assert_eq!(
+        restored.opened.as_deref(),
+        Some(brightfield_shell::starts::DASHBOARD),
+        "the file did not record what was open, so the next launch restores an \
+         arrangement around panes that are all still empty"
+    );
+}
+
+/// The size the window was last at is what the next boot reads back.
+///
+/// The save half of the geometry round trip, which nothing else can see. It is
+/// its own test because it needs three distinct sizes and the other tests need
+/// two of them equal: this window is *seeded* at a size that is neither
+/// `WindowGeometry::default()` nor [`SCREEN`], drawn at `SCREEN`, and must come
+/// back at `SCREEN`. Match any two of those three and the assertion holds
+/// without `observe_window` ever running — which is what it did while the
+/// harness screen and the production default were both `1280×820`.
+///
+/// Watched redden, one mutation: replacing the body of
+/// `MeridianApp::observe_window` with `let _ = ctx;` so it records nothing
+/// fails here at "the window's own geometry never reached the layout" — the
+/// flush finds nothing to write, because the seeded size is still what the
+/// tracker was handed.
+#[test]
+fn the_window_geometry_the_user_left_is_what_the_next_boot_reads() {
+    let scratch = Scratch::new("geometry");
+    let path = scratch.file();
+    let ctx = egui::Context::default();
+
+    let mut seeded = default_layout();
+    seeded.window.size = [906.0, 588.0];
+    let mut app = MeridianApp::headless_with_layout(Boot::empty(), seeded, Mode::Light);
+    settle(&mut app, &ctx, 3);
+
+    app.flush_layout(&path)
+        .expect(
+            "the window's own geometry never reached the layout — it was \
+             seeded at 906x588 and drawn at the harness screen size, so a \
+             clean tracker means nothing observed the frame",
+        )
+        .expect("the write succeeded");
+
+    let (restored, outcome) = persist::load(&path, default_layout);
+    assert_eq!(outcome, LoadOutcome::Restored, "{}", outcome.reason());
+    assert_eq!(
+        restored.window.size,
+        [SCREEN.max.x, SCREEN.max.y],
+        "the next boot opens at a size nothing was ever drawn at"
+    );
+    // A position that cannot be read is not recorded, rather than being
+    // invented: this context reports no outer rect at all.
+    assert_eq!(restored.window.position, None);
+}
+
+/// A layout file written before `opened` existed still loads.
+///
+/// The upgrade path, and the one that is silent when it breaks: a field added
+/// to `SavedLayout` without `#[serde(default)]` makes every file already on
+/// every machine fail to parse, which surfaces as `Corrupt` — a log line that
+/// blames the user's file for a change this build made, and everybody's
+/// arrangement gone.
+///
+/// Watched redden, one mutation: a second field added to `SavedLayout` at a
+/// non-optional type (`u32`) with `#[serde(default)]` forgotten, stripped from
+/// the file below the way `opened` is, fails here with `Corrupt`. Putting the
+/// attribute back on that field turns it green again — so this test is holding
+/// the attribute, on the types where the attribute is the mechanism.
+///
+/// Watched **stay green**, and therefore not claimed: removing
+/// `#[serde(default)]` from `opened` while it stays an `Option`. serde's derive
+/// already reads a missing `Option<T>` field as `None`, so on *that* type the
+/// attribute is redundant — see the note on `SavedLayout::opened`, which now
+/// says which way round it is.
+#[test]
+fn a_layout_from_before_this_field_existed_still_loads() {
+    let scratch = Scratch::new("upgrade");
+    let path = scratch.file();
+
+    // Publish the vocabulary the way a boot does, so the pane keys below
+    // resolve. This binary builds windows in its other tests, but nothing here
+    // may depend on which ran first.
+    let _ = brightfield_shell::startup::boot_layout(None);
+
+    let mut json = serde_json::to_value(default_layout()).expect("a layout serialises");
+    let removed = json
+        .as_object_mut()
+        .expect("the envelope is an object")
+        .remove("opened");
+    assert!(
+        removed.is_some(),
+        "there is no `opened` key to remove, so this test proves nothing"
+    );
+    std::fs::write(&path, serde_json::to_string(&json).expect("writes")).expect("writes");
+
+    let (restored, outcome) = persist::load(&path, default_layout);
+    assert_eq!(
+        outcome,
+        LoadOutcome::Restored,
+        "a layout written before `opened` existed no longer loads ({}) — every \
+         file on every machine is discarded on upgrade",
+        outcome.reason()
+    );
+    assert_eq!(restored.opened, None);
+}
+
+/// A layout missing a view is repaired without resizing the window.
+///
+/// What such a file is: one written before a `ViewKind` existed. `persist`
+/// repairs it by copying the missing view's tree from the default arrangement
+/// and reports `Incomplete`, which answers `restored()` `false` — correctly,
+/// because something on screen is not what the user arranged.
+///
+/// The trap is treating that as "there was nothing to restore" and reaching
+/// for a content-derived window size. The file carried the size and position
+/// the user last left, nothing repaired those, and resizing their window
+/// because an upgrade added a view is a change they did not ask for.
+///
+/// Watched redden, one mutation: defining `kept_window_geometry` as
+/// `outcome.restored()` fails here at "an upgrade that added a view also
+/// resized the window".
+#[test]
+fn a_layout_missing_a_view_is_repaired_without_resizing_the_window() {
+    let scratch = Scratch::new("incomplete");
+    let path = scratch.file();
+    let _ = brightfield_shell::startup::boot_layout(None);
+
+    let mut saved = default_layout();
+    saved.window.size = [744.0, 512.0];
+    let mut json = serde_json::to_value(&saved).expect("a layout serialises");
+    let trees = json
+        .pointer_mut("/workspace/trees")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("the workspace carries a tree per view");
+    assert!(
+        trees.remove("Protocol").is_some(),
+        "there is no Protocol tree to remove, so this test proves nothing"
+    );
+    std::fs::write(&path, serde_json::to_string(&json).expect("writes")).expect("writes");
+
+    let (repaired, outcome) = persist::load(&path, default_layout);
+    assert_eq!(outcome, LoadOutcome::Incomplete, "{}", outcome.reason());
+    assert!(repaired.workspace.missing_views().is_empty());
+    assert!(
+        kept_window_geometry(outcome),
+        "an upgrade that added a view also resized the window the user left"
+    );
+    assert_eq!(repaired.window.size, [744.0, 512.0]);
+
+    // And the other side of it: a file this build could not read carries no
+    // geometry worth keeping, so the boot is free to size itself.
+    std::fs::write(&path, "{ not json").expect("writes");
+    let (_, outcome) = persist::load(&path, default_layout);
+    assert_eq!(outcome, LoadOutcome::Corrupt);
+    assert!(!kept_window_geometry(outcome));
+}
+
+/// The command line outranks what was remembered; nothing remembered and
+/// nothing named opens on nothing; and what was remembered brings its document
+/// but not a view.
+///
+/// The precedence `main` runs on, asserted through the same function `main`
+/// calls rather than through a second spelling of it.
+///
+/// Watched redden, two mutations: having `opening_boot` ignore its `opened`
+/// argument — which is all a shell that persisted only the arrangement can do
+/// — fails at "a remembered start was not reopened"; and dropping the
+/// `.map(Boot::deferring_to_the_saved_view)` from the restore path fails at
+/// "a restored start claimed a view".
+#[test]
+fn what_the_window_opens_on_prefers_the_command_line_then_what_was_open() {
+    let nothing = opening_boot(None, None, Flow::Vertical).expect("an empty boot cannot fail");
+    assert!(
+        nothing.is_empty(),
+        "a launch with nothing named opened something"
+    );
+    assert_eq!(nothing.view, None);
+
+    let remembered = opening_boot(
+        None,
+        Some(brightfield_shell::starts::CROSSWALK),
+        Flow::Vertical,
+    )
+    .expect("the remembered start loads");
+    assert!(
+        !remembered.is_empty(),
+        "a remembered start was not reopened, so the front door shows again \
+         over the work it was supposed to restore"
+    );
+    assert!(
+        !remembered.protocol.graph_full.nodes.is_empty(),
+        "the remembered start came back without its graph"
+    );
+    assert_eq!(
+        remembered.view, None,
+        "a restored start claimed a view — the file records which view the \
+         window was left on separately, and that record is the one the user \
+         made deliberately"
+    );
+
+    // A named spec wins, even with something remembered.
+    let named = opening_boot(
+        Some("../../examples/dashboard.yaml"),
+        Some(brightfield_shell::starts::CROSSWALK),
+        Flow::Vertical,
+    )
+    .expect("the named spec opens");
+    assert_eq!(named.view, Some(ViewKind::Charts));
+    assert!(named.protocol.graph_full.nodes.is_empty());
+
+    // An id from a build that shipped a start this one does not is dropped,
+    // not propagated: a stale config line may not stop the window opening.
+    let stale = opening_boot(None, Some("a-start-from-the-future"), Flow::Vertical)
+        .expect("an unrecognised start still opens a window");
+    assert!(stale.is_empty());
+}
+
+/// An arrangement the user actually made reaches the drawn frame.
+///
+/// The headline claim of the whole layout wiring, and the one nothing else in
+/// this repo could see: every other test hands the shell `default_layout()`,
+/// so `assemble` could throw the restored trees away and rebuild both views
+/// from their registries and the suite would stay green. It was checked —
+/// replacing `layout.workspace` with a fresh `Workspace::new` over the two
+/// `default_tree()`s, preserving `active`, leaves every test in this crate
+/// passing. Only the *contents* of the trees were ever unasserted; the active
+/// view, the window size and `opened` were all covered.
+///
+/// So this one saves a genuinely rearranged tree — the chart view's controls
+/// rail widened from its declared 0.2 to 0.6 — through a real file, and asks
+/// the drawn frame about it rather than asking the data structure. The two
+/// windows below differ in nothing but their saved layout and are drawn on the
+/// same screen, so a chart pane that comes back the same width is a chart pane
+/// laid out from a tree the restore did not produce.
+///
+/// Watched redden, one mutation: rebuilding `layout.workspace` from the two
+/// registries' `default_tree()`s at the top of `MeridianApp::assemble`,
+/// carrying `active` across, fails here at "the restored arrangement never
+/// reached the frame".
+#[test]
+fn a_rearranged_dock_survives_the_file_and_reaches_the_frame() {
+    let scratch = Scratch::new("rearranged");
+    let path = scratch.file();
+    let ctx = egui::Context::default();
+
+    // Publish the vocabulary the way a boot does, so the pane keys in the file
+    // below resolve. This binary builds windows in its other tests, but nothing
+    // here may depend on which ran first.
+    let _ = brightfield_shell::startup::boot_layout(None);
+
+    let mut arranged = seated_layout();
+    assert!(
+        (rail_share(&arranged) - WIDENED_RAIL).abs() > 0.1,
+        "the fixture's rail already has the share this test widens it to, so \
+         nothing below distinguishes a restore from a rebuilt default"
+    );
+    set_rail_share(&mut arranged, WIDENED_RAIL);
+    std::fs::write(&path, arranged.to_json().expect("a layout serialises")).expect("writes");
+
+    let (restored, outcome) = persist::load(&path, default_layout);
+    assert_eq!(outcome, LoadOutcome::Restored, "{}", outcome.reason());
+    assert!(
+        (rail_share(&restored) - WIDENED_RAIL).abs() < 1e-4,
+        "the widened rail did not survive the file: {}",
+        rail_share(&restored)
+    );
+
+    // Over a real dashboard, because an empty chart pane draws an empty state
+    // instead of a canvas and records no content box — there would be no
+    // laid-out rect to ask about.
+    let dashboard =
+        || Boot::start(brightfield_shell::starts::DASHBOARD, Flow::Vertical).expect("it loads");
+    let mut app = MeridianApp::headless_with_layout(dashboard(), restored, Mode::Light);
+    settle(&mut app, &ctx, 2);
+
+    let mut plain = MeridianApp::headless_with_layout(dashboard(), seated_layout(), Mode::Light);
+    settle(&mut plain, &ctx, 2);
+
+    let widened = app
+        .chart_viewport()
+        .expect("the chart pane was laid out")
+        .width();
+    let declared = plain
+        .chart_viewport()
+        .expect("the chart pane was laid out")
+        .width();
+    assert!(
+        widened < declared - 100.0,
+        "the restored arrangement never reached the frame — the chart pane is \
+         {widened} wide against {declared} for the declared default, and a \
+         rail widened from 0.2 to {WIDENED_RAIL} of the dock cannot leave it \
+         the same"
+    );
+
+    // And the frame did not quietly put the declared share back.
+    assert!(
+        (rail_share(app.layout()) - WIDENED_RAIL).abs() < 1e-4,
+        "drawing reset the rail to its declared share"
+    );
+    assert_eq!(
+        app.layout().workspace.panes(ViewKind::Charts),
+        plain.layout().workspace.panes(ViewKind::Charts),
+        "the rearranged layout lost or gained a pane"
+    );
+}
+
+/// A restored Steps tab is still in front after the first frame, and drawing
+/// that frame did not dirty the layout.
+///
+/// The arrangement is one keystroke away — `shift-S` opens the steps sheet, and
+/// the strip's active tab is part of the serialised tree — so this is what a
+/// user who quits with the sheet open comes back to. What it used to be:
+/// `MeridianApp::draw` makes the strip authoritative from `ProtocolModel`'s
+/// sheet flag on every frame it draws this view, a freshly constructed model
+/// boots with the sheet shut, and so Canvas overwrote the restored Steps
+/// before any frame could read it. Both halves of that are asserted, because
+/// the second is the worse one: the overwrite is a tile-tree mutation, so a
+/// launch nobody touched went dirty and the debounce wrote the reverted
+/// arrangement back over the file. The restore was lossy *and* it destroyed
+/// the evidence.
+///
+/// The fixture is the one `frames_nobody_rearranged_write_nothing` cannot
+/// supply: that test starts from [`seated_layout`], whose strip already has
+/// Canvas in front, so the only value it can watch `set_active_tab` write is
+/// the one already there.
+///
+/// Watched redden, one mutation: deleting the `steps_tab_is_active(…)` seeding
+/// from the end of `MeridianApp::assemble` fails here at "the restored Steps
+/// tab was reverted to Canvas", and — with that assertion removed as well — at
+/// "a launch that restored a Steps tab rewrote the layout file".
+#[test]
+fn a_restored_steps_tab_survives_the_first_frame() {
+    let scratch = Scratch::new("steps-tab");
+    let path = scratch.file();
+    let ctx = egui::Context::default();
+    let _ = brightfield_shell::startup::boot_layout(None);
+
+    let steps = PaneKey::new(ViewKind::Protocol, STEPS);
+    let mut saved = seated_layout();
+    saved.workspace.set_active(ViewKind::Protocol);
+    assert_eq!(
+        front_tab(&saved),
+        Some(PaneKey::new(ViewKind::Protocol, CANVAS)),
+        "the declared strip already has Steps in front, so nothing below \
+         distinguishes a restore from the model's own default"
+    );
+    set_front_tab(&mut saved, steps);
+
+    // Through the file, so this is the arrangement a real session leaves
+    // rather than one only this test can build.
+    std::fs::write(&path, saved.to_json().expect("a layout serialises")).expect("writes");
+    let (restored, outcome) = persist::load(&path, default_layout);
+    assert_eq!(outcome, LoadOutcome::Restored, "{}", outcome.reason());
+    assert_eq!(
+        front_tab(&restored),
+        Some(steps),
+        "the Steps tab did not survive the file, so the loss is in `persist` \
+         rather than in the shell wiring this test is about"
+    );
+    std::fs::remove_file(&path).expect("removes");
+
+    let mut app = MeridianApp::headless_with_layout(Boot::empty(), restored, Mode::Light);
+    settle(&mut app, &ctx, 4);
+
+    assert_eq!(
+        front_tab(app.layout()),
+        Some(steps),
+        "the restored Steps tab was reverted to Canvas on the first frame, so \
+         quitting with the steps sheet open comes back to a shut one"
+    );
+    assert!(
+        app.protocol_model().show_sheet(),
+        "the strip says Steps and the model says the sheet is shut, so the \
+         next `shift-S` toggles it the wrong way"
+    );
+    assert!(
+        app.flush_layout(&path).is_none(),
+        "a launch that restored a Steps tab rewrote the layout file without \
+         the user touching anything — the reverted arrangement is now what is \
+         on disk"
+    );
+    assert!(!path.exists());
+}
+
+/// A restored session names its window from the view that will actually be
+/// drawn.
+///
+/// `main` hands `Boot::title` straight to `eframe::run_native`, which is where
+/// the OS window's title comes from, and the only `ViewportCommand::Title` in
+/// the workspace is inside `MeridianApp::open_start` — a restore never reaches
+/// it. So a title that is wrong at this one call is wrong for the whole
+/// session, and the same expression answers the boot summary printed to
+/// stderr.
+///
+/// The trap this pins: a restored start carries no view (`Boot::view` is
+/// `None`, deliberately — see `startup::opening_boot`), so anything that
+/// defaults a `None` to the charts view answers for `Composed::empty()`. That
+/// titled a restored 34-node crosswalk "Brightfield" and logged "composed 0x0
+/// dashboard" for it.
+///
+/// Asserted as an *agreement* between the two answers rather than against a
+/// literal: `Boot::title` is only meaningful because it is the same question
+/// `MeridianApp::title` answers once the window exists, and a literal on both
+/// sides would go on agreeing with itself after either drifted.
+///
+/// Watched redden, one mutation: replacing `Boot::view_or`'s body with
+/// `ViewKind::Charts` fails here at "the window is titled for a view it is not
+/// drawing".
+#[test]
+fn a_restored_session_is_titled_for_the_view_it_draws() {
+    let mut saved = default_layout();
+    saved.opened = Some(brightfield_shell::starts::CROSSWALK.to_string());
+    saved.workspace.set_active(ViewKind::Protocol);
+
+    // Exactly what `main` does, in the order it does it.
+    let boot = opening_boot(None, saved.opened.as_deref(), Flow::Vertical)
+        .expect("the remembered start loads");
+    let view = boot.view_or(saved.workspace.active());
+    let title = boot.title(view);
+    let described = boot.describe(view);
+
+    let ctx = egui::Context::default();
+    let mut app = MeridianApp::headless_with_layout(boot, saved, Mode::Light);
+    settle(&mut app, &ctx, 2);
+
+    assert_eq!(app.active(), ViewKind::Protocol);
+    assert_eq!(
+        title,
+        app.title(),
+        "the window is titled for a view it is not drawing, and nothing sends \
+         a `ViewportCommand::Title` on a restore, so that name survives the \
+         session"
+    );
+    assert!(
+        described.starts_with("protocol "),
+        "the boot summary describes something that was not loaded: {described}"
+    );
+}

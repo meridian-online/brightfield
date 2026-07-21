@@ -205,6 +205,10 @@ impl std::fmt::Display for PaneKey {
 pub enum Request {
     /// Run a command.
     Verb(Verb),
+    /// Open the shipped starting point with this id — see
+    /// [`Action::Open`](crate::subject::Action::Open). The id is opaque here;
+    /// a shell that does not recognise it does nothing.
+    Open(&'static str),
     /// Move focus to a pane.
     Focus(PaneKey),
     /// Schedule another frame.

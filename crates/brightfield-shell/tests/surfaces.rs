@@ -291,7 +291,7 @@ fn protocol_surface(mode: Mode, name: &str, script: Vec<Vec<egui::Event>>) -> im
 /// first time a label or a padding moved.
 fn protocol_layout(mode: Mode) -> (egui::Rect, egui::Rect, egui::Rect) {
     let boot = protocol_boot();
-    let (w, h) = boot.window_size();
+    let (w, h) = boot.window_size(ViewKind::Protocol);
     let mut app = MeridianApp::headless(boot, mode);
     let ctx = egui::Context::default();
     let raw = egui::RawInput {
