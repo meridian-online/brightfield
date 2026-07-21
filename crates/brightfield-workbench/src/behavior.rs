@@ -68,6 +68,17 @@ use crate::Mode;
 /// to subtract the gaps first, and it cannot subtract a number nobody named.
 pub const TILE_GAP: f32 = 1.0;
 
+/// The height `egui_tiles` gives a tab strip, in logical points.
+///
+/// The value `egui_tiles`' own `Behavior` default already returns, so declaring
+/// it moves no pixels — and it is declared for exactly the reason [`TILE_GAP`]
+/// is. A shell sizing a window so that a fixed-size raster fits the centre tile
+/// has to subtract the chrome above it first, and when that centre tile is a
+/// *tab* the strip is part of that chrome. It cannot subtract a number nobody
+/// named, and the alternative — measuring the strip after a frame has drawn —
+/// is not available to a window size computed before any frame exists.
+pub const TAB_BAR_HEIGHT: f32 = 24.0;
+
 /// Draws every pane in one view's tree, and names every tab in it.
 ///
 /// Borrowed rather than owning, and built fresh each frame: it holds the
@@ -197,6 +208,12 @@ impl<D: ?Sized> egui_tiles::Behavior<PaneKey> for PaneChrome<'_, D> {
     /// inherited, because a shell's window arithmetic has to subtract it.
     fn gap_width(&self, _style: &egui::Style) -> f32 {
         TILE_GAP
+    }
+
+    /// The height of a tab strip — [`TAB_BAR_HEIGHT`], stated rather than
+    /// inherited, for the same reason the tile gap above it is.
+    fn tab_bar_height(&self, _style: &egui::Style) -> f32 {
+        TAB_BAR_HEIGHT
     }
 
     /// Simplification stays **off**, and that is load-bearing twice.

@@ -23,7 +23,7 @@
 //!
 //! # The ordering question these tests answer
 //!
-//! `ShellState`/`ProtocolShell` present *before* the panels draw, so the raster
+//! both views present *before* their panes draw, so the raster
 //! size is last frame's — a pane-filling chart would lag one frame during a
 //! resize drag. The fix would be to present from **inside** the pane's draw,
 //! once the rect is known, and the question is whether that is safe.
@@ -774,7 +774,7 @@ fn a_cached_pane_survives_a_sweep_between_the_ui_and_the_paint() {
     let screen = egui::vec2(320.0, 160.0);
     let rect_size = egui::vec2(120.0, 100.0);
 
-    // Frame 1: present and cache the id, the way `ShellState::ensure_presented`
+    // Frame 1: present and cache the id, the way a document's `present`
     // does. The host is not consulted again.
     let held = rig
         .host

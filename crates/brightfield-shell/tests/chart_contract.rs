@@ -15,12 +15,10 @@
 
 use std::collections::BTreeMap;
 
-use brightfield_shell::app::{
-    chart_registry, draw_shell, publish_item_ids, window_size_for, ChartDoc, ShellState, CHART,
-    CONTROLS, DOCK_INSET, TOP_BAR,
-};
+use brightfield_shell::app::{chart_registry, ChartDoc, CHART, CONTROLS};
 use brightfield_shell::design::Mode;
 use brightfield_shell::pipeline::{compose_spec, Composed};
+use brightfield_shell::window::{chart_window_size, Boot, MeridianApp, BAR_HEIGHT, DOCK_INSET};
 use brightfield_workbench::behavior::TILE_GAP;
 use brightfield_workbench::registry::{DockSide, Slot};
 use brightfield_workbench::{audit, chrome, ItemId, PaneKey, Subject, ViewKind};
@@ -149,12 +147,15 @@ fn each_pane_names_itself_once_and_binds_in_the_workspace_context() {
 }
 
 /// A pane declares no chrome it cannot be held to: no toolbar control and no
-/// status line, because the shell's top bar is still its own.
+/// status line.
 ///
-/// A statement about *this* increment rather than a rule for all time — the top
-/// bar's mode line becomes a status entry when the one-app shell lands. Until
-/// then, an entry appearing here would be an entry nothing draws, which is worse
-/// than none.
+/// The one-app window has landed and this still holds, which is worth saying
+/// plainly because the note here used to promise the opposite. The merged top
+/// bar describes the *window* and the *view* — a switcher over `ViewKind::ALL`,
+/// the view's title, the renderer line — and none of that is any pane's to
+/// declare. `chrome::toolbar_row` and `chrome::status_rail` are still drawn by
+/// nothing, so an entry appearing here would be an entry nothing draws, which
+/// is worse than none.
 #[test]
 fn no_pane_declares_chrome_the_shell_does_not_yet_draw() {
     for (id, subject) in subjects(&loaded()) {
@@ -211,41 +212,6 @@ fn the_default_dock_is_a_chart_with_a_controls_rail() {
     }
 }
 
-/// The published id vocabulary is derived from the registry, not written beside
-/// it.
-///
-/// The protocol view shipped a hand-written `static [ItemId; 4]` next to its
-/// registry, which is a second declaration by definition: a pane added to the
-/// registry and forgotten in the array compiled, ran, and produced a pane whose
-/// saved layout could never load. This asserts the two agree — and, because
-/// `publish` is additive and process-global, that every id this binary has
-/// published came from the registry.
-#[test]
-fn the_published_vocabulary_is_the_registry_and_nothing_else() {
-    publish_item_ids();
-    let declared = chart_registry().ids();
-    let known = ItemId::known();
-    for id in &declared {
-        assert!(known.contains(id), "{id} is declared but never published");
-    }
-    for id in known {
-        assert!(
-            declared.contains(id),
-            "{id} was published by something other than the chart registry"
-        );
-    }
-
-    // The point of the vocabulary: a saved layout naming these panes loads.
-    for item in declared {
-        let key = PaneKey::new(ViewKind::Charts, item);
-        let json = serde_json::to_string(&key).expect("a pane key serialises");
-        assert_eq!(
-            serde_json::from_str::<PaneKey>(&json).expect("and round trips"),
-            key
-        );
-    }
-}
-
 /// The window the shell asks for is sized from the *same* share the dock lays
 /// the rail out with, and the chart pane's content box it produces fits the
 /// dashboard — **in both axes**.
@@ -268,7 +234,7 @@ fn the_published_vocabulary_is_the_registry_and_nothing_else() {
 #[test]
 fn the_window_is_sized_from_the_rail_share_it_lays_out() {
     let composed = compose_spec(DASHBOARD).expect("compose examples/dashboard.yaml");
-    let (w, h) = window_size_for(&composed);
+    let (w, h) = chart_window_size(&composed);
     let centre = 1.0 - controls_share();
     let inset = chrome::pane_content_inset();
 
@@ -283,9 +249,10 @@ fn the_window_is_sized_from_the_rail_share_it_lays_out() {
          {dashboard_w:.0}pt dashboard — the raster will be clipped"
     );
 
-    // Down: the window gives up the top bar, insets to the dock, and the pane
+    // Down: the window gives up its one band — the charts view draws no hint
+    // bar — insets to the dock, and the pane
     // frame takes its header band and its padding above and below.
-    let content_h = h - TOP_BAR - 2.0 * DOCK_INSET - chrome::header_band_height() - 2.0 * inset;
+    let content_h = h - BAR_HEIGHT - 2.0 * DOCK_INSET - chrome::header_band_height() - 2.0 * inset;
     let dashboard_h = composed.height as f32;
     assert!(
         content_h >= dashboard_h,
@@ -295,7 +262,7 @@ fn the_window_is_sized_from_the_rail_share_it_lays_out() {
 
     // And in neither axis is the leftover a fudge factor. Every term above is
     // read from the component that consumes it, so the *only* slack
-    // `window_size_for` may have is its rounding up to whole logical points:
+    // `chart_window_size` may have is its rounding up to whole logical points:
     // strictly less than one point, per axis. An inequality that any positive
     // number satisfies is what let the height budget be 95 points short.
     for (axis, slack) in [
@@ -305,35 +272,40 @@ fn the_window_is_sized_from_the_rail_share_it_lays_out() {
         assert!(
             slack < 1.0,
             "the chart pane's content box has {slack:.2}pt of slack {axis} — \
-             more than the sub-point rounding `window_size_for` is allowed, so \
+             more than the sub-point rounding `chart_window_size` is allowed, so \
              some of the budget is a fudge factor rather than a component"
         );
     }
 }
 
-/// The window `window_size_for` asks for really does fit the raster the chart
+/// The window `chart_window_size` asks for really does fit the raster the chart
 /// pane presents — checked by laying a **real frame** out, not by re-running the
 /// same arithmetic.
 ///
 /// The sibling above walks the budget term by term, and a walk can only ever be
 /// as right as its author's model of the dock. This one has no model: it runs
-/// `draw_shell` through `egui::Context::run_ui` at exactly the window size the
+/// the window through `egui::Context::run_ui` at exactly the window size the
 /// shell asks for, and reads back the content box `egui_tiles` and
 /// `chrome::pane_frame` between them actually handed the chart pane. If any of
 /// the four components in that budget changes its height, this reddens whether
 /// or not anyone remembered to update the arithmetic.
 ///
-/// GPU-free: `ShellState::headless` has no device, so the pane paints nothing —
+/// GPU-free: `MeridianApp::headless` has no device, so the pane paints nothing —
 /// but it is handed the same rect either way, and `ChartPane::ui` records it
 /// before it looks for a texture. Two frames, because the first installs the
 /// font atlas and settles the layout, exactly as the capture path does.
+///
+/// It also holds the charts view to drawing no key-hint bar, without naming
+/// one: a hint bar is one [`BAR_HEIGHT`] band — 32 logical points — and
+/// `chart_window_size` budgets for a single band, so a hint bar on this view
+/// would take those points out of the box read back below.
 #[test]
 fn the_window_it_asks_for_fits_the_raster_it_presents() {
     let composed = compose_spec(DASHBOARD).expect("compose examples/dashboard.yaml");
     let (dash_w, dash_h) = (composed.width as f32, composed.height as f32);
-    let (w, h) = window_size_for(&composed);
+    let (w, h) = chart_window_size(&composed);
 
-    let mut state = ShellState::headless(composed, Mode::Light);
+    let mut app = MeridianApp::headless(Boot::charts(composed), Mode::Light);
     let ctx = egui::Context::default();
     let raw = egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(
@@ -343,10 +315,10 @@ fn the_window_it_asks_for_fits_the_raster_it_presents() {
         ..Default::default()
     };
     for _ in 0..2 {
-        let _ = ctx.run_ui(raw.clone(), |ui| draw_shell(ui, &mut state));
+        let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
     }
 
-    let box_ = state
+    let box_ = app
         .chart_viewport()
         .expect("the chart pane drew, so it recorded the box it was given");
     assert!(

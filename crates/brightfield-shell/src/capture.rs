@@ -3,23 +3,22 @@
 //! write a PNG.
 //!
 //! This is the loop the gpui host never had: no display server, no window — the
-//! same [`crate::app::draw_shell`] that runs live is driven by a synthetic
+//! same [`crate::window::MeridianApp`] that runs live is driven by a synthetic
 //! [`egui::RawInput`] and rendered by egui's real wgpu backend, so the PNG is
 //! the actual UI, Vello canvas included, not a Vello-only composite.
 
 use std::path::Path;
 use std::sync::Arc;
 
-use brightfield_protocol::layout::Flow;
 use brightfield_render::vello_renderer::VelloRenderer;
 use meridian_design::chrome::{INK_DARK, INK_LIGHT};
 use vello::wgpu;
 
-use crate::app::{draw_shell, ShellState};
-use crate::canvas::{EguiCanvasHost, SharedEguiRenderer};
+use crate::canvas::SharedEguiRenderer;
 use crate::design::Mode;
 use crate::pipeline::Composed;
-use crate::protocol::{host_on_device, ProtocolInputs, ProtocolShell};
+use crate::protocol::host_on_device;
+use crate::window::{Boot, MeridianApp};
 
 /// Create a headless (surface-less) wgpu device on the default adapter.
 ///
@@ -40,14 +39,22 @@ pub fn headless_device() -> Result<(wgpu::Device, wgpu::Queue), String> {
     .map_err(|e| format!("device creation failed: {e}"))
 }
 
-/// Render the shell to `out` as a PNG at `scale` device pixels per logical
+/// Render the window to `out` as a PNG at `scale` device pixels per logical
 /// point, optionally applying one scripted frame of events per entry in
 /// `script`. Returns the device pixel dimensions written.
+///
+/// **One entry point for both views.** It used to be two — `capture_png` over
+/// the chart shell and `capture_protocol_png` over the protocol shell — and
+/// those two functions were two of the four places the old fork was
+/// load-bearing: each constructed a different shell, read a different
+/// `window_size`, and could only ever photograph the surface it was named
+/// after. [`Boot`] carries which view opens and both documents' contents, so
+/// what used to be the choice of function is now a field.
 ///
 /// # Errors
 /// Returns a message on GPU, encode, or file-write failure.
 pub fn capture_png(
-    composed: Composed,
+    boot: Boot,
     mode: Mode,
     scale: f32,
     out: &Path,
@@ -56,11 +63,13 @@ pub fn capture_png(
     let (device, queue) = headless_device()?;
     let target_format = wgpu::TextureFormat::Rgba8Unorm;
     let egui_renderer = new_egui_renderer(&device, target_format);
-    let vello = VelloRenderer::from_shared(device.clone(), queue.clone());
-    let host = EguiCanvasHost::new(device.clone(), queue.clone(), vello, egui_renderer.clone());
+    // One host per document, as the live window builds them: a document owns
+    // the canvas it rasters into, and the two views' rasters are independent.
+    let chart_host = host_on_device(device.clone(), queue.clone(), egui_renderer.clone());
+    let protocol_host = host_on_device(device.clone(), queue.clone(), egui_renderer.clone());
 
-    let mut state = ShellState::new(composed, host, mode);
-    let (win_w, win_h) = state.window_size();
+    let (win_w, win_h) = boot.window_size();
+    let mut app = MeridianApp::new(boot, chart_host, protocol_host, mode);
 
     let ctx = egui::Context::default();
     ctx.set_pixels_per_point(scale);
@@ -74,65 +83,7 @@ pub fn capture_png(
         screen,
         script,
         |ui| {
-            draw_shell(ui, &mut state);
-        },
-    );
-    finish_capture(
-        &ctx,
-        &egui_renderer,
-        &device,
-        &queue,
-        full,
-        win_w,
-        win_h,
-        scale,
-        mode,
-        target_format,
-        out,
-    )
-}
-
-/// Render the egui **Protocol panel** (dock + DAG + outline + inspector + steps)
-/// to `out` as a PNG at `scale`, optionally seeding the selection to `focus`
-/// (the dotted asset id a click would target) before applying one scripted frame
-/// of events per entry in `script`. The loop the gpui protocol shell never had:
-/// prove a keystroke drives the view by capturing the actual pixels.
-///
-/// # Errors
-/// Returns a message on GPU, encode, or file-write failure.
-pub fn capture_protocol_png(
-    inputs: ProtocolInputs,
-    mode: Mode,
-    flow: Flow,
-    focus: Option<String>,
-    scale: f32,
-    out: &Path,
-    script: Vec<Vec<egui::Event>>,
-) -> Result<(u32, u32), String> {
-    let (device, queue) = headless_device()?;
-    let target_format = wgpu::TextureFormat::Rgba8Unorm;
-    let egui_renderer = new_egui_renderer(&device, target_format);
-    let host = host_on_device(device.clone(), queue.clone(), egui_renderer.clone());
-
-    let mut shell = ProtocolShell::new(inputs, host, mode, flow);
-    if let Some(id) = focus {
-        shell.model_mut().select_id(id);
-    }
-    let (win_w, win_h) = shell.window_size();
-
-    let ctx = egui::Context::default();
-    ctx.set_pixels_per_point(scale);
-    let screen = egui::vec2(win_w, win_h);
-
-    let full = run_ui_frames(
-        &ctx,
-        &egui_renderer,
-        &device,
-        &queue,
-        screen,
-        script,
-        |ui| {
-            shell.draw(ui);
+            app.draw(ui);
         },
     );
     finish_capture(
@@ -166,7 +117,7 @@ fn new_egui_renderer(device: &wgpu::Device, format: wgpu::TextureFormat) -> Shar
     Arc::new(egui::mutex::RwLock::new(r))
 }
 
-/// Drive the shared draw function through a warm-up frame (fonts atlas + layout
+/// Drive the window's draw through a warm-up frame (fonts atlas + layout
 /// settle), the scripted frames (one per entry), and a final settle frame that
 /// becomes the captured image — keeping the renderer's texture atlas current each
 /// frame. Returns the last frame's [`egui::FullOutput`].

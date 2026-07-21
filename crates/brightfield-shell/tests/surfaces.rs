@@ -2,11 +2,10 @@
 //!
 //! The sibling `snapshot.rs` tier renders a hand-built chrome sheet — it pins
 //! the design→egui bridge (fonts, visuals, widget ink) and nothing else. It
-//! never touches [`brightfield_shell::app::draw_shell`], `ShellState`, or
-//! [`brightfield_shell::protocol::ProtocolShell`], so before this file a rewrite
-//! of either surface could change every pixel a user sees with the whole suite
-//! staying green. These tests close that hole: they drive the *real* surfaces
-//! and diff the *real* window.
+//! never touches [`brightfield_shell::window::MeridianApp`], so before this file
+//! a rewrite of either surface could change every pixel a user sees with the
+//! whole suite staying green. These tests close that hole: they drive the *real*
+//! surfaces and diff the *real* window.
 //!
 //! # Why the pixel tier, for both
 //!
@@ -28,9 +27,9 @@
 //! same renderer* that draws the frame, so a kittest-rendered harness would show
 //! the two surfaces with a blank hole where their content is — a baseline that
 //! pins everything except the thing most likely to break. Instead these tests
-//! run the crate's own headless capture path (`capture::capture_png` /
-//! `capture_protocol_png`) — the same code `brightfield-shot` runs and the same
-//! code the live window's `draw_shell` runs — and hand the resulting image to
+//! run the crate's own headless capture path (`capture::capture_png`) — the
+//! same code `brightfield-shot` runs and the same code the live window runs —
+//! and hand the resulting image to
 //! egui_kittest's standalone [`egui_kittest::image_snapshot`], so the comparison,
 //! the `kittest.toml` thresholds and the `UPDATE_SNAPSHOTS=1` workflow are
 //! identical to the sheet tier's.
@@ -51,10 +50,14 @@
 //! — that is what makes a first-frame layout pass invisible to the baseline.
 //!
 //! Scale is **1.0** here, against the sheet tier's 2.0. The chart window is
-//! 947×396 logical points and the protocol window 1642×1250, so at 2.0 these
-//! five baselines would cost roughly 3 MB of repo; at 1.0 they cost 0.8 MB for
-//! the same coverage. The perceptual gate is a per-pixel delta, not a per-image
-//! one, so the lower raster does not buy any slack — it just stores less of it.
+//! 947×396 logical points and the protocol window 1978×1248; at 1.0 the five
+//! committed baselines cost 0.87 MB of repo, and the same five captured at 2.0
+//! cost 2.4 MB. Both figures are measured, the second by capturing them rather
+//! than by scaling the first — PNG compresses the extra pixels far better than
+//! the 4× area implies, and every previous version of this sentence carried a
+//! projected number that was wrong. The perceptual gate is a per-pixel delta,
+//! not a per-image one, so the lower raster does not buy any slack — it just
+//! stores less of it.
 //! (Measured sensitivity at this scale: deleting one character from a side-panel
 //! label reddens the shell baselines by 15 pixels.)
 //!
@@ -66,11 +69,12 @@
 use std::path::PathBuf;
 
 use brightfield_protocol::layout::Flow;
-use brightfield_shell::app::{draw_shell, window_size_for, ShellState};
-use brightfield_shell::capture::{capture_png, capture_protocol_png};
+use brightfield_shell::capture::capture_png;
 use brightfield_shell::design::Mode;
 use brightfield_shell::pipeline::compose_spec;
 use brightfield_shell::protocol::load_protocol_offline;
+use brightfield_shell::window::{chart_window_size, Boot, MeridianApp};
+use brightfield_workbench::ViewKind;
 
 /// Device pixels per logical point for this tier. See the module note.
 const SCALE: f32 = 1.0;
@@ -99,15 +103,15 @@ fn read_rgba(path: &PathBuf) -> image::RgbaImage {
         .to_rgba8()
 }
 
-/// Capture the **chart shell** — `draw_shell` over `ShellState`: the top bar,
-/// and the dock's two panes (the composited Vello dashboard, and the controls
+/// Capture the window **booted on the charts view**: the merged top bar, and
+/// the dock's two panes (the composited Vello dashboard, and the controls
 /// rail), each in the header band `PaneChrome` draws from its `Subject`.
 fn shell_capture(mode: Mode, name: &str, script: Vec<Vec<egui::Event>>) -> image::RgbaImage {
     let spec = fixture("examples/dashboard.yaml");
     let composed = compose_spec(spec.to_str().expect("utf-8 fixture path"))
         .unwrap_or_else(|e| panic!("compose {}: {e}", spec.display()));
     let out = scratch(name);
-    let (w, h) = capture_png(composed, mode, SCALE, &out, script)
+    let (w, h) = capture_png(Boot::charts(composed), mode, SCALE, &out, script)
         .unwrap_or_else(|e| panic!("capture {name}: {e}"));
     assert!(w > 0 && h > 0, "{name}: empty capture");
     read_rgba(&out)
@@ -229,8 +233,8 @@ fn chart_layout(mode: Mode) -> (egui::Rect, egui::Rect) {
     let spec = fixture("examples/dashboard.yaml");
     let composed = compose_spec(spec.to_str().expect("utf-8 fixture path"))
         .unwrap_or_else(|e| panic!("compose {}: {e}", spec.display()));
-    let (w, h) = window_size_for(&composed);
-    let mut state = ShellState::headless(composed, mode);
+    let (w, h) = chart_window_size(&composed);
+    let mut app = MeridianApp::headless(Boot::charts(composed), mode);
     let ctx = egui::Context::default();
     let raw = egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(
@@ -240,30 +244,73 @@ fn chart_layout(mode: Mode) -> (egui::Rect, egui::Rect) {
         ..Default::default()
     };
     for _ in 0..2 {
-        let _ = ctx.run_ui(raw.clone(), |ui| draw_shell(ui, &mut state));
+        let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
     }
     (
-        state.chart_viewport().expect("the chart pane drew"),
-        state
-            .overlay_checkbox()
+        app.chart_viewport().expect("the chart pane drew"),
+        app.overlay_checkbox()
             .expect("the controls rail drew its overlay checkbox"),
     )
 }
 
-/// Capture the **protocol shell** — `ProtocolShell::draw`: the outline rail, the
-/// DAG canvas, the inspector rail, the steps sheet tab and the breadcrumb/hint
-/// bars, in the default vertical flow with the nav's boot cursor selected.
-fn protocol_surface(mode: Mode, name: &str, script: Vec<Vec<egui::Event>>) -> image::RgbaImage {
+/// A boot on the protocol view over the checked-in fixture, in the default
+/// vertical flow.
+fn protocol_boot() -> Boot {
     let spec = fixture("examples/protocol/edgar_gleif/arcform.yaml");
     let inputs = load_protocol_offline(spec.to_str().expect("utf-8 fixture path"))
         .unwrap_or_else(|e| panic!("load {}: {e}", spec.display()));
+    Boot::protocol(inputs, Flow::Vertical, None)
+}
+
+/// Capture the window **booted on the protocol view**: the outline rail, the
+/// DAG canvas, the inspector rail, the steps sheet tab, and the merged top bar
+/// and hint bar around them, in the default vertical flow with the nav's boot
+/// cursor selected.
+fn protocol_capture(mode: Mode, name: &str, script: Vec<Vec<egui::Event>>) -> image::RgbaImage {
     let out = scratch(name);
-    let (w, h) = capture_protocol_png(inputs, mode, Flow::Vertical, None, SCALE, &out, script)
+    let (w, h) = capture_png(protocol_boot(), mode, SCALE, &out, script)
         .unwrap_or_else(|e| panic!("capture {name}: {e}"));
     assert!(w > 0 && h > 0, "{name}: empty capture");
-    let img = read_rgba(&out);
+    read_rgba(&out)
+}
+
+/// The same, diffed against the committed baseline.
+fn protocol_surface(mode: Mode, name: &str, script: Vec<Vec<egui::Event>>) -> image::RgbaImage {
+    let img = protocol_capture(mode, name, script);
     egui_kittest::image_snapshot(&img, name);
     img
+}
+
+/// The rects the protocol view's layout produces at the window size it asks
+/// for: the DAG canvas pane's content box, and the top bar's switcher control
+/// for each view.
+///
+/// The headless twin of [`chart_layout`], derived for the same reason: the
+/// round-trip test below has to click the *switcher*, and a coordinate typed
+/// against a bar nothing derived it from would go on clicking empty bar the
+/// first time a label or a padding moved.
+fn protocol_layout(mode: Mode) -> (egui::Rect, egui::Rect, egui::Rect) {
+    let boot = protocol_boot();
+    let (w, h) = boot.window_size();
+    let mut app = MeridianApp::headless(boot, mode);
+    let ctx = egui::Context::default();
+    let raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(w, h),
+        )),
+        ..Default::default()
+    };
+    for _ in 0..2 {
+        let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
+    }
+    (
+        app.canvas_viewport().expect("the DAG canvas pane drew"),
+        app.switcher_rect(ViewKind::Charts)
+            .expect("the top bar drew a charts switcher control"),
+        app.switcher_rect(ViewKind::Protocol)
+            .expect("the top bar drew a protocol switcher control"),
+    )
 }
 
 /// One frame of a keypress, the same event pair `capture::parse_script`
@@ -357,6 +404,73 @@ fn protocol_steps_light_surface() {
 #[test]
 fn protocol_dark_surface() {
     protocol_surface(Mode::Dark, "protocol_dark", Vec::new());
+}
+
+/// The DAG is still there after the user has been to the other view and back.
+///
+/// One window means one canvas host per document and two documents alive at
+/// once, and the rule that keeps them alive is a single line: `MeridianApp` has
+/// to name **every pane of every view** to the hosts every frame, not just the
+/// panes the drawn view laid out. `EguiCanvasHost::end_frame` frees any slot
+/// that neither presented this frame nor appears in the set it is handed, and
+/// `present` returns early on an unchanged key — so naming only the drawn
+/// view's panes frees the other view's texture while leaving the pane holding
+/// its id, and the DAG comes back as an empty box the instant the user
+/// switches to it. Nothing about that is visible without a device: the layout,
+/// the rects, the scroll offsets and every accesskit node are identical either
+/// way. It is a pixel question, so it is asked in pixels.
+///
+/// Two captures of the same window, compared over a rectangle strictly inside
+/// the DAG canvas: one that never leaves the protocol view, one that clicks
+/// through to the charts view and back. The pointer ends on the top bar in
+/// both readings that matter, so nothing inside the canvas is hovered.
+///
+/// Watched redden, one mutation: sweeping both documents with the *drawn*
+/// view's pane set (`self.charts.doc.sweep(&live); self.protocol.doc.sweep(&live)`)
+/// leaves every other test in the workspace green and fails here with the whole
+/// canvas differing.
+#[test]
+fn the_dag_survives_a_round_trip_through_the_charts_view() {
+    let (canvas, to_charts, to_protocol) = protocol_layout(Mode::Light);
+    // Strictly inside the raster, clear of the pane frame and the tab strip.
+    let inside_dag = Region::inside(canvas, 20.0);
+
+    let stayed = protocol_capture(Mode::Light, "roundtrip_stayed", Vec::new());
+    let returned = protocol_capture(
+        Mode::Light,
+        "roundtrip_returned",
+        vec![
+            click_at(to_charts.center().x, to_charts.center().y),
+            click_at(to_protocol.center().x, to_protocol.center().y),
+        ],
+    );
+
+    // Guard the guard: if either click missed, the second capture never left
+    // the protocol view and the assertion below would pass for the wrong
+    // reason. The charts view is a different window entirely — a chart pane and
+    // a controls rail where the outline rail and the DAG are — so a capture
+    // taken with only the first click is bound to differ over this rectangle,
+    // and does not if the click missed the switcher.
+    let switched = protocol_capture(
+        Mode::Light,
+        "roundtrip_switched",
+        vec![click_at(to_charts.center().x, to_charts.center().y)],
+    );
+    assert!(
+        region_diff(&stayed, &switched, inside_dag).is_some(),
+        "clicking the charts control at {:?} changed nothing inside the DAG \
+         canvas — the click did not land on the switcher, so this test proves \
+         nothing about the round trip",
+        to_charts.center(),
+    );
+
+    assert_eq!(
+        region_diff(&stayed, &returned, inside_dag),
+        None,
+        "the DAG canvas differs after a round trip through the charts view \
+         (and the trip did happen — see above), so the protocol document's \
+         texture did not survive the frames its view was not drawn"
+    );
 }
 
 /// The overlay toggle still reaches the canvas across the dock.

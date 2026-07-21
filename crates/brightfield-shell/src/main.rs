@@ -1,9 +1,10 @@
 //! `brightfield-shell` — the live egui/eframe window (Tier-3 of the loop).
 //!
-//! Opens the real docked shell over a spec, rendering the Vello canvas on
-//! eframe's shared wgpu device. Auto-routes a Mosaic dashboard to the chart
-//! shell and a Protocol manifest (with `BRIGHTFIELD_PROTOCOL_OFFLINE=1`) to the
-//! egui Protocol panel (dock + DAG + outline + inspector + steps). Press F12 to
+//! Opens the real docked window over a spec, rendering the Vello canvases on
+//! eframe's shared wgpu device. The window holds **both** views — the chart
+//! workbench and the Protocol panel — with a switcher in the top bar; the spec
+//! decides which of them opens first, and a Protocol manifest still needs
+//! `BRIGHTFIELD_PROTOCOL_OFFLINE=1` to be rendered without a run. Press F12 to
 //! fire a `ViewportCommand::Screenshot` and write a PNG of the live window for
 //! on-device sign-off.
 //!
@@ -15,11 +16,9 @@ use std::sync::Arc;
 
 use brightfield_protocol::layout::Flow;
 use brightfield_render::vello_renderer::VelloRenderer;
-use brightfield_shell::app::{draw_shell, window_size_for, ShellState};
 use brightfield_shell::canvas::EguiCanvasHost;
 use brightfield_shell::design::Mode;
-use brightfield_shell::pipeline::compose_spec;
-use brightfield_shell::protocol::{load_protocol_offline, ProtocolShell};
+use brightfield_shell::window::{Boot, MeridianApp};
 
 struct Args {
     spec: String,
@@ -67,7 +66,7 @@ fn parse_args() -> Args {
     }
 }
 
-/// The shared F12 → live-screenshot latch (request in `ui`, capture next frame).
+/// The F12 → live-screenshot latch (request in `ui`, capture next frame).
 struct ShotLatch {
     shot_out: PathBuf,
     pending: bool,
@@ -106,28 +105,23 @@ impl ShotLatch {
     }
 }
 
-struct ShellApp {
-    state: ShellState,
+/// The **one** `eframe::App` in the product.
+///
+/// It used to be two — one over the chart shell and one over the protocol
+/// shell, chosen by sniffing the spec, each opening its own window. Two
+/// `eframe::App`s is precisely what made it impossible for the chart and the
+/// DAG to share a window, whatever the workbench underneath them could express.
+/// What is left here is the window's own business and nothing else: the
+/// screenshot latch, and handing the frame to [`MeridianApp`].
+struct BrightfieldApp {
+    app: MeridianApp,
     shot: ShotLatch,
 }
 
-impl eframe::App for ShellApp {
+impl eframe::App for BrightfieldApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        draw_shell(ui, &mut self.state);
-        self.shot.tick(&ctx);
-    }
-}
-
-struct ProtocolApp {
-    shell: ProtocolShell,
-    shot: ShotLatch,
-}
-
-impl eframe::App for ProtocolApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let ctx = ui.ctx().clone();
-        self.shell.draw(ui);
+        self.app.draw(ui);
         self.shot.tick(&ctx);
     }
 }
@@ -147,6 +141,10 @@ fn save_color_image(image: &egui::ColorImage, out: &std::path::Path) -> Result<(
 }
 
 /// eframe's shared wgpu device/queue/renderer → an [`EguiCanvasHost`].
+///
+/// Called once per document. Every handle it takes is an `Arc` clone, so a
+/// second host costs one `VelloRenderer` and nothing else — which is what lets
+/// the two views go on owning their own canvases inside one window.
 fn host_from_frame(cc: &eframe::CreationContext<'_>) -> Result<EguiCanvasHost, String> {
     let rs = cc
         .wgpu_render_state
@@ -161,85 +159,34 @@ fn host_from_frame(cc: &eframe::CreationContext<'_>) -> Result<EguiCanvasHost, S
 
 fn main() -> Result<(), String> {
     let args = parse_args();
-    let text = std::fs::read_to_string(&args.spec).unwrap_or_default();
+    let boot = Boot::open(&args.spec, args.flow, None)?;
+    eprintln!("{} from {}", boot.describe(), args.spec);
 
-    if brightfield_protocol::is_protocol_manifest(&text) {
-        if std::env::var("BRIGHTFIELD_PROTOCOL_OFFLINE").is_err() {
-            return Err(format!(
-                "{} is a Protocol manifest; set BRIGHTFIELD_PROTOCOL_OFFLINE=1 to render it offline",
-                args.spec
-            ));
-        }
-        return run_protocol_window(args);
-    }
+    // Both read before the window exists, and both from the boot rather than
+    // open-coded here. `main.rs` having its own copy of the chart window's
+    // budget — 200 logical points, against a shell that said 214 and a panel
+    // declared at 180 — is the drift this arrangement ends.
+    let (win_w, win_h) = boot.window_size();
+    let title = boot.title();
 
-    run_mosaic_window(args)
-}
-
-fn run_mosaic_window(args: Args) -> Result<(), String> {
-    let composed = compose_spec(&args.spec)?;
-    // The same function `ShellState::window_size` reads. This line used to be
-    // `+ 200.0 / + 56.0`, against a `ShellState::window_size` that said 214/60
-    // and a side panel declared at 180 — three numbers for one layout, already
-    // drifted.
-    let (win_w, win_h) = window_size_for(&composed);
-    let title = composed
-        .title
-        .clone()
-        .unwrap_or_else(|| "Brightfield".to_string());
-
-    let options = native_options(win_w, win_h);
-    let mode = args.mode;
-    let shot_out = args.shot_out.clone();
-    eframe::run_native(
-        &title,
-        options,
-        Box::new(move |cc| {
-            let host = host_from_frame(cc)?;
-            let state = ShellState::new(composed, host, mode);
-            Ok(Box::new(ShellApp {
-                state,
-                shot: ShotLatch::new(shot_out),
-            }) as Box<dyn eframe::App>)
-        }),
-    )
-    .map_err(|e| format!("eframe run failed: {e}"))
-}
-
-fn run_protocol_window(args: Args) -> Result<(), String> {
-    let inputs = load_protocol_offline(&args.spec)?;
-    eprintln!(
-        "protocol {} ({} collapsed / {} full nodes, {} steps, {:?} flow)",
-        inputs.protocol,
-        inputs.graph_collapsed.nodes.len(),
-        inputs.graph_full.nodes.len(),
-        inputs.sheet_rows.len(),
-        args.flow,
-    );
-    let title = format!("Protocol · {}", inputs.protocol);
-    let options = native_options(1440.0, 900.0);
-    let mode = args.mode;
-    let flow = args.flow;
-    let shot_out = args.shot_out.clone();
-    eframe::run_native(
-        &title,
-        options,
-        Box::new(move |cc| {
-            let host = host_from_frame(cc)?;
-            let shell = ProtocolShell::new(inputs, host, mode, flow);
-            Ok(Box::new(ProtocolApp {
-                shell,
-                shot: ShotLatch::new(shot_out),
-            }) as Box<dyn eframe::App>)
-        }),
-    )
-    .map_err(|e| format!("eframe run failed: {e}"))
-}
-
-fn native_options(win_w: f32, win_h: f32) -> eframe::NativeOptions {
-    eframe::NativeOptions {
+    let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport: egui::ViewportBuilder::default().with_inner_size([win_w, win_h]),
         ..Default::default()
-    }
+    };
+    let mode = args.mode;
+    let shot_out = args.shot_out.clone();
+    eframe::run_native(
+        &title,
+        options,
+        Box::new(move |cc| {
+            let chart_host = host_from_frame(cc)?;
+            let protocol_host = host_from_frame(cc)?;
+            Ok(Box::new(BrightfieldApp {
+                app: MeridianApp::new(boot, chart_host, protocol_host, mode),
+                shot: ShotLatch::new(shot_out),
+            }) as Box<dyn eframe::App>)
+        }),
+    )
+    .map_err(|e| format!("eframe run failed: {e}"))
 }

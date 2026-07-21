@@ -139,12 +139,15 @@ fn each_pane_names_itself_once_and_binds_in_the_protocol_context() {
 }
 
 /// A pane declares no chrome it cannot be held to: no toolbar control and no
-/// status line, because the panel's two bars are still the shell's own.
+/// status line.
 ///
-/// This is a statement about *this* increment rather than a rule for all time —
-/// the hint bar becomes status entries and the flow toggle a toolbar entry when
-/// the one-app shell lands. Until then, an entry appearing here would be an
-/// entry nothing draws, which is worse than none.
+/// The one-app window has landed and this still holds, which is worth saying
+/// plainly because the note here used to promise the opposite. The hint bar and
+/// the flow toggle describe the *view* — its key grammar, its reading axis —
+/// and neither is any one pane's to declare; they are drawn by the window, from
+/// the view's model. `chrome::toolbar_row` and `chrome::status_rail` are still
+/// drawn by nothing, so an entry appearing here would be an entry nothing
+/// draws, which is worse than none.
 #[test]
 fn no_pane_declares_chrome_the_panel_does_not_yet_draw() {
     for (id, subject) in subjects(&loaded()) {
