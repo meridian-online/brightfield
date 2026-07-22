@@ -30,11 +30,15 @@ serde = { version = "1", features = ["derive"] }
 # nothing in the chrome path knows this crate exists.
 serde_json = "1"
 # The design tokens. Every colour, radius, row height and gap in this crate
-# comes from here; nothing is invented locally. `design` is also where the
-# tokens become an `egui::Style`/`Visuals` and the bundled faces become an
-# `egui::FontDefinitions` — that bridge lives here rather than in the consuming
-# shell so a workbench frame is drawn in Meridian type and ink, not egui's.
-meridian-design = { git = "https://github.com/meridian-online/design", rev = "539c579c43897fdd0c7d5c141221201d5e97a910" }
+# comes from here; nothing is invented locally.
+meridian-design = { git = "https://github.com/meridian-online/design", rev = "2f32e0daca6b34ee7c86321bf3b47d930fd22091" }
+# The egui emitter of those tokens — the design repo's third thin emitter. It
+# owns `Mode` (re-exported from this crate's root) and the `Style`/`Visuals`/
+# font bridge that used to live here; a workbench frame is drawn in Meridian
+# type and ink because that bridge exists, wherever it lives. A committed
+# `[patch]` in the workspace root points both design crates at a side-by-side
+# clone for local development, since `meridian-egui` is not yet published.
+meridian-egui = { git = "https://github.com/meridian-online/design", rev = "2f32e0daca6b34ee7c86321bf3b47d930fd22091" }
 # The command registry, so a declared verb can be checked against the real
 # keyboard grammar rather than merely spelled like one.
 brightfield-keys = { version = "0.1.0", path = "../brightfield-keys" }

@@ -16,6 +16,13 @@ repository = "https://github.com/meridian-online/brightfield"
 [patch."https://github.com/zed-industries/zed"]
 ztracing = { path = "stubs/ztracing" }
 
+# The Meridian design system (the token crate + its egui emitter) is consumed as
+# a pinned git dependency of https://github.com/meridian-online/design — bump the
+# `rev` in the member crates to adopt a design change. For live side-by-side
+# development, add a LOCAL, UNCOMMITTED `[patch."https://github.com/meridian-online/design"]`
+# redirecting the two crates to a design checkout beside this one; the committed
+# form stays on the git pin so CI (which has no sibling checkout) resolves.
+
 [workspace.lints.rust]
 unused_must_use = "warn"
 missing_docs = "allow"

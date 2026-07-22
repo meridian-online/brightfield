@@ -1801,7 +1801,6 @@ fn truncate(s: &str, max: usize) -> String {
 /// mutation, so it is a free function).
 pub(crate) fn hint_ui(ui: &mut egui::Ui, model: &ProtocolModel, mode: Mode) {
     let sem = semantic(mode.is_dark());
-    ui.add_space(spacing::SPACE_1);
     // The motion keys follow the drawn flow: along it, produce/consume; across
     // it, siblings. Spell out which keys are which for the current axis.
     let hint = if model.show_sheet() {
@@ -1817,7 +1816,16 @@ pub(crate) fn hint_ui(ui: &mut egui::Ui, model: &ProtocolModel, mode: Mode) {
             }
         }
     };
-    ui.horizontal(|ui| {
+    // `horizontal_centered`, like the top bar — the band's height is
+    // `BAR_HEIGHT`, pinned by the panel's `exact_size`, and this fills and
+    // vertically centres within it. A content-driven `horizontal` with manual
+    // `add_space` padding instead grows to whatever its row plus that padding
+    // comes to, and when that exceeds `BAR_HEIGHT` egui does not clip it: the
+    // panel frame reports the pinned height but is laid out past the window
+    // edge, and the dock below is handed the overrun as unbudgeted slack. Filling
+    // the band keeps the key-hint row exactly one `BAR_HEIGHT` tall, whatever the
+    // style makes a row of labels measure.
+    ui.horizontal_centered(|ui| {
         // Small and proportional — what this bar has always rendered. `main`
         // wrote `.monospace().small()`, but `.small()` came last and both call
         // `text_style()`, which overwrites unconditionally, so Small won and the
@@ -1855,7 +1863,6 @@ pub(crate) fn hint_ui(ui: &mut egui::Ui, model: &ProtocolModel, mode: Mode) {
             }
         });
     });
-    ui.add_space(spacing::SPACE_1);
 }
 
 // A convenience the shot/live binaries share: build the host on a device.

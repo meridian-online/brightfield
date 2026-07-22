@@ -31,10 +31,15 @@ pub mod window;
 
 /// The Meridian Design System → egui bridge.
 ///
-/// It lives in `brightfield-workbench` now: the workbench draws every pixel of
-/// chrome from `meridian_design` tokens, so leaving the `Style`/`Visuals`/font
-/// bridge downstream of it meant a workbench frame rendered in egui's default
-/// type and widget ink. Re-exported here because `brightfield_shell::design`
-/// is the path this crate, its snapshot tier and the headless shot binary all
-/// already spell, and renaming them would bury the change worth reading.
-pub use brightfield_workbench::design;
+/// It lives in the `meridian-egui` crate now — the design repo's egui emitter,
+/// beside the tokens it translates (ADR 0003/0011), rather than in this
+/// consumer. Re-exported under this crate's `design` path because
+/// `brightfield_shell::design::…` is the spelling this crate, its snapshot tier
+/// and the headless shot binary all already use, and renaming them would bury
+/// the change worth reading.
+pub mod design {
+    pub use meridian_egui::theme::{
+        apply, install_fonts, meridian_style, meridian_visuals, to_color32,
+    };
+    pub use meridian_egui::Mode;
+}

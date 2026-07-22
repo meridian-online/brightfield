@@ -66,11 +66,9 @@
 //! - [`behavior`] — [`PaneChrome`], the one `egui_tiles::Behavior`.
 //! - [`persist`] — the versioned layout file and its debounced writer.
 //! - [`chrome`] — the one drawing file.
-//! - [`design`] — the Meridian tokens → egui `Style`/`Visuals`/fonts bridge.
 
 pub mod behavior;
 pub mod chrome;
-pub mod design;
 pub mod item;
 pub mod persist;
 pub mod registry;
@@ -89,39 +87,13 @@ pub use subject::{
 };
 pub use workspace::{ViewKind, Workspace};
 
-/// Light or dark chrome.
+/// Light or dark chrome — re-exported from `meridian-egui`.
 ///
-/// This lives here, not in the egui shell's design bridge, because [`chrome`]
-/// resolves every colour it paints through `meridian_design::semantic(dark)`
-/// and therefore needs to know the mode before any shell type exists. The
-/// shell re-exports it so nothing downstream had to change when it moved.
-///
-/// [`Mode::Light`] remains the default: the Vello chart canvas is light-first
-/// this phase, and dark chrome around a white chart reads as broken until
-/// dark chart ink lands.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum Mode {
-    /// Light chrome (the current default).
-    #[default]
-    Light,
-    /// Dark chrome (tokens ready; chart ink follows in a later phase).
-    Dark,
-}
-
-impl Mode {
-    /// Whether this is the dark mode — the argument every design-token
-    /// accessor takes (`semantic(dark)`, `Elevation::shadow(dark)`).
-    #[must_use]
-    pub const fn is_dark(self) -> bool {
-        matches!(self, Mode::Dark)
-    }
-
-    /// The other mode.
-    #[must_use]
-    pub const fn toggled(self) -> Self {
-        match self {
-            Mode::Light => Mode::Dark,
-            Mode::Dark => Mode::Light,
-        }
-    }
-}
+/// The theme selector and the token → egui `Style`/`Visuals`/font bridge moved
+/// to the design repo's egui emitter (they belong beside the tokens they
+/// translate, not in this consumer). [`chrome`] still resolves every colour it
+/// paints through `meridian_design::semantic(dark)`, so it takes a [`Mode`] by
+/// value; the shell holds its own copy. Re-exported here so
+/// `brightfield_workbench::Mode` and `crate::Mode` resolve unchanged across the
+/// crate.
+pub use meridian_egui::Mode;
