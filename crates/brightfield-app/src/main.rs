@@ -9,19 +9,21 @@
 
 // The framework-free application models (boot mode, dock persistence, the
 // feedback log, menu placement, profile presentation, shell geometry, palette
-// argument collection) live in the `brightfield-model` crate; only the gpui
-// translation shims and the not-yet-lifted framework-free modules
-// (`reload_feedback`, `spec_save`) remain here.
+// argument collection — and, since their lift, the save intelligence and the
+// reload-feedback router) live in the `brightfield-model` crate; only the
+// gpui translation shims remain here. The two re-exports keep the
+// `crate::spec_save` / `crate::reload_feedback` spelling every consumer in
+// this binary already uses.
 #[cfg(any(target_os = "macos", test))]
 mod keymap;
 #[cfg(any(target_os = "macos", test))]
 mod meridian_theme;
 #[cfg(any(target_os = "macos", test))]
-mod reload_feedback;
+pub(crate) use brightfield_model::reload_feedback;
 #[cfg(any(target_os = "macos", test))]
 mod shell;
 #[cfg(any(target_os = "macos", test))]
-mod spec_save;
+pub(crate) use brightfield_model::spec_save;
 
 use std::collections::{HashMap, HashSet};
 use std::env;

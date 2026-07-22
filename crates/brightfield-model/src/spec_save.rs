@@ -1,16 +1,23 @@
 //! Spec-file save — framework-free.
 //!
-//! The editor's cmd-s handler is built from the pure pieces here:
+//! An editor's save handler is built from the pure pieces here:
 //! [`decide_save`] (the conflict/truncation guard over the three texts in
 //! play), [`save_spec_atomic`] (the temp+rename write), and
 //! [`should_reseed`] (whether an external change replaces a pristine
-//! buffer). The write is the ONLY bridge between the editor and the render
-//! loop: the existing 300ms mtime watcher notices the rename exactly as it
-//! notices any external editor's save, so the reload machinery changes zero
-//! lines. Rename atomicity (same directory, same filesystem) means the
-//! watcher can never read a half-written spec — the tabletop's
-//! kill-condition-3 mitigation. No gpui import may enter this file
-//! (semantic-layer rule).
+//! buffer). The write is the ONLY bridge between an editor and the render
+//! loop: an mtime watcher notices the rename exactly as it notices any
+//! external editor's save, so the reload machinery changes zero lines.
+//! Rename atomicity (same directory, same filesystem) means the watcher can
+//! never read a half-written spec — the tabletop's kill-condition-3
+//! mitigation. No UI-framework import may enter this module; that used to be
+//! a file-header rule in the app and is now the crate boundary itself.
+//!
+//! **Everything here moves bytes, and only bytes.** [`save_spec_atomic`]
+//! takes the buffer text and writes it verbatim — there is no spec type, no
+//! parse, no re-serialisation and no canonicalisation anywhere in this
+//! module, so a save can never destroy a comment or reorder a key. If a
+//! canonical form is ever wanted, it is an explicit command a user runs, not
+//! a side effect a save performs.
 //!
 //! Metadata semantics of temp+rename: the destination is resolved through
 //! symlinks first (so saving "through" a symlinked spec replaces the TARGET
@@ -47,6 +54,11 @@ pub enum SaveOutcome {
 /// does not resolve (e.g. the file does not exist yet), the raw path is
 /// used as-is. The original file's permissions are copied onto the temp
 /// before the rename, so the replacement keeps the file's mode bits.
+///
+/// # Errors
+///
+/// Any I/O failure from the write, the permission copy or the rename; the
+/// destination is left as it was.
 pub fn save_spec_atomic(buffer: &str, path: &Path) -> io::Result<SaveOutcome> {
     let dest = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
@@ -87,7 +99,7 @@ pub fn save_spec_atomic(buffer: &str, path: &Path) -> io::Result<SaveOutcome> {
     }
 }
 
-/// What the editor's cmd-s should do — decided framework-free from the
+/// What an editor's save action should do — decided framework-free from the
 /// three texts in play: the editor `buffer`, the file's current contents
 /// (`file_now`, `None` when unreadable/missing), and `last_synced` (the
 /// file text the buffer was seeded from or last successfully saved as;
@@ -107,8 +119,8 @@ pub enum SaveDecision {
     RefuseUnseeded,
 }
 
-/// The two-writer guard for cmd-s: refuse an unseeded editor, flag a file
-/// that changed under us, and otherwise write/no-op as before.
+/// The two-writer guard for a save action: refuse an unseeded editor, flag a
+/// file that changed under us, and otherwise write/no-op as before.
 #[must_use]
 pub fn decide_save(
     buffer: &str,
@@ -168,8 +180,8 @@ pub fn should_reseed(buffer: &str, last_synced: Option<&str>, file_now: &str) ->
 /// reason (the author saves or discards the manual edit first). `decide_save`
 /// stays the downstream external-file-conflict guard, NOT the dirty-buffer guard.
 ///
-/// Its live caller is the deliberate cmd-s commit action
-/// (`EditorPanel::commit_buffer`); the gate logic is unit-tested.
+/// Its live caller is the deliberate save-commit action in the windowed
+/// shell's editor panel; the gate logic is unit-tested here.
 #[must_use]
 pub fn commit_is_allowed(buffer: &str, last_synced: Option<&str>) -> bool {
     match last_synced {
@@ -181,7 +193,7 @@ pub fn commit_is_allowed(buffer: &str, last_synced: Option<&str>) -> bool {
 }
 
 /// The refusal reason a dirty-buffer commit surfaces.
-/// Consumed by the cmd-s commit action (`EditorPanel::commit_buffer`).
+/// Consumed by the shell's save-commit action.
 pub const DIRTY_BUFFER_COMMIT_REFUSAL: &str =
     "unsaved editor edits — save or discard them before committing keyboard edits";
 
@@ -190,8 +202,19 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    fn temp_spec(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("bf-spec-save-{}", std::process::id()));
+    /// A file path inside a directory unique to one test.
+    ///
+    /// Per-test subdirectories, not one shared per-process directory: every
+    /// test in this module runs in the same process (same pid), and the
+    /// leftover-temp scan in `save_replaces_file_atomically_via_temp_rename`
+    /// lists its whole directory — under a shared directory a sibling test's
+    /// in-flight `.bf-save-*` temp could appear in that listing for the
+    /// nanoseconds before its rename, which is exactly the flake this
+    /// isolation removes.
+    fn temp_spec(test: &str, name: &str) -> PathBuf {
+        let dir = std::env::temp_dir()
+            .join(format!("bf-spec-save-{}", std::process::id()))
+            .join(test);
         fs::create_dir_all(&dir).unwrap();
         dir.join(name)
     }
@@ -201,7 +224,7 @@ mod tests {
     /// leaves exactly one artefact, the destination.
     #[test]
     fn save_replaces_file_atomically_via_temp_rename() {
-        let path = temp_spec("replace.yaml");
+        let path = temp_spec("replace", "replace.yaml");
         fs::write(&path, "plot:\n  - mark: dot\n").unwrap();
 
         let new_buffer = "plot:\n  - mark: line\n    stroke: steelblue\n";
@@ -213,7 +236,9 @@ mod tests {
             "full buffer lands"
         );
 
-        // No `.bf-save` temp remnant beside the destination.
+        // No `.bf-save` temp remnant beside the destination. The directory
+        // is this test's own (see `temp_spec`), so the scan cannot observe
+        // another test's in-flight temp.
         let dir = path.parent().unwrap();
         let leftovers: Vec<_> = fs::read_dir(dir)
             .unwrap()
@@ -232,7 +257,7 @@ mod tests {
     /// (the read-compare simply finds nothing to compare against).
     #[test]
     fn save_creates_a_missing_file() {
-        let path = temp_spec("fresh.yaml");
+        let path = temp_spec("create", "fresh.yaml");
         let _ = fs::remove_file(&path);
         let outcome = save_spec_atomic("data: {}\n", &path).expect("save succeeds");
         assert_eq!(outcome, SaveOutcome::Written);
@@ -241,11 +266,11 @@ mod tests {
     }
 
     /// Unchanged no-op: an identical buffer touches nothing —
-    /// same mtime, `Unchanged` outcome — so cmd-s on a clean buffer never
+    /// same mtime, `Unchanged` outcome — so a save over a clean buffer never
     /// triggers a watcher reload.
     #[test]
     fn unchanged_buffer_is_a_no_op() {
-        let path = temp_spec("unchanged.yaml");
+        let path = temp_spec("unchanged", "unchanged.yaml");
         let buffer = "plot:\n  - mark: dot\n";
         fs::write(&path, buffer).unwrap();
         let before = fs::metadata(&path).unwrap().modified().unwrap();
@@ -376,7 +401,7 @@ mod tests {
     fn save_preserves_owner_only_permissions() {
         use std::os::unix::fs::PermissionsExt;
 
-        let path = temp_spec("perms.yaml");
+        let path = temp_spec("perms", "perms.yaml");
         fs::write(&path, "plot:\n  - mark: dot\n").unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
 
@@ -395,9 +420,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn save_through_symlink_updates_target_keeps_link() {
-        let target = temp_spec("link-target.yaml");
+        let target = temp_spec("symlink", "link-target.yaml");
         fs::write(&target, "plot:\n  - mark: dot\n").unwrap();
-        let link = temp_spec("link.yaml");
+        let link = temp_spec("symlink", "link.yaml");
         let _ = fs::remove_file(&link);
         std::os::unix::fs::symlink(&target, &link).unwrap();
 

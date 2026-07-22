@@ -19,6 +19,9 @@
 //!   binding brush/click gestures to the engine's coordinator seam.
 //! - [`legend`] — the chart legend as a native egui margin panel, outside the
 //!   plot rect, derived from the scales each chart was drawn against.
+//! - [`editor`] — the YAML spec editor: the highlighted code surface, its
+//!   read-only treatment, and the `EditorPane` item over the
+//!   `brightfield-model` save intelligence.
 //! - [`overlays`] — the picker delegates: the domain halves of the command
 //!   palette, help sheet, jump lists and argument prompt, over the
 //!   framework-free corpora in `brightfield-keys` / `brightfield-model`.
@@ -33,6 +36,7 @@ pub mod app;
 pub mod canvas;
 pub mod capture;
 pub mod chart_item;
+pub mod editor;
 pub mod legend;
 pub mod overlays;
 pub mod pipeline;

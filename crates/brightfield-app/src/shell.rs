@@ -4,10 +4,10 @@
 //! Views here are deliberately thin (semantic-layer rule): every decision —
 //! panel visibility, save timing, load fallback, atomic writes, sidebar
 //! profile formatting, notification routing, the log model, the bottom-dock
-//! backfill and presentation action — lives in the framework-free modules
-//! (`shell_model`, `dock_state_file`, `spec_save`, `reload_feedback`,
-//! `profile_model`, `log_model`); this file only executes them against
-//! gpui-component's `DockArea`/`Panel`/`Root` machinery.
+//! backfill and presentation action — lives in the framework-free
+//! `brightfield-model` crate (`shell_model`, `dock_state_file`, `spec_save`,
+//! `reload_feedback`, `profile_model`, `log_model`); this file only executes
+//! them against gpui-component's `DockArea`/`Panel`/`Root` machinery.
 //!
 //! - [`CanvasPanel`] — a Panel shim AROUND the untouched [`ChartView`]
 //!   entity: white canvas surface, workspace key context (bare

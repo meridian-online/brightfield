@@ -19,14 +19,20 @@
 //!   usability, canvas stripping, save policy.
 //! - [`log_model`] — the append-only reload/save feedback log (and the
 //!   notification [`log_model::Severity`] vocabulary it shares with the
-//!   reload-feedback router, which stays app-side until its own lift).
+//!   reload-feedback router below).
 //! - [`menu_resolve`] — resolving `input: menu` specs into launch-fixed
 //!   widget placements.
 //! - [`profile_model`] — source-profile presentation strings for the
 //!   sidebar.
+//! - [`reload_feedback`] — the hot-reload outcome → notification decision:
+//!   what surfaces, how sticky it is, and what clears it.
 //! - [`shell_model`] — panel identities, default dock geometry, the
 //!   initial-window-size formula, and the presentation-mode visibility
 //!   mapping.
+//! - [`spec_save`] — the spec editor's save intelligence: the atomic
+//!   temp+rename write, the two-writer conflict guard, and the pristine-
+//!   buffer reseed/commit gates. Bytes in, bytes out — no spec type, no
+//!   serialisation, no canonicalisation.
 
 pub mod arg_collector;
 pub mod boot;
@@ -34,4 +40,6 @@ pub mod dock_state_file;
 pub mod log_model;
 pub mod menu_resolve;
 pub mod profile_model;
+pub mod reload_feedback;
 pub mod shell_model;
+pub mod spec_save;
