@@ -1,0 +1,17 @@
+# Typed operator steps with flow-style `with:` blocks — the shape the real
+# fixtures upstream use. This one is NOT part of the local `arc run` proof:
+# the fetch would hit the network. The loader gate and the edit path are what
+# this file exercises.
+name: opsflow
+engine: duckdb
+engine_version: ">=1.2"
+
+steps:
+  - name: fetch
+    op: http_fetch@1
+    with: { url: 'https://data.example/tides.csv', out: build/tides.csv }
+
+  - name: export
+    # compression pinned so the bytes are reproducible run-over-run
+    op: parquet_export@1
+    with: { input: tides, dest: build/tides.parquet, compression: zstd }

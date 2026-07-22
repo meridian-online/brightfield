@@ -9,15 +9,18 @@
 //! JSON contract emitted by `arc run` ([`contract`] structs, [`contract_graph`]
 //! builder): the run already lists its assets and steps, so the view renders a
 //! real run — with per-asset row counts, per-step status, and a live `.jsonl`
-//! stream ([`stream`]) folded on top. The interim [`manifest`] parser (an
-//! arcform `arcform.yaml` + its `models/*.sql`) is the **gated offline/fixture
+//! stream ([`stream`]) folded on top. The [`manifest`] path (an arcform
+//! `arcform.yaml` + its `models/*.sql`, loaded and validated by the `arc`
+//! crate itself — see the module docs) is the **gated offline/fixture
 //! fallback** — it infers the same graph without a run, for demos and tests.
 //! Both produce the crate's one [`AssetGraph`]/[`Seam`]/[`Edge`] model, so the
 //! same layout, family collapse, and renderer draw either.
 //!
-//! **Framework-free by contract:** no gpui, no vello, no duckdb — pure data +
-//! geometry, so `brightfield-render` can draw the result and the whole pipeline
-//! is unit-testable without pixels. Everything on the graph/layout path is
+//! **Framework-free by contract:** no gpui, no vello — pure data + geometry,
+//! so `brightfield-render` can draw the result and the whole pipeline is
+//! unit-testable without pixels. (The `arc` dependency links DuckDB into the
+//! build — its private engine compiles into the library — but nothing on this
+//! crate's paths ever opens a database.) Everything on the graph/layout path is
 //! `BTreeMap`/`BTreeSet`/`Vec` — **no `HashMap` anywhere** — so the same input
 //! always yields the same coordinates.
 //!
@@ -51,7 +54,7 @@ pub use contract_graph::{
 pub use error::Error;
 pub use graph::{AssetGraph, AssetKind, AssetNode, Edge, Seam, SeamKind};
 pub use layout::{layout, Flow, Layout, LayoutConfig};
-pub use manifest::{is_protocol_manifest, parse_manifest_str, Manifest, Step};
+pub use manifest::{is_protocol_manifest, parse_manifest_str, Manifest, Step, StepExt};
 pub use nav::{Dir, FoldOutcome, ProtocolNav};
 pub use panel::{
     inspector_for, kind_label, outline_order, outline_rows, InspectorFacts, OutlineRow,

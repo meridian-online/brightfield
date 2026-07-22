@@ -494,10 +494,10 @@ steps:
     with: { url: 'https://h.example/a', out: build/a }
   - name: left
     op: archive_extract@1
-    with: { archive: build/a, dest: build/l }
+    with: { archive: build/a, dest: build/l, members: [p.tsv] }
   - name: right
     op: archive_extract@1
-    with: { archive: build/a, dest: build/r }
+    with: { archive: build/a, dest: build/r, members: [p.tsv] }
   - name: join
     sql: models/j.sql
     depends_on: [build/l, build/r, build/a]

@@ -1,0 +1,21 @@
+# The sequence below is a minefield on purpose: comment ownership between
+# block-sequence items is ambiguous in YAML, so the write path's convention
+# (a flush comment is the NEXT item's header and travels with it; a comment
+# separated by a blank line belongs to the sequence and stays put) is
+# exercised here rather than assumed.
+name: seqcomments
+engine: duckdb
+
+steps:
+  - name: first
+    command: echo first
+
+  # flush against `second` — this is second's header and MUST travel with it
+  - name: second
+    command: echo second
+
+  # a section marker for the tail of the pipeline — blank-separated on both
+  # sides, so it belongs to the SEQUENCE, not to `third`
+
+  - name: third
+    command: echo third

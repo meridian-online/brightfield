@@ -8,6 +8,23 @@ repository.workspace = true
 description = "Protocol+Run contract -> typed asset graph -> deterministic layout (gpui-free, vello-free)"
 
 [dependencies]
+# The arcform spec library: the real `arcform.yaml` loader, validators and
+# format-preserving write path. Rev-pinned (arc is pre-1.0: every bump is
+# potentially breaking; move deliberately). `default-features = false` drops
+# arc's CLI — `cli_main` parses the *caller's* argv and can exit the process,
+# so it has no business being linkable from here. BUMPING is three moves in
+# lockstep: this `rev`, the `[patch.crates-io]` sqlparser rev in the workspace
+# root Cargo.toml (arc's vendored sqlparser fork — patch tables do not
+# propagate through dependencies), and Cargo.lock. See README §"The arcform
+# dependency".
+arc = { git = "https://github.com/meridian-online/arcform", rev = "d01a2d2e09056f459566d0073f56d8f0026b4a53", default-features = false }
+# NOT used by this crate directly. arc's private engine links DuckDB even in
+# its library shape, and libduckdb-sys defaults to linking a SYSTEM libduckdb
+# (DUCKDB_LIB_DIR) that neither CI runner nor a fresh clone has. This entry
+# exists solely to switch libduckdb-sys to its `bundled` build via feature
+# unification, so the workspace builds hermetically everywhere. Drop it if arc
+# ever stops linking DuckDB into the library target.
+duckdb = { version = "1.2", features = ["bundled"] }
 brightfield-sql = { path = "../brightfield-sql" }
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
