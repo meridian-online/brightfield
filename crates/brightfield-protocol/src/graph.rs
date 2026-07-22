@@ -38,7 +38,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use crate::manifest::{Manifest, Step};
+use crate::manifest::{Manifest, Step, StepExt};
 use crate::sql_assets::{extract_statement_assets, StatementAssets};
 
 /// What a node IS — the visual class the renderer draws.
@@ -239,7 +239,7 @@ fn decode_step(
     let mut out_files = Vec::new();
     let mut input_rels = Vec::new();
     let mut other_paths = Vec::new();
-    if let Some(with) = &step.with {
+    if let Some(with) = step.with.as_ref().and_then(serde_yaml::Value::as_mapping) {
         for (key, value) in with {
             let (Some(key), Some(value)) = (key.as_str(), value.as_str()) else {
                 continue; // nested mappings (headers) / sequences (members) / scalars
@@ -999,6 +999,7 @@ steps:
     with:
       archive: build/z.zip
       dest: build/out/q1
+      members: [part.tsv]
   - name: load
     sql: models/load.sql
     depends_on: [build/out/q1/part.tsv]
@@ -1043,19 +1044,23 @@ steps:
     with:
       archive: build/q1.zip
       dest: build/ncen/q1
+      members: [p.tsv]
   - name: extract_q2
     op: archive_extract@1
     with:
       archive: build/q2.zip
       dest: build/ncen/q2
+      members: [p.tsv]
   - name: extract_q3
     op: archive_extract@1
     with:
       archive: build/q3.zip
       dest: build/ncen/2023/q3
+      members: [p.tsv]
   - name: load
-    op: duckdb_load@1
+    op: parquet_export@1
     with:
+      input: loaded
       dest: build/loaded.parquet
     depends_on: [build/ncen]
 ";
@@ -1129,7 +1134,7 @@ steps:
     with: { input: sec_entities, dest: build/sec_entities.parquet }
   - name: resolve
     op: splink_resolve@1
-    with: { edgar: build/sec_entities.parquet, out: build/resolved.parquet }
+    with: { edgar: build/sec_entities.parquet, gleif: gleif.parquet, out: build/resolved.parquet }
   - name: tier
     sql: models/tier.sql
     depends_on: [build/resolved.parquet]
@@ -1187,10 +1192,10 @@ name: x
 steps:
   - name: extract_q1
     op: archive_extract@1
-    with: { archive: a.zip, dest: build/ncen/q1 }
+    with: { archive: a.zip, dest: build/ncen/q1, members: [p.tsv] }
   - name: extract_q2
     op: archive_extract@1
-    with: { archive: b.zip, dest: build/ncen/q2 }
+    with: { archive: b.zip, dest: build/ncen/q2, members: [p.tsv] }
   - name: load
     sql: models/load.sql
     depends_on: [build/ncen]

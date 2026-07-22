@@ -620,7 +620,7 @@ steps:
     with: { input: t_out, dest: build/t.parquet }
   - name: validate
     op: finetype_validate@1
-    with: { parquet: build/t.parquet }
+    with: { parquet: build/t.parquet, schema: schema.json }
 ";
         let manifest = parse_manifest_str(yaml).unwrap();
         let mut sources = BTreeMap::new();

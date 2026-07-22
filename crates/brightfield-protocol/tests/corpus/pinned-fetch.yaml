@@ -1,0 +1,32 @@
+# Tide-gauge ingest: the station list is PINNED to the 2024 revision on
+# purpose — the agency renumbered stations in 2025 and downstream joins key on
+# the OLD ids. Bump the pin only together with the join model, never alone.
+name: tidegauge
+engine: duckdb
+
+params:
+  # Stamped on every exported row; pin at run time for a reproducible build.
+  as_of:
+    default: ""          # empty means "today", decided by the runner
+  station_rev:
+    default: "2024"      # see the header comment before bumping this
+
+# Network blips shouldn't sink a run — retry with a short backoff.
+defaults:
+  retry:
+    max_attempts: 3
+    backoff_sec: 2.0
+
+steps:
+  - name: stage
+    command: mkdir -p build   # every later step writes under build/
+
+  - name: fetch_stations
+    # `printf` stands in for the real fetch: the corpus must run everywhere,
+    # and what is under test is this FILE's bytes, not the network.
+    command: printf 'id,name\n1,alpha\n2,beta\n' > build/stations.csv
+    produces: [build/stations.csv]
+
+  - name: pack
+    command: wc -l < build/stations.csv
+    depends_on: [build/stations.csv]

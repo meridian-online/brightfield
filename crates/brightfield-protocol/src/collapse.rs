@@ -260,13 +260,13 @@ steps:
     with: { url: 'https://h.example/q1.zip', out: build/z/q1.zip }
   - name: extract_x_q1
     op: archive_extract@1
-    with: { archive: build/z/q1.zip, dest: build/x/q1 }
+    with: { archive: build/z/q1.zip, dest: build/x/q1, members: [p.tsv] }
   - name: fetch_x_q2
     op: http_fetch@1
     with: { url: 'https://h.example/q2.zip', out: build/z/q2.zip }
   - name: extract_x_q2
     op: archive_extract@1
-    with: { archive: build/z/q2.zip, dest: build/x/q2 }
+    with: { archive: build/z/q2.zip, dest: build/x/q2, members: [p.tsv] }
   - name: load
     sql: models/load.sql
     depends_on: [build/x/q1/p.tsv, build/x/q2/p.tsv]
@@ -342,13 +342,13 @@ steps:
     with: { url: 'https://h.example/1', out: build/a1 }
   - name: extract_x_q1
     op: archive_extract@1
-    with: { dest: build/b1 }
+    with: { archive: z1.zip, dest: build/b1, members: [p.tsv] }
   - name: fetch_y_q1
     op: http_fetch@1
     with: { url: 'https://h.example/2', out: build/a2 }
   - name: extract_y_q1
     op: archive_extract@1
-    with: { dest: build/b2 }
+    with: { archive: z2.zip, dest: build/b2, members: [p.tsv] }
 ";
         let manifest = parse_manifest_str(yaml).unwrap();
         let g = build_graph(&manifest, &BTreeMap::new());
@@ -372,13 +372,13 @@ steps:
     with: { url: 'https://edgar.example/e.zip', out: build/e.zip }
   - name: extract_edgar
     op: archive_extract@1
-    with: { archive: build/e.zip, dest: build/edgar }
+    with: { archive: build/e.zip, dest: build/edgar, members: [p.tsv] }
   - name: fetch_gleif
     op: http_fetch@1
     with: { url: 'https://gleif.example/g.zip', out: build/g.zip }
   - name: extract_gleif
     op: archive_extract@1
-    with: { archive: build/g.zip, dest: build/gleif }
+    with: { archive: build/g.zip, dest: build/gleif, members: [p.tsv] }
   - name: load
     sql: models/load.sql
     depends_on: [build/edgar, build/gleif]

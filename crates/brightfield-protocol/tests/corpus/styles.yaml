@@ -1,0 +1,26 @@
+# One document, both YAML styles: block where the content reads like prose,
+# flow where a reader scans it as a tuple. The point of keeping both in one
+# file: an editor that normalises style would flatten exactly this document.
+name: styles
+engine: duckdb
+
+params:
+  greeting: { default: "hello" }     # flow-style param, double-quoted
+  target:
+    default: 'world'                 # block-style param, single-quoted
+
+steps:
+  - name: emit
+    command: touch build/begin.txt build/begin.log
+    produces: [build/begin.txt, build/begin.log]
+
+  - name: fold
+    # a folded scalar: the lines below join with spaces when the step runs,
+    # but the SOURCE keeps the line breaks — and must keep them after an edit
+    command: >
+      echo folded scalars join lines
+      with spaces which is precisely
+      why this one is in the corpus
+    depends_on: [build/begin.txt]
+
+  - {name: flow_item, command: echo compact}   # a flow-mapped sequence item

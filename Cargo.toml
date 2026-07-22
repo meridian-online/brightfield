@@ -23,6 +23,26 @@ ztracing = { path = "stubs/ztracing" }
 # redirecting the two crates to a design checkout beside this one; the committed
 # form stays on the git pin so CI (which has no sibling checkout) resolves.
 
+# The arcform spec library (`arc`) is consumed the same way: a rev-pinned git
+# dependency of `brightfield-protocol` (see that crate's Cargo.toml for the pin
+# and README §"The arcform dependency" for the bump procedure). arc parses SQL
+# with a vendored fork of sqlparser 0.55 (statement-form PIVOT/UNPIVOT +
+# multi-option COPY), wired inside arc's own workspace via `[patch.crates-io]` —
+# and Cargo patch tables do NOT propagate through dependencies, so this
+# workspace must carry the same patch itself or arc fails to compile (missing
+# `SetExpr::Pivot`/`Unpivot` variants). The GIT form below points at the same
+# repo+rev as the arc pin: Cargo scans that repository's packages and finds
+# `vendor/sqlparser-0.55.0`, so a bare CI checkout resolves with no sibling
+# ../arcform on disk. (A path-form patch into a sibling checkout works locally
+# and breaks CI — same lesson as the design-repo pin above.) The patch carries
+# version 0.55.0, so it applies only to arc's `sqlparser = "0.55"` requirement;
+# the workspace's own sqlparser 0.61 keeps resolving from crates.io untouched.
+# BUMPING: move this rev and the arc pin in brightfield-protocol IN LOCKSTEP,
+# then refresh Cargo.lock (and re-pin tree-sitter-iter if the resolver drifts
+# above the toolchain — see the lock).
+[patch.crates-io]
+sqlparser = { git = "https://github.com/meridian-online/arcform", rev = "d01a2d2e09056f459566d0073f56d8f0026b4a53" }
+
 [workspace.lints.rust]
 unused_must_use = "warn"
 missing_docs = "allow"

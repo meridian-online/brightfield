@@ -554,10 +554,10 @@ steps:
     with: { url: 'https://h.example/a', out: build/a }
   - name: left
     op: archive_extract@1
-    with: { archive: build/a, dest: build/l }
+    with: { archive: build/a, dest: build/l, members: [p.tsv] }
   - name: right
     op: archive_extract@1
-    with: { archive: build/a, dest: build/r }
+    with: { archive: build/a, dest: build/r, members: [p.tsv] }
 ";
         let manifest = parse_manifest_str(yaml).unwrap();
         let g = build_graph(&manifest, &BTreeMap::new());
@@ -588,13 +588,13 @@ steps:
     with: { url: 'https://h.example/q1.zip', out: build/z/q1.zip }
   - name: extract_x_q1
     op: archive_extract@1
-    with: { archive: build/z/q1.zip, dest: build/x/q1 }
+    with: { archive: build/z/q1.zip, dest: build/x/q1, members: [p.tsv] }
   - name: fetch_x_q2
     op: http_fetch@1
     with: { url: 'https://h.example/q2.zip', out: build/z/q2.zip }
   - name: extract_x_q2
     op: archive_extract@1
-    with: { archive: build/z/q2.zip, dest: build/x/q2 }
+    with: { archive: build/z/q2.zip, dest: build/x/q2, members: [p.tsv] }
   - name: load
     sql: models/load.sql
     depends_on: [build/x/q1, build/x/q2]
@@ -667,10 +667,10 @@ steps:
     with: { url: 'https://h.example/a', out: build/a }
   - name: left
     op: archive_extract@1
-    with: { archive: build/a, dest: build/l }
+    with: { archive: build/a, dest: build/l, members: [p.tsv] }
   - name: right
     op: archive_extract@1
-    with: { archive: build/a, dest: build/r }
+    with: { archive: build/a, dest: build/r, members: [p.tsv] }
   - name: join
     sql: models/j.sql
     depends_on: [build/l, build/r]

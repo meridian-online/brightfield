@@ -1,0 +1,18 @@
+# Literal blocks: every character below the pipe belongs to the author,
+# including the three trailing spaces on the banner line — a writer that
+# trims trailing whitespace has changed what the step prints.
+name: blocks
+engine: duckdb
+
+steps:
+  - name: banner
+    command: |
+      echo "=== tide report ==="   
+      echo "generated locally, no network"
+
+  - name: chomped
+    # |- chomps the final newline: the last byte of this value is `o`,
+    # and an edit anywhere else must not grow a newline onto it
+    command: |-
+      echo one
+      echo two

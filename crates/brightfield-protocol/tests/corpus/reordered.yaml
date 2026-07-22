@@ -1,0 +1,17 @@
+# Key order here is the AUTHOR's: steps first, because they are what a reader
+# opens the file for; the name sits at the bottom like a signature. A loader
+# that cares about mapping order is broken; a writer that "fixes" it is worse.
+steps:
+  - name: greet
+    command: echo hello
+
+  - name: shout
+    command: echo HELLO
+
+# Retries are declared AFTER the steps they govern — the author reads this
+# file bottom-up and so does the next maintainer.
+defaults:
+  retry: { max_attempts: 2, backoff_sec: 0.5 }
+
+engine: duckdb
+name: reordered

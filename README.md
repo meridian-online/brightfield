@@ -157,6 +157,50 @@ With the sibling clone present, a change there is picked up on the next `cargo b
 (`meridian-egui` is a newer crate; until it is published, the patch is also what makes it
 resolve at all, so the sibling checkout is required to build a branch that depends on it.)
 
+### The arcform dependency (`arc`)
+
+Brightfield **loads, validates and edits** `arcform.yaml` specs with the
+[`arc` crate](https://github.com/meridian-online/arcform) — the same loader, the same
+validators and the same format-preserving write path the `arc` binary itself uses. There is
+deliberately **no brightfield-side copy of the spec schema**: two schemas drift, one cannot.
+A spec this app accepts and a spec `arc run` accepts are the same thing by construction, and
+edits made here preserve every byte they do not target (asserted by the hand-authored corpus
+under `crates/brightfield-protocol/tests/corpus/`).
+
+**What is pinned, and why.** `arc` is pre-1.0, so `brightfield-protocol/Cargo.toml` pins it
+by git **rev** (`arc = { git = …/arcform, rev = <sha>, default-features = false }` — the
+default `cli` feature is a binary entry point that parses the caller's argv, so it is
+switched off). Treat every bump as potentially breaking and move deliberately.
+
+**The sqlparser patch mirror — do not skip this.** arc parses SQL with a **vendored fork of
+sqlparser 0.55** (`vendor/sqlparser-0.55.0` in the arcform repo), wired up there via
+`[patch.crates-io]`. Cargo patch tables **do not propagate through dependencies**, so this
+workspace's root `Cargo.toml` carries the same patch itself — in **git form**, pointing at
+the same repo and rev as the arc pin, so a bare CI checkout (no sibling `../arcform`)
+resolves it. A path-form patch into a sibling checkout works locally and breaks CI. The
+patch's package version is 0.55.0, so it applies only to arc's requirement; the workspace's
+own newer `sqlparser` keeps coming from crates.io.
+
+**To bump the pin**, move three things in lockstep, in one commit:
+
+1. the `rev` on `arc` in `crates/brightfield-protocol/Cargo.toml`;
+2. the `rev` on `sqlparser` in the root `[patch.crates-io]` (same sha);
+3. `Cargo.lock` — run a build, and if the resolver pulls a transitive dep above the CI
+   toolchain pin (`tree-sitter-iter` has done this: arc pins `yamlpath = "=1.27.0"`, but a
+   fresh resolve can still float its deps), pin it back with
+   `cargo update <crate>@<ver> --precise <ok-ver>`.
+
+Then run the whole suite: `crates/brightfield-protocol/tests/roundtrip.rs` is the canary for
+write-path behaviour changes, and the protocol/render/shell fixtures are the canary for
+validator tightening (arc's gate rejects what the old in-tree parser tolerated — an armless
+step, an unknown operator, an incomplete `with:` block — so a stricter arc surfaces here as
+fixture failures, which is the point).
+
+**DuckDB note:** arc's engine links DuckDB even when only the spec library is consumed.
+`brightfield-protocol` therefore enables `duckdb/bundled` (compiled from source) so the
+workspace builds hermetically — no system `libduckdb`, no `DUCKDB_LIB_DIR`, on any machine
+or CI runner.
+
 ## License
 
 MIT — see [`LICENSE`](LICENSE)

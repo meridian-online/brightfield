@@ -1,73 +1,53 @@
-// INTERIM CONTRACT
-//! Interim arcform-manifest parser.
+//! Arcform-manifest ingest — the `arc` crate's loader, not a copy of it.
 //!
-//! Serde model of arcform's Protocol manifest *as it exists today*
-//! (name/engine/params/defaults/steps; steps carry `op: name@version` +
-//! `with:`, or `sql:` model paths + `depends_on`). Deliberately thin and
-//! deletable: this module swaps for the arcform-emitted Protocol+Run JSON
-//! when that contract lands upstream — nothing outside this crate should
-//! depend on its serde shapes.
+//! This module used to carry brightfield's own serde model of the Protocol
+//! manifest (an "interim contract": a second schema, deliberately lenient,
+//! kept in sync by discipline). That model is deleted. The schema, the loader
+//! and the validators now come from the `arc` crate itself (`arc::spec`),
+//! linked as a rev-pinned git dependency — so a spec brightfield accepts and a
+//! spec `arc run` accepts are the same thing **by construction**, and a spec
+//! arc would refuse gets refused here too, with arc's own diagnostic.
 //!
-//! Unknown keys are **ignored, never errors** (serde's default), so the
-//! parser survives manifest evolution (`produces:`, `retry:`, `timeout_sec:`
-//! and whatever comes next all pass through silently).
+//! [`parse_manifest_str`] is exactly the parse + validation gate `arc run`
+//! loads with ([`Manifest::from_yaml_str`]): names unique, exactly one of
+//! `sql:`/`command:`/`op:` per step, `op:` steps resolved against the operator
+//! catalog with a `with:` block that deserialises, well-formed preconditions
+//! and retry policies. The consequence for callers: manifests that the old
+//! interim parser tolerated (an armless step, an unknown operator) are now
+//! **errors**, matching what `arc` itself would say.
+//!
+//! Writing is arc's business too. Editing an existing spec goes through
+//! `arc::spec::{SpecEdit, apply_edits, edit_spec}` — format-preserving splices
+//! into the original bytes, re-gated by the same loader — so brightfield never
+//! serialises a whole spec it did not create (asserted by
+//! `tests/roundtrip.rs` over a hand-authored hostile corpus).
+//!
+//! The one piece of brightfield-side logic left here is
+//! [`is_protocol_manifest`]: the routing sniff that decides whether a YAML
+//! belongs to the existing Mosaic-spec pipeline or the protocol arm. That is a
+//! router, not a schema — it never validates, and Mosaic inputs reach the spec
+//! parser byte-untouched.
 
-use serde::Deserialize;
+pub use arc::spec::{Manifest, Step};
 
-/// A Protocol manifest: the ordered step list plus engine/params metadata.
-#[derive(Debug, Clone, Deserialize)]
-pub struct Manifest {
-    /// Protocol name — the namespace for every derived asset id.
-    pub name: String,
-    /// Execution engine (`duckdb`); informational here.
-    #[serde(default)]
-    pub engine: Option<String>,
-    /// Engine version constraint; informational here.
-    #[serde(default)]
-    pub engine_version: Option<String>,
-    /// Engine database path; informational here.
-    #[serde(default)]
-    pub db: Option<String>,
-    /// Declared run parameters, preserved raw for later cards' seam labels.
-    #[serde(default)]
-    pub params: serde_yaml::Mapping,
-    /// Step defaults (retry policy etc.), preserved raw.
-    #[serde(default)]
-    pub defaults: serde_yaml::Mapping,
-    /// The ordered steps — the graph derivation input.
-    #[serde(default)]
-    pub steps: Vec<Step>,
-}
-
-/// One manifest step: a typed operator (`op:` + `with:`), a SQL model
-/// (`sql:` path), an opaque command, or none of those (parses as opaque —
-/// never an error).
-#[derive(Debug, Clone, Deserialize)]
-pub struct Step {
-    /// Step name — unique within the manifest; the seam identity.
-    pub name: String,
-    /// `"http_fetch@1"` — split into (name, version) by [`Step::op_parts`].
-    #[serde(default)]
-    pub op: Option<String>,
-    /// Operator arguments, preserved raw for asset derivation + seam labels.
-    #[serde(default)]
-    pub with: Option<serde_yaml::Mapping>,
-    /// SQL model path relative to the manifest's parent directory.
-    #[serde(default)]
-    pub sql: Option<String>,
-    /// Opaque-by-design shell steps.
-    #[serde(default)]
-    pub command: Option<String>,
-    /// File/table refs this step reads (paths or bare relation idents).
-    #[serde(default)]
-    pub depends_on: Vec<String>,
-}
-
-impl Step {
+/// Derived accessors on [`Step`] that brightfield's graph derivation uses.
+///
+/// These are *readers*, not schema: the schema is arc's. They live here so the
+/// graph builder can keep asking the questions it asks without brightfield
+/// owning any manifest shape of its own.
+pub trait StepExt {
     /// Split `op` into `(name, version)`; `op` without `@` yields version
     /// `"?"`. `None` when the step has no `op`.
     #[must_use]
-    pub fn op_parts(&self) -> Option<(String, String)> {
+    fn op_parts(&self) -> Option<(String, String)>;
+
+    /// The string value of a `with:` key, if present.
+    #[must_use]
+    fn with_str(&self, key: &str) -> Option<&str>;
+}
+
+impl StepExt for Step {
+    fn op_parts(&self) -> Option<(String, String)> {
         let raw = self.op.as_deref()?;
         Some(match raw.split_once('@') {
             Some((name, version)) => (name.to_string(), version.to_string()),
@@ -75,21 +55,22 @@ impl Step {
         })
     }
 
-    /// The string value of a `with:` key, if present.
-    #[must_use]
-    pub fn with_str(&self, key: &str) -> Option<&str> {
+    fn with_str(&self, key: &str) -> Option<&str> {
         self.with.as_ref()?.get(key)?.as_str()
     }
 }
 
-/// Parse a manifest from YAML text.
+/// Parse **and validate** a manifest from YAML text — the same gate `arc run`
+/// loads with.
 ///
 /// # Errors
 ///
-/// Returns the serde error when the text is not a mapping with the required
-/// `name` (unknown keys never error — see the module docs).
-pub fn parse_manifest_str(text: &str) -> Result<Manifest, serde_yaml::Error> {
-    serde_yaml::from_str(text)
+/// arc's own error: a parse error when the text is not YAML in the shape of a
+/// manifest, or a validation error when the shape is right but the content is
+/// not (duplicate step names, an armless step, an unknown operator, a `with:`
+/// block that does not deserialise, …).
+pub fn parse_manifest_str(text: &str) -> Result<Manifest, arc::spec::Error> {
+    Manifest::from_yaml_str(text)
 }
 
 /// Mosaic-spec keys that decide a YAML belongs to the existing spec pipeline,
@@ -154,18 +135,16 @@ steps:
       max_attempts: 1
   - name: legacy
     command: ./scripts/legacy.sh
-  - name: mystery
 ";
 
     #[test]
-    fn pds_manifest_parses_steps_and_ignores_unknown_keys() {
-        // `produces:` and `retry:` are unknown to the interim contract — they
-        // must be ignored, never errors.
+    fn pds_manifest_parses_through_arcs_gate() {
         let m = parse_manifest_str(MINI).expect("parses");
         assert_eq!(m.name, "mini");
-        assert_eq!(m.steps.len(), 4);
+        assert_eq!(m.steps.len(), 3);
         assert_eq!(m.steps[1].sql.as_deref(), Some("models/t.sql"));
         assert_eq!(m.steps[1].depends_on, vec!["build/a.csv".to_string()]);
+        assert_eq!(m.steps[1].produces, vec!["t".to_string()]);
     }
 
     #[test]
@@ -175,15 +154,34 @@ steps:
             m.steps[0].op_parts(),
             Some(("http_fetch".to_string(), "1".to_string()))
         );
-        // op without `@` degrades to version "?".
+        // op without `@` degrades to version "?" on the accessor; whether a
+        // whole manifest carrying it loads is the catalog's call, not ours.
         let step: Step = serde_yaml::from_str("{ name: x, op: http_fetch }").unwrap();
         assert_eq!(
             step.op_parts(),
             Some(("http_fetch".to_string(), "?".to_string()))
         );
-        // A step with none of op/sql/command still parses (opaque step).
-        let opaque = &m.steps[3];
-        assert!(opaque.op.is_none() && opaque.sql.is_none() && opaque.command.is_none());
+        assert_eq!(m.steps[0].with_str("out"), Some("build/a.csv"));
+        assert_eq!(m.steps[0].with_str("absent"), None);
+    }
+
+    #[test]
+    fn pds_gate_refuses_what_arc_refuses() {
+        // An armless step (no sql/command/op) — tolerated by the deleted
+        // interim parser, refused by arc's validator, therefore refused here.
+        let err = parse_manifest_str("name: m\nsteps:\n  - name: mystery\n").unwrap_err();
+        assert!(
+            err.to_string().contains("must have one of"),
+            "arc's own diagnostic surfaces: {err}"
+        );
+        // An operator the catalog does not know is refused at load, not at run.
+        let err =
+            parse_manifest_str("name: m\nsteps:\n  - name: x\n    op: not_a_real_operator@1\n")
+                .unwrap_err();
+        assert!(
+            err.to_string().contains("unknown operator"),
+            "catalog resolution is part of the gate: {err}"
+        );
     }
 
     #[test]
