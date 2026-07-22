@@ -306,6 +306,138 @@ pub struct StatusEntry {
     pub hide: HideAffordance,
 }
 
+/// How the data a surface previews relates to what the pipeline currently
+/// specifies — the honesty channel of the shell contract.
+///
+/// A document has one state. A pipeline has two: what is *specified* and what
+/// has been *materialised*, and the two diverge the moment a step is edited.
+/// A surface that previews materialised data is honest only if it labels that
+/// data against the current specification — and this enum is the label's
+/// whole vocabulary. There is deliberately no second one anywhere in the
+/// workspace: the viz status inks reach it through [`RunState::tone`] →
+/// [`Tone`] → the design system's reserved status colours, and the old
+/// shell's transient feedback severities fold into [`Tone`] the same way,
+/// rather than growing a parallel palette.
+///
+/// **Values of this type are ingested, never computed here.** The engine that
+/// runs the pipeline is the only thing that computes staleness (it fingerprints
+/// SQL and content and records a typed skip reason in the emitted run
+/// contract); a surface reads those recorded fields, overlays the not-yet-run
+/// edits the user just made, and labels. Nothing in the shell re-derives
+/// freshness from hashes.
+///
+/// The default is [`RunState::NeverRun`] because that is the safe direction:
+/// nothing reads as current until a run's record proves it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RunState {
+    /// No run has materialised this data — or none this preview can vouch
+    /// for. Never presented as current, and never silently indistinguishable
+    /// from [`RunState::Fresh`]: the two differ in both label and tone.
+    #[default]
+    NeverRun,
+    /// The materialised data matches the step as currently specified — the
+    /// run's record says so (a clean success, or a skip the engine recorded
+    /// as fresh). The only state a preview may present as current.
+    Fresh,
+    /// This step's own definition changed after its data was materialised.
+    /// The preview shows the *old* definition's output.
+    StaleOwnEdit,
+    /// A step upstream changed after this data was materialised. Nothing here
+    /// was touched and nothing has run — which is exactly why the label
+    /// exists: the data is downstream of an edit it has not seen.
+    StaleUpstream,
+    /// The last attempt to materialise this data failed.
+    Failed,
+}
+
+impl RunState {
+    /// Every state, for a test that walks the vocabulary.
+    pub const ALL: [RunState; 5] = [
+        RunState::NeverRun,
+        RunState::Fresh,
+        RunState::StaleOwnEdit,
+        RunState::StaleUpstream,
+        RunState::Failed,
+    ];
+
+    /// The short label a surface renders beside previewed data. Always shown
+    /// with the tone, never replaced by it — colour alone is not a label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            RunState::NeverRun => "never run",
+            RunState::Fresh => "fresh",
+            RunState::StaleOwnEdit => "stale · edited",
+            RunState::StaleUpstream => "stale · upstream edited",
+            RunState::Failed => "failed",
+        }
+    }
+
+    /// A one-line explainer for an inspector or tooltip.
+    #[must_use]
+    pub const fn gloss(self) -> &'static str {
+        match self {
+            RunState::NeverRun => {
+                "No run has produced this data yet — nothing to preview as current."
+            }
+            RunState::Fresh => {
+                "The last run's record says this data matches the step as specified."
+            }
+            RunState::StaleOwnEdit => {
+                "This step was edited after its data was produced — run to refresh."
+            }
+            RunState::StaleUpstream => {
+                "A step upstream was edited — this data has not seen that change."
+            }
+            RunState::Failed => "The last run of this step failed — this data was not produced.",
+        }
+    }
+
+    /// The tone this state takes, which is how it reaches ink: the chrome
+    /// resolves [`Tone::Good`]/[`Tone::Warning`]/[`Tone::Critical`] to the
+    /// design system's reserved status colours, and [`Tone::Neutral`] to
+    /// quiet text ink — so never-run can never wear fresh's green.
+    #[must_use]
+    pub const fn tone(self) -> Tone {
+        match self {
+            RunState::NeverRun => Tone::Neutral,
+            RunState::Fresh => Tone::Good,
+            RunState::StaleOwnEdit | RunState::StaleUpstream => Tone::Warning,
+            RunState::Failed => Tone::Critical,
+        }
+    }
+
+    /// Whether a preview may present this data as current. True for
+    /// [`RunState::Fresh`] and nothing else — the honesty rule in one
+    /// predicate: materialised data is never shown as though it were current
+    /// unless the run's record proves it is.
+    #[must_use]
+    pub const fn is_current(self) -> bool {
+        matches!(self, RunState::Fresh)
+    }
+
+    /// Whether the data exists but no longer matches the specification.
+    #[must_use]
+    pub const fn is_stale(self) -> bool {
+        matches!(self, RunState::StaleOwnEdit | RunState::StaleUpstream)
+    }
+
+    /// This state as a standing status-rail entry: trailing (standing state
+    /// sits right), cleared with the rail. The words and tone come from
+    /// [`RunState::label`] and [`RunState::tone`], so every surface that rails
+    /// a run-state says it the same way.
+    #[must_use]
+    pub fn status_entry(self, id: &'static str) -> StatusEntry {
+        StatusEntry {
+            id,
+            side: StatusSide::Trailing,
+            text: self.label().to_string(),
+            tone: self.tone(),
+            hide: HideAffordance::WithRail,
+        }
+    }
+}
+
 /// What activating an [`Affordance`] does.
 ///
 /// # Why this is an enum, and why it is not a hole in "the shell may not
@@ -592,5 +724,95 @@ mod tests {
     #[should_panic(expected = "the shell may not invent verbs")]
     fn constructing_an_unregistered_verb_panics_in_debug() {
         let _ = Verb::new(INVENTED);
+    }
+
+    // -- RunState: the data-honesty vocabulary ------------------------------
+
+    /// The floor of the honesty rule: a step that has never run must not be
+    /// silently indistinguishable from one that ran clean. Both the words and
+    /// the tone differ, so neither channel alone carries the distinction.
+    #[test]
+    fn never_run_is_distinct_from_fresh_in_both_label_and_tone() {
+        assert_ne!(RunState::NeverRun.label(), RunState::Fresh.label());
+        assert_ne!(RunState::NeverRun.tone(), RunState::Fresh.tone());
+        assert_ne!(RunState::NeverRun.gloss(), RunState::Fresh.gloss());
+    }
+
+    /// The honesty predicate: materialised data may be presented as current
+    /// under exactly one state. Walked over the whole vocabulary so a new
+    /// variant cannot join the current club by forgetting a match arm.
+    #[test]
+    fn a_preview_may_claim_current_only_when_fresh() {
+        for state in RunState::ALL {
+            assert_eq!(
+                state.is_current(),
+                state == RunState::Fresh,
+                "{state:?} may not present data as current unless it is Fresh"
+            );
+        }
+    }
+
+    /// Every state says something different — five states, five labels, five
+    /// glosses. A shared label would make two states indistinguishable in the
+    /// one channel a user actually reads.
+    #[test]
+    fn every_run_state_labels_itself_distinctly() {
+        for a in RunState::ALL {
+            for b in RunState::ALL {
+                if a != b {
+                    assert_ne!(a.label(), b.label(), "{a:?} and {b:?} share a label");
+                    assert_ne!(a.gloss(), b.gloss(), "{a:?} and {b:?} share a gloss");
+                }
+            }
+        }
+        // Both stale states say "stale" — same family, different cause.
+        assert!(RunState::StaleOwnEdit.label().contains("stale"));
+        assert!(RunState::StaleUpstream.label().contains("stale"));
+    }
+
+    /// The tone mapping is the whole reconciliation with the design system's
+    /// reserved status inks: fresh takes good, both stales take warning,
+    /// failure takes critical, and never-run stays neutral — it is the
+    /// *absence* of a run, not a good or bad one.
+    #[test]
+    fn run_state_tones_reconcile_into_the_one_tone_vocabulary() {
+        assert_eq!(RunState::Fresh.tone(), Tone::Good);
+        assert_eq!(RunState::StaleOwnEdit.tone(), Tone::Warning);
+        assert_eq!(RunState::StaleUpstream.tone(), Tone::Warning);
+        assert_eq!(RunState::Failed.tone(), Tone::Critical);
+        assert_eq!(RunState::NeverRun.tone(), Tone::Neutral);
+        // Staleness is never dressed as success or as the interaction accent.
+        for state in RunState::ALL {
+            if state.is_stale() {
+                assert_ne!(state.tone(), Tone::Good);
+                assert_ne!(state.tone(), Tone::Accent);
+            }
+        }
+    }
+
+    /// The default is the safe direction: nothing reads as current until a
+    /// run's record proves it.
+    #[test]
+    fn the_default_run_state_never_claims_current() {
+        assert_eq!(RunState::default(), RunState::NeverRun);
+        assert!(!RunState::default().is_current());
+    }
+
+    /// A railed run-state carries its own words and tone — one spelling for
+    /// every surface — and is standing state: trailing, cleared with the rail,
+    /// declaring no verb (so the registration gate has nothing to check).
+    #[test]
+    fn a_run_state_status_entry_carries_its_own_words_and_tone() {
+        for state in RunState::ALL {
+            let entry = state.status_entry("run-state");
+            assert_eq!(entry.id, "run-state");
+            assert_eq!(entry.side, StatusSide::Trailing);
+            assert_eq!(entry.text, state.label());
+            assert_eq!(entry.tone, state.tone());
+            assert_eq!(entry.hide, HideAffordance::WithRail);
+        }
+        let subject = Subject::new("t", Icon("i"), BindingContext::Global)
+            .with_status(RunState::StaleUpstream.status_entry("run-state"));
+        assert!(subject.declared_verbs().is_empty());
     }
 }

@@ -136,6 +136,16 @@ pub struct ContractView {
 }
 
 impl StepView {
+    /// The typed form of the recorded skip reason — see
+    /// [`SkipReason`](crate::contract::SkipReason). `None` when the step was
+    /// not skipped (or the reason is deferred).
+    #[must_use]
+    pub fn skip_reason_kind(&self) -> Option<crate::contract::SkipReason> {
+        self.skip_reason
+            .as_deref()
+            .map(crate::contract::SkipReason::parse)
+    }
+
     /// The seam's execution-status tint: the live stream state wins when the
     /// step is in flight, else the authoritative terminal `.json` state.
     #[must_use]
@@ -641,6 +651,59 @@ fn topological_order(nodes: &BTreeMap<AssetId, AssetNode>, edges: &[Edge]) -> Ve
     out
 }
 
+/// The steps an edit to `seeds` drags stale, through the asset lineage: every
+/// step other than a seed that reads — directly or transitively — an asset a
+/// seed produces. Editing step 2 of a seven-step chain returns steps 3..7,
+/// with nothing run and nothing recomputed.
+///
+/// This is the *representation-side* mirror of the runner's own downstream
+/// propagation (its staleness pass drags dependents of a stale step stale the
+/// same way). The runner remains the only thing that **computes** staleness —
+/// from fingerprints, at run time; this walk only says which previews an edit
+/// invalidates, so a surface can label them *before* any run happens.
+///
+/// Steps that produce nothing (a gate is a shield with no lineage seam; a
+/// pure side-effect command has no products) have no previewed data to
+/// mislabel, and do not extend the walk.
+#[must_use]
+pub fn downstream_steps(graph: &AssetGraph, seeds: &BTreeSet<StepId>) -> BTreeSet<StepId> {
+    // Each step's products (the nodes recording it as producer)…
+    let mut products: BTreeMap<StepId, Vec<AssetId>> = BTreeMap::new();
+    for node in graph.nodes.values() {
+        if let Some(step) = &node.step {
+            products
+                .entry(step.clone())
+                .or_default()
+                .push(node.id.clone());
+        }
+    }
+    // …and each asset's readers (the `via` steps of its outgoing edges).
+    let mut readers: BTreeMap<AssetId, BTreeSet<StepId>> = BTreeMap::new();
+    for edge in &graph.edges {
+        if let Some(via) = &edge.via {
+            readers
+                .entry(edge.from.clone())
+                .or_default()
+                .insert(via.clone());
+        }
+    }
+    // Alternate step → products → readers. A step dragged stale re-runs
+    // whole, so ALL of its products join the frontier — not only the ones an
+    // edge happened to reach it through.
+    let mut reached: BTreeSet<StepId> = seeds.clone();
+    let mut queue: Vec<StepId> = seeds.iter().cloned().collect();
+    while let Some(step) = queue.pop() {
+        for asset in products.get(&step).into_iter().flatten() {
+            for reader in readers.get(asset).into_iter().flatten() {
+                if reached.insert(reader.clone()) {
+                    queue.push(reader.clone());
+                }
+            }
+        }
+    }
+    &reached - seeds
+}
+
 /// Fold a run's live `.jsonl` [`StreamState`] onto a built view: each step in
 /// the stream gets its `live_state` set (last-line-wins), and the run outcome /
 /// completion are refreshed. Steps absent from the thinner stream keep their
@@ -656,5 +719,112 @@ pub fn apply_stream(view: &mut ContractView, stream: &StreamState) {
     }
     if stream.complete {
         view.run.complete = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contract::parse_contract;
+
+    /// A seven-step chain: s1 → a1 → s2 → a2 → … → s7 → a7, every step a
+    /// clean success except s4, which the runner skipped hash-clean.
+    fn chain_contract() -> Contract {
+        let mut assets = String::new();
+        let mut steps = String::new();
+        for i in 1..=7 {
+            let consumed_by = if i < 7 {
+                format!(r#"["s{}"]"#, i + 1)
+            } else {
+                "[]".to_string()
+            };
+            assets.push_str(&format!(
+                r#"{}{{ "id": "table:a{i}", "name": "a{i}", "kind": "table",
+                     "produced_by": "s{i}", "consumed_by": {consumed_by} }}"#,
+                if i > 1 { "," } else { "" },
+            ));
+            let reads = if i > 1 {
+                format!(r#"["a{}"]"#, i - 1)
+            } else {
+                "[]".to_string()
+            };
+            let status = if i == 4 {
+                r#"{ "state": "skipped", "skip_reason": "hash_clean" }"#
+            } else {
+                r#"{ "state": "success" }"#
+            };
+            steps.push_str(&format!(
+                r#"{}{{ "name": "s{i}", "kind": "sql",
+                     "sql": {{ "model_path": "models/s{i}.sql",
+                               "sql_hash": "h{i}",
+                               "statements": [ {{ "produces": ["a{i}"], "reads": {reads} }} ] }},
+                     "status": {status} }}"#,
+                if i > 1 { "," } else { "" },
+            ));
+        }
+        let json = format!(
+            r#"{{ "contract_version": "b4/1",
+                  "run": {{ "run_id": "r1", "protocol": {{ "name": "chain" }},
+                            "outcome": "success" }},
+                  "assets": [{assets}], "steps": [{steps}] }}"#
+        );
+        parse_contract(json.as_bytes()).expect("chain contract parses")
+    }
+
+    /// Editing step 2 drags steps 3..7 — and only them — in the
+    /// representation: nothing runs, nothing is recomputed, the walk merely
+    /// follows the lineage the contract already recorded. The runner's own
+    /// staleness pass does the same drag at run time; this is its
+    /// representation-side mirror.
+    #[test]
+    fn editing_a_step_drags_every_downstream_step_and_nothing_upstream() {
+        let view = build_contract_view(&chain_contract());
+        let seeds: BTreeSet<StepId> = ["s2".to_string()].into();
+        let dragged = downstream_steps(&view.graph, &seeds);
+        let expect: BTreeSet<StepId> = ["s3", "s4", "s5", "s6", "s7"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            dragged, expect,
+            "s3..s7 dragged; s1 untouched; s2 is the seed"
+        );
+
+        // The sink drags nothing; the head drags everything.
+        assert!(downstream_steps(&view.graph, &["s7".to_string()].into()).is_empty());
+        assert_eq!(
+            downstream_steps(&view.graph, &["s1".to_string()].into()).len(),
+            6
+        );
+    }
+
+    /// Two seeds union their drags, and a seed downstream of another seed
+    /// stays a seed — never double-reported as dragged.
+    #[test]
+    fn multiple_edits_union_their_downstream_drags() {
+        let view = build_contract_view(&chain_contract());
+        let seeds: BTreeSet<StepId> = ["s2".to_string(), "s5".to_string()].into();
+        let dragged = downstream_steps(&view.graph, &seeds);
+        let expect: BTreeSet<StepId> = ["s3", "s4", "s6", "s7"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(dragged, expect, "seeds are excluded from their own drag");
+    }
+
+    /// The typed skip reason survives the view build: s4's hash-clean skip is
+    /// readable off its `StepView`, typed, exactly as the contract recorded it.
+    #[test]
+    fn a_step_view_exposes_its_typed_skip_reason() {
+        use crate::contract::SkipReason;
+        let view = build_contract_view(&chain_contract());
+        assert_eq!(
+            view.steps["s4"].skip_reason_kind(),
+            Some(SkipReason::HashClean)
+        );
+        assert!(view.steps["s4"]
+            .skip_reason_kind()
+            .is_some_and(SkipReason::proves_fresh));
+        assert_eq!(view.steps["s3"].skip_reason_kind(), None);
     }
 }

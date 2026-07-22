@@ -46,6 +46,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use brightfield_protocol::contract::{SkipReason, StepState};
 use brightfield_protocol::contract_graph::{AssetMeta, SeamStatus, StepView};
 use brightfield_protocol::graph::{AssetGraph, AssetId, AssetKind, SeamKind, StepId};
 use brightfield_protocol::layout::{Flow, Layout, LayoutConfig, Rect};
@@ -58,6 +59,7 @@ use brightfield_render::canvas_host::{Color, PixelSize};
 
 use brightfield_keys::BindingContext;
 use brightfield_workbench::registry::{DockSide, Slot};
+use brightfield_workbench::subject::RunState;
 use brightfield_workbench::{
     chrome, Affordance, EmptyState, Icon, Item, ItemCtx, ItemId, ItemRegistry, ItemSpec, PaneKey,
     Subject, Tone, Verb, ViewKind,
@@ -1469,6 +1471,21 @@ fn inspector_body(ui: &mut egui::Ui, facts: &InspectorFacts, mode: Mode) {
         false,
     );
 
+    // The data-honesty channel, beside the execution channel above: what the
+    // previewed data is worth against the pipeline as it stands, ingested
+    // from the contract's recorded state + typed skip reason (see
+    // `run_state_recorded`). Only for produced assets — an external input is
+    // not run. The view is read-only today, so nothing is locally edited and
+    // the recorded verdict is composed against an empty `EditOverlay`; the
+    // editing bridge reports into that overlay when it lands.
+    if facts.producing_step.is_some() {
+        run_state_field(
+            ui,
+            mode,
+            run_state_recorded(facts.step_state, facts.skip_reason),
+        );
+    }
+
     // Measured values exist only after a real run; the offline manifest carries
     // lineage only, so say that rather than show blank rows. This is a *field*
     // that is not yet measured, not a pane with nothing in it — the pane's
@@ -1771,6 +1788,134 @@ fn status_gloss(s: SeamStatus) -> &'static str {
         SeamStatus::Failed => "Failed on the last run — check the run log.",
         SeamStatus::NotRun => "Not run in this view (the offline manifest has no run status).",
     }
+}
+
+// ---------------------------------------------------------------------------
+// Run-state: the data-honesty channel of the status/inspector region.
+//
+// The inspector's "Status" field is the *execution* channel — what the run
+// did (ok / skipped / failed). Run-state is the other channel: what the
+// previewed DATA is worth against the pipeline as it currently stands. The
+// two deliberately disagree in one famous case — a hash-clean skip is
+// "skipped" as execution and "fresh" as data — which is why they are two
+// fields and not one.
+//
+// Everything here INGESTS. The run contract already records each step's
+// terminal state and a typed skip reason computed by the engine's own
+// staleness pass; nothing in this shell re-derives freshness from hashes.
+// What the shell adds is the one thing only it can know: the edits the user
+// has made since that record was written, and which previews those edits
+// invalidate — a walk over the lineage the contract recorded, not a second
+// staleness computation.
+// ---------------------------------------------------------------------------
+
+/// The run contract's own verdict on a step's data, ingested — never
+/// recomputed — from its recorded terminal state and typed skip reason.
+///
+/// - a recorded success is [`RunState::Fresh`];
+/// - a skip is [`RunState::Fresh`] only when its typed reason is the engine's
+///   freshness proof (`hash_clean` / the precondition pair) — an unproven
+///   skip refuses the claim and reads [`RunState::NeverRun`], the safe
+///   direction;
+/// - a recorded failure is [`RunState::Failed`];
+/// - no record at all (an unrun step, the offline manifest, an external
+///   input's absent producer) is [`RunState::NeverRun`] — never silently
+///   dressed as fresh.
+#[must_use]
+pub fn run_state_recorded(state: Option<StepState>, skip: Option<SkipReason>) -> RunState {
+    match state {
+        None | Some(StepState::Unknown) => RunState::NeverRun,
+        Some(StepState::Failed) => RunState::Failed,
+        Some(StepState::Success) => RunState::Fresh,
+        Some(StepState::Skipped) => match skip {
+            Some(reason) if reason.proves_fresh() => RunState::Fresh,
+            _ => RunState::NeverRun,
+        },
+    }
+}
+
+/// The view-local edit overlay: which steps have been edited since the run
+/// contract was emitted, and which other steps those edits drag stale.
+///
+/// This is the propagation-in-the-representation piece: marking step 2 edited
+/// labels steps 3..7 stale **without running anything** — the contract on
+/// disk still says fresh, and stays authoritative for everything the edits do
+/// not reach. The drag itself is
+/// [`brightfield_protocol::downstream_steps`], a walk over the lineage the
+/// contract recorded (the engine's own staleness pass drags dependents the
+/// same way at run time; this is its representation-side mirror, not a rival
+/// computation).
+///
+/// No editor surface feeds this yet — the protocol view is read-only today,
+/// so the live panes compose against an empty overlay and the recorded
+/// verdict is the whole truth. The type exists now so the editing bridge has
+/// one honest place to report into, and so the honesty property is pinned by
+/// tests before any editor ships.
+#[derive(Debug, Clone, Default)]
+pub struct EditOverlay {
+    /// Steps edited since the contract was emitted.
+    edited: BTreeSet<StepId>,
+    /// Steps the edits drag stale, through the recorded lineage.
+    dragged: BTreeSet<StepId>,
+}
+
+impl EditOverlay {
+    /// Record an edit to `step` and re-derive the drag through `graph` — in
+    /// the representation only; nothing runs.
+    pub fn mark_edited(&mut self, step: impl Into<String>, graph: &AssetGraph) {
+        self.edited.insert(step.into());
+        self.dragged = brightfield_protocol::downstream_steps(graph, &self.edited);
+    }
+
+    /// Whether nothing has been edited (the read-only view's standing state).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.edited.is_empty()
+    }
+
+    /// The overlay's verdict for `step`, given the contract's `recorded` one.
+    ///
+    /// Precedence, most-recent-fact first: the user's own edit to this step
+    /// beats everything (whatever the data was, the definition has left it
+    /// behind); a recorded failure stays visible under an upstream edit (both
+    /// are non-current, and the failure is the more actionable signal); an
+    /// upstream edit drags an otherwise fresh or unrun step; everything else
+    /// keeps the contract's word.
+    #[must_use]
+    pub fn apply(&self, step: &str, recorded: RunState) -> RunState {
+        if self.edited.contains(step) {
+            return RunState::StaleOwnEdit;
+        }
+        if recorded != RunState::Failed && self.dragged.contains(step) {
+            return RunState::StaleUpstream;
+        }
+        recorded
+    }
+}
+
+/// One inspector row for the data-honesty channel: caption, the run-state's
+/// own label in its own tone ink, and its gloss. Not [`field`], deliberately —
+/// a run-state is the one inspector value whose *ink* carries meaning (fresh
+/// green, stale warning, never-run neutral), and the label + tone pair is
+/// what keeps never-run visually distinct from fresh.
+fn run_state_field(ui: &mut egui::Ui, mode: Mode, state: RunState) {
+    let sem = semantic(mode.is_dark());
+    ui.add_space(spacing::SPACE_4);
+    ui.label(
+        egui::RichText::new("DATA")
+            .font(ui_font())
+            .color(chrome::colour(sem.text.muted)),
+    );
+    ui.label(
+        egui::RichText::new(state.label())
+            .font(ui_font())
+            .color(chrome::tone_colour(state.tone(), mode)),
+    );
+    ui.label(
+        egui::RichText::new(state.gloss())
+            .font(ui_font())
+            .color(chrome::colour(sem.text.muted)),
+    );
 }
 
 /// Human-readable byte size (1 KiB steps), for the inspector's measured Size.
@@ -2287,5 +2432,204 @@ mod tests {
         m.feed_events(&[key(egui::Key::Y)]);
         assert_eq!(m.take_yank_request(), Some(sel.clone()));
         assert_eq!(m.yank_flash(), Some(&sel));
+    }
+
+    // -- Run-state: the data-honesty channel --------------------------------
+
+    /// A seven-step chain contract, every step a recorded success except s4
+    /// (a hash-clean skip — the engine's own freshness proof).
+    fn chain_view() -> brightfield_protocol::ContractView {
+        let mut assets = String::new();
+        let mut steps = String::new();
+        for i in 1..=7 {
+            let consumed_by = if i < 7 {
+                format!(r#"["s{}"]"#, i + 1)
+            } else {
+                "[]".to_string()
+            };
+            assets.push_str(&format!(
+                r#"{}{{ "id": "table:a{i}", "name": "a{i}", "kind": "table",
+                     "produced_by": "s{i}", "consumed_by": {consumed_by} }}"#,
+                if i > 1 { "," } else { "" },
+            ));
+            let reads = if i > 1 {
+                format!(r#"["a{}"]"#, i - 1)
+            } else {
+                "[]".to_string()
+            };
+            let status = if i == 4 {
+                r#"{ "state": "skipped", "skip_reason": "hash_clean" }"#
+            } else {
+                r#"{ "state": "success" }"#
+            };
+            steps.push_str(&format!(
+                r#"{}{{ "name": "s{i}", "kind": "sql",
+                     "sql": {{ "model_path": "models/s{i}.sql",
+                               "sql_hash": "h{i}",
+                               "statements": [ {{ "produces": ["a{i}"], "reads": {reads} }} ] }},
+                     "status": {status} }}"#,
+                if i > 1 { "," } else { "" },
+            ));
+        }
+        let json = format!(
+            r#"{{ "contract_version": "b4/1",
+                  "run": {{ "run_id": "r1", "protocol": {{ "name": "chain" }},
+                            "outcome": "success" }},
+                  "assets": [{assets}], "steps": [{steps}] }}"#
+        );
+        brightfield_protocol::view_from_contract_bytes(json.as_bytes()).expect("chain view")
+    }
+
+    /// The recorded run-state for a step of the chain view, composed the way
+    /// the inspector composes it: state + typed skip reason, ingested.
+    fn recorded(view: &brightfield_protocol::ContractView, step: &str) -> RunState {
+        let s = &view.steps[step];
+        run_state_recorded(Some(s.state), s.skip_reason_kind())
+    }
+
+    /// THE honesty test: editing an upstream step labels every downstream
+    /// preview stale — not merely re-rendered — while the contract on disk
+    /// still records success, because nothing ran. The un-edited upstream
+    /// step keeps its recorded verdict.
+    #[test]
+    fn editing_an_upstream_step_labels_downstream_previews_stale_without_running() {
+        let view = chain_view();
+        let mut edits = EditOverlay::default();
+        assert!(edits.is_empty(), "the read-only view starts un-edited");
+        edits.mark_edited("s2", &view.graph);
+
+        // The edited step itself: stale by its own edit.
+        assert_eq!(
+            edits.apply("s2", recorded(&view, "s2")),
+            RunState::StaleOwnEdit
+        );
+
+        // Every dependent: the CONTRACT still says fresh (nothing ran — that
+        // is the point), and the REPRESENTATION refuses to present it as
+        // current anyway. This includes s4, whose hash-clean skip was proof
+        // of freshness against the pipeline the run saw, not this one.
+        for step in ["s3", "s4", "s5", "s6", "s7"] {
+            let contract_says = recorded(&view, step);
+            assert_eq!(
+                contract_says,
+                RunState::Fresh,
+                "{step}: the recorded verdict is still fresh — nothing ran"
+            );
+            let labelled = edits.apply(step, contract_says);
+            assert_eq!(
+                labelled,
+                RunState::StaleUpstream,
+                "{step}: downstream of the edit, so labelled stale"
+            );
+            assert!(
+                !labelled.is_current(),
+                "{step}: a stale preview may never claim current"
+            );
+            assert_ne!(
+                labelled.label(),
+                RunState::Fresh.label(),
+                "{step}: the stale label is visibly different words, not a re-render"
+            );
+        }
+
+        // Upstream of the edit: untouched, and honestly still fresh.
+        assert_eq!(edits.apply("s1", recorded(&view, "s1")), RunState::Fresh);
+    }
+
+    /// The ingestion rules: success reads fresh; a skip reads fresh only on
+    /// the engine's typed freshness proof; an unproven skip, an unknown
+    /// state and a missing record all refuse the claim; failure reads failed.
+    #[test]
+    fn run_state_is_ingested_from_recorded_state_and_typed_skip_reason() {
+        use StepState::{Failed, Skipped, Success, Unknown};
+        assert_eq!(run_state_recorded(Some(Success), None), RunState::Fresh);
+        assert_eq!(
+            run_state_recorded(Some(Skipped), Some(SkipReason::HashClean)),
+            RunState::Fresh,
+            "a hash-clean skip is the engine's own proof of freshness"
+        );
+        assert_eq!(
+            run_state_recorded(Some(Skipped), Some(SkipReason::PreconditionFresh)),
+            RunState::Fresh
+        );
+        assert_eq!(
+            run_state_recorded(Some(Skipped), None),
+            RunState::NeverRun,
+            "a skip without a typed reason proves nothing — never green"
+        );
+        assert_eq!(
+            run_state_recorded(Some(Skipped), Some(SkipReason::Other)),
+            RunState::NeverRun
+        );
+        assert_eq!(run_state_recorded(Some(Failed), None), RunState::Failed);
+        assert_eq!(run_state_recorded(Some(Unknown), None), RunState::NeverRun);
+        assert_eq!(run_state_recorded(None, None), RunState::NeverRun);
+    }
+
+    /// Overlay precedence: an own edit beats everything (including a prior
+    /// failure — the definition has moved on); a recorded failure stays
+    /// visible under an upstream edit; an empty overlay changes nothing.
+    #[test]
+    fn edit_overlay_precedence_keeps_the_most_recent_fact_first() {
+        let view = chain_view();
+        let mut edits = EditOverlay::default();
+        edits.mark_edited("s2", &view.graph);
+
+        assert_eq!(
+            edits.apply("s2", RunState::Failed),
+            RunState::StaleOwnEdit,
+            "the user's own edit is the newest fact about s2"
+        );
+        assert_eq!(
+            edits.apply("s3", RunState::Failed),
+            RunState::Failed,
+            "a failure downstream of the edit stays visible — it is the more actionable signal"
+        );
+        assert_eq!(
+            edits.apply("s3", RunState::NeverRun),
+            RunState::StaleUpstream
+        );
+
+        let empty = EditOverlay::default();
+        for state in RunState::ALL {
+            assert_eq!(
+                empty.apply("s3", state),
+                state,
+                "an empty overlay keeps the contract's word"
+            );
+        }
+    }
+
+    /// The inspector's facts carry the ingested pair, and composing them
+    /// yields the two-channel disagreement that motivates the second field:
+    /// s4 is "skipped" as execution and fresh as data.
+    #[test]
+    fn inspector_facts_compose_to_the_data_channel() {
+        let view = chain_view();
+        let graph = collapse_families(&view.graph);
+        let statuses = view.seam_statuses();
+        let a4 = graph
+            .nodes
+            .keys()
+            .find(|k| k.ends_with(".a4"))
+            .expect("a4 node")
+            .clone();
+        let facts = brightfield_protocol::inspector_for(
+            &graph,
+            &view.assets,
+            &view.steps,
+            &statuses,
+            Some(&a4),
+        );
+        assert_eq!(
+            facts.status,
+            SeamStatus::Skipped,
+            "execution channel: skipped"
+        );
+        assert_eq!(
+            run_state_recorded(facts.step_state, facts.skip_reason),
+            RunState::Fresh,
+            "data channel: the typed hash-clean skip is proof of freshness"
+        );
     }
 }

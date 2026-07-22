@@ -15,6 +15,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+use crate::contract::{SkipReason, StepState};
 use crate::contract_graph::{AssetMeta, SeamStatus, StepView};
 use crate::graph::{AssetGraph, AssetId, AssetKind, StepId};
 
@@ -51,6 +52,14 @@ pub struct InspectorFacts {
     pub transform: Option<String>,
     /// Execution status of the producing step.
     pub status: SeamStatus,
+    /// The producing step's recorded terminal state, verbatim from the run
+    /// contract (`None` for an external input, or on the offline manifest
+    /// path where no run exists). With `skip_reason`, the ingested pair a
+    /// surface labels the previewed data's run-state from — the contract's
+    /// own record, never a staleness re-computation.
+    pub step_state: Option<StepState>,
+    /// The producing step's typed skip reason, when the run recorded one.
+    pub skip_reason: Option<SkipReason>,
     /// Row count when a contract measured it.
     pub row_count: Option<u64>,
     /// Whether the asset was actually materialised (`None` offline).
@@ -73,6 +82,8 @@ impl InspectorFacts {
             producing_step: None,
             transform: None,
             status: SeamStatus::NotRun,
+            step_state: None,
+            skip_reason: None,
             row_count: None,
             materialized: None,
             bytes: None,
@@ -232,6 +243,8 @@ pub fn inspector_for(
         producing_step: node.step.clone(),
         transform,
         status: status_of(graph, statuses, id),
+        step_state: step_view.map(|s| s.state),
+        skip_reason: step_view.and_then(StepView::skip_reason_kind),
         row_count: meta.and_then(|m| m.row_count),
         materialized: meta.map(|m| m.materialized),
         bytes: meta.and_then(|m| m.bytes),
@@ -329,5 +342,10 @@ mod tests {
         assert_eq!(facts.row_count, Some(5), "measured row count surfaces");
         assert_eq!(facts.materialized, Some(true));
         assert!(facts.producing_step.is_some(), "widgets has a producer");
+        // The run-state ingredients ride along verbatim: the recorded terminal
+        // state and (here, none) the typed skip reason — ingested for the
+        // surface to label with, never re-derived.
+        assert_eq!(facts.step_state, Some(StepState::Success));
+        assert_eq!(facts.skip_reason, None);
     }
 }
