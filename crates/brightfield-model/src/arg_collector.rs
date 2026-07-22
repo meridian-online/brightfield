@@ -1,6 +1,6 @@
 //! The argument-prompt collector — framework-free.
 //!
-//! Two of the five command-log verbs take arguments: `add-mark` collects a mark
+//! Two of the five keyboard editing verbs take arguments: `add-mark` collects a mark
 //! KIND, and `set-channel` collects a CHANNEL then a COLUMN. The Space palette's
 //! `run_palette` today only pick->runs a bare action; this gpui-free state
 //! machine drives a NEW palette argument-prompt mode. The overlay (the gpui

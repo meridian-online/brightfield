@@ -28,9 +28,7 @@ use brightfield_spec::layout::Rect;
 use crate::brush::{
     brush_rect_to_predicate, point_to_predicate, BrushKind, ChannelColumns, SelectionDispatcher,
 };
-use crate::chart_state::ChartState;
-use crate::crossfilter::CrossfilterCoordinator;
-use crate::gpui_canvas::GpuiChartSurface;
+use crate::gpui_canvas::{GpuiChartState, GpuiChartSurface, GpuiCrossfilter};
 use crate::interaction::{BrushRegion, InteractionState};
 use crate::legend_element::{LegendElement, PlacedLegend};
 use crate::menu::MenuBinding;
@@ -39,7 +37,7 @@ use crate::slider::SliderBinding;
 use crate::slider_element::{SliderElement, SliderWidget};
 
 /// One plot positioned in the dashboard: its rect (in dashboard pixels) and its
-/// own reactive [`ChartState`]. Each plot owns its state — and thus its own
+/// own reactive [`ChartState`](crate::chart_state::ChartState). Each plot owns its state — and thus its own
 /// raster cache and interaction — so hover/brush are independent per plot.
 pub struct PlacedChart {
     /// Left edge within the dashboard, in pixels.
@@ -54,11 +52,11 @@ pub struct PlacedChart {
     /// focus / verb-target identity, matching the coordinator's `LivePlot.path`.
     pub path: ComponentPath,
     /// The plot's reactive chart state.
-    pub state: Entity<ChartState>,
+    pub state: Entity<GpuiChartState>,
     /// Shared cross-filter coordinator, if this dashboard cross-filters. When
     /// present, a brush release on this plot routes through it (re-query +
     /// re-render subscribers); when `None`, the brush is purely visual.
-    pub coordinator: Option<Rc<RefCell<CrossfilterCoordinator>>>,
+    pub coordinator: Option<Rc<RefCell<GpuiCrossfilter>>>,
 }
 
 /// One slider widget positioned in the dashboard: its rect, the
@@ -78,7 +76,7 @@ pub struct PlacedSlider {
     /// Reactive widget state (resting value + drag gesture).
     pub state: Entity<SliderWidget>,
     /// Shared coordinator; a release routes through it to re-query + repaint.
-    pub coordinator: Option<Rc<RefCell<CrossfilterCoordinator>>>,
+    pub coordinator: Option<Rc<RefCell<GpuiCrossfilter>>>,
 }
 
 /// One menu-family widget positioned in the dashboard: its rect,
@@ -101,7 +99,7 @@ pub struct PlacedMenu {
     /// Reactive widget state (current value + interaction state).
     pub state: Entity<MenuWidget>,
     /// Shared coordinator; a pick routes through it to re-query + repaint.
-    pub coordinator: Option<Rc<RefCell<CrossfilterCoordinator>>>,
+    pub coordinator: Option<Rc<RefCell<GpuiCrossfilter>>>,
 }
 
 /// GPUI render component for a dashboard: hosts one [`GpuiChartSurface`] per plot,
@@ -178,7 +176,7 @@ impl ChartView {
     /// The shared cross-filter coordinator (all plots hold the same `Rc`), if this
     /// dashboard cross-filters — the seam a keyboard runtime verb (Esc clear)
     /// drives, without threading the coordinator through the panel.
-    pub fn coordinator(&self) -> Option<Rc<RefCell<CrossfilterCoordinator>>> {
+    pub fn coordinator(&self) -> Option<Rc<RefCell<GpuiCrossfilter>>> {
         self.charts.first().and_then(|c| c.coordinator.clone())
     }
 }

@@ -3,13 +3,11 @@
 //!
 //! The engine computes the raw per-source profiles ([`SourceProfile`], its
 //! types re-exported here); this module turns them into the exact strings the
-//! [`SidebarPanel`] renders — the per-column stat line, the source header's
-//! row-count label, the muted fallback rows, the displayed-column cap, and the
-//! Warning message a failed source logs. `shell.rs` stays a rendering shim
-//! that only lays these strings out. No gpui import may enter this file
-//! (semantic-layer rule).
-//!
-//! [`SidebarPanel`]: crate::shell::SidebarPanel
+//! app shell's sidebar panel renders — the per-column stat line, the source
+//! header's row-count label, the muted fallback rows, the displayed-column
+//! cap, and the Warning message a failed source logs. The shell stays a
+//! rendering shim that only lays these strings out. No gpui import may enter
+//! this crate (semantic-layer rule).
 
 pub use brightfield_engine::{ColumnProfile, ProfileOutcome, SourceProfile};
 

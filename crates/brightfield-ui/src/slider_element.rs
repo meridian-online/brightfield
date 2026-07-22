@@ -20,7 +20,7 @@ use gpui::{
     MouseMoveEvent, MouseUpEvent, Pixels, Rgba, Size, Style, Window,
 };
 
-use crate::crossfilter::CrossfilterCoordinator;
+use crate::gpui_canvas::GpuiCrossfilter;
 use crate::slider::{thumb_fraction, value_at, SliderBinding, SliderState};
 
 /// Thumb radius (logical px). The track is inset by this so the thumb stays
@@ -76,7 +76,7 @@ pub struct SliderElement {
     /// Index into the coordinator's slider bindings (sliders hosted in order).
     index: usize,
     id: ElementId,
-    coordinator: Option<Rc<RefCell<CrossfilterCoordinator>>>,
+    coordinator: Option<Rc<RefCell<GpuiCrossfilter>>>,
 }
 
 impl SliderElement {
@@ -88,7 +88,7 @@ impl SliderElement {
         width: f64,
         height: f64,
         index: usize,
-        coordinator: Option<Rc<RefCell<CrossfilterCoordinator>>>,
+        coordinator: Option<Rc<RefCell<GpuiCrossfilter>>>,
     ) -> Self {
         Self {
             state,

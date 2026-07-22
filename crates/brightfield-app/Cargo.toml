@@ -20,6 +20,8 @@ brightfield-protocol = { path = "../brightfield-protocol" }
 brightfield-engine = { path = "../brightfield-engine" }
 brightfield-render = { path = "../brightfield-render" }
 brightfield-ui = { path = "../brightfield-ui" }
+# The framework-free application models the shell shims over.
+brightfield-model = { path = "../brightfield-model" }
 gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", package = "gpui" }
 # The authoring workspace shell: DockArea, Panel, code editor,
 # Root notifications. Pinned by exact commit (its zed pin matches ours,

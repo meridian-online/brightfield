@@ -531,7 +531,7 @@ params:
         assert_eq!(warnings.len(), 1);
 
         let mut log = crate::log_model::FeedbackLog::default();
-        for (severity, message) in crate::resolution_warning_entries(&warnings) {
+        for (severity, message) in crate::log_model::resolution_warning_entries(&warnings) {
             log.append(severity, message);
         }
         assert_eq!(
@@ -541,7 +541,7 @@ params:
         );
         assert!(matches!(
             log.entries()[0].severity,
-            crate::reload_feedback::Severity::Warning
+            crate::log_model::Severity::Warning
         ));
         assert_eq!(log.entries()[0].message, warnings[0]);
     }

@@ -7,28 +7,19 @@
 //! which needs full Xcode + Metal compiler). Without it, the pipeline runs
 //! headlessly and prints a summary.
 
-#[cfg(any(target_os = "macos", test))]
-mod arg_collector;
-mod boot;
-#[cfg(any(target_os = "macos", test))]
-mod command_log;
-#[cfg(any(target_os = "macos", test))]
-mod dock_state_file;
+// The framework-free application models (boot mode, dock persistence, the
+// feedback log, menu placement, profile presentation, shell geometry, palette
+// argument collection) live in the `brightfield-model` crate; only the gpui
+// translation shims and the not-yet-lifted framework-free modules
+// (`reload_feedback`, `spec_save`) remain here.
 #[cfg(any(target_os = "macos", test))]
 mod keymap;
 #[cfg(any(target_os = "macos", test))]
-mod log_model;
-mod menu_resolve;
-#[cfg(any(target_os = "macos", test))]
 mod meridian_theme;
-#[cfg(any(target_os = "macos", test))]
-mod profile_model;
 #[cfg(any(target_os = "macos", test))]
 mod reload_feedback;
 #[cfg(any(target_os = "macos", test))]
 mod shell;
-#[cfg(any(target_os = "macos", test))]
-mod shell_model;
 #[cfg(any(target_os = "macos", test))]
 mod spec_save;
 
@@ -61,7 +52,8 @@ use brightfield_ui::{
     CrossfilterCoordinator, LivePlot, MarkInput, MenuBinding, MenuStyle, SliderBinding,
 };
 
-use crate::menu_resolve::{resolve_menu_placements, MenuPlacement};
+use brightfield_model::menu_resolve::{resolve_menu_placements, MenuPlacement};
+use brightfield_model::{boot, log_model, profile_model, shell_model};
 
 /// Concatenate the record batches from one mark's query into a single batch.
 ///
@@ -171,7 +163,7 @@ struct Dashboard {
 fn placed_legend_views(
     legends: &[LegendPlacement],
     bindings: &[brightfield_spec::analysis::LegendBinding],
-    coordinator: Option<&std::rc::Rc<std::cell::RefCell<brightfield_ui::CrossfilterCoordinator>>>,
+    coordinator: Option<&std::rc::Rc<std::cell::RefCell<brightfield_ui::GpuiCrossfilter>>>,
 ) -> Vec<brightfield_ui::PlacedLegend> {
     legends
         .iter()
@@ -744,20 +736,6 @@ fn run_pipeline(
     })
 }
 
-/// The Log-dock entries one reload/launch pass appends for assembly-time
-/// menu resolution warnings: exactly one `Warning`
-/// per warning string, per assembly pass — independent of whether the pass
-/// subsequently gates (the watcher appends these BEFORE the
-/// same_layout/chrome_divergence `continue`s, so a gated "restart to apply"
-/// still co-surfaces the explanation instead of dropping it).
-#[cfg(any(target_os = "macos", test))]
-fn resolution_warning_entries(warnings: &[String]) -> Vec<(reload_feedback::Severity, String)> {
-    warnings
-        .iter()
-        .map(|w| (reload_feedback::Severity::Warning, w.clone()))
-        .collect()
-}
-
 /// Run the spec-to-scene pipeline, returning a [`Dashboard`] — one independently
 /// rendered scene per plot (each with its own axes/scales), positioned per the
 /// layout pass — AND the live engine/render state ([`LiveParts`]) the window
@@ -1275,7 +1253,7 @@ struct WatchedPlot {
     y: f64,
     width: f64,
     height: f64,
-    state: gpui::Entity<brightfield_ui::ChartState>,
+    state: gpui::Entity<brightfield_ui::GpuiChartState>,
 }
 
 #[cfg(target_os = "macos")]
@@ -1347,7 +1325,7 @@ fn spawn_spec_watcher(
                     // warning explaining why. Exactly
                     // one append per warning per assembly pass.
                     if !resolution_warnings.is_empty() {
-                        let entries = resolution_warning_entries(&resolution_warnings);
+                        let entries = log_model::resolution_warning_entries(&resolution_warnings);
                         cx.update(|app| {
                             for (severity, message) in entries {
                                 feedback_log.update(app, |log, _| {
@@ -1922,7 +1900,7 @@ fn main() {
             // truncation, per-input failures,
             // style degrades — Warning, no toast (the profile precedent),
             // exactly one entry per warning per pass.
-            for (severity, message) in resolution_warning_entries(&menu_warnings) {
+            for (severity, message) in log_model::resolution_warning_entries(&menu_warnings) {
                 feedback_log.update(cx, |log, _| {
                     log.append(severity, message);
                 });
@@ -1936,7 +1914,12 @@ fn main() {
                 let insets = p.insets;
                 let margins = p.margins;
                 let state = cx.new(|_| {
-                    brightfield_ui::ChartState::new(p.scene, p.width, p.height, renderer.clone())
+                    brightfield_ui::GpuiChartState::new(
+                        p.scene,
+                        p.width,
+                        p.height,
+                        renderer.clone(),
+                    )
                 });
                 // Carry the plot's resolved range insets AND title-grown margins
                 // into its interaction layout so brush inversion / hit-testing
@@ -1957,7 +1940,7 @@ fn main() {
             // Build the live cross-filter coordinator, joining each plot's
             // metadata to its state entity (same order as the dashboard plots).
             // `None` when nothing brushes — the brush then stays purely visual.
-            let live_plots: Vec<LivePlot> = live_plots_meta
+            let live_plots: Vec<LivePlot<brightfield_ui::GpuiStateHandle>> = live_plots_meta
                 .into_iter()
                 .zip(watched.iter())
                 .map(|(meta, w)| LivePlot {
@@ -1997,12 +1980,12 @@ fn main() {
             // legend's index matches its binding.
             let legend_select_bindings: Vec<brightfield_ui::LegendSelectBinding> =
                 legend_bindings.iter().map(Into::into).collect();
-            // `command_log_active: true` — the authoring window always hosts the
-            // command log, so a structural edit (m/a/e/d/u) must be
+            // `editing_active: true` — the authoring window always hosts the
+            // keyboard editing grammar, so a structural edit (m/a/e/d/u) must be
             // able to drive even an otherwise-static plot (a plain scatter). Without
             // this the coordinator is `None` for a no-selection / non-sequential
-            // spec and every edit silently no-ops on the canvas (the working spec +
-            // log update, the plot never moves — the silent-no-op class).
+            // spec and every edit silently no-ops on the canvas (the working spec
+            // updates, the plot never moves — the silent-no-op class).
             let coordinator = CrossfilterCoordinator::new(
                 session,
                 marks,
@@ -2075,7 +2058,7 @@ fn main() {
             cx.bind_keys(brightfield_ui::workspace_key_bindings());
             cx.bind_keys(shell::editor_key_bindings());
             cx.bind_keys(keymap::grammar_key_bindings());
-            // cmd-s on the CANVAS commits command-log edits (distinct
+            // cmd-s on the CANVAS commits keyboard edits (distinct
             // from the editor's cmd-s save; resolved by focus context).
             cx.bind_keys(shell::workspace_command_bindings());
 
@@ -2160,18 +2143,12 @@ fn main() {
                             cx,
                         )
                     });
-                    // the SHARED command-log model — the canvas writes
-                    // structural edits/commits/refusals to it; the dedicated
-                    // bottom-dock CommandLog panel renders the SAME entity.
-                    let command_log_model = cx.new(|_| command_log::CommandLog::new());
-                    // Wire the keyboard command-log session onto the canvas — the
+                    // Wire the keyboard editing session onto the canvas — the
                     // working Spec (re-parsed from the launch file; the reducer
-                    // target) + the shared log. A parse failure here leaves the
-                    // canvas session-less (the verbs no-op gracefully), never a crash.
+                    // target). A parse failure here leaves the canvas
+                    // session-less (the verbs no-op gracefully), never a crash.
                     if let Ok(parsed) = brightfield_spec::parse_spec_path(&spec_path_for_command) {
-                        canvas.update(cx, |c, _| {
-                            c.set_command_session(parsed.spec, command_log_model.clone())
-                        });
+                        canvas.update(cx, |c, _| c.set_command_session(parsed.spec));
                     }
                     *canvas_capture.borrow_mut() = Some(canvas.clone());
                     let editor = cx.new(|cx| {
@@ -2198,22 +2175,12 @@ fn main() {
                             cx,
                         )
                     });
-                    // The second bottom-dock citizen: the command-log panel over
-                    // the shared command-log model.
-                    let command_log_panel = cx.new(|cx| {
-                        shell::CommandLogPanel::new(
-                            command_log_model.clone(),
-                            presentation.clone(),
-                            cx,
-                        )
-                    });
                     let workspace = cx.new(|cx| {
                         shell::WorkspaceRoot::new(
                             canvas,
                             editor,
                             sidebar,
                             log,
-                            command_log_panel,
                             presentation,
                             reload_trigger_for_workspace,
                             window,
@@ -2715,7 +2682,7 @@ colorRange: $ramp
         use brightfield_spec::analysis::analyse_spec;
         use brightfield_spec::analysis::{ComponentPath, LegendBinding};
         use brightfield_spec::layout::Rect;
-        use brightfield_ui::{CrossfilterCoordinator, LegendSelectBinding, MarkInput};
+        use brightfield_ui::{LegendSelectBinding, MarkInput};
 
         // A real (legend-only) coordinator over a minimal live session.
         let yaml = r#"
@@ -2742,7 +2709,7 @@ plot:
             contributor: ComponentPath("root".into()),
             column: "g".into(),
         };
-        let coordinator = CrossfilterCoordinator::new(
+        let coordinator = brightfield_ui::GpuiCrossfilter::new(
             session,
             Vec::<MarkInput>::new(),
             vec![],
@@ -3401,7 +3368,7 @@ vconcat:
         // (2) Exactly one Log entry per warning, Warning severity — appended
         // once per assembly pass by construction (the watcher calls this
         // once, before the gates).
-        let entries = super::resolution_warning_entries(&warnings);
+        let entries = brightfield_model::log_model::resolution_warning_entries(&warnings);
         assert_eq!(entries.len(), 1);
         assert!(matches!(
             entries[0].0,
@@ -3939,7 +3906,7 @@ vconcat:
     /// must follow the placements.
     #[test]
     fn lcf_f4_orphan_binding_discarded_and_liveness_follows_placements() {
-        use brightfield_ui::{CrossfilterCoordinator, LegendSelectBinding};
+        use brightfield_ui::LegendSelectBinding;
 
         const SRC: &str = r#"
 params:
@@ -4006,7 +3973,7 @@ hconcat:
         let legend_select: Vec<LegendSelectBinding> =
             live.legend_bindings.iter().map(Into::into).collect();
         assert!(
-            CrossfilterCoordinator::new(
+            brightfield_ui::GpuiCrossfilter::new(
                 live.session,
                 live.marks,
                 vec![],
