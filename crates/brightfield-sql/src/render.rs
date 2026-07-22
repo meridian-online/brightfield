@@ -194,7 +194,10 @@ pub fn render_query(plan: &QueryPlan, bindings: &mut Vec<Binding>) -> String {
         } => {
             let inner = render_query(input, bindings);
             let mut select_cols = group_by.clone();
-            select_cols.extend(aggregates.iter().cloned());
+            // A typed AggregateExpr::Call renders byte-identically to the raw
+            // string it replaced (see its ir.rs docs) — Display is the one
+            // rendering path for both forms.
+            select_cols.extend(aggregates.iter().map(ToString::to_string));
             let select = select_cols.join(", ");
             // DuckDB positional GROUP BY
             let positions: Vec<String> = (1..=group_by.len()).map(|i| i.to_string()).collect();
@@ -203,7 +206,11 @@ pub fn render_query(plan: &QueryPlan, bindings: &mut Vec<Binding>) -> String {
         }
         QueryPlan::AggregateScalar { input, aggregates } => {
             let inner = render_query(input, bindings);
-            let select = aggregates.join(", ");
+            let select = aggregates
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<String>>()
+                .join(", ");
             format!("SELECT {select} FROM ({inner}) AS _as")
         }
         QueryPlan::Bin {
@@ -408,13 +415,53 @@ mod tests {
                 table: "t".to_string(),
             }),
             group_by: vec!["x".to_string()],
-            aggregates: vec!["SUM(y) AS total".to_string()],
+            aggregates: vec![crate::ir::AggregateExpr::Raw("SUM(y) AS total".to_string())],
         };
         let mut bindings = Vec::new();
         let sql = render_query(&plan, &mut bindings);
         assert!(sql.contains("GROUP BY 1"), "should use positional group by");
         assert!(sql.contains("SUM(y) AS total"));
         assert_valid_sql(&sql);
+    }
+
+    /// A typed aggregate call in an Aggregation renders byte-identically to
+    /// the raw string it replaces — the plan-level byte-stability guarantee.
+    #[test]
+    fn typed_aggregates_render_identically_to_raw_strings() {
+        use crate::ir::{AggregateCall, AggregateExpr, AggregateFunction};
+        let over = |aggregates: Vec<AggregateExpr>| QueryPlan::Aggregation {
+            input: Box::new(QueryPlan::Source {
+                table: "t".to_string(),
+            }),
+            group_by: vec!["\"x\"".to_string()],
+            aggregates,
+        };
+        let typed = over(vec![
+            AggregateExpr::Call(AggregateCall {
+                func: AggregateFunction::Count,
+                args: vec!["*".to_string()],
+                filter: None,
+                cast: Some("DOUBLE".to_string()),
+                alias: Some("__bf_count".to_string()),
+            }),
+            AggregateExpr::Call(AggregateCall {
+                func: AggregateFunction::Sum,
+                args: vec!["\"y\"".to_string()],
+                filter: None,
+                cast: None,
+                alias: Some("total".to_string()),
+            }),
+        ]);
+        let raw = over(vec![
+            AggregateExpr::Raw("CAST(COUNT(*) AS DOUBLE) AS __bf_count".to_string()),
+            AggregateExpr::Raw("sum(\"y\") AS total".to_string()),
+        ]);
+        let mut b1 = Vec::new();
+        let mut b2 = Vec::new();
+        let sql_typed = render_query(&typed, &mut b1);
+        let sql_raw = render_query(&raw, &mut b2);
+        assert_eq!(sql_typed, sql_raw, "byte-identical emitted SQL");
+        assert_valid_sql(&sql_typed);
     }
 
     #[test]
@@ -483,7 +530,9 @@ mod tests {
             input: Box::new(QueryPlan::Source {
                 table: "athletes".to_string(),
             }),
-            aggregates: vec!["regr_slope(height, weight) AS slope".to_string()],
+            aggregates: vec![crate::ir::AggregateExpr::Raw(
+                "regr_slope(height, weight) AS slope".to_string(),
+            )],
         };
         let mut bindings = Vec::new();
         let sql = render_query(&plan, &mut bindings);

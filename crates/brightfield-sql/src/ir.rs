@@ -275,6 +275,170 @@ pub enum SortDir {
     Desc,
 }
 
+/// An aggregate function the mark lowerers emit as a typed call.
+///
+/// The variant set is scoped to what the lowerers actually produce today —
+/// `COUNT`/`sum`/`avg`/`min`/`max` plus the linear-regression
+/// sufficient-statistics family — and grows with the lowerers. A function
+/// outside this set stays a raw string ([`AggregateExpr::Raw`]).
+///
+/// [`Self::sql_name`] pins the exact historical spelling of each function
+/// (`COUNT` uppercase, everything else lowercase), so a typed call renders
+/// byte-identically to the string the lowerers used to format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AggregateFunction {
+    /// `COUNT` — `args == ["*"]` is count-star (row count); a column argument
+    /// counts non-NULL values of that column.
+    Count,
+    Sum,
+    Avg,
+    Min,
+    Max,
+    /// `regr_slope(y, x)` — slope of the least-squares fit.
+    RegrSlope,
+    /// `regr_intercept(y, x)` — intercept of the least-squares fit.
+    RegrIntercept,
+    /// `regr_count(y, x)` — rows where both arguments are non-NULL.
+    RegrCount,
+    /// `regr_avgx(y, x)` — mean of the independent variable.
+    RegrAvgx,
+    /// `regr_sxx(y, x)` — sum of squared deviations of x.
+    RegrSxx,
+    /// `regr_sxy(y, x)` — sum of co-deviations of x and y.
+    RegrSxy,
+    /// `regr_syy(y, x)` — sum of squared deviations of y.
+    RegrSyy,
+}
+
+impl AggregateFunction {
+    /// The exact SQL spelling the string-formatting path has always emitted.
+    /// `COUNT` is uppercase (the historical density/hexbin/cell form); every
+    /// other function is lowercase. Changing a spelling here changes emitted
+    /// SQL bytes — don't.
+    #[must_use]
+    pub fn sql_name(&self) -> &'static str {
+        match self {
+            Self::Count => "COUNT",
+            Self::Sum => "sum",
+            Self::Avg => "avg",
+            Self::Min => "min",
+            Self::Max => "max",
+            Self::RegrSlope => "regr_slope",
+            Self::RegrIntercept => "regr_intercept",
+            Self::RegrCount => "regr_count",
+            Self::RegrAvgx => "regr_avgx",
+            Self::RegrSxx => "regr_sxx",
+            Self::RegrSxy => "regr_sxy",
+            Self::RegrSyy => "regr_syy",
+        }
+    }
+}
+
+/// A typed aggregate call — function identity and argument expressions carried
+/// as data, not as unparsed text.
+///
+/// # The decomposition contract
+///
+/// This type exists so a later automatic pre-aggregation pass can decompose an
+/// aggregate into sufficient statistics over the cells of a derived cube
+/// (global `sum` = sum of per-cell sums; `avg` = summed sums over summed
+/// counts; `min`/`max` = min/max of per-cell extrema; the `regr_*` family from
+/// per-cell moment sums). What that pass needs, and what this type guarantees:
+///
+/// - **`func` is an enum**, so decomposability is a `match`, not a string
+///   parse.
+/// - **`args` are individually addressable expressions** (each element is
+///   trusted raw SQL, exactly like [`Predicate::Expr`]; `["*"]` is
+///   count-star), so the derivation can re-aggregate the same argument
+///   expression at cube-cell grain.
+/// - **`filter`**, when present, is the predicate text of a
+///   `FILTER (WHERE …)` clause and must propagate onto *every* statistic the
+///   aggregate decomposes into.
+/// - **`cast` / `alias` are carried, not interpreted** — they reproduce
+///   today's emission byte-exactly ([`Display`](fmt::Display) renders
+///   `CAST(func(args) FILTER (WHERE …) AS cast) AS alias`, omitting the
+///   absent parts) and the output column keeps its name across a rewrite.
+///
+/// An expression that does not fit this shape stays an
+/// [`AggregateExpr::Raw`] string: opaque to analysis, which simply bails
+/// derivation for that query and falls back to the direct query — the
+/// designed fallback, not a failure.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AggregateCall {
+    /// The aggregate function.
+    pub func: AggregateFunction,
+    /// Argument expressions, in call order. Each is a trusted SQL expression
+    /// (typically a quoted column like `"delay"`); `["*"]` is count-star.
+    pub args: Vec<String>,
+    /// `FILTER (WHERE …)` predicate text, when present. No lowerer emits one
+    /// today; the field is carried for derivation, which must propagate it
+    /// onto every decomposed statistic.
+    pub filter: Option<String>,
+    /// `CAST(… AS <this>)` wrapped around the call (e.g. `DOUBLE`), when
+    /// present.
+    pub cast: Option<String>,
+    /// Output alias — the exact text after ` AS `, including any quoting
+    /// (`__bf_count`, `"score"`, `slope`).
+    pub alias: Option<String>,
+}
+
+impl fmt::Display for AggregateCall {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut call = format!("{}({})", self.func.sql_name(), self.args.join(", "));
+        if let Some(pred) = &self.filter {
+            call = format!("{call} FILTER (WHERE {pred})");
+        }
+        if let Some(ty) = &self.cast {
+            call = format!("CAST({call} AS {ty})");
+        }
+        f.write_str(&call)?;
+        if let Some(alias) = &self.alias {
+            write!(f, " AS {alias}")?;
+        }
+        Ok(())
+    }
+}
+
+/// One aggregate output expression in an [`QueryPlan::Aggregation`] /
+/// [`QueryPlan::AggregateScalar`] — either a typed, analyzable call or the
+/// raw-string escape hatch.
+///
+/// The two forms render identically wherever both can express the same SQL
+/// (see [`AggregateCall`]'s `Display`), so migrating a lowerer from `Raw` to
+/// `Call` never changes emitted bytes — only what downstream analysis can see.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum AggregateExpr {
+    /// A raw SQL expression string, rendered verbatim. The escape hatch for
+    /// anything unanalyzable (or not yet analyzed) — e.g. hexbin's
+    /// constant-per-group geometry columns, which are scalar expressions, not
+    /// aggregate calls. Derivation treats `Raw` as opaque and bails to the
+    /// direct query.
+    Raw(String),
+    /// A typed aggregate call — see [`AggregateCall`] for the contract.
+    Call(AggregateCall),
+}
+
+impl fmt::Display for AggregateExpr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Raw(s) => f.write_str(s),
+            Self::Call(call) => write!(f, "{call}"),
+        }
+    }
+}
+
+impl From<String> for AggregateExpr {
+    fn from(raw: String) -> Self {
+        Self::Raw(raw)
+    }
+}
+
+impl From<&str> for AggregateExpr {
+    fn from(raw: &str) -> Self {
+        Self::Raw(raw.to_string())
+    }
+}
+
 /// A typed intermediate representation for DuckDB query emission.
 ///
 /// Variants compose via `Box<QueryPlan>` nesting — a `Filter` wraps its
@@ -311,8 +475,10 @@ pub enum QueryPlan {
         input: Box<QueryPlan>,
         /// Group-by column expressions.
         group_by: Vec<String>,
-        /// Aggregate expressions (e.g. `"SUM(y) AS total"`).
-        aggregates: Vec<String>,
+        /// Aggregate output expressions — typed calls where the lowerer's
+        /// output is analyzable ([`AggregateExpr::Call`]), raw strings
+        /// otherwise ([`AggregateExpr::Raw`], e.g. `"SUM(y) AS total"`).
+        aggregates: Vec<AggregateExpr>,
     },
 
     /// Scalar aggregation — produces a single row, no `GROUP BY`.
@@ -322,8 +488,10 @@ pub enum QueryPlan {
     /// the output is a single row of summary statistics.
     AggregateScalar {
         input: Box<QueryPlan>,
-        /// Aggregate expressions (e.g. `"regr_slope(y, x) AS slope"`).
-        aggregates: Vec<String>,
+        /// Aggregate output expressions — same convention as the
+        /// [`QueryPlan::Aggregation`] `aggregates` field (e.g. a typed
+        /// `regr_slope("y", "x") AS slope` call).
+        aggregates: Vec<AggregateExpr>,
     },
 
     /// Binning via `width_bucket()` or `CASE` expression.
@@ -405,7 +573,7 @@ mod tests {
         let _agg = QueryPlan::Aggregation {
             input: Box::new(src.clone()),
             group_by: vec!["x".to_string()],
-            aggregates: vec!["SUM(y)".to_string()],
+            aggregates: vec![AggregateExpr::Raw("SUM(y)".to_string())],
         };
         let _bin = QueryPlan::Bin {
             input: Box::new(src.clone()),
@@ -667,6 +835,150 @@ mod tests {
             with_meta.clone(),
             "clone preserves meta identity"
         );
+    }
+
+    // --- typed aggregates (AggregateExpr / AggregateCall) ---
+
+    fn call(
+        func: AggregateFunction,
+        args: &[&str],
+        cast: Option<&str>,
+        alias: Option<&str>,
+    ) -> AggregateCall {
+        AggregateCall {
+            func,
+            args: args.iter().map(ToString::to_string).collect(),
+            filter: None,
+            cast: cast.map(ToString::to_string),
+            alias: alias.map(ToString::to_string),
+        }
+    }
+
+    /// Every typed-call shape a lowerer emits today renders byte-identically
+    /// to the string it used to format — the byte-stability contract at the
+    /// single-expression level.
+    #[test]
+    fn aggregate_call_renders_historical_strings() {
+        // density / hexbin / cell count-star.
+        assert_eq!(
+            call(
+                AggregateFunction::Count,
+                &["*"],
+                Some("DOUBLE"),
+                Some("__bf_count")
+            )
+            .to_string(),
+            "CAST(COUNT(*) AS DOUBLE) AS __bf_count"
+        );
+        // hexbin / cell column aggregate aliased to its source column.
+        assert_eq!(
+            call(
+                AggregateFunction::Avg,
+                &["\"score\""],
+                Some("DOUBLE"),
+                Some("\"score\"")
+            )
+            .to_string(),
+            "CAST(avg(\"score\") AS DOUBLE) AS \"score\""
+        );
+        // regression sufficient statistics (two-argument family, no cast).
+        assert_eq!(
+            call(
+                AggregateFunction::RegrSlope,
+                &["\"height\"", "\"weight\""],
+                None,
+                Some("slope")
+            )
+            .to_string(),
+            "regr_slope(\"height\", \"weight\") AS slope"
+        );
+        // regression data extents (cast, plain alias).
+        assert_eq!(
+            call(
+                AggregateFunction::Min,
+                &["\"weight\""],
+                Some("DOUBLE"),
+                Some("x_min")
+            )
+            .to_string(),
+            "CAST(min(\"weight\") AS DOUBLE) AS x_min"
+        );
+        // bare call: no cast, no alias.
+        assert_eq!(
+            call(AggregateFunction::Sum, &["\"y\""], None, None).to_string(),
+            "sum(\"y\")"
+        );
+    }
+
+    /// A FILTER clause renders inside the CAST (it attaches to the aggregate
+    /// call itself) and before the alias.
+    #[test]
+    fn aggregate_call_renders_filter_clause() {
+        let mut c = call(
+            AggregateFunction::Sum,
+            &["\"y\""],
+            Some("DOUBLE"),
+            Some("total"),
+        );
+        c.filter = Some("\"y\" > 0".to_string());
+        assert_eq!(
+            c.to_string(),
+            "CAST(sum(\"y\") FILTER (WHERE \"y\" > 0) AS DOUBLE) AS total"
+        );
+        let mut bare = call(AggregateFunction::Count, &["*"], None, Some("n"));
+        bare.filter = Some("\"ok\"".to_string());
+        assert_eq!(bare.to_string(), "COUNT(*) FILTER (WHERE \"ok\") AS n");
+    }
+
+    /// Raw is a verbatim pass-through, and the From impls build it.
+    #[test]
+    fn aggregate_expr_raw_passthrough() {
+        let raw: AggregateExpr = "SUM(y) AS total".into();
+        assert_eq!(raw.to_string(), "SUM(y) AS total");
+        assert_eq!(raw, AggregateExpr::Raw("SUM(y) AS total".to_string()));
+        let owned: AggregateExpr = String::from("COUNT(*)").into();
+        assert_eq!(owned.to_string(), "COUNT(*)");
+    }
+
+    /// A typed call and the raw string that renders the same SQL are
+    /// DIFFERENT IR values (analysis can tell them apart) even though their
+    /// rendered bytes are identical.
+    #[test]
+    fn aggregate_expr_typed_and_raw_render_same_but_differ() {
+        let typed = AggregateExpr::Call(call(
+            AggregateFunction::Count,
+            &["*"],
+            Some("DOUBLE"),
+            Some("__bf_count"),
+        ));
+        let raw = AggregateExpr::Raw("CAST(COUNT(*) AS DOUBLE) AS __bf_count".to_string());
+        assert_eq!(typed.to_string(), raw.to_string(), "same rendered bytes");
+        assert_ne!(typed, raw, "different IR values");
+        let mut h1 = DefaultHasher::new();
+        let mut h2 = DefaultHasher::new();
+        typed.hash(&mut h1);
+        raw.hash(&mut h2);
+        assert_ne!(h1.finish(), h2.finish(), "hash follows the IR value");
+    }
+
+    /// A plan whose aggregates are typed still hashes structurally, and the
+    /// hash moves when the aggregate value changes.
+    #[test]
+    fn hash_structural_covers_typed_aggregates() {
+        let plan = |alias: &str| QueryPlan::Aggregation {
+            input: Box::new(QueryPlan::Source {
+                table: "t".to_string(),
+            }),
+            group_by: vec!["\"x\"".to_string()],
+            aggregates: vec![AggregateExpr::Call(call(
+                AggregateFunction::Sum,
+                &["\"y\""],
+                None,
+                Some(alias),
+            ))],
+        };
+        assert_eq!(plan("a").hash_structural(), plan("a").hash_structural());
+        assert_ne!(plan("a").hash_structural(), plan("b").hash_structural());
     }
 
     /// A QueryPlan containing a structured clause still hashes structurally
