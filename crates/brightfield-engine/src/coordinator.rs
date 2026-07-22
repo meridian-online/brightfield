@@ -494,6 +494,72 @@ vconcat:
         );
     }
 
+    // --- structured predicates ride the unchanged Interaction seam ---
+
+    #[test]
+    fn structured_predicate_through_interaction_matches_string_form() {
+        // The structured Interval clause flows through the SAME Interaction
+        // seam (no new variants, no signature changes): applied via
+        // Interaction::Select it filters exactly the rows its string form
+        // filters, and the session's live slot still holds the full structure
+        // — column, typed bounds, scale/pixel metadata — where the string
+        // form left only an opaque expression.
+        use brightfield_sql::ir::{ClauseMeta, ScalarValue, ScaleDescriptor};
+
+        let contributor = ComponentPath("root/vconcat[99]".to_string());
+
+        let mut coord_string = coordinator_from(BRUSH_DASHBOARD);
+        coord_string.apply(Interaction::Select {
+            name: "brush".to_string(),
+            contributor: contributor.clone(),
+            predicate: SqlPredicate::And(vec![
+                SqlPredicate::Expr("x >= 2".to_string()),
+                SqlPredicate::Expr("x <= 4".to_string()),
+            ]),
+        });
+
+        let structured = SqlPredicate::Interval {
+            column: "x".to_string(),
+            lo: ScalarValue::Float(2.0),
+            hi: ScalarValue::Float(4.0),
+            meta: Some(ClauseMeta {
+                scale: Some(ScaleDescriptor {
+                    kind: "linear".to_string(),
+                    domain: Some((1.0, 5.0)),
+                    range: Some((40.0, 340.0)),
+                }),
+                pixel_size: Some(1.0),
+            }),
+        };
+        let mut coord_structured = coordinator_from(BRUSH_DASHBOARD);
+        let requery = coord_structured.apply(Interaction::Select {
+            name: "brush".to_string(),
+            contributor: contributor.clone(),
+            predicate: structured.clone(),
+        });
+        assert_eq!(requery.affected.len(), 2, "both marks re-queried");
+
+        // Identical pushed-down filtering on every mark, chart and grid alike.
+        for mark in 0..=1 {
+            let s = column_i64(&coord_string.chart_rows(mark).expect("chart"), "x");
+            let t = column_i64(&coord_structured.chart_rows(mark).expect("chart"), "x");
+            assert_eq!(t, s, "mark {mark}: structured == string filtered rows");
+            assert_eq!(t, vec![2, 3, 4], "x kept in {{2,3,4}}");
+            let g = column_i64(&coord_structured.grid_rows(mark).expect("grid"), "x");
+            assert_eq!(g, t, "mark {mark}: grid agrees under the structured clause");
+        }
+
+        // No erasure through the seam: the live slot holds the clause whole.
+        let slot = coord_structured
+            .session()
+            .contributor_predicate("brush", &contributor.0)
+            .expect("slot written");
+        assert_eq!(
+            slot, &structured,
+            "structure and metadata intact end to end"
+        );
+    }
+
     // --- coalescing (supersession of queued interactions) ---
 
     #[test]

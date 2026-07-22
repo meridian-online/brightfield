@@ -58,12 +58,18 @@ pub use brightfield_render::vello_renderer;
 pub mod workspace;
 pub mod workspace_actions;
 
-pub use brush::{brush_rect_to_predicate, BrushKind, ChannelColumns};
+pub use brush::{
+    brush_rect_to_predicate, brush_rect_to_structured, point_to_structured, scalar_value_from,
+    BrushKind, ChannelColumns,
+};
 pub use canvas_host::{CanvasHost, ChartSurface, OverlayPainter};
 pub use chart_layout::ChartLayout;
 pub use chart_state::ChartState;
 pub use chart_view::{ChartView, PlacedChart, PlacedMenu, PlacedSlider};
-pub use crossfilter::{CrossfilterCoordinator, LegendSelectBinding, LivePlot, MarkInput};
+pub use crossfilter::{
+    clause_meta_for_scale, structured_brush_predicate, CrossfilterCoordinator, LegendSelectBinding,
+    LivePlot, MarkInput,
+};
 pub use gpui_canvas::{
     GpuiCanvasHost, GpuiChartState, GpuiChartSurface, GpuiCrossfilter, GpuiStateHandle, GpuiSurface,
 };

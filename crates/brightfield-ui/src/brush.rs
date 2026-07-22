@@ -10,7 +10,7 @@
 use brightfield_engine::DispatchResult;
 use brightfield_render::nearest::SelectionValue;
 use brightfield_spec::analysis::ComponentPath;
-use brightfield_sql::ir::Predicate;
+use brightfield_sql::ir::{ClauseMeta, Predicate, ScalarValue};
 use kurbo::Rect;
 
 /// Selection kind for a brush — mirrors the corresponding
@@ -163,6 +163,109 @@ pub fn point_to_predicate(
 /// deferred (decision 2).
 pub fn point_predicate(column: &str, value: &str) -> Predicate {
     Predicate::Expr(format!("{column} = {value}"))
+}
+
+// ---------------------------------------------------------------------------
+// Structured clause constructors — the lossless channel
+// ---------------------------------------------------------------------------
+//
+// The adapters above flatten the structured brush (rect, channels, resolved
+// values) into opaque SQL strings the moment a gesture commits. The
+// constructors below build the structured `Predicate::Interval` /
+// `Predicate::Point` clauses instead, carrying the column, typed bounds or
+// values, and optional scale/pixel metadata through to the query layer
+// without erasure — while emitting SQL equivalent to the string forms (see
+// their `ir.rs` docs for the exact byte-level rendering contract). The string
+// path above REMAINS the default; these are the opt-in structured producers.
+
+/// Convert a resolved [`SelectionValue`] into the IR's typed
+/// [`ScalarValue`], preserving the value's type. `ScalarValue::to_sql_literal`
+/// reproduces [`SelectionValue::literal`]'s text exactly, so a structured
+/// clause built from this conversion renders the identical literal the string
+/// path interpolates.
+#[must_use]
+pub fn scalar_value_from(value: &SelectionValue) -> ScalarValue {
+    match value {
+        SelectionValue::Number(n) => ScalarValue::Float(*n),
+        SelectionValue::Int(i) => ScalarValue::Int(*i),
+        SelectionValue::Text(s) => ScalarValue::Text(s.clone()),
+        SelectionValue::Timestamp(us) => ScalarValue::TimestampMicros(*us),
+        SelectionValue::TimestampTz(us) => ScalarValue::TimestampTzMicros(*us),
+    }
+}
+
+/// Structured counterpart of [`brush_rect_to_predicate`]: the same rect /
+/// kind / channel resolution, producing `Predicate::Interval` clauses that
+/// keep the column and bounds machine-readable. Per-axis metadata is optional
+/// (`None` where the caller has no scale context yet — the clause is no less
+/// valid without it).
+///
+/// - `IntervalX` → `Interval` on the x channel over `rect.x0..rect.x1`.
+/// - `IntervalY` → `Interval` on the y channel over `rect.y0..rect.y1`.
+/// - `IntervalXY` → `And([Interval(x), Interval(y)])` — one structured clause
+///   per axis, so each stays independently readable downstream.
+/// - Missing channels and point kinds degrade to `Predicate::True`, exactly
+///   like the string adapter.
+pub fn brush_rect_to_structured(
+    rect: Rect,
+    kind: BrushKind,
+    channels: &ChannelColumns,
+    x_meta: Option<ClauseMeta>,
+    y_meta: Option<ClauseMeta>,
+) -> Predicate {
+    match kind {
+        BrushKind::IntervalX => match channels.x.as_deref() {
+            Some(col) => interval_clause(col, rect.x0, rect.x1, x_meta),
+            None => Predicate::True,
+        },
+        BrushKind::IntervalY => match channels.y.as_deref() {
+            Some(col) => interval_clause(col, rect.y0, rect.y1, y_meta),
+            None => Predicate::True,
+        },
+        BrushKind::IntervalXY => match (channels.x.as_deref(), channels.y.as_deref()) {
+            (Some(xc), Some(yc)) => Predicate::And(vec![
+                interval_clause(xc, rect.x0, rect.x1, x_meta),
+                interval_clause(yc, rect.y0, rect.y1, y_meta),
+            ]),
+            _ => Predicate::True,
+        },
+        BrushKind::Point | BrushKind::PointX | BrushKind::PointY => Predicate::True,
+    }
+}
+
+/// Structured counterpart of [`point_to_predicate`]: the same kind / channel
+/// resolution, producing a single-value `Predicate::Point` clause whose typed
+/// value survives to the query layer. A missing channel for the kind, or a
+/// non-point kind, yields `Predicate::True` (degenerate), exactly like the
+/// string adapter.
+pub fn point_to_structured(
+    value: &SelectionValue,
+    kind: BrushKind,
+    channels: &ChannelColumns,
+    meta: Option<ClauseMeta>,
+) -> Predicate {
+    let column = match kind {
+        BrushKind::PointX => channels.x.as_deref(),
+        BrushKind::PointY => channels.y.as_deref(),
+        _ => None,
+    };
+    match column {
+        Some(col) => Predicate::Point {
+            column: col.to_string(),
+            values: vec![scalar_value_from(value)],
+            meta,
+        },
+        None => Predicate::True,
+    }
+}
+
+fn interval_clause(col: &str, lo: f64, hi: f64, meta: Option<ClauseMeta>) -> Predicate {
+    Predicate::Interval {
+        column: col.to_string(),
+        lo: ScalarValue::Float(lo),
+        hi: ScalarValue::Float(hi),
+        meta,
+    }
 }
 
 /// Trait abstracting the selection-dispatch surface ChartView calls
@@ -415,6 +518,153 @@ mod tests {
                 &SelectionValue::Number(1.0),
                 BrushKind::IntervalX,
                 &channels
+            ),
+            Predicate::True
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Structured clause constructors
+    // ---------------------------------------------------------------------
+
+    /// The structured 1-D brush renders the SAME SQL text as the string
+    /// adapter's predicate for the same gesture — Display is the render
+    /// contract (`ir.rs`), so string-vs-structured substitution is
+    /// byte-invisible downstream.
+    #[test]
+    fn structured_interval_matches_string_adapter_sql() {
+        let rect = Rect::new(10.0, 50.0, 90.0, 250.0);
+        let channels = ChannelColumns::xy("speed", "delay");
+
+        for kind in [BrushKind::IntervalX, BrushKind::IntervalY] {
+            let string_form = brush_rect_to_predicate(rect, kind, &channels);
+            let structured = brush_rect_to_structured(rect, kind, &channels, None, None);
+            assert_eq!(
+                format!("{structured}"),
+                format!("{string_form}"),
+                "{kind:?}: structured and string forms render identical SQL"
+            );
+        }
+        // The structured form is the Interval variant, not a flattened string.
+        match brush_rect_to_structured(rect, BrushKind::IntervalX, &channels, None, None) {
+            Predicate::Interval { column, .. } => assert_eq!(column, "speed"),
+            other => panic!("expected Interval, got {other:?}"),
+        }
+    }
+
+    /// The structured XY brush produces one Interval clause per axis under a
+    /// flat And, and renders SQL semantically equal to the string adapter's
+    /// four-clause form — byte-identical to the NESTED hand-written string
+    /// shape (each axis's two bounds grouped), which is the string form of
+    /// this structure.
+    #[test]
+    fn structured_interval_xy_one_clause_per_axis() {
+        let rect = Rect::new(10.0, 50.0, 90.0, 250.0);
+        let channels = ChannelColumns::xy("speed", "delay");
+        let structured =
+            brush_rect_to_structured(rect, BrushKind::IntervalXY, &channels, None, None);
+
+        match &structured {
+            Predicate::And(clauses) => {
+                assert_eq!(clauses.len(), 2, "one structured clause per axis");
+                match (&clauses[0], &clauses[1]) {
+                    (
+                        Predicate::Interval { column: xc, .. },
+                        Predicate::Interval { column: yc, .. },
+                    ) => {
+                        assert_eq!(xc, "speed");
+                        assert_eq!(yc, "delay");
+                    }
+                    other => panic!("expected two Intervals, got {other:?}"),
+                }
+            }
+            other => panic!("expected And, got {other:?}"),
+        }
+
+        // Byte-identity with the equivalent hand-written NESTED string form.
+        let nested_string_form = Predicate::And(vec![
+            Predicate::And(vec![
+                Predicate::Expr("speed >= 10".to_string()),
+                Predicate::Expr("speed <= 90".to_string()),
+            ]),
+            Predicate::And(vec![
+                Predicate::Expr("delay >= 50".to_string()),
+                Predicate::Expr("delay <= 250".to_string()),
+            ]),
+        ]);
+        assert_eq!(format!("{structured}"), format!("{nested_string_form}"));
+    }
+
+    /// Missing channels and point kinds degrade to True — mirroring the
+    /// string adapter exactly.
+    #[test]
+    fn structured_brush_degenerate_cases_mirror_string_adapter() {
+        let rect = Rect::new(10.0, 50.0, 90.0, 250.0);
+        let y_only = ChannelColumns::y_only("delay");
+        assert_eq!(
+            brush_rect_to_structured(rect, BrushKind::IntervalX, &y_only, None, None),
+            Predicate::True
+        );
+        assert_eq!(
+            brush_rect_to_structured(rect, BrushKind::IntervalXY, &y_only, None, None),
+            Predicate::True
+        );
+        let channels = ChannelColumns::xy("speed", "delay");
+        for kind in [BrushKind::Point, BrushKind::PointX, BrushKind::PointY] {
+            assert_eq!(
+                brush_rect_to_structured(rect, kind, &channels, None, None),
+                Predicate::True,
+                "{kind:?} is click-driven; the rect path degrades to True"
+            );
+        }
+    }
+
+    /// scalar_value_from preserves each SelectionValue's type, and the
+    /// structured point clause renders the exact SQL the string adapter
+    /// produces for the same click — across every literal kind.
+    #[test]
+    fn structured_point_matches_string_adapter_sql() {
+        let channels = ChannelColumns::xy("speed", "delay");
+        let values = [
+            SelectionValue::Number(1.5),
+            SelectionValue::Int(3),
+            SelectionValue::Text("O'Hara".to_string()),
+            SelectionValue::Timestamp(1_700_000_000_000_000),
+            SelectionValue::TimestampTz(1_700_000_000_000_000),
+        ];
+        for value in &values {
+            // Literal-text parity between the two formatting paths.
+            assert_eq!(
+                scalar_value_from(value).to_sql_literal(),
+                value.literal(),
+                "ScalarValue reproduces SelectionValue::literal for {value:?}"
+            );
+            for kind in [BrushKind::PointX, BrushKind::PointY] {
+                let string_form = point_to_predicate(value, kind, &channels);
+                let structured = point_to_structured(value, kind, &channels, None);
+                assert_eq!(
+                    format!("{structured}"),
+                    format!("{string_form}"),
+                    "{kind:?}/{value:?}: identical rendered SQL"
+                );
+            }
+        }
+        // Degenerate cases mirror the string adapter.
+        assert_eq!(
+            point_to_structured(
+                &SelectionValue::Number(1.0),
+                BrushKind::PointY,
+                &ChannelColumns::x_only("speed"),
+                None,
+            ),
+            Predicate::True
+        );
+        assert_eq!(
+            point_to_structured(
+                &SelectionValue::Number(1.0),
+                BrushKind::IntervalX,
+                &channels,
+                None,
             ),
             Predicate::True
         );
