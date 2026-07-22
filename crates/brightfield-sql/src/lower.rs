@@ -13,7 +13,10 @@ use brightfield_spec::ast::{
 use brightfield_spec::vocab::MarkKind;
 
 use crate::error::EmitError;
-use crate::ir::{Predicate, QueryPlan, SelectionResolution, SortDir};
+use crate::ir::{
+    AggregateCall, AggregateExpr, AggregateFunction, Predicate, QueryPlan, SelectionResolution,
+    SortDir,
+};
 
 /// Context available during lowering — spec-level data sources, params, selections.
 #[derive(Debug)]
@@ -300,32 +303,51 @@ impl MarkLower for RegressionLowerer {
             )),
         };
 
+        // Typed aggregate calls (function + arguments as data) — every
+        // expression this lowerer emits is analyzable, so nothing stays a raw
+        // string. The regr_* family takes (y, x) in that order.
+        let regr = |func: AggregateFunction, alias: &str| {
+            AggregateExpr::Call(AggregateCall {
+                func,
+                args: vec![format!("\"{y_col}\""), format!("\"{x_col}\"")],
+                filter: None,
+                cast: None,
+                alias: Some(alias.to_string()),
+            })
+        };
+        let extent = |func: AggregateFunction, col: &str, alias: &str| {
+            AggregateExpr::Call(AggregateCall {
+                func,
+                args: vec![format!("\"{col}\"")],
+                filter: None,
+                cast: Some("DOUBLE".to_string()),
+                alias: Some(alias.to_string()),
+            })
+        };
         let aggregates = vec![
-            format!("regr_slope(\"{y_col}\", \"{x_col}\") AS slope"),
-            format!("regr_intercept(\"{y_col}\", \"{x_col}\") AS intercept"),
-            format!("regr_count(\"{y_col}\", \"{x_col}\") AS n"),
-            format!("regr_avgx(\"{y_col}\", \"{x_col}\") AS x_bar"),
-            format!("regr_sxx(\"{y_col}\", \"{x_col}\") AS sxx"),
-            format!("regr_sxy(\"{y_col}\", \"{x_col}\") AS sxy"),
-            format!("regr_syy(\"{y_col}\", \"{x_col}\") AS syy"),
+            regr(AggregateFunction::RegrSlope, "slope"),
+            regr(AggregateFunction::RegrIntercept, "intercept"),
+            regr(AggregateFunction::RegrCount, "n"),
+            regr(AggregateFunction::RegrAvgx, "x_bar"),
+            regr(AggregateFunction::RegrSxx, "sxx"),
+            regr(AggregateFunction::RegrSxy, "sxy"),
+            regr(AggregateFunction::RegrSyy, "syy"),
             // Data extents for render-time scale construction. The executed
             // batch holds only coefficients (no raw x/y rows), so the renderer
             // can't infer x/y scales from a column — it builds them from these
             // extents instead (see `RegressionRenderer::augment_scales`). The
             // filter above already drops NULL x/y, so min/max are over the
             // fitted sample.
-            format!("CAST(min(\"{x_col}\") AS DOUBLE) AS x_min"),
-            format!("CAST(max(\"{x_col}\") AS DOUBLE) AS x_max"),
-            format!("CAST(min(\"{y_col}\") AS DOUBLE) AS y_min"),
-            format!("CAST(max(\"{y_col}\") AS DOUBLE) AS y_max"),
+            extent(AggregateFunction::Min, x_col, "x_min"),
+            extent(AggregateFunction::Max, x_col, "x_max"),
+            extent(AggregateFunction::Min, y_col, "y_min"),
+            extent(AggregateFunction::Max, y_col, "y_max"),
         ];
 
-        // Group by stroke column when present.
+        // Group by stroke column when present. (The Aggregation IR variant
+        // places group_by columns first via render_query, so the group key
+        // appears in the projection without duplicating it here.)
         if let Some(stroke_col) = opt_string(&mark.options, "stroke") {
-            let mut group_aggregates = aggregates.clone();
-            // Prepend the group key so it appears in the projection.
-            // (Aggregation IR variant places group_by columns first via render_query.)
-            let _ = &mut group_aggregates; // keep as-is; group_by handled below
             return Ok(QueryPlan::Aggregation {
                 input: Box::new(filtered),
                 group_by: vec![format!("\"{stroke_col}\"")],
@@ -441,6 +463,19 @@ fn equiwidth_bin_centre(table: &str, col: &str, bins: i64) -> String {
     )
 }
 
+/// The density lowerers' per-bucket occupancy count as a typed aggregate call
+/// — renders `CAST(COUNT(*) AS DOUBLE) AS __bf_count`, byte-identical to the
+/// string form it replaced.
+fn density_count_expr() -> AggregateExpr {
+    AggregateExpr::Call(AggregateCall {
+        func: AggregateFunction::Count,
+        args: vec!["*".to_string()],
+        filter: None,
+        cast: Some("DOUBLE".to_string()),
+        alias: Some("__bf_count".to_string()),
+    })
+}
+
 /// Build a 1D density plan: bin `col` into equiwidth buckets, group by bucket,
 /// and emit the bucket **centre aliased to the channel column name** (so generic
 /// scale inference and `ChannelMap::get` treat it like any positional column)
@@ -450,7 +485,7 @@ fn build_density_1d(table: &str, col: &str, bins: i64) -> QueryPlan {
     // Occupancy is aliased to the reserved `__bf_count` (not `count`) so it can't
     // collide with the bin centre when a density channel is bound to a column
     // literally named `count`. The renderer reads it as `DENSITY_COUNT_COL`.
-    let count_expr = "CAST(COUNT(*) AS DOUBLE) AS __bf_count".to_string();
+    let count_expr = density_count_expr();
 
     // ORDER BY the bucket centre: GROUP BY output order is unspecified in
     // DuckDB, and the density/raster renderers draw in row order — a different
@@ -483,7 +518,7 @@ fn build_density_2d(table: &str, x_col: &str, y_col: &str, bins: i64) -> QueryPl
         equiwidth_bin_centre(table, y_col, bins)
     );
     // Reserved occupancy alias — see build_density_1d.
-    let count_expr = "CAST(COUNT(*) AS DOUBLE) AS __bf_count".to_string();
+    let count_expr = density_count_expr();
 
     // Deterministic row order (x centre, then y centre) — see build_density_1d.
     QueryPlan::Order {
@@ -760,15 +795,20 @@ fn build_hexbin_plan(
             format!("CAST({cy_data} AS DOUBLE) AS \"{y_col}\""),
         ],
         aggregates: vec![
+            // The fill aggregate is a typed call; the geometry/extent columns
+            // below are constant-per-group SCALAR expressions (correlated
+            // subqueries over the raw table), not aggregate calls — they stay
+            // raw strings, which downstream aggregate analysis treats as
+            // opaque (the designed bail-to-direct-query fallback).
             agg_expr,
-            format!("{dx_data} AS {HEX_DX_COL}"),
-            format!("{dy_data} AS {HEX_DY_COL}"),
+            AggregateExpr::Raw(format!("{dx_data} AS {HEX_DX_COL}")),
+            AggregateExpr::Raw(format!("{dy_data} AS {HEX_DY_COL}")),
             // Raw extent (constant per group) so the renderer widens the scales
             // RAW-anchored — the exactness the hexgrid reconstruction rides on.
-            format!("CAST({xmin} AS DOUBLE) AS {HEX_X0_COL}"),
-            format!("CAST({xmax} AS DOUBLE) AS {HEX_X1_COL}"),
-            format!("CAST({ymin} AS DOUBLE) AS {HEX_Y0_COL}"),
-            format!("CAST({ymax} AS DOUBLE) AS {HEX_Y1_COL}"),
+            AggregateExpr::Raw(format!("CAST({xmin} AS DOUBLE) AS {HEX_X0_COL}")),
+            AggregateExpr::Raw(format!("CAST({xmax} AS DOUBLE) AS {HEX_X1_COL}")),
+            AggregateExpr::Raw(format!("CAST({ymin} AS DOUBLE) AS {HEX_Y0_COL}")),
+            AggregateExpr::Raw(format!("CAST({ymax} AS DOUBLE) AS {HEX_Y1_COL}")),
         ],
     };
 
@@ -857,27 +897,39 @@ impl MarkLower for HexgridLowerer {
     }
 }
 
-/// The SQL aggregate expression for a hexbin/cell fill aggregate. `count` folds
-/// to the reserved `__bf_count`; a column aggregate aliases to its source
-/// column so the fill channel reads it.
-fn hex_aggregate_expr(agg: &(AggregateFunc, Option<String>)) -> String {
+/// The aggregate expression for a hexbin/cell fill aggregate, as a typed
+/// call. `count` folds to the reserved `__bf_count`; a column aggregate
+/// aliases to its source column so the fill channel reads it. A
+/// column-taking aggregate with NO column degrades to count so the query is
+/// still valid (the parser should have caught this).
+fn hex_aggregate_expr(agg: &(AggregateFunc, Option<String>)) -> AggregateExpr {
+    let count = || {
+        AggregateExpr::Call(AggregateCall {
+            func: AggregateFunction::Count,
+            args: vec!["*".to_string()],
+            filter: None,
+            cast: Some("DOUBLE".to_string()),
+            alias: Some(HEX_COUNT_COL.to_string()),
+        })
+    };
     match agg {
-        (AggregateFunc::Count, _) => {
-            format!("CAST(COUNT(*) AS DOUBLE) AS {HEX_COUNT_COL}")
-        }
+        (AggregateFunc::Count, _) | (_, None) => count(),
         (func, Some(col)) => {
-            let sql_fn = match func {
-                AggregateFunc::Sum => "sum",
-                AggregateFunc::Avg => "avg",
-                AggregateFunc::Min => "min",
-                AggregateFunc::Max => "max",
-                AggregateFunc::Count => unreachable!(),
+            let func = match func {
+                AggregateFunc::Sum => AggregateFunction::Sum,
+                AggregateFunc::Avg => AggregateFunction::Avg,
+                AggregateFunc::Min => AggregateFunction::Min,
+                AggregateFunc::Max => AggregateFunction::Max,
+                AggregateFunc::Count => unreachable!("count matched above"),
             };
-            format!("CAST({sql_fn}(\"{col}\") AS DOUBLE) AS \"{col}\"")
+            AggregateExpr::Call(AggregateCall {
+                func,
+                args: vec![format!("\"{col}\"")],
+                filter: None,
+                cast: Some("DOUBLE".to_string()),
+                alias: Some(format!("\"{col}\"")),
+            })
         }
-        // A column-taking aggregate with no column — degrade to count so the
-        // query is still valid (the parser should have caught this).
-        (_, None) => format!("CAST(COUNT(*) AS DOUBLE) AS {HEX_COUNT_COL}"),
     }
 }
 
@@ -1437,21 +1489,86 @@ mod tests {
         let plan = RegressionLowerer.lower(&mark, &ctx).expect("lowers");
         match plan {
             QueryPlan::AggregateScalar { aggregates, .. } => {
-                assert!(aggregates.iter().any(|a| a.contains("regr_slope")));
-                assert!(aggregates.iter().any(|a| a.contains("regr_intercept")));
-                assert!(aggregates.iter().any(|a| a.contains("regr_count")));
-                assert!(aggregates.iter().any(|a| a.contains("regr_avgx")));
-                assert!(aggregates.iter().any(|a| a.contains("regr_sxx")));
-                assert!(aggregates.iter().any(|a| a.contains("regr_sxy")));
-                assert!(aggregates.iter().any(|a| a.contains("regr_syy")));
-                // Data extents the renderer builds its x/y scales from.
-                assert!(aggregates.iter().any(|a| a.contains("AS x_min")));
-                assert!(aggregates.iter().any(|a| a.contains("AS x_max")));
-                assert!(aggregates.iter().any(|a| a.contains("AS y_min")));
-                assert!(aggregates.iter().any(|a| a.contains("AS y_max")));
+                // Every aggregate is a TYPED call — function identity and
+                // argument expressions as data (nothing left as a raw string).
+                let calls: Vec<&AggregateCall> = aggregates
+                    .iter()
+                    .map(|a| match a {
+                        AggregateExpr::Call(c) => c,
+                        AggregateExpr::Raw(s) => {
+                            panic!("regression aggregate left raw: {s}")
+                        }
+                    })
+                    .collect();
+                let has = |func: AggregateFunction, alias: &str| {
+                    calls
+                        .iter()
+                        .any(|c| c.func == func && c.alias.as_deref() == Some(alias))
+                };
+                assert!(has(AggregateFunction::RegrSlope, "slope"));
+                assert!(has(AggregateFunction::RegrIntercept, "intercept"));
+                assert!(has(AggregateFunction::RegrCount, "n"));
+                assert!(has(AggregateFunction::RegrAvgx, "x_bar"));
+                assert!(has(AggregateFunction::RegrSxx, "sxx"));
+                assert!(has(AggregateFunction::RegrSxy, "sxy"));
+                assert!(has(AggregateFunction::RegrSyy, "syy"));
+                // regr_* argument order is (y, x).
+                let slope = calls
+                    .iter()
+                    .find(|c| c.func == AggregateFunction::RegrSlope)
+                    .unwrap();
+                assert_eq!(
+                    slope.args,
+                    vec!["\"height\"".to_string(), "\"weight\"".to_string()]
+                );
+                // Data extents the renderer builds its x/y scales from —
+                // typed min/max calls with the DOUBLE cast carried as data.
+                assert!(has(AggregateFunction::Min, "x_min"));
+                assert!(has(AggregateFunction::Max, "x_max"));
+                assert!(has(AggregateFunction::Min, "y_min"));
+                assert!(has(AggregateFunction::Max, "y_max"));
+                let x_min = calls
+                    .iter()
+                    .find(|c| c.alias.as_deref() == Some("x_min"))
+                    .unwrap();
+                assert_eq!(x_min.cast.as_deref(), Some("DOUBLE"));
+                assert_eq!(x_min.args, vec!["\"weight\"".to_string()]);
             }
             other => panic!("expected AggregateScalar, got {other:?}"),
         }
+    }
+
+    /// The regression lowerer's typed aggregates render byte-identically to
+    /// the strings the lowerer used to format — the SQL is pinned verbatim.
+    #[test]
+    fn regression_lowerer_sql_is_byte_stable() {
+        let mark = make_mark_with_options(
+            MarkKind::RegressionY,
+            vec![
+                ("x", SpecValue::String("weight".to_string())),
+                ("y", SpecValue::String("height".to_string())),
+            ],
+        );
+        let ctx = make_ctx();
+        let plan = RegressionLowerer.lower(&mark, &ctx).expect("lowers");
+        let mut bindings = Vec::new();
+        let sql = crate::render::render_query(&plan, &mut bindings);
+        assert_eq!(
+            sql,
+            "SELECT regr_slope(\"height\", \"weight\") AS slope, \
+             regr_intercept(\"height\", \"weight\") AS intercept, \
+             regr_count(\"height\", \"weight\") AS n, \
+             regr_avgx(\"height\", \"weight\") AS x_bar, \
+             regr_sxx(\"height\", \"weight\") AS sxx, \
+             regr_sxy(\"height\", \"weight\") AS sxy, \
+             regr_syy(\"height\", \"weight\") AS syy, \
+             CAST(min(\"weight\") AS DOUBLE) AS x_min, \
+             CAST(max(\"weight\") AS DOUBLE) AS x_max, \
+             CAST(min(\"height\") AS DOUBLE) AS y_min, \
+             CAST(max(\"height\") AS DOUBLE) AS y_max \
+             FROM (SELECT * FROM (SELECT * FROM \"athletes\") AS _f \
+             WHERE \"weight\" IS NOT NULL AND \"height\" IS NOT NULL) AS _as"
+        );
     }
 
     #[test]
@@ -1529,7 +1646,17 @@ mod tests {
                 assert!(group_by[0].contains("least"));
                 assert!(group_by[0].contains("AS \"weight\""));
                 assert_eq!(aggregates.len(), 1);
-                assert!(aggregates[0].contains("COUNT"));
+                // The occupancy count is a TYPED call (count-star, DOUBLE
+                // cast, reserved alias — all as data).
+                match &aggregates[0] {
+                    AggregateExpr::Call(c) => {
+                        assert_eq!(c.func, AggregateFunction::Count);
+                        assert_eq!(c.args, vec!["*".to_string()]);
+                        assert_eq!(c.cast.as_deref(), Some("DOUBLE"));
+                        assert_eq!(c.alias.as_deref(), Some("__bf_count"));
+                    }
+                    other => panic!("expected typed count call, got {other:?}"),
+                }
             }
             other => panic!("expected Aggregation, got {other:?}"),
         }
@@ -1738,12 +1865,21 @@ mod tests {
         // Centres are emitted in DATA units aliased to the x/y channel columns.
         assert!(group_by[0].contains("AS \"time\""), "{group_by:?}");
         assert!(group_by[1].contains("AS \"delay\""), "{group_by:?}");
-        // Count → reserved column; constant hex half-extents travel in-band.
+        // Count → reserved column, as a TYPED call; the constant hex
+        // half-extents travel in-band as RAW scalar expressions (they are not
+        // aggregate calls — the designed analysis bail).
+        assert!(aggregates.iter().any(|a| matches!(
+            a,
+            AggregateExpr::Call(c)
+                if c.func == AggregateFunction::Count
+                    && c.alias.as_deref() == Some("__bf_count")
+        )));
         assert!(aggregates
             .iter()
-            .any(|a| a.contains("COUNT(*)") && a.contains("__bf_count")));
-        assert!(aggregates.iter().any(|a| a.contains("__bf_hex_dx")));
-        assert!(aggregates.iter().any(|a| a.contains("__bf_hex_dy")));
+            .any(|a| matches!(a, AggregateExpr::Raw(s) if s.contains("__bf_hex_dx"))));
+        assert!(aggregates
+            .iter()
+            .any(|a| matches!(a, AggregateExpr::Raw(s) if s.contains("__bf_hex_dy"))));
     }
 
     #[test]
@@ -1909,7 +2045,14 @@ mod tests {
             group_by,
             vec!["\"day\"".to_string(), "\"hour\"".to_string()]
         );
-        assert!(aggregates[0].contains("COUNT(*)") && aggregates[0].contains("__bf_count"));
+        match &aggregates[0] {
+            AggregateExpr::Call(c) => {
+                assert_eq!(c.func, AggregateFunction::Count);
+                assert_eq!(c.args, vec!["*".to_string()]);
+                assert_eq!(c.alias.as_deref(), Some("__bf_count"));
+            }
+            other => panic!("expected typed count call, got {other:?}"),
+        }
     }
 
     #[test]
