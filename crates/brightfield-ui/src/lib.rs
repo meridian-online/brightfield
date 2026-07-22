@@ -9,8 +9,13 @@
 //!
 //! ## Architecture
 //!
-//! - **ChartState** — reactive state wrapped in `gpui::Entity`. Owns scene,
+//! - **ChartState** (`chart_state`) — one plot's mutable chart state, generic
+//!   over the host texture handle. The gpui shell wraps it in `gpui::Entity`
+//!   (`GpuiChartState`); the state itself names no host type. Owns scene,
 //!   interaction, navigation, transition, dimensions, and VelloRenderer ref.
+//! - **ReactiveHandle** (`reactive`) — the host-side reactive-cell seam the
+//!   crossfilter coordinator addresses plot state through; the gpui
+//!   realisation (`Entity<GpuiChartState>` + `App`) lives in `gpui_canvas`.
 //! - **CanvasHost / ChartSurface / OverlayPainter** (`canvas_host`) — the
 //!   framework-free render/host boundary. The chart's paint logic
 //!   (`chart_element`) is expressed against these traits and names no gpui type.
@@ -42,6 +47,7 @@ pub mod legend_element;
 pub mod legend_scene;
 pub mod menu;
 pub mod menu_element;
+pub mod reactive;
 pub mod slider;
 pub mod slider_element;
 mod theme_bridge;
@@ -58,7 +64,9 @@ pub use chart_layout::ChartLayout;
 pub use chart_state::ChartState;
 pub use chart_view::{ChartView, PlacedChart, PlacedMenu, PlacedSlider};
 pub use crossfilter::{CrossfilterCoordinator, LegendSelectBinding, LivePlot, MarkInput};
-pub use gpui_canvas::{GpuiCanvasHost, GpuiChartSurface};
+pub use gpui_canvas::{
+    GpuiCanvasHost, GpuiChartState, GpuiChartSurface, GpuiCrossfilter, GpuiStateHandle, GpuiSurface,
+};
 pub use interaction::InteractionState;
 pub use legend_element::{swatch_hit_category, LegendElement, PlacedLegend};
 pub use legend_scene::build_legend_scene;
@@ -67,6 +75,7 @@ pub use menu::{
     MenuBinding, MenuState, MenuStyle,
 };
 pub use menu_element::MenuWidget;
+pub use reactive::ReactiveHandle;
 pub use slider::{commit_slider_release, ParamDispatcher, SliderBinding, SliderState};
 pub use slider_element::{SliderElement, SliderWidget};
 pub use vello_renderer::VelloRenderer;

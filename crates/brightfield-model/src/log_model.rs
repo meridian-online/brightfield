@@ -8,7 +8,17 @@
 //! reconstruct what happened to a save after the toast is gone. No gpui
 //! import may enter this file (semantic-layer rule).
 
-use crate::reload_feedback::Severity;
+/// How prominently a feedback outcome surfaces — the notification-severity
+/// vocabulary shared by this log and the reload-feedback router (the router
+/// still lives app-side until its own lift re-homes it; it re-exports this
+/// type so its callers are unmoved).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    /// The save was not applied and needs fixing (e.g. a parse error).
+    Error,
+    /// The save is valid but this window can't absorb it — restart to apply.
+    Warning,
+}
 
 /// Maximum entries the log retains; the oldest fall off past the cap.
 pub const LOG_CAP: usize = 200;
@@ -22,6 +32,20 @@ pub struct LogEntry {
     pub severity: Severity,
     /// The notification's message, verbatim.
     pub message: String,
+}
+
+/// The Log-dock entries one reload/launch pass appends for assembly-time
+/// menu resolution warnings: exactly one [`Severity::Warning`]
+/// per warning string, per assembly pass — independent of whether the pass
+/// subsequently gates (the watcher appends these BEFORE the
+/// same_layout/chrome_divergence `continue`s, so a gated "restart to apply"
+/// still co-surfaces the explanation instead of dropping it).
+#[must_use]
+pub fn resolution_warning_entries(warnings: &[String]) -> Vec<(Severity, String)> {
+    warnings
+        .iter()
+        .map(|w| (Severity::Warning, w.clone()))
+        .collect()
 }
 
 /// The append-only feedback log, newest first. There is deliberately NO

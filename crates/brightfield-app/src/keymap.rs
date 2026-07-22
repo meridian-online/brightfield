@@ -44,15 +44,15 @@ actions!(
         ReloadSpec,
         /// Cycle the focused view's sequential colour scheme (c, transient).
         CycleColourScheme,
-        /// Change the focused view's primary mark type (m, command log).
+        /// Change the focused view's primary mark type (m, editing grammar).
         ChangeMarkType,
         /// Add a mark to the focused view (a, argument overlay).
         AddMark,
         /// Bind a channel to a column on the focused view (e, argument overlay).
         SetChannel,
-        /// Remove the focused view's primary mark (d, command log).
+        /// Remove the focused view's primary mark (d, editing grammar).
         RemoveMark,
-        /// Undo the last uncommitted command-log edit (u).
+        /// Undo the last uncommitted keyboard edit (u).
         Undo
     ]
 );
@@ -93,7 +93,7 @@ fn keybinding_for(bk: &BoundKey) -> Option<KeyBinding> {
         "clear-selection" => KeyBinding::new(ks, ClearSelection, ctx),
         "reload-spec" => KeyBinding::new(ks, ReloadSpec, ctx),
         "cycle-colour-scheme" => KeyBinding::new(ks, CycleColourScheme, ctx),
-        // Command-log structural edits.
+        // Keyboard structural edits.
         "change-mark-type" => KeyBinding::new(ks, ChangeMarkType, ctx),
         "add-mark" => KeyBinding::new(ks, AddMark, ctx),
         "set-channel" => KeyBinding::new(ks, SetChannel, ctx),
@@ -187,7 +187,7 @@ mod tests {
             want,
             "adapter dropped a new registry binding"
         );
-        // The command log added m/a/e/d/u (5 keys): 23 registry keys − p − cmd-s = 21.
+        // The editing grammar added m/a/e/d/u (5 keys): 23 registry keys − p − cmd-s = 21.
         assert_eq!(
             want, 21,
             "21 new grammar bindings (23 registry keys − p − cmd-s)"

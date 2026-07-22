@@ -24,14 +24,10 @@ pub enum ReloadOutcome<'a> {
     ChromeDiverged(&'a str),
 }
 
-/// How prominently a rejection surfaces.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Severity {
-    /// The save was not applied and needs fixing (e.g. a parse error).
-    Error,
-    /// The save is valid but this window can't absorb it — restart to apply.
-    Warning,
-}
+/// How prominently a rejection surfaces. The type moved to the
+/// framework-free model crate with the feedback log it labels; re-exported
+/// here so `crate::reload_feedback::Severity` callers are unmoved.
+pub use brightfield_model::log_model::Severity;
 
 /// The workspace notification for a reload outcome, if any: rejections
 /// surface (in addition to the existing stderr line), successes are silent.

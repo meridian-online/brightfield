@@ -1,23 +1,27 @@
-//! ChartState — reactive chart state for GPUI Entity wrapping.
+//! ChartState — one plot's mutable chart state, framework-free.
 //!
 //! ChartState holds all mutable chart state: the Vello scene, interaction state,
 //! navigation state, transition state, layout dimensions, and a shared
-//! VelloRenderer reference. It is wrapped in `gpui::Entity<ChartState>` for
-//! reactive notifications.
+//! VelloRenderer reference. The HOST owns the reactive cell it lives in and
+//! addresses it through [`crate::reactive::ReactiveHandle`] (the gpui shell:
+//! `Entity<ChartState<…>>`); this module names no host type.
 //!
-//! The chart surface borrows from ChartState for one paint cycle. ChartState
-//! owns all mutable state; the surface owns none.
+//! The one host-specific thing the state touches is its base-raster cache:
+//! what a presented scene *becomes* is the host's texture handle (the
+//! [`CanvasHost::Surface`] of its present path), so the state is generic over
+//! that handle type `S` and [`ChartState::base_image`] is driven through
+//! whichever [`CanvasHost`] the shell owns. The chart surface borrows from
+//! ChartState for one paint cycle. ChartState owns all mutable state; the
+//! surface owns none.
 
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
-use gpui::RenderImage;
 use kurbo::{Affine, Point};
 use vello::Scene;
 
 use crate::canvas_host::{CanvasHost, Color, PixelSize};
 use crate::chart_layout::ChartLayout;
-use crate::gpui_canvas::GpuiCanvasHost;
 use crate::interaction::{
     brush_region, BrushRegion, InteractionState, NavigationState, PointerAction, HANDLE_TOL,
 };
@@ -25,11 +29,13 @@ use crate::vello_renderer::VelloRenderer;
 use brightfield_render::layout::{Insets, Margins};
 use brightfield_render::transition::Transition;
 
-/// Reactive chart state, wrapped in `gpui::Entity` for notifications.
+/// One plot's mutable chart state, owned by the host's reactive cell.
 ///
 /// Owns all mutable chart state. The chart surface borrows from this for
-/// one paint cycle — it is a stateless rendering shell.
-pub struct ChartState {
+/// one paint cycle — it is a stateless rendering shell. `S` is the host
+/// texture handle the base-raster cache holds (the host's
+/// [`CanvasHost::Surface`]).
+pub struct ChartState<S> {
     /// The Vello scene containing the full chart (marks + axes + grid + legend).
     scene: Scene,
     /// Current interaction state (idle, brushing, hovering).
@@ -61,17 +67,18 @@ pub struct ChartState {
     /// unchanged so hovering/brushing don't re-run Vello. Interior-mutable
     /// because it is populated lazily during `paint` (a `&self` context); held
     /// per-chart, so multiple charts never share or evict each other's raster.
-    base_cache: RefCell<Option<BaseRaster>>,
+    base_cache: RefCell<Option<BaseRaster<S>>>,
 }
 
-/// A cached device-resolution rasterisation of [`ChartState::scene`].
-struct BaseRaster {
+/// A cached device-resolution rasterisation of [`ChartState::scene`], as the
+/// host texture handle the present path produced it.
+struct BaseRaster<S> {
     dev_w: u32,
     dev_h: u32,
-    image: Arc<RenderImage>,
+    image: S,
 }
 
-impl ChartState {
+impl<S> ChartState<S> {
     /// Create a new ChartState.
     pub fn new(scene: Scene, width: u32, height: u32, renderer: Arc<Mutex<VelloRenderer>>) -> Self {
         Self {
@@ -104,14 +111,19 @@ impl ChartState {
         *self.base_cache.borrow_mut() = None;
     }
 
-    /// The current scene rasterised at device resolution and returned as a GPUI
-    /// image, reusing the cached result while the scene and target dimensions
-    /// are unchanged. `scale_factor` is the window's device pixel ratio: the
-    /// scene (in logical coordinates) is scaled up to the device pixel grid so
-    /// the chart stays crisp on HiDPI displays rather than being upscaled by the
-    /// compositor. The interaction overlay is NOT included — it is painted as
-    /// GPUI quads on top — so hovering/brushing reuse this cached raster.
-    pub fn base_image(&self, scale_factor: f32) -> Arc<RenderImage> {
+    /// The current scene rasterised at device resolution through the host's
+    /// present path and returned as the host texture handle, reusing the
+    /// cached result while the scene and target dimensions are unchanged.
+    /// `scale_factor` is the window's device pixel ratio: the scene (in
+    /// logical coordinates) is scaled up to the device pixel grid so the
+    /// chart stays crisp on HiDPI displays rather than being upscaled by the
+    /// compositor. The interaction overlay is NOT included — the host paints
+    /// it on top — so hovering/brushing reuse this cached raster.
+    pub fn base_image<H>(&self, host: &mut H, scale_factor: f32) -> S
+    where
+        H: CanvasHost<Surface = S>,
+        S: Clone,
+    {
         let sf = f64::from(scale_factor.max(1.0));
         // Match paint_image, which scales the logical bounds by the device ratio
         // and ceils the size: render at exactly that device size and scale the
@@ -134,10 +146,10 @@ impl ChartState {
             Some(Affine::scale_non_uniform(scale_x, scale_y)),
         );
 
-        // Present through the CanvasHost boundary: scene → device-resolution
-        // RenderImage (GPU readback + BGRA swap). The chart clears to a
+        // Present through the CanvasHost boundary: scene → the host's
+        // device-resolution texture handle. The chart clears to a
         // transparent base — the overlay and ink carry their own alpha.
-        let image = GpuiCanvasHost::new(self.renderer.clone()).present_scene(
+        let image = host.present_scene(
             &scaled,
             PixelSize {
                 width: dev_w,
@@ -430,17 +442,18 @@ impl ChartState {
     }
 }
 
-// ChartState must be Send for gpui::Entity.
-// This is safe because all fields are Send:
+// ChartState must be Send (with a Send surface handle) for hosts whose
+// reactive cells require it (gpui's Entity does).
+// This is safe because all remaining fields are Send:
 // - Scene is Send
 // - InteractionState is Send (Point, NearestHit are Send)
 // - NavigationState is Send
 // - Transition is Send
 // - VelloRenderer contains wgpu types which are Send
-// Compile-time assertion: ChartState must be Send for gpui::Entity.
-fn _assert_chart_state_send() {
+// Compile-time assertion, generic in the surface handle.
+fn _assert_chart_state_send<S: Send>() {
     fn _assert<T: Send>() {}
-    _assert::<ChartState>();
+    _assert::<ChartState<S>>();
 }
 
 #[cfg(all(test, feature = "gpu-tests"))]
@@ -454,7 +467,7 @@ mod tests {
     fn chart_state_construction() {
         let renderer = VelloRenderer::new();
         let scene = Scene::new();
-        let state = ChartState::new(scene, 640, 480, renderer);
+        let state = ChartState::<()>::new(scene, 640, 480, renderer);
 
         assert_eq!(state.width(), 640);
         assert_eq!(state.height(), 480);
@@ -467,7 +480,7 @@ mod tests {
     #[test]
     fn chart_state_scene_update() {
         let renderer = VelloRenderer::new();
-        let mut state = ChartState::new(Scene::new(), 640, 480, renderer);
+        let mut state = ChartState::<()>::new(Scene::new(), 640, 480, renderer);
 
         let mut new_scene = Scene::new();
         use kurbo::{Affine, Circle};
@@ -493,7 +506,7 @@ mod tests {
     #[test]
     fn chart_state_dimensions_update() {
         let renderer = VelloRenderer::new();
-        let mut state = ChartState::new(Scene::new(), 640, 480, renderer);
+        let mut state = ChartState::<()>::new(Scene::new(), 640, 480, renderer);
 
         state.set_dimensions(1024, 768);
         assert_eq!(state.width(), 1024);
@@ -508,7 +521,7 @@ mod tests {
         // The review HIGH: a resize must NOT reset title-grown margins to
         // Margins::default (which would desync hit-testing from the titled
         // scene). set_margins_and_insets stores them; set_dimensions preserves.
-        let mut state = ChartState::new(Scene::new(), 640, 480, VelloRenderer::new());
+        let mut state = ChartState::<()>::new(Scene::new(), 640, 480, VelloRenderer::new());
         let grown = Margins {
             left: 60.0,
             top: 40.0,
@@ -534,7 +547,7 @@ mod tests {
     #[test]
     fn chart_state_interaction_update() {
         let renderer = VelloRenderer::new();
-        let mut state = ChartState::new(Scene::new(), 640, 480, renderer);
+        let mut state = ChartState::<()>::new(Scene::new(), 640, 480, renderer);
 
         state.set_interaction(InteractionState::start_brush(kurbo::Point::new(10.0, 20.0)));
         assert!(matches!(
@@ -547,7 +560,7 @@ mod tests {
     #[test]
     fn pointer_down_inside_starts_brush_outside_does_not() {
         let renderer = VelloRenderer::new();
-        let mut state = ChartState::new(Scene::new(), 640, 480, renderer);
+        let mut state = ChartState::<()>::new(Scene::new(), 640, 480, renderer);
 
         // Inside the plot area (default margins 40/20/20/30) at origin (0,0).
         assert!(state.pointer_down(Point::new(300.0, 200.0), Point::new(0.0, 0.0)));
@@ -557,7 +570,7 @@ mod tests {
         ));
 
         // In the left margin (x=10 < 40) — no brush.
-        let mut state2 = ChartState::new(Scene::new(), 640, 480, VelloRenderer::new());
+        let mut state2 = ChartState::<()>::new(Scene::new(), 640, 480, VelloRenderer::new());
         assert!(!state2.pointer_down(Point::new(10.0, 200.0), Point::new(0.0, 0.0)));
         assert!(matches!(state2.interaction(), InteractionState::Idle));
     }
@@ -566,7 +579,7 @@ mod tests {
     #[test]
     fn pointer_move_drags_brush_and_hovers() {
         let renderer = VelloRenderer::new();
-        let mut state = ChartState::new(Scene::new(), 640, 480, renderer);
+        let mut state = ChartState::<()>::new(Scene::new(), 640, 480, renderer);
 
         // Hover inside the plot area (no button held).
         assert!(state.pointer_move(Point::new(300.0, 200.0), Point::new(0.0, 0.0), false));
@@ -593,7 +606,7 @@ mod tests {
     #[test]
     fn pointer_up_persists_a_drag_and_a_click_stays_idle() {
         let renderer = VelloRenderer::new();
-        let mut state = ChartState::new(Scene::new(), 640, 480, renderer);
+        let mut state = ChartState::<()>::new(Scene::new(), 640, 480, renderer);
 
         // A drag commits to a persistent Selected rectangle (Mosaic fidelity).
         state.pointer_down(Point::new(120.0, 120.0), Point::new(0.0, 0.0));

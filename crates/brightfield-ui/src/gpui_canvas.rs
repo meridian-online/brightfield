@@ -44,7 +44,42 @@ use crate::chart_element::{
 use crate::chart_state::ChartState;
 use crate::crossfilter::CrossfilterCoordinator;
 use crate::interaction::BrushRegion;
+use crate::reactive::ReactiveHandle;
 use crate::vello_renderer::VelloRenderer;
+
+// ---------------------------------------------------------------------------
+// The gpui host's names for the two host seams.
+// ---------------------------------------------------------------------------
+
+/// The gpui host's texture handle: a presented scene becomes a `RenderImage`
+/// via GPU readback (the transitional present path).
+pub type GpuiSurface = Arc<RenderImage>;
+
+/// [`ChartState`] specialised to the gpui host's texture handle.
+pub type GpuiChartState = ChartState<GpuiSurface>;
+
+/// The gpui [`ReactiveHandle`]: the host's reactive cell is `gpui::Entity`
+/// and its update context is the `App`.
+pub type GpuiStateHandle = Entity<GpuiChartState>;
+
+/// [`CrossfilterCoordinator`] specialised to the gpui host.
+pub type GpuiCrossfilter = CrossfilterCoordinator<GpuiStateHandle>;
+
+/// The gpui realisation of the reactive-state seam: `Entity<ChartState<…>>`
+/// addressed through the `App`, with a requested repaint delivered as the
+/// entity notify every observer of the cell already subscribes to.
+impl ReactiveHandle for Entity<GpuiChartState> {
+    type Surface = GpuiSurface;
+    type Cx = App;
+
+    fn update(&self, cx: &mut App, f: impl FnOnce(&mut GpuiChartState) -> bool) {
+        Entity::update(self, cx, |state, entity_cx| {
+            if f(state) {
+                entity_cx.notify();
+            }
+        });
+    }
+}
 
 // ---------------------------------------------------------------------------
 // CanvasHost — Vello scene → RenderImage (GPU readback).
@@ -111,7 +146,7 @@ impl CanvasHost for GpuiCanvasHost {
 /// own — it reads and updates the shared `Entity<ChartState>`.
 pub struct GpuiChartSurface {
     /// The reactive chart state entity.
-    state: Entity<ChartState>,
+    state: Entity<GpuiChartState>,
     /// This plot's index — both the stable element id and the plot index into
     /// the cross-filter coordinator (charts are hosted in plot order).
     index: usize,
@@ -120,7 +155,7 @@ pub struct GpuiChartSurface {
     /// Shared cross-filter coordinator. When present, a brush release routes
     /// through it to re-query and re-render subscriber plots; `None` means the
     /// brush is purely visual (no linked views).
-    coordinator: Option<Rc<RefCell<CrossfilterCoordinator>>>,
+    coordinator: Option<Rc<RefCell<GpuiCrossfilter>>>,
     /// The pointer's grab region over the persisted `Selected` rect,
     /// shared with the persistent `ChartView` so it survives the per-frame
     /// element recreation. Set by the mouse-move listener, read each paint to
@@ -135,9 +170,9 @@ impl GpuiChartSurface {
     /// doesn't cross-filter. `region` is the persistent cursor-region cell the
     /// hosting `ChartView` owns per plot.
     pub fn new(
-        state: Entity<ChartState>,
+        state: Entity<GpuiChartState>,
         index: usize,
-        coordinator: Option<Rc<RefCell<CrossfilterCoordinator>>>,
+        coordinator: Option<Rc<RefCell<GpuiCrossfilter>>>,
         region: Rc<Cell<BrushRegion>>,
     ) -> Self {
         Self {
@@ -360,7 +395,7 @@ impl Element for GpuiChartSurface {
 struct GpuiFrame<'a> {
     window: &'a mut Window,
     cx: &'a mut App,
-    state: &'a Entity<ChartState>,
+    state: &'a Entity<GpuiChartState>,
     hitbox: &'a Hitbox,
     bounds: Bounds<Pixels>,
     sf: f32,
@@ -370,8 +405,11 @@ impl ChartSurface for GpuiFrame<'_> {
     fn present(&mut self, _size: PixelSize) -> SurfaceRect {
         // The cached, device-resolution base raster (re-rendered only when the
         // scene changes) painted into the reserved bounds — hovering/brushing
-        // reuse it instead of re-running Vello.
-        let base = self.state.read(self.cx).base_image(self.sf);
+        // reuse it instead of re-running Vello. The state presents through
+        // THIS host's present path (scene → RenderImage via GPU readback).
+        let state = self.state.read(self.cx);
+        let mut host = GpuiCanvasHost::new(state.renderer().clone());
+        let base = state.base_image(&mut host, self.sf);
         let _ = self
             .window
             .paint_image(self.bounds, Corners::default(), base, 0, false);

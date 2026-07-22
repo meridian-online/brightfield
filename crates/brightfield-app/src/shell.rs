@@ -57,26 +57,25 @@ use brightfield_spec::edit::{
 use brightfield_spec::vocab::{ImplStatus, MarkKind};
 use brightfield_ui::{ChartView, PresentationMode, TogglePresentation, WORKSPACE_KEY_CONTEXT};
 
-use crate::arg_collector::{ArgCollector, ArgOutcome, ArgStep};
-use crate::command_log::CommandLog;
-use crate::dock_state_file::{
-    self, LoadDecision, SaveAction, SavePolicy, DOCK_STATE_VERSION, SAVE_DEBOUNCE_MS,
-};
 use crate::keymap::{
     action_for_longname, AddMark, ChangeMarkType, ClearSelection, CycleColourScheme, DiveIn,
     FocusJump, FocusNextSibling, FocusPrevSibling, OpenHelp, OpenPalette, PopOut, ReloadSpec,
     RemoveMark, SetChannel, ToggleFocus, Undo,
 };
-use crate::log_model::FeedbackLog;
-use crate::profile_model::{self, ProfileOutcome, SourceProfile};
 use crate::reload_feedback::{self, Severity};
-use crate::shell_model::{
+use crate::spec_save;
+use brightfield_model::arg_collector::{ArgCollector, ArgOutcome, ArgStep};
+use brightfield_model::dock_state_file::{
+    self, LoadDecision, SaveAction, SavePolicy, DOCK_STATE_VERSION, SAVE_DEBOUNCE_MS,
+};
+use brightfield_model::log_model::FeedbackLog;
+use brightfield_model::profile_model::{self, ProfileOutcome, SourceProfile};
+use brightfield_model::shell_model::{
     bottom_dock_action, bottom_dock_needs_backfill, dock_closes_when_emptied, docks_open,
     grammar_chrome_visible, layout_persistable, panel_visible, BottomDockAction, PanelRole,
-    BOTTOM_DOCK_HEIGHT, CANVAS_PANEL_NAME, CMD_LOG_PANEL_NAME, EDITOR_DOCK_WIDTH,
-    EDITOR_PANEL_NAME, LOG_PANEL_NAME, SIDEBAR_DOCK_WIDTH, SIDEBAR_PANEL_NAME,
+    BOTTOM_DOCK_HEIGHT, CANVAS_PANEL_NAME, EDITOR_DOCK_WIDTH, EDITOR_PANEL_NAME, LOG_PANEL_NAME,
+    SIDEBAR_DOCK_WIDTH, SIDEBAR_PANEL_NAME,
 };
-use crate::spec_save;
 
 actions!(
     brightfield,
@@ -91,7 +90,7 @@ actions!(
         DockEditorAtRight,
         DockSidebarAtBottom,
         DockSidebarAtLeft,
-        /// Commit the accumulated command-log edits to disk: cmd-s while
+        /// Commit the accumulated keyboard edits to disk: cmd-s while
         /// the CANVAS has focus. Distinct from the
         /// editor's cmd-s `SaveSpec` (which saves the hand-typed buffer);
         /// resolved by focus context.
@@ -114,7 +113,7 @@ pub fn editor_key_bindings() -> Vec<KeyBinding> {
     vec![KeyBinding::new("cmd-s", SaveSpec, Some(EDITOR_KEY_CONTEXT))]
 }
 
-/// The command-log commit binding: cmd-s scoped to the
+/// The keyboard-edit commit binding: cmd-s scoped to the
 /// CANVAS ([`WORKSPACE_KEY_CONTEXT`]) → [`CommitEdits`]. So cmd-s commits pending
 /// structural edits while the canvas is focused, and saves the buffer while the
 /// editor is focused (`editor_key_bindings`) — resolved by focus context, the
@@ -167,17 +166,16 @@ pub struct CanvasPanel {
     /// Where keyboard focus sits (the bare-verb / focus-ring target); `None` when
     /// the dashboard has no navigable structure.
     focus_state: Option<FocusState>,
-    /// The keyboard command-log session: the working `Spec` the
-    /// structural verbs mutate, the snapshot-undo stack, and the shared
-    /// [`CommandLog`]. `None` until [`Self::set_command_session`] wires it (the
-    /// dump path + a spec that failed to re-parse never do), so the verbs
-    /// no-op gracefully on a session-less canvas.
+    /// The keyboard editing session: the working `Spec` the
+    /// structural verbs mutate and the snapshot-undo stack. `None` until
+    /// [`Self::set_command_session`] wires it (the dump path + a spec that
+    /// failed to re-parse never do), so the verbs no-op gracefully on a
+    /// session-less canvas.
     command: Option<CommandSession>,
 }
 
-/// The keyboard command-log session state riding [`CanvasPanel`].
-/// Framework-bound only in that it holds a gpui `Entity<CommandLog>`; the
-/// reducer target ([`Spec`]) and the [`UndoStack`] are gpui-free.
+/// The keyboard editing-session state riding [`CanvasPanel`] — fully
+/// gpui-free: the reducer target ([`Spec`]) and the [`UndoStack`].
 struct CommandSession {
     /// The WORKING `Spec` — the reducer target ([`apply_spec_edit`] mutates it).
     /// The live coordinator holds no `Spec` (crossfilter.rs), so it lives here.
@@ -189,8 +187,6 @@ struct CommandSession {
     /// refreshes all plots, so this is retained for future targeted refresh /
     /// diagnostics rather than strictly required today).
     undo_paths: Vec<String>,
-    /// The shared append-only command log the inline readout renders.
-    log: Entity<CommandLog>,
 }
 
 impl CanvasPanel {
@@ -224,23 +220,21 @@ impl CanvasPanel {
         }
     }
 
-    /// Wire the command-log session AFTER construction — so
+    /// Wire the keyboard editing session AFTER construction — so
     /// [`CanvasPanel::new`]'s signature (and its many test callers) stay
-    /// untouched. `working_spec` is the parsed launch spec (the reducer target);
-    /// `log` is the shared [`CommandLog`] the inline readout renders and the
-    /// structural verbs append to. Called once from `main` when the pipeline
-    /// produced a re-parsable spec.
-    pub fn set_command_session(&mut self, working_spec: Spec, log: Entity<CommandLog>) {
+    /// untouched. `working_spec` is the parsed launch spec (the reducer
+    /// target). Called once from `main` when the pipeline produced a
+    /// re-parsable spec.
+    pub fn set_command_session(&mut self, working_spec: Spec) {
         self.command = Some(CommandSession {
             working_spec,
             undo: UndoStack::new(),
             undo_paths: Vec::new(),
-            log,
         });
     }
 
     /// The focused View's plot path (`root/vconcat[0]`, …), or `None` when focus
-    /// is at the Dashboard altitude (the command-log verbs are View-scoped). The
+    /// is at the Dashboard altitude (the editing verbs are View-scoped). The
     /// path scheme matches `edit::plot_at_path` + the coordinator's `LivePlot`
     /// paths (all built from the shared `collect_plot_nodes`/`descend` walk), so
     /// an edit targeting it resolves in both the reducer and the coordinator.
@@ -290,16 +284,6 @@ impl CanvasPanel {
         None
     }
 
-    /// Append a message to the command log and repaint the readout.
-    fn log_command(&self, f: impl FnOnce(&mut CommandLog), cx: &mut Context<Self>) {
-        if let Some(session) = self.command.as_ref() {
-            session.log.update(cx, |log, cx| {
-                f(log);
-                cx.notify();
-            });
-        }
-    }
-
     /// The focused View's plot path — the argument overlay's target.
     /// `None` when there is no command session or focus sits at the
     /// Dashboard altitude (the argument verbs are View-scoped).
@@ -320,30 +304,19 @@ impl CanvasPanel {
         brightfield_spec::parse::serialise_spec(&session.working_spec).ok()
     }
 
-    /// Seal the current uncommitted edits behind a commit barrier + record the
-    /// commit in the log — called after the buffer/save
-    /// pipeline has flushed `pending_commit_yaml` to disk.
-    pub fn mark_committed(&mut self, cx: &mut Context<Self>) {
+    /// Seal the current uncommitted edits behind a commit barrier — called
+    /// after the buffer/save pipeline has flushed `pending_commit_yaml` to
+    /// disk.
+    pub fn mark_committed(&mut self, _cx: &mut Context<Self>) {
         if let Some(session) = self.command.as_mut() {
             session.undo.commit_barrier();
         }
-        self.log_command(
-            |log| {
-                log.commit();
-            },
-            cx,
-        );
-    }
-
-    /// Record a refused command (e.g. a dirty-buffer commit refusal) in the log.
-    pub fn log_command_refusal(&self, reason: &str, cx: &mut Context<Self>) {
-        self.log_command(|log| log.record_refused(reason.to_string()), cx);
     }
 
     /// Apply a structural [`SpecEdit`] to the working spec + live coordinator:
     /// snapshot for undo, classify+apply to the working
     /// `Spec`, and on success re-analyse + drive the coordinator's transient
-    /// refresh + log the edit; on a refusal, log the reason (never mutating).
+    /// refresh; a refusal reports its reason to stderr (never mutating).
     /// TRANSIENT — no disk write (the commit is a separate deliberate action).
     /// `pub` so the argument overlay (on `WorkspaceRoot`) applies a completed
     /// `AddMark`/`SetChannel`.
@@ -355,7 +328,7 @@ impl CanvasPanel {
     ) {
         // Phase 1: classify + apply to the working spec under a snapshot. Borrows
         // only `self.command`; produces the re-analysed spec or a refusal reason.
-        let prepared: Result<(Spec, brightfield_spec::analysis::SpecAnalysis, String), String> = {
+        let prepared: Result<(Spec, brightfield_spec::analysis::SpecAnalysis), String> = {
             let Some(session) = self.command.as_mut() else {
                 return;
             };
@@ -365,7 +338,7 @@ impl CanvasPanel {
                     Ok(analysis) => {
                         session.undo.push(snapshot);
                         session.undo_paths.push(edit.plot_path().to_string());
-                        Ok((session.working_spec.clone(), analysis, edit.summary()))
+                        Ok((session.working_spec.clone(), analysis))
                     }
                     Err(e) => {
                         // A gate-clean edit should analyse; roll back defensively.
@@ -376,21 +349,20 @@ impl CanvasPanel {
                 Err(reason) => Err(format!("{}: {}", edit.summary(), reason.reason())),
             }
         };
-        // Phase 2: drive the coordinator (disjoint field `chart_view`) + log.
+        // Phase 2: drive the coordinator (disjoint field `chart_view`).
         match prepared {
-            Ok((spec, analysis, summary)) => {
+            Ok((spec, analysis)) => {
                 let coord = self.chart_view.read(cx).coordinator();
                 let changed = if let Some(coord) = coord {
                     coord.borrow_mut().apply_spec_edit(edit, spec, analysis, cx)
                 } else {
                     false
                 };
-                self.log_command(|log| log.record_edit(summary), cx);
                 if changed {
                     window.refresh();
                 }
             }
-            Err(reason) => self.log_command(|log| log.record_refused(reason), cx),
+            Err(reason) => eprintln!("edit refused: {reason}"),
         }
     }
 
@@ -404,10 +376,7 @@ impl CanvasPanel {
     ) {
         match self.next_retype_edit() {
             Some(edit) => self.apply_command_edit(&edit, window, cx),
-            None => self.log_command(
-                |log| log.record_refused("change-mark-type: no gate-clean retype from here"),
-                cx,
-            ),
+            None => eprintln!("change-mark-type: no gate-clean retype from here"),
         }
     }
 
@@ -467,15 +436,9 @@ impl CanvasPanel {
                 if let Some(coord) = coord {
                     coord.borrow_mut().reload_all_from_spec(spec, analysis, cx);
                 }
-                self.log_command(
-                    |log| {
-                        log.record_undo();
-                    },
-                    cx,
-                );
                 window.refresh();
             }
-            UndoAction::Refused(reason) => self.log_command(|log| log.record_refused(reason), cx),
+            UndoAction::Refused(reason) => eprintln!("{reason}"),
         }
     }
 
@@ -736,13 +699,14 @@ impl Render for CanvasPanel {
             .then(|| self.breadcrumb_text())
             .flatten();
         // A lightweight inline "uncommitted edits" badge, authoring-
-        // only — an at-a-glance cue right where the author works. The full
-        // history lives in the dedicated bottom-dock CommandLog panel.
+        // only — an at-a-glance cue right where the author works. The count
+        // comes from the undo stack: the working spec vs the last commit
+        // barrier is the only durable record of pending edits.
         let command_readout: Option<usize> =
             (grammar_chrome_visible(self.presentation.read(cx).mode))
                 .then_some(self.command.as_ref())
                 .flatten()
-                .map(|s| s.log.read(cx).uncommitted())
+                .map(|s| s.undo.uncommitted_len())
                 .filter(|n| *n > 0);
         div()
             .relative()
@@ -970,7 +934,7 @@ impl EditorPanel {
         self.conflict_pending = false;
     }
 
-    /// Commit a command-log flush THROUGH the editor buffer:
+    /// Commit a keyboard-edit flush THROUGH the editor buffer:
     /// the PRISTINE-BUFFER gate first (a DIRTY buffer refuses — never `set_value`
     /// over hand-typed edits), then render the canonical `yaml` into the buffer
     /// and write it atomically, letting the watcher reload it. `Ok(())` on a
@@ -1352,117 +1316,6 @@ impl Render for LogPanel {
     }
 }
 
-/// The bottom-dock command-log panel — the SECOND bottom
-/// citizen, rendering the framework-free [`CommandLog`] (the structural edits /
-/// commits / refusals a keyboard author runs), newest at top, with the
-/// uncommitted count in its header. DISTINCT from [`LogPanel`], which stays the
-/// reload/save diagnostics log. Its arrival is what unlocks the dock-drag (a
-/// single-panel dock can never source a drag).
-pub struct CommandLogPanel {
-    log: Entity<CommandLog>,
-    presentation: Entity<PresentationState>,
-    focus_handle: FocusHandle,
-}
-
-impl CommandLogPanel {
-    /// Host the shared command `log` (the SAME entity the canvas appends to).
-    pub fn new(
-        log: Entity<CommandLog>,
-        presentation: Entity<PresentationState>,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        // Repaint on ANY log change (delta finding 7). The canvas appends to the
-        // log from ITS own context — a bare-verb refusal (`d`/`m`/undo) or an edit
-        // notifies the log entity's observers, not this panel — so without this
-        // observe the new row only surfaces on an unrelated later frame.
-        cx.observe(&log, |_, _, cx| cx.notify()).detach();
-        Self {
-            log,
-            presentation,
-            focus_handle: cx.focus_handle(),
-        }
-    }
-}
-
-impl EventEmitter<PanelEvent> for CommandLogPanel {}
-
-impl Focusable for CommandLogPanel {
-    fn focus_handle(&self, _cx: &App) -> FocusHandle {
-        self.focus_handle.clone()
-    }
-}
-
-impl Panel for CommandLogPanel {
-    fn panel_name(&self) -> &'static str {
-        CMD_LOG_PANEL_NAME
-    }
-
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("Commands")
-    }
-
-    fn closable(&self, _cx: &App) -> bool {
-        false
-    }
-
-    fn zoomable(&self, _cx: &App) -> Option<PanelControl> {
-        None
-    }
-
-    fn visible(&self, cx: &App) -> bool {
-        // Same visibility rule as the diagnostics Log (authoring-only, a bottom
-        // citizen): reuse PanelRole::Log rather than adding a new role.
-        panel_visible(self.presentation.read(cx).mode, PanelRole::Log)
-    }
-}
-
-impl Render for CommandLogPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let muted = cx.theme().muted_foreground;
-        let foreground = cx.theme().foreground;
-        let accent = cx.theme().info;
-        let danger = cx.theme().danger;
-        let log = self.log.read(cx);
-        let uncommitted = log.uncommitted();
-        let entries = log.entries().to_vec();
-        let header = div()
-            .text_size(px(11.0))
-            .text_color(muted)
-            .child(SharedString::from(format!("{uncommitted} uncommitted")));
-        let list = div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .size_full()
-            .p_3()
-            .text_size(px(12.0))
-            .overflow_hidden()
-            .child(header);
-        if entries.is_empty() {
-            return list.child(div().text_color(muted).child(SharedString::from(
-                "(no command-log edits yet — try m / a / e / d / u)",
-            )));
-        }
-        list.children(entries.into_iter().map(move |entry| {
-            use crate::command_log::CommandLogEntry;
-            let (tag, tag_color) = match &entry {
-                CommandLogEntry::Edit(_) => ("edit", foreground),
-                CommandLogEntry::Commit(_) => ("commit", accent),
-                CommandLogEntry::Refused(_) => ("refused", danger),
-            };
-            div()
-                .flex()
-                .gap_2()
-                .child(div().text_color(tag_color).child(SharedString::from(tag)))
-                .child(
-                    div()
-                        .text_color(foreground)
-                        .child(SharedString::from(entry.text().to_string())),
-                )
-        }))
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Workspace root
 // ---------------------------------------------------------------------------
@@ -1575,9 +1428,9 @@ impl WorkspaceRoot {
     /// Assemble the dock over the four panels, restoring the saved layout
     /// when usable (missing/corrupt/version-mismatch → default), and wire
     /// the save triggers.
-    // 9 arguments: the five panels this root docks, the presentation state they
+    // 8 arguments: the four panels this root docks, the presentation state they
     // share, the reload flag, and gpui's `window`/`cx` — which every gpui
-    // constructor carries and which alone put this two over clippy's threshold.
+    // constructor carries and which alone put this one over clippy's threshold.
     // There is no grouping of the panels that is not just a struct named
     // "the arguments to new".
     #[allow(clippy::too_many_arguments)]
@@ -1586,7 +1439,6 @@ impl WorkspaceRoot {
         editor: Entity<EditorPanel>,
         sidebar: Entity<SidebarPanel>,
         log: Entity<LogPanel>,
-        command_log: Entity<CommandLogPanel>,
         presentation: Entity<PresentationState>,
         reload_trigger: Arc<AtomicBool>,
         window: &mut Window,
@@ -1607,7 +1459,6 @@ impl WorkspaceRoot {
             editor,
             sidebar,
             log,
-            command_log,
             presentation,
             state_path,
             raw,
@@ -1628,7 +1479,6 @@ impl WorkspaceRoot {
         editor: Entity<EditorPanel>,
         sidebar: Entity<SidebarPanel>,
         log: Entity<LogPanel>,
-        command_log: Entity<CommandLogPanel>,
         presentation: Entity<PresentationState>,
         state_path: Option<PathBuf>,
         raw: Option<String>,
@@ -1660,10 +1510,6 @@ impl WorkspaceRoot {
             let log = log.clone();
             move |_, _, _, _, _| Box::new(log.clone())
         });
-        register_panel(cx, CMD_LOG_PANEL_NAME, {
-            let command_log = command_log.clone();
-            move |_, _, _, _, _| Box::new(command_log.clone())
-        });
 
         // Restore the saved arrangement, or build the default layout. Every
         // "is this state usable?" decision is dock_state_file's; a restore
@@ -1694,16 +1540,7 @@ impl WorkspaceRoot {
             }
         };
         if !restored {
-            Self::default_layout(
-                &dock_area,
-                &canvas,
-                &editor,
-                &sidebar,
-                &log,
-                &command_log,
-                window,
-                cx,
-            );
+            Self::default_layout(&dock_area, &canvas, &editor, &sidebar, &log, window, cx);
         } else {
             // Normalise (correction): pre-round saves
             // serialised bare-Tabs dock roots, which this pin's drag
@@ -1712,11 +1549,11 @@ impl WorkspaceRoot {
             Self::normalise_dock_roots(&dock_area, window, cx);
             if bottom_dock_needs_backfill(dock_area.read(cx).has_dock(DockPlacement::Bottom)) {
                 // Backfill: a restored layout with no bottom dock —
-                // append the same closed bottom dock the default layout seeds
-                // (Log + CommandLog tabs), without touching the restored
-                // arrangement. (A saved layout that predates the CommandLog panel
-                // is discarded by the v2 version bump before reaching here.)
-                Self::seed_bottom_dock(&dock_area, &log, &command_log, window, cx);
+                // append the same closed bottom Log dock the default layout
+                // seeds, without touching the restored arrangement. (A saved
+                // layout from the era of a second bottom panel is discarded by
+                // the version bump before reaching here.)
+                Self::seed_bottom_dock(&dock_area, &log, window, cx);
             }
         }
 
@@ -1958,9 +1795,7 @@ impl WorkspaceRoot {
             .update(cx, |editor, cx| editor.commit_buffer(&yaml, window, cx));
         match result {
             Ok(()) => self.canvas.update(cx, |c, cx| c.mark_committed(cx)),
-            Err(reason) => self
-                .canvas
-                .update(cx, |c, cx| c.log_command_refusal(&reason, cx)),
+            Err(reason) => eprintln!("commit refused: {reason}"),
         }
         cx.notify();
     }
@@ -2525,16 +2360,12 @@ impl WorkspaceRoot {
     /// Center canvas + left sidebar + right editor at their default sizes,
     /// plus the closed bottom Log dock. Every item is
     /// stack-rooted (see [`Self::stack_rooted_tab`]).
-    // 8 arguments, for the same reason as `new`: the dock area, the five panels
-    // being placed into it, and gpui's `window`/`cx`.
-    #[allow(clippy::too_many_arguments)]
     fn default_layout(
         dock_area: &Entity<DockArea>,
         canvas: &Entity<CanvasPanel>,
         editor: &Entity<EditorPanel>,
         sidebar: &Entity<SidebarPanel>,
         log: &Entity<LogPanel>,
-        command_log: &Entity<CommandLogPanel>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -2547,28 +2378,24 @@ impl WorkspaceRoot {
             area.set_left_dock(left, Some(px(SIDEBAR_DOCK_WIDTH as f32)), true, window, cx);
             area.set_right_dock(right, Some(px(EDITOR_DOCK_WIDTH as f32)), true, window, cx);
         });
-        Self::seed_bottom_dock(dock_area, log, command_log, window, cx);
+        Self::seed_bottom_dock(dock_area, log, window, cx);
     }
 
-    /// Seed the bottom dock CLOSED with the Log + CommandLog panels as tabs
-    /// (makes the CommandLog the SECOND citizen — the pair is what unlocks the
-    /// dock drag, since a single-panel dock can never source a drag). The 29px
-    /// strip is the drop/expand affordance, closed doesn't re-carve the author's
-    /// layout, and the tabs are stack-rooted so the strip's TabPanel is a real
-    /// drop target (review F1).
+    /// Seed the bottom dock CLOSED with the Log panel. The 29px strip is the
+    /// drop/expand affordance, closed doesn't re-carve the author's layout,
+    /// and the tab is stack-rooted so the strip's TabPanel is a real drop
+    /// target (review F1). A single-panel dock cannot source a drag at this
+    /// pin; the menu-move actions remain the bootstrap that first pairs
+    /// panels up.
     fn seed_bottom_dock(
         dock_area: &Entity<DockArea>,
         log: &Entity<LogPanel>,
-        command_log: &Entity<CommandLogPanel>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let weak = dock_area.downgrade();
         let tabs = DockItem::tabs(
-            vec![
-                std::sync::Arc::new(log.clone()) as std::sync::Arc<dyn PanelView>,
-                std::sync::Arc::new(command_log.clone()),
-            ],
+            vec![std::sync::Arc::new(log.clone()) as std::sync::Arc<dyn PanelView>],
             &weak,
             window,
             cx,
@@ -3033,7 +2860,7 @@ impl Render for WorkspaceRoot {
             .on_action(cx.listener(Self::on_open_help))
             .on_action(cx.listener(Self::on_focus_jump))
             .on_action(cx.listener(Self::on_open_palette))
-            // Command-log argument verbs (a/e) + commit (cmd-s on the canvas):
+            // Keyboard-edit argument verbs (a/e) + commit (cmd-s on the canvas):
             // bubble from the focused canvas to this root.
             .on_action(cx.listener(Self::on_add_mark))
             .on_action(cx.listener(Self::on_set_channel))
@@ -3688,16 +3515,12 @@ mod tests {
             let sidebar = cx.new(|cx| SidebarPanel::new(Vec::new(), presentation_in.clone(), cx));
             let log_panel =
                 cx.new(|cx| LogPanel::new(feedback_log.clone(), presentation_in.clone(), cx));
-            let command_log_model = cx.new(|_| crate::command_log::CommandLog::new());
-            let command_log_panel =
-                cx.new(|cx| CommandLogPanel::new(command_log_model, presentation_in.clone(), cx));
             let workspace = cx.new(|cx| {
                 WorkspaceRoot::with_saved_layout(
                     canvas,
                     editor.clone(),
                     sidebar,
                     log_panel,
-                    command_log_panel,
                     presentation_in.clone(),
                     None,
                     raw,
@@ -3926,8 +3749,8 @@ mod tests {
         );
         assert_eq!(
             bottom_dock_panel_names(cx, &shell.workspace),
-            vec![LOG_PANEL_NAME.to_string(), CMD_LOG_PANEL_NAME.to_string()],
-            "the Log + Commands panels anchor it"
+            vec![LOG_PANEL_NAME.to_string()],
+            "the Log panel anchors it"
         );
         assert_all_roots_stack_rooted(cx, &shell.workspace);
     }
@@ -3976,7 +3799,7 @@ mod tests {
         assert_eq!(size, Some(px(BOTTOM_DOCK_HEIGHT as f32)));
         assert_eq!(
             bottom_dock_panel_names(cx, &shell.workspace),
-            vec![LOG_PANEL_NAME.to_string(), CMD_LOG_PANEL_NAME.to_string()]
+            vec![LOG_PANEL_NAME.to_string()]
         );
         // …and every restored bare-Tabs root was normalised (review F1).
         assert_all_roots_stack_rooted(cx, &shell.workspace);
@@ -4040,7 +3863,7 @@ mod tests {
         assert_eq!(size, Some(px(BOTTOM_DOCK_HEIGHT as f32)), "size preserved");
         assert_eq!(
             bottom_dock_panel_names(cx, &shell.workspace),
-            vec![LOG_PANEL_NAME.to_string(), CMD_LOG_PANEL_NAME.to_string()]
+            vec![LOG_PANEL_NAME.to_string()]
         );
         assert!(
             dock_root_is_stack_rooted(cx, &shell.workspace, DockPlacement::Bottom),
@@ -4081,12 +3904,8 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(
             bottom_dock_panel_names(cx, &shell.workspace),
-            vec![
-                LOG_PANEL_NAME.to_string(),
-                CMD_LOG_PANEL_NAME.to_string(),
-                EDITOR_PANEL_NAME.to_string()
-            ],
-            "editor moved into the bottom dock beside Log + Commands"
+            vec![LOG_PANEL_NAME.to_string(), EDITOR_PANEL_NAME.to_string()],
+            "editor moved into the bottom dock beside the Log"
         );
 
         toggle_presentation_mode(cx, &shell.presentation);
@@ -4102,11 +3921,7 @@ mod tests {
         assert_eq!(size, Some(px(240.0)), "author's size preserved");
         assert_eq!(
             bottom_dock_panel_names(cx, &shell.workspace),
-            vec![
-                LOG_PANEL_NAME.to_string(),
-                CMD_LOG_PANEL_NAME.to_string(),
-                EDITOR_PANEL_NAME.to_string()
-            ],
+            vec![LOG_PANEL_NAME.to_string(), EDITOR_PANEL_NAME.to_string()],
             "contents preserved, including the moved-in editor"
         );
         assert!(
@@ -4170,7 +3985,7 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(
             bottom_dock_panel_names(cx, &shell.workspace),
-            vec![LOG_PANEL_NAME.to_string(), CMD_LOG_PANEL_NAME.to_string()],
+            vec![LOG_PANEL_NAME.to_string()],
             "the panel-tree change landed"
         );
         cx.update(|cx| {
@@ -4214,12 +4029,8 @@ mod tests {
         move_panel(cx, &shell, editor.clone(), DockPlacement::Bottom);
         assert_eq!(
             bottom_dock_panel_names(cx, &shell.workspace),
-            vec![
-                LOG_PANEL_NAME.to_string(),
-                CMD_LOG_PANEL_NAME.to_string(),
-                EDITOR_PANEL_NAME.to_string()
-            ],
-            "editor docked at the bottom beside the Log + Commands"
+            vec![LOG_PANEL_NAME.to_string(), EDITOR_PANEL_NAME.to_string()],
+            "editor docked at the bottom beside the Log"
         );
         assert_eq!(
             bottom_dock_state(cx, &shell.workspace).1,
@@ -4239,11 +4050,7 @@ mod tests {
         move_panel(cx, &shell, editor.clone(), DockPlacement::Bottom);
         assert_eq!(
             bottom_dock_panel_names(cx, &shell.workspace),
-            vec![
-                LOG_PANEL_NAME.to_string(),
-                CMD_LOG_PANEL_NAME.to_string(),
-                EDITOR_PANEL_NAME.to_string()
-            ],
+            vec![LOG_PANEL_NAME.to_string(), EDITOR_PANEL_NAME.to_string()],
             "repeating the move is a no-op, not a duplicate"
         );
 
@@ -4271,8 +4078,8 @@ mod tests {
         );
         assert_eq!(
             bottom_dock_panel_names(cx, &shell.workspace),
-            vec![LOG_PANEL_NAME.to_string(), CMD_LOG_PANEL_NAME.to_string()],
-            "the Log + Commands remain the bottom dock's anchors"
+            vec![LOG_PANEL_NAME.to_string()],
+            "the Log remains the bottom dock's anchor"
         );
         assert_eq!(
             bottom_dock_state(cx, &shell.workspace).1,

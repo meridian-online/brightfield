@@ -171,7 +171,11 @@ pub struct MoveOutcome {
 /// persisted selection (the `pointer_down` resolver decides which). Returns
 /// `true` when the interaction changed. A non-primary press, or one off the
 /// hitbox, is ignored — matching the pre-refactor left-button + hovered gate.
-pub fn route_pointer_down(input: &SurfaceInput, state: &mut ChartState, origin: Point) -> bool {
+pub fn route_pointer_down<S>(
+    input: &SurfaceInput,
+    state: &mut ChartState<S>,
+    origin: Point,
+) -> bool {
     if input.pointer_primary.is_down() && input.hovered {
         if let Some(pos) = input.pointer_pos {
             return state.pointer_down(pos, origin);
@@ -183,9 +187,9 @@ pub fn route_pointer_down(input: &SurfaceInput, state: &mut ChartState, origin: 
 /// Route a pointer-move: extend the brush / move-resize the grab while the
 /// primary button is held, or update hover; and re-classify the pointer over any
 /// persisted selection so the paint-phase cursor tracks the region under it.
-pub fn route_pointer_move(
+pub fn route_pointer_move<S>(
     input: &SurfaceInput,
-    state: &mut ChartState,
+    state: &mut ChartState<S>,
     origin: Point,
 ) -> MoveOutcome {
     let Some(pos) = input.pointer_pos else {
@@ -205,7 +209,7 @@ pub fn route_pointer_move(
 /// range re-dispatches (the drag defence); every other state passes through
 /// unchanged. The host feeds the result into the cross-filter coordinator BEFORE
 /// `ChartState::pointer_up` clears the gesture.
-pub fn redispatch_target(state: &ChartState) -> InteractionState {
+pub fn redispatch_target<S>(state: &ChartState<S>) -> InteractionState {
     let interaction = state.interaction().clone();
     redispatch_brushing_from(&interaction).unwrap_or(interaction)
 }

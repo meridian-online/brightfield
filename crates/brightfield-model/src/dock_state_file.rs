@@ -15,10 +15,12 @@ use crate::shell_model::CANVAS_PANEL_NAME;
 
 /// Version stamped into the persisted layout. Bump when the panel set or
 /// dock structure changes incompatibly; a mismatch falls back to the
-/// default layout (no migration, no prompt). v2: the bottom dock
-/// gained the second CommandLog panel, so v1 layouts (Log-only bottom) are
-/// discarded and rebuilt with both.
-pub const DOCK_STATE_VERSION: usize = 2;
+/// default layout (no migration, no prompt). v2: the bottom dock gained a
+/// second panel, so v1 layouts (Log-only bottom) were discarded. v3: that
+/// second panel was removed again — edits are transient proposals en route
+/// to the document, so a scrollback panel of them was retired — and a v2
+/// layout carrying it names a panel this build no longer registers.
+pub const DOCK_STATE_VERSION: usize = 3;
 
 /// Debounce for `LayoutChanged`-triggered saves, in milliseconds (their
 /// dock example uses the same 10s window); quit flushes immediately.
@@ -147,8 +149,9 @@ impl SavePolicy {
 
     /// Whether a debounced save is armed and not yet fired — the probe the
     /// shell tests use to assert a dock change reached the policy
-    /// (the rebuilt-dock observer wiring).
-    #[cfg(test)]
+    /// (the rebuilt-dock observer wiring). Compiled unconditionally: the
+    /// consumers testing against it live in OTHER crates now, where a
+    /// `cfg(test)` gate here would be invisible.
     #[must_use]
     pub fn pending(&self) -> bool {
         self.due_at_ms.is_some()

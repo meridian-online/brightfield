@@ -156,7 +156,7 @@ pub fn should_reseed(buffer: &str, last_synced: Option<&str>, file_now: &str) ->
     }
 }
 
-/// Whether a command-log COMMIT may proceed (pristine-buffer
+/// Whether a keyboard-edit COMMIT may proceed (pristine-buffer
 /// gate). A commit re-serialises the working Spec and `set_value`s it OVER the
 /// editor buffer; [`decide_save`] does NOT guard this — it only flags an
 /// EXTERNAL disk change (`file_now` vs `last_synced`), and for a DIRTY in-app
@@ -183,7 +183,7 @@ pub fn commit_is_allowed(buffer: &str, last_synced: Option<&str>) -> bool {
 /// The refusal reason a dirty-buffer commit surfaces.
 /// Consumed by the cmd-s commit action (`EditorPanel::commit_buffer`).
 pub const DIRTY_BUFFER_COMMIT_REFUSAL: &str =
-    "unsaved editor edits — save or discard them before committing command-log edits";
+    "unsaved editor edits — save or discard them before committing keyboard edits";
 
 #[cfg(test)]
 mod tests {

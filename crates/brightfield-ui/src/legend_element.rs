@@ -14,7 +14,7 @@
 //! A legend BOUND `as:` a selection (click-to-filter) additionally
 //! registers a hitbox and a mouse-up hit-test: the click maps to a swatch
 //! entry via [`swatch_entry_rects`] and commits through
-//! [`CrossfilterCoordinator::commit_legend_click`]. Sequential (gradient)
+//! [`commit_legend_click`](crate::crossfilter::CrossfilterCoordinator::commit_legend_click). Sequential (gradient)
 //! legends never bind — they have no discrete entries.
 
 use std::cell::{Cell, RefCell};
@@ -33,7 +33,7 @@ use vello::Scene;
 use brightfield_render::legend::swatch_entry_rects;
 use brightfield_render::scale::Scale;
 
-use crate::crossfilter::CrossfilterCoordinator;
+use crate::gpui_canvas::GpuiCrossfilter;
 use crate::legend_scene::build_legend_scene;
 use crate::vello_renderer::VelloRenderer;
 
@@ -55,7 +55,7 @@ pub struct PlacedLegend {
     /// The legend's binding index into the coordinator's legend bindings plus
     /// the shared coordinator, present only for a legend bound `as:` a
     /// selection. `None` = display-only.
-    pub binding: Option<(usize, Rc<RefCell<CrossfilterCoordinator>>)>,
+    pub binding: Option<(usize, Rc<RefCell<GpuiCrossfilter>>)>,
     /// Whether the current mouse press originated inside this legend's panel
     /// — the press-origin half of the click decision. Lives on
     /// the placement (not the per-frame element) so it survives element
@@ -91,15 +91,11 @@ impl PlacedLegend {
 
     /// Bind this legend to the shared coordinator as its legend binding
     /// `index`: a swatch click on the hosted element then commits
-    /// through [`CrossfilterCoordinator::commit_legend_click`]. Only
+    /// through [`commit_legend_click`](crate::crossfilter::CrossfilterCoordinator::commit_legend_click). Only
     /// meaningful for a categorical [`Scale::Colour`] legend — the element
     /// arms its hit-test for bound Colour legends exclusively.
     #[must_use]
-    pub fn with_binding(
-        mut self,
-        index: usize,
-        coordinator: Rc<RefCell<CrossfilterCoordinator>>,
-    ) -> Self {
+    pub fn with_binding(mut self, index: usize, coordinator: Rc<RefCell<GpuiCrossfilter>>) -> Self {
         self.binding = Some((index, coordinator));
         self
     }
@@ -216,7 +212,7 @@ pub struct LegendElement {
     id: ElementId,
     /// Coordinator + binding index for a bound legend; `None`
     /// keeps the element display-only.
-    binding: Option<(usize, Rc<RefCell<CrossfilterCoordinator>>)>,
+    binding: Option<(usize, Rc<RefCell<GpuiCrossfilter>>)>,
     /// Shared press-origin flag (see [`PlacedLegend::pressed`]) — set on
     /// mouse-down, consumed by the mouse-up decision.
     pressed: Rc<Cell<bool>>,

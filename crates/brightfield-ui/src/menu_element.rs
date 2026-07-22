@@ -27,7 +27,7 @@ use brightfield_spec::ast::SpecValue;
 use brightfield_spec::layout::RADIO_ROW_HEIGHT;
 
 use crate::chart_view::PlacedMenu;
-use crate::crossfilter::CrossfilterCoordinator;
+use crate::gpui_canvas::GpuiCrossfilter;
 use crate::menu::{
     checkbox_checked, checkbox_toggle_index, option_label, MenuBinding, MenuState, MenuStyle,
 };
@@ -105,7 +105,7 @@ pub fn menu_element(
 /// session's live param value — this shim only forwards.
 fn commit_pick(
     state: &Entity<MenuWidget>,
-    coordinator: &Option<Rc<RefCell<CrossfilterCoordinator>>>,
+    coordinator: &Option<Rc<RefCell<GpuiCrossfilter>>>,
     binding: &MenuBinding,
     menu_index: usize,
     option_index: usize,

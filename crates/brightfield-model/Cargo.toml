@@ -1,0 +1,27 @@
+# The framework-free application-model crate: every decision the desktop app
+# makes that is plain data and arithmetic — boot mode, dock-layout persistence,
+# the feedback log, menu placement resolution, source-profile presentation,
+# shell geometry/visibility, and palette argument collection — lifted out of
+# the windowed shell so it compiles and tests headlessly on any host. This
+# crate MUST NOT depend on gpui (or any other UI framework): the windowed
+# shell is a translation shim over these models, never the other way around.
+[package]
+name = "brightfield-model"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Brightfield application models: framework-free state machines and decisions behind the desktop shell"
+
+[dependencies]
+brightfield-spec = { path = "../brightfield-spec" }
+brightfield-engine = { path = "../brightfield-engine" }
+# For the gpui-free chart/widget vocabulary only (menu bindings, the
+# presentation-mode machine, the framed-window formula) — none of the gpui
+# element modules are named here.
+brightfield-ui = { path = "../brightfield-ui" }
+serde_json = "1"
+
+[lints]
+workspace = true

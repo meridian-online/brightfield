@@ -23,7 +23,6 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use gpui::{App, Entity};
 use kurbo::{Point, Rect};
 use vello::Scene;
 
@@ -51,12 +50,12 @@ use brightfield_spec::vocab::MarkKind;
 use brightfield_sql::ir::Predicate;
 
 use crate::brush::{point_predicate, SelectionDispatcher};
-use crate::chart_state::ChartState;
 use crate::chart_view::{
     commit_brush_release_multi, commit_click_multi, BrushBinding, ZERO_AREA_EPSILON,
 };
 use crate::interaction::InteractionState;
 use crate::menu::{commit_menu_release, MenuBinding, MenuState};
+use crate::reactive::ReactiveHandle;
 use crate::slider::{commit_slider_release, SliderBinding, SliderState};
 
 /// Build the predicate for a legend's selected category set (legend
@@ -130,7 +129,8 @@ pub struct MarkInput {
 
 /// One plot in the live dashboard: its identity, the marks it owns, its layout,
 /// the brushes it contributes, its data scales (for inversion), and its state.
-pub struct LivePlot {
+/// `H` is the host's [`ReactiveHandle`] to the plot's [`ChartState`](crate::chart_state::ChartState) cell.
+pub struct LivePlot<H> {
     /// Stable component path (diagnostics / matching).
     pub path: String,
     /// Flat indices (into the coordinator's `marks`) of this plot's marks.
@@ -171,8 +171,10 @@ pub struct LivePlot {
     /// anchored live rebuild re-emits the same titles the first render drew. The
     /// grown title margins are baked into `layout` (and the `ChartState`).
     pub titles: ResolvedTitles,
-    /// Reactive state entity — the scene we swap when this plot is re-filtered.
-    pub state: Entity<ChartState>,
+    /// The host's reactive handle to this plot's [`ChartState`](crate::chart_state::ChartState) — the cell
+    /// whose scene we swap when this plot is re-filtered (gpui:
+    /// `Entity<ChartState<…>>`; see [`ReactiveHandle`]).
+    pub state: H,
 }
 
 /// A legend's selection-producer binding, UI-side — the mirror of
@@ -207,10 +209,16 @@ impl From<&LegendBinding> for LegendSelectBinding {
 /// legend point selections (swatch clicks) across a dashboard's
 /// plots. All gestures re-execute subscriber marks through the same live
 /// `Session` and rebuild only the affected plot scenes.
-pub struct CrossfilterCoordinator {
+///
+/// Generic over the host's [`ReactiveHandle`] `H` — the ONLY host-facing
+/// thing the coordinator does is swap a rebuilt scene into a plot's
+/// [`ChartState`](crate::chart_state::ChartState) cell and ask for a repaint, so the whole engine/render
+/// chain here is host-free and a new shell adopts it by implementing that
+/// one trait (gpui today: `Entity<ChartState<…>>` in `gpui_canvas`).
+pub struct CrossfilterCoordinator<H: ReactiveHandle> {
     session: Session,
     marks: Vec<MarkInput>,
-    plots: Vec<LivePlot>,
+    plots: Vec<LivePlot<H>>,
     /// Dashboard-level slider bindings, indexed by hosted slider.
     /// A slider's subscribers may span multiple plots; the affected plots are
     /// resolved generically via `mark_to_plot` from the re-executed mark indices.
@@ -232,31 +240,31 @@ pub struct CrossfilterCoordinator {
     renderers: Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>)>,
 }
 
-impl CrossfilterCoordinator {
+impl<H: ReactiveHandle> CrossfilterCoordinator<H> {
     /// Build a coordinator from the live engine session and the per-mark /
     /// per-plot / slider / menu / legend metadata assembled at startup. Returns
     /// `None` when there is nothing live to drive — no plot has a brush binding
     /// AND there are no sliders AND no menu widgets AND no bound legends AND no
-    /// plot carries a sequential Fill ramp AND the command log is not active —
-    /// so a purely static PNG/embedding path skips the wiring entirely and
-    /// behaves as before.
+    /// plot carries a sequential Fill ramp AND the editing grammar is not
+    /// active — so a purely static PNG/embedding path skips the wiring entirely
+    /// and behaves as before.
     /// A dashboard whose only interactive surface is a bound legend,
     /// or whose only live surface is a sequential colour scale (the `c`
-    /// colour-cycle), stays live. `command_log_active` is
+    /// colour-cycle), stays live. `editing_active` is
     /// itself a live surface: the authoring window passes `true` so a structural
-    /// edit (m/a/e/d/u) can re-render even an otherwise-static plot — without it a
-    /// plain scatter's edits mutate the working spec + fill the log but never
-    /// re-render the canvas (the silent-no-op class). Keeping the
+    /// edit (m/a/e/d/u) can re-render even an otherwise-static plot — without it
+    /// a plain scatter's edits mutate the working spec but never re-render the
+    /// canvas (the silent-no-op class). Keeping the
     /// coordinator costs only the retained non-Send Session in the window; the
     /// dump/watcher paths never build one and pass `false`.
     pub fn new(
         session: Session,
         marks: Vec<MarkInput>,
-        plots: Vec<LivePlot>,
+        plots: Vec<LivePlot<H>>,
         slider_bindings: Vec<SliderBinding>,
         menu_bindings: Vec<MenuBinding>,
         legend_bindings: Vec<LegendSelectBinding>,
-        command_log_active: bool,
+        editing_active: bool,
     ) -> Option<Rc<RefCell<Self>>> {
         let any_brush = plots.iter().any(|p| !p.bindings.is_empty());
         let any_sequential_fill = plots.iter().any(|p| has_sequential_fill(&p.launch_scales));
@@ -266,7 +274,7 @@ impl CrossfilterCoordinator {
             !menu_bindings.is_empty(),
             !legend_bindings.is_empty(),
             any_sequential_fill,
-            command_log_active,
+            editing_active,
         ) {
             return None;
         }
@@ -306,7 +314,7 @@ impl CrossfilterCoordinator {
         &mut self,
         plot_index: usize,
         interaction: &InteractionState,
-        cx: &mut App,
+        cx: &mut H::Cx,
     ) -> bool {
         let (start, current) = match interaction {
             InteractionState::Brushing { start, current } => (*start, *current),
@@ -369,9 +377,9 @@ impl CrossfilterCoordinator {
         for pi in to_rebuild {
             let scene = self.build_plot_scene(pi);
             let state = self.plots[pi].state.clone();
-            state.update(cx, |s, c| {
+            state.update(cx, |s| {
                 s.set_scene(scene);
-                c.notify();
+                true
             });
         }
         true
@@ -381,7 +389,7 @@ impl CrossfilterCoordinator {
     /// retract each of its brush/point bindings, re-execute
     /// subscribers back toward unfiltered, and rebuild the affected scenes.
     /// Returns `true` if anything was actually cleared (caller then refreshes).
-    pub fn clear_plot(&mut self, plot_path: &str, cx: &mut App) -> bool {
+    pub fn clear_plot(&mut self, plot_path: &str, cx: &mut H::Cx) -> bool {
         let bindings = match self.plots.iter().find(|p| p.path == plot_path) {
             Some(p) => p.bindings.clone(),
             None => return false,
@@ -394,7 +402,7 @@ impl CrossfilterCoordinator {
 
     /// Clear EVERY plot's selection (Esc at the dashboard altitude).
     /// Returns `true` if anything was cleared.
-    pub fn clear_all(&mut self, cx: &mut App) -> bool {
+    pub fn clear_all(&mut self, cx: &mut H::Cx) -> bool {
         let bindings: Vec<BrushBinding> =
             self.plots.iter().flat_map(|p| p.bindings.clone()).collect();
         let filter = self.clear_bindings(&bindings, cx);
@@ -410,24 +418,22 @@ impl CrossfilterCoordinator {
 
     /// Drop the persistent `Selected` rectangle on the plot at `plot_path` (the
     /// visual half of Esc-clear — the filter half is [`Self::clear_bindings`]).
-    fn clear_selection_overlay(&mut self, plot_path: &str, cx: &mut App) -> bool {
+    fn clear_selection_overlay(&mut self, plot_path: &str, cx: &mut H::Cx) -> bool {
         let Some(p) = self.plots.iter().find(|p| p.path == plot_path) else {
             return false;
         };
         let state = p.state.clone();
         let mut cleared = false;
-        state.update(cx, |s, c| {
-            if s.clear_persistent_selection() {
-                cleared = true;
-                c.notify();
-            }
+        state.update(cx, |s| {
+            cleared = s.clear_persistent_selection();
+            cleared
         });
         cleared
     }
 
     /// Retract `bindings`' contributions, absorb the re-execution, and rebuild the
     /// affected scenes — the shared tail of [`Self::clear_plot`] / [`Self::clear_all`].
-    fn clear_bindings(&mut self, bindings: &[BrushBinding], cx: &mut App) -> bool {
+    fn clear_bindings(&mut self, bindings: &[BrushBinding], cx: &mut H::Cx) -> bool {
         let mut to_rebuild: HashSet<usize> = HashSet::new();
         let mut cleared = false;
         for b in bindings {
@@ -440,9 +446,9 @@ impl CrossfilterCoordinator {
         for pi in to_rebuild {
             let scene = self.build_plot_scene(pi);
             let state = self.plots[pi].state.clone();
-            state.update(cx, |s, c| {
+            state.update(cx, |s| {
                 s.set_scene(scene);
-                c.notify();
+                true
             });
         }
         cleared
@@ -463,7 +469,7 @@ impl CrossfilterCoordinator {
     /// Returns `true` when the plot was cycled (the caller then refreshes the
     /// window); `false` for an unknown path, or a plot with no sequential Fill
     /// (a categorical/no-Fill plot has nothing to cycle — a clean no-op).
-    pub fn cycle_scheme(&mut self, plot_path: &str, cx: &mut App) -> bool {
+    pub fn cycle_scheme(&mut self, plot_path: &str, cx: &mut H::Cx) -> bool {
         let Some(pi) = self.plots.iter().position(|p| p.path == plot_path) else {
             return false;
         };
@@ -489,15 +495,15 @@ impl CrossfilterCoordinator {
 
         let scene = self.build_plot_scene(pi);
         let state = self.plots[pi].state.clone();
-        state.update(cx, |s, c| {
+        state.update(cx, |s| {
             s.set_scene(scene);
-            c.notify();
+            true
         });
         true
     }
 
     /// Apply a transient structural [`SpecEdit`] to the live coordinator
-    /// — the load-bearing command-log mechanism, a DURABLE
+    /// — the load-bearing keyboard-edit mechanism, a DURABLE
     /// coordinator refresh (heavier than `cycle_scheme`: it re-queries).
     ///
     /// The app has already `apply`'d the edit to the working `Spec` and
@@ -519,16 +525,16 @@ impl CrossfilterCoordinator {
         edit: &SpecEdit,
         spec: Spec,
         analysis: SpecAnalysis,
-        cx: &mut App,
+        cx: &mut H::Cx,
     ) -> bool {
         let Some(pi) = self.apply_spec_edit_data(edit, spec, analysis) else {
             return false;
         };
         let scene = self.build_plot_scene(pi);
         let state = self.plots[pi].state.clone();
-        state.update(cx, |s, c| {
+        state.update(cx, |s| {
             s.set_scene(scene);
-            c.notify();
+            true
         });
         true
     }
@@ -545,7 +551,7 @@ impl CrossfilterCoordinator {
         &mut self,
         spec: Spec,
         analysis: SpecAnalysis,
-        cx: &mut App,
+        cx: &mut H::Cx,
     ) -> bool {
         // Capture the highlight bindings BEFORE reload_spec MOVES `analysis`, so a
         // rebuilt mark keeps its dimming (finding 1/2/4).
@@ -603,7 +609,7 @@ impl CrossfilterCoordinator {
                             m.batch = concat_batches(batches);
                         }
                     }
-                    Err(e) => eprintln!("command-log undo: mark {mi} re-execute failed: {e}"),
+                    Err(e) => eprintln!("undo: mark {mi} re-execute failed: {e}"),
                 }
             }
             if let Some(fresh) = self.fresh_plot_scales(pi) {
@@ -611,9 +617,9 @@ impl CrossfilterCoordinator {
             }
             let scene = self.build_plot_scene(pi);
             let state = self.plots[pi].state.clone();
-            state.update(cx, |s, c| {
+            state.update(cx, |s| {
                 s.set_scene(scene);
-                c.notify();
+                true
             });
         }
         true
@@ -706,7 +712,7 @@ impl CrossfilterCoordinator {
                         m.batch = concat_batches(batches);
                     }
                 }
-                Err(e) => eprintln!("command-log: mark {mi} re-execute failed: {e}"),
+                Err(e) => eprintln!("spec edit: mark {mi} re-execute failed: {e}"),
             }
         }
 
@@ -746,7 +752,7 @@ impl CrossfilterCoordinator {
         let engine = self.session.mark_count();
         if engine != self.marks.len() {
             eprintln!(
-                "command-log: coordinator/engine mark-count disagree ({} coordinator vs {} engine) \
+                "spec edit: coordinator/engine mark-count disagree ({} coordinator vs {} engine) \
                  — flat-index space may be stale",
                 self.marks.len(),
                 engine
@@ -850,7 +856,7 @@ impl CrossfilterCoordinator {
         &mut self,
         slider_index: usize,
         state: &SliderState,
-        cx: &mut App,
+        cx: &mut H::Cx,
     ) -> bool {
         let to_rebuild = match self.apply_slider(slider_index, state) {
             Some(set) => set,
@@ -859,9 +865,9 @@ impl CrossfilterCoordinator {
         for pi in to_rebuild {
             let scene = self.build_plot_scene(pi);
             let state_entity = self.plots[pi].state.clone();
-            state_entity.update(cx, |s, c| {
+            state_entity.update(cx, |s| {
                 s.set_scene(scene);
-                c.notify();
+                true
             });
         }
         true
@@ -891,7 +897,7 @@ impl CrossfilterCoordinator {
     ///
     /// Returns `true` if a pick was committed (the caller then refreshes the
     /// window once, repainting the swapped subscriber scenes).
-    pub fn commit_menu(&mut self, menu_index: usize, state: &MenuState, cx: &mut App) -> bool {
+    pub fn commit_menu(&mut self, menu_index: usize, state: &MenuState, cx: &mut H::Cx) -> bool {
         let to_rebuild = match self.apply_menu(menu_index, state) {
             Some(set) => set,
             None => return false,
@@ -899,9 +905,9 @@ impl CrossfilterCoordinator {
         for pi in to_rebuild {
             let scene = self.build_plot_scene(pi);
             let state_entity = self.plots[pi].state.clone();
-            state_entity.update(cx, |s, c| {
+            state_entity.update(cx, |s| {
                 s.set_scene(scene);
-                c.notify();
+                true
             });
         }
         true
@@ -950,7 +956,7 @@ impl CrossfilterCoordinator {
         hit: Option<&str>,
         additive: bool,
         categories: &[String],
-        cx: &mut App,
+        cx: &mut H::Cx,
     ) -> bool {
         // Shift-click (`additive`) toggles a category into/out of an OR'd union;
         // a plain click is the single-select replace/toggle.
@@ -966,9 +972,9 @@ impl CrossfilterCoordinator {
         for pi in to_rebuild {
             let scene = self.build_plot_scene(pi);
             let state = self.plots[pi].state.clone();
-            state.update(cx, |s, c| {
+            state.update(cx, |s| {
                 s.set_scene(scene);
-                c.notify();
+                true
             });
         }
         true
@@ -1265,16 +1271,16 @@ fn render_plot_scene(
 /// hold. Factored out (over booleans, not `LivePlot`s) so the gate — including
 /// the sequential-Fill relaxation that keeps an otherwise-static heatmap
 /// dashboard live — is headlessly testable without a window (a `LivePlot`
-/// holds a gpui `Entity`).
+/// holds the host's reactive handle).
 fn coordinator_has_live_surface(
     any_brush: bool,
     any_slider: bool,
     any_menu: bool,
     any_legend: bool,
     any_sequential_fill: bool,
-    command_log: bool,
+    editing_active: bool,
 ) -> bool {
-    command_log || any_brush || any_slider || any_menu || any_legend || any_sequential_fill
+    editing_active || any_brush || any_slider || any_menu || any_legend || any_sequential_fill
 }
 
 /// Whether a `ScaleSet`'s Fill channel is a `Scale::Sequential` ramp — the signal
@@ -1299,8 +1305,8 @@ fn has_sequential_fill(scales: &ScaleSet) -> bool {
 /// re-scenes them exactly); the affected plot's marks are rebuilt fresh from the
 /// spec, re-deriving highlight style + projection from its render context
 /// (finding 1/2/4). Extracted from the coordinator so the count-changing
-/// integrity is unit-testable WITHOUT a gpui window (LivePlot carries a non-Send
-/// `Entity<ChartState>` no headless test can build) — mirroring the
+/// integrity is unit-testable WITHOUT a window (a headless test has no host
+/// reactive cell to hand a `LivePlot`) — mirroring the
 /// `apply_slider` / `apply_spec_edit_data` data-half split.
 // Returns the three things the caller must swap in together: the rebuilt marks,
 // the per-plot flat-index map, and the old→new index remap. They are a tuple
@@ -1506,9 +1512,28 @@ fn invert_axis(scale: Option<&Scale>, a: f64, b: f64) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chart_state::ChartState;
     use brightfield_render::mark::configured_renderer;
     use brightfield_render::scale::{anchor_scales, SequentialScheme};
     use brightfield_render::scene::build_multi_mark_scene;
+
+    /// The [`ReactiveHandle`] for these tests, all of which run with NO live
+    /// plots (the data halves are exercised directly; scene swaps need a
+    /// window). With no plot there is no state cell to address, so `update`
+    /// is unreachable by construction.
+    #[derive(Clone)]
+    struct NoPlots;
+
+    impl ReactiveHandle for NoPlots {
+        type Surface = ();
+        type Cx = ();
+        fn update(&self, _: &mut (), _: impl FnOnce(&mut ChartState<()>) -> bool) {
+            unreachable!("coordinator tests carry no live plots");
+        }
+    }
+
+    /// The coordinator specialised to the no-plot test handle.
+    type TestCoordinator = CrossfilterCoordinator<NoPlots>;
 
     /// Build the launch `ScaleSet` the app captures at startup: infer over the
     /// given marks' batches through the SAME inferring multi-mark path
@@ -2361,7 +2386,8 @@ projectionType: albers
     /// wrong-variant regression makes `c` inert on the heatmap dashboards it
     /// targets), and (2) `coordinator_has_live_surface` OR-folds that flag so `new`
     /// keeps the coordinator alive for an otherwise-static sequential dashboard.
-    /// (`new` itself can't run headlessly — a `LivePlot` holds a gpui `Entity`.)
+    /// (`new` itself runs headlessly only with no plots — a `LivePlot` holds
+    /// the host's reactive state handle.)
     #[test]
     fn sequential_fill_keeps_the_coordinator_live() {
         // (1) Detection over real ScaleSets: a Sequential Fill is seen; an empty
@@ -2434,11 +2460,11 @@ projectionType: albers
         assert!(coordinator_has_live_surface(
             false, false, true, false, false, false
         ));
-        // the command log is itself a live surface. Without this
+        // the editing grammar is itself a live surface. Without this
         // disjunct a static spec (categorical/absent fill, no selection — e.g.
         // scatter.yaml) built no coordinator, so m/a/e/d/u mutated the working
-        // spec + filled the log but never re-rendered — the silent-no-op
-        // class, on the simplest possible spec.
+        // spec but never re-rendered — the silent-no-op class, on the
+        // simplest possible spec.
         assert!(coordinator_has_live_surface(
             false, false, false, false, false, true
         ));
@@ -2446,14 +2472,14 @@ projectionType: albers
 
     /// regression (the scatter silent-no-op): a STATIC spec — a plain
     /// `dot` mark with a categorical fill, no params / selection / sequential
-    /// ramp — must still get a live coordinator when the command log is active,
-    /// so a structural edit can re-render. Before the `command_log_active`
-    /// disjunct `new` returned `None` here and every m/a/e/d/u was a canvas no-op
-    /// (the working spec + command log updated, the plot never moved). The flag is
-    /// load-bearing: `false` (the dump/embedding path) still yields `None`; `true`
-    /// (the authoring window) yields `Some`.
+    /// ramp — must still get a live coordinator when the editing grammar is
+    /// active, so a structural edit can re-render. Before the `editing_active`
+    /// disjunct `new` returned `None` here and every m/a/e/d/u was a canvas
+    /// no-op (the working spec updated, the plot never moved). The flag is
+    /// load-bearing: `false` (the dump/embedding path) still yields `None`;
+    /// `true` (the authoring window) yields `Some`.
     #[test]
-    fn static_spec_gets_a_coordinator_for_the_command_log() {
+    fn static_spec_gets_a_coordinator_for_keyboard_editing() {
         use brightfield_engine::Engine;
         use brightfield_spec::analysis::analyse_spec;
         use brightfield_spec::{parse_spec, Format};
@@ -2501,23 +2527,22 @@ plot:
             (session, marks)
         };
 
-        // No live surface AND the command log off (the PNG/embedding path) → None,
+        // No live surface AND editing off (the PNG/embedding path) → None,
         // exactly as before.
         let (session, marks) = build_marks();
         assert!(
-            CrossfilterCoordinator::new(session, marks, vec![], vec![], vec![], vec![], false)
-                .is_none(),
-            "a static spec with no command log stays coordinator-free (dump path)"
+            TestCoordinator::new(session, marks, vec![], vec![], vec![], vec![], false).is_none(),
+            "a static spec with editing off stays coordinator-free (dump path)"
         );
 
-        // The authoring window activates the command log → the same static spec
-        // now gets a coordinator, so a structural edit can re-render (scatter fix).
+        // The authoring window activates the editing grammar → the same static
+        // spec now gets a coordinator, so a structural edit can re-render
+        // (scatter fix).
         let (session, marks) = build_marks();
         assert!(
-            CrossfilterCoordinator::new(session, marks, vec![], vec![], vec![], vec![], true)
-                .is_some(),
-            "the command log is a live surface: a static scatter's m/a/e/d/u must \
-             re-render, not silently no-op"
+            TestCoordinator::new(session, marks, vec![], vec![], vec![], vec![], true).is_some(),
+            "the editing grammar is a live surface: a static scatter's m/a/e/d/u \
+             must re-render, not silently no-op"
         );
     }
 
@@ -3432,7 +3457,7 @@ plot:
 
     // commit_slider's data path — a Released value
     // re-executes the subscribing mark (row count changes); a Dragging value is a
-    // no-op. An empty `plots` vec means no gpui App is needed: the rebuild loop
+    // no-op. An empty `plots` vec means no host context is needed: the rebuild loop
     // has nothing to repaint, and we assert on the swapped batch directly.
     #[test]
     fn apply_slider_reexecutes_on_release_only() {
@@ -3489,16 +3514,9 @@ plot:
             max: 6.0,
             step: Some(1.0),
         };
-        let coord = CrossfilterCoordinator::new(
-            session,
-            marks,
-            vec![],
-            vec![binding],
-            vec![],
-            vec![],
-            false,
-        )
-        .expect("a slider binding keeps the coordinator alive with no brushes");
+        let coord =
+            TestCoordinator::new(session, marks, vec![], vec![binding], vec![], vec![], false)
+                .expect("a slider binding keeps the coordinator alive with no brushes");
         let mut c = coord.borrow_mut();
 
         // threshold=2 default → x in {3,4,5,6} = 4 rows.
@@ -3574,16 +3592,9 @@ plot:
             })
             .collect();
 
-        let coord = CrossfilterCoordinator::new(
-            session,
-            marks,
-            vec![],
-            vec![binding],
-            vec![],
-            vec![],
-            false,
-        )
-        .expect("coordinator");
+        let coord =
+            TestCoordinator::new(session, marks, vec![], vec![binding], vec![], vec![], false)
+                .expect("coordinator");
         let mut c = coord.borrow_mut();
         let before = c.marks[0].batch.as_ref().map_or(0, |b| b.num_rows());
         c.apply_slider(0, &SliderState::Released { value: 7.0 });
@@ -3597,7 +3608,7 @@ plot:
     // -----------------------------------------------------------------------
     // The menu-family coordinator lane, against a REAL session — the same
     // headless pattern the slider lane uses (an empty `plots` vec
-    // means no gpui App is needed; we assert on the swapped batch directly).
+    // means no host context is needed; we assert on the swapped batch directly).
     // -----------------------------------------------------------------------
 
     /// A String param filtering a dot plot — the menu data-effect fixture.
@@ -3623,7 +3634,7 @@ plot:
     /// `Some(..)` here IS the liveness assertion: a dashboard whose
     /// only interactive surface is a menu widget must keep the coordinator
     /// alive.
-    fn menu_coordinator() -> Rc<RefCell<CrossfilterCoordinator>> {
+    fn menu_coordinator() -> Rc<RefCell<TestCoordinator>> {
         use brightfield_engine::Engine;
         use brightfield_spec::analysis::analyse_spec;
         use brightfield_spec::{parse_spec, Format};
@@ -3663,7 +3674,7 @@ plot:
             ],
             derived: None,
         };
-        CrossfilterCoordinator::new(session, marks, vec![], vec![], vec![binding], vec![], false)
+        TestCoordinator::new(session, marks, vec![], vec![], vec![binding], vec![], false)
             .expect("liveness: a menu binding alone keeps the coordinator alive")
     }
 
@@ -3733,7 +3744,7 @@ plot:
 
         let coord = menu_coordinator();
         let mut c = coord.borrow_mut();
-        let column_of = |c: &CrossfilterCoordinator| {
+        let column_of = |c: &TestCoordinator| {
             c.marks[0]
                 .batch
                 .as_ref()
@@ -3831,7 +3842,7 @@ hconcat:
     /// LEGEND_TOGGLE_SPEC's live session. The `Some(..)` here IS the liveness
     /// assertion: a dashboard whose only interactive surface is a bound
     /// legend must keep the coordinator alive.
-    fn legend_toggle_coordinator() -> Rc<RefCell<CrossfilterCoordinator>> {
+    fn legend_toggle_coordinator() -> Rc<RefCell<TestCoordinator>> {
         use brightfield_engine::Engine;
         use brightfield_spec::analysis::analyse_spec;
         use brightfield_spec::{parse_spec, Format};
@@ -3866,7 +3877,7 @@ hconcat:
             })
             .collect();
 
-        CrossfilterCoordinator::new(
+        TestCoordinator::new(
             session,
             marks,
             vec![],
@@ -3880,7 +3891,7 @@ hconcat:
 
     /// The predicate the legend's contributor slot currently holds, read
     /// through the same engine lookup `apply_legend_click` decides from.
-    fn slot_expr(c: &CrossfilterCoordinator) -> Option<String> {
+    fn slot_expr(c: &TestCoordinator) -> Option<String> {
         let b = &c.legend_bindings[0];
         c.session
             .contributor_predicate(&b.selection_name, &b.contributor.0)
@@ -3897,8 +3908,7 @@ hconcat:
     fn legend_toggle_state_machine_dispatches_and_clears() {
         let coord = legend_toggle_coordinator();
         let mut c = coord.borrow_mut();
-        let rows =
-            |c: &CrossfilterCoordinator| c.marks[1].batch.as_ref().map_or(0, |b| b.num_rows());
+        let rows = |c: &TestCoordinator| c.marks[1].batch.as_ref().map_or(0, |b| b.num_rows());
         let baseline = rows(&c);
         assert_eq!(baseline, 6, "all rows before any click");
 
@@ -3948,8 +3958,7 @@ hconcat:
     fn lcf_f1a_brush_replacing_the_slot_does_not_invert_the_toggle() {
         let coord = legend_toggle_coordinator();
         let mut c = coord.borrow_mut();
-        let rows =
-            |c: &CrossfilterCoordinator| c.marks[1].batch.as_ref().map_or(0, |b| b.num_rows());
+        let rows = |c: &TestCoordinator| c.marks[1].batch.as_ref().map_or(0, |b| b.num_rows());
 
         // Legend click: species = 'gentoo' → 3 rows downstream.
         assert!(c.apply_legend_click(0, Some("gentoo")).is_some());
@@ -3990,8 +3999,7 @@ hconcat:
     fn lcf_f1b_external_clear_does_not_eat_the_next_swatch_click() {
         let coord = legend_toggle_coordinator();
         let mut c = coord.borrow_mut();
-        let rows =
-            |c: &CrossfilterCoordinator| c.marks[1].batch.as_ref().map_or(0, |b| b.num_rows());
+        let rows = |c: &TestCoordinator| c.marks[1].batch.as_ref().map_or(0, |b| b.num_rows());
         let baseline = rows(&c);
 
         // Legend click: species = 'gentoo' → 3 rows downstream.
@@ -4089,8 +4097,7 @@ hconcat:
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let rows =
-            |c: &CrossfilterCoordinator| c.marks[1].batch.as_ref().map_or(0, |b| b.num_rows());
+        let rows = |c: &TestCoordinator| c.marks[1].batch.as_ref().map_or(0, |b| b.num_rows());
 
         // Shift-click gentoo → a bare Expr, 3 rows (single-select parity).
         assert!(c.apply_legend_toggle(0, Some("gentoo"), &cats).is_some());
@@ -4151,8 +4158,7 @@ hconcat:
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let rows =
-            |c: &CrossfilterCoordinator| c.marks[1].batch.as_ref().map_or(0, |b| b.num_rows());
+        let rows = |c: &TestCoordinator| c.marks[1].batch.as_ref().map_or(0, |b| b.num_rows());
         let baseline = rows(&c);
 
         assert!(c.apply_legend_toggle(0, Some("gentoo"), &cats).is_some());
@@ -4179,8 +4185,7 @@ hconcat:
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let rows =
-            |c: &CrossfilterCoordinator| c.marks[1].batch.as_ref().map_or(0, |b| b.num_rows());
+        let rows = |c: &TestCoordinator| c.marks[1].batch.as_ref().map_or(0, |b| b.num_rows());
 
         // A foreign point selection occupies the shared (selection, contributor)
         // slot — a bare Expr that is NOT one of this legend's categories.
