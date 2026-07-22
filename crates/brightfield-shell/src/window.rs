@@ -132,8 +132,7 @@ pub const TAGLINE_PLACEHOLDER: &str = "Open a starting point, or bring your own 
 /// The front door's content column, in logical points: four gallery cards and
 /// the three gaps between them, so the Explore row is what sets the measure
 /// and everything above it aligns to the gallery.
-const DOOR_COLUMN_WIDTH: f32 =
-    4.0 * CARD_WIDTH + 3.0 * spacing::SECTION_GAP;
+const DOOR_COLUMN_WIDTH: f32 = 4.0 * CARD_WIDTH + 3.0 * spacing::SECTION_GAP;
 
 /// One gallery card's outer width.
 const CARD_WIDTH: f32 = 216.0;
@@ -1668,9 +1667,7 @@ impl MeridianApp {
                             Some(k) => format!("Keyboard help  {k}"),
                             None => "Keyboard help".to_string(),
                         };
-                        let help = ui.button(
-                            egui::RichText::new(help_label).font(ui_font()),
-                        );
+                        let help = ui.button(egui::RichText::new(help_label).font(ui_font()));
                         self.door_help = Some(help.rect);
                         if help.clicked() {
                             open_help = true;
@@ -1681,9 +1678,8 @@ impl MeridianApp {
                         // raising the request a pane's button would.
                         if let Some(start) = remembered {
                             door_zone_heading(ui, "Continue", &sem);
-                            let control = ui.button(
-                                egui::RichText::new(start.label).font(ui_font()),
-                            );
+                            let control =
+                                ui.button(egui::RichText::new(start.label).font(ui_font()));
                             self.door_continue = Some(control.rect);
                             if control.clicked() {
                                 requests.push(Request::Open(start.id));
@@ -1802,8 +1798,7 @@ impl MeridianApp {
         }
 
         self.door_cards.push((start.id, rect));
-        let fills_its_view =
-            crate::starts::for_view(start.view).map(|s| s.id) == Some(start.id);
+        let fills_its_view = crate::starts::for_view(start.view).map(|s| s.id) == Some(start.id);
         if fills_its_view {
             let pane = match start.view {
                 ViewKind::Charts => PaneKey::new(ViewKind::Charts, CHART),
