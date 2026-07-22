@@ -4,7 +4,7 @@
 //! This is the coordinator layer named by Mosaic's architecture — the thing that
 //! "translates interactions into database queries." A brush, a filter, a slider
 //! or a selection never filters a materialised result set client-side; it
-//! resolves to a [`Predicate`] the engine wraps into a SQL `WHERE`, and the
+//! resolves to a predicate the engine wraps into a SQL `WHERE`, and the
 //! affected marks re-execute. That is what makes interaction latency roughly
 //! independent of row count.
 //!

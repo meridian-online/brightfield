@@ -120,7 +120,7 @@ fn compose(spec: Spec, spec_dir: Option<&Path>) -> Result<Composed, String> {
 /// the live DuckDB session — across frames. An interaction is handed to
 /// [`LiveDashboard::apply`], which resolves it to a predicate/param the engine
 /// pushes into DuckDB, re-queries the affected marks, and re-composites through
-/// the identical layout/scene path the first paint took ([`compose_from_results`]).
+/// the identical layout/scene path the first paint took (`compose_from_results`).
 /// No frame is ever built by filtering a materialised batch in Rust — the filter
 /// is in the emitted SQL.
 ///
