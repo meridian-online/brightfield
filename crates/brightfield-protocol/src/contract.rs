@@ -354,6 +354,58 @@ pub struct StepStatus {
     pub skip_reason: Option<String>,
 }
 
+impl StepStatus {
+    /// The typed form of [`StepStatus::skip_reason`] — see [`SkipReason`].
+    #[must_use]
+    pub fn skip_reason_kind(&self) -> Option<SkipReason> {
+        self.skip_reason.as_deref().map(SkipReason::parse)
+    }
+}
+
+/// The typed skip reasons the runner records on a step it left un-executed
+/// because the materialised data is already current: `hash_clean` (the step's
+/// SQL/config fingerprint matches the prior run) and the precondition pair
+/// (`precondition_fresh` / `precondition_modified_after` — the step's declared
+/// precondition held). The runner computes these; this reader only names them,
+/// so a surface can render a skip's meaning without re-deriving freshness.
+///
+/// A reason outside that set parses as [`SkipReason::Other`], which proves
+/// nothing — the forward-compatibility stance the enum-tagged contract fields
+/// already take, applied to this string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkipReason {
+    /// The step's SQL/config fingerprint matches the prior successful run.
+    HashClean,
+    /// The step's declared precondition reported fresh.
+    PreconditionFresh,
+    /// The step's modified-after precondition reported fresh.
+    PreconditionModifiedAfter,
+    /// A reason this reader does not know. Proves nothing.
+    Other,
+}
+
+impl SkipReason {
+    /// Parse a recorded skip-reason string into its typed form.
+    #[must_use]
+    pub fn parse(raw: &str) -> Self {
+        match raw {
+            "hash_clean" => SkipReason::HashClean,
+            "precondition_fresh" => SkipReason::PreconditionFresh,
+            "precondition_modified_after" => SkipReason::PreconditionModifiedAfter,
+            _ => SkipReason::Other,
+        }
+    }
+
+    /// Whether this reason is the runner's own proof that the materialised
+    /// data is current — a skip recorded *because* the data is fresh, as
+    /// opposed to a reason this reader cannot vouch for. The honesty rule
+    /// rides on this: only a proven skip may be presented as fresh.
+    #[must_use]
+    pub const fn proves_fresh(self) -> bool {
+        !matches!(self, SkipReason::Other)
+    }
+}
+
 /// Retry policy for a step.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Retry {
@@ -397,4 +449,40 @@ pub struct Narrative {
 /// contract document.
 pub fn parse_contract(bytes: &[u8]) -> Result<Contract, serde_json::Error> {
     serde_json::from_slice(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The three recorded reasons parse to their typed forms and all three
+    /// prove freshness; anything else parses to `Other` and proves nothing.
+    #[test]
+    fn skip_reasons_parse_typed_and_only_the_known_three_prove_fresh() {
+        assert_eq!(SkipReason::parse("hash_clean"), SkipReason::HashClean);
+        assert_eq!(
+            SkipReason::parse("precondition_fresh"),
+            SkipReason::PreconditionFresh
+        );
+        assert_eq!(
+            SkipReason::parse("precondition_modified_after"),
+            SkipReason::PreconditionModifiedAfter
+        );
+        assert!(SkipReason::HashClean.proves_fresh());
+        assert!(SkipReason::PreconditionFresh.proves_fresh());
+        assert!(SkipReason::PreconditionModifiedAfter.proves_fresh());
+        // A reason from a future emitter is named, not trusted.
+        assert_eq!(SkipReason::parse("gated_off"), SkipReason::Other);
+        assert!(!SkipReason::Other.proves_fresh());
+    }
+
+    /// The accessor reads the recorded string off a step's status verbatim.
+    #[test]
+    fn step_status_exposes_its_typed_skip_reason() {
+        let skipped: StepStatus =
+            serde_json::from_str(r#"{ "state": "skipped", "skip_reason": "hash_clean" }"#).unwrap();
+        assert_eq!(skipped.skip_reason_kind(), Some(SkipReason::HashClean));
+        let ran: StepStatus = serde_json::from_str(r#"{ "state": "success" }"#).unwrap();
+        assert_eq!(ran.skip_reason_kind(), None);
+    }
 }

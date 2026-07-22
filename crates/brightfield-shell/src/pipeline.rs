@@ -29,6 +29,7 @@ use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::layout::{collect_plot_nodes, placed_plots, resolve_plot_insets, Rect};
 use brightfield_spec::{parse_spec, parse_spec_path, Format, Spec};
 use brightfield_sql::{collect_marks, collect_plot_groups};
+use brightfield_workbench::subject::RunState;
 use vello::Scene;
 
 /// One composited dashboard ready to present: the merged Vello scene, its
@@ -42,6 +43,21 @@ pub struct Composed {
     pub height: u32,
     /// The spec's `meta.title`, if declared.
     pub title: Option<String>,
+    /// The run-state of materialised data this preview shows, when it shows
+    /// any — the honesty channel at the preview surface.
+    ///
+    /// `None` means the preview makes **no currency claim**: the compose
+    /// paths in this module set `None` because they execute their queries
+    /// live for this very composition (nothing previewed here outlived an
+    /// edit). A caller whose spec reads output materialised by a pipeline
+    /// run annotates via [`Composed::with_run_state`], **ingesting** the
+    /// state from that run's contract — it is never computed here.
+    ///
+    /// The render is [`Composed::run_state_line`]: minimal but real, so an
+    /// annotated stale preview is never presented bare. Fuller status chrome
+    /// arrives with the chart-side status work and must consume this same
+    /// vocabulary rather than define a second one.
+    pub run_state: Option<RunState>,
 }
 
 impl Composed {
@@ -61,7 +77,32 @@ impl Composed {
             width: 0,
             height: 0,
             title: None,
+            run_state: None,
         }
+    }
+
+    /// Annotate this preview with the run-state of the materialised data it
+    /// shows, read off the run's contract by the caller. Consumes and returns
+    /// `self` so the annotation happens at the compose call site, not as a
+    /// mutation something else can forget to make.
+    #[must_use]
+    pub fn with_run_state(mut self, state: RunState) -> Self {
+        self.run_state = Some(state);
+        self
+    }
+
+    /// The one-line run-state banner this preview draws, when it previews
+    /// materialised run output at all. `None` for a live-queried dashboard —
+    /// no claim is made, so no label is owed.
+    ///
+    /// The words and tone come from the workbench vocabulary
+    /// ([`RunState::label`] / [`RunState::gloss`]), so a stale preview here
+    /// and a stale step in the inspector say it the same way — and a preview
+    /// annotated stale can never render the fresh line.
+    #[must_use]
+    pub fn run_state_line(&self) -> Option<String> {
+        self.run_state
+            .map(|s| format!("data {} — {}", s.label(), s.gloss()))
     }
 }
 
@@ -313,6 +354,11 @@ fn compose_from_results(
         width,
         height,
         title,
+        // Live-queried this very composition — no materialised run output is
+        // being previewed, so no currency claim is made (or owed). A caller
+        // previewing run output annotates with `with_run_state`, ingesting
+        // from the run's contract.
+        run_state: None,
     })
 }
 
@@ -373,5 +419,46 @@ plot:
             .map(RecordBatch::num_rows)
             .sum();
         assert_eq!(rows, 2, "brush kept x in {{3,4}} via a pushed predicate");
+    }
+
+    /// A live-queried dashboard makes no currency claim — its queries ran for
+    /// this very composition, so there is no materialised run output whose
+    /// staleness could be misrepresented, and no banner is owed.
+    #[test]
+    fn a_live_queried_preview_makes_no_run_state_claim() {
+        let mut dash = LiveDashboard::load_str(SPEC, None).expect("load");
+        let composed = dash.present().expect("paint");
+        assert_eq!(composed.run_state, None);
+        assert_eq!(composed.run_state_line(), None);
+        assert_eq!(Composed::empty().run_state, None, "empty claims nothing");
+    }
+
+    /// A preview annotated with run output's state renders that state's own
+    /// words: a stale annotation can never produce the fresh line, and a
+    /// never-run annotation is not the fresh line either — the preview
+    /// surface cannot show materialised data as though it were current.
+    #[test]
+    fn an_annotated_preview_is_labelled_not_merely_rendered() {
+        let stale = Composed::empty().with_run_state(RunState::StaleUpstream);
+        let line = stale.run_state_line().expect("an annotated preview labels");
+        assert!(line.contains("stale"), "the stale line says stale: {line}");
+        assert!(
+            !stale.run_state.expect("annotated").is_current(),
+            "a stale preview may never claim current"
+        );
+
+        let fresh_line = Composed::empty()
+            .with_run_state(RunState::Fresh)
+            .run_state_line()
+            .expect("labelled");
+        let never_line = Composed::empty()
+            .with_run_state(RunState::NeverRun)
+            .run_state_line()
+            .expect("labelled");
+        assert_ne!(line, fresh_line, "stale and fresh are different words");
+        assert_ne!(
+            never_line, fresh_line,
+            "never-run is visibly distinct from fresh"
+        );
     }
 }

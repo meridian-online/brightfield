@@ -42,10 +42,11 @@ use std::path::Path;
 
 pub use collapse::collapse_families;
 pub use contract::{
-    parse_contract, Contract, SUPPORTED_CONTRACT_FAMILY, SUPPORTED_CONTRACT_VERSION,
+    parse_contract, Contract, SkipReason, SUPPORTED_CONTRACT_FAMILY, SUPPORTED_CONTRACT_VERSION,
 };
 pub use contract_graph::{
-    apply_stream, build_contract_view, AssetMeta, ContractView, RunView, SeamStatus, StepView,
+    apply_stream, build_contract_view, downstream_steps, AssetMeta, ContractView, RunView,
+    SeamStatus, StepView,
 };
 pub use error::Error;
 pub use graph::{AssetGraph, AssetKind, AssetNode, Edge, Seam, SeamKind};
