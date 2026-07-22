@@ -1,0 +1,52 @@
+# A starter dashboard: a year of daily readings beside their weekday profile.
+#
+# Every `data:` entry here is a QUERY the engine materialises as a DuckDB view —
+# this file carries no rows. `readings` is generated deterministically in SQL
+# (a trend, two seasonal terms, hash-derived noise), and `weekday` is a GROUP BY
+# the engine runs over it. That is the shape every shipped starting point takes:
+# a table the engine can query, never a YAML file of inline numbers.
+meta:
+  title: A year of signals
+  description: |
+    Daily readings for one year — trend, seasonality and noise — beside the
+    weekday profile aggregated from the same table. All data is generated
+    deterministically in-engine; nothing is fetched and nothing ships beyond
+    this spec.
+data:
+  readings:
+    query: |
+      SELECT
+        d AS day,
+        round(
+          120
+          + 0.06 * d
+          + 16 * sin(2 * pi() * d / 91.0)
+          + 6 * sin(2 * pi() * d / 7.0)
+          + 9 * (CAST(hash(d) % 200 AS DOUBLE) - 100) / 100.0,
+          2
+        ) AS reading
+      FROM range(0, 365) t(d)
+      ORDER BY day
+  weekday:
+    query: |
+      SELECT
+        (['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'])[dow + 1] AS weekday,
+        mean_reading
+      FROM (
+        SELECT CAST(day % 7 AS BIGINT) AS dow, round(avg(reading), 2) AS mean_reading
+        FROM readings
+        GROUP BY 1
+      )
+      ORDER BY dow
+hconcat:
+  - plot:
+      - { mark: areaY, data: { from: readings }, x: day, y: reading }
+      - { mark: line, data: { from: readings }, x: day, y: reading }
+    title: Daily readings
+    width: 460
+    height: 300
+  - plot:
+      - { mark: barY, data: { from: weekday }, x: weekday, y: mean_reading }
+    title: Weekday profile
+    width: 320
+    height: 300

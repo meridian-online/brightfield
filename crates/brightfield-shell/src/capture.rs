@@ -52,12 +52,48 @@ pub fn headless_device() -> Result<(wgpu::Device, wgpu::Queue), String> {
 /// after. [`Boot`] carries which view opens and both documents' contents, so
 /// what used to be the choice of function is now a field.
 ///
+/// The window is sized from the boot's content, which is the right answer for
+/// every boot that *has* content and a wrong one for [`Boot::empty`] — an
+/// empty boot's content self-measures a few tens of points, and a capture at
+/// that size photographs a sliver of top bar and calls it the front door. A
+/// capture of the empty window goes through [`capture_png_at`] with the size
+/// said out loud.
+///
 /// # Errors
 /// Returns a message on GPU, encode, or file-write failure.
 pub fn capture_png(
     boot: Boot,
     mode: Mode,
     scale: f32,
+    out: &Path,
+    script: Vec<Vec<egui::Event>>,
+) -> Result<(u32, u32), String> {
+    // Every boot that reaches here came through `Boot::open`, `Boot::charts`
+    // or `Boot::protocol`, each of which names a view, so the fallback below
+    // is unreachable. It is spelled out at the call site rather than hidden
+    // inside the getter — a baked-in default is how a boot that named no view
+    // once answered `main`'s title and summary for the wrong document.
+    let size = boot.window_size(boot.view_or(ViewKind::Charts));
+    capture_png_at(boot, mode, scale, size, out, script)
+}
+
+/// [`capture_png`] at an explicit logical window size, instead of the size the
+/// boot's content asks for.
+///
+/// The caller that needs this is the one whose boot has no content to derive
+/// a size from: [`Boot::empty`], whose window is the front door. The live
+/// binary answers that case from the saved geometry or
+/// [`WindowGeometry`](brightfield_workbench::WindowGeometry)'s default — see
+/// [`Boot::is_empty`] — and a capture has neither, so the size is a parameter
+/// rather than a guess.
+///
+/// # Errors
+/// As [`capture_png`].
+pub fn capture_png_at(
+    boot: Boot,
+    mode: Mode,
+    scale: f32,
+    size: (f32, f32),
     out: &Path,
     script: Vec<Vec<egui::Event>>,
 ) -> Result<(u32, u32), String> {
@@ -69,12 +105,7 @@ pub fn capture_png(
     let chart_host = host_on_device(device.clone(), queue.clone(), egui_renderer.clone());
     let protocol_host = host_on_device(device.clone(), queue.clone(), egui_renderer.clone());
 
-    // Every boot that reaches here came through `Boot::open`, `Boot::charts`
-    // or `Boot::protocol`, each of which names a view, so the fallback below
-    // is unreachable. It is spelled out at the call site rather than hidden
-    // inside the getter — a baked-in default is how a boot that named no view
-    // once answered `main`'s title and summary for the wrong document.
-    let (win_w, win_h) = boot.window_size(boot.view_or(ViewKind::Charts));
+    let (win_w, win_h) = size;
     let mut app = MeridianApp::new(boot, chart_host, protocol_host, mode);
 
     let ctx = egui::Context::default();
@@ -288,6 +319,23 @@ pub fn capture_vello_only(
     img.save(out)
         .map_err(|e| format!("write {}: {e}", out.display()))?;
     Ok((dev_w, dev_h))
+}
+
+/// Scale-and-centre-crop a capture to exactly `w`×`h` — the shape a shipped
+/// start's gallery thumbnail takes.
+///
+/// One definition, used by the regeneration test that produces the committed
+/// `assets/starts/*.png` files and by nothing else at runtime: the shipped
+/// thumbnail is bytes in the binary, never a render. Fill-and-crop rather
+/// than letterbox, so every card in the gallery is the same shape whatever
+/// window its start's content asked for; Lanczos3 because it is deterministic
+/// for a given input, which is what lets the regeneration test hold the
+/// committed file against the bundled spec.
+#[must_use]
+pub fn thumbnail(capture: &image::RgbaImage, w: u32, h: u32) -> image::RgbaImage {
+    image::DynamicImage::ImageRgba8(capture.clone())
+        .resize_to_fill(w, h, image::imageops::FilterType::Lanczos3)
+        .to_rgba8()
 }
 
 /// Read an `Rgba8Unorm` texture back into tightly-packed RGBA bytes.
