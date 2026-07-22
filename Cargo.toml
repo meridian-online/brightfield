@@ -16,6 +16,18 @@ repository = "https://github.com/meridian-online/brightfield"
 [patch."https://github.com/zed-industries/zed"]
 ztracing = { path = "stubs/ztracing" }
 
+# The Meridian design system is developed side by side with brightfield. Both
+# the token crate and its egui emitter are consumed as git dependencies, and
+# this patch redirects them to a local clone of the design repo checked out
+# beside this one, so a change to a token or the theme bridge is picked up
+# without a publish + pin-bump round trip. `meridian-egui` is not yet published,
+# so the patch is also what makes it resolve at all until it lands upstream.
+# Point the paths at a design checkout on the branch you are developing against
+# (README: "Working on the design system alongside brightfield").
+[patch."https://github.com/meridian-online/design"]
+meridian-design = { path = "../design/meridian-design" }
+meridian-egui = { path = "../design/meridian-egui" }
+
 [workspace.lints.rust]
 unused_must_use = "warn"
 missing_docs = "allow"

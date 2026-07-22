@@ -135,6 +135,28 @@ Brightfield is part of the [Meridian](https://meridian.online) project family, a
 
 The three libraries are designed to compose: Arcform prepares data, FineType types it, and Brightfield visualises it.
 
+### Working on the design system alongside brightfield
+
+Brightfield's look — every colour, gap, radius, and the egui `Style`/`Visuals`/font
+bridge — comes from the [Meridian design system](https://github.com/meridian-online/design),
+consumed as two git dependencies: `meridian-design` (the framework-neutral tokens) and
+`meridian-egui` (the egui emitter). Both are pinned in the crates that use them.
+
+To iterate on a token or the theme bridge without a publish-and-bump round trip, clone the
+design repo **beside** this one so the two sit side by side:
+
+```
+meridian-online/
+  brightfield/      ← this repo
+  design/           ← git clone of meridian-online/design
+```
+
+The workspace root `Cargo.toml` carries a `[patch."https://github.com/meridian-online/design"]`
+section that redirects both crates to `../design/meridian-design` and `../design/meridian-egui`.
+With the sibling clone present, a change there is picked up on the next `cargo build` here.
+(`meridian-egui` is a newer crate; until it is published, the patch is also what makes it
+resolve at all, so the sibling checkout is required to build a branch that depends on it.)
+
 ## License
 
 MIT — see [`LICENSE`](LICENSE)

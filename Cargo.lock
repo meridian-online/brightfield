@@ -980,6 +980,7 @@ dependencies = [
  "image",
  "kurbo 0.13.1",
  "meridian-design",
+ "meridian-egui",
  "peniko",
  "pollster 0.4.0",
  "serde_json",
@@ -1035,6 +1036,7 @@ dependencies = [
  "egui",
  "egui_tiles",
  "meridian-design",
+ "meridian-egui",
  "serde",
  "serde_json",
 ]
@@ -4328,7 +4330,14 @@ dependencies = [
 [[package]]
 name = "meridian-design"
 version = "0.1.0"
-source = "git+https://github.com/meridian-online/design?rev=539c579c43897fdd0c7d5c141221201d5e97a910#539c579c43897fdd0c7d5c141221201d5e97a910"
+
+[[package]]
+name = "meridian-egui"
+version = "0.1.0"
+dependencies = [
+ "egui",
+ "meridian-design",
+]
 
 [[package]]
 name = "metal"
