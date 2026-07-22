@@ -129,6 +129,11 @@ pub struct ChartDoc {
     /// The rect the legend band occupied last frame — `None` when the
     /// dashboard calls for no legend, which is itself an assertable fact.
     pub legend_rect: Option<egui::Rect>,
+    /// The spec file this dashboard was composed from, when a named file
+    /// composed it — what the spec editor opens beside the live chart.
+    /// `None` for the shipped starts and the in-memory composes of the test
+    /// and capture tiers, whose dashboards have no file behind them.
+    pub spec_path: Option<std::path::PathBuf>,
     /// The live, session-holding dashboard behind this document, when the
     /// boot path loaded one. `None` for a one-shot composition (captures, the
     /// pixel tier, the shipped starts): every gesture entry point checks, so
@@ -178,6 +183,7 @@ impl ChartDoc {
             overlay_checkbox: None,
             raster_rect: None,
             legend_rect: None,
+            spec_path: None,
             live: None,
             active_selections: Vec::new(),
             canvas: CanvasSlot::new(host),
@@ -195,6 +201,7 @@ impl ChartDoc {
             overlay_checkbox: None,
             raster_rect: None,
             legend_rect: None,
+            spec_path: None,
             live: None,
             active_selections: Vec::new(),
             canvas: CanvasSlot::headless(),
@@ -220,14 +227,17 @@ impl ChartDoc {
     /// error anywhere: a stale picture that reads as a GPU fault. Dropping the
     /// presented key is what makes the next `present` actually raster.
     ///
-    /// This is the **different-document** entry: it drops any live session and
-    /// any committed selections, because both belong to the spec that is being
-    /// replaced. A re-composite of the *same* live document goes through
-    /// [`ChartDoc::apply_interaction`], which keeps them.
+    /// This is the **different-document** entry: it drops any live session,
+    /// any committed selections, and the composing file's path, because all
+    /// three belong to the spec that is being replaced — the callers are the
+    /// shipped starts, whose fixtures have no file to edit. A re-composite of
+    /// the *same* live document goes through [`ChartDoc::apply_interaction`],
+    /// which keeps them.
     pub fn open(&mut self, composed: Composed) {
         self.composed = composed;
         self.live = None;
         self.active_selections.clear();
+        self.spec_path = None;
         self.canvas.invalidate();
     }
 
@@ -433,8 +443,8 @@ pub(crate) const CONTROLS_SHARE: f32 = 0.2;
 /// mark kind's own, named by [`ChartItem`].
 const ICON_CONTROLS: Icon = Icon("sliders");
 
-/// The chart view's registry: two panes, where each sits, and the verb that
-/// shows and hides the rail.
+/// The chart view's registry: the chart canvas, the controls rail, and the
+/// spec editor, where each sits, and the verbs that show and hide them.
 ///
 /// This is the **only** declaration of the view's shape. The dock's default
 /// arrangement ([`ItemRegistry::default_tree`]), the live item map
@@ -461,6 +471,7 @@ pub fn chart_registry() -> ItemRegistry<ChartDoc> {
                 toggle: Some(Verb::new("toggle-controls-rail")),
                 make: || Box::new(ControlsPane),
             },
+            crate::editor::editor_spec(),
         ],
     )
 }

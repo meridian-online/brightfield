@@ -17,6 +17,7 @@ use std::collections::BTreeMap;
 
 use brightfield_shell::app::{chart_registry, ChartDoc, CHART, CONTROLS};
 use brightfield_shell::design::Mode;
+use brightfield_shell::editor::EDITOR;
 use brightfield_shell::pipeline::{compose_spec, Composed};
 use brightfield_shell::window::{
     chart_toolbar_band, chart_window_size, Boot, MeridianApp, BAR_HEIGHT, DOCK_INSET,
@@ -30,8 +31,17 @@ const DASHBOARD: &str = "../../examples/dashboard.yaml";
 const CROSSFILTER: &str = "../../examples/crossfilter.yaml";
 
 /// The real fixture, as a document with no device behind it.
+///
+/// Carries the path it was composed from, exactly as [`Boot::open`] records
+/// it on a live boot — the spec editor reads it, so a fixture that dropped
+/// the path would test a document no boot produces.
+///
+/// [`Boot::open`]: brightfield_shell::window::Boot::open
 fn loaded() -> ChartDoc {
-    ChartDoc::headless(compose_spec(DASHBOARD).expect("compose examples/dashboard.yaml"))
+    let mut doc =
+        ChartDoc::headless(compose_spec(DASHBOARD).expect("compose examples/dashboard.yaml"));
+    doc.spec_path = Some(DASHBOARD.into());
+    doc
 }
 
 /// Every pane's subject over one document, keyed by item id.
@@ -127,27 +137,36 @@ fn no_pane_is_empty_over_a_real_dashboard() {
 // What the panes declare
 // ---------------------------------------------------------------------------
 
-/// Each pane names itself once, and resolves its keys in the chart grammar's
-/// context.
+/// Each pane names itself once, and resolves its keys in its own context:
+/// the chart grammar's for the chart and its controls, the editor's for the
+/// editor — a text buffer that resolved `cmd-c` through chart bindings
+/// would copy the wrong thing.
 ///
 /// The title is the whole of the pane's name now. Before this increment the
 /// controls rail's own body opened with a bold `Controls` label and the chart
 /// had no name at all; the only heading on the surface was the window's.
+/// The editor's fresh-pane title is `Editor`; the file names the tab from
+/// the first drawn frame, and `editor_item.rs` holds that half.
 #[test]
-fn each_pane_names_itself_once_and_binds_in_the_workspace_context() {
+fn each_pane_names_itself_once_and_binds_in_its_own_context() {
     let names: BTreeMap<ItemId, String> = subjects(&loaded())
         .into_iter()
         .map(|(id, s)| {
+            let expected = if id == EDITOR {
+                brightfield_keys::BindingContext::Editor
+            } else {
+                brightfield_keys::BindingContext::Workspace
+            };
             assert_eq!(
-                s.key_context,
-                brightfield_keys::BindingContext::Workspace,
-                "{id} resolves keys somewhere other than the chart context"
+                s.key_context, expected,
+                "{id} resolves keys somewhere other than its own context"
             );
             (id, s.title)
         })
         .collect();
     assert_eq!(names[&CHART], "Chart");
     assert_eq!(names[&CONTROLS], "Controls");
+    assert_eq!(names[&EDITOR], "Editor");
 }
 
 /// The chart pane declares its toolbar — and over a dashboard with no
@@ -225,15 +244,17 @@ fn an_annotated_preview_rails_its_run_state() {
 // The default arrangement
 // ---------------------------------------------------------------------------
 
-/// The registry is the single declaration of the view's shape: the chart is the
-/// centre pane and the controls are a right rail.
+/// The registry is the single declaration of the view's shape: the chart is
+/// the centre pane, the editor is a tab beside it, and the controls are a
+/// right rail.
 ///
-/// Neither pane is under a tab strip, which is the load-bearing part: a pane in
-/// a tab strip has its header band suppressed because the strip already names
-/// it, so if either of these became a tab it would silently lose its name rather
-/// than grow a second one.
+/// The strip placement is the load-bearing part, in both directions. The
+/// chart and the editor sit under one tab strip, whose tabs name them — so
+/// their header bands are suppressed and neither grows a second name. The
+/// rail is *not* under a strip: tabbing it would silently swallow its own
+/// header band, and its name with it.
 #[test]
-fn the_default_dock_is_a_chart_with_a_controls_rail() {
+fn the_default_dock_is_a_tabbed_chart_and_editor_with_a_controls_rail() {
     let registry = chart_registry();
     let slots: BTreeMap<ItemId, Slot> = registry
         .specs()
@@ -241,6 +262,11 @@ fn the_default_dock_is_a_chart_with_a_controls_rail() {
         .map(|spec| (spec.id, spec.slot))
         .collect();
     assert_eq!(slots[&CHART], Slot::Centre, "the chart is the centre pane");
+    assert_eq!(
+        slots[&EDITOR],
+        Slot::CentreTab,
+        "the editor is a tab beside the centre"
+    );
     assert!(
         matches!(
             slots[&CONTROLS],
@@ -255,15 +281,23 @@ fn the_default_dock_is_a_chart_with_a_controls_rail() {
 
     let tree = registry.default_tree();
     let tabbed = brightfield_workbench::workspace::tabbed_tiles_of(&tree);
-    for item in [CHART, CONTROLS] {
+    for item in [CHART, EDITOR] {
         let tile =
             brightfield_workbench::workspace::tile_of(&tree, PaneKey::new(ViewKind::Charts, item))
                 .unwrap_or_else(|| panic!("{item} is in the default tree"));
         assert!(
-            !tabbed.contains(&tile),
-            "{item} is under a tab strip, so its header band is suppressed"
+            tabbed.contains(&tile),
+            "{item} is a centre tab: the strip names it, its header band is \
+             suppressed"
         );
     }
+    let rail =
+        brightfield_workbench::workspace::tile_of(&tree, PaneKey::new(ViewKind::Charts, CONTROLS))
+            .expect("the controls rail is in the default tree");
+    assert!(
+        !tabbed.contains(&rail),
+        "the rail is not under a tab strip, so it keeps its header band"
+    );
 }
 
 /// The window the shell asks for is sized from the *same* share the dock lays

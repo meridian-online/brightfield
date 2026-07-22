@@ -274,6 +274,10 @@ pub struct Boot {
     /// `None` on the capture tiers' one-shot boots, whose stillness is the
     /// point.
     pub live: Option<crate::pipeline::LiveDashboard>,
+    /// The chart spec file `composed` was composed from, when a named file
+    /// composed it — what the spec editor opens. `None` for the shipped
+    /// starts (embedded fixtures, no file to edit) and for [`Boot::empty`].
+    pub spec_path: Option<std::path::PathBuf>,
     /// The protocol view's graph and steps.
     pub protocol: ProtocolInputs,
     /// The protocol view's reading axis.
@@ -291,6 +295,7 @@ impl Boot {
             view: Some(ViewKind::Charts),
             composed,
             live: None,
+            spec_path: None,
             protocol: ProtocolInputs::empty(),
             flow: Flow::Vertical,
             focus: None,
@@ -304,6 +309,7 @@ impl Boot {
             view: Some(ViewKind::Protocol),
             composed: Composed::empty(),
             live: None,
+            spec_path: None,
             protocol: inputs,
             flow,
             focus,
@@ -329,6 +335,7 @@ impl Boot {
             view: None,
             composed: Composed::empty(),
             live: None,
+            spec_path: None,
             protocol: ProtocolInputs::empty(),
             flow: Flow::Vertical,
             focus: None,
@@ -430,6 +437,11 @@ impl Boot {
         let (live, composed) = crate::pipeline::live_spec(spec)?;
         let mut boot = Self::charts(composed);
         boot.live = Some(live);
+        // The file the dashboard was composed from rides along, so the spec
+        // editor opens on it. Only this constructor sets it: it is the one
+        // place a chart document comes from a *file* rather than an embedded
+        // start or a test's in-memory compose.
+        boot.spec_path = Some(std::path::PathBuf::from(spec));
         Ok(boot)
     }
 
@@ -701,6 +713,7 @@ impl MeridianApp {
         if let Some(live) = boot.live {
             doc.attach_live(live);
         }
+        doc.spec_path = boot.spec_path;
         let model = ProtocolModel::new(boot.protocol, boot.flow);
         Self::assemble(
             boot.view,
@@ -739,6 +752,7 @@ impl MeridianApp {
         if let Some(live) = boot.live {
             doc.attach_live(live);
         }
+        doc.spec_path = boot.spec_path;
         let model = ProtocolModel::new(boot.protocol, boot.flow);
         Self::assemble(
             boot.view,

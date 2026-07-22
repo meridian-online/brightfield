@@ -5,10 +5,11 @@
 //! rejection branch already eprintlns and `continue`s; the tap merely asks
 //! this module what (if anything) the workspace notification layer should
 //! show for the same outcome. Successful reloads stay quiet — the canvas
-//! repainting IS the feedback. No gpui import may enter this file
-//! (semantic-layer rule).
+//! repainting IS the feedback. No UI-framework import may enter this module;
+//! that used to be a file-header rule in the app and is now the crate
+//! boundary itself.
 
-/// The reload outcomes the watcher already distinguishes (main.rs's
+/// The reload outcomes the watcher already distinguishes (the app's
 /// `spawn_spec_watcher` branches, verbatim).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReloadOutcome<'a> {
@@ -24,10 +25,10 @@ pub enum ReloadOutcome<'a> {
     ChromeDiverged(&'a str),
 }
 
-/// How prominently a rejection surfaces. The type moved to the
-/// framework-free model crate with the feedback log it labels; re-exported
-/// here so `crate::reload_feedback::Severity` callers are unmoved.
-pub use brightfield_model::log_model::Severity;
+/// How prominently a rejection surfaces. The feedback log's own severity
+/// vocabulary, re-exported so `reload_feedback::Severity` callers read the
+/// same type the log labels entries with.
+pub use crate::log_model::Severity;
 
 /// The workspace notification for a reload outcome, if any: rejections
 /// surface (in addition to the existing stderr line), successes are silent.
