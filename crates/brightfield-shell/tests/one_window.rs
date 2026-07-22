@@ -126,6 +126,7 @@ fn both(view: ViewKind) -> Boot {
     Boot {
         view: Some(view),
         composed: compose_spec(DASHBOARD).expect("compose the dashboard"),
+        live: None,
         protocol: edgar(),
         flow: Flow::Vertical,
         focus: None,

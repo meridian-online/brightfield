@@ -376,22 +376,85 @@ pub struct ToolbarDrawn {
     pub activated: Vec<Verb>,
 }
 
+/// A pane's toolbar, with the collapse rule attached: a row in which **every**
+/// control is withheld does not exist this frame.
+///
+/// [`toolbar_row`] draws whatever it is handed — an all-[`Hidden`] list still
+/// costs a row of empty air, because `ui.horizontal` allocates its height
+/// before any entry is filtered. That is the wrong default for a pane whose
+/// controls are all conditional: an item with nothing to say returns `Hidden`
+/// for everything, and the honest render of that is **no row at all**, not a
+/// blank band above the content. This type is the mechanical source of "quiet
+/// when there is nothing to show" — the item goes on *declaring* its controls
+/// (so the vocabulary stays greppable and the audit stays able to check the
+/// verbs), and the chrome decides existence from the declaration.
+///
+/// [`Hidden`]: ToolbarLocation::Hidden
+#[derive(Clone, Copy, Debug)]
+pub struct Toolbar<'a> {
+    entries: &'a [ToolbarEntry],
+}
+
+impl<'a> Toolbar<'a> {
+    /// A toolbar over a pane's declared controls.
+    #[must_use]
+    pub const fn new(entries: &'a [ToolbarEntry]) -> Self {
+        Self { entries }
+    }
+
+    /// Whether this toolbar has anything to say — any entry in a *drawn*
+    /// group. [`ToolbarLocation::Hidden`] entries are declared-but-withheld
+    /// by definition, and [`ToolbarLocation::Overflow`] entries do not count
+    /// either while the overflow affordance remains unbuilt ([`toolbar_row`]
+    /// draws them nowhere, so a row summoned for them alone would be exactly
+    /// the blank band this type exists to remove).
+    #[must_use]
+    pub fn has_something_to_say(&self) -> bool {
+        self.entries.iter().any(|e| {
+            matches!(
+                e.location,
+                ToolbarLocation::Leading | ToolbarLocation::Trailing
+            )
+        })
+    }
+
+    /// Draw the row — or nothing at all.
+    ///
+    /// When every entry is withheld this allocates **zero height**: the row
+    /// disappears entirely rather than reserving a blank band, and the
+    /// returned [`ToolbarDrawn`] is empty, which is the same answer
+    /// [`toolbar_row`] gives for the entries it filters out.
+    pub fn show(self, ui: &mut egui::Ui, mode: Mode) -> ToolbarDrawn {
+        if !self.has_something_to_say() {
+            return ToolbarDrawn::default();
+        }
+        toolbar_row(ui, self.entries, mode)
+    }
+}
+
 /// The toolbar row: leading group, spacer, trailing group.
 ///
 /// [`ToolbarLocation::Overflow`] entries are collected but not yet drawn —
 /// the overflow affordance lands with the first row long enough to need one,
 /// and until then they are reported in neither `drawn` nor `activated`, which
 /// the contract test pins.
+///
+/// This draws unconditionally — an all-hidden list still allocates the row's
+/// height, because the horizontal container reserves it before the filter
+/// runs. A caller whose controls are all conditional wants [`Toolbar`], which
+/// adds the existence rule on top of this.
 pub fn toolbar_row(ui: &mut egui::Ui, entries: &[ToolbarEntry], mode: Mode) -> ToolbarDrawn {
     let mut out = ToolbarDrawn::default();
-    let b = control::binding(HEADER_ROW);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = spacing::CONTROL_GAP;
         for entry in entries
             .iter()
             .filter(|e| e.location == ToolbarLocation::Leading)
         {
-            draw_toolbar_entry(ui, entry, b, mode, &mut out);
+            if let Some(verb) = toolbar_button(ui, entry, mode) {
+                out.activated.push(verb);
+            }
+            out.drawn.push(entry.id);
         }
         let trailing: Vec<&ToolbarEntry> = entries
             .iter()
@@ -400,7 +463,10 @@ pub fn toolbar_row(ui: &mut egui::Ui, entries: &[ToolbarEntry], mode: Mode) -> T
         if !trailing.is_empty() {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 for entry in trailing.iter().rev() {
-                    draw_toolbar_entry(ui, entry, b, mode, &mut out);
+                    if let Some(verb) = toolbar_button(ui, entry, mode) {
+                        out.activated.push(verb);
+                    }
+                    out.drawn.push(entry.id);
                 }
             });
         }
@@ -408,15 +474,20 @@ pub fn toolbar_row(ui: &mut egui::Ui, entries: &[ToolbarEntry], mode: Mode) -> T
     out
 }
 
-fn draw_toolbar_entry(
-    ui: &mut egui::Ui,
-    entry: &ToolbarEntry,
-    b: control::Binding,
-    mode: Mode,
-    out: &mut ToolbarDrawn,
-) {
+/// One toolbar control, drawn on its own: the button, its toggle on-state,
+/// its tooltip with the registry keystroke appended — and the **one** keyboard
+/// focus treatment, `meridian-egui`'s [`focus_ring_for`], the same ring every
+/// Meridian surface draws. Returns the entry's verb when it was activated.
+///
+/// Public as the primitive [`toolbar_row`]'s groups are made of, so a caller
+/// composing a row shape this file does not offer still gets the identical
+/// control — a second spelling of the toolbar button is how a toolbar stops
+/// feeling like one thing.
+///
+/// [`focus_ring_for`]: meridian_egui::widgets::focus_ring_for
+pub fn toolbar_button(ui: &mut egui::Ui, entry: &ToolbarEntry, mode: Mode) -> Option<Verb> {
+    let b = control::binding(HEADER_ROW);
     let sem = semantic(mode.is_dark());
-    out.drawn.push(entry.id);
 
     let text = egui::RichText::new(&entry.label).font(ui_font());
     let button = egui::Button::new(text)
@@ -451,6 +522,12 @@ fn draw_toolbar_entry(
         );
     }
 
+    // The one focus treatment: the design system's ring, drawn only when the
+    // control holds keyboard focus. egui 0.35 folds `has_focus()` into the
+    // same visuals bucket as *pressed*, so without this a focused-but-idle
+    // control is indistinguishable from an idle one.
+    meridian_egui::widgets::focus_ring_for(ui, &response);
+
     let response = match &entry.tooltip {
         // The keystroke is appended here, from the registry, so a rebinding
         // can never leave a tooltip claiming a key that no longer works.
@@ -461,9 +538,7 @@ fn draw_toolbar_entry(
         None => response,
     };
 
-    if response.clicked() {
-        out.activated.push(entry.verb);
-    }
+    response.clicked().then_some(entry.verb)
 }
 
 /// What a status rail did this frame.
@@ -600,4 +675,115 @@ fn affordance_button(ui: &mut egui::Ui, next: &Affordance) -> egui::Response {
             .corner_radius(radius::CONTROL)
             .min_size(egui::vec2(0.0, b.control)),
     )
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests — the Toolbar existence rule, which is a property of this file.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::subject::ToolbarEntry;
+
+    /// A real registered verb — the entries here must survive `Verb::new`'s
+    /// debug assertion, and inventing one would trip it by design.
+    fn verb() -> Verb {
+        let name = brightfield_keys::registry()
+            .first()
+            .expect("the keyboard registry is not empty")
+            .longname;
+        Verb::new(name)
+    }
+
+    /// Run one frame and report how much vertical space `add` consumed.
+    fn height_consumed(add: impl FnOnce(&mut egui::Ui) -> ToolbarDrawn) -> (ToolbarDrawn, f32) {
+        let ctx = egui::Context::default();
+        let mut slot = None;
+        let mut add = Some(add);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_max(
+                egui::pos2(0.0, 0.0),
+                egui::pos2(400.0, 300.0),
+            )),
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(input, |ui| {
+            if let Some(add) = add.take() {
+                let before = ui.cursor().min.y;
+                let drawn = add(ui);
+                let after = ui.cursor().min.y;
+                slot = Some((drawn, after - before));
+            }
+        });
+        slot.expect("the frame ran")
+    }
+
+    /// The existence rule itself: a toolbar in which every control is
+    /// withheld does not exist — zero height, nothing drawn, nothing
+    /// activatable. This is the mechanical source of "quiet when there is
+    /// nothing to show": the item keeps *declaring* the control (greppable,
+    /// auditable), and the row vanishes.
+    #[test]
+    fn a_toolbar_of_only_hidden_entries_takes_no_space_at_all() {
+        let entries = vec![
+            ToolbarEntry::button("a", "Not now", verb()).at(ToolbarLocation::Hidden),
+            ToolbarEntry::button("b", "Also not now", verb()).at(ToolbarLocation::Hidden),
+        ];
+        let toolbar = Toolbar::new(&entries);
+        assert!(!toolbar.has_something_to_say());
+        let (drawn, height) = height_consumed(|ui| toolbar.show(ui, Mode::Light));
+        assert_eq!(
+            drawn,
+            ToolbarDrawn::default(),
+            "nothing drawn, nothing armed"
+        );
+        assert_eq!(
+            height, 0.0,
+            "an all-hidden toolbar reserved {height}pt of blank band"
+        );
+    }
+
+    /// An empty declaration is the same answer as an all-hidden one.
+    #[test]
+    fn a_toolbar_with_no_entries_takes_no_space_either() {
+        let toolbar = Toolbar::new(&[]);
+        assert!(!toolbar.has_something_to_say());
+        let (_, height) = height_consumed(|ui| toolbar.show(ui, Mode::Light));
+        assert_eq!(height, 0.0);
+    }
+
+    /// One offered control brings the row back — and the hidden sibling stays
+    /// declared-but-unpainted, exactly as [`toolbar_row`] treats it.
+    #[test]
+    fn one_visible_entry_summons_the_row_and_hidden_siblings_stay_unpainted() {
+        let entries = vec![
+            ToolbarEntry::button("offered", "Clear", verb()),
+            ToolbarEntry::button("withheld", "Not now", verb()).at(ToolbarLocation::Hidden),
+        ];
+        let toolbar = Toolbar::new(&entries);
+        assert!(toolbar.has_something_to_say());
+        let (drawn, height) = height_consumed(|ui| toolbar.show(ui, Mode::Light));
+        assert_eq!(drawn.drawn, vec!["offered"]);
+        assert!(
+            height > 0.0,
+            "an offered control did not bring the row back"
+        );
+    }
+
+    /// Overflow does not summon the row: [`toolbar_row`] draws overflow
+    /// entries nowhere until the affordance lands, so a row summoned for them
+    /// alone would be a blank band — the exact thing the rule removes. This
+    /// test is the tripwire for that landing: when the affordance arrives,
+    /// overflow entries become something to say, and this flips.
+    #[test]
+    fn overflow_alone_does_not_summon_a_row_nothing_would_draw_into() {
+        let entries =
+            vec![ToolbarEntry::button("later", "More", verb()).at(ToolbarLocation::Overflow)];
+        let toolbar = Toolbar::new(&entries);
+        assert!(!toolbar.has_something_to_say());
+        let (drawn, height) = height_consumed(|ui| toolbar.show(ui, Mode::Light));
+        assert_eq!(drawn, ToolbarDrawn::default());
+        assert_eq!(height, 0.0);
+    }
 }

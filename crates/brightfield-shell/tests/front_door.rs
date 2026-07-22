@@ -281,8 +281,15 @@ fn the_way_in_declares_no_verb_and_therefore_no_keystroke() {
             "{what} offers a way in that declares a verb: {:?}",
             next.action
         );
-        assert!(
-            subject.declared_verbs().is_empty(),
+        // Every verb the subject declares comes from its toolbar and only
+        // its toolbar — the way in itself contributes none, so the chrome
+        // cannot print a keystroke on the button. (The chart pane's toolbar
+        // legitimately declares `clear-selection`, mostly Hidden; that is a
+        // control, not a way in.)
+        let toolbar_verbs: Vec<_> = subject.toolbar.iter().map(|t| t.verb).collect();
+        assert_eq!(
+            subject.declared_verbs(),
+            toolbar_verbs,
             "{what}'s empty state declares a verb, so the chrome will print \
              that verb's keystroke on the button"
         );

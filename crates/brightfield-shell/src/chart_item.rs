@@ -1,0 +1,909 @@
+//! The chart pane: **one** [`Item`] implementation, parameterised by mark
+//! kind.
+//!
+//! # Three shells, one implementation
+//!
+//! The dying gpui side hosts a chart through three separate `Element` shells —
+//! a canvas surface, a legend element, a slider element — each with its own
+//! framework glue and its own idea of what "selected" looks like. This module
+//! is their egui replacement expressed the other way round: one `ChartItem`
+//! whose behaviour is a *function of the mark kind* it presents. The kind is
+//! data ([`ChartDoc`] carries it, per plot, off the composition that actually
+//! happened), so a dot plot, a bar chart and an area chart are one type with
+//! one draw path and one gesture router — `mark_icon` and `gesture_for` are
+//! total over [`MarkKind`], and a new mark kind is a new match arm, not a new
+//! shell.
+//!
+//! # One selection treatment
+//!
+//! Everything transient the pointer does to the chart is painted from the
+//! design system's **overlay** token group (`brush_fill` / `brush_border` /
+//! `focus_ring` — the "never in the data scene" inks), and keyboard focus
+//! anywhere on the chart surfaces is `meridian-egui`'s one `focus_ring`. The
+//! five treatments this retires are the gpui shells': the brush overlay's own
+//! constants, the legend element's selected-entry dim, its hover lighten, the
+//! slider's focus treatment, and the workbench's second focus ring.
+//!
+//! # Gestures are queries
+//!
+//! A brush or a click never filters pixels or batches here. It resolves —
+//! through the plot's *displayed* scales — to a **structured** predicate
+//! ([`SqlPredicate::Interval`] / [`SqlPredicate::Point`]) and goes through
+//! [`ChartDoc::apply_interaction`] into the coordinator seam: the engine
+//! pushes it into DuckDB and the affected marks re-execute. The structured
+//! clause variants are preferred over flattened strings deliberately — they
+//! render byte-identical SQL, and keep the column, bounds and gesture context
+//! machine-readable downstream.
+
+use brightfield_engine::coordinator::Interaction;
+use brightfield_engine::SqlPredicate;
+use brightfield_keys::BindingContext;
+use brightfield_render::canvas_host::{ChartSurface, Color, PixelSize, SurfaceCursor};
+use brightfield_render::channel::Channel;
+use brightfield_render::scale::Scale;
+use brightfield_spec::analysis::BrushKind;
+use brightfield_spec::vocab::MarkKind;
+use brightfield_sql::ir::ScalarValue;
+use brightfield_workbench::subject::RunState;
+use brightfield_workbench::{
+    chrome, Affordance, EmptyState, Icon, Item, ItemCtx, ItemId, Subject, ToolbarEntry,
+    ToolbarLocation, Verb,
+};
+use meridian_design::chrome::{OverlayTokens, INK_DARK, INK_LIGHT, OVERLAY_DARK, OVERLAY_LIGHT};
+use meridian_design::semantic::Role;
+
+use crate::app::{ChartDoc, CHART};
+use crate::canvas::{surface_input, EguiChartFrame};
+use crate::design::Mode;
+use crate::legend;
+use crate::pipeline::{GestureBinding, PlotHandle};
+use crate::starts;
+
+/// The mode's overlay tokens — the transient-gesture ink group.
+fn overlay_tokens(mode: Mode) -> &'static OverlayTokens {
+    match mode {
+        Mode::Light => &OVERLAY_LIGHT,
+        Mode::Dark => &OVERLAY_DARK,
+    }
+}
+
+/// The icon a mark kind wears, from the Meridian icon set — the visible half
+/// of "parameterised by mark kind": one function, total over the vocabulary,
+/// instead of one shell per chart shape.
+#[must_use]
+pub fn mark_icon(kind: Option<MarkKind>) -> Icon {
+    let name = match kind {
+        Some(
+            MarkKind::BarY
+            | MarkKind::BarX
+            | MarkKind::Rect
+            | MarkKind::RectX
+            | MarkKind::RectY
+            | MarkKind::Cell,
+        ) => "chart-bar",
+        Some(MarkKind::AreaY | MarkKind::AreaX) => "chart-area",
+        Some(MarkKind::Line) => "chart-line",
+        // Dots, densities, rasters, geo — everything mark-shaped without a
+        // closer glyph presents as the dot chart.
+        Some(_) | None => "chart-dots",
+    };
+    Icon(name)
+}
+
+/// Which gesture class a brush binding drives on a plot of this mark kind —
+/// the behavioural half of the parameterisation. Interval brushes sweep a
+/// range on continuous axes; point toggles pick a category off a band axis.
+/// The *spec's* interactor decides which was asked for; the mark kind decides
+/// nothing extra today, and taking it as a parameter anyway is what keeps
+/// this the one place a kind-specific gesture rule would land.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GestureClass {
+    /// Drag sweeps an interval (x, y, or both).
+    Interval,
+    /// Click toggles a categorical member.
+    Point,
+}
+
+/// The gesture class of a brush kind. Total, so a new interactor kind is a
+/// compile error here rather than a silent dead gesture.
+#[must_use]
+pub fn gesture_for(kind: BrushKind) -> GestureClass {
+    match kind {
+        BrushKind::IntervalX | BrushKind::IntervalY | BrushKind::IntervalXY => {
+            GestureClass::Interval
+        }
+        BrushKind::Point | BrushKind::PointX | BrushKind::PointY => GestureClass::Point,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The run-state pill — the shell's render of the one status vocabulary.
+// ---------------------------------------------------------------------------
+
+/// The icon each [`RunState`] wears. Icon and label always travel together
+/// (the pill draws both), so colour is never the only signal — and two states
+/// never share an icon, so the icon alone is not a lie either.
+#[must_use]
+pub fn run_state_icon(state: RunState) -> meridian_egui::Icon {
+    let name = match state {
+        RunState::NeverRun => "clock",
+        RunState::Fresh => "circle-check",
+        RunState::StaleOwnEdit => "refresh",
+        RunState::StaleUpstream => "alert-triangle",
+        RunState::Failed => "circle-x",
+    };
+    meridian_egui::Icon::by_name(name).unwrap_or_else(|| {
+        unreachable!("run-state icon {name:?} is in the Meridian icon set — pinned by test")
+    })
+}
+
+/// The design-system role each [`RunState`] resolves to — the reconciliation
+/// of the old gpui emitter's ad-hoc feedback roles and the viz status inks
+/// into ONE mapping, routed through the state's own [`Tone`]: fresh wears
+/// success, both stales wear warning, failure wears danger, and never-run
+/// stays neutral — the absence of a run, not a good or bad one.
+///
+/// [`Tone`]: brightfield_workbench::subject::Tone
+#[must_use]
+pub fn run_state_role(state: RunState) -> Role {
+    use brightfield_workbench::subject::Tone;
+    match state.tone() {
+        Tone::Good => Role::Success,
+        Tone::Warning => Role::Warning,
+        Tone::Critical => Role::Danger,
+        Tone::Accent => Role::Accent,
+        Tone::Neutral => Role::Neutral,
+    }
+}
+
+/// The run-state pill: `meridian-egui`'s `status_pill` speaking the
+/// [`RunState`] vocabulary — the workbench contract's five states, never a
+/// second parallel set. Words from [`RunState::label`], colour from
+/// [`run_state_role`], icon from [`run_state_icon`]; the gloss rides the
+/// hover.
+pub fn run_state_pill(ui: &mut egui::Ui, state: RunState) -> egui::Response {
+    let icon = run_state_icon(state);
+    meridian_egui::widgets::status_pill(ui, &icon, state.label(), run_state_role(state))
+        .on_hover_text(state.gloss())
+}
+
+// ---------------------------------------------------------------------------
+// The item.
+// ---------------------------------------------------------------------------
+
+/// An in-progress brush drag, in raster-local logical pixels — view-local
+/// state, which is the only state an [`Item`] may hold. The *committed*
+/// selection lives where it belongs: in the engine, as a pushed predicate.
+#[derive(Clone, Copy, Debug)]
+struct Drag {
+    /// The plot index the drag started in — a drag never crosses plots.
+    plot: usize,
+    /// Where the primary button went down.
+    start: kurbo::Point,
+    /// The pointer now.
+    current: kurbo::Point,
+}
+
+/// The chart pane. See the module docs for what this one type replaces.
+pub struct ChartItem {
+    drag: Option<Drag>,
+    /// Whether the primary button was down over the raster last frame — the
+    /// edge detector the drag state machine runs on.
+    was_down: bool,
+}
+
+impl ChartItem {
+    /// A chart pane with no gesture in progress.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            drag: None,
+            was_down: false,
+        }
+    }
+
+    /// The pane's toolbar, declared once and read twice — `describe` puts it
+    /// on the subject (the auditable declaration) and `ui` draws the same
+    /// list through the chrome's collapsing `Toolbar`.
+    ///
+    /// One control today: `clear-selection`. On a dashboard with no brushable
+    /// plot it is **`Hidden`** — still declared, so the vocabulary stays
+    /// greppable and the verb stays audited, while the row itself disappears.
+    /// That is the quiet-when-nothing-to-show mechanism, not a convention.
+    ///
+    /// Visibility is keyed on the *composition* (does any plot declare a
+    /// gesture?), not on liveness, so the pane's geometry is a pure function
+    /// of [`Composed`](crate::pipeline::Composed) — which is what lets
+    /// [`chart_window_size`](crate::window::chart_window_size) budget the row
+    /// before any frame exists. Whether the control can *act* right now is
+    /// `enabled`, which is where "can" belongs.
+    fn toolbar_entries(doc: &ChartDoc) -> Vec<ToolbarEntry> {
+        let bindable = doc.composed.plots.iter().any(|p| p.gesture.is_some());
+        let mut entry = ToolbarEntry::button(
+            "chart-clear-selection",
+            "Clear selection",
+            Verb::new("clear-selection"),
+        )
+        .enabled(doc.selection_active());
+        entry.tooltip = Some("Retract every committed brush and re-query".to_string());
+        if !bindable {
+            entry = entry.at(ToolbarLocation::Hidden);
+        }
+        vec![entry]
+    }
+}
+
+impl Default for ChartItem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Item<ChartDoc> for ChartItem {
+    fn item_id(&self) -> ItemId {
+        CHART
+    }
+
+    /// The chart view's **front door**.
+    ///
+    /// This empty state is what a launch with no spec on the command line
+    /// opens on, so its prose cannot assume a spec was ever named — the copy
+    /// it replaces opened "This spec composed no plots", which is a report
+    /// about a spec that does not exist. It names both ways in: a shipped
+    /// start, offered as a button, and the command line.
+    ///
+    /// The affordance is an [`Action::Open`](brightfield_workbench::Action)
+    /// rather than a verb. There is no registered command that means "open the
+    /// example dashboard" and inventing one would put a keystroke and a palette
+    /// entry behind a fixture; worse, the chrome renders an affordance's verb's
+    /// real keystroke next to its label, so borrowing an unrelated verb would
+    /// ship a button that claims a key it does not have.
+    fn empty_state(&self, doc: &ChartDoc) -> Option<EmptyState> {
+        if !doc.is_empty() {
+            return None;
+        }
+        let mut empty = EmptyState::new(
+            mark_icon(None),
+            "Nothing to draw",
+            "No spec is open, or the one that is composed no plots. Start \
+             from the example below, or name a spec on the command line.",
+        );
+        if let Some(start) = starts::for_view(brightfield_workbench::ViewKind::Charts) {
+            empty = empty.with_next(Affordance::open(start.label, start.id));
+        }
+        Some(empty)
+    }
+
+    fn describe(&self, doc: &ChartDoc) -> Subject {
+        let mut subject = Subject::new(
+            "Chart",
+            mark_icon(doc.primary_mark()),
+            BindingContext::Workspace,
+        );
+        for entry in Self::toolbar_entries(doc) {
+            subject = subject.with_toolbar(entry);
+        }
+        if let Some(state) = doc.composed.run_state {
+            // The one vocabulary, spelled by its own type — the same entry a
+            // protocol surface rails, so a stale preview here and a stale
+            // step there say it identically.
+            subject = subject.with_status(state.status_entry("run-state"));
+        }
+        subject
+    }
+
+    fn ui(&mut self, doc: &mut ChartDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
+        // Recorded *before* the texture check, so a headless document still
+        // reports the box the dock gave this pane. See `ChartDoc::viewport`.
+        doc.viewport = Some(ui.max_rect());
+        let mode = cx.mode;
+
+        // The toolbar row — through the collapsing Toolbar, so a document
+        // with nothing to offer draws no row at all rather than a blank band.
+        let entries = Self::toolbar_entries(doc);
+        let drawn = chrome::Toolbar::new(&entries).show(ui, mode);
+        for verb in drawn.activated {
+            cx.request(verb);
+        }
+
+        // The run-state banner, only when this preview shows materialised run
+        // output at all: icon + label + tone, never colour alone. A live or
+        // one-shot composition claims nothing and draws nothing.
+        if let Some(state) = doc.composed.run_state {
+            run_state_pill(ui, state);
+        }
+
+        let (w, h) = (doc.composed.width, doc.composed.height);
+        let band = legend::band_width(&doc.composed);
+
+        // The raster and, when any plot calls for one, the legend band beside
+        // it — OUTSIDE the plot rect, in the chart's margin, by layout rather
+        // than by hope.
+        let overlay_on = doc.overlay;
+        let ctx = ui.ctx().clone();
+        let texture = doc.canvas_texture();
+        let mut raster_rect = None;
+        let mut legend_rect = None;
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            let Some(texture) = texture else {
+                // No device behind this document. The raster is blank rather
+                // than apologetic — a headless document is a test fixture —
+                // but the *layout* still happens: the geometry the exercise
+                // tests hold is produced with and without a GPU alike.
+                let (rect, _) = ui.allocate_exact_size(
+                    egui::vec2(w as f32, h as f32),
+                    egui::Sense::click_and_drag(),
+                );
+                raster_rect = Some(rect);
+                if band > 0.0 {
+                    ui.add_space(meridian_design::spacing::CONTROL_GAP);
+                    let (band_rect, _) = ui.allocate_exact_size(
+                        egui::vec2(legend::block_width(), h as f32),
+                        egui::Sense::hover(),
+                    );
+                    legend_rect = Some(band_rect);
+                }
+                return;
+            };
+
+            let mut frame = EguiChartFrame::new(ui, texture);
+            frame.present(PixelSize {
+                width: w,
+                height: h,
+            });
+            let Some(rect) = frame.reserved() else {
+                return;
+            };
+            raster_rect = Some(rect);
+
+            // Gestures and the transient overlay, before the legend band so
+            // the frame borrow ends inside this scope.
+            let input = surface_input(&ctx, rect);
+            let hovered = input.hovered;
+            let pointer = input.pointer_pos;
+            let down = matches!(
+                input.pointer_primary,
+                brightfield_render::canvas_host::ButtonState::Down
+            );
+
+            // The drag state machine: press starts a brush in the plot under
+            // the pointer, release commits it. Edge-triggered on the button.
+            if down && !self.was_down {
+                if let Some(p) = pointer {
+                    if let Some(plot) = plot_at(&doc.composed.plots, p) {
+                        if doc.composed.plots[plot].gesture.is_some() && doc.is_live() {
+                            self.drag = Some(Drag {
+                                plot,
+                                start: p,
+                                current: p,
+                            });
+                        }
+                    }
+                }
+            } else if down {
+                if let (Some(drag), Some(p)) = (self.drag.as_mut(), pointer) {
+                    drag.current = p;
+                }
+            }
+            let released = !down && self.was_down;
+            self.was_down = down;
+
+            // The one transient-gesture treatment: the overlay token group.
+            if let Some(drag) = self.drag {
+                let tokens = overlay_tokens(mode);
+                let r = drag_rect(&doc.composed.plots[drag.plot], drag);
+                let painter = frame.overlay();
+                painter.fill_rect(r, Color::from_token(tokens.brush_fill));
+                painter.stroke_rect(r, Color::from_token(tokens.brush_border), 1.0);
+            } else if overlay_on && hovered {
+                // The hover crosshair — the chart's own ink layer, matched to
+                // the raster's palette rather than the chrome's.
+                if let Some(p) = pointer {
+                    let focus = match mode {
+                        Mode::Light => INK_LIGHT.focus,
+                        Mode::Dark => INK_DARK.focus,
+                    };
+                    let ink = Color::from_token_alpha(focus, 0.9);
+                    let painter = frame.overlay();
+                    painter.line(
+                        kurbo::Point::new(p.x, 0.0),
+                        kurbo::Point::new(p.x, f64::from(h)),
+                        ink,
+                        1.0,
+                    );
+                    painter.line(
+                        kurbo::Point::new(0.0, p.y),
+                        kurbo::Point::new(f64::from(w), p.y),
+                        ink,
+                        1.0,
+                    );
+                    painter.fill_circle(p, 3.0, ink);
+                }
+                frame.set_cursor(Some(SurfaceCursor::Grab));
+            }
+
+            // Release: resolve the gesture to a structured predicate and push
+            // it through the seam. A click (no sweep) on an interval binding
+            // clears that plot's contribution instead — the crossfilter
+            // convention — and on a point binding toggles the category.
+            if released {
+                if let Some(drag) = self.drag.take() {
+                    let plot = &doc.composed.plots[drag.plot];
+                    if let Some(binding) = plot.gesture.clone() {
+                        if let Some(interaction) = resolve_gesture(&binding, plot, drag) {
+                            doc.apply_interaction(interaction);
+                            cx.request_repaint();
+                        }
+                    }
+                }
+            }
+
+            // The legend band, drawn from the same scales the raster was
+            // composed against. The gap is allocated space, so the band's
+            // rect and the raster's are disjoint by geometry, not by paint.
+            if band > 0.0 {
+                ui.add_space(meridian_design::spacing::CONTROL_GAP);
+                let (band_rect, _) = ui.allocate_exact_size(
+                    egui::vec2(legend::block_width(), h as f32),
+                    egui::Sense::hover(),
+                );
+                legend_rect = Some(band_rect);
+                legend::draw_band(ui, band_rect, rect.top(), &doc.composed, mode);
+            }
+        });
+        doc.raster_rect = raster_rect;
+        doc.legend_rect = legend_rect;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Gesture geometry — pure, and unit-tested as such.
+// ---------------------------------------------------------------------------
+
+/// The index of the plot whose placed rect contains `p` (raster-local
+/// logical pixels), if any.
+fn plot_at(plots: &[PlotHandle], p: kurbo::Point) -> Option<usize> {
+    plots.iter().position(|plot| {
+        p.x >= plot.rect.x
+            && p.x <= plot.rect.x + plot.rect.width
+            && p.y >= plot.rect.y
+            && p.y <= plot.rect.y + plot.rect.height
+    })
+}
+
+/// The brush rectangle a drag paints, clamped to its plot and axis-locked to
+/// the binding's brush kind (an x-interval sweeps full plot height, a
+/// y-interval full width).
+fn drag_rect(plot: &PlotHandle, drag: Drag) -> brightfield_render::canvas_host::SurfaceRect {
+    use brightfield_render::canvas_host::SurfaceRect;
+    let kind = plot.gesture.as_ref().map(|g| g.kind);
+    let (x0, x1) = min_max(drag.start.x, drag.current.x);
+    let (y0, y1) = min_max(drag.start.y, drag.current.y);
+    let (px0, px1) = (plot.rect.x, plot.rect.x + plot.rect.width);
+    let (py0, py1) = (plot.rect.y, plot.rect.y + plot.rect.height);
+    let (x0, x1, y0, y1) = match kind {
+        Some(BrushKind::IntervalX | BrushKind::PointX) => (x0.max(px0), x1.min(px1), py0, py1),
+        Some(BrushKind::IntervalY | BrushKind::PointY) => (px0, px1, y0.max(py0), y1.min(py1)),
+        _ => (x0.max(px0), x1.min(px1), y0.max(py0), y1.min(py1)),
+    };
+    SurfaceRect::new(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0))
+}
+
+fn min_max(a: f64, b: f64) -> (f64, f64) {
+    if a <= b {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+/// Resolve a finished drag to the interaction it means, or `None` when it
+/// means nothing (no channel column, a degenerate scale).
+///
+/// - An **interval** sweep becomes [`SqlPredicate::Interval`] per swept axis
+///   (both, `And`-ed, for `intervalXY`), bounds inverted through the plot's
+///   displayed scales.
+/// - An interval **click** (no sweep) retracts this plot's contribution —
+///   the click-clears convention.
+/// - A **point** click becomes [`SqlPredicate::Point`] over the category the
+///   band scale places under the pointer.
+fn resolve_gesture(binding: &GestureBinding, plot: &PlotHandle, drag: Drag) -> Option<Interaction> {
+    /// A drag shorter than this on both axes is a click, not a sweep.
+    const CLICK_SLOP: f64 = 3.0;
+    let swept = (drag.current.x - drag.start.x).abs() > CLICK_SLOP
+        || (drag.current.y - drag.start.y).abs() > CLICK_SLOP;
+    match gesture_for(binding.kind) {
+        GestureClass::Interval => {
+            if !swept {
+                return Some(Interaction::ClearSelect {
+                    name: binding.selection.clone(),
+                    contributor: binding.contributor.clone(),
+                });
+            }
+            let predicate = interval_predicate(binding, plot, drag.start, drag.current)?;
+            Some(Interaction::Select {
+                name: binding.selection.clone(),
+                contributor: binding.contributor.clone(),
+                predicate,
+            })
+        }
+        GestureClass::Point => {
+            if swept {
+                return None;
+            }
+            let predicate = point_predicate(binding, plot, drag.current)?;
+            Some(Interaction::Select {
+                name: binding.selection.clone(),
+                contributor: binding.contributor.clone(),
+                predicate,
+            })
+        }
+    }
+}
+
+/// The structured interval clause(s) a sweep from `a` to `b` (raster-local)
+/// means on this plot: per-axis `Interval`s, `And`-ed when the binding
+/// sweeps both.
+fn interval_predicate(
+    binding: &GestureBinding,
+    plot: &PlotHandle,
+    a: kurbo::Point,
+    b: kurbo::Point,
+) -> Option<SqlPredicate> {
+    let mut clauses = Vec::new();
+    if matches!(binding.kind, BrushKind::IntervalX | BrushKind::IntervalXY) {
+        let column = binding.x_column.clone()?;
+        let scale = plot.scales.get(Channel::X)?;
+        clauses.push(axis_interval(
+            column,
+            scale,
+            a.x - plot.rect.x,
+            b.x - plot.rect.x,
+        )?);
+    }
+    if matches!(binding.kind, BrushKind::IntervalY | BrushKind::IntervalXY) {
+        let column = binding.y_column.clone()?;
+        let scale = plot.scales.get(Channel::Y)?;
+        clauses.push(axis_interval(
+            column,
+            scale,
+            a.y - plot.rect.y,
+            b.y - plot.rect.y,
+        )?);
+    }
+    match clauses.len() {
+        0 => None,
+        1 => clauses.pop(),
+        _ => Some(SqlPredicate::And(clauses)),
+    }
+}
+
+/// One axis's structured interval: two plot-local pixels inverted through the
+/// displayed scale, ordered into inclusive `[lo, hi]` bounds.
+fn axis_interval(column: String, scale: &Scale, p0: f64, p1: f64) -> Option<SqlPredicate> {
+    let (v0, v1) = (scale.inverse_f64(p0)?, scale.inverse_f64(p1)?);
+    let (lo, hi) = min_max(v0, v1);
+    let bound = |v: f64| match scale {
+        Scale::Time { .. } => ScalarValue::TimestampMicros(v.round() as i64),
+        _ => ScalarValue::Float(v),
+    };
+    Some(SqlPredicate::Interval {
+        column,
+        lo: bound(lo),
+        hi: bound(hi),
+        meta: None,
+    })
+}
+
+/// The structured point clause a click at `p` (raster-local) means: the
+/// category whose band slot contains the pointer, on the binding's axis.
+fn point_predicate(
+    binding: &GestureBinding,
+    plot: &PlotHandle,
+    p: kurbo::Point,
+) -> Option<SqlPredicate> {
+    let (column, channel, pixel) = match binding.kind {
+        BrushKind::PointY => (binding.y_column.clone()?, Channel::Y, p.y - plot.rect.y),
+        _ => (binding.x_column.clone()?, Channel::X, p.x - plot.rect.x),
+    };
+    let category = band_category(plot.scales.get(channel)?, pixel)?;
+    Some(SqlPredicate::Point {
+        column,
+        values: vec![ScalarValue::Text(category)],
+        meta: None,
+    })
+}
+
+/// The category whose band slot contains `pixel`, on a band scale.
+fn band_category(scale: &Scale, pixel: f64) -> Option<String> {
+    let Scale::Band {
+        categories,
+        range_start,
+        range_end,
+        ..
+    } = scale
+    else {
+        return None;
+    };
+    if categories.is_empty() {
+        return None;
+    }
+    let span = range_end - range_start;
+    if span.abs() < f64::EPSILON {
+        return None;
+    }
+    let slot = span / categories.len() as f64;
+    let idx = ((pixel - range_start) / slot).floor();
+    if idx < 0.0 || idx >= categories.len() as f64 {
+        return None;
+    }
+    Some(categories[idx as usize].clone())
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use brightfield_render::layout::ChartLayout;
+    use brightfield_render::scale::ScaleSet;
+    use brightfield_spec::analysis::ComponentPath;
+    use brightfield_spec::layout::Rect;
+
+    fn linear(range: (f64, f64), domain: (f64, f64)) -> Scale {
+        Scale::Linear {
+            domain_min: domain.0,
+            domain_max: domain.1,
+            range_start: range.0,
+            range_end: range.1,
+        }
+    }
+
+    fn plot(scales: ScaleSet, kind: BrushKind) -> PlotHandle {
+        PlotHandle {
+            path: "root".to_string(),
+            rect: Rect::new(0.0, 0.0, 100.0, 100.0),
+            scales,
+            layout: ChartLayout::new(100.0, 100.0),
+            marks: vec![MarkKind::Dot],
+            gesture: Some(GestureBinding {
+                selection: "brush".to_string(),
+                contributor: ComponentPath("root".to_string()),
+                kind,
+                x_column: Some("x".to_string()),
+                y_column: Some("y".to_string()),
+            }),
+        }
+    }
+
+    /// The wave constraint in one assertion: a sweep resolves to the
+    /// STRUCTURED interval clause — column, typed bounds — not a flattened
+    /// string, and it renders exactly the SQL its hand-written form would.
+    #[test]
+    fn an_x_sweep_resolves_to_a_structured_interval_clause() {
+        let mut scales = ScaleSet::new();
+        scales.insert(Channel::X, linear((0.0, 100.0), (0.0, 10.0)));
+        let plot = plot(scales, BrushKind::IntervalX);
+        let binding = plot.gesture.clone().expect("bound");
+        let predicate = interval_predicate(
+            &binding,
+            &plot,
+            kurbo::Point::new(20.0, 5.0),
+            kurbo::Point::new(80.0, 60.0),
+        )
+        .expect("a sweep inverts");
+        let SqlPredicate::Interval { column, lo, hi, .. } = &predicate else {
+            panic!("expected the structured Interval variant, got {predicate:?}");
+        };
+        assert_eq!(column, "x");
+        assert_eq!(*lo, ScalarValue::Float(2.0));
+        assert_eq!(*hi, ScalarValue::Float(8.0));
+        // The structured clause renders byte-identically to the string form.
+        assert_eq!(predicate.to_string(), "(x >= 2 AND x <= 8)");
+    }
+
+    /// A reversed drag still yields ordered inclusive bounds.
+    #[test]
+    fn a_right_to_left_sweep_orders_its_bounds() {
+        let mut scales = ScaleSet::new();
+        scales.insert(Channel::X, linear((0.0, 100.0), (0.0, 10.0)));
+        let plot = plot(scales, BrushKind::IntervalX);
+        let binding = plot.gesture.clone().expect("bound");
+        let SqlPredicate::Interval { lo, hi, .. } = interval_predicate(
+            &binding,
+            &plot,
+            kurbo::Point::new(80.0, 0.0),
+            kurbo::Point::new(20.0, 0.0),
+        )
+        .expect("inverts") else {
+            panic!("structured clause");
+        };
+        assert_eq!(lo, ScalarValue::Float(2.0));
+        assert_eq!(hi, ScalarValue::Float(8.0));
+    }
+
+    /// A 2D sweep is one `And` of two structured intervals — the y axis
+    /// inverted through the y scale's flipped pixel range.
+    #[test]
+    fn an_xy_sweep_ands_two_intervals() {
+        let mut scales = ScaleSet::new();
+        scales.insert(Channel::X, linear((0.0, 100.0), (0.0, 10.0)));
+        // y pixel range runs top-down: pixel 0 is the domain max.
+        scales.insert(Channel::Y, linear((100.0, 0.0), (0.0, 50.0)));
+        let plot = plot(scales, BrushKind::IntervalXY);
+        let binding = plot.gesture.clone().expect("bound");
+        let predicate = interval_predicate(
+            &binding,
+            &plot,
+            kurbo::Point::new(10.0, 10.0),
+            kurbo::Point::new(90.0, 90.0),
+        )
+        .expect("inverts");
+        let SqlPredicate::And(clauses) = &predicate else {
+            panic!("an XY sweep is a conjunction, got {predicate:?}");
+        };
+        assert_eq!(clauses.len(), 2);
+        let SqlPredicate::Interval { column, lo, hi, .. } = &clauses[1] else {
+            panic!("y clause is structured");
+        };
+        assert_eq!(column, "y");
+        // Pixels 10 and 90 on a flipped 100→0 range are domain 45 and 5.
+        let (ScalarValue::Float(lo), ScalarValue::Float(hi)) = (lo, hi) else {
+            panic!("linear bounds are floats");
+        };
+        assert!((lo - 5.0).abs() < 1e-9, "lo inverted to {lo}");
+        assert!((hi - 45.0).abs() < 1e-9, "hi inverted to {hi}");
+    }
+
+    /// A click on a band axis resolves the category under the pointer to a
+    /// structured Point clause — a quoted equality, not a between.
+    #[test]
+    fn a_band_click_resolves_to_a_structured_point_clause() {
+        let mut scales = ScaleSet::new();
+        scales.insert(
+            Channel::X,
+            Scale::Band {
+                categories: vec!["North".into(), "South".into(), "East".into()],
+                range_start: 0.0,
+                range_end: 90.0,
+                padding: 0.1,
+            },
+        );
+        let plot = plot(scales, BrushKind::PointX);
+        let binding = plot.gesture.clone().expect("bound");
+        let predicate = point_predicate(&binding, &plot, kurbo::Point::new(45.0, 50.0))
+            .expect("the middle band is under the pointer");
+        assert_eq!(
+            predicate,
+            SqlPredicate::Point {
+                column: "x".to_string(),
+                values: vec![ScalarValue::Text("South".to_string())],
+                meta: None,
+            }
+        );
+        assert_eq!(predicate.to_string(), "x = 'South'");
+    }
+
+    /// A click outside every band resolves to nothing rather than to the
+    /// nearest category — a miss is a miss.
+    #[test]
+    fn a_click_off_the_band_axis_selects_nothing() {
+        let scale = Scale::Band {
+            categories: vec!["a".into(), "b".into()],
+            range_start: 10.0,
+            range_end: 50.0,
+            padding: 0.0,
+        };
+        assert_eq!(band_category(&scale, 5.0), None);
+        assert_eq!(band_category(&scale, 55.0), None);
+        assert_eq!(band_category(&scale, 15.0), Some("a".to_string()));
+    }
+
+    /// An interval click (no sweep) retracts the plot's contribution — the
+    /// click-clears convention — and a point sweep does nothing at all.
+    #[test]
+    fn clicks_and_sweeps_route_by_gesture_class() {
+        let mut scales = ScaleSet::new();
+        scales.insert(Channel::X, linear((0.0, 100.0), (0.0, 10.0)));
+        let interval = plot(scales.clone(), BrushKind::IntervalX);
+        let click = Drag {
+            plot: 0,
+            start: kurbo::Point::new(40.0, 40.0),
+            current: kurbo::Point::new(41.0, 41.0),
+        };
+        let binding = interval.gesture.clone().expect("bound");
+        assert!(matches!(
+            resolve_gesture(&binding, &interval, click),
+            Some(Interaction::ClearSelect { .. })
+        ));
+
+        let point = plot(scales, BrushKind::PointX);
+        let sweep = Drag {
+            plot: 0,
+            start: kurbo::Point::new(10.0, 10.0),
+            current: kurbo::Point::new(90.0, 90.0),
+        };
+        let binding = point.gesture.clone().expect("bound");
+        assert_eq!(resolve_gesture(&binding, &point, sweep), None);
+    }
+
+    /// One implementation, every mark kind: the parameterisation is total —
+    /// each implemented kind resolves an icon from the Meridian set, so a
+    /// dot, a bar and an area chart are match arms, not shells.
+    #[test]
+    fn the_mark_kind_parameterisation_is_total_over_the_vocabulary() {
+        for kind in [
+            MarkKind::Dot,
+            MarkKind::BarY,
+            MarkKind::BarX,
+            MarkKind::AreaY,
+            MarkKind::AreaX,
+            MarkKind::Line,
+            MarkKind::Rect,
+            MarkKind::Cell,
+        ] {
+            let icon = mark_icon(Some(kind));
+            assert!(
+                meridian_egui::Icon::by_name(icon.as_str()).is_some(),
+                "{kind:?} resolves to {:?}, which is not in the icon set",
+                icon.as_str()
+            );
+        }
+        assert_eq!(mark_icon(None).as_str(), "chart-dots");
+    }
+
+    /// Every brush kind routes to exactly one gesture class — a new
+    /// interactor kind must choose here before it can compile.
+    #[test]
+    fn every_brush_kind_has_a_gesture_class() {
+        for (kind, class) in [
+            (BrushKind::IntervalX, GestureClass::Interval),
+            (BrushKind::IntervalY, GestureClass::Interval),
+            (BrushKind::IntervalXY, GestureClass::Interval),
+            (BrushKind::Point, GestureClass::Point),
+            (BrushKind::PointX, GestureClass::Point),
+            (BrushKind::PointY, GestureClass::Point),
+        ] {
+            assert_eq!(gesture_for(kind), class);
+        }
+    }
+
+    // -- The run-state pill: the one vocabulary, rendered -------------------
+
+    /// The pill speaks the workbench vocabulary and nothing else: five
+    /// states, five distinct icons that all exist in the icon set, and the
+    /// role mapping is the tone reconciliation — never-run is neutral, not
+    /// an error and not success.
+    #[test]
+    fn the_run_state_pill_consumes_the_one_vocabulary() {
+        let mut seen = std::collections::BTreeSet::new();
+        for state in RunState::ALL {
+            let icon = run_state_icon(state);
+            assert!(seen.insert(format!("{icon:?}")), "{state:?} shares an icon");
+        }
+        assert_eq!(run_state_role(RunState::Fresh), Role::Success);
+        assert_eq!(run_state_role(RunState::StaleOwnEdit), Role::Warning);
+        assert_eq!(run_state_role(RunState::StaleUpstream), Role::Warning);
+        assert_eq!(run_state_role(RunState::Failed), Role::Danger);
+        assert_eq!(run_state_role(RunState::NeverRun), Role::Neutral);
+    }
+
+    /// The toolbar declaration follows the document: hidden (row disappears)
+    /// with nothing to act on, offered-but-disabled with a live bindable
+    /// dashboard and no committed brush. Declared either way, so the verb
+    /// stays greppable and audited.
+    #[test]
+    fn the_clear_selection_control_is_hidden_exactly_when_it_cannot_act() {
+        let doc = ChartDoc::empty();
+        let entries = ChartItem::toolbar_entries(&doc);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].location, ToolbarLocation::Hidden);
+        assert!(
+            !chrome::Toolbar::new(&entries).has_something_to_say(),
+            "a hidden-only toolbar summons no row"
+        );
+    }
+}
