@@ -1571,14 +1571,14 @@ pub fn clause_meta_for_scale(scale: &Scale) -> ClauseMeta {
 }
 
 /// The structured (lossless) form of the drag-commit predicate: invert the
-/// pixel gesture through the plot's scales exactly as [`invert_pixel_brush`]
+/// pixel gesture through the plot's scales exactly as `invert_pixel_brush`
 /// does for the string path, then build `Predicate::Interval` clauses that
 /// keep the column, data-space bounds, and per-axis scale/pixel metadata
 /// machine-readable all the way into the query layer. Emits SQL equivalent
 /// to the string path's predicate for the same gesture (see `ir.rs`).
 ///
 /// This is the opt-in structured producer — the string path
-/// ([`invert_pixel_brush`] + `brush_rect_to_predicate`) remains the live
+/// (`invert_pixel_brush` + `brush_rect_to_predicate`) remains the live
 /// default until a consumer needs the structure.
 #[must_use]
 pub fn structured_brush_predicate(
