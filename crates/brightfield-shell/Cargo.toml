@@ -62,6 +62,10 @@ brightfield-model = { version = "0.1.0", path = "../brightfield-model" }
 # drawing every pane's header, empty state and selection. The chart view and the
 # one-app `Workspace` follow in later steps.
 brightfield-workbench = { version = "0.1.0", path = "../brightfield-workbench" }
+# The virtualised table viewer under the data grid and the Steps sheet
+# (rerun-io; deliberately styling-free — sticky headers, millions of rows).
+# Tracks egui majors: 0.9 rides egui 0.35; bump the two together.
+egui_table = "0.9"
 
 [dev-dependencies]
 # Tier-1 real-UI snapshot loop: egui_kittest renders the real app headlessly on

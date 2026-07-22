@@ -56,7 +56,7 @@
 
 use std::collections::BTreeSet;
 
-use brightfield_engine::coordinator::Interaction;
+use brightfield_engine::coordinator::{Coordinator, Interaction};
 use brightfield_keys::BindingContext;
 use brightfield_render::canvas_host::{Color, PixelSize};
 use brightfield_spec::analysis::ComponentPath;
@@ -254,6 +254,14 @@ impl ChartDoc {
         self.live.is_some()
     }
 
+    /// The live coordinator behind this document, when one is attached — the
+    /// data-grid pane's read path: the windowed step-rows seam, plus the
+    /// interaction generation those reads are cache-keyed to. `None` for a
+    /// one-shot composition, whose stillness has nothing to read back.
+    pub(crate) fn live_coordinator(&mut self) -> Option<&mut Coordinator> {
+        self.live.as_mut().map(LiveDashboard::coordinator)
+    }
+
     /// Whether any selection currently holds a committed gesture.
     #[must_use]
     pub fn selection_active(&self) -> bool {
@@ -443,8 +451,9 @@ pub(crate) const CONTROLS_SHARE: f32 = 0.2;
 /// mark kind's own, named by [`ChartItem`].
 const ICON_CONTROLS: Icon = Icon("sliders");
 
-/// The chart view's registry: the chart canvas, the controls rail, and the
-/// spec editor, where each sits, and the verbs that show and hide them.
+/// The chart view's registry: the chart canvas, its data-grid peer, the
+/// controls rail, and the spec editor, where each sits, and the verbs that
+/// show and hide them.
 ///
 /// This is the **only** declaration of the view's shape. The dock's default
 /// arrangement ([`ItemRegistry::default_tree`]), the live item map
@@ -462,6 +471,7 @@ pub fn chart_registry() -> ItemRegistry<ChartDoc> {
                 toggle: None,
                 make: || Box::new(ChartItem::new()),
             },
+            crate::data_grid::data_grid_spec(),
             ItemSpec {
                 id: CONTROLS,
                 slot: Slot::Rail {

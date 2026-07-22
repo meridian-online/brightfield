@@ -1605,100 +1605,18 @@ impl Item<ProtocolDoc> for StepsPane {
     }
 
     fn ui(&mut self, doc: &mut ProtocolDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
-        let sem = semantic(cx.mode.is_dark());
-        let cursor = doc.model.sheet().cursor();
-        egui::ScrollArea::both()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                let grid = egui::Grid::new("proto-steps-grid")
-                    .striped(true)
-                    .num_columns(6)
-                    .spacing(egui::vec2(spacing::SPACE_6, spacing::SPACE_2))
-                    .show(ui, |ui| {
-                        for h in brightfield_protocol::sheet::COLUMNS {
-                            ui.label(
-                                egui::RichText::new(h)
-                                    .font(ui_font())
-                                    .color(chrome::colour(sem.text.muted)),
-                            );
-                        }
-                        ui.end_row();
-                        let mut wash = None;
-                        for (i, row) in doc.model.sheet().rows().iter().enumerate() {
-                            if let Some(w) = steps_row(ui, row, i == cursor, cx.mode) {
-                                wash = Some(w);
-                            }
-                        }
-                        wash
-                    });
-                // The wash is filled in *after* the grid closes, because that
-                // is the first moment the row's full width is known. Sizing it
-                // from the union of the row's own cells fell ~40px short of the
-                // zebra stripe beside it: the stripe spans the grid's full
-                // width, while the last column is empty on an offline row and
-                // contributes a zero-width rect. So the x range comes from the
-                // grid and only the y range from the row.
-                if let Some((idx, rows)) = grid.inner {
-                    let rect = egui::Rect::from_x_y_ranges(grid.response.rect.x_range(), rows)
-                        .expand(spacing::SPACE_1);
-                    ui.painter()
-                        .set(idx, chrome::selection_wash_shape(rect, cx.mode));
-                }
-            });
+        // The one Meridian table chrome (`crate::data_grid`): sticky header,
+        // the dense row rung, the cursor row under the one selection wash,
+        // and the order column right-aligned in the tabular-numeral scope.
+        // This retires the bespoke `egui::Grid` render that stood here — and
+        // with it the mono-font order column, which was alignment-by-font,
+        // the thing the density guideline forbids. The sheet CORE — rows,
+        // cursor, ordering — stays in `brightfield_protocol::sheet`,
+        // untouched; this pane is only its projection.
+        let sheet = doc.model.sheet();
+        let mut source = crate::data_grid::StepSheetRows::new(sheet.rows(), sheet.cursor());
+        crate::data_grid::show_table(ui, "proto-steps-grid", cx.mode, &mut source);
     }
-}
-
-/// One steps row, with the cursor row wearing the one selection wash.
-///
-/// Returns the reserved wash slot and the row's vertical extent when this is
-/// the cursor row, for the caller to fill in once the grid's width is known.
-/// The wash has to be *reserved* before the cells are laid out, because a grid
-/// row's rect is not known until its widest cell has been measured. That is
-/// what [`chrome::selection_wash_shape`] exists for. The version this replaces
-/// marked the cursor with a ▸ prefix and an ink swap and no wash at all — a
-/// third spelling of "this row is selected".
-fn steps_row(
-    ui: &mut egui::Ui,
-    row: &StepRow,
-    selected: bool,
-    mode: Mode,
-) -> Option<(egui::layers::ShapeIdx, egui::Rangef)> {
-    let sem = semantic(mode.is_dark());
-    let wash = selected.then(|| ui.painter().add(egui::Shape::Noop));
-    let ink = chrome::colour(sem.text.primary);
-    let quiet = chrome::colour(sem.text.secondary);
-
-    let name = if row.gate {
-        format!("{} ◈", row.name)
-    } else {
-        row.name.clone()
-    };
-    let first = ui.label(
-        egui::RichText::new(row.order.to_string())
-            .font(mono_font())
-            .color(ink),
-    );
-    ui.label(egui::RichText::new(name).font(ui_font()).color(ink));
-    ui.label(egui::RichText::new(row.kind).font(ui_font()).color(quiet));
-    ui.label(
-        egui::RichText::new(truncate(&row.detail, 40))
-            .font(ui_font())
-            .color(quiet),
-    );
-    ui.label(egui::RichText::new(row.status).font(ui_font()).color(quiet));
-    let live = row
-        .live_state
-        .clone()
-        .or_else(|| row.skip_reason.clone())
-        .unwrap_or_default();
-    let last = ui.label(
-        egui::RichText::new(live)
-            .font(ui_font())
-            .color(chrome::colour(sem.text.muted)),
-    );
-    ui.end_row();
-
-    wash.map(|idx| (idx, first.rect.union(last.rect).y_range()))
 }
 
 // ---------------------------------------------------------------------------

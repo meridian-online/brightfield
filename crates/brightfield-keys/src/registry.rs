@@ -589,6 +589,24 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Show or hide the chart controls rail",
             scores: None,
         },
+        // The chart view's data-grid tab, on the same terms as the rails
+        // above: the grid is the chart's peer — two queries over one step
+        // materialisation — and the tab strip is the one toggle between the
+        // two projections. Named here because a centre tab must name its
+        // show/hide verb (the item-registry audit enforces it) and the shell
+        // may not invent one; unbound until the workspace shell performs
+        // pane toggles, while the tab itself stays reachable by pointer.
+        VerbEntry {
+            longname: "toggle-data-grid",
+            tier: CommandTier::View,
+            binding_specs: Vec::new(),
+            scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
+            drives: D::Reserved,
+            status: VerbStatus::Reserved,
+            reserved_reason: Some(ReservedReason::NeedsWorkspaceShell),
+            help: "Show or hide the data grid — the chart's tabular peer",
+            scores: None,
+        },
     ]
 }
 
@@ -781,6 +799,7 @@ mod tests {
             needs_shell,
             [
                 "toggle-controls-rail",
+                "toggle-data-grid",
                 "toggle-inspector-rail",
                 "toggle-outline-rail"
             ]
@@ -851,6 +870,7 @@ mod tests {
             "toggle-outline-rail",
             "toggle-inspector-rail",
             "toggle-controls-rail",
+            "toggle-data-grid",
         ];
         assert_eq!(got, expected);
     }
