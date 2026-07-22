@@ -53,6 +53,9 @@ serde_json = "1"
 egui_tiles = { version = "0.16", features = ["serde"] }
 brightfield-protocol = { version = "0.1.0", path = "../brightfield-protocol" }
 brightfield-keys = { version = "0.1.0", path = "../brightfield-keys" }
+# The framework-free argument collector the argument-prompt overlay drives —
+# consumed read-only, like the keys registry above.
+brightfield-model = { version = "0.1.0", path = "../brightfield-model" }
 # The shell contract: Subject, Item, the registry, the one chrome file, the
 # workspace, and the Meridian -> egui Style/Visuals/fonts bridge. The protocol
 # view is expressed on it: four `Item`s, one `ItemRegistry`, and `PaneChrome`

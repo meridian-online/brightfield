@@ -360,22 +360,24 @@ impl Item<ChartDoc> for ChartPane {
     /// entry behind a fixture; worse, the chrome renders an affordance's verb's
     /// real keystroke next to its label, so borrowing an unrelated verb would
     /// ship a button that claims a key it does not have.
-    fn subject(&self, doc: &ChartDoc) -> Subject {
-        let subject = Subject::new("Chart", ICON_CHART, BindingContext::Workspace);
-        if doc.is_empty() {
-            let mut empty = EmptyState::new(
-                ICON_CHART,
-                "Nothing to draw",
-                "No spec is open, or the one that is composed no plots. Start \
-                 from the example below, or name a spec on the command line.",
-            );
-            if let Some(start) = starts::for_view(ViewKind::Charts) {
-                empty = empty.with_next(Affordance::open(start.label, start.id));
-            }
-            subject.empty(empty)
-        } else {
-            subject
+    fn empty_state(&self, doc: &ChartDoc) -> Option<EmptyState> {
+        if !doc.is_empty() {
+            return None;
         }
+        let mut empty = EmptyState::new(
+            ICON_CHART,
+            "Nothing to draw",
+            "No spec is open, or the one that is composed no plots. Start \
+             from the example below, or name a spec on the command line.",
+        );
+        if let Some(start) = starts::for_view(ViewKind::Charts) {
+            empty = empty.with_next(Affordance::open(start.label, start.id));
+        }
+        Some(empty)
+    }
+
+    fn describe(&self, _doc: &ChartDoc) -> Subject {
+        Subject::new("Chart", ICON_CHART, BindingContext::Workspace)
     }
 
     fn ui(&mut self, doc: &mut ChartDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
@@ -449,22 +451,23 @@ impl Item<ChartDoc> for ControlsPane {
         CONTROLS
     }
 
-    fn subject(&self, doc: &ChartDoc) -> Subject {
-        let subject = Subject::new("Controls", ICON_CONTROLS, BindingContext::Workspace);
-        if doc.is_empty() {
-            // No affordance here on purpose: this rail sits beside the front
-            // door, and two buttons offering different things on a first
-            // launch is a choice nobody asked to make. It says what fills it
-            // and points at the pane that offers the way in.
-            subject.empty(EmptyState::new(
+    /// No affordance here on purpose: this rail sits beside the front door,
+    /// and two buttons offering different things on a first launch is a
+    /// choice nobody asked to make. It says what fills it and points at the
+    /// pane that offers the way in.
+    fn empty_state(&self, doc: &ChartDoc) -> Option<EmptyState> {
+        doc.is_empty().then(|| {
+            EmptyState::new(
                 ICON_CONTROLS,
                 "No dashboard to control",
                 "These controls act on a composed dashboard. Open one from the \
                  chart pane, or name a spec on the command line.",
-            ))
-        } else {
-            subject
-        }
+            )
+        })
+    }
+
+    fn describe(&self, _doc: &ChartDoc) -> Subject {
+        Subject::new("Controls", ICON_CONTROLS, BindingContext::Workspace)
     }
 
     fn ui(&mut self, doc: &mut ChartDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {

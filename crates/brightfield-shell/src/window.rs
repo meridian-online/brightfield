@@ -56,12 +56,17 @@ use std::collections::BTreeSet;
 use egui::containers::{CentralPanel, Panel};
 use egui_tiles::{Container, Tile};
 
+use brightfield_keys::{Altitude, RecencyCounter};
 use brightfield_protocol::layout::{Flow, Layout};
 use brightfield_workbench::behavior::{TAB_BAR_HEIGHT, TILE_GAP};
 use brightfield_workbench::workspace::{tabs_holding, tile_of};
 use brightfield_workbench::{
-    chrome, DirtyTracker, ItemMap, PaneChrome, PaneKey, Request, SavedLayout, ViewKind,
+    chrome, DirtyTracker, ItemMap, PaneChrome, PaneKey, Request, SavedLayout, Verb, ViewKind,
     WindowGeometry, Workspace,
+};
+use meridian_egui::{
+    ModalChrome, ModalLayer, Notification, NotificationId, NotificationLayer, Picker, PickerEvent,
+    Severity, Toast, ToastLayer,
 };
 
 use meridian_design::{semantic, spacing};
@@ -69,6 +74,7 @@ use meridian_design::{semantic, spacing};
 use crate::app::{chart_registry, ChartDoc, CONTROLS_SHARE};
 use crate::canvas::EguiCanvasHost;
 use crate::design::{self, Mode};
+use crate::overlays::{CommandPalette, HelpSheet, JumpTarget, JumpToNode};
 use crate::pipeline::{compose_spec, Composed};
 use crate::protocol::{
     hint_ui, load_protocol_offline, protocol_registry, ui_font, ProtocolDoc, ProtocolInputs,
@@ -475,6 +481,78 @@ struct TopBar {
     switcher: Vec<(ViewKind, egui::Rect)>,
 }
 
+/// Which grammar overlay is open over the workspace, holding the live
+/// [`Picker`] over its delegate. In immediate mode "a modal is open" is the
+/// host's state — the layer itself is stateless — so this enum *is* the
+/// modal slot: `None` means no overlay, and at most one is ever open.
+///
+/// While one is open, no bare key reaches the protocol grammar (the
+/// no-bare-under-overlay invariant): [`MeridianApp::draw`] gates the model's
+/// event feed on this slot being empty.
+///
+/// The argument prompt ([`crate::overlays::ArgPrompt`]) and column jump are
+/// deliberately absent: their opening verbs (`add-mark` / `set-channel`)
+/// need a focused plot and an applied `SpecEdit`, which is the chart view's
+/// editing bridge — not landed in this shell yet. The delegates are built
+/// and tested; the slot grows their arms when the bridge does.
+enum Overlay {
+    /// The command palette (`space`): query + ranked corpus at the active
+    /// altitude.
+    Palette(Picker<CommandPalette>),
+    /// The keyboard help sheet (`?`): grouped, read-only.
+    Help(Picker<HelpSheet>),
+    /// The node jump (`/`): fuzzy finder over the graph in view.
+    Jump(Picker<JumpToNode>),
+}
+
+/// The registry-bound keystrokes that open overlays, resolved once at boot.
+///
+/// Tokens, not `egui::Key`s, because the registry speaks tokens; the one
+/// token → key mapping is [`consume_token`]. Resolved from
+/// `brightfield_keys::registry()` so the shell opens its overlays on the keys
+/// the registry declares — the shell may not invent bindings any more than it
+/// may invent verbs.
+struct OverlayKeys {
+    palette: Option<&'static str>,
+    help: Option<&'static str>,
+    jump: Option<&'static str>,
+}
+
+impl OverlayKeys {
+    fn from_registry() -> Self {
+        let reg = brightfield_keys::registry();
+        let primary = |longname: &str| {
+            reg.iter()
+                .find(|v| v.longname == longname)
+                .and_then(brightfield_keys::VerbEntry::primary_key)
+        };
+        Self {
+            palette: primary("open-palette"),
+            help: primary("open-help"),
+            jump: primary("focus-jump"),
+        }
+    }
+}
+
+/// Consume the pressed key a registry keystroke token names, if it is down
+/// this frame. Only the tokens the overlay openers actually bind are mapped;
+/// an unmapped token is simply never consumed, which fails safe — the
+/// overlay does not open, and nothing else changes.
+fn consume_token(ctx: &egui::Context, token: &str) -> bool {
+    use egui::{Key, Modifiers};
+    match token {
+        "space" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Space)),
+        "/" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Slash)),
+        // `?` is shift-`/` on most layouts, its own key on some — egui
+        // reports the logical key either way, with or without the shift.
+        "?" => ctx.input_mut(|i| {
+            i.consume_key(Modifiers::NONE, Key::Questionmark)
+                || i.consume_key(Modifiers::SHIFT, Key::Questionmark)
+        }),
+        _ => false,
+    }
+}
+
 /// The chart view's half: its document and its live items.
 struct ChartView {
     doc: ChartDoc,
@@ -515,6 +593,19 @@ pub struct MeridianApp {
     /// logical points — recorded for exactly the reason [`Self::switcher`] is,
     /// and read back through [`MeridianApp::affordance_rect`].
     affordances: Vec<(PaneKey, egui::Rect)>,
+    /// The one modal slot — see [`Overlay`].
+    overlay: Option<Overlay>,
+    /// The keystrokes that open overlays, read off the registry at boot.
+    overlay_keys: OverlayKeys,
+    /// The per-session palette recency: verbs run from the palette rank
+    /// higher on its next empty-query open. Session-scoped by design (the
+    /// sanctioned v1 simplification); it resets each launch.
+    recency: RecencyCounter,
+    /// Persistent, id-deduplicated banners. A source that re-fails raises
+    /// under the same composite id and *replaces* its banner — never stacks.
+    notifications: NotificationLayer,
+    /// Transient, self-expiring toasts — confirmations, not conditions.
+    toasts: ToastLayer,
 }
 
 impl MeridianApp {
@@ -674,6 +765,11 @@ impl MeridianApp {
             fonts_installed: false,
             switcher: Vec::new(),
             affordances: Vec::new(),
+            overlay: None,
+            overlay_keys: OverlayKeys::from_registry(),
+            recency: RecencyCounter::new(),
+            notifications: NotificationLayer::new(),
+            toasts: ToastLayer::new(),
         }
     }
 
@@ -860,6 +956,10 @@ impl MeridianApp {
         let view = self.ws().active();
         let mode = self.mode;
 
+        // The overlay-opening keys, before the grammar feed so the frame that
+        // opens an overlay is already under it.
+        self.overlay_open_keys(&ctx, view);
+
         // The protocol grammar is bare-key — `h j k l y t Enter Esc ⌫ shift-S`
         // with no modifier to disambiguate it — so it is fed only while its own
         // view is drawn. Gating on the active view rather than on the focused
@@ -867,9 +967,16 @@ impl MeridianApp {
         // *view's* model, not one pane's, and every pane of this view declares
         // the same context anyway. A per-pane gate would be a second answer to
         // a question the view already answers.
+        //
+        // And it is fed only while no overlay is open — the
+        // no-bare-under-overlay invariant. An open picker owns the keyboard;
+        // a `j` typed into its query line must never also walk the DAG
+        // underneath it.
         if view == ViewKind::Protocol {
-            let events = ctx.input(|i| i.events.clone());
-            self.protocol.doc.model.feed_events(&events);
+            if self.overlay.is_none() {
+                let events = ctx.input(|i| i.events.clone());
+                self.protocol.doc.model.feed_events(&events);
+            }
             if let Some(addr) = self.protocol.doc.model.take_yank_request() {
                 ctx.copy_text(addr);
             }
@@ -965,7 +1072,151 @@ impl MeridianApp {
             self.ws_mut().set_active(next);
             ctx.request_repaint();
         }
+
+        // The overlay plane, over everything the frame drew, then the two
+        // notification layers over that. All three draw nothing when empty,
+        // so a frame with no overlay, no banner and no toast is
+        // pixel-identical to one drawn before they existed.
+        self.overlay_ui(&ctx, view);
+        self.notifications.show(&ctx);
+        self.toasts.show(&ctx);
+
         self.sweep();
+    }
+
+    // -----------------------------------------------------------------------
+    // The overlay slot
+    // -----------------------------------------------------------------------
+
+    /// Open an overlay if its registry-declared key was pressed this frame.
+    ///
+    /// The palette and the node jump open on the **protocol** view only: the
+    /// palette's candidate list is altitude-scoped and every verb it offers
+    /// at [`Altitude::Protocol`] genuinely dispatches through the model,
+    /// while at the chart altitudes most verbs have no handler in this shell
+    /// yet — a palette of rows that silently no-op would be worse than none.
+    /// Both go live on the chart view with its editing bridge. The help
+    /// sheet is read-only and opens anywhere.
+    fn overlay_open_keys(&mut self, ctx: &egui::Context, view: ViewKind) {
+        if self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        let pressed = |token: Option<&'static str>| token.is_some_and(|t| consume_token(ctx, t));
+        if view == ViewKind::Protocol && pressed(self.overlay_keys.palette) {
+            self.open_palette(Altitude::Protocol);
+        } else if view == ViewKind::Protocol && pressed(self.overlay_keys.jump) {
+            self.open_jump();
+        } else if pressed(self.overlay_keys.help) {
+            self.overlay = Some(Overlay::Help(Picker::new(HelpSheet::new())));
+        }
+    }
+
+    /// Open the command palette at `altitude`, over a snapshot of the
+    /// session's recency.
+    fn open_palette(&mut self, altitude: Altitude) {
+        self.overlay = Some(Overlay::Palette(Picker::new(CommandPalette::new(
+            altitude,
+            self.recency.clone(),
+        ))));
+    }
+
+    /// Open the node jump over the outline — the graph in view, in its
+    /// topological order, which is what an empty query shows.
+    fn open_jump(&mut self) {
+        let targets = self
+            .protocol
+            .doc
+            .model
+            .outline()
+            .into_iter()
+            .map(|row| JumpTarget {
+                detail: (row.id != row.label).then(|| row.id.clone()),
+                id: row.id,
+                label: row.label,
+            })
+            .collect();
+        self.overlay = Some(Overlay::Jump(Picker::new(JumpToNode::new(targets))));
+    }
+
+    /// Draw the open overlay, if any, and act on what it reports.
+    ///
+    /// Dismissal arrives two ways and both mean close: a [`Picker`] inside a
+    /// [`ModalLayer`] consumes escape first and reports it as its own
+    /// [`PickerEvent::Dismissed`], while a backdrop click surfaces as the
+    /// layer's `dismissed` flag.
+    fn overlay_ui(&mut self, ctx: &egui::Context, view: ViewKind) {
+        let Some(mut overlay) = self.overlay.take() else {
+            return;
+        };
+        let close;
+        match &mut overlay {
+            Overlay::Palette(picker) => {
+                let chrome = ModalChrome::new().title("Commands").enter_hint("run");
+                let shown =
+                    ModalLayer::show(ctx, "bf-overlay-palette", &chrome, |ui| picker.show(ui));
+                match shown.inner.event {
+                    Some(PickerEvent::Confirmed) => {
+                        if let Some(name) = picker.delegate.take_picked() {
+                            self.recency.record(name);
+                            self.apply(ctx, view, vec![Request::Verb(Verb::new(name))]);
+                        }
+                        close = true;
+                    }
+                    Some(PickerEvent::Dismissed) => close = true,
+                    None => close = shown.dismissed,
+                }
+            }
+            Overlay::Help(picker) => {
+                let chrome = ModalChrome::new().title("Keyboard help");
+                let shown = ModalLayer::show(ctx, "bf-overlay-help", &chrome, |ui| picker.show(ui));
+                // Read-only: enter is another way out (the delegate is not
+                // confirmable), so every event is a close.
+                close = shown.inner.event.is_some() || shown.dismissed;
+            }
+            Overlay::Jump(picker) => {
+                let chrome = ModalChrome::new().title("Jump to asset").enter_hint("jump");
+                let shown = ModalLayer::show(ctx, "bf-overlay-jump", &chrome, |ui| picker.show(ui));
+                match shown.inner.event {
+                    Some(PickerEvent::Confirmed) => {
+                        if let Some(id) = picker.delegate.take_picked() {
+                            self.protocol.doc.model.select_id(id);
+                        }
+                        close = true;
+                    }
+                    Some(PickerEvent::Dismissed) => close = true,
+                    None => close = shown.dismissed,
+                }
+            }
+        }
+        if close {
+            ctx.request_repaint();
+        } else {
+            self.overlay = Some(overlay);
+        }
+    }
+
+    /// Which overlay is open, named — a test hook, like
+    /// [`MeridianApp::switcher_rect`].
+    #[must_use]
+    pub fn open_overlay(&self) -> Option<&'static str> {
+        self.overlay.as_ref().map(|o| match o {
+            Overlay::Palette(_) => "palette",
+            Overlay::Help(_) => "help",
+            Overlay::Jump(_) => "jump",
+        })
+    }
+
+    /// The persistent banner layer, read-only — what a test holds the
+    /// replace-not-stack contract against.
+    #[must_use]
+    pub fn notifications(&self) -> &NotificationLayer {
+        &self.notifications
+    }
+
+    /// The transient toast layer, read-only.
+    #[must_use]
+    pub fn toasts(&self) -> &ToastLayer {
+        &self.toasts
     }
 
     /// The one top bar: the view switcher, the active view's subject, and what
@@ -1100,14 +1351,23 @@ impl MeridianApp {
     /// reason [`SavedLayout::opened`] exists. Recording it also makes the
     /// layout dirty, so the debounce writes it.
     ///
-    /// An id this build does not ship, or a fixture that will not load, logs
-    /// and does nothing. Both are build-time defects rather than a user's
-    /// circumstance, and neither is worth taking a window down for.
+    /// An id this build does not ship, or a fixture that will not load, is a
+    /// build-time defect rather than a user's circumstance, and not worth
+    /// taking a window down for — it logs for the headless tiers and raises
+    /// a banner where a user is looking. The banner's id is composite over
+    /// the start, so the same start failing again **replaces** its banner in
+    /// place rather than stacking a second; a later success dismisses it.
     fn open_start(&mut self, ctx: &egui::Context, id: &'static str) {
+        let banner = NotificationId::composite("open-start", id);
         let opened = match crate::starts::load(id) {
             Ok(opened) => opened,
             Err(e) => {
                 eprintln!("could not open {id}: {e}");
+                self.notifications.raise(
+                    Notification::new(banner, Severity::Error, "Could not open the starting point")
+                        .body(format!("{id}: {e}")),
+                );
+                ctx.request_repaint();
                 return;
             }
         };
@@ -1116,8 +1376,13 @@ impl MeridianApp {
             crate::starts::Opened::Charts(composed) => self.charts.doc.open(*composed),
             crate::starts::Opened::Protocol(inputs) => self.protocol.doc.open(*inputs),
         }
+        self.notifications.dismiss(banner);
         self.ws_mut().set_active(view);
         self.layout.live_mut().opened = Some(id.to_string());
+        self.toasts.push(Toast::new(
+            Severity::Success,
+            format!("Opened {}", self.title()),
+        ));
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
         ctx.request_repaint();
     }
@@ -1212,4 +1477,78 @@ fn text_width(ui: &egui::Ui, text: &str, font: egui::FontId) -> f32 {
         .layout_no_wrap(text.to_owned(), font, egui::Color32::PLACEHOLDER)
         .size()
         .x
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests — the notification wiring, which only this module can drive
+// through its private entry points.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app() -> MeridianApp {
+        MeridianApp::headless(Boot::empty(), Mode::Light)
+    }
+
+    /// The id-dedup contract at this shell's real raise site: the same start
+    /// failing again replaces its banner; a different start is a different
+    /// condition with its own.
+    #[test]
+    fn a_start_that_refails_replaces_its_banner_instead_of_stacking() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        app.open_start(&ctx, "no-such-start");
+        app.open_start(&ctx, "no-such-start");
+        assert_eq!(app.notifications().len(), 1, "one source, one banner");
+        app.open_start(&ctx, "also-no-such-start");
+        assert_eq!(
+            app.notifications().len(),
+            2,
+            "a different start is a different condition"
+        );
+    }
+
+    /// A success is a toast (a moment), never a banner (a condition) — and it
+    /// clears only its own start's banner.
+    #[test]
+    fn a_successful_open_toasts_and_clears_only_its_own_banner() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        app.open_start(&ctx, "no-such-start");
+        app.open_start(&ctx, crate::starts::DASHBOARD);
+        assert!(!app.chart_doc().is_empty(), "the open did not land");
+        assert_eq!(app.toasts().len(), 1, "a confirmation is a toast");
+        assert_eq!(
+            app.notifications().len(),
+            1,
+            "the unrelated failure banner is not swept up by someone else's success"
+        );
+    }
+
+    /// The overlay openers are read off the registry, not invented here — if
+    /// a binding moves in `brightfield-keys`, the shell follows it.
+    #[test]
+    fn the_overlay_keys_come_from_the_registry() {
+        let keys = OverlayKeys::from_registry();
+        let reg = brightfield_keys::registry();
+        let primary = |name: &str| {
+            reg.iter()
+                .find(|v| v.longname == name)
+                .and_then(brightfield_keys::VerbEntry::primary_key)
+        };
+        assert_eq!(keys.palette, primary("open-palette"));
+        assert_eq!(keys.help, primary("open-help"));
+        assert_eq!(keys.jump, primary("focus-jump"));
+        // …and every token an opener binds today is one `consume_token` can
+        // map to a key, so none of the three is silently unwired.
+        for token in [keys.palette, keys.help, keys.jump].into_iter().flatten() {
+            assert!(
+                matches!(token, "space" | "/" | "?"),
+                "registry token {token:?} has no key mapping in consume_token — \
+                 the opener would be dead"
+            );
+        }
+    }
 }

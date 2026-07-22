@@ -52,8 +52,10 @@ fn subjects(doc: &ProtocolDoc) -> BTreeMap<ItemId, Subject> {
 /// house style, a verb the keyboard registry does not have, and a rail or tab
 /// that names no verb to show and hide it.
 ///
-/// Watched redden, one mutation each: deleting `.empty(…)` from the outline
-/// pane gives *"protocol-outline: shows no empty state on an empty document"*;
+/// Watched redden, one mutation each: making the outline pane's
+/// `empty_state` answer `None` gives *"protocol-outline: shows no empty
+/// state on an empty document"* (forgetting the method entirely no longer
+/// compiles — it is required on `Item`);
 /// putting a full stop on the steps headline gives *"protocol-steps: headline
 /// takes no terminal period"*; dropping the inspector rail's `toggle` gives
 /// *"protocol-inspector: a rail or tab with no toggle verb"*. Each of those is

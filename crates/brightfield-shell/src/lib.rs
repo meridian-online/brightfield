@@ -15,6 +15,11 @@
 //! - [`capture`] — headless egui_wgpu → PNG (the `brightfield-shot` binary).
 //! - [`app`] / [`protocol`] — the two views, each declared as `Item`s on the
 //!   `brightfield-workbench` shell contract.
+//! - [`overlays`] — the picker delegates: the domain halves of the command
+//!   palette, help sheet, jump lists and argument prompt, over the
+//!   framework-free corpora in `brightfield-keys` / `brightfield-model`.
+//!   The chrome they render through is `meridian-egui`'s one `Picker` inside
+//!   its one `ModalLayer`.
 //! - [`startup`] — where the layout file lives, and the one order it can be
 //!   read in.
 //! - [`starts`] — the starting points that ship inside the binary, which are
@@ -23,6 +28,7 @@
 pub mod app;
 pub mod canvas;
 pub mod capture;
+pub mod overlays;
 pub mod pipeline;
 pub mod protocol;
 pub mod starts;

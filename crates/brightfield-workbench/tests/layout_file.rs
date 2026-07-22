@@ -40,12 +40,15 @@ impl Item<Doc> for Pane {
     fn item_id(&self) -> ItemId {
         self.0
     }
-    fn subject(&self, _doc: &Doc) -> Subject {
-        Subject::new(self.1, Icon("pane"), BindingContext::Workspace).empty(EmptyState::new(
+    fn empty_state(&self, _doc: &Doc) -> Option<EmptyState> {
+        Some(EmptyState::new(
             Icon("pane"),
             "Nothing here yet",
             "This pane fills in once a protocol has run",
         ))
+    }
+    fn describe(&self, _doc: &Doc) -> Subject {
+        Subject::new(self.1, Icon("pane"), BindingContext::Workspace)
     }
     fn ui(&mut self, _doc: &mut Doc, _ui: &mut egui::Ui, _cx: &mut ItemCtx<'_>) {}
 }

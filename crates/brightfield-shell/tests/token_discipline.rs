@@ -7,12 +7,21 @@
 //! - `Color32::from_rgb(` — a colour built from raw channels rather than a token
 //!   (the sanctioned boundary is `to_color32`, which uses `from_rgba_unmultiplied`
 //!   and is not matched by this precise, paren-anchored needle);
-//! - a six-hex literal (`0xRRGGBB`) — a hand-typed colour;
+//! - a six-hex literal (`0xRRGGBB`) — a hand-typed colour, which also catches
+//!   the gpui-era `rgb(0x…)` spelling;
 //! - a bare float in `add_space(` / `Margin::` / `inner_margin(` / `Vec2::splat(`
-//!   — a hand-typed gap or margin where a spacing/radius token belongs.
+//!   — a hand-typed gap or margin where a spacing/radius token belongs;
+//! - a hand-rolled overlay — `egui::Window` / `egui::Area` / `egui::Modal`
+//!   constructed in this crate. Overlay chrome comes from `meridian-egui`'s
+//!   one `ModalLayer` / `NotificationLayer` / `ToastLayer`, or it drifts:
+//!   the audit behind the design system found one conceptual modal card
+//!   re-declared at four widths with three escape hints. The layers
+//!   themselves construct their `Area`s inside `meridian-egui`, where the
+//!   treatment is singular; this crate has no business doing so.
 //!
-//! It passes trivially today: an earlier change already moved every gap onto a
-//! `spacing::` constant. It becomes load-bearing as more surfaces are built.
+//! Load-bearing since the overlay increment: the shell now hosts a modal
+//! slot, banners and toasts, all through the `meridian-egui` layers, and
+//! this file is what keeps a second copy from creeping in beside them.
 //!
 //! Each rule has an allowlist, capped at five entries, and every entry must
 //! carry a justification. The lists ship empty — the cap and the mandatory
@@ -27,6 +36,13 @@ type Allow = (&'static str, &'static str, &'static str);
 const COLOUR_ALLOW: &[Allow] = &[];
 const HEX_ALLOW: &[Allow] = &[];
 const FLOAT_ALLOW: &[Allow] = &[];
+const OVERLAY_ALLOW: &[Allow] = &[];
+
+/// Call fragments that construct a floating layer by hand. `egui::Modal` has
+/// no paren anchor because `Modal::new(egui::Id…)` is exactly the call the
+/// `meridian-egui` layer makes — the needle here is this *crate* naming the
+/// type at all.
+const OVERLAY_NEEDLES: &[&str] = &["egui::Window::new", "egui::Area::new", "egui::Modal"];
 
 /// Call fragments after which a bare float is a hand-typed box-model value.
 const FLOAT_CALLS: &[&str] = &["add_space(", "Margin::", "inner_margin(", "Vec2::splat("];
@@ -109,6 +125,7 @@ fn allowlists_stay_small_and_justified() {
         ("COLOUR_ALLOW", COLOUR_ALLOW),
         ("HEX_ALLOW", HEX_ALLOW),
         ("FLOAT_ALLOW", FLOAT_ALLOW),
+        ("OVERLAY_ALLOW", OVERLAY_ALLOW),
     ] {
         assert!(list.len() <= 5, "{name} exceeds the five-entry cap");
         for (suffix, needle, why) in list {
@@ -165,6 +182,14 @@ fn the_shell_spells_no_colour_or_box_model_as_a_raw_literal() {
                             "{loc}: bare float in `{call}` — use a spacing/radius token"
                         ));
                     }
+                }
+            }
+            for needle in OVERLAY_NEEDLES {
+                if line.contains(needle) && !allowed(OVERLAY_ALLOW, &rel, line) {
+                    violations.push(format!(
+                        "{loc}: `{needle}` — overlay chrome comes from meridian-egui's \
+                         ModalLayer/NotificationLayer/ToastLayer, never hand-rolled here"
+                    ));
                 }
             }
         }

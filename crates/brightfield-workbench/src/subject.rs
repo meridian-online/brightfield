@@ -576,16 +576,17 @@ pub struct Subject {
     pub toolbar: Vec<ToolbarEntry>,
     /// The status lines this pane raises.
     pub status: Vec<StatusEntry>,
-    /// `Some` means there is nothing to show.
+    /// `Some` means there is nothing to show: the shell paints it and does
+    /// **not** call [`crate::Item::ui`] — an empty state that is not a branch
+    /// inside the pane's draw code, and so not one anybody can forget to
+    /// write.
     ///
-    /// The intended contract is that when this is `Some` the shell paints it
-    /// and does **not** call [`crate::Item::ui`] — an empty state that is not
-    /// a branch inside the pane's draw code, and so not one anybody can forget
-    /// to write.
-    ///
-    /// **That shell does not exist yet.** This crate defines the vocabulary;
-    /// the frame loop that honours it arrives with the workspace. Until then
-    /// this field is data with an audit over it, not a behaviour.
+    /// **Populated by [`crate::Item::subject`], never by a pane.** The answer
+    /// comes from [`crate::Item::empty_state`], which is a *required* trait
+    /// method — a pane that has not decided what it shows when empty does not
+    /// compile. `describe()` implementations leave this `None`; the provided
+    /// `subject()` glue folds the method's answer in, and asserts in debug
+    /// that nothing set it early.
     pub empty_state: Option<EmptyState>,
 }
 
@@ -603,13 +604,6 @@ impl Subject {
             status: Vec::new(),
             empty_state: None,
         }
-    }
-
-    /// Declare this pane empty.
-    #[must_use]
-    pub fn empty(mut self, empty: EmptyState) -> Self {
-        self.empty_state = Some(empty);
-        self
     }
 
     /// Add a toolbar control.
