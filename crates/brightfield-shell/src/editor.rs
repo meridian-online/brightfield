@@ -99,9 +99,9 @@ pub const EDITOR: ItemId = ItemId::new("spec-editor");
 /// The editor's icon — a name, resolved to paint when the icon set lands.
 const ICON_EDITOR: Icon = Icon("code");
 
-/// The editor's registry entry, ready to append to the chart view's
-/// registry: a centre tab beside the chart canvas, toggled by the
-/// canvas↔editor focus verb.
+/// The editor's registry entry, appended to the chart view's registry
+/// ([`crate::app::chart_registry`]): a centre tab beside the chart canvas,
+/// toggled by the canvas↔editor focus verb.
 ///
 /// Kept here rather than inline in the registry so the append is one line
 /// and the editor's whole declaration lives with the editor.
@@ -772,11 +772,10 @@ struct OpenFile {
 /// The YAML spec editor as an [`Item`] in the chart view.
 ///
 /// Holds only editor-local state, per the workbench's no-document-handle
-/// rule. The one seam this pane is still owed by the shell: the chart
-/// document does not yet carry *which spec file* composed it, so nothing
-/// hands this pane a path when a spec opens — [`EditorPane::open_file`] is
-/// public and waiting for that wiring. Until then a fresh pane answers a
-/// real empty state.
+/// rule. Which file to open comes from the document: [`ChartDoc::spec_path`]
+/// carries the file the dashboard was composed from, and the pane's first
+/// drawn frame hands it to [`EditorPane::open_file`]. A fresh pane over a
+/// document with no file behind it answers a real empty state.
 pub struct EditorPane {
     file: Option<OpenFile>,
     /// When the last successful save landed — drives the transient ack.
@@ -1044,15 +1043,17 @@ impl Item<ChartDoc> for EditorPane {
         EDITOR
     }
 
-    /// No file, nothing to edit — and the honest way in, since the shell
-    /// does not yet hand this pane the path a spec was opened from.
+    /// No file open and none to open — nothing to edit.
     ///
-    /// Answered from the pane's own state rather than the document: the
-    /// chart document does not carry its spec's source (yet — that is the
-    /// seam [`EditorPane::open_file`] waits on), so the buffer is the only
-    /// truth about whether there is something to edit.
-    fn empty_state(&self, _doc: &ChartDoc) -> Option<EmptyState> {
-        if self.file.is_some() {
+    /// Two truths answer it: the pane's own buffer, and the document's
+    /// [`ChartDoc::spec_path`] — the file the dashboard was composed from,
+    /// which this pane opens on its first drawn frame ([`Self::ui`]). A
+    /// composed dashboard with a file behind it is *not* an empty editor,
+    /// even before the tab has ever been focused; without the second check
+    /// the shell would draw the empty state instead of calling `ui`, and the
+    /// open would never happen.
+    fn empty_state(&self, doc: &ChartDoc) -> Option<EmptyState> {
+        if self.file.is_some() || doc.spec_path.is_some() {
             return None;
         }
         Some(EmptyState::new(
@@ -1126,11 +1127,21 @@ impl Item<ChartDoc> for EditorPane {
         subject
     }
 
-    fn ui(&mut self, _doc: &mut ChartDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
+    fn ui(&mut self, doc: &mut ChartDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
+        // The document carries which spec file composed it; the first drawn
+        // frame is where that path becomes an open buffer. Once a file is
+        // open the pane keeps it — a start replacing the dashboard clears the
+        // document's path, not an editor holding unsaved keystrokes.
+        if self.file.is_none() {
+            if let Some(path) = &doc.spec_path {
+                self.open_file(path.clone());
+            }
+        }
         self.poll_disk();
         let Some(file) = &mut self.file else {
-            // Unreachable through the shell (the empty state draws instead);
-            // blank rather than apologetic if reached directly.
+            // Unreachable through the shell (the empty state draws instead
+            // when there is no file and no path to open one from); blank
+            // rather than apologetic if reached directly.
             return;
         };
 

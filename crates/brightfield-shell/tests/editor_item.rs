@@ -8,9 +8,8 @@
 //!
 //! The contract half runs the workbench [`audit`] over a registry holding
 //! the editor beside a minimal centre pane. The editor's `ItemSpec` is the
-//! same one (`editor_spec`) the chart registry will append when the chart
-//! document carries its spec source — so the audit here is the audit that
-//! entry will face, run today.
+//! same one (`editor_spec`) the chart registry appends — so this is the
+//! audit that entry faces, isolated from the rest of the chart view.
 
 use std::fs;
 use std::path::PathBuf;
@@ -117,9 +116,11 @@ fn the_editor_passes_the_contract_audit_beside_a_centre_pane() {
     audit(&registry, &ChartDoc::empty()).expect("the editor is on the contract");
 }
 
-/// No file, a real empty state; a file, none. The emptiness is the PANE's
-/// (its buffer), not the document's — the chart document does not yet carry
-/// which spec file composed it, which is the seam `open_file` waits on.
+/// No file open and no file to open, a real empty state; a file, none.
+/// Over a document with no `spec_path` behind it the emptiness is the
+/// PANE's (its buffer); a document that does carry one is content even
+/// before the first drawn frame opens it — that case is
+/// `a_composed_spec_reaches_the_editor_through_the_document`.
 #[test]
 fn the_editor_is_empty_without_a_file_and_not_with_one() {
     let doc = ChartDoc::empty();
@@ -133,6 +134,58 @@ fn the_editor_is_empty_without_a_file_and_not_with_one() {
     let path = temp_spec("empty-state", "plot: {}\n");
     pane.open_file(&path);
     assert_eq!(pane.empty_state(&doc), None, "a seeded buffer is content");
+}
+
+/// The document is how a composed spec reaches the editor. A document
+/// carrying `spec_path` is not an empty editor even before the tab is ever
+/// focused — the shell must call `ui`, not draw the empty state — and the
+/// first drawn frame hands the path to `open_file`, seeding the buffer from
+/// the file the dashboard was composed from.
+#[test]
+fn a_composed_spec_reaches_the_editor_through_the_document() {
+    let path = temp_spec("through-the-document", "plot: {}\n");
+    let mut doc = ChartDoc::empty();
+    doc.spec_path = Some(path.clone());
+
+    let mut pane = EditorPane::new();
+    assert_eq!(
+        pane.empty_state(&doc),
+        None,
+        "a document with a file behind it is content, not emptiness"
+    );
+
+    // One drawn frame is the handoff.
+    let ctx = egui::Context::default();
+    let raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(480.0, 320.0),
+        )),
+        ..Default::default()
+    };
+    let mut requests = Vec::new();
+    let _ = ctx.run_ui(raw, |ui| {
+        brightfield_shell::design::apply(ui.ctx(), Mode::Light);
+        let mut icx = ItemCtx::new(
+            Mode::Light,
+            PaneKey::new(ViewKind::Charts, EDITOR),
+            egui_tiles::TileId::from_u64(1),
+            true,
+            &mut requests,
+        );
+        pane.ui(&mut doc, ui, &mut icx);
+    });
+
+    assert_eq!(
+        pane.path(),
+        Some(path.as_path()),
+        "the pane opened the file"
+    );
+    assert_eq!(
+        pane.buffer(),
+        Some("plot: {}\n"),
+        "the buffer seeds from the composing file"
+    );
 }
 
 /// What the editor declares, the shell draws — and nothing else. With a
