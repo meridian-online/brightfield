@@ -1327,14 +1327,17 @@ impl Item<ProtocolDoc> for CanvasPane {
                     .tint(egui::Color32::WHITE)
                     .paint_at(ui, rect);
 
-                // The keyboard cursor, ringed with the token layer's focus ring
-                // — one treatment, at the ring's own width, offset and radius.
-                // The hand-rolled 2px stroke at a 4px radius it replaces matched
-                // nothing else in the product.
+                // The keyboard cursor, ringed with the design system's ONE
+                // focus ring — `meridian-egui`'s, the same primitive every
+                // Meridian surface draws, reading its mode from the themed
+                // context. This was the last shell call site of the workbench
+                // chrome's second ring implementation; the hand-rolled 2px
+                // stroke at a 4px radius both replaced matched nothing else
+                // in the product.
                 if let Some(sel) = doc.model.selected().cloned() {
                     if let Some(node) = doc.model.layout().positions.get(&sel).cloned() {
                         let r = node_rect(rect.min, &node);
-                        chrome::focus_ring(ui, r, cx.mode);
+                        meridian_egui::widgets::focus_ring(ui, r, meridian_design::radius::CONTROL);
                         frame_selection(ui, doc, cx, r);
                     }
                 }

@@ -23,14 +23,79 @@ use brightfield_render::channel::ChannelMap;
 use brightfield_render::inset::{resolve_insets_for_marks, DEFAULT_SCALE_INSET};
 use brightfield_render::layout::{ChartLayout, Margins};
 use brightfield_render::mark::{default_renderers, find_renderer, MarkRenderer};
+use brightfield_render::scale::ScaleSet;
 use brightfield_render::scene::{build_multi_mark_scene, compose_dashboard, ChartData};
 use brightfield_render::{grow_margins, resolve_titles};
-use brightfield_spec::analysis::analyse_spec;
+use brightfield_spec::analysis::{
+    analyse_spec, build_brushable_bindings, BrushKind, ComponentPath,
+};
 use brightfield_spec::layout::{collect_plot_nodes, placed_plots, resolve_plot_insets, Rect};
+use brightfield_spec::vocab::MarkKind;
 use brightfield_spec::{parse_spec, parse_spec_path, Format, Spec};
 use brightfield_sql::{collect_marks, collect_plot_groups};
 use brightfield_workbench::subject::RunState;
 use vello::Scene;
+
+/// One placed plot of the composed dashboard, carried beside the scene so the
+/// shell can act on the chart rather than merely picture it: the margin
+/// legend reads the *displayed* scales, and a gesture inverts its pixels
+/// through the same set — which is the only way the predicate a brush pushes
+/// can mean the rectangle the user drew.
+///
+/// Everything here is a by-product of the composition that already happened;
+/// nothing is recomputed, so a handle cannot disagree with the scene beside it.
+pub struct PlotHandle {
+    /// The plot node's component path (`root`, `root/hconcat[0]`, …) — the
+    /// same join key `collect_plot_groups` and the brushable bindings use.
+    pub path: String,
+    /// The placed rect on the dashboard plane, in logical pixels.
+    pub rect: Rect,
+    /// The scale set this plot was drawn against. Pixel↔data inversion for
+    /// gestures, and the series the margin legend is accurate to.
+    pub scales: ScaleSet,
+    /// The layout (margins + insets) the scales' pixel ranges live in.
+    pub layout: ChartLayout,
+    /// The mark kinds drawn on this plot, in declaration order. The first is
+    /// the plot's presenting kind — the parameter the chart item reads.
+    pub marks: Vec<MarkKind>,
+    /// The plot's brush/point gesture binding, when its spec declares one.
+    pub gesture: Option<GestureBinding>,
+}
+
+/// A plot's declared interaction, resolved from the spec's brushable-interactor
+/// analysis to exactly what the coordinator seam consumes: which selection the
+/// gesture writes, as which contributor, over which columns.
+#[derive(Clone, Debug)]
+pub struct GestureBinding {
+    /// The selection name the gesture writes to (`as: $brush` → `"brush"`).
+    pub selection: String,
+    /// The contributor identity (the parent plot's node path) — crossfilter
+    /// self-exclusion compares this, so it is carried, never re-derived.
+    pub contributor: ComponentPath,
+    /// Which gesture the interactor declared (interval axes / point toggle).
+    pub kind: BrushKind,
+    /// The x channel's column expression, when the first mark names one.
+    pub x_column: Option<String>,
+    /// The y channel's column expression, when the first mark names one.
+    pub y_column: Option<String>,
+}
+
+/// One spec-declared scalar parameter with a slider widget behind it: what the
+/// controls rail binds instead of its worked example, when the spec declares
+/// anything to bind.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParamControl {
+    /// The parameter name (`$threshold` → `"threshold"`).
+    pub name: String,
+    /// Its current value.
+    pub value: f64,
+    /// Slider minimum, from the input widget's `min:` (0 when unstated).
+    pub min: f64,
+    /// Slider maximum, from the input widget's `max:` (1 when unstated).
+    pub max: f64,
+    /// Slider step, from the input widget's `step:` (`None` = continuous).
+    pub step: Option<f64>,
+}
 
 /// One composited dashboard ready to present: the merged Vello scene, its
 /// logical bounding size, and the spec's declared title (for the window chrome).
@@ -43,6 +108,11 @@ pub struct Composed {
     pub height: u32,
     /// The spec's `meta.title`, if declared.
     pub title: Option<String>,
+    /// The placed plots, with the scales and gesture bindings each was
+    /// composed against. Empty only for [`Composed::empty`].
+    pub plots: Vec<PlotHandle>,
+    /// The spec's slider-backed scalar params, for the controls rail.
+    pub params: Vec<ParamControl>,
     /// The run-state of materialised data this preview shows, when it shows
     /// any — the honesty channel at the preview surface.
     ///
@@ -77,6 +147,8 @@ impl Composed {
             width: 0,
             height: 0,
             title: None,
+            plots: Vec::new(),
+            params: Vec::new(),
             run_state: None,
         }
     }
@@ -116,6 +188,22 @@ impl Composed {
 pub fn compose_spec(spec_path: &str) -> Result<Composed, String> {
     let parsed = parse_spec_path(spec_path).map_err(|e| format!("parse error: {e}"))?;
     compose(parsed.spec, Path::new(spec_path).parent())
+}
+
+/// [`compose_spec`], with the session **kept**: the live dashboard holding
+/// the DuckDB session for interaction, plus its first composite. What the
+/// window boots a command-line chart spec through, so a brush has something
+/// to re-query; the one-shot [`compose_spec`] remains the capture tiers'
+/// deterministic path.
+///
+/// # Errors
+///
+/// As [`compose_spec`].
+pub fn live_spec(spec_path: &str) -> Result<(LiveDashboard, Composed), String> {
+    let parsed = parse_spec_path(spec_path).map_err(|e| format!("parse error: {e}"))?;
+    let mut dash = LiveDashboard::load(parsed.spec, Path::new(spec_path).parent())?;
+    let composed = dash.present()?;
+    Ok((dash, composed))
 }
 
 /// The same pipeline over spec **text** rather than a file.
@@ -213,10 +301,22 @@ impl LiveDashboard {
     /// Apply one interaction — push its predicate/param into DuckDB, re-query,
     /// and re-composite. This is the seam: an interaction resolves to a query.
     ///
+    /// A [`Interaction::SetParam`] also lands in this handle's spec copy, so
+    /// the [`ParamControl`]s the next composition surfaces carry the value the
+    /// slider was just dragged to — otherwise every re-present would snap the
+    /// control back to the spec's boot value while the query ran at the new
+    /// one, a lie in whichever direction the reader trusted.
+    ///
     /// # Errors
     ///
     /// As [`LiveDashboard::present`].
     pub fn apply(&mut self, interaction: Interaction) -> Result<Composed, String> {
+        if let Interaction::SetParam { name, value } = &interaction {
+            use brightfield_spec::ast::ParamNode;
+            if let Some(node @ ParamNode::Value(_)) = self.spec.params.get_mut(name) {
+                *node = ParamNode::Value(value.clone());
+            }
+        }
         self.coordinator.apply(interaction);
         self.present()
     }
@@ -257,15 +357,18 @@ fn compose_from_results(
     let groups = collect_plot_groups(spec);
     let plot_nodes = collect_plot_nodes(spec);
     let registry = default_renderers();
+    let brushable = build_brushable_bindings(spec);
 
     // Own each plot's scene; place them below.
     let mut placements: Vec<(f64, f64, Scene)> = Vec::new();
+    let mut plots: Vec<PlotHandle> = Vec::new();
     for plot in &placed {
         let Some(group) = groups.iter().find(|g| g.plot_path == plot.path) else {
             continue;
         };
 
         let mut chart_data: Vec<ChartData<'_>> = Vec::new();
+        let mut plot_marks: Vec<MarkKind> = Vec::new();
         for &mi in &group.mark_indices {
             let Some(batch) = batches.get(mi).and_then(|b| b.as_ref()) else {
                 continue;
@@ -277,6 +380,7 @@ fn compose_from_results(
                     continue;
                 }
             };
+            plot_marks.push(kinds[mi]);
             chart_data.push(ChartData {
                 batch,
                 channel_map: &channel_maps[mi],
@@ -324,10 +428,34 @@ fn compose_from_results(
         }
 
         let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
-        let (scene, _scales) = build_multi_mark_scene(&refs, true, &titles);
+        // `draw_inline_legend = false`: the legend is NOT baked into the data
+        // scene. The shell draws it as a native margin panel outside the plot
+        // rect, from the scales returned here — one legend per chart, one
+        // source of truth, and no in-plot swatch block a margin copy could
+        // drift from or that could sit on top of the marks.
+        let (scene, scales) = build_multi_mark_scene(&refs, false, &titles);
         drop(refs);
         drop(chart_data);
         placements.push((plot.rect.x, plot.rect.y, scene));
+
+        let gesture = brushable
+            .iter()
+            .find(|b| b.parent_plot.0 == plot.path)
+            .map(|b| GestureBinding {
+                selection: b.selection.clone(),
+                contributor: b.parent_plot.clone(),
+                kind: b.kind,
+                x_column: b.channels.x.clone(),
+                y_column: b.channels.y.clone(),
+            });
+        plots.push(PlotHandle {
+            path: plot.path.clone(),
+            rect: plot.rect,
+            scales,
+            layout,
+            marks: plot_marks,
+            gesture,
+        });
     }
 
     if placements.is_empty() {
@@ -354,12 +482,83 @@ fn compose_from_results(
         width,
         height,
         title,
+        plots,
+        params: param_controls(spec),
         // Live-queried this very composition — no materialised run output is
         // being previewed, so no currency claim is made (or owed). A caller
         // previewing run output annotates with `with_run_state`, ingesting
         // from the run's contract.
         run_state: None,
     })
+}
+
+/// The spec's slider-backed scalar params: every `input: slider` widget bound
+/// `as: $param` whose param currently holds a number, with the widget's own
+/// `min:`/`max:`/`step:` range. Read off the spec, never invented — a rail
+/// slider over a range the spec did not declare would be a control whose ends
+/// mean nothing.
+fn param_controls(spec: &Spec) -> Vec<ParamControl> {
+    use brightfield_spec::ast::{Component, Input, ParamNode, SpecValue, ValueOrParamRef};
+    use brightfield_spec::vocab::InputKind;
+
+    fn numeric(v: &SpecValue) -> Option<f64> {
+        match v {
+            SpecValue::Integer(i) => Some(*i as f64),
+            SpecValue::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
+
+    fn collect<'s>(component: &'s Component, out: &mut Vec<&'s Input>) {
+        match component {
+            Component::Input(input) => out.push(input),
+            Component::Plot(node) => {
+                for item in &node.items {
+                    collect(item, out);
+                }
+            }
+            Component::HConcat(node) | Component::VConcat(node) => {
+                for item in &node.items {
+                    collect(item, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut inputs = Vec::new();
+    if let Some(root) = &spec.root {
+        collect(root, &mut inputs);
+    }
+
+    let mut out = Vec::new();
+    for input in inputs {
+        if input.kind != InputKind::Slider {
+            continue;
+        }
+        let Some(param) = &input.as_param else {
+            continue;
+        };
+        let name = param.0.clone();
+        let Some(ParamNode::Value(value)) = spec.params.get(&name) else {
+            continue;
+        };
+        let Some(value) = numeric(value) else {
+            continue;
+        };
+        let option = |key: &str| match input.options.get(key) {
+            Some(ValueOrParamRef::Value(v)) => numeric(v),
+            _ => None,
+        };
+        out.push(ParamControl {
+            name,
+            value,
+            min: option("min").unwrap_or(0.0),
+            max: option("max").unwrap_or(1.0),
+            step: option("step"),
+        });
+    }
+    out
 }
 
 #[cfg(test)]
@@ -419,6 +618,45 @@ plot:
             .map(RecordBatch::num_rows)
             .sum();
         assert_eq!(rows, 2, "brush kept x in {{3,4}} via a pushed predicate");
+    }
+
+    /// The same seam, driven with the STRUCTURED clause the chart gestures
+    /// prefer: a `Predicate::Interval` keeps exactly the rows its hand-written
+    /// string form would — the variants render byte-identical SQL — while the
+    /// column and bounds stay machine-readable end to end.
+    #[test]
+    fn a_structured_interval_selects_the_same_rows_as_its_string_form() {
+        use brightfield_sql::ir::ScalarValue;
+        let mut dash = LiveDashboard::load_str(SPEC, None).expect("load");
+        let _ = dash.present().expect("first paint");
+
+        let interval = SqlPredicate::Interval {
+            column: "x".to_string(),
+            lo: ScalarValue::Float(2.0),
+            hi: ScalarValue::Float(3.0),
+            meta: None,
+        };
+        assert_eq!(
+            interval.to_string(),
+            "(x >= 2 AND x <= 3)",
+            "the structured clause renders exactly the string form"
+        );
+        let after = dash
+            .apply(Interaction::Select {
+                name: "brush".to_string(),
+                contributor: ComponentPath("root/plot[99]".to_string()),
+                predicate: interval,
+            })
+            .expect("re-paint after structured brush");
+        assert!(after.width > 0 && after.height > 0);
+        let rows: usize = dash
+            .coordinator()
+            .chart_rows(0)
+            .expect("chart rows")
+            .iter()
+            .map(RecordBatch::num_rows)
+            .sum();
+        assert_eq!(rows, 2, "the interval kept x in {{2,3}} in DuckDB");
     }
 
     /// A live-queried dashboard makes no currency claim — its queries ran for

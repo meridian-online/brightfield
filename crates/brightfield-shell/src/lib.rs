@@ -15,6 +15,10 @@
 //! - [`capture`] — headless egui_wgpu → PNG (the `brightfield-shot` binary).
 //! - [`app`] / [`protocol`] — the two views, each declared as `Item`s on the
 //!   `brightfield-workbench` shell contract.
+//! - [`chart_item`] — the chart pane: one `Item`, parameterised by mark kind,
+//!   binding brush/click gestures to the engine's coordinator seam.
+//! - [`legend`] — the chart legend as a native egui margin panel, outside the
+//!   plot rect, derived from the scales each chart was drawn against.
 //! - [`overlays`] — the picker delegates: the domain halves of the command
 //!   palette, help sheet, jump lists and argument prompt, over the
 //!   framework-free corpora in `brightfield-keys` / `brightfield-model`.
@@ -28,6 +32,8 @@
 pub mod app;
 pub mod canvas;
 pub mod capture;
+pub mod chart_item;
+pub mod legend;
 pub mod overlays;
 pub mod pipeline;
 pub mod protocol;

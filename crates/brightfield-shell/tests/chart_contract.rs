@@ -18,12 +18,16 @@ use std::collections::BTreeMap;
 use brightfield_shell::app::{chart_registry, ChartDoc, CHART, CONTROLS};
 use brightfield_shell::design::Mode;
 use brightfield_shell::pipeline::{compose_spec, Composed};
-use brightfield_shell::window::{chart_window_size, Boot, MeridianApp, BAR_HEIGHT, DOCK_INSET};
+use brightfield_shell::window::{
+    chart_toolbar_band, chart_window_size, Boot, MeridianApp, BAR_HEIGHT, DOCK_INSET,
+};
 use brightfield_workbench::behavior::TILE_GAP;
 use brightfield_workbench::registry::{DockSide, Slot};
+use brightfield_workbench::subject::{RunState, ToolbarLocation};
 use brightfield_workbench::{audit, chrome, ItemId, PaneKey, Subject, ViewKind};
 
 const DASHBOARD: &str = "../../examples/dashboard.yaml";
+const CROSSFILTER: &str = "../../examples/crossfilter.yaml";
 
 /// The real fixture, as a document with no device behind it.
 fn loaded() -> ChartDoc {
@@ -146,25 +150,75 @@ fn each_pane_names_itself_once_and_binds_in_the_workspace_context() {
     assert_eq!(names[&CONTROLS], "Controls");
 }
 
-/// A pane declares no chrome it cannot be held to: no toolbar control and no
-/// status line.
+/// The chart pane declares its toolbar — and over a dashboard with no
+/// brushable plot, declares it **withheld**, so the collapsing `Toolbar`
+/// draws no row at all. Quiet-when-nothing-to-show as a mechanism: the
+/// declaration stays (greppable, and its verb goes through the audit's
+/// registry gate), the row does not exist.
 ///
-/// The one-app window has landed and this still holds, which is worth saying
-/// plainly because the note here used to promise the opposite. The merged top
-/// bar describes the *window* and the *view* — a switcher over `ViewKind::ALL`,
-/// the view's title, the renderer line — and none of that is any pane's to
-/// declare. `chrome::toolbar_row` and `chrome::status_rail` are still drawn by
-/// nothing, so an entry appearing here would be an entry nothing draws, which
-/// is worse than none.
+/// The controls rail still declares nothing: the merged top bar describes the
+/// window, and `chrome::status_rail` is still drawn by nothing, so a status
+/// entry here would be an entry nothing draws.
 #[test]
-fn no_pane_declares_chrome_the_shell_does_not_yet_draw() {
-    for (id, subject) in subjects(&loaded()) {
-        assert!(
-            subject.toolbar.is_empty(),
-            "{id} declares a toolbar control"
-        );
-        assert!(subject.status.is_empty(), "{id} declares a status line");
-    }
+fn the_toolbar_is_declared_but_the_row_vanishes_when_nothing_can_act() {
+    let subjects = subjects(&loaded());
+    let chart = &subjects[&CHART];
+    assert_eq!(
+        chart.toolbar.len(),
+        1,
+        "the chart pane declares exactly its clear-selection control"
+    );
+    assert_eq!(chart.toolbar[0].verb.as_str(), "clear-selection");
+    assert_eq!(
+        chart.toolbar[0].location,
+        ToolbarLocation::Hidden,
+        "no plot of examples/dashboard.yaml declares a gesture, so the \
+         control is declared-but-withheld"
+    );
+    assert!(
+        !chrome::Toolbar::new(&chart.toolbar).has_something_to_say(),
+        "a withheld-only toolbar summons no row"
+    );
+    assert!(
+        chart.status.is_empty(),
+        "a live-queried preview makes no run-state claim, so no status line"
+    );
+
+    let controls = &subjects[&CONTROLS];
+    assert!(controls.toolbar.is_empty(), "the rail declares no toolbar");
+    assert!(controls.status.is_empty(), "the rail declares no status");
+}
+
+/// Over a spec that *does* declare a brush, the same control is offered —
+/// same declaration, different location — and the row exists.
+#[test]
+fn a_brushable_dashboard_offers_the_clear_selection_control() {
+    let doc = ChartDoc::headless(compose_spec(CROSSFILTER).expect("compose crossfilter"));
+    let chart = &subjects(&doc)[&CHART];
+    assert_eq!(chart.toolbar.len(), 1);
+    assert_eq!(
+        chart.toolbar[0].location,
+        ToolbarLocation::Leading,
+        "a brushable plot offers the control in the row"
+    );
+    assert!(
+        !chart.toolbar[0].enabled,
+        "nothing is committed yet, so the control is offered but disabled"
+    );
+    assert!(chrome::Toolbar::new(&chart.toolbar).has_something_to_say());
+}
+
+/// A preview annotated with materialised run output rails that state — the
+/// one vocabulary, spelled by its own type, never a second set.
+#[test]
+fn an_annotated_preview_rails_its_run_state() {
+    let mut composed = compose_spec(DASHBOARD).expect("compose examples/dashboard.yaml");
+    composed = composed.with_run_state(RunState::StaleUpstream);
+    let doc = ChartDoc::headless(composed);
+    let chart = &subjects(&doc)[&CHART];
+    assert_eq!(chart.status.len(), 1, "one standing run-state entry");
+    assert_eq!(chart.status[0].id, "run-state");
+    assert_eq!(chart.status[0].text, RunState::StaleUpstream.label());
 }
 
 // ---------------------------------------------------------------------------
@@ -240,24 +294,38 @@ fn the_window_is_sized_from_the_rail_share_it_lays_out() {
 
     // Across: the window insets to the dock, the dock gives up the gap between
     // the two tiles, the chart takes `centre` of what is left, and the pane
-    // frame insets it again on both sides.
+    // frame insets it again on both sides. The content box holds the raster
+    // AND the legend margin band beside it — dashboard.yaml's scatter maps
+    // fill, so its band is real here, and a `band_width` nobody budgeted
+    // would come straight out of the raster's pixels.
     let content_w = (w - 2.0 * DOCK_INSET - TILE_GAP) * centre - 2.0 * inset;
-    let dashboard_w = composed.width as f32;
+    let need_w = composed.width as f32 + brightfield_shell::legend::band_width(&composed);
     assert!(
-        content_w >= dashboard_w,
+        brightfield_shell::legend::band_width(&composed) > 0.0,
+        "dashboard.yaml maps fill, so this walk must include a real band"
+    );
+    assert!(
+        content_w >= need_w,
         "the chart pane's content box is {content_w:.2}pt across for a \
-         {dashboard_w:.0}pt dashboard — the raster will be clipped"
+         {need_w:.0}pt raster+legend — something will be clipped"
     );
 
     // Down: the window gives up its one band — the charts view draws no hint
-    // bar — insets to the dock, and the pane
-    // frame takes its header band and its padding above and below.
+    // bar — insets to the dock, and the pane frame takes its header band and
+    // its padding above and below. The toolbar band is a term too, and for
+    // this gesture-less dashboard it must be exactly zero — quiet means no
+    // row, and no row means no budget.
     let content_h = h - BAR_HEIGHT - 2.0 * DOCK_INSET - chrome::header_band_height() - 2.0 * inset;
-    let dashboard_h = composed.height as f32;
+    assert_eq!(
+        chart_toolbar_band(&composed),
+        0.0,
+        "no plot of dashboard.yaml declares a gesture, so no toolbar band"
+    );
+    let need_h = composed.height as f32 + chart_toolbar_band(&composed);
     assert!(
-        content_h >= dashboard_h,
+        content_h >= need_h,
         "the chart pane's content box is {content_h:.2}pt tall for a \
-         {dashboard_h:.0}pt dashboard — the raster will be clipped"
+         {need_h:.0}pt raster — the raster will be clipped"
     );
 
     // And in neither axis is the leftover a fudge factor. Every term above is
@@ -265,10 +333,7 @@ fn the_window_is_sized_from_the_rail_share_it_lays_out() {
     // `chart_window_size` may have is its rounding up to whole logical points:
     // strictly less than one point, per axis. An inequality that any positive
     // number satisfies is what let the height budget be 95 points short.
-    for (axis, slack) in [
-        ("across", content_w - dashboard_w),
-        ("down", content_h - dashboard_h),
-    ] {
+    for (axis, slack) in [("across", content_w - need_w), ("down", content_h - need_h)] {
         assert!(
             slack < 1.0,
             "the chart pane's content box has {slack:.2}pt of slack {axis} — \

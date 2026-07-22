@@ -4,8 +4,11 @@
 //! This file declares the view and nothing around it. The window, the top bar
 //! and the frame loop belong to [`crate::window::MeridianApp`], which draws
 //! this view and the protocol view from one `eframe::App`; what is here is the
-//! document the two panes share, the registry that is the single declaration of
-//! the view's shape, and the panes themselves.
+//! document the two panes share, the registry that is the single declaration
+//! of the view's shape, and the controls rail. The chart pane itself is
+//! [`crate::chart_item::ChartItem`], in its own module — one implementation
+//! parameterised by mark kind, with the gesture seam and the margin legend
+//! beside it.
 //!
 //! # What this file no longer does
 //!
@@ -40,8 +43,11 @@
 //!   name `INK_LIGHT` unconditionally, so the plotted chart is light ink in both
 //!   modes. That is the chart-side twin of the DAG raster fix, it is fourteen
 //!   call sites in another crate, and it is not this file.)
-//! - **No bespoke selection or focus treatment**, because this surface has
-//!   neither: nothing on it is selectable, and nothing tracked focus.
+//! - **No bespoke selection or focus treatment.** The surface *is* selectable
+//!   now — a brush is a selection — and the treatment is still nobody's own:
+//!   the transient gesture wears the design system's overlay token group and
+//!   keyboard focus wears `meridian-egui`'s one ring, both in
+//!   [`crate::chart_item`], neither invented here.
 //!
 //! What this surface *did* lack entirely is an empty state — a spec that
 //! composed nothing would have rendered chrome and a blank rectangle. Both panes
@@ -50,21 +56,24 @@
 
 use std::collections::BTreeSet;
 
+use brightfield_engine::coordinator::Interaction;
 use brightfield_keys::BindingContext;
-use brightfield_render::canvas_host::{ChartSurface, Color, PixelSize, SurfaceCursor};
+use brightfield_render::canvas_host::{Color, PixelSize};
+use brightfield_spec::analysis::ComponentPath;
+use brightfield_spec::ast::SpecValue;
+use brightfield_spec::vocab::MarkKind;
 use brightfield_workbench::registry::{DockSide, Slot};
 use brightfield_workbench::{
-    chrome, Affordance, EmptyState, Icon, Item, ItemCtx, ItemId, ItemRegistry, ItemSpec, PaneKey,
-    Subject, Verb, ViewKind,
+    chrome, EmptyState, Icon, Item, ItemCtx, ItemId, ItemRegistry, ItemSpec, PaneKey, Subject,
+    Verb, ViewKind,
 };
 
-use meridian_design::chrome::{INK_DARK, INK_LIGHT};
 use meridian_design::{semantic, spacing};
 
-use crate::canvas::{surface_input, CanvasSlot, EguiCanvasHost, EguiChartFrame};
+use crate::canvas::{CanvasSlot, EguiCanvasHost};
+use crate::chart_item::ChartItem;
 use crate::design::Mode;
-use crate::pipeline::Composed;
-use crate::starts;
+use crate::pipeline::{Composed, LiveDashboard};
 
 // ---------------------------------------------------------------------------
 // ChartDoc — the state every pane in this view shares.
@@ -112,6 +121,22 @@ pub struct ChartDoc {
     /// today, and would have silently stopped landing the first time the rail's
     /// share or a row height moved. It aims from a headless layout pass now.
     pub overlay_checkbox: Option<egui::Rect>,
+    /// The rect the raster was presented into last frame, in window-space
+    /// logical points — the box the legend must never enter. Recorded for the
+    /// reason [`Self::viewport`] is: the no-legend-overlaps-data exercise
+    /// holds disjointness over rects a real layout pass produced.
+    pub raster_rect: Option<egui::Rect>,
+    /// The rect the legend band occupied last frame — `None` when the
+    /// dashboard calls for no legend, which is itself an assertable fact.
+    pub legend_rect: Option<egui::Rect>,
+    /// The live, session-holding dashboard behind this document, when the
+    /// boot path loaded one. `None` for a one-shot composition (captures, the
+    /// pixel tier, the shipped starts): every gesture entry point checks, so
+    /// a still frame is still a still frame.
+    live: Option<LiveDashboard>,
+    /// Selections currently holding a committed gesture, as
+    /// `(selection name, contributor)` — what `clear-selection` retracts.
+    active_selections: Vec<(String, ComponentPath)>,
     canvas: CanvasSlot<CanvasKey>,
 }
 
@@ -151,6 +176,10 @@ impl ChartDoc {
             overlay: true,
             viewport: None,
             overlay_checkbox: None,
+            raster_rect: None,
+            legend_rect: None,
+            live: None,
+            active_selections: Vec::new(),
             canvas: CanvasSlot::new(host),
         }
     }
@@ -164,6 +193,10 @@ impl ChartDoc {
             overlay: true,
             viewport: None,
             overlay_checkbox: None,
+            raster_rect: None,
+            legend_rect: None,
+            live: None,
+            active_selections: Vec::new(),
             canvas: CanvasSlot::headless(),
         }
     }
@@ -186,9 +219,111 @@ impl ChartDoc {
     /// size as the old one would leave the *old* raster on screen with no
     /// error anywhere: a stale picture that reads as a GPU fault. Dropping the
     /// presented key is what makes the next `present` actually raster.
+    ///
+    /// This is the **different-document** entry: it drops any live session and
+    /// any committed selections, because both belong to the spec that is being
+    /// replaced. A re-composite of the *same* live document goes through
+    /// [`ChartDoc::apply_interaction`], which keeps them.
     pub fn open(&mut self, composed: Composed) {
         self.composed = composed;
+        self.live = None;
+        self.active_selections.clear();
         self.canvas.invalidate();
+    }
+
+    /// Put a live, session-holding dashboard behind this document — the boot
+    /// path calls this when it loaded one, and it is what arms every gesture.
+    pub fn attach_live(&mut self, live: LiveDashboard) {
+        self.live = Some(live);
+    }
+
+    /// Whether a live session is behind this document — whether gestures can
+    /// re-query at all.
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        self.live.is_some()
+    }
+
+    /// Whether any selection currently holds a committed gesture.
+    #[must_use]
+    pub fn selection_active(&self) -> bool {
+        !self.active_selections.is_empty()
+    }
+
+    /// Push one interaction through the coordinator seam and present the
+    /// re-composite: the predicate goes into DuckDB, the affected marks
+    /// re-query, and the identical layout/scene path repaints. Returns whether
+    /// anything was applied (`false` on a document with no live session).
+    ///
+    /// A failed re-composite keeps the previous picture and reports to stderr
+    /// — the same posture the compose warnings take — rather than blanking a
+    /// window over one gesture.
+    pub fn apply_interaction(&mut self, interaction: Interaction) -> bool {
+        let Some(live) = self.live.as_mut() else {
+            return false;
+        };
+        match &interaction {
+            Interaction::Select {
+                name, contributor, ..
+            } => {
+                let entry = (name.clone(), contributor.clone());
+                if !self.active_selections.contains(&entry) {
+                    self.active_selections.push(entry);
+                }
+            }
+            Interaction::ClearSelect { name, contributor } => {
+                self.active_selections
+                    .retain(|(n, c)| !(n == name && c == contributor));
+            }
+            Interaction::SetParam { .. } => {}
+        }
+        match live.apply(interaction) {
+            Ok(composed) => {
+                self.composed = composed;
+                self.canvas.invalidate();
+                true
+            }
+            Err(e) => {
+                eprintln!("warning: interaction re-composite failed: {e}");
+                false
+            }
+        }
+    }
+
+    /// Retract every committed gesture — the `clear-selection` verb's chart
+    /// arm. A no-op on a document with nothing committed.
+    pub fn clear_selection(&mut self) {
+        for (name, contributor) in std::mem::take(&mut self.active_selections) {
+            self.apply_interaction(Interaction::ClearSelect { name, contributor });
+        }
+    }
+
+    /// Drive one spec-declared scalar parameter — the controls rail's slider,
+    /// bound to the seam instead of to a field nothing reads.
+    pub fn set_param(&mut self, name: &str, value: f64) -> bool {
+        self.apply_interaction(Interaction::SetParam {
+            name: name.to_string(),
+            value: SpecValue::Float(value),
+        })
+    }
+
+    /// The dashboard's presenting mark kind: the first mark of the first
+    /// plot. `None` over an empty document.
+    #[must_use]
+    pub fn primary_mark(&self) -> Option<MarkKind> {
+        self.composed
+            .plots
+            .first()
+            .and_then(|p| p.marks.first())
+            .copied()
+    }
+
+    /// The presented texture, if a device is behind this document and a frame
+    /// has rastered. The chart pane's read — the canvas slot itself stays
+    /// private to this module.
+    #[must_use]
+    pub(crate) fn canvas_texture(&self) -> Option<egui::TextureId> {
+        self.canvas.texture()
     }
 
     /// Whether there is a dashboard to draw.
@@ -292,10 +427,10 @@ const CHART_PANE: PaneKey = PaneKey::new(ViewKind::Charts, CHART);
 /// budgeted 200.
 pub(crate) const CONTROLS_SHARE: f32 = 0.2;
 
-/// Every icon here is a *name*, resolved to paint at draw time. The Meridian
-/// icon set has not landed in this workspace, so the chrome reserves each
-/// glyph's box without painting into it.
-const ICON_CHART: Icon = Icon("chart");
+/// The rail's icon is a *name*, resolved to paint at draw time. The Meridian
+/// icon set has not landed in this workspace's chrome, so the chrome reserves
+/// the glyph's box without painting into it. The chart pane's icon is the
+/// mark kind's own, named by [`ChartItem`].
 const ICON_CONTROLS: Icon = Icon("sliders");
 
 /// The chart view's registry: two panes, where each sits, and the verb that
@@ -315,7 +450,7 @@ pub fn chart_registry() -> ItemRegistry<ChartDoc> {
                 id: CHART,
                 slot: Slot::Centre,
                 toggle: None,
-                make: || Box::new(ChartPane),
+                make: || Box::new(ChartItem::new()),
             },
             ItemSpec {
                 id: CONTROLS,
@@ -331,119 +466,14 @@ pub fn chart_registry() -> ItemRegistry<ChartDoc> {
 }
 
 // ---------------------------------------------------------------------------
-// The two panes.
+// The controls rail. (The chart pane is [`ChartItem`], in its own module.)
 // ---------------------------------------------------------------------------
-
-/// The composited dashboard, presented as a zero-copy egui texture, with the
-/// hover crosshair overlay drawn on top of it.
-///
-/// A unit struct because it has no view-local state at all — everything it draws
-/// is a function of the document.
-struct ChartPane;
-
-impl Item<ChartDoc> for ChartPane {
-    fn item_id(&self) -> ItemId {
-        CHART
-    }
-
-    /// The chart view's **front door**.
-    ///
-    /// This empty state is what a launch with no spec on the command line
-    /// opens on, so its prose cannot assume a spec was ever named — the copy
-    /// it replaces opened "This spec composed no plots", which is a report
-    /// about a spec that does not exist. It names both ways in: a shipped
-    /// start, offered as a button, and the command line.
-    ///
-    /// The affordance is an [`Action::Open`](brightfield_workbench::Action)
-    /// rather than a verb. There is no registered command that means "open the
-    /// example dashboard" and inventing one would put a keystroke and a palette
-    /// entry behind a fixture; worse, the chrome renders an affordance's verb's
-    /// real keystroke next to its label, so borrowing an unrelated verb would
-    /// ship a button that claims a key it does not have.
-    fn empty_state(&self, doc: &ChartDoc) -> Option<EmptyState> {
-        if !doc.is_empty() {
-            return None;
-        }
-        let mut empty = EmptyState::new(
-            ICON_CHART,
-            "Nothing to draw",
-            "No spec is open, or the one that is composed no plots. Start \
-             from the example below, or name a spec on the command line.",
-        );
-        if let Some(start) = starts::for_view(ViewKind::Charts) {
-            empty = empty.with_next(Affordance::open(start.label, start.id));
-        }
-        Some(empty)
-    }
-
-    fn describe(&self, _doc: &ChartDoc) -> Subject {
-        Subject::new("Chart", ICON_CHART, BindingContext::Workspace)
-    }
-
-    fn ui(&mut self, doc: &mut ChartDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
-        // Recorded *before* the texture check, so a headless document still
-        // reports the box the dock gave this pane. See `ChartDoc::viewport`.
-        doc.viewport = Some(ui.max_rect());
-        let Some(texture) = doc.canvas.texture() else {
-            // No device behind this document. The pane is blank rather than
-            // apologetic: a headless document is a test fixture, never a state a
-            // user reaches, so a message here would be chrome nobody sees.
-            return;
-        };
-        let (w, h) = (doc.composed.width, doc.composed.height);
-        let overlay_on = doc.overlay;
-        let mode = cx.mode;
-        let ctx = ui.ctx().clone();
-
-        let mut frame = EguiChartFrame::new(ui, texture);
-        frame.present(PixelSize {
-            width: w,
-            height: h,
-        });
-
-        // Drive the overlay/hit-test seam from egui pointer input: a crosshair
-        // marker at the pointer while it's over the chart, with a grab cursor.
-        let Some(rect) = frame.reserved() else {
-            return;
-        };
-        let input = surface_input(&ctx, rect);
-        if !overlay_on || !input.hovered {
-            return;
-        }
-        if let Some(p) = input.pointer_pos {
-            // The chart's own ink layer, not the chrome's: this line is painted
-            // through the render seam over a Vello raster whose colours all come
-            // from `chrome::INK_*`, so it stays there rather than moving to
-            // `semantic()` and quietly becoming a different colour.
-            let focus = match mode {
-                Mode::Light => INK_LIGHT.focus,
-                Mode::Dark => INK_DARK.focus,
-            };
-            let ink = Color::from_token_alpha(focus, 0.9);
-            let painter = frame.overlay();
-            painter.line(
-                kurbo::Point::new(p.x, 0.0),
-                kurbo::Point::new(p.x, f64::from(h)),
-                ink,
-                1.0,
-            );
-            painter.line(
-                kurbo::Point::new(0.0, p.y),
-                kurbo::Point::new(f64::from(w), p.y),
-                ink,
-                1.0,
-            );
-            painter.fill_circle(p, 3.0, ink);
-        }
-        frame.set_cursor(Some(SurfaceCursor::Grab));
-    }
-}
 
 /// The controls rail: the native egui widgets the render trait does not cover.
 ///
-/// A unit struct for the same reason [`ChartPane`] is one — the values these
-/// widgets drive belong to the document, because the chart pane reads one of
-/// them.
+/// A unit struct for the same reason [`ChartItem`] holds no document handle —
+/// the values these widgets drive belong to the document, because the chart
+/// pane reads them.
 struct ControlsPane;
 
 impl Item<ChartDoc> for ControlsPane {
@@ -471,15 +501,37 @@ impl Item<ChartDoc> for ControlsPane {
     }
 
     fn ui(&mut self, doc: &mut ChartDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
-        // The legend that used to sit above these controls is gone and is not
-        // coming back here: a hardcoded "Series A/B/C" swatch block duplicated
-        // the chart's own in-scene legend and, being fixed at three series,
-        // mislabelled a single-series bar chart. Accurate, one-per-chart legends
-        // belong in the plot margin, derived from each chart's real series — a
-        // follow-up that needs the compose pipeline to surface series metadata
-        // (it is currently baked into the Vello scene by `build_multi_mark_scene`).
-        ui.label("param");
-        ui.add(egui::Slider::new(&mut doc.param, 0.0..=1.0));
+        // The legend that used to sit above these controls is gone for good:
+        // a hardcoded "Series A/B/C" swatch block duplicated the chart's own
+        // legend and, being fixed at three series, mislabelled a single-series
+        // bar chart. The one legend is [`crate::legend`]'s margin panel,
+        // drawn by the chart pane from each chart's real series.
+        //
+        // The slider is two things depending on what the spec declared. A
+        // spec with a slider-backed scalar param gets one slider **per
+        // declared param**, labelled with the param's name, spanning the
+        // widget's own range, and wired through the coordinator seam — a drag
+        // is an `Interaction::SetParam`, a pushed value and a re-query, never
+        // a Rust-side filter. A spec with none keeps the worked example that
+        // exercises native egui state over the document.
+        let params = doc.composed.params.clone();
+        if doc.is_live() && !params.is_empty() {
+            for control in params {
+                ui.label(&control.name);
+                let mut value = control.value;
+                let mut slider = egui::Slider::new(&mut value, control.min..=control.max);
+                if let Some(step) = control.step {
+                    slider = slider.step_by(step);
+                }
+                let response = ui.add(slider);
+                if response.changed() && (value - control.value).abs() > f64::EPSILON {
+                    doc.set_param(&control.name, value);
+                }
+            }
+        } else {
+            ui.label("param");
+            ui.add(egui::Slider::new(&mut doc.param, 0.0..=1.0));
+        }
         doc.overlay_checkbox = Some(ui.checkbox(&mut doc.overlay, "hover overlay").rect);
         ui.add_space(spacing::CONTROL_GAP);
         let sem = semantic(cx.mode.is_dark());
@@ -490,6 +542,146 @@ impl Item<ChartDoc> for ControlsPane {
             ))
             .monospace()
             .color(chrome::colour(sem.text.muted)),
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests — the document's live seam, which only this module can drive
+// through the private fields.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pipeline::LiveDashboard;
+    use brightfield_engine::SqlPredicate;
+    use brightfield_sql::ir::ScalarValue;
+
+    /// A brushable spec with a slider-backed param — both live seams in one
+    /// fixture.
+    const SPEC: &str = r#"
+params:
+  brush:
+    select: intersect
+  threshold: 0
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+    - { x: 3, y: 30 }
+    - { x: 4, y: 40 }
+plot:
+  - mark: dot
+    data: { from: t, filterBy: $brush, filter: "x > $threshold" }
+    x: x
+    y: y
+"#;
+
+    fn live_doc() -> ChartDoc {
+        let mut live = LiveDashboard::load_str(SPEC, None).expect("load");
+        let composed = live.present().expect("first paint");
+        let mut doc = ChartDoc::headless(composed);
+        doc.attach_live(live);
+        doc
+    }
+
+    /// The chart-side gesture path end to end: a STRUCTURED interval clause
+    /// through `apply_interaction` re-queries and re-presents, the committed
+    /// selection is tracked, and `clear_selection` retracts it — the
+    /// clear-selection verb's whole arm, without a window anywhere.
+    #[test]
+    fn a_structured_interval_brush_applies_and_clears_through_the_document() {
+        let mut doc = live_doc();
+        assert!(doc.is_live());
+        assert!(!doc.selection_active(), "nothing committed at boot");
+
+        let applied = doc.apply_interaction(Interaction::Select {
+            name: "brush".to_string(),
+            contributor: ComponentPath("root/plot[9]".to_string()),
+            predicate: SqlPredicate::Interval {
+                column: "x".to_string(),
+                lo: ScalarValue::Float(2.0),
+                hi: ScalarValue::Float(3.0),
+                meta: None,
+            },
+        });
+        assert!(applied, "a live document applies");
+        assert!(doc.selection_active(), "the commitment is tracked");
+        assert!(
+            doc.composed.width > 0 && doc.composed.height > 0,
+            "the re-composite replaced the picture"
+        );
+
+        doc.clear_selection();
+        assert!(!doc.selection_active(), "clear-selection retracts");
+    }
+
+    /// A one-shot document refuses every interaction — a still frame is a
+    /// still frame, and the capture tiers depend on that.
+    #[test]
+    fn a_one_shot_document_applies_nothing() {
+        let mut doc = ChartDoc::empty();
+        assert!(!doc.apply_interaction(Interaction::SetParam {
+            name: "threshold".to_string(),
+            value: SpecValue::Float(2.0),
+        }));
+        assert!(!doc.set_param("threshold", 2.0));
+        assert!(!doc.is_live());
+    }
+
+    /// The param seam over a spec with a real slider widget: `set_param`
+    /// pushes the value into DuckDB, and the next composition's surfaced
+    /// control carries the value the slider was dragged to — not the spec's
+    /// boot value, which is what would make the control snap back under the
+    /// user's pointer.
+    #[test]
+    fn set_param_re_queries_and_the_surfaced_control_keeps_the_new_value() {
+        const SLIDER_SPEC: &str = r#"
+params:
+  threshold: 1
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+    - { x: 3, y: 30 }
+vconcat:
+  - plot:
+      - { mark: dot, data: { from: t, filter: "x > $threshold" }, x: x, y: y }
+  - input: slider
+    label: Threshold
+    as: $threshold
+    min: 0
+    max: 3
+    step: 1
+"#;
+        let mut live = LiveDashboard::load_str(SLIDER_SPEC, None).expect("load");
+        let composed = live.present().expect("first paint");
+        assert_eq!(
+            composed.params,
+            vec![crate::pipeline::ParamControl {
+                name: "threshold".to_string(),
+                value: 1.0,
+                min: 0.0,
+                max: 3.0,
+                step: Some(1.0),
+            }],
+            "the widget's own range is what the rail binds"
+        );
+        let mut doc = ChartDoc::headless(composed);
+        doc.attach_live(live);
+
+        assert!(doc.set_param("threshold", 2.0));
+        let control = doc
+            .composed
+            .params
+            .iter()
+            .find(|p| p.name == "threshold")
+            .expect("the control survives the re-composite");
+        assert!(
+            (control.value - 2.0).abs() < f64::EPSILON,
+            "the surfaced control snapped back to {}",
+            control.value
         );
     }
 }

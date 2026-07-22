@@ -75,7 +75,7 @@ use crate::app::{chart_registry, ChartDoc, CONTROLS_SHARE};
 use crate::canvas::EguiCanvasHost;
 use crate::design::{self, Mode};
 use crate::overlays::{CommandPalette, HelpSheet, JumpTarget, JumpToNode};
-use crate::pipeline::{compose_spec, Composed};
+use crate::pipeline::Composed;
 use crate::protocol::{
     hint_ui, load_protocol_offline, protocol_registry, ui_font, ProtocolDoc, ProtocolInputs,
     ProtocolModel, CANVAS, INSPECTOR_SHARE, OUTLINE_SHARE, STEPS,
@@ -162,13 +162,44 @@ pub fn chart_window_size(composed: &Composed) -> (f32, f32) {
     let centre = 1.0 - CONTROLS_SHARE;
     let inset = chrome::pane_content_inset();
 
-    let tile_w = composed.width as f32 + 2.0 * inset;
+    // The legend band is a term, not a bite: a dashboard whose scales call
+    // for a margin legend gets the band's width beside the raster, and one
+    // that calls for none contributes zero — read from the component that
+    // draws it, like every other term here.
+    let tile_w = composed.width as f32 + crate::legend::band_width(composed) + 2.0 * inset;
     let w = (tile_w / centre + TILE_GAP + 2.0 * DOCK_INSET).ceil();
 
-    let tile_h = composed.height as f32 + 2.0 * inset + chrome::header_band_height();
+    let tile_h = composed.height as f32
+        + chart_toolbar_band(composed)
+        + 2.0 * inset
+        + chrome::header_band_height();
     let h = (tile_h + 2.0 * DOCK_INSET + BAR_HEIGHT).ceil();
 
     (w, h)
+}
+
+/// The height the chart pane's toolbar row consumes above the raster, in
+/// logical points — `0.0` for a dashboard with no gesture-bindable plot,
+/// where the collapsing `Toolbar` draws no row at all.
+///
+/// Like the legend band, a term read from the components that produce it: the
+/// row is the toolbar button's real height — the binding's control height,
+/// floored by the meridian style's `interact_size.y` (`control::HEIGHT_MD`),
+/// which egui applies to every button — and the style's vertical item spacing
+/// separates it from the raster. Keyed on the composition (not on liveness)
+/// for the reason the pane's own declaration is — the window is sized before
+/// a session could exist.
+#[must_use]
+pub fn chart_toolbar_band(composed: &Composed) -> f32 {
+    use meridian_design::control;
+    if composed.plots.iter().any(|p| p.gesture.is_some()) {
+        control::binding(spacing::ROW_GRID)
+            .control
+            .max(control::HEIGHT_MD)
+            + spacing::SPACE_2
+    } else {
+        0.0
+    }
 }
 
 /// The natural window size in logical points for a laid-out asset graph, read
@@ -238,6 +269,11 @@ pub struct Boot {
     pub view: Option<ViewKind>,
     /// The chart view's dashboard.
     pub composed: Composed,
+    /// The live, session-holding dashboard behind `composed`, when this boot
+    /// loaded one — what arms brushes, clicks and param sliders to re-query.
+    /// `None` on the capture tiers' one-shot boots, whose stillness is the
+    /// point.
+    pub live: Option<crate::pipeline::LiveDashboard>,
     /// The protocol view's graph and steps.
     pub protocol: ProtocolInputs,
     /// The protocol view's reading axis.
@@ -254,6 +290,7 @@ impl Boot {
         Self {
             view: Some(ViewKind::Charts),
             composed,
+            live: None,
             protocol: ProtocolInputs::empty(),
             flow: Flow::Vertical,
             focus: None,
@@ -266,6 +303,7 @@ impl Boot {
         Self {
             view: Some(ViewKind::Protocol),
             composed: Composed::empty(),
+            live: None,
             protocol: inputs,
             flow,
             focus,
@@ -290,6 +328,7 @@ impl Boot {
         Self {
             view: None,
             composed: Composed::empty(),
+            live: None,
             protocol: ProtocolInputs::empty(),
             flow: Flow::Vertical,
             focus: None,
@@ -383,7 +422,15 @@ impl Boot {
             }
             return Ok(Self::protocol(load_protocol_offline(spec)?, flow, focus));
         }
-        Ok(Self::charts(compose_spec(spec)?))
+        // A chart spec named on the command line boots **live**: the session
+        // is held behind the document, so a brush, a click or a param slider
+        // resolves to a pushed predicate and a re-query rather than a still
+        // frame. The capture tiers build their boots through [`Boot::charts`]
+        // and stay one-shot, which is what keeps a baseline a baseline.
+        let (live, composed) = crate::pipeline::live_spec(spec)?;
+        let mut boot = Self::charts(composed);
+        boot.live = Some(live);
+        Ok(boot)
     }
 
     /// The window this boot asks for, in logical points — `view`'s natural
@@ -650,7 +697,10 @@ impl MeridianApp {
         protocol_host: EguiCanvasHost,
         mode: Mode,
     ) -> Self {
-        let doc = ChartDoc::new(boot.composed, chart_host);
+        let mut doc = ChartDoc::new(boot.composed, chart_host);
+        if let Some(live) = boot.live {
+            doc.attach_live(live);
+        }
         let model = ProtocolModel::new(boot.protocol, boot.flow);
         Self::assemble(
             boot.view,
@@ -685,7 +735,10 @@ impl MeridianApp {
     /// directory.
     #[must_use]
     pub fn headless_with_layout(boot: Boot, layout: SavedLayout, mode: Mode) -> Self {
-        let doc = ChartDoc::headless(boot.composed);
+        let mut doc = ChartDoc::headless(boot.composed);
+        if let Some(live) = boot.live {
+            doc.attach_live(live);
+        }
         let model = ProtocolModel::new(boot.protocol, boot.flow);
         Self::assemble(
             boot.view,
@@ -1317,14 +1370,20 @@ impl MeridianApp {
     ///
     /// A verb goes to the model of the view that raised it — only the active
     /// view's panes drew, so that is the active view's model. The charts view
-    /// has no model to dispatch into and nothing on it declares a verb-bearing
-    /// control; the arm is spelled out so that adding one is a change to *this*
-    /// line rather than a control that silently does nothing.
+    /// has no model; its verbs act on the document directly, and the match is
+    /// spelled out so that a chart control declaring a verb this arm does not
+    /// handle is a change to *this* line rather than a button that silently
+    /// does nothing.
     fn apply(&mut self, ctx: &egui::Context, view: ViewKind, requests: Vec<Request>) {
         for request in requests {
             match request {
                 Request::Verb(verb) => match view {
-                    ViewKind::Charts => {}
+                    ViewKind::Charts => {
+                        if verb.as_str() == "clear-selection" {
+                            self.charts.doc.clear_selection();
+                            ctx.request_repaint();
+                        }
+                    }
                     ViewKind::Protocol => {
                         self.protocol.doc.model.dispatch(verb.as_str());
                     }
