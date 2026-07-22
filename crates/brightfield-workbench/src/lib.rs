@@ -35,12 +35,14 @@
 //!   reason review suffices is that no [`Subject`] field asks for a header, so
 //!   a pane wanting one has already left the contract. See
 //!   [`chrome::pane_frame`].
-//! - **A forgotten empty state is caught by an audit, not by the compiler.**
-//!   [`Subject::empty_state`] is an `Option` and returning `None` compiles
-//!   cleanly. [`audit`] catches it: it walks a registry, asks every item for
-//!   its subject over an empty document, and rejects a missing empty state —
-//!   along with prose that breaks the house style, an unregistered verb, and a
-//!   rail with no toggle. It ships in the crate rather than as a helper each
+//! - **A forgotten empty state cannot compile; a wrong one is caught by an
+//!   audit.** [`Item::empty_state`] is a *required* method, so a pane that
+//!   never decided what it shows when empty is a type error, not a review
+//!   finding. What the compiler cannot check is the answer: `None` over an
+//!   empty document compiles cleanly, and [`audit`] catches it — it walks a
+//!   registry, asks every item for its subject over an empty document, and
+//!   rejects a missing empty state, along with prose that breaks the house
+//!   style, an unregistered verb, and a rail with no toggle. It ships in the crate rather than as a helper each
 //!   view's tests re-write, so a view gates itself with one call. That is only
 //!   as good as the registry being the door every pane comes through, which is
 //!   a convention this crate makes convenient rather than one it can enforce —

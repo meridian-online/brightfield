@@ -299,13 +299,15 @@ impl<D: ?Sized> ItemRegistry<D> {
 ///
 /// # Why this lives in the crate rather than in a test
 ///
-/// [`crate::Subject::empty_state`] is an `Option` and returning `None`
-/// compiles cleanly, so nothing in the type system stops a pane from
-/// rendering a header and silence — which is the single most common defect in
-/// the shell this crate replaces, and the two worst instances of it were the
-/// two nobody had written at all. The gate is the thing that catches it, so
-/// shipping the gate as a test helper would mean every view re-implementing
-/// it, which is the per-surface drift this crate exists to end. One function,
+/// [`crate::Item::empty_state`] is a *required* method, so a pane that never
+/// decided what it shows when empty no longer compiles — but `None` over an
+/// empty document still does, and that is the wrong *answer* to a question
+/// the type system can only make sure was asked. Rendering a header and
+/// silence was the single most common defect in the shell this crate
+/// replaces, and the two worst instances of it were the two nobody had
+/// written at all. The gate is the thing that catches the answer, so
+/// shipping it as a test helper would mean every view re-implementing it,
+/// which is the per-surface drift this crate exists to end. One function,
 /// one call per view.
 ///
 /// # Why it takes a document rather than requiring `Default`
@@ -332,6 +334,17 @@ pub fn audit<D: ?Sized>(reg: &ItemRegistry<D>, empty_doc: &D) -> Result<(), Stri
         }
 
         let subject = item.subject(empty_doc);
+        // `subject()` is provided glue over `describe()` + `empty_state()`,
+        // and overriding it is how the two channels could diverge again. The
+        // compare catches an override that answers differently from the
+        // required method; an override that faithfully reproduces the glue is
+        // indistinguishable and harmless.
+        if subject.empty_state != item.empty_state(empty_doc) {
+            return Err(format!(
+                "{id}: subject() and empty_state() disagree — Item::subject is \
+                 provided glue and must not be overridden"
+            ));
+        }
         let Some(empty) = &subject.empty_state else {
             return Err(format!("{id}: shows no empty state on an empty document"));
         };

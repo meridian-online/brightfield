@@ -54,7 +54,10 @@ impl Item<Doc> for Canvas {
     fn item_id(&self) -> ItemId {
         CANVAS
     }
-    fn subject(&self, doc: &Doc) -> Subject {
+    fn empty_state(&self, _doc: &Doc) -> Option<EmptyState> {
+        None
+    }
+    fn describe(&self, doc: &Doc) -> Subject {
         Subject::new(doc.title.clone(), Icon("chart"), BindingContext::Workspace)
     }
     fn ui(&mut self, doc: &mut Doc, ui: &mut egui::Ui, _cx: &mut ItemCtx<'_>) {
@@ -69,7 +72,10 @@ impl Item<Doc> for Notes {
     fn item_id(&self) -> ItemId {
         NOTES
     }
-    fn subject(&self, _doc: &Doc) -> Subject {
+    fn empty_state(&self, _doc: &Doc) -> Option<EmptyState> {
+        None
+    }
+    fn describe(&self, _doc: &Doc) -> Subject {
         Subject::new("Notes", Icon("note"), BindingContext::Editor)
     }
     fn ui(&mut self, doc: &mut Doc, _ui: &mut egui::Ui, _cx: &mut ItemCtx<'_>) {
@@ -85,17 +91,17 @@ impl Item<Doc> for Rail {
     fn item_id(&self) -> ItemId {
         RAIL
     }
-    fn subject(&self, doc: &Doc) -> Subject {
-        let s = Subject::new("Detail", Icon("inspector"), BindingContext::Workspace);
-        if doc.rows.is_empty() {
-            s.empty(EmptyState::new(
+    fn empty_state(&self, doc: &Doc) -> Option<EmptyState> {
+        doc.rows.is_empty().then(|| {
+            EmptyState::new(
                 Icon("inspector"),
                 "Nothing selected",
                 "Pick a row to see what it is made of",
-            ))
-        } else {
-            s
-        }
+            )
+        })
+    }
+    fn describe(&self, _doc: &Doc) -> Subject {
+        Subject::new("Detail", Icon("inspector"), BindingContext::Workspace)
     }
     fn ui(&mut self, doc: &mut Doc, _ui: &mut egui::Ui, _cx: &mut ItemCtx<'_>) {
         doc.draws += 1;

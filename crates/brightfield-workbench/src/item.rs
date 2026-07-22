@@ -33,7 +33,7 @@ use std::sync::{PoisonError, RwLock};
 
 use serde::{Deserialize, Serialize};
 
-use crate::subject::{Subject, Verb};
+use crate::subject::{EmptyState, Subject, Verb};
 use crate::workspace::ViewKind;
 use crate::Mode;
 
@@ -313,13 +313,55 @@ pub trait Item<D: ?Sized> {
     /// constructs it; the registry asserts as much.
     fn item_id(&self) -> ItemId;
 
-    /// What the shell should draw around this pane, this frame.
+    /// What this pane shows when it has nothing to show — and whether that is
+    /// now. `Some` means the pane is empty this frame: the shell draws the
+    /// returned state *instead of* calling [`Item::ui`]. `None` means the
+    /// pane has content.
+    ///
+    /// **Required, with no default, and that is the whole design.** The two
+    /// worst empty states in the shell this crate replaces were the two
+    /// nobody had written — an outline and a steps sheet that rendered a
+    /// header and silence. An optional field can be forgotten; a required
+    /// method makes "what does this pane show when it is empty?" a question
+    /// every pane author answers before their pane compiles. The audit
+    /// ([`crate::registry::audit`]) still checks the *answer*: over an empty
+    /// document this must be `Some`, with prose to the house style.
+    ///
+    /// `&self` and `&D` for the reason [`Item::describe`] takes them:
+    /// answering cannot mutate anything.
+    fn empty_state(&self, doc: &D) -> Option<EmptyState>;
+
+    /// What the shell should draw around this pane, this frame — everything
+    /// **except** the empty state, which is [`Item::empty_state`]'s to
+    /// answer. Implementations must not set [`Subject::empty_state`] here;
+    /// [`Item::subject`] composes the two and asserts as much in debug.
     ///
     /// `&self` and `&D` on purpose: building a subject cannot mutate
     /// anything, so it can never quietly become a second update path, and the
     /// shell can ask any pane for its subject at any time — including a pane
     /// that is not being drawn, which is what a tab title needs.
-    fn subject(&self, doc: &D) -> Subject;
+    fn describe(&self, doc: &D) -> Subject;
+
+    /// The full subject: [`Item::describe`]'s chrome with
+    /// [`Item::empty_state`]'s answer folded in. This is what the shell and
+    /// the audit read.
+    ///
+    /// Provided, and **not to be overridden**: the composition is what makes
+    /// the two channels unable to disagree — an override would reopen the gap
+    /// between "the pane says it is empty" and "the shell draws it empty",
+    /// and the audit rejects an item whose `subject` and `empty_state`
+    /// answers diverge.
+    fn subject(&self, doc: &D) -> Subject {
+        let mut subject = self.describe(doc);
+        debug_assert!(
+            subject.empty_state.is_none(),
+            "{}: declare emptiness by implementing Item::empty_state, not by \
+             setting Subject::empty_state in describe()",
+            self.item_id()
+        );
+        subject.empty_state = self.empty_state(doc);
+        subject
+    }
 
     /// Draw the body.
     ///
@@ -334,7 +376,8 @@ pub trait Item<D: ?Sized> {
     /// pane that sets out to bypass the contract the backstop is review, not
     /// the type system. See [`crate::chrome::pane_frame`].
     ///
-    /// Not called at all when `subject(doc).empty_state` is `Some`.
+    /// Not called at all when [`Item::empty_state`] answers `Some` — the
+    /// shell draws that instead.
     fn ui(&mut self, doc: &mut D, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>);
 
     /// Perform a verb dispatched to this item.

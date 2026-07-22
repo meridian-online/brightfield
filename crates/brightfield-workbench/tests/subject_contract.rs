@@ -78,8 +78,19 @@ impl Item<Doc> for ListItem {
         LIST
     }
 
-    fn subject(&self, doc: &Doc) -> Subject {
-        let mut s = Subject::new("Rows", Icon("list"), BindingContext::Workspace)
+    fn empty_state(&self, doc: &Doc) -> Option<EmptyState> {
+        doc.rows.is_empty().then(|| {
+            EmptyState::new(
+                Icon("list"),
+                "No rows yet",
+                "Rows appear here once a protocol has run",
+            )
+            .with_next(Affordance::new("Reload", reload_verb()))
+        })
+    }
+
+    fn describe(&self, doc: &Doc) -> Subject {
+        Subject::new("Rows", Icon("list"), BindingContext::Workspace)
             .with_toolbar(ToolbarEntry::button("reload", "Reload", reload_verb()))
             .with_toolbar(
                 ToolbarEntry::button("hidden", "Not offered", open_verb())
@@ -91,18 +102,7 @@ impl Item<Doc> for ListItem {
                 text: format!("{} rows", doc.rows.len()),
                 tone: Tone::Neutral,
                 hide: HideAffordance::WithRail,
-            });
-        if doc.rows.is_empty() {
-            s = s.empty(
-                EmptyState::new(
-                    Icon("list"),
-                    "No rows yet",
-                    "Rows appear here once a protocol has run",
-                )
-                .with_next(Affordance::new("Reload", reload_verb())),
-            );
-        }
-        s
+            })
     }
 
     fn ui(&mut self, doc: &mut Doc, ui: &mut egui::Ui, _cx: &mut ItemCtx<'_>) {
@@ -130,17 +130,17 @@ impl Item<Doc> for DetailItem {
     fn item_id(&self) -> ItemId {
         DETAIL
     }
-    fn subject(&self, doc: &Doc) -> Subject {
-        let s = Subject::new("Detail", Icon("inspector"), BindingContext::Workspace);
-        if doc.rows.is_empty() {
-            s.empty(EmptyState::new(
+    fn empty_state(&self, doc: &Doc) -> Option<EmptyState> {
+        doc.rows.is_empty().then(|| {
+            EmptyState::new(
                 Icon("inspector"),
                 "Nothing selected",
                 "Pick a row to see what it is made of",
-            ))
-        } else {
-            s
-        }
+            )
+        })
+    }
+    fn describe(&self, _doc: &Doc) -> Subject {
+        Subject::new("Detail", Icon("inspector"), BindingContext::Workspace)
     }
     fn ui(&mut self, _doc: &mut Doc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
         if ui.button("focus me").clicked() {
@@ -157,12 +157,15 @@ impl Item<Doc> for NotesItem {
     fn item_id(&self) -> ItemId {
         NOTES
     }
-    fn subject(&self, _doc: &Doc) -> Subject {
-        Subject::new("Notes", Icon("note"), BindingContext::Editor).empty(EmptyState::new(
+    fn empty_state(&self, _doc: &Doc) -> Option<EmptyState> {
+        Some(EmptyState::new(
             Icon("note"),
             "No notes",
             "Notes you write against a run are kept here",
         ))
+    }
+    fn describe(&self, _doc: &Doc) -> Subject {
+        Subject::new("Notes", Icon("note"), BindingContext::Editor)
     }
     fn ui(&mut self, _doc: &mut Doc, _ui: &mut egui::Ui, _cx: &mut ItemCtx<'_>) {}
 }
@@ -209,15 +212,21 @@ fn a_well_formed_view_passes_the_gate() {
 // …and bites on each specific defect
 // ---------------------------------------------------------------------------
 
-/// The defect the whole `EmptyState`-is-required design exists to catch: a
+/// The defect the whole empty-state-is-required design exists to catch: a
 /// pane that renders a header and silence when it has nothing to show.
+/// `Item::empty_state` being a required method forces the *question* at
+/// compile time; answering `None` over an empty document is the wrong
+/// *answer*, and it is the audit that rejects it.
 #[derive(Default)]
 struct NoEmptyState;
 impl Item<Doc> for NoEmptyState {
     fn item_id(&self) -> ItemId {
         LIST
     }
-    fn subject(&self, _doc: &Doc) -> Subject {
+    fn empty_state(&self, _doc: &Doc) -> Option<EmptyState> {
+        None
+    }
+    fn describe(&self, _doc: &Doc) -> Subject {
         Subject::new("Rows", Icon("list"), BindingContext::Workspace)
     }
     fn ui(&mut self, _doc: &mut Doc, _ui: &mut egui::Ui, _cx: &mut ItemCtx<'_>) {}
@@ -244,12 +253,11 @@ impl Item<Doc> for SloppyProse {
     fn item_id(&self) -> ItemId {
         LIST
     }
-    fn subject(&self, _doc: &Doc) -> Subject {
-        Subject::new("Rows", Icon("list"), BindingContext::Workspace).empty(EmptyState::new(
-            Icon("list"),
-            "no rows yet.",
-            "",
-        ))
+    fn empty_state(&self, _doc: &Doc) -> Option<EmptyState> {
+        Some(EmptyState::new(Icon("list"), "no rows yet.", ""))
+    }
+    fn describe(&self, _doc: &Doc) -> Subject {
+        Subject::new("Rows", Icon("list"), BindingContext::Workspace)
     }
     fn ui(&mut self, _doc: &mut Doc, _ui: &mut egui::Ui, _cx: &mut ItemCtx<'_>) {}
 }

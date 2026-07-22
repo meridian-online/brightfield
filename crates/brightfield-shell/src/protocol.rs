@@ -1178,18 +1178,19 @@ impl Item<ProtocolDoc> for OutlinePane {
         OUTLINE
     }
 
-    fn subject(&self, doc: &ProtocolDoc) -> Subject {
-        let subject = Subject::new("Outline", ICON_OUTLINE, BindingContext::Protocol);
-        if doc.model.has_assets() {
-            subject
-        } else {
-            subject.empty(EmptyState::new(
+    fn empty_state(&self, doc: &ProtocolDoc) -> Option<EmptyState> {
+        (!doc.model.has_assets()).then(|| {
+            EmptyState::new(
                 ICON_OUTLINE,
                 "No assets yet",
                 "This protocol declares no assets, so there is nothing to list. \
                  Open a manifest whose steps build at least one table or file.",
-            ))
-        }
+            )
+        })
+    }
+
+    fn describe(&self, _doc: &ProtocolDoc) -> Subject {
+        Subject::new("Outline", ICON_OUTLINE, BindingContext::Protocol)
     }
 
     fn ui(&mut self, doc: &mut ProtocolDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
@@ -1282,22 +1283,24 @@ impl Item<ProtocolDoc> for CanvasPane {
     /// The disclosure is made **here**, once, and the layout file remembers the
     /// pick — a later launch reopens the crosswalk without drawing this pane at
     /// all. [`run_less_manifest_refusal`] states that half of the rule.
-    fn subject(&self, doc: &ProtocolDoc) -> Subject {
-        let subject = Subject::new("Canvas", ICON_CANVAS, BindingContext::Protocol);
-        if doc.model.displayed_graph().nodes.is_empty() {
-            let mut empty = EmptyState::new(
-                ICON_CANVAS,
-                "Nothing to draw",
-                "No protocol is open, or the graph in view holds no assets. \
-                 Start from the example below, or widen the drill scope.",
-            );
-            if let Some(start) = starts::for_view(ViewKind::Protocol) {
-                empty = empty.with_next(Affordance::open(start.label, start.id));
-            }
-            subject.empty(empty)
-        } else {
-            subject
+    fn empty_state(&self, doc: &ProtocolDoc) -> Option<EmptyState> {
+        if !doc.model.displayed_graph().nodes.is_empty() {
+            return None;
         }
+        let mut empty = EmptyState::new(
+            ICON_CANVAS,
+            "Nothing to draw",
+            "No protocol is open, or the graph in view holds no assets. \
+             Start from the example below, or widen the drill scope.",
+        );
+        if let Some(start) = starts::for_view(ViewKind::Protocol) {
+            empty = empty.with_next(Affordance::open(start.label, start.id));
+        }
+        Some(empty)
+    }
+
+    fn describe(&self, _doc: &ProtocolDoc) -> Subject {
+        Subject::new("Canvas", ICON_CANVAS, BindingContext::Protocol)
     }
 
     fn ui(&mut self, doc: &mut ProtocolDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
@@ -1382,18 +1385,19 @@ impl Item<ProtocolDoc> for InspectorPane {
         INSPECTOR
     }
 
-    fn subject(&self, doc: &ProtocolDoc) -> Subject {
-        let subject = Subject::new("Inspector", ICON_INSPECTOR, BindingContext::Protocol);
-        if doc.model.has_selection() {
-            subject
-        } else {
-            subject.empty(EmptyState::new(
+    fn empty_state(&self, doc: &ProtocolDoc) -> Option<EmptyState> {
+        (!doc.model.has_selection()).then(|| {
+            EmptyState::new(
                 ICON_INSPECTOR,
                 "Nothing selected",
                 "Click a node in the canvas or a row in the outline, or move the \
                  cursor with h j k l.",
-            ))
-        }
+            )
+        })
+    }
+
+    fn describe(&self, _doc: &ProtocolDoc) -> Subject {
+        Subject::new("Inspector", ICON_INSPECTOR, BindingContext::Protocol)
     }
 
     fn ui(&mut self, doc: &mut ProtocolDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
@@ -1582,18 +1586,19 @@ impl Item<ProtocolDoc> for StepsPane {
         STEPS
     }
 
-    fn subject(&self, doc: &ProtocolDoc) -> Subject {
-        let subject = Subject::new("Steps", ICON_STEPS, BindingContext::Protocol);
-        if doc.model.sheet().is_empty() {
-            subject.empty(EmptyState::new(
+    fn empty_state(&self, doc: &ProtocolDoc) -> Option<EmptyState> {
+        doc.model.sheet().is_empty().then(|| {
+            EmptyState::new(
                 ICON_STEPS,
                 "No steps yet",
                 "This protocol runs nothing. A manifest with op: or sql: steps \
                  fills this list in run order.",
-            ))
-        } else {
-            subject
-        }
+            )
+        })
+    }
+
+    fn describe(&self, _doc: &ProtocolDoc) -> Subject {
+        Subject::new("Steps", ICON_STEPS, BindingContext::Protocol)
     }
 
     fn ui(&mut self, doc: &mut ProtocolDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
