@@ -282,6 +282,26 @@ fn render_predicate(predicate: &Predicate, bindings: &mut Vec<Binding>) -> Strin
         }
         Predicate::True => "TRUE".to_string(),
         Predicate::False => "FALSE".to_string(),
+        // The structured clauses render exactly as their hand-written string
+        // forms do (see their `ir.rs` docs) — the metadata is carried, never
+        // emitted — so structured-for-string substitution is byte-invisible
+        // in the SQL.
+        Predicate::Interval { column, lo, hi, .. } => format!(
+            "({column} >= {} AND {column} <= {})",
+            lo.to_sql_literal(),
+            hi.to_sql_literal()
+        ),
+        Predicate::Point { column, values, .. } => match values.as_slice() {
+            [] => "FALSE".to_string(),
+            [v] => format!("{column} = {}", v.to_sql_literal()),
+            vs => {
+                let parts: Vec<String> = vs
+                    .iter()
+                    .map(|v| format!("{column} = {}", v.to_sql_literal()))
+                    .collect();
+                format!("({})", parts.join(" OR "))
+            }
+        },
     }
 }
 
@@ -491,5 +511,157 @@ mod tests {
         let sql = render_query(&plan, &mut bindings);
         assert!(sql.contains("LIMIT 100 OFFSET 10"));
         assert_valid_sql(&sql);
+    }
+
+    // --- structured clause rendering: byte-equivalence with the string forms ---
+
+    use crate::ir::{ClauseMeta, ScalarValue, ScaleDescriptor};
+
+    fn filter_over(table: &str, predicate: Predicate) -> QueryPlan {
+        QueryPlan::Filter {
+            input: Box::new(QueryPlan::Source {
+                table: table.to_string(),
+            }),
+            predicate,
+        }
+    }
+
+    /// A full plan whose WHERE holds a structured Interval renders
+    /// byte-identically to the same plan holding the hand-written string form
+    /// — the metadata changes nothing in the emitted SQL.
+    #[test]
+    fn structured_interval_renders_identically_to_string_form() {
+        let structured = filter_over(
+            "t",
+            Predicate::Interval {
+                column: "speed".to_string(),
+                lo: ScalarValue::Float(10.0),
+                hi: ScalarValue::Float(90.0),
+                meta: Some(ClauseMeta {
+                    scale: Some(ScaleDescriptor {
+                        kind: "linear".to_string(),
+                        domain: Some((0.0, 120.0)),
+                        range: Some((40.0, 340.0)),
+                    }),
+                    pixel_size: Some(1.0),
+                }),
+            },
+        );
+        let string_form = filter_over(
+            "t",
+            Predicate::And(vec![
+                Predicate::Expr("speed >= 10".to_string()),
+                Predicate::Expr("speed <= 90".to_string()),
+            ]),
+        );
+        let mut b1 = Vec::new();
+        let mut b2 = Vec::new();
+        let sql_structured = render_query(&structured, &mut b1);
+        let sql_string = render_query(&string_form, &mut b2);
+        assert_eq!(sql_structured, sql_string, "byte-identical emitted SQL");
+        assert!(b1.is_empty() && b2.is_empty(), "no bindings from either");
+        assert_valid_sql(&sql_structured);
+    }
+
+    /// A structured Point renders byte-identically to its string forms at all
+    /// three cardinalities (empty / single / union).
+    #[test]
+    fn structured_point_renders_identically_to_string_forms() {
+        // Single value ↔ bare equality Expr.
+        let one = filter_over(
+            "t",
+            Predicate::Point {
+                column: "sport".to_string(),
+                values: vec![ScalarValue::Text("Athletics".to_string())],
+                meta: None,
+            },
+        );
+        let one_str = filter_over("t", Predicate::Expr("sport = 'Athletics'".to_string()));
+        let mut b = Vec::new();
+        assert_eq!(
+            render_query(&one, &mut b),
+            render_query(&one_str, &mut b),
+            "single-value Point == bare equality Expr"
+        );
+
+        // Union ↔ Or of equalities.
+        let many = filter_over(
+            "t",
+            Predicate::Point {
+                column: "sport".to_string(),
+                values: vec![
+                    ScalarValue::Text("Athletics".to_string()),
+                    ScalarValue::Text("Rowing".to_string()),
+                ],
+                meta: None,
+            },
+        );
+        let many_str = filter_over(
+            "t",
+            Predicate::Or(vec![
+                Predicate::Expr("sport = 'Athletics'".to_string()),
+                Predicate::Expr("sport = 'Rowing'".to_string()),
+            ]),
+        );
+        let many_sql = render_query(&many, &mut b);
+        assert_eq!(
+            many_sql,
+            render_query(&many_str, &mut b),
+            "multi-value Point == Or of equalities"
+        );
+        assert_valid_sql(&many_sql);
+
+        // Empty ↔ empty Or (FALSE).
+        let none = filter_over(
+            "t",
+            Predicate::Point {
+                column: "sport".to_string(),
+                values: vec![],
+                meta: None,
+            },
+        );
+        let none_str = filter_over("t", Predicate::Or(vec![]));
+        assert_eq!(
+            render_query(&none, &mut b),
+            render_query(&none_str, &mut b),
+            "empty Point == empty Or (FALSE)"
+        );
+    }
+
+    /// Structured clauses nested in a selection-shaped tree (And of
+    /// contributors, alongside a Param) render identically to the string
+    /// forms AND leave the Param binding positions untouched.
+    #[test]
+    fn structured_clause_in_selection_tree_preserves_bindings() {
+        let mk = |pred: Predicate| {
+            filter_over(
+                "t",
+                Predicate::And(vec![
+                    pred,
+                    Predicate::Param {
+                        name: "threshold".to_string(),
+                        placeholder_index: 0,
+                    },
+                ]),
+            )
+        };
+        let structured = mk(Predicate::Interval {
+            column: "x".to_string(),
+            lo: ScalarValue::Int(3),
+            hi: ScalarValue::Int(7),
+            meta: None,
+        });
+        let string_form = mk(Predicate::And(vec![
+            Predicate::Expr("x >= 3".to_string()),
+            Predicate::Expr("x <= 7".to_string()),
+        ]));
+        let mut b1 = Vec::new();
+        let mut b2 = Vec::new();
+        let sql1 = render_query(&structured, &mut b1);
+        let sql2 = render_query(&string_form, &mut b2);
+        assert_eq!(sql1, sql2, "identical SQL inside a selection tree");
+        assert_eq!(b1, b2, "identical param bindings around the clause");
+        assert_eq!(b1.len(), 1, "the one Param recorded once");
+        assert_valid_sql(&sql1);
     }
 }

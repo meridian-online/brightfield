@@ -47,9 +47,9 @@ use brightfield_spec::ast::{Component, Mark, PlotNode, Spec, SpecValue, ValueOrP
 use brightfield_spec::edit::SpecEdit;
 use brightfield_spec::layout::{collect_plot_nodes, resolve_projection};
 use brightfield_spec::vocab::MarkKind;
-use brightfield_sql::ir::Predicate;
+use brightfield_sql::ir::{ClauseMeta, Predicate, ScaleDescriptor};
 
-use crate::brush::{point_predicate, SelectionDispatcher};
+use crate::brush::{brush_rect_to_structured, point_predicate, SelectionDispatcher};
 use crate::chart_view::{
     commit_brush_release_multi, commit_click_multi, BrushBinding, ZERO_AREA_EPSILON,
 };
@@ -1507,6 +1507,90 @@ fn invert_axis(scale: Option<&Scale>, a: f64, b: f64) -> (f64, f64) {
         Some((da, db)) => (da.min(db), da.max(db)),
         None => (a.min(b), a.max(b)),
     }
+}
+
+/// Capture one axis's live [`Scale`] as the structured-clause metadata a
+/// brush carries into the query layer: the transform kind, the data-space
+/// domain, and the pixel-space range the gesture was inverted through.
+/// `pixel_size` is the per-pixel selection granularity (`1.0` — one pixel of
+/// gesture = one selection step; nothing coarsens brushes today).
+///
+/// Colour-family scales never sit on a brush axis, but the mapping is total
+/// so a caller can feed any channel's scale through it.
+#[must_use]
+pub fn clause_meta_for_scale(scale: &Scale) -> ClauseMeta {
+    let descriptor = match scale {
+        Scale::Linear {
+            domain_min,
+            domain_max,
+            range_start,
+            range_end,
+        } => ScaleDescriptor {
+            kind: "linear".to_string(),
+            domain: Some((*domain_min, *domain_max)),
+            range: Some((*range_start, *range_end)),
+        },
+        Scale::Time {
+            domain_min_us,
+            domain_max_us,
+            range_start,
+            range_end,
+        } => ScaleDescriptor {
+            kind: "time".to_string(),
+            domain: Some((*domain_min_us as f64, *domain_max_us as f64)),
+            range: Some((*range_start, *range_end)),
+        },
+        Scale::Band {
+            range_start,
+            range_end,
+            ..
+        } => ScaleDescriptor {
+            kind: "band".to_string(),
+            domain: None,
+            range: Some((*range_start, *range_end)),
+        },
+        Scale::Colour { .. } => ScaleDescriptor {
+            kind: "colour".to_string(),
+            domain: None,
+            range: None,
+        },
+        Scale::Sequential {
+            domain_min,
+            domain_max,
+            ..
+        } => ScaleDescriptor {
+            kind: "sequential".to_string(),
+            domain: Some((*domain_min, *domain_max)),
+            range: None,
+        },
+    };
+    ClauseMeta {
+        scale: Some(descriptor),
+        pixel_size: Some(1.0),
+    }
+}
+
+/// The structured (lossless) form of the drag-commit predicate: invert the
+/// pixel gesture through the plot's scales exactly as [`invert_pixel_brush`]
+/// does for the string path, then build `Predicate::Interval` clauses that
+/// keep the column, data-space bounds, and per-axis scale/pixel metadata
+/// machine-readable all the way into the query layer. Emits SQL equivalent
+/// to the string path's predicate for the same gesture (see `ir.rs`).
+///
+/// This is the opt-in structured producer — the string path
+/// ([`invert_pixel_brush`] + `brush_rect_to_predicate`) remains the live
+/// default until a consumer needs the structure.
+#[must_use]
+pub fn structured_brush_predicate(
+    start: Point,
+    current: Point,
+    scales: &ScaleSet,
+    binding: &BrushBinding,
+) -> Predicate {
+    let data_rect = invert_pixel_brush(start, current, scales);
+    let x_meta = scales.get(Channel::X).map(clause_meta_for_scale);
+    let y_meta = scales.get(Channel::Y).map(clause_meta_for_scale);
+    brush_rect_to_structured(data_rect, binding.kind, &binding.channels, x_meta, y_meta)
 }
 
 #[cfg(test)]
@@ -4403,5 +4487,134 @@ hconcat:
             aggregated.is_empty(),
             "a raw Selected through the unchanged path dispatches nothing (the wire is load-bearing)"
         );
+    }
+
+    /// THE LOSSLESS CHANNEL, END TO END: the same pixel gesture committed
+    /// through the string path and through [`structured_brush_predicate`]
+    /// filters the SAME subscriber rows — and the structured session's live
+    /// contributor slot still holds the full structured clause (column, typed
+    /// data-space bounds, and the scale/pixel metadata captured from the
+    /// plot's live ScaleSet). Today's string path erases all of that at
+    /// dispatch; this proves the structured variant carries it through the
+    /// engine's selection store without changing what DuckDB returns.
+    #[test]
+    fn structured_brush_flows_to_query_layer_without_erasure() {
+        use brightfield_engine::Engine;
+        use brightfield_spec::analysis::analyse_spec;
+        use brightfield_spec::{parse_spec, Format};
+        use brightfield_sql::ir::ScalarValue;
+
+        let parsed = parse_spec(DRB_BRUSH_SPEC, Format::Yaml).expect("parse");
+        let analysis = analyse_spec(&parsed.spec).expect("analyse");
+        let binding: BrushBinding = (&analysis.brushable_bindings[0]).into();
+        let contributor = binding.contributor.0.clone();
+
+        let load = |spec: &brightfield_spec::ast::Spec| -> Session {
+            let mut session = Engine::new()
+                .load_spec(spec.clone(), analyse_spec(spec).expect("analyse"), None)
+                .expect("load")
+                .session;
+            let _ = session.execute_all();
+            session
+        };
+        let mut session_string = load(&parsed.spec);
+        let mut session_structured = load(&parsed.spec);
+
+        // The plot's inversion scales (temp [2,35] over plot-area x [40,340]).
+        let mut scales = ScaleSet::new();
+        scales.insert(
+            Channel::X,
+            Scale::Linear {
+                domain_min: 2.0,
+                domain_max: 35.0,
+                range_start: 40.0,
+                range_end: 340.0,
+            },
+        );
+
+        let start_px = Point::new(100.0, 100.0);
+        let current_px = Point::new(160.0, 200.0);
+
+        // String path — exactly what commit_brush does today.
+        let data_rect = invert_pixel_brush(start_px, current_px, &scales);
+        let synthetic = InteractionState::Brushing {
+            start: Point::new(data_rect.x0, data_rect.y0),
+            current: Point::new(data_rect.x1, data_rect.y1),
+        };
+        let (_next, aggregated) = commit_brush_release_multi(
+            &synthetic,
+            std::slice::from_ref(&binding),
+            &mut session_string,
+        );
+
+        // Structured path — the same gesture through the lossless channel.
+        let structured = structured_brush_predicate(start_px, current_px, &scales, &binding);
+        let structured_results = session_structured.dispatch(
+            &binding.selection_name,
+            binding.contributor.clone(),
+            structured.clone(),
+        );
+
+        // Identical filtered data on the subscriber (mark index 1).
+        let rows_of = |results: &[DispatchResult]| -> usize {
+            results
+                .iter()
+                .map(|(_, r)| {
+                    r.as_ref()
+                        .map(|bs| bs.iter().map(|b| b.num_rows()).sum::<usize>())
+                        .unwrap_or(0)
+                })
+                .sum()
+        };
+        let string_rows: usize = aggregated.iter().map(|(_, r)| rows_of(r)).sum();
+        assert_eq!(
+            rows_of(&structured_results),
+            string_rows,
+            "string and structured forms of the same gesture filter identical rows"
+        );
+        assert_eq!(
+            string_rows, 2,
+            "pixel x∈[100,160] → temp∈[8.6,15.2] → 2 rows"
+        );
+
+        // No erasure: the engine's live slot holds the structured clause whole.
+        let slot = session_structured
+            .contributor_predicate(&binding.selection_name, &contributor)
+            .expect("the structured dispatch wrote the slot");
+        assert_eq!(
+            slot, &structured,
+            "the stored predicate is the dispatched structured clause, bit for bit"
+        );
+        match slot {
+            Predicate::Interval {
+                column,
+                lo,
+                hi,
+                meta,
+            } => {
+                assert_eq!(column, "temp");
+                assert_eq!(lo, &ScalarValue::Float(data_rect.x0));
+                assert_eq!(hi, &ScalarValue::Float(data_rect.x1));
+                let meta = meta.as_ref().expect("x-axis metadata captured");
+                let scale = meta.scale.as_ref().expect("scale descriptor captured");
+                assert_eq!(scale.kind, "linear");
+                assert_eq!(scale.domain, Some((2.0, 35.0)));
+                assert_eq!(scale.range, Some((40.0, 340.0)));
+                assert_eq!(meta.pixel_size, Some(1.0));
+            }
+            other => panic!("expected the structured Interval in the slot, got {other:?}"),
+        }
+
+        // The string path's slot, by contrast, is the flattened And-of-Exprs —
+        // the erasure the structured channel exists to avoid.
+        match session_string
+            .contributor_predicate(&binding.selection_name, &contributor)
+            .expect("the string dispatch wrote the slot")
+        {
+            Predicate::And(clauses) => {
+                assert!(clauses.iter().all(|c| matches!(c, Predicate::Expr(_))));
+            }
+            other => panic!("expected the flattened string form, got {other:?}"),
+        }
     }
 }

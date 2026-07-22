@@ -1600,4 +1600,122 @@ plot:
         );
         assert!(emitted.sql.contains("a > 1"));
     }
+
+    // -----------------------------------------------------------------------
+    // Structured clause equivalence — full emission path
+    // -----------------------------------------------------------------------
+
+    /// Swapping a selection contributor's string-form predicate for its
+    /// structured Interval emits byte-identical SQL through the FULL path
+    /// (compile_selection → lower → passes → render): structure (and its
+    /// scale/pixel metadata) rides along without changing one emitted byte.
+    #[test]
+    fn structured_interval_selection_emits_identical_sql() {
+        use crate::ir::{ClauseMeta, ScalarValue, ScaleDescriptor};
+
+        let yaml = r#"
+params:
+  brush: { select: intersect }
+plot:
+  - mark: dot
+    data: { from: t, filterBy: $brush }
+    x: x
+    y: y
+"#;
+        let spec = parse_spec(yaml, Format::Yaml).unwrap().spec;
+
+        let string_selections: Vec<SelectionPredicate> = vec![(
+            "brush".to_string(),
+            vec![(
+                "root/other".to_string(),
+                Predicate::And(vec![
+                    Predicate::Expr("x >= 3".to_string()),
+                    Predicate::Expr("x <= 7".to_string()),
+                ]),
+            )],
+        )];
+        let structured_selections: Vec<SelectionPredicate> = vec![(
+            "brush".to_string(),
+            vec![(
+                "root/other".to_string(),
+                Predicate::Interval {
+                    column: "x".to_string(),
+                    lo: ScalarValue::Float(3.0),
+                    hi: ScalarValue::Float(7.0),
+                    meta: Some(ClauseMeta {
+                        scale: Some(ScaleDescriptor {
+                            kind: "linear".to_string(),
+                            domain: Some((0.0, 10.0)),
+                            range: Some((40.0, 340.0)),
+                        }),
+                        pixel_size: Some(1.0),
+                    }),
+                },
+            )],
+        )];
+
+        let from_string = emit_query(&spec, 0, None, Some(&string_selections)).expect("emit");
+        let from_structured =
+            emit_query(&spec, 0, None, Some(&structured_selections)).expect("emit");
+        assert_eq!(
+            from_structured.sql, from_string.sql,
+            "structured Interval and its string form emit byte-identical SQL"
+        );
+        assert_eq!(from_structured.bindings, from_string.bindings);
+        assert!(from_string.sql.contains("x >= 3"), "{}", from_string.sql);
+    }
+
+    /// Same equivalence for the structured Point clause: the single-value and
+    /// union forms each emit byte-identically to their string counterparts.
+    #[test]
+    fn structured_point_selection_emits_identical_sql() {
+        use crate::ir::ScalarValue;
+
+        let yaml = r#"
+params:
+  click: { select: single }
+plot:
+  - mark: dot
+    data: { from: t, filterBy: $click }
+    x: x
+    y: y
+"#;
+        let spec = parse_spec(yaml, Format::Yaml).unwrap().spec;
+
+        let cases: Vec<(Predicate, Predicate)> = vec![
+            (
+                Predicate::Expr("sport = 'Athletics'".to_string()),
+                Predicate::Point {
+                    column: "sport".to_string(),
+                    values: vec![ScalarValue::Text("Athletics".to_string())],
+                    meta: None,
+                },
+            ),
+            (
+                Predicate::Or(vec![
+                    Predicate::Expr("sport = 'Athletics'".to_string()),
+                    Predicate::Expr("sport = 'Rowing'".to_string()),
+                ]),
+                Predicate::Point {
+                    column: "sport".to_string(),
+                    values: vec![
+                        ScalarValue::Text("Athletics".to_string()),
+                        ScalarValue::Text("Rowing".to_string()),
+                    ],
+                    meta: None,
+                },
+            ),
+        ];
+        for (string_form, structured) in cases {
+            let sel = |p: Predicate| -> Vec<SelectionPredicate> {
+                vec![("click".to_string(), vec![("root/other".to_string(), p)])]
+            };
+            let s1 = emit_query(&spec, 0, None, Some(&sel(string_form))).expect("emit");
+            let s2 = emit_query(&spec, 0, None, Some(&sel(structured))).expect("emit");
+            assert_eq!(
+                s2.sql, s1.sql,
+                "structured Point and its string form emit byte-identical SQL"
+            );
+        }
+    }
 }

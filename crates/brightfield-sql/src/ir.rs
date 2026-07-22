@@ -39,6 +39,142 @@ impl From<brightfield_spec::vocab::SelectionResolution> for SelectionResolution 
 /// than as "the selection filters to apply".
 pub type SelectionPredicate = (String, Vec<(String, Predicate)>);
 
+/// A typed SQL scalar literal carried by the structured clause variants
+/// ([`Predicate::Interval`] / [`Predicate::Point`]).
+///
+/// [`ScalarValue::to_sql_literal`] produces exactly the literal text the
+/// string-predicate path produces today (bare `Display` numbers, single-quoted
+/// strings with embedded quotes doubled, `make_timestamp(us)` timestamps), so
+/// a structured clause and its hand-written string form render byte-identical
+/// SQL.
+///
+/// `PartialEq`/`Eq`/`Hash` are hand-written because of the `f64` payload:
+/// floats compare and hash by bit pattern (`f64::to_bits`), which keeps the
+/// derived `Eq + Hash` on [`QueryPlan`] sound (reflexive even for NaN; `0.0`
+/// and `-0.0` are distinct, matching their distinct SQL literals).
+#[derive(Debug, Clone)]
+pub enum ScalarValue {
+    /// A floating-point value — bare literal via Rust `Display` (`10`, `0.5`).
+    Float(f64),
+    /// An exact integer value — bare literal.
+    Int(i64),
+    /// A string / categorical value — single-quoted, embedded quotes doubled.
+    Text(String),
+    /// A naive-`TIMESTAMP` microsecond epoch — `make_timestamp(us)`.
+    TimestampMicros(i64),
+    /// A `TIMESTAMPTZ` UTC microsecond epoch —
+    /// `make_timestamp(us) AT TIME ZONE 'UTC'`.
+    TimestampTzMicros(i64),
+}
+
+impl ScalarValue {
+    /// Format as a SQL literal — the exact text the string-predicate path
+    /// interpolates into its expression strings.
+    #[must_use]
+    pub fn to_sql_literal(&self) -> String {
+        match self {
+            Self::Float(n) => n.to_string(),
+            Self::Int(i) => i.to_string(),
+            Self::Text(s) => format!("'{}'", s.replace('\'', "''")),
+            Self::TimestampMicros(us) => format!("make_timestamp({us})"),
+            Self::TimestampTzMicros(us) => format!("make_timestamp({us}) AT TIME ZONE 'UTC'"),
+        }
+    }
+}
+
+impl PartialEq for ScalarValue {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Float(a), Self::Float(b)) => a.to_bits() == b.to_bits(),
+            (Self::Int(a), Self::Int(b)) => a == b,
+            (Self::Text(a), Self::Text(b)) => a == b,
+            (Self::TimestampMicros(a), Self::TimestampMicros(b)) => a == b,
+            (Self::TimestampTzMicros(a), Self::TimestampTzMicros(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for ScalarValue {}
+
+impl Hash for ScalarValue {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            Self::Float(n) => n.to_bits().hash(state),
+            Self::Int(i) | Self::TimestampMicros(i) | Self::TimestampTzMicros(i) => i.hash(state),
+            Self::Text(s) => s.hash(state),
+        }
+    }
+}
+
+/// The scale context a structured clause was produced under — how the brushed
+/// axis maps data to pixels. Captured so a downstream consumer can derive
+/// pixel-resolution binned columns from the clause; SQL emission ignores it
+/// entirely.
+#[derive(Debug, Clone)]
+pub struct ScaleDescriptor {
+    /// Scale transform kind — e.g. `"linear"`, `"band"`, `"time"`.
+    pub kind: String,
+    /// Data-space domain `[lo, hi]` of the axis, when continuous
+    /// (a time axis carries its microsecond epochs as `f64`).
+    pub domain: Option<(f64, f64)>,
+    /// Pixel-space range `[lo, hi]` of the axis.
+    pub range: Option<(f64, f64)>,
+}
+
+/// Bit-pattern equality for the `f64` pairs (`Eq`-sound; see [`ScalarValue`]).
+fn pair_bits(pair: &Option<(f64, f64)>) -> Option<(u64, u64)> {
+    pair.map(|(a, b)| (a.to_bits(), b.to_bits()))
+}
+
+impl PartialEq for ScaleDescriptor {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+            && pair_bits(&self.domain) == pair_bits(&other.domain)
+            && pair_bits(&self.range) == pair_bits(&other.range)
+    }
+}
+
+impl Eq for ScaleDescriptor {}
+
+impl Hash for ScaleDescriptor {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.kind.hash(state);
+        pair_bits(&self.domain).hash(state);
+        pair_bits(&self.range).hash(state);
+    }
+}
+
+/// Optional scale/pixel metadata on a structured clause. Optional end to end:
+/// a producer that cannot supply it yet passes `None` and the clause is no
+/// less valid — data-unit consumers work without it; pixel-resolution
+/// consumers check for it and degrade gracefully.
+#[derive(Debug, Clone, Default)]
+pub struct ClauseMeta {
+    /// The scale that mapped the gesture's pixels to this clause's data bounds.
+    pub scale: Option<ScaleDescriptor>,
+    /// The interactive-pixel granularity of the selection along its axis — how
+    /// many screen pixels one selection step spans (`1.0` = per-pixel).
+    pub pixel_size: Option<f64>,
+}
+
+impl PartialEq for ClauseMeta {
+    fn eq(&self, other: &Self) -> bool {
+        self.scale == other.scale
+            && self.pixel_size.map(f64::to_bits) == other.pixel_size.map(f64::to_bits)
+    }
+}
+
+impl Eq for ClauseMeta {}
+
+impl Hash for ClauseMeta {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.scale.hash(state);
+        self.pixel_size.map(f64::to_bits).hash(state);
+    }
+}
+
 /// A predicate in the IR — used in `Filter` and selection compilation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Predicate {
@@ -58,6 +194,36 @@ pub enum Predicate {
     True,
     /// Literal `FALSE`.
     False,
+    /// A structured interval clause — `column` within `[lo, hi]`, both bounds
+    /// inclusive. Renders exactly as its hand-written string form
+    /// `And([Expr("col >= lo"), Expr("col <= hi")])` renders —
+    /// `(col >= lo AND col <= hi)` — so substituting one for the other
+    /// anywhere in a predicate tree emits byte-identical SQL. Unlike that
+    /// string form, the column, bounds, and scale/pixel context stay
+    /// machine-readable for downstream analysis. `column` is a trusted SQL
+    /// expression, exactly like `Expr`.
+    Interval {
+        /// The column expression the interval constrains.
+        column: String,
+        /// Inclusive lower bound.
+        lo: ScalarValue,
+        /// Inclusive upper bound.
+        hi: ScalarValue,
+        /// Scale/pixel context, when the producer has it (optional end to end).
+        meta: Option<ClauseMeta>,
+    },
+    /// A structured point/membership clause — `column` equal to one of
+    /// `values`. Renders exactly as its hand-written string forms render: one
+    /// value as `col = v` (a bare `Expr`), several as `(col = v1 OR col = v2)`
+    /// (an `Or` of equalities), none as `FALSE` (the empty `Or`).
+    Point {
+        /// The column expression the membership tests.
+        column: String,
+        /// The selected values (equality members).
+        values: Vec<ScalarValue>,
+        /// Scale/pixel context, when the producer has it (optional end to end).
+        meta: Option<ClauseMeta>,
+    },
 }
 
 impl fmt::Display for Predicate {
@@ -81,6 +247,23 @@ impl fmt::Display for Predicate {
             }
             Self::True => f.write_str("TRUE"),
             Self::False => f.write_str("FALSE"),
+            Self::Interval { column, lo, hi, .. } => write!(
+                f,
+                "({column} >= {} AND {column} <= {})",
+                lo.to_sql_literal(),
+                hi.to_sql_literal()
+            ),
+            Self::Point { column, values, .. } => match values.as_slice() {
+                [] => f.write_str("FALSE"),
+                [v] => write!(f, "{column} = {}", v.to_sql_literal()),
+                vs => {
+                    let parts: Vec<String> = vs
+                        .iter()
+                        .map(|v| format!("{column} = {}", v.to_sql_literal()))
+                        .collect();
+                    write!(f, "({})", parts.join(" OR "))
+                }
+            },
         }
     }
 }
@@ -337,5 +520,170 @@ mod tests {
             predicate: Predicate::True,
         };
         assert_ne!(plan_a.hash_structural(), plan_b.hash_structural());
+    }
+
+    // --- structured clause variants (Interval / Point) ---
+
+    fn hash_of(p: &Predicate) -> u64 {
+        let mut h = DefaultHasher::new();
+        p.hash(&mut h);
+        h.finish()
+    }
+
+    /// Every ScalarValue variant formats the exact literal text the
+    /// string-predicate path interpolates (bare Display numbers, quoted +
+    /// doubled strings, make_timestamp forms).
+    #[test]
+    fn scalar_value_literals_match_string_path_formatting() {
+        assert_eq!(ScalarValue::Float(10.0).to_sql_literal(), "10");
+        assert_eq!(ScalarValue::Float(0.5).to_sql_literal(), "0.5");
+        assert_eq!(ScalarValue::Int(42).to_sql_literal(), "42");
+        assert_eq!(
+            ScalarValue::Text("O'Hara".to_string()).to_sql_literal(),
+            "'O''Hara'"
+        );
+        assert_eq!(
+            ScalarValue::TimestampMicros(1_700_000_000_000_000).to_sql_literal(),
+            "make_timestamp(1700000000000000)"
+        );
+        assert_eq!(
+            ScalarValue::TimestampTzMicros(1_700_000_000_000_000).to_sql_literal(),
+            "make_timestamp(1700000000000000) AT TIME ZONE 'UTC'"
+        );
+    }
+
+    /// Float equality/hashing is by bit pattern: reflexive for NaN (Eq-sound
+    /// inside the derived Eq on QueryPlan) and distinguishing 0.0 from -0.0
+    /// (their SQL literals differ).
+    #[test]
+    fn scalar_value_float_bitwise_eq_and_hash() {
+        let nan_a = ScalarValue::Float(f64::NAN);
+        let nan_b = ScalarValue::Float(f64::NAN);
+        assert_eq!(nan_a, nan_b, "NaN == NaN by bit pattern (Eq reflexivity)");
+        assert_ne!(
+            ScalarValue::Float(0.0),
+            ScalarValue::Float(-0.0),
+            "0.0 and -0.0 are distinct values with distinct literals"
+        );
+        assert_ne!(
+            ScalarValue::Int(5),
+            ScalarValue::TimestampMicros(5),
+            "same payload, different variant: not equal"
+        );
+    }
+
+    /// Display of a structured Interval is byte-identical to the Display of
+    /// its hand-written string form (the two-clause And).
+    #[test]
+    fn interval_display_matches_string_form() {
+        let structured = Predicate::Interval {
+            column: "speed".to_string(),
+            lo: ScalarValue::Float(10.0),
+            hi: ScalarValue::Float(90.0),
+            meta: None,
+        };
+        let string_form = Predicate::And(vec![
+            Predicate::Expr("speed >= 10".to_string()),
+            Predicate::Expr("speed <= 90".to_string()),
+        ]);
+        assert_eq!(format!("{structured}"), format!("{string_form}"));
+        assert_eq!(format!("{structured}"), "(speed >= 10 AND speed <= 90)");
+    }
+
+    /// Display of a structured Point matches its string forms across all three
+    /// cardinalities: none → FALSE (empty Or), one → the bare equality Expr,
+    /// several → the Or of equalities.
+    #[test]
+    fn point_display_matches_string_forms() {
+        let none = Predicate::Point {
+            column: "sport".to_string(),
+            values: vec![],
+            meta: None,
+        };
+        assert_eq!(format!("{none}"), format!("{}", Predicate::Or(vec![])));
+
+        let one = Predicate::Point {
+            column: "sport".to_string(),
+            values: vec![ScalarValue::Text("Athletics".to_string())],
+            meta: None,
+        };
+        assert_eq!(
+            format!("{one}"),
+            format!("{}", Predicate::Expr("sport = 'Athletics'".to_string()))
+        );
+
+        let many = Predicate::Point {
+            column: "sport".to_string(),
+            values: vec![
+                ScalarValue::Text("Athletics".to_string()),
+                ScalarValue::Text("Rowing".to_string()),
+            ],
+            meta: None,
+        };
+        let string_form = Predicate::Or(vec![
+            Predicate::Expr("sport = 'Athletics'".to_string()),
+            Predicate::Expr("sport = 'Rowing'".to_string()),
+        ]);
+        assert_eq!(format!("{many}"), format!("{string_form}"));
+        assert_eq!(
+            format!("{many}"),
+            "(sport = 'Athletics' OR sport = 'Rowing')"
+        );
+    }
+
+    /// Metadata is carried (participating in Eq/Hash — two clauses differing
+    /// only in scale context are different values) but never rendered.
+    #[test]
+    fn clause_meta_participates_in_identity_but_not_display() {
+        let meta = ClauseMeta {
+            scale: Some(ScaleDescriptor {
+                kind: "linear".to_string(),
+                domain: Some((0.0, 100.0)),
+                range: Some((40.0, 340.0)),
+            }),
+            pixel_size: Some(1.0),
+        };
+        let with_meta = Predicate::Interval {
+            column: "x".to_string(),
+            lo: ScalarValue::Float(3.0),
+            hi: ScalarValue::Float(7.0),
+            meta: Some(meta),
+        };
+        let without_meta = Predicate::Interval {
+            column: "x".to_string(),
+            lo: ScalarValue::Float(3.0),
+            hi: ScalarValue::Float(7.0),
+            meta: None,
+        };
+        assert_ne!(with_meta, without_meta, "meta is part of the clause value");
+        assert_ne!(hash_of(&with_meta), hash_of(&without_meta));
+        assert_eq!(
+            format!("{with_meta}"),
+            format!("{without_meta}"),
+            "meta never leaks into the rendered SQL"
+        );
+        assert_eq!(
+            with_meta,
+            with_meta.clone(),
+            "clone preserves meta identity"
+        );
+    }
+
+    /// A QueryPlan containing a structured clause still hashes structurally
+    /// (the derived Eq + Hash stay sound with the f64 payloads).
+    #[test]
+    fn hash_structural_covers_structured_clauses() {
+        let plan = QueryPlan::Filter {
+            input: Box::new(QueryPlan::Source {
+                table: "t".to_string(),
+            }),
+            predicate: Predicate::Interval {
+                column: "x".to_string(),
+                lo: ScalarValue::Float(1.5),
+                hi: ScalarValue::Float(2.5),
+                meta: None,
+            },
+        };
+        assert_eq!(plan.hash_structural(), plan.clone().hash_structural());
     }
 }

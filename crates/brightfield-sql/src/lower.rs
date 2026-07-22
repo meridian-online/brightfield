@@ -1361,6 +1361,48 @@ mod tests {
         assert_eq!(result, Predicate::True);
     }
 
+    /// A structured clause passes through selection compilation INTACT — the
+    /// column, typed bounds, and scale/pixel metadata all survive resolution
+    /// (crossfilter exclusion included), so a downstream consumer can read the
+    /// structure back out of the compiled predicate. This is the no-erasure
+    /// guarantee at the query layer.
+    #[test]
+    fn compile_selection_preserves_structured_clause() {
+        use crate::ir::{ClauseMeta, ScalarValue, ScaleDescriptor};
+
+        let structured = Predicate::Interval {
+            column: "x".to_string(),
+            lo: ScalarValue::Float(3.0),
+            hi: ScalarValue::Float(7.0),
+            meta: Some(ClauseMeta {
+                scale: Some(ScaleDescriptor {
+                    kind: "linear".to_string(),
+                    domain: Some((0.0, 10.0)),
+                    range: Some((40.0, 340.0)),
+                }),
+                pixel_size: Some(1.0),
+            }),
+        };
+        let selection = SelectionNode {
+            select: AstRes::Crossfilter,
+            status: ImplStatus::Unimplemented,
+            options: IndexMap::new(),
+        };
+        let predicates = vec![
+            ("view_a".to_string(), structured.clone()),
+            ("view_b".to_string(), Predicate::Expr("y < 10".to_string())),
+        ];
+        // Resolved for view_b: view_a's structured clause is included, intact.
+        let result = compile_selection(&selection, "view_b", &predicates);
+        assert_eq!(result, Predicate::And(vec![structured.clone()]));
+        // Resolved for view_a (self-exclusion): the structured clause drops.
+        let excluded = compile_selection(&selection, "view_a", &predicates);
+        assert_eq!(
+            excluded,
+            Predicate::And(vec![Predicate::Expr("y < 10".to_string())])
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Statistical-mark lowerers
     // -----------------------------------------------------------------------
