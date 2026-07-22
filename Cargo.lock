@@ -4330,10 +4330,12 @@ dependencies = [
 [[package]]
 name = "meridian-design"
 version = "0.1.0"
+source = "git+https://github.com/meridian-online/design?rev=2f32e0daca6b34ee7c86321bf3b47d930fd22091#2f32e0daca6b34ee7c86321bf3b47d930fd22091"
 
 [[package]]
 name = "meridian-egui"
 version = "0.1.0"
+source = "git+https://github.com/meridian-online/design?rev=2f32e0daca6b34ee7c86321bf3b47d930fd22091#2f32e0daca6b34ee7c86321bf3b47d930fd22091"
 dependencies = [
  "egui",
  "meridian-design",

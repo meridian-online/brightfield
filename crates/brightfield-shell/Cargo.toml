@@ -15,14 +15,14 @@ brightfield-engine = { path = "../brightfield-engine" }
 brightfield-spec = { path = "../brightfield-spec" }
 brightfield-sql = { path = "../brightfield-sql" }
 # Meridian design tokens.
-meridian-design = { git = "https://github.com/meridian-online/design", rev = "539c579c43897fdd0c7d5c141221201d5e97a910" }
+meridian-design = { git = "https://github.com/meridian-online/design", rev = "2f32e0daca6b34ee7c86321bf3b47d930fd22091" }
 # The egui emitter of those tokens (the design repo's third thin emitter): the
 # `Style`/`Visuals`/font bridge and `Mode`, re-exported under this crate's
 # `design` module so `brightfield_shell::design::…` call sites are unchanged.
 # The bridge used to live in brightfield-shell/src/design.rs; it now lives here,
 # which is where ADR 0003/0011 always said an emitter belongs. A `[patch]` in
 # the workspace root points both design crates at a side-by-side clone.
-meridian-egui = { git = "https://github.com/meridian-online/design", rev = "539c579c43897fdd0c7d5c141221201d5e97a910" }
+meridian-egui = { git = "https://github.com/meridian-online/design", rev = "2f32e0daca6b34ee7c86321bf3b47d930fd22091" }
 
 # VERSION LOCK — egui 0.35 rides wgpu 29, the same wgpu major Vello 0.9 uses, so
 # `egui_wgpu`'s wgpu and `vello::wgpu` resolve to ONE crate instance and therefore
