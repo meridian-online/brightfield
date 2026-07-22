@@ -205,7 +205,10 @@ fn project_param_channels(mark: &Mark, base: QueryPlan) -> QueryPlan {
 /// parses to a plain `String` that is already raw predicate text, used verbatim
 /// (NOT quoted — quoting would turn the WHERE into a constant-string no-op that
 /// silently passes every row).
-fn apply_data_filter(extras: &IndexMap<String, SpecValue>, plan: QueryPlan) -> QueryPlan {
+pub(crate) fn apply_data_filter(
+    extras: &IndexMap<String, SpecValue>,
+    plan: QueryPlan,
+) -> QueryPlan {
     match data_filter_sql(extras) {
         Some(predicate) => QueryPlan::Filter {
             input: Box::new(plan),

@@ -689,6 +689,104 @@ pub fn emit_query_with_passes(
     })
 }
 
+/// Emit the ROW-LEVEL query for a mark's step — every column of the step's
+/// materialisation, under the *same* static `data.filter` and the *same* live
+/// selection predicate the chart's [`emit_query`] applies to that mark.
+///
+/// This is the seam that makes a tabular ("grid") surface and a chart surface at
+/// one step **unable to disagree**: both read from the identical source view and
+/// both push the identical predicate into DuckDB. The chart query then projects
+/// its channels (and may aggregate); the grid query keeps `SELECT *`. Because the
+/// filter is compiled by the one code path here — the same `mark_filter_by_name`
+/// and `compile_selection(sel_node, plot_node_path(mark_path), contributors)`
+/// call that [`emit_query_with_passes`] uses — the two surfaces cannot resolve
+/// different row sets from the same selection state. Neither surface filters a
+/// materialised result client-side; the predicate lives in the SQL `WHERE`.
+///
+/// Only marks with `data: { from: <source> }` have a materialisation to grid;
+/// an inline-data or data-less mark returns [`EmitError::UnsupportedMark`].
+///
+/// # Errors
+///
+/// [`EmitError::InvariantViolation`] if `mark_index` is out of bounds, or
+/// [`EmitError::UnsupportedMark`] for a mark without a `from`-source.
+pub fn emit_rows_query(
+    spec: &Spec,
+    mark_index: usize,
+    param_values: Option<&ParamValues>,
+    selection_predicates: Option<&[SelectionPredicate]>,
+) -> Result<EmittedQuery, EmitError> {
+    let marks_with_paths = collect_marks_with_paths(spec);
+    let (mark, mark_path) =
+        marks_with_paths
+            .get(mark_index)
+            .ok_or_else(|| EmitError::InvariantViolation {
+                detail: format!(
+                    "mark_index {} out of bounds (spec has {} marks)",
+                    mark_index,
+                    marks_with_paths.len()
+                ),
+            })?;
+
+    // The grid reads the step's SOURCE view directly, so it needs a `from`
+    // source. Inline / data-less marks have no materialisation to tabulate.
+    let (source, extras) = match &mark.data {
+        Some(brightfield_spec::ast::MarkData::From { source, extras, .. }) => (source, extras),
+        _ => {
+            return Err(EmitError::UnsupportedMark {
+                kind: format!(
+                    "{} (grid rows need data: {{ from: ... }})",
+                    mark.kind.wire_name()
+                ),
+            })
+        }
+    };
+
+    // SELECT * FROM <source>, plus the step's static `data.filter` — the row
+    // shape of the materialisation before any channel projection or aggregation.
+    let base = QueryPlan::Source {
+        table: source.clone(),
+    };
+    let mut plan = crate::lower::apply_data_filter(extras, base);
+
+    // The SAME live selection filter the chart mark receives — identical
+    // self-exclusion identity (the stable plot-node path) and identical
+    // `compile_selection`, so grid and chart share one predicate.
+    if let Some(selection_name) = mark_filter_by_name(mark) {
+        if let Some(ParamNode::Selection(sel_node)) = spec.params.get(selection_name) {
+            let self_source = brightfield_spec::analysis::plot_node_path(mark_path);
+            let contributors: &[(String, Predicate)] = selection_predicates
+                .and_then(|all| {
+                    all.iter()
+                        .find(|(n, _)| n == selection_name)
+                        .map(|(_, c)| c.as_slice())
+                })
+                .unwrap_or(&[]);
+            let predicate = compile_selection(sel_node, self_source, contributors);
+            if predicate != Predicate::True {
+                plan = QueryPlan::Filter {
+                    input: Box::new(plan),
+                    predicate,
+                };
+            }
+        }
+    }
+
+    let plan_hash = plan.hash_structural();
+    let mut bindings: Vec<Binding> = Vec::new();
+    let rendered = render_query(&plan, &mut bindings);
+    let sql = match param_values {
+        Some(params) => interpolate_params(&rendered, params),
+        None => rendered,
+    };
+
+    Ok(EmittedQuery {
+        sql,
+        bindings,
+        plan_hash,
+    })
+}
+
 /// Substitute `$name` param placeholders in `sql` with escaped literals drawn
 /// from `params` (Decision 1). Matching is identifier-boundary aware
 /// (`$name` consumes a maximal `[A-Za-z0-9_]` run); a `$name` whose identifier
@@ -1095,6 +1193,73 @@ mod query_tests {
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
         let result = emit_query(&spec, 99, None, None);
         assert!(matches!(result, Err(EmitError::InvariantViolation { .. })));
+    }
+
+    #[test]
+    fn emit_rows_query_shares_predicate_with_chart() {
+        // A dot mark that filters by a selection. The chart query projects its
+        // channels; the grid (rows) query keeps SELECT *. Both must push the
+        // SAME selection predicate into the SQL WHERE — that is the "grid and
+        // chart cannot disagree" seam.
+        let src = r#"
+params:
+  brush:
+    select: intersect
+data:
+  t: { file: t.parquet }
+plot:
+  - mark: dot
+    data: { from: t, filterBy: $brush }
+    x: x
+    y: y
+"#;
+        let spec = parse_spec(src, Format::Yaml).unwrap().spec;
+
+        // A distinctive predicate contributed from a DIFFERENT plot node so
+        // self-exclusion does not drop it.
+        let pred_text = "x > 42".to_string();
+        let selections: Vec<SelectionPredicate> = vec![(
+            "brush".to_string(),
+            vec![(
+                "root/plot[99]".to_string(),
+                Predicate::Expr(pred_text.clone()),
+            )],
+        )];
+
+        let chart = emit_query(&spec, 0, None, Some(&selections)).expect("chart emit");
+        let rows = emit_rows_query(&spec, 0, None, Some(&selections)).expect("rows emit");
+
+        // Both surfaces carry the identical predicate — pushed into DuckDB.
+        assert!(
+            chart.sql.contains(&pred_text),
+            "chart SQL must push the predicate: {}",
+            chart.sql
+        );
+        assert!(
+            rows.sql.contains(&pred_text),
+            "grid SQL must push the same predicate: {}",
+            rows.sql
+        );
+        // The grid keeps every column; the chart projected x/y channels.
+        assert!(
+            rows.sql.contains("SELECT *"),
+            "grid rows query is row-level SELECT *: {}",
+            rows.sql
+        );
+        assert!(
+            rows.sql.contains("\"t\"") || rows.sql.contains(" t "),
+            "grid rows query reads the same source view: {}",
+            rows.sql
+        );
+    }
+
+    #[test]
+    fn emit_rows_query_rejects_inline_mark() {
+        // Inline data has no materialisation view to tabulate.
+        let src = "plot:\n  - mark: dot\n    data:\n      - { x: 1, y: 2 }\n    x: x\n    y: y\n";
+        let spec = parse_spec(src, Format::Yaml).unwrap().spec;
+        let result = emit_rows_query(&spec, 0, None, None);
+        assert!(matches!(result, Err(EmitError::UnsupportedMark { .. })));
     }
 
     #[test]
