@@ -16,6 +16,8 @@
 use std::path::Path;
 
 use arrow::record_batch::RecordBatch;
+use brightfield_engine::coordinator::{Coordinator, Interaction};
+use brightfield_engine::error::EngineError;
 use brightfield_engine::Engine;
 use brightfield_render::channel::ChannelMap;
 use brightfield_render::inset::{resolve_insets_for_marks, DEFAULT_SCALE_INSET};
@@ -106,7 +108,94 @@ fn compose(spec: Spec, spec_dir: Option<&Path>) -> Result<Composed, String> {
 
     // Execute every mark; keep its first result batch (examples fit one chunk).
     let results = session.execute_all();
-    let marks = collect_marks(&spec);
+    compose_from_results(&spec, results)
+}
+
+/// A live, session-holding dashboard — the push-down seam at the presentation
+/// layer (per the push-down architecture: interactions are queries).
+///
+/// The one-shot [`compose_spec`] path parses, executes once, composites, and
+/// **drops the session**: there is no path for a later brush or slider to
+/// re-query. [`LiveDashboard`] instead HOLDS a [`Coordinator`] — and therefore
+/// the live DuckDB session — across frames. An interaction is handed to
+/// [`LiveDashboard::apply`], which resolves it to a predicate/param the engine
+/// pushes into DuckDB, re-queries the affected marks, and re-composites through
+/// the identical layout/scene path the first paint took (`compose_from_results`).
+/// No frame is ever built by filtering a materialised batch in Rust — the filter
+/// is in the emitted SQL.
+///
+/// This is the synchronous handle a single-window presenter drives on its own
+/// thread. The off-UI-thread interaction path (coalescing + interrupt +
+/// generation-stamped supersession, forced by a sustained drag) is
+/// [`brightfield_engine::coordinator::QueryLoop`]; wiring its channels into a
+/// specific egui event loop is the chrome layer's concern, not this seam's.
+pub struct LiveDashboard {
+    coordinator: Coordinator,
+    spec: Spec,
+}
+
+impl LiveDashboard {
+    /// Load a spec and hold its session live for interaction. `spec_dir` is
+    /// where relative `file:` paths resolve (`None` for inline-data specs).
+    ///
+    /// # Errors
+    ///
+    /// As [`compose_spec`]: a human-readable message on analyse / load failure.
+    pub fn load(spec: Spec, spec_dir: Option<&Path>) -> Result<Self, String> {
+        let analysis = analyse_spec(&spec).map_err(|e| format!("analysis error: {e}"))?;
+        let coordinator = Coordinator::load(spec.clone(), analysis, spec_dir)
+            .map_err(|e| format!("engine error: {e}"))?;
+        Ok(Self { coordinator, spec })
+    }
+
+    /// Load from spec text (mirrors [`compose_spec_str`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`LiveDashboard::load`].
+    pub fn load_str(source: &str, spec_dir: Option<&Path>) -> Result<Self, String> {
+        let parsed = parse_spec(source, Format::Yaml).map_err(|e| format!("parse error: {e}"))?;
+        Self::load(parsed.spec, spec_dir)
+    }
+
+    /// Composite the CURRENT materialisation into a dashboard scene — the first
+    /// paint and every post-interaction re-paint go through here.
+    ///
+    /// # Errors
+    ///
+    /// As [`compose_spec`] (returns `Err` when nothing renders).
+    pub fn present(&mut self) -> Result<Composed, String> {
+        let results = self.coordinator.session_mut().execute_all();
+        compose_from_results(&self.spec, results)
+    }
+
+    /// Apply one interaction — push its predicate/param into DuckDB, re-query,
+    /// and re-composite. This is the seam: an interaction resolves to a query.
+    ///
+    /// # Errors
+    ///
+    /// As [`LiveDashboard::present`].
+    pub fn apply(&mut self, interaction: Interaction) -> Result<Composed, String> {
+        self.coordinator.apply(interaction);
+        self.present()
+    }
+
+    /// The live coordinator, for surfaces that read the session directly (a grid
+    /// at a step, distinct-value option lists) or hold the interrupt handle.
+    pub fn coordinator(&mut self) -> &mut Coordinator {
+        &mut self.coordinator
+    }
+}
+
+/// Build the composited dashboard from a spec and its per-mark execution
+/// results. Shared by the one-shot [`compose`] path and the live
+/// [`LiveDashboard`] re-query seam, so a re-composite after an interaction takes
+/// the identical layout and scene path as the first paint.
+fn compose_from_results(
+    spec: &Spec,
+    results: Vec<Result<Vec<RecordBatch>, EngineError>>,
+) -> Result<Composed, String> {
+    let marks = collect_marks(spec);
     let mut batches: Vec<Option<RecordBatch>> = Vec::with_capacity(marks.len());
     let mut channel_maps: Vec<ChannelMap> = Vec::with_capacity(marks.len());
     let mut kinds = Vec::with_capacity(marks.len());
@@ -123,9 +212,9 @@ fn compose(spec: Spec, spec_dir: Option<&Path>) -> Result<Composed, String> {
         kinds.push(marks[i].kind);
     }
 
-    let placed = placed_plots(&spec, Rect::new(0.0, 0.0, 0.0, 0.0));
-    let groups = collect_plot_groups(&spec);
-    let plot_nodes = collect_plot_nodes(&spec);
+    let placed = placed_plots(spec, Rect::new(0.0, 0.0, 0.0, 0.0));
+    let groups = collect_plot_groups(spec);
+    let plot_nodes = collect_plot_nodes(spec);
     let registry = default_renderers();
 
     // Own each plot's scene; place them below.
@@ -225,4 +314,64 @@ fn compose(spec: Spec, spec_dir: Option<&Path>) -> Result<Composed, String> {
         height,
         title,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use brightfield_engine::SqlPredicate;
+    use brightfield_spec::analysis::ComponentPath;
+
+    const SPEC: &str = r#"
+params:
+  brush:
+    select: intersect
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+    - { x: 3, y: 30 }
+    - { x: 4, y: 40 }
+plot:
+  - mark: dot
+    data: { from: t, filterBy: $brush }
+    x: x
+    y: y
+"#;
+
+    #[test]
+    fn live_dashboard_holds_session_and_re_queries_on_interaction() {
+        // The seam at the presentation layer: the session is held across frames
+        // and a brush resolves to a pushed predicate + a re-composite, rather
+        // than the one-shot compose_spec path that drops the session.
+        let mut dash = LiveDashboard::load_str(SPEC, None).expect("load");
+        let first = dash.present().expect("first paint");
+        assert!(first.width > 0 && first.height > 0, "first paint has area");
+        assert_eq!(dash.coordinator().generation(), 0);
+
+        let after = dash
+            .apply(Interaction::Select {
+                name: "brush".to_string(),
+                contributor: ComponentPath("root/plot[99]".to_string()),
+                predicate: SqlPredicate::Expr("x > 2".to_string()),
+            })
+            .expect("re-paint after brush");
+        assert!(after.width > 0 && after.height > 0, "re-paint has area");
+        assert_eq!(
+            dash.coordinator().generation(),
+            1,
+            "the interaction advanced the materialisation generation"
+        );
+
+        // The re-composite drew from a DuckDB-filtered batch: 2 rows kept, and
+        // no Rust-side path filtered a materialised batch.
+        let rows: usize = dash
+            .coordinator()
+            .chart_rows(0)
+            .expect("chart rows")
+            .iter()
+            .map(RecordBatch::num_rows)
+            .sum();
+        assert_eq!(rows, 2, "brush kept x in {{3,4}} via a pushed predicate");
+    }
 }

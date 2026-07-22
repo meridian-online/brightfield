@@ -7,6 +7,7 @@
 //! **Dependency chain:** `brightfield-spec` → `brightfield-sql` → `brightfield-engine`.
 //! Neither upstream crate depends on this one.
 
+pub mod coordinator;
 pub mod error;
 pub mod profile;
 
@@ -117,7 +118,9 @@ use brightfield_spec::parse::ParseWarning;
 use brightfield_spec::vocab::MarkKind;
 
 use brightfield_sql::binding::{Binding, EmittedQuery, ParamValues};
-use brightfield_sql::emit::{emit_query, emit_query_with_passes, emit_sources, SourceKindTag};
+use brightfield_sql::emit::{
+    emit_query, emit_query_with_passes, emit_rows_query, emit_sources, SourceKindTag,
+};
 use brightfield_sql::ir::{Predicate, SelectionPredicate};
 use brightfield_sql::navigation_filter_pass::NavigationFilterPass;
 use brightfield_sql::passes::Pass;
@@ -655,6 +658,53 @@ impl Session {
 
         let mark_kind = self.mark_kind_at(index);
         self.execute_emitted(index, &mark_kind, &emitted)
+    }
+
+    /// Execute the ROW-LEVEL query for a mark's step — every column of the
+    /// step's materialisation, under the current `param_state` and
+    /// `selection_state`. This is the tabular ("grid") surface's read path.
+    ///
+    /// It shares the mark's live selection predicate with [`Self::execute_mark`]
+    /// bit-for-bit: both go through `brightfield_sql`'s one selection-compile
+    /// path (`emit_rows_query` reuses the same `compile_selection` as
+    /// `emit_query`). A grid and a chart at the same step therefore issue two
+    /// queries over the SAME source view with the SAME `WHERE`, and cannot
+    /// resolve different rows from the same selection state. Neither filters a
+    /// materialised batch client-side — the predicate is in the SQL.
+    ///
+    /// Errors as [`Self::execute_mark`]: a mark without a `from`-source (inline
+    /// data) has no materialisation to tabulate and returns
+    /// [`EngineError::EmitFailed`].
+    pub fn execute_step_rows(&mut self, index: usize) -> Result<Vec<RecordBatch>, EngineError> {
+        let params = if self.param_state.is_empty() {
+            None
+        } else {
+            Some(&self.param_state)
+        };
+        let selections = self.selection_predicates_for_emit();
+        let selections_ref: Option<&[SelectionPredicate]> = if selections.is_empty() {
+            None
+        } else {
+            Some(selections.as_slice())
+        };
+        let emitted = emit_rows_query(&self.spec, index, params, selections_ref)
+            .map_err(|e| EngineError::EmitFailed { cause: e })?;
+
+        let mark_kind = self.mark_kind_at(index);
+        self.execute_emitted(index, &mark_kind, &emitted)
+    }
+
+    /// A cancellation handle for whatever query this session's connection is
+    /// currently running — DuckDB's own `interrupt`. Cloneable, `Send + Sync`,
+    /// and safe to hold on a different thread than the one executing the query:
+    /// the coordinator hands this to the UI side so a newer interaction can
+    /// cancel an in-flight re-query on the engine worker thread (the off-UI-
+    /// thread interaction path). Calling `interrupt()` makes the running query
+    /// fail promptly; the worker discards that error and serves the latest
+    /// interaction instead.
+    #[must_use]
+    pub fn interrupt_handle(&self) -> std::sync::Arc<duckdb::InterruptHandle> {
+        self.conn.interrupt_handle()
     }
 
     /// Execute all marks. Returns one result per mark in depth-first order.
