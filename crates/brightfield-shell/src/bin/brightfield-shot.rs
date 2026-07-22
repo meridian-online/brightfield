@@ -84,8 +84,12 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    eprintln!("{} from {}", boot.describe(), args.spec);
-    if boot.view == ViewKind::Protocol {
+    // `Boot::open` always names a view, so the fallback here is unreachable —
+    // said at the call site rather than baked into the getter, for the reason
+    // `Boot::view_or` records.
+    let view = boot.view_or(ViewKind::Charts);
+    eprintln!("{} from {}", boot.describe(view), args.spec);
+    if view == ViewKind::Protocol {
         // Surface the family tile ids so `--focus` has a target for a scripted `za`.
         for (id, node) in &boot.protocol.graph_collapsed.nodes {
             if node.kind == brightfield_protocol::graph::AssetKind::Family {
@@ -100,7 +104,7 @@ fn main() -> ExitCode {
         // it, and there is no protocol analogue of it. Collapsing the fork made
         // this combination reachable for the first time, so it gets an answer
         // rather than an empty PNG.
-        if boot.view != ViewKind::Charts {
+        if view != ViewKind::Charts {
             eprintln!(
                 "error: --vello-only renders a composed dashboard; {} opens the Protocol view",
                 args.spec

@@ -59,7 +59,10 @@ use egui_tiles::{Container, Tile};
 use brightfield_protocol::layout::{Flow, Layout};
 use brightfield_workbench::behavior::{TAB_BAR_HEIGHT, TILE_GAP};
 use brightfield_workbench::workspace::{tabs_holding, tile_of};
-use brightfield_workbench::{chrome, ItemMap, PaneChrome, PaneKey, Request, ViewKind, Workspace};
+use brightfield_workbench::{
+    chrome, DirtyTracker, ItemMap, PaneChrome, PaneKey, Request, SavedLayout, ViewKind,
+    WindowGeometry, Workspace,
+};
 
 use meridian_design::{semantic, spacing};
 
@@ -136,6 +139,18 @@ pub const DOCK_INSET: f32 = spacing::SPACE_4;
 /// Rounded **up** to whole logical points: the share is an `f32` division, and a
 /// window a quarter of a point short would clip a row of the raster just as
 /// surely as one seventeen points short.
+///
+/// # Who still reads this, now that a saved layout outranks it
+///
+/// Not a decoy, and worth naming the readers rather than leaving that to be
+/// rediscovered. The live window consults it only on a boot with **no**
+/// restored layout and a document to derive a size from; every other caller
+/// has no saved layout and cannot get one — `capture::capture_png` and the
+/// `brightfield-shot` binary behind it, which need a deterministic
+/// content-derived size for the PNG tier, and the tests that hold this
+/// arithmetic to a real laid-out frame rather than to a second copy of itself.
+/// Deleting it deletes those gates, and they exist because this window was
+/// once caught clipping the bottom seventeen rows of its own chart.
 #[must_use]
 pub fn chart_window_size(composed: &Composed) -> (f32, f32) {
     let centre = 1.0 - CONTROLS_SHARE;
@@ -172,6 +187,9 @@ pub fn chart_window_size(composed: &Composed) -> (f32, f32) {
 /// part-scrolled in silence. The clamps are gone with it: a window that lies
 /// about fitting is this crate's defect, and a window larger than the display
 /// is the compositor's to resolve.
+///
+/// Read by the same tiers as [`chart_window_size`], and kept for the same
+/// reason — see the note there.
 #[must_use]
 pub fn protocol_window_size(layout: &Layout) -> (f32, f32) {
     let centre = 1.0 - OUTLINE_SHARE - INSPECTOR_SHARE;
@@ -198,8 +216,20 @@ pub fn protocol_window_size(layout: &Layout) -> (f32, f32) {
 /// document, and that is a state the product has to render correctly anyway —
 /// it is what a first run over a spec that declares nothing looks like.
 pub struct Boot {
-    /// The view the window opens on.
-    pub view: ViewKind,
+    /// The view the window opens on, when something chose one.
+    ///
+    /// `None` means nothing chose, so the saved layout's own active view
+    /// stands. Two boots are `None`: [`Boot::empty`], which loaded no document
+    /// to have a view for, and a start put back by
+    /// [`Boot::deferring_to_the_saved_view`], which loaded one but was not
+    /// *asked* for.
+    ///
+    /// A spec on the command line does have an opinion and wins — you asked
+    /// for *that*, and being shown the other view because it is where you left
+    /// off last time would be the window arguing with you. So does a start the
+    /// user picked off the front door, which is the same ask by a different
+    /// route.
+    pub view: Option<ViewKind>,
     /// The chart view's dashboard.
     pub composed: Composed,
     /// The protocol view's graph and steps.
@@ -216,7 +246,7 @@ impl Boot {
     #[must_use]
     pub fn charts(composed: Composed) -> Self {
         Self {
-            view: ViewKind::Charts,
+            view: Some(ViewKind::Charts),
             composed,
             protocol: ProtocolInputs::empty(),
             flow: Flow::Vertical,
@@ -228,12 +258,103 @@ impl Boot {
     #[must_use]
     pub fn protocol(inputs: ProtocolInputs, flow: Flow, focus: Option<String>) -> Self {
         Self {
-            view: ViewKind::Protocol,
+            view: Some(ViewKind::Protocol),
             composed: Composed::empty(),
             protocol: inputs,
             flow,
             focus,
         }
+    }
+
+    /// Open on nothing: both documents empty, no view chosen.
+    ///
+    /// **The no-argument launch.** What stood here was a hardcoded
+    /// `examples/dashboard.yaml`, which from the repo root silently opened a
+    /// dashboard nobody asked for and from anywhere else exited with a read
+    /// error before a window existed. Neither is a first run of a product.
+    ///
+    /// Every pane of both views answers an empty document with a real empty
+    /// state — that is the workbench contract, and
+    /// [`audit`](brightfield_workbench::audit) is what makes it true rather
+    /// than remembered — so this is not a blank window. It is the front door,
+    /// and the panes that can be filled by something the binary ships offer it
+    /// (see [`crate::starts`]).
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            view: None,
+            composed: Composed::empty(),
+            protocol: ProtocolInputs::empty(),
+            flow: Flow::Vertical,
+            focus: None,
+        }
+    }
+
+    /// Open on whatever [`crate::starts`] calls `id`, in the view it fills.
+    ///
+    /// # Errors
+    ///
+    /// If `id` is not a start this build ships, or the embedded fixture fails
+    /// to load.
+    pub fn start(id: &str, flow: Flow) -> Result<Self, String> {
+        Ok(match crate::starts::load(id)? {
+            crate::starts::Opened::Charts(composed) => Self::charts(*composed),
+            crate::starts::Opened::Protocol(inputs) => Self::protocol(*inputs, flow, None),
+        })
+    }
+
+    /// The same documents, with the view opinion dropped.
+    ///
+    /// The difference between a start the user *picked* and a start the layout
+    /// file *remembered*. Both load the same document, and only the first is
+    /// an ask to be looking at it: the file separately records which view the
+    /// window was left on, that record is the deliberate one, and a restore
+    /// that overrode it would make the persisted active view dead for every
+    /// returning user. See [`crate::startup::opening_boot`], which is the only
+    /// caller and the place the precedence is stated.
+    #[must_use]
+    pub fn deferring_to_the_saved_view(mut self) -> Self {
+        self.view = None;
+        self
+    }
+
+    /// The view this boot's size, title and summary are answered for: the one
+    /// it named, or `fallback` when it named none.
+    ///
+    /// **The fallback is a parameter because only the caller knows it.** This
+    /// used to be a `const fn` with `ViewKind::Charts` baked in, which was
+    /// harmless while every `Boot` named a view and became wrong the moment
+    /// [`Boot::deferring_to_the_saved_view`] made `None` the *normal* case: a
+    /// restored crosswalk answered "Brightfield" and "composed 0x0 dashboard"
+    /// for a 34-node protocol graph, and since the window title is set once
+    /// from that string the wrong one survived the whole session.
+    ///
+    /// `main` has the saved layout in hand before it asks any of the three, so
+    /// it passes the view that will actually be drawn. The capture tiers build
+    /// their boots through [`Boot::open`], [`Boot::charts`] or
+    /// [`Boot::protocol`], all of which name a view, so what they pass is
+    /// unreachable — and saying it at the call site is what makes that
+    /// checkable rather than assumed.
+    #[must_use]
+    pub const fn view_or(&self, fallback: ViewKind) -> ViewKind {
+        match self.view {
+            Some(view) => view,
+            None => fallback,
+        }
+    }
+
+    /// Whether this boot loaded no document at all.
+    ///
+    /// The window arithmetic needs this: [`chart_window_size`] read outwards
+    /// from a 0x0 dashboard asks for a window a few tens of points wide, which
+    /// is a correct answer to the wrong question. A boot with nothing in it
+    /// has no content to derive a window from, so it takes the saved geometry
+    /// — or, on a first run, [`WindowGeometry`]'s default.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.composed.width == 0
+            && self.composed.height == 0
+            && self.protocol.graph_full.nodes.is_empty()
     }
 
     /// Read `spec` and load whichever document it describes.
@@ -244,29 +365,27 @@ impl Boot {
     /// environment gate, a window size and a summary line that neither shared.
     ///
     /// # Errors
-    /// A message if the file cannot be read, if it is a protocol manifest
-    /// without `BRIGHTFIELD_PROTOCOL_OFFLINE` set, or if the pipeline rejects
-    /// it.
+    /// A message if the file cannot be read, if it is a run-less protocol
+    /// manifest and this process has not opted in — see
+    /// [`crate::protocol::run_less_manifest_refusal`], which states that rule
+    /// once for both callers — or if the pipeline rejects it.
     pub fn open(spec: &str, flow: Flow, focus: Option<String>) -> Result<Self, String> {
         let text = std::fs::read_to_string(spec).map_err(|e| format!("read {spec}: {e}"))?;
         if brightfield_protocol::is_protocol_manifest(&text) {
-            if std::env::var("BRIGHTFIELD_PROTOCOL_OFFLINE").is_err() {
-                return Err(format!(
-                    "{spec} is a Protocol manifest, not an emitted Protocol+Run contract. \
-                     To render it offline without a run, set BRIGHTFIELD_PROTOCOL_OFFLINE=1."
-                ));
+            if !crate::protocol::offline_optin() {
+                return Err(crate::protocol::run_less_manifest_refusal(spec));
             }
             return Ok(Self::protocol(load_protocol_offline(spec)?, flow, focus));
         }
         Ok(Self::charts(compose_spec(spec)?))
     }
 
-    /// The window this boot asks for, in logical points — the **boot view's**
-    /// natural size.
+    /// The window this boot asks for, in logical points — `view`'s natural
+    /// size over the documents this boot loaded.
     ///
     /// One window means one size, and the two views want very different ones.
-    /// The boot view's is the answer because it is the only one that is a fact
-    /// at the moment the window is created: the other view's document is
+    /// The opening view's is the answer because it is the only one that is a
+    /// fact at the moment the window is created: the other view's document is
     /// usually empty, and sizing to the larger of the two would open a window
     /// mostly full of an empty state nobody asked for. Switching views does not
     /// resize — the user's window is theirs once it exists, and both views
@@ -275,9 +394,19 @@ impl Boot {
     /// Answered here rather than on [`MeridianApp`] because a window has to be
     /// sized before it can be created, and the app cannot be built until eframe
     /// has handed over a device.
+    ///
+    /// `view` is a parameter for the reason [`Boot::view_or`] gives: a boot
+    /// that named no view has no business inventing one when the caller
+    /// already knows which one will be drawn.
+    ///
+    /// **A saved layout outranks this.** The live binary consults it only when
+    /// nothing was restored, and never for a [`Boot::empty`] — see
+    /// [`Boot::is_empty`]. The headless capture path and the pixel tier have
+    /// no saved layout and no user to have arranged one, so this stays their
+    /// only answer.
     #[must_use]
-    pub fn window_size(&self) -> (f32, f32) {
-        match self.view {
+    pub fn window_size(&self, view: ViewKind) -> (f32, f32) {
+        match view {
             ViewKind::Charts => chart_window_size(&self.composed),
             ViewKind::Protocol => {
                 protocol_window_size(&ProtocolModel::boot_layout(&self.protocol, self.flow))
@@ -285,10 +414,19 @@ impl Boot {
         }
     }
 
-    /// The window title: the boot view's subject.
+    /// The window title: `view`'s subject over the documents this boot loaded.
+    ///
+    /// The same answer [`MeridianApp::title`] gives once the window exists,
+    /// provided `view` is the view that will be drawn — which is the caller's
+    /// job to supply and `main`'s reason for resolving it against the restored
+    /// layout first. It matters more here than it looks: `main` hands this
+    /// string to `eframe::run_native`, which is where the OS window's title
+    /// comes from, and nothing sends a `ViewportCommand::Title` afterwards
+    /// except the front door's own click. A title that is wrong at this call
+    /// stays wrong for the session.
     #[must_use]
-    pub fn title(&self) -> String {
-        match self.view {
+    pub fn title(&self, view: ViewKind) -> String {
+        match view {
             ViewKind::Charts => self
                 .composed
                 .title
@@ -298,10 +436,13 @@ impl Boot {
         }
     }
 
-    /// One line describing what was loaded, for the binaries' stderr.
+    /// One line describing what `view` was given, for the binaries' stderr.
     #[must_use]
-    pub fn describe(&self) -> String {
-        match self.view {
+    pub fn describe(&self, view: ViewKind) -> String {
+        if self.is_empty() {
+            return "nothing open".to_string();
+        }
+        match view {
             ViewKind::Charts => format!(
                 "composed {}x{} dashboard",
                 self.composed.width, self.composed.height
@@ -348,7 +489,15 @@ struct ProtocolView {
 
 /// The window.
 pub struct MeridianApp {
-    ws: Workspace,
+    /// The live layout — the arrangement, the window geometry, and what is
+    /// open — alongside a clone of what is durably on disk.
+    ///
+    /// The workspace lives *inside* the tracker rather than beside it because
+    /// the tracker's whole design is that `live` **is** the thing the UI
+    /// mutates: the change signal is a plain `live != saved` compare, and a
+    /// workspace held next to the tracker would have to be copied in and out
+    /// every frame for that compare to mean anything.
+    layout: DirtyTracker,
     charts: ChartView,
     protocol: ProtocolView,
     mode: Mode,
@@ -362,6 +511,10 @@ pub struct MeridianApp {
     /// lands today and goes on being green while clicking empty bar the first
     /// time a label or a padding moves.
     switcher: Vec<(ViewKind, egui::Rect)>,
+    /// Where each empty pane drew the button that resolves it, in window-space
+    /// logical points — recorded for exactly the reason [`Self::switcher`] is,
+    /// and read back through [`MeridianApp::affordance_rect`].
+    affordances: Vec<(PaneKey, egui::Rect)>,
 }
 
 impl MeridianApp {
@@ -371,9 +524,37 @@ impl MeridianApp {
     /// canvas it rasters into — that is the rule the whole item contract hangs
     /// off. Both are built from the same wgpu device: `EguiCanvasHost` holds
     /// `Arc` handles, so a second one costs a `VelloRenderer` and nothing else.
+    /// **Never reads the layout file.** The default arrangement is built here,
+    /// which is what keeps the headless capture path — `capture_png`, and so
+    /// `brightfield-shot` and the whole pixel tier — off the developer's real
+    /// `workspace-layout.json`. The live window uses
+    /// [`MeridianApp::with_layout`] and passes one in.
     #[must_use]
     pub fn new(
         boot: Boot,
+        chart_host: EguiCanvasHost,
+        protocol_host: EguiCanvasHost,
+        mode: Mode,
+    ) -> Self {
+        Self::with_layout(
+            boot,
+            crate::startup::default_layout(),
+            chart_host,
+            protocol_host,
+            mode,
+        )
+    }
+
+    /// The window over `boot`, arranged as `layout` says.
+    ///
+    /// The one constructor that takes a restored layout, and the layout is a
+    /// **parameter** rather than something read here: a constructor that read
+    /// the file itself would read and write the developer's real config
+    /// directory on every `cargo test`.
+    #[must_use]
+    pub fn with_layout(
+        boot: Boot,
+        layout: SavedLayout,
         chart_host: EguiCanvasHost,
         protocol_host: EguiCanvasHost,
         mode: Mode,
@@ -383,6 +564,7 @@ impl MeridianApp {
         Self::assemble(
             boot.view,
             boot.focus,
+            layout,
             doc,
             ProtocolDoc::new(model, protocol_host),
             mode,
@@ -397,13 +579,27 @@ impl MeridianApp {
     /// That is what makes the window arithmetic assertable without a GPU: a
     /// test can run a real frame through `egui::Context::run_ui` and read the
     /// box the dock gave a canvas pane back out of the document.
+    ///
+    /// Like [`MeridianApp::new`], it never reads the layout file.
     #[must_use]
     pub fn headless(boot: Boot, mode: Mode) -> Self {
+        Self::headless_with_layout(boot, crate::startup::default_layout(), mode)
+    }
+
+    /// The device-free window over a layout that was restored from somewhere.
+    ///
+    /// The GPU-free twin of [`MeridianApp::with_layout`], and the constructor
+    /// the layout wiring is asserted through: it is the only way to ask what a
+    /// restored arrangement does to a real frame without a device or a config
+    /// directory.
+    #[must_use]
+    pub fn headless_with_layout(boot: Boot, layout: SavedLayout, mode: Mode) -> Self {
         let doc = ChartDoc::headless(boot.composed);
         let model = ProtocolModel::new(boot.protocol, boot.flow);
         Self::assemble(
             boot.view,
             boot.focus,
+            layout,
             doc,
             ProtocolDoc::headless(model),
             mode,
@@ -411,8 +607,9 @@ impl MeridianApp {
     }
 
     fn assemble(
-        view: ViewKind,
+        view: Option<ViewKind>,
         focus: Option<String>,
+        layout: SavedLayout,
         chart_doc: ChartDoc,
         mut protocol_doc: ProtocolDoc,
         mode: Mode,
@@ -420,7 +617,10 @@ impl MeridianApp {
         // Both views' vocabularies, published before any layout file could be
         // read. Idempotent, and both are needed whichever view boots: a
         // `PaneKey` naming a pane of the view that did not boot has to
-        // deserialise too, or a saved layout loads as corrupt.
+        // deserialise too, or a saved layout loads as corrupt. `startup`
+        // publishes them again ahead of the read that happens before this
+        // window exists; these stay because the headless tiers never go
+        // through `startup` at all.
         crate::app::publish_item_ids();
         crate::protocol::publish_item_ids();
 
@@ -430,18 +630,38 @@ impl MeridianApp {
 
         let charts = chart_registry();
         let protocol = protocol_registry();
-        let trees = [
-            (ViewKind::Charts, charts.default_tree()),
-            (ViewKind::Protocol, protocol.default_tree()),
-        ]
-        .into_iter()
-        .collect();
 
-        let mut ws = Workspace::new(trees);
-        ws.set_active(view);
+        let mut layout = DirtyTracker::new(layout);
+        // Something that asked for a view wins; a boot with no opinion keeps
+        // the view the saved layout was left on. See `Boot::view` for which
+        // boots have an opinion — notably a *restored* start does not.
+        //
+        // Deliberately after `DirtyTracker::new`: a boot that overrides the
+        // active view has genuinely moved the window off what the file says,
+        // and that difference should be written. A boot with no opinion
+        // touches nothing here, so it is clean from construction and a launch
+        // that restores a session writes nothing until the user moves
+        // something.
+        if let Some(view) = view {
+            layout.workspace_mut().set_active(view);
+        }
+
+        // The restored tab strip is the authority over the model's default,
+        // not the other way round. `ProtocolModel` boots with its sheet shut,
+        // `draw` makes the strip authoritative from that flag on every frame
+        // it draws this view, and the strip's active tab is part of the
+        // serialised tree — so without this line a file that recorded the
+        // Steps sheet is overwritten with Canvas before any frame can read it,
+        // and the overwrite is a tile-tree mutation, so a launch nobody
+        // touched goes dirty and the debounce writes the reverted arrangement
+        // back. The restore was one-way lossy and it rewrote the file to say
+        // so. Held by `a_restored_steps_tab_survives_the_first_frame`.
+        if let Some(show) = steps_tab_is_active(layout.live().workspace.tree(ViewKind::Protocol)) {
+            protocol_doc.model.set_show_sheet(show);
+        }
 
         Self {
-            ws,
+            layout,
             charts: ChartView {
                 doc: chart_doc,
                 items: charts.instantiate(),
@@ -453,20 +673,39 @@ impl MeridianApp {
             mode,
             fonts_installed: false,
             switcher: Vec::new(),
+            affordances: Vec::new(),
         }
+    }
+
+    /// The arrangement the UI reads.
+    fn ws(&self) -> &Workspace {
+        &self.layout.live().workspace
+    }
+
+    /// The arrangement the UI mutates.
+    fn ws_mut(&mut self) -> &mut Workspace {
+        self.layout.workspace_mut()
     }
 
     /// The view currently drawn.
     #[must_use]
     pub fn active(&self) -> ViewKind {
-        self.ws.active()
+        self.ws().active()
     }
 
-    /// The window title: the active view's subject. [`Boot::title`] is the same
-    /// question answered before the window exists.
+    /// The window title: the active view's subject.
+    ///
+    /// [`Boot::title`] is the same question answered before the window exists,
+    /// and the two agree exactly when it is asked for the view this window will
+    /// draw — which is why `Boot::title` takes that view rather than assuming
+    /// one. It matters that they agree: `main` hands `Boot::title`'s answer to
+    /// `eframe::run_native`, and the only `ViewportCommand::Title` in the
+    /// workspace is in `open_start`, which a restored session never reaches. `a_restored_session_is_titled_for_the_view_it_draws` asserts
+    /// the agreement rather than either answer, because a literal on both
+    /// sides would go on matching itself after either drifted.
     #[must_use]
     pub fn title(&self) -> String {
-        match self.ws.active() {
+        match self.ws().active() {
             ViewKind::Charts => self.charts.doc.title().to_string(),
             ViewKind::Protocol => format!("Protocol · {}", self.protocol.doc.model.protocol),
         }
@@ -503,6 +742,21 @@ impl MeridianApp {
             .map(|(_, r)| *r)
     }
 
+    /// The rect the empty state of `pane` drew its resolving button at, in the
+    /// last frame this window drew.
+    ///
+    /// `None` for a pane that is not empty, or whose empty state offers no
+    /// action. This is how the test that a front door is *reachable* aims its
+    /// click — and the empty state is drawn by the chrome, not by the pane, so
+    /// no `Item` can record it.
+    #[must_use]
+    pub fn affordance_rect(&self, pane: PaneKey) -> Option<egui::Rect> {
+        self.affordances
+            .iter()
+            .find(|(k, _)| *k == pane)
+            .map(|(_, r)| *r)
+    }
+
     /// The protocol view's interaction model, read-only.
     ///
     /// The window is the only thing that feeds it keys, and it feeds it keys
@@ -514,6 +768,86 @@ impl MeridianApp {
         &self.protocol.doc.model
     }
 
+    /// The chart view's document, read-only — what a test asks whether the
+    /// front door's second click actually filled.
+    #[must_use]
+    pub fn chart_doc(&self) -> &ChartDoc {
+        &self.charts.doc
+    }
+
+    /// The protocol view's document, read-only. The twin of
+    /// [`Self::chart_doc`].
+    #[must_use]
+    pub fn protocol_doc(&self) -> &ProtocolDoc {
+        &self.protocol.doc
+    }
+
+    // -----------------------------------------------------------------------
+    // The layout file
+    // -----------------------------------------------------------------------
+
+    /// The live layout: the arrangement, the window geometry, and what is open.
+    #[must_use]
+    pub fn layout(&self) -> &SavedLayout {
+        self.layout.live()
+    }
+
+    /// Record the window's current size and position into the live layout.
+    ///
+    /// Called by the **host** and not from [`Self::draw`], so the headless
+    /// tiers cannot accidentally write a test harness's screen rect into a
+    /// layout: a headless context reports no viewport rect at all, and the
+    /// fallback below would take the whole screen for the window.
+    ///
+    /// `inner_rect`/`outer_rect` are `Option` and are `None` on some platforms,
+    /// so neither is unwrapped. A position that cannot be read simply is not
+    /// recorded, which the layout file already permits.
+    pub fn observe_window(&mut self, ctx: &egui::Context) {
+        let (inner, outer, viewport_rect) = ctx.input(|i| {
+            (
+                i.viewport().inner_rect,
+                i.viewport().outer_rect,
+                i.viewport_rect(),
+            )
+        });
+        let size = inner.map_or(viewport_rect, |r| r).size();
+        self.layout.live_mut().window = WindowGeometry {
+            size: [size.x, size.y],
+            position: outer.map(|r| [r.min.x, r.min.y]),
+        };
+    }
+
+    /// Tick the layout's debounced save at `now_ms`, writing to `path` when
+    /// the layout has been changed and still long enough.
+    ///
+    /// Returns the write's result when one was attempted. Never a hard
+    /// failure: a failed write leaves the tracker dirty so the next tick, or
+    /// the exit flush, retries it.
+    pub fn poll_layout(
+        &mut self,
+        now_ms: u64,
+        path: &std::path::Path,
+    ) -> Option<Result<(), String>> {
+        self.layout.poll(now_ms, path)
+    }
+
+    /// Whether a debounced save is counting down.
+    ///
+    /// The host has to ask, because eframe paints on input rather than
+    /// continuously: without a [`request_repaint_after`](egui::Context::request_repaint_after)
+    /// while this is true, a user who drags a splitter and then leaves the
+    /// window alone generates no further frames, the countdown never fires,
+    /// and the change survives only as far as the exit flush.
+    #[must_use]
+    pub fn layout_armed(&self) -> bool {
+        self.layout.is_armed()
+    }
+
+    /// Write the layout now if it has changed, debounce or not — the quit path.
+    pub fn flush_layout(&mut self, path: &std::path::Path) -> Option<Result<(), String>> {
+        self.layout.flush(path)
+    }
+
     /// Draw one frame into the root `ui` (egui 0.35's Ui-rooted model — the same
     /// `ui` eframe hands `App::ui` and `Context::run_ui` yields). Idempotent and
     /// tier-agnostic.
@@ -523,7 +857,7 @@ impl MeridianApp {
             design::apply(&ctx, self.mode);
             self.fonts_installed = true;
         }
-        let view = self.ws.active();
+        let view = self.ws().active();
         let mode = self.mode;
 
         // The protocol grammar is bare-key — `h j k l y t Enter Esc ⌫ shift-S`
@@ -577,13 +911,18 @@ impl MeridianApp {
         // `Frame::central_panel`'s, restated with `DOCK_INSET` in place of
         // egui's internal `8` — same pixels, one declaration the window
         // arithmetic reads.
-        let tabbed = self.ws.tabbed_tiles(view);
-        let focused = self.ws.focus();
+        let tabbed = self.ws().tabbed_tiles(view);
+        let focused = self.ws().focus();
         let mut requests: Vec<Request> = Vec::new();
         let dock_frame = egui::Frame::new()
             .inner_margin(DOCK_INSET)
             .fill(ui.visuals().panel_fill);
-        let (ws, charts, protocol) = (&mut self.ws, &mut self.charts, &mut self.protocol);
+        let (ws, charts, protocol, affordances) = (
+            self.layout.workspace_mut(),
+            &mut self.charts,
+            &mut self.protocol,
+            &mut self.affordances,
+        );
         CentralPanel::default().frame(dock_frame).show(ui, |ui| {
             // The two arms are the whole cost of keeping the documents apart.
             match view {
@@ -595,6 +934,7 @@ impl MeridianApp {
                         focused,
                         &tabbed,
                         &mut requests,
+                        affordances,
                     );
                     ws.tree_mut(view).ui(&mut behavior, ui);
                 }
@@ -606,6 +946,7 @@ impl MeridianApp {
                         focused,
                         &tabbed,
                         &mut requests,
+                        affordances,
                     );
                     ws.tree_mut(view).ui(&mut behavior, ui);
                 }
@@ -621,7 +962,7 @@ impl MeridianApp {
             }
         }
         if let Some(next) = bar.switch {
-            self.ws.set_active(next);
+            self.ws_mut().set_active(next);
             ctx.request_repaint();
         }
         self.sweep();
@@ -659,7 +1000,7 @@ impl MeridianApp {
     /// [`Verb`]: brightfield_workbench::Verb
     fn top_bar(&mut self, ui: &mut egui::Ui) -> TopBar {
         let sem = semantic(self.mode.is_dark());
-        let active = self.ws.active();
+        let active = self.ws().active();
         // Read everything the bar says before drawing it, so the closure below
         // borrows no more of `self` than the switcher state it writes.
         let title = self.title();
@@ -737,19 +1078,55 @@ impl MeridianApp {
                         self.protocol.doc.model.dispatch(verb.as_str());
                     }
                 },
+                Request::Open(id) => self.open_start(ctx, id),
                 Request::Focus(key) => {
-                    self.ws.set_focus(key);
+                    self.ws_mut().set_focus(key);
                 }
                 Request::Repaint => ctx.request_repaint(),
             }
         }
     }
 
+    /// Open the shipped starting point `id` into the view it fills.
+    ///
+    /// **The second click.** It has to land on a rendered result, not on an
+    /// instrument: the document is replaced with a *composed* dashboard or a
+    /// *built* graph, its canvas is invalidated so the next frame rasters the
+    /// new one, and the view holding it is made active. There is no editor in
+    /// between, no path to type and no buffer to fill.
+    ///
+    /// It also records the id in the live layout, which is what lets a later
+    /// launch restore this rather than show the front door again — the whole
+    /// reason [`SavedLayout::opened`] exists. Recording it also makes the
+    /// layout dirty, so the debounce writes it.
+    ///
+    /// An id this build does not ship, or a fixture that will not load, logs
+    /// and does nothing. Both are build-time defects rather than a user's
+    /// circumstance, and neither is worth taking a window down for.
+    fn open_start(&mut self, ctx: &egui::Context, id: &'static str) {
+        let opened = match crate::starts::load(id) {
+            Ok(opened) => opened,
+            Err(e) => {
+                eprintln!("could not open {id}: {e}");
+                return;
+            }
+        };
+        let view = opened.view();
+        match opened {
+            crate::starts::Opened::Charts(composed) => self.charts.doc.open(*composed),
+            crate::starts::Opened::Protocol(inputs) => self.protocol.doc.open(*inputs),
+        }
+        self.ws_mut().set_active(view);
+        self.layout.live_mut().opened = Some(id.to_string());
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
+        ctx.request_repaint();
+    }
+
     /// Before rendering: make the active Canvas/Steps tab authoritative from the
     /// model's sheet flag (so the `shift-S`/`Esc` keys drive it).
     fn set_active_tab(&mut self) {
         let show_sheet = self.protocol.doc.model.show_sheet();
-        let tree = self.ws.tree_mut(ViewKind::Protocol);
+        let tree = self.ws_mut().tree_mut(ViewKind::Protocol);
         let Some(canvas) = tile_of(tree, PaneKey::new(ViewKind::Protocol, CANVAS)) else {
             return;
         };
@@ -768,17 +1145,8 @@ impl MeridianApp {
     /// After rendering: read a manual tab click back into the model (so a
     /// pointer click on the Steps tab also opens the sheet, and Canvas closes it).
     fn read_active_tab(&mut self) {
-        let tree = self.ws.tree(ViewKind::Protocol);
-        let Some(steps) = tile_of(tree, PaneKey::new(ViewKind::Protocol, STEPS)) else {
-            return;
-        };
-        let Some(tabs_id) = tabs_holding(tree, steps) else {
-            return;
-        };
-        if let Some(Tile::Container(Container::Tabs(tabs))) = tree.tiles.get(tabs_id) {
-            if let Some(active) = tabs.active {
-                self.protocol.doc.model.set_show_sheet(active == steps);
-            }
+        if let Some(show) = steps_tab_is_active(self.ws().tree(ViewKind::Protocol)) {
+            self.protocol.doc.model.set_show_sheet(show);
         }
     }
 
@@ -794,11 +1162,28 @@ impl MeridianApp {
     /// dangling id the instant the user switched back. The failure in the other
     /// direction is a leak, which is the safe one to be wrong in.
     fn sweep(&mut self) {
-        let charts: BTreeSet<PaneKey> = self.ws.panes(ViewKind::Charts).into_iter().collect();
+        let charts: BTreeSet<PaneKey> = self.ws().panes(ViewKind::Charts).into_iter().collect();
         self.charts.doc.sweep(&charts);
-        let protocol: BTreeSet<PaneKey> = self.ws.panes(ViewKind::Protocol).into_iter().collect();
+        let protocol: BTreeSet<PaneKey> = self.ws().panes(ViewKind::Protocol).into_iter().collect();
         self.protocol.doc.sweep(&protocol);
     }
+}
+
+/// Whether the protocol view's tab strip has the steps sheet in front, or
+/// `None` when this tree has no such strip.
+///
+/// The one reader of the strip, so the restore path and the click-back path
+/// cannot disagree about which tab means what:
+/// [`MeridianApp::assemble`] seeds the model from it before the first frame,
+/// and [`MeridianApp::read_active_tab`] reads a user's click out of it after
+/// each one.
+fn steps_tab_is_active(tree: &egui_tiles::Tree<PaneKey>) -> Option<bool> {
+    let steps = tile_of(tree, PaneKey::new(ViewKind::Protocol, STEPS))?;
+    let tabs_id = tabs_holding(tree, steps)?;
+    let Some(Tile::Container(Container::Tabs(tabs))) = tree.tiles.get(tabs_id) else {
+        return None;
+    };
+    Some(tabs.active? == steps)
 }
 
 /// How wide the top bar's right-hand group would be if it drew: the renderer

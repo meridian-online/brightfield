@@ -54,8 +54,8 @@ use brightfield_keys::BindingContext;
 use brightfield_render::canvas_host::{ChartSurface, Color, PixelSize, SurfaceCursor};
 use brightfield_workbench::registry::{DockSide, Slot};
 use brightfield_workbench::{
-    chrome, EmptyState, Icon, Item, ItemCtx, ItemId, ItemRegistry, ItemSpec, PaneKey, Subject,
-    Verb, ViewKind,
+    chrome, Affordance, EmptyState, Icon, Item, ItemCtx, ItemId, ItemRegistry, ItemSpec, PaneKey,
+    Subject, Verb, ViewKind,
 };
 
 use meridian_design::chrome::{INK_DARK, INK_LIGHT};
@@ -64,6 +64,7 @@ use meridian_design::{semantic, spacing};
 use crate::canvas::{surface_input, CanvasSlot, EguiCanvasHost, EguiChartFrame};
 use crate::design::Mode;
 use crate::pipeline::Composed;
+use crate::starts;
 
 // ---------------------------------------------------------------------------
 // ChartDoc — the state every pane in this view shares.
@@ -173,6 +174,21 @@ impl ChartDoc {
     #[must_use]
     pub fn empty() -> Self {
         Self::headless(Composed::empty())
+    }
+
+    /// Replace the dashboard with a freshly composed one.
+    ///
+    /// The `invalidate` is not belt and braces. This document's canvas key is
+    /// `{dev_width, dev_height, dark}` and nothing else — the scene is not in
+    /// it, because until this existed a dashboard was composed once before the
+    /// window opened and never rebuilt. `CanvasSlot::present` returns early on
+    /// an unchanged key, so a new dashboard that happens to be the same pixel
+    /// size as the old one would leave the *old* raster on screen with no
+    /// error anywhere: a stale picture that reads as a GPU fault. Dropping the
+    /// presented key is what makes the next `present` actually raster.
+    pub fn open(&mut self, composed: Composed) {
+        self.composed = composed;
+        self.canvas.invalidate();
     }
 
     /// Whether there is a dashboard to draw.
@@ -330,15 +346,33 @@ impl Item<ChartDoc> for ChartPane {
         CHART
     }
 
+    /// The chart view's **front door**.
+    ///
+    /// This empty state is what a launch with no spec on the command line
+    /// opens on, so its prose cannot assume a spec was ever named — the copy
+    /// it replaces opened "This spec composed no plots", which is a report
+    /// about a spec that does not exist. It names both ways in: a shipped
+    /// start, offered as a button, and the command line.
+    ///
+    /// The affordance is an [`Action::Open`](brightfield_workbench::Action)
+    /// rather than a verb. There is no registered command that means "open the
+    /// example dashboard" and inventing one would put a keystroke and a palette
+    /// entry behind a fixture; worse, the chrome renders an affordance's verb's
+    /// real keystroke next to its label, so borrowing an unrelated verb would
+    /// ship a button that claims a key it does not have.
     fn subject(&self, doc: &ChartDoc) -> Subject {
         let subject = Subject::new("Chart", ICON_CHART, BindingContext::Workspace);
         if doc.is_empty() {
-            subject.empty(EmptyState::new(
+            let mut empty = EmptyState::new(
                 ICON_CHART,
                 "Nothing to draw",
-                "This spec composed no plots. Open a spec whose marks resolve \
-                 against their data, so that at least one plot is placed.",
-            ))
+                "No spec is open, or the one that is composed no plots. Start \
+                 from the example below, or name a spec on the command line.",
+            );
+            if let Some(start) = starts::for_view(ViewKind::Charts) {
+                empty = empty.with_next(Affordance::open(start.label, start.id));
+            }
+            subject.empty(empty)
         } else {
             subject
         }
@@ -418,11 +452,15 @@ impl Item<ChartDoc> for ControlsPane {
     fn subject(&self, doc: &ChartDoc) -> Subject {
         let subject = Subject::new("Controls", ICON_CONTROLS, BindingContext::Workspace);
         if doc.is_empty() {
+            // No affordance here on purpose: this rail sits beside the front
+            // door, and two buttons offering different things on a first
+            // launch is a choice nobody asked to make. It says what fills it
+            // and points at the pane that offers the way in.
             subject.empty(EmptyState::new(
                 ICON_CONTROLS,
                 "No dashboard to control",
-                "These controls act on a composed dashboard. Open a spec that \
-                 places at least one plot.",
+                "These controls act on a composed dashboard. Open one from the \
+                 chart pane, or name a spec on the command line.",
             ))
         } else {
             subject

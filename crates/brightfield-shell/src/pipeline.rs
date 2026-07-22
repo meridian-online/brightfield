@@ -25,7 +25,7 @@ use brightfield_render::scene::{build_multi_mark_scene, compose_dashboard, Chart
 use brightfield_render::{grow_margins, resolve_titles};
 use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::layout::{collect_plot_nodes, placed_plots, resolve_plot_insets, Rect};
-use brightfield_spec::parse_spec_path;
+use brightfield_spec::{parse_spec, parse_spec_path, Format, Spec};
 use brightfield_sql::{collect_marks, collect_plot_groups};
 use vello::Scene;
 
@@ -72,12 +72,33 @@ impl Composed {
 /// renders.
 pub fn compose_spec(spec_path: &str) -> Result<Composed, String> {
     let parsed = parse_spec_path(spec_path).map_err(|e| format!("parse error: {e}"))?;
-    let spec = parsed.spec;
+    compose(parsed.spec, Path::new(spec_path).parent())
+}
 
+/// The same pipeline over spec **text** rather than a file.
+///
+/// What it exists for: the starting points in [`crate::starts`] are
+/// `include_str!`-ed into the binary, so there is no path to hand
+/// [`compose_spec`] — and inventing one by resolving `examples/` relative to
+/// the working directory is exactly the decoy this replaces, since it works
+/// from the repo root and nowhere else.
+///
+/// `base_dir` is where relative `file:` paths in the spec resolve; `None` for
+/// a spec whose data is inline, which every embedded start's is.
+///
+/// # Errors
+///
+/// As [`compose_spec`].
+pub fn compose_spec_str(source: &str, base_dir: Option<&Path>) -> Result<Composed, String> {
+    let parsed = parse_spec(source, Format::Yaml).map_err(|e| format!("parse error: {e}"))?;
+    compose(parsed.spec, base_dir)
+}
+
+/// Everything after the parse, shared by both entry points above.
+fn compose(spec: Spec, spec_dir: Option<&Path>) -> Result<Composed, String> {
     let analysis = analyse_spec(&spec).map_err(|e| format!("analysis error: {e}"))?;
 
     let engine = Engine::new();
-    let spec_dir = Path::new(spec_path).parent();
     let load = engine
         .load_spec(spec.clone(), analysis, spec_dir)
         .map_err(|e| format!("engine error: {e}"))?;

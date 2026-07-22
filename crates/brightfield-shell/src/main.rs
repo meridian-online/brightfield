@@ -8,27 +8,38 @@
 //! fire a `ViewportCommand::Screenshot` and write a PNG of the live window for
 //! on-device sign-off.
 //!
+//! Naming a spec is optional. With none, the window opens on nothing — which
+//! is a real surface rather than a blank one: every pane of both views answers
+//! an empty document with an empty state, and the two panes that something
+//! shipped in the binary can fill offer it as a button. What stood here
+//! instead was a hardcoded `examples/dashboard.yaml`, which opened a dashboard
+//! nobody asked for when run from the repo root and exited with a read error
+//! from anywhere else.
+//!
 //! Usage: `brightfield-shell [SPEC.yaml] [--theme light|dark] [--shot-out PATH]
 //!         [--flow vertical|horizontal]`
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use brightfield_protocol::layout::Flow;
 use brightfield_render::vello_renderer::VelloRenderer;
 use brightfield_shell::canvas::EguiCanvasHost;
 use brightfield_shell::design::Mode;
-use brightfield_shell::window::{Boot, MeridianApp};
+use brightfield_shell::startup;
+use brightfield_shell::window::MeridianApp;
+use brightfield_workbench::persist::SAVE_DEBOUNCE_MS;
 
 struct Args {
-    spec: String,
+    spec: Option<String>,
     mode: Mode,
     shot_out: PathBuf,
     flow: Flow,
 }
 
 fn parse_args() -> Args {
-    let mut spec = "examples/dashboard.yaml".to_string();
+    let mut spec: Option<String> = None;
     let mut mode = Mode::Light;
     let mut shot_out = PathBuf::from("render-proof/live-screenshot.png");
     let mut flow = Flow::Vertical;
@@ -54,7 +65,7 @@ fn parse_args() -> Args {
                     };
                 }
             }
-            other if !other.starts_with("--") => spec = other.to_string(),
+            other if !other.starts_with("--") => spec = Some(other.to_string()),
             other => eprintln!("ignoring unknown flag {other}"),
         }
     }
@@ -116,6 +127,20 @@ impl ShotLatch {
 struct BrightfieldApp {
     app: MeridianApp,
     shot: ShotLatch,
+    /// Where the layout is written, or `None` when this machine has nowhere to
+    /// put one.
+    ///
+    /// Held by the host rather than by [`MeridianApp`] because this is the
+    /// only place `startup::layout_path()` is called: `MeridianApp` writes
+    /// only to a path it is handed, so nothing the headless tiers construct
+    /// can name the developer's real `workspace-layout.json` — the file the
+    /// PNG capture tier would otherwise overwrite on every `cargo test`. That
+    /// is a property of who calls `layout_path`, checkable with
+    /// `git grep -n 'layout_path()' -- crates/`, and **not** a claim that a
+    /// headless window cannot write: `poll_layout` and `flush_layout` are
+    /// `pub`, take any `&Path`, and `layout_wiring.rs` uses them to write real
+    /// files into a scratch directory.
+    layout_path: Option<PathBuf>,
 }
 
 impl eframe::App for BrightfieldApp {
@@ -123,6 +148,40 @@ impl eframe::App for BrightfieldApp {
         let ctx = ui.ctx().clone();
         self.app.draw(ui);
         self.shot.tick(&ctx);
+
+        // After the draw, so this frame's drags are already in the tree.
+        self.app.observe_window(&ctx);
+        if let Some(path) = &self.layout_path {
+            let now_ms = (ctx.input(|i| i.time) * 1000.0) as u64;
+            if let Some(Err(e)) = self.app.poll_layout(now_ms, path) {
+                eprintln!("layout save failed: {e}");
+            }
+            // eframe paints on input, not continuously. Without this, a user
+            // who drags a splitter and then leaves the window alone generates
+            // no more frames, the countdown never reaches its deadline, and
+            // the change survives only as far as `on_exit` — which a crash
+            // does not reach, and bounding that loss is what the debounce is
+            // for.
+            if self.app.layout_armed() {
+                ctx.request_repaint_after(Duration::from_millis(SAVE_DEBOUNCE_MS));
+            }
+        }
+    }
+
+    /// Write the layout on the way out, debounce or not.
+    ///
+    /// `on_exit` and not `App::save`: eframe's `persistence` feature is off in
+    /// this build, which makes `save` a no-op the integration never calls —
+    /// wiring the flush there would look right, compile, and never run. This
+    /// signature is the `#[cfg(not(feature = "glow"))]` arm; enabling glow
+    /// would grow a `gl` parameter and break this loudly, which is the right
+    /// direction for it to break in.
+    fn on_exit(&mut self) {
+        if let Some(path) = &self.layout_path {
+            if let Some(Err(e)) = self.app.flush_layout(path) {
+                eprintln!("layout flush failed: {e}");
+            }
+        }
     }
 }
 
@@ -159,19 +218,47 @@ fn host_from_frame(cc: &eframe::CreationContext<'_>) -> Result<EguiCanvasHost, S
 
 fn main() -> Result<(), String> {
     let args = parse_args();
-    let boot = Boot::open(&args.spec, args.flow, None)?;
-    eprintln!("{} from {}", boot.describe(), args.spec);
 
-    // Both read before the window exists, and both from the boot rather than
-    // open-coded here. `main.rs` having its own copy of the chart window's
-    // budget — 200 logical points, against a shell that said 214 and a panel
-    // declared at 180 — is the drift this arrangement ends.
-    let (win_w, win_h) = boot.window_size();
-    let title = boot.title();
+    // The layout is read *before* anything else, because two things downstream
+    // depend on it: the window's size, which has to be settled before the
+    // viewport is built, and what to open when the command line named nothing.
+    // `startup::boot_layout` publishes both views' item vocabularies first —
+    // see its docs for why the read is invalid without that.
+    let path = startup::layout_path();
+    let (mut layout, outcome) = startup::boot_layout(path.as_deref());
+    eprintln!("layout: {}", outcome.reason());
+
+    let boot = startup::opening_boot(args.spec.as_deref(), layout.opened.as_deref(), args.flow)?;
+
+    // Which view will actually be drawn, resolved once and asked three times.
+    // A boot that named one wins — `MeridianApp::assemble` sets it active — and
+    // a boot that named none defers to the layout, which is exactly what
+    // `assemble` leaves standing. So this is the view the first frame draws,
+    // and it is the only honest subject for the size, the title and the
+    // summary line below. Letting a `None` default to the charts view instead
+    // titled a restored crosswalk "Brightfield" and logged "composed 0x0
+    // dashboard" over a 34-node graph — and since `run_native` takes the title
+    // once and only the front door's own click ever sends a
+    // `ViewportCommand::Title`, that name stayed wrong for the session.
+    let view = boot.view_or(layout.workspace.active());
+    eprintln!("{}", boot.describe(view));
+
+    // A window size the user chose is authoritative. Otherwise the boot's own
+    // budget stands — unless it has no document to derive one from, in which
+    // case `WindowGeometry`'s default is already in `layout.window`.
+    if !startup::kept_window_geometry(outcome) && !boot.is_empty() {
+        let (w, h) = boot.window_size(view);
+        layout.window.size = [w, h];
+    }
+    let mut viewport = egui::ViewportBuilder::default().with_inner_size(layout.window.size);
+    if let Some([x, y]) = layout.window.position {
+        viewport = viewport.with_position([x, y]);
+    }
+    let title = boot.title(view);
 
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
-        viewport: egui::ViewportBuilder::default().with_inner_size([win_w, win_h]),
+        viewport,
         ..Default::default()
     };
     let mode = args.mode;
@@ -183,8 +270,9 @@ fn main() -> Result<(), String> {
             let chart_host = host_from_frame(cc)?;
             let protocol_host = host_from_frame(cc)?;
             Ok(Box::new(BrightfieldApp {
-                app: MeridianApp::new(boot, chart_host, protocol_host, mode),
+                app: MeridianApp::with_layout(boot, layout, chart_host, protocol_host, mode),
                 shot: ShotLatch::new(shot_out),
+                layout_path: path,
             }) as Box<dyn eframe::App>)
         }),
     )

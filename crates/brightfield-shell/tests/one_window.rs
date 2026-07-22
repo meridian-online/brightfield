@@ -43,7 +43,7 @@ struct Window {
 
 impl Window {
     fn open(boot: Boot, mode: Mode) -> Self {
-        let (w, h) = boot.window_size();
+        let (w, h) = boot.window_size(boot.view_or(ViewKind::Charts));
         Self::open_at(boot, mode, egui::vec2(w, h))
     }
 
@@ -124,7 +124,7 @@ fn edgar() -> ProtocolInputs {
 /// the view being active.
 fn both(view: ViewKind) -> Boot {
     Boot {
-        view,
+        view: Some(view),
         composed: compose_spec(DASHBOARD).expect("compose the dashboard"),
         protocol: edgar(),
         flow: Flow::Vertical,
@@ -157,7 +157,7 @@ fn both(view: ViewKind) -> Boot {
 #[test]
 fn a_spec_chooses_the_opening_view_and_both_views_are_loaded() {
     let charts = Boot::open(DASHBOARD, Flow::Vertical, None).expect("open the dashboard spec");
-    assert_eq!(charts.view, ViewKind::Charts);
+    assert_eq!(charts.view, Some(ViewKind::Charts));
     assert!(
         charts.protocol.graph_collapsed.nodes.is_empty(),
         "a dashboard spec loaded a protocol"
@@ -177,7 +177,7 @@ fn a_spec_chooses_the_opening_view_and_both_views_are_loaded() {
     let protocol = Boot::open(EDGAR, Flow::Vertical, None).expect("open the manifest offline");
     std::env::remove_var(OFFLINE);
 
-    assert_eq!(protocol.view, ViewKind::Protocol);
+    assert_eq!(protocol.view, Some(ViewKind::Protocol));
     assert!(
         !protocol.protocol.graph_collapsed.nodes.is_empty(),
         "the protocol fixture loaded no assets, so this test proves nothing"
@@ -414,7 +414,7 @@ fn the_protocol_grammar_does_not_reach_the_dag_from_the_charts_view() {
 /// case green.
 #[test]
 fn the_top_bar_switcher_switches_the_view_the_dock_draws() {
-    let natural = both(ViewKind::Protocol).window_size();
+    let natural = both(ViewKind::Protocol).window_size(ViewKind::Protocol);
     for size in [egui::vec2(natural.0, natural.1), egui::vec2(240.0, 400.0)] {
         let mut win = Window::open_at(both(ViewKind::Protocol), Mode::Light, size);
         win.settle();

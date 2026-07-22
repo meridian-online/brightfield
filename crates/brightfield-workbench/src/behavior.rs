@@ -56,6 +56,7 @@ use egui_tiles::{SimplificationOptions, TileId, UiResponse};
 
 use crate::chrome;
 use crate::item::{ItemCtx, ItemMap, PaneKey, Request};
+use crate::subject::Action;
 use crate::Mode;
 
 /// The gap `egui_tiles` leaves between two sibling tiles, in logical points.
@@ -104,6 +105,16 @@ pub struct PaneChrome<'a, D: ?Sized> {
     /// reason [`Request`] documents — acting on one now would mean
     /// re-entering the tile tree from inside its own draw.
     requests: &'a mut Vec<Request>,
+    /// Where each pane that drew an empty state put its resolving button, in
+    /// window-space logical points. Overwritten every frame by the shell.
+    ///
+    /// A measurement rather than a request, so it does not ride the request
+    /// queue. It has to come out through the behaviour because the empty state
+    /// is drawn by [`chrome::empty_state`] and not by the pane's own
+    /// [`Item::ui`](crate::Item::ui) — no item can record a rect it never
+    /// receives, and the alternative is a test clicking a coordinate nothing
+    /// derived.
+    affordances: &'a mut Vec<(PaneKey, egui::Rect)>,
 }
 
 impl<'a, D: ?Sized> PaneChrome<'a, D> {
@@ -115,7 +126,9 @@ impl<'a, D: ?Sized> PaneChrome<'a, D> {
         focused: Option<PaneKey>,
         tabbed: &'a HashSet<TileId>,
         requests: &'a mut Vec<Request>,
+        affordances: &'a mut Vec<(PaneKey, egui::Rect)>,
     ) -> Self {
+        affordances.clear();
         Self {
             doc,
             items,
@@ -123,6 +136,7 @@ impl<'a, D: ?Sized> PaneChrome<'a, D> {
             focused,
             tabbed,
             requests,
+            affordances,
         }
     }
 }
@@ -154,6 +168,7 @@ impl<D: ?Sized> egui_tiles::Behavior<PaneKey> for PaneChrome<'_, D> {
             focused,
             tabbed,
             requests,
+            affordances,
         } = self;
         let mode = *mode;
         let key = *pane;
@@ -171,8 +186,14 @@ impl<D: ?Sized> egui_tiles::Behavior<PaneKey> for PaneChrome<'_, D> {
             // The empty state is drawn *instead of* the item, which is what
             // makes it impossible to forget: it is not a branch a pane author
             // has to remember to write inside their own draw.
-            if let Some(verb) = chrome::empty_state(&mut body, empty, mode).activated {
-                requests.push(Request::Verb(verb));
+            let drawn = chrome::empty_state(&mut body, empty, mode);
+            if let Some(rect) = drawn.affordance {
+                affordances.push((key, rect));
+            }
+            match drawn.activated {
+                Some(Action::Verb(verb)) => requests.push(Request::Verb(verb)),
+                Some(Action::Open(id)) => requests.push(Request::Open(id)),
+                None => {}
             }
         } else {
             let mut cx = ItemCtx::new(mode, key, tile, *focused == Some(key), requests);

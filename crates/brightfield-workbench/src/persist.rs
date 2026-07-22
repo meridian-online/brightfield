@@ -126,8 +126,9 @@ impl Default for WindowGeometry {
     }
 }
 
-/// The whole persisted envelope: the version, the window, and the workspace
-/// (which carries the per-view trees and the active view).
+/// The whole persisted envelope: the version, the window, the workspace
+/// (which carries the per-view trees and the active view), and what the window
+/// was last opened on.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SavedLayout {
     /// See [`LAYOUT_VERSION`].
@@ -136,16 +137,59 @@ pub struct SavedLayout {
     pub window: WindowGeometry,
     /// The arrangement.
     pub workspace: Workspace,
+    /// The shipped starting point the window last opened, if any.
+    ///
+    /// # Why the arrangement is not enough
+    ///
+    /// The rest of this envelope restores *where the panes are*, not *what is
+    /// in them*: a shell that restored only [`Self::workspace`] would come up
+    /// with the user's splitter positions around panes that are all still
+    /// empty. That is not a restored session, and a surface that invites a
+    /// first action would be right to go on inviting one.
+    ///
+    /// So the id of a starting point the binary ships is recorded here and
+    /// re-opened at boot. An id rather than a path, deliberately: a path drags
+    /// in a file that has since moved or been deleted, and a boot that can
+    /// fail is a boot that needs a policy for failing. A shipped start cannot
+    /// go missing, and an id this build does not recognise means the same
+    /// thing as `None` — open on nothing.
+    ///
+    /// # Why this is not a [`LAYOUT_VERSION`] bump
+    ///
+    /// Every file written before this field existed still parses as
+    /// [`LoadOutcome::Restored`], so nothing is discarded on upgrade. The
+    /// version's own rule is to bump "when the persisted shape changes
+    /// incompatibly", and this change is compatible.
+    ///
+    /// **`#[serde(default)]` is the thing not to drop the day this field stops
+    /// being an `Option`.** On an `Option<T>` the attribute is redundant:
+    /// serde's derive already reads a missing one as `None`, so removing it
+    /// here changes nothing any test can see. On any other type it is the
+    /// whole mechanism — a field added at a non-optional type *without* it
+    /// makes every file already on every machine fail to parse, which surfaces
+    /// as [`LoadOutcome::Corrupt`]: a log line blaming the user's file for a
+    /// change this build made, and everybody's arrangement gone. Which is the
+    /// opposite way round from how it reads, so it is written down.
+    ///
+    /// Both halves watched, by adding a second field beside this one at
+    /// `u32` and stripping it from a saved file the way
+    /// `a_layout_from_before_this_field_existed_still_loads` strips this one:
+    /// without the attribute the load reports `Corrupt`, with it `Restored`.
+    /// And removing the attribute from this field, an `Option`, leaves that
+    /// test green.
+    #[serde(default)]
+    pub opened: Option<String>,
 }
 
 impl SavedLayout {
-    /// A layout at the current version, around `workspace`.
+    /// A layout at the current version, around `workspace`, opened on nothing.
     #[must_use]
     pub fn new(workspace: Workspace) -> Self {
         Self {
             version: LAYOUT_VERSION,
             window: WindowGeometry::default(),
             workspace,
+            opened: None,
         }
     }
 

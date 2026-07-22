@@ -199,6 +199,7 @@ fn draw(
     input: egui::RawInput,
 ) -> (Vec<Request>, Vec<egui::ClippedPrimitive>) {
     let mut requests = Vec::new();
+    let mut affordances = Vec::new();
     let view = ws.active();
     let tabbed = ws.tabbed_tiles(view);
     let focused = ws.focus();
@@ -216,6 +217,7 @@ fn draw(
                 focused,
                 &tabbed,
                 &mut requests,
+                &mut affordances,
             );
             ws.tree_mut(view).ui(&mut behavior, ui);
         }
@@ -368,6 +370,7 @@ fn a_tab_title_is_read_from_the_document_for_a_pane_that_is_not_drawing() {
     let mut items = registry(ViewKind::Charts).instantiate();
     let tabbed = ws.tabbed_tiles(ViewKind::Charts);
     let mut requests = Vec::new();
+    let mut affordances = Vec::new();
     let mut behavior = PaneChrome::new(
         &mut doc,
         &mut items,
@@ -375,6 +378,7 @@ fn a_tab_title_is_read_from_the_document_for_a_pane_that_is_not_drawing() {
         None,
         &tabbed,
         &mut requests,
+        &mut affordances,
     );
 
     use egui_tiles::Behavior as _;
@@ -395,6 +399,7 @@ fn a_tab_title_is_read_from_the_document_for_a_pane_that_is_not_drawing() {
         None,
         &tabbed,
         &mut requests,
+        &mut affordances,
     );
     assert_eq!(
         behavior.tab_title_for_pane(&canvas).text(),
@@ -435,6 +440,7 @@ fn a_pane_under_a_tab_strip_gets_no_header_band() {
     // Drawn as the registry arranges it — the canvas is in the tab strip.
     let mut tree = ws.tree(ViewKind::Charts).clone();
     let mut requests = Vec::new();
+    let mut affordances = Vec::new();
     let (_, tabbed_pixels) = {
         let ctx = egui::Context::default();
         let mut once = Some(());
@@ -452,6 +458,7 @@ fn a_pane_under_a_tab_strip_gets_no_header_band() {
                         None,
                         &tabbed,
                         &mut requests,
+                        &mut affordances,
                     );
                     tree.ui(&mut behavior, ui);
                 }
@@ -464,6 +471,7 @@ fn a_pane_under_a_tab_strip_gets_no_header_band() {
     let empty = std::collections::HashSet::new();
     let mut tree = ws.tree(ViewKind::Charts).clone();
     let mut requests = Vec::new();
+    let mut affordances = Vec::new();
     let untabbed_pixels = {
         let ctx = egui::Context::default();
         let mut once = Some(());
@@ -481,6 +489,7 @@ fn a_pane_under_a_tab_strip_gets_no_header_band() {
                         None,
                         &empty,
                         &mut requests,
+                        &mut affordances,
                     );
                     tree.ui(&mut behavior, ui);
                 }

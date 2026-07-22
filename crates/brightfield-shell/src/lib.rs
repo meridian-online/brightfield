@@ -15,12 +15,18 @@
 //! - [`capture`] — headless egui_wgpu → PNG (the `brightfield-shot` binary).
 //! - [`app`] / [`protocol`] — the two views, each declared as `Item`s on the
 //!   `brightfield-workbench` shell contract.
+//! - [`startup`] — where the layout file lives, and the one order it can be
+//!   read in.
+//! - [`starts`] — the starting points that ship inside the binary, which are
+//!   what a launch with nothing on the command line offers.
 
 pub mod app;
 pub mod canvas;
 pub mod capture;
 pub mod pipeline;
 pub mod protocol;
+pub mod starts;
+pub mod startup;
 pub mod window;
 
 /// The Meridian Design System → egui bridge.

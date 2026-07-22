@@ -59,14 +59,15 @@ use brightfield_render::canvas_host::{Color, PixelSize};
 use brightfield_keys::BindingContext;
 use brightfield_workbench::registry::{DockSide, Slot};
 use brightfield_workbench::{
-    chrome, EmptyState, Icon, Item, ItemCtx, ItemId, ItemRegistry, ItemSpec, PaneKey, Subject,
-    Tone, Verb, ViewKind,
+    chrome, Affordance, EmptyState, Icon, Item, ItemCtx, ItemId, ItemRegistry, ItemSpec, PaneKey,
+    Subject, Tone, Verb, ViewKind,
 };
 
 use meridian_design::{control, semantic, spacing};
 
 use crate::canvas::{CanvasSlot, EguiCanvasHost};
 use crate::design::Mode;
+use crate::starts;
 
 // ---------------------------------------------------------------------------
 // Offline pipeline: arcform manifest -> asset graph + steps.
@@ -123,6 +124,77 @@ impl ProtocolInputs {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Rendering a manifest that has no run behind it
+// ---------------------------------------------------------------------------
+
+/// The opt-in that lets a Protocol **manifest** — a declaration, with no run
+/// behind it — be rendered.
+pub const OFFLINE_VAR: &str = "BRIGHTFIELD_PROTOCOL_OFFLINE";
+
+/// Whether this process has opted a run-less manifest in.
+#[must_use]
+pub fn offline_optin() -> bool {
+    std::env::var(OFFLINE_VAR).is_ok()
+}
+
+/// The refusal shown for `what`, a run-less manifest this process did not opt
+/// in to.
+///
+/// # The rule, stated once because it had already been restated
+///
+/// The default input to this view is an **emitted Protocol+Run contract**: a
+/// graph a run actually produced. A manifest is the other thing — the graph a
+/// protocol *declares* — and nothing on the canvas distinguishes the two. So a
+/// manifest may only be rendered where something else makes the difference
+/// plain, and [`OFFLINE_VAR`] is that something for a path handed in from
+/// outside.
+///
+/// The qualifier that is **not** part of it: this is about the artifact class,
+/// not about who named the artifact. A defence of the form "the user named
+/// that one, so it needs the gate; we shipped this one, so it does not" is a
+/// narrower rule than the one recorded, and it was written down once before
+/// being noticed.
+///
+/// # The one exemption, and what it actually is
+///
+/// A [`crate::starts::Start`] that sets
+/// [`run_less`](crate::starts::Start::run_less) is exempt, because its label
+/// carries [`crate::starts::RUN_LESS_MARK`]: the disclosure the variable
+/// exists to force, made in the place the variable cannot reach — on the
+/// button, at the moment of the click.
+///
+/// **Disclosed once at the pick, then remembered — not disclosed every time it
+/// is taken.** That distinction is load-bearing rather than pedantic, because
+/// the second way in is one this product ships: `MeridianApp::open_start`
+/// records the start's id in
+/// [`SavedLayout::opened`](brightfield_workbench::SavedLayout), and
+/// [`crate::startup::opening_boot`] reopens it on the next launch — a path with
+/// no button and no click, whose restored graph carries `(no run)` nowhere on
+/// it. An earlier spelling of this paragraph said the exemption held "on the
+/// button, at the moment of the click" full stop, which was false for the
+/// launch after that click.
+///
+/// What makes the remembered form honest is where the memory can come from.
+/// `SavedLayout::opened` is written from exactly one place in product code —
+/// `MeridianApp::open_start`, checkable with
+/// `git grep -n 'live_mut().opened' -- crates/brightfield-shell/src` — so it
+/// can only name an id the user picked off a button that disclosed it. What
+/// invalidates it: opening anything else, which overwrites it, and a build
+/// that no longer ships that start, which `opening_boot` drops rather than
+/// propagates.
+///
+/// `starts.rs` states the same thing at the declaration, and
+/// `a_start_that_opens_a_run_less_manifest_says_so_on_its_own_button` holds
+/// the label to the flag.
+#[must_use]
+pub fn run_less_manifest_refusal(what: &str) -> String {
+    format!(
+        "{what} is a Protocol manifest, not an emitted Protocol+Run contract. \
+         To render it offline without a run, set {OFFLINE_VAR}=1."
+    )
+}
+
 /// Load a protocol manifest (`arcform.yaml` + its `models/*.sql`) into
 /// [`ProtocolInputs`] — the gated offline/fixture path, the same input
 /// `brightfield-shot`/the shell consume.
@@ -141,10 +213,80 @@ pub fn load_protocol_offline(spec_path: &str) -> Result<ProtocolInputs, String> 
         .parent()
         .unwrap_or_else(|| Path::new("."));
     let sources = brightfield_protocol::graph::load_model_sources(&manifest, dir);
-    let graph_full = brightfield_protocol::graph::build_graph(&manifest, &sources);
+    Ok(inputs_from(&manifest, &sources))
+}
+
+/// The same load over manifest **text** and its models' text, rather than a
+/// directory on disk.
+///
+/// What it exists for: the crosswalk starting point in [`crate::starts`] is
+/// `include_str!`-ed into the binary, models and all, so there is no directory
+/// to read them out of — and resolving `examples/` against the working
+/// directory would give a start that works from the repo root and nowhere
+/// else.
+///
+/// `models` maps each `sql:` step's model path — exactly as the manifest
+/// spells it — to that model's SQL.
+///
+/// **A model the manifest names and this map does not carry is an error**, not
+/// a degradation. [`brightfield_protocol::graph::load_model_sources`] degrades
+/// an unreadable *file* to an opaque chip because a file on a user's disk can
+/// legitimately be missing; nothing here can. Every source is `include_str!`-ed
+/// at compile time, so the only way one is absent is a key spelled differently
+/// from the manifest — and the damage is quiet: the steps sheet is unchanged,
+/// every affected step degrades to a chip, and a third of the crosswalk's
+/// lineage silently stops being drawn. The front door would go on offering a
+/// button that resolves to a render missing the thing it is for.
+///
+/// # Errors
+///
+/// A message if the text is not a protocol manifest, does not parse as one, or
+/// names a `sql:` model that is not in `models`.
+pub fn load_protocol_str(text: &str, models: &[(&str, &str)]) -> Result<ProtocolInputs, String> {
+    if !brightfield_protocol::is_protocol_manifest(text) {
+        return Err("not a protocol manifest".to_string());
+    }
+    let manifest = brightfield_protocol::parse_manifest_str(text)
+        .map_err(|e| format!("protocol parse error: {e}"))?;
+    let mut missing: Vec<&str> = Vec::new();
+    let sources: BTreeMap<StepId, Result<String, String>> = manifest
+        .steps
+        .iter()
+        .filter_map(|step| {
+            let model = step.sql.as_ref()?;
+            let source = match models.iter().find(|(name, _)| name == model) {
+                Some((_, sql)) => Ok((*sql).to_string()),
+                None => {
+                    missing.push(model);
+                    Err(format!("{model}: not embedded"))
+                }
+            };
+            Some((step.name.clone(), source))
+        })
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "{} names {} model(s) no embedded source was found for: {}",
+            manifest.name,
+            missing.len(),
+            missing.join(", ")
+        ));
+    }
+    Ok(inputs_from(&manifest, &sources))
+}
+
+/// Derive the panel's inputs from a parsed manifest and its models' sources —
+/// the half both loaders share, so a start that ships inside the binary and a
+/// manifest read off disk produce the same graph by construction rather than
+/// by two spellings agreeing.
+fn inputs_from(
+    manifest: &brightfield_protocol::Manifest,
+    sources: &BTreeMap<StepId, Result<String, String>>,
+) -> ProtocolInputs {
+    let graph_full = brightfield_protocol::graph::build_graph(manifest, sources);
     let graph_collapsed = collapse_families(&graph_full);
     let sheet_rows = synth_sheet_rows(&graph_full);
-    Ok(ProtocolInputs {
+    ProtocolInputs {
         protocol: manifest.name.clone(),
         graph_collapsed,
         graph_full,
@@ -152,7 +294,7 @@ pub fn load_protocol_offline(spec_path: &str) -> Result<ProtocolInputs, String> 
         assets: BTreeMap::new(),
         steps: BTreeMap::new(),
         sheet_rows,
-    })
+    }
 }
 
 /// Synthesise the flat run-ordered step rows from the graph's seams — the S
@@ -844,6 +986,18 @@ impl ProtocolDoc {
         Self::headless(ProtocolModel::new(ProtocolInputs::empty(), Flow::Vertical))
     }
 
+    /// Replace the graph with a freshly built one, keeping the reading axis
+    /// the user chose.
+    ///
+    /// The `invalidate` is cheaper insurance here than on the chart side —
+    /// this view's [`CanvasKey`] carries a layout `generation`, which a new
+    /// model resets to zero, so an equal-shaped replacement could collide with
+    /// the presented key. Dropping it is one line and removes the question.
+    pub fn open(&mut self, inputs: ProtocolInputs) {
+        self.model = ProtocolModel::new(inputs, self.model.flow());
+        self.canvas.invalidate();
+    }
+
     /// The identity of the raster this document would present right now.
     fn canvas_key(&self, ppp: f32, mode: Mode) -> (CanvasKey, PixelSize) {
         let (expanded, flow) = self.model.layout_key();
@@ -1108,15 +1262,37 @@ impl Item<ProtocolDoc> for CanvasPane {
         CANVAS
     }
 
+    /// The protocol view's **front door**.
+    ///
+    /// Reached by switching to this view on a launch that named no manifest,
+    /// so its prose cannot assume one was opened. The affordance opens the
+    /// crosswalk that ships with the binary — see [`crate::starts`] for why it
+    /// is an `Action::Open` and not a verb.
+    ///
+    /// The crosswalk is a manifest with no run behind it, which is the artifact
+    /// class [`run_less_manifest_refusal`] gates. It is not exempted here by
+    /// being shipped: it is exempted because its label carries
+    /// [`starts::RUN_LESS_MARK`], which is the disclosure
+    /// [`OFFLINE_VAR`] exists to force, made where the user is looking. That
+    /// label is read straight off the [`starts::Start`], so the button and the
+    /// exemption cannot say different things.
+    ///
+    /// The disclosure is made **here**, once, and the layout file remembers the
+    /// pick — a later launch reopens the crosswalk without drawing this pane at
+    /// all. [`run_less_manifest_refusal`] states that half of the rule.
     fn subject(&self, doc: &ProtocolDoc) -> Subject {
         let subject = Subject::new("Canvas", ICON_CANVAS, BindingContext::Protocol);
         if doc.model.displayed_graph().nodes.is_empty() {
-            subject.empty(EmptyState::new(
+            let mut empty = EmptyState::new(
                 ICON_CANVAS,
                 "Nothing to draw",
-                "The graph in view holds no assets. Widen the drill scope, or open \
-                 a protocol whose steps produce something.",
-            ))
+                "No protocol is open, or the graph in view holds no assets. \
+                 Start from the example below, or widen the drill scope.",
+            );
+            if let Some(start) = starts::for_view(ViewKind::Protocol) {
+                empty = empty.with_next(Affordance::open(start.label, start.id));
+            }
+            subject.empty(empty)
         } else {
             subject
         }
