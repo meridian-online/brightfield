@@ -1,4 +1,4 @@
-//! Spec → composited Vello scene (gpui-free).
+//! Spec → composited Vello scene (framework-free).
 //!
 //! A focused port of the app's `build_everything` plot-composition path, using
 //! only the framework-free crates (`brightfield-spec` / `-engine` / `-sql` /

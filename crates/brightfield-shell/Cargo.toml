@@ -5,12 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "egui/eframe shell hosting the Vello mosaic canvas on a shared wgpu device (gpui-free)"
+description = "egui/eframe shell hosting the Vello mosaic canvas on a shared wgpu device"
 
 [dependencies]
 # The framework-free render/host seam + Vello renderer + scene builders.
 brightfield-render = { path = "../brightfield-render" }
-# Spec -> engine -> executed marks -> Vello scene pipeline (all gpui-free).
+# Spec -> engine -> executed marks -> Vello scene pipeline (all framework-free).
 brightfield-engine = { path = "../brightfield-engine" }
 brightfield-spec = { path = "../brightfield-spec" }
 brightfield-sql = { path = "../brightfield-sql" }

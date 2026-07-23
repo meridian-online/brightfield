@@ -7,9 +7,9 @@
 //! **status** and live **state** finally surface as columns
 //! ("the S sheet answers asset-inversion disorientation").
 //!
-//! Pure data + a cursor: the app renders the rows into a `gpui-component` table
+//! Pure data + a cursor: the shell renders the rows into its table widget
 //! and drives the cursor from `j`/`k`; the headless tests drive the same
-//! surface. No gpui, no vello.
+//! surface. No UI framework, no vello.
 
 use crate::contract_graph::ContractView;
 

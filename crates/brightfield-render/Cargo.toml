@@ -10,10 +10,10 @@ description = "Headless chart rendering: Mosaic spec + Arrow data -> Vello scene
 [dependencies]
 brightfield-spec = { path = "../brightfield-spec" }
 # Asset-graph + layout types for the protocol DAG scene —
-# gpui-free and vello-free by contract, so this crate stays framework-free.
+# UI-framework-free and vello-free by contract, so this crate stays framework-free.
 brightfield-protocol = { path = "../brightfield-protocol" }
 # Meridian design tokens (chart ink, Harbour palette, bundled Inter font).
-# MIT, dependency-free and gpui-free, so the render crate stays framework-free.
+# MIT and dependency-free, so the render crate stays framework-free.
 meridian-design = { git = "https://github.com/meridian-online/design", rev = "952eea92e4659a0f80a998709b81742be5d7385b" }
 arrow = { version = "58", default-features = false, features = ["chrono-tz"] }
 # `wgpu` feature: this crate now owns the framework-free render/host seam

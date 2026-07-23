@@ -13,7 +13,7 @@
 //! within-plot edit that WOULD bounce to "restart to apply" is refused at edit
 //! time with a reason instead.
 //!
-//! No gpui type crosses this boundary — the app layer is the shim that drives
+//! No UI-framework type crosses this boundary — the shell layer is the shim that drives
 //! the reducer and re-renders (the standing framework-free rule, mirroring
 //! `brightfield-keys` / `spec_save`). Targeting is by focused-plot + ordinal
 //! (v1: the plot's PRIMARY/first mark): count-changing edits re-walk the live
@@ -34,7 +34,7 @@ use crate::vocab::{LegendChannel, MarkKind};
 const INHERITED_CHANNELS: &[&str] = &["x", "y", "x1", "x2", "y1", "y2"];
 
 /// A typed structural mutation applied to the working [`Spec`] by [`apply`] —
-/// the gpui-free AST-mutation API the keyboard grammar named as missing.
+/// the framework-free AST-mutation API the keyboard grammar named as missing.
 ///
 /// Four variants (the 5th reserved verb, undo, is an [`UndoStack`] pop, not an
 /// edit). Each edit is TYPED (never an exec-string, per the VisiData warning),

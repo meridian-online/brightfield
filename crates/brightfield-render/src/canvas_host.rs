@@ -3,16 +3,15 @@
 //! These traits factor the chart's paint path into a framework-free seam. The
 //! chart's logic (building the scene, interpreting brush/hover input, deciding
 //! the overlay) is expressed against these traits; the framework that actually
-//! owns a GPU device, a window, and a pointer implements them. Implementors: the
-//! gpui host (`brightfield_ui::gpui_canvas`, a `RenderImage` via GPU readback —
-//! the transitional present path) and the egui host (`brightfield_shell`, a
-//! `vello::Scene` rendered to a texture on eframe's shared wgpu device, presented
-//! zero-copy as an `egui::TextureId` — the readback deleted). The seam lets a new
-//! host drop in without touching the chart logic.
+//! owns a GPU device, a window, and a pointer implements them. Implementor: the
+//! egui host (`brightfield_shell`, a `vello::Scene` rendered to a texture on
+//! eframe's shared wgpu device, presented zero-copy as an `egui::TextureId`).
+//! The retired gpui host implemented the same seam through a `RenderImage` GPU
+//! readback — the proof the seam lets a new host drop in without touching the
+//! chart logic, which is how the egui host arrived.
 //!
 //! - [`CanvasHost`] owns the shared wgpu device/queue and turns a `vello::Scene`
-//!   into a host-displayable handle (the gpui host: a `RenderImage` via GPU
-//!   readback — the transitional present path).
+//!   into a host-displayable handle (the egui host: a texture id).
 //! - [`ChartSurface`] is the per-chart, per-frame boundary: present the built
 //!   scene, reserve the on-screen rect, hand back an [`OverlayPainter`], and set
 //!   the pointer cursor.
@@ -67,7 +66,7 @@ impl SurfaceRect {
 
 /// A straight-alpha sRGB colour (components 0–1), framework-free. Mirrors
 /// `meridian_design::Rgba`; the host converts to its own colour type at the
-/// boundary (the gpui host: `gpui::Rgba` → `Hsla`).
+/// boundary.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Color {
     /// Red (0–1).
@@ -81,7 +80,7 @@ pub struct Color {
 }
 
 impl Color {
-    /// Fully transparent — the base colour the transitional gpui present clears
+    /// Fully transparent — the base colour a present path clears
     /// to (the overlay and chart ink carry their own alpha).
     pub const TRANSPARENT: Color = Color {
         r: 0.0,
@@ -187,8 +186,8 @@ impl Default for SurfaceInput {
 }
 
 /// A pointer cursor over the surface, framework-free. The host maps each variant
-/// to its own cursor type (the gpui host: an open/closed hand over the interior,
-/// axis/diagonal resize handles on edges/corners).
+/// to its own cursor type (an open/closed hand over the interior, axis/diagonal
+/// resize handles on edges/corners).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SurfaceCursor {
     /// Over a grabbable interior (translate) — open hand.
@@ -207,8 +206,9 @@ pub enum SurfaceCursor {
 
 /// The response a [`ChartSurface`] produces for a frame — the reserved on-screen
 /// rect plus the surface-local input. (The overlay pass is borrowed from the
-/// surface via [`ChartSurface::overlay`] rather than owned here, because the gpui
-/// overlay painter borrows the live window for the duration of the pass.)
+/// surface via [`ChartSurface::overlay`] rather than owned here, because a
+/// host's overlay painter may borrow the live window for the duration of the
+/// pass.)
 #[derive(Clone, Copy, Debug)]
 pub struct SurfaceResponse {
     /// The rect the surface reserved on screen (window-space logical pixels).
@@ -218,8 +218,7 @@ pub struct SurfaceResponse {
 }
 
 /// Owns the shared wgpu device/queue; turns a `vello::Scene` into a
-/// host-displayable handle. The gpui host's `Surface` is a `RenderImage`
-/// produced by GPU readback (the transitional present path).
+/// host-displayable handle (the egui host's `Surface`: a texture id).
 pub trait CanvasHost {
     /// The host-displayable handle a presented scene becomes.
     type Surface;
@@ -255,8 +254,8 @@ pub trait OverlayPainter {
 /// The per-chart render/host boundary. Each frame the chart hands over the built
 /// scene + logical size; the surface presents it, reserves the on-screen rect,
 /// exposes an [`OverlayPainter`] for the transient overlay, and sets the pointer
-/// cursor. Input is delivered separately (see the module docs on the gpui host):
-/// the host's native pointer events are gathered into [`SurfaceInput`] and routed
+/// cursor. Input is delivered separately: the host's native pointer events are
+/// gathered into [`SurfaceInput`] and routed
 /// into the interaction transitions.
 pub trait ChartSurface {
     /// Present the chart's current scene at `size` and reserve its on-screen

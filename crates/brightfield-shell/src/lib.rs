@@ -1,6 +1,6 @@
 //! brightfield-shell — the egui/eframe host for the Vello mosaic canvas.
 //!
-//! The second stage of the gpui → egui/Vello migration: a gpui-free shell that
+//! The second stage of the gpui → egui/Vello migration: a framework-clean shell that
 //! renders the real chart through the framework-free render seam on eframe's
 //! shared wgpu device, with the Metal↔wgpu readback deleted. Its reason
 //! to exist first is the loop — every later UI change is verifiable because the
@@ -11,7 +11,7 @@
 //! - [`canvas`] — [`canvas::EguiCanvasHost`] / [`canvas::EguiChartFrame`], the
 //!   egui realisation of the `CanvasHost`/`ChartSurface`/`OverlayPainter` seam.
 //! - [`design`] — the Meridian Design System → egui `Visuals`/`Style`/fonts.
-//! - [`pipeline`] — spec → composited Vello scene (gpui-free).
+//! - [`pipeline`] — spec → composited Vello scene (framework-free).
 //! - [`capture`] — headless egui_wgpu → PNG (the `brightfield-shot` binary).
 //! - [`app`] / [`protocol`] — the two views, each declared as `Item`s on the
 //!   `brightfield-workbench` shell contract.

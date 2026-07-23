@@ -1,12 +1,13 @@
 //! VelloRenderer — wgpu-backed Vello scene renderer.
 //!
-//! Wraps a dedicated wgpu device/queue and Vello renderer behind an
+//! Wraps a wgpu device/queue and Vello renderer behind an
 //! `Arc<Mutex<VelloRenderer>>`. Renders Vello scenes to RGBA pixel buffers
-//! for display as GPUI images.
+//! or straight onto host textures.
 //!
 //! Uses `vello::wgpu` (Vello's re-exported wgpu) to avoid version conflicts.
-//! The wgpu device is standalone (not shared with GPUI), created once,
-//! and shared via `Arc<Mutex<VelloRenderer>>`.
+//! [`VelloRenderer::new`] creates a standalone device once and shares it via
+//! `Arc<Mutex<VelloRenderer>>`; [`VelloRenderer::from_shared`] rides the
+//! host's device instead (the egui/eframe path).
 
 use std::sync::{Arc, Mutex};
 
@@ -15,11 +16,11 @@ use vello::{Renderer as VelloInner, RendererOptions, Scene};
 
 /// GPU-backed Vello renderer.
 ///
-/// Owns a dedicated wgpu device and queue (not shared with GPUI).
-/// Created once and shared via `Arc<Mutex<VelloRenderer>>`.
+/// Owns (or shares — see [`VelloRenderer::from_shared`]) a wgpu device and
+/// queue. Created once and shared via `Arc<Mutex<VelloRenderer>>`.
 ///
 /// Vello's internal `Renderer` is not `Sync` (contains `RefCell`), so
-/// we use `Mutex` to provide safe shared access. GPUI's single-threaded
+/// we use `Mutex` to provide safe shared access. The host's single-threaded
 /// paint guarantees no contention in practice.
 ///
 /// # Panics
@@ -98,7 +99,7 @@ impl VelloRenderer {
     /// second device and no CPU readback. Sharing the host's device is the whole
     /// point: a texture written by one device cannot be sampled by another, so a
     /// renderer-owned device would force every frame back through host memory.
-    /// The gpui path, which has no device to borrow, keeps [`Self::new`]'s
+    /// A host with no device to borrow (headless dumps) keeps [`Self::new`]'s
     /// dedicated device.
     ///
     /// # Panics

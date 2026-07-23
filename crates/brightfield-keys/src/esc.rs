@@ -3,11 +3,11 @@
 //! clear the focused view's selection. It does NOT auto-pop the focus surface
 //! (pop is `h` / `q`).
 //!
-//! Cancelling a pending prefix relies on GPUI's replay-on-non-match (a key that
-//! does not extend the prefix resolves it before the 1s timer), NOT
-//! `window.clear_pending_keystrokes` (which is `pub(crate)` at our pin). The
-//! cancel-pending rung is inert in v1 (no `g`-sequences are wired) but the
-//! decision is modelled and tested.
+//! Cancelling a pending prefix relies on the host replaying a key that does
+//! not extend the prefix (resolving it before the 1s timer) rather than an
+//! explicit clear-pending call (the retired gpui shell's was not public at
+//! its pin). The cancel-pending rung is inert in v1 (no `g`-sequences are
+//! wired) but the decision is modelled and tested.
 
 /// The surface state Esc resolves against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

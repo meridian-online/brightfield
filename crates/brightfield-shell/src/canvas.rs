@@ -5,7 +5,7 @@
 //! a `vello::Scene` is rasterised straight onto a wgpu texture on eframe's
 //! **shared** device (`VelloRenderer::render_to_texture`, no readback) and then
 //! handed to egui **zero-copy** via `egui_wgpu::Renderer::register_native_texture`
-//! — deleting the Metal↔wgpu readback the gpui host needed, which existed only
+//! — deleting the Metal↔wgpu readback the retired gpui host needed, which existed only
 //! because that host rendered on its own device and had to copy pixels through
 //! host memory to hand them over.
 //!
@@ -71,8 +71,8 @@ pub type SharedEguiRenderer = Arc<egui::mutex::RwLock<egui_wgpu::Renderer>>;
 
 /// The single slot every [`CanvasHost::present_scene`] call routes through.
 ///
-/// The trait is also implemented by the dying gpui host, which has no notion of
-/// a pane, so its signature stays key-free and the egui implementation forwards
+/// The trait signature is key-free (it predates panes — the retired gpui host
+/// had no notion of one), so the egui implementation forwards
 /// here. Each view's document owns its own host, so one legacy key per host is
 /// one slot per view. Neither view reaches this constant: both present under
 /// their own pane's key.
@@ -313,9 +313,8 @@ impl CanvasHost for EguiCanvasHost {
 
     /// The key-free trait present: [`LEGACY_CANVAS`]'s slot.
     ///
-    /// A thin forward on purpose. `CanvasHost` is also implemented by the gpui
-    /// host, so keying belongs on the inherent API rather than in the shared
-    /// seam.
+    /// A thin forward on purpose. `CanvasHost` is the shared framework-free
+    /// seam, so keying belongs on the inherent API rather than in it.
     fn present_scene(&mut self, scene: &Scene, size: PixelSize, base: Color) -> egui::TextureId {
         self.present_keyed(LEGACY_CANVAS, scene, size, base)
     }

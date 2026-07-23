@@ -56,8 +56,8 @@ pub enum PanelRole {
 /// Whether a panel of `role` reports `visible()` under `mode`.
 ///
 /// Presentation hides every authoring panel; the canvas remains in both
-/// modes. A pure function of (mode, role) — the GPUI shell reads it, never
-/// decides it.
+/// modes. A pure function of (mode, role) — the windowed shell reads it,
+/// never decides it.
 #[must_use]
 pub fn panel_visible(mode: PresentationMode, role: PanelRole) -> bool {
     match role {
@@ -103,7 +103,7 @@ pub enum BottomDockAction {
 }
 
 /// The bottom-dock action for `mode` — the pure half of the presentation
-/// round trip; the GPUI shell executes it against the DockArea.
+/// round trip; the windowed shell executes it against its dock layout.
 #[must_use]
 pub fn bottom_dock_action(mode: PresentationMode) -> BottomDockAction {
     if mode.chrome_visible() {

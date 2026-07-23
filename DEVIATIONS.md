@@ -12,7 +12,7 @@ highlight, toggle, nearest) against a live DuckDB session.
 
 **Brightfield behaviour.** The renderer has landed: marks, axes, scales, legends, and interactors
 are drawn as a Vello 2D scene by the framework-free `brightfield-render`
-crate and presented both live (GPUI/wgpu shell) and headless (PNG). 38
+crate and presented both live (egui/wgpu shell) and headless (PNG). 38
 vocabulary entries in `brightfield-spec`'s registry are now marked
 `Implemented`. The layered conformance runner, however, gates only
 layers 1 (AST round-trip) and 2 (data-source SQL/DDL equivalence): both

@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Framework-free semantic layer for the selection-first keyboard grammar — command registry, focus state machine, scope resolver, palette filter, Esc ladder, and dispatch-resolution projection. No GPUI: could this run headless? yes."
+description = "Framework-free semantic layer for the selection-first keyboard grammar — command registry, focus state machine, scope resolver, palette filter, Esc ladder, and dispatch-resolution projection. No UI framework: could this run headless? yes."
 
 [dependencies]
 brightfield-spec = { path = "../brightfield-spec" }

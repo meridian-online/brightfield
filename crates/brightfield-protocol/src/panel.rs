@@ -296,7 +296,7 @@ mod tests {
 
     /// Selecting a node marks exactly that outline row and populates the
     /// inspector from the same graph — the two-way-sync contract at the model
-    /// layer (the gpui surface just renders these).
+    /// layer (the windowed surface just renders these).
     #[test]
     fn selection_syncs_outline_and_inspector() {
         let graph = edgar_graph();

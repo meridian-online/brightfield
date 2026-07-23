@@ -1,24 +1,26 @@
 //! The command registry: every verb as data, the single source of truth
 //! for the keymap-as-data vec, the palette corpus, and the help sheet.
 //!
-//! Framework-free by construction — no gpui types cross this boundary. The GPUI
-//! adapter turns a [`BindingSpec`] into a `gpui::KeyBinding` and maps a `longname`
-//! to its action; nothing here knows about gpui.
+//! Framework-free by construction — no UI-framework type crosses this
+//! boundary. A shell's keymap adapter turns a [`BindingSpec`] into its own
+//! key-binding form and maps a `longname` to its action; nothing here knows
+//! about the framework.
 
 use crate::altitude::Altitude;
 
-/// A framework-free keystroke descriptor. Carries NO gpui types (the standing
-/// framework-free rule): the adapter builds `gpui::KeyBinding` from this.
+/// A framework-free keystroke descriptor. Carries NO framework types (the
+/// standing framework-free rule): a shell adapter builds its own binding form
+/// from this.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BindingSpec {
-    /// Space-separated keystrokes, mirroring gpui's `KeyBinding` string but as
-    /// plain data, e.g. `"p"`, `"cmd-e"`, `"g f"`.
+    /// Space-separated keystrokes as plain data, e.g. `"p"`, `"cmd-e"`,
+    /// `"g f"`.
     pub keystrokes: &'static str,
     /// The key-context this binding resolves in.
     pub context: BindingContext,
 }
 
-/// The key-context a binding resolves in. The adapter maps it to a gpui context
+/// The key-context a binding resolves in. A shell adapter maps it to its own context
 /// predicate: `Workspace` → `"BrightfieldWorkspace"`, `Editor` →
 /// `"BrightfieldEditor"`, `Global` → `None` (fires regardless of focus).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -636,8 +638,8 @@ fn reserved(
 // Producers: each takes the registry as its sole verb-metadata input
 // ---------------------------------------------------------------------------
 
-/// One bound key in the keymap-as-data vec: the projection the GPUI adapter
-/// consumes to build a `gpui::KeyBinding`, and the input to the
+/// One bound key in the keymap-as-data vec: the projection a shell's keymap
+/// adapter consumes to build its own bindings, and the input to the
 /// dispatch-resolution table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundKey {
@@ -649,8 +651,8 @@ pub struct BoundKey {
     pub context: BindingContext,
 }
 
-/// The keymap-as-data vec: the SINGLE binding source. The adapter maps
-/// `longname` → action and `context` → predicate to build `gpui::KeyBinding`s.
+/// The keymap-as-data vec: the SINGLE binding source. A shell adapter maps
+/// `longname` → action and `context` → predicate to build its bindings.
 #[must_use]
 pub fn keymap_bindings(reg: &[VerbEntry]) -> Vec<BoundKey> {
     reg.iter()

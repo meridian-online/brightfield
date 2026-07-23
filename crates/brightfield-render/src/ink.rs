@@ -1,8 +1,9 @@
 //! Meridian design-token boundary — the ONE place `meridian_design::Rgba`
 //! converts to this crate's `peniko::Color` (design phase 4 PR B).
 //!
-//! The design crate is deliberately framework-neutral (its `Rgba` is neither
-//! `peniko::Color` nor `gpui::Hsla`); consumers convert at their own boundary.
+//! The design crate is deliberately framework-neutral (its `Rgba` is not
+//! `peniko::Color`, nor any UI framework's colour type); consumers convert at
+//! their own boundary.
 //! Every chart-ink constant in this crate goes through [`ink`] so a token
 //! bump in the design crate propagates without hand-transcribed components.
 

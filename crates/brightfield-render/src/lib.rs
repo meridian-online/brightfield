@@ -2,10 +2,10 @@
 //!
 //! This crate sits downstream of `brightfield-spec` (parsing) and consumes
 //! Arrow `RecordBatch` data from the execution engine. It produces a
-//! `vello::Scene` ready for composition — no GPUI dependency.
+//! `vello::Scene` ready for composition — no UI-framework dependency.
 //!
 //! **Dependency chain:** `brightfield-spec` -> `brightfield-render`.
-//! Neither `gpui` nor `brightfield-engine` is a dependency.
+//! No UI framework and no `brightfield-engine` in the dependency list.
 
 pub mod asset_scene;
 pub mod axis;
