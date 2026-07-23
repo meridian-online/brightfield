@@ -16,8 +16,9 @@
 //!
 //! The grid renders by querying the engine for the **visible window**
 //! ([`brightfield_engine::Session::execute_step_rows_window`] — `LIMIT`/
-//! `OFFSET` wrapped around the identical emitted rows SQL) and sizes its
-//! scroll range from a `count(*)` over the same SQL. Scrolling a table larger
+//! `OFFSET` under the deterministic total order that seam imposes, wrapped
+//! around the identical emitted rows SQL) and sizes its scroll range from a
+//! `count(*)` over the same SQL. Scrolling a table larger
 //! than memory therefore never materialises it on this side of the seam: the
 //! page cache below holds the fetched window and nothing else, bounded by the
 //! viewport plus [`PAGE_PAD`] rows of scroll margin. There is deliberately no

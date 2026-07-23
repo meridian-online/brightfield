@@ -725,6 +725,8 @@ impl Session {
     /// other is [`Self::execute_step_rows_window`]): a virtualised grid sizes
     /// its scroll range from this count and then queries only the visible
     /// window, so a step larger than memory is never materialised client-side.
+    /// Unlike the window read, this wrap imposes no `ORDER BY`: `count(*)` is
+    /// order-independent, so ordering it would buy nothing and cost a sort.
     ///
     /// `&self`, deliberately: it rides the raw query path (as
     /// [`Self::distinct_values`] does) rather than `execute_emitted`, so it
@@ -759,9 +761,10 @@ impl Session {
         Ok(u64::try_from(count).unwrap_or(0))
     }
 
-    /// A WINDOW of a mark's step rows — `LIMIT limit OFFSET offset` wrapped
-    /// around the identical emitted rows SQL [`Self::execute_step_rows`]
-    /// executes, under the same live `param_state` / `selection_state`.
+    /// A WINDOW of a mark's step rows — `ORDER BY ALL LIMIT limit OFFSET
+    /// offset` wrapped around the identical emitted rows SQL
+    /// [`Self::execute_step_rows`] executes, under the same live
+    /// `param_state` / `selection_state`.
     ///
     /// This is the visible-window read a virtualised grid scrolls with: the
     /// window bound goes into the SQL, DuckDB materialises only the window,
@@ -771,8 +774,27 @@ impl Session {
     /// from the one emission path, a windowed read can never see a row set the
     /// chart's query would not.
     ///
-    /// No `ORDER BY` is injected: the grid presents the step's own
-    /// materialisation order, exactly as [`Self::execute_step_rows`] does.
+    /// # Why this read orders (`ORDER BY ALL`)
+    ///
+    /// `LIMIT`/`OFFSET` windows are only coherent over a total order, and the
+    /// step's own materialisation order is not one: DuckDB preserves insertion
+    /// order per execution, but a view body containing order-unstable
+    /// operators (`GROUP BY`, hash joins, `DISTINCT`) may hand back a
+    /// different permutation on every execution. Unordered windows over such
+    /// a step tear — adjacent pages duplicate and lose rows, and re-reading
+    /// the same window returns different rows. So the windowed read — alone;
+    /// [`Self::step_rows_count`] needs no order — wraps the emitted rows
+    /// query in `ORDER BY ALL`: every emitted column, left to right, a
+    /// deterministic total order over the step's own schema. Rows that are
+    /// full duplicates across every column stay mutually interchangeable
+    /// under that order, which is harmless here: any permutation of
+    /// identical rows yields byte-identical windows.
+    ///
+    /// The order makes a deep offset cost an ordered scan of the prefix on
+    /// every read. That cost is carried on the same terms as this read being
+    /// synchronous at all (the posture the [`coordinator`] module note
+    /// records): a known item for the later materialisation layer, not this
+    /// wrap's to fix.
     ///
     /// `&self` for the reason [`Self::step_rows_count`] is: the raw query
     /// path, no cache traffic.
@@ -787,8 +809,10 @@ impl Session {
         limit: u64,
     ) -> Result<Vec<RecordBatch>, EngineError> {
         let rows_sql = self.step_rows_sql(index)?;
-        let sql =
-            format!("SELECT * FROM ({rows_sql}) AS bf_step_rows LIMIT {limit} OFFSET {offset}");
+        let sql = format!(
+            "SELECT * FROM ({rows_sql}) AS bf_step_rows \
+             ORDER BY ALL LIMIT {limit} OFFSET {offset}"
+        );
         self.query_arrow_raw(&sql)
             .map_err(|e| EngineError::QueryFailed {
                 mark_index: index,

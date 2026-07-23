@@ -5,7 +5,12 @@
 //! 1. **The visible window is the only thing materialised client-side.** The
 //!    windowed read over a million-row source returns exactly the window; the
 //!    pane's cache is bounded by the viewport plus scroll margin, never by the
-//!    result set.
+//!    result set. And the window is **deterministic**: the engine imposes a
+//!    total order on the windowed read, so re-reading a window is
+//!    byte-identical and adjacent windows tile — even over a source whose
+//!    view body ends in an order-unstable operator (`GROUP BY`, hash joins,
+//!    `DISTINCT`), where DuckDB's per-execution insertion order would
+//!    otherwise hand each `LIMIT`/`OFFSET` slice a fresh permutation.
 //! 2. **Grid and chart cannot disagree** — the agreement the engine seam
 //!    guarantees, re-exercised here **from the grid side**: the same pushed
 //!    predicate, read back through the grid's own windowed fetch path, resolves
@@ -23,7 +28,7 @@
 use brightfield_engine::coordinator::{Coordinator, Interaction};
 use brightfield_engine::{RecordBatch, SqlPredicate};
 use brightfield_shell::app::ChartDoc;
-use brightfield_shell::data_grid::{fetch_page, DataGridItem, PAGE_PAD};
+use brightfield_shell::data_grid::{fetch_page, DataGridItem, GridPage, PAGE_PAD};
 use brightfield_shell::design::Mode;
 use brightfield_shell::pipeline::LiveDashboard;
 use brightfield_spec::analysis::{analyse_spec, ComponentPath};
@@ -146,6 +151,90 @@ fn the_windowed_reads_bypass_the_mark_caches() {
         coord.session().duckdb_execute_count(),
         executes,
         "window reads did not count against the mark-execute path"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 1b. The windowed read is deterministic over an order-unstable source.
+// ---------------------------------------------------------------------------
+
+/// An ORDER-UNSTABLE source: the rows view's body ends in a `GROUP BY` — a
+/// hash aggregate, whose emission order DuckDB does NOT hold stable across
+/// executions (insertion-order preservation is per-execution; a hash
+/// operator's output order is not). Five thousand groups, enough that two
+/// executions of the aggregate essentially never agree — the shape under
+/// which an unordered `LIMIT`/`OFFSET` window tears.
+const UNSTABLE_GROUPED: &str = r#"
+data:
+  t: { query: "SELECT (i % 5000) AS x, count(*) AS n, sum(i) AS s FROM range(50000) t(i) GROUP BY x" }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: x
+    y: n
+"#;
+
+/// A page's cells as text, row-major — the byte-identity the stability
+/// assertions compare.
+fn page_texts(page: &GridPage) -> Vec<Vec<String>> {
+    page.rows
+        .iter()
+        .map(|row| row.iter().map(|cell| cell.text.clone()).collect())
+        .collect()
+}
+
+#[test]
+fn re_reading_one_window_of_an_order_unstable_source_is_byte_identical() {
+    let coord = coordinator_from(UNSTABLE_GROUPED);
+    let session = coord.session();
+    assert_eq!(session.step_rows_count(0).expect("count"), 5_000);
+
+    // The same mid-table window, fetched repeatedly — what a grid does every
+    // time a scroll position is revisited. Without the total order the
+    // engine imposes on the windowed read, each fetch re-executes the hash
+    // aggregate and `OFFSET` slices a fresh permutation: this exact read
+    // returned a different row set on most fetches. Byte-identity, every
+    // time, is the contract a scrollbar rests on.
+    let window = 2_000..2_100;
+    let first = page_texts(&fetch_page(session, 0, window.clone()).expect("first read"));
+    assert_eq!(first.len(), 100, "exactly the window came back");
+    for read in 1..=5 {
+        let again = page_texts(&fetch_page(session, 0, window.clone()).expect("re-read"));
+        assert_eq!(
+            again, first,
+            "re-read {read} of the same window returned a different row set"
+        );
+    }
+}
+
+#[test]
+fn adjacent_windows_of_an_order_unstable_source_tile_the_full_read() {
+    let coord = coordinator_from(UNSTABLE_GROUPED);
+    let session = coord.session();
+    let total = session.step_rows_count(0).expect("count");
+
+    // The whole step in one ordered read — the reference row set.
+    let full = page_texts(&fetch_page(session, 0, 0..total).expect("full read"));
+    assert_eq!(full.len(), total as usize);
+
+    // The same step as adjacent windows, sized to misalign with any internal
+    // batch boundary. Scrolled pages must tile the materialisation: no row
+    // lost at a seam, none duplicated across one — which holds only if every
+    // window is a slice of ONE total order rather than of per-read
+    // permutations.
+    let mut tiled: Vec<Vec<String>> = Vec::new();
+    let mut start = 0_u64;
+    while start < total {
+        let end = (start + 97).min(total);
+        tiled.extend(page_texts(
+            &fetch_page(session, 0, start..end).expect("page"),
+        ));
+        start = end;
+    }
+    assert_eq!(
+        tiled, full,
+        "adjacent windows do not reassemble the full ordered read — a seam \
+         duplicated or dropped rows"
     );
 }
 
