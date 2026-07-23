@@ -1,6 +1,9 @@
 /target
 /.claude
 
+# Packaged distribution artifacts (scripts/package.sh output); regenerable.
+/dist
+
 # Local real-UI capture artifacts (brightfield-shot / parity PNGs); regenerable.
 /render-proof
 
