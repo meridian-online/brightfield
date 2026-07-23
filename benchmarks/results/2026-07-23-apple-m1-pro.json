@@ -1,0 +1,805 @@
+{
+  "schema": "brightfield-bench/v1",
+  "machine": {
+    "cpu": "Apple M1 Pro",
+    "logical_cpus": "8",
+    "memory_gib": "16",
+    "os": "macOS 26.1",
+    "gpu_adapter": "Apple M1 Pro (Metal, IntegratedGpu)",
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+    "build_profile": "release",
+    "commit": "d5469de",
+    "captured_at": "2026-07-23T18:25:35.714795+10:00",
+    "duckdb": "v1.5.2"
+  },
+  "config": {
+    "rows": [
+      10000,
+      100000,
+      1000000,
+      10000000
+    ],
+    "iterations": 20,
+    "warmup_frames": 5,
+    "measured_frames": 30,
+    "corpus_frames": 20,
+    "frame_scale": 2.0
+  },
+  "methodology": [
+    "Interaction latency is measured at the coordinator seam the live window blocks its frame on: one committed brush step = Coordinator::apply (predicate push-down into DuckDB + re-query of every affected mark). live_apply adds the re-composite into a Vello scene (LiveDashboard::apply), which is the full in-frame cost of a brush step in the live window.",
+    "Every timed brush uses a distinct interval: the engine caches repeated identical SQL, so a repeated interval would time the cache. A non-vacuity check requires the brush to have actually reduced the cross-filtered step's row count, and every apply must affect at least one mark.",
+    "Frame times are headless: the real MeridianApp drawn by egui's real wgpu backend into an offscreen texture, timed per frame through GPU completion (submit + blocking wait). No swapchain, no present, no vsync — the number is the cost of producing a frame, not displaying one. Warm-up frames are discarded.",
+    "steady frames draw with nothing changing (the shell's floor). interaction frames each push one committed brush step through the live document before drawing, so they carry re-query + re-composite + canvas re-raster + GPU wait.",
+    "The composed scene currently draws a mark's FIRST Arrow batch only; materialised_rows vs first_batch_rows records where the drawn picture holds fewer rows than the query answered (the aggregating scenario fits one batch by construction; the raw-dot scenario does not past one batch).",
+    "cold open = Coordinator::load (DDL, no mark queries) then the first full materialisation of every mark, on a session in the same process; the Parquet file is warm in the OS page cache.",
+    "Datasets are deterministic pure functions of the row index via DuckDB hash() — no RNG. The raw-dot scenario's frame suites are capped at one million rows; its engine suites run at every magnitude.",
+    "The emitted SQL applies a selection predicate OUTSIDE a mark's query, so an aggregating mark can only be cross-filtered by a column its aggregation projects (a foreign column is a binder error today). The brush-density scenario therefore bins the brushed column itself: each brush step still re-runs the full-table aggregation, and the predicate filters bins after it. Moving that predicate inside the aggregation is what a pre-aggregation layer changes; this baseline measures what exists."
+  ],
+  "scaling": [
+    {
+      "scenario": "brush-density",
+      "rows": 10000,
+      "dataset": "uniform_10000.parquet",
+      "load_ms": 14.605,
+      "first_materialise_ms": 40.536,
+      "marks": [
+        {
+          "mark": 0,
+          "materialised_rows": 10000,
+          "first_batch_rows": 2048
+        },
+        {
+          "mark": 1,
+          "materialised_rows": 100,
+          "first_batch_rows": 100
+        }
+      ],
+      "coordinator_apply": {
+        "n": 20,
+        "min_ms": 13.119,
+        "mean_ms": 13.994,
+        "p50_ms": 13.971,
+        "p95_ms": 14.463,
+        "max_ms": 14.967
+      },
+      "live_apply": {
+        "n": 20,
+        "min_ms": 13.144,
+        "mean_ms": 13.712,
+        "p50_ms": 13.667,
+        "p95_ms": 14.256,
+        "max_ms": 14.279
+      },
+      "brushed_step_rows": 5755,
+      "unfiltered_step_rows": 10000,
+      "frames": {
+        "steady": {
+          "n": 30,
+          "min_ms": 1.367,
+          "mean_ms": 1.391,
+          "p50_ms": 1.384,
+          "p95_ms": 1.434,
+          "max_ms": 1.524
+        },
+        "interaction": {
+          "n": 30,
+          "min_ms": 16.774,
+          "mean_ms": 19.313,
+          "p50_ms": 19.925,
+          "p95_ms": 20.463,
+          "max_ms": 21.069
+        }
+      }
+    },
+    {
+      "scenario": "crossfilter-dots",
+      "rows": 10000,
+      "dataset": "uniform_10000.parquet",
+      "load_ms": 12.425,
+      "first_materialise_ms": 0.9,
+      "marks": [
+        {
+          "mark": 0,
+          "materialised_rows": 10000,
+          "first_batch_rows": 2048
+        },
+        {
+          "mark": 1,
+          "materialised_rows": 10000,
+          "first_batch_rows": 2048
+        }
+      ],
+      "coordinator_apply": {
+        "n": 20,
+        "min_ms": 0.618,
+        "mean_ms": 0.668,
+        "p50_ms": 0.667,
+        "p95_ms": 0.702,
+        "max_ms": 0.772
+      },
+      "live_apply": {
+        "n": 20,
+        "min_ms": 1.085,
+        "mean_ms": 1.176,
+        "p50_ms": 1.157,
+        "p95_ms": 1.25,
+        "max_ms": 1.489
+      },
+      "brushed_step_rows": 5755,
+      "unfiltered_step_rows": 10000,
+      "frames": {
+        "steady": {
+          "n": 30,
+          "min_ms": 1.363,
+          "mean_ms": 1.43,
+          "p50_ms": 1.377,
+          "p95_ms": 1.536,
+          "max_ms": 2.635
+        },
+        "interaction": {
+          "n": 30,
+          "min_ms": 4.862,
+          "mean_ms": 5.941,
+          "p50_ms": 6.071,
+          "p95_ms": 6.456,
+          "max_ms": 6.466
+        }
+      }
+    },
+    {
+      "scenario": "brush-density",
+      "rows": 100000,
+      "dataset": "uniform_100000.parquet",
+      "load_ms": 12.57,
+      "first_materialise_ms": 41.195,
+      "marks": [
+        {
+          "mark": 0,
+          "materialised_rows": 100000,
+          "first_batch_rows": 2048
+        },
+        {
+          "mark": 1,
+          "materialised_rows": 100,
+          "first_batch_rows": 100
+        }
+      ],
+      "coordinator_apply": {
+        "n": 20,
+        "min_ms": 15.801,
+        "mean_ms": 16.558,
+        "p50_ms": 16.233,
+        "p95_ms": 16.976,
+        "max_ms": 22.141
+      },
+      "live_apply": {
+        "n": 20,
+        "min_ms": 15.671,
+        "mean_ms": 16.321,
+        "p50_ms": 16.334,
+        "p95_ms": 16.895,
+        "max_ms": 17.118
+      },
+      "brushed_step_rows": 57064,
+      "unfiltered_step_rows": 100000,
+      "frames": {
+        "steady": {
+          "n": 30,
+          "min_ms": 1.366,
+          "mean_ms": 1.391,
+          "p50_ms": 1.385,
+          "p95_ms": 1.44,
+          "max_ms": 1.477
+        },
+        "interaction": {
+          "n": 30,
+          "min_ms": 20.81,
+          "mean_ms": 23.378,
+          "p50_ms": 23.456,
+          "p95_ms": 24.373,
+          "max_ms": 24.669
+        }
+      }
+    },
+    {
+      "scenario": "crossfilter-dots",
+      "rows": 100000,
+      "dataset": "uniform_100000.parquet",
+      "load_ms": 13.311,
+      "first_materialise_ms": 3.355,
+      "marks": [
+        {
+          "mark": 0,
+          "materialised_rows": 100000,
+          "first_batch_rows": 2048
+        },
+        {
+          "mark": 1,
+          "materialised_rows": 100000,
+          "first_batch_rows": 2048
+        }
+      ],
+      "coordinator_apply": {
+        "n": 20,
+        "min_ms": 2.862,
+        "mean_ms": 3.465,
+        "p50_ms": 3.465,
+        "p95_ms": 3.822,
+        "max_ms": 3.912
+      },
+      "live_apply": {
+        "n": 20,
+        "min_ms": 3.218,
+        "mean_ms": 3.871,
+        "p50_ms": 3.792,
+        "p95_ms": 4.345,
+        "max_ms": 4.346
+      },
+      "brushed_step_rows": 57064,
+      "unfiltered_step_rows": 100000,
+      "frames": {
+        "steady": {
+          "n": 30,
+          "min_ms": 1.367,
+          "mean_ms": 1.423,
+          "p50_ms": 1.381,
+          "p95_ms": 1.427,
+          "max_ms": 2.456
+        },
+        "interaction": {
+          "n": 30,
+          "min_ms": 7.374,
+          "mean_ms": 8.94,
+          "p50_ms": 8.589,
+          "p95_ms": 11.581,
+          "max_ms": 11.626
+        }
+      }
+    },
+    {
+      "scenario": "brush-density",
+      "rows": 1000000,
+      "dataset": "uniform_1000000.parquet",
+      "load_ms": 13.154,
+      "first_materialise_ms": 61.084,
+      "marks": [
+        {
+          "mark": 0,
+          "materialised_rows": 1000000,
+          "first_batch_rows": 2048
+        },
+        {
+          "mark": 1,
+          "materialised_rows": 100,
+          "first_batch_rows": 100
+        }
+      ],
+      "coordinator_apply": {
+        "n": 20,
+        "min_ms": 20.05,
+        "mean_ms": 20.983,
+        "p50_ms": 20.938,
+        "p95_ms": 21.667,
+        "max_ms": 21.7
+      },
+      "live_apply": {
+        "n": 20,
+        "min_ms": 19.792,
+        "mean_ms": 21.415,
+        "p50_ms": 21.482,
+        "p95_ms": 22.265,
+        "max_ms": 22.716
+      },
+      "brushed_step_rows": 569470,
+      "unfiltered_step_rows": 1000000,
+      "frames": {
+        "steady": {
+          "n": 30,
+          "min_ms": 1.126,
+          "mean_ms": 1.437,
+          "p50_ms": 1.38,
+          "p95_ms": 2.463,
+          "max_ms": 2.564
+        },
+        "interaction": {
+          "n": 30,
+          "min_ms": 24.844,
+          "mean_ms": 27.277,
+          "p50_ms": 27.424,
+          "p95_ms": 28.475,
+          "max_ms": 29.192
+        }
+      }
+    },
+    {
+      "scenario": "crossfilter-dots",
+      "rows": 1000000,
+      "dataset": "uniform_1000000.parquet",
+      "load_ms": 13.881,
+      "first_materialise_ms": 15.579,
+      "marks": [
+        {
+          "mark": 0,
+          "materialised_rows": 1000000,
+          "first_batch_rows": 2048
+        },
+        {
+          "mark": 1,
+          "materialised_rows": 1000000,
+          "first_batch_rows": 2048
+        }
+      ],
+      "coordinator_apply": {
+        "n": 20,
+        "min_ms": 10.44,
+        "mean_ms": 13.583,
+        "p50_ms": 13.456,
+        "p95_ms": 16.563,
+        "max_ms": 16.612
+      },
+      "live_apply": {
+        "n": 20,
+        "min_ms": 11.092,
+        "mean_ms": 13.576,
+        "p50_ms": 13.757,
+        "p95_ms": 15.342,
+        "max_ms": 15.69
+      },
+      "brushed_step_rows": 569470,
+      "unfiltered_step_rows": 1000000,
+      "frames": {
+        "steady": {
+          "n": 30,
+          "min_ms": 1.363,
+          "mean_ms": 1.435,
+          "p50_ms": 1.381,
+          "p95_ms": 1.537,
+          "max_ms": 2.637
+        },
+        "interaction": {
+          "n": 30,
+          "min_ms": 17.158,
+          "mean_ms": 20.985,
+          "p50_ms": 20.785,
+          "p95_ms": 24.231,
+          "max_ms": 25.809
+        }
+      }
+    },
+    {
+      "scenario": "brush-density",
+      "rows": 10000000,
+      "dataset": "uniform_10000000.parquet",
+      "load_ms": 15.088,
+      "first_materialise_ms": 282.368,
+      "marks": [
+        {
+          "mark": 0,
+          "materialised_rows": 10000000,
+          "first_batch_rows": 2048
+        },
+        {
+          "mark": 1,
+          "materialised_rows": 100,
+          "first_batch_rows": 100
+        }
+      ],
+      "coordinator_apply": {
+        "n": 20,
+        "min_ms": 71.962,
+        "mean_ms": 75.521,
+        "p50_ms": 74.973,
+        "p95_ms": 79.066,
+        "max_ms": 80.58
+      },
+      "live_apply": {
+        "n": 20,
+        "min_ms": 70.976,
+        "mean_ms": 75.933,
+        "p50_ms": 74.957,
+        "p95_ms": 80.151,
+        "max_ms": 80.28
+      },
+      "brushed_step_rows": 5699856,
+      "unfiltered_step_rows": 10000000,
+      "frames": {
+        "steady": {
+          "n": 30,
+          "min_ms": 1.386,
+          "mean_ms": 1.449,
+          "p50_ms": 1.432,
+          "p95_ms": 1.57,
+          "max_ms": 1.63
+        },
+        "interaction": {
+          "n": 30,
+          "min_ms": 74.306,
+          "mean_ms": 81.523,
+          "p50_ms": 80.814,
+          "p95_ms": 86.097,
+          "max_ms": 86.875
+        }
+      }
+    },
+    {
+      "scenario": "crossfilter-dots",
+      "rows": 10000000,
+      "dataset": "uniform_10000000.parquet",
+      "load_ms": 13.563,
+      "first_materialise_ms": 152.348,
+      "marks": [
+        {
+          "mark": 0,
+          "materialised_rows": 10000000,
+          "first_batch_rows": 2048
+        },
+        {
+          "mark": 1,
+          "materialised_rows": 10000000,
+          "first_batch_rows": 2048
+        }
+      ],
+      "coordinator_apply": {
+        "n": 20,
+        "min_ms": 89.066,
+        "mean_ms": 124.131,
+        "p50_ms": 123.675,
+        "p95_ms": 152.62,
+        "max_ms": 156.765
+      },
+      "live_apply": {
+        "n": 20,
+        "min_ms": 91.088,
+        "mean_ms": 137.779,
+        "p50_ms": 149.656,
+        "p95_ms": 162.66,
+        "max_ms": 167.419
+      },
+      "brushed_step_rows": 5699856,
+      "unfiltered_step_rows": 10000000
+    }
+  ],
+  "corpus": [
+    {
+      "example": "area-x.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.361,
+        "mean_ms": 1.435,
+        "p50_ms": 1.373,
+        "p95_ms": 1.477,
+        "max_ms": 2.387
+      }
+    },
+    {
+      "example": "area.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.364,
+        "mean_ms": 1.416,
+        "p50_ms": 1.382,
+        "p95_ms": 1.552,
+        "max_ms": 1.705
+      }
+    },
+    {
+      "example": "bars.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.363,
+        "mean_ms": 1.582,
+        "p50_ms": 1.39,
+        "p95_ms": 2.689,
+        "max_ms": 2.723
+      }
+    },
+    {
+      "example": "cell.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.36,
+        "mean_ms": 1.375,
+        "p50_ms": 1.369,
+        "p95_ms": 1.398,
+        "max_ms": 1.407
+      }
+    },
+    {
+      "example": "contour.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.24,
+        "mean_ms": 1.364,
+        "p50_ms": 1.363,
+        "p95_ms": 1.432,
+        "max_ms": 1.501
+      }
+    },
+    {
+      "example": "crossfilter.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.362,
+        "mean_ms": 1.385,
+        "p50_ms": 1.381,
+        "p95_ms": 1.421,
+        "max_ms": 1.428
+      }
+    },
+    {
+      "example": "dashboard.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.198,
+        "mean_ms": 1.391,
+        "p50_ms": 1.385,
+        "p95_ms": 1.491,
+        "max_ms": 1.501
+      }
+    },
+    {
+      "example": "density-x.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.198,
+        "mean_ms": 1.544,
+        "p50_ms": 1.411,
+        "p95_ms": 2.703,
+        "max_ms": 2.837
+      }
+    },
+    {
+      "example": "density.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.357,
+        "mean_ms": 1.365,
+        "p50_ms": 1.364,
+        "p95_ms": 1.377,
+        "max_ms": 1.378
+      }
+    },
+    {
+      "example": "framed.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.363,
+        "mean_ms": 1.368,
+        "p50_ms": 1.368,
+        "p95_ms": 1.372,
+        "max_ms": 1.375
+      }
+    },
+    {
+      "example": "geo.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.357,
+        "mean_ms": 1.366,
+        "p50_ms": 1.364,
+        "p95_ms": 1.376,
+        "max_ms": 1.377
+      }
+    },
+    {
+      "example": "heatmap.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.234,
+        "mean_ms": 1.42,
+        "p50_ms": 1.404,
+        "p95_ms": 1.518,
+        "max_ms": 1.554
+      }
+    },
+    {
+      "example": "hexbin.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.384,
+        "mean_ms": 1.418,
+        "p50_ms": 1.409,
+        "p95_ms": 1.499,
+        "max_ms": 1.537
+      }
+    },
+    {
+      "example": "highlight.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.326,
+        "mean_ms": 1.574,
+        "p50_ms": 1.405,
+        "p95_ms": 2.526,
+        "max_ms": 2.64
+      }
+    },
+    {
+      "example": "layout-spacer.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.358,
+        "mean_ms": 1.396,
+        "p50_ms": 1.381,
+        "p95_ms": 1.461,
+        "max_ms": 1.511
+      }
+    },
+    {
+      "example": "legend-select.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.361,
+        "mean_ms": 1.408,
+        "p50_ms": 1.387,
+        "p95_ms": 1.549,
+        "max_ms": 1.559
+      }
+    },
+    {
+      "example": "legend-standalone.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.157,
+        "mean_ms": 1.386,
+        "p50_ms": 1.39,
+        "p95_ms": 1.439,
+        "max_ms": 1.443
+      }
+    },
+    {
+      "example": "param-menu.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.172,
+        "mean_ms": 1.375,
+        "p50_ms": 1.378,
+        "p95_ms": 1.424,
+        "max_ms": 1.424
+      }
+    },
+    {
+      "example": "param-slider.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.359,
+        "mean_ms": 1.394,
+        "p50_ms": 1.384,
+        "p95_ms": 1.465,
+        "max_ms": 1.48
+      }
+    },
+    {
+      "example": "param-threshold.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.357,
+        "mean_ms": 1.368,
+        "p50_ms": 1.367,
+        "p95_ms": 1.38,
+        "max_ms": 1.387
+      }
+    },
+    {
+      "example": "point-select-categorical.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.359,
+        "mean_ms": 1.367,
+        "p50_ms": 1.367,
+        "p95_ms": 1.376,
+        "max_ms": 1.38
+      }
+    },
+    {
+      "example": "point-select.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.366,
+        "mean_ms": 1.373,
+        "p50_ms": 1.372,
+        "p95_ms": 1.38,
+        "max_ms": 1.384
+      }
+    },
+    {
+      "example": "raster-blues.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.359,
+        "mean_ms": 1.392,
+        "p50_ms": 1.372,
+        "p95_ms": 1.448,
+        "max_ms": 1.481
+      }
+    },
+    {
+      "example": "raster-legend.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.344,
+        "mean_ms": 1.409,
+        "p50_ms": 1.385,
+        "p95_ms": 1.602,
+        "max_ms": 1.602
+      }
+    },
+    {
+      "example": "raster.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.369,
+        "mean_ms": 1.433,
+        "p50_ms": 1.426,
+        "p95_ms": 1.48,
+        "max_ms": 1.507
+      }
+    },
+    {
+      "example": "rect-cells.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.377,
+        "mean_ms": 1.564,
+        "p50_ms": 1.43,
+        "p95_ms": 2.619,
+        "max_ms": 2.666
+      }
+    },
+    {
+      "example": "rect-histogram.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.378,
+        "mean_ms": 1.483,
+        "p50_ms": 1.429,
+        "p95_ms": 1.494,
+        "max_ms": 2.41
+      }
+    },
+    {
+      "example": "regression.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.377,
+        "mean_ms": 1.905,
+        "p50_ms": 1.466,
+        "p95_ms": 2.834,
+        "max_ms": 2.883
+      }
+    },
+    {
+      "example": "rules.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.172,
+        "mean_ms": 1.405,
+        "p50_ms": 1.403,
+        "p95_ms": 1.481,
+        "max_ms": 1.519
+      }
+    },
+    {
+      "example": "scatter.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.364,
+        "mean_ms": 1.637,
+        "p50_ms": 1.38,
+        "p95_ms": 2.641,
+        "max_ms": 2.679
+      }
+    },
+    {
+      "example": "text.yaml",
+      "frame_steady": {
+        "n": 20,
+        "min_ms": 1.358,
+        "mean_ms": 1.44,
+        "p50_ms": 1.372,
+        "p95_ms": 1.417,
+        "max_ms": 2.717
+      }
+    }
+  ]
+}

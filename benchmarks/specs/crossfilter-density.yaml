@@ -1,0 +1,44 @@
+# Scaling scenario: a brushed scatter re-aggregating a 1D density, over one
+# Parquet table.
+#
+# The left plot is a raw dot scatter carrying the interval brush; the right
+# plot is a `densityX` — the density lowerer equiwidth-bins and counts in
+# DuckDB, so a brush step re-runs a full-table aggregation however many rows
+# the table holds, and the result set the renderer sees stays O(bins). The
+# data path is what scales with row count here, not the picture.
+#
+# WHY THE DENSITY BINS THE BRUSHED COLUMN: the emitted SQL applies a selection
+# predicate OUTSIDE a mark's query, so an aggregating mark can only be
+# cross-filtered by a column its aggregation projects — brushing `value_a`
+# against a density over `value_b` is a binder error in the current engine.
+# The density therefore bins `value_a` itself, and the brush filters its bins
+# after aggregation (the full-table scan per brush step is unchanged). Moving
+# that predicate inside the aggregation is exactly what the pre-aggregation
+# layer changes; this spec measures what exists.
+#
+# `__DATA_PARQUET__` is substituted by the harness with the absolute path of
+# the generated dataset before the spec is loaded. The dataset's columns are a
+# pure function of the row index — see the harness's data module.
+meta:
+  title: Baseline — brushed scatter re-aggregating a density
+params:
+  brush: { select: crossfilter }
+data:
+  t:
+    file: __DATA_PARQUET__
+hconcat:
+  - plot:
+      - mark: dot
+        data: { from: t, filterBy: $brush }
+        x: value_a
+        y: value_b
+      - select: intervalX
+        as: $brush
+    width: 440
+    height: 300
+  - plot:
+      - mark: densityX
+        data: { from: t, filterBy: $brush }
+        x: value_a
+    width: 440
+    height: 300

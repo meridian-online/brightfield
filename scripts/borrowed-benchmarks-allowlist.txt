@@ -1,0 +1,9 @@
+# Allowlist for check-borrowed-benchmarks.sh — one entry per line:
+#
+#   <tracked-path><TAB><reason>
+#
+# An entry silences the gate for that file. It needs a real reason (for
+# instance: the file records a figure MEASURED in this repository, with its
+# machine record beside it). An entry without a reason is a malformed
+# allowlist and the gate refuses to run. Ships empty; stays empty until a
+# file has earned its place.

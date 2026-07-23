@@ -116,7 +116,7 @@ The system comprises four layers:
 
 ## Success Criteria
 
-- A Mosaic YAML spec defining a two-view cross-filtered dashboard over a multi-million-row Parquet file renders interactively at 60+ FPS with sub-100ms filter response times.
+- A Mosaic YAML spec defining a two-view cross-filtered dashboard over a large Parquet file stays fluid as the table grows: interaction latency roughly independent of row count. That is a *property to demonstrate, not a figure to inherit* — Mosaic's published numbers were measured on Mosaic's coordinator, and this project quotes only numbers measured here. The measured record, with its machine, dataset and methodology, lives in [`benchmarks/`](benchmarks/); re-measure with `./scripts/bench-baseline.sh`. A CI gate (`scripts/check-borrowed-benchmarks.sh`) keeps upstream figures from being restated as ours.
 - The same spec, unmodified, produces equivalent output to Mosaic's web rendering.
 - The application is a single native binary with no runtime dependencies beyond system graphics drivers.
 

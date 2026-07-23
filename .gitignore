@@ -20,3 +20,8 @@
 # User-supplied geo data for examples/live/ (download per each spec's header;
 # never committed — see examples/live/us-states.yaml).
 /examples/live/*.json
+
+# The benchmark harness generated datasets and substituted scenario specs —
+# deterministic pure functions of the row index, regenerated on demand by
+# `cargo run --release -p brightfield-bench`. Only results are committed.
+/benchmarks/.data

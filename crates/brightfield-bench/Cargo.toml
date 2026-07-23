@@ -1,0 +1,27 @@
+[package]
+name = "brightfield-bench"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Measured performance baseline: repeatable interaction-latency and frame-time harness"
+
+[dependencies]
+brightfield-engine = { path = "../brightfield-engine" }
+brightfield-spec = { path = "../brightfield-spec" }
+brightfield-sql = { path = "../brightfield-sql" }
+brightfield-shell = { path = "../brightfield-shell" }
+brightfield-protocol = { path = "../brightfield-protocol" }
+# Dataset generation: deterministic hash-derived columns written to Parquet.
+# Same version spec as brightfield-engine, so Cargo resolves ONE bundled build.
+duckdb = { version = "1", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Adapter identity for the machine profile — same wgpu the shell renders on.
+vello = { version = "0.9", features = ["wgpu"] }
+pollster = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[lints]
+workspace = true

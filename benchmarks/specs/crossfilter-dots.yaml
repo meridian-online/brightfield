@@ -1,0 +1,37 @@
+# Scaling scenario: cross-filtered raw dot plots over one Parquet table.
+#
+# The row-per-mark shape: every materialised row becomes a drawn dot, so BOTH
+# the data path and the picture scale with row count. This is the literal
+# "two-view cross-filtered dashboard" shape, kept in the baseline precisely
+# because it does not aggregate — it shows where row-per-mark rendering stops
+# being honest at scale (the composed scene currently draws a mark's first
+# Arrow batch; the harness records materialised-vs-drawn row counts).
+#
+# `__DATA_PARQUET__` is substituted by the harness with the absolute path of
+# the generated dataset before the spec is loaded.
+meta:
+  title: Baseline — cross-filtered dots
+params:
+  brush: { select: crossfilter }
+data:
+  t:
+    file: __DATA_PARQUET__
+hconcat:
+  - plot:
+      - mark: dot
+        data: { from: t, filterBy: $brush }
+        x: value_a
+        y: value_b
+      - select: intervalX
+        as: $brush
+    width: 440
+    height: 300
+  - plot:
+      - mark: dot
+        data: { from: t, filterBy: $brush }
+        x: value_b
+        y: value_a
+      - select: intervalX
+        as: $brush
+    width: 440
+    height: 300
