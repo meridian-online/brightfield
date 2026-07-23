@@ -35,6 +35,8 @@
 //!   read in.
 //! - [`starts`] — the starting points that ship inside the binary, which are
 //!   what a launch with nothing on the command line offers.
+//! - [`watch`] — the document's file watcher: external spec/data changes
+//!   noticed by mtime poll and surfaced through `Subject::status`.
 
 pub mod app;
 pub mod canvas;
@@ -48,6 +50,7 @@ pub mod pipeline;
 pub mod protocol;
 pub mod starts;
 pub mod startup;
+pub mod watch;
 pub mod window;
 
 /// The Meridian Design System → egui bridge.

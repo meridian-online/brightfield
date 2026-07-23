@@ -13,7 +13,7 @@
 //! taken from their first result batch (examples fit one ~2048-row chunk); the
 //! app's multi-chunk concat is the production path.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use arrow::record_batch::RecordBatch;
 use brightfield_engine::coordinator::{Coordinator, Interaction};
@@ -326,6 +326,34 @@ impl LiveDashboard {
     pub fn coordinator(&mut self) -> &mut Coordinator {
         &mut self.coordinator
     }
+
+    /// The local files this dashboard's spec reads through `file:` data
+    /// sources — see [`spec_data_files`], which this delegates to over the
+    /// held spec.
+    #[must_use]
+    pub fn data_files(&self, spec_dir: Option<&Path>) -> Vec<PathBuf> {
+        spec_data_files(&self.spec, spec_dir)
+    }
+}
+
+/// The local files `spec` reads through `file:` data sources, resolved
+/// against `spec_dir` — the list the document's file watcher watches. URLs
+/// are not files and are skipped; whether a listed path exists is the
+/// watcher's business (a file appearing where the spec expects one is a
+/// change worth noticing).
+#[must_use]
+pub fn spec_data_files(spec: &Spec, spec_dir: Option<&Path>) -> Vec<PathBuf> {
+    use brightfield_spec::ast::DataSourceKind;
+    spec.data
+        .values()
+        .filter_map(|source| match &source.kind {
+            DataSourceKind::File(f) if !f.contains("://") => Some(match spec_dir {
+                Some(dir) => dir.join(f),
+                None => PathBuf::from(f),
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Build the composited dashboard from a spec and its per-mark execution

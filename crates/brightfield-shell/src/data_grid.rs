@@ -70,7 +70,7 @@ use brightfield_keys::BindingContext;
 use brightfield_protocol::{sheet, StepRow};
 use brightfield_workbench::registry::Slot;
 use brightfield_workbench::{
-    chrome, EmptyState, Icon, Item, ItemCtx, ItemId, ItemSpec, Subject, Verb,
+    chrome, Activity, EmptyState, Icon, Item, ItemCtx, ItemId, ItemSpec, Subject, Verb,
 };
 
 use meridian_design::typography::{self, FontFeature};
@@ -734,7 +734,7 @@ impl Item<ChartDoc> for DataGridItem {
             }
         }
 
-        let Some(coordinator) = doc.live_coordinator() else {
+        if doc.live_coordinator().is_none() {
             // A one-shot composition (a capture, a shipped still) carries no
             // session, so there is nothing to query — and pretending
             // otherwise with a frozen copy would be exactly the client-side
@@ -748,10 +748,11 @@ impl Item<ChartDoc> for DataGridItem {
                 .color(chrome::colour(sem.text.muted)),
             );
             return;
-        };
-        let generation = coordinator.generation();
-        let session = coordinator.session();
-        if session.mark_count() == 0 {
+        }
+        if doc
+            .live_coordinator()
+            .is_some_and(|c| c.session().mark_count() == 0)
+        {
             ui.label(
                 egui::RichText::new("This spec declares no marks, so no step to tabulate.")
                     .font(cell_font())
@@ -761,9 +762,19 @@ impl Item<ChartDoc> for DataGridItem {
         }
 
         // The step this grid projects is the one the chart pane presents:
-        // depth-first mark 0, the dashboard's presenting step.
-        let mut source = EngineRows::new(session, 0, generation, &mut self.cache);
-        show_table(ui, "chart-data-grid", mode, &mut source);
+        // depth-first mark 0, the dashboard's presenting step. The read marks
+        // itself as engine work — resolved within the frame today (see the
+        // activity module for why a synchronous read owes no cue), begun and
+        // ended around the borrow so the seam is already marked when this
+        // read moves off the UI thread.
+        doc.activity.begin(Activity::EngineQuery);
+        if let Some(coordinator) = doc.live_coordinator() {
+            let generation = coordinator.generation();
+            let session = coordinator.session();
+            let mut source = EngineRows::new(session, 0, generation, &mut self.cache);
+            show_table(ui, "chart-data-grid", mode, &mut source);
+        }
+        doc.activity.end(Activity::EngineQuery);
 
         if self.cache.error.is_none() && self.cache.total == 0 {
             // A real answer, not an empty pane: the query ran and selected

@@ -61,8 +61,8 @@ use brightfield_protocol::layout::{Flow, Layout};
 use brightfield_workbench::behavior::{TAB_BAR_HEIGHT, TILE_GAP};
 use brightfield_workbench::workspace::{tabs_holding, tile_of};
 use brightfield_workbench::{
-    chrome, DirtyTracker, ItemMap, PaneChrome, PaneKey, Request, SavedLayout, Verb, ViewKind,
-    WindowGeometry, Workspace,
+    chrome, Activity, ActivityIndicator, DirtyTracker, ItemMap, PaneChrome, PaneKey, Request,
+    SavedLayout, StatusEntry, Subject, Verb, ViewKind, WindowGeometry, Workspace,
 };
 use meridian_egui::{
     ModalChrome, ModalLayer, Notification, NotificationId, NotificationLayer, Picker, PickerEvent,
@@ -716,6 +716,12 @@ pub struct MeridianApp {
     notifications: NotificationLayer,
     /// Transient, self-expiring toasts — confirmations, not conditions.
     toasts: ToastLayer,
+    /// What the status rail drew last frame — the ids in draw order and any
+    /// dismissals — recorded for the reason [`Self::switcher`] is: a headless
+    /// test that asks "did the rail say it?" reads this rather than a second
+    /// copy of the composing logic. Empty on a frame the rail drew nothing,
+    /// which is most frames — the rail is quiet when there is nothing to say.
+    rail: chrome::StatusDrawn,
 }
 
 impl MeridianApp {
@@ -765,6 +771,7 @@ impl MeridianApp {
             doc.attach_live(live);
         }
         doc.spec_path = boot.spec_path;
+        doc.wire_watch();
         let model = ProtocolModel::new(boot.protocol, boot.flow);
         Self::assemble(
             boot.view,
@@ -804,6 +811,7 @@ impl MeridianApp {
             doc.attach_live(live);
         }
         doc.spec_path = boot.spec_path;
+        doc.wire_watch();
         let model = ProtocolModel::new(boot.protocol, boot.flow);
         Self::assemble(
             boot.view,
@@ -892,6 +900,7 @@ impl MeridianApp {
             recency: RecencyCounter::new(),
             notifications: NotificationLayer::new(),
             toasts: ToastLayer::new(),
+            rail: chrome::StatusDrawn::default(),
         }
     }
 
@@ -1042,6 +1051,16 @@ impl MeridianApp {
         &self.protocol.doc
     }
 
+    /// The chart view's document, mutably — the seam an embedder (or a test)
+    /// reaches the document's own state through between frames: its activity
+    /// log, its file watcher, a param. Never handed to an [`Item`] — the
+    /// no-document-handle rule is about panes, and this is not one.
+    ///
+    /// [`Item`]: brightfield_workbench::Item
+    pub fn chart_doc_mut(&mut self) -> &mut ChartDoc {
+        &mut self.charts.doc
+    }
+
     // -----------------------------------------------------------------------
     // The layout file
     // -----------------------------------------------------------------------
@@ -1128,6 +1147,17 @@ impl MeridianApp {
         // state of the window's content plane rather than a mode of the
         // window.
         let door = self.front_door_is_live();
+
+        // The document's file watcher: poll on its own cadence, keep frames
+        // coming while anything is watched (a poll nobody runs watches
+        // nothing), and repaint immediately on news so the notice lands next
+        // frame rather than at the next keystroke.
+        if self.charts.doc.watch.has_watches() {
+            if self.charts.doc.watch.poll() {
+                ctx.request_repaint();
+            }
+            ctx.request_repaint_after(crate::watch::WATCH_POLL);
+        }
 
         // The overlay-opening keys, before the grammar feed so the frame that
         // opens an overlay is already under it.
@@ -1256,6 +1286,8 @@ impl MeridianApp {
                 }
             });
         }
+
+        self.status_rail_ui(&ctx, &mut requests);
 
         self.apply(&ctx, view, requests);
         if view == ViewKind::Protocol {
@@ -1509,6 +1541,83 @@ impl MeridianApp {
             }
         });
         bar
+    }
+
+    /// The status rail: the workbench widget, drawn at last — the contract
+    /// tests spent several releases noting it was "drawn by nothing", and
+    /// this is the something.
+    ///
+    /// The float itself is [`chrome::status_rail_overlay`]'s — the bottom
+    /// edge, a foreground layer, nothing when there is nothing to say (and
+    /// the note there on why floating rather than a bottom panel). What this
+    /// method owns is the *content*:
+    ///
+    /// - the **focused pane's** status lines, as declared on its
+    ///   [`Subject`] — minus its activity reports;
+    /// - **one** activity indicator, composed from *every* pane's subject in
+    ///   *both* views — in-flight work anywhere in the window is the window's
+    ///   to report, and two panes querying at once say "querying…" once.
+    ///
+    /// Dismissal verbs the rail's entries declare are routed into the same
+    /// request queue as pane requests — the rail can offer nothing a pane
+    /// could not.
+    fn status_rail_ui(&mut self, ctx: &egui::Context, requests: &mut Vec<Request>) {
+        let mode = self.mode;
+        let chart_subjects: Vec<Subject> = self
+            .charts
+            .items
+            .values()
+            .map(|item| item.subject(&self.charts.doc))
+            .collect();
+        let protocol_subjects: Vec<Subject> = self
+            .protocol
+            .items
+            .values()
+            .map(|item| item.subject(&self.protocol.doc))
+            .collect();
+
+        let mut entries: Vec<StatusEntry> = Vec::new();
+        if let Some(key) = self.ws().focus() {
+            let focused = match self.ws().active() {
+                ViewKind::Charts => self
+                    .charts
+                    .items
+                    .get(&key)
+                    .map(|item| item.subject(&self.charts.doc)),
+                ViewKind::Protocol => self
+                    .protocol
+                    .items
+                    .get(&key)
+                    .map(|item| item.subject(&self.protocol.doc)),
+            };
+            if let Some(subject) = focused {
+                // The pane's own lines. Its typed activity entries are
+                // filtered out here because the indicator below says them —
+                // once, merged with everyone else's, never twice.
+                entries.extend(
+                    subject
+                        .status
+                        .into_iter()
+                        .filter(|entry| Activity::of_entry(entry).is_none()),
+                );
+            }
+        }
+        if let Some(indicator) =
+            ActivityIndicator::compose(chart_subjects.iter().chain(protocol_subjects.iter()))
+        {
+            entries.push(indicator);
+        }
+
+        self.rail = chrome::status_rail_overlay(ctx, &entries, mode);
+        for verb in self.rail.dismissed.clone() {
+            requests.push(Request::Verb(verb));
+        }
+    }
+
+    /// What the status rail drew last frame, read-only — the test hook.
+    #[must_use]
+    pub fn rail(&self) -> &chrome::StatusDrawn {
+        &self.rail
     }
 
     /// Perform the requests the frame's panes raised, now that the tile tree's
