@@ -787,7 +787,8 @@ impl Session {
         limit: u64,
     ) -> Result<Vec<RecordBatch>, EngineError> {
         let rows_sql = self.step_rows_sql(index)?;
-        let sql = format!("SELECT * FROM ({rows_sql}) AS bf_step_rows LIMIT {limit} OFFSET {offset}");
+        let sql =
+            format!("SELECT * FROM ({rows_sql}) AS bf_step_rows LIMIT {limit} OFFSET {offset}");
         self.query_arrow_raw(&sql)
             .map_err(|e| EngineError::QueryFailed {
                 mark_index: index,

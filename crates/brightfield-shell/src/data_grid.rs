@@ -63,12 +63,14 @@ use arrow::array::{Array, StringArray};
 use arrow::compute::cast;
 use arrow::datatypes::DataType;
 
-use brightfield_engine::{EngineError, RecordBatch, Session};
+use brightfield_engine::error::EngineError;
+use brightfield_engine::{RecordBatch, Session};
 use brightfield_keys::BindingContext;
 use brightfield_protocol::{sheet, StepRow};
 use brightfield_workbench::registry::Slot;
-use brightfield_workbench::subject::RunState;
-use brightfield_workbench::{chrome, EmptyState, Icon, Item, ItemCtx, ItemId, ItemSpec, Subject, Verb};
+use brightfield_workbench::{
+    chrome, EmptyState, Icon, Item, ItemCtx, ItemId, ItemSpec, Subject, Verb,
+};
 
 use meridian_design::typography::{self, FontFeature};
 use meridian_design::{control, semantic, spacing};
@@ -335,6 +337,10 @@ pub struct GridPage {
 /// # Errors
 ///
 /// As [`Session::execute_step_rows_window`].
+// The Err variant is the engine's own error type, at the engine's own size —
+// boxing it at this one seam would make the grid the only consumer to receive
+// it boxed, for a path taken once per scroll page.
+#[allow(clippy::result_large_err)]
 pub fn fetch_page(
     session: &Session,
     mark_index: usize,
@@ -458,9 +464,27 @@ impl<'a> EngineRows<'a> {
                     cache.error = Some(e.to_string());
                 }
             }
+            cache.columns.clear();
             cache.window = 0..0;
             cache.rows.clear();
             cache.generation = Some(generation);
+        }
+        // The schema has to exist before the table can lay out at all — the
+        // column count is the table's shape — and it only arrives with a
+        // fetched page, so seed the head of the materialisation here. The
+        // window [`RowSource::prepare`] asks for replaces this immediately
+        // when the scroll position is elsewhere.
+        if cache.error.is_none() && cache.columns.is_empty() && cache.total > 0 {
+            match fetch_page(session, mark_index, 0..cache.total.min(PAGE_PAD)) {
+                Ok(page) => {
+                    cache.window = page.window;
+                    cache.columns = page.columns;
+                    cache.rows = page.rows;
+                }
+                Err(e) => {
+                    cache.error = Some(e.to_string());
+                }
+            }
         }
         Self {
             session,
@@ -550,7 +574,7 @@ impl<'a> StepSheetRows<'a> {
             .collect();
         Self {
             rows,
-            cursor: (cursor < rows.len()).then(|| cursor as u64),
+            cursor: (cursor < rows.len()).then_some(cursor as u64),
             columns,
         }
     }
@@ -660,28 +684,19 @@ impl Item<ChartDoc> for DataGridItem {
     }
 
     fn empty_state(&self, doc: &ChartDoc) -> Option<EmptyState> {
-        if doc.is_empty() {
-            return Some(EmptyState::new(
+        // Empty means NOTHING IS OPEN — the same predicate the chart answers
+        // with, so the two peers agree about whether there is a document at
+        // all. A composed-but-not-live dashboard is not empty; that case is
+        // the body's to explain (see `ui`), the way the canvas pane renders
+        // a quiet surface rather than an apology over a headless document.
+        doc.is_empty().then(|| {
+            EmptyState::new(
                 ICON_DATA,
                 "No data to tabulate",
                 "This grid shows the rows behind the chart beside it. Open a \
                  spec from the chart pane, or name one on the command line.",
-            ));
-        }
-        if !doc.is_live() {
-            // A one-shot composition (a capture, a shipped still) carries no
-            // session, so there is nothing to query — and pretending
-            // otherwise with a frozen copy would be exactly the client-side
-            // grid this pane exists not to be.
-            return Some(EmptyState::new(
-                ICON_DATA,
-                "A still frame",
-                "This dashboard was composed once, without a live query \
-                 session, so its rows cannot be read back. Open the spec \
-                 itself and the grid fills from the engine.",
-            ));
-        }
-        None
+            )
+        })
     }
 
     fn describe(&self, doc: &ChartDoc) -> Subject {
@@ -719,7 +734,18 @@ impl Item<ChartDoc> for DataGridItem {
         }
 
         let Some(coordinator) = doc.live_coordinator() else {
-            // `empty_state` already answered for the still-frame document.
+            // A one-shot composition (a capture, a shipped still) carries no
+            // session, so there is nothing to query — and pretending
+            // otherwise with a frozen copy would be exactly the client-side
+            // grid this pane exists not to be. Say so, quietly.
+            ui.label(
+                egui::RichText::new(
+                    "A still frame — this dashboard was composed without a \
+                     live query session, so its rows cannot be read back.",
+                )
+                .font(cell_font())
+                .color(chrome::colour(sem.text.muted)),
+            );
             return;
         };
         let generation = coordinator.generation();
@@ -738,6 +764,15 @@ impl Item<ChartDoc> for DataGridItem {
         let mut source = EngineRows::new(session, 0, generation, &mut self.cache);
         show_table(ui, "chart-data-grid", mode, &mut source);
 
+        if self.cache.error.is_none() && self.cache.total == 0 {
+            // A real answer, not an empty pane: the query ran and selected
+            // nothing under the current interaction state.
+            ui.label(
+                egui::RichText::new("0 rows under the current selection.")
+                    .font(cell_font())
+                    .color(chrome::colour(sem.text.muted)),
+            );
+        }
         if let Some(error) = self.cache.error.as_ref() {
             ui.add_space(spacing::SPACE_2);
             ui.label(
@@ -865,6 +900,7 @@ mod tests {
     /// rows at all.
     #[test]
     fn the_row_presenting_states_are_exactly_fresh_and_stale() {
+        use brightfield_workbench::subject::RunState;
         let presents_rows: Vec<RunState> = RunState::ALL
             .into_iter()
             .filter(|s| s.is_current() || s.is_stale())

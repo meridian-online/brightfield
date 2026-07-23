@@ -102,7 +102,10 @@ fn a_window_of_a_million_row_table_returns_only_the_window() {
     assert_eq!(page.rows.len(), 100, "exactly the window, nothing more");
     assert_eq!(page.window, 500_000..500_100);
     assert_eq!(
-        page.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        page.columns
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect::<Vec<_>>(),
         ["x", "y"]
     );
     assert!(
@@ -387,8 +390,12 @@ plot:
 fn the_header_row_exists_and_speaks_the_schema() {
     let mut harness = grid_harness(live_doc(BRUSH_DASHBOARD));
     harness.run();
-    let _ = harness.get_by_label("x");
-    let _ = harness.get_by_label("y");
+    // `egui_table` lays its header out in both split-scroll regions (the
+    // sticky-column region is zero-width here but still populates the
+    // accessibility tree), so the header label can appear more than once —
+    // the assertion is presence, not cardinality.
+    assert!(harness.query_all_by_label("x").next().is_some());
+    assert!(harness.query_all_by_label("y").next().is_some());
 }
 
 // ---------------------------------------------------------------------------
