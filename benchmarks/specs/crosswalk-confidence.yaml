@@ -1,0 +1,37 @@
+# Fixed-scale scenario over the published EDGAR–GLEIF company-identifier
+# crosswalk dataset — the production-shaped table this engine exists to make
+# interactive. A dot plot carries an interval brush over match `confidence`;
+# a densityX over the same column re-aggregates on every brush step.
+#
+# The brushed column holds a handful of distinct values (the crosswalk tiers
+# its confidence), so the derived cube is a few hundred cells over a
+# 200k-row table — the pre-aggregation layer's intended shape on real data.
+#
+# Opt-in: the dataset is not generated. Pass
+#   --crosswalk-parquet <path to the crosswalk's parquet>
+# with a local copy of the published dataset (meridian.online/datasets —
+# the columns used here are `confidence` only). `__DATA_PARQUET__` is
+# substituted with that path. The harness records the file's row count.
+meta:
+  title: Baseline — crosswalk confidence brush re-aggregating a density
+params:
+  brush: { select: crossfilter }
+data:
+  t:
+    file: __DATA_PARQUET__
+hconcat:
+  - plot:
+      - mark: dot
+        data: { from: t, filterBy: $brush }
+        x: confidence
+        y: confidence
+      - select: intervalX
+        as: $brush
+    width: 440
+    height: 300
+  - plot:
+      - mark: densityX
+        data: { from: t, filterBy: $brush }
+        x: confidence
+    width: 440
+    height: 300

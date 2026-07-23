@@ -49,8 +49,8 @@ use brightfield_spec::vocab::MarkKind;
 use brightfield_sql::ir::{ClauseMeta, Predicate, ScaleDescriptor};
 
 use crate::brush::{
-    brush_rect_to_structured, commit_brush_release_multi, commit_click_multi, point_predicate,
-    BrushBinding, SelectionDispatcher, ZERO_AREA_EPSILON,
+    brush_rect_to_structured, commit_brush_release_multi_structured, commit_click_multi,
+    point_predicate, BrushBinding, SelectionDispatcher, ZERO_AREA_EPSILON,
 };
 use crate::interaction::InteractionState;
 use crate::menu::{commit_menu_release, MenuBinding, MenuState};
@@ -331,15 +331,32 @@ impl<H: ReactiveHandle> CrossfilterCoordinator<H> {
 
         let mut to_rebuild: HashSet<usize> = HashSet::new();
         if is_drag {
-            // Invert the pixel rect to data coordinates and dispatch. Reuse the
-            // shared helper by synthesising a Brushing state already in data space.
+            // Invert the pixel rect to data coordinates and dispatch as
+            // STRUCTURED interval clauses (the live default) carrying each
+            // axis's scale metadata — the machine-readable form the engine's
+            // automatic pre-aggregation layer derives its cube from. Reuse the
+            // shared helper by synthesising a Brushing state already in data
+            // space.
             let data_rect = invert_pixel_brush(start, current, &self.plots[plot_index].scales);
+            let x_meta = self.plots[plot_index]
+                .scales
+                .get(Channel::X)
+                .map(clause_meta_for_scale);
+            let y_meta = self.plots[plot_index]
+                .scales
+                .get(Channel::Y)
+                .map(clause_meta_for_scale);
             let synthetic = InteractionState::Brushing {
                 start: Point::new(data_rect.x0, data_rect.y0),
                 current: Point::new(data_rect.x1, data_rect.y1),
             };
-            let (_next, aggregated) =
-                commit_brush_release_multi(&synthetic, &bindings, &mut self.session);
+            let (_next, aggregated) = commit_brush_release_multi_structured(
+                &synthetic,
+                &bindings,
+                x_meta,
+                y_meta,
+                &mut self.session,
+            );
             for (_selection, results) in aggregated {
                 self.absorb(results, &mut to_rebuild);
             }
@@ -1576,9 +1593,11 @@ pub fn clause_meta_for_scale(scale: &Scale) -> ClauseMeta {
 /// machine-readable all the way into the query layer. Emits SQL equivalent
 /// to the string path's predicate for the same gesture (see `ir.rs`).
 ///
-/// This is the opt-in structured producer — the string path
-/// (`invert_pixel_brush` + `brush_rect_to_predicate`) remains the live
-/// default until a consumer needs the structure.
+/// The structured path is the LIVE DEFAULT (the release commit dispatches
+/// structured clauses, which the engine's automatic pre-aggregation layer
+/// derives its cube from); the string path (`invert_pixel_brush` +
+/// `brush_rect_to_predicate`) remains as the SQL-equivalent compatibility
+/// surface.
 #[must_use]
 pub fn structured_brush_predicate(
     start: Point,
@@ -1595,6 +1614,7 @@ pub fn structured_brush_predicate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::brush::commit_brush_release_multi;
     use crate::chart_state::ChartState;
     use brightfield_render::mark::configured_renderer;
     use brightfield_render::scale::{anchor_scales, SequentialScheme};

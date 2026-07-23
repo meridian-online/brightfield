@@ -678,6 +678,607 @@ plot:
         }
     }
 
+    // --- automatic pre-aggregation: served from the cube, proven ------------
+
+    /// A density mark over a larger source, brushed on a DIFFERENT column —
+    /// the canonical cube client. The synthetic contributor path belongs to
+    /// no plot, so nothing self-excludes.
+    const DENSITY_UNDER_BRUSH: &str = r#"
+params:
+  brush:
+    select: intersect
+data:
+  events_base: { query: "SELECT (i % 200) AS x, (i % 100) AS y FROM range(20000) t(i)" }
+plot:
+  - mark: densityX
+    data: { from: events_base, filterBy: $brush }
+    x: x
+"#;
+
+    fn structured_y_interval(lo: f64, hi: f64) -> SqlPredicate {
+        use brightfield_sql::ir::ScalarValue;
+        SqlPredicate::Interval {
+            column: "y".to_string(),
+            lo: ScalarValue::Float(lo),
+            hi: ScalarValue::Float(hi),
+            meta: None,
+        }
+    }
+
+    fn string_y_interval(lo: f64, hi: f64) -> SqlPredicate {
+        SqlPredicate::And(vec![
+            SqlPredicate::Expr(format!("y >= {lo}")),
+            SqlPredicate::Expr(format!("y <= {hi}")),
+        ])
+    }
+
+    fn column_f64(batches: &[RecordBatch], name: &str) -> Vec<f64> {
+        use duckdb::arrow::array::Float64Array;
+        use duckdb::arrow::compute::cast;
+        use duckdb::arrow::datatypes::DataType;
+        let mut out = Vec::new();
+        for b in batches {
+            let idx = b.schema().index_of(name).expect("column present");
+            let col = cast(b.column(idx), &DataType::Float64).expect("numeric column");
+            let arr = col.as_any().downcast_ref::<Float64Array>().expect("f64");
+            for i in 0..arr.len() {
+                out.push(arr.value(i));
+            }
+        }
+        out
+    }
+
+    /// THE MERGE GATE for the cube layer: an interaction over the source is
+    /// served from the automatically derived pre-aggregate, not a scan of the
+    /// base table — proven by the executed-statement targets (query-count and
+    /// query-plan assertions), not by timing.
+    #[test]
+    fn structured_interaction_is_served_from_the_cube_not_the_base_table() {
+        let mut coord = coordinator_from(DENSITY_UNDER_BRUSH);
+        let contributor = ComponentPath("root/vconcat[99]".to_string());
+
+        // Warm the initial render (direct, unfiltered — no interaction yet).
+        let at_rest = coord.chart_rows(0).expect("initial render");
+        assert!(rows(&at_rest) > 0);
+        coord.session_mut().clear_executed_sql();
+
+        // First brush step: builds the cube once, serves from it.
+        let requery = coord.apply(Interaction::Select {
+            name: "brush".to_string(),
+            contributor: contributor.clone(),
+            predicate: structured_y_interval(10.0, 49.0),
+        });
+        assert!(requery.affected.iter().all(|(_, r)| r.is_ok()));
+        let stats = coord.session().preagg_stats().clone();
+        assert_eq!(stats.cubes_built, 1, "one cube materialised");
+        assert_eq!(stats.cube_hits, 1, "the re-query was served from it");
+        assert_eq!(stats.serve_failures, 0);
+        assert_eq!(stats.build_failures, 0);
+
+        let log = coord.session().executed_sql();
+        assert!(
+            log.iter()
+                .any(|s| s.starts_with("CREATE TEMP TABLE \"__bf_preagg_")),
+            "the build statement ran: {log:#?}"
+        );
+        let serving: Vec<&String> = log
+            .iter()
+            .filter(|s| !s.starts_with("CREATE TEMP TABLE"))
+            .collect();
+        assert!(
+            serving.iter().all(|s| !s.contains("\"events_base\"")),
+            "after the one-time build, no executed statement touches the base table: {log:#?}"
+        );
+        assert!(
+            serving.iter().any(|s| s.contains("__bf_preagg_")),
+            "the serving query reads the cube: {log:#?}"
+        );
+
+        // Query-plan assertion: DuckDB's own plan for the serving query scans
+        // the pre-aggregate, never the base table.
+        let cube_query = serving
+            .iter()
+            .find(|s| s.contains("__bf_preagg_"))
+            .expect("serving query logged")
+            .to_string();
+        let plan_batches = coord
+            .session()
+            .execute_raw_sql(&format!("EXPLAIN {cube_query}"))
+            .expect("EXPLAIN runs");
+        let mut plan_text = String::new();
+        for b in &plan_batches {
+            for c in 0..b.num_columns() {
+                use duckdb::arrow::array::StringArray;
+                if let Some(col) = b.column(c).as_any().downcast_ref::<StringArray>() {
+                    for r in 0..col.len() {
+                        plan_text.push_str(col.value(r));
+                        plan_text.push('\n');
+                    }
+                }
+            }
+        }
+        assert!(
+            plan_text.contains("__bf_preagg_"),
+            "plan scans the cube: {plan_text}"
+        );
+        assert!(
+            !plan_text.contains("events_base"),
+            "plan never scans the base table: {plan_text}"
+        );
+
+        // Second brush step: the SAME cube serves — no rebuild, exactly one
+        // more DuckDB execute, still zero base-table statements.
+        coord.session_mut().clear_executed_sql();
+        let execs_before = coord.session().duckdb_execute_count();
+        let requery2 = coord.apply(Interaction::Select {
+            name: "brush".to_string(),
+            contributor,
+            predicate: structured_y_interval(20.0, 59.0),
+        });
+        assert!(requery2.affected.iter().all(|(_, r)| r.is_ok()));
+        let stats2 = coord.session().preagg_stats().clone();
+        assert_eq!(stats2.cubes_built, 1, "cube reused across steps");
+        assert_eq!(stats2.cube_hits, 2);
+        assert_eq!(
+            coord.session().duckdb_execute_count(),
+            execs_before + 1,
+            "one drag step costs exactly one cube query"
+        );
+        let log2 = coord.session().executed_sql();
+        assert!(
+            log2.iter().all(|s| !s.contains("\"events_base\"")),
+            "no drag step rescans the base table: {log2:#?}"
+        );
+    }
+
+    /// Transparency: the cube-served result IS the direct result. The control
+    /// coordinator applies the equivalent STRING predicate (unstructured →
+    /// derivation bails → direct query); schemas and values must match.
+    #[test]
+    fn cube_served_result_equals_the_direct_result() {
+        let contributor = ComponentPath("root/vconcat[99]".to_string());
+
+        let mut served = coordinator_from(DENSITY_UNDER_BRUSH);
+        served.apply(Interaction::Select {
+            name: "brush".to_string(),
+            contributor: contributor.clone(),
+            predicate: structured_y_interval(10.0, 49.0),
+        });
+        assert_eq!(served.session().preagg_stats().cube_hits, 1, "served");
+
+        let mut direct = coordinator_from(DENSITY_UNDER_BRUSH);
+        direct.apply(Interaction::Select {
+            name: "brush".to_string(),
+            contributor,
+            predicate: string_y_interval(10.0, 49.0),
+        });
+        assert_eq!(
+            direct.session().preagg_stats().cubes_built,
+            0,
+            "the string predicate is not derivable — direct query"
+        );
+
+        let a = served.chart_rows(0).expect("served rows");
+        let b = direct.chart_rows(0).expect("direct rows");
+        assert_eq!(rows(&a), rows(&b), "same row count");
+        assert!(rows(&a) > 0, "non-vacuous comparison");
+        assert_eq!(
+            a[0].schema(),
+            b[0].schema(),
+            "identical schema — names and types"
+        );
+        // Density orders by bin centre, so rows align positionally.
+        assert_eq!(column_f64(&a, "x"), column_f64(&b, "x"), "bin centres");
+        assert_eq!(
+            column_f64(&a, "__bf_count"),
+            column_f64(&b, "__bf_count"),
+            "per-bin counts"
+        );
+    }
+
+    /// Fallback matrix: shapes the cube must NOT serve still work, directly.
+    #[test]
+    fn non_derivable_shapes_fall_back_to_the_direct_query() {
+        // (a) A row-level mark (dot) has nothing to pre-aggregate.
+        let mut coord = coordinator_from(BRUSH_DASHBOARD);
+        let contributor = ComponentPath("root/vconcat[99]".to_string());
+        let requery = coord.apply(Interaction::Select {
+            name: "brush".to_string(),
+            contributor: contributor.clone(),
+            predicate: structured_y_interval(20.0, 40.0),
+        });
+        assert!(requery.affected.iter().all(|(_, r)| r.is_ok()));
+        assert_eq!(coord.session().preagg_stats().cubes_built, 0);
+        assert_eq!(coord.session().preagg_stats().cube_hits, 0);
+        assert_eq!(rows(&coord.chart_rows(0).unwrap()), 3, "y in {{20,30,40}}");
+
+        // (b) An unstructured predicate over the aggregate mark: direct.
+        let mut coord = coordinator_from(DENSITY_UNDER_BRUSH);
+        let requery = coord.apply(Interaction::Select {
+            name: "brush".to_string(),
+            contributor,
+            predicate: SqlPredicate::Expr("y < 50".to_string()),
+        });
+        assert!(requery.affected.iter().all(|(_, r)| r.is_ok()));
+        assert_eq!(coord.session().preagg_stats().cubes_built, 0);
+        assert!(
+            coord
+                .session()
+                .executed_sql()
+                .iter()
+                .any(|s| s.contains("\"events_base\"")),
+            "the direct query ran against the base table"
+        );
+    }
+
+    /// The grid surface (row-level SELECT *) is never served from a cube —
+    /// exact-SQL matching cannot confuse the two read shapes — and both
+    /// surfaces agree on the filtered row count.
+    #[test]
+    fn grid_reads_stay_row_level_under_a_cube_serve() {
+        let mut coord = coordinator_from(DENSITY_UNDER_BRUSH);
+        let contributor = ComponentPath("root/vconcat[99]".to_string());
+        coord.apply(Interaction::Select {
+            name: "brush".to_string(),
+            contributor,
+            predicate: structured_y_interval(0.0, 49.0),
+        });
+        assert_eq!(coord.session().preagg_stats().cube_hits, 1);
+        let grid = coord.grid_rows(0).expect("grid rows");
+        assert_eq!(
+            rows(&grid),
+            10_000,
+            "row-level read: the 10k source rows with y in [0,49]"
+        );
+        assert_eq!(
+            coord.session().preagg_stats().cube_hits,
+            1,
+            "the grid read did not (wrongly) hit the cube"
+        );
+    }
+
+    /// A spec reload retires every cube and serve: the TEMP tables are
+    /// dropped and the next interaction derives afresh.
+    #[test]
+    fn spec_reload_retires_the_cubes() {
+        let parsed = parse_spec(DENSITY_UNDER_BRUSH, Format::Yaml).expect("parse");
+        let analysis = analyse_spec(&parsed.spec).expect("analyse");
+        let mut coord = coordinator_from(DENSITY_UNDER_BRUSH);
+        let contributor = ComponentPath("root/vconcat[99]".to_string());
+        coord.apply(Interaction::Select {
+            name: "brush".to_string(),
+            contributor: contributor.clone(),
+            predicate: structured_y_interval(10.0, 49.0),
+        });
+        assert_eq!(coord.session().preagg_stats().cubes_built, 1);
+
+        coord.session_mut().clear_executed_sql();
+        coord.session_mut().reload_spec(parsed.spec, analysis);
+        assert!(
+            coord
+                .session()
+                .executed_sql()
+                .iter()
+                .any(|s| s.starts_with("DROP TABLE IF EXISTS \"__bf_preagg_")),
+            "reload dropped the cube tables"
+        );
+
+        // The next interaction builds a fresh cube and still serves.
+        let requery = coord.apply(Interaction::Select {
+            name: "brush".to_string(),
+            contributor,
+            predicate: structured_y_interval(10.0, 49.0),
+        });
+        assert!(requery.affected.iter().all(|(_, r)| r.is_ok()));
+        assert_eq!(coord.session().preagg_stats().cubes_built, 2);
+    }
+
+    /// A changed data content fingerprint retires the cubes rather than
+    /// serving them stale. The hazard is proven real first: a session's
+    /// file-backed source is a view (a direct query reads the bytes on disk),
+    /// but a materialised cube holds the bytes from build time — after the
+    /// file changes, a cube-served interaction answers from the OLD data
+    /// until the fingerprint observation retires it.
+    #[test]
+    fn changed_data_fingerprint_retires_stale_cubes() {
+        use brightfield_sql::ir::ScalarValue;
+        let dir = std::env::temp_dir();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = dir.join(format!("bf_preagg_fp_{}_{unique}.csv", std::process::id()));
+        // v1: cell (a,p) holds 2 north rows; (b,q) holds 1.
+        std::fs::write(
+            &path,
+            "xg,yg,region\na,p,north\na,p,north\na,p,south\nb,q,north\n",
+        )
+        .expect("write csv v1");
+
+        let yaml = format!(
+            r#"
+params:
+  pick:
+    select: intersect
+data:
+  events_base: {{ file: {} }}
+plot:
+  - mark: cell
+    data: {{ from: events_base, filterBy: $pick }}
+    x: xg
+    y: yg
+    fill: {{ count: }}
+"#,
+            path.display()
+        );
+        let contributor = ComponentPath("root/vconcat[99]".to_string());
+        let north = |values: &[&str]| SqlPredicate::Point {
+            column: "region".to_string(),
+            values: values
+                .iter()
+                .map(|v| ScalarValue::Text((*v).to_string()))
+                .collect(),
+            meta: None,
+        };
+        let total =
+            |batches: &[RecordBatch]| -> f64 { column_f64(batches, "__bf_count").iter().sum() };
+
+        let mut coord = coordinator_from(&yaml);
+        coord.apply(Interaction::Select {
+            name: "pick".to_string(),
+            contributor: contributor.clone(),
+            predicate: north(&["north"]),
+        });
+        assert_eq!(coord.session().preagg_stats().cubes_built, 1);
+        assert_eq!(coord.session().preagg_stats().cube_hits, 1);
+        assert_eq!(
+            total(&coord.chart_rows(0).expect("served v1")),
+            3.0,
+            "v1 has three north rows"
+        );
+
+        // The file changes underneath the session: (a,p) now holds 5 north
+        // rows. (Atomic swap via rename, as a publisher would.)
+        let staged = path.with_extension("csv.new");
+        std::fs::write(
+            &staged,
+            "xg,yg,region\na,p,north\na,p,north\na,p,north\na,p,north\na,p,north\na,p,south\nb,q,north\n",
+        )
+        .expect("write csv v2");
+        std::fs::rename(&staged, &path).expect("swap in v2");
+
+        // The hazard, proven: a new interaction step is served from the STALE
+        // cube (v1 bytes) while the view would answer v2.
+        coord.apply(Interaction::Select {
+            name: "pick".to_string(),
+            contributor: contributor.clone(),
+            predicate: north(&["north", "south"]),
+        });
+        assert_eq!(coord.session().preagg_stats().cube_hits, 2, "still serving");
+        assert_eq!(
+            total(&coord.chart_rows(0).expect("stale serve")),
+            4.0,
+            "the cube still answers v1's four rows — the staleness this seam exists to kill"
+        );
+
+        // The fingerprint observation retires everything derived.
+        coord.session_mut().clear_executed_sql();
+        assert!(coord.session_mut().observe_data_fingerprint("v2"));
+        assert!(
+            coord
+                .session()
+                .executed_sql()
+                .iter()
+                .any(|s| s.starts_with("DROP TABLE IF EXISTS \"__bf_preagg_")),
+            "the cube tables were dropped"
+        );
+        assert_eq!(
+            coord.session().data_fingerprint(),
+            Some("v2"),
+            "the fingerprint is recorded"
+        );
+        assert!(
+            !coord.session_mut().observe_data_fingerprint("v2"),
+            "an unchanged fingerprint is a no-op"
+        );
+
+        // The next interaction rebuilds from the CURRENT bytes and answers
+        // fresh — equal to a direct (never-cubed) session over the same file.
+        coord.apply(Interaction::Select {
+            name: "pick".to_string(),
+            contributor: contributor.clone(),
+            predicate: north(&["north"]),
+        });
+        assert_eq!(coord.session().preagg_stats().cubes_built, 2, "rebuilt");
+        let fresh = total(&coord.chart_rows(0).expect("fresh serve"));
+        assert_eq!(fresh, 6.0, "v2 has six north rows");
+
+        let mut direct = coordinator_from(&yaml);
+        direct.apply(Interaction::Select {
+            name: "pick".to_string(),
+            contributor,
+            predicate: SqlPredicate::Expr("region = 'north'".to_string()),
+        });
+        assert_eq!(direct.session().preagg_stats().cubes_built, 0);
+        assert_eq!(
+            total(&direct.chart_rows(0).expect("direct")),
+            fresh,
+            "cube-served equals direct over the same bytes"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The layer's on/off switch: disabled, every interaction runs direct
+    /// (and existing cubes are retired); re-enabled, the cube engages again.
+    /// This is the lever the measurement harness uses to isolate the layer.
+    #[test]
+    fn preagg_toggle_disables_and_reenables_the_layer() {
+        let mut coord = coordinator_from(DENSITY_UNDER_BRUSH);
+        let contributor = ComponentPath("root/vconcat[99]".to_string());
+        assert!(coord.session().preagg_enabled(), "enabled by default");
+
+        coord.session_mut().set_preagg_enabled(false);
+        coord.apply(Interaction::Select {
+            name: "brush".to_string(),
+            contributor: contributor.clone(),
+            predicate: structured_y_interval(10.0, 49.0),
+        });
+        assert_eq!(coord.session().preagg_stats().cubes_built, 0, "no cube");
+        assert_eq!(coord.session().preagg_stats().cube_hits, 0, "no serve");
+        assert!(
+            coord
+                .session()
+                .executed_sql()
+                .iter()
+                .any(|s| s.contains("\"events_base\"")),
+            "the direct query ran against the base table"
+        );
+
+        coord.session_mut().set_preagg_enabled(true);
+        coord.apply(Interaction::Select {
+            name: "brush".to_string(),
+            contributor,
+            predicate: structured_y_interval(12.0, 47.0),
+        });
+        assert_eq!(coord.session().preagg_stats().cubes_built, 1, "re-engaged");
+        assert_eq!(coord.session().preagg_stats().cube_hits, 1);
+    }
+
+    /// A self-aggregating cell under a POINT clause: served from the cube,
+    /// equal to the direct result.
+    #[test]
+    fn cell_point_selection_served_from_cube_matches_direct() {
+        use brightfield_sql::ir::ScalarValue;
+        const CELL_UNDER_BRUSH: &str = r#"
+params:
+  pick:
+    select: intersect
+data:
+  events_base:
+    - { xg: a, yg: p, region: north }
+    - { xg: a, yg: p, region: south }
+    - { xg: a, yg: q, region: north }
+    - { xg: b, yg: p, region: north }
+    - { xg: b, yg: q, region: south }
+plot:
+  - mark: cell
+    data: { from: events_base, filterBy: $pick }
+    x: xg
+    y: yg
+    fill: { count: }
+"#;
+        let contributor = ComponentPath("root/vconcat[99]".to_string());
+        let point = SqlPredicate::Point {
+            column: "region".to_string(),
+            values: vec![ScalarValue::Text("north".to_string())],
+            meta: None,
+        };
+
+        let mut served = coordinator_from(CELL_UNDER_BRUSH);
+        served.apply(Interaction::Select {
+            name: "pick".to_string(),
+            contributor: contributor.clone(),
+            predicate: point,
+        });
+        assert_eq!(served.session().preagg_stats().cube_hits, 1, "served");
+
+        let mut direct = coordinator_from(CELL_UNDER_BRUSH);
+        direct.apply(Interaction::Select {
+            name: "pick".to_string(),
+            contributor,
+            predicate: SqlPredicate::Expr("region = 'north'".to_string()),
+        });
+        assert_eq!(direct.session().preagg_stats().cubes_built, 0);
+
+        let a = served.chart_rows(0).expect("served");
+        let b = direct.chart_rows(0).expect("direct");
+        assert_eq!(rows(&a), rows(&b));
+        assert_eq!(rows(&a), 3, "three cells hold a north row");
+        assert_eq!(a[0].schema(), b[0].schema());
+        assert_eq!(
+            column_f64(&a, "__bf_count"),
+            column_f64(&b, "__bf_count"),
+            "identical per-cell counts (cell orders by category)"
+        );
+    }
+
+    /// The regression mark (scalar regr_* family) served from a cube matches
+    /// the direct fit to floating-point tolerance — the mean-centered
+    /// sufficient statistics reassemble the same coefficients.
+    #[test]
+    fn regression_served_from_cube_matches_direct_fit() {
+        const REGRESSION_UNDER_BRUSH: &str = r#"
+params:
+  brush:
+    select: intersect
+data:
+  events_base: { query: "SELECT (i % 40) AS g, CAST(i % 97 AS DOUBLE) AS w, CAST(2.5 * (i % 97) + 3 + (i % 7) AS DOUBLE) AS h FROM range(5000) t(i)" }
+plot:
+  - mark: regressionY
+    data: { from: events_base, filterBy: $brush }
+    x: w
+    y: h
+"#;
+        let contributor = ComponentPath("root/vconcat[99]".to_string());
+        let brush = |mut c: Coordinator, pred: SqlPredicate| {
+            c.apply(Interaction::Select {
+                name: "brush".to_string(),
+                contributor: contributor.clone(),
+                predicate: pred,
+            });
+            c
+        };
+        let served = brush(
+            coordinator_from(REGRESSION_UNDER_BRUSH),
+            SqlPredicate::Interval {
+                column: "g".to_string(),
+                lo: brightfield_sql::ir::ScalarValue::Float(5.0),
+                hi: brightfield_sql::ir::ScalarValue::Float(30.0),
+                meta: None,
+            },
+        );
+        let mut served = served;
+        assert_eq!(served.session().preagg_stats().cube_hits, 1, "served");
+        assert_eq!(served.session().preagg_stats().build_failures, 0);
+
+        let direct = brush(
+            coordinator_from(REGRESSION_UNDER_BRUSH),
+            SqlPredicate::And(vec![
+                SqlPredicate::Expr("g >= 5".to_string()),
+                SqlPredicate::Expr("g <= 30".to_string()),
+            ]),
+        );
+        let mut direct = direct;
+        assert_eq!(direct.session().preagg_stats().cubes_built, 0);
+
+        let a = served.chart_rows(0).expect("served");
+        let b = direct.chart_rows(0).expect("direct");
+        assert_eq!(rows(&a), 1);
+        assert_eq!(rows(&b), 1);
+        for col in [
+            "slope",
+            "intercept",
+            "x_bar",
+            "x_min",
+            "x_max",
+            "y_min",
+            "y_max",
+        ] {
+            let va = column_f64(&a, col)[0];
+            let vb = column_f64(&b, col)[0];
+            assert!(
+                (va - vb).abs() <= 1e-9 * vb.abs().max(1.0),
+                "{col}: cube {va} vs direct {vb}"
+            );
+        }
+        assert_eq!(
+            column_f64(&a, "n"),
+            column_f64(&b, "n"),
+            "pair count is exact"
+        );
+    }
+
     // --- offline, file-backed spec (no network) ---
 
     #[test]

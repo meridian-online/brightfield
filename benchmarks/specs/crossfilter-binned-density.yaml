@@ -1,0 +1,38 @@
+# Scaling scenario: the bounded-cardinality brush — a brushed scatter
+# re-aggregating a 1D density over a column with exactly forty distinct
+# values (`value_c`).
+#
+# This is the shape the automatic pre-aggregation layer is built for: the
+# derived cube groups by (density bin × brushed value), so it holds at most
+# bins × 40 cells however many rows the table has. Each brush step then
+# re-aggregates the cube, not the table. Contrast with the crossfilter-density
+# scenario, whose brushed column is ~unique per row: there the first-cut cube
+# (raw active values, not pixel-binned) grows with the table and the layer
+# buys little — both facts belong in the measured record.
+#
+# `__DATA_PARQUET__` is substituted by the harness with the absolute path of
+# the generated dataset before the spec is loaded. The dataset's columns are a
+# pure function of the row index — see the harness's data module.
+meta:
+  title: Baseline — bounded-cardinality brush re-aggregating a density
+params:
+  brush: { select: crossfilter }
+data:
+  t:
+    file: __DATA_PARQUET__
+hconcat:
+  - plot:
+      - mark: dot
+        data: { from: t, filterBy: $brush }
+        x: value_c
+        y: value_b
+      - select: intervalX
+        as: $brush
+    width: 440
+    height: 300
+  - plot:
+      - mark: densityX
+        data: { from: t, filterBy: $brush }
+        x: value_c
+    width: 440
+    height: 300

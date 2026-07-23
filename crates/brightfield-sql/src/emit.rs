@@ -540,17 +540,19 @@ pub fn emit_query(
     )
 }
 
-/// Emit a query for a single mark, applying the given passes to the plan.
+/// Lower a single mark to its query plan **before any selection threading** —
+/// the pure lowerer output plus the mark's component path.
 ///
-/// Pass-aware variant of [`emit_query`]. Same `param_values` /
-/// `selection_predicates` contract.
-pub fn emit_query_with_passes(
-    spec: &Spec,
-    mark_index: usize,
-    param_values: Option<&ParamValues>,
-    selection_predicates: Option<&[SelectionPredicate]>,
-    extra_passes: &[Box<dyn crate::passes::Pass>],
-) -> Result<EmittedQuery, EmitError> {
+/// This is the seam the automatic pre-aggregation layer analyses: the cube
+/// derivation needs the mark's plan *without* the live selection filter (the
+/// active clause becomes cube dimensions instead), and it must see exactly the
+/// plan [`emit_query`] starts from — so both call this one function.
+///
+/// # Errors
+///
+/// [`EmitError::InvariantViolation`] if `mark_index` is out of bounds;
+/// otherwise whatever the mark's lowerer returns.
+pub fn lower_mark_plan(spec: &Spec, mark_index: usize) -> Result<(QueryPlan, String), EmitError> {
     // Use the path-aware mark walker so we can compute the parent plot
     // identity for selection self-exclusion (v2 decision 4).
     let marks_with_paths = collect_marks_with_paths(spec);
@@ -573,18 +575,97 @@ pub fn emit_query_with_passes(
     };
 
     let lowerer = find_lowerer(mark.kind, &lowerers);
-    let mut plan = lowerer.lower(mark, &ctx)?;
+    let plan = lowerer.lower(mark, &ctx)?;
+    Ok((plan, (*mark_path).to_string()))
+}
+
+/// Thread a compiled selection predicate into a lowered plan at the
+/// semantically correct level.
+///
+/// For a **row-level plan** (Source / Filter / Projection chains) the filter
+/// wraps the whole plan — the historical placement, byte-unchanged.
+///
+/// For an **aggregating plan** (`Aggregation` / `AggregateScalar`, possibly
+/// under `Order`) the predicate is pushed onto the aggregation's *input*: a
+/// selection filters the base rows that get aggregated, it does not filter the
+/// aggregated output (whose columns are the group keys and aggregate aliases —
+/// the brushed column is usually not among them, and even when an alias
+/// collides, filtering bins is not filtering rows). This is the Mosaic
+/// semantics the pre-aggregation layer's cube rewrite reproduces, so the
+/// direct query and the cube-served query cannot disagree.
+fn apply_selection_filter(plan: QueryPlan, predicate: Predicate) -> QueryPlan {
+    match plan {
+        QueryPlan::Order { input, keys } => QueryPlan::Order {
+            input: Box::new(apply_selection_filter(*input, predicate)),
+            keys,
+        },
+        QueryPlan::Aggregation {
+            input,
+            group_by,
+            aggregates,
+        } => QueryPlan::Aggregation {
+            input: Box::new(QueryPlan::Filter { input, predicate }),
+            group_by,
+            aggregates,
+        },
+        QueryPlan::AggregateScalar { input, aggregates } => QueryPlan::AggregateScalar {
+            input: Box::new(QueryPlan::Filter { input, predicate }),
+            aggregates,
+        },
+        other => QueryPlan::Filter {
+            input: Box::new(other),
+            predicate,
+        },
+    }
+}
+
+/// The selection name a mark subscribes to via `data: { filterBy: $name }`,
+/// with the mark's component path — the pre-aggregation layer's per-mark
+/// lookup. `None` for an out-of-bounds index or a mark without `filterBy`.
+#[must_use]
+pub fn mark_selection_name(spec: &Spec, mark_index: usize) -> Option<(String, String)> {
+    let marks_with_paths = collect_marks_with_paths(spec);
+    let (mark, mark_path) = marks_with_paths.get(mark_index)?;
+    let name = mark_filter_by_name(mark)?;
+    Some((name.to_string(), (*mark_path).to_string()))
+}
+
+/// Interpolate `$name` scalar params into a SQL string — the same
+/// substitution [`emit_query`] applies to its rendered SQL, exposed for
+/// callers (the pre-aggregation layer) that render additional SQL from the
+/// same plans and must agree byte-for-byte on param handling.
+#[must_use]
+pub fn interpolate_sql(sql: &str, params: &ParamValues) -> String {
+    interpolate_params(sql, params)
+}
+
+/// Emit a query for a single mark, applying the given passes to the plan.
+///
+/// Pass-aware variant of [`emit_query`]. Same `param_values` /
+/// `selection_predicates` contract.
+pub fn emit_query_with_passes(
+    spec: &Spec,
+    mark_index: usize,
+    param_values: Option<&ParamValues>,
+    selection_predicates: Option<&[SelectionPredicate]>,
+    extra_passes: &[Box<dyn crate::passes::Pass>],
+) -> Result<EmittedQuery, EmitError> {
+    let (mut plan, mark_path) = lower_mark_plan(spec, mark_index)?;
+    let marks_with_paths = collect_marks_with_paths(spec);
+    let (mark, _) = marks_with_paths
+        .get(mark_index)
+        .expect("bounds checked by lower_mark_plan");
 
     // Selection threading: if the mark has a filter_by reference and the
     // referenced name is a SelectionNode in spec.params, compile the live
-    // contributors into a predicate and wrap the lowered plan in
-    // `QueryPlan::Filter`. Self-exclusion identity is the stable plot-node path
+    // contributors into a predicate and thread it into the lowered plan.
+    // Self-exclusion identity is the stable plot-node path
     // (decision 4) — `plot_node_path`, NOT `parent_plot`, so a mark and the
     // brushing interactor in the same plot resolve to the same identity (else a
     // plot filters itself).
     if let Some(selection_name) = mark_filter_by_name(mark) {
         if let Some(ParamNode::Selection(sel_node)) = spec.params.get(selection_name) {
-            let self_source = brightfield_spec::analysis::plot_node_path(mark_path);
+            let self_source = brightfield_spec::analysis::plot_node_path(&mark_path);
             let contributors: &[(String, Predicate)] = selection_predicates
                 .and_then(|all| {
                     all.iter()
@@ -597,10 +678,7 @@ pub fn emit_query_with_passes(
             // stay structurally identical to pre-card behaviour (relied on
             // by existing render-shape tests).
             if predicate != Predicate::True {
-                plan = QueryPlan::Filter {
-                    input: Box::new(plan),
-                    predicate,
-                };
+                plan = apply_selection_filter(plan, predicate);
             }
         }
     }
@@ -1090,6 +1168,77 @@ mod query_tests {
             emitted.sql.contains("x > 2"),
             "the filter param must be interpolated: {}",
             emitted.sql
+        );
+    }
+
+    /// A selection filter on an AGGREGATING mark (density) lands INSIDE the
+    /// aggregation — filtering the base rows that get aggregated — never
+    /// outside it (where the brushed column is not among the output columns
+    /// and the filter would either error or filter bins instead of rows).
+    /// This is the placement the pre-aggregation cube rewrite reproduces, so
+    /// direct and cube-served queries cannot disagree.
+    #[test]
+    fn selection_filter_on_aggregate_mark_filters_base_rows() {
+        let src = "params:\n  brush:\n    select: intersect\ndata:\n  t: [{ x: 1, y: 9 }, { x: 2, y: 1 }]\nplot:\n  - mark: densityX\n    data: { from: t, filterBy: $brush }\n    x: x\n";
+        let spec = parse_spec(src, Format::Yaml).unwrap().spec;
+        let selections: Vec<SelectionPredicate> = vec![(
+            "brush".to_string(),
+            vec![(
+                "root/other".to_string(),
+                Predicate::Expr("\"y\" <= 5".to_string()),
+            )],
+        )];
+        let emitted = emit_query(&spec, 0, None, Some(&selections)).unwrap();
+        let sql = &emitted.sql;
+        let group_pos = sql.find("GROUP BY").expect("density aggregates");
+        let pred_pos = sql.find("\"y\" <= 5").expect("selection predicate present");
+        assert!(
+            pred_pos < group_pos,
+            "the selection WHERE must sit inside (before) the aggregation, got: {sql}"
+        );
+        // Still parseable SQL.
+        crate::conform::parse_and_normalise(sql).expect("valid SQL");
+    }
+
+    /// The same selection on a ROW-LEVEL mark (dot) keeps the historical
+    /// outer-wrap placement, byte-identical.
+    #[test]
+    fn selection_filter_on_row_mark_wraps_outside_unchanged() {
+        let src = "params:\n  brush:\n    select: intersect\ndata:\n  t: [{ x: 1, y: 9 }]\nplot:\n  - mark: dot\n    data: { from: t, filterBy: $brush }\n    x: x\n    y: y\n";
+        let spec = parse_spec(src, Format::Yaml).unwrap().spec;
+        let selections: Vec<SelectionPredicate> = vec![(
+            "brush".to_string(),
+            vec![(
+                "root/other".to_string(),
+                Predicate::Expr("\"y\" <= 5".to_string()),
+            )],
+        )];
+        let emitted = emit_query(&spec, 0, None, Some(&selections)).unwrap();
+        assert_eq!(
+            emitted.sql, "SELECT * FROM (SELECT * FROM \"t\") AS _f WHERE (\"y\" <= 5)",
+            "row-level placement is unchanged"
+        );
+    }
+
+    /// `lower_mark_plan` returns the pure pre-selection plan (identical to
+    /// what `emit_query` starts from) plus the mark's component path, and
+    /// `mark_selection_name` resolves the mark's filterBy binding.
+    #[test]
+    fn lower_mark_plan_and_selection_name_expose_the_preagg_seam() {
+        let src = "params:\n  brush:\n    select: intersect\ndata:\n  t: [{ x: 1 }]\nplot:\n  - mark: densityX\n    data: { from: t, filterBy: $brush }\n    x: x\n";
+        let spec = parse_spec(src, Format::Yaml).unwrap().spec;
+        let (plan, path) = lower_mark_plan(&spec, 0).expect("lowers");
+        assert!(
+            matches!(plan, QueryPlan::Order { .. }),
+            "density lowers to Order(Aggregation(..)) with no selection filter"
+        );
+        assert_eq!(path, "root/plot[0]/mark[densityX]");
+        let (name, sel_path) = mark_selection_name(&spec, 0).expect("filterBy resolves");
+        assert_eq!(name, "brush");
+        assert_eq!(sel_path, path);
+        assert!(
+            mark_selection_name(&spec, 9).is_none(),
+            "out of bounds → None"
         );
     }
 

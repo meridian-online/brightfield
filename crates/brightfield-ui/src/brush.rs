@@ -183,8 +183,13 @@ pub fn point_predicate(column: &str, value: &str) -> Predicate {
 // `Predicate::Point` clauses instead, carrying the column, typed bounds or
 // values, and optional scale/pixel metadata through to the query layer
 // without erasure — while emitting SQL equivalent to the string forms (see
-// their `ir.rs` docs for the exact byte-level rendering contract). The string
-// path above REMAINS the default; these are the opt-in structured producers.
+// their `ir.rs` docs for the exact byte-level rendering contract).
+//
+// The structured producers are the LIVE DEFAULT: the release/click commit
+// path dispatches structured clauses, which is what lets the engine's
+// automatic pre-aggregation layer derive a cube from the gesture. The string
+// adapters above remain as the compatibility surface (and for callers with
+// no scale context).
 
 /// Convert a resolved [`SelectionValue`] into the IR's typed
 /// [`ScalarValue`], preserving the value's type. `ScalarValue::to_sql_literal`
@@ -755,6 +760,56 @@ pub fn commit_brush_release_multi<D: SelectionDispatcher>(
     }
 }
 
+/// Structured form of [`commit_brush_release_multi`] — the LIVE drag-commit
+/// path. Same interaction/binding iteration and kind-compatibility filter,
+/// but each interval binding dispatches a structured
+/// [`Predicate::Interval`] clause (via [`brush_rect_to_structured`]) carrying
+/// the per-axis scale/pixel metadata, so the engine's pre-aggregation layer
+/// can derive a cube from the gesture. Emits SQL equivalent to the string
+/// path for the same rect.
+pub fn commit_brush_release_multi_structured<D: SelectionDispatcher>(
+    interaction: &InteractionState,
+    bindings: &[BrushBinding],
+    x_meta: Option<ClauseMeta>,
+    y_meta: Option<ClauseMeta>,
+    dispatcher: &mut D,
+) -> (InteractionState, Vec<(String, Vec<DispatchResult>)>) {
+    if let InteractionState::Brushing { start, current } = interaction {
+        let rect = kurbo::Rect::new(
+            start.x.min(current.x),
+            start.y.min(current.y),
+            start.x.max(current.x),
+            start.y.max(current.y),
+        );
+        let mut aggregated = Vec::with_capacity(bindings.len());
+        for binding in bindings {
+            // Kind-compatibility filter — see commit_brush_release_multi.
+            if matches!(
+                binding.kind,
+                BrushKind::Point | BrushKind::PointX | BrushKind::PointY
+            ) {
+                continue;
+            }
+            let predicate = brush_rect_to_structured(
+                rect,
+                binding.kind,
+                &binding.channels,
+                x_meta.clone(),
+                y_meta.clone(),
+            );
+            let results = dispatcher.dispatch(
+                &binding.selection_name,
+                binding.contributor.clone(),
+                predicate,
+            );
+            aggregated.push((binding.selection_name.clone(), results));
+        }
+        (InteractionState::Idle, aggregated)
+    } else {
+        (interaction.clone(), Vec::new())
+    }
+}
+
 /// Pure helper for the single-binding path: given an InteractionState (which may or
 /// may not be Brushing), a binding, and a dispatcher, produce the
 /// dispatch result vec and the next InteractionState. Lifted out of
@@ -853,10 +908,22 @@ pub fn commit_click_multi<D: SelectionDispatcher>(
                     NearestMode::Y
                 };
                 match resolve_point_value(click_px, marks, scales, binding, mode) {
-                    // Hit: select that datum's (or category's) exact value.
+                    // Hit: select that datum's (or category's) exact value —
+                    // dispatched as a structured Point clause (the live
+                    // default; SQL-equivalent to the string form) carrying
+                    // the clicked axis's scale metadata.
                     Some(value) => {
                         selected.insert(key);
-                        let predicate = point_to_predicate(&value, binding.kind, &binding.channels);
+                        let channel = if matches!(binding.kind, BrushKind::PointX) {
+                            Channel::X
+                        } else {
+                            Channel::Y
+                        };
+                        let meta = scales
+                            .get(channel)
+                            .map(crate::crossfilter::clause_meta_for_scale);
+                        let predicate =
+                            point_to_structured(&value, binding.kind, &binding.channels, meta);
                         dispatcher.dispatch(
                             &binding.selection_name,
                             binding.contributor.clone(),
@@ -1203,6 +1270,67 @@ mod commit_tests {
             "the dispatched selection is the interval, not the point"
         );
         assert_eq!(aggregated.len(), 1);
+    }
+
+    /// The LIVE drag-commit default dispatches STRUCTURED interval clauses:
+    /// the slot the engine stores carries the column, typed bounds, and the
+    /// per-axis scale metadata — machine-readable for cube derivation — while
+    /// point-kind bindings are skipped exactly as on the string path.
+    #[test]
+    fn structured_release_dispatches_interval_clauses_with_meta() {
+        use brightfield_sql::ir::ScaleDescriptor;
+        let mut interaction = InteractionState::start_brush(Point::new(20.0, 30.0));
+        interaction.update_brush(Point::new(120.0, 230.0));
+
+        let bindings = [
+            BrushBinding {
+                selection_name: "pt".to_string(),
+                contributor: ComponentPath("root/plot[0]".to_string()),
+                kind: BrushKind::PointX,
+                channels: ChannelColumns::xy("speed", "delay"),
+            },
+            BrushBinding {
+                selection_name: "iv".to_string(),
+                contributor: ComponentPath("root/plot[0]".to_string()),
+                kind: BrushKind::IntervalY,
+                channels: ChannelColumns::xy("speed", "delay"),
+            },
+        ];
+        let y_meta = ClauseMeta {
+            scale: Some(ScaleDescriptor {
+                kind: "linear".to_string(),
+                domain: Some((0.0, 500.0)),
+                range: Some((340.0, 40.0)),
+            }),
+            pixel_size: Some(1.0),
+        };
+        let mut dispatcher = RecordingDispatcher::new();
+        let (state, aggregated) = commit_brush_release_multi_structured(
+            &interaction,
+            &bindings,
+            None,
+            Some(y_meta.clone()),
+            &mut dispatcher,
+        );
+        assert!(matches!(state, InteractionState::Idle));
+        assert_eq!(aggregated.len(), 1, "point binding skipped on a drag");
+        assert_eq!(dispatcher.calls.len(), 1);
+        let (selection, _, predicate) = &dispatcher.calls[0];
+        assert_eq!(selection, "iv");
+        match predicate {
+            Predicate::Interval {
+                column,
+                lo,
+                hi,
+                meta,
+            } => {
+                assert_eq!(column, "delay");
+                assert_eq!(lo, &ScalarValue::Float(30.0));
+                assert_eq!(hi, &ScalarValue::Float(230.0));
+                assert_eq!(meta.as_ref(), Some(&y_meta), "scale metadata intact");
+            }
+            other => panic!("expected a structured Interval clause, got {other:?}"),
+        }
     }
 
     // ---------------------------------------------------------------------

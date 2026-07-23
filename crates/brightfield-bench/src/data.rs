@@ -4,8 +4,11 @@
 //! — no RNG, no seed state — so two runs (and two machines on the same DuckDB
 //! version) generate byte-for-byte the same logical data. The distributions
 //! are chosen for the scenarios, not for realism: `value_a` is uniform on
-//! [0, 100) (the brushed axis), `value_b` is a bell-ish sum of three uniforms
-//! on [0, ~100), and `category` takes ten values.
+//! [0, 100) (a high-cardinality brushed axis — ~every row distinct),
+//! `value_b` is a bell-ish sum of three uniforms on [0, ~100), `value_c` is
+//! uniform over the 40 integers [0, 40) (a bounded-cardinality brushed axis —
+//! the shape where a derived data cube stays small however many rows the
+//! table holds), and `category` takes ten values.
 
 use std::path::{Path, PathBuf};
 
@@ -20,7 +23,9 @@ pub fn ensure_dataset(
     rows: u64,
 ) -> Result<PathBuf, String> {
     std::fs::create_dir_all(data_dir).map_err(|e| format!("create {}: {e}", data_dir.display()))?;
-    let path = data_dir.join(format!("uniform_{rows}.parquet"));
+    // v2: adds `value_c` (the bounded-cardinality axis). The version is in
+    // the filename because an existing file is reused as-is.
+    let path = data_dir.join(format!("uniform_v2_{rows}.parquet"));
     if path.exists() {
         return Ok(path);
     }
@@ -30,6 +35,7 @@ pub fn ensure_dataset(
                 i::BIGINT AS id,
                 ((hash(i) % 1000000) / 1000000.0 * 100.0)::DOUBLE AS value_a,
                 (((hash(i * 2 + 1) % 1000) + (hash(i * 3 + 2) % 1000) + (hash(i * 5 + 3) % 1000)) / 30.0)::DOUBLE AS value_b,
+                (hash(i * 11 + 7) % 40)::DOUBLE AS value_c,
                 ('c' || (hash(i * 7 + 5) % 10))::VARCHAR AS category
             FROM range({rows}) AS r(i)
         ) TO '{}' (FORMAT PARQUET)",
@@ -66,7 +72,7 @@ mod tests {
             let conn = duckdb::Connection::open_in_memory().expect("duckdb");
             conn.query_row(
                 &format!(
-                    "SELECT COUNT(*) || '/' || SUM(hash(id, value_a, value_b, category))::VARCHAR \
+                    "SELECT COUNT(*) || '/' || SUM(hash(id, value_a, value_b, value_c, category))::VARCHAR \
                      FROM read_parquet('{}')",
                     p.display()
                 ),
@@ -97,6 +103,28 @@ mod tests {
             .expect("range");
         assert!(lo >= 0.0 && hi < 100.0, "domain [0,100): got [{lo},{hi}]");
         assert!(hi - lo > 90.0, "spread covers the domain: got [{lo},{hi}]");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn value_c_is_bounded_cardinality() {
+        let dir = std::env::temp_dir().join(format!("bf-bench-card-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let conn = duckdb::Connection::open_in_memory().expect("duckdb");
+        let p = ensure_dataset(&conn, &dir, 10_000).expect("dataset");
+        let (distinct, lo, hi): (i64, f64, f64) = conn
+            .query_row(
+                &format!(
+                    "SELECT COUNT(DISTINCT value_c), MIN(value_c), MAX(value_c) \
+                     FROM read_parquet('{}')",
+                    p.display()
+                ),
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("cardinality");
+        assert_eq!(distinct, 40, "exactly forty distinct values");
+        assert!(lo >= 0.0 && hi < 40.0, "domain [0,40): got [{lo},{hi}]");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
