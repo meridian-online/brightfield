@@ -21,23 +21,35 @@
 //!                  [--size WxH] [--scale N] [--theme light|dark]
 //!                  [--script keys.ndjson]
 //!                  [--flow vertical|horizontal] [--focus <dotted-id>]
+//! brightfield-shot --gallery <component-id> --out out.png
+//!                  [--size WxH] [--scale N] [--theme light|dark]
 //! ```
 //!
 //! `--flow` / `--focus` apply to the Protocol panel: the reading axis (vertical
 //! by default) and the boot selection (the dotted asset id a click would target,
 //! so a scripted `za`/`Enter` has a cursor to act on).
+//!
+//! `--gallery` renders one design-gallery component solo through the same
+//! deterministic capture path — an agent that just changed a primitive can
+//! see it without composing a dashboard. On this path `--size` is honoured
+//! (defaulting to the component's own solo size); on the `--spec` path it
+//! remains a reserved override, because there the window derives from the
+//! document.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use brightfield_protocol::layout::Flow;
-use brightfield_shell::capture::{capture_png, capture_vello_only, parse_script};
+use brightfield_shell::capture::{
+    capture_component, capture_png, capture_vello_only, parse_script,
+};
 use brightfield_shell::design::Mode;
 use brightfield_shell::window::Boot;
 use brightfield_workbench::ViewKind;
 
 struct Args {
-    spec: String,
+    spec: Option<String>,
+    gallery: Option<String>,
     out: PathBuf,
     scale: f32,
     mode: Mode,
@@ -56,11 +68,31 @@ fn main() -> ExitCode {
             eprintln!(
                 "usage: brightfield-shot --spec S.yaml --out O.png \
                  [--scale N] [--theme light|dark] [--script keys.ndjson] \
-                 [--size WxH] [--flow vertical|horizontal] [--focus <dotted-id>]"
+                 [--size WxH] [--flow vertical|horizontal] [--focus <dotted-id>]\n\
+                 \x20      brightfield-shot --gallery <component-id> --out O.png \
+                 [--scale N] [--theme light|dark] [--size WxH]"
             );
             return ExitCode::from(2);
         }
     };
+
+    if let Some(parent) = args.out.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+
+    if let Some(id) = &args.gallery {
+        let size = args.size.map(|(w, h)| (w as f32, h as f32));
+        eprintln!("gallery component {id}");
+        return report(
+            capture_component(id, args.mode, args.scale, size, &args.out),
+            &args.out,
+        );
+    }
+    // `parse_args` guarantees one of the two modes is present.
+    let spec = args
+        .spec
+        .as_deref()
+        .expect("--spec or --gallery is present");
 
     let script = match &args.script {
         Some(p) => match parse_script(p) {
@@ -73,11 +105,7 @@ fn main() -> ExitCode {
         None => Vec::new(),
     };
 
-    if let Some(parent) = args.out.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-
-    let boot = match Boot::open(&args.spec, args.flow, args.focus.clone()) {
+    let boot = match Boot::open(spec, args.flow, args.focus.clone()) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("error: {e}");
@@ -88,7 +116,7 @@ fn main() -> ExitCode {
     // said at the call site rather than baked into the getter, for the reason
     // `Boot::view_or` records.
     let view = boot.view_or(ViewKind::Charts);
-    eprintln!("{} from {}", boot.describe(view), args.spec);
+    eprintln!("{} from {}", boot.describe(view), spec);
     if view == ViewKind::Protocol {
         // Surface the family tile ids so `--focus` has a target for a scripted `za`.
         for (id, node) in &boot.protocol.graph_collapsed.nodes {
@@ -106,8 +134,7 @@ fn main() -> ExitCode {
         // rather than an empty PNG.
         if view != ViewKind::Charts {
             eprintln!(
-                "error: --vello-only renders a composed dashboard; {} opens the Protocol view",
-                args.spec
+                "error: --vello-only renders a composed dashboard; {spec} opens the Protocol view"
             );
             return ExitCode::from(2);
         }
@@ -137,6 +164,7 @@ fn report(result: Result<(u32, u32), String>, out: &std::path::Path) -> ExitCode
 
 fn parse_args() -> Result<Args, String> {
     let mut spec: Option<String> = None;
+    let mut gallery: Option<String> = None;
     let mut out: Option<PathBuf> = None;
     let mut scale = 2.0_f32;
     let mut mode = Mode::Light;
@@ -150,6 +178,7 @@ fn parse_args() -> Result<Args, String> {
         let mut next = || it.next().ok_or_else(|| format!("{a} needs a value"));
         match a.as_str() {
             "--spec" => spec = Some(next()?),
+            "--gallery" => gallery = Some(next()?),
             "--out" => out = Some(PathBuf::from(next()?)),
             "--scale" => {
                 scale = next()?
@@ -184,8 +213,18 @@ fn parse_args() -> Result<Args, String> {
             other => return Err(format!("unknown arg: {other}")),
         }
     }
+    if spec.is_none() && gallery.is_none() {
+        return Err("one of --spec or --gallery is required".to_string());
+    }
+    if spec.is_some() && gallery.is_some() {
+        return Err(
+            "--spec and --gallery are exclusive: a shot is of a document or of a component"
+                .to_string(),
+        );
+    }
     Ok(Args {
-        spec: spec.ok_or("--spec is required")?,
+        spec,
+        gallery,
         out: out.ok_or("--out is required")?,
         scale: if scale > 0.0 { scale } else { 1.0 },
         mode,

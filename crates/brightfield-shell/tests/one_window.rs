@@ -12,7 +12,7 @@
 //! box it was given before it looks for a texture.
 
 use brightfield_protocol::layout::Flow;
-use brightfield_shell::app::chart_registry;
+use brightfield_shell::app::chart_registry_with;
 use brightfield_shell::design::Mode;
 use brightfield_shell::pipeline::compose_spec;
 use brightfield_shell::protocol::{
@@ -206,13 +206,20 @@ fn a_spec_chooses_the_opening_view_and_both_views_are_loaded() {
 /// booted: the tree of the view that did *not* boot has to deserialise too, or
 /// the layout loads as corrupt. The count assertion is the other half — two
 /// views sharing an id would let one view's saved pane validate as the other's.
+///
+/// The chart side is compared in its gallery-*inclusive* form
+/// (`chart_registry_with(true)`), because that is deliberately what
+/// `publish_item_ids` publishes whatever the dev flag says: a layout saved
+/// while the gallery flag was on names its pane, and an id that stops being
+/// published makes that whole file unloadable. The *item* stays flag-gated;
+/// only the vocabulary is a superset.
 #[test]
 fn a_window_publishes_both_registries_and_nothing_else() {
     // Through the app, not through the two `publish_item_ids` entry points, so
     // this fails if `assemble` ever stops publishing the view it did not open.
     let _app = MeridianApp::headless(both(ViewKind::Charts), Mode::Light);
 
-    let charts = chart_registry().ids();
+    let charts = chart_registry_with(true).ids();
     let protocol = protocol_registry().ids();
     let known = ItemId::known();
     for id in charts.iter().chain(protocol.iter()) {

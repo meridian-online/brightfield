@@ -609,6 +609,22 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Show or hide the data grid — the chart's tabular peer",
             scores: None,
         },
+        // The dev-flagged design gallery tab, on the same terms as the pane
+        // toggles above: a centre tab must name its show/hide verb (the
+        // item-registry audit enforces it) and the shell may not invent one.
+        // Unbound until the workspace shell performs pane toggles; the tab
+        // itself stays reachable by pointer when the gallery flag is set.
+        VerbEntry {
+            longname: "toggle-gallery",
+            tier: CommandTier::View,
+            binding_specs: Vec::new(),
+            scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
+            drives: D::Reserved,
+            status: VerbStatus::Reserved,
+            reserved_reason: Some(ReservedReason::NeedsWorkspaceShell),
+            help: "Show or hide the design gallery — the component vocabulary, drawn live",
+            scores: None,
+        },
     ]
 }
 
@@ -802,6 +818,7 @@ mod tests {
             [
                 "toggle-controls-rail",
                 "toggle-data-grid",
+                "toggle-gallery",
                 "toggle-inspector-rail",
                 "toggle-outline-rail"
             ]
@@ -873,6 +890,7 @@ mod tests {
             "toggle-inspector-rail",
             "toggle-controls-rail",
             "toggle-data-grid",
+            "toggle-gallery",
         ];
         assert_eq!(got, expected);
     }
