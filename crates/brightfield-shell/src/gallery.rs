@@ -60,9 +60,9 @@ use brightfield_workbench::{
 };
 use meridian_design::semantic::{semantic, Role};
 use meridian_egui::{
-    align, icons, key_chip, list_row, query_line, tooltip_for_action, widgets, ListRow,
+    align, icons, key_chip, list_row, query_line, tooltip_for_action, widgets, ListRow, MeridianUi,
     ModalChrome, ModalLayer, Notification, NotificationId, NotificationLayer, RowHeight, Severity,
-    Toast, ToastLayer, MeridianUi, PROMPT_GLYPH,
+    Toast, ToastLayer, PROMPT_GLYPH,
 };
 
 use crate::app::ChartDoc;
@@ -124,8 +124,8 @@ impl ComponentStatus {
         }
     }
 
-    /// The pill's role — colour never travels alone, the icon rides along in
-    /// [`status_pill_ui`].
+    /// The pill's role — colour never travels alone, the icon rides along
+    /// wherever the pane draws the pill.
     #[must_use]
     pub fn role(self) -> Role {
         match self {
@@ -445,11 +445,7 @@ impl Item<ChartDoc> for GalleryPane {
                         status_pill_ui(ui, info.status);
                         ui.add_space(control_gap);
                         let muted = to_color32(semantic(ui.visuals().dark_mode).text.muted);
-                        ui.label(
-                            egui::RichText::new(info.id)
-                                .monospace()
-                                .color(muted),
-                        );
+                        ui.label(egui::RichText::new(info.id).monospace().color(muted));
                     });
                     ui.add_space(control_gap);
                     component.ui(ui);
@@ -505,15 +501,19 @@ impl Component for ListRowDemo {
         ];
         for (label, icon, selected) in rows {
             let icon_size = meridian_design::control::ICON_SM;
-            let response = list_row(ui, ListRow::new(RowHeight::Grid).selected(selected), |ui, state| {
-                icon.show(ui, icon_size, ink);
-                ui.label(label);
-                if state.hovered {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        key_chip(ui, "↩");
-                    });
-                }
-            });
+            let response = list_row(
+                ui,
+                ListRow::new(RowHeight::Grid).selected(selected),
+                |ui, state| {
+                    icon.show(ui, icon_size, ink);
+                    ui.label(label);
+                    if state.hovered {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            key_chip(ui, "↩");
+                        });
+                    }
+                },
+            );
             // The row is the click target; the demo labels it so the gate —
             // and a screen reader — can address the *row*, not only the text
             // inside it.
@@ -728,15 +728,10 @@ impl Component for FocusRingDemo {
             // The standing exemplar: the ring's geometry and colour, visible
             // without holding focus — goldens would otherwise show nothing.
             let dark = ui.visuals().dark_mode;
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(swatch, swatch),
-                egui::Sense::hover(),
-            );
-            ui.painter().rect_filled(
-                rect,
-                radius,
-                to_color32(semantic(dark).surfaces.raised),
-            );
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(swatch, swatch), egui::Sense::hover());
+            ui.painter()
+                .rect_filled(rect, radius, to_color32(semantic(dark).surfaces.raised));
             widgets::focus_ring(ui, rect, radius);
             ui.add_space(gap);
             let response = ui.button("Focus me");
@@ -777,7 +772,13 @@ impl Component for FieldRowDemo {
 
     fn ui(&mut self, ui: &mut egui::Ui) {
         align::align_scope(ui, "gallery-fields", |ui| {
-            widgets::field_row(ui, "address", "example/things", Some("where it lives"), true);
+            widgets::field_row(
+                ui,
+                "address",
+                "example/things",
+                Some("where it lives"),
+                true,
+            );
             widgets::field_row(ui, "rows", "12,480", None, true);
             widgets::field_row(ui, "owner", "meridian", None, false);
         });
@@ -926,7 +927,8 @@ impl Component for FeedbackLayersDemo {
             }
             ui.add_space(gap);
             if ui.button("Pop toast").clicked() {
-                self.toasts.push(Toast::new(Severity::Info, "A confirmation"));
+                self.toasts
+                    .push(Toast::new(Severity::Info, "A confirmation"));
             }
         });
         self.notifications.show(ui.ctx());

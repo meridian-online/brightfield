@@ -38,11 +38,10 @@ use brightfield_shell::app::{chart_registry_with, ChartDoc};
 use brightfield_shell::capture::capture_component;
 use brightfield_shell::design::Mode;
 use brightfield_shell::gallery::{
-    catalog, enabled, solo, ActuationInput, Component, FocusTarget, GateHeight, ProbeRole,
-    GALLERY,
+    catalog, enabled, solo, ActuationInput, Component, FocusTarget, GateHeight, ProbeRole, GALLERY,
 };
-use brightfield_workbench::registry::Slot;
 use brightfield_workbench::audit;
+use brightfield_workbench::registry::Slot;
 use egui::accesskit::Role;
 use egui_kittest::kittest::Queryable;
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
@@ -80,9 +79,7 @@ fn the_catalog_is_complete_against_the_source() {
     for component in &entries {
         let info = component.info();
         assert!(
-            info.id
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c == '-'),
+            info.id.chars().all(|c| c.is_ascii_lowercase() || c == '-'),
             "{}: component ids are kebab-case",
             info.id
         );

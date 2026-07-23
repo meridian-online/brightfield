@@ -435,9 +435,9 @@ pub fn bench_frames(
 ///
 /// This is the confirmation that the determinism apparatus generalises past
 /// `--spec`: the headless device, the deterministic renderer options
-/// ([`new_egui_renderer`]: dithering off, predictable filtering), the
-/// warm-up/settle frame loop ([`run_ui_frames`]) and the readback
-/// ([`finish_capture`]) are all spec-agnostic — only [`Boot`] is spec-shaped,
+/// (`new_egui_renderer`: dithering off, predictable filtering), the
+/// warm-up/settle frame loop (`run_ui_frames`) and the readback
+/// (`finish_capture`) are all spec-agnostic — only [`Boot`] is spec-shaped,
 /// and a component needs no boot. The frame drawn is
 /// [`crate::gallery::solo`], the same composition the pixel-tier gate
 /// measures, so what an agent screenshots is what the gate held.
@@ -465,7 +465,10 @@ pub fn capture_component(
                 .iter()
                 .map(|c| c.info().id)
                 .collect();
-            format!("unknown gallery component {id:?}; catalog: {}", ids.join(", "))
+            format!(
+                "unknown gallery component {id:?}; catalog: {}",
+                ids.join(", ")
+            )
         })?;
     let (win_w, win_h) = size.unwrap_or(component.info().solo_size);
 

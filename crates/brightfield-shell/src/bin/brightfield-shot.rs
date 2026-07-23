@@ -40,7 +40,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use brightfield_protocol::layout::Flow;
-use brightfield_shell::capture::{capture_component, capture_png, capture_vello_only, parse_script};
+use brightfield_shell::capture::{
+    capture_component, capture_png, capture_vello_only, parse_script,
+};
 use brightfield_shell::design::Mode;
 use brightfield_shell::window::Boot;
 use brightfield_workbench::ViewKind;
@@ -87,7 +89,10 @@ fn main() -> ExitCode {
         );
     }
     // `parse_args` guarantees one of the two modes is present.
-    let spec = args.spec.as_deref().expect("--spec or --gallery is present");
+    let spec = args
+        .spec
+        .as_deref()
+        .expect("--spec or --gallery is present");
 
     let script = match &args.script {
         Some(p) => match parse_script(p) {
@@ -212,7 +217,10 @@ fn parse_args() -> Result<Args, String> {
         return Err("one of --spec or --gallery is required".to_string());
     }
     if spec.is_some() && gallery.is_some() {
-        return Err("--spec and --gallery are exclusive: a shot is of a document or of a component".to_string());
+        return Err(
+            "--spec and --gallery are exclusive: a shot is of a document or of a component"
+                .to_string(),
+        );
     }
     Ok(Args {
         spec,
