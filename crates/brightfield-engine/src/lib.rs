@@ -9,6 +9,7 @@
 
 pub mod coordinator;
 pub mod error;
+pub mod preagg;
 pub mod profile;
 
 use std::collections::{HashMap, HashSet};
@@ -232,6 +233,7 @@ impl Engine {
             ddl_warnings: emit_output.warnings.clone(),
             param_state,
             selection_state: HashMap::new(),
+            preagg: preagg::PreAgg::default(),
         };
 
         Ok(LoadResult {
@@ -280,6 +282,10 @@ pub struct Session {
     /// decision 4 — string equality with subscriber's parent plot path
     /// drives crossfilter self-exclusion in compile_selection).
     selection_state: HashMap<String, Vec<(ComponentPath, Predicate)>>,
+    /// The automatic pre-aggregation layer's session state: prepared cube
+    /// serves, materialised TEMP cubes, and the executed-SQL log. See
+    /// [`preagg`].
+    preagg: preagg::PreAgg,
 }
 
 /// A cached SQL string with its binding metadata.
@@ -411,9 +417,12 @@ impl Session {
         self.spec = spec;
         self.analysis = analysis;
         // Invalidate anything keyed to the OLD spec so the next execute re-emits
-        // fresh SQL rather than serving a stale cached batch/plan.
+        // fresh SQL rather than serving a stale cached batch/plan — including
+        // every pre-aggregation cube and serve, which were derived from the
+        // old spec's plans (a cube never survives the state it came from).
         self.cache.clear();
         self.sql_cache.invalidate();
+        self.preagg_retire_all();
     }
 
     /// The flat mark index a `ComponentPath` string resolves to under the
@@ -455,6 +464,28 @@ impl Session {
             .collect()
     }
 
+    /// The sorted, deduplicated flat indices of `name`'s subscriber MARKS —
+    /// the one lookup `propagate_selection`, `clear_selection`, and the
+    /// pre-aggregation trigger all share (a subscriber path that is not a
+    /// mark component is dropped here).
+    fn selection_subscriber_marks(&self, name: &str) -> Vec<usize> {
+        let subscriber_paths: Vec<ComponentPath> = self
+            .analysis
+            .selection_subscribers
+            .get(name)
+            .cloned()
+            .unwrap_or_default();
+        let mut mark_indices: Vec<usize> = Vec::new();
+        for path in &subscriber_paths {
+            if let Some(&(idx, _)) = self.mark_index_map.get(&path.0) {
+                mark_indices.push(idx);
+            }
+        }
+        mark_indices.sort();
+        mark_indices.dedup();
+        mark_indices
+    }
+
     /// Propagate a selection update: store the contributor's predicate in
     /// `selection_state[name]` (replacing any prior entry from the same
     /// contributor), look up subscribers from
@@ -484,26 +515,19 @@ impl Session {
         // scan; ≤5 contributors per selection in the corpus.
         let entries = self.selection_state.entry(name.to_string()).or_default();
         entries.retain(|(p, _)| p != &contributor);
+        let contributor_key = contributor.clone();
         entries.push((contributor, predicate));
 
-        // 2. Look up subscribers from the static analysis graph.
-        let subscriber_paths: Vec<ComponentPath> = self
-            .analysis
-            .selection_subscribers
-            .get(name)
-            .cloned()
-            .unwrap_or_default();
+        // 1b. Automatic pre-aggregation: derive/refresh cube serves for this
+        // selection's subscriber marks BEFORE dispatch, so the re-queries
+        // below are served from a cube when one derives. Every bail inside
+        // simply leaves no serve registered — the dispatch then runs the
+        // direct query, unchanged. This is the coordinator-side trigger the
+        // spec never declares.
+        self.preagg_prepare(name, &contributor_key);
 
-        // 3. Filter to mark components only.
-        let mut mark_indices: Vec<usize> = Vec::new();
-        for path in &subscriber_paths {
-            if let Some(&(idx, _)) = self.mark_index_map.get(&path.0) {
-                mark_indices.push(idx);
-            }
-        }
-        mark_indices.sort();
-        mark_indices.dedup();
-
+        // 2/3. Subscriber marks from the static analysis graph.
+        let mark_indices = self.selection_subscriber_marks(name);
         if mark_indices.is_empty() {
             return Vec::new();
         }
@@ -584,24 +608,8 @@ impl Session {
             return Vec::new();
         }
 
-        // 2. Look up subscribers from the static analysis graph.
-        let subscriber_paths: Vec<ComponentPath> = self
-            .analysis
-            .selection_subscribers
-            .get(name)
-            .cloned()
-            .unwrap_or_default();
-
-        // 3. Filter to mark components only.
-        let mut mark_indices: Vec<usize> = Vec::new();
-        for path in &subscriber_paths {
-            if let Some(&(idx, _)) = self.mark_index_map.get(&path.0) {
-                mark_indices.push(idx);
-            }
-        }
-        mark_indices.sort();
-        mark_indices.dedup();
-
+        // 2/3. Subscriber marks from the static analysis graph.
+        let mark_indices = self.selection_subscriber_marks(name);
         if mark_indices.is_empty() {
             return Vec::new();
         }
@@ -1107,8 +1115,35 @@ impl Session {
             return Ok(batches);
         }
 
+        // Automatic pre-aggregation: when a serve is registered for this mark
+        // whose direct SQL matches the emitted SQL byte-for-byte, run the cube
+        // re-query instead and cache its (identical) result under the DIRECT
+        // SQL key — every downstream read of this query is then cube-backed.
+        // A serve failure falls through to the direct query (transparent
+        // fallback: nothing breaks, it only slows).
+        if let Some(cube_sql) = self.preagg.serve_for(mark_index, &sql) {
+            self.sql_cache.duckdb_execute_count += 1;
+            self.preagg.log_sql(&cube_sql);
+            let served = self.conn.prepare(&cube_sql).and_then(|mut stmt| {
+                let arrow = stmt.query_arrow(duckdb::params![])?;
+                Ok(arrow.collect::<Vec<_>>())
+            });
+            match served {
+                Ok(batches) => {
+                    self.preagg.stats.cube_hits += 1;
+                    self.sql_cache.insert(sql, batches.clone());
+                    return Ok(batches);
+                }
+                Err(_) => {
+                    self.preagg.stats.serve_failures += 1;
+                    self.preagg.drop_serve(mark_index);
+                }
+            }
+        }
+
         // Cache miss — execute the query and record one DuckDB execute.
         self.sql_cache.duckdb_execute_count += 1;
+        self.preagg.log_sql(&sql);
         let batches = self
             .conn
             .prepare(&sql)
