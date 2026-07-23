@@ -16,15 +16,17 @@
 # release workflow for the canonical shape) land when those platform stacks are
 # validated in CI first.
 #
-# The aarch64 leg re-proves the air-gapped claim against the packaged tarball
-# (scripts/verify-airgapped.sh: network-denial negative control, then the
-# packaged binary renders a chart and a Protocol manifest inside the jail).
-# The x86_64 leg is a cross-compile from the arm64 runner: its Mach-O linkage
-# audit still runs (otool reads any arch), but it cannot be executed there, so
-# its air-gapped run is the native one's by construction — same source, same
-# packaging, different codegen target. If the hosted runner turns out to have
-# no window session for the verify step, move that step behind a self-hosted
-# runner rather than deleting it; the claim must stay executable somewhere.
+# A separate `verify` job re-proves the air-gapped claim against the packaged
+# aarch64 tarball (scripts/verify-airgapped.sh: network-denial negative
+# control, then the packaged binary renders a chart and a Protocol manifest
+# inside the jail). It reports independently and does NOT gate the release —
+# see the comment above the job for why. The x86_64 leg is a cross-compile
+# from the arm64 runner: its Mach-O linkage audit still runs (otool reads any
+# arch), but it cannot be executed there, so its air-gapped run is the native
+# one's by construction — same source, same packaging, different codegen
+# target. If the hosted runner turns out to have no window session for the
+# verify job, move it behind a self-hosted runner rather than deleting it; the
+# claim must stay executable somewhere.
 
 name: release
 
@@ -69,10 +71,6 @@ jobs:
       - name: Package
         run: scripts/package.sh "${GITHUB_REF_NAME}" "${{ matrix.target }}"
 
-      - name: Verify air-gapped (packaged binary, network denied)
-        if: ${{ matrix.native }}
-        run: scripts/verify-airgapped.sh "dist/brightfield-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
-
       - uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.target }}
@@ -80,6 +78,37 @@ jobs:
             dist/brightfield-*.tar.gz
             dist/brightfield-*.sha256
           if-no-files-found: error
+
+  # Deliberately NOT a gate on `release`. This step needs a real window on a
+  # hosted runner, which nothing has ever proven — test.yml only renders
+  # offscreen (egui_kittest). As a step inside `build` it withheld every asset,
+  # including the x86_64 ones, whenever the runner's window session was the
+  # thing at fault rather than the binary. So it runs on its own and reports
+  # red on its own: a failure here is loud and blocks nothing.
+  #
+  # That is safe because this is a REGRESSION GUARD, not the primary proof —
+  # the air-gapped claim was executed against the packaged artifact on a
+  # developer machine before the packaging merged, and re-executed after the
+  # rebase. If this job fails, read it as "the claim is no longer verified in
+  # CI", check the run, and re-prove it locally or behind a self-hosted runner
+  # (see the header) — do not delete it, and do not assume a red here means the
+  # published binary phones home.
+  verify:
+    name: Verify air-gapped (packaged binary, network denied)
+    needs: build
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the packaged aarch64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-aarch64-apple-darwin
+          path: dist
+
+      - name: Verify air-gapped
+        run: scripts/verify-airgapped.sh "dist/brightfield-${GITHUB_REF_NAME}-aarch64-apple-darwin.tar.gz"
 
   release:
     name: Create release
@@ -95,7 +124,75 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          # Deliberately NOT generate_release_notes. With no previous tag to
+          # diff against, GitHub generates notes back to the first commit —
+          # every merged PR title, including the planning vocabulary that
+          # scripts/check-public-hygiene.sh rejects in tracked files. From the
+          # second tag on, the diff base is the previous tag and auto-notes are
+          # safe to switch back on if hand-writing them stops earning its keep.
+          #
+          # A release page is a browser-download surface, and this binary is
+          # unsigned: unpacked by the Finder's Archive Utility it inherits the
+          # quarantine attribute and macOS kills it on launch with no
+          # explanation. Unpacked by `tar` in a terminal it does not. That is
+          # why the install instructions lead with the command and say why.
+          body: |
+            One native binary for macOS. No server, no webview, no language
+            runtime, no account — the only thing it asks of the machine is a
+            working graphics driver. It renders with the network switched off.
+
+            **This is an early preview**, macOS only, and it is not yet signed
+            or notarized by Apple. Read the install note before you unpack it.
+
+            ### Install
+
+            Download the tarball for your Mac, then **in Terminal**:
+
+            ```
+            tar -xzf brightfield-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz
+            cd brightfield-${{ github.ref_name }}-aarch64-apple-darwin
+            ./brightfield
+            ```
+
+            On an Intel Mac, swap `aarch64` for `x86_64`.
+
+            **Unpack in Terminal, not in Finder.** Because this build is
+            unsigned, macOS marks anything the Finder's Archive Utility
+            extracts as quarantined and then refuses to run it — you get
+            "Apple could not verify…" and the app is killed before it opens.
+            The `tar` command above does not set that mark. If you have already
+            unpacked it in Finder, clear it:
+
+            ```
+            xattr -dr com.apple.quarantine ./brightfield
+            ```
+
+            ### Verify the download
+
+            ```
+            shasum -a 256 -c brightfield-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz.sha256
+            ```
+
+            ### What you get
+
+            `./brightfield` with no arguments opens on a set of starts that
+            ship inside the binary: the lineage of the EDGAR↔GLEIF crosswalk,
+            and three charts. Or name a spec yourself —
+
+            ```
+            ./brightfield examples/bars.yaml
+            ```
+
+            31 example specs and a Protocol manifest are in the archive
+            alongside the binary, its LICENSE (MIT) and a README.
+
+            ### It does not phone home
+
+            There is no HTTP client in the application at all.
+            `scripts/verify-airgapped.sh` in the repository re-proves that
+            against this exact artifact: it denies the network, checks that the
+            denial really bites, and only then renders a chart and a protocol
+            graph inside the jail.
           files: |
             artifacts/brightfield-*.tar.gz
             artifacts/brightfield-*.sha256
