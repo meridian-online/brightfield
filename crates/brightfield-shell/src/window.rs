@@ -1547,15 +1547,10 @@ impl MeridianApp {
     /// tests spent several releases noting it was "drawn by nothing", and
     /// this is the something.
     ///
-    /// It floats over the window's bottom edge in a foreground layer, exactly
-    /// as the toast layer floats over its corner, and **draws nothing when it
-    /// has nothing to say** — which is most frames. That is why it is an
-    /// anchored `Area` rather than a bottom panel: a standing band would take
-    /// [`BAR_HEIGHT`] out of the dock on every frame for a line that rarely
-    /// exists, move both views' window arithmetic, and re-baseline every
-    /// pixel test, all to reserve room for silence.
-    ///
-    /// What it says, and from where:
+    /// The float itself is [`chrome::status_rail_overlay`]'s — the bottom
+    /// edge, a foreground layer, nothing when there is nothing to say (and
+    /// the note there on why floating rather than a bottom panel). What this
+    /// method owns is the *content*:
     ///
     /// - the **focused pane's** status lines, as declared on its
     ///   [`Subject`] — minus its activity reports;
@@ -1613,26 +1608,7 @@ impl MeridianApp {
             entries.push(indicator);
         }
 
-        self.rail = chrome::StatusDrawn::default();
-        if entries.is_empty() {
-            return;
-        }
-        let screen = ctx.content_rect();
-        egui::Area::new(egui::Id::new("bf-status-rail"))
-            .anchor(egui::Align2::LEFT_BOTTOM, egui::Vec2::ZERO)
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                let (rect, _) = ui.allocate_exact_size(
-                    egui::vec2(screen.width(), BAR_HEIGHT),
-                    egui::Sense::hover(),
-                );
-                let mut band = ui.new_child(
-                    egui::UiBuilder::new()
-                        .max_rect(rect)
-                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                );
-                self.rail = chrome::status_rail(&mut band, &entries, mode);
-            });
+        self.rail = chrome::status_rail_overlay(ctx, &entries, mode);
         for verb in self.rail.dismissed.clone() {
             requests.push(Request::Verb(verb));
         }

@@ -550,6 +550,55 @@ pub struct StatusDrawn {
     pub dismissed: Vec<Verb>,
 }
 
+/// The height [`status_rail_overlay`] gives the rail's band, in logical
+/// points — the window bar rung: the grid row plus a breath above and below,
+/// the same arithmetic the shell's top and hint bars use for theirs.
+#[must_use]
+pub const fn status_rail_height() -> f32 {
+    spacing::ROW_GRID + 2.0 * spacing::SPACE_2
+}
+
+/// The status rail, floated over the window's bottom edge.
+///
+/// An anchored foreground layer rather than a bottom panel, and the
+/// difference is the point: the rail **draws nothing when it has nothing to
+/// say** — which is most frames — so a standing band would spend a bar's
+/// height of every window reserving room for silence, move the window
+/// arithmetic of every view, and re-baseline every pixel test. Floating, it
+/// costs nothing until a line exists, exactly as the notification layers do.
+///
+/// Drawn *here* rather than by the shell because this file is where every
+/// pixel of workbench chrome is painted — a shell hand-placing an
+/// `egui::Area` around the rail would be the first line of a second drawing
+/// file.
+pub fn status_rail_overlay(
+    ctx: &egui::Context,
+    entries: &[StatusEntry],
+    mode: Mode,
+) -> StatusDrawn {
+    if entries.is_empty() {
+        return StatusDrawn::default();
+    }
+    let screen = ctx.content_rect();
+    let mut out = StatusDrawn::default();
+    egui::Area::new(egui::Id::new("workbench-status-rail"))
+        .anchor(egui::Align2::LEFT_BOTTOM, egui::Vec2::ZERO)
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(screen.width(), status_rail_height()),
+                egui::Sense::hover(),
+            );
+            let mut band = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            out = status_rail(&mut band, entries, mode);
+        });
+    out
+}
+
 /// The status rail: leading entries at the left, trailing at the right.
 pub fn status_rail(ui: &mut egui::Ui, entries: &[StatusEntry], mode: Mode) -> StatusDrawn {
     let sem = semantic(mode.is_dark());
