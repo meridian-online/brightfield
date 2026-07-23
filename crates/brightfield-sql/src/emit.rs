@@ -27,6 +27,8 @@ pub enum SourceKindTag {
     Json,
     Spatial,
     DuckDb,
+    /// `ATTACH 'ducklake:…' (READ_ONLY)` — a DuckLake catalog attach.
+    DuckLake,
     InlineRows,
     Query,
 }
@@ -40,6 +42,15 @@ pub struct SourceDdl {
     pub sql: String,
     /// Which dispatch arm produced this.
     pub source_kind: SourceKindTag,
+    /// `Some(location)` when the resolved data location is reached over the
+    /// network (an `http://` / `https://` URL, including inside a
+    /// `ducklake:` URI). The engine uses this to gate DuckDB `httpfs`
+    /// loading to specs that actually need it, and to name the network as
+    /// the cause when such a source fails. `None` for local files, inline
+    /// rows, and author-written `query:` SQL (which DuckDB's own autoload
+    /// handles if it reaches out; the engine still names the network when
+    /// such SQL fails with a network-shaped error).
+    pub remote_location: Option<String>,
 }
 
 /// Result of a successful emission — DDL statements plus non-fatal warnings.
@@ -93,11 +104,13 @@ pub fn emit_sources(spec: &Spec, base_dir: Option<&Path>) -> Result<EmitOutput, 
                 view_name: name.clone(),
                 sql: format!("CREATE OR REPLACE VIEW \"{}\" AS {}", name, sql),
                 source_kind: SourceKindTag::Query,
+                remote_location: None,
             },
             DataSourceKind::Shorthand(s) => SourceDdl {
                 view_name: name.clone(),
                 sql: format!("CREATE OR REPLACE VIEW \"{}\" AS {}", name, s),
                 source_kind: SourceKindTag::Query,
+                remote_location: None,
             },
             DataSourceKind::InlineRows(rows) => {
                 source::emit_inline_rows(name, rows, &data_source.extras)?
@@ -147,7 +160,15 @@ pub(crate) const CSV_ALLOW_LIST: &[&str] =
 ///
 /// HTTP(S) URLs pass through verbatim. Absolute paths pass through.
 /// Relative paths are joined against `base_dir` if provided.
+/// A `ducklake:` URI keeps its prefix and resolves the inner catalog
+/// location by the same rules (so `ducklake:meta.ducklake` is
+/// base-dir-relative while `ducklake:https://…` passes through verbatim).
 pub(crate) fn resolve_path(file_value: &str, base_dir: Option<&Path>) -> String {
+    // DuckLake URIs: resolve the catalog location inside the prefix.
+    if let Some(inner) = file_value.strip_prefix("ducklake:") {
+        return format!("ducklake:{}", resolve_path(inner, base_dir));
+    }
+
     // HTTP(S) URLs pass through verbatim
     if file_value.starts_with("http://") || file_value.starts_with("https://") {
         return file_value.to_string();
@@ -164,6 +185,20 @@ pub(crate) fn resolve_path(file_value: &str, base_dir: Option<&Path>) -> String 
     match base_dir {
         Some(base) => base.join(path).to_string_lossy().into_owned(),
         None => file_value.to_string(),
+    }
+}
+
+/// `Some(resolved_path)` when the resolved data location is reached over
+/// the network — an `http://` / `https://` URL, directly or inside a
+/// `ducklake:` URI. This is what a [`SourceDdl::remote_location`] carries.
+pub(crate) fn remote_location(resolved_path: &str) -> Option<String> {
+    let inner = resolved_path
+        .strip_prefix("ducklake:")
+        .unwrap_or(resolved_path);
+    if inner.starts_with("http://") || inner.starts_with("https://") {
+        Some(resolved_path.to_string())
+    } else {
+        None
     }
 }
 

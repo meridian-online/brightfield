@@ -333,12 +333,14 @@ mod tests {
                 sql: "CREATE OR REPLACE VIEW \"b\" AS SELECT * FROM read_parquet('b.parquet')"
                     .to_string(),
                 source_kind: SourceKindTag::Parquet,
+                remote_location: None,
             },
             SourceDdl {
                 view_name: "a".to_string(),
                 sql: "CREATE OR REPLACE VIEW \"a\" AS SELECT * FROM read_csv('a.csv', auto_detect=true)"
                     .to_string(),
                 source_kind: SourceKindTag::Csv,
+                remote_location: None,
             },
         ];
 
@@ -354,11 +356,13 @@ mod tests {
                 view_name: "zebra".to_string(),
                 sql: "CREATE OR REPLACE VIEW \"zebra\" AS SELECT 1".to_string(),
                 source_kind: SourceKindTag::Query,
+                remote_location: None,
             },
             SourceDdl {
                 view_name: "alpha".to_string(),
                 sql: "CREATE OR REPLACE VIEW \"alpha\" AS SELECT 2".to_string(),
                 source_kind: SourceKindTag::Query,
+                remote_location: None,
             },
         ];
 
