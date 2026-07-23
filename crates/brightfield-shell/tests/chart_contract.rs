@@ -176,8 +176,8 @@ fn each_pane_names_itself_once_and_binds_in_its_own_context() {
 /// registry gate), the row does not exist.
 ///
 /// The controls rail still declares nothing: the merged top bar describes the
-/// window, and `chrome::status_rail` is still drawn by nothing, so a status
-/// entry here would be an entry nothing draws.
+/// window, and the rail's params are its whole content — the status rail
+/// (drawn by the window now) has nothing of this pane's to say.
 #[test]
 fn the_toolbar_is_declared_but_the_row_vanishes_when_nothing_can_act() {
     let subjects = subjects(&loaded());

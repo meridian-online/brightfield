@@ -64,8 +64,8 @@ use brightfield_spec::ast::SpecValue;
 use brightfield_spec::vocab::MarkKind;
 use brightfield_workbench::registry::{DockSide, Slot};
 use brightfield_workbench::{
-    chrome, EmptyState, Icon, Item, ItemCtx, ItemId, ItemRegistry, ItemSpec, PaneKey, Subject,
-    Verb, ViewKind,
+    chrome, Activity, ActivityLog, EmptyState, Icon, Item, ItemCtx, ItemId, ItemRegistry, ItemSpec,
+    PaneKey, Subject, Verb, ViewKind,
 };
 
 use meridian_design::{semantic, spacing};
@@ -74,6 +74,7 @@ use crate::canvas::{CanvasSlot, EguiCanvasHost};
 use crate::chart_item::ChartItem;
 use crate::design::Mode;
 use crate::pipeline::{Composed, LiveDashboard};
+use crate::watch::FileWatcher;
 
 // ---------------------------------------------------------------------------
 // ChartDoc — the state every pane in this view shares.
@@ -134,6 +135,16 @@ pub struct ChartDoc {
     /// `None` for the shipped starts and the in-memory composes of the test
     /// and capture tiers, whose dashboards have no file behind them.
     pub spec_path: Option<std::path::PathBuf>,
+    /// The work this document has in flight — engine queries mark themselves
+    /// here, and the shell's one activity indicator reports from it. See
+    /// `brightfield_workbench::activity` for why a synchronous query never
+    /// draws a cue (and why that is the honest answer, not a gap).
+    pub activity: ActivityLog,
+    /// The mtime poll over this document's claimed files — the spec it was
+    /// composed from and the `file:` data sources that spec names. Wired by
+    /// [`ChartDoc::wire_watch`] when a named file composed the document;
+    /// watches nothing otherwise.
+    pub watch: FileWatcher,
     /// The live, session-holding dashboard behind this document, when the
     /// boot path loaded one. `None` for a one-shot composition (captures, the
     /// pixel tier, the shipped starts): every gesture entry point checks, so
@@ -184,6 +195,8 @@ impl ChartDoc {
             raster_rect: None,
             legend_rect: None,
             spec_path: None,
+            activity: ActivityLog::new(),
+            watch: FileWatcher::new(),
             live: None,
             active_selections: Vec::new(),
             canvas: CanvasSlot::new(host),
@@ -202,6 +215,8 @@ impl ChartDoc {
             raster_rect: None,
             legend_rect: None,
             spec_path: None,
+            activity: ActivityLog::new(),
+            watch: FileWatcher::new(),
             live: None,
             active_selections: Vec::new(),
             canvas: CanvasSlot::headless(),
@@ -238,7 +253,32 @@ impl ChartDoc {
         self.live = None;
         self.active_selections.clear();
         self.spec_path = None;
+        // The watch list described the replaced document's files, and any
+        // in-flight marks belonged to its session — both go with it.
+        self.watch.watch(None, Vec::new());
+        self.activity = ActivityLog::new();
         self.canvas.invalidate();
+    }
+
+    /// Point the file watcher at this document's claimed files: the spec it
+    /// was composed from and the `file:` data sources that spec names. A
+    /// document with no file behind it (a shipped start, an in-memory
+    /// compose) watches nothing.
+    ///
+    /// Called by the boot path after [`Self::spec_path`] and the live session
+    /// are in place — the two fields the list is derived from.
+    pub fn wire_watch(&mut self) {
+        let Some(spec) = self.spec_path.clone() else {
+            self.watch.watch(None, Vec::new());
+            return;
+        };
+        let dir = spec.parent().map(std::path::Path::to_path_buf);
+        let data = self
+            .live
+            .as_ref()
+            .map(|live| live.data_files(dir.as_deref()))
+            .unwrap_or_default();
+        self.watch.watch(Some(spec), data);
     }
 
     /// Put a live, session-holding dashboard behind this document — the boot
@@ -295,7 +335,14 @@ impl ChartDoc {
             }
             Interaction::SetParam { .. } => {}
         }
-        match live.apply(interaction) {
+        // The engine seam marks its work. Synchronous today, so begin/end
+        // resolve inside one frame and no cue is drawn — see the activity
+        // module for why that is the honest answer; the mark is what lights
+        // the indicator up unchanged when this moves off the UI thread.
+        self.activity.begin(Activity::EngineQuery);
+        let applied = live.apply(interaction);
+        self.activity.end(Activity::EngineQuery);
+        match applied {
             Ok(composed) => {
                 self.composed = composed;
                 self.canvas.invalidate();

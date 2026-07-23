@@ -81,8 +81,8 @@ use brightfield_keys::BindingContext;
 use brightfield_model::spec_save::{self, SaveDecision, SaveOutcome};
 use brightfield_workbench::registry::Slot;
 use brightfield_workbench::{
-    Crumb, Dirty, EmptyState, Handled, HideAffordance, Icon, Item, ItemCtx, ItemId, ItemSpec,
-    StatusEntry, StatusSide, Subject, Tone, Verb,
+    Activity, Crumb, Dirty, EmptyState, Handled, HideAffordance, Icon, Item, ItemCtx, ItemId,
+    ItemSpec, StatusEntry, StatusSide, Subject, Tone, Verb, HONESTY_LINE_MS,
 };
 use meridian_design::{control, radius, scales, semantic, spacing, Rgba};
 
@@ -124,8 +124,9 @@ pub const SAVE_ACK_MS: u32 = 2000;
 
 /// The honesty line from the speed guideline: work that can exceed ~100 ms
 /// must show its truth. A reload resolved faster than this shows nothing —
-/// a spinner for a sub-perceptual read is decoration, not honesty.
-pub const RELOAD_SPINNER_HONESTY_MS: u128 = 100;
+/// a spinner for a sub-perceptual read is decoration, not honesty. One
+/// declaration, in the activity vocabulary this pane reports through.
+pub const RELOAD_SPINNER_HONESTY_MS: u128 = HONESTY_LINE_MS;
 
 /// Whether a reload that has been pending for `elapsed_ms` owes the user a
 /// progress cue. The one place the honesty line is compared against.
@@ -1036,6 +1037,20 @@ impl EditorPane {
         self.reload_pending_since
             .is_some_and(|since| reload_spinner_due(since.elapsed().as_millis()))
     }
+
+    /// The save route, with the document's file watcher told about a write
+    /// that landed — the app's own save moves the same mtime an external
+    /// edit does, and a watcher that reported it would cry wolf on every
+    /// ⌘S. Both save entry points (the keystroke and the verb) come through
+    /// here so neither can forget the note.
+    fn save_and_note(&mut self, doc: &mut ChartDoc) {
+        let report = self.save_now();
+        if matches!(report, SaveReport::Written | SaveReport::ForcedWrite) {
+            if let Some(path) = self.path().map(std::path::Path::to_path_buf) {
+                doc.watch.note_own_write(&path);
+            }
+        }
+    }
 }
 
 impl Item<ChartDoc> for EditorPane {
@@ -1115,13 +1130,11 @@ impl Item<ChartDoc> for EditorPane {
                 });
             }
             if self.reload_indicator_due() {
-                subject = subject.with_status(StatusEntry {
-                    id: "editor-reloading",
-                    side: StatusSide::Trailing,
-                    text: "reloading…".to_string(),
-                    tone: Tone::Neutral,
-                    hide: HideAffordance::WithRail,
-                });
+                // The typed activity entry, not a bespoke one: an external
+                // change mid-adoption is file-watch work in flight, and
+                // reporting it in the vocabulary's own spelling is what lets
+                // the shell's one indicator pick it up.
+                subject = subject.with_status(Activity::FileWatch.status_entry());
             }
         }
         subject
@@ -1164,7 +1177,7 @@ impl Item<ChartDoc> for EditorPane {
         // keyboard while the author types — the workspace dispatch defers to
         // it — and `perform` stays the verb's route in from everything else.
         if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
-            let _ = self.save_now();
+            self.save_and_note(doc);
         }
 
         if self.ack_live() || self.reload_pending_since.is_some() {
@@ -1174,9 +1187,9 @@ impl Item<ChartDoc> for EditorPane {
         }
     }
 
-    fn perform(&mut self, _doc: &mut ChartDoc, verb: Verb, cx: &mut ItemCtx<'_>) -> Handled {
+    fn perform(&mut self, doc: &mut ChartDoc, verb: Verb, cx: &mut ItemCtx<'_>) -> Handled {
         if verb.as_str() == "save-spec" {
-            let _ = self.save_now();
+            self.save_and_note(doc);
             cx.request_repaint();
             return Handled::Yes;
         }

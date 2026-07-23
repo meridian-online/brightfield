@@ -147,9 +147,14 @@ fn each_pane_names_itself_once_and_binds_in_the_protocol_context() {
 /// plainly because the note here used to promise the opposite. The hint bar and
 /// the flow toggle describe the *view* — its key grammar, its reading axis —
 /// and neither is any one pane's to declare; they are drawn by the window, from
-/// the view's model. `chrome::toolbar_row` and `chrome::status_rail` are still
-/// drawn by nothing, so an entry appearing here would be an entry nothing
-/// draws, which is worse than none.
+/// the view's model. `chrome::toolbar_row` is still drawn by nothing here, so a
+/// toolbar control would be a control nothing draws. The status rail *is*
+/// drawn now — the window rails the focused pane's entries and the one
+/// activity indicator — so the status half of this assertion changed meaning
+/// without changing truth: these panes still declare no status line because
+/// their status spellings (the node status words, the inspector gloss) live
+/// in the canvas and the inspector, and a rail entry would be a second
+/// spelling of the same facts.
 #[test]
 fn no_pane_declares_chrome_the_panel_does_not_yet_draw() {
     for (id, subject) in subjects(&loaded()) {

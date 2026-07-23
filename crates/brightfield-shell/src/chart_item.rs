@@ -289,6 +289,17 @@ impl Item<ChartDoc> for ChartItem {
             // step there say it identically.
             subject = subject.with_status(state.status_entry("run-state"));
         }
+        // The document's in-flight work and file notices, reported here
+        // because this pane is the view's presenting surface: activity in
+        // the typed entries the shell's one indicator collects, and the
+        // watcher's facts about files — which are conditions beside the
+        // run-state entry above, never a re-spelling of it.
+        for entry in doc.activity.entries() {
+            subject = subject.with_status(entry);
+        }
+        for entry in doc.watch.entries() {
+            subject = subject.with_status(entry);
+        }
         subject
     }
 

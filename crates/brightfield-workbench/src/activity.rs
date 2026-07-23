@@ -176,7 +176,8 @@ impl ActivityIndicator {
         let text = Activity::ALL
             .into_iter()
             .zip(live)
-            .filter_map(|(a, on)| on.then(|| a.label()))
+            .filter(|(_, on)| *on)
+            .map(|(a, _)| a.label())
             .collect::<Vec<_>>()
             .join(" · ");
         if text.is_empty() {

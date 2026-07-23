@@ -24,8 +24,8 @@ use brightfield_shell::editor::{
 };
 use brightfield_workbench::registry::Slot;
 use brightfield_workbench::{
-    audit, EmptyState, Handled, HideAffordance, Icon, Item, ItemCtx, ItemId, ItemRegistry,
-    ItemSpec, PaneKey, Request, Subject, Tone, Verb, ViewKind,
+    audit, Activity, EmptyState, Handled, HideAffordance, Icon, Item, ItemCtx, ItemId,
+    ItemRegistry, ItemSpec, PaneKey, Request, Subject, Tone, Verb, ViewKind,
 };
 use meridian_design::semantic;
 
@@ -376,8 +376,42 @@ fn the_reload_indicator_respects_the_honesty_line() {
     pane.open_file(&path);
     let subject = pane.subject(&ChartDoc::empty());
     assert!(
-        !subject.status.iter().any(|s| s.id == "editor-reloading"),
+        !subject
+            .status
+            .iter()
+            .any(|s| s.id == Activity::FileWatch.id()),
         "nothing pending, no spinner"
+    );
+}
+
+/// A pending reload reports in the typed activity vocabulary — the entry the
+/// shell's one indicator collects — not in a bespoke spelling of its own.
+#[test]
+fn a_pending_reload_reports_as_typed_file_watch_activity() {
+    let path = temp_spec("pending", "plot: {}\n");
+    let mut pane = EditorPane::new();
+    pane.open_file(&path);
+
+    // Delete the file: the poll sees the mtime move and cannot read it back,
+    // which is exactly the mid-write window the indicator exists for — the
+    // reload stays pending rather than resolving.
+    fs::remove_file(&path).unwrap();
+    pane.poll_disk_now();
+    std::thread::sleep(std::time::Duration::from_millis(
+        u64::try_from(RELOAD_SPINNER_HONESTY_MS).unwrap() + 20,
+    ));
+
+    let subject = pane.subject(&ChartDoc::empty());
+    let entry = subject
+        .status
+        .iter()
+        .find(|s| s.id == Activity::FileWatch.id())
+        .expect("a reload pending past the honesty line reports as activity");
+    assert_eq!(entry.text, Activity::FileWatch.label());
+    assert_eq!(
+        entry.tone,
+        Tone::Neutral,
+        "activity is progress, never a status ink"
     );
 }
 
