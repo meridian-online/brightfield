@@ -188,7 +188,13 @@ jobs:
 
             ### It does not phone home
 
-            There is no HTTP client in the application at all.
+            No telemetry, no analytics, no update check — and no HTTP client,
+            no TLS crate and no async runtime in the application itself. It
+            reaches the network in exactly one case: when a spec you opened
+            names a remote source, DuckDB's `httpfs` fetches it. A local spec
+            never loads that extension and never reaches out, and nothing is
+            needed to start, to render, or to open a local protocol.
+
             `scripts/verify-airgapped.sh` in the repository re-proves that
             against this exact artifact: it denies the network, checks that the
             denial really bites, and only then renders a chart and a protocol
