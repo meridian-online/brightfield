@@ -1630,7 +1630,7 @@ pub(crate) fn ui_font() -> egui::FontId {
 }
 
 /// The same size in the Meridian mono face, for a value the reader compares
-/// character by character: an address, a run ordinal, the key hints.
+/// character by character: an address, the key hints.
 ///
 /// It has to be a [`egui::FontId`] rather than `RichText::monospace`, and that
 /// is the whole reason this exists. `RichText::font` sets *size and family*
