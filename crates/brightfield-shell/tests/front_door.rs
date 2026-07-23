@@ -751,21 +751,12 @@ fn every_shipped_start_still_renders_and_its_thumbnail_is_current() {
     for start in starts::STARTS {
         let boot = Boot::start(start.id, Flow::Vertical)
             .unwrap_or_else(|e| panic!("{} no longer loads: {e}", start.id));
+        // The window the start itself asks for — its content's own natural
+        // size, the same answer the live click gives.
+        let size = boot.window_size(boot.view_or(ViewKind::Charts));
         let out = scratch(&format!("thumb-{}", start.id));
-        let (w, h) = capture_png_at(
-            boot,
-            Mode::Light,
-            1.0,
-            {
-                // The window the start itself asks for — its content's own
-                // natural size, the same answer the live click gives.
-                let boot = Boot::start(start.id, Flow::Vertical).expect("loads twice");
-                boot.window_size(boot.view_or(ViewKind::Charts))
-            },
-            &out,
-            Vec::new(),
-        )
-        .unwrap_or_else(|e| panic!("{} no longer renders: {e}", start.id));
+        let (w, h) = capture_png_at(boot, Mode::Light, 1.0, size, &out, Vec::new())
+            .unwrap_or_else(|e| panic!("{} no longer renders: {e}", start.id));
         assert!(w > 0 && h > 0, "{}: empty capture", start.id);
         let thumb = thumbnail(&read_rgba(&out), 480, 300);
         if let Err(e) = egui_kittest::try_image_snapshot_options(&thumb, start.id, &options) {

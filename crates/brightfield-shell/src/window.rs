@@ -1662,7 +1662,7 @@ impl MeridianApp {
                         // here: the help sheet opens on any view, and its
                         // keystroke is the registry's, printed rather than
                         // claimed.
-                        door_zone_heading(ui, "Start", &sem);
+                        door_zone_heading(ui, "Start", sem);
                         let help_label = match help_key {
                             Some(k) => format!("Keyboard help  {k}"),
                             None => "Keyboard help".to_string(),
@@ -1677,7 +1677,7 @@ impl MeridianApp {
                         // remembered start renders its own opening control,
                         // raising the request a pane's button would.
                         if let Some(start) = remembered {
-                            door_zone_heading(ui, "Continue", &sem);
+                            door_zone_heading(ui, "Continue", sem);
                             let control =
                                 ui.button(egui::RichText::new(start.label).font(ui_font()));
                             self.door_continue = Some(control.rect);
@@ -1688,7 +1688,7 @@ impl MeridianApp {
 
                         // Explore — the gallery, and the flagship: every card
                         // opens onto a drawn result.
-                        door_zone_heading(ui, "Explore", &sem);
+                        door_zone_heading(ui, "Explore", sem);
                         ui.label(
                             egui::RichText::new(
                                 "Starting points that ship with the binary — \
@@ -1702,13 +1702,13 @@ impl MeridianApp {
                             ui.spacing_mut().item_spacing =
                                 egui::vec2(spacing::SECTION_GAP, spacing::SECTION_GAP);
                             for start in crate::starts::STARTS {
-                                self.door_card(ui, start, &sem, requests);
+                                self.door_card(ui, start, sem, requests);
                             }
                         });
 
                         // Learn — the placeholder zone; walkthrough content
                         // is its own work and arrives as such.
-                        door_zone_heading(ui, "Learn", &sem);
+                        door_zone_heading(ui, "Learn", sem);
                         ui.label(
                             egui::RichText::new("Guided walkthroughs will live here.")
                                 .font(ui_font())
