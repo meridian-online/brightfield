@@ -179,6 +179,26 @@ impl ContractView {
             .map(|(name, s)| (name.clone(), s.seam_status()))
             .collect()
     }
+
+    /// A deterministic fold of this run's per-asset content hashes — the
+    /// value a data consumer (e.g. a live chart session) can compare across
+    /// runs to learn that the content behind its sources changed. Two views
+    /// whose assets carry the same hashes fold to the same string; any hash
+    /// changing, appearing, or disappearing changes it. Assets are visited in
+    /// their (already sorted) map order; an asset with no computed hash
+    /// contributes a `-` placeholder so hash presence itself is part of the
+    /// identity.
+    #[must_use]
+    pub fn content_fingerprint(&self) -> String {
+        let mut out = String::new();
+        for (id, meta) in &self.assets {
+            out.push_str(id);
+            out.push('=');
+            out.push_str(meta.content_hash.as_deref().unwrap_or("-"));
+            out.push('\n');
+        }
+        out
+    }
 }
 
 /// The flat tail of a contract id (`table:widgets` → `widgets`).
@@ -769,6 +789,33 @@ mod tests {
                   "assets": [{assets}], "steps": [{steps}] }}"#
         );
         parse_contract(json.as_bytes()).expect("chain contract parses")
+    }
+
+    /// The content fingerprint is deterministic across identical views,
+    /// changes when any asset's hash changes or a hash is first computed, and
+    /// is insensitive to nothing else.
+    #[test]
+    fn content_fingerprint_tracks_asset_hashes() {
+        let mut a = build_contract_view(&chain_contract());
+        let b = build_contract_view(&chain_contract());
+        assert_eq!(
+            a.content_fingerprint(),
+            b.content_fingerprint(),
+            "identical views fold identically"
+        );
+
+        let before = a.content_fingerprint();
+        let first = a.assets.keys().next().expect("assets present").clone();
+        a.assets.get_mut(&first).expect("meta").content_hash = Some("abc123".to_string());
+        let after = a.content_fingerprint();
+        assert_ne!(before, after, "a newly computed hash changes the fold");
+
+        a.assets.get_mut(&first).expect("meta").content_hash = Some("abc124".to_string());
+        assert_ne!(
+            after,
+            a.content_fingerprint(),
+            "a changed hash changes the fold"
+        );
     }
 
     /// Editing step 2 drags steps 3..7 — and only them — in the

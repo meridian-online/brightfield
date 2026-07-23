@@ -234,6 +234,7 @@ impl Engine {
             param_state,
             selection_state: HashMap::new(),
             preagg: preagg::PreAgg::default(),
+            data_fingerprint: None,
         };
 
         Ok(LoadResult {
@@ -286,6 +287,10 @@ pub struct Session {
     /// serves, materialised TEMP cubes, and the executed-SQL log. See
     /// [`preagg`].
     preagg: preagg::PreAgg,
+    /// The content fingerprint of the data this session was loaded against,
+    /// as last reported through [`Session::observe_data_fingerprint`]. `None`
+    /// until a caller first reports one.
+    data_fingerprint: Option<String>,
 }
 
 /// A cached SQL string with its binding metadata.
@@ -420,9 +425,48 @@ impl Session {
         // fresh SQL rather than serving a stale cached batch/plan — including
         // every pre-aggregation cube and serve, which were derived from the
         // old spec's plans (a cube never survives the state it came from).
+        self.invalidate_derived_state();
+    }
+
+    /// Drop every artifact derived from the current (spec, data) pair: the
+    /// prepared-plan cache, the renderer-side SQL cache, and every
+    /// pre-aggregation cube and serve. The shared retirement seam behind
+    /// [`Session::reload_spec`] (the spec changed) and
+    /// [`Session::observe_data_fingerprint`] (the data changed).
+    fn invalidate_derived_state(&mut self) {
         self.cache.clear();
         self.sql_cache.invalidate();
         self.preagg_retire_all();
+    }
+
+    /// The content fingerprint this session last observed for its data, if
+    /// any. See [`Session::observe_data_fingerprint`].
+    #[must_use]
+    pub fn data_fingerprint(&self) -> Option<&str> {
+        self.data_fingerprint.as_deref()
+    }
+
+    /// Report the current content fingerprint of the data behind this
+    /// session's sources — any stable digest of the upstream content, e.g. a
+    /// fold of per-asset content hashes from a producing run's record.
+    ///
+    /// A session's file-backed sources are views: a direct query always reads
+    /// the bytes on disk, but **derived** artifacts — pre-aggregation cubes,
+    /// cached result batches — hold data from the moment they were built.
+    /// When the reported fingerprint differs from the last one observed, all
+    /// of them are retired through the same seam a spec reload uses, so
+    /// nothing derived from the old bytes can be served against the new. An
+    /// unchanged fingerprint is a no-op.
+    ///
+    /// Returns `true` when the fingerprint changed and derived state was
+    /// retired. The first observation is conservatively treated as a change.
+    pub fn observe_data_fingerprint(&mut self, fingerprint: &str) -> bool {
+        if self.data_fingerprint.as_deref() == Some(fingerprint) {
+            return false;
+        }
+        self.invalidate_derived_state();
+        self.data_fingerprint = Some(fingerprint.to_string());
+        true
     }
 
     /// The flat mark index a `ComponentPath` string resolves to under the

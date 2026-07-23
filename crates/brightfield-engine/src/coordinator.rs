@@ -973,6 +973,142 @@ plot:
         assert_eq!(coord.session().preagg_stats().cubes_built, 2);
     }
 
+    /// A changed data content fingerprint retires the cubes rather than
+    /// serving them stale. The hazard is proven real first: a session's
+    /// file-backed source is a view (a direct query reads the bytes on disk),
+    /// but a materialised cube holds the bytes from build time — after the
+    /// file changes, a cube-served interaction answers from the OLD data
+    /// until the fingerprint observation retires it.
+    #[test]
+    fn changed_data_fingerprint_retires_stale_cubes() {
+        use brightfield_sql::ir::ScalarValue;
+        let dir = std::env::temp_dir();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = dir.join(format!("bf_preagg_fp_{}_{unique}.csv", std::process::id()));
+        // v1: cell (a,p) holds 2 north rows; (b,q) holds 1.
+        std::fs::write(
+            &path,
+            "xg,yg,region\na,p,north\na,p,north\na,p,south\nb,q,north\n",
+        )
+        .expect("write csv v1");
+
+        let yaml = format!(
+            r#"
+params:
+  pick:
+    select: intersect
+data:
+  events_base: {{ file: {} }}
+plot:
+  - mark: cell
+    data: {{ from: events_base, filterBy: $pick }}
+    x: xg
+    y: yg
+    fill: {{ count: }}
+"#,
+            path.display()
+        );
+        let contributor = ComponentPath("root/vconcat[99]".to_string());
+        let north = |values: &[&str]| SqlPredicate::Point {
+            column: "region".to_string(),
+            values: values
+                .iter()
+                .map(|v| ScalarValue::Text((*v).to_string()))
+                .collect(),
+            meta: None,
+        };
+        let total =
+            |batches: &[RecordBatch]| -> f64 { column_f64(batches, "__bf_count").iter().sum() };
+
+        let mut coord = coordinator_from(&yaml);
+        coord.apply(Interaction::Select {
+            name: "pick".to_string(),
+            contributor: contributor.clone(),
+            predicate: north(&["north"]),
+        });
+        assert_eq!(coord.session().preagg_stats().cubes_built, 1);
+        assert_eq!(coord.session().preagg_stats().cube_hits, 1);
+        assert_eq!(
+            total(&coord.chart_rows(0).expect("served v1")),
+            3.0,
+            "v1 has three north rows"
+        );
+
+        // The file changes underneath the session: (a,p) now holds 5 north
+        // rows. (Atomic swap via rename, as a publisher would.)
+        let staged = path.with_extension("csv.new");
+        std::fs::write(
+            &staged,
+            "xg,yg,region\na,p,north\na,p,north\na,p,north\na,p,north\na,p,north\na,p,south\nb,q,north\n",
+        )
+        .expect("write csv v2");
+        std::fs::rename(&staged, &path).expect("swap in v2");
+
+        // The hazard, proven: a new interaction step is served from the STALE
+        // cube (v1 bytes) while the view would answer v2.
+        coord.apply(Interaction::Select {
+            name: "pick".to_string(),
+            contributor: contributor.clone(),
+            predicate: north(&["north", "south"]),
+        });
+        assert_eq!(coord.session().preagg_stats().cube_hits, 2, "still serving");
+        assert_eq!(
+            total(&coord.chart_rows(0).expect("stale serve")),
+            4.0,
+            "the cube still answers v1's four rows — the staleness this seam exists to kill"
+        );
+
+        // The fingerprint observation retires everything derived.
+        coord.session_mut().clear_executed_sql();
+        assert!(coord.session_mut().observe_data_fingerprint("v2"));
+        assert!(
+            coord
+                .session()
+                .executed_sql()
+                .iter()
+                .any(|s| s.starts_with("DROP TABLE IF EXISTS \"__bf_preagg_")),
+            "the cube tables were dropped"
+        );
+        assert_eq!(
+            coord.session().data_fingerprint(),
+            Some("v2"),
+            "the fingerprint is recorded"
+        );
+        assert!(
+            !coord.session_mut().observe_data_fingerprint("v2"),
+            "an unchanged fingerprint is a no-op"
+        );
+
+        // The next interaction rebuilds from the CURRENT bytes and answers
+        // fresh — equal to a direct (never-cubed) session over the same file.
+        coord.apply(Interaction::Select {
+            name: "pick".to_string(),
+            contributor: contributor.clone(),
+            predicate: north(&["north"]),
+        });
+        assert_eq!(coord.session().preagg_stats().cubes_built, 2, "rebuilt");
+        let fresh = total(&coord.chart_rows(0).expect("fresh serve"));
+        assert_eq!(fresh, 6.0, "v2 has six north rows");
+
+        let mut direct = coordinator_from(&yaml);
+        direct.apply(Interaction::Select {
+            name: "pick".to_string(),
+            contributor,
+            predicate: SqlPredicate::Expr("region = 'north'".to_string()),
+        });
+        assert_eq!(direct.session().preagg_stats().cubes_built, 0);
+        assert_eq!(
+            total(&direct.chart_rows(0).expect("direct")),
+            fresh,
+            "cube-served equals direct over the same bytes"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// A self-aggregating cell under a POINT clause: served from the cube,
     /// equal to the direct result.
     #[test]

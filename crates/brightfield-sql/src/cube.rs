@@ -445,12 +445,32 @@ pub fn derive_cube(
     let mut stats = StatRegistry::default();
     let mut regr_groups: Vec<RegrGroup> = Vec::new();
     let mut aggs = Vec::with_capacity(aggregates.len());
+    let mut agg_aliases: Vec<&str> = Vec::with_capacity(aggregates.len());
     for agg in aggregates {
         let call = match agg {
             AggregateExpr::Call(call) => call,
             AggregateExpr::Raw(_) => return None,
         };
         aggs.push(decompose(call, &mut stats, &mut regr_groups)?);
+        agg_aliases.push(call.alias.as_deref().expect("decompose required an alias"));
+    }
+
+    // --- order keys must name output columns --------------------------------
+    // The re-query reproduces ORDER BY verbatim over the cube, where only the
+    // output columns (dim aliases and aggregate aliases) exist. A key that is
+    // an expression over base-table columns (`sum("y")`, `x + 1`) would make
+    // the re-query error at serve time — bail to the direct query instead.
+    for (key, _) in &order {
+        let trimmed = key.trim();
+        if !is_simple_identifier(trimmed) {
+            return None;
+        }
+        let name = unquote(trimmed);
+        let known = dims.iter().any(|d| unquote(&d.alias) == name)
+            || agg_aliases.iter().any(|a| unquote(a) == name);
+        if !known {
+            return None;
+        }
     }
 
     // --- centering probe (regression groups only) ---------------------------
@@ -598,6 +618,15 @@ fn find_top_level_as(s: &str) -> Option<usize> {
     last
 }
 
+/// The bare name inside a quoted identifier, or the string itself.
+fn unquote(s: &str) -> &str {
+    if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') && !s[1..s.len() - 1].contains('"') {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    }
+}
+
 /// `x` / `x_2` / `"anything quoted"` — an entry that names a column directly.
 fn is_simple_identifier(s: &str) -> bool {
     if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
@@ -620,6 +649,14 @@ fn decompose(
     // The reassembled column must keep its name; a call without an alias
     // would take an engine-derived name that the rewrite cannot reproduce.
     let alias = call.alias.as_ref()?;
+    // A DISTINCT aggregate does not decompose: a sum of per-cell distinct
+    // counts is not a distinct count. Bail to the direct query.
+    if call.args.iter().any(|a| {
+        let t = a.trim_start();
+        t.len() >= 9 && t[..9].eq_ignore_ascii_case("distinct ")
+    }) {
+        return None;
+    }
     let filter_suffix = call
         .filter
         .as_ref()
@@ -644,8 +681,10 @@ fn decompose(
             let arg = one_arg()?;
             let stat = stats.intern(format!("COUNT({arg}){filter_suffix}"));
             // COUNT is BIGINT; a sum of BIGINTs widens, so cast back unless
-            // the original call already casts.
-            let reasm = cast_wrap(format!("sum(\"{stat}\")"), Some("BIGINT"));
+            // the original call already casts. The coalesce matters for the
+            // scalar shape over an emptied cube: direct COUNT over zero rows
+            // is 0, while a bare sum over zero rows is NULL.
+            let reasm = cast_wrap(format!("coalesce(sum(\"{stat}\"), 0)"), Some("BIGINT"));
             Some(AggPlan::Simple {
                 reasm: format!("{reasm} AS {alias}"),
             })
@@ -873,7 +912,7 @@ mod tests {
         assert!(q.contains("FROM \"cube_tbl\""));
         assert!(q.contains("\"__bf_a0\" >= 10 AND \"__bf_a0\" <= 50"));
         assert!(q.contains("\"__bf_dim0\" AS \"x\""));
-        assert!(q.contains("CAST(sum(\"__bf_s0\") AS DOUBLE) AS __bf_count"));
+        assert!(q.contains("CAST(coalesce(sum(\"__bf_s0\"), 0) AS DOUBLE) AS __bf_count"));
         assert!(q.contains("ORDER BY \"x\" ASC"));
         assert!(
             !q.contains("FROM \"t\""),
@@ -1101,6 +1140,90 @@ mod tests {
             !q.contains("\"sport\" ="),
             "original column never re-filtered"
         );
+    }
+
+    #[test]
+    fn distinct_aggregate_args_bail() {
+        let plan = QueryPlan::AggregateScalar {
+            input: Box::new(QueryPlan::Source {
+                table: "t".to_string(),
+            }),
+            aggregates: vec![AggregateExpr::Call(AggregateCall {
+                func: AggregateFunction::Count,
+                args: vec!["DISTINCT \"x\"".to_string()],
+                filter: None,
+                cast: None,
+                alias: Some("n".to_string()),
+            })],
+        };
+        assert!(
+            derive_cube(&plan, &interval("\"y\"", 0.0, 1.0), None).is_none(),
+            "a sum of per-cell distinct counts is not a distinct count"
+        );
+    }
+
+    #[test]
+    fn order_keys_must_name_output_columns() {
+        // ORDER BY over an aggregate ALIAS is fine: the alias exists in the
+        // re-query's output.
+        let by_alias = QueryPlan::Order {
+            input: Box::new(QueryPlan::Aggregation {
+                input: Box::new(QueryPlan::Source {
+                    table: "t".to_string(),
+                }),
+                group_by: vec!["\"g\"".to_string()],
+                aggregates: vec![count_star("n")],
+            }),
+            keys: vec![("\"n\"".to_string(), SortDir::Desc)],
+        };
+        assert!(derive_cube(&by_alias, &interval("\"y\"", 0.0, 1.0), None).is_some());
+
+        // ORDER BY over a base-table expression is not: the expression's
+        // columns do not exist in the cube, so the re-query would error at
+        // serve time — bail instead.
+        let by_expr = QueryPlan::Order {
+            input: Box::new(QueryPlan::Aggregation {
+                input: Box::new(QueryPlan::Source {
+                    table: "t".to_string(),
+                }),
+                group_by: vec!["\"g\"".to_string()],
+                aggregates: vec![count_star("n")],
+            }),
+            keys: vec![("sum(\"y\")".to_string(), SortDir::Asc)],
+        };
+        assert!(derive_cube(&by_expr, &interval("\"y\"", 0.0, 1.0), None).is_none());
+
+        // A key naming a column that is neither a dim nor an aggregate alias
+        // also bails.
+        let by_unknown = QueryPlan::Order {
+            input: Box::new(QueryPlan::Aggregation {
+                input: Box::new(QueryPlan::Source {
+                    table: "t".to_string(),
+                }),
+                group_by: vec!["\"g\"".to_string()],
+                aggregates: vec![count_star("n")],
+            }),
+            keys: vec![("\"z\"".to_string(), SortDir::Asc)],
+        };
+        assert!(derive_cube(&by_unknown, &interval("\"y\"", 0.0, 1.0), None).is_none());
+    }
+
+    #[test]
+    fn scalar_count_over_an_emptied_cube_is_zero_not_null() {
+        // The reassembly must coalesce: direct COUNT over zero rows is 0,
+        // while a bare sum over zero rows would be NULL.
+        let plan = QueryPlan::AggregateScalar {
+            input: Box::new(QueryPlan::Source {
+                table: "t".to_string(),
+            }),
+            aggregates: vec![count_star("n")],
+        };
+        let sqls = derive_cube(&plan, &interval("\"y\"", 0.0, 1.0), None)
+            .unwrap()
+            .finalize(&[])
+            .unwrap();
+        let q = sqls.query_select("c").unwrap();
+        assert!(q.contains("coalesce(sum(\"__bf_s0\"), 0)"));
     }
 
     #[test]
