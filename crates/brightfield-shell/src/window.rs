@@ -123,11 +123,10 @@ pub const DOCK_INSET: f32 = spacing::SPACE_4;
 
 /// The line under the Welcome heading.
 ///
-/// **Deliberately a neutral placeholder.** The real tagline is a
-/// product-voice decision that has not been made, and inventing one here
-/// would make this constant the place it accidentally got made. Replace the
-/// words; keep the slot.
-pub const TAGLINE_PLACEHOLDER: &str = "Open a starting point, or bring your own data.";
+/// The product's own voice — chosen copy, no longer the neutral placeholder
+/// this slot shipped with. Changing these words is a copy decision, not a
+/// refactor.
+pub const TAGLINE: &str = "Watch insight assemble.";
 
 /// The front door's content column, in logical points: four gallery cards and
 /// the three gaps between them, so the Explore row is what sets the measure
@@ -1762,7 +1761,7 @@ impl MeridianApp {
                         );
                         ui.add_space(spacing::SPACE_2);
                         ui.label(
-                            egui::RichText::new(TAGLINE_PLACEHOLDER)
+                            egui::RichText::new(TAGLINE)
                                 .font(ui_font())
                                 .color(chrome::colour(sem.text.muted)),
                         );
