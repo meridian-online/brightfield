@@ -694,6 +694,134 @@ impl Session {
         self.execute_emitted(index, &mark_kind, &emitted)
     }
 
+    /// The emitted rows SQL for a mark's step under the CURRENT
+    /// `param_state` / `selection_state` — the single string both
+    /// [`Self::execute_step_rows`] and the windowed reads below wrap. One
+    /// emission path (`emit_rows_query`, the same `compile_selection` the
+    /// chart's `emit_query` uses), so every step-rows surface — full read,
+    /// count, window — queries the identical filtered row set by construction.
+    fn step_rows_sql(&self, index: usize) -> Result<String, EngineError> {
+        let params = if self.param_state.is_empty() {
+            None
+        } else {
+            Some(&self.param_state)
+        };
+        let selections = self.selection_predicates_for_emit();
+        let selections_ref: Option<&[SelectionPredicate]> = if selections.is_empty() {
+            None
+        } else {
+            Some(selections.as_slice())
+        };
+        emit_rows_query(&self.spec, index, params, selections_ref)
+            .map(|emitted| emitted.sql)
+            .map_err(|e| EngineError::EmitFailed { cause: e })
+    }
+
+    /// The row COUNT of a mark's step materialisation under the current
+    /// interaction state — `count(*)` over the exact SQL
+    /// [`Self::execute_step_rows`] runs, evaluated inside DuckDB.
+    ///
+    /// This is one half of the tabular surface's *windowed* read path (the
+    /// other is [`Self::execute_step_rows_window`]): a virtualised grid sizes
+    /// its scroll range from this count and then queries only the visible
+    /// window, so a step larger than memory is never materialised client-side.
+    /// Unlike the window read, this wrap imposes no `ORDER BY`: `count(*)` is
+    /// order-independent, so ordering it would buy nothing and cost a sort.
+    ///
+    /// `&self`, deliberately: it rides the raw query path (as
+    /// [`Self::distinct_values`] does) rather than `execute_emitted`, so it
+    /// touches neither the plan cache nor the SQL→batches LRU — a scroll
+    /// position change can never evict a chart's cached result.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::execute_step_rows`]: emit failure for an inline/data-less
+    /// mark, or [`EngineError::QueryFailed`] if DuckDB rejects the query.
+    pub fn step_rows_count(&self, index: usize) -> Result<u64, EngineError> {
+        let rows_sql = self.step_rows_sql(index)?;
+        let sql = format!("SELECT count(*) AS n FROM ({rows_sql}) AS bf_step_rows");
+        let batches = self
+            .query_arrow_raw(&sql)
+            .map_err(|e| EngineError::QueryFailed {
+                mark_index: index,
+                mark_kind: self.mark_kind_at(index),
+                sql: sql.clone(),
+                cause: e,
+            })?;
+        let count = batches
+            .first()
+            .filter(|b| b.num_rows() > 0)
+            .and_then(|b| {
+                b.column(0)
+                    .as_any()
+                    .downcast_ref::<duckdb::arrow::array::Int64Array>()
+                    .map(|a| a.value(0))
+            })
+            .unwrap_or(0);
+        Ok(u64::try_from(count).unwrap_or(0))
+    }
+
+    /// A WINDOW of a mark's step rows — `ORDER BY ALL LIMIT limit OFFSET
+    /// offset` wrapped around the identical emitted rows SQL
+    /// [`Self::execute_step_rows`] executes, under the same live
+    /// `param_state` / `selection_state`.
+    ///
+    /// This is the visible-window read a virtualised grid scrolls with: the
+    /// window bound goes into the SQL, DuckDB materialises only the window,
+    /// and the client never holds more than `limit` rows — the client-side
+    /// alternative (materialise the result set, scroll it in memory) is the
+    /// architecture this seam exists to reject. Because the inner SQL comes
+    /// from the one emission path, a windowed read can never see a row set the
+    /// chart's query would not.
+    ///
+    /// # Why this read orders (`ORDER BY ALL`)
+    ///
+    /// `LIMIT`/`OFFSET` windows are only coherent over a total order, and the
+    /// step's own materialisation order is not one: DuckDB preserves insertion
+    /// order per execution, but a view body containing order-unstable
+    /// operators (`GROUP BY`, hash joins, `DISTINCT`) may hand back a
+    /// different permutation on every execution. Unordered windows over such
+    /// a step tear — adjacent pages duplicate and lose rows, and re-reading
+    /// the same window returns different rows. So the windowed read — alone;
+    /// [`Self::step_rows_count`] needs no order — wraps the emitted rows
+    /// query in `ORDER BY ALL`: every emitted column, left to right, a
+    /// deterministic total order over the step's own schema. Rows that are
+    /// full duplicates across every column stay mutually interchangeable
+    /// under that order, which is harmless here: any permutation of
+    /// identical rows yields byte-identical windows.
+    ///
+    /// The order makes a deep offset cost an ordered scan of the prefix on
+    /// every read. That cost is carried on the same terms as this read being
+    /// synchronous at all (the posture the [`coordinator`] module note
+    /// records): a known item for the later materialisation layer, not this
+    /// wrap's to fix.
+    ///
+    /// `&self` for the reason [`Self::step_rows_count`] is: the raw query
+    /// path, no cache traffic.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::step_rows_count`].
+    pub fn execute_step_rows_window(
+        &self,
+        index: usize,
+        offset: u64,
+        limit: u64,
+    ) -> Result<Vec<RecordBatch>, EngineError> {
+        let rows_sql = self.step_rows_sql(index)?;
+        let sql = format!(
+            "SELECT * FROM ({rows_sql}) AS bf_step_rows \
+             ORDER BY ALL LIMIT {limit} OFFSET {offset}"
+        );
+        self.query_arrow_raw(&sql)
+            .map_err(|e| EngineError::QueryFailed {
+                mark_index: index,
+                mark_kind: self.mark_kind_at(index),
+                sql: sql.clone(),
+                cause: e,
+            })
+    }
+
     /// A cancellation handle for whatever query this session's connection is
     /// currently running — DuckDB's own `interrupt`. Cloneable, `Send + Sync`,
     /// and safe to hold on a different thread than the one executing the query:

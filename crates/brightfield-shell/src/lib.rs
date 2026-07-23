@@ -19,6 +19,10 @@
 //!   binding brush/click gestures to the engine's coordinator seam.
 //! - [`legend`] — the chart legend as a native egui margin panel, outside the
 //!   plot rect, derived from the scales each chart was drawn against.
+//! - [`data_grid`] — the Data pane: the chart's peer, a DuckDB-backed grid
+//!   reading the SAME step materialisation through the engine's windowed
+//!   rows seam — and the one Meridian table chrome the Steps sheet renders
+//!   through as well.
 //! - [`editor`] — the YAML spec editor: the highlighted code surface, its
 //!   read-only treatment, and the `EditorPane` item over the
 //!   `brightfield-model` save intelligence.
@@ -36,6 +40,7 @@ pub mod app;
 pub mod canvas;
 pub mod capture;
 pub mod chart_item;
+pub mod data_grid;
 pub mod editor;
 pub mod legend;
 pub mod overlays;
