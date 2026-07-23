@@ -3,7 +3,7 @@ meta:
   description: |
     A self-contained bar chart over inline data — no external files needed.
 
-      cargo run -p brightfield-app -- examples/bars.yaml
+      cargo run -p brightfield-shell -- examples/bars.yaml
 
     Demonstrates a band (categorical) x-axis and a zero-anchored value axis, so
     the bars baseline on the axis rather than floating.

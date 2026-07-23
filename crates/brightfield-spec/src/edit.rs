@@ -13,7 +13,7 @@
 //! within-plot edit that WOULD bounce to "restart to apply" is refused at edit
 //! time with a reason instead.
 //!
-//! No gpui type crosses this boundary — the app layer is the shim that drives
+//! No UI-framework type crosses this boundary — the shell layer is the shim that drives
 //! the reducer and re-renders (the standing framework-free rule, mirroring
 //! `brightfield-keys` / `spec_save`). Targeting is by focused-plot + ordinal
 //! (v1: the plot's PRIMARY/first mark): count-changing edits re-walk the live
@@ -34,7 +34,7 @@ use crate::vocab::{LegendChannel, MarkKind};
 const INHERITED_CHANNELS: &[&str] = &["x", "y", "x1", "x2", "y1", "y2"];
 
 /// A typed structural mutation applied to the working [`Spec`] by [`apply`] —
-/// the gpui-free AST-mutation API the keyboard grammar named as missing.
+/// the framework-free AST-mutation API the keyboard grammar named as missing.
 ///
 /// Four variants (the 5th reserved verb, undo, is an [`UndoStack`] pop, not an
 /// edit). Each edit is TYPED (never an exec-string, per the VisiData warning),
@@ -274,10 +274,11 @@ fn apply_unchecked(spec: &mut Spec, edit: &SpecEdit) {
 }
 
 /// Classify whether a pending edit would trip a reload gate or has no valid
-/// target — WITHOUT mutating. This REIMPLEMENTS the app-binary reload
-/// gate (`same_layout` / `chrome_divergence`, main.rs) from the spec
-/// representation, because brightfield-app has no `[lib]` target; a brightfield-
-/// app AGREEMENT test pins these verdicts equal.
+/// target — WITHOUT mutating. This expresses the reload gate
+/// (`same_layout` / `chrome_divergence`) from the spec representation. It was
+/// born as a reimplementation of the retired gpui shell's gate and pinned
+/// equal by an agreement test in that binary; with the gpui shell deleted,
+/// this classifier is the single authority on gate verdicts.
 ///
 /// Two structural preconditions refuse first (a missing target mark; a
 /// `RemoveMark` that would EMPTY the plot). Then the WITHIN-PLOT chrome signature
@@ -574,12 +575,13 @@ fn inherited_positional(
     out
 }
 
-/// The axis a mark kind baselines at zero on — a gpui-free MIRROR of the
+/// The axis a mark kind baselines at zero on — a framework-free MIRROR of the
 /// render-side `MarkRenderer::zero_baseline_channel` (bar/area/rect value forms,
 /// mark.rs) so the classifier can predict the axis-inset flip a retype causes.
 /// `BarRenderer` baselines Y for BOTH barX and barY; area/rect
 /// value forms baseline their value axis; every other mark has no baseline.
-/// Pinned to the real renderer mapping by the brightfield-app agreement test.
+/// Keep in sync with the render-side mapping by hand: the cross-crate
+/// agreement test that pinned the two retired with the gpui shell.
 fn mark_zero_baseline_axis(kind: MarkKind) -> Option<&'static str> {
     match kind {
         MarkKind::BarX | MarkKind::BarY | MarkKind::AreaY | MarkKind::RectY => Some("y"),
@@ -1246,8 +1248,8 @@ vconcat:
     #[test]
     fn binding_an_inline_fill_is_clean() {
         // An inline colour fill is NOT captured by chrome_divergence (only
-        // STANDALONE legends are), so binding `fill` is gate-clean — verified
-        // against the real gate by the brightfield-app agreement test.
+        // STANDALONE legends are), so binding `fill` is gate-clean — a verdict
+        // the retired gpui shell's agreement test verified against its gate.
         let spec = parse(SINGLE);
         assert!(classify_edit(
             &spec,

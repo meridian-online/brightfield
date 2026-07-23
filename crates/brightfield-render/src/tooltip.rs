@@ -1,7 +1,7 @@
 //! Tooltip content extraction from Arrow RecordBatch rows.
 //!
-//! This module provides data extraction only — the GPUI tooltip element
-//! that renders this content is deferred to a follow-up card.
+//! This module provides data extraction only — the shell-side tooltip
+//! widget that renders this content is deferred to a follow-up card.
 
 use arrow::array::{Array, Float64Array, Int64Array, StringArray, TimestampMicrosecondArray};
 use arrow::datatypes::{DataType, TimeUnit};

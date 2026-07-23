@@ -4,7 +4,7 @@
 # The canonical Mosaic "click a bar to filter" interaction.
 #
 # Window-gated (the live click needs the macOS app). Headless resting render:
-#   BRIGHTFIELD_DUMP_PNG=cat.png cargo run -p brightfield-app -- examples/point-select-categorical.yaml
+#   cargo run -p brightfield-shell --bin brightfield-shot -- --spec examples/point-select-categorical.yaml --out cat.png --vello-only
 params:
   pick: { select: crossfilter }
 data:

@@ -366,10 +366,9 @@ pub fn load(path: &Path, default: impl FnOnce() -> SavedLayout) -> (SavedLayout,
 /// An explicit override wins, for tests and portable installs; otherwise the
 /// platform config directory — macOS `Application Support`, else
 /// `$XDG_CONFIG_HOME`, else `~/.config`. That policy is
-/// `brightfield-app`'s `dock_state_file::dock_state_path`, reimplemented
-/// rather than imported: that module lives in a crate that pulls gpui, and
-/// this one is framework-free by construction. Only the policy is shared, and
-/// it is small enough that duplicating it costs less than the dependency.
+/// `brightfield-model`'s `dock_state_file::dock_state_path`, reimplemented
+/// rather than imported: only the policy is shared, and it is small enough
+/// that duplicating it costs less than the cross-crate dependency.
 ///
 /// Pure in its inputs — the environment is passed, never read — so the
 /// selection is testable on every platform's rule at once, and `None` (no

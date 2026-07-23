@@ -16,7 +16,7 @@
 //! nearest in the pressed direction (fed by [`set_geometry`](ProtocolNav::set_geometry)),
 //! so movement always matches the drawn layout. `za` folds/unfolds a
 //! parameterised family and `Enter`/`Esc` push/pop a drill stack whose
-//! breadcrumb tracks the path (no consecutive duplicates). No gpui, no vello:
+//! breadcrumb tracks the path (no consecutive duplicates). No UI framework, no vello:
 //! the app's key handler calls these methods and re-reads
 //! [`cursor`](ProtocolNav::cursor); the headless tests drive the same surface.
 //!

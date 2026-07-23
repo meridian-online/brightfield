@@ -3,12 +3,12 @@
 //!
 //! Panel identities, default dock geometry, the initial-window-size formula,
 //! and the presentation-mode → panel-visibility mapping all live
-//! here as plain data and arithmetic; `shell.rs` is the thin GPUI/
-//! gpui-component translation shim over this module. No gpui import may
+//! here as plain data and arithmetic; a windowed shell is a thin
+//! translation shim over this module. No UI-framework import may
 //! enter this file (semantic-layer rule).
 //!
 //! [`PresentationMode`] itself stays in `brightfield_ui::workspace` (the
-//! gpui-free machine, deliberately unmoved); this module only maps it
+//! framework-free machine, deliberately unmoved); this module only maps it
 //! onto the dock shell: which panels report `visible()` and whether the
 //! authoring docks are open.
 
@@ -56,8 +56,8 @@ pub enum PanelRole {
 /// Whether a panel of `role` reports `visible()` under `mode`.
 ///
 /// Presentation hides every authoring panel; the canvas remains in both
-/// modes. A pure function of (mode, role) — the GPUI shell reads it, never
-/// decides it.
+/// modes. A pure function of (mode, role) — the windowed shell reads it,
+/// never decides it.
 #[must_use]
 pub fn panel_visible(mode: PresentationMode, role: PanelRole) -> bool {
     match role {
@@ -103,7 +103,7 @@ pub enum BottomDockAction {
 }
 
 /// The bottom-dock action for `mode` — the pure half of the presentation
-/// round trip; the GPUI shell executes it against the DockArea.
+/// round trip; the windowed shell executes it against its dock layout.
 #[must_use]
 pub fn bottom_dock_action(mode: PresentationMode) -> BottomDockAction {
     if mode.chrome_visible() {

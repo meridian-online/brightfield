@@ -3,10 +3,10 @@
 //!
 //! # Three shells, one implementation
 //!
-//! The dying gpui side hosts a chart through three separate `Element` shells —
-//! a canvas surface, a legend element, a slider element — each with its own
-//! framework glue and its own idea of what "selected" looks like. This module
-//! is their egui replacement expressed the other way round: one `ChartItem`
+//! The retired gpui side hosted a chart through three separate `Element`
+//! shells — a canvas surface, a legend element, a slider element — each with
+//! its own framework glue and its own idea of what "selected" looked like.
+//! This module is their egui replacement expressed the other way round: one `ChartItem`
 //! whose behaviour is a *function of the mark kind* it presents. The kind is
 //! data ([`ChartDoc`] carries it, per plot, off the composition that actually
 //! happened), so a dot plot, a bar chart and an area chart are one type with
@@ -20,7 +20,7 @@
 //! design system's **overlay** token group (`brush_fill` / `brush_border` /
 //! `focus_ring` — the "never in the data scene" inks), and keyboard focus
 //! anywhere on the chart surfaces is `meridian-egui`'s one `focus_ring`. The
-//! five treatments this retires are the gpui shells': the brush overlay's own
+//! five treatments this retired were the gpui shells': the brush overlay's own
 //! constants, the legend element's selected-entry dim, its hover lighten, the
 //! slider's focus treatment, and the workbench's second focus ring.
 //!

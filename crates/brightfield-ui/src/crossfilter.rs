@@ -4,8 +4,7 @@
 //! alive past the initial render, so a brush committed in the window
 //! re-executes the subscriber marks and swaps their scenes in place. The window
 //! holds one coordinator wrapped in `Rc<RefCell<…>>`; each plot's
-//! `GpuiChartSurface` mouse-up handler calls
-//! [`CrossfilterCoordinator::commit_brush`].
+//! mouse-up handler calls [`CrossfilterCoordinator::commit_brush`].
 //!
 //! The chain — all but the final `set_scene` is exercised headlessly by
 //! `tests/crossfilter_integration.rs` and the inversion is unit-tested below:
@@ -49,9 +48,9 @@ use brightfield_spec::layout::{collect_plot_nodes, resolve_projection};
 use brightfield_spec::vocab::MarkKind;
 use brightfield_sql::ir::{ClauseMeta, Predicate, ScaleDescriptor};
 
-use crate::brush::{brush_rect_to_structured, point_predicate, SelectionDispatcher};
-use crate::chart_view::{
-    commit_brush_release_multi, commit_click_multi, BrushBinding, ZERO_AREA_EPSILON,
+use crate::brush::{
+    brush_rect_to_structured, commit_brush_release_multi, commit_click_multi, point_predicate,
+    BrushBinding, SelectionDispatcher, ZERO_AREA_EPSILON,
 };
 use crate::interaction::InteractionState;
 use crate::menu::{commit_menu_release, MenuBinding, MenuState};
@@ -172,8 +171,8 @@ pub struct LivePlot<H> {
     /// grown title margins are baked into `layout` (and the `ChartState`).
     pub titles: ResolvedTitles,
     /// The host's reactive handle to this plot's [`ChartState`](crate::chart_state::ChartState) — the cell
-    /// whose scene we swap when this plot is re-filtered (gpui:
-    /// `Entity<ChartState<…>>`; see [`ReactiveHandle`]).
+    /// whose scene we swap when this plot is re-filtered (see
+    /// [`ReactiveHandle`]).
     pub state: H,
 }
 
@@ -214,7 +213,7 @@ impl From<&LegendBinding> for LegendSelectBinding {
 /// thing the coordinator does is swap a rebuilt scene into a plot's
 /// [`ChartState`](crate::chart_state::ChartState) cell and ask for a repaint, so the whole engine/render
 /// chain here is host-free and a new shell adopts it by implementing that
-/// one trait (gpui today: `Entity<ChartState<…>>` in `gpui_canvas`).
+/// one trait.
 pub struct CrossfilterCoordinator<H: ReactiveHandle> {
     session: Session,
     marks: Vec<MarkInput>,
@@ -625,7 +624,7 @@ impl<H: ReactiveHandle> CrossfilterCoordinator<H> {
         true
     }
 
-    /// The gpui-free data half of [`Self::apply_spec_edit`]: swap the session
+    /// The framework-free data half of [`Self::apply_spec_edit`]: swap the session
     /// spec, update marks + flat-index maps, re-execute, and RESET the affected
     /// plot's launch anchor — returning the affected plot index to re-scene, or
     /// `None` for an untracked plot. Separated so the whole mechanism minus the
@@ -873,7 +872,7 @@ impl<H: ReactiveHandle> CrossfilterCoordinator<H> {
         true
     }
 
-    /// The gpui-free half of [`Self::commit_slider`]: on a `Released` state, dispatch
+    /// The framework-free half of [`Self::commit_slider`]: on a `Released` state, dispatch
     /// the param and absorb the re-execution results into the per-mark batches,
     /// returning the set of plots to rebuild. Returns `None` (nothing committed)
     /// for a non-`Released` state or an out-of-range slider index. Separated so
@@ -913,7 +912,7 @@ impl<H: ReactiveHandle> CrossfilterCoordinator<H> {
         true
     }
 
-    /// The gpui-free half of [`Self::commit_menu`] (the `apply_slider` split):
+    /// The framework-free half of [`Self::commit_menu`] (the `apply_slider` split):
     /// on a `Committed` state, dispatch the picked option's [`SpecValue`]
     /// verbatim through `commit_menu_release` — which reads the param's LIVE
     /// value from the session so a same-value pick dispatches nothing — and
@@ -980,7 +979,7 @@ impl<H: ReactiveHandle> CrossfilterCoordinator<H> {
         true
     }
 
-    /// The gpui-free half of [`Self::commit_legend_click`] — the single-select
+    /// The framework-free half of [`Self::commit_legend_click`] — the single-select
     /// toggle state machine:
     ///
     /// - a category whose exact point predicate is NOT the slot's current
@@ -1105,8 +1104,8 @@ impl<H: ReactiveHandle> CrossfilterCoordinator<H> {
         Some(to_rebuild)
     }
 
-    /// The bound legend's currently-selected categories, for the hosted
-    /// [`crate::legend_element::LegendElement`] to dim the non-members
+    /// The bound legend's currently-selected categories, for the host's
+    /// legend widget to dim the non-members
     /// (selected-state, extended to a multi-select union).
     /// Derived per call from the engine's contributor slot — NO stored mirror
     /// (the F1 lesson): the slot predicate is decomposed into its OR
@@ -1291,7 +1290,7 @@ fn has_sequential_fill(scales: &ScaleSet) -> bool {
     matches!(scales.get(Channel::Fill), Some(Scale::Sequential { .. }))
 }
 
-/// The gpui-free core of [`CrossfilterCoordinator::rebuild_marks_and_maps`]:
+/// The framework-free core of [`CrossfilterCoordinator::rebuild_marks_and_maps`]:
 /// recompute the flat mark-index space after a
 /// count-changing edit. Given each tracked plot's `(path, old flat indices,
 /// scheme)` in coordinator-plots order, the old flat `marks`, the mutated
@@ -1763,7 +1762,7 @@ mod tests {
     /// ORIGINAL plot, (c) an UNAFFECTED plot's mark is MOVED verbatim (its
     /// retained render-config survives) while the affected plot's marks are
     /// rebuilt fresh from the spec; a RemoveMark then re-checks the same
-    /// integrity. Drives the gpui-free `rebuild_flat_index_space` directly (the
+    /// integrity. Drives the framework-free `rebuild_flat_index_space` directly (the
     /// data core of `rebuild_marks_and_maps` — LivePlot's non-Send
     /// `Entity<ChartState>` can't be built headless). The engine half
     /// (mark_index_map rebuild + resolve + execute) is pinned by
@@ -3765,7 +3764,7 @@ plot:
     /// DATA-EFFECT: apply_menu on a Committed String pick
     /// re-executes the subscribing mark — the batch row count changes to the
     /// predicted value. The silent-no-op defence at the
-    /// gpui-free half of the commit split.
+    /// framework-free half of the commit split.
     #[test]
     fn apply_menu_reexecutes_subscriber_on_commit() {
         let coord = menu_coordinator();

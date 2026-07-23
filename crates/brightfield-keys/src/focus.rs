@@ -1,7 +1,7 @@
 //! The focus state machine over the ComponentPath tree and the
 //! path↔plot(+rect) resolver — plus focus-jump path fuzzy-matching.
 //!
-//! Built gpui-free from the spec's layout tree: the focus tree carries the SAME
+//! Built framework-free from the spec's layout tree: the focus tree carries the SAME
 //! plot-node path scheme as `brightfield_spec::layout::placed_plots` (and thus
 //! `collect_plot_groups`), so a focused plot path joins to the runtime
 //! coordinator's `LivePlot.path` and to the engine's selection keys.
@@ -56,7 +56,7 @@ impl FocusNode {
     }
 }
 
-/// A gpui-free tree of the dashboard's navigable structure, seeded at assembly.
+/// A framework-free tree of the dashboard's navigable structure, seeded at assembly.
 /// Arena-based (indices, no `Rc`) so it stays trivially `Clone` and headless.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FocusTree {

@@ -10,6 +10,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Two checks, two steps, so a red run names its gate directly.
+      # Licenses: every dependency must carry a permissive licence from the
+      # deny.toml allow-list (MIT binaries).
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check licenses
+      # Advisories: the RUSTSEC feed over the graph we actually ship. Gated
+      # here since the shell cutover removed the gpui-carried advisory surface
+      # (async-std, rustybuzz-via-usvg et al.) — a finding now means a real
+      # vulnerability in a surviving dependency. Resolve with a bump, or waive
+      # in deny.toml [advisories] with a written reason; no bare ignores.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        if: always()
+        with:
+          command: check advisories

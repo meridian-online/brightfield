@@ -57,7 +57,7 @@ impl Transition {
     /// Compute the current interpolation factor and state.
     ///
     /// Returns `(t, state)` where `t` is clamped to [0.0, 1.0].
-    /// Uses linear easing; GPUI easing functions can be applied on top.
+    /// Uses linear easing; a host's easing functions can be applied on top.
     pub fn tick(&self, now: Instant) -> (f64, TransitionState) {
         let elapsed = now.duration_since(self.start);
         if elapsed >= self.duration {

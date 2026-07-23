@@ -282,7 +282,7 @@ pub struct SideInsets {
 /// `bottom`). Only literal numeric attributes (`Integer`/`Float`) are read;
 /// anything else — including a lifted `$param` — is treated as absent for that
 /// key and falls through to the next-most-specific one. This is the single
-/// gpui-free primitive both layout models' insets derive from.
+/// framework-free primitive both layout models' insets derive from.
 #[must_use]
 pub fn resolve_plot_insets(plot: &PlotNode) -> SideInsets {
     let num = |key: &str| -> Option<f64> {
@@ -366,7 +366,7 @@ pub fn resolve_plot_title(plot: &PlotNode) -> Option<String> {
 /// resolved at the render site from the channel map) plus the optional plot
 /// title, and emits NO warnings — the non-string `ParseWarning::NonStringLabel`
 /// is raised at parse time in `walk_plot`, exactly as `NonNumericInset` is. This
-/// is the single gpui-free primitive the render/scene path consumes.
+/// is the single framework-free primitive the render/scene path consumes.
 #[must_use]
 pub fn resolve_axis_titles(plot: &PlotNode) -> AxisTitles {
     AxisTitles {

@@ -4,11 +4,11 @@ meta:
     A `regressionY` mark — the ordinary-least-squares fit line with a 95%
     confidence band — drawn over a `dot` scatter of the same data.
 
-      cargo run -p brightfield-app -- examples/regression.yaml
+      cargo run -p brightfield-shell -- examples/regression.yaml
 
     Headless:
 
-      BRIGHTFIELD_DUMP_PNG=regression.png cargo run -p brightfield-app -- examples/regression.yaml
+      cargo run -p brightfield-shell --bin brightfield-shot -- --spec examples/regression.yaml --out regression.png --vello-only
 data:
   points:
     - { weight: 52, height: 158 }

@@ -1,9 +1,9 @@
-//! Workspace shell model — the gpui-free half of the window shell.
+//! Workspace shell model — the framework-free half of the window shell.
 //!
 //! Everything here is plain state and arithmetic so it runs headlessly (the
 //! semantic-layer rule: state machines and size formulas are framework-free;
-//! the GPUI views are thin translation shims over this module). No gpui
-//! import may enter this file.
+//! windowed views are thin translation shims over this module). No
+//! UI-framework import may enter this file.
 //!
 //! - [`PresentationMode`] — the authoring/presentation state machine the
 //!   `TogglePresentation` action flips (hosted by the canvas panel).
@@ -30,7 +30,7 @@ pub const CONTENT_PADDING: f64 = 16.0;
 /// (chrome hidden, canvas only — exactly what a consumer would see).
 ///
 /// A plain two-state machine so the shell's one bit of mode lives in
-/// headlessly-testable code; the GPUI view reads it, never owns it.
+/// headlessly-testable code; a windowed view reads it, never owns it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PresentationMode {
     /// Shell chrome visible: header strip + padded content area.
@@ -141,7 +141,7 @@ mod tests {
     }
 
     /// State machine: toggle() flips Authoring ↔ Presentation and
-    /// back; the type lives in this module, which imports no gpui.
+    /// back; the type lives in this module, which imports no UI framework.
     #[test]
     fn presentation_state_machine_toggles() {
         let mut mode = PresentationMode::default();

@@ -6,7 +6,7 @@
 # background. See raster-blues.yaml for a single-hue variant and
 # raster-legend.yaml for the standalone gradient legend.
 #
-#   BRIGHTFIELD_DUMP_PNG=raster.png cargo run -p brightfield-app -- examples/raster.yaml
+#   cargo run -p brightfield-shell --bin brightfield-shot -- --spec examples/raster.yaml --out raster.png --vello-only
 data:
   points:
     - { x: 2.658, y: 3.952 }

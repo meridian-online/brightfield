@@ -6,11 +6,11 @@ meta:
     renderer convolves the histogram with a Gaussian (Silverman bandwidth). The
     perpendicular axis is a normalised [0, 1] density scale.
 
-      cargo run -p brightfield-app -- examples/density-x.yaml
+      cargo run -p brightfield-shell -- examples/density-x.yaml
 
     Headless:
 
-      BRIGHTFIELD_DUMP_PNG=density-x.png cargo run -p brightfield-app -- examples/density-x.yaml
+      cargo run -p brightfield-shell --bin brightfield-shot -- --spec examples/density-x.yaml --out density-x.png --vello-only
 data:
   samples:
     - { x: 1 }

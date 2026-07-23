@@ -2,14 +2,15 @@
 //!
 //! Every module here is a decision the app makes expressed as plain data and
 //! arithmetic — no window, no GPU, no framework types — so each one compiles
-//! and tests headlessly on any host. The windowed shell (today the gpui app;
-//! at the shell cutover, its egui successor) is a thin translation shim over
-//! these models: it *executes* their decisions and never re-makes them.
+//! and tests headlessly on any host. The windowed shell (the egui app,
+//! which replaced the retired gpui one at the shell cutover) is a thin
+//! translation shim over these models: it *executes* their decisions and
+//! never re-makes them.
 //!
 //! The semantic-layer rule these modules carried as file headers is now the
 //! crate boundary itself: **no UI-framework import may enter this crate.**
-//! Its manifest names no gpui dependency, and keeping it that way is what
-//! lets a new shell adopt every model below without touching one.
+//! Its manifest names no UI-framework dependency, and keeping it that way
+//! is what lets a new shell adopt every model below without touching one.
 //!
 //! - [`boot`] — the one decision separating the headless PNG dump from the
 //!   windowed workspace.

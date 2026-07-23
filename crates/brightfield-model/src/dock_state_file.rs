@@ -5,8 +5,8 @@
 //! or derived from the Mosaic spec. Every decision here — where the file
 //! lives, whether a saved layout is usable, what the canvas persists, when a
 //! save fires — is plain data and arithmetic on JSON text, so it runs
-//! headlessly; `shell.rs` only executes the decisions. No gpui import may
-//! enter this file (semantic-layer rule).
+//! headlessly; the windowed shell only executes the decisions. No UI-framework
+//! import may enter this file (semantic-layer rule).
 
 use std::io;
 use std::path::{Path, PathBuf};

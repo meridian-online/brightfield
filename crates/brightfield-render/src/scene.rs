@@ -421,10 +421,10 @@ pub fn compose_dashboard(width: f64, height: f64, plots: &[(f64, f64, &Scene)]) 
     scene
 }
 
-/// Slider widget colours + geometry — kept in sync with the live GPUI
-/// `SliderElement` (crates/brightfield-ui/src/slider_element.rs) so the
-/// headless PNG matches the window. Both sides read the same
-/// Meridian tokens: track = warm gray step 5, thumb = Maritime focus ink.
+/// Slider widget colours + geometry. These were once one half of a twin pair
+/// with the retired gpui shell's slider element; with that twin deleted, this
+/// is the single authority. Sourced from Meridian tokens: track = warm gray
+/// step 5, thumb = Maritime focus ink.
 const SLIDER_TRACK_COLOUR: Color = ink(meridian_design::scales::GRAY_LIGHT[4]);
 const SLIDER_THUMB_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.focus);
 const SLIDER_THUMB_RADIUS: f64 = 7.0;
@@ -467,19 +467,18 @@ pub fn render_slider(scene: &mut Scene, x: f64, y: f64, width: f64, height: f64,
     );
 }
 
-/// Menu-family widget ink + geometry — kept in sync with the
-/// live GPUI shim (crates/brightfield-ui/src/menu_element.rs `WIDGET_*`
-/// constants) so the headless PNG matches the window, exactly like the
-/// SLIDER_* pair above. Both sides read the same Meridian tokens: fill =
-/// chart surface, border = warm gray step 5 (the slider-track gray), label
-/// = primary ink, affordance (chevron / ring outline) = muted ink, active
-/// (selected dot / check) = Maritime focus ink.
+/// Menu-family widget ink + geometry. Like the SLIDER_* set above, these were
+/// once one half of a twin pair with the retired gpui shell's menu element;
+/// with that twin deleted, this is the single authority. Sourced from Meridian
+/// tokens: fill = chart surface, border = warm gray step 5 (the slider-track
+/// gray), label = primary ink, affordance (chevron / ring outline) = muted
+/// ink, active (selected dot / check) = Maritime focus ink.
 const WIDGET_FILL_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.surface);
 const WIDGET_BORDER_COLOUR: Color = ink(meridian_design::scales::GRAY_LIGHT[4]);
 const WIDGET_LABEL_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.ink_primary);
 const WIDGET_AFFORDANCE_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.ink_muted);
 const WIDGET_ACTIVE_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.focus);
-/// Widget label text size (px) — matches the GPUI shim's `WIDGET_TEXT_SIZE`.
+/// Widget label text size (px).
 const WIDGET_TEXT_SIZE: f32 = 12.0;
 /// Vertical offset from a row's centre to the label baseline at
 /// `WIDGET_TEXT_SIZE` (approximately half the cap height).

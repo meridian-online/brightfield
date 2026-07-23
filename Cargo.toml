@@ -1,20 +1,16 @@
 [workspace]
-members = ["crates/brightfield-workbench", "crates/brightfield-spec", "crates/brightfield-keys", "crates/brightfield-conformance", "crates/brightfield-sql", "crates/brightfield-protocol", "crates/brightfield-engine", "crates/brightfield-render", "crates/brightfield-ui", "crates/brightfield-model", "crates/brightfield-app", "crates/brightfield-shell"]
+members = ["crates/brightfield-workbench", "crates/brightfield-spec", "crates/brightfield-keys", "crates/brightfield-conformance", "crates/brightfield-sql", "crates/brightfield-protocol", "crates/brightfield-engine", "crates/brightfield-render", "crates/brightfield-ui", "crates/brightfield-model", "crates/brightfield-shell"]
 resolver = "2"
 
 [workspace.package]
 edition = "2021"
-# Floor set by gpui at zed pin 1d217ee (std::hint::cold_path, stable since
-# 1.95 — zed's own rust-toolchain.toml pins 1.95.0); vello 0.9 needs 1.88.
+# Historical floor: set by the retired gpui shell's zed pin (std::hint::cold_path,
+# stable since 1.95); kept because CI and the local loop pin 1.95.0 exactly and
+# nothing needs newer. vello 0.9 itself needs only 1.88 — lower this floor
+# deliberately (with a CI re-pin), not incidentally.
 rust-version = "1.95"
 license = "MIT"
 repository = "https://github.com/meridian-online/brightfield"
-
-# Replace zed's GPL-3.0 tracing shim with a clean-room no-op stub so Brightfield
-# binaries link no GPL code (the chain is gpui -> sum_tree -> ztracing -> zlog).
-# Guarded by `cargo deny check licenses` (deny.toml) at every pin bump.
-[patch."https://github.com/zed-industries/zed"]
-ztracing = { path = "stubs/ztracing" }
 
 # The Meridian design system (the token crate + its egui emitter) is consumed as
 # a pinned git dependency of https://github.com/meridian-online/design — bump the

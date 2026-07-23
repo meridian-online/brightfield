@@ -1,13 +1,12 @@
 //! Menu widget family — menu / radio / checkbox.
 //!
-//! The discrete counterpart of `slider.rs`, following the same gpui-free
+//! The discrete counterpart of `slider.rs`, following the same framework-free
 //! model / thin element split: `MenuBinding` is the widget's dispatch-time
 //! identity (param + resolved options + presentation style),
 //! [`MenuState`] the interaction machine, and [`commit_menu_release`] the
-//! pure dispatch helper exercised against a recording double. The GPUI
-//! shim (`menu_element.rs`) and hosting (`chart_view.rs`) consume these
-//! thinly — no param or option-resolution logic lives window-side
-//! (the egui-exit posture).
+//! pure dispatch helper exercised against a recording double. A host's
+//! widget shim consumes these thinly — no param or option-resolution
+//! logic lives window-side.
 //!
 //! Radio and checkbox are `style:` PRESENTATIONS of `input: menu`, read
 //! from the preserved-verbatim options bag — never new vocabulary
@@ -78,7 +77,7 @@ impl MenuBinding {
     /// Construct a `MenuBinding` from an `Input` AST node (kind = Menu).
     ///
     /// Returns `(binding, degrade_reasons)` — the return is widened beyond
-    /// slider parity so this gpui-free model is the single source of the
+    /// slider parity so this framework-free model is the single source of the
     /// CONSTRUCTION-TIME degrade decisions and assembly only logs what the
     /// model surfaced. Today the only construction-time class is
     /// an unknown `style:` value (falls back to `Menu` + one reason); the
@@ -172,7 +171,7 @@ impl MenuBinding {
     }
 }
 
-/// Interaction state for a menu-family widget, lifted out of GPUI so it is
+/// Interaction state for a menu-family widget, framework-free so it is
 /// testable without a window (the `SliderState` shape).
 ///
 /// Transitions: `Closed → Open` on a menu-box click (menu style only;
@@ -201,13 +200,14 @@ impl MenuState {
     /// A menu-box click: `Closed → Open`, `Open → Closed` (toggle).
     /// `Committed` passes through untouched (mid-commit clicks are inert).
     ///
-    /// COMPOSED WIRING NOTE: the gpui shim only reaches this from
-    /// a box click when the menu RENDERED closed. A box click while open
-    /// double-fires — gpui runs the popup's capture-phase `on_mouse_down_out`
-    /// ([`Self::click_away`] → `Closed`) before the box's bubble-phase
-    /// handler — so the shim closes from its render-time open snapshot
-    /// instead of toggling the capture-mutated state (which would always
-    /// re-open). See `composed_box_click_closes_after_capture_click_away`.
+    /// COMPOSED WIRING NOTE: a host shim should only reach this from
+    /// a box click when the menu RENDERED closed. In a host whose popup
+    /// runs a capture-phase click-away BEFORE the box's bubble-phase
+    /// handler (as the retired gpui shell's did), a box click while open
+    /// double-fires ([`Self::click_away`] → `Closed` first) — so the shim
+    /// must close from its render-time open snapshot instead of toggling
+    /// the capture-mutated state (which would always re-open). See
+    /// `composed_box_click_closes_after_capture_click_away`.
     #[must_use]
     pub fn toggle_open(&self) -> Self {
         match self {
@@ -735,10 +735,11 @@ mod tests {
         );
     }
 
-    // Composed shim semantics: one physical click on the OPEN
-    // menu's box double-fires in gpui — the popup's on_mouse_down_out runs
+    // Composed shim semantics: in a capture-then-bubble host (as the
+    // retired gpui shell was), one physical click on the OPEN
+    // menu's box double-fires — the popup's click-away runs
     // in the CAPTURE phase (click_away → Closed) BEFORE the box's
-    // BUBBLE-phase on_mouse_down. The box decision must therefore come from
+    // BUBBLE-phase mouse-down. The box decision must therefore come from
     // the RENDER-TIME open snapshot (`was_open`), never a toggle_open()
     // re-read of the capture-mutated gesture — the re-read would flip the
     // now-Closed state straight back to Open, leaving the box click unable

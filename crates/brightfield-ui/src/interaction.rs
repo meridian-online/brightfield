@@ -68,7 +68,7 @@ pub enum InteractionState {
 /// The classification of a pointer position relative to a persisted `Selected`
 /// brush rectangle — the single source of truth for BOTH the
 /// paint-phase cursor style and the `pointer_down` grab decision + the
-/// subsequent move/resize transform. Computed by the gpui-free classifier
+/// subsequent move/resize transform. Computed by the framework-free classifier
 /// [`brush_region`] with a handle tolerance band; `Corner` takes precedence
 /// over `Edge`, `Edge` over `Interior`, and anything beyond `tol` outside the
 /// rect is `Outside`.
@@ -111,7 +111,7 @@ pub enum BrushCorner {
 }
 
 /// The action a `pointer_down` resolves to over a plot, decided by
-/// the gpui-free [`InteractionState::resolve_press`] resolver: grab a hit on
+/// the framework-free [`InteractionState::resolve_press`] resolver: grab a hit on
 /// the persisted `Selected` rect (resolved BEFORE the plot-contains check, so a
 /// handle in the inset-band overhang above `plot_area.y0` still grabs), else
 /// start a fresh brush inside the plot, else ignore.
@@ -140,7 +140,7 @@ fn norm_rect(a: Point, b: Point) -> Rect {
 
 /// Classify a local-space pointer over a `Selected` rect into
 /// interior / edge / corner / outside using a handle tolerance band `tol`.
-/// Renderer-free and gpui-free. `Corner` precedence over
+/// Renderer-free and framework-free. `Corner` precedence over
 /// `Edge` over `Interior`; a point farther than `tol` outside any side is
 /// `Outside`. The region hit is resolved BEFORE any plot-containment check so a
 /// handle in the rect's inset-band overhang still grabs.
@@ -484,14 +484,14 @@ impl InteractionState {
 /// Synthesise a pixel-space `Brushing` from a move/resize end-state so the
 /// moved cross-filter re-dispatches on release — the SOLE
 /// synthesis site of the silent-no-op defence, a pure
-/// gpui-free production fn the release path DRIVES.
+/// framework-free production fn the release path DRIVES.
 ///
 /// `commit_brush` reads ONLY `Brushing`, so a gesture ending in `Dragging`
 /// re-dispatches nothing unless converted here. Returns:
 /// - `Some(Brushing { new corners })` for a `Dragging` whose rect actually moved
 ///   from its `anchor` — the corners `invert_pixel_brush` then inverts downstream;
 /// - `None` for a zero-delta grab (a click on the rect, the moved rect within
-///   [`ZERO_AREA_EPSILON`](crate::chart_view::ZERO_AREA_EPSILON) of the anchor)
+///   [`ZERO_AREA_EPSILON`](crate::brush::ZERO_AREA_EPSILON) of the anchor)
 ///   — so a click never fires a redundant re-query, the selection intact;
 /// - `None` for every other state (a persisted `Selected`, a fresh `Brushing`
 ///   which already dispatches through the unchanged path, `Idle`, `Hovering`) —
@@ -507,10 +507,10 @@ pub fn redispatch_brushing_from(end_state: &InteractionState) -> Option<Interact
             ..
         } => {
             let moved = norm_rect(*start, *current);
-            let unmoved = (moved.x0 - anchor.x0).abs() < crate::chart_view::ZERO_AREA_EPSILON
-                && (moved.y0 - anchor.y0).abs() < crate::chart_view::ZERO_AREA_EPSILON
-                && (moved.x1 - anchor.x1).abs() < crate::chart_view::ZERO_AREA_EPSILON
-                && (moved.y1 - anchor.y1).abs() < crate::chart_view::ZERO_AREA_EPSILON;
+            let unmoved = (moved.x0 - anchor.x0).abs() < crate::brush::ZERO_AREA_EPSILON
+                && (moved.y0 - anchor.y0).abs() < crate::brush::ZERO_AREA_EPSILON
+                && (moved.x1 - anchor.x1).abs() < crate::brush::ZERO_AREA_EPSILON
+                && (moved.y1 - anchor.y1).abs() < crate::brush::ZERO_AREA_EPSILON;
             if unmoved {
                 None
             } else {
@@ -1059,7 +1059,7 @@ mod tests {
 
     const TOL: f64 = HANDLE_TOL;
 
-    /// the gpui-free brush-region classifier resolves a pointer over a
+    /// the framework-free brush-region classifier resolves a pointer over a
     /// Selected rect into Interior / Edge / Corner / Outside with corner-over-edge
     /// precedence and a `tol` handle band.
     #[test]

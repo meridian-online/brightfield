@@ -5,7 +5,7 @@
 # `for:` relocates the plot's inline legend, so the ramp appears once, on the far
 # right, colour-matching the cells.
 #
-#   BRIGHTFIELD_DUMP_PNG=raster-legend.png cargo run -p brightfield-app -- examples/raster-legend.yaml
+#   cargo run -p brightfield-shell --bin brightfield-shot -- --spec examples/raster-legend.yaml --out raster-legend.png --vello-only
 data:
   points:
     - { x: 2.658, y: 3.952 }

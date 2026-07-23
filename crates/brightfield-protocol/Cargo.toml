@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Protocol+Run contract -> typed asset graph -> deterministic layout (gpui-free, vello-free)"
+description = "Protocol+Run contract -> typed asset graph -> deterministic layout (framework-free, vello-free)"
 
 [dependencies]
 # The arcform spec library: the real `arcform.yaml` loader, validators and

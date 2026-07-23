@@ -9,9 +9,9 @@ description = "The shell contract: what a pane declares about itself, and the on
 
 [dependencies]
 # egui is the drawing surface, and egui_tiles supplies the tile identity a pane
-# is addressed by. Deliberately ABSENT: eframe, egui-wgpu, wgpu, vello, gpui.
+# is addressed by. Deliberately ABSENT: eframe, egui-wgpu, wgpu, vello.
 # That absence is load-bearing three times over — it is why this crate owns its
-# own layout persistence rather than borrowing the gpui shell's, why `ItemCtx`
+# own layout persistence rather than borrowing the retired gpui shell's, why `ItemCtx`
 # carries no GPU handle, and why the whole contract can be asserted in a unit
 # test with no adapter, no window and no renderer.
 egui = "0.35"

@@ -3517,8 +3517,8 @@ fn collect_polygon_rings(coords: &serde_json::Value, out: &mut Vec<Vec<(f64, f64
 
 /// Build the default renderer registry mapping mark kinds to renderers.
 ///
-/// This replaces the prior silent `_ => DotRenderer` fallback in
-/// brightfield-app/src/main.rs. Unknown / unimplemented mark kinds return
+/// This replaces the silent `_ => DotRenderer` fallback the retired gpui
+/// shell once carried. Unknown / unimplemented mark kinds return
 /// `None` from `find_renderer` so the caller can decide what to do
 /// (typically: skip the mark and log a tracing event).
 ///

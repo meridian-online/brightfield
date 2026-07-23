@@ -16,7 +16,7 @@
 //! Both produce the crate's one [`AssetGraph`]/[`Seam`]/[`Edge`] model, so the
 //! same layout, family collapse, and renderer draw either.
 //!
-//! **Framework-free by contract:** no gpui, no vello — pure data + geometry,
+//! **Framework-free by contract:** no UI framework, no vello — pure data + geometry,
 //! so `brightfield-render` can draw the result and the whole pipeline is
 //! unit-testable without pixels. (The `arc` dependency links DuckDB into the
 //! build — its private engine compiles into the library — but nothing on this
@@ -25,7 +25,8 @@
 //! always yields the same coordinates.
 //!
 //! **Dependency chain:** `brightfield-sql` (statement parse) -> this crate ->
-//! `brightfield-render` (asset_scene) -> `brightfield-app` (dump arm).
+//! `brightfield-render` (asset_scene) -> `brightfield-shell` (the Protocol
+//! panel and the headless shot).
 
 pub mod collapse;
 pub mod contract;

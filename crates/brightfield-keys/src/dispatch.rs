@@ -1,10 +1,11 @@
 //! The dispatch-resolution table: a PROJECTION of the same keymap-as-data
-//! vec `main` feeds to `cx.bind_keys` — not a hand-maintained mirror. It encodes,
-//! and is tested for, the context/overlay resolution invariants.
+//! vec a shell feeds its key-binding registration — not a hand-maintained
+//! mirror. It encodes, and is tested for, the context/overlay resolution
+//! invariants.
 //!
-//! IMPORTANT (honesty): this proves the projection is faithful to the binding vec
-//! and internally consistent. It does NOT prove GPUI's live dispatch conforms to
-//! these invariants — that conformance is eyeball-verified.
+//! IMPORTANT (honesty): this proves the projection is faithful to the binding
+//! vec and internally consistent. It does NOT prove a live shell's dispatch
+//! conforms to these invariants — that conformance is eyeball-verified.
 
 use crate::registry::{BindingContext, BoundKey};
 

@@ -11,9 +11,10 @@
 //! fragment (`:export-protocol`). This cannot be retrofitted — the tier must be
 //! present from the first commit — hence it lives beside the registry as data.
 //!
-//! No gpui import may enter this file (the standing framework-free rule,
-//! mirroring `registry` / `scope`). The GPUI adapter hands each dispatched verb
-//! its resolved dotted address; nothing here knows about pixels.
+//! No UI-framework import may enter this file (the standing framework-free
+//! rule, mirroring `registry` / `scope`). The shell adapter hands each
+//! dispatched verb its resolved dotted address; nothing here knows about
+//! pixels.
 
 use crate::registry::CommandTier;
 

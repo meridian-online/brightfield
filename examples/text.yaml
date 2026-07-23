@@ -4,7 +4,7 @@ meta:
     A `text` mark places a string label (from the `text` channel) at each
     (x, y) data position — annotations and labelled scatters.
 
-      cargo run -p brightfield-app -- examples/text.yaml
+      cargo run -p brightfield-shell -- examples/text.yaml
 data:
   langs:
     - { speed: 2, ergonomics: 8, name: Python }

@@ -4,7 +4,7 @@ meta:
     A self-contained two-plot dashboard (hconcat) over inline data — a scatter
     and a bar chart side by side, each with its own axes.
 
-      cargo run -p brightfield-app -- examples/dashboard.yaml
+      cargo run -p brightfield-shell -- examples/dashboard.yaml
 data:
   points:
     - { x: 52, y: 158, g: A }

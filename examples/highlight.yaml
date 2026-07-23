@@ -12,7 +12,7 @@
 # because the brush and the highlight share one plot it also exercises the
 # no-self-exclusion fix (the brushed plot greys its own non-matching points).
 #
-#   cargo run -p brightfield-app -- examples/highlight.yaml
+#   cargo run -p brightfield-shell -- examples/highlight.yaml
 #
 # Live-window only — a headless PNG shows the resting state (nothing brushed, so
 # every point is at full opacity).

@@ -7,7 +7,7 @@
 # the left plot unfiltered and its colour scale stable.
 #
 # Window-gated (the click needs the macOS app). Headless resting render:
-#   BRIGHTFIELD_DUMP_PNG=legend-select.png cargo run -p brightfield-app -- examples/legend-select.yaml
+#   cargo run -p brightfield-shell --bin brightfield-shot -- --spec examples/legend-select.yaml --out legend-select.png --vello-only
 params:
   sel: { select: crossfilter }
 data:

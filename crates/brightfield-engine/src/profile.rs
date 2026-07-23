@@ -2,7 +2,7 @@
 //!
 //! Pure data types + framework-free helpers for [`Session::profile_sources`]
 //! (implemented in `lib.rs`, where the private `conn`/`spec` fields live). No
-//! gpui, no rendering: the app's `profile_model` formats these for the Data
+//! UI framework, no rendering: `brightfield-model`'s `profile_model` formats these for the Data
 //! sidebar. Profiles describe the SOURCE — full-table stats, not any live
 //! cross-filter selection.
 //!

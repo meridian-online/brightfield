@@ -7,7 +7,7 @@
 # (near-white background -> navy cores); compare raster-blues.yaml for the
 # unsmoothed count version of the same picture.
 #
-#   BRIGHTFIELD_DUMP_PNG=heatmap.png cargo run -p brightfield-app -- examples/heatmap.yaml
+#   cargo run -p brightfield-shell --bin brightfield-shot -- --spec examples/heatmap.yaml --out heatmap.png --vello-only
 data:
   points:
     - { x: 2.658, y: 3.952 }

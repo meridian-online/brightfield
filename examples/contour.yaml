@@ -5,7 +5,7 @@
 # the ISO-LEVEL count (Mosaic semantics), not the SQL bin count - the grid
 # resolution stays on `bins`.
 #
-#   BRIGHTFIELD_DUMP_PNG=contour.png cargo run -p brightfield-app -- examples/contour.yaml
+#   cargo run -p brightfield-shell --bin brightfield-shot -- --spec examples/contour.yaml --out contour.png --vello-only
 data:
   points:
     - { x: 2.658, y: 3.952 }

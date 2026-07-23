@@ -5,7 +5,7 @@
 //! save refusals/conflicts/failures). Unlike the notification layer — where
 //! a successful reload CLEARS the sticky error (#47's recovery rule) — the
 //! log is history: recovery never removes entries, so an author can always
-//! reconstruct what happened to a save after the toast is gone. No gpui
+//! reconstruct what happened to a save after the toast is gone. No UI-framework
 //! import may enter this file (semantic-layer rule).
 
 /// How prominently a feedback outcome surfaces — the notification-severity
