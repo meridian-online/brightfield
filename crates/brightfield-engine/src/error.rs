@@ -61,11 +61,35 @@ pub enum EngineError {
         reason: String,
     },
 
-    /// A remote data source's DDL executed and failed — the network fetch
+    /// A LOCAL data source (a `.ducklake` catalog on disk) needs a DuckDB
+    /// extension that could not be loaded. Distinct from
+    /// [`Self::RemoteDisabled`] because the data itself is local — it is
+    /// the extension INSTALL, not the data, that needs the network, and
+    /// the message must not claim otherwise.
+    #[error(
+        "source '{source_name}' ({location}) is disabled: {reason} — \
+         the catalog is local, but reading it needs the DuckDB \
+         '{extension}' extension; sources that don't need it still work"
+    )]
+    ExtensionUnavailable {
+        /// The data source name from the spec.
+        source_name: String,
+        /// The local catalog location the spec pointed at.
+        location: String,
+        /// The extension this source needs (e.g. `ducklake`).
+        extension: String,
+        /// Why the extension is unavailable (the DuckDB load error).
+        reason: String,
+    },
+
+    /// A remote data source's SQL executed and failed — the network fetch
     /// itself is the cause (unreachable host, connection refused, an HTTP
-    /// error from the far end). Named separately from [`Self::DdlFailed`]
-    /// so the surface names the network, never showing
-    /// plausible-and-wrong local data instead.
+    /// error from the far end). Raised for a failing source DDL at load
+    /// AND for a failing query over a remote-backed mark mid-session (a
+    /// remote view re-fetches on every execution, so the network can drop
+    /// long after a successful load). Named separately from
+    /// [`Self::DdlFailed`] / [`Self::QueryFailed`] so the surface names
+    /// the network, never showing plausible-and-wrong local data instead.
     #[error(
         "remote source '{source_name}' could not be reached over the \
          network ({location}): {cause}"

@@ -48,7 +48,8 @@ pub struct SourceDdl {
     /// loading to specs that actually need it, and to name the network as
     /// the cause when such a source fails. `None` for local files, inline
     /// rows, and author-written `query:` SQL (which DuckDB's own autoload
-    /// handles if it reaches out).
+    /// handles if it reaches out; the engine still names the network when
+    /// such SQL fails with a network-shaped error).
     pub remote_location: Option<String>,
 }
 

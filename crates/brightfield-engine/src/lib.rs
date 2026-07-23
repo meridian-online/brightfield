@@ -114,13 +114,13 @@ fn spec_value_at(array: &dyn duckdb::arrow::array::Array, row: usize) -> Option<
 }
 
 use brightfield_spec::analysis::{ComponentPath, SpecAnalysis};
-use brightfield_spec::ast::{Component, Spec, SpecValue};
+use brightfield_spec::ast::{Component, MarkData, Spec, SpecValue};
 use brightfield_spec::parse::ParseWarning;
 use brightfield_spec::vocab::MarkKind;
 
 use brightfield_sql::binding::{Binding, EmittedQuery, ParamValues};
 use brightfield_sql::emit::{
-    emit_query, emit_query_with_passes, emit_rows_query, emit_sources, SourceKindTag,
+    collect_marks, emit_query, emit_query_with_passes, emit_rows_query, emit_sources, SourceKindTag,
 };
 use brightfield_sql::ir::{Predicate, SelectionPredicate};
 use brightfield_sql::navigation_filter_pass::NavigationFilterPass;
@@ -294,7 +294,10 @@ impl Engine {
             .statements
             .iter()
             .any(|s| s.source_kind == SourceKindTag::DuckLake);
-        let mut remote_disabled_reason: Option<String> = None;
+        // Per-extension, so blame is precise: a source's error names only
+        // the extension(s) THAT SOURCE needs, and a source whose extension
+        // DID load proceeds even when the other one failed.
+        let mut failed_extensions: Vec<(&str, String)> = Vec::new();
         for (needed, ext) in [(needs_httpfs, "httpfs"), (needs_ducklake, "ducklake")] {
             if !needed {
                 continue;
@@ -304,35 +307,60 @@ impl Engine {
                 NetworkPolicy::Disabled => format!("LOAD {ext};"),
             };
             if let Err(e) = conn.execute_batch(&batch) {
-                let reason = format!(
-                    "DuckDB '{ext}' extension unavailable (installing it needs \
-                     the network): {e}"
-                );
-                remote_disabled_reason = Some(match remote_disabled_reason.take() {
-                    Some(prev) => format!("{prev}; {reason}"),
-                    None => reason,
-                });
+                failed_extensions.push((
+                    ext,
+                    format!(
+                        "DuckDB '{ext}' extension unavailable (installing it \
+                         needs the network): {e}"
+                    ),
+                ));
             }
         }
 
         for ddl in &emit_output.statements {
-            let is_remote =
-                ddl.remote_location.is_some() || ddl.source_kind == SourceKindTag::DuckLake;
-            if is_remote {
-                if let Some(reason) = &remote_disabled_reason {
-                    return Err(EngineError::RemoteDisabled {
+            // Which extensions THIS source needs: a remote `ducklake:` URI
+            // needs both (`ducklake` for the attach, `httpfs` for the
+            // fetch); a local `.ducklake` catalog only `ducklake`; a plain
+            // http(s) file only `httpfs`.
+            let is_ducklake = ddl.source_kind == SourceKindTag::DuckLake;
+            let needs: &[&str] = match (is_ducklake, ddl.remote_location.is_some()) {
+                (true, true) => &["ducklake", "httpfs"],
+                (true, false) => &["ducklake"],
+                (false, true) => &["httpfs"],
+                (false, false) => &[],
+            };
+            let blocking: Vec<&(&str, String)> = failed_extensions
+                .iter()
+                .filter(|(ext, _)| needs.contains(ext))
+                .collect();
+            if let Some((first_ext, _)) = blocking.first() {
+                let reason = blocking
+                    .iter()
+                    .map(|(_, r)| r.as_str())
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                return Err(match &ddl.remote_location {
+                    Some(location) => EngineError::RemoteDisabled {
+                        source_name: ddl.view_name.clone(),
+                        location: location.clone(),
+                        reason,
+                    },
+                    // A LOCAL `ducklake:` catalog with the extension
+                    // unavailable: the data needs no network — say so, and
+                    // name the attach target from its own DDL (the first
+                    // quoted literal).
+                    None => EngineError::ExtensionUnavailable {
                         source_name: ddl.view_name.clone(),
                         location: ddl
-                            .remote_location
-                            .clone()
-                            // A local `ducklake:` catalog with the extension
-                            // unavailable: name the attach target from its
-                            // own DDL (the first quoted literal).
-                            .or_else(|| ddl.sql.split('\'').nth(1).map(str::to_string))
+                            .sql
+                            .split('\'')
+                            .nth(1)
+                            .map(str::to_string)
                             .unwrap_or_else(|| ddl.view_name.clone()),
-                        reason: reason.clone(),
-                    });
-                }
+                        extension: (*first_ext).to_string(),
+                        reason,
+                    },
+                });
             }
             if let Err(e) = conn.execute_batch(&ddl.sql) {
                 return Err(match &ddl.remote_location {
@@ -344,11 +372,28 @@ impl Engine {
                         location: location.clone(),
                         cause: e,
                     },
-                    None => EngineError::DdlFailed {
-                        source_name: ddl.view_name.clone(),
-                        sql: ddl.sql.clone(),
-                        cause: e,
-                    },
+                    // Author-written `query:` SQL is deliberately never
+                    // classified remote at emission (a URL-shaped string
+                    // literal must not gate extension loading or fail-fast
+                    // a working spec) — but when such a DDL actually FAILS,
+                    // with a network-shaped error, over SQL that embeds an
+                    // http(s) URL, the error still names the network and
+                    // the location rather than reading like a local-data
+                    // problem.
+                    None => {
+                        match embedded_http_url(&ddl.sql).filter(|_| error_is_network_shaped(&e)) {
+                            Some(location) => EngineError::RemoteSourceFailed {
+                                source_name: ddl.view_name.clone(),
+                                location,
+                                cause: e,
+                            },
+                            None => EngineError::DdlFailed {
+                                source_name: ddl.view_name.clone(),
+                                sql: ddl.sql.clone(),
+                                cause: e,
+                            },
+                        }
+                    }
                 });
             }
         }
@@ -365,6 +410,20 @@ impl Engine {
             }
         }
 
+        // Remember which source views are remote-backed: a remote view
+        // re-fetches over the network on EVERY query, so its failures can
+        // be network failures long after a successful load (a mid-session
+        // drop) — the execute paths use this to keep naming the network.
+        let remote_sources: HashMap<String, String> = emit_output
+            .statements
+            .iter()
+            .filter_map(|s| {
+                s.remote_location
+                    .clone()
+                    .map(|loc| (s.view_name.clone(), loc))
+            })
+            .collect();
+
         let session = Session {
             conn,
             spec,
@@ -377,6 +436,7 @@ impl Engine {
             selection_state: HashMap::new(),
             preagg: preagg::PreAgg::default(),
             data_fingerprint: None,
+            remote_sources,
         };
 
         Ok(LoadResult {
@@ -390,6 +450,52 @@ impl Default for Engine {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Does a DuckDB failure read as a NETWORK-side failure — an httpfs
+/// IO/HTTP error, a connection problem, a timeout, an unresolvable host, a
+/// TLS failure, or the httpfs extension itself missing — rather than a
+/// query-shape one (binder / parser / conversion errors)?
+///
+/// Used only to pick the more precise error variant for SQL that reads a
+/// remote location, and only in the fail-safe direction: a miss falls back
+/// to the generic error with the cause intact, never the other way round.
+fn error_is_network_shaped(cause: &duckdb::Error) -> bool {
+    let msg = cause.to_string();
+    [
+        "HTTP",
+        "http", // also matches a quoted failing URL, and "httpfs"
+        "Connection",
+        "connection",
+        "timed out",
+        "Timeout",
+        "timeout",
+        "resolve",
+        "SSL",
+        "TLS",
+    ]
+    .iter()
+    .any(|needle| msg.contains(needle))
+}
+
+/// The first `http://` / `https://` URL embedded in a SQL string, if any.
+///
+/// Author-written `query:` sources are deliberately NOT classified remote
+/// at emission (a URL-shaped string literal must not gate extension
+/// loading or fail-fast a working spec) — but when such SQL actually fails
+/// with a network-shaped error, the error message names this location.
+fn embedded_http_url(sql: &str) -> Option<String> {
+    let start = match (sql.find("http://"), sql.find("https://")) {
+        (Some(a), Some(b)) => a.min(b),
+        (Some(a), None) => a,
+        (None, Some(b)) => b,
+        (None, None) => return None,
+    };
+    let url: String = sql[start..]
+        .chars()
+        .take_while(|c| !c.is_whitespace() && !matches!(c, '\'' | '"' | ')' | ';' | ','))
+        .collect();
+    Some(url)
 }
 
 /// An active execution session. Owns a DuckDB connection, the loaded spec,
@@ -433,6 +539,13 @@ pub struct Session {
     /// as last reported through [`Session::observe_data_fingerprint`]. `None`
     /// until a caller first reports one.
     data_fingerprint: Option<String>,
+    /// Source views whose resolved data location is reached over the
+    /// network (view name → location), captured at load. The execute-time
+    /// counterpart of the load-time remote-DDL classification: a query
+    /// over such a view re-fetches on every execution, so a failure there
+    /// may be the network dropping mid-session — see
+    /// [`Session::classify_query_failure`].
+    remote_sources: HashMap<String, String>,
 }
 
 /// A cached SQL string with its binding metadata.
@@ -934,14 +1047,9 @@ impl Session {
     pub fn step_rows_count(&self, index: usize) -> Result<u64, EngineError> {
         let rows_sql = self.step_rows_sql(index)?;
         let sql = format!("SELECT count(*) AS n FROM ({rows_sql}) AS bf_step_rows");
-        let batches = self
-            .query_arrow_raw(&sql)
-            .map_err(|e| EngineError::QueryFailed {
-                mark_index: index,
-                mark_kind: self.mark_kind_at(index),
-                sql: sql.clone(),
-                cause: e,
-            })?;
+        let batches = self.query_arrow_raw(&sql).map_err(|e| {
+            self.classify_query_failure(index, &self.mark_kind_at(index), sql.clone(), e)
+        })?;
         let count = batches
             .first()
             .filter(|b| b.num_rows() > 0)
@@ -1007,13 +1115,9 @@ impl Session {
             "SELECT * FROM ({rows_sql}) AS bf_step_rows \
              ORDER BY ALL LIMIT {limit} OFFSET {offset}"
         );
-        self.query_arrow_raw(&sql)
-            .map_err(|e| EngineError::QueryFailed {
-                mark_index: index,
-                mark_kind: self.mark_kind_at(index),
-                sql: sql.clone(),
-                cause: e,
-            })
+        self.query_arrow_raw(&sql).map_err(|e| {
+            self.classify_query_failure(index, &self.mark_kind_at(index), sql.clone(), e)
+        })
     }
 
     /// A cancellation handle for whatever query this session's connection is
@@ -1337,12 +1441,7 @@ impl Session {
                 let arrow = stmt.query_arrow(duckdb::params![])?;
                 Ok(arrow.collect::<Vec<_>>())
             })
-            .map_err(|e| EngineError::QueryFailed {
-                mark_index,
-                mark_kind: mark_kind.to_string(),
-                sql: sql.clone(),
-                cause: e,
-            })?;
+            .map_err(|e| self.classify_query_failure(mark_index, mark_kind, sql.clone(), e))?;
 
         self.sql_cache.insert(sql, batches.clone());
         Ok(batches)
@@ -1614,6 +1713,56 @@ impl Session {
             }
         }
         "unknown".to_string()
+    }
+
+    /// The remote location backing a mark's `from:` source, if that source
+    /// was classified remote at load time — `(source_name, location)`.
+    /// `None` for inline and local-file-backed marks. Depth-first mark
+    /// indexing, the same order `emit_query` and `mark_index_map` use.
+    fn mark_remote_source(&self, index: usize) -> Option<(String, String)> {
+        let marks = collect_marks(&self.spec);
+        let mark = marks.get(index)?;
+        if let Some(MarkData::From { source, .. }) = &mark.data {
+            return self
+                .remote_sources
+                .get(source)
+                .map(|loc| (source.clone(), loc.clone()));
+        }
+        None
+    }
+
+    /// Classify a failed mark query: a mark whose `from:` source is
+    /// remote-backed re-fetches over the network on EVERY execution, so a
+    /// network-shaped failure here — mid-session, long after a successful
+    /// load — is a network failure and must say so
+    /// ([`EngineError::RemoteSourceFailed`] naming the source, the
+    /// location, and the network), never a bare SQL error a reader could
+    /// mistake for a local-data problem. Anything else (a local-backed
+    /// mark, or a query-shape error such as a binder failure on a remote
+    /// one) stays [`EngineError::QueryFailed`] with the cause intact —
+    /// the fallback direction never misattributes.
+    fn classify_query_failure(
+        &self,
+        mark_index: usize,
+        mark_kind: &str,
+        sql: String,
+        cause: duckdb::Error,
+    ) -> EngineError {
+        if error_is_network_shaped(&cause) {
+            if let Some((source_name, location)) = self.mark_remote_source(mark_index) {
+                return EngineError::RemoteSourceFailed {
+                    source_name,
+                    location,
+                    cause,
+                };
+            }
+        }
+        EngineError::QueryFailed {
+            mark_index,
+            mark_kind: mark_kind.to_string(),
+            sql,
+            cause,
+        }
     }
 
     /// Expose cache size for testing.
@@ -2014,11 +2163,214 @@ plot:
         assert!(msg.contains("network"), "names the network: {msg}");
         assert!(msg.contains("httpfs"), "names the extension: {msg}");
         assert!(
+            // Blame is per-extension: an https file source needs httpfs
+            // only, so its error never names the ducklake extension.
+            !msg.contains("ducklake"),
+            "blames only the needed extension: {msg}"
+        );
+        assert!(
             msg.contains("local file specs still work offline"),
             "says what still works: {msg}"
         );
 
         std::fs::remove_dir_all(&ext_dir).ok();
+    }
+
+    /// A LOCAL `.ducklake` catalog with its extension unavailable is an
+    /// extension problem, not a remote-data one — the data needs no
+    /// network, only the extension INSTALL does. The error says exactly
+    /// that ([`EngineError::ExtensionUnavailable`]), names the catalog and
+    /// the `ducklake` extension, and never claims "remote data needs the
+    /// network" about a file on disk — nor blames `httpfs`, which this
+    /// source does not need.
+    #[test]
+    fn local_ducklake_catalog_blames_the_extension_not_the_data() {
+        let catalog_path = temp_fixture_path("local_meta.ducklake");
+        std::fs::write(&catalog_path, "").unwrap();
+        let ext_dir = empty_extension_dir("local_ducklake");
+
+        let yaml = format!(
+            r#"
+data:
+  lake: {{ file: {} }}
+  inline:
+    - {{ x: 1 }}
+plot:
+  - mark: dot
+    data: {{ from: inline }}
+"#,
+            catalog_path.display()
+        );
+        let (spec, analysis) = parse_and_analyse(&yaml);
+        let options = LoadOptions {
+            network: NetworkPolicy::Disabled,
+            extension_directory: Some(ext_dir.clone()),
+        };
+        let err = Engine::new()
+            .load_spec_with(spec, analysis, None, &options)
+            .expect_err("a ducklake attach cannot work without its extension");
+        match &err {
+            EngineError::ExtensionUnavailable {
+                source_name,
+                location,
+                extension,
+                ..
+            } => {
+                assert_eq!(source_name, "lake");
+                assert_eq!(extension, "ducklake");
+                assert!(
+                    location.contains("local_meta.ducklake"),
+                    "names the catalog: {location}"
+                );
+            }
+            other => panic!("expected ExtensionUnavailable, got: {other:?}"),
+        }
+        let msg = format!("{err}");
+        assert!(msg.contains("local"), "says the catalog is local: {msg}");
+        assert!(msg.contains("ducklake"), "names the extension: {msg}");
+        assert!(
+            !msg.contains("remote data needs the network"),
+            "never claims local data needs the network: {msg}"
+        );
+        assert!(
+            !msg.contains("httpfs"),
+            "blames only the needed extension: {msg}"
+        );
+
+        std::fs::remove_file(&catalog_path).ok();
+        std::fs::remove_dir_all(&ext_dir).ok();
+    }
+
+    /// The network can drop MID-SESSION: a remote-backed view re-fetches
+    /// on every query, so an execute-time failure long after a successful
+    /// load must still name the network — never surface as a bare SQL
+    /// error. This pins the execute-time classification seam directly: a
+    /// network-shaped DuckDB failure on a remote-backed mark becomes
+    /// [`EngineError::RemoteSourceFailed`] naming source + location +
+    /// network; a query-shape failure on the same mark, and ANY failure on
+    /// a local-backed mark, stay [`EngineError::QueryFailed`] with the
+    /// cause intact — the classifier never misattributes.
+    #[test]
+    fn midsession_network_failure_on_remote_backed_mark_names_the_network() {
+        let csv_path = temp_fixture_path("midsession.csv");
+        std::fs::write(&csv_path, "origin,delay\nSEA,14\n").unwrap();
+        let yaml = format!(
+            r#"
+data:
+  inline:
+    - {{ x: 1 }}
+  flights: {{ file: {} }}
+plot:
+  - mark: dot
+    data: {{ from: inline }}
+  - mark: dot
+    data: {{ from: flights }}
+"#,
+            csv_path.display()
+        );
+        let (spec, analysis) = parse_and_analyse(&yaml);
+        let mut session = Engine::new()
+            .load_spec(spec, analysis, None)
+            .expect("local spec loads")
+            .session;
+        // Stand-in for a session that loaded over a live network which
+        // then dropped: the source is remote-backed in the session's book.
+        session.remote_sources.insert(
+            "flights".to_string(),
+            "https://example.com/flights.csv".to_string(),
+        );
+        let network_shaped = || {
+            duckdb::Error::ToSqlConversionFailure(
+                "IO Error: Connection error for HTTP HEAD to \
+                 'https://example.com/flights.csv'"
+                    .to_string()
+                    .into(),
+            )
+        };
+
+        // Mark 1 reads the remote-backed source: named, structured.
+        let err =
+            session.classify_query_failure(1, "dot", "SELECT 1".to_string(), network_shaped());
+        match &err {
+            EngineError::RemoteSourceFailed {
+                source_name,
+                location,
+                ..
+            } => {
+                assert_eq!(source_name, "flights");
+                assert_eq!(location, "https://example.com/flights.csv");
+            }
+            other => panic!("expected RemoteSourceFailed, got: {other:?}"),
+        }
+        let msg = format!("{err}");
+        assert!(msg.contains("network"), "names the network: {msg}");
+
+        // A query-shape failure on the SAME remote-backed mark is not
+        // misattributed to the network.
+        let binder = duckdb::Error::ToSqlConversionFailure(
+            "Binder Error: Referenced column \"nope\" not found"
+                .to_string()
+                .into(),
+        );
+        assert!(
+            matches!(
+                session.classify_query_failure(1, "dot", "SELECT 1".to_string(), binder),
+                EngineError::QueryFailed { .. }
+            ),
+            "a binder failure stays a query failure"
+        );
+
+        // Mark 0 is local-backed: even a network-shaped cause stays a
+        // plain query failure.
+        assert!(
+            matches!(
+                session.classify_query_failure(0, "dot", "SELECT 1".to_string(), network_shaped()),
+                EngineError::QueryFailed { .. }
+            ),
+            "a local mark's failure is never blamed on the network"
+        );
+
+        std::fs::remove_file(&csv_path).ok();
+    }
+
+    /// Author-written `query:` SQL is deliberately never classified remote
+    /// at emission (a URL-shaped string literal must not gate extension
+    /// loading) — but when such SQL FAILS with a network-shaped error, the
+    /// error still names the network and the embedded location.
+    /// `127.0.0.1:1` refuses connections without any external dependency,
+    /// so this is deterministic everywhere, whichever branch is taken
+    /// (connection refused with httpfs loadable; a missing-httpfs error
+    /// without it — both network-shaped).
+    #[test]
+    fn author_query_sql_over_unreachable_url_names_the_network() {
+        let yaml = r#"
+data:
+  remote: { query: "SELECT * FROM read_csv('http://127.0.0.1:1/never.csv')" }
+plot:
+  - mark: dot
+    data: { from: remote }
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let err = Engine::new()
+            .load_spec(spec, analysis, None)
+            .expect_err("author SQL over an unreachable url cannot load");
+        match &err {
+            EngineError::RemoteSourceFailed {
+                source_name,
+                location,
+                ..
+            } => {
+                assert_eq!(source_name, "remote");
+                assert_eq!(location, "http://127.0.0.1:1/never.csv");
+            }
+            other => panic!("expected RemoteSourceFailed, got: {other:?}"),
+        }
+        let msg = format!("{err}");
+        assert!(msg.contains("network"), "names the network: {msg}");
+        assert!(
+            msg.contains("http://127.0.0.1:1/never.csv"),
+            "names the location: {msg}"
+        );
     }
 
     /// A remote source that cannot be REACHED (extension present or not)
@@ -2060,8 +2412,11 @@ plot:
 
     /// A spec pointing at an https:// parquet executes through DuckDB's
     /// httpfs — the mark returns real rows with no Rust HTTP client, no
-    /// TLS crate and no async runtime in the dependency graph (the diff
-    /// that added this changed no Cargo.toml).
+    /// TLS crate and no async runtime in the RUNTIME dependency graph
+    /// (`cargo tree -e normal`; the diff that added this changed no
+    /// Cargo.toml). Precisely runtime: DuckDB's own build script
+    /// (`libduckdb-sys` build-dependencies) fetches with reqwest at
+    /// COMPILE time, which was true before this change and ships nothing.
     ///
     /// Network-gated: exercises the live published lake, so it is opt-in
     /// (`cargo test -- --ignored`) rather than part of the hermetic suite.
