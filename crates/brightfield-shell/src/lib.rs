@@ -26,6 +26,9 @@
 //! - [`editor`] — the YAML spec editor: the highlighted code surface, its
 //!   read-only treatment, and the `EditorPane` item over the
 //!   `brightfield-model` save intelligence.
+//! - [`gallery`] — the dev-flagged in-app design gallery: the `Component`
+//!   catalog of shared primitives, rendered as a pane under the live theme,
+//!   with the per-primitive conformance gate declared as data.
 //! - [`overlays`] — the picker delegates: the domain halves of the command
 //!   palette, help sheet, jump lists and argument prompt, over the
 //!   framework-free corpora in `brightfield-keys` / `brightfield-model`.
@@ -44,6 +47,7 @@ pub mod capture;
 pub mod chart_item;
 pub mod data_grid;
 pub mod editor;
+pub mod gallery;
 pub mod legend;
 pub mod overlays;
 pub mod pipeline;

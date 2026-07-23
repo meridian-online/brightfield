@@ -430,6 +430,79 @@ pub fn bench_frames(
     Ok(times)
 }
 
+/// Render one gallery component solo — themed page, no window chrome — to a
+/// PNG. The `--gallery <component-id>` arm of `brightfield-shot`.
+///
+/// This is the confirmation that the determinism apparatus generalises past
+/// `--spec`: the headless device, the deterministic renderer options
+/// ([`new_egui_renderer`]: dithering off, predictable filtering), the
+/// warm-up/settle frame loop ([`run_ui_frames`]) and the readback
+/// ([`finish_capture`]) are all spec-agnostic — only [`Boot`] is spec-shaped,
+/// and a component needs no boot. The frame drawn is
+/// [`crate::gallery::solo`], the same composition the pixel-tier gate
+/// measures, so what an agent screenshots is what the gate held.
+///
+/// `size` is the logical window; `None` takes the component's own
+/// [`solo_size`](crate::gallery::ComponentInfo::solo_size). (On this path
+/// `--size` is honoured; on the `--spec` path it remains a reserved
+/// override, because there the window is derived from the document.)
+///
+/// # Errors
+/// An unknown id — reported with the catalog, before any GPU work — or a
+/// GPU, encode, or file-write failure.
+pub fn capture_component(
+    id: &str,
+    mode: Mode,
+    scale: f32,
+    size: Option<(f32, f32)>,
+    out: &Path,
+) -> Result<(u32, u32), String> {
+    let mut component = crate::gallery::catalog()
+        .into_iter()
+        .find(|c| c.info().id == id)
+        .ok_or_else(|| {
+            let ids: Vec<&str> = crate::gallery::catalog()
+                .iter()
+                .map(|c| c.info().id)
+                .collect();
+            format!("unknown gallery component {id:?}; catalog: {}", ids.join(", "))
+        })?;
+    let (win_w, win_h) = size.unwrap_or(component.info().solo_size);
+
+    let (device, queue) = headless_device()?;
+    let target_format = wgpu::TextureFormat::Rgba8Unorm;
+    let egui_renderer = new_egui_renderer(&device, target_format);
+
+    let ctx = egui::Context::default();
+    ctx.set_pixels_per_point(scale);
+    let screen = egui::vec2(win_w, win_h);
+
+    let full = run_ui_frames(
+        &ctx,
+        &egui_renderer,
+        &device,
+        &queue,
+        screen,
+        Vec::new(),
+        |ui| {
+            crate::gallery::solo(ui, mode, component.as_mut());
+        },
+    );
+    finish_capture(
+        &ctx,
+        &egui_renderer,
+        &device,
+        &queue,
+        full,
+        win_w,
+        win_h,
+        scale,
+        mode,
+        target_format,
+        out,
+    )
+}
+
 /// Render just the composited Vello dashboard (no egui chrome) to a PNG on a
 /// dedicated device — the pipeline's "Vello baseline", for parity-checking the
 /// egui path against the app's `BRIGHTFIELD_DUMP_PNG` output. `scale` scales the

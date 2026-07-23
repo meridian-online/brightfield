@@ -477,8 +477,14 @@ pub const CONTROLS: ItemId = ItemId::new("chart-controls");
 /// learned that the hard way: a hand-written `static [ItemId; 4]` beside its
 /// registry was a second declaration of the view's shape, one a fifth pane could
 /// be added to the registry without.
+///
+/// Published from the gallery-*inclusive* registry, whatever the dev flag
+/// says: a layout saved while the gallery flag was on names its pane, and an
+/// id that stops being published makes that whole file unloadable. The pane
+/// itself stays flag-gated — an unpublished id corrupts the file, an
+/// uninstantiated item merely draws the orphan-pane treatment.
 pub fn publish_item_ids() {
-    chart_registry().publish_ids();
+    chart_registry_with(true).publish_ids();
 }
 
 /// The chart pane's address — the key its Vello texture slot is filed under.
@@ -509,28 +515,38 @@ const ICON_CONTROLS: Icon = Icon("sliders");
 /// from this list, so a pane cannot be added to one and forgotten in another.
 #[must_use]
 pub fn chart_registry() -> ItemRegistry<ChartDoc> {
-    ItemRegistry::new(
-        ViewKind::Charts,
-        vec![
-            ItemSpec {
-                id: CHART,
-                slot: Slot::Centre,
-                toggle: None,
-                make: || Box::new(ChartItem::new()),
+    chart_registry_with(crate::gallery::enabled())
+}
+
+/// [`chart_registry`] with the gallery decision explicit — the form the
+/// contract tests hold both arrangements through, without touching the
+/// process environment. `gallery: true` appends the dev gallery tab
+/// ([`crate::gallery::gallery_spec`]); `false` is the shipping arrangement.
+#[must_use]
+pub fn chart_registry_with(gallery: bool) -> ItemRegistry<ChartDoc> {
+    let mut specs = vec![
+        ItemSpec {
+            id: CHART,
+            slot: Slot::Centre,
+            toggle: None,
+            make: || Box::new(ChartItem::new()),
+        },
+        crate::data_grid::data_grid_spec(),
+        ItemSpec {
+            id: CONTROLS,
+            slot: Slot::Rail {
+                side: DockSide::Right,
+                share: CONTROLS_SHARE,
             },
-            crate::data_grid::data_grid_spec(),
-            ItemSpec {
-                id: CONTROLS,
-                slot: Slot::Rail {
-                    side: DockSide::Right,
-                    share: CONTROLS_SHARE,
-                },
-                toggle: Some(Verb::new("toggle-controls-rail")),
-                make: || Box::new(ControlsPane),
-            },
-            crate::editor::editor_spec(),
-        ],
-    )
+            toggle: Some(Verb::new("toggle-controls-rail")),
+            make: || Box::new(ControlsPane),
+        },
+        crate::editor::editor_spec(),
+    ];
+    if gallery {
+        specs.push(crate::gallery::gallery_spec());
+    }
+    ItemRegistry::new(ViewKind::Charts, specs)
 }
 
 // ---------------------------------------------------------------------------

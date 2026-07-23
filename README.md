@@ -158,6 +158,21 @@ With the sibling clone present, a change there is picked up on the next `cargo b
 (`meridian-egui` is a newer crate; until it is published, the patch is also what makes it
 resolve at all, so the sibling checkout is required to build a branch that depends on it.)
 
+The fastest way to *see* a design-system change in context is the in-app gallery: run the
+shell with `BRIGHTFIELD_GALLERY=1` and a **Gallery** tab joins the chart view, rendering
+the shared component vocabulary — rows, pills, chips, the query line, the focus ring, the
+icon set — inside the real window, under the live theme, each entry with a status pill so
+unfinished coverage is visible rather than absent. Headlessly,
+
+```sh
+cargo run -p brightfield-shell --bin brightfield-shot -- \
+  --gallery list-row --out list-row.png --theme dark
+```
+
+captures one component solo through the same deterministic pipeline the pixel tests use
+(`--size WxH` is honoured on this path). The per-component conformance gate lives in
+`crates/brightfield-shell/tests/gallery_gate.rs`.
+
 ### The arcform dependency (`arc`)
 
 Brightfield **loads, validates and edits** `arcform.yaml` specs with the
