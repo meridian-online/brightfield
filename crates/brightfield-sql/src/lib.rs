@@ -10,6 +10,7 @@
 
 pub mod binding;
 pub mod conform;
+pub mod cube;
 pub mod emit;
 pub mod error;
 
