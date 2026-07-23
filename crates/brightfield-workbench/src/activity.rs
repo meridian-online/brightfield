@@ -31,6 +31,8 @@
 //! seam is marked anyway, so the moment query work moves off the UI thread
 //! (the engine's `QueryLoop` exists for exactly that) the indicator lights up
 //! with no further wiring.
+//!
+//! [`RunState`]: crate::subject::RunState
 
 use std::time::Instant;
 
