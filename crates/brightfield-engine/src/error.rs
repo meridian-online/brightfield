@@ -43,6 +43,42 @@ pub enum EngineError {
         cause: EmitError,
     },
 
+    /// A spec declares a remote (network-reached) data source, but the
+    /// DuckDB extension it needs could not be loaded — so remote sources
+    /// are disabled rather than served wrong. Local file specs are
+    /// unaffected: they never attempt an extension load and never touch
+    /// the network.
+    #[error(
+        "remote source '{source_name}' ({location}) is disabled: {reason} — \
+         remote data needs the network; local file specs still work offline"
+    )]
+    RemoteDisabled {
+        /// The data source name from the spec.
+        source_name: String,
+        /// The remote location the spec pointed at.
+        location: String,
+        /// Why the extension is unavailable (the DuckDB load error).
+        reason: String,
+    },
+
+    /// A remote data source's DDL executed and failed — the network fetch
+    /// itself is the cause (unreachable host, connection refused, an HTTP
+    /// error from the far end). Named separately from [`Self::DdlFailed`]
+    /// so the surface names the network, never showing
+    /// plausible-and-wrong local data instead.
+    #[error(
+        "remote source '{source_name}' could not be reached over the \
+         network ({location}): {cause}"
+    )]
+    RemoteSourceFailed {
+        /// The data source name from the spec.
+        source_name: String,
+        /// The remote location that could not be fetched.
+        location: String,
+        /// The underlying DuckDB error.
+        cause: duckdb::Error,
+    },
+
     /// A distinct-values options query failed (input widgets) —
     /// a bad column name, a vanished source, or a column type with no
     /// [`brightfield_spec::ast::SpecValue`] mapping. Per-input isolated:

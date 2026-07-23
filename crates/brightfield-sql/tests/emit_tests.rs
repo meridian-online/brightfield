@@ -434,3 +434,129 @@ plot:
     assert_eq!(groups[0].mark_indices, vec![0, 1]);
     assert_eq!(groups[0].plot_path, "root");
 }
+
+// ── Remote locations + DuckLake catalog attach ─────────────────────
+
+#[test]
+fn dfsql_remote_location_set_for_https_parquet_and_csv() {
+    for file in [
+        "https://example.com/data.parquet",
+        "http://example.com/d.csv",
+    ] {
+        let spec = spec_with_source(
+            "remote",
+            DataSourceKind::File(file.to_string()),
+            IndexMap::new(),
+        );
+        let output = emit_sources(&spec, Some(Path::new("/data"))).unwrap();
+        assert_eq!(
+            output.statements[0].remote_location.as_deref(),
+            Some(file),
+            "an http(s) URL is a remote location"
+        );
+    }
+}
+
+#[test]
+fn dfsql_remote_location_none_for_local_inline_and_query() {
+    let local = spec_with_source(
+        "t",
+        DataSourceKind::File("flights.parquet".to_string()),
+        IndexMap::new(),
+    );
+    let output = emit_sources(&local, Some(Path::new("/data"))).unwrap();
+    assert_eq!(
+        output.statements[0].remote_location, None,
+        "a local file is not remote"
+    );
+
+    let query = spec_with_source(
+        "q",
+        DataSourceKind::Query("SELECT 1 AS x".to_string()),
+        IndexMap::new(),
+    );
+    let output = emit_sources(&query, None).unwrap();
+    assert_eq!(
+        output.statements[0].remote_location, None,
+        "author-written SQL is not classified"
+    );
+
+    let inline = spec_with_source(
+        "rows",
+        DataSourceKind::InlineRows(vec![SpecValue::Object({
+            let mut m = IndexMap::new();
+            // A URL as a data VALUE must not classify the source as remote.
+            m.insert(
+                "link".to_string(),
+                SpecValue::String("https://example.com/x.parquet".to_string()),
+            );
+            m
+        })]),
+        IndexMap::new(),
+    );
+    let output = emit_sources(&inline, None).unwrap();
+    assert_eq!(
+        output.statements[0].remote_location, None,
+        "inline rows are never remote, whatever strings they contain"
+    );
+}
+
+#[test]
+fn dfsql_ducklake_uri_attaches_read_only() {
+    let spec = spec_with_source(
+        "meridian",
+        DataSourceKind::File("ducklake:https://openlake.example/catalog/open.ducklake".to_string()),
+        IndexMap::new(),
+    );
+    let output = emit_sources(&spec, Some(Path::new("/data"))).unwrap();
+    let ddl = &output.statements[0];
+    assert_eq!(ddl.source_kind, SourceKindTag::DuckLake);
+    assert_eq!(
+        ddl.sql,
+        "ATTACH 'ducklake:https://openlake.example/catalog/open.ducklake' \
+         AS \"meridian\" (READ_ONLY)"
+    );
+    assert_eq!(
+        ddl.remote_location.as_deref(),
+        Some("ducklake:https://openlake.example/catalog/open.ducklake"),
+        "an https DuckLake catalog is a remote location"
+    );
+}
+
+#[test]
+fn dfsql_ducklake_bare_metadata_file_gets_prefix_and_base_dir() {
+    let spec = spec_with_source(
+        "lake",
+        DataSourceKind::File("open.ducklake".to_string()),
+        IndexMap::new(),
+    );
+    let output = emit_sources(&spec, Some(Path::new("/data"))).unwrap();
+    let ddl = &output.statements[0];
+    assert_eq!(ddl.source_kind, SourceKindTag::DuckLake);
+    assert_eq!(
+        ddl.sql,
+        "ATTACH 'ducklake:/data/open.ducklake' AS \"lake\" (READ_ONLY)"
+    );
+    assert_eq!(
+        ddl.remote_location, None,
+        "a local DuckLake catalog is not remote"
+    );
+}
+
+#[test]
+fn dfsql_ducklake_relative_uri_resolves_inner_path() {
+    // The prefix survives and the inner catalog path is base-dir-relative.
+    let spec = spec_with_source(
+        "lake",
+        DataSourceKind::File("ducklake:meta.ducklake".to_string()),
+        IndexMap::new(),
+    );
+    let output = emit_sources(&spec, Some(Path::new("/base"))).unwrap();
+    assert!(
+        output.statements[0]
+            .sql
+            .contains("'ducklake:/base/meta.ducklake'"),
+        "inner path resolves against base_dir: {}",
+        output.statements[0].sql
+    );
+}

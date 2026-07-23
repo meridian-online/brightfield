@@ -25,6 +25,14 @@ pub(crate) fn emit_file(
     let ext = emit::file_extension(file_value).unwrap_or_default();
     let resolved = emit::resolve_path(file_value, base_dir);
 
+    // A DuckLake catalog — the `ducklake:` URI form (per the DuckDB docs)
+    // or a bare `.ducklake` metadata file — attaches read-only. Checked
+    // before extension dispatch: a `ducklake:…` URI's "extension" is
+    // whatever follows the last dot of its inner location.
+    if file_value.starts_with("ducklake:") || ext == "ducklake" {
+        return Ok(emit_ducklake_attach(name, &resolved));
+    }
+
     match ext.as_str() {
         "parquet" => Ok(emit_parquet(name, &resolved)),
         "csv" | "tsv" => Ok(emit_csv(name, &resolved, extras)),
@@ -65,6 +73,7 @@ fn emit_parquet(name: &str, resolved_path: &str) -> SourceDdl {
             name, resolved_path
         ),
         source_kind: SourceKindTag::Parquet,
+        remote_location: emit::remote_location(resolved_path),
     }
 }
 
@@ -81,6 +90,7 @@ fn emit_csv(name: &str, resolved_path: &str, extras: &IndexMap<String, SpecValue
             kwargs.join(", ")
         ),
         source_kind: SourceKindTag::Csv,
+        remote_location: emit::remote_location(resolved_path),
     }
 }
 
@@ -92,6 +102,7 @@ fn emit_json(name: &str, resolved_path: &str) -> SourceDdl {
             name, resolved_path
         ),
         source_kind: SourceKindTag::Json,
+        remote_location: emit::remote_location(resolved_path),
     }
 }
 
@@ -116,6 +127,7 @@ fn emit_spatial(
             name, resolved, layer_kwarg
         ),
         source_kind: SourceKindTag::Spatial,
+        remote_location: emit::remote_location(&resolved),
     })
 }
 
@@ -124,6 +136,25 @@ fn emit_duckdb_attach(name: &str, resolved_path: &str) -> SourceDdl {
         view_name: name.to_string(),
         sql: format!("ATTACH '{}' AS \"{}\" (READ_ONLY)", resolved_path, name),
         source_kind: SourceKindTag::DuckDb,
+        remote_location: emit::remote_location(resolved_path),
+    }
+}
+
+/// `ATTACH 'ducklake:…' AS "name" (READ_ONLY)` — a DuckLake catalog. The
+/// `ducklake:` prefix is added when the source was a bare `.ducklake`
+/// metadata file. Read-only is not optional here: brightfield is a
+/// consumer of published catalogs, never a writer.
+fn emit_ducklake_attach(name: &str, resolved_path: &str) -> SourceDdl {
+    let uri = if resolved_path.starts_with("ducklake:") {
+        resolved_path.to_string()
+    } else {
+        format!("ducklake:{resolved_path}")
+    };
+    SourceDdl {
+        view_name: name.to_string(),
+        sql: format!("ATTACH '{}' AS \"{}\" (READ_ONLY)", uri, name),
+        source_kind: SourceKindTag::DuckLake,
+        remote_location: emit::remote_location(&uri),
     }
 }
 
@@ -214,5 +245,6 @@ pub(crate) fn emit_inline_rows(
             quoted_cols.join(", ")
         ),
         source_kind: SourceKindTag::InlineRows,
+        remote_location: None,
     })
 }

@@ -13,7 +13,7 @@ pub mod preagg;
 pub mod profile;
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // Re-export duckdb's Arrow types so consumers don't need a separate arrow dep.
 pub use brightfield_sql::ir::Predicate as SqlPredicate;
@@ -153,6 +153,41 @@ impl std::fmt::Debug for LoadResult {
     }
 }
 
+/// How the engine may use the network to acquire DuckDB extensions.
+///
+/// The data path itself belongs to DuckDB (`httpfs`), so this is the ONLY
+/// network question the engine ever has: may a missing extension be
+/// downloaded? A spec over local files never triggers an extension
+/// acquisition under either policy — the air-gapped promise does not
+/// depend on choosing [`NetworkPolicy::Disabled`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NetworkPolicy {
+    /// Extensions a spec needs may be installed (downloaded) on demand,
+    /// then loaded. The default.
+    #[default]
+    Auto,
+    /// Air-gapped: never reach out. `INSTALL` is skipped entirely,
+    /// DuckDB's autoinstall/autoload are switched off, and the extension
+    /// repository is pointed at an unresolvable path as belt-and-braces —
+    /// so no code path can fetch. A previously-cached extension in the
+    /// extension directory still loads: a warm machine keeps remote specs
+    /// working without the network ever being touched.
+    Disabled,
+}
+
+/// Options for [`Engine::load_spec_with`]. `Default` matches the
+/// behaviour of [`Engine::load_spec`].
+#[derive(Debug, Clone, Default)]
+pub struct LoadOptions {
+    /// Whether missing DuckDB extensions may be downloaded.
+    pub network: NetworkPolicy,
+    /// Override DuckDB's extension cache directory (its default is
+    /// `~/.duckdb`). This is where `LOAD` looks for already-installed
+    /// extensions — pointing it at a bundle directory is the packaging
+    /// story, pointing it at an empty directory is the hermetic-test one.
+    pub extension_directory: Option<PathBuf>,
+}
+
 /// Factory for creating [`Session`] objects. Stateless.
 pub struct Engine;
 
@@ -162,7 +197,7 @@ impl Engine {
         Engine
     }
 
-    /// Load a spec into a new session.
+    /// Load a spec into a new session with default [`LoadOptions`].
     ///
     /// Opens an in-memory DuckDB connection, executes all source DDL from
     /// `emit_sources()`, and builds the mark-index map for reactive updates.
@@ -172,11 +207,45 @@ impl Engine {
         analysis: SpecAnalysis,
         base_dir: Option<&Path>,
     ) -> Result<LoadResult, EngineError> {
+        self.load_spec_with(spec, analysis, base_dir, &LoadOptions::default())
+    }
+
+    /// [`Engine::load_spec`], with explicit [`LoadOptions`] — the seam the
+    /// air-gapped tests and any packaged extension directory go through.
+    pub fn load_spec_with(
+        &self,
+        spec: Spec,
+        analysis: SpecAnalysis,
+        base_dir: Option<&Path>,
+        options: &LoadOptions,
+    ) -> Result<LoadResult, EngineError> {
         let conn =
             Connection::open_in_memory().map_err(|e| EngineError::ConnectionFailed { cause: e })?;
 
         let emit_output =
             emit_sources(&spec, base_dir).map_err(|e| EngineError::EmitFailed { cause: e })?;
+
+        // Apply extension-acquisition settings BEFORE any INSTALL/LOAD (or
+        // any DDL that could autoload): these are global settings DuckDB
+        // honours from the moment they are set, and they are the whole
+        // mechanism behind NetworkPolicy::Disabled.
+        if let Some(dir) = &options.extension_directory {
+            let quoted = dir.to_string_lossy().replace('\'', "''");
+            conn.execute_batch(&format!("SET extension_directory='{quoted}';"))
+                .map_err(|e| EngineError::ConnectionFailed { cause: e })?;
+        }
+        if options.network == NetworkPolicy::Disabled {
+            // autoinstall/autoload off: no query-time fetch. The repository
+            // override is defence-in-depth — a path through the null device
+            // cannot resolve, so even a code path that still tried to
+            // install would fail locally instead of reaching out.
+            conn.execute_batch(
+                "SET autoinstall_known_extensions=false; \
+                 SET autoload_known_extensions=false; \
+                 SET custom_extension_repository='/dev/null/brightfield-no-network';",
+            )
+            .map_err(|e| EngineError::ConnectionFailed { cause: e })?;
+        }
 
         // Load the DuckDB `spatial` extension once at bootstrap, BEFORE the DDL
         // loop, so a `type: spatial` `ST_Read` view (the geo mark's live corpus
@@ -193,7 +262,12 @@ impl Engine {
             .iter()
             .any(|s| s.source_kind == SourceKindTag::Spatial);
         if needs_spatial {
-            if let Err(e) = conn.execute_batch("INSTALL spatial; LOAD spatial;") {
+            if let Err(e) = conn.execute_batch(match options.network {
+                NetworkPolicy::Auto => "INSTALL spatial; LOAD spatial;",
+                // Air-gapped: LOAD only — from the local extension cache,
+                // never the network.
+                NetworkPolicy::Disabled => "LOAD spatial;",
+            }) {
                 eprintln!(
                     "warning: DuckDB spatial extension unavailable (autoinstall \
                      needs the network); `type: spatial` / ST_Read sources will \
@@ -202,13 +276,81 @@ impl Engine {
             }
         }
 
+        // Remote data arrives through DuckDB's `httpfs`, and a DuckLake
+        // catalog attaches through `ducklake` — no Rust HTTP client, no TLS
+        // crate, no async runtime. Same bootstrap contract as spatial:
+        // gated to specs that ACTUALLY declare such a source, so a local
+        // spec never pays a load or touches the network, and the app never
+        // needs the network to start. A load failure here is remembered,
+        // not fatal: the affected sources are DISABLED with an error that
+        // names the network as the cause (see the DDL loop below), because
+        // rendering nothing-with-a-reason beats rendering
+        // plausible-and-wrong local data.
+        let needs_httpfs = emit_output
+            .statements
+            .iter()
+            .any(|s| s.remote_location.is_some());
+        let needs_ducklake = emit_output
+            .statements
+            .iter()
+            .any(|s| s.source_kind == SourceKindTag::DuckLake);
+        let mut remote_disabled_reason: Option<String> = None;
+        for (needed, ext) in [(needs_httpfs, "httpfs"), (needs_ducklake, "ducklake")] {
+            if !needed {
+                continue;
+            }
+            let batch = match options.network {
+                NetworkPolicy::Auto => format!("INSTALL {ext}; LOAD {ext};"),
+                NetworkPolicy::Disabled => format!("LOAD {ext};"),
+            };
+            if let Err(e) = conn.execute_batch(&batch) {
+                let reason = format!(
+                    "DuckDB '{ext}' extension unavailable (installing it needs \
+                     the network): {e}"
+                );
+                remote_disabled_reason = Some(match remote_disabled_reason.take() {
+                    Some(prev) => format!("{prev}; {reason}"),
+                    None => reason,
+                });
+            }
+        }
+
         for ddl in &emit_output.statements {
-            conn.execute_batch(&ddl.sql)
-                .map_err(|e| EngineError::DdlFailed {
-                    source_name: ddl.view_name.clone(),
-                    sql: ddl.sql.clone(),
-                    cause: e,
-                })?;
+            let is_remote =
+                ddl.remote_location.is_some() || ddl.source_kind == SourceKindTag::DuckLake;
+            if is_remote {
+                if let Some(reason) = &remote_disabled_reason {
+                    return Err(EngineError::RemoteDisabled {
+                        source_name: ddl.view_name.clone(),
+                        location: ddl
+                            .remote_location
+                            .clone()
+                            // A local `ducklake:` catalog with the extension
+                            // unavailable: name the attach target from its
+                            // own DDL (the first quoted literal).
+                            .or_else(|| ddl.sql.split('\'').nth(1).map(str::to_string))
+                            .unwrap_or_else(|| ddl.view_name.clone()),
+                        reason: reason.clone(),
+                    });
+                }
+            }
+            if let Err(e) = conn.execute_batch(&ddl.sql) {
+                return Err(match &ddl.remote_location {
+                    // The DDL that failed reaches over the network: say so,
+                    // by name, rather than leaving a bare SQL error that
+                    // reads like a local-data problem.
+                    Some(location) => EngineError::RemoteSourceFailed {
+                        source_name: ddl.view_name.clone(),
+                        location: location.clone(),
+                        cause: e,
+                    },
+                    None => EngineError::DdlFailed {
+                        source_name: ddl.view_name.clone(),
+                        sql: ddl.sql.clone(),
+                        cause: e,
+                    },
+                });
+            }
         }
 
         let mark_index_map = build_mark_index_map(&spec);
@@ -1299,7 +1441,8 @@ impl Session {
     /// ONE aggregate pass over the view — non-null count, null count,
     /// `approx_count_distinct`, and min/max for numeric/temporal types only —
     /// and the source row count once. Attached-database sources
-    /// (`.duckdb`/`.db` ATTACH) return [`ProfileOutcome::Unsupported`] without
+    /// (`.duckdb`/`.db` ATTACH, and `ducklake:` catalog attaches) return
+    /// [`ProfileOutcome::Unsupported`] without
     /// querying; a source whose DESCRIBE or aggregate fails returns
     /// [`ProfileOutcome::Failed`] carrying the reason, isolated from its
     /// siblings (the sidebar never blanks).
@@ -1327,7 +1470,10 @@ impl Session {
             .keys()
             .enumerate()
             .map(|(i, name)| {
-                let outcome = if matches!(kinds.get(i), Some(Some(SourceKindTag::DuckDb))) {
+                let outcome = if matches!(
+                    kinds.get(i),
+                    Some(Some(SourceKindTag::DuckDb | SourceKindTag::DuckLake))
+                ) {
                     ProfileOutcome::Unsupported
                 } else {
                     self.profile_one_source(name)
@@ -1765,6 +1911,239 @@ plot:
             }
             other => panic!("expected DdlFailed, got: {other:?}"),
         }
+    }
+
+    // --- Remote data through httpfs, and the graceful-offline story ---
+
+    /// A fresh empty directory to stand in for DuckDB's extension cache:
+    /// nothing is installed there, so under [`NetworkPolicy::Disabled`]
+    /// no extension can load AND none can be fetched — a true air-gap,
+    /// even on a dev machine whose real `~/.duckdb` has a warm cache.
+    fn empty_extension_dir(suffix: &str) -> std::path::PathBuf {
+        let dir = temp_fixture_path(&format!("extdir_{suffix}"));
+        std::fs::create_dir_all(&dir).expect("create empty extension dir");
+        dir
+    }
+
+    /// THE AIR-GAPPED PROMISE, proven with the network path UNAVAILABLE
+    /// rather than merely unused: with an empty extension directory and
+    /// `NetworkPolicy::Disabled` (no INSTALL, autoinstall/autoload off,
+    /// extension repository unresolvable), a local spec over inline rows
+    /// AND a local CSV file loads, executes every mark, and returns rows.
+    /// The companion test below proves the same environment really does
+    /// forbid the network path — so this pass is not vacuous.
+    #[test]
+    fn airgapped_local_spec_loads_and_executes() {
+        let csv_path = temp_fixture_path("airgap.csv");
+        std::fs::write(&csv_path, "origin,delay\nSEA,14\nLAX,-3\n").unwrap();
+        let ext_dir = empty_extension_dir("airgap_local");
+
+        let yaml = format!(
+            r#"
+data:
+  inline:
+    - {{ x: 1, y: 10 }}
+    - {{ x: 2, y: 20 }}
+  flights: {{ file: {} }}
+plot:
+  - mark: dot
+    data: {{ from: inline }}
+  - mark: dot
+    data: {{ from: flights }}
+"#,
+            csv_path.display()
+        );
+        let (spec, analysis) = parse_and_analyse(&yaml);
+        let options = LoadOptions {
+            network: NetworkPolicy::Disabled,
+            extension_directory: Some(ext_dir.clone()),
+        };
+        let mut session = Engine::new()
+            .load_spec_with(spec, analysis, None, &options)
+            .expect("a local spec must load with the network unavailable")
+            .session;
+        for (mark, want_rows) in [(0, 2), (1, 2)] {
+            let batches = session
+                .execute_mark(mark)
+                .expect("local marks execute offline");
+            let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+            assert_eq!(total, want_rows, "mark {mark} rows");
+        }
+
+        std::fs::remove_file(&csv_path).ok();
+        std::fs::remove_dir_all(&ext_dir).ok();
+    }
+
+    /// The non-vacuity half of the air-gap proof, and the
+    /// degraded-not-required story: in the SAME hermetic environment a
+    /// remote https source cannot work — and it fails as a structured
+    /// [`EngineError::RemoteDisabled`] naming the source, the location,
+    /// and the NETWORK as the cause. Never a bare SQL error a reader
+    /// could mistake for a local-data problem, and never
+    /// plausible-and-wrong local data.
+    #[test]
+    fn airgapped_remote_spec_fails_naming_the_network() {
+        let ext_dir = empty_extension_dir("airgap_remote");
+        let yaml = r#"
+data:
+  remote: { file: "https://example.com/data.parquet" }
+plot:
+  - mark: dot
+    data: { from: remote }
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let options = LoadOptions {
+            network: NetworkPolicy::Disabled,
+            extension_directory: Some(ext_dir.clone()),
+        };
+        let err = Engine::new()
+            .load_spec_with(spec, analysis, None, &options)
+            .expect_err("a remote spec cannot load air-gapped");
+        match &err {
+            EngineError::RemoteDisabled {
+                source_name,
+                location,
+                ..
+            } => {
+                assert_eq!(source_name, "remote");
+                assert_eq!(location, "https://example.com/data.parquet");
+            }
+            other => panic!("expected RemoteDisabled, got: {other:?}"),
+        }
+        let msg = format!("{err}");
+        assert!(msg.contains("network"), "names the network: {msg}");
+        assert!(msg.contains("httpfs"), "names the extension: {msg}");
+        assert!(
+            msg.contains("local file specs still work offline"),
+            "says what still works: {msg}"
+        );
+
+        std::fs::remove_dir_all(&ext_dir).ok();
+    }
+
+    /// A remote source that cannot be REACHED (extension present or not)
+    /// fails with a message naming the network. `127.0.0.1:1` refuses
+    /// connections without any external dependency, so this is
+    /// deterministic everywhere: with httpfs loadable the fetch is
+    /// refused ([`EngineError::RemoteSourceFailed`]); on a machine where
+    /// httpfs cannot even be installed it is
+    /// [`EngineError::RemoteDisabled`]. Both name the network — asserted
+    /// on the rendered message, which is what a surface shows.
+    #[test]
+    fn unreachable_remote_source_names_the_network() {
+        let yaml = r#"
+data:
+  remote: { file: "http://127.0.0.1:1/never.csv" }
+plot:
+  - mark: dot
+    data: { from: remote }
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let err = Engine::new()
+            .load_spec(spec, analysis, None)
+            .expect_err("an unreachable remote source cannot load");
+        assert!(
+            matches!(
+                err,
+                EngineError::RemoteSourceFailed { .. } | EngineError::RemoteDisabled { .. }
+            ),
+            "structured remote error, got: {err:?}"
+        );
+        let msg = format!("{err}");
+        assert!(msg.contains("network"), "names the network: {msg}");
+        assert!(msg.contains("remote"), "names the source: {msg}");
+        assert!(
+            msg.contains("http://127.0.0.1:1/never.csv"),
+            "names the location: {msg}"
+        );
+    }
+
+    /// A spec pointing at an https:// parquet executes through DuckDB's
+    /// httpfs — the mark returns real rows with no Rust HTTP client, no
+    /// TLS crate and no async runtime in the dependency graph (the diff
+    /// that added this changed no Cargo.toml).
+    ///
+    /// Network-gated: exercises the live published lake, so it is opt-in
+    /// (`cargo test -- --ignored`) rather than part of the hermetic suite.
+    #[test]
+    #[ignore = "network: fetches a published parquet over https"]
+    fn remote_https_parquet_executes_via_httpfs() {
+        let yaml = r#"
+data:
+  naics: { file: "https://openlake.meridian.online/naics.parquet" }
+plot:
+  - mark: dot
+    data: { from: naics }
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let mut session = Engine::new()
+            .load_spec(spec, analysis, None)
+            .expect("remote parquet loads through httpfs")
+            .session;
+        let batches = session
+            .execute_mark(0)
+            .expect("remote-backed mark executes");
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert!(total > 0, "expected rows from the published parquet");
+    }
+
+    /// The open DuckLake catalog attaches over https, read-only: tables
+    /// enumerate, rows come back, and a write is REFUSED. Network-gated
+    /// like the parquet test above.
+    #[test]
+    #[ignore = "network: attaches the published DuckLake catalog over https"]
+    fn ducklake_catalog_attaches_read_only_over_https() {
+        let yaml = r#"
+data:
+  lake: { file: "ducklake:https://openlake.meridian.online/catalog/open.ducklake" }
+  inline:
+    - { x: 1 }
+plot:
+  - mark: dot
+    data: { from: inline }
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let session = Engine::new()
+            .load_spec(spec, analysis, None)
+            .expect("the published DuckLake catalog attaches over https")
+            .session;
+
+        // Enumerate the attached catalog's tables through the live
+        // connection (robust to dataset renames), then read one row.
+        let mut stmt = session
+            .conn
+            .prepare(
+                "SELECT schema_name, table_name FROM duckdb_tables() \
+                 WHERE database_name = 'lake' ORDER BY schema_name, table_name",
+            )
+            .expect("enumerate attached tables");
+        let tables: Vec<(String, String)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("query tables")
+            .collect::<Result<_, _>>()
+            .expect("collect tables");
+        assert!(!tables.is_empty(), "the open catalog publishes tables");
+
+        let (schema, table) = &tables[0];
+        let count: i64 = session
+            .conn
+            .query_row(
+                &format!("SELECT count(*) FROM \"lake\".\"{schema}\".\"{table}\""),
+                [],
+                |row| row.get(0),
+            )
+            .expect("read from the attached catalog");
+        assert!(count > 0, "{schema}.{table} has rows");
+
+        // READ_ONLY is enforced, not just declared.
+        let write = session.conn.execute_batch(&format!(
+            "INSERT INTO \"lake\".\"{schema}\".\"{table}\" SELECT * FROM \
+             \"lake\".\"{schema}\".\"{table}\" LIMIT 1"
+        ));
+        assert!(
+            write.is_err(),
+            "a write into the read-only catalog must fail"
+        );
     }
 
     // --- Session::profile_sources ---
