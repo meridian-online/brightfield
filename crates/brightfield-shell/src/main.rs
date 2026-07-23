@@ -16,10 +16,18 @@
 //! nobody asked for when run from the repo root and exited with a read error
 //! from anywhere else.
 //!
+//! `--shot-after N` is the same screenshot, fired by a countdown instead of a
+//! finger: render N frames, capture the live window to `--shot-out`, close.
+//! It exists so a *packaged* binary can prove "starts, renders, opens the
+//! spec" unattended — the air-gapped smoke test runs exactly this under a
+//! network-denying sandbox and trusts the exit code, which is only 0 once the
+//! PNG is actually on disk.
+//!
 //! Usage: `brightfield-shell [SPEC.yaml] [--theme light|dark] [--shot-out PATH]
-//!         [--flow vertical|horizontal]`
+//!         [--shot-after N] [--flow vertical|horizontal]`
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -36,14 +44,28 @@ struct Args {
     mode: Mode,
     shot_out: PathBuf,
     flow: Flow,
+    /// `Some(n)`: capture the window automatically after `n` frames, write it
+    /// to `shot_out`, and close. The scriptable form of F12.
+    shot_after: Option<u32>,
 }
 
-fn parse_args() -> Args {
+fn parse_args() -> Result<Args, String> {
+    parse_args_from(std::env::args().skip(1))
+}
+
+/// The flag grammar, split from `std::env::args` so a test can feed it.
+///
+/// Unknown flags are reported and ignored — this window would rather open than
+/// argue. `--shot-after` is the one exception: a value that does not parse is
+/// an error, because the flag only exists for scripts, and a script whose
+/// countdown was silently dropped gets a window that never exits instead of a
+/// failed check.
+fn parse_args_from(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut spec: Option<String> = None;
     let mut mode = Mode::Light;
     let mut shot_out = PathBuf::from("render-proof/live-screenshot.png");
     let mut flow = Flow::Vertical;
-    let mut it = std::env::args().skip(1);
+    let mut shot_after: Option<u32> = None;
     while let Some(a) = it.next() {
         match a.as_str() {
             "--theme" => {
@@ -55,6 +77,13 @@ fn parse_args() -> Args {
                 if let Some(v) = it.next() {
                     shot_out = PathBuf::from(v);
                 }
+            }
+            "--shot-after" => {
+                let v = it.next().ok_or("--shot-after needs a frame count")?;
+                shot_after = Some(
+                    v.parse()
+                        .map_err(|_| format!("--shot-after needs a frame count, not {v}"))?,
+                );
             }
             "--flow" => {
                 if let Some(v) = it.next() {
@@ -69,33 +98,65 @@ fn parse_args() -> Args {
             other => eprintln!("ignoring unknown flag {other}"),
         }
     }
-    Args {
+    Ok(Args {
         spec,
         mode,
         shot_out,
         flow,
-    }
+        shot_after,
+    })
 }
 
 /// The F12 → live-screenshot latch (request in `ui`, capture next frame).
+///
+/// With `--shot-after N` the same latch also runs a countdown: N frames of
+/// real rendering, then the identical request→capture→save path, then a
+/// `ViewportCommand::Close`. The countdown holds `request_repaint` high while
+/// it runs, because eframe paints on input and an untouched window would
+/// otherwise stop producing the very frames being counted.
 struct ShotLatch {
     shot_out: PathBuf,
     pending: bool,
+    /// Frames left before the automatic capture fires; `None` once fired, or
+    /// when the window is interactive-only.
+    countdown: Option<u32>,
+    /// Whether this latch was armed by `--shot-after` — i.e. whether a save
+    /// should be followed by a close, success or not. A failed save still
+    /// closes: the countdown run is a check, and a check that hangs on
+    /// failure is not one.
+    auto: bool,
+    /// Raised only when the automatic capture's PNG is actually on disk; the
+    /// exit gate `main` reads after the event loop returns.
+    saved: Arc<AtomicBool>,
 }
 
 impl ShotLatch {
-    fn new(shot_out: PathBuf) -> Self {
+    fn new(shot_out: PathBuf, shot_after: Option<u32>, saved: Arc<AtomicBool>) -> Self {
         Self {
             shot_out,
             pending: false,
+            countdown: shot_after,
+            auto: shot_after.is_some(),
+            saved,
         }
     }
 
-    /// Request on F12, then save the image handed back on a later frame.
+    /// Request on F12 (or countdown expiry), then save the image handed back
+    /// on a later frame.
     fn tick(&mut self, ctx: &egui::Context) {
         if ctx.input(|i| i.key_pressed(egui::Key::F12)) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
-            self.pending = true;
+            self.request(ctx);
+        }
+        match self.countdown {
+            Some(0) => {
+                self.countdown = None;
+                self.request(ctx);
+            }
+            Some(n) => self.countdown = Some(n - 1),
+            None => {}
+        }
+        if self.auto && (self.countdown.is_some() || self.pending) {
+            ctx.request_repaint();
         }
         if self.pending {
             let image = ctx.input(|i| {
@@ -106,13 +167,25 @@ impl ShotLatch {
             });
             if let Some(image) = image {
                 self.pending = false;
-                if let Err(e) = save_color_image(&image, &self.shot_out) {
-                    eprintln!("screenshot save failed: {e}");
-                } else {
-                    eprintln!("live screenshot written: {}", self.shot_out.display());
+                match save_color_image(&image, &self.shot_out) {
+                    Err(e) => eprintln!("screenshot save failed: {e}"),
+                    Ok(()) => {
+                        eprintln!("live screenshot written: {}", self.shot_out.display());
+                        if self.auto {
+                            self.saved.store(true, Ordering::SeqCst);
+                        }
+                    }
+                }
+                if self.auto {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             }
         }
+    }
+
+    fn request(&mut self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+        self.pending = true;
     }
 }
 
@@ -217,7 +290,7 @@ fn host_from_frame(cc: &eframe::CreationContext<'_>) -> Result<EguiCanvasHost, S
 }
 
 fn main() -> Result<(), String> {
-    let args = parse_args();
+    let args = parse_args()?;
 
     // The layout is read *before* anything else, because two things downstream
     // depend on it: the window's size, which has to be settled before the
@@ -263,6 +336,9 @@ fn main() -> Result<(), String> {
     };
     let mode = args.mode;
     let shot_out = args.shot_out.clone();
+    let shot_after = args.shot_after;
+    let shot_saved = Arc::new(AtomicBool::new(false));
+    let saved = shot_saved.clone();
     eframe::run_native(
         &title,
         options,
@@ -271,10 +347,95 @@ fn main() -> Result<(), String> {
             let protocol_host = host_from_frame(cc)?;
             Ok(Box::new(BrightfieldApp {
                 app: MeridianApp::with_layout(boot, layout, chart_host, protocol_host, mode),
-                shot: ShotLatch::new(shot_out),
+                shot: ShotLatch::new(shot_out, shot_after, saved),
                 layout_path: path,
             }) as Box<dyn eframe::App>)
         }),
     )
-    .map_err(|e| format!("eframe run failed: {e}"))
+    .map_err(|e| format!("eframe run failed: {e}"))?;
+
+    // The countdown run's contract: exit 0 *means* the PNG landed. The window
+    // closing is not that — a failed save also closes (see `ShotLatch`), and
+    // an exit code that can't tell the two apart is no use to the script that
+    // asked.
+    if args.shot_after.is_some() && !shot_saved.load(Ordering::SeqCst) {
+        return Err(format!(
+            "--shot-after capture never landed at {}",
+            args.shot_out.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Result<Args, String> {
+        parse_args_from(list.iter().map(|s| (*s).to_string()))
+    }
+
+    #[test]
+    fn bare_invocation_stays_interactive() {
+        let a = args(&[]).unwrap();
+        assert!(a.spec.is_none());
+        assert!(a.shot_after.is_none());
+    }
+
+    #[test]
+    fn shot_after_parses_a_frame_count() {
+        let a = args(&["examples/bars.yaml", "--shot-after", "30"]).unwrap();
+        assert_eq!(a.spec.as_deref(), Some("examples/bars.yaml"));
+        assert_eq!(a.shot_after, Some(30));
+    }
+
+    #[test]
+    fn shot_after_rejects_a_missing_or_bad_count() {
+        assert!(args(&["--shot-after"]).is_err());
+        assert!(args(&["--shot-after", "soon"]).is_err());
+    }
+
+    #[test]
+    fn unknown_flags_are_still_ignored() {
+        let a = args(&["--wobble", "--theme", "dark"]).unwrap();
+        assert!(matches!(a.mode, Mode::Dark));
+    }
+
+    /// The countdown fires the request exactly once, holds repaint high while
+    /// it runs, and goes quiet after — checked against a real `egui::Context`
+    /// so the frame arithmetic is exercised, not restated.
+    #[test]
+    fn countdown_fires_once_then_goes_quiet() {
+        let ctx = egui::Context::default();
+        let saved = Arc::new(AtomicBool::new(false));
+        let mut latch = ShotLatch::new(PathBuf::from("unused.png"), Some(2), saved.clone());
+
+        // Ticks run inside a frame so `ctx.input` sees a real (empty) state.
+        for _ in 0..2 {
+            let _ = ctx.run_ui(egui::RawInput::default(), |ctx| latch.tick(ctx));
+            assert!(!latch.pending, "countdown still running");
+        }
+        let _ = ctx.run_ui(egui::RawInput::default(), |ctx| latch.tick(ctx));
+        assert!(latch.pending, "expiry requests the capture");
+        assert!(latch.countdown.is_none(), "the countdown does not re-arm");
+        assert!(!saved.load(Ordering::SeqCst), "nothing saved yet");
+
+        // With no Screenshot event ever delivered, further ticks keep the
+        // request pending rather than inventing a second one.
+        let _ = ctx.run_ui(egui::RawInput::default(), |ctx| latch.tick(ctx));
+        assert!(latch.pending);
+    }
+
+    /// An interactive latch (no `--shot-after`) never counts, never requests.
+    #[test]
+    fn interactive_latch_is_inert_without_f12() {
+        let ctx = egui::Context::default();
+        let saved = Arc::new(AtomicBool::new(false));
+        let mut latch = ShotLatch::new(PathBuf::from("unused.png"), None, saved);
+        for _ in 0..5 {
+            let _ = ctx.run_ui(egui::RawInput::default(), |ctx| latch.tick(ctx));
+        }
+        assert!(!latch.pending);
+        assert!(latch.countdown.is_none());
+    }
 }

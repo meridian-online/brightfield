@@ -101,6 +101,30 @@ The system comprises four layers:
 - **Linux** — secondary target (Vulkan via wgpu). The stack supports it; the system-dependency matrix is not yet CI-validated.
 - **Windows** — the egui/wgpu stack supports it in principle; unvalidated.
 
+## Distribution
+
+One native binary, no runtime dependencies beyond the OS graphics stack — no
+server, no webview, no language runtime, and no network required to start,
+render, or open a local protocol.
+
+```bash
+# Package: release build → linked-library audit (OS allowlist) →
+# brightfield-<version>-<target>.tar.gz + .sha256 under dist/
+scripts/package.sh
+
+# Prove the air-gapped claim against the artifact itself: a negative control
+# (curl must FAIL inside the jail), then the *packaged* binary renders a chart
+# and a Protocol manifest with the network denied (sandbox-exec / unshare -rn)
+scripts/verify-airgapped.sh dist/brightfield-*.tar.gz
+```
+
+The tarball contains the binary, LICENSE, a README and the self-contained
+examples — everything its own verification opens. Tag pushes run the same
+`package.sh` per target in CI (`.github/workflows/release.yml`) and lift the
+results onto a GitHub release; the `<tool>-<version>-<target>.tar.gz` +
+`.sha256` asset naming is the contract the `install.meridian.online`
+convention consumes.
+
 ## Technology Stack
 
 | Component | Technology | Rationale |

@@ -1,0 +1,101 @@
+# Tag-driven single-binary release.
+#
+# The packaging IS scripts/package.sh — this workflow only runs it per target
+# and lifts the results onto a GitHub release, so a release asset and a locally
+# packaged tarball are the same artifact, byte-for-byte in construction. The
+# asset layout (`brightfield-<tag>-<target>.tar.gz` + `.sha256` sidecar per
+# asset) is the contract the install.meridian.online convention consumes; when
+# this repo onboards there, the script that site serves resolves exactly these
+# names by `uname`.
+#
+# Two macOS targets, deliberately. test.yml runs the suite on macOS only,
+# because that is the one hosted runner where the winit/wgpu window stack is
+# validated; releasing for platforms the suite has never run on would ship
+# binaries nobody has proven. The Linux and Windows legs (and the install-site
+# dispatch job, which also wants the full five-target set — see the finetype
+# release workflow for the canonical shape) land when those platform stacks are
+# validated in CI first.
+#
+# The aarch64 leg re-proves the air-gapped claim against the packaged tarball
+# (scripts/verify-airgapped.sh: network-denial negative control, then the
+# packaged binary renders a chart and a Protocol manifest inside the jail).
+# The x86_64 leg is a cross-compile from the arm64 runner: its Mach-O linkage
+# audit still runs (otool reads any arch), but it cannot be executed there, so
+# its air-gapped run is the native one's by construction — same source, same
+# packaging, different codegen target. If the hosted runner turns out to have
+# no window session for the verify step, move that step behind a self-hosted
+# runner rather than deleting it; the claim must stay executable somewhere.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Package ${{ matrix.target }}
+    runs-on: macos-15
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            native: true
+          - target: x86_64-apple-darwin
+            native: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The same exact pin test.yml nails; package.sh defaults to it too, so
+      # CI and a local `scripts/package.sh` run agree on the compiler.
+      - uses: dtolnay/rust-toolchain@1.95.0
+
+      - run: rustup target add ${{ matrix.target }}
+        if: ${{ !matrix.native }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Package
+        run: scripts/package.sh "${GITHUB_REF_NAME}" "${{ matrix.target }}"
+
+      - name: Verify air-gapped (packaged binary, network denied)
+        if: ${{ matrix.native }}
+        run: scripts/verify-airgapped.sh "dist/brightfield-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: |
+            dist/brightfield-*.tar.gz
+            dist/brightfield-*.sha256
+          if-no-files-found: error
+
+  release:
+    name: Create release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/brightfield-*.tar.gz
+            artifacts/brightfield-*.sha256
