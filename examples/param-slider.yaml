@@ -7,9 +7,9 @@
 #
 # Run the window (macOS) and drag the slider:
 #   cargo run -p brightfield-shell -- examples/param-slider.yaml
-# Preview a value headlessly:
-#   BRIGHTFIELD_PARAM_OVERRIDE="threshold=6" BRIGHTFIELD_DUMP_PNG=out.png \
-#     cargo run -p brightfield-shell -- examples/param-slider.yaml
+# Render headlessly (at the declared param defaults):
+#   cargo run -p brightfield-shell --bin brightfield-shot -- \
+#     --spec examples/param-slider.yaml --out out.png --vello-only
 params:
   threshold: 2
 data:

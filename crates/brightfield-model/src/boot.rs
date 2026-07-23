@@ -2,10 +2,10 @@
 //!
 //! The ONE decision separating the headless PNG dump from the windowed
 //! authoring workspace, lifted out of `main` so it is headlessly testable
-//! and structurally reviewable: `main` matches on [`BootMode`] and RETURNS
-//! from the dump arm before any workspace/dock construction is reachable.
-//! The workspace shell (DockArea, panels, editor — `shell.rs`) is only
-//! called from the [`BootMode::Window`] arm, so no shell state can ever
+//! and structurally reviewable: a `main` that matches on [`BootMode`] RETURNS
+//! from the dump arm before any workspace/dock construction is reachable,
+//! and calls the workspace shell only
+//! from the [`BootMode::Window`] arm, so no shell state can ever
 //! move a pixel in a dumped PNG (the byte-identity halt gate's structural
 //! guarantee). No UI-framework import may enter this file (semantic-layer rule).
 
