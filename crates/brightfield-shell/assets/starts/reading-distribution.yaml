@@ -1,0 +1,40 @@
+# A starter histogram: five thousand generated samples, binned by the engine.
+#
+# `samples` approximates a bell curve by summing four hash-derived uniforms
+# (Irwin–Hall), and `bins` is a GROUP BY over it — the bars arrive already
+# aggregated, computed where the data lives. Five thousand rows is five times
+# the inline-row cap, which is the point: a starting point's data is a table
+# the engine queries, not rows a YAML file carries.
+meta:
+  title: Distribution of readings
+  description: |
+    A histogram of five thousand generated samples, binned in-engine with a
+    GROUP BY. The samples approximate a bell curve by summing four hash-derived
+    uniform draws; everything is deterministic and self-contained.
+data:
+  samples:
+    query: |
+      SELECT
+        i,
+        round(
+          100
+          + 18 * ( ( CAST(hash(i) % 1000 AS DOUBLE)
+                   + CAST(hash(i + 65536) % 1000 AS DOUBLE)
+                   + CAST(hash(i + 131072) % 1000 AS DOUBLE)
+                   + CAST(hash(i + 262144) % 1000 AS DOUBLE) ) / 2000.0 - 1.0 ),
+          2
+        ) AS score
+      FROM range(0, 5000) t(i)
+  bins:
+    query: |
+      SELECT
+        floor(score / 4) * 4 AS lo,
+        floor(score / 4) * 4 + 4 AS hi,
+        count(*) AS n
+      FROM samples
+      GROUP BY 1, 2
+      ORDER BY lo
+plot:
+  - { mark: rectY, data: { from: bins }, x1: lo, x2: hi, y: n }
+width: 640
+height: 400

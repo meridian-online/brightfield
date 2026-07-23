@@ -69,9 +69,9 @@ use meridian_egui::{
     Severity, Toast, ToastLayer,
 };
 
-use meridian_design::{semantic, spacing};
+use meridian_design::{radius, semantic, spacing};
 
-use crate::app::{chart_registry, ChartDoc, CONTROLS_SHARE};
+use crate::app::{chart_registry, ChartDoc, CHART, CONTROLS_SHARE};
 use crate::canvas::EguiCanvasHost;
 use crate::design::{self, Mode};
 use crate::overlays::{CommandPalette, HelpSheet, JumpTarget, JumpToNode};
@@ -116,6 +116,36 @@ pub const BAR_HEIGHT: f32 = spacing::ROW_GRID + 2.0 * spacing::SPACE_2;
 /// a term the window arithmetic has to subtract cannot be a number that lives
 /// only inside egui.
 pub const DOCK_INSET: f32 = spacing::SPACE_4;
+
+// ---------------------------------------------------------------------------
+// The front door's own measures.
+// ---------------------------------------------------------------------------
+
+/// The line under the Welcome heading.
+///
+/// **Deliberately a neutral placeholder.** The real tagline is a
+/// product-voice decision that has not been made, and inventing one here
+/// would make this constant the place it accidentally got made. Replace the
+/// words; keep the slot.
+pub const TAGLINE_PLACEHOLDER: &str = "Open a starting point, or bring your own data.";
+
+/// The front door's content column, in logical points: four gallery cards and
+/// the three gaps between them, so the Explore row is what sets the measure
+/// and everything above it aligns to the gallery.
+const DOOR_COLUMN_WIDTH: f32 = 4.0 * CARD_WIDTH + 3.0 * spacing::SECTION_GAP;
+
+/// One gallery card's outer width.
+const CARD_WIDTH: f32 = 216.0;
+
+/// The thumbnail's drawn height: the card's width less its two insets, at the
+/// shipped thumbnails' own 16:10 — `(216 − 8) / 1.6`. Stated as the number the
+/// arithmetic produces so a drift in either term is a visible edit here.
+const CARD_IMAGE_HEIGHT: f32 = 130.0;
+
+/// One gallery card's outer height: the image and its insets, plus room for a
+/// two-line label and a two-line summary. A label that wraps past that is
+/// clipped by the card's own rect rather than pushing the gallery apart.
+const CARD_HEIGHT: f32 = 220.0;
 
 /// The natural window size in logical points for a composed dashboard: exactly
 /// big enough that the chart pane's content box fits the dashboard's raster,
@@ -651,7 +681,28 @@ pub struct MeridianApp {
     /// Where each empty pane drew the button that resolves it, in window-space
     /// logical points — recorded for exactly the reason [`Self::switcher`] is,
     /// and read back through [`MeridianApp::affordance_rect`].
+    ///
+    /// On a frame the front door drew instead of the dock, the door records
+    /// the view-filling starts' cards here under the pane keys those starts
+    /// fill — see [`MeridianApp::front_door_ui`] — so "where is the way in
+    /// that fills this pane" has one answer wherever it was drawn.
     affordances: Vec<(PaneKey, egui::Rect)>,
+    /// The front door's gallery textures, decoded once from the shipped
+    /// thumbnail bytes on the first frame the door draws. Kept for the app's
+    /// life: a `TextureHandle` is an `Arc`, and four small thumbnails are not
+    /// worth a re-decode if the user comes back to an emptied window.
+    door_thumbs: Vec<(&'static str, egui::TextureHandle)>,
+    /// Where the front door drew each start's gallery card, by start id —
+    /// the test hook the door's clicks are aimed through, exactly as
+    /// [`Self::affordances`] is for pane empty states. Cleared on frames the
+    /// door did not draw.
+    door_cards: Vec<(&'static str, egui::Rect)>,
+    /// Where the front door drew the Continue zone's resolving button, when
+    /// the layout remembered work to continue. `None` on a first run — the
+    /// zone is the morph, not a fixture.
+    door_continue: Option<egui::Rect>,
+    /// Where the front door drew the Start zone's keyboard-help control.
+    door_help: Option<egui::Rect>,
     /// The one modal slot — see [`Overlay`].
     overlay: Option<Overlay>,
     /// The keystrokes that open overlays, read off the registry at boot.
@@ -832,6 +883,10 @@ impl MeridianApp {
             fonts_installed: false,
             switcher: Vec::new(),
             affordances: Vec::new(),
+            door_thumbs: Vec::new(),
+            door_cards: Vec::new(),
+            door_continue: None,
+            door_help: None,
             overlay: None,
             overlay_keys: OverlayKeys::from_registry(),
             recency: RecencyCounter::new(),
@@ -918,6 +973,48 @@ impl MeridianApp {
             .iter()
             .find(|(k, _)| *k == pane)
             .map(|(_, r)| *r)
+    }
+
+    /// Whether the next frame this window draws is the front door: nothing
+    /// open in either view, so the window's answer is an invitation rather
+    /// than a dock of empty instruments.
+    ///
+    /// Not a mode and not a setting — a fact about the documents, recomputed
+    /// every frame, which is why the door needs no dismissal: it is
+    /// outcompeted by content the moment either view has any.
+    #[must_use]
+    pub fn front_door_is_live(&self) -> bool {
+        self.charts.doc.is_empty() && !self.protocol.doc.model.has_assets()
+    }
+
+    /// The rect the front door drew the gallery card for the start `id` at,
+    /// in the last frame this window drew.
+    ///
+    /// `None` when the door did not draw — which is the morph's other half,
+    /// so a test that asserts the door is *gone* asks this too. Recorded for
+    /// the reason [`MeridianApp::affordance_rect`] records pane buttons: the
+    /// test that proves a card opens something has to click it where it was
+    /// actually laid out.
+    #[must_use]
+    pub fn front_door_card_rect(&self, id: &str) -> Option<egui::Rect> {
+        self.door_cards
+            .iter()
+            .find(|(card, _)| *card == id)
+            .map(|(_, r)| *r)
+    }
+
+    /// The rect of the front door's Continue button, when the last frame drew
+    /// one — it exists only once the layout remembers work to continue.
+    #[must_use]
+    pub fn front_door_continue_rect(&self) -> Option<egui::Rect> {
+        self.door_continue
+    }
+
+    /// The rect of the front door's keyboard-help control, when the last
+    /// frame drew the door.
+    #[must_use]
+    pub fn front_door_help_rect(&self) -> Option<egui::Rect> {
+        self.door_help
     }
 
     /// The protocol view's interaction model, read-only.
@@ -1023,6 +1120,15 @@ impl MeridianApp {
         let view = self.ws().active();
         let mode = self.mode;
 
+        // Whether this frame is the front door. Decided once, up here,
+        // because three branches below have to agree which frame this is: the
+        // grammar feed, the hint bar and the central panel. The door replaces
+        // the *dock* and nothing else — the top bar, the overlays and the
+        // notification layers stay exactly where they are, so the door is a
+        // state of the window's content plane rather than a mode of the
+        // window.
+        let door = self.front_door_is_live();
+
         // The overlay-opening keys, before the grammar feed so the frame that
         // opens an overlay is already under it.
         self.overlay_open_keys(&ctx, view);
@@ -1039,7 +1145,10 @@ impl MeridianApp {
         // no-bare-under-overlay invariant. An open picker owns the keyboard;
         // a `j` typed into its query line must never also walk the DAG
         // underneath it.
-        if view == ViewKind::Protocol {
+        //
+        // Nor while the front door is drawn: the grammar drives the DAG, and
+        // the door is standing where the DAG would be.
+        if view == ViewKind::Protocol && !door {
             if self.overlay.is_none() {
                 let events = ctx.input(|i| i.events.clone());
                 self.protocol.doc.model.feed_events(&events);
@@ -1072,7 +1181,9 @@ impl MeridianApp {
         // that function asks for and reads the box the chart pane was handed, so
         // a hint bar appearing on this view would take BAR_HEIGHT out of that
         // box and redden.
-        if view == ViewKind::Protocol {
+        // And not on the front door: a row of grammar hints for a DAG that is
+        // not on screen would be the window instructing rather than inviting.
+        if view == ViewKind::Protocol && !door {
             let model = &self.protocol.doc.model;
             Panel::bottom("bf-hint-bar")
                 .resizable(false)
@@ -1091,45 +1202,66 @@ impl MeridianApp {
         let dock_frame = egui::Frame::new()
             .inner_margin(DOCK_INSET)
             .fill(ui.visuals().panel_fill);
-        let (ws, charts, protocol, affordances) = (
-            self.layout.workspace_mut(),
-            &mut self.charts,
-            &mut self.protocol,
-            &mut self.affordances,
-        );
-        CentralPanel::default().frame(dock_frame).show(ui, |ui| {
-            // The two arms are the whole cost of keeping the documents apart.
-            match view {
-                ViewKind::Charts => {
-                    let mut behavior = PaneChrome::new(
-                        &mut charts.doc,
-                        &mut charts.items,
-                        mode,
-                        focused,
-                        &tabbed,
-                        &mut requests,
-                        affordances,
-                    );
-                    ws.tree_mut(view).ui(&mut behavior, ui);
+        if door {
+            // The front door, instead of the dock: a dock of empty
+            // instruments is the surface the research warned against, and
+            // every one of its panes would be inviting the same first action
+            // from a different corner. What a card click *does* is the same
+            // `Request::Open` an empty pane's button raises — the door is a
+            // different arrangement of the same way in, not a second route.
+            CentralPanel::default().frame(dock_frame).show(ui, |ui| {
+                self.front_door_ui(ui, &mut requests);
+            });
+        } else {
+            // Content somewhere, so the dock — and no stale door geometry: a
+            // test that asks where a card was after the door has gone must
+            // hear "nowhere", exactly as `affordances` answers for panes.
+            self.door_cards.clear();
+            self.door_continue = None;
+            self.door_help = None;
+            let (ws, charts, protocol, affordances) = (
+                self.layout.workspace_mut(),
+                &mut self.charts,
+                &mut self.protocol,
+                &mut self.affordances,
+            );
+            CentralPanel::default().frame(dock_frame).show(ui, |ui| {
+                // The two arms are the whole cost of keeping the documents
+                // apart.
+                match view {
+                    ViewKind::Charts => {
+                        let mut behavior = PaneChrome::new(
+                            &mut charts.doc,
+                            &mut charts.items,
+                            mode,
+                            focused,
+                            &tabbed,
+                            &mut requests,
+                            affordances,
+                        );
+                        ws.tree_mut(view).ui(&mut behavior, ui);
+                    }
+                    ViewKind::Protocol => {
+                        let mut behavior = PaneChrome::new(
+                            &mut protocol.doc,
+                            &mut protocol.items,
+                            mode,
+                            focused,
+                            &tabbed,
+                            &mut requests,
+                            affordances,
+                        );
+                        ws.tree_mut(view).ui(&mut behavior, ui);
+                    }
                 }
-                ViewKind::Protocol => {
-                    let mut behavior = PaneChrome::new(
-                        &mut protocol.doc,
-                        &mut protocol.items,
-                        mode,
-                        focused,
-                        &tabbed,
-                        &mut requests,
-                        affordances,
-                    );
-                    ws.tree_mut(view).ui(&mut behavior, ui);
-                }
-            }
-        });
+            });
+        }
 
         self.apply(&ctx, view, requests);
         if view == ViewKind::Protocol {
-            self.read_active_tab();
+            if !door {
+                self.read_active_tab();
+            }
             if bar.toggle_flow {
                 self.protocol.doc.model.toggle_flow();
                 self.protocol.doc.canvas.invalidate();
@@ -1460,6 +1592,251 @@ impl MeridianApp {
         ctx.request_repaint();
     }
 
+    // -----------------------------------------------------------------------
+    // The front door
+    // -----------------------------------------------------------------------
+
+    /// Draw the front door into the central panel: what the window shows when
+    /// nothing is open anywhere, in place of a dock of empty instruments.
+    ///
+    /// Five zones, one voice: **Welcome** (the invariant greeting — the
+    /// content below it morphs, the greeting never flips), **Start** (the
+    /// verb spine), **Continue** (recent work, present only once there is
+    /// any), **Explore** (the gallery of shipped starts — the flagship), and
+    /// **Learn** (the placeholder for walkthroughs, which are their own
+    /// work). Continue appearing and disappearing *is* the morph: there is no
+    /// dismissal anywhere because there is nothing to dismiss — content
+    /// outcompetes the door, and the door comes back only when the window is
+    /// emptied.
+    ///
+    /// Everything a click does here goes out through `requests` as the same
+    /// [`Request::Open`] an empty pane's button raises, into the same
+    /// [`MeridianApp::open_start`]. The door owns no route of its own.
+    fn front_door_ui(&mut self, ui: &mut egui::Ui, requests: &mut Vec<Request>) {
+        self.door_cards.clear();
+        self.door_continue = None;
+        self.door_help = None;
+        self.affordances.clear();
+        self.ensure_door_thumbs(ui.ctx());
+
+        let sem = semantic(self.mode.is_dark());
+        let help_key = self.overlay_keys.help;
+        // The remembered start, when the layout carries one this build
+        // recognises. The door only draws with nothing open, so anything
+        // remembered here is by definition work that was *not* restored —
+        // which is exactly what Continue is for.
+        let remembered = self
+            .layout
+            .live()
+            .opened
+            .as_deref()
+            .and_then(crate::starts::find);
+        let mut open_help = false;
+
+        egui::ScrollArea::vertical()
+            .id_salt("bf-front-door")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let width = DOOR_COLUMN_WIDTH.min(ui.available_width());
+                let pad = ((ui.available_width() - width) / 2.0).max(0.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(pad);
+                    ui.vertical(|ui| {
+                        ui.set_width(width);
+                        ui.add_space(spacing::SECTION_GAP);
+
+                        // Welcome — invariant, whatever the zones below do.
+                        ui.label(
+                            egui::RichText::new("Welcome")
+                                .text_style(egui::TextStyle::Heading)
+                                .color(chrome::colour(sem.text.primary)),
+                        );
+                        ui.add_space(spacing::SPACE_2);
+                        ui.label(
+                            egui::RichText::new(TAGLINE_PLACEHOLDER)
+                                .font(ui_font())
+                                .color(chrome::colour(sem.text.muted)),
+                        );
+
+                        // Start — the verb spine. Only verbs that work from
+                        // here: the help sheet opens on any view, and its
+                        // keystroke is the registry's, printed rather than
+                        // claimed.
+                        door_zone_heading(ui, "Start", sem);
+                        let help_label = match help_key {
+                            Some(k) => format!("Keyboard help  {k}"),
+                            None => "Keyboard help".to_string(),
+                        };
+                        let help = ui.button(egui::RichText::new(help_label).font(ui_font()));
+                        self.door_help = Some(help.rect);
+                        if help.clicked() {
+                            open_help = true;
+                        }
+
+                        // Continue — the morph. Absent on a first run; a
+                        // remembered start renders its own opening control,
+                        // raising the request a pane's button would.
+                        if let Some(start) = remembered {
+                            door_zone_heading(ui, "Continue", sem);
+                            let control =
+                                ui.button(egui::RichText::new(start.label).font(ui_font()));
+                            self.door_continue = Some(control.rect);
+                            if control.clicked() {
+                                requests.push(Request::Open(start.id));
+                            }
+                        }
+
+                        // Explore — the gallery, and the flagship: every card
+                        // opens onto a drawn result.
+                        door_zone_heading(ui, "Explore", sem);
+                        ui.label(
+                            egui::RichText::new(
+                                "Starting points that ship with the binary — \
+                                 every one opens on a rendered result.",
+                            )
+                            .font(ui_font())
+                            .color(chrome::colour(sem.text.secondary)),
+                        );
+                        ui.add_space(spacing::CONTROL_GAP);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing =
+                                egui::vec2(spacing::SECTION_GAP, spacing::SECTION_GAP);
+                            for start in crate::starts::STARTS {
+                                self.door_card(ui, start, sem, requests);
+                            }
+                        });
+
+                        // Learn — the placeholder zone; walkthrough content
+                        // is its own work and arrives as such.
+                        door_zone_heading(ui, "Learn", sem);
+                        ui.label(
+                            egui::RichText::new("Guided walkthroughs will live here.")
+                                .font(ui_font())
+                                .color(chrome::colour(sem.text.muted)),
+                        );
+                        ui.add_space(spacing::SECTION_GAP);
+                    });
+                });
+            });
+
+        if open_help {
+            self.overlay = Some(Overlay::Help(Picker::new(HelpSheet::new())));
+        }
+    }
+
+    /// One gallery card: the start's pre-rendered thumbnail, its label and
+    /// its one-line summary, the whole card clickable.
+    ///
+    /// A card whose start fills a view is also recorded under that view's
+    /// canvas pane key in [`Self::affordances`] — on a door frame it *is*
+    /// where the way in that fills that pane was drawn, so
+    /// [`MeridianApp::affordance_rect`] keeps one answer across both
+    /// arrangements of the same affordance.
+    fn door_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        start: &'static crate::starts::Start,
+        sem: &semantic::Semantic,
+        requests: &mut Vec<Request>,
+    ) {
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(CARD_WIDTH, CARD_HEIGHT), egui::Sense::click());
+        if ui.is_rect_visible(rect) {
+            let painter = ui.painter().with_clip_rect(rect);
+            painter.rect_filled(rect, radius::CONTROL, chrome::colour(sem.surfaces.raised));
+            let edge = if response.hovered() {
+                sem.borders.strong
+            } else {
+                sem.borders.subtle
+            };
+            painter.rect_stroke(
+                rect,
+                radius::CONTROL,
+                egui::Stroke::new(1.0, chrome::colour(edge)),
+                egui::StrokeKind::Inside,
+            );
+
+            let img_rect = egui::Rect::from_min_size(
+                rect.min + egui::vec2(spacing::SPACE_2, spacing::SPACE_2),
+                egui::vec2(CARD_WIDTH - 2.0 * spacing::SPACE_2, CARD_IMAGE_HEIGHT),
+            );
+            if let Some(tex) = self
+                .door_thumbs
+                .iter()
+                .find(|(id, _)| *id == start.id)
+                .map(|(_, t)| t.id())
+            {
+                painter.image(
+                    tex,
+                    img_rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            }
+
+            let text_left = rect.min.x + spacing::SPACE_4;
+            let wrap = CARD_WIDTH - 2.0 * spacing::SPACE_4;
+            let title = painter.layout(
+                start.label.to_string(),
+                ui_font(),
+                chrome::colour(sem.text.primary),
+                wrap,
+            );
+            let title_pos = egui::pos2(text_left, img_rect.max.y + spacing::SPACE_4);
+            painter.galley(title_pos, title.clone(), chrome::colour(sem.text.primary));
+            let summary = painter.layout(
+                start.summary.to_string(),
+                egui::TextStyle::Small.resolve(ui.style()),
+                chrome::colour(sem.text.muted),
+                wrap,
+            );
+            painter.galley(
+                egui::pos2(text_left, title_pos.y + title.size().y + spacing::SPACE_1),
+                summary,
+                chrome::colour(sem.text.muted),
+            );
+        }
+
+        self.door_cards.push((start.id, rect));
+        let fills_its_view = crate::starts::for_view(start.view).map(|s| s.id) == Some(start.id);
+        if fills_its_view {
+            let pane = match start.view {
+                ViewKind::Charts => PaneKey::new(ViewKind::Charts, CHART),
+                ViewKind::Protocol => PaneKey::new(ViewKind::Protocol, CANVAS),
+            };
+            self.affordances.push((pane, rect));
+        }
+        if response.clicked() {
+            requests.push(Request::Open(start.id));
+        }
+    }
+
+    /// Decode the shipped thumbnails into textures, once.
+    ///
+    /// Bytes that will not decode are a build defect the thumbnail
+    /// regeneration test exists to catch — a card without its picture is the
+    /// honest degradation here, not a reason to take the door down.
+    fn ensure_door_thumbs(&mut self, ctx: &egui::Context) {
+        if !self.door_thumbs.is_empty() {
+            return;
+        }
+        for start in crate::starts::STARTS {
+            let Ok(decoded) = image::load_from_memory(start.thumbnail) else {
+                debug_assert!(false, "{}'s shipped thumbnail is not decodable", start.id);
+                continue;
+            };
+            let rgba = decoded.to_rgba8();
+            let size = [rgba.width() as usize, rgba.height() as usize];
+            let pixels = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+            let tex = ctx.load_texture(
+                format!("bf-door-thumb-{}", start.id),
+                pixels,
+                egui::TextureOptions::LINEAR,
+            );
+            self.door_thumbs.push((start.id, tex));
+        }
+    }
+
     /// Before rendering: make the active Canvas/Steps tab authoritative from the
     /// model's sheet flag (so the `shift-S`/`Esc` keys drive it).
     fn set_active_tab(&mut self) {
@@ -1522,6 +1899,20 @@ fn steps_tab_is_active(tree: &egui_tiles::Tree<PaneKey>) -> Option<bool> {
         return None;
     };
     Some(tabs.active? == steps)
+}
+
+/// One front-door zone heading: the settled name, set apart from the zone's
+/// content by weight and tone rather than by size — the door has exactly one
+/// large word on it, and it is Welcome.
+fn door_zone_heading(ui: &mut egui::Ui, name: &str, sem: &semantic::Semantic) {
+    ui.add_space(spacing::SECTION_GAP);
+    ui.label(
+        egui::RichText::new(name)
+            .font(ui_font())
+            .strong()
+            .color(chrome::colour(sem.text.secondary)),
+    );
+    ui.add_space(spacing::SPACE_2);
 }
 
 /// How wide the top bar's right-hand group would be if it drew: the renderer

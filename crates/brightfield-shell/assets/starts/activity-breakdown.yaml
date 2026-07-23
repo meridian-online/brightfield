@@ -1,0 +1,34 @@
+# A starter bar chart: event counts aggregated and ranked by the engine.
+#
+# `events` generates 2,400 categorical rows from hash draws; `by_action` is the
+# GROUP BY that ranks them. The chart reads only the aggregate — the raw table
+# exists solely as a DuckDB view declared by this spec, which is where a
+# starting point's data belongs.
+meta:
+  title: Actions by volume
+  description: |
+    Counts of five kinds of generated events, aggregated and ranked in-engine.
+    Deterministic and self-contained: the raw 2,400-row table exists only as a
+    DuckDB view declared by this spec.
+data:
+  events:
+    query: |
+      SELECT
+        CASE
+          WHEN r < 34 THEN 'Search'
+          WHEN r < 58 THEN 'Browse'
+          WHEN r < 76 THEN 'Compare'
+          WHEN r < 90 THEN 'Export'
+          ELSE 'Share'
+        END AS action
+      FROM (SELECT CAST(hash(i) % 100 AS BIGINT) AS r FROM range(0, 2400) t(i))
+  by_action:
+    query: |
+      SELECT action, count(*) AS events
+      FROM events
+      GROUP BY action
+      ORDER BY events DESC
+plot:
+  - { mark: barY, data: { from: by_action }, x: action, y: events }
+width: 640
+height: 420
