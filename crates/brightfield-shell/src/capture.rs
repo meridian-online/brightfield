@@ -290,6 +290,146 @@ fn finish_capture(
     Ok((size_px[0], size_px[1]))
 }
 
+/// Run the real shell headlessly for `frames` frames and time each one — the
+/// measurement twin of [`capture_png`], for the performance baseline.
+///
+/// Every frame is a complete produce-a-picture cycle, timed end to end:
+///
+/// 1. `on_frame(&mut app, i)` — the caller's per-frame action (inject an
+///    interaction through [`MeridianApp::chart_doc_mut`], or nothing for a
+///    steady-state frame);
+/// 2. the egui pass over the real [`MeridianApp::draw`] (which is where a
+///    live-document interaction's re-query, re-composite and canvas re-raster
+///    happen, exactly as in the live window);
+/// 3. tessellation + the `egui_wgpu` render pass into an offscreen target;
+/// 4. a blocking wait for the GPU to finish the submitted work.
+///
+/// What it deliberately is NOT: there is no swapchain, no present and no
+/// vsync — the number is the cost of *producing* a frame, not of displaying
+/// one — and no pixel readback (a live frame never reads back). The first
+/// frame includes one-off costs (font atlas upload, layout settle, first
+/// materialisation): callers discard warm-up frames themselves so the discard
+/// count is visible at the call site, next to the numbers it shapes.
+///
+/// # Errors
+/// Returns a message if no GPU adapter/device is available.
+pub fn bench_frames(
+    boot: Boot,
+    mode: Mode,
+    scale: f32,
+    frames: usize,
+    mut on_frame: impl FnMut(&mut MeridianApp, usize),
+) -> Result<Vec<std::time::Duration>, String> {
+    let (device, queue) = headless_device()?;
+    let target_format = wgpu::TextureFormat::Rgba8Unorm;
+    let egui_renderer = new_egui_renderer(&device, target_format);
+    let chart_host = host_on_device(device.clone(), queue.clone(), egui_renderer.clone());
+    let protocol_host = host_on_device(device.clone(), queue.clone(), egui_renderer.clone());
+
+    let (win_w, win_h) = boot.window_size(boot.view_or(ViewKind::Charts));
+    let mut app = MeridianApp::new(boot, chart_host, protocol_host, mode);
+
+    let ctx = egui::Context::default();
+    ctx.set_pixels_per_point(scale);
+    let screen = egui::vec2(win_w, win_h);
+
+    let size_px = [
+        ((win_w * scale).round() as u32).max(1),
+        ((win_h * scale).round() as u32).max(1),
+    ];
+    let screen_desc = egui_wgpu::ScreenDescriptor {
+        size_in_pixels: size_px,
+        pixels_per_point: scale,
+    };
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("brightfield-bench-target"),
+        size: wgpu::Extent3d {
+            width: size_px[0],
+            height: size_px[1],
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: target_format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let page = match mode {
+        Mode::Light => INK_LIGHT.page,
+        Mode::Dark => INK_DARK.page,
+    };
+    let clear = wgpu::Color {
+        r: f64::from(page.r),
+        g: f64::from(page.g),
+        b: f64::from(page.b),
+        a: 1.0,
+    };
+
+    let mut times = Vec::with_capacity(frames);
+    for i in 0..frames {
+        let started = std::time::Instant::now();
+        on_frame(&mut app, i);
+
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen)),
+            ..Default::default()
+        };
+        let out = ctx.run_ui(raw, |ui| app.draw(ui));
+        {
+            let mut r = egui_renderer.write();
+            for (id, delta) in &out.textures_delta.set {
+                r.update_texture(&device, &queue, *id, delta);
+            }
+            for id in &out.textures_delta.free {
+                r.free_texture(id);
+            }
+        }
+        let clipped = ctx.tessellate(out.shapes, scale);
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("brightfield-bench-encoder"),
+        });
+        let user_cmds = {
+            let mut r = egui_renderer.write();
+            r.update_buffers(&device, &queue, &mut encoder, &clipped, &screen_desc)
+        };
+        {
+            let mut pass = encoder
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("brightfield-bench-pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(clear),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                })
+                .forget_lifetime();
+            let r = egui_renderer.read();
+            r.render(&mut pass, &clipped, &screen_desc);
+        }
+        queue.submit(
+            user_cmds
+                .into_iter()
+                .chain(std::iter::once(encoder.finish())),
+        );
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|e| format!("GPU wait failed: {e:?}"))?;
+        times.push(started.elapsed());
+    }
+    Ok(times)
+}
+
 /// Render just the composited Vello dashboard (no egui chrome) to a PNG on a
 /// dedicated device — the pipeline's "Vello baseline", for parity-checking the
 /// egui path against the app's `BRIGHTFIELD_DUMP_PNG` output. `scale` scales the

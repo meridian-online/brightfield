@@ -33,3 +33,13 @@ jobs:
       # every tracked file in the repository, workspace crates included.
       - name: private planning identifiers
         run: ./scripts/check-public-hygiene.sh
+
+      # Second honesty gate, same shape: upstream Mosaic performance figures
+      # must not be restated as this project's own. Our numbers live in
+      # benchmarks/results/, measured by the committed harness. Self-test
+      # first, for the same reason as above.
+      - name: borrowed-benchmarks gate self-test
+        run: ./scripts/check-borrowed-benchmarks-selftest.sh
+
+      - name: borrowed benchmark figures
+        run: ./scripts/check-borrowed-benchmarks.sh

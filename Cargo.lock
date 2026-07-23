@@ -567,6 +567,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "brightfield-bench"
+version = "0.1.0"
+dependencies = [
+ "brightfield-engine",
+ "brightfield-protocol",
+ "brightfield-shell",
+ "brightfield-spec",
+ "brightfield-sql",
+ "chrono",
+ "duckdb",
+ "pollster",
+ "serde",
+ "serde_json",
+ "vello",
+]
+
+[[package]]
 name = "brightfield-conformance"
 version = "0.1.0"
 dependencies = [
