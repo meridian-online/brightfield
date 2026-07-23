@@ -57,6 +57,9 @@
 //! # Layout
 //!
 //! - [`subject`] — [`Subject`] and its parts, plus [`Verb`]. No egui types.
+//! - [`activity`] — [`Activity`], the in-flight-work vocabulary beside the
+//!   run-state one, and [`ActivityIndicator`], the one rail entry it
+//!   composes to. No egui types.
 //! - [`item`] — [`Item`], [`ItemId`], [`PaneKey`], [`ItemCtx`].
 //! - [`registry`] — [`Slot`], [`ItemSpec`], [`ItemRegistry`]: the only route
 //!   from an item to a pane, and therefore the thing the contract tests gate;
@@ -69,6 +72,7 @@
 //! - [`persist`] — the versioned layout file and its debounced writer.
 //! - [`chrome`] — the one drawing file.
 
+pub mod activity;
 pub mod behavior;
 pub mod chrome;
 pub mod item;
@@ -78,6 +82,7 @@ pub mod shell;
 pub mod subject;
 pub mod workspace;
 
+pub use activity::{Activity, ActivityIndicator, ActivityLog, HONESTY_LINE_MS};
 pub use behavior::PaneChrome;
 pub use item::{Handled, Item, ItemCtx, ItemId, ItemMap, PaneKey, Request};
 pub use persist::{DirtyTracker, LoadOutcome, SavedLayout, WindowGeometry};
