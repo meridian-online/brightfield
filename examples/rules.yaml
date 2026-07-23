@@ -6,7 +6,7 @@ meta:
     data column (one line per row). A rule spans the perpendicular axis, so it
     lives in a plot that also gives that axis a scale (here, the scatter's x).
 
-      cargo run -p brightfield-app -- examples/rules.yaml
+      cargo run -p brightfield-shell -- examples/rules.yaml
 data:
   points:
     - { x: 1,  y: 14 }

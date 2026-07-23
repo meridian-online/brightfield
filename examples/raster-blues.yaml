@@ -4,7 +4,7 @@
 # deep blue, the sparse background as pale blue. Demonstrates that a spec picks a
 # scheme by its Mosaic-portable lowercase name.
 #
-#   BRIGHTFIELD_DUMP_PNG=raster-blues.png cargo run -p brightfield-app -- examples/raster-blues.yaml
+#   cargo run -p brightfield-shell --bin brightfield-shot -- --spec examples/raster-blues.yaml --out raster-blues.png --vello-only
 data:
   points:
     - { x: 2.658, y: 3.952 }

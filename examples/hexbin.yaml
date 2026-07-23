@@ -10,7 +10,7 @@
 # filled hexes. Compare raster.yaml (square-bin count) and heatmap.yaml
 # (KDE-smoothed) for the same picture.
 #
-#   BRIGHTFIELD_DUMP_PNG=hexbin.png cargo run -p brightfield-app -- examples/hexbin.yaml
+#   cargo run -p brightfield-shell --bin brightfield-shot -- --spec examples/hexbin.yaml --out hexbin.png --vello-only
 data:
   points:
     - { x: 2.658, y: 3.952 }

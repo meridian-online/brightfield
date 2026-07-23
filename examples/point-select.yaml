@@ -6,7 +6,7 @@
 # x value, so the right plot collapses to the rows sharing that x. Click empty
 # space to clear.
 #
-#   cargo run -p brightfield-app -- examples/point-select.yaml
+#   cargo run -p brightfield-shell -- examples/point-select.yaml
 #
 # (Interaction is live-window only; a headless PNG shows the resting, unfiltered
 # dashboard.)

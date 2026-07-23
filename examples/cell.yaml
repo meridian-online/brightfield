@@ -4,7 +4,7 @@
 # the classic "activity by weekday and hour" grid. A categorical fill would
 # instead take the ordinary swatch Colour path.
 #
-#   BRIGHTFIELD_DUMP_PNG=cell.png cargo run -p brightfield-app -- examples/cell.yaml
+#   cargo run -p brightfield-shell --bin brightfield-shot -- --spec examples/cell.yaml --out cell.png --vello-only
 data:
   activity:
     - { day: Mon, hour: "08", value: 3 }

@@ -3,7 +3,7 @@
 # pass folds the gap into each plot's placed rect, which drives both the window
 # and the headless composite — no per-spacer rendering needed (a gap is empty).
 #
-#   BRIGHTFIELD_DUMP_PNG=spacer.png cargo run -p brightfield-app -- examples/layout-spacer.yaml
+#   cargo run -p brightfield-shell --bin brightfield-shot -- --spec examples/layout-spacer.yaml --out spacer.png --vello-only
 data:
   t:
     - { x: 1, y: 3 }

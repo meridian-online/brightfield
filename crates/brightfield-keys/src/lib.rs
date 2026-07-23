@@ -2,18 +2,18 @@
 //!
 //! Scope is where focus sits on the ComponentPath tree; a bare argumentless verb
 //! acts on the focused node; a fuzzy Space palette carries discoverability so
-//! single keys stay terse. This crate is the gpui-FREE half of that grammar —
-//! the command registry, focus state machine, path↔plot resolver, scope resolver,
-//! palette filter, Esc ladder, and dispatch-resolution projection all live here as
-//! plain data and state machines. "Could this run headless? yes" — enforced by
-//! construction: this crate has NO gpui dependency. The GPUI adapter (in
-//! `brightfield-app` / `brightfield-ui`) turns a [`BindingSpec`] into a
-//! `gpui::KeyBinding`, maps a `longname` to its action, and adapts these
-//! decisions into views; nothing here knows about gpui.
+//! single keys stay terse. This crate is the framework-FREE half of that
+//! grammar — the command registry, focus state machine, path↔plot resolver,
+//! scope resolver, palette filter, Esc ladder, and dispatch-resolution
+//! projection all live here as plain data and state machines. "Could this run
+//! headless? yes" — enforced by construction: this crate has NO UI-framework
+//! dependency. The windowed shell (`brightfield-shell`) adapts a
+//! [`BindingSpec`] into its own key handling and these decisions into views;
+//! nothing here knows about the framework.
 //!
 //! Verification split: everything here is headless-unit-tested (verifies:
-//! capability). The live GPUI wiring that consumes it is macOS-eyeball verified,
-//! because keyboard interaction is not headless-testable.
+//! capability). The live windowed wiring that consumes it is verified by the
+//! shell's scripted-keystroke capture tier and on-device eyeballs.
 
 pub mod altitude;
 pub mod cmdlog;

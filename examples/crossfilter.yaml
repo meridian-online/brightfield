@@ -6,7 +6,7 @@ meta:
     Both plots brush into the same `$brush` selection and are filtered by it, so
     each cross-filters the other (a plot never filters itself).
 
-      cargo run -p brightfield-app -- examples/crossfilter.yaml
+      cargo run -p brightfield-shell -- examples/crossfilter.yaml
 params:
   brush: { select: crossfilter }
 data:

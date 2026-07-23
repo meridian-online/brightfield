@@ -6,7 +6,7 @@
 # true quantitative scale synthesised from the bin edges.
 #
 # Preview headlessly:
-#   BRIGHTFIELD_DUMP_PNG=out.png cargo run -p brightfield-app -- examples/rect-histogram.yaml
+#   cargo run -p brightfield-shell --bin brightfield-shot -- --spec examples/rect-histogram.yaml --out out.png --vello-only
 data:
   bins:
     - { lo: 0, hi: 1, count: 2 }

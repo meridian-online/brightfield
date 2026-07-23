@@ -5,7 +5,7 @@
 # widget lands (window-gated) — re-executes the query and drops/adds points.
 #
 # Verify headless: dump the PNG at the default threshold, then at an override.
-#   BRIGHTFIELD_DUMP_PNG=out.png cargo run -p brightfield-app -- examples/param-threshold.yaml
+#   cargo run -p brightfield-shell --bin brightfield-shot -- --spec examples/param-threshold.yaml --out out.png --vello-only
 params:
   threshold: 2
 data:

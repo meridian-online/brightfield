@@ -5,8 +5,8 @@
 # composites it. Press `p` to toggle presentation mode (chrome hides, canvas
 # re-centres, window size unchanged).
 #
-#   cargo run -p brightfield-app -- examples/framed.yaml
-#   BRIGHTFIELD_DUMP_PNG=framed.png cargo run -p brightfield-app -- examples/framed.yaml
+#   cargo run -p brightfield-shell -- examples/framed.yaml
+#   cargo run -p brightfield-shell --bin brightfield-shot -- --spec examples/framed.yaml --out framed.png --vello-only
 meta:
   title: Quarterly Species Mix
 data:

@@ -5,7 +5,7 @@ meta:
     the x=0 baseline rightward to the value line x(y), with points ordered along
     the y (position) axis.
 
-      cargo run -p brightfield-app -- examples/area-x.yaml
+      cargo run -p brightfield-shell -- examples/area-x.yaml
 data:
   series:
     - { pos: 0,  val: 12 }

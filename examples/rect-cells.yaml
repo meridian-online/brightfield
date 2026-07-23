@@ -6,7 +6,7 @@
 # cell categorically.
 #
 # Preview headlessly:
-#   BRIGHTFIELD_DUMP_PNG=out.png cargo run -p brightfield-app -- examples/rect-cells.yaml
+#   cargo run -p brightfield-shell --bin brightfield-shot -- --spec examples/rect-cells.yaml --out out.png --vello-only
 data:
   cells:
     - { x1: 0, x2: 2, y1: 0, y2: 3, g: a }

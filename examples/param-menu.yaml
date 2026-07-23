@@ -11,10 +11,10 @@
 # (a `style:` key in the options bag), so this spec parses as plain Mosaic.
 #
 # Run the window (macOS) and click the widgets:
-#   cargo run -p brightfield-app -- examples/param-menu.yaml
+#   cargo run -p brightfield-shell -- examples/param-menu.yaml
 # Preview a value headlessly:
 #   BRIGHTFIELD_PARAM_OVERRIDE="region=west" BRIGHTFIELD_DUMP_PNG=out.png \
-#     cargo run -p brightfield-app -- examples/param-menu.yaml
+#     cargo run -p brightfield-shell -- examples/param-menu.yaml
 params:
   region: east
   kind: circle

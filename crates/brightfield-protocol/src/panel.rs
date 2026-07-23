@@ -1,10 +1,10 @@
 //! Framework-free derivation for the Protocol panel's outline + inspector.
 //!
-//! The live gpui panel (`brightfield-app::protocol_shell`) and the headless
+//! The live Protocol panel (`brightfield-shell`) and the headless
 //! panel-composite render (`brightfield-render::panel_scene`) draw the SAME
-//! derived rows and facts from this module — no gpui, no vello. Keeping the
-//! derivation here means the PNG proof and the live surface can never drift:
-//! both read [`outline_rows`] and [`inspector_for`].
+//! derived rows and facts from this module — no UI framework, no vello.
+//! Keeping the derivation here means the PNG proof and the live surface can
+//! never drift: both read [`outline_rows`] and [`inspector_for`].
 //!
 //! - The **outline** is the graph's nodes in deterministic topological order
 //!   (producer → consumer; a stable Kahn sort with an id-sorted ready set), the

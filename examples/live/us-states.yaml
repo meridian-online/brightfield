@@ -26,7 +26,7 @@
 # stated v1 gap — until then, drop the `filter:` line to see everything in place.
 #
 # Run it in-app (a window, not the PNG dump):
-#   cargo run -p brightfield-app -- examples/live/us-states.yaml
+#   cargo run -p brightfield-shell -- examples/live/us-states.yaml
 #
 # For the hermetic, offline, PNG-baselined geo demo see examples/geo.yaml.
 meta:

@@ -5,11 +5,11 @@ meta:
     of circles whose opacity encodes local density. The lowerer equiwidth-bins
     both axes (here `thresholds: 12`) and the renderer smooths the histogram.
 
-      cargo run -p brightfield-app -- examples/density.yaml
+      cargo run -p brightfield-shell -- examples/density.yaml
 
     Headless:
 
-      BRIGHTFIELD_DUMP_PNG=density.png cargo run -p brightfield-app -- examples/density.yaml
+      cargo run -p brightfield-shell --bin brightfield-shot -- --spec examples/density.yaml --out density.png --vello-only
 data:
   points:
     - { x: 10, y: 10 }

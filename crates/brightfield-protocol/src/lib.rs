@@ -25,7 +25,8 @@
 //! always yields the same coordinates.
 //!
 //! **Dependency chain:** `brightfield-sql` (statement parse) -> this crate ->
-//! `brightfield-render` (asset_scene) -> `brightfield-app` (dump arm).
+//! `brightfield-render` (asset_scene) -> `brightfield-shell` (the Protocol
+//! panel and the headless shot).
 
 pub mod collapse;
 pub mod contract;

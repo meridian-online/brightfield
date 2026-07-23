@@ -3,12 +3,12 @@ meta:
   description: |
     A self-contained scatter plot over inline data — no external files needed.
 
-      cargo run -p brightfield-app -- examples/scatter.yaml
+      cargo run -p brightfield-shell -- examples/scatter.yaml
 
     On macOS this opens a native window. Anywhere else (or for a quick check),
     render to an image instead:
 
-      BRIGHTFIELD_DUMP_PNG=scatter.png cargo run -p brightfield-app -- examples/scatter.yaml
+      cargo run -p brightfield-shell --bin brightfield-shot -- --spec examples/scatter.yaml --out scatter.png --vello-only
 data:
   points:
     - { weight: 52, height: 158, group: A }
