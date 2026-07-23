@@ -29,9 +29,9 @@ env:
 jobs:
   fmt-clippy:
     # macos-15, matching `test`, and NOT the ubuntu-latest that `public-hygiene`
-    # uses. Not a copy-paste: `brightfield-app` depends on gpui unconditionally,
-    # and clippy has to build the dependency graph to lint it. Standing gpui up
-    # on Linux needs the system-dependency matrix (Vulkan, wayland/X11,
+    # uses. Not a copy-paste: clippy has to build the dependency graph to lint
+    # it, and standing the winit/wgpu window stack up on Linux needs the
+    # system-dependency matrix (Vulkan, wayland/X11,
     # xkbcommon, fontconfig) that `test.yml` records as unvalidated in this
     # repo, so an ubuntu runner here would be a gate nobody had seen pass. The
     # cheap-runner win is real but it belongs to whoever validates that matrix;
@@ -53,8 +53,8 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      # Shared with `test`'s cache. The git dependencies (zed/GPUI,
-      # gpui-component) dominate a cold run.
+      # Shared with `test`'s cache. The git dependencies (the design-system
+      # and arcform pins) plus wgpu/vello dominate a cold run.
       - uses: Swatinem/rust-cache@v2
 
       # `fmt` first: it builds nothing, so a formatting slip reports before

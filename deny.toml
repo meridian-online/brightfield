@@ -24,7 +24,6 @@ allow = [
   "BSL-1.0",
   "CC0-1.0",
   "Unicode-3.0",
-  "bzip2-1.0.6",
   "NCSA",
   "CDLA-Permissive-2.0",
   # MPL-2.0 is file-scoped weak copyleft: acceptable in an MIT binary provided
@@ -43,7 +42,17 @@ allow = [
 ]
 
 [advisories]
-# No waivers. Anything the RUSTSEC feed flags in the surviving graph must be
-# resolved (bump the dependency) or waived HERE with a written justification —
-# a bare id with no reason does not pass review.
-ignore = []
+# Anything the RUSTSEC feed flags in the surviving graph must be resolved
+# (bump the dependency) or waived HERE with a written justification — a bare
+# id with no reason does not pass review.
+ignore = [
+  # paste 1.0.15 — unmaintained-crate NOTICE, not a vulnerability. A
+  # compile-time proc-macro (no code of it ships in a binary), reached only
+  # through the AVIF encoder chain of `image` (rav1e -> ravif), whose
+  # default-features are enabled by third-party consumers we do not control
+  # (dify under egui_kittest; smithay-client-toolkit on the Linux target) —
+  # so feature-narrowing our own `image` dependency cannot remove it. No
+  # fixed release exists ("no safe upgrade"); drop this waiver when
+  # image/rav1e move off paste.
+  "RUSTSEC-2024-0436",
+]
