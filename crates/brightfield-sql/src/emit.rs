@@ -1215,8 +1215,7 @@ mod query_tests {
         )];
         let emitted = emit_query(&spec, 0, None, Some(&selections)).unwrap();
         assert_eq!(
-            emitted.sql,
-            "SELECT * FROM (SELECT * FROM \"t\") AS _f WHERE (\"y\" <= 5)",
+            emitted.sql, "SELECT * FROM (SELECT * FROM \"t\") AS _f WHERE (\"y\" <= 5)",
             "row-level placement is unchanged"
         );
     }
@@ -1237,7 +1236,10 @@ mod query_tests {
         let (name, sel_path) = mark_selection_name(&spec, 0).expect("filterBy resolves");
         assert_eq!(name, "brush");
         assert_eq!(sel_path, path);
-        assert!(mark_selection_name(&spec, 9).is_none(), "out of bounds → None");
+        assert!(
+            mark_selection_name(&spec, 9).is_none(),
+            "out of bounds → None"
+        );
     }
 
     /// pefr review regression (#4): a filter with NO `$param` parses to

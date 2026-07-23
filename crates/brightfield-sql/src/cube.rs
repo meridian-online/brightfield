@@ -30,9 +30,7 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use crate::ir::{
-    AggregateCall, AggregateExpr, AggregateFunction, Predicate, QueryPlan, SortDir,
-};
+use crate::ir::{AggregateCall, AggregateExpr, AggregateFunction, Predicate, QueryPlan, SortDir};
 use crate::render::render_query;
 
 /// Column-name prefixes reserved for cube-internal columns.
@@ -187,9 +185,7 @@ impl CubeDerivation {
             let y = format!("(CAST({} AS DOUBLE) - {cy})", group.y);
             let f = &group.pair_filter;
             group.cols = Some(RegrCols {
-                n: self
-                    .stats
-                    .intern(format!("COUNT(*) FILTER (WHERE {f})")),
+                n: self.stats.intern(format!("COUNT(*) FILTER (WHERE {f})")),
                 sx: self.stats.intern(format!("sum({x}) FILTER (WHERE {f})")),
                 sy: self.stats.intern(format!("sum({y}) FILTER (WHERE {f})")),
                 sxx: self
@@ -576,10 +572,13 @@ fn find_top_level_as(s: &str) -> Option<usize> {
             b'"' if !in_single => in_double = !in_double,
             b'(' if !in_single && !in_double => depth += 1,
             b')' if !in_single && !in_double => depth = depth.saturating_sub(1),
-            b' ' if depth == 0 && !in_single && !in_double => {
-                if s[i..].len() >= 4 && (s[i..i + 4].eq_ignore_ascii_case(" as ")) {
-                    last = Some(i);
-                }
+            b' ' if depth == 0
+                && !in_single
+                && !in_double
+                && s[i..].len() >= 4
+                && s[i..i + 4].eq_ignore_ascii_case(" as ") =>
+            {
+                last = Some(i);
             }
             _ => {}
         }
@@ -724,12 +723,7 @@ fn decompose(
 /// second moments reassemble exactly:
 /// `Sxx = ΣSxx − SX²/N`, `Sxy = ΣSxy − SX·SY/N`, `Syy = ΣSyy − SY²/N`,
 /// and the means shift back by the centering constants.
-fn regr_reassembly(
-    func: AggregateFunction,
-    cols: &RegrCols,
-    cx: &str,
-    cy: &str,
-) -> Option<String> {
+fn regr_reassembly(func: AggregateFunction, cols: &RegrCols, cx: &str, cy: &str) -> Option<String> {
     let n = format!("sum(\"{}\")", cols.n);
     let sx = format!("sum(\"{}\")", cols.sx);
     let sy = format!("sum(\"{}\")", cols.sy);
@@ -870,7 +864,10 @@ mod tests {
         assert!(q.contains("\"__bf_dim0\" AS \"x\""));
         assert!(q.contains("CAST(sum(\"__bf_s0\") AS DOUBLE) AS __bf_count"));
         assert!(q.contains("ORDER BY \"x\" ASC"));
-        assert!(!q.contains("FROM \"t\""), "the re-query never touches the base table");
+        assert!(
+            !q.contains("FROM \"t\""),
+            "the re-query never touches the base table"
+        );
     }
 
     #[test]
@@ -884,7 +881,10 @@ mod tests {
             .expect("finalizes");
         assert!(sqls.build_select.contains("\"z\" = 4"));
         let q = sqls.query_select("c").expect("query");
-        assert!(!q.contains("\"z\" = 4"), "rest is baked into the cube, not re-applied");
+        assert!(
+            !q.contains("\"z\" = 4"),
+            "rest is baked into the cube, not re-applied"
+        );
     }
 
     #[test]
@@ -964,18 +964,18 @@ mod tests {
                 input: Box::new(QueryPlan::Source {
                     table: "t".to_string(),
                 }),
-                predicate: Predicate::Expr(
-                    "\"w\" IS NOT NULL AND \"h\" IS NOT NULL".to_string(),
-                ),
+                predicate: Predicate::Expr("\"w\" IS NOT NULL AND \"h\" IS NOT NULL".to_string()),
             }),
             aggregates: vec![
                 regr(AggregateFunction::RegrSlope, "slope"),
                 regr(AggregateFunction::RegrCount, "n"),
             ],
         };
-        let derivation =
-            derive_cube(&plan, &interval("\"g\"", 0.0, 9.0), None).expect("derives");
-        let probe = derivation.probe_sql().expect("regr needs centers").to_string();
+        let derivation = derive_cube(&plan, &interval("\"g\"", 0.0, 9.0), None).expect("derives");
+        let probe = derivation
+            .probe_sql()
+            .expect("regr needs centers")
+            .to_string();
         assert_valid_sql(&probe);
         assert!(probe.contains("avg(CAST(\"w\" AS DOUBLE))"));
         assert!(probe.contains("avg(CAST(\"h\" AS DOUBLE))"));
@@ -985,20 +985,28 @@ mod tests {
         // Six moment statistics share one group; centering constants baked in.
         assert!(sqls.build_select.contains("- 100.0"));
         assert!(sqls.build_select.contains("- 5.0"));
-        assert!(sqls.build_select.contains("FILTER (WHERE \"h\" IS NOT NULL AND \"w\" IS NOT NULL)"));
+        assert!(sqls
+            .build_select
+            .contains("FILTER (WHERE \"h\" IS NOT NULL AND \"w\" IS NOT NULL)"));
 
         let q = sqls.query_select("c").expect("query");
         assert_valid_sql(&q);
         assert!(q.contains("nullif"), "slope guards zero variance");
         assert!(q.contains("CAST(coalesce(sum(\"__bf_s0\"), 0) AS BIGINT) AS n"));
-        assert!(!q.contains("GROUP BY"), "scalar shape re-queries without GROUP BY");
+        assert!(
+            !q.contains("GROUP BY"),
+            "scalar shape re-queries without GROUP BY"
+        );
     }
 
     #[test]
     fn center_count_mismatch_bails() {
         let plan = density_like_plan();
         let derivation = derive_cube(&plan, &interval("\"y\"", 0.0, 1.0), None).unwrap();
-        assert!(derivation.finalize(&[1.0]).is_none(), "unexpected centers → bail");
+        assert!(
+            derivation.finalize(&[1.0]).is_none(),
+            "unexpected centers → bail"
+        );
     }
 
     #[test]
@@ -1078,7 +1086,10 @@ mod tests {
             .unwrap();
         let q = sqls.query_select("c").unwrap();
         assert!(q.contains("\"__bf_a0\" = 'Rowing' OR \"__bf_a0\" = 'Judo'"));
-        assert!(!q.contains("\"sport\" ="), "original column never re-filtered");
+        assert!(
+            !q.contains("\"sport\" ="),
+            "original column never re-filtered"
+        );
     }
 
     #[test]

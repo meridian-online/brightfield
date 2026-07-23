@@ -1084,7 +1084,15 @@ plot:
         let b = direct.chart_rows(0).expect("direct");
         assert_eq!(rows(&a), 1);
         assert_eq!(rows(&b), 1);
-        for col in ["slope", "intercept", "x_bar", "x_min", "x_max", "y_min", "y_max"] {
+        for col in [
+            "slope",
+            "intercept",
+            "x_bar",
+            "x_min",
+            "x_max",
+            "y_min",
+            "y_max",
+        ] {
             let va = column_f64(&a, col)[0];
             let vb = column_f64(&b, col)[0];
             assert!(

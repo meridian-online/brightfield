@@ -49,8 +49,8 @@ use brightfield_spec::vocab::MarkKind;
 use brightfield_sql::ir::{ClauseMeta, Predicate, ScaleDescriptor};
 
 use crate::brush::{
-    brush_rect_to_structured, commit_brush_release_multi, commit_brush_release_multi_structured,
-    commit_click_multi, point_predicate, BrushBinding, SelectionDispatcher, ZERO_AREA_EPSILON,
+    brush_rect_to_structured, commit_brush_release_multi_structured, commit_click_multi,
+    point_predicate, BrushBinding, SelectionDispatcher, ZERO_AREA_EPSILON,
 };
 use crate::interaction::InteractionState;
 use crate::menu::{commit_menu_release, MenuBinding, MenuState};
@@ -1614,6 +1614,7 @@ pub fn structured_brush_predicate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::brush::commit_brush_release_multi;
     use crate::chart_state::ChartState;
     use brightfield_render::mark::configured_renderer;
     use brightfield_render::scale::{anchor_scales, SequentialScheme};

@@ -6,7 +6,7 @@
 //!
 //! - **Trigger.** When a selection interaction carries a *structured* clause
 //!   ([`Predicate::Interval`] / [`Predicate::Point`]), the propagation path
-//!   calls [`Session::preagg_prepare`] before dispatching re-queries. For each
+//!   calls `Session::preagg_prepare` before dispatching re-queries. For each
 //!   subscriber mark it derives a cube, materialises it once as a
 //!   session-scoped TEMP table, and registers a *serve*: the exact direct SQL
 //!   the dispatch is about to execute, paired with the cube re-query that
