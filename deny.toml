@@ -1,10 +1,16 @@
-# License gate: `cargo deny check licenses`
+# Dependency gates: `cargo deny check licenses` + `cargo deny check advisories`
 #
-# Purpose: Brightfield ships MIT binaries, but gpui is built from the zed git
-# tree, which has carried GPL-3.0 crates since 2025-12-05 (sum_tree -> ztracing
-# -> zlog; zed issue #55470). The GPL shims are replaced by clean-room stubs via
-# the [patch] section in Cargo.toml; this config makes any copyleft regression a
-# loud failure at every pin bump. (GPL-precedent rationale tracked in planning.)
+# Licenses: Brightfield ships MIT binaries; every dependency must carry a
+# permissive licence from the allow-list below. The list was born as the
+# firewall around the zed/gpui git tree (which carried GPL-3.0 crates); that
+# tree is gone, and the gate stays as general hygiene — any copyleft entrant
+# fails loudly in CI.
+#
+# Advisories: the RUSTSEC feed, gated in CI alongside licenses. The advisory
+# surface that used to fire here (async-std, rustybuzz-via-usvg, et al.)
+# arrived through gpui and left with it; a new finding means a REAL advisory
+# in the graph we actually ship — resolve it with a bump, or waive it below
+# with a written reason.
 
 [licenses]
 allow = [
@@ -26,8 +32,7 @@ allow = [
   # new MPL entrant in review rather than blocking the build.
   "MPL-2.0",
   # 0BSD (BSD Zero Clause) is OSI-approved and maximally permissive — public-
-  # domain-equivalent, no attribution clause. Entrant: enum-iterator +
-  # enum-iterator-derive, via gpui-component (approved 2026-07-06).
+  # domain-equivalent, no attribution clause.
   "0BSD",
   # Open-font licenses for egui's bundled default fonts (Ubuntu-Light + the
   # Noto/emoji fallbacks the egui default FontDefinitions ship). Both are
@@ -37,15 +42,8 @@ allow = [
   "Ubuntu-font-1.0",
 ]
 
-# Zed-tree crates whose manifests omit a license field. The zed repo licenses
-# its non-GPL crates Apache-2.0 (each of these sits alongside LICENSE-APACHE in
-# the tree; verified at pin 1d217ee).
-[[licenses.clarify]]
-crate = "gpui_util"
-expression = "Apache-2.0"
-license-files = []
-
-[[licenses.clarify]]
-crate = "gpui_shared_string"
-expression = "Apache-2.0"
-license-files = []
+[advisories]
+# No waivers. Anything the RUSTSEC feed flags in the surviving graph must be
+# resolved (bump the dependency) or waived HERE with a written justification —
+# a bare id with no reason does not pass review.
+ignore = []
