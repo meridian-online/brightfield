@@ -26,6 +26,17 @@
 //! active-column derivation from the interaction clause, and transparent
 //! fallback to the direct query whenever derivation bails. The implementation
 //! is native to this crate's IR; no Mosaic code is vendored.
+//!
+//! **One deliberate divergence:** active interval columns enter the cube at
+//! their RAW data values, not binned to pixel resolution. Mosaic bins the
+//! active column through the scale transform (bounding the cube at ~plot-width
+//! cells) and accepts pixel-snapped answers; here the cube's answer must equal
+//! the direct query's for *any* clause bounds, so exactness wins the first
+//! cut. The cost is cube size proportional to the active column's distinct
+//! count. The structured clause already carries the scale/pixel metadata
+//! ([`crate::ir::ClauseMeta`]), so pixel-resolution binning is a later swap of
+//! the active-dimension expression — made when measurement shows the size
+//! matters and the brush's bounds are provably grid-aligned.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
