@@ -3,8 +3,8 @@
 //! ChartState holds all mutable chart state: the Vello scene, interaction state,
 //! navigation state, transition state, layout dimensions, and a shared
 //! VelloRenderer reference. The HOST owns the reactive cell it lives in and
-//! addresses it through [`crate::reactive::ReactiveHandle`] (the gpui shell:
-//! `Entity<ChartState<…>>`); this module names no host type.
+//! addresses it through [`crate::reactive::ReactiveHandle`]; this module
+//! names no host type.
 //!
 //! The one host-specific thing the state touches is its base-raster cache:
 //! what a presented scene *becomes* is the host's texture handle (the
@@ -267,10 +267,10 @@ impl<S> ChartState<S> {
     // These translate a window-space pointer position (with the element's
     // origin) into the chart's local plot coordinates and update the
     // interaction state. Each returns `true` when the state changed so the
-    // caller can trigger a repaint. They are the single source of truth shared
-    // by the live event wiring (GpuiChartSurface) and the ChartView handlers.
+    // caller can trigger a repaint. They are the single source of truth for
+    // any host's live event wiring.
 
-    /// Pointer pressed. A thin shim over the gpui-free grab resolver
+    /// Pointer pressed. A thin shim over the framework-free grab resolver
     /// ([`InteractionState::resolve_press`]): a press ON the persisted
     /// `Selected` rect GRABS it (enters a move/resize sub-state preserving the
     /// rect) — resolved BEFORE the plot-contains gate, so a boundary handle in
@@ -383,7 +383,7 @@ impl<S> ChartState<S> {
     /// paint-phase cursor: the grabbable region under `window_pos`,
     /// or `Outside` when there is no persisted selection. While a grab is
     /// in-flight (`Dragging`) the active region holds, so the cursor stays put.
-    /// Pure over the gpui-free [`brush_region`]; the element's mouse-move
+    /// Pure over the framework-free [`brush_region`]; the element's mouse-move
     /// listener stores the result and refreshes on change.
     pub fn cursor_region(&self, window_pos: Point, element_origin: Point) -> BrushRegion {
         let local = self.layout.window_to_local(window_pos, element_origin);
@@ -416,8 +416,8 @@ impl<S> ChartState<S> {
             InteractionState::Brushing { start, current } => (*start, *current),
             _ => return false,
         };
-        let is_drag = (start.x - current.x).abs() >= crate::chart_view::ZERO_AREA_EPSILON
-            || (start.y - current.y).abs() >= crate::chart_view::ZERO_AREA_EPSILON;
+        let is_drag = (start.x - current.x).abs() >= crate::brush::ZERO_AREA_EPSILON
+            || (start.y - current.y).abs() >= crate::brush::ZERO_AREA_EPSILON;
         self.interaction = if is_drag {
             InteractionState::Selected { start, current }
         } else {
@@ -443,7 +443,7 @@ impl<S> ChartState<S> {
 }
 
 // ChartState must be Send (with a Send surface handle) for hosts whose
-// reactive cells require it (gpui's Entity does).
+// reactive cells require it.
 // This is safe because all remaining fields are Send:
 // - Scene is Send
 // - InteractionState is Send (Point, NearestHit are Send)

@@ -54,7 +54,7 @@ pub fn resolve_menu_placements(
         if input.kind != InputKind::Menu {
             continue;
         }
-        // Construction: the gpui-free model is the single source of the
+        // Construction: the framework-free model is the single source of the
         // construction-time degrade decisions (unknown style) — assembly
         // only logs what it surfaced.
         let (binding, reasons) = MenuBinding::from_input(input);

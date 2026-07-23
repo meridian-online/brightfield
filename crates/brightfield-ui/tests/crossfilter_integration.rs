@@ -16,7 +16,7 @@
 //! from `analyse_spec`, not a hand-built struct.
 //!
 //! Coordinates are constructed directly in DATA space — the pixel→data
-//! inversion that the live GPUI window needs is a separate increment, so it is
+//! inversion that a live window needs is a separate increment, so it is
 //! deliberately bypassed here (the brush rect is authored in column units).
 
 use brightfield_engine::Engine;
@@ -30,10 +30,8 @@ use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::{parse_spec, Format};
 use brightfield_sql::collect_marks;
 use brightfield_ui::brush::{
-    brush_rect_to_predicate, point_predicate, point_to_predicate, BrushKind,
-};
-use brightfield_ui::chart_view::{
-    commit_brush_clear, commit_brush_release_multi, commit_click_multi, BrushBinding,
+    brush_rect_to_predicate, commit_brush_clear, commit_brush_release_multi, commit_click_multi,
+    point_predicate, point_to_predicate, BrushBinding, BrushKind,
 };
 use brightfield_ui::InteractionState;
 use kurbo::{Point, Rect};

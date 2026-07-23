@@ -1,11 +1,11 @@
 //! Slider widget — first end-to-end input widget binding (rpw3 layer 3).
 //!
-//! Mirrors the brush.rs / chart_view.rs pattern from cfs2: a value-typed
+//! Mirrors the brush.rs commit pattern from cfs2: a value-typed
 //! `ParamDispatcher` trait abstracts the param-coordinator surface that
 //! the UI calls when a slider release commits, an `impl ParamDispatcher
 //! for brightfield_engine::Session` forwards to `Session::propagate_param`,
 //! and a pure `commit_slider_release` helper isolates the dispatch logic
-//! from the GPUI event loop so it can be exercised against a recording
+//! from the windowed event loop so it can be exercised against a recording
 //! double (the lifted-helper precedent).
 //!
 //! ## Out of scope (Decision 2 case iii deferral)
@@ -41,8 +41,8 @@ use brightfield_spec::ast::{Input, SpecValue, ValueOrParamRef};
 /// `ChartView` (or any host that wires a slider in) calls `dispatch` on
 /// release; the real `Session` impl forwards to `propagate_param`. Tests
 /// substitute a recording double that returns an empty result vec but
-/// captures the call — the same shape the brush `RecordingDispatcher`
-/// uses in `chart_view.rs`.
+/// captures the call — the same shape the brush commit tests'
+/// `RecordingDispatcher` uses in `brush.rs`.
 pub trait ParamDispatcher {
     /// Dispatch a new value for `name`. Returns one (mark_index, Result)
     /// tuple per subscriber that re-executed during the topological
@@ -123,9 +123,9 @@ fn read_numeric_option(input: &Input, key: &str) -> Option<f64> {
     }
 }
 
-/// Per-frame state for a slider, lifted out of GPUI so it can be tested
-/// without a window. Mirrors the `InteractionState`/`commit_brush_release`
-/// shape from chart_view.rs.
+/// Per-frame state for a slider, lifted out of the windowed shell so it can
+/// be tested without a window. Mirrors the
+/// `InteractionState`/`commit_brush_release` shape from brush.rs.
 ///
 /// Transitions: `Idle → Dragging` on `mouse_down`,
 /// `Dragging → Released` on `mouse_up`,
@@ -177,7 +177,7 @@ impl SliderState {
 ///
 /// On a non-`Released` state the helper is a no-op: empty result vec and
 /// the state passes through unchanged. This mirrors `commit_brush_release`
-/// in `chart_view.rs:181-206`.
+/// in `brush.rs`.
 pub fn commit_slider_release<D: ParamDispatcher>(
     state: &SliderState,
     binding: &SliderBinding,
@@ -283,7 +283,7 @@ mod tests {
     use indexmap::IndexMap;
 
     /// Recording test double — captures every dispatch call in order.
-    /// Mirrors the brush RecordingDispatcher in chart_view.rs:323-346.
+    /// Mirrors the brush RecordingDispatcher in brush.rs.
     struct RecordingDispatcher {
         calls: Vec<(String, SpecValue)>,
     }

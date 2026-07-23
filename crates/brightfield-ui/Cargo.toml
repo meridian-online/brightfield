@@ -5,25 +5,16 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "GPUI application shell: Vello chart rendering + interaction in a native window"
+description = "Framework-free chart interaction logic: brush/click/widget commit paths, chart state, and the live cross-filter coordinator"
 
 [dependencies]
 brightfield-render = { path = "../brightfield-render" }
 brightfield-engine = { path = "../brightfield-engine" }
 brightfield-spec = { path = "../brightfield-spec" }
 brightfield-sql = { path = "../brightfield-sql" }
-# Meridian design tokens — the GPUI twins of the vello-side chart ink (slider
-# pair, hover disc) read the same source the render crate does.
-gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", package = "gpui" }
-# Meridian design tokens (design phase 4 PR A): GPUI-side overlay colours
-# (brush rect, focus ring). MIT, dependency-free by contract.
-meridian-design = { git = "https://github.com/meridian-online/design", rev = "952eea92e4659a0f80a998709b81742be5d7385b" }
 vello = "0.9"
 kurbo = "0.13"
 peniko = "0.6"
-pollster = "0.4"
-image = "0.25"
-smallvec = "1"
 
 [features]
 gpu-tests = []

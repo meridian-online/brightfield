@@ -3,12 +3,12 @@
 //!
 //! Panel identities, default dock geometry, the initial-window-size formula,
 //! and the presentation-mode → panel-visibility mapping all live
-//! here as plain data and arithmetic; `shell.rs` is the thin GPUI/
-//! gpui-component translation shim over this module. No gpui import may
+//! here as plain data and arithmetic; a windowed shell is a thin
+//! translation shim over this module. No UI-framework import may
 //! enter this file (semantic-layer rule).
 //!
 //! [`PresentationMode`] itself stays in `brightfield_ui::workspace` (the
-//! gpui-free machine, deliberately unmoved); this module only maps it
+//! framework-free machine, deliberately unmoved); this module only maps it
 //! onto the dock shell: which panels report `visible()` and whether the
 //! authoring docks are open.
 

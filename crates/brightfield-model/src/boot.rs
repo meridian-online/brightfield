@@ -7,7 +7,7 @@
 //! The workspace shell (DockArea, panels, editor — `shell.rs`) is only
 //! called from the [`BootMode::Window`] arm, so no shell state can ever
 //! move a pixel in a dumped PNG (the byte-identity halt gate's structural
-//! guarantee). No gpui import may enter this file (semantic-layer rule).
+//! guarantee). No UI-framework import may enter this file (semantic-layer rule).
 
 /// How this process runs, decided once at startup from the environment.
 #[derive(Debug, Clone, PartialEq, Eq)]

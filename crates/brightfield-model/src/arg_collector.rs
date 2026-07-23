@@ -2,13 +2,13 @@
 //!
 //! Two of the five keyboard editing verbs take arguments: `add-mark` collects a mark
 //! KIND, and `set-channel` collects a CHANNEL then a COLUMN. The Space palette's
-//! `run_palette` today only pick->runs a bare action; this gpui-free state
-//! machine drives a NEW palette argument-prompt mode. The overlay (the gpui
-//! shim) reuses the fuzzy matcher to filter the option lists this collector
+//! `run_palette` today only pick->runs a bare action; this framework-free state
+//! machine drives a NEW palette argument-prompt mode. The overlay (the
+//! shell's shim) reuses the fuzzy matcher to filter the option lists this collector
 //! offers, and feeds each pick back in via [`ArgCollector::pick`]; a completed
 //! collection yields the fully-formed [`SpecEdit`] the caller applies.
 //!
-//! No gpui type crosses this boundary (semantic-layer rule).
+//! No UI-framework type crosses this boundary (semantic-layer rule).
 //!
 //! The palette argument-prompt overlay (shell's `Overlay::Arg`) drives this for
 //! the `a`/`e` verbs; the overlay itself is a macOS-eyeball surface, but the
