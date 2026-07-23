@@ -36,6 +36,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# The repo's exact toolchain pin (the same one CI nails via its toolchain
+# action; there is no rust-toolchain.toml). Overridable, but the default must
+# not be "whatever cargo the shell finds" — the workspace floor is above some
+# installed defaults, and a release artifact should be built by the pinned
+# compiler, not by luck.
+export RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-1.95.0}"
+
 CRATE_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/brightfield-shell/Cargo.toml | head -1)
 VERSION="${1:-v${CRATE_VERSION}-local}"
 HOST=$(rustc -vV | sed -n 's/^host: //p')
