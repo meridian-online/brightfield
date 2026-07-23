@@ -1109,6 +1109,42 @@ plot:
         let _ = std::fs::remove_file(&path);
     }
 
+    /// The layer's on/off switch: disabled, every interaction runs direct
+    /// (and existing cubes are retired); re-enabled, the cube engages again.
+    /// This is the lever the measurement harness uses to isolate the layer.
+    #[test]
+    fn preagg_toggle_disables_and_reenables_the_layer() {
+        let mut coord = coordinator_from(DENSITY_UNDER_BRUSH);
+        let contributor = ComponentPath("root/vconcat[99]".to_string());
+        assert!(coord.session().preagg_enabled(), "enabled by default");
+
+        coord.session_mut().set_preagg_enabled(false);
+        coord.apply(Interaction::Select {
+            name: "brush".to_string(),
+            contributor: contributor.clone(),
+            predicate: structured_y_interval(10.0, 49.0),
+        });
+        assert_eq!(coord.session().preagg_stats().cubes_built, 0, "no cube");
+        assert_eq!(coord.session().preagg_stats().cube_hits, 0, "no serve");
+        assert!(
+            coord
+                .session()
+                .executed_sql()
+                .iter()
+                .any(|s| s.contains("\"events_base\"")),
+            "the direct query ran against the base table"
+        );
+
+        coord.session_mut().set_preagg_enabled(true);
+        coord.apply(Interaction::Select {
+            name: "brush".to_string(),
+            contributor,
+            predicate: structured_y_interval(12.0, 47.0),
+        });
+        assert_eq!(coord.session().preagg_stats().cubes_built, 1, "re-engaged");
+        assert_eq!(coord.session().preagg_stats().cube_hits, 1);
+    }
+
     /// A self-aggregating cell under a POINT clause: served from the cube,
     /// equal to the direct result.
     #[test]

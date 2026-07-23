@@ -39,8 +39,62 @@ use crate::stats::Stats;
 
 /// The density-pair scenario spec, compiled in from `benchmarks/specs/`.
 const SPEC_DENSITY: &str = include_str!("../../../benchmarks/specs/crossfilter-density.yaml");
+/// The bounded-cardinality density spec, compiled in from `benchmarks/specs/`.
+const SPEC_BINNED: &str = include_str!("../../../benchmarks/specs/crossfilter-binned-density.yaml");
 /// The raw-dot scenario spec, compiled in from `benchmarks/specs/`.
 const SPEC_DOTS: &str = include_str!("../../../benchmarks/specs/crossfilter-dots.yaml");
+/// The crosswalk scenario spec (opt-in, fixed scale), compiled in from
+/// `benchmarks/specs/`.
+const SPEC_CROSSWALK: &str = include_str!("../../../benchmarks/specs/crosswalk-confidence.yaml");
+
+/// One committed scaling scenario: which spec, which brush, what the
+/// pre-aggregation layer is expected to do.
+struct SpecDef {
+    name: &'static str,
+    template: &'static str,
+    brush_column: &'static str,
+    brush_domain: (f64, f64),
+    /// Whether the enabled run must show the cube engaging (checked both
+    /// ways — see the scenario module's non-vacuity guards).
+    expect_cube: bool,
+    /// Whether frame suites are capped by row count for this scenario.
+    frames_capped: bool,
+}
+
+/// The scaling scenarios, in report order.
+const SCENARIOS: &[SpecDef] = &[
+    SpecDef {
+        name: "brush-density",
+        template: SPEC_DENSITY,
+        brush_column: "value_a",
+        brush_domain: (0.0, 100.0),
+        // The cube engages, but `value_a` is ~unique per row and active
+        // dimensions are raw-valued in the first cut, so the cube grows with
+        // the table — the record shows what that costs.
+        expect_cube: true,
+        frames_capped: false,
+    },
+    SpecDef {
+        name: "brush-binned-density",
+        template: SPEC_BINNED,
+        brush_column: "value_c",
+        brush_domain: (0.0, 40.0),
+        // Forty distinct brushed values: the cube stays O(bins × 40) at any
+        // row count — the layer's intended shape.
+        expect_cube: true,
+        frames_capped: false,
+    },
+    SpecDef {
+        name: "crossfilter-dots",
+        template: SPEC_DOTS,
+        brush_column: "value_a",
+        brush_domain: (0.0, 100.0),
+        // Row-level marks: nothing to pre-aggregate; the layer must stay
+        // silent.
+        expect_cube: false,
+        frames_capped: true,
+    },
+];
 
 /// Row counts above this skip the raw-dot scenario's FRAME suites (its engine
 /// suites run at every magnitude): an interaction frame over ten million raw
@@ -64,6 +118,9 @@ struct Args {
     out_dir: PathBuf,
     data_dir: PathBuf,
     label: Option<String>,
+    /// Opt-in: a local copy of the published crosswalk parquet; when present
+    /// the fixed-scale crosswalk scenario runs against it.
+    crosswalk_parquet: Option<PathBuf>,
 }
 
 impl Args {
@@ -79,6 +136,7 @@ impl Args {
             out_dir: root.join("benchmarks/results"),
             data_dir: root.join("benchmarks/.data"),
             label: None,
+            crosswalk_parquet: None,
         };
         let mut it = std::env::args().skip(1);
         while let Some(a) = it.next() {
@@ -108,6 +166,9 @@ impl Args {
                 "--out-dir" => args.out_dir = PathBuf::from(val("--out-dir")?),
                 "--data-dir" => args.data_dir = PathBuf::from(val("--data-dir")?),
                 "--label" => args.label = Some(val("--label")?),
+                "--crosswalk-parquet" => {
+                    args.crosswalk_parquet = Some(PathBuf::from(val("--crosswalk-parquet")?));
+                }
                 "--skip-frames" => args.skip_frames = true,
                 "--skip-corpus" => args.skip_corpus = true,
                 "--quick" => {
@@ -127,14 +188,19 @@ impl Args {
     }
 }
 
-/// One scenario × row-count row of the baseline.
+/// One scenario × row-count row of the baseline. The engine suites run twice
+/// on identical code — pre-aggregation enabled (`engine`, the shipped
+/// configuration) and disabled (`engine_direct`) — so the delta between the
+/// two brush-step latencies is attributable to the layer alone.
 #[derive(Debug, Serialize)]
 struct ScalingResult {
     scenario: String,
     rows: u64,
     dataset: String,
-    #[serde(flatten)]
+    /// The shipped configuration: automatic pre-aggregation enabled.
     engine: EngineMeasurement,
+    /// The same suites with the layer disabled — the direct-query control.
+    engine_direct: EngineMeasurement,
     #[serde(skip_serializing_if = "Option::is_none")]
     frames: Option<frames::FrameMeasurement>,
 }
@@ -179,7 +245,11 @@ const METHODOLOGY: &[&str] = &[
     "The composed scene currently draws a mark's FIRST Arrow batch only; materialised_rows vs first_batch_rows records where the drawn picture holds fewer rows than the query answered (the aggregating scenario fits one batch by construction; the raw-dot scenario does not past one batch).",
     "cold open = Coordinator::load (DDL, no mark queries) then the first full materialisation of every mark, on a session in the same process; the Parquet file is warm in the OS page cache.",
     "Datasets are deterministic pure functions of the row index via DuckDB hash() — no RNG. The raw-dot scenario's frame suites are capped at one million rows; its engine suites run at every magnitude.",
-    "The emitted SQL applies a selection predicate OUTSIDE a mark's query, so an aggregating mark can only be cross-filtered by a column its aggregation projects (a foreign column is a binder error today). The brush-density scenario therefore bins the brushed column itself: each brush step still re-runs the full-table aggregation, and the predicate filters bins after it. Moving that predicate inside the aggregation is what a pre-aggregation layer changes; this baseline measures what exists.",
+    "The emitted SQL applies a selection predicate INSIDE an aggregating mark's query — it filters the base rows that get aggregated (row-level marks are wrapped whole). The aggregating scenarios keep their original brush-the-binned-column shape so the measured series stays comparable across harness runs.",
+    "Each scenario's engine suites run twice on identical code: automatic pre-aggregation enabled (the shipped configuration) and disabled (the direct-query control). The delta between the two brush-step latencies is the layer's contribution. Cube engagement is verified per run — engaged and serving where the scenario expects it, silent where it does not — and a run whose cube behaviour contradicts the expectation FAILS instead of reporting.",
+    "Active interval dimensions enter a cube at RAW data values in this first cut (answer-exactness over cube size). A cube over a ~unique-per-row brushed column (brush-density's value_a) therefore approaches the base table's size and buys little; the bounded-cardinality scenario (brush-binned-density, forty distinct brushed values) and the crosswalk scenario measure the shape the layer is built for. Frame suites run in the shipped configuration only.",
+    "The crosswalk scenario is opt-in (--crosswalk-parquet) and fixed-scale: it measures the published company-identifier crosswalk dataset as-is; the harness records the file's row count rather than generating data.",
+    "In the enabled run, the FIRST brush step carries the one-time cube build (a full-table aggregation); it surfaces in the max percentile, while p50 reflects the steady per-step serve cost. Cubes are session-scoped and never persist.",
 ];
 
 fn main() -> ExitCode {
@@ -197,7 +267,8 @@ fn main() -> ExitCode {
             eprintln!(
                 "usage: brightfield-bench [--rows N,N,..] [--iterations N] [--frames N] \
                  [--warmup-frames N] [--skip-frames] [--skip-corpus] [--quick] \
-                 [--out-dir D] [--data-dir D] [--label NAME]"
+                 [--out-dir D] [--data-dir D] [--label NAME] \
+                 [--crosswalk-parquet FILE]"
             );
             return ExitCode::from(2);
         }
@@ -235,30 +306,36 @@ fn run(root: &Path, args: &Args) -> Result<Vec<PathBuf>, String> {
     let mut scaling = Vec::new();
     for &rows in &args.rows {
         let dataset = data::ensure_dataset(&gen_conn, &args.data_dir, rows)?;
-        for (name, template) in [
-            ("brush-density", SPEC_DENSITY),
-            ("crossfilter-dots", SPEC_DOTS),
-        ] {
-            let frames_capped = name == "crossfilter-dots" && rows > DOTS_FRAME_ROW_CAP;
-            eprintln!("scenario {name} @ {rows} rows ...");
-            let spec_text = template.replace(
+        for def in SCENARIOS {
+            let frames_capped = def.frames_capped && rows > DOTS_FRAME_ROW_CAP;
+            eprintln!("scenario {} @ {rows} rows ...", def.name);
+            let spec_text = def.template.replace(
                 "__DATA_PARQUET__",
                 dataset.to_str().ok_or("dataset path is not UTF-8")?,
             );
-            let sc = Scenario { name, spec_text };
+            let sc = Scenario {
+                name: def.name.to_string(),
+                spec_text,
+                brush_column: def.brush_column,
+                brush_domain: def.brush_domain,
+                expect_cube: def.expect_cube,
+            };
 
-            let engine = scenario::run_engine_suites(&sc, None, args.iterations)?;
+            // The A/B pair: direct control first, then the shipped
+            // configuration — identical code, the toggle is the only change.
+            let engine_direct = scenario::run_engine_suites(&sc, None, args.iterations, false)?;
+            let engine = scenario::run_engine_suites(&sc, None, args.iterations, true)?;
 
             let frames = if args.skip_frames || frames_capped {
                 None
             } else {
                 // The spec must exist as a file for the shell's boot path.
-                let spec_path = args.data_dir.join(format!("{name}_{rows}.yaml"));
+                let spec_path = args.data_dir.join(format!("{}_{rows}.yaml", def.name));
                 std::fs::write(&spec_path, &sc.spec_text)
                     .map_err(|e| format!("write {}: {e}", spec_path.display()))?;
                 let parsed =
                     brightfield_spec::parse_spec(&sc.spec_text, brightfield_spec::Format::Yaml)
-                        .map_err(|e| format!("{name}: parse: {e}"))?;
+                        .map_err(|e| format!("{}: parse: {e}", def.name))?;
                 let bindings = brightfield_spec::analysis::build_brushable_bindings(&parsed.spec);
                 let b = bindings.first().ok_or("no brushable binding")?;
                 let steady = frames::frames_steady(
@@ -269,6 +346,8 @@ fn run(root: &Path, args: &Args) -> Result<Vec<PathBuf>, String> {
                 )?;
                 let interaction = frames::frames_interaction(
                     &spec_path,
+                    def.brush_column,
+                    def.brush_domain,
                     &b.selection,
                     &b.parent_plot,
                     FRAME_SCALE,
@@ -282,16 +361,56 @@ fn run(root: &Path, args: &Args) -> Result<Vec<PathBuf>, String> {
             };
 
             scaling.push(ScalingResult {
-                scenario: name.to_string(),
+                scenario: def.name.to_string(),
                 rows,
                 dataset: dataset
                     .file_name()
                     .map(|f| f.to_string_lossy().into_owned())
                     .unwrap_or_default(),
                 engine,
+                engine_direct,
                 frames,
             });
         }
+    }
+
+    // The fixed-scale crosswalk scenario, when a local copy was supplied.
+    if let Some(parquet) = &args.crosswalk_parquet {
+        let parquet_str = parquet.to_str().ok_or("crosswalk path is not UTF-8")?;
+        let rows: u64 = gen_conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM read_parquet('{parquet_str}')"),
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|e| format!("crosswalk row count: {e}"))?
+            .try_into()
+            .map_err(|_| "crosswalk row count is negative".to_string())?;
+        eprintln!("scenario crosswalk-confidence @ {rows} rows (fixed) ...");
+        let sc = Scenario {
+            name: "crosswalk-confidence".to_string(),
+            spec_text: SPEC_CROSSWALK.replace("__DATA_PARQUET__", parquet_str),
+            brush_column: "confidence",
+            // Slightly wider than the data's [0.8, 1.0] so the drag's interval
+            // endpoints sweep ACROSS the crosswalk's few distinct confidence
+            // tiers — successive steps select varying non-empty subsets
+            // rather than always all-or-nothing.
+            brush_domain: (0.75, 1.05),
+            expect_cube: true,
+        };
+        let engine_direct = scenario::run_engine_suites(&sc, None, args.iterations, false)?;
+        let engine = scenario::run_engine_suites(&sc, None, args.iterations, true)?;
+        scaling.push(ScalingResult {
+            scenario: sc.name.clone(),
+            rows,
+            dataset: parquet
+                .file_name()
+                .map(|f| f.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            engine,
+            engine_direct,
+            frames: None,
+        });
     }
 
     let mut corpus = Vec::new();
@@ -327,7 +446,7 @@ fn run(root: &Path, args: &Args) -> Result<Vec<PathBuf>, String> {
     }
 
     let report = BaselineReport {
-        schema: "brightfield-bench/v1",
+        schema: "brightfield-bench/v2",
         machine,
         config: RunConfig {
             rows: args.rows.clone(),
@@ -419,10 +538,23 @@ fn render_markdown(r: &BaselineReport) -> String {
     let _ = writeln!(md);
     let _ = writeln!(
         md,
-        "| Scenario | Rows | Cold open (load + first query, ms) | Brush → data (ms) | \
-         Brush → scene (ms) | Steady frame (ms) | Interaction frame (ms) | Drawn/materialised rows |"
+        "`direct` disables the automatic pre-aggregation layer; `cubed` is the \
+         shipped configuration. Identical code either side of the toggle — the \
+         delta is the layer. `cube` shows what the enabled run's layer did: \
+         cubes built / brush steps served from a cube."
     );
-    let _ = writeln!(md, "|---|---:|---:|---:|---:|---:|---:|---:|");
+    let _ = writeln!(md);
+    let _ = writeln!(
+        md,
+        "| Scenario | Rows | Cold open (load + first query, ms) | \
+         Brush → data, direct (ms) | Brush → data, cubed (ms) | \
+         Brush → scene, direct (ms) | Brush → scene, cubed (ms) | Cube | \
+         Steady frame (ms) | Interaction frame (ms) | Drawn/materialised rows |"
+    );
+    let _ = writeln!(
+        md,
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+    );
     for s in &r.scaling {
         let drawn = s
             .engine
@@ -433,13 +565,17 @@ fn render_markdown(r: &BaselineReport) -> String {
             .join(" · ");
         let _ = writeln!(
             md,
-            "| {} | {} | {:.1} + {:.1} | {} | {} | {} | {} | {} |",
+            "| {} | {} | {:.1} + {:.1} | {} | {} | {} | {} | {}/{} | {} | {} | {} |",
             s.scenario,
             s.rows,
             s.engine.load_ms,
             s.engine.first_materialise_ms,
+            fmt_stats(&s.engine_direct.coordinator_apply),
             fmt_stats(&s.engine.coordinator_apply),
+            fmt_stats(&s.engine_direct.live_apply),
             fmt_stats(&s.engine.live_apply),
+            s.engine.preagg.cubes_built,
+            s.engine.preagg.cube_hits,
             s.frames
                 .as_ref()
                 .map_or("—".into(), |f| fmt_stats(&f.steady)),
@@ -485,6 +621,8 @@ mod tests {
     #[test]
     fn scenario_templates_carry_the_substitution_token() {
         assert!(SPEC_DENSITY.contains("__DATA_PARQUET__"));
+        assert!(SPEC_BINNED.contains("__DATA_PARQUET__"));
         assert!(SPEC_DOTS.contains("__DATA_PARQUET__"));
+        assert!(SPEC_CROSSWALK.contains("__DATA_PARQUET__"));
     }
 }

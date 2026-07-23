@@ -72,6 +72,9 @@ struct CubeEntry {
 /// The session's pre-aggregation state.
 #[derive(Default)]
 pub(crate) struct PreAgg {
+    /// `true` when the layer is switched off ([`Session::set_preagg_enabled`]):
+    /// no serves are prepared, so every interaction runs its direct query.
+    pub(crate) disabled: bool,
     /// mark index → the serve prepared for the CURRENT selection state.
     serves: HashMap<usize, CubeServe>,
     /// Materialised cubes, least recently used first.
@@ -114,6 +117,26 @@ impl Session {
         &self.preagg.stats
     }
 
+    /// Whether the automatic pre-aggregation layer is enabled (it is by
+    /// default).
+    #[must_use]
+    pub fn preagg_enabled(&self) -> bool {
+        !self.preagg.disabled
+    }
+
+    /// Switch the automatic pre-aggregation layer on or off. Disabling
+    /// retires every materialised cube and serve, so every subsequent
+    /// interaction runs its direct query — behaviourally identical, only
+    /// slower. The measurement harness uses this to isolate the layer's
+    /// contribution on identical code; it also serves as an operational kill
+    /// switch. Nothing in a spec declares or observes it.
+    pub fn set_preagg_enabled(&mut self, enabled: bool) {
+        if !enabled {
+            self.preagg_retire_all();
+        }
+        self.preagg.disabled = !enabled;
+    }
+
     /// The recent SQL statements this session sent to DuckDB through its
     /// execution choke points (bounded log, oldest first) — the surface the
     /// served-from-the-cube proof asserts against.
@@ -134,6 +157,9 @@ impl Session {
     /// Every early return leaves the affected marks WITHOUT a serve, which
     /// means the dispatch runs the direct query — the transparent fallback.
     pub(crate) fn preagg_prepare(&mut self, name: &str, contributor: &ComponentPath) {
+        if self.preagg.disabled {
+            return;
+        }
         let marks = self.selection_subscriber_marks(name);
         if marks.is_empty() {
             return;

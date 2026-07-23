@@ -46,12 +46,16 @@ pub fn frames_steady(
     Stats::from_durations(&times[warmup..]).ok_or_else(|| "no frames measured".to_string())
 }
 
-/// Boot `spec_path` live and time frames that each carry one brush step.
+/// Boot `spec_path` live and time frames that each carry one brush step over
+/// `brush_column` within `brush_domain`.
 ///
 /// Fails rather than reports if the boot has no live session — an interaction
 /// frame against a still document would time nothing but the draw.
+#[allow(clippy::too_many_arguments)]
 pub fn frames_interaction(
     spec_path: &Path,
+    brush_column: &str,
+    brush_domain: (f64, f64),
     selection: &str,
     contributor: &ComponentPath,
     scale: f32,
@@ -65,12 +69,16 @@ pub fn frames_interaction(
     )?;
     let selection = selection.to_string();
     let contributor = contributor.clone();
+    let brush_column = brush_column.to_string();
     let mut applied = 0usize;
     let times = bench_frames(boot, Mode::Light, scale, warmup + measured, |app, i| {
-        if app
-            .chart_doc_mut()
-            .apply_interaction(brush_select(&selection, &contributor, i))
-        {
+        if app.chart_doc_mut().apply_interaction(brush_select(
+            &brush_column,
+            brush_domain,
+            &selection,
+            &contributor,
+            i,
+        )) {
             applied += 1;
         }
     })?;

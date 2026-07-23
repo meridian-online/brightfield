@@ -7,14 +7,19 @@
 # the table holds, and the result set the renderer sees stays O(bins). The
 # data path is what scales with row count here, not the picture.
 #
-# WHY THE DENSITY BINS THE BRUSHED COLUMN: the emitted SQL applies a selection
-# predicate OUTSIDE a mark's query, so an aggregating mark can only be
-# cross-filtered by a column its aggregation projects — brushing `value_a`
-# against a density over `value_b` is a binder error in the current engine.
-# The density therefore bins `value_a` itself, and the brush filters its bins
-# after aggregation (the full-table scan per brush step is unchanged). Moving
-# that predicate inside the aggregation is exactly what the pre-aggregation
-# layer changes; this spec measures what exists.
+# WHY THE DENSITY BINS THE BRUSHED COLUMN: this scenario predates the
+# selection-placement change that lets an aggregating mark be cross-filtered
+# by any base column (the predicate now filters the aggregation's INPUT
+# rows). It keeps its original shape — brushing the density's own column —
+# so the measured series stays comparable with earlier runs of the same
+# harness.
+#
+# NOTE ON THE PRE-AGGREGATION LAYER: `value_a` is ~unique per row, and the
+# layer's first cut enters active interval dimensions into the cube at RAW
+# data values (exactness over size). The derived cube for this scenario
+# therefore grows with the table, and the layer buys little here by design —
+# the bounded-cardinality twin (crossfilter-binned-density) measures the
+# shape the cube is built for. Both facts belong in the record.
 #
 # `__DATA_PARQUET__` is substituted by the harness with the absolute path of
 # the generated dataset before the spec is loaded. The dataset's columns are a

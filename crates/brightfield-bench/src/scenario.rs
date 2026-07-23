@@ -13,8 +13,8 @@ use serde::Serialize;
 
 use crate::stats::Stats;
 
-/// The brushed interval for iteration `i` of a suite — a widening/narrowing
-/// drag over `value_a`'s [0, 100) domain. The pairs stay distinct for 35
+/// The brushed interval for iteration `i` of a suite, in the unit domain
+/// [0, 100) — a widening/narrowing drag. The pairs stay distinct for 35
 /// consecutive iterations, which matters: the engine's renderer-side SQL cache
 /// short-circuits a repeated identical query, so re-using one interval would
 /// time the cache, not the engine. A real drag never repeats a pixel either.
@@ -24,16 +24,34 @@ pub fn brush_interval(i: usize) -> (f64, f64) {
     (lo, hi)
 }
 
-/// The brush `Select` interaction for iteration `i`, against the binding's
-/// selection and contributor — identical in shape to what the chart pane's
-/// interval gesture produces.
-pub fn brush_select(selection: &str, contributor: &ComponentPath, i: usize) -> Interaction {
+/// [`brush_interval`] mapped onto a scenario's brushed-column domain: the
+/// unit-domain endpoints scale linearly onto `[domain.0, domain.1)`, so a
+/// dataset whose brushable axis is not [0, 100) still receives distinct,
+/// inside-the-data intervals.
+pub fn brush_interval_in(domain: (f64, f64), i: usize) -> (f64, f64) {
     let (lo, hi) = brush_interval(i);
+    let span = (domain.1 - domain.0) / 100.0;
+    (domain.0 + lo * span, domain.0 + hi * span)
+}
+
+/// The brush `Select` interaction for iteration `i`: a structured interval
+/// over `column` within `domain`, against the binding's selection and
+/// contributor — identical in shape to what the chart pane's interval gesture
+/// produces (structured clauses are what let the pre-aggregation layer
+/// engage).
+pub fn brush_select(
+    column: &str,
+    domain: (f64, f64),
+    selection: &str,
+    contributor: &ComponentPath,
+    i: usize,
+) -> Interaction {
+    let (lo, hi) = brush_interval_in(domain, i);
     Interaction::Select {
         name: selection.to_string(),
         contributor: contributor.clone(),
         predicate: SqlPredicate::Interval {
-            column: "value_a".to_string(),
+            column: column.to_string(),
             lo: ScalarValue::Float(lo),
             hi: ScalarValue::Float(hi),
             meta: None,
@@ -56,6 +74,24 @@ pub struct MarkRows {
     pub first_batch_rows: u64,
 }
 
+/// What the automatic pre-aggregation layer did during a suite — the
+/// non-vacuity evidence beside the latencies. A comparison whose cube never
+/// engaged (or engaged when it should not have) fails the run instead of
+/// quietly reporting.
+#[derive(Debug, Clone, Serialize)]
+pub struct PreAggSummary {
+    /// Whether the layer was enabled for this suite.
+    pub enabled: bool,
+    /// Cubes materialised (one CREATE TEMP TABLE each).
+    pub cubes_built: usize,
+    /// Brush-step re-queries served from a cube instead of the base table.
+    pub cube_hits: usize,
+    /// Cube builds that failed (each falls back to the direct query).
+    pub build_failures: usize,
+    /// Registered serves that failed at execution time and fell back.
+    pub serve_failures: usize,
+}
+
 /// One scenario × row-count measurement at the engine seam.
 #[derive(Debug, Clone, Serialize)]
 pub struct EngineMeasurement {
@@ -66,8 +102,8 @@ pub struct EngineMeasurement {
     /// Per-mark row shape after that first materialisation.
     pub marks: Vec<MarkRows>,
     /// Per-interaction `Coordinator::apply` latency: predicate push-down +
-    /// re-query of every affected mark. What the pre-aggregation layer is
-    /// later measured against.
+    /// re-query of every affected mark. The number the pre-aggregation layer
+    /// is measured against (and, in the enabled run, measured with).
     pub coordinator_apply: Stats,
     /// Per-interaction `LiveDashboard::apply` latency: `Coordinator::apply`
     /// plus the re-composite into a Vello scene — the full cost the live
@@ -78,14 +114,23 @@ pub struct EngineMeasurement {
     pub brushed_step_rows: u64,
     /// The same step's row count with no brush active.
     pub unfiltered_step_rows: u64,
+    /// What the pre-aggregation layer did (coordinator-seam session).
+    pub preagg: PreAggSummary,
 }
 
 /// The parsed scenario inputs the suites share.
 pub struct Scenario {
     /// Scenario id used in reports and spec filenames.
-    pub name: &'static str,
+    pub name: String,
     /// Fully substituted spec text.
     pub spec_text: String,
+    /// The column the interval brush sweeps.
+    pub brush_column: &'static str,
+    /// The brushed column's data domain, mapped from the unit drag.
+    pub brush_domain: (f64, f64),
+    /// Whether the pre-aggregation layer is expected to engage for this
+    /// scenario's shape when enabled. Checked, both ways.
+    pub expect_cube: bool,
 }
 
 /// The brushable binding the suites drive: first binding in spec order —
@@ -104,7 +149,9 @@ fn rows_of(batches: &[RecordBatch]) -> (u64, u64) {
     (total as u64, first as u64)
 }
 
-/// Run the engine suites for one scenario over one dataset.
+/// Run the engine suites for one scenario over one dataset, with the
+/// automatic pre-aggregation layer switched on or off (`preagg`) — the two
+/// runs measure identical code, so their delta is the layer's contribution.
 ///
 /// `iterations` timed brush applies run against BOTH seams (coordinator and
 /// live-dashboard), each iteration with a distinct interval (see
@@ -113,6 +160,7 @@ pub fn run_engine_suites(
     scenario: &Scenario,
     spec_dir: Option<&Path>,
     iterations: usize,
+    preagg: bool,
 ) -> Result<EngineMeasurement, String> {
     let parsed = parse_spec(&scenario.spec_text, Format::Yaml)
         .map_err(|e| format!("{}: parse error: {e}", scenario.name))?;
@@ -126,6 +174,7 @@ pub fn run_engine_suites(
     let mut coord = Coordinator::load(spec.clone(), analysis, spec_dir)
         .map_err(|e| format!("{}: load error: {e}", scenario.name))?;
     let load_ms = t.elapsed().as_secs_f64() * 1000.0;
+    coord.session_mut().set_preagg_enabled(preagg);
 
     let t = Instant::now();
     let results = coord.session_mut().execute_all();
@@ -148,7 +197,7 @@ pub fn run_engine_suites(
     }
 
     // Non-vacuity ground: the cross-filtered mark's step, unfiltered.
-    // Mark 1 is plot B's mark in both scenarios (spec order).
+    // Mark 1 is plot B's mark in every scenario (spec order).
     let unfiltered_step_rows = coord
         .session()
         .step_rows_count(1)
@@ -157,7 +206,13 @@ pub fn run_engine_suites(
     // --- Coordinator seam: per-interaction apply latency. ------------------
     let mut apply_ms = Vec::with_capacity(iterations);
     for i in 0..iterations {
-        let interaction = brush_select(&selection, &contributor, i);
+        let interaction = brush_select(
+            scenario.brush_column,
+            scenario.brush_domain,
+            &selection,
+            &contributor,
+            i,
+        );
         let t = Instant::now();
         let requery = coord.apply(interaction);
         apply_ms.push(t.elapsed().as_secs_f64() * 1000.0);
@@ -189,17 +244,48 @@ pub fn run_engine_suites(
             scenario.name
         ));
     }
+
+    // Non-vacuity for the layer itself: engaged where expected, silent where
+    // not. A cube comparison that never engaged would measure nothing.
+    let stats = coord.session().preagg_stats().clone();
+    let preagg_summary = PreAggSummary {
+        enabled: preagg,
+        cubes_built: stats.cubes_built,
+        cube_hits: stats.cube_hits,
+        build_failures: stats.build_failures,
+        serve_failures: stats.serve_failures,
+    };
+    if preagg && scenario.expect_cube && (stats.cubes_built == 0 || stats.cube_hits == 0) {
+        return Err(format!(
+            "{}: the pre-aggregation layer never engaged (built {}, hits {}) — \
+             the enabled run would be measuring the direct path",
+            scenario.name, stats.cubes_built, stats.cube_hits
+        ));
+    }
+    if (!preagg || !scenario.expect_cube) && stats.cube_hits != 0 {
+        return Err(format!(
+            "{}: unexpected cube serving (hits {}) in a run that promised none",
+            scenario.name, stats.cube_hits
+        ));
+    }
     drop(coord);
 
     // --- Live seam: apply + re-composite, on a fresh session. --------------
     let mut dash =
         brightfield_shell::pipeline::LiveDashboard::load_str(&scenario.spec_text, spec_dir)
             .map_err(|e| format!("{}: live load error: {e}", scenario.name))?;
+    dash.coordinator().session_mut().set_preagg_enabled(preagg);
     dash.present()
         .map_err(|e| format!("{}: first present: {e}", scenario.name))?;
     let mut live_ms = Vec::with_capacity(iterations);
     for i in 0..iterations {
-        let interaction = brush_select(&selection, &contributor, i);
+        let interaction = brush_select(
+            scenario.brush_column,
+            scenario.brush_domain,
+            &selection,
+            &contributor,
+            i,
+        );
         let t = Instant::now();
         dash.apply(interaction)
             .map_err(|e| format!("{}: live apply {i}: {e}", scenario.name))?;
@@ -215,6 +301,7 @@ pub fn run_engine_suites(
         live_apply: Stats::from_ms(live_ms).expect("iterations > 0"),
         brushed_step_rows,
         unfiltered_step_rows,
+        preagg: preagg_summary,
     })
 }
 
@@ -233,5 +320,22 @@ mod tests {
                 "interval {i} repeats — a repeated interval would hit the SQL cache"
             );
         }
+    }
+
+    #[test]
+    fn domain_mapping_preserves_distinctness_and_bounds() {
+        let domain = (0.8, 1.0);
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..35 {
+            let (lo, hi) = brush_interval_in(domain, i);
+            assert!(lo < hi, "interval {i} is ordered");
+            assert!(lo >= domain.0 && hi <= domain.1, "inside the domain");
+            assert!(
+                seen.insert(format!("{lo:.6}-{hi:.6}")),
+                "interval {i} repeats in the mapped domain"
+            );
+        }
+        // The identity domain reproduces the unit intervals exactly.
+        assert_eq!(brush_interval_in((0.0, 100.0), 3), brush_interval(3));
     }
 }
