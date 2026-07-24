@@ -70,7 +70,7 @@ Per scenario × row count, the record holds:
 | `preagg` | what the layer did during the suite: enabled, cubes built, brush steps served from a cube, build/serve failures — the non-vacuity evidence beside the latencies |
 | `frames.steady` | headless full-window frame time with nothing changing — the shell's floor |
 | `frames.interaction` | headless full-window frame time where every frame carries one committed brush step: re-query + re-composite + canvas re-raster + GPU wait |
-| `marks[].materialised_rows` / `first_batch_rows` | how many rows the mark's query answered vs how many the composed scene draws — the presentation layer currently composes a mark's **first Arrow batch only**, and this records where that truncates the picture |
+| `marks[].materialised_rows` / `drawn_rows` | how many rows the mark's query answered vs how many the composed scene draws — the presentation layer assembles **every** Arrow chunk (measured through that same assembly path), so the two are equal; a regression that reintroduced a first-chunk cap would show `drawn_rows` < `materialised_rows` here |
 | `unfiltered_step_rows` / `brushed_step_rows` | non-vacuity evidence: the cross-filtered step's row count without and under the final brush — the harness fails if a brush filtered nothing |
 
 Plus `corpus`: steady-state frame time for every spec in `examples/*.yaml`.

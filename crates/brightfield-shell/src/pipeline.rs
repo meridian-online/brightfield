@@ -9,16 +9,18 @@
 //!
 //! Scope for the loop-first phase: colour-scheme / projection / highlight /
 //! explicit colorDomain and standalone-legend relocation are NOT ported (the
-//! golden `dashboard.yaml` and the simple examples use none of them). Marks are
-//! taken from their first result batch (examples fit one ~2048-row chunk); the
-//! app's multi-chunk concat is the production path.
+//! golden `dashboard.yaml` and the simple examples use none of them). Each mark
+//! draws EVERY materialised chunk — its result batches are assembled into one
+//! drawable batch via [`assemble_batches`], so a row-per-mark chart wider than a
+//! single ~2048-row chunk draws all its rows, and an assembly that cannot
+//! proceed fails loudly by name rather than silently drawing the first chunk.
 
 use std::path::{Path, PathBuf};
 
 use arrow::record_batch::RecordBatch;
 use brightfield_engine::coordinator::{Coordinator, Interaction};
 use brightfield_engine::error::EngineError;
-use brightfield_engine::Engine;
+use brightfield_engine::{assemble_batches, Engine};
 use brightfield_render::channel::ChannelMap;
 use brightfield_render::inset::{resolve_insets_for_marks, DEFAULT_SCALE_INSET};
 use brightfield_render::layout::{ChartLayout, Margins};
@@ -235,7 +237,7 @@ fn compose(spec: Spec, spec_dir: Option<&Path>) -> Result<Composed, String> {
         .map_err(|e| format!("engine error: {e}"))?;
     let mut session = load.session;
 
-    // Execute every mark; keep its first result batch (examples fit one chunk).
+    // Execute every mark; assemble all its result chunks into one drawable batch.
     let results = session.execute_all();
     compose_from_results(&spec, results)
 }
@@ -369,8 +371,13 @@ fn compose_from_results(
     let mut channel_maps: Vec<ChannelMap> = Vec::with_capacity(marks.len());
     let mut kinds = Vec::with_capacity(marks.len());
     for (i, result) in results.into_iter().enumerate() {
+        // Assemble EVERY materialised chunk into the one batch this mark draws,
+        // not just the first ~2048-row chunk. A row-per-mark chart wider than one
+        // chunk must draw all its rows; taking `bs.into_iter().next()` silently
+        // dropped the rest. Assembly failure is a loud, NAMED error, surfaced
+        // here rather than masked by drawing a partial batch.
         let batch = match result {
-            Ok(bs) => bs.into_iter().next(),
+            Ok(bs) => assemble_batches(bs).map_err(|e| format!("mark {i}: {e}"))?,
             Err(e) => {
                 eprintln!("warning: skipping mark {i}: {e}");
                 None
@@ -725,6 +732,160 @@ plot:
         assert_ne!(
             never_line, fresh_line,
             "never-run is visibly distinct from fresh"
+        );
+    }
+
+    // --- Drawing every materialised chunk (the row-per-mark fix) -----------
+
+    /// A one-mark dot spec whose inline data is irrelevant — these tests feed
+    /// the execution results directly, so `compose_from_results` never queries.
+    const DOT_SPEC: &str = r#"
+data:
+  t:
+    - { x: 0, y: 0 }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: x
+    y: y
+"#;
+
+    fn xy_batch(xs: Vec<f64>, ys: Vec<f64>) -> RecordBatch {
+        use arrow::array::Float64Array;
+        use arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(xs)),
+                Arc::new(Float64Array::from(ys)),
+            ],
+        )
+        .unwrap()
+    }
+
+    /// Two chunks that, between them, span more than one DuckDB vector
+    /// (>2048 rows). The FIRST chunk already carries the domain endpoints (0
+    /// and 100 on both axes), so the inferred scales — and therefore the grid
+    /// and axis ink — are byte-identical whether the composite sees only the
+    /// first chunk or both. That pins every non-mark path constant, so a
+    /// path-count DIFFERENCE between the two composites is exactly the extra
+    /// dots drawn.
+    fn two_chunk_dot_results(
+        first_rows: usize,
+        second_rows: usize,
+    ) -> (Vec<Result<Vec<RecordBatch>, EngineError>>, usize) {
+        let first_x: Vec<f64> = (0..first_rows).map(|i| (i % 101) as f64).collect();
+        let first_y: Vec<f64> = (0..first_rows).map(|i| (i % 101) as f64).collect();
+        let first = xy_batch(first_x, first_y);
+        // Second chunk stays strictly inside [0, 100] so it cannot widen the
+        // domain — every value is the midpoint.
+        let second = xy_batch(vec![50.0; second_rows], vec![50.0; second_rows]);
+        let total = first_rows + second_rows;
+        (vec![Ok(vec![first, second])], total)
+    }
+
+    /// A row-per-mark chart over more than one ~2048-row chunk draws EVERY
+    /// materialised row, not just the first chunk. Proven two ways: the whole
+    /// materialisation composites to strictly more mark ink than the first
+    /// chunk alone, by exactly the dropped-row count; and chunking is
+    /// invisible — one 3052-row batch draws identically to 2000 + 1052.
+    #[test]
+    fn a_chart_over_2048_rows_draws_every_materialised_row() {
+        use brightfield_render::mark::count_scene_paths;
+        let spec = parse_spec(DOT_SPEC, Format::Yaml).expect("parse").spec;
+
+        let first_rows = 2000;
+        let second_rows = 1052;
+        let materialised = first_rows + second_rows;
+        assert!(
+            materialised > 2048,
+            "the fixture must exceed one DuckDB vector"
+        );
+
+        // The whole materialisation vs the first chunk only (what the old code
+        // drew). Domains are pinned equal, so the frame ink is identical and
+        // the path-count delta is purely the extra dots.
+        let (full_results, total) = two_chunk_dot_results(first_rows, second_rows);
+        assert_eq!(total, materialised);
+        let full = compose_from_results(&spec, full_results).expect("compose full");
+
+        let first_only: Vec<Result<Vec<RecordBatch>, EngineError>> = vec![Ok(vec![xy_batch(
+            (0..first_rows).map(|i| (i % 101) as f64).collect(),
+            (0..first_rows).map(|i| (i % 101) as f64).collect(),
+        )])];
+        let first = compose_from_results(&spec, first_only).expect("compose first");
+
+        let drawn_delta = count_scene_paths(&full.scene) - count_scene_paths(&first.scene);
+        assert_eq!(
+            drawn_delta, second_rows,
+            "the composite drew exactly the rows the first-chunk cap used to drop"
+        );
+
+        // Chunking is invisible: one batch of all rows draws the same as two.
+        let single: Vec<Result<Vec<RecordBatch>, EngineError>> = vec![Ok(vec![xy_batch(
+            (0..materialised).map(|i| (i % 101) as f64).collect(),
+            (0..materialised).map(|i| (i % 101) as f64).collect(),
+        )])];
+        let single = compose_from_results(&spec, single).expect("compose single");
+        assert_eq!(
+            count_scene_paths(&full.scene),
+            count_scene_paths(&single.scene),
+            "a chart draws the same whether its rows arrive in one chunk or many"
+        );
+    }
+
+    /// Hitting a real assembly limit — a mark's chunks whose schemas disagree —
+    /// fails the compose loudly, by NAME, naming the mark, instead of silently
+    /// drawing only the first chunk.
+    #[test]
+    fn an_unassemblable_mark_fails_loudly_by_name() {
+        use arrow::array::{Float64Array, Int64Array};
+        use arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc;
+        let parsed = parse_spec(DOT_SPEC, Format::Yaml).expect("parse");
+        let spec = parsed.spec;
+
+        let int_schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Int64, false),
+            Field::new("y", DataType::Int64, false),
+        ]));
+        let a = RecordBatch::try_new(
+            int_schema,
+            vec![
+                Arc::new(Int64Array::from(vec![1_i64, 2])),
+                Arc::new(Int64Array::from(vec![1_i64, 2])),
+            ],
+        )
+        .unwrap();
+        // Same column names, a different x type — the chunks cannot concatenate.
+        let drift_schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Int64, false),
+        ]));
+        let b = RecordBatch::try_new(
+            drift_schema,
+            vec![
+                Arc::new(Float64Array::from(vec![3.0_f64])),
+                Arc::new(Int64Array::from(vec![3_i64])),
+            ],
+        )
+        .unwrap();
+
+        let results: Vec<Result<Vec<RecordBatch>, EngineError>> = vec![Ok(vec![a, b])];
+        // `.err()` rather than `.expect_err()` — `Composed` is deliberately not
+        // `Debug` (it holds a Vello scene), so we inspect the error side directly.
+        let err = compose_from_results(&spec, results)
+            .err()
+            .expect("must fail loudly");
+        assert!(err.contains("mark 0"), "the failure names the mark: {err}");
+        assert!(
+            err.contains("batch-assembly limit"),
+            "the failure names the limit: {err}"
         );
     }
 }

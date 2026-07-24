@@ -5,7 +5,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use brightfield_engine::coordinator::{Coordinator, Interaction};
-use brightfield_engine::{RecordBatch, SqlPredicate};
+use brightfield_engine::{assemble_batches, RecordBatch, SqlPredicate};
 use brightfield_spec::analysis::{analyse_spec, build_brushable_bindings, ComponentPath};
 use brightfield_spec::{parse_spec, Format};
 use brightfield_sql::ir::ScalarValue;
@@ -60,18 +60,21 @@ pub fn brush_select(
 }
 
 /// Per-mark materialisation shape after the first full execute: how many rows
-/// the query returned in total, and how many of them the first Arrow batch
-/// holds. The presentation layer currently composes a mark's scene from the
-/// FIRST batch only, so `first_batch_rows < materialised_rows` means the drawn
-/// picture holds fewer rows than the query answered — recorded, not hidden.
+/// the query returned in total, and how many of them the presentation layer
+/// actually draws. `drawn_rows` is measured by running the SAME assembly the
+/// presentation uses ([`assemble_batches`]) — so `drawn_rows < materialised_rows`
+/// would mean the drawn picture holds fewer rows than the query answered. The
+/// presentation now assembles every chunk, so the two are equal; a regression
+/// that reintroduced a first-chunk cap would surface here as a discrepancy.
 #[derive(Debug, Clone, Serialize)]
 pub struct MarkRows {
     /// Mark index in spec order.
     pub mark: usize,
     /// Total rows across all returned batches.
     pub materialised_rows: u64,
-    /// Rows in the first batch (what the composed scene draws).
-    pub first_batch_rows: u64,
+    /// Rows in the assembled batch the composed scene draws — every chunk,
+    /// via the presentation's own assembly path.
+    pub drawn_rows: u64,
 }
 
 /// What the automatic pre-aggregation layer did during a suite — the
@@ -143,10 +146,17 @@ fn first_binding(spec: &brightfield_spec::ast::Spec) -> Result<(String, Componen
     Ok((b.selection.clone(), b.parent_plot.clone()))
 }
 
-fn rows_of(batches: &[RecordBatch]) -> (u64, u64) {
+/// `(materialised_rows, drawn_rows)` for a query's chunks. `materialised_rows`
+/// is the raw total; `drawn_rows` is what the presentation actually draws,
+/// measured through the SAME [`assemble_batches`] path the compose step uses —
+/// so the pair is a genuine cross-check, not a tautology. An assembly failure is
+/// surfaced as `Err`, never silently reported as a smaller drawn count.
+fn rows_of(batches: &[RecordBatch]) -> Result<(u64, u64), String> {
     let total: usize = batches.iter().map(RecordBatch::num_rows).sum();
-    let first = batches.first().map_or(0, RecordBatch::num_rows);
-    (total as u64, first as u64)
+    let drawn = assemble_batches(batches.to_vec())
+        .map_err(|e| e.to_string())?
+        .map_or(0, |b| b.num_rows());
+    Ok((total as u64, drawn as u64))
 }
 
 /// Run the engine suites for one scenario over one dataset, with the
@@ -188,11 +198,12 @@ pub fn run_engine_suites(
                 scenario.name
             )
         })?;
-        let (materialised_rows, first_batch_rows) = rows_of(batches);
+        let (materialised_rows, drawn_rows) =
+            rows_of(batches).map_err(|e| format!("{}: mark {i} assembly: {e}", scenario.name))?;
         marks.push(MarkRows {
             mark: i,
             materialised_rows,
-            first_batch_rows,
+            drawn_rows,
         });
     }
 
