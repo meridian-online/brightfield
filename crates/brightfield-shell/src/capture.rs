@@ -537,21 +537,35 @@ pub fn capture_vello_only(
     Ok((dev_w, dev_h))
 }
 
-/// Scale-and-centre-crop a capture to exactly `w`×`h` — the shape a shipped
-/// start's gallery thumbnail takes.
+/// Fit-and-pad (letterbox) a capture into exactly `w`×`h` — the shape a
+/// shipped start's gallery thumbnail takes.
 ///
 /// One definition, used by the regeneration test that produces the committed
 /// `assets/starts/*.png` files and by nothing else at runtime: the shipped
-/// thumbnail is bytes in the binary, never a render. Fill-and-crop rather
-/// than letterbox, so every card in the gallery is the same shape whatever
-/// window its start's content asked for; Lanczos3 because it is deterministic
-/// for a given input, which is what lets the regeneration test hold the
-/// committed file against the bundled spec.
+/// thumbnail is bytes in the binary, never a render. **Letterbox rather than
+/// centre-crop**, so a start's whole dashboard shows on its card instead of a
+/// centre slice of it — every card is still the same `w`×`h` shape whatever
+/// window its content asked for, the picture inside is just fitted rather than
+/// cropped. Lanczos3 because it is deterministic for a given input, which is
+/// what lets the regeneration test hold the committed file against the
+/// bundled spec.
+///
+/// The pad is **transparent**, not an inked tone: the door draws each card
+/// over its own `surfaces.raised` and composites the thumbnail with its alpha
+/// honoured (`ColorImage::from_rgba_unmultiplied`), so transparent bars take
+/// the card's colour in both light and dark. A fixed grey would fight one mode
+/// or the other; transparent reads as the fitted picture floating on a uniform
+/// card. The capture's own opaque page tone stays inside the fitted rectangle.
 #[must_use]
 pub fn thumbnail(capture: &image::RgbaImage, w: u32, h: u32) -> image::RgbaImage {
-    image::DynamicImage::ImageRgba8(capture.clone())
-        .resize_to_fill(w, h, image::imageops::FilterType::Lanczos3)
-        .to_rgba8()
+    let fitted = image::DynamicImage::ImageRgba8(capture.clone())
+        .resize(w, h, image::imageops::FilterType::Lanczos3)
+        .to_rgba8();
+    let mut canvas = image::RgbaImage::from_pixel(w, h, image::Rgba([0, 0, 0, 0]));
+    let x = i64::from((w - fitted.width()) / 2);
+    let y = i64::from((h - fitted.height()) / 2);
+    image::imageops::overlay(&mut canvas, &fitted, x, y);
+    canvas
 }
 
 /// Read an `Rgba8Unorm` texture back into tightly-packed RGBA bytes.
