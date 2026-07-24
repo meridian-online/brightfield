@@ -17,7 +17,7 @@ description = "Protocol+Run contract -> typed asset graph -> deterministic layou
 # root Cargo.toml (arc's vendored sqlparser fork — patch tables do not
 # propagate through dependencies), and Cargo.lock. See README §"The arcform
 # dependency".
-arc = { git = "https://github.com/meridian-online/arcform", rev = "d01a2d2e09056f459566d0073f56d8f0026b4a53", default-features = false }
+arc = { git = "https://github.com/meridian-online/arcform", rev = "4b4501926b6c3428059df7cbe281fa96be183a08", default-features = false }
 # NOT used by this crate directly. arc's private engine links DuckDB even in
 # its library shape, and libduckdb-sys defaults to linking a SYSTEM libduckdb
 # (DUCKDB_LIB_DIR) that neither CI runner nor a fresh clone has. This entry

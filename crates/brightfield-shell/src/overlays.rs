@@ -35,14 +35,14 @@
 //! [`crate::window::MeridianApp`] on the protocol view's grammar. The
 //! argument prompt and column jump are complete and tested here, and go live
 //! with the chart view's editing bridge — the half that knows a focused plot
-//! and applies a `SpecEdit`, which this shell does not carry yet.
+//! and applies a `ChartEdit`, which this shell does not carry yet.
 
 use brightfield_keys::fuzzy::fuzzy_score;
 use brightfield_keys::{
     palette_filter, registry, Altitude, HelpRow, PaletteCandidate, RecencyCounter, VerbEntry,
 };
 use brightfield_model::arg_collector::{ArgCollector, ArgOutcome};
-use brightfield_spec::edit::SpecEdit;
+use brightfield_spec::edit::ChartEdit;
 use meridian_egui::{PickerDelegate, PickerHint, PickerOutcome, PickerRow};
 
 // ---------------------------------------------------------------------------
@@ -452,7 +452,7 @@ pub struct ArgPrompt {
     /// `(option index, score)` for the current query.
     matches: Vec<(usize, i32)>,
     hint: Option<PickerHint>,
-    ready: Option<SpecEdit>,
+    ready: Option<ChartEdit>,
     advanced: bool,
 }
 
@@ -477,7 +477,7 @@ impl ArgPrompt {
     }
 
     /// The completed edit, surrendered once. The host applies it and closes.
-    pub fn take_ready(&mut self) -> Option<SpecEdit> {
+    pub fn take_ready(&mut self) -> Option<ChartEdit> {
         self.ready.take()
     }
 
@@ -783,7 +783,7 @@ mod tests {
             .expect("barY renders and is offered");
         assert_eq!(prompt.confirm(Some(i), ""), PickerOutcome::Close);
         match prompt.take_ready() {
-            Some(SpecEdit::AddMark { plot: p, .. }) => assert_eq!(p, plot()),
+            Some(ChartEdit::AddMark { plot: p, .. }) => assert_eq!(p, plot()),
             other => panic!("expected a completed AddMark, got {other:?}"),
         }
     }
@@ -807,7 +807,7 @@ mod tests {
             .expect("the profile's columns are offered");
         assert_eq!(prompt.confirm(Some(depth), ""), PickerOutcome::Close);
         match prompt.take_ready() {
-            Some(SpecEdit::SetChannel {
+            Some(ChartEdit::SetChannel {
                 channel, column, ..
             }) => {
                 assert_eq!(channel, "x");
@@ -837,7 +837,7 @@ mod tests {
         assert_eq!(prompt.confirm(None, "depth"), PickerOutcome::Close);
         assert!(matches!(
             prompt.take_ready(),
-            Some(SpecEdit::SetChannel { .. })
+            Some(ChartEdit::SetChannel { .. })
         ));
     }
 

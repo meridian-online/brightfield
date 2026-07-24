@@ -724,7 +724,7 @@ impl Session {
     /// (see `execute_mark` / `emit_query`), and before this seam existed there
     /// was NO public path to swap it — a re-lowered structural edit could only
     /// re-emit the STALE SQL, or take the full disk rebuild. After a structural
-    /// [`brightfield_spec::edit::SpecEdit`] the app re-analyses the mutated
+    /// [`brightfield_spec::edit::ChartEdit`] the app re-analyses the mutated
     /// working `Spec` and hands both here; the private state is replaced (the
     /// `mark_index_map` REBUILT via the private `build_mark_index_map` so an
     /// added/removed mark's flat index resolves + the count-changing renumber
@@ -5810,10 +5810,10 @@ plot:
     }
 
     // -----------------------------------------------------------------------
-    // The command-log SpecEdit spine's engine seam (reload_spec).
+    // The command-log ChartEdit spine's engine seam (reload_spec).
     // -----------------------------------------------------------------------
 
-    use brightfield_spec::edit::{apply, SpecEdit};
+    use brightfield_spec::edit::{apply, ChartEdit};
 
     fn cp(s: &str) -> ComponentPath {
         ComponentPath(s.to_string())
@@ -5869,7 +5869,7 @@ xLabel: X axis
         let mut spec_b = spec_a.clone();
         apply(
             &mut spec_b,
-            &SpecEdit::SetChannel {
+            &ChartEdit::SetChannel {
                 plot: cp("root"),
                 mark_ordinal: 0,
                 channel: "x".to_string(),
@@ -5905,7 +5905,7 @@ xLabel: X axis
         let mut spec_b = spec_a.clone();
         apply(
             &mut spec_b,
-            &SpecEdit::SetChannel {
+            &ChartEdit::SetChannel {
                 plot: cp("root"),
                 mark_ordinal: 0,
                 channel: "x".to_string(),
@@ -5964,7 +5964,7 @@ plot:
         // AddMark a SECOND dot: cardinality +1, two DISTINCT keys.
         apply(
             &mut spec,
-            &SpecEdit::AddMark {
+            &ChartEdit::AddMark {
                 plot: cp("root"),
                 kind: MarkKind::Dot,
             },
@@ -5987,7 +5987,7 @@ plot:
         // RemoveMark (primary) then AddMark: the map still resolves cleanly.
         apply(
             &mut spec,
-            &SpecEdit::RemoveMark {
+            &ChartEdit::RemoveMark {
                 plot: cp("root"),
                 mark_ordinal: 0,
             },
@@ -5995,7 +5995,7 @@ plot:
         .expect("clean");
         apply(
             &mut spec,
-            &SpecEdit::AddMark {
+            &ChartEdit::AddMark {
                 plot: cp("root"),
                 kind: MarkKind::Line,
             },
@@ -6044,7 +6044,7 @@ vconcat:
         let mut spec_b = spec_a.clone();
         apply(
             &mut spec_b,
-            &SpecEdit::AddMark {
+            &ChartEdit::AddMark {
                 plot: cp("root/vconcat[1]"),
                 kind: MarkKind::Line,
             },

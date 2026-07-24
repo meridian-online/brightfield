@@ -37,7 +37,7 @@ repository = "https://github.com/meridian-online/brightfield"
 # then refresh Cargo.lock (and re-pin tree-sitter-iter if the resolver drifts
 # above the toolchain — see the lock).
 [patch.crates-io]
-sqlparser = { git = "https://github.com/meridian-online/arcform", rev = "d01a2d2e09056f459566d0073f56d8f0026b4a53" }
+sqlparser = { git = "https://github.com/meridian-online/arcform", rev = "4b4501926b6c3428059df7cbe281fa96be183a08" }
 
 [workspace.lints.rust]
 unused_must_use = "warn"

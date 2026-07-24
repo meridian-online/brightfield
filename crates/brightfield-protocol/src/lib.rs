@@ -37,6 +37,7 @@ pub mod layout;
 pub mod manifest;
 pub mod nav;
 pub mod panel;
+pub mod record;
 pub mod sheet;
 pub mod sql_assets;
 pub mod stream;
@@ -60,6 +61,7 @@ pub use nav::{Dir, FoldOutcome, ProtocolNav};
 pub use panel::{
     inspector_for, kind_label, outline_order, outline_rows, InspectorFacts, OutlineRow,
 };
+pub use record::{amend_recorded_filter, record_grid_filter, AmendOutcome, GridFilter, Promotion};
 pub use sheet::{StepRow, StepsSheet};
 pub use stream::{fold_stream, StreamReader, StreamState};
 

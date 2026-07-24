@@ -40,6 +40,7 @@ pub mod boot;
 pub mod dock_state_file;
 pub mod log_model;
 pub mod menu_resolve;
+pub mod panel_capture;
 pub mod profile_model;
 pub mod reload_feedback;
 pub mod shell_model;
