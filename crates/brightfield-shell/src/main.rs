@@ -23,8 +23,11 @@
 //! network-denying sandbox and trusts the exit code, which is only 0 once the
 //! PNG is actually on disk.
 //!
+//! `--version` prints the crate version and `--help` prints usage; both answer
+//! on stdout and exit 0 *before* any window, layout read or spec boot happens.
+//!
 //! Usage: `brightfield-shell [SPEC.yaml] [--theme light|dark] [--shot-out PATH]
-//!         [--shot-after N] [--flow vertical|horizontal]`
+//!         [--shot-after N] [--flow vertical|horizontal] [--help] [--version]`
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -49,18 +52,63 @@ struct Args {
     shot_after: Option<u32>,
 }
 
-fn parse_args() -> Result<Args, String> {
+/// What the command line asked `main` to do, resolved before any window work.
+///
+/// `--version` and `--help` are answered as their own variants rather than as
+/// fields on [`Args`] because they must run *nothing else*: no layout is read,
+/// no spec is booted, and `eframe::run_native` is never reached. A query about
+/// the binary should never open the binary's window — nor touch the developer's
+/// real `workspace-layout.json`, which the window-open path reads on the way in.
+enum Invocation {
+    /// Open the live window with these settings.
+    Run(Args),
+    /// `--version`: print the crate version to stdout and exit 0. No window.
+    Version,
+    /// `--help`: print usage to stdout and exit 0. No window.
+    Help,
+}
+
+/// The `--help` body. Mirrors the module-doc usage line and the flag grammar in
+/// [`parse_args_from`]; keep the three in step when a flag is added or removed.
+const HELP: &str = "\
+brightfield — the Meridian live chart and Protocol window.
+
+Usage: brightfield [SPEC.yaml] [OPTIONS]
+
+Arguments:
+  [SPEC.yaml]                     A chart spec or Protocol manifest to open.
+                                  With none, opens on the bundled gallery.
+
+Options:
+  --theme <light|dark>            Colour mode (default: light).
+  --flow <vertical|horizontal>    Pane flow for the opening view
+                                  (default: vertical).
+  --shot-out <PATH>               Where F12 and --shot-after write the PNG
+                                  (default: render-proof/live-screenshot.png).
+  --shot-after <N>                Render N frames, capture the window to
+                                  --shot-out, then exit. Exit 0 means the PNG
+                                  landed; for unattended smoke tests.
+  -h, --help                      Print this help and exit.
+  -V, --version                   Print the version and exit.
+
+Press F12 in the window to capture a screenshot to --shot-out.";
+
+fn parse_args() -> Result<Invocation, String> {
     parse_args_from(std::env::args().skip(1))
 }
 
 /// The flag grammar, split from `std::env::args` so a test can feed it.
 ///
-/// Unknown flags are reported and ignored — this window would rather open than
-/// argue. `--shot-after` is the one exception: a value that does not parse is
-/// an error, because the flag only exists for scripts, and a script whose
-/// countdown was silently dropped gets a window that never exits instead of a
-/// failed check.
-fn parse_args_from(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
+/// `--version`/`-V` and `--help`/`-h` short-circuit the moment they are seen,
+/// whatever else is on the line: asking the binary its version or usage is not
+/// a request to open it, so it wins over any spec or flag typed alongside.
+///
+/// Otherwise, unknown flags are reported and ignored — this window would rather
+/// open than argue. `--shot-after` is the one exception: a value that does not
+/// parse is an error, because the flag only exists for scripts, and a script
+/// whose countdown was silently dropped gets a window that never exits instead
+/// of a failed check.
+fn parse_args_from(mut it: impl Iterator<Item = String>) -> Result<Invocation, String> {
     let mut spec: Option<String> = None;
     let mut mode = Mode::Light;
     let mut shot_out = PathBuf::from("render-proof/live-screenshot.png");
@@ -68,6 +116,8 @@ fn parse_args_from(mut it: impl Iterator<Item = String>) -> Result<Args, String>
     let mut shot_after: Option<u32> = None;
     while let Some(a) = it.next() {
         match a.as_str() {
+            "--version" | "-V" => return Ok(Invocation::Version),
+            "--help" | "-h" => return Ok(Invocation::Help),
             "--theme" => {
                 if let Some(v) = it.next() {
                     mode = if v == "dark" { Mode::Dark } else { Mode::Light };
@@ -98,13 +148,13 @@ fn parse_args_from(mut it: impl Iterator<Item = String>) -> Result<Args, String>
             other => eprintln!("ignoring unknown flag {other}"),
         }
     }
-    Ok(Args {
+    Ok(Invocation::Run(Args {
         spec,
         mode,
         shot_out,
         flow,
         shot_after,
-    })
+    }))
 }
 
 /// The F12 → live-screenshot latch (request in `ui`, capture next frame).
@@ -290,7 +340,20 @@ fn host_from_frame(cc: &eframe::CreationContext<'_>) -> Result<EguiCanvasHost, S
 }
 
 fn main() -> Result<(), String> {
-    let args = parse_args()?;
+    // Answered before any window work: print to stdout, exit 0, open nothing.
+    // Nothing below this match — the layout read, the spec boot, the viewport,
+    // `run_native` — is reached for a `--version` or `--help` invocation.
+    let args = match parse_args()? {
+        Invocation::Version => {
+            println!("brightfield {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Invocation::Help => {
+            println!("{HELP}");
+            return Ok(());
+        }
+        Invocation::Run(args) => args,
+    };
 
     // The layout is read *before* anything else, because two things downstream
     // depend on it: the window's size, which has to be settled before the
@@ -371,34 +434,66 @@ fn main() -> Result<(), String> {
 mod tests {
     use super::*;
 
-    fn args(list: &[&str]) -> Result<Args, String> {
+    fn parse(list: &[&str]) -> Result<Invocation, String> {
         parse_args_from(list.iter().map(|s| (*s).to_string()))
+    }
+
+    /// The `Run` arguments, or a panic — for the cases that are meant to open a
+    /// window rather than short-circuit on `--version`/`--help`.
+    fn run_args(list: &[&str]) -> Args {
+        match parse(list) {
+            Ok(Invocation::Run(a)) => a,
+            Ok(Invocation::Version) => panic!("expected Run, got Version"),
+            Ok(Invocation::Help) => panic!("expected Run, got Help"),
+            Err(e) => panic!("expected Run, got Err: {e}"),
+        }
     }
 
     #[test]
     fn bare_invocation_stays_interactive() {
-        let a = args(&[]).unwrap();
+        let a = run_args(&[]);
         assert!(a.spec.is_none());
         assert!(a.shot_after.is_none());
     }
 
     #[test]
     fn shot_after_parses_a_frame_count() {
-        let a = args(&["examples/bars.yaml", "--shot-after", "30"]).unwrap();
+        let a = run_args(&["examples/bars.yaml", "--shot-after", "30"]);
         assert_eq!(a.spec.as_deref(), Some("examples/bars.yaml"));
         assert_eq!(a.shot_after, Some(30));
     }
 
     #[test]
     fn shot_after_rejects_a_missing_or_bad_count() {
-        assert!(args(&["--shot-after"]).is_err());
-        assert!(args(&["--shot-after", "soon"]).is_err());
+        assert!(parse(&["--shot-after"]).is_err());
+        assert!(parse(&["--shot-after", "soon"]).is_err());
     }
 
     #[test]
     fn unknown_flags_are_still_ignored() {
-        let a = args(&["--wobble", "--theme", "dark"]).unwrap();
+        let a = run_args(&["--wobble", "--theme", "dark"]);
         assert!(matches!(a.mode, Mode::Dark));
+    }
+
+    #[test]
+    fn version_flag_short_circuits() {
+        assert!(matches!(parse(&["--version"]), Ok(Invocation::Version)));
+        assert!(matches!(parse(&["-V"]), Ok(Invocation::Version)));
+        // Wins over anything else on the line, and opens no window.
+        assert!(matches!(
+            parse(&["examples/bars.yaml", "--version"]),
+            Ok(Invocation::Version)
+        ));
+    }
+
+    #[test]
+    fn help_flag_short_circuits() {
+        assert!(matches!(parse(&["--help"]), Ok(Invocation::Help)));
+        assert!(matches!(parse(&["-h"]), Ok(Invocation::Help)));
+        assert!(matches!(
+            parse(&["--theme", "dark", "--help"]),
+            Ok(Invocation::Help)
+        ));
     }
 
     /// The countdown fires the request exactly once, holds repaint high while
