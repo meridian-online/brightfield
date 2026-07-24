@@ -17,7 +17,7 @@
 //! [`GENERATED_MARKER`](arc::spec::GENERATED_MARKER) so a later amend is
 //! licensed to regenerate it.
 //!
-//! **Recording never runs anything.** [`record_step`](arc::spec::record_step)
+//! **Recording never runs anything.** [`record_step`]
 //! opens no database, executes no SQL, materialises no asset — it writes files
 //! and returns. A freshly promoted step is a step that has **never run**, even
 //! though equivalent rows were just on screen: what the person saw was a query,
@@ -108,7 +108,7 @@ pub struct AmendOutcome {
 /// arc's published write path.
 ///
 /// The step name doubles as the created table's name. brightfield writes no
-/// manifest YAML: [`record_step`](arc::spec::record_step) appends the step (a
+/// manifest YAML: [`record_step`] appends the step (a
 /// format-preserving splice) and writes the generated model, marker header and
 /// all. The promotion runs nothing — the step has never run when this returns.
 ///
