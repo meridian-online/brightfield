@@ -107,6 +107,11 @@ fn read_rgba(path: &PathBuf) -> image::RgbaImage {
 /// the dock's two panes (the composited Vello dashboard, and the controls
 /// rail), each in the header band `PaneChrome` draws from its `Subject`.
 fn shell_capture(mode: Mode, name: &str, script: Vec<Vec<egui::Event>>) -> image::RgbaImage {
+    // Pin the developer-diagnostics flag off so a dev shell that has
+    // `BRIGHTFIELD_DEVTOOLS` set cannot bake the controls readout or the
+    // top-bar renderer string into a regenerated golden. Hermetic capture
+    // owns the same class of process env the offline gate does.
+    std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
     let spec = fixture("examples/dashboard.yaml");
     let composed = compose_spec(spec.to_str().expect("utf-8 fixture path"))
         .unwrap_or_else(|e| panic!("compose {}: {e}", spec.display()));
@@ -267,6 +272,9 @@ fn protocol_boot() -> Boot {
 /// and hint bar around them, in the default vertical flow with the nav's boot
 /// cursor selected.
 fn protocol_capture(mode: Mode, name: &str, script: Vec<Vec<egui::Event>>) -> image::RgbaImage {
+    // Hermetic capture: keep `BRIGHTFIELD_DEVTOOLS` from leaking the top-bar
+    // renderer string into this golden (see `shell_capture`).
+    std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
     let out = scratch(name);
     let (w, h) = capture_png(protocol_boot(), mode, SCALE, &out, script)
         .unwrap_or_else(|e| panic!("capture {name}: {e}"));

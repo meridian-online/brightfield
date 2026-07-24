@@ -795,6 +795,10 @@ fn read_rgba(path: &PathBuf) -> image::RgbaImage {
 /// Photograph the front door — the whole window over `Boot::empty()` at the
 /// default geometry — and diff it against the committed baseline.
 fn door_surface(mode: Mode, name: &str) {
+    // Hermetic capture: a dev shell with `BRIGHTFIELD_DEVTOOLS` set must not
+    // bake the top-bar renderer string into this golden. Same class of process
+    // env the offline gate owns.
+    std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
     let out = scratch(name);
     let (w, h) = capture_png_at(Boot::empty(), mode, 1.0, DOOR_SIZE, &out, Vec::new())
         .unwrap_or_else(|e| panic!("capture {name}: {e}"));
@@ -827,6 +831,9 @@ fn front_door_dark_surface() {
 /// they are pre-rendered on purpose; the door never renders them live.
 #[test]
 fn every_shipped_start_still_renders_and_its_thumbnail_is_current() {
+    // Hermetic capture: keep `BRIGHTFIELD_DEVTOOLS` from baking the top-bar
+    // renderer string into a regenerated thumbnail (see `door_surface`).
+    std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
     let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/starts");
     let options = egui_kittest::SnapshotOptions::default().output_path(&assets);
     let mut failures = Vec::new();

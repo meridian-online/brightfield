@@ -1075,7 +1075,7 @@ impl Item<ChartDoc> for EditorPane {
             ICON_EDITOR,
             "No spec open",
             "The dashboards that ship with Brightfield are built in, so there \
-             is no spec file to edit here yet.",
+             is no spec file to edit here.",
         ))
     }
 

@@ -960,6 +960,15 @@ impl MeridianApp {
     /// sides would go on matching itself after either drifted.
     #[must_use]
     pub fn title(&self) -> String {
+        // The front door spans both views, so it has no view subject to name —
+        // and the top bar draws this unconditionally. Reaching the door from
+        // the Protocol view would otherwise show "Protocol · " (the emptied
+        // graph's blank name) in the visible chrome for the whole visit. A
+        // cold-boot door is already this string (an empty `ChartDoc` titles
+        // "Brightfield"), so this only fixes the reached-from-Protocol case.
+        if self.front_door_is_live() {
+            return "Brightfield".to_string();
+        }
         match self.ws().active() {
             ViewKind::Charts => self.charts.doc.title().to_string(),
             ViewKind::Protocol => format!("Protocol · {}", self.protocol.doc.model.protocol),
@@ -1177,15 +1186,6 @@ impl MeridianApp {
         let view = self.ws().active();
         let mode = self.mode;
 
-        // Whether this frame is the front door. Decided once, up here,
-        // because three branches below have to agree which frame this is: the
-        // grammar feed, the hint bar and the central panel. The door replaces
-        // the *dock* and nothing else — the top bar, the overlays and the
-        // notification layers stay exactly where they are, so the door is a
-        // state of the window's content plane rather than a mode of the
-        // window.
-        let door = self.front_door_is_live();
-
         // The document's file watcher: poll on its own cadence, keep frames
         // coming while anything is watched (a poll nobody runs watches
         // nothing), and repaint immediately on news so the notice lands next
@@ -1204,6 +1204,17 @@ impl MeridianApp {
         // it is deliberately not an overlay-opener (so the registry cross-ref
         // that pins those three stays pinned).
         self.home_key(&ctx);
+
+        // Whether this frame is the front door. Decided once, **after**
+        // `home_key`, because three branches below have to agree which frame
+        // this is — the grammar feed, the hint bar and the central panel — and
+        // a cmd-shift-h this frame just emptied the documents: latched before
+        // it, they would draw the dock over a door-that-should-be for one
+        // frame. The door replaces the *dock* and nothing else — the top bar,
+        // the overlays and the notification layers stay exactly where they are,
+        // so the door is a state of the window's content plane rather than a
+        // mode of the window.
+        let door = self.front_door_is_live();
 
         // The protocol grammar is bare-key — `h j k l y t Enter Esc ⌫ shift-S`
         // with no modifier to disambiguate it — so it is fed only while its own

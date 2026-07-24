@@ -85,10 +85,9 @@ use crate::watch::FileWatcher;
 ///
 /// No [`Item`] holds a handle to it — the shell hands out exactly one
 /// `&mut ChartDoc`, for the duration of one pane's draw. That is why the canvas
-/// host lives here rather than inside the canvas pane, and why the parameter and
-/// the overlay flag live here rather than inside the controls pane: the controls
-/// rail writes both and the chart pane reads one of them, so they belong to the
-/// view, not to either pane.
+/// host lives here rather than inside the canvas pane, and why the overlay flag
+/// lives here rather than inside the controls pane: the controls rail writes it
+/// and the chart pane reads it, so it belongs to the view, not to either pane.
 pub struct ChartDoc {
     /// The composited Vello dashboard and its logical size.
     pub composed: Composed,
