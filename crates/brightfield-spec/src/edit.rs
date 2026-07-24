@@ -106,7 +106,10 @@ impl ChartEdit {
     /// for a count-changing edit.
     #[must_use]
     pub fn is_count_changing(&self) -> bool {
-        matches!(self, ChartEdit::AddMark { .. } | ChartEdit::RemoveMark { .. })
+        matches!(
+            self,
+            ChartEdit::AddMark { .. } | ChartEdit::RemoveMark { .. }
+        )
     }
 
     /// The mark ordinal this edit targets (v1: always 0, the primary mark);

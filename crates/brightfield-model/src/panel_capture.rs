@@ -134,7 +134,11 @@ plot:
         // The file landed beside where models/ would be.
         let written = std::fs::read_to_string(dir.path().join(&rel)).expect("read panel");
         // Regeneration IS conformance: re-parsing the panel yields the same chart.
-        assert_eq!(parse(&written), spec, "the panel round-trips to the same AST");
+        assert_eq!(
+            parse(&written),
+            spec,
+            "the panel round-trips to the same AST"
+        );
     }
 
     #[test]
@@ -171,7 +175,10 @@ plot:
             spec,
             "the captured panel is the edited chart, not the original"
         );
-        assert!(written.contains("line"), "the edit is in the panel: {written}");
+        assert!(
+            written.contains("line"),
+            "the edit is in the panel: {written}"
+        );
     }
 
     #[test]
@@ -192,8 +199,7 @@ plot:
             use std::sync::atomic::{AtomicU64, Ordering};
             static SEQ: AtomicU64 = AtomicU64::new(0);
             let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-            let dir = std::env::temp_dir()
-                .join(format!("bf-panel-{}-{seq}", std::process::id()));
+            let dir = std::env::temp_dir().join(format!("bf-panel-{}-{seq}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).expect("scratch dir");
             Self(dir)

@@ -49,10 +49,8 @@ impl SpecDir {
         use std::sync::atomic::{AtomicU64, Ordering};
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "bf-record-{}-{test}-{seq}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("bf-record-{}-{test}-{seq}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("scratch dir");
         fs::write(dir.join(MANIFEST_FILENAME), text).expect("seed spec");
@@ -118,7 +116,10 @@ fn recording_appends_the_step_and_preserves_every_other_byte() {
     // must come back, byte for byte. Nothing else moved.
     let item = "  - name: dover_tides\n    sql: models/01_dover_tides.sql\n";
     let on_disk = dir.read_manifest();
-    assert!(on_disk.contains(item), "the step was spliced in:\n{on_disk}");
+    assert!(
+        on_disk.contains(item),
+        "the step was spliced in:\n{on_disk}"
+    );
     assert_eq!(
         on_disk.replacen(item, "", 1),
         original,
@@ -233,8 +234,7 @@ fn amending_a_generated_model_rewrites_it_and_drags_downstream_stale() {
     // …and the edit dragged both downstream steps stale, via the existing
     // lineage walk — no second staleness computation.
     assert!(
-        outcome.downstream_stale.contains("summary")
-            && outcome.downstream_stale.contains("report"),
+        outcome.downstream_stale.contains("summary") && outcome.downstream_stale.contains("report"),
         "downstream steps go stale: {:?}",
         outcome.downstream_stale
     );

@@ -29,8 +29,8 @@
 //! that brings a local-history net snapshots there — the ordering stays visible.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
 use std::path::Path;
+use std::path::PathBuf;
 
 use arc::spec::{amend_step_sql, record_step, Error as ArcError, RecordedStep};
 use brightfield_sql::ir::Predicate;
