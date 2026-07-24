@@ -114,6 +114,7 @@ jobs:
     name: Create release
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -137,19 +138,21 @@ jobs:
           # explanation. Unpacked by `tar` in a terminal it does not. That is
           # why the install instructions lead with the command and say why.
           prerelease: true
+          fail_on_unmatched_files: true
+          # Prose paragraphs are each ONE physical line on purpose. GitHub
+          # renders release bodies as GFM, whose hard-line-break extension
+          # turns every wrapped line into a visible <br> — a 70-column-wrapped
+          # body reads as ragged half-lines on the page. Verify before tagging:
+          #   gh api --method POST /markdown -f mode=gfm -f text="$(...)" | grep -c '<br>'
+          # must be 0. Code fences are exempt; keep them wrapped as they are.
           body: |
-            One native binary for macOS. No server, no webview, no language
-            runtime, no account — the only thing it asks of the machine is a
-            working graphics driver. Every example in this archive renders with
-            the network switched off.
+            One native binary for macOS. No server, no webview, no language runtime, no account — the only thing it asks of the machine is a working graphics driver. Every example in this archive renders with the network switched off.
 
-            **This is an early preview**, macOS only, and it is not signed or
-            notarized by Apple. Read the two notes below before you unpack it.
+            **This is an early preview**, macOS only, and it is not signed or notarized by Apple. Read the two notes below before you unpack it.
 
             ### Check what you downloaded
 
-            Download the tarball **and** its `.sha256` sidecar, then from the
-            folder they landed in:
+            Download the tarball **and** its `.sha256` sidecar, then from the folder they landed in:
 
             ```
             shasum -a 256 -c brightfield-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz.sha256
@@ -159,11 +162,7 @@ jobs:
 
             ### Unpack it in Terminal, not in Finder
 
-            This build is unsigned, so macOS quarantines anything the Finder's
-            Archive Utility extracts and then kills it the moment you run it —
-            usually with nothing in the terminal but `zsh: killed`, and
-            sometimes a notification saying Apple could not verify it. The
-            `tar` command below does not set that mark:
+            This build is unsigned, so macOS quarantines anything the Finder's Archive Utility extracts and then kills it the moment you run it — usually with nothing in the terminal but `zsh: killed`, and sometimes a notification saying Apple could not verify it. The `tar` command below does not set that mark:
 
             ```
             tar -xzf brightfield-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz
@@ -171,8 +170,7 @@ jobs:
             ./brightfield
             ```
 
-            If you already unpacked it in Finder, clear the mark from the whole
-            folder — adjust the path for wherever it landed:
+            If you already unpacked it in Finder, clear the mark from the whole folder — adjust the path for wherever it landed:
 
             ```
             xattr -dr com.apple.quarantine ~/Downloads/brightfield-${{ github.ref_name }}-aarch64-apple-darwin
@@ -180,33 +178,25 @@ jobs:
 
             ### What you get
 
-            `./brightfield` with no arguments opens on a set of starts that
-            ship inside the binary: the lineage of the EDGAR↔GLEIF crosswalk,
-            and three charts. Or name a spec yourself —
+            `./brightfield` with no arguments opens on a set of starts that ship inside the binary: the lineage of the EDGAR↔GLEIF crosswalk, and three charts. Or name a spec yourself —
 
             ```
             ./brightfield examples/bars.yaml
             ```
 
-            31 example specs and the EDGAR↔GLEIF Protocol manifest are in the
-            archive alongside the binary, its LICENSE (MIT) and a README.
+            31 example specs and the EDGAR↔GLEIF Protocol manifest are in the archive, alongside the binary, its LICENSE (MIT) and a README. The Protocol manifest renders from the manifest alone, without a run:
+
+            ```
+            BRIGHTFIELD_PROTOCOL_OFFLINE=1 ./brightfield examples/protocol/edgar_gleif/arcform.yaml
+            ```
 
             ### What it reports
 
-            Nothing. No telemetry, no analytics, no update check — nothing in
-            this application reports anywhere, and it needs no network to
-            start, to render, or to open a local protocol.
+            Nothing. No telemetry, no analytics, no update check — nothing in this application reports anywhere, and it needs no network to start, to render, or to open a local protocol.
 
-            It reaches out only when a spec asks it to: a remote source, a
-            DuckLake catalog, or a spatial source. In those cases DuckDB
-            downloads the extension it needs from its own extension repository
-            and fetches the data. A spec over local files does neither.
+            It reaches out only when a spec asks it to: a remote source, a DuckLake catalog, or a spatial source. In those cases DuckDB downloads the extension it needs from its own extension repository and fetches the data. A spec over local files does neither.
 
-            `scripts/verify-airgapped.sh` in the repository proves that against
-            the packaged artifact — it denies the network, checks that the
-            denial really bites, and only then renders a chart and a protocol
-            graph inside the jail. Run it yourself; it takes a minute. The
-            Intel build is the same source and packaging, cross-compiled.
+            `scripts/verify-airgapped.sh` in the repository proves that against the packaged artifact — it denies the network, checks that the denial really bites, and only then renders a chart and a protocol graph inside the jail. Run it yourself; it takes a minute. The Intel build is the same source and packaging, cross-compiled.
           files: |
             artifacts/brightfield-*.tar.gz
             artifacts/brightfield-*.sha256

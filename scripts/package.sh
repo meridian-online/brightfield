@@ -71,10 +71,17 @@ cp -R examples/protocol "$STAGE/examples/protocol"
 cat > "$STAGE/README.txt" <<EOF
 brightfield ${VERSION} (${TARGET})
 
-One native binary. No server, no webview, no language runtime, no network —
-the only thing it asks of the machine is a working graphics driver.
+One native binary. No server, no webview, no language runtime, and no network
+needed to run — the only thing it asks of the machine is a working graphics
+driver. Nothing here reports anywhere; it reaches out only when a spec names a
+remote source, a DuckLake catalog or a spatial source, and everything bundled
+below is local.
 
-Run it on a bundled example:
+Start on the bundled gallery:
+
+  ./brightfield
+
+Or run it on a bundled example:
 
   ./brightfield examples/bars.yaml
 
