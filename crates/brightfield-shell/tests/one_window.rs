@@ -458,3 +458,51 @@ fn the_top_bar_switcher_switches_the_view_the_dock_draws() {
         );
     }
 }
+
+/// The top bar's Home button actually returns to the front door — clicked
+/// where it drew itself. Sibling to the switcher test above, and asserted the
+/// same way: `open_home` can be called from a test all day without a person
+/// being able to reach it, so the click is aimed at the rect the bar recorded
+/// on the previous frame, and the claim is that the window *went home* — both
+/// documents emptied, so `front_door_is_live` again.
+///
+/// The button lives in the always-drawn left group, not the right-to-left
+/// group that a narrow window drops, and it shows only off the door — so this
+/// opens with both fixtures loaded, and after the trip the door draws no Home
+/// button at all, because there is nowhere left to go.
+///
+/// Watched redden, one mutation: dropping the `if bar.home` handling after the
+/// top panel closes, so the recorded click reaches nothing, fails here at
+/// "clicking Home left the window on the dock".
+#[test]
+fn the_top_bar_home_button_returns_to_the_front_door() {
+    let mut win = Window::open(both(ViewKind::Charts), Mode::Light);
+    win.settle();
+    assert!(
+        !win.app.front_door_is_live(),
+        "both fixtures loaded, so the dock — not the door"
+    );
+
+    let target = win
+        .app
+        .home_rect()
+        .expect("off the door, the top bar draws a Home button");
+    assert!(
+        win.screen.contains_rect(target),
+        "the Home button drew at {target:?}, outside the window — nothing \
+         could click it"
+    );
+    win.run(vec![click_at(target.center()), Vec::new()]);
+    win.settle();
+
+    assert!(
+        win.app.front_door_is_live(),
+        "clicking Home left the window on the dock — the button is chrome \
+         that does nothing"
+    );
+    assert!(
+        win.app.home_rect().is_none(),
+        "the front door still drew a Home button — there is nowhere to go \
+         home from"
+    );
+}

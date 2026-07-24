@@ -127,6 +127,28 @@ fn click_at(pos: egui::Pos2) -> Vec<egui::Event> {
     events
 }
 
+/// One frame's worth of the `open-home` keystroke, cmd-shift-h. `command` and
+/// `shift` are what `consume_key`'s logical match reads — mac_cmd/ctrl are
+/// platform detail the pattern ignores — so this fires the same on every
+/// runner.
+fn press_home() -> Vec<egui::Event> {
+    let modifiers = egui::Modifiers {
+        command: true,
+        shift: true,
+        ..Default::default()
+    };
+    [true, false]
+        .into_iter()
+        .map(|pressed| egui::Event::Key {
+            key: egui::Key::H,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers,
+        })
+        .collect()
+}
+
 fn chart_subject(doc: &ChartDoc) -> Subject {
     chart_registry()
         .specs()
@@ -674,6 +696,66 @@ fn a_door_with_history_grows_a_continue_zone_that_reopens_it() {
         "Continue reopened nothing"
     );
     assert_eq!(win.app.active(), ViewKind::Protocol);
+    assert!(!win.app.front_door_is_live());
+}
+
+/// Going home returns to the front door **without forgetting the session** —
+/// the `open-home` keystroke clears both documents but leaves `layout.opened`
+/// standing, so the door it lands on grows the Continue zone that reopens what
+/// was left. That is the deliberate asymmetry with `open_start` (which records
+/// `opened`): Home keeps your place, by design.
+///
+/// The trip is driven by the live cmd-shift-h keystroke rather than by calling
+/// `open_home` directly, so the registry binding and its wiring are on the hook
+/// too — a declared-but-unwired key would leave this at "still on the dock".
+///
+/// Watched redden, one mutation: having `open_home` null `layout.opened` (the
+/// `open_start`-symmetric thing to do) fails here at "the door forgot the
+/// session" — the Continue zone vanishes and there is no way back to the work.
+#[test]
+fn going_home_returns_to_the_door_but_keeps_the_session() {
+    let mut layout = default_layout();
+    layout.opened = Some(starts::CROSSWALK.to_string());
+    layout.workspace.set_active(ViewKind::Protocol);
+
+    let boot = opening_boot(None, layout.opened.as_deref(), Flow::Vertical)
+        .expect("an unnamed launch cannot fail");
+    let mut win = Window {
+        app: MeridianApp::headless_with_layout(boot, layout, Mode::Light),
+        ctx: egui::Context::default(),
+        screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0)),
+    };
+    win.settle();
+    assert!(
+        !win.app.front_door_is_live(),
+        "the launch restored its work, so the dock — not the door"
+    );
+
+    win.run(vec![press_home(), Vec::new()]);
+    win.settle();
+
+    assert!(
+        win.app.front_door_is_live(),
+        "cmd-shift-h left the window on the dock — the binding is declared but not wired"
+    );
+    assert_eq!(
+        win.app.layout().opened.as_deref(),
+        Some(starts::CROSSWALK),
+        "going home forgot the session — the Continue zone has nothing to reopen"
+    );
+    let control = win
+        .app
+        .front_door_continue_rect()
+        .expect("the kept session should grow a Continue zone on the door");
+    assert!(win.screen.contains_rect(control));
+
+    // And Continue still reopens exactly what was left.
+    win.run(vec![click_at(control.center()), Vec::new()]);
+    win.settle();
+    assert!(
+        win.app.protocol_model().has_assets(),
+        "Continue after Home reopened nothing"
+    );
     assert!(!win.app.front_door_is_live());
 }
 
