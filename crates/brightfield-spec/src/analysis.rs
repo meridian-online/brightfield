@@ -974,13 +974,12 @@ fn collect_inline_filter_by_marks(
             else {
                 return;
             };
-            let selection = filter_by
-                .as_ref()
-                .map(|pr| pr.0.clone())
-                .or_else(|| match m.options.get("filterBy") {
+            let selection = filter_by.as_ref().map(|pr| pr.0.clone()).or_else(|| {
+                match m.options.get("filterBy") {
                     Some(ValueOrParamRef::Param(pr)) => Some(pr.0.clone()),
                     _ => None,
-                });
+                }
+            });
             let Some(selection) = selection else {
                 return;
             };
@@ -3176,7 +3175,10 @@ hconcat:
                 alternatives,
                 ..
             } => {
-                assert_eq!(mark, "root/hconcat[1]/plot[0]/mark[dot]", "names the subscriber mark");
+                assert_eq!(
+                    mark, "root/hconcat[1]/plot[0]/mark[dot]",
+                    "names the subscriber mark"
+                );
                 assert_eq!(column, "x", "names the unbindable cross-filter column");
                 assert_eq!(
                     alternatives,

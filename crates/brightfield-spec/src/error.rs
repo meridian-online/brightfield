@@ -278,9 +278,15 @@ mod tests {
             span: None,
         };
         let msg = e.to_string();
-        assert!(msg.contains("root/hconcat[1]/plot[0]/mark[dot]"), "names mark: {msg}");
+        assert!(
+            msg.contains("root/hconcat[1]/plot[0]/mark[dot]"),
+            "names mark: {msg}"
+        );
         assert!(msg.contains("delay"), "names column: {msg}");
-        assert!(msg.contains('p') && msg.contains('q'), "names alternatives: {msg}");
+        assert!(
+            msg.contains('p') && msg.contains('q'),
+            "names alternatives: {msg}"
+        );
     }
 
     #[test]
