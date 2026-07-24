@@ -383,6 +383,39 @@ impl Engine {
             }
         }
 
+        // NON-GOAL (deliberate, this version): per-source graceful degradation
+        // of the load. Every statement below is fatal to the WHOLE load — the
+        // first source whose DDL fails returns `Err`, and no dashboard is
+        // produced, even if other sources would have loaded cleanly. A "mixed"
+        // spec (one unreachable remote source beside several good local ones)
+        // therefore fails outright rather than rendering the marks it could.
+        //
+        // Degrading per-mark instead — build a view→mark dependency map, drop
+        // only the sources that failed, and let the surviving marks render
+        // (the compose path in `brightfield-shell::pipeline::compose_from_results`
+        // already tolerates a `None` batch per mark) — is NOT attempted here,
+        // for three reasons:
+        //
+        //   1. The map is not clean. A `query:` source is itself a view that
+        //      may select from other sources, so source failure propagates
+        //      through a dependency DAG, not a flat source→mark table; a mark's
+        //      query can also join several sources at once. Attributing a
+        //      failure to "the marks it takes down" requires transitive
+        //      analysis this seam does not have.
+        //   2. It is a contract change, not a local fix. `load_spec_with`
+        //      returns `Result<LoadResult, EngineError>`; partial success needs
+        //      a richer return type and ripples through every caller (the
+        //      coordinator, the shell, the capture tiers) and their tests.
+        //   3. It reverses a considered product stance. Failing with a NAMED
+        //      cause (the `RemoteDisabled` / `RemoteSourceFailed` / `DdlFailed`
+        //      variants below) is preferred over a silently partial dashboard:
+        //      "nothing, with a reason" beats "most of it, and you can't tell
+        //      what's missing." A single-source spec whose one source fails
+        //      would degrade to a blank canvas with no error at all.
+        //
+        // Changing this belongs behind a product decision about how a partial
+        // dashboard surfaces its gaps, not an incidental engine edit. Until
+        // then, whole-load fail-fast with a precise error is the contract.
         for ddl in &emit_output.statements {
             // Which extensions THIS source needs: a remote `ducklake:` URI
             // needs both (`ducklake` for the attach, `httpfs` for the

@@ -13,11 +13,26 @@ use serde::Serialize;
 
 use crate::stats::Stats;
 
+/// The number of consecutive iterations for which [`brush_interval`] yields
+/// distinct `(lo, hi)` pairs before the sequence repeats. It is the least
+/// common multiple of the two moduli in `brush_interval` (`i % 5` and
+/// `i % 7`, coprime): once `i` reaches 35 the pair `(i % 5, i % 7)` — and
+/// therefore the interval — collides with iteration 0.
+///
+/// Beyond this a suite would re-issue an interval it has already brushed, and
+/// the engine's renderer-side SQL cache would short-circuit the repeat: the
+/// measurement would time the cache rather than the engine, silently violating
+/// the "every timed brush is distinct" methodology guarantee. The harness caps
+/// its iteration count at this value (see `Args::parse`) so the guarantee holds
+/// by construction rather than by the operator remembering to stay under it.
+pub const DISTINCT_BRUSH_INTERVALS: usize = 35;
+
 /// The brushed interval for iteration `i` of a suite, in the unit domain
-/// [0, 100) — a widening/narrowing drag. The pairs stay distinct for 35
-/// consecutive iterations, which matters: the engine's renderer-side SQL cache
-/// short-circuits a repeated identical query, so re-using one interval would
-/// time the cache, not the engine. A real drag never repeats a pixel either.
+/// [0, 100) — a widening/narrowing drag. The pairs stay distinct for
+/// [`DISTINCT_BRUSH_INTERVALS`] consecutive iterations, which matters: the
+/// engine's renderer-side SQL cache short-circuits a repeated identical query,
+/// so re-using one interval would time the cache, not the engine. A real drag
+/// never repeats a pixel either.
 pub fn brush_interval(i: usize) -> (f64, f64) {
     let lo = 10.0 + (i % 5) as f64 * 4.0;
     let hi = 58.0 + (i % 7) as f64 * 5.0;
@@ -323,7 +338,7 @@ mod tests {
     #[test]
     fn brush_intervals_stay_distinct_for_a_full_suite() {
         let mut seen = std::collections::HashSet::new();
-        for i in 0..35 {
+        for i in 0..DISTINCT_BRUSH_INTERVALS {
             let (lo, hi) = brush_interval(i);
             assert!(lo < hi, "interval {i} is ordered");
             assert!(
@@ -334,10 +349,23 @@ mod tests {
     }
 
     #[test]
+    fn distinct_limit_is_exactly_the_repeat_period() {
+        // The constant is the cap the harness enforces; it must be the FIRST
+        // collision, not merely below it. One past the last distinct index
+        // wraps back onto iteration 0, so the cap is tight: raising it by one
+        // would admit a repeated interval and re-time the SQL cache.
+        assert_eq!(
+            brush_interval(DISTINCT_BRUSH_INTERVALS),
+            brush_interval(0),
+            "iteration {DISTINCT_BRUSH_INTERVALS} must collide with iteration 0"
+        );
+    }
+
+    #[test]
     fn domain_mapping_preserves_distinctness_and_bounds() {
         let domain = (0.8, 1.0);
         let mut seen = std::collections::HashSet::new();
-        for i in 0..35 {
+        for i in 0..DISTINCT_BRUSH_INTERVALS {
             let (lo, hi) = brush_interval_in(domain, i);
             assert!(lo < hi, "interval {i} is ordered");
             assert!(lo >= domain.0 && hi <= domain.1, "inside the domain");

@@ -184,8 +184,29 @@ impl Args {
         if args.rows.is_empty() || args.iterations == 0 || args.measured_frames == 0 {
             return Err("rows, iterations and frames must be non-zero".into());
         }
+        validate_iterations(args.iterations)?;
         Ok(args)
     }
+}
+
+/// Reject an iteration count the brush generator cannot serve with distinct
+/// intervals. Above [`scenario::DISTINCT_BRUSH_INTERVALS`], `brush_interval`
+/// repeats a pair it has already yielded, and the engine's SQL cache
+/// short-circuits the repeat — so the extra iterations would time the cache,
+/// not the engine, silently making the measurement a lie rather than merely a
+/// slow run. Failing loudly is the honest response; the operator can lower the
+/// count or, if more samples are truly wanted, the generator's period is what
+/// must grow first.
+fn validate_iterations(iterations: usize) -> Result<(), String> {
+    if iterations > scenario::DISTINCT_BRUSH_INTERVALS {
+        return Err(format!(
+            "--iterations {iterations} exceeds the {} distinct brush intervals the \
+             harness generates; a larger count would re-issue an interval and time \
+             the SQL cache instead of the engine",
+            scenario::DISTINCT_BRUSH_INTERVALS
+        ));
+    }
+    Ok(())
 }
 
 /// One scenario × row-count row of the baseline. The engine suites run twice
@@ -624,5 +645,24 @@ mod tests {
         assert!(SPEC_BINNED.contains("__DATA_PARQUET__"));
         assert!(SPEC_DOTS.contains("__DATA_PARQUET__"));
         assert!(SPEC_CROSSWALK.contains("__DATA_PARQUET__"));
+    }
+
+    #[test]
+    fn iterations_at_the_distinct_limit_are_accepted() {
+        // The default (20) and --quick (5) both sit under the cap; the cap
+        // itself is the largest count the brush generator can serve distinctly.
+        assert!(validate_iterations(1).is_ok());
+        assert!(validate_iterations(20).is_ok());
+        assert!(validate_iterations(scenario::DISTINCT_BRUSH_INTERVALS).is_ok());
+    }
+
+    #[test]
+    fn iterations_past_the_distinct_limit_are_rejected() {
+        let err = validate_iterations(scenario::DISTINCT_BRUSH_INTERVALS + 1)
+            .expect_err("one past the distinct limit must be rejected");
+        assert!(
+            err.contains("SQL cache"),
+            "the error must explain why a larger count is unsound: {err}"
+        );
     }
 }
