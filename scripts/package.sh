@@ -45,6 +45,28 @@ export RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-1.95.0}"
 
 CRATE_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/brightfield-shell/Cargo.toml | head -1)
 VERSION="${1:-v${CRATE_VERSION}-local}"
+
+# A named release tag must carry the crate's own version. The release workflow
+# passes GITHUB_REF_NAME here — a `v*` tag — and the whole artifact (tarball
+# name, README, and the binary's own `--version`) is labelled from it. If the
+# tag says v0.2.0 while the crate is still 0.1.0, that artifact ships mislabelled
+# and the in-binary version disagrees with the download. Refuse to build it.
+#
+# Runs before `rustc`/`cargo` so the check is a fast, toolchain-free fail. Only
+# fires when a VERSION argument was actually given: with none, VERSION is the
+# `v<crate>-local` default, which is derived from the crate and cannot disagree.
+if [ "$#" -ge 1 ]; then
+  tag_core="${1#v}"          # strip a leading v (the workflow tags as `v*`)
+  tag_core="${tag_core%%-*}" # strip any -prerelease / -local suffix
+  if [ "$tag_core" != "$CRATE_VERSION" ]; then
+    echo "package.sh: version mismatch — tag '${1}' resolves to '${tag_core}', but" >&2
+    echo "  crates/brightfield-shell/Cargo.toml declares version ${CRATE_VERSION}." >&2
+    echo "  Bump the crate version or retag so they agree; refusing to build a" >&2
+    echo "  mislabelled artifact." >&2
+    exit 1
+  fi
+fi
+
 HOST=$(rustc -vV | sed -n 's/^host: //p')
 TARGET="${2:-$HOST}"
 

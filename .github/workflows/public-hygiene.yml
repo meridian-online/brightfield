@@ -43,3 +43,12 @@ jobs:
 
       - name: borrowed benchmark figures
         run: ./scripts/check-borrowed-benchmarks.sh
+
+      # Release-packaging honesty, same cheap-shell shape: package.sh must
+      # refuse to build an artifact whose tag disagrees with the crate version.
+      # The self-test exercises both directions and runs no compiler (the guard
+      # fails before rustc/cargo; the pass path stubs them), so it belongs on
+      # this toolchain-free runner rather than in the tagged release workflow —
+      # where it would only ever run after a tag, too late to catch the mismatch.
+      - name: package version-guard self-test
+        run: ./scripts/package-version-guard-selftest.sh
