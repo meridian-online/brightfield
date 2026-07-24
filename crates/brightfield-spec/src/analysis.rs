@@ -829,6 +829,208 @@ fn check_filter_by_ref(
 }
 
 // ---------------------------------------------------------------------------
+// Cross-filter column reachability validation
+// ---------------------------------------------------------------------------
+
+/// A selection PRODUCER's column contribution: the stable plot-node path of the
+/// contributing plot, and the SQL column the clause it dispatches constrains.
+struct ProducerColumn {
+    /// Plot-node identity of the contributor (self-exclusion key).
+    plot: String,
+    /// The column the dispatched clause targets.
+    column: String,
+}
+
+/// One `filterBy` subscriber mark whose source schema is statically known.
+struct InlineSubscriber {
+    /// The mark's component path (the diagnostic's `mark` field).
+    mark_path: String,
+    /// Plot-node identity of the subscriber (self-exclusion key).
+    plot: String,
+    /// The selection name the mark filters by.
+    selection: String,
+    /// The columns the mark's inline source exposes (the projected alternatives).
+    columns: Vec<String>,
+}
+
+/// Validate that no cross-filter targets a column a subscriber mark's source
+/// cannot bind — the static half of a defence that keeps a raw DuckDB binder
+/// error (`Referenced column … not found`) from being the first thing a user
+/// sees when they brush.
+///
+/// A cross-filter carries a *column*, resolved from the producing plot's brush
+/// (or legend) channel. Every mark that `filterBy`s that selection re-emits its
+/// query with `WHERE <column> …`; if the mark's source does not expose that
+/// column, DuckDB's binder rejects the query at interaction time. This check
+/// makes that failure eager and legible for the cases it can PROVE.
+///
+/// # Soundness
+///
+/// The check fires only when the subscriber's source schema is fully known —
+/// i.e. an **inline** (`data: [{…}]`) source, whose columns are the first row's
+/// keys (matching the `VALUES … AS t(cols)` view the SQL layer builds). File,
+/// query, and remote sources have no statically-knowable schema, so a
+/// cross-filter onto them is left to the runtime binder as an honest fallback
+/// (never a false positive here).
+///
+/// It also fires only for a producer on a DIFFERENT plot than the subscriber. A
+/// producer on the SAME plot as the subscriber is dropped by crossfilter
+/// self-exclusion (a plot never filters itself), and a same-source same-plot
+/// producer's column is a channel of that plot's own mark anyway — so scoping
+/// to cross-plot contributions is both sound (a different-plot producer always
+/// contributes, under every resolution) and complete for the failure this
+/// guards.
+///
+/// Returns `Err` on the first violation, naming the mark, the column, and the
+/// projected alternatives.
+///
+/// # Errors
+///
+/// [`ParseError::CrossfilterColumnUnprojected`] for the first cross-filter
+/// whose column is provably absent from a subscriber mark's inline source.
+pub fn validate_crossfilter_columns(spec: &Spec) -> Result<(), ParseError> {
+    // Producer columns per selection, from brush interactors and bound legends.
+    let mut producers: HashMap<String, Vec<ProducerColumn>> = HashMap::new();
+    for b in build_brushable_bindings(spec) {
+        let cols: Vec<&Option<String>> = match b.kind {
+            BrushKind::IntervalX | BrushKind::PointX => vec![&b.channels.x],
+            BrushKind::IntervalY | BrushKind::PointY => vec![&b.channels.y],
+            BrushKind::IntervalXY | BrushKind::Point => vec![&b.channels.x, &b.channels.y],
+        };
+        for col in cols.into_iter().flatten() {
+            producers
+                .entry(b.selection.clone())
+                .or_default()
+                .push(ProducerColumn {
+                    plot: b.parent_plot.0.clone(),
+                    column: col.clone(),
+                });
+        }
+    }
+    // Legend producers dispatch an equality on the `for:` plot's colour column.
+    // `build_legend_bindings` pushes binding warnings; they are already emitted
+    // by the `analyse_spec` call, so a throwaway sink is correct here.
+    let mut sink: Vec<ParseWarning> = Vec::new();
+    for lb in build_legend_bindings(spec, &mut sink) {
+        producers
+            .entry(lb.selection.clone())
+            .or_default()
+            .push(ProducerColumn {
+                plot: lb.plot_path.0.clone(),
+                column: lb.colour_column.clone(),
+            });
+    }
+    if producers.is_empty() {
+        return Ok(());
+    }
+
+    // Subscriber marks whose inline source schema is statically known.
+    let mut subscribers: Vec<InlineSubscriber> = Vec::new();
+    if let Some(root) = &spec.root {
+        collect_inline_filter_by_marks(root, "root", spec, &mut subscribers);
+    }
+
+    // First provably-unbindable (producer column ∉ subscriber schema) pair wins.
+    for sub in &subscribers {
+        let Some(contributors) = producers.get(&sub.selection) else {
+            continue;
+        };
+        for pc in contributors {
+            // A same-plot producer is self-excluded (crossfilter) or its column
+            // is the plot's own channel — never a cross-plot binder failure.
+            if pc.plot == sub.plot {
+                continue;
+            }
+            if !sub.columns.iter().any(|c| c == &pc.column) {
+                return Err(ParseError::CrossfilterColumnUnprojected {
+                    mark: sub.mark_path.clone(),
+                    column: pc.column.clone(),
+                    alternatives: sub.columns.clone(),
+                    span: None,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Walk the component tree collecting every `filterBy` mark whose `from:` source
+/// is an inline-rows source, recording the columns that source exposes.
+fn collect_inline_filter_by_marks(
+    component: &Component,
+    path: &str,
+    spec: &Spec,
+    out: &mut Vec<InlineSubscriber>,
+) {
+    match component {
+        Component::Mark(m) => {
+            let mark_path = format!("{path}/mark[{}]", m.kind.wire_name());
+            // Source + filterBy selection, mirroring `validate_filter_by_refs`:
+            // the selection may sit on `data.filterBy` or a mark-level
+            // `filterBy` option, but the source always comes from `data.from`.
+            let Some(crate::ast::MarkData::From {
+                source, filter_by, ..
+            }) = &m.data
+            else {
+                return;
+            };
+            let selection = filter_by.as_ref().map(|pr| pr.0.clone()).or_else(|| {
+                match m.options.get("filterBy") {
+                    Some(ValueOrParamRef::Param(pr)) => Some(pr.0.clone()),
+                    _ => None,
+                }
+            });
+            let Some(selection) = selection else {
+                return;
+            };
+            if let Some(columns) = inline_source_columns(spec, source) {
+                out.push(InlineSubscriber {
+                    plot: plot_node_path(&mark_path).to_string(),
+                    mark_path,
+                    selection,
+                    columns,
+                });
+            }
+        }
+        Component::Plot(p) => {
+            for (i, item) in p.items.iter().enumerate() {
+                collect_inline_filter_by_marks(item, &format!("{path}/plot[{i}]"), spec, out);
+            }
+        }
+        Component::HConcat(c) => {
+            for (i, item) in c.items.iter().enumerate() {
+                collect_inline_filter_by_marks(item, &format!("{path}/hconcat[{i}]"), spec, out);
+            }
+        }
+        Component::VConcat(c) => {
+            for (i, item) in c.items.iter().enumerate() {
+                collect_inline_filter_by_marks(item, &format!("{path}/vconcat[{i}]"), spec, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The columns an inline-rows data source exposes, or `None` when the named
+/// source is not inline (schema not statically knowable) or is malformed.
+///
+/// Mirrors the SQL layer's inline-view construction exactly: object rows take
+/// the FIRST row's keys (insertion order); array rows synthesise `c0, c1, …`.
+/// A scalar first row is malformed (the SQL layer errors on it) and yields
+/// `None` here — no schema to check against.
+fn inline_source_columns(spec: &Spec, source: &str) -> Option<Vec<String>> {
+    let ds = spec.data.get(source)?;
+    let crate::ast::DataSourceKind::InlineRows(rows) = &ds.kind else {
+        return None;
+    };
+    match rows.first()? {
+        SpecValue::Object(first) => Some(first.keys().cloned().collect()),
+        SpecValue::Array(first) => Some((0..first.len()).map(|i| format!("c{i}")).collect()),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Interactor binding validation
 // ---------------------------------------------------------------------------
 
@@ -1865,6 +2067,11 @@ pub fn analyse_spec(spec: &Spec) -> Result<SpecAnalysis, ParseError> {
 
     // filterBy validation — hard error on missing or non-selection refs.
     validate_filter_by_refs(spec)?;
+
+    // Cross-filter column reachability — hard error when a cross-filter
+    // provably targets a column a subscriber mark's (inline) source cannot
+    // bind, so the raw DuckDB binder error never surfaces at interaction time.
+    validate_crossfilter_columns(spec)?;
 
     // Interactor binding warnings.
     warnings.extend(validate_interactor_bindings(spec));
@@ -2923,6 +3130,185 @@ plot:
             ],
             "toggleX→PointX and toggleY→PointY, each carrying the plot's channels"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Cross-filter column reachability validation
+    // -----------------------------------------------------------------------
+
+    /// AC — validation-time diagnosis: a cross-filter whose producer plot
+    /// brushes a column absent from a subscriber mark's inline source is
+    /// rejected by `analyse_spec`, naming the mark, the column, and the
+    /// projected alternatives.
+    #[test]
+    fn crossfilter_column_unprojected_diagnoses_mark_column_alternatives() {
+        let yaml = r#"
+params:
+  brush: { select: crossfilter }
+data:
+  a:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+  b:
+    - { p: 1, q: 10 }
+    - { p: 2, q: 20 }
+hconcat:
+  - plot:
+    - mark: dot
+      data: { from: a }
+      x: x
+      y: y
+    - select: intervalX
+      as: $brush
+  - plot:
+    - mark: dot
+      data: { from: b, filterBy: $brush }
+      x: p
+      y: q
+"#;
+        let out = parse_spec(yaml, Format::Yaml).expect("parses");
+        let err = analyse_spec(&out.spec).expect_err("must reject unbindable cross-filter");
+        match err {
+            ParseError::CrossfilterColumnUnprojected {
+                mark,
+                column,
+                alternatives,
+                ..
+            } => {
+                assert_eq!(
+                    mark, "root/hconcat[1]/plot[0]/mark[dot]",
+                    "names the subscriber mark"
+                );
+                assert_eq!(column, "x", "names the unbindable cross-filter column");
+                assert_eq!(
+                    alternatives,
+                    vec!["p".to_string(), "q".to_string()],
+                    "lists the subscriber source's projected columns"
+                );
+            }
+            other => panic!("expected CrossfilterColumnUnprojected, got {other:?}"),
+        }
+    }
+
+    /// A cross-filter whose producer and subscriber share one inline source
+    /// (so the brushed column exists) passes — no false positive. This is the
+    /// canonical mutual-crossfilter shape reduced to a single source.
+    #[test]
+    fn crossfilter_same_source_present_column_passes() {
+        let yaml = r#"
+params:
+  brush: { select: crossfilter }
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+hconcat:
+  - plot:
+    - mark: dot
+      data: { from: t }
+      x: x
+      y: y
+    - select: intervalX
+      as: $brush
+  - plot:
+    - mark: dot
+      data: { from: t, filterBy: $brush }
+      x: x
+      y: y
+"#;
+        let out = parse_spec(yaml, Format::Yaml).expect("parses");
+        analyse_spec(&out.spec).expect("valid same-source cross-filter must pass");
+    }
+
+    /// A subscriber whose source is a FILE (schema not statically knowable) is
+    /// NOT flagged even when the producer brushes a column the file may lack —
+    /// the runtime binder stays the honest fallback for unknowable schemas.
+    #[test]
+    fn crossfilter_file_source_subscriber_not_flagged() {
+        let yaml = r#"
+params:
+  brush: { select: crossfilter }
+data:
+  a:
+    - { x: 1, y: 10 }
+  b: { file: data/other.parquet }
+hconcat:
+  - plot:
+    - mark: dot
+      data: { from: a }
+      x: x
+      y: y
+    - select: intervalX
+      as: $brush
+  - plot:
+    - mark: dot
+      data: { from: b, filterBy: $brush }
+      x: p
+      y: q
+"#;
+        let out = parse_spec(yaml, Format::Yaml).expect("parses");
+        analyse_spec(&out.spec)
+            .expect("unknowable file schema is left to the runtime binder fallback");
+    }
+
+    /// A plot that both brushes and filters itself on one inline source is not
+    /// flagged: crossfilter self-exclusion drops the plot's own contribution,
+    /// so no cross-plot binder failure can arise.
+    #[test]
+    fn crossfilter_self_filtering_plot_not_flagged() {
+        let yaml = r#"
+params:
+  brush: { select: crossfilter }
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+plot:
+  - mark: dot
+    data: { from: t, filterBy: $brush }
+    x: x
+    y: y
+  - select: intervalX
+    as: $brush
+"#;
+        let out = parse_spec(yaml, Format::Yaml).expect("parses");
+        analyse_spec(&out.spec).expect("self-filtering plot must not be flagged");
+    }
+
+    /// An `intervalXY` brush contributes BOTH channel columns; a subscriber
+    /// missing the y column is diagnosed on that column.
+    #[test]
+    fn crossfilter_interval_xy_diagnoses_missing_y_channel() {
+        let yaml = r#"
+params:
+  brush: { select: crossfilter }
+data:
+  a:
+    - { x: 1, y: 10 }
+  b:
+    - { x: 1, q: 10 }
+hconcat:
+  - plot:
+    - mark: dot
+      data: { from: a }
+      x: x
+      y: y
+    - select: intervalXY
+      as: $brush
+  - plot:
+    - mark: dot
+      data: { from: b, filterBy: $brush }
+      x: x
+      y: q
+"#;
+        let out = parse_spec(yaml, Format::Yaml).expect("parses");
+        let err = analyse_spec(&out.spec).expect_err("y channel `y` is absent from source b");
+        match err {
+            ParseError::CrossfilterColumnUnprojected { column, .. } => {
+                assert_eq!(column, "y", "the missing y channel is the offending column");
+            }
+            other => panic!("expected CrossfilterColumnUnprojected, got {other:?}"),
+        }
     }
 
     // -----------------------------------------------------------------------

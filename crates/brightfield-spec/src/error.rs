@@ -159,6 +159,34 @@ pub enum ParseError {
         /// Location in the source if available.
         span: Option<SourceSpan>,
     },
+
+    /// A cross-filter (a brush / point / legend selection) contributed by one
+    /// plot targets a column that a *subscriber* mark's source provably does
+    /// not expose — so the `WHERE` the subscriber emits would fail at the
+    /// DuckDB binder ("Referenced column … not found"). Diagnosed statically
+    /// only when the subscriber's source schema is fully known (inline rows);
+    /// file / query / remote sources whose columns are not knowable without
+    /// executing DDL fall through to the runtime binder as an honest fallback.
+    #[error(
+        "cross-filter targets column `{column}`, which mark `{mark}` does not project; \
+         projected columns: {available}",
+        available = if alternatives.is_empty() {
+            "(none)".to_owned()
+        } else {
+            alternatives.join(", ")
+        }
+    )]
+    CrossfilterColumnUnprojected {
+        /// Component path of the subscriber mark whose query would fail to bind.
+        mark: String,
+        /// The cross-filter column the subscriber's source does not expose.
+        column: String,
+        /// The columns the subscriber's source *does* project — the valid
+        /// alternatives a corrected spec would target.
+        alternatives: Vec<String>,
+        /// Location in the source if available.
+        span: Option<SourceSpan>,
+    },
 }
 
 impl ParseError {
@@ -172,7 +200,8 @@ impl ParseError {
             | Self::MalformedDataDef { span, .. }
             | Self::MalformedParamDef { span, .. }
             | Self::StrictContextUnresolvedRef { span, .. }
-            | Self::SchemaViolation { span, .. } => *span,
+            | Self::SchemaViolation { span, .. }
+            | Self::CrossfilterColumnUnprojected { span, .. } => *span,
             Self::Io(_) | Self::UnknownFormat { .. } => None,
         }
     }
@@ -223,6 +252,12 @@ mod tests {
                 detail: "unknown field".into(),
                 span: Some(SourceSpan::point(0)),
             },
+            ParseError::CrossfilterColumnUnprojected {
+                mark: "root/plot[0]/mark[dot]".into(),
+                column: "delay".into(),
+                alternatives: vec!["p".into(), "q".into()],
+                span: None,
+            },
         ];
         // Each variant must expose a span() accessor (even if None).
         for v in &variants {
@@ -230,6 +265,28 @@ mod tests {
         }
         // Io / UnknownFormat return None — verified by contract, not asserted
         // here because constructing Io requires an io::Error.
+    }
+
+    /// The cross-filter diagnostic names the mark, the column, and the
+    /// projected alternatives in its rendered message.
+    #[test]
+    fn crossfilter_column_unprojected_message_names_all_three() {
+        let e = ParseError::CrossfilterColumnUnprojected {
+            mark: "root/hconcat[1]/plot[0]/mark[dot]".into(),
+            column: "delay".into(),
+            alternatives: vec!["p".into(), "q".into()],
+            span: None,
+        };
+        let msg = e.to_string();
+        assert!(
+            msg.contains("root/hconcat[1]/plot[0]/mark[dot]"),
+            "names mark: {msg}"
+        );
+        assert!(msg.contains("delay"), "names column: {msg}");
+        assert!(
+            msg.contains('p') && msg.contains('q'),
+            "names alternatives: {msg}"
+        );
     }
 
     #[test]
