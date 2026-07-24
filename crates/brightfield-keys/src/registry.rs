@@ -343,6 +343,17 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Reload the spec from disk (guards unsaved editor edits)",
             scores: Some(Scores { frequency: 2, mnemonic: 4, convention: 4, motor_note: "cmd-r = reload (browser); bare r NOT bound (dirty-guard)" }),
         },
+        VerbEntry {
+            longname: "open-home",
+            tier: CommandTier::View,
+            binding_specs: vec![global("cmd-shift-h")],
+            scope_applicability: vec![Dashboard, View, Protocol],
+            drives: D::RuntimeDispatch,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Return to the front door (keeps your place under Continue)",
+            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 4, motor_note: "cmd-shift-h = home; free of the editor chord set" }),
+        },
         // ---- presentation + save: shipped fixed points, sourced here so
         //      the registry is the single binding source ----
         VerbEntry {
@@ -865,6 +876,7 @@ mod tests {
             "open-help",
             "clear-selection",
             "reload-spec",
+            "open-home",
             "toggle-presentation",
             "save-spec",
             "cycle-colour-scheme",

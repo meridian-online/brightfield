@@ -46,6 +46,7 @@ pub mod canvas;
 pub mod capture;
 pub mod chart_item;
 pub mod data_grid;
+pub mod devtools;
 pub mod editor;
 pub mod gallery;
 pub mod legend;

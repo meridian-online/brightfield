@@ -249,8 +249,8 @@ impl Item<ChartDoc> for ChartItem {
     /// This empty state is what a launch with no spec on the command line
     /// opens on, so its prose cannot assume a spec was ever named — the copy
     /// it replaces opened "This spec composed no plots", which is a report
-    /// about a spec that does not exist. It names both ways in: a shipped
-    /// start, offered as a button, and the command line.
+    /// about a spec that does not exist. It names the one way in: a shipped
+    /// start, offered as a button.
     ///
     /// The affordance is an [`Action::Open`](brightfield_workbench::Action)
     /// rather than a verb. There is no registered command that means "open the
@@ -266,7 +266,7 @@ impl Item<ChartDoc> for ChartItem {
             mark_icon(None),
             "Nothing to draw",
             "No spec is open, or the one that is composed no plots. Start \
-             from the example below, or name a spec on the command line.",
+             from the example below.",
         );
         if let Some(start) = starts::for_view(brightfield_workbench::ViewKind::Charts) {
             empty = empty.with_next(Affordance::open(start.label, start.id));

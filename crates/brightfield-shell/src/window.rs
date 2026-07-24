@@ -515,9 +515,11 @@ impl Boot {
     /// job to supply and `main`'s reason for resolving it against the restored
     /// layout first. It matters more here than it looks: `main` hands this
     /// string to `eframe::run_native`, which is where the OS window's title
-    /// comes from, and nothing sends a `ViewportCommand::Title` afterwards
-    /// except the front door's own click. A title that is wrong at this call
-    /// stays wrong for the session.
+    /// comes from, and the only things that send a `ViewportCommand::Title`
+    /// afterwards are opening a start (`open_start`) and going home
+    /// (`open_home`) — both private, both re-titling from the documents they
+    /// just changed. A title that is wrong at this call stays wrong until one
+    /// of those runs.
     #[must_use]
     pub fn title(&self, view: ViewKind) -> String {
         match view {
@@ -565,8 +567,14 @@ struct TopBar {
     switch: Option<ViewKind>,
     /// Whether the protocol view's flow toggle was pressed.
     toggle_flow: bool,
+    /// Whether the Home button was pressed — the return to the front door.
+    home: bool,
     /// Each switcher control's rect — see [`MeridianApp::switcher`].
     switcher: Vec<(ViewKind, egui::Rect)>,
+    /// The Home button's rect, when the bar drew one — see
+    /// [`MeridianApp::home_rect`]. `None` on the front door, which draws no
+    /// Home button because it is already home.
+    home_rect: Option<egui::Rect>,
 }
 
 /// Which grammar overlay is open over the workspace, holding the live
@@ -623,9 +631,9 @@ impl OverlayKeys {
 }
 
 /// Consume the pressed key a registry keystroke token names, if it is down
-/// this frame. Only the tokens the overlay openers actually bind are mapped;
-/// an unmapped token is simply never consumed, which fails safe — the
-/// overlay does not open, and nothing else changes.
+/// this frame. Only the tokens the shell actually wires live — the overlay
+/// openers and open-home — are mapped; an unmapped token is simply never
+/// consumed, which fails safe: nothing opens, and nothing else changes.
 fn consume_token(ctx: &egui::Context, token: &str) -> bool {
     use egui::{Key, Modifiers};
     match token {
@@ -637,6 +645,9 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
             i.consume_key(Modifiers::NONE, Key::Questionmark)
                 || i.consume_key(Modifiers::SHIFT, Key::Questionmark)
         }),
+        "cmd-shift-h" => {
+            ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::H))
+        }
         _ => false,
     }
 }
@@ -677,6 +688,11 @@ pub struct MeridianApp {
     /// lands today and goes on being green while clicking empty bar the first
     /// time a label or a padding moves.
     switcher: Vec<(ViewKind, egui::Rect)>,
+    /// Where the top bar drew the Home button in the last frame this window
+    /// drew, in window-space logical points — recorded for the reason
+    /// [`Self::switcher`] is, and read back through [`MeridianApp::home_rect`].
+    /// `None` on a frame the bar drew no Home button (the front door).
+    home_button: Option<egui::Rect>,
     /// Where each empty pane drew the button that resolves it, in window-space
     /// logical points — recorded for exactly the reason [`Self::switcher`] is,
     /// and read back through [`MeridianApp::affordance_rect`].
@@ -706,6 +722,12 @@ pub struct MeridianApp {
     overlay: Option<Overlay>,
     /// The keystrokes that open overlays, read off the registry at boot.
     overlay_keys: OverlayKeys,
+    /// The `open-home` keystroke token, read off the registry at boot — the
+    /// shell invents no binding, it only wires the one the registry declares.
+    /// Kept out of [`OverlayKeys`] on purpose: open-home is a runtime
+    /// dispatch, not an overlay opener, and that struct's contents are pinned
+    /// by `the_overlay_keys_come_from_the_registry`.
+    home_binding: Option<&'static str>,
     /// The per-session palette recency: verbs run from the palette rank
     /// higher on its next empty-query open. Session-scoped by design (the
     /// sanctioned v1 simplification); it resets each launch.
@@ -889,6 +911,7 @@ impl MeridianApp {
             mode,
             fonts_installed: false,
             switcher: Vec::new(),
+            home_button: None,
             affordances: Vec::new(),
             door_thumbs: Vec::new(),
             door_cards: Vec::new(),
@@ -896,6 +919,10 @@ impl MeridianApp {
             door_help: None,
             overlay: None,
             overlay_keys: OverlayKeys::from_registry(),
+            home_binding: brightfield_keys::registry()
+                .iter()
+                .find(|v| v.longname == "open-home")
+                .and_then(brightfield_keys::VerbEntry::primary_key),
             recency: RecencyCounter::new(),
             notifications: NotificationLayer::new(),
             toasts: ToastLayer::new(),
@@ -925,12 +952,23 @@ impl MeridianApp {
     /// and the two agree exactly when it is asked for the view this window will
     /// draw — which is why `Boot::title` takes that view rather than assuming
     /// one. It matters that they agree: `main` hands `Boot::title`'s answer to
-    /// `eframe::run_native`, and the only `ViewportCommand::Title` in the
-    /// workspace is in `open_start`, which a restored session never reaches. `a_restored_session_is_titled_for_the_view_it_draws` asserts
+    /// `eframe::run_native`, and the runtime `ViewportCommand::Title`s in the
+    /// workspace — in `open_start` and `open_home` — re-title from this same
+    /// method, so a restored session that reaches neither keeps `Boot::title`'s
+    /// answer. `a_restored_session_is_titled_for_the_view_it_draws` asserts
     /// the agreement rather than either answer, because a literal on both
     /// sides would go on matching itself after either drifted.
     #[must_use]
     pub fn title(&self) -> String {
+        // The front door spans both views, so it has no view subject to name —
+        // and the top bar draws this unconditionally. Reaching the door from
+        // the Protocol view would otherwise show "Protocol · " (the emptied
+        // graph's blank name) in the visible chrome for the whole visit. A
+        // cold-boot door is already this string (an empty `ChartDoc` titles
+        // "Brightfield"), so this only fixes the reached-from-Protocol case.
+        if self.front_door_is_live() {
+            return "Brightfield".to_string();
+        }
         match self.ws().active() {
             ViewKind::Charts => self.charts.doc.title().to_string(),
             ViewKind::Protocol => format!("Protocol · {}", self.protocol.doc.model.protocol),
@@ -966,6 +1004,16 @@ impl MeridianApp {
             .iter()
             .find(|(v, _)| *v == view)
             .map(|(_, r)| *r)
+    }
+
+    /// The rect the top bar's Home button occupied in the last frame this
+    /// window drew, or `None` on a frame it drew none — the front door draws
+    /// no Home button, because it is already home. Recorded and read back for
+    /// the reason [`MeridianApp::switcher_rect`] is: the test that proves Home
+    /// is reachable has to click it where it was actually laid out.
+    #[must_use]
+    pub fn home_rect(&self) -> Option<egui::Rect> {
+        self.home_button
     }
 
     /// The rect the empty state of `pane` drew its resolving button at, in the
@@ -1138,15 +1186,6 @@ impl MeridianApp {
         let view = self.ws().active();
         let mode = self.mode;
 
-        // Whether this frame is the front door. Decided once, up here,
-        // because three branches below have to agree which frame this is: the
-        // grammar feed, the hint bar and the central panel. The door replaces
-        // the *dock* and nothing else — the top bar, the overlays and the
-        // notification layers stay exactly where they are, so the door is a
-        // state of the window's content plane rather than a mode of the
-        // window.
-        let door = self.front_door_is_live();
-
         // The document's file watcher: poll on its own cadence, keep frames
         // coming while anything is watched (a poll nobody runs watches
         // nothing), and repaint immediately on news so the notice lands next
@@ -1161,6 +1200,21 @@ impl MeridianApp {
         // The overlay-opening keys, before the grammar feed so the frame that
         // opens an overlay is already under it.
         self.overlay_open_keys(&ctx, view);
+        // Return-home, on the same gate: no overlay may own the keyboard, and
+        // it is deliberately not an overlay-opener (so the registry cross-ref
+        // that pins those three stays pinned).
+        self.home_key(&ctx);
+
+        // Whether this frame is the front door. Decided once, **after**
+        // `home_key`, because three branches below have to agree which frame
+        // this is — the grammar feed, the hint bar and the central panel — and
+        // a cmd-shift-h this frame just emptied the documents: latched before
+        // it, they would draw the dock over a door-that-should-be for one
+        // frame. The door replaces the *dock* and nothing else — the top bar,
+        // the overlays and the notification layers stay exactly where they are,
+        // so the door is a state of the window's content plane rather than a
+        // mode of the window.
+        let door = self.front_door_is_live();
 
         // The protocol grammar is bare-key — `h j k l y t Enter Esc ⌫ shift-S`
         // with no modifier to disambiguate it — so it is fed only while its own
@@ -1201,6 +1255,7 @@ impl MeridianApp {
             .exact_size(BAR_HEIGHT)
             .show(ui, |ui| bar = self.top_bar(ui));
         self.switcher = std::mem::take(&mut bar.switcher);
+        self.home_button = bar.home_rect;
 
         // The key-hint bar belongs to the protocol grammar, so it is drawn on
         // the view that has one. The charts view has no key grammar at all, and
@@ -1298,6 +1353,9 @@ impl MeridianApp {
                 self.protocol.doc.canvas.invalidate();
             }
         }
+        if bar.home {
+            self.open_home(&ctx);
+        }
         if let Some(next) = bar.switch {
             self.ws_mut().set_active(next);
             ctx.request_repaint();
@@ -1338,6 +1396,25 @@ impl MeridianApp {
             self.open_jump();
         } else if pressed(self.overlay_keys.help) {
             self.overlay = Some(Overlay::Help(Picker::new(HelpSheet::new())));
+        }
+    }
+
+    /// Return home if the registry's `open-home` keystroke was pressed this
+    /// frame and no overlay owns the keyboard.
+    ///
+    /// A sibling of [`overlay_open_keys`](Self::overlay_open_keys) rather than
+    /// a case inside it: `open-home` is a runtime dispatch, not an overlay
+    /// opener, and [`OverlayKeys`] is pinned to exactly the three that are. It
+    /// still invents no binding — the token comes off the registry
+    /// ([`Self::home_binding`]) and runs through the same
+    /// [`consume_token`]. `open_home` is a no-op on the front door, so an
+    /// idle press there costs nothing.
+    fn home_key(&mut self, ctx: &egui::Context) {
+        if self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        if self.home_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.open_home(ctx);
         }
     }
 
@@ -1494,6 +1571,12 @@ impl MeridianApp {
             Mode::Light => "light",
             Mode::Dark => "dark",
         };
+        // The Home button belongs in the always-drawn left group, not the
+        // right-to-left group that is dropped on a narrow window — a return
+        // to the front door that vanishes when the window is small is a return
+        // you cannot rely on. It shows only off the door: on the door there is
+        // nothing to return from, and `open_home` would no-op anyway.
+        let door = self.front_door_is_live();
 
         let mut bar = TopBar::default();
         ui.horizontal_centered(|ui| {
@@ -1502,6 +1585,13 @@ impl MeridianApp {
                 bar.switcher.push((view, control.rect));
                 if control.clicked() && view != active {
                     bar.switch = Some(view);
+                }
+            }
+            if !door {
+                let home = ui.button(egui::RichText::new("Home").font(ui_font()));
+                bar.home_rect = Some(home.rect);
+                if home.clicked() {
+                    bar.home = true;
                 }
             }
             ui.label(egui::RichText::new(title).color(chrome::colour(sem.text.primary)));
@@ -1517,19 +1607,30 @@ impl MeridianApp {
                         .color(chrome::colour(sem.text.secondary)),
                 );
             }
-            let renderer = format!("egui · Vello · wgpu 29  —  {theme}");
+            // The renderer line is a developer diagnostic — a stranger's first
+            // launch should not read "egui · Vello · wgpu 29". It appears only
+            // under the devtools flag; the flow toggle is a real affordance and
+            // always draws when the protocol view supplies one.
+            let renderer =
+                crate::devtools::enabled().then(|| format!("egui · Vello · wgpu 29  —  {theme}"));
             let toggle = (active == ViewKind::Protocol).then(|| match flow {
                 Flow::Vertical => ("flow: vertical ⇄".to_string(), "horizontal"),
                 Flow::Horizontal => ("flow: horizontal ⇄".to_string(), "vertical"),
             });
-            let wanted = right_group_width(ui, &renderer, toggle.as_ref().map(|(t, _)| t.as_str()));
-            if ui.available_width() >= wanted {
+            let wanted = right_group_width(
+                ui,
+                renderer.as_deref(),
+                toggle.as_ref().map(|(t, _)| t.as_str()),
+            );
+            if (renderer.is_some() || toggle.is_some()) && ui.available_width() >= wanted {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
-                        egui::RichText::new(renderer)
-                            .monospace()
-                            .color(chrome::colour(sem.text.muted)),
-                    );
+                    if let Some(renderer) = renderer {
+                        ui.label(
+                            egui::RichText::new(renderer)
+                                .monospace()
+                                .color(chrome::colour(sem.text.muted)),
+                        );
+                    }
                     if let Some((label, next)) = toggle {
                         bar.toggle_flow = ui
                             .button(egui::RichText::new(label).font(ui_font()))
@@ -1631,6 +1732,15 @@ impl MeridianApp {
     fn apply(&mut self, ctx: &egui::Context, view: ViewKind, requests: Vec<Request>) {
         for request in requests {
             match request {
+                // open-home spans both views — it is not a per-view dispatch,
+                // so it is handled before the view match rather than inside it.
+                // The Charts arm string-matches only clear-selection, and the
+                // Protocol arm forwards to `model.dispatch`, which would
+                // silently no-op an unknown verb — so without this intercept
+                // the verb would reach neither handler.
+                Request::Verb(verb) if verb.as_str() == "open-home" => {
+                    self.open_home(ctx);
+                }
                 Request::Verb(verb) => match view {
                     ViewKind::Charts => {
                         if verb.as_str() == "clear-selection" {
@@ -1649,6 +1759,33 @@ impl MeridianApp {
                 Request::Repaint => ctx.request_repaint(),
             }
         }
+    }
+
+    /// Return to the front door, **keeping the session** so the door's
+    /// Continue zone still offers the way back in.
+    ///
+    /// [`open_start`](Self::open_start)'s mirror, with one deliberate
+    /// asymmetry: this clears both documents but leaves `layout.opened`
+    /// untouched. `open_start` records the id there so a later launch restores
+    /// rather than greets; going Home wants the greeting *and* the standing
+    /// offer to resume, and the Continue card is drawn from that id — so it has
+    /// to survive the trip home. The product owner locked that: Home keeps your
+    /// place.
+    ///
+    /// Both documents are emptied **through their own `open`**, which keeps the
+    /// wgpu host this window rasters through. A fresh `ChartDoc::empty()` /
+    /// `ProtocolDoc::empty()` would drop the device the next dashboard needs.
+    /// A window already on the front door is left exactly as it is — the guard
+    /// is what makes cmd-shift-h on the door a no-op rather than a needless
+    /// re-clear that would flash the same empty pixels.
+    fn open_home(&mut self, ctx: &egui::Context) {
+        if self.front_door_is_live() {
+            return;
+        }
+        self.charts.doc.open(Composed::empty());
+        self.protocol.doc.open(ProtocolInputs::empty());
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
+        ctx.request_repaint();
     }
 
     /// Open the shipped starting point `id` into the view it fills.
@@ -2024,7 +2161,9 @@ fn door_zone_heading(ui: &mut egui::Ui, name: &str, sem: &semantic::Semantic) {
 }
 
 /// How wide the top bar's right-hand group would be if it drew: the renderer
-/// line, and the flow toggle when the protocol view supplies one.
+/// line when developer diagnostics are on, and the flow toggle when the
+/// protocol view supplies one. Either or both may be absent — an absent item
+/// counts no width, and a group with nothing in it is not drawn at all.
 ///
 /// Asked *before* the group is drawn, which is the whole point — a
 /// right-to-left layout that does not fit overlaps what is already on the bar
@@ -2033,10 +2172,13 @@ fn door_zone_heading(ui: &mut egui::Ui, name: &str, sem: &semantic::Semantic) {
 ///
 /// The one leading item spacing is included because egui inserts it when it
 /// places the group, and `available_width` is measured before it exists.
-fn right_group_width(ui: &egui::Ui, renderer: &str, toggle: Option<&str>) -> f32 {
+fn right_group_width(ui: &egui::Ui, renderer: Option<&str>, toggle: Option<&str>) -> f32 {
     let spacing = ui.spacing().item_spacing.x;
-    let mono = egui::TextStyle::Monospace.resolve(ui.style());
-    let mut wanted = spacing + text_width(ui, renderer, mono);
+    let mut wanted = 0.0;
+    if let Some(renderer) = renderer {
+        let mono = egui::TextStyle::Monospace.resolve(ui.style());
+        wanted += spacing + text_width(ui, renderer, mono);
+    }
     if let Some(label) = toggle {
         wanted += spacing + text_width(ui, label, ui_font()) + 2.0 * ui.spacing().button_padding.x;
     }
