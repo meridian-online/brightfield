@@ -1517,19 +1517,30 @@ impl MeridianApp {
                         .color(chrome::colour(sem.text.secondary)),
                 );
             }
-            let renderer = format!("egui · Vello · wgpu 29  —  {theme}");
+            // The renderer line is a developer diagnostic — a stranger's first
+            // launch should not read "egui · Vello · wgpu 29". It appears only
+            // under the devtools flag; the flow toggle is a real affordance and
+            // always draws when the protocol view supplies one.
+            let renderer =
+                crate::devtools::enabled().then(|| format!("egui · Vello · wgpu 29  —  {theme}"));
             let toggle = (active == ViewKind::Protocol).then(|| match flow {
                 Flow::Vertical => ("flow: vertical ⇄".to_string(), "horizontal"),
                 Flow::Horizontal => ("flow: horizontal ⇄".to_string(), "vertical"),
             });
-            let wanted = right_group_width(ui, &renderer, toggle.as_ref().map(|(t, _)| t.as_str()));
-            if ui.available_width() >= wanted {
+            let wanted = right_group_width(
+                ui,
+                renderer.as_deref(),
+                toggle.as_ref().map(|(t, _)| t.as_str()),
+            );
+            if (renderer.is_some() || toggle.is_some()) && ui.available_width() >= wanted {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
-                        egui::RichText::new(renderer)
-                            .monospace()
-                            .color(chrome::colour(sem.text.muted)),
-                    );
+                    if let Some(renderer) = renderer {
+                        ui.label(
+                            egui::RichText::new(renderer)
+                                .monospace()
+                                .color(chrome::colour(sem.text.muted)),
+                        );
+                    }
                     if let Some((label, next)) = toggle {
                         bar.toggle_flow = ui
                             .button(egui::RichText::new(label).font(ui_font()))
@@ -2024,7 +2035,9 @@ fn door_zone_heading(ui: &mut egui::Ui, name: &str, sem: &semantic::Semantic) {
 }
 
 /// How wide the top bar's right-hand group would be if it drew: the renderer
-/// line, and the flow toggle when the protocol view supplies one.
+/// line when developer diagnostics are on, and the flow toggle when the
+/// protocol view supplies one. Either or both may be absent — an absent item
+/// counts no width, and a group with nothing in it is not drawn at all.
 ///
 /// Asked *before* the group is drawn, which is the whole point — a
 /// right-to-left layout that does not fit overlaps what is already on the bar
@@ -2033,10 +2046,13 @@ fn door_zone_heading(ui: &mut egui::Ui, name: &str, sem: &semantic::Semantic) {
 ///
 /// The one leading item spacing is included because egui inserts it when it
 /// places the group, and `available_width` is measured before it exists.
-fn right_group_width(ui: &egui::Ui, renderer: &str, toggle: Option<&str>) -> f32 {
+fn right_group_width(ui: &egui::Ui, renderer: Option<&str>, toggle: Option<&str>) -> f32 {
     let spacing = ui.spacing().item_spacing.x;
-    let mono = egui::TextStyle::Monospace.resolve(ui.style());
-    let mut wanted = spacing + text_width(ui, renderer, mono);
+    let mut wanted = 0.0;
+    if let Some(renderer) = renderer {
+        let mono = egui::TextStyle::Monospace.resolve(ui.style());
+        wanted += spacing + text_width(ui, renderer, mono);
+    }
     if let Some(label) = toggle {
         wanted += spacing + text_width(ui, label, ui_font()) + 2.0 * ui.spacing().button_padding.x;
     }

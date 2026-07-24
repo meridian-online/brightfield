@@ -92,13 +92,6 @@ use crate::watch::FileWatcher;
 pub struct ChartDoc {
     /// The composited Vello dashboard and its logical size.
     pub composed: Composed,
-    /// The parameter the controls rail's slider drives.
-    ///
-    /// Nothing downstream re-executes on it today: the compose pipeline runs
-    /// once, before the window opens, and this value reaches no query. It is the
-    /// shell's worked example of a native egui control over shared view state,
-    /// and it is named for what it is rather than for what it will be.
-    pub param: f32,
     /// Whether the hover crosshair overlay is armed — the worked example that
     /// keeps the overlay seam exercised end to end.
     pub overlay: bool,
@@ -188,7 +181,6 @@ impl ChartDoc {
     pub fn new(composed: Composed, host: EguiCanvasHost) -> Self {
         Self {
             composed,
-            param: 0.5,
             overlay: true,
             viewport: None,
             overlay_checkbox: None,
@@ -208,7 +200,6 @@ impl ChartDoc {
     pub fn headless(composed: Composed) -> Self {
         Self {
             composed,
-            param: 0.5,
             overlay: true,
             viewport: None,
             overlay_checkbox: None,
@@ -575,7 +566,7 @@ impl Item<ChartDoc> for ControlsPane {
                 ICON_CONTROLS,
                 "No dashboard to control",
                 "These controls act on a composed dashboard. Open one from the \
-                 chart pane, or name a spec on the command line.",
+                 chart pane.",
             )
         })
     }
@@ -596,8 +587,8 @@ impl Item<ChartDoc> for ControlsPane {
         // declared param**, labelled with the param's name, spanning the
         // widget's own range, and wired through the coordinator seam — a drag
         // is an `Interaction::SetParam`, a pushed value and a re-query, never
-        // a Rust-side filter. A spec with none keeps the worked example that
-        // exercises native egui state over the document.
+        // a Rust-side filter. A spec with no declared params draws no slider at
+        // all — just the crosshair toggle below.
         let params = doc.composed.params.clone();
         if doc.is_live() && !params.is_empty() {
             for control in params {
@@ -612,21 +603,20 @@ impl Item<ChartDoc> for ControlsPane {
                     doc.set_param(&control.name, value);
                 }
             }
-        } else {
-            ui.label("param");
-            ui.add(egui::Slider::new(&mut doc.param, 0.0..=1.0));
         }
         doc.overlay_checkbox = Some(ui.checkbox(&mut doc.overlay, "hover overlay").rect);
-        ui.add_space(spacing::CONTROL_GAP);
-        let sem = semantic(cx.mode.is_dark());
-        ui.label(
-            egui::RichText::new(format!(
-                "{}×{} logical",
-                doc.composed.width, doc.composed.height
-            ))
-            .monospace()
-            .color(chrome::colour(sem.text.muted)),
-        );
+        if crate::devtools::enabled() {
+            ui.add_space(spacing::CONTROL_GAP);
+            let sem = semantic(cx.mode.is_dark());
+            ui.label(
+                egui::RichText::new(format!(
+                    "{}×{} logical",
+                    doc.composed.width, doc.composed.height
+                ))
+                .monospace()
+                .color(chrome::colour(sem.text.muted)),
+            );
+        }
     }
 }
 

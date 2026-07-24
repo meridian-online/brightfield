@@ -695,7 +695,7 @@ impl Item<ChartDoc> for DataGridItem {
                 ICON_DATA,
                 "No data to tabulate",
                 "This grid shows the rows behind the chart beside it. Open a \
-                 spec from the chart pane, or name one on the command line.",
+                 spec from the chart pane.",
             )
         })
     }

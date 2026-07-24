@@ -1074,8 +1074,8 @@ impl Item<ChartDoc> for EditorPane {
         Some(EmptyState::new(
             ICON_EDITOR,
             "No spec open",
-            "Name a spec on the command line to edit it here. Edits save \
-             back to the file exactly as typed.",
+            "The dashboards that ship with Brightfield are built in, so there \
+             is no spec file to edit here yet.",
         ))
     }
 
