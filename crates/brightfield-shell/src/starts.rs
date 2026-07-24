@@ -12,10 +12,14 @@
 //! worth offering:
 //!
 //! - **They ship with the binary.** Every spec is `include_str!`-ed and every
-//!   thumbnail `include_bytes!`-ed at compile time. There is no network client
-//!   anywhere in this crate's dependency graph and none is wanted; there is
-//!   also no path to get wrong, so a start works from any working directory
-//!   and cannot be broken by moving the checkout.
+//!   thumbnail `include_bytes!`-ed at compile time, so opening one fetches
+//!   nothing and there is no path to get wrong: a start works from any working
+//!   directory and cannot be broken by moving the checkout. (Note what this
+//!   claim is NOT: `ureq` and `rustls` do reach this binary, as normal
+//!   dependencies of `arc` by way of `brightfield-protocol`. The property that
+//!   holds is behavioural — these starts open without touching the network —
+//!   not an absence from the dependency graph. Do not restate it as the
+//!   latter; it is false and trivially falsifiable with `cargo tree`.)
 //! - **Choosing one lands on a result.** [`load`] returns a *composed*
 //!   dashboard or a *built* asset graph, not a file path and not an editor
 //!   buffer. A front door whose second click opens a blank surface has moved
