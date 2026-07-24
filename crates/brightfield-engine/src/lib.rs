@@ -21,22 +21,88 @@ pub use duckdb::arrow::record_batch::RecordBatch;
 use duckdb::Connection;
 pub use profile::{ColumnProfile, ProfileOutcome, SourceProfile};
 
-/// Concatenate a query's result chunks into a single [`RecordBatch`], or `None`
-/// if empty. A DuckDB result arrives as one batch per ~2048 rows; renderers and
-/// the cross-filter coordinator want one batch per mark. Uses duckdb's bundled
-/// Arrow so callers in crates without a direct `arrow` dependency (e.g.
-/// `brightfield-ui`) can concatenate re-execution results. Falls back to the
-/// first chunk if concatenation fails (schema mismatch is not expected).
-pub fn concat_batches(batches: Vec<RecordBatch>) -> Option<RecordBatch> {
+/// A named, loud failure assembling a query's Arrow chunks into the single
+/// [`RecordBatch`] a mark draws.
+///
+/// A DuckDB result arrives as one chunk per ~2048 rows, and every chunk of a
+/// single query shares one schema by construction — so concatenation failing is
+/// an invariant violation, not an expected outcome. This is the name that
+/// violation is reported under, in place of the old silent first-chunk fallback
+/// (which drew ~2048 rows and dropped every row past the first chunk with no
+/// signal). The message names how many rows would have been lost, so a limit
+/// that is genuinely hit is loud and attributable rather than invisible.
+#[derive(Debug, Clone)]
+pub struct BatchAssemblyError {
+    /// How many chunks were being assembled.
+    pub chunks: usize,
+    /// Total rows across all chunks — the count that a first-chunk fallback
+    /// would have silently reduced to the first chunk's rows.
+    pub total_rows: usize,
+    /// The underlying Arrow concatenation error, stringified.
+    pub reason: String,
+}
+
+impl std::fmt::Display for BatchAssemblyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "batch-assembly limit: cannot concatenate {} Arrow chunks ({} rows) into one \
+             drawable batch — schema drift across a single query's chunks: {}. Refusing to \
+             draw only the first chunk (that would silently drop rows past the first ~2048)",
+            self.chunks, self.total_rows, self.reason
+        )
+    }
+}
+
+impl std::error::Error for BatchAssemblyError {}
+
+/// Assemble a query's result chunks into the single [`RecordBatch`] a mark
+/// draws, or `None` if the query returned nothing. A DuckDB result arrives as
+/// one chunk per ~2048 rows; renderers and the cross-filter coordinator want one
+/// batch per mark, holding EVERY materialised row — never just the first chunk.
+///
+/// Uses duckdb's bundled Arrow so callers in crates without a direct `arrow`
+/// dependency (e.g. `brightfield-ui`) can assemble re-execution results.
+///
+/// # Errors
+///
+/// Returns a [`BatchAssemblyError`] — loud and named — if the chunks cannot be
+/// concatenated. This replaces the historical silent fallback to the first
+/// chunk: a caller that draws the returned batch draws all materialised rows or
+/// learns, by name, that it could not.
+pub fn assemble_batches(
+    batches: Vec<RecordBatch>,
+) -> Result<Option<RecordBatch>, BatchAssemblyError> {
     match batches.len() {
-        0 => None,
-        1 => batches.into_iter().next(),
+        0 => Ok(None),
+        1 => Ok(batches.into_iter().next()),
         _ => {
             let schema = batches[0].schema();
-            match duckdb::arrow::compute::concat_batches(&schema, &batches) {
-                Ok(batch) => Some(batch),
-                Err(_) => batches.into_iter().next(),
-            }
+            duckdb::arrow::compute::concat_batches(&schema, &batches)
+                .map(Some)
+                .map_err(|e| BatchAssemblyError {
+                    chunks: batches.len(),
+                    total_rows: batches.iter().map(RecordBatch::num_rows).sum(),
+                    reason: e.to_string(),
+                })
+        }
+    }
+}
+
+/// Concatenate a query's result chunks into a single [`RecordBatch`] holding
+/// every materialised row, or `None` if empty or if assembly fails.
+///
+/// Thin `Option`-returning wrapper over [`assemble_batches`] for the
+/// cross-filter coordinator's per-mark slot. Unlike the historical
+/// implementation, an assembly failure is **not** silently masked by returning
+/// the first chunk: it is logged loudly, by name, and yields `None` (no partial
+/// batch masquerading as the whole), so a drawn batch is always complete.
+pub fn concat_batches(batches: Vec<RecordBatch>) -> Option<RecordBatch> {
+    match assemble_batches(batches) {
+        Ok(batch) => batch,
+        Err(e) => {
+            eprintln!("error: {e}");
+            None
         }
     }
 }
@@ -1839,6 +1905,96 @@ mod tests {
         let parsed = parse_spec(yaml, Format::Yaml).expect("parse failed");
         let analysis = analyse_spec(&parsed.spec).expect("analysis failed");
         (parsed.spec, analysis)
+    }
+
+    // --- Batch assembly: draw every chunk, fail loudly on a real limit ---
+
+    fn i64_batch(name: &str, vals: &[i64]) -> RecordBatch {
+        use duckdb::arrow::array::Int64Array;
+        use duckdb::arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc;
+        let schema = Arc::new(Schema::new(vec![Field::new(name, DataType::Int64, false)]));
+        RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vals.to_vec()))]).unwrap()
+    }
+
+    fn f64_batch(name: &str, vals: &[f64]) -> RecordBatch {
+        use duckdb::arrow::array::Float64Array;
+        use duckdb::arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc;
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            name,
+            DataType::Float64,
+            false,
+        )]));
+        RecordBatch::try_new(schema, vec![Arc::new(Float64Array::from(vals.to_vec()))]).unwrap()
+    }
+
+    /// The row-per-mark fix, at the assembly seam: chunks totalling MORE than a
+    /// single DuckDB vector (>2048 rows) assemble into one batch holding EVERY
+    /// row — never just the first ~2048-row chunk.
+    #[test]
+    fn assemble_batches_concatenates_every_chunk_past_one_vector() {
+        let a = i64_batch("x", &(0..2048).collect::<Vec<_>>());
+        let b = i64_batch("x", &(2048..3000).collect::<Vec<_>>());
+        let total = a.num_rows() + b.num_rows();
+        assert_eq!(
+            total, 3000,
+            "the fixture spans more than one 2048-row chunk"
+        );
+        let assembled = assemble_batches(vec![a, b])
+            .expect("uniform schema assembles")
+            .expect("non-empty");
+        assert_eq!(
+            assembled.num_rows(),
+            total,
+            "the assembled batch holds every materialised row"
+        );
+    }
+
+    /// Empty assembles to `None`; a lone chunk passes through unchanged.
+    #[test]
+    fn assemble_batches_empty_is_none_single_is_passthrough() {
+        assert!(assemble_batches(vec![]).expect("ok").is_none());
+        let out = assemble_batches(vec![i64_batch("x", &[1, 2, 3])])
+            .expect("ok")
+            .expect("some");
+        assert_eq!(out.num_rows(), 3);
+    }
+
+    /// Hitting a real limit — chunks whose schemas disagree cannot be
+    /// concatenated — fails loudly, by NAME, naming the rows at stake, instead
+    /// of the old silent fallback to the first chunk (which dropped the rest).
+    #[test]
+    fn assemble_batches_names_the_limit_on_schema_drift() {
+        let a = i64_batch("x", &[1, 2]);
+        let b = f64_batch("x", &[3.0]); // different column type => schema drift
+        let err = assemble_batches(vec![a, b]).expect_err("schema drift must fail");
+        assert_eq!(err.chunks, 2, "the error names how many chunks");
+        assert_eq!(
+            err.total_rows, 3,
+            "the error names the rows that would be lost"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("batch-assembly limit"),
+            "names the limit: {msg}"
+        );
+        assert!(msg.contains('3'), "names the rows at stake: {msg}");
+    }
+
+    /// The `Option` wrapper never masks a failure with a partial (first-chunk)
+    /// batch: a drawn batch is complete or absent, never silently short. The
+    /// happy path still assembles every chunk.
+    #[test]
+    fn concat_batches_is_none_on_failure_and_whole_on_success() {
+        let short = concat_batches(vec![i64_batch("x", &[1, 2]), f64_batch("x", &[3.0])]);
+        assert!(
+            short.is_none(),
+            "a failed assembly yields None, not a partial batch"
+        );
+        let whole =
+            concat_batches(vec![i64_batch("x", &[1]), i64_batch("x", &[2, 3])]).expect("some");
+        assert_eq!(whole.num_rows(), 3, "success assembles every chunk");
     }
 
     // --- EngineError variants ---

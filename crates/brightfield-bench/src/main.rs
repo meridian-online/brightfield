@@ -242,7 +242,7 @@ const METHODOLOGY: &[&str] = &[
     "Every timed brush uses a distinct interval: the engine caches repeated identical SQL, so a repeated interval would time the cache. A non-vacuity check requires the brush to have actually reduced the cross-filtered step's row count, and every apply must affect at least one mark.",
     "Frame times are headless: the real MeridianApp drawn by egui's real wgpu backend into an offscreen texture, timed per frame through GPU completion (submit + blocking wait). No swapchain, no present, no vsync — the number is the cost of producing a frame, not displaying one. Warm-up frames are discarded.",
     "steady frames draw with nothing changing (the shell's floor). interaction frames each push one committed brush step through the live document before drawing, so they carry re-query + re-composite + canvas re-raster + GPU wait.",
-    "The composed scene currently draws a mark's FIRST Arrow batch only; materialised_rows vs first_batch_rows records where the drawn picture holds fewer rows than the query answered (the aggregating scenario fits one batch by construction; the raw-dot scenario does not past one batch).",
+    "The composed scene draws EVERY materialised Arrow chunk: a mark's result batches are assembled into one drawable batch (assemble_batches), the same path the presentation layer uses. drawn_rows vs materialised_rows is the cross-check — they are equal, so the drawn picture holds every row the query answered (the raw-dot scenario spans many ~2048-row chunks and still draws them all). A future regression that reintroduced a first-chunk cap would show drawn_rows < materialised_rows here; an assembly that could not proceed fails the run loudly by name rather than reporting a smaller drawn count.",
     "cold open = Coordinator::load (DDL, no mark queries) then the first full materialisation of every mark, on a session in the same process; the Parquet file is warm in the OS page cache.",
     "Datasets are deterministic pure functions of the row index via DuckDB hash() — no RNG. The raw-dot scenario's frame suites are capped at one million rows; its engine suites run at every magnitude.",
     "The emitted SQL applies a selection predicate INSIDE an aggregating mark's query — it filters the base rows that get aggregated (row-level marks are wrapped whole). The aggregating scenarios keep their original brush-the-binned-column shape so the measured series stays comparable across harness runs.",
@@ -560,7 +560,7 @@ fn render_markdown(r: &BaselineReport) -> String {
             .engine
             .marks
             .iter()
-            .map(|mk| format!("{}/{}", mk.first_batch_rows, mk.materialised_rows))
+            .map(|mk| format!("{}/{}", mk.drawn_rows, mk.materialised_rows))
             .collect::<Vec<_>>()
             .join(" · ");
         let _ = writeln!(
