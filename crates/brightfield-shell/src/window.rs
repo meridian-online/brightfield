@@ -516,10 +516,10 @@ impl Boot {
     /// layout first. It matters more here than it looks: `main` hands this
     /// string to `eframe::run_native`, which is where the OS window's title
     /// comes from, and the only things that send a `ViewportCommand::Title`
-    /// afterwards are opening a start ([`MeridianApp::open_start`]) and going
-    /// home ([`MeridianApp::open_home`]) — both of which re-title from the
-    /// documents they just changed. A title that is wrong at this call stays
-    /// wrong until one of those runs.
+    /// afterwards are opening a start (`open_start`) and going home
+    /// (`open_home`) — both private, both re-titling from the documents they
+    /// just changed. A title that is wrong at this call stays wrong until one
+    /// of those runs.
     #[must_use]
     pub fn title(&self, view: ViewKind) -> String {
         match view {
