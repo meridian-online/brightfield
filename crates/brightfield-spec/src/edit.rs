@@ -1,11 +1,12 @@
-//! The SpecEdit spine — typed structural mutations of the working Spec
-//! (the keyboard command-log).
+//! The ChartEdit spine — typed structural mutations of the working chart Spec.
 //!
-//! The keyboard grammar named five reserved verbs (`m` / `a` / `e` /
-//! `d` / undo) that all "need the command log": a way to change a mark's type,
-//! add a mark, bind a channel, remove a mark, and undo — applied live, then
-//! committed on a deliberate action. This module is the substrate behind them:
-//! a framework-free [`SpecEdit`] enum + [`apply`] reducer that walks the root
+//! Named `ChartEdit` to keep it distinct from arc's `arc::spec::SpecEdit` (the
+//! manifest splice op): this is a mutation of the working *chart* AST, not of a
+//! protocol manifest. The keyboard grammar named five reserved verbs (`m` /
+//! `a` / `e` / `d` / undo) — a way to change a mark's type, add a mark, bind a
+//! channel, remove a mark, and undo — applied live, then committed on a
+//! deliberate action. This module is the substrate behind them:
+//! a framework-free [`ChartEdit`] enum + [`apply`] reducer that walks the root
 //! [`Component`] tree by focused-plot path and mutates the AST in place, a
 //! snapshot [`UndoStack`] with a commit barrier, and a [`classify_edit`]
 //! gate-classifier that REIMPLEMENTS the app-binary reload gate
@@ -41,11 +42,11 @@ const INHERITED_CHANNELS: &[&str] = &["x", "y", "x1", "x2", "y1", "y2"];
 /// targets the focused plot's primary mark by walking the live AST via a plot
 /// [`ComponentPath`], and is bracketed by a whole-`Spec` clone snapshot so undo
 /// is total and near-free. Two variants are count-STABLE
-/// ([`SpecEdit::ChangeMarkType`], [`SpecEdit::SetChannel`]) and two are
-/// count-CHANGING ([`SpecEdit::AddMark`], [`SpecEdit::RemoveMark`]); the
+/// ([`ChartEdit::ChangeMarkType`], [`ChartEdit::SetChannel`]) and two are
+/// count-CHANGING ([`ChartEdit::AddMark`], [`ChartEdit::RemoveMark`]); the
 /// transient apply treats them differently (the coordinator flat-index rebuild).
 #[derive(Debug, Clone, PartialEq)]
-pub enum SpecEdit {
+pub enum ChartEdit {
     /// Retype the focused plot's primary mark (`dot` -> `bar`). Count-stable.
     /// Among the SimpleLowerer family the SQL is byte-identical — the real
     /// change is the renderer/scene geometry.
@@ -88,15 +89,15 @@ pub enum SpecEdit {
     },
 }
 
-impl SpecEdit {
+impl ChartEdit {
     /// The plot-node path this edit targets.
     #[must_use]
     pub fn plot_path(&self) -> &str {
         match self {
-            SpecEdit::ChangeMarkType { plot, .. }
-            | SpecEdit::AddMark { plot, .. }
-            | SpecEdit::SetChannel { plot, .. }
-            | SpecEdit::RemoveMark { plot, .. } => plot.0.as_str(),
+            ChartEdit::ChangeMarkType { plot, .. }
+            | ChartEdit::AddMark { plot, .. }
+            | ChartEdit::SetChannel { plot, .. }
+            | ChartEdit::RemoveMark { plot, .. } => plot.0.as_str(),
         }
     }
 
@@ -105,7 +106,7 @@ impl SpecEdit {
     /// for a count-changing edit.
     #[must_use]
     pub fn is_count_changing(&self) -> bool {
-        matches!(self, SpecEdit::AddMark { .. } | SpecEdit::RemoveMark { .. })
+        matches!(self, ChartEdit::AddMark { .. } | ChartEdit::RemoveMark { .. })
     }
 
     /// The mark ordinal this edit targets (v1: always 0, the primary mark);
@@ -115,10 +116,10 @@ impl SpecEdit {
     #[must_use]
     pub fn mark_ordinal(&self) -> usize {
         match self {
-            SpecEdit::ChangeMarkType { mark_ordinal, .. }
-            | SpecEdit::SetChannel { mark_ordinal, .. }
-            | SpecEdit::RemoveMark { mark_ordinal, .. } => *mark_ordinal,
-            SpecEdit::AddMark { .. } => 0,
+            ChartEdit::ChangeMarkType { mark_ordinal, .. }
+            | ChartEdit::SetChannel { mark_ordinal, .. }
+            | ChartEdit::RemoveMark { mark_ordinal, .. } => *mark_ordinal,
+            ChartEdit::AddMark { .. } => 0,
         }
     }
 
@@ -127,16 +128,16 @@ impl SpecEdit {
     #[must_use]
     pub fn summary(&self) -> String {
         match self {
-            SpecEdit::ChangeMarkType { new_kind, .. } => {
+            ChartEdit::ChangeMarkType { new_kind, .. } => {
                 format!("change-mark-type: -> {}", new_kind.wire_name())
             }
-            SpecEdit::AddMark { kind, .. } => format!("add-mark: {}", kind.wire_name()),
-            SpecEdit::SetChannel {
+            ChartEdit::AddMark { kind, .. } => format!("add-mark: {}", kind.wire_name()),
+            ChartEdit::SetChannel {
                 channel, column, ..
             } => {
                 format!("set-channel: {channel} -> {column}")
             }
-            SpecEdit::RemoveMark { .. } => "remove-mark".to_string(),
+            ChartEdit::RemoveMark { .. } => "remove-mark".to_string(),
         }
     }
 }
@@ -204,7 +205,7 @@ impl RefuseReason {
 /// The classifier runs first ([`classify_edit`]) so a gate-tripping edit never
 /// mutates; the caller snapshots the pre-edit Spec BEFORE calling apply and, on
 /// `Err`, discards the snapshot (nothing changed).
-pub fn apply(spec: &mut Spec, edit: &SpecEdit) -> Result<(), RefuseReason> {
+pub fn apply(spec: &mut Spec, edit: &ChartEdit) -> Result<(), RefuseReason> {
     // Gate FIRST — a refused edit must leave the Spec byte-identical.
     classify_edit(spec, edit)?;
     apply_unchecked(spec, edit);
@@ -215,12 +216,12 @@ pub fn apply(spec: &mut Spec, edit: &SpecEdit) -> Result<(), RefuseReason> {
 /// preconditions already hold (the plot + target mark exist). Never called by
 /// the app directly — [`apply`] gates first — but shared with the classifier,
 /// which applies it to a CLONE to compute the post-edit chrome signature.
-fn apply_unchecked(spec: &mut Spec, edit: &SpecEdit) {
+fn apply_unchecked(spec: &mut Spec, edit: &ChartEdit) {
     let Some(p) = plot_at_path_mut(spec, edit.plot_path()) else {
         return;
     };
     match edit {
-        SpecEdit::ChangeMarkType {
+        ChartEdit::ChangeMarkType {
             mark_ordinal,
             new_kind,
             ..
@@ -232,7 +233,7 @@ fn apply_unchecked(spec: &mut Spec, edit: &SpecEdit) {
                 }
             }
         }
-        SpecEdit::AddMark { kind, .. } => {
+        ChartEdit::AddMark { kind, .. } => {
             // Inherit the primary mark's data source + positional channels so
             // the added mark renders against the same frame.
             let (data, options) = p
@@ -250,7 +251,7 @@ fn apply_unchecked(spec: &mut Spec, edit: &SpecEdit) {
                 options,
             }));
         }
-        SpecEdit::SetChannel {
+        ChartEdit::SetChannel {
             mark_ordinal,
             channel,
             column,
@@ -265,7 +266,7 @@ fn apply_unchecked(spec: &mut Spec, edit: &SpecEdit) {
                 }
             }
         }
-        SpecEdit::RemoveMark { mark_ordinal, .. } => {
+        ChartEdit::RemoveMark { mark_ordinal, .. } => {
             if let Some(item) = nth_mark_item_index(p, *mark_ordinal) {
                 p.items.remove(item);
             }
@@ -294,7 +295,7 @@ fn apply_unchecked(spec: &mut Spec, edit: &SpecEdit) {
 /// allowed. The inset check is CONSERVATIVE on a categorical axis (the gate
 /// applies no inset default there, so a baseline flip is inert): it may
 /// over-refuse, which is the safe side (never a silent bounce).
-pub fn classify_edit(spec: &Spec, edit: &SpecEdit) -> Result<(), RefuseReason> {
+pub fn classify_edit(spec: &Spec, edit: &ChartEdit) -> Result<(), RefuseReason> {
     let plot = plot_at_path(spec, edit.plot_path()).ok_or(RefuseReason::PlotNotFound)?;
     let mark_count = plot
         .items
@@ -304,14 +305,14 @@ pub fn classify_edit(spec: &Spec, edit: &SpecEdit) -> Result<(), RefuseReason> {
 
     // Structural preconditions.
     match edit {
-        SpecEdit::ChangeMarkType { mark_ordinal, .. }
-        | SpecEdit::SetChannel { mark_ordinal, .. }
-        | SpecEdit::RemoveMark { mark_ordinal, .. }
+        ChartEdit::ChangeMarkType { mark_ordinal, .. }
+        | ChartEdit::SetChannel { mark_ordinal, .. }
+        | ChartEdit::RemoveMark { mark_ordinal, .. }
             if *mark_ordinal >= mark_count =>
         {
             return Err(RefuseReason::NoSuchMark);
         }
-        SpecEdit::RemoveMark { .. } if mark_count <= 1 => {
+        ChartEdit::RemoveMark { .. } if mark_count <= 1 => {
             return Err(RefuseReason::WouldEmptyPlot);
         }
         _ => {}
@@ -335,8 +336,8 @@ pub fn classify_edit(spec: &Spec, edit: &SpecEdit) -> Result<(), RefuseReason> {
     // fill with NO standalone legend stays clean (the earlier finding — see
     // `binding_an_inline_fill_is_clean`).
     let colour_edit = match edit {
-        SpecEdit::SetChannel { channel, .. } => is_colour_channel(channel),
-        SpecEdit::ChangeMarkType {
+        ChartEdit::SetChannel { channel, .. } => is_colour_channel(channel),
+        ChartEdit::ChangeMarkType {
             new_kind,
             mark_ordinal,
             ..
@@ -819,7 +820,7 @@ vconcat:
         assert_eq!(primary_kind(&spec, "root"), MarkKind::Dot);
         apply(
             &mut spec,
-            &SpecEdit::ChangeMarkType {
+            &ChartEdit::ChangeMarkType {
                 plot: cp("root"),
                 mark_ordinal: 0,
                 new_kind: MarkKind::Line,
@@ -835,7 +836,7 @@ vconcat:
         let mut spec = parse(SINGLE_LABELLED);
         apply(
             &mut spec,
-            &SpecEdit::SetChannel {
+            &ChartEdit::SetChannel {
                 plot: cp("root"),
                 mark_ordinal: 0,
                 channel: "x".to_string(),
@@ -864,7 +865,7 @@ vconcat:
         assert_eq!(mark_count(&spec, "root"), 1);
         apply(
             &mut spec,
-            &SpecEdit::AddMark {
+            &ChartEdit::AddMark {
                 plot: cp("root"),
                 kind: MarkKind::Line,
             },
@@ -899,7 +900,7 @@ vconcat:
         let mut spec = parse(SINGLE);
         apply(
             &mut spec,
-            &SpecEdit::AddMark {
+            &ChartEdit::AddMark {
                 plot: cp("root"),
                 kind: MarkKind::Line,
             },
@@ -908,7 +909,7 @@ vconcat:
         assert_eq!(mark_count(&spec, "root"), 2);
         apply(
             &mut spec,
-            &SpecEdit::RemoveMark {
+            &ChartEdit::RemoveMark {
                 plot: cp("root"),
                 mark_ordinal: 0,
             },
@@ -926,7 +927,7 @@ vconcat:
         let before = spec.clone();
         let err = apply(
             &mut spec,
-            &SpecEdit::RemoveMark {
+            &ChartEdit::RemoveMark {
                 plot: cp("root"),
                 mark_ordinal: 0,
             },
@@ -938,7 +939,7 @@ vconcat:
         // Rebinding a DERIVED (unlabelled) axis: Err, Spec byte-identical.
         let err = apply(
             &mut spec,
-            &SpecEdit::SetChannel {
+            &ChartEdit::SetChannel {
                 plot: cp("root"),
                 mark_ordinal: 0,
                 channel: "x".to_string(),
@@ -960,7 +961,7 @@ vconcat:
         assert_eq!(primary_kind(&spec, "root/vconcat[1]"), MarkKind::Line);
         apply(
             &mut spec,
-            &SpecEdit::ChangeMarkType {
+            &ChartEdit::ChangeMarkType {
                 plot: cp("root/vconcat[1]"),
                 mark_ordinal: 0,
                 new_kind: MarkKind::Dot,
@@ -977,7 +978,7 @@ vconcat:
         let mut spec = parse(SINGLE);
         let err = apply(
             &mut spec,
-            &SpecEdit::ChangeMarkType {
+            &ChartEdit::ChangeMarkType {
                 plot: cp("root/vconcat[9]"),
                 mark_ordinal: 0,
                 new_kind: MarkKind::BarY,
@@ -996,7 +997,7 @@ vconcat:
         let mut spec = parse(SINGLE);
         apply(
             &mut spec,
-            &SpecEdit::AddMark {
+            &ChartEdit::AddMark {
                 plot: cp("root"),
                 kind: MarkKind::Line,
             },
@@ -1005,7 +1006,7 @@ vconcat:
         // Two marks: dot (primary), line.
         apply(
             &mut spec,
-            &SpecEdit::RemoveMark {
+            &ChartEdit::RemoveMark {
                 plot: cp("root"),
                 mark_ordinal: 0,
             },
@@ -1015,7 +1016,7 @@ vconcat:
         // gate-clean); the re-walk finds line as primary.
         apply(
             &mut spec,
-            &SpecEdit::AddMark {
+            &ChartEdit::AddMark {
                 plot: cp("root"),
                 kind: MarkKind::Dot,
             },
@@ -1026,7 +1027,7 @@ vconcat:
         // Retype the primary once more: still resolves to line, not a stale dot.
         apply(
             &mut spec,
-            &SpecEdit::ChangeMarkType {
+            &ChartEdit::ChangeMarkType {
                 plot: cp("root"),
                 mark_ordinal: 0,
                 new_kind: MarkKind::Rect,
@@ -1043,7 +1044,7 @@ vconcat:
         let mut spec = parse(SINGLE);
         apply(
             &mut spec,
-            &SpecEdit::AddMark {
+            &ChartEdit::AddMark {
                 plot: cp("root"),
                 kind: MarkKind::Dot,
             },
@@ -1063,7 +1064,7 @@ vconcat:
         undo.push(spec.clone());
         apply(
             &mut spec,
-            &SpecEdit::ChangeMarkType {
+            &ChartEdit::ChangeMarkType {
                 plot: cp("root"),
                 mark_ordinal: 0,
                 new_kind: MarkKind::Line,
@@ -1088,7 +1089,7 @@ vconcat:
             undo.push(spec.clone());
             apply(
                 &mut spec,
-                &SpecEdit::ChangeMarkType {
+                &ChartEdit::ChangeMarkType {
                     plot: cp("root"),
                     mark_ordinal: 0,
                     new_kind: kind,
@@ -1115,7 +1116,7 @@ vconcat:
         undo.push(spec.clone());
         apply(
             &mut spec,
-            &SpecEdit::ChangeMarkType {
+            &ChartEdit::ChangeMarkType {
                 plot: cp("root"),
                 mark_ordinal: 0,
                 new_kind: MarkKind::Line,
@@ -1144,7 +1145,7 @@ vconcat:
         // inset baseline / derived title / colour facet).
         assert!(classify_edit(
             &spec,
-            &SpecEdit::ChangeMarkType {
+            &ChartEdit::ChangeMarkType {
                 plot: cp("root"),
                 mark_ordinal: 0,
                 new_kind: MarkKind::Line
@@ -1153,7 +1154,7 @@ vconcat:
         .is_ok());
         assert!(classify_edit(
             &spec,
-            &SpecEdit::AddMark {
+            &ChartEdit::AddMark {
                 plot: cp("root"),
                 kind: MarkKind::Line
             }
@@ -1163,7 +1164,7 @@ vconcat:
         let labelled = parse(SINGLE_LABELLED);
         assert!(classify_edit(
             &labelled,
-            &SpecEdit::SetChannel {
+            &ChartEdit::SetChannel {
                 plot: cp("root"),
                 mark_ordinal: 0,
                 channel: "x".to_string(),
@@ -1181,7 +1182,7 @@ vconcat:
         assert_eq!(
             classify_edit(
                 &spec,
-                &SpecEdit::SetChannel {
+                &ChartEdit::SetChannel {
                     plot: cp("root"),
                     mark_ordinal: 0,
                     channel: "x".to_string(),
@@ -1193,7 +1194,7 @@ vconcat:
         // Rebinding to the SAME column it already derives is a no-op title-wise -> clean.
         assert!(classify_edit(
             &spec,
-            &SpecEdit::SetChannel {
+            &ChartEdit::SetChannel {
                 plot: cp("root"),
                 mark_ordinal: 0,
                 channel: "x".to_string(),
@@ -1211,7 +1212,7 @@ vconcat:
         assert_eq!(
             classify_edit(
                 &spec,
-                &SpecEdit::ChangeMarkType {
+                &ChartEdit::ChangeMarkType {
                     plot: cp("root"),
                     mark_ordinal: 0,
                     new_kind: MarkKind::BarY
@@ -1221,7 +1222,7 @@ vconcat:
         );
         assert!(classify_edit(
             &spec,
-            &SpecEdit::ChangeMarkType {
+            &ChartEdit::ChangeMarkType {
                 plot: cp("root"),
                 mark_ordinal: 0,
                 new_kind: MarkKind::Circle
@@ -1236,7 +1237,7 @@ vconcat:
         assert_eq!(
             classify_edit(
                 &spec,
-                &SpecEdit::RemoveMark {
+                &ChartEdit::RemoveMark {
                     plot: cp("root"),
                     mark_ordinal: 0
                 }
@@ -1253,7 +1254,7 @@ vconcat:
         let spec = parse(SINGLE);
         assert!(classify_edit(
             &spec,
-            &SpecEdit::SetChannel {
+            &ChartEdit::SetChannel {
                 plot: cp("root"),
                 mark_ordinal: 0,
                 channel: "fill".to_string(),
@@ -1268,7 +1269,7 @@ vconcat:
         let mut spec = parse(SINGLE);
         apply(
             &mut spec,
-            &SpecEdit::AddMark {
+            &ChartEdit::AddMark {
                 plot: cp("root"),
                 kind: MarkKind::Line,
             },
@@ -1276,7 +1277,7 @@ vconcat:
         .expect("clean");
         assert!(classify_edit(
             &spec,
-            &SpecEdit::RemoveMark {
+            &ChartEdit::RemoveMark {
                 plot: cp("root"),
                 mark_ordinal: 0
             }
@@ -1310,7 +1311,7 @@ vconcat:
         assert_eq!(
             classify_edit(
                 &spec,
-                &SpecEdit::SetChannel {
+                &ChartEdit::SetChannel {
                     plot: cp("root/vconcat[1]"),
                     mark_ordinal: 0,
                     channel: "fill".to_string(),
@@ -1324,7 +1325,7 @@ vconcat:
         assert_eq!(
             classify_edit(
                 &spec,
-                &SpecEdit::ChangeMarkType {
+                &ChartEdit::ChangeMarkType {
                     plot: cp("root/vconcat[1]"),
                     mark_ordinal: 0,
                     new_kind: MarkKind::Heatmap,
@@ -1339,7 +1340,7 @@ vconcat:
         assert_ne!(
             classify_edit(
                 &spec,
-                &SpecEdit::SetChannel {
+                &ChartEdit::SetChannel {
                     plot: cp("root/vconcat[1]"),
                     mark_ordinal: 0,
                     channel: "x".to_string(),
@@ -1358,7 +1359,7 @@ vconcat:
         let spec = parse(SINGLE);
         assert!(classify_edit(
             &spec,
-            &SpecEdit::SetChannel {
+            &ChartEdit::SetChannel {
                 plot: cp("root"),
                 mark_ordinal: 0,
                 channel: "fill".to_string(),
@@ -1418,7 +1419,7 @@ vconcat:
         assert_eq!(
             classify_edit(
                 &spec,
-                &SpecEdit::SetChannel {
+                &ChartEdit::SetChannel {
                     plot: cp("root/vconcat[1]"),
                     mark_ordinal: 0,
                     channel: "fill".to_string(),
@@ -1438,7 +1439,7 @@ vconcat:
         assert_eq!(
             classify_edit(
                 &spec,
-                &SpecEdit::SetChannel {
+                &ChartEdit::SetChannel {
                     plot: cp("root/vconcat[2]"),
                     mark_ordinal: 0,
                     channel: "fill".to_string(),
@@ -1454,7 +1455,7 @@ vconcat:
         assert_eq!(
             classify_edit(
                 &spec,
-                &SpecEdit::SetChannel {
+                &ChartEdit::SetChannel {
                     plot: cp("root/vconcat[1]"),
                     mark_ordinal: 0,
                     channel: "fill".to_string(),
@@ -1496,7 +1497,7 @@ vconcat:
         assert_ne!(
             classify_edit(
                 &spec,
-                &SpecEdit::SetChannel {
+                &ChartEdit::SetChannel {
                     plot: cp("root/vconcat[1]"),
                     mark_ordinal: 0,
                     channel: "fill".to_string(),
@@ -1518,10 +1519,10 @@ vconcat:
         // TEXT but idempotent on the AST).
         // Each edit is applied to a fixture on which it is gate-clean (the
         // labelled fixture makes the set-channel rebind title-stable).
-        let cases: Vec<(&str, SpecEdit)> = vec![
+        let cases: Vec<(&str, ChartEdit)> = vec![
             (
                 SINGLE,
-                SpecEdit::ChangeMarkType {
+                ChartEdit::ChangeMarkType {
                     plot: cp("root"),
                     mark_ordinal: 0,
                     new_kind: MarkKind::Line,
@@ -1529,7 +1530,7 @@ vconcat:
             ),
             (
                 SINGLE_LABELLED,
-                SpecEdit::SetChannel {
+                ChartEdit::SetChannel {
                     plot: cp("root"),
                     mark_ordinal: 0,
                     channel: "x".to_string(),
@@ -1538,7 +1539,7 @@ vconcat:
             ),
             (
                 SINGLE,
-                SpecEdit::AddMark {
+                ChartEdit::AddMark {
                     plot: cp("root"),
                     kind: MarkKind::Line,
                 },

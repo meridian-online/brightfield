@@ -588,7 +588,7 @@ struct TopBar {
 ///
 /// The argument prompt ([`crate::overlays::ArgPrompt`]) and column jump are
 /// deliberately absent: their opening verbs (`add-mark` / `set-channel`)
-/// need a focused plot and an applied `SpecEdit`, which is the chart view's
+/// need a focused plot and an applied `ChartEdit`, which is the chart view's
 /// editing bridge — not landed in this shell yet. The delegates are built
 /// and tested; the slot grows their arms when the bridge does.
 enum Overlay {

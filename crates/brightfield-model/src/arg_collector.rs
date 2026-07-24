@@ -6,7 +6,7 @@
 //! machine drives a NEW palette argument-prompt mode. The overlay (the
 //! shell's shim) reuses the fuzzy matcher to filter the option lists this collector
 //! offers, and feeds each pick back in via [`ArgCollector::pick`]; a completed
-//! collection yields the fully-formed [`SpecEdit`] the caller applies.
+//! collection yields the fully-formed [`ChartEdit`] the caller applies.
 //!
 //! No UI-framework type crosses this boundary (semantic-layer rule).
 //!
@@ -15,7 +15,7 @@
 //! collector is unit-tested.
 
 use brightfield_spec::analysis::ComponentPath;
-use brightfield_spec::edit::SpecEdit;
+use brightfield_spec::edit::ChartEdit;
 use brightfield_spec::vocab::{ImplStatus, MarkKind};
 
 /// The verb an argument overlay is collecting arguments for.
@@ -59,7 +59,7 @@ pub enum ArgOutcome {
     /// Still collecting — the overlay stays open on the (advanced) step.
     Pending,
     /// All arguments collected — apply this edit and close the overlay.
-    Ready(SpecEdit),
+    Ready(ChartEdit),
     /// The pick was not a valid option for the current step — the overlay stays
     /// open (nothing advanced).
     Invalid,
@@ -129,11 +129,11 @@ impl ArgCollector {
     }
 
     /// Feed a pick (a chosen option's canonical string) into the collector,
-    /// advancing the step or producing the finished [`SpecEdit`].
+    /// advancing the step or producing the finished [`ChartEdit`].
     pub fn pick(&mut self, choice: &str) -> ArgOutcome {
         match &self.step {
             ArgStep::Kind => match MarkKind::from_wire(choice) {
-                Some(kind) => ArgOutcome::Ready(SpecEdit::AddMark {
+                Some(kind) => ArgOutcome::Ready(ChartEdit::AddMark {
                     plot: self.plot.clone(),
                     kind,
                 }),
@@ -153,7 +153,7 @@ impl ArgCollector {
                 if choice.is_empty() {
                     ArgOutcome::Invalid
                 } else {
-                    ArgOutcome::Ready(SpecEdit::SetChannel {
+                    ArgOutcome::Ready(ChartEdit::SetChannel {
                         plot: self.plot.clone(),
                         mark_ordinal: self.mark_ordinal,
                         channel: channel.clone(),
@@ -209,7 +209,7 @@ mod tests {
             other => panic!("expected Invalid for a bad kind, got {other:?}"),
         }
         match c.pick("barY") {
-            ArgOutcome::Ready(SpecEdit::AddMark { plot, kind }) => {
+            ArgOutcome::Ready(ChartEdit::AddMark { plot, kind }) => {
                 assert_eq!(plot, cp("root"));
                 assert_eq!(kind, MarkKind::BarY);
             }
@@ -236,7 +236,7 @@ mod tests {
         let cols = vec!["temp".to_string(), "depth".to_string()];
         assert_eq!(c.options(&cols), cols);
         match c.pick("depth") {
-            ArgOutcome::Ready(SpecEdit::SetChannel {
+            ArgOutcome::Ready(ChartEdit::SetChannel {
                 plot,
                 mark_ordinal,
                 channel,

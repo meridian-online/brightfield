@@ -65,34 +65,39 @@ pub enum Drives {
     PaletteMeta,
     /// The transient colour-scheme preview.
     ColourPreview,
-    /// A structural spec edit through the command log: change-mark-
-    /// type / add-mark / set-channel / remove-mark / undo. NOT `g`-broadcast
-    /// eligible (that is runtime-dispatch only, `scope::g_eligible`).
+    /// A structural spec edit that writes the durable protocol document:
+    /// change-mark-type / add-mark / set-channel / remove-mark / undo. NOT
+    /// `g`-broadcast eligible (that is runtime-dispatch only, `scope::g_eligible`).
     SpecEdit,
     /// A deferred verb, shown but unbound.
     Reserved,
 }
 
-/// The command tier — the cmdlog discipline's REQUIRED taxonomy,
+/// The command tier — the durability taxonomy, REQUIRED on every verb and
 /// enforced from the first commit because it cannot be retrofitted.
 ///
-/// Every verb declares which tier it is. The split governs the command log: a
-/// **View** command (navigation, folds, panes, palette/help) is never logged —
-/// it changes only what you look at. A **Data** command carries a stable dotted
-/// address (an asset id / focused node), and IS logged as `longname + address +
-/// input`, JSONL, **never** a screen position or pointer movement. A logged row
-/// is shape-identical to an `op:`/`with:` step, so a session's Data rows compile
-/// straight into a protocol fragment.
+/// Every verb declares which tier it is, and the split is about **durability**:
+/// whether the verb writes the durable protocol document on disk. A **View**
+/// command (navigation, folds, panes, palette/help) changes only what you look
+/// at — it never touches the protocol. A **Data** command acts on an addressed
+/// asset and writes the durable protocol document: it appends or amends a step
+/// through arc's own write path, so a session's Data commands leave a protocol,
+/// not a screen trace. The durable-write barrier this draws is load-bearing:
+/// undo is a Data command precisely because it rewrites the durable document,
+/// so it must never be misclassified as a mere view change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandTier {
-    /// Changes only the view (nav / fold / pane / meta). Never logged.
+    /// Changes only the view (nav / fold / pane / meta). Writes nothing durable.
     View,
-    /// Acts on addressed data. Logged by longname + dotted address + input.
+    /// Acts on an addressed asset and writes the durable protocol document
+    /// (append/amend a step through arc's write path).
     Data,
 }
 
 impl CommandTier {
-    /// Whether commands at this tier are written to the command log.
+    /// Whether commands at this tier write the durable protocol document — the
+    /// durable-write barrier. `true` for [`CommandTier::Data`] and nothing
+    /// else, so a View command can never be mistaken for one that writes.
     #[must_use]
     pub fn is_logged(self) -> bool {
         matches!(self, CommandTier::Data)
@@ -113,8 +118,10 @@ pub enum VerbStatus {
 /// Why a reserved verb is not yet available — the named buckets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReservedReason {
-    /// `m` / `a` / `e` / `d` / undo — need the command log (the SpecEdit AST
-    /// mutation API) to persist a structural change.
+    /// `m` / `a` / `e` / `d` / undo — need the durable spec-edit spine (the
+    /// `ChartEdit` AST mutation API) to persist a structural change. Now an
+    /// empty bucket: those verbs are built, and the variant is retained only for
+    /// its `reason()` surface.
     NeedsCommandLog,
     /// `f` / `g f` / `t` / set-param — need a keyboard data-target: a way to
     /// name a predicate without a pointer-derived rectangle or point.
@@ -155,10 +162,10 @@ pub struct VerbEntry {
     pub scope_applicability: Vec<Altitude>,
     /// What the verb drives.
     pub drives: Drives,
-    /// The cmdlog tier — REQUIRED on every verb. Governs whether the
-    /// verb logs, and, for `Data`, that it logs by dotted address (never a
-    /// screen position). Enforced by [`registry`]'s construction, so a new verb
-    /// cannot be added without a deliberate tier call.
+    /// The durability tier — REQUIRED on every verb. Governs whether the verb
+    /// writes the durable protocol document, and, for `Data`, that it acts by
+    /// dotted address (never a screen position). Enforced by [`registry`]'s
+    /// construction, so a new verb cannot be added without a deliberate tier call.
     pub tier: CommandTier,
     /// Lifecycle status.
     pub status: VerbStatus,
@@ -395,9 +402,10 @@ pub fn registry() -> Vec<VerbEntry> {
         reserved("cross-filter-all", vec![Dashboard], ReservedReason::NeedsKeyboardTarget, "Broadcast a cross-filter to every view (needs a keyboard target)"),
         reserved("toggle-point-select", vec![View], ReservedReason::NeedsKeyboardTarget, "Toggle a point selection (needs a keyboard target)"),
         reserved("set-param", DASHBOARD_AND_VIEW.to_vec(), ReservedReason::NeedsKeyboardTarget, "Set a parameter's value (needs a keyboard target)"),
-        // ---- command-log structural edits: m/a/e/d at View, undo
-        //      at Dashboard+View. Flipped Reserved -> Built — the SpecEdit spine
-        //      + Session::reload_spec seam now back them. ----
+        // ---- durable structural edits: m/a/e/d at View, undo at
+        //      Dashboard+View. Flipped Reserved -> Built — the ChartEdit spine
+        //      + Session::reload_spec seam now back them. All Data-tier: each
+        //      writes the durable protocol document. ----
         VerbEntry {
             longname: "change-mark-type",
             tier: CommandTier::Data,
@@ -443,8 +451,13 @@ pub fn registry() -> Vec<VerbEntry> {
             scores: Some(Scores { frequency: 2, mnemonic: 4, convention: 4, motor_note: "d = delete (vim); refused if it would empty the plot" }),
         },
         VerbEntry {
+            // Data-tier: undo rewrites the durable protocol document (it pops the
+            // spec-edit stack back over durable writes), so it sits on the
+            // durable side of the barrier. Tagging it View would let it be
+            // mistaken for a mere view change and cross a durable-write barrier —
+            // exactly the misclassification the tier taxonomy exists to prevent.
             longname: "undo",
-            tier: CommandTier::View,
+            tier: CommandTier::Data,
             binding_specs: vec![ws("u")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
             drives: D::SpecEdit,
@@ -908,24 +921,27 @@ mod tests {
     }
 
     #[test]
-    fn every_verb_declares_a_tier_and_only_data_logs() {
-        // The cmdlog discipline's REQUIRED field: every verb carries a tier, and
-        // exactly the Data tier is logged. Navigation/fold/pane/meta verbs are
-        // View; the spec-edit + object verbs that name a dotted address are Data.
+    fn every_verb_declares_a_tier_and_only_data_writes_durably() {
+        // The durability taxonomy's REQUIRED field: every verb carries a tier,
+        // and exactly the Data tier writes the durable protocol document.
+        // Navigation/fold/pane/meta verbs are View; the spec-edit + object verbs
+        // that name a dotted address (and undo, which rewrites the document) are
+        // Data.
         let reg = registry();
-        let logged: Vec<&str> = reg
+        let durable: Vec<&str> = reg
             .iter()
             .filter(|v| v.tier.is_logged())
             .map(|v| v.longname)
             .collect();
-        // The Data-tier set is exactly the addressed verbs.
-        let mut got = logged.clone();
+        // The Data-tier set is exactly the addressed spec-edit verbs plus undo.
+        let mut got = durable.clone();
         got.sort_unstable();
         let mut expected = vec![
             "change-mark-type",
             "add-mark",
             "set-channel",
             "remove-mark",
+            "undo",
             "filter-view",
             "cross-filter-all",
             "toggle-point-select",
@@ -933,7 +949,7 @@ mod tests {
             "yank-address",
         ];
         expected.sort_unstable();
-        assert_eq!(got, expected, "only addressed (Data) verbs log");
+        assert_eq!(got, expected, "only durable-writing (Data) verbs write");
         // Every protocol MOTION verb is View-tier (a fold/nav is never logged).
         for name in [
             "protocol-producer",
@@ -950,6 +966,44 @@ mod tests {
                 v.tier,
                 CommandTier::View,
                 "{name} is a view command, never logged"
+            );
+        }
+    }
+
+    #[test]
+    fn undo_is_a_durable_write_never_a_view_change() {
+        // The undo-barrier invariant. Undo carries a durable spec edit (it
+        // rewrites the protocol document by popping the edit stack), so it must
+        // sit on the durable side of the barrier — Data tier — and never be
+        // tagged View. A View-tagged undo could be treated as a mere view change
+        // and slip across a durable-write barrier, which is the bug this guards.
+        let reg = registry();
+        let undo = reg
+            .iter()
+            .find(|v| v.longname == "undo")
+            .expect("undo is registered");
+        assert_eq!(
+            undo.drives,
+            Drives::SpecEdit,
+            "undo drives a structural spec edit"
+        );
+        assert_eq!(
+            undo.tier,
+            CommandTier::Data,
+            "undo writes durably, so it is Data-tier, never View"
+        );
+        assert!(
+            undo.tier.is_logged(),
+            "a durable-write verb reports it writes the durable document"
+        );
+        // Cross-check the whole taxonomy: no verb that drives a structural spec
+        // edit may be tagged View — a durable write is never a view change.
+        for v in reg.iter().filter(|v| v.drives == Drives::SpecEdit) {
+            assert_eq!(
+                v.tier,
+                CommandTier::Data,
+                "{} drives a spec edit, so it must be Data-tier (durable)",
+                v.longname
             );
         }
     }

@@ -43,7 +43,7 @@ use brightfield_spec::analysis::{
     mark_honours_highlight, ComponentPath, HighlightBinding, LegendBinding, SpecAnalysis,
 };
 use brightfield_spec::ast::{Component, Mark, PlotNode, Spec, SpecValue, ValueOrParamRef};
-use brightfield_spec::edit::SpecEdit;
+use brightfield_spec::edit::ChartEdit;
 use brightfield_spec::layout::{collect_plot_nodes, resolve_projection};
 use brightfield_spec::vocab::MarkKind;
 use brightfield_sql::ir::{ClauseMeta, Predicate, ScaleDescriptor};
@@ -518,7 +518,7 @@ impl<H: ReactiveHandle> CrossfilterCoordinator<H> {
         true
     }
 
-    /// Apply a transient structural [`SpecEdit`] to the live coordinator
+    /// Apply a transient structural [`ChartEdit`] to the live coordinator
     /// — the load-bearing keyboard-edit mechanism, a DURABLE
     /// coordinator refresh (heavier than `cycle_scheme`: it re-queries).
     ///
@@ -538,7 +538,7 @@ impl<H: ReactiveHandle> CrossfilterCoordinator<H> {
     /// window); `false` for an edit whose plot the coordinator doesn't track.
     pub fn apply_spec_edit(
         &mut self,
-        edit: &SpecEdit,
+        edit: &ChartEdit,
         spec: Spec,
         analysis: SpecAnalysis,
         cx: &mut H::Cx,
@@ -649,7 +649,7 @@ impl<H: ReactiveHandle> CrossfilterCoordinator<H> {
     /// [`Self::apply_slider`]).
     fn apply_spec_edit_data(
         &mut self,
-        edit: &SpecEdit,
+        edit: &ChartEdit,
         spec: Spec,
         analysis: SpecAnalysis,
     ) -> Option<usize> {
@@ -683,7 +683,7 @@ impl<H: ReactiveHandle> CrossfilterCoordinator<H> {
                 .unwrap_or((None, Projection::default()));
             if let Some(&mi) = self.plots[pi].mark_indices.get(edit.mark_ordinal()) {
                 match edit {
-                    SpecEdit::ChangeMarkType { new_kind, .. } => {
+                    ChartEdit::ChangeMarkType { new_kind, .. } => {
                         if let Some(m) = self.marks.get_mut(mi) {
                             m.kind = *new_kind;
                             // Geo carries the plot's projection (finding 1/2/4).
@@ -705,7 +705,7 @@ impl<H: ReactiveHandle> CrossfilterCoordinator<H> {
                                 .flatten();
                         }
                     }
-                    SpecEdit::SetChannel {
+                    ChartEdit::SetChannel {
                         channel, column, ..
                     } => {
                         if let (Some(m), Some(ch)) =
@@ -1790,7 +1790,7 @@ mod tests {
     #[test]
     fn count_change_rebuilds_coordinator_mark_to_plot() {
         use brightfield_spec::analysis::ComponentPath;
-        use brightfield_spec::edit::{apply, SpecEdit};
+        use brightfield_spec::edit::{apply, ChartEdit};
         use brightfield_spec::{parse_spec, Format};
 
         let yaml = "\
@@ -1844,7 +1844,7 @@ vconcat:
         let mut spec_b = spec.clone();
         apply(
             &mut spec_b,
-            &SpecEdit::AddMark {
+            &ChartEdit::AddMark {
                 plot: cp("root/vconcat[0]"),
                 kind: MarkKind::Line,
             },
@@ -1890,7 +1890,7 @@ vconcat:
         let mut spec_c = spec_b.clone();
         apply(
             &mut spec_c,
-            &SpecEdit::RemoveMark {
+            &ChartEdit::RemoveMark {
                 plot: cp("root/vconcat[0]"),
                 mark_ordinal: 0,
             },
