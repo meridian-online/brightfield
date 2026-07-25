@@ -11,7 +11,7 @@ use brightfield_shell::window::Boot;
 use brightfield_spec::analysis::ComponentPath;
 use serde::Serialize;
 
-use crate::scenario::brush_select;
+use crate::scenario::{drag_select, Drag};
 use crate::stats::Stats;
 
 /// Frame-time measurements for one booted spec.
@@ -20,8 +20,9 @@ pub struct FrameMeasurement {
     /// Steady-state frames: the app draws with nothing changing — the shell's
     /// floor (egui pass + composite of the cached canvas texture + GPU wait).
     pub steady: Stats,
-    /// Interaction frames: every frame pushes one committed brush step through
-    /// the live document before drawing, so each timed frame carries the
+    /// Interaction frames: every frame pushes one committed drag step (a brush
+    /// or a slider, per the scenario) through the live document before drawing,
+    /// so each timed frame carries the
     /// re-query, the re-composite, the canvas re-raster and the GPU wait —
     /// the true in-frame cost of a brush step in the live window. `None` for
     /// corpus specs, which are measured steady-state only.
@@ -46,7 +47,7 @@ pub fn frames_steady(
     Stats::from_durations(&times[warmup..]).ok_or_else(|| "no frames measured".to_string())
 }
 
-/// Boot `spec_path` live and time frames that each carry one brush step over
+/// Boot `spec_path` live and time frames that each carry one `drag` step over
 /// `brush_column` within `brush_domain`.
 ///
 /// Fails rather than reports if the boot has no live session — an interaction
@@ -54,6 +55,7 @@ pub fn frames_steady(
 #[allow(clippy::too_many_arguments)]
 pub fn frames_interaction(
     spec_path: &Path,
+    drag: Drag,
     brush_column: &str,
     brush_domain: (f64, f64),
     selection: &str,
@@ -72,7 +74,8 @@ pub fn frames_interaction(
     let brush_column = brush_column.to_string();
     let mut applied = 0usize;
     let times = bench_frames(boot, Mode::Light, scale, warmup + measured, |app, i| {
-        if app.chart_doc_mut().apply_interaction(brush_select(
+        if app.chart_doc_mut().apply_interaction(drag_select(
+            drag,
             &brush_column,
             brush_domain,
             &selection,

@@ -25,6 +25,7 @@
 mod data;
 mod frames;
 mod machine;
+mod mem;
 mod scenario;
 mod stats;
 
@@ -34,7 +35,7 @@ use std::process::ExitCode;
 use serde::Serialize;
 
 use crate::machine::MachineProfile;
-use crate::scenario::{EngineMeasurement, Scenario};
+use crate::scenario::{Drag, EngineMeasurement, Scenario};
 use crate::stats::Stats;
 
 /// The density-pair scenario spec, compiled in from `benchmarks/specs/`.
@@ -43,15 +44,20 @@ const SPEC_DENSITY: &str = include_str!("../../../benchmarks/specs/crossfilter-d
 const SPEC_BINNED: &str = include_str!("../../../benchmarks/specs/crossfilter-binned-density.yaml");
 /// The raw-dot scenario spec, compiled in from `benchmarks/specs/`.
 const SPEC_DOTS: &str = include_str!("../../../benchmarks/specs/crossfilter-dots.yaml");
+/// The range-slider drag spec, compiled in from `benchmarks/specs/`.
+const SPEC_SLIDER: &str = include_str!("../../../benchmarks/specs/slider-drag.yaml");
 /// The crosswalk scenario spec (opt-in, fixed scale), compiled in from
 /// `benchmarks/specs/`.
 const SPEC_CROSSWALK: &str = include_str!("../../../benchmarks/specs/crosswalk-confidence.yaml");
 
-/// One committed scaling scenario: which spec, which brush, what the
-/// pre-aggregation layer is expected to do.
+/// One committed scaling scenario: which spec, which gesture, which column,
+/// what the pre-aggregation layer is expected to do.
 struct SpecDef {
     name: &'static str,
     template: &'static str,
+    /// The gesture the timed steps imitate — a brush moves both interval
+    /// endpoints, a slider moves one handle across fixed stops.
+    drag: Drag,
     brush_column: &'static str,
     brush_domain: (f64, f64),
     /// Whether the enabled run must show the cube engaging (checked both
@@ -66,6 +72,7 @@ const SCENARIOS: &[SpecDef] = &[
     SpecDef {
         name: "brush-density",
         template: SPEC_DENSITY,
+        drag: Drag::Brush,
         brush_column: "value_a",
         brush_domain: (0.0, 100.0),
         // The cube engages, but `value_a` is ~unique per row and active
@@ -77,6 +84,7 @@ const SCENARIOS: &[SpecDef] = &[
     SpecDef {
         name: "brush-binned-density",
         template: SPEC_BINNED,
+        drag: Drag::Brush,
         brush_column: "value_c",
         brush_domain: (0.0, 40.0),
         // Forty distinct brushed values: the cube stays O(bins × 40) at any
@@ -87,12 +95,27 @@ const SCENARIOS: &[SpecDef] = &[
     SpecDef {
         name: "crossfilter-dots",
         template: SPEC_DOTS,
+        drag: Drag::Brush,
         brush_column: "value_a",
         brush_domain: (0.0, 100.0),
         // Row-level marks: nothing to pre-aggregate; the layer must stay
         // silent.
         expect_cube: false,
         frames_capped: true,
+    },
+    SpecDef {
+        name: "slider-drag",
+        template: SPEC_SLIDER,
+        // The gesture that had never been measured: one handle, fixed stops.
+        drag: Drag::Slider,
+        brush_column: "value_c",
+        brush_domain: (0.0, 40.0),
+        // Forty stops on the brushed axis and `intersect` resolution: both
+        // views subscribe and both get a cube, bounded at O(bins × 40).
+        expect_cube: true,
+        // Both views aggregate, so the drawn picture stays O(bins) at every
+        // magnitude — a drag frame here is the drag, not a raster.
+        frames_capped: false,
     },
 ];
 
@@ -216,6 +239,8 @@ fn validate_iterations(iterations: usize) -> Result<(), String> {
 #[derive(Debug, Serialize)]
 struct ScalingResult {
     scenario: String,
+    /// Which gesture drove this row's timed steps.
+    drag: Drag,
     rows: u64,
     dataset: String,
     /// The shipped configuration: automatic pre-aggregation enabled.
@@ -258,6 +283,18 @@ struct RunConfig {
     frame_scale: f32,
 }
 
+/// The record's schema id.
+///
+/// v2 → v3 is a field migration, not a re-shape: v2 carried `first_batch_rows`
+/// beside `materialised_rows`, describing a presentation that drew a mark's
+/// FIRST Arrow chunk only. That presentation is gone — the compose assembles
+/// every chunk — so the field is now `drawn_rows` and names what it holds. It
+/// stayed labelled v2 for one commit after the behaviour changed, which means
+/// two different field sets shipped under one version; the bump is what makes
+/// a v2 record un-mistakable for a v3 one. v3 also adds `drag` (which gesture
+/// produced a row's steps), per-mark chunk/byte shape, and `compose_memory`.
+const SCHEMA: &str = "brightfield-bench/v3";
+
 const METHODOLOGY: &[&str] = &[
     "Interaction latency is measured at the coordinator seam the live window blocks its frame on: one committed brush step = Coordinator::apply (predicate push-down into DuckDB + re-query of every affected mark). live_apply adds the re-composite into a Vello scene (LiveDashboard::apply), which is the full in-frame cost of a brush step in the live window.",
     "Every timed brush uses a distinct interval: the engine caches repeated identical SQL, so a repeated interval would time the cache. A non-vacuity check requires the brush to have actually reduced the cross-filtered step's row count, and every apply must affect at least one mark.",
@@ -271,6 +308,12 @@ const METHODOLOGY: &[&str] = &[
     "Active interval dimensions enter a cube at RAW data values in this first cut (answer-exactness over cube size). A cube over a ~unique-per-row brushed column (brush-density's value_a) therefore approaches the base table's size and buys little; the bounded-cardinality scenario (brush-binned-density, forty distinct brushed values) and the crosswalk scenario measure the shape the layer is built for. Frame suites run in the shipped configuration only.",
     "The crosswalk scenario is opt-in (--crosswalk-parquet) and fixed-scale: it measures the published company-identifier crosswalk dataset as-is; the harness records the file's row count rather than generating data.",
     "In the enabled run, the FIRST brush step carries the one-time cube build (a full-table aggregation); it surfaces in the max percentile, while p50 reflects the steady per-step serve cost. Cubes are session-scoped and never persist.",
+    "Each row records which GESTURE drove its timed steps (`drag`). A brush moves BOTH interval endpoints as a rectangle is dragged inside a chart; a slider pins its lower end and advances one handle across fixed stops. They are not interchangeable: the slider's steps are monotone and land exactly on the brushed axis's forty stops (a step falling between two stops would emit different SQL while selecting identical rows, reporting a re-query that did no new work as though it had).",
+    "The slider-drag scenario drives a SELECTION, not a scalar param. Upstream Mosaic expresses a range slider as `select: interval`, and this engine's pre-aggregation layer keys its cubes off that structured clause — the only path reaching it is selection propagation. A slider wired to a scalar param arrives at the query layer as a substituted expression predicate that decomposes into no cube at all, so measuring it would measure a different mechanism under the slider's name. The spec vocabulary has no slider-to-selection widget form yet, so the contributor is declared as the interval interactor it does have and the harness drives it with slider-shaped steps; no row in this record took the scalar-param path.",
+    "slider-drag resolves its selection as `intersect`, not `crossfilter`. A slider is not a view and has no picture of its own to spare, so EVERY subscriber is filtered, including the plot that declares the contributor — both views re-query on every step. A crossfilter brush exempts its own plot, so a brush row's per-step work is one view lighter than a slider row's at the same row count; compare the two knowing that.",
+    "compose_memory is what the client held while the first full scene was composed — the window around LiveDashboard::present, which executes every mark and hands the whole result set to compose_from_results, which assembles every chunk of every mark and holds them all while it builds the scene. Two figures, because neither alone is honest. arrow_chunks_mib / arrow_assembled_mib are EXACT and deterministic, summed from the batches themselves (RecordBatch::get_array_memory_size) — the data the compose holds, identical on any host. A single-chunk mark assembles by pass-through, so its assembled bytes are the SAME allocation counted again, not a second copy.",
+    "rss_*_mib is the process's resident set size, polled from the OS across that same window (Linux /proc/self/status; macOS `ps -o rss=`, ~5ms resolution, so `rss_samples` states how coarse a given cell is). It is the only figure that sees the Arrow buffers' real cost: the chunks are imported from DuckDB over the C data interface, so DuckDB's C++ allocator owns them and a Rust allocator counter would not see them. Read the PEAK, not the growth: RSS is cumulative within one harness run because a general-purpose allocator does not return freed pages promptly, so a scenario measured late starts from an already-high floor and its growth can read near zero while holding hundreds of megabytes. The poller stops before the timed applies, so it cannot perturb a reported latency.",
+    "Record schema v3. v2 carried `first_batch_rows` beside `materialised_rows` — the pre-assembly presentation that drew a mark's FIRST Arrow chunk only. That field is gone; `drawn_rows` names what the field now holds. A v2 record's row counts describe code that no longer ships and must not be quoted against a v3 one.",
 ];
 
 fn main() -> ExitCode {
@@ -337,6 +380,7 @@ fn run(root: &Path, args: &Args) -> Result<Vec<PathBuf>, String> {
             let sc = Scenario {
                 name: def.name.to_string(),
                 spec_text,
+                drag: def.drag,
                 brush_column: def.brush_column,
                 brush_domain: def.brush_domain,
                 expect_cube: def.expect_cube,
@@ -367,6 +411,7 @@ fn run(root: &Path, args: &Args) -> Result<Vec<PathBuf>, String> {
                 )?;
                 let interaction = frames::frames_interaction(
                     &spec_path,
+                    def.drag,
                     def.brush_column,
                     def.brush_domain,
                     &b.selection,
@@ -383,6 +428,7 @@ fn run(root: &Path, args: &Args) -> Result<Vec<PathBuf>, String> {
 
             scaling.push(ScalingResult {
                 scenario: def.name.to_string(),
+                drag: def.drag,
                 rows,
                 dataset: dataset
                     .file_name()
@@ -411,6 +457,7 @@ fn run(root: &Path, args: &Args) -> Result<Vec<PathBuf>, String> {
         let sc = Scenario {
             name: "crosswalk-confidence".to_string(),
             spec_text: SPEC_CROSSWALK.replace("__DATA_PARQUET__", parquet_str),
+            drag: Drag::Brush,
             brush_column: "confidence",
             // Slightly wider than the data's [0.8, 1.0] so the drag's interval
             // endpoints sweep ACROSS the crosswalk's few distinct confidence
@@ -423,6 +470,7 @@ fn run(root: &Path, args: &Args) -> Result<Vec<PathBuf>, String> {
         let engine = scenario::run_engine_suites(&sc, None, args.iterations, true)?;
         scaling.push(ScalingResult {
             scenario: sc.name.clone(),
+            drag: sc.drag,
             rows,
             dataset: parquet
                 .file_name()
@@ -467,7 +515,7 @@ fn run(root: &Path, args: &Args) -> Result<Vec<PathBuf>, String> {
     }
 
     let report = BaselineReport {
-        schema: "brightfield-bench/v2",
+        schema: SCHEMA,
         machine,
         config: RunConfig {
             rows: args.rows.clone(),
@@ -524,6 +572,14 @@ fn fmt_stats(s: &Stats) -> String {
     format!("{:.1} / {:.1} / {:.1}", s.p50_ms, s.p95_ms, s.max_ms)
 }
 
+/// The gesture name a report row carries.
+fn drag_label(d: Drag) -> &'static str {
+    match d {
+        Drag::Brush => "brush",
+        Drag::Slider => "slider",
+    }
+}
+
 /// The human-readable face of the JSON record — same data, no extra claims.
 fn render_markdown(r: &BaselineReport) -> String {
     use std::fmt::Write as _;
@@ -548,7 +604,7 @@ fn render_markdown(r: &BaselineReport) -> String {
     let _ = writeln!(md);
     let _ = writeln!(
         md,
-        "Latency cells are `p50 / p95 / max` in milliseconds over {} timed brush steps \
+        "Latency cells are `p50 / p95 / max` in milliseconds over {} timed drag steps \
          (each a distinct interval). Frame cells are `p50 / p95 / max` in milliseconds \
          over {} timed frames at {}x scale, after {} discarded warm-up frames. \
          Full definitions: the `methodology` block in the JSON record beside this file.",
@@ -562,19 +618,25 @@ fn render_markdown(r: &BaselineReport) -> String {
         "`direct` disables the automatic pre-aggregation layer; `cubed` is the \
          shipped configuration. Identical code either side of the toggle — the \
          delta is the layer. `cube` shows what the enabled run's layer did: \
-         cubes built / brush steps served from a cube."
+         cubes built / drag steps served from a cube. `Drag` is the gesture the \
+         timed steps imitate: a **brush** moves both interval endpoints inside a \
+         chart and exempts its own plot (crossfilter); a **slider** pins its \
+         lower end, advances one handle across fixed stops, and filters every \
+         view including the contributor's (intersect) — so a slider step \
+         re-queries one more view than a brush step at the same row count."
     );
     let _ = writeln!(md);
     let _ = writeln!(
         md,
-        "| Scenario | Rows | Cold open (load + first query, ms) | \
-         Brush → data, direct (ms) | Brush → data, cubed (ms) | \
-         Brush → scene, direct (ms) | Brush → scene, cubed (ms) | Cube | \
-         Steady frame (ms) | Interaction frame (ms) | Drawn/materialised rows |"
+        "| Scenario | Drag | Rows | Cold open (load + first query, ms) | \
+         Step → data, direct (ms) | Step → data, cubed (ms) | \
+         Step → scene, direct (ms) | Step → scene, cubed (ms) | Cube | \
+         Steady frame (ms) | Interaction frame (ms) | Drawn/materialised rows | \
+         Compose peak RSS (MiB) | Arrow held (MiB) |"
     );
     let _ = writeln!(
         md,
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
     );
     for s in &r.scaling {
         let drawn = s
@@ -584,10 +646,16 @@ fn render_markdown(r: &BaselineReport) -> String {
             .map(|mk| format!("{}/{}", mk.drawn_rows, mk.materialised_rows))
             .collect::<Vec<_>>()
             .join(" · ");
+        // The DIRECT run's window: it runs first at each row count, so its
+        // allocator floor is the lower of the pair. The compose itself is
+        // identical either side of the toggle — the first present happens
+        // before any interaction, so no cube exists yet to change it.
+        let mem = &s.engine_direct.compose_memory;
         let _ = writeln!(
             md,
-            "| {} | {} | {:.1} + {:.1} | {} | {} | {} | {} | {}/{} | {} | {} | {} |",
+            "| {} | {} | {} | {:.1} + {:.1} | {} | {} | {} | {} | {}/{} | {} | {} | {} | {} | {:.1} |",
             s.scenario,
+            drag_label(s.drag),
             s.rows,
             s.engine.load_ms,
             s.engine.first_materialise_ms,
@@ -605,8 +673,32 @@ fn render_markdown(r: &BaselineReport) -> String {
                 .and_then(|f| f.interaction.as_ref())
                 .map_or("—".into(), fmt_stats),
             drawn,
+            mem.rss_peak_mib.map_or("—".into(), |p| format!(
+                "{p:.0} (+{})",
+                mem.rss_growth_mib.map_or("?".into(), |g| format!("{g:.0}"))
+            )),
+            mem.arrow_chunks_mib,
         );
     }
+    let _ = writeln!(md);
+    let _ = writeln!(
+        md,
+        "`Compose peak RSS` is the whole process's high-water mark across the \
+         first full compose — every mark executed, every Arrow chunk assembled, \
+         the scene built — with the growth over the pre-compose reading in \
+         brackets. It is CUMULATIVE within one run: the allocator does not \
+         return freed pages promptly, so a scenario measured late starts from an \
+         already-high floor and its growth understates what it held. Read the \
+         peak. The cell is the direct-configuration run (the first of the pair, \
+         so the lower floor); the cubed run's window is in the JSON beside it, \
+         and the compose is identical either way — the first present precedes \
+         any interaction, so no cube exists yet. `Arrow held` is exact and \
+         deterministic: the summed size of every materialised chunk the compose \
+         holds at once, read from the batches themselves. Sampler: {}.",
+        r.scaling
+            .first()
+            .map_or("none", |s| s.engine_direct.compose_memory.sampler)
+    );
     let _ = writeln!(md);
     if !r.corpus.is_empty() {
         let _ = writeln!(md, "## Example corpus — steady-state frame time");
@@ -644,7 +736,67 @@ mod tests {
         assert!(SPEC_DENSITY.contains("__DATA_PARQUET__"));
         assert!(SPEC_BINNED.contains("__DATA_PARQUET__"));
         assert!(SPEC_DOTS.contains("__DATA_PARQUET__"));
+        assert!(SPEC_SLIDER.contains("__DATA_PARQUET__"));
         assert!(SPEC_CROSSWALK.contains("__DATA_PARQUET__"));
+    }
+
+    /// The slider scenario's whole reason to exist is that it drives a
+    /// selection. A spec edit that swapped the interval contributor for a
+    /// scalar param would still run, still produce numbers, and quietly
+    /// measure a path with no cube — so the shape is asserted, not assumed.
+    #[test]
+    fn the_slider_scenario_drives_a_selection_not_a_scalar_param() {
+        let def = SCENARIOS
+            .iter()
+            .find(|d| d.name == "slider-drag")
+            .expect("the slider scenario is committed");
+        assert_eq!(def.drag, Drag::Slider, "driven with slider-shaped steps");
+        assert!(
+            SPEC_SLIDER.contains("select: intersect"),
+            "a slider filters every view — crossfilter would exempt its own plot"
+        );
+        assert!(
+            SPEC_SLIDER.contains("select: intervalX"),
+            "the contributor must be an interval interactor, so the clause \
+             reaches the engine as a structured Interval the cube can key off"
+        );
+        assert!(
+            !SPEC_SLIDER.contains("input: slider"),
+            "an input widget writes a SCALAR param, which reaches the IR as a \
+             substituted expression predicate and decomposes into no cube"
+        );
+        assert!(
+            def.expect_cube,
+            "forty stops on the brushed axis: the cube must engage, and a run \
+             where it did not must fail rather than report"
+        );
+    }
+
+    /// A slider row and a brush row are only comparable when the reader knows
+    /// which is which, so every committed scenario names its gesture.
+    #[test]
+    fn every_scenario_names_its_gesture() {
+        assert!(SCENARIOS.iter().any(|d| d.drag == Drag::Slider));
+        assert!(SCENARIOS.iter().any(|d| d.drag == Drag::Brush));
+        for d in SCENARIOS {
+            assert!(!drag_label(d.drag).is_empty(), "{} has a label", d.name);
+        }
+    }
+
+    /// The schema id must move when the field set does. v2 shipped
+    /// `first_batch_rows`; v3 ships `drawn_rows`, `drag` and `compose_memory`.
+    /// Leaving the id at v2 is what let two different field sets share one
+    /// version — the failure this assertion exists to stop repeating.
+    #[test]
+    fn the_schema_id_is_past_the_first_batch_era() {
+        assert_eq!(SCHEMA, "brightfield-bench/v3");
+        assert!(
+            METHODOLOGY
+                .iter()
+                .any(|m| m.contains("first_batch_rows") && m.contains("drawn_rows")),
+            "the record must state the migration, so a v2 record is not quoted \
+             against a v3 one"
+        );
     }
 
     #[test]

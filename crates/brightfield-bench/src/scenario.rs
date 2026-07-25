@@ -11,6 +11,7 @@ use brightfield_spec::{parse_spec, Format};
 use brightfield_sql::ir::ScalarValue;
 use serde::Serialize;
 
+use crate::mem::{ComposeMemory, RssSampler};
 use crate::stats::Stats;
 
 /// The number of consecutive iterations for which [`brush_interval`] yields
@@ -27,6 +28,53 @@ use crate::stats::Stats;
 /// by construction rather than by the operator remembering to stay under it.
 pub const DISTINCT_BRUSH_INTERVALS: usize = 35;
 
+/// The number of consecutive slider steps [`slider_interval`] yields before it
+/// wraps. Held equal to [`DISTINCT_BRUSH_INTERVALS`] (proved by test) so the
+/// harness's ONE iteration cap keeps the distinctness guarantee for BOTH drag
+/// shapes — a second, larger cap for the slider would let a brush suite
+/// silently re-issue an interval.
+pub const DISTINCT_SLIDER_STEPS: usize = 35;
+
+/// Which gesture a scenario's timed steps imitate.
+///
+/// The two shapes are not interchangeable. A brush moves BOTH interval
+/// endpoints as a rectangle is dragged over a chart; a slider moves ONE handle
+/// across fixed stops with its other end pinned. They land different SQL, put
+/// different pressure on the cube, and answer different questions — so the
+/// record names which one produced each row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Drag {
+    /// A rectangular brush dragged inside a chart: both endpoints move.
+    Brush,
+    /// A range slider's upper handle dragged across its stops: the lower end
+    /// stays pinned at the domain floor and the upper end advances one stop
+    /// per step.
+    Slider,
+}
+
+impl Drag {
+    /// This gesture's interval for step `i`, in the unit domain [0, 100).
+    #[must_use]
+    pub fn interval(self, i: usize) -> (f64, f64) {
+        match self {
+            Self::Brush => brush_interval(i),
+            Self::Slider => slider_interval(i),
+        }
+    }
+
+    /// [`Drag::interval`] mapped onto a scenario's brushed-column domain: the
+    /// unit-domain endpoints scale linearly onto `[domain.0, domain.1)`, so a
+    /// dataset whose brushable axis is not [0, 100) still receives distinct,
+    /// inside-the-data intervals.
+    #[must_use]
+    pub fn interval_in(self, domain: (f64, f64), i: usize) -> (f64, f64) {
+        let (lo, hi) = self.interval(i);
+        let span = (domain.1 - domain.0) / 100.0;
+        (domain.0 + lo * span, domain.0 + hi * span)
+    }
+}
+
 /// The brushed interval for iteration `i` of a suite, in the unit domain
 /// [0, 100) — a widening/narrowing drag. The pairs stay distinct for
 /// [`DISTINCT_BRUSH_INTERVALS`] consecutive iterations, which matters: the
@@ -39,29 +87,35 @@ pub fn brush_interval(i: usize) -> (f64, f64) {
     (lo, hi)
 }
 
-/// [`brush_interval`] mapped onto a scenario's brushed-column domain: the
-/// unit-domain endpoints scale linearly onto `[domain.0, domain.1)`, so a
-/// dataset whose brushable axis is not [0, 100) still receives distinct,
-/// inside-the-data intervals.
-pub fn brush_interval_in(domain: (f64, f64), i: usize) -> (f64, f64) {
-    let (lo, hi) = brush_interval(i);
-    let span = (domain.1 - domain.0) / 100.0;
-    (domain.0 + lo * span, domain.0 + hi * span)
+/// The slider interval for step `i` of a drag, in the unit domain [0, 100):
+/// the lower end pinned at the floor, the upper handle advancing one stop per
+/// step. `2.5` units per stop is one fortieth of the domain, so on a
+/// forty-value axis every step lands exactly on a stop — a slider's positions
+/// are discrete, and a step that fell between two of them would select the
+/// same rows as its neighbour while still emitting different SQL.
+///
+/// Monotone in `i`, so the steps are distinct by construction; the modulus
+/// wraps at [`DISTINCT_SLIDER_STEPS`] to keep the upper handle inside the
+/// domain rather than running off its end.
+pub fn slider_interval(i: usize) -> (f64, f64) {
+    (0.0, 12.5 + (i % DISTINCT_SLIDER_STEPS) as f64 * 2.5)
 }
 
-/// The brush `Select` interaction for iteration `i`: a structured interval
-/// over `column` within `domain`, against the binding's selection and
-/// contributor — identical in shape to what the chart pane's interval gesture
-/// produces (structured clauses are what let the pre-aggregation layer
-/// engage).
-pub fn brush_select(
+/// The `Select` interaction for step `i` of `drag`: a structured interval over
+/// `column` within `domain`, against the binding's selection and contributor —
+/// identical in shape to what the chart pane's interval gesture (and, upstream,
+/// a range slider's `select: interval`) produces. Structured clauses are what
+/// let the pre-aggregation layer engage; a scalar param would arrive as a
+/// substituted expression predicate and decompose into no cube at all.
+pub fn drag_select(
+    drag: Drag,
     column: &str,
     domain: (f64, f64),
     selection: &str,
     contributor: &ComponentPath,
     i: usize,
 ) -> Interaction {
-    let (lo, hi) = brush_interval_in(domain, i);
+    let (lo, hi) = drag.interval_in(domain, i);
     Interaction::Select {
         name: selection.to_string(),
         contributor: contributor.clone(),
@@ -90,6 +144,16 @@ pub struct MarkRows {
     /// Rows in the assembled batch the composed scene draws — every chunk,
     /// via the presentation's own assembly path.
     pub drawn_rows: u64,
+    /// Arrow chunks the query returned for this mark. The compose holds them
+    /// all at once, so the count is what turns a row total into a memory
+    /// question.
+    pub chunks: u64,
+    /// Exact Arrow bytes across those chunks.
+    pub chunk_bytes: u64,
+    /// Exact Arrow bytes of the assembled drawable batch. A single-chunk mark
+    /// assembles by pass-through, so this is the SAME allocation as
+    /// `chunk_bytes`, not a second copy.
+    pub assembled_bytes: u64,
 }
 
 /// What the automatic pre-aggregation layer did during a suite — the
@@ -134,6 +198,8 @@ pub struct EngineMeasurement {
     pub unfiltered_step_rows: u64,
     /// What the pre-aggregation layer did (coordinator-seam session).
     pub preagg: PreAggSummary,
+    /// What the client held while the first full scene was composed.
+    pub compose_memory: ComposeMemory,
 }
 
 /// The parsed scenario inputs the suites share.
@@ -142,6 +208,8 @@ pub struct Scenario {
     pub name: String,
     /// Fully substituted spec text.
     pub spec_text: String,
+    /// Which gesture the timed steps imitate.
+    pub drag: Drag,
     /// The column the interval brush sweeps.
     pub brush_column: &'static str,
     /// The brushed column's data domain, mapped from the unit drag.
@@ -161,17 +229,26 @@ fn first_binding(spec: &brightfield_spec::ast::Spec) -> Result<(String, Componen
     Ok((b.selection.clone(), b.parent_plot.clone()))
 }
 
-/// `(materialised_rows, drawn_rows)` for a query's chunks. `materialised_rows`
-/// is the raw total; `drawn_rows` is what the presentation actually draws,
-/// measured through the SAME [`assemble_batches`] path the compose step uses —
-/// so the pair is a genuine cross-check, not a tautology. An assembly failure is
-/// surfaced as `Err`, never silently reported as a smaller drawn count.
-fn rows_of(batches: &[RecordBatch]) -> Result<(u64, u64), String> {
+/// The row and byte shape of one mark's query result, measured through the
+/// SAME [`assemble_batches`] path the compose step uses — so `drawn_rows`
+/// against `materialised_rows` is a genuine cross-check, not a tautology, and
+/// the byte figures are the compose's real working set rather than an
+/// estimate. An assembly failure is surfaced as `Err`, never silently reported
+/// as a smaller drawn count.
+fn shape_of(mark: usize, batches: &[RecordBatch]) -> Result<MarkRows, String> {
     let total: usize = batches.iter().map(RecordBatch::num_rows).sum();
-    let drawn = assemble_batches(batches.to_vec())
-        .map_err(|e| e.to_string())?
-        .map_or(0, |b| b.num_rows());
-    Ok((total as u64, drawn as u64))
+    let chunk_bytes: usize = batches.iter().map(RecordBatch::get_array_memory_size).sum();
+    let assembled = assemble_batches(batches.to_vec()).map_err(|e| e.to_string())?;
+    Ok(MarkRows {
+        mark,
+        materialised_rows: total as u64,
+        drawn_rows: assembled.as_ref().map_or(0, RecordBatch::num_rows) as u64,
+        chunks: batches.len() as u64,
+        chunk_bytes: chunk_bytes as u64,
+        assembled_bytes: assembled
+            .as_ref()
+            .map_or(0, RecordBatch::get_array_memory_size) as u64,
+    })
 }
 
 /// Run the engine suites for one scenario over one dataset, with the
@@ -213,14 +290,13 @@ pub fn run_engine_suites(
                 scenario.name
             )
         })?;
-        let (materialised_rows, drawn_rows) =
-            rows_of(batches).map_err(|e| format!("{}: mark {i} assembly: {e}", scenario.name))?;
-        marks.push(MarkRows {
-            mark: i,
-            materialised_rows,
-            drawn_rows,
-        });
+        marks.push(
+            shape_of(i, batches)
+                .map_err(|e| format!("{}: mark {i} assembly: {e}", scenario.name))?,
+        );
     }
+    let arrow_chunk_bytes: u64 = marks.iter().map(|m| m.chunk_bytes).sum();
+    let arrow_assembled_bytes: u64 = marks.iter().map(|m| m.assembled_bytes).sum();
 
     // Non-vacuity ground: the cross-filtered mark's step, unfiltered.
     // Mark 1 is plot B's mark in every scenario (spec order).
@@ -232,7 +308,8 @@ pub fn run_engine_suites(
     // --- Coordinator seam: per-interaction apply latency. ------------------
     let mut apply_ms = Vec::with_capacity(iterations);
     for i in 0..iterations {
-        let interaction = brush_select(
+        let interaction = drag_select(
+            scenario.drag,
             scenario.brush_column,
             scenario.brush_domain,
             &selection,
@@ -301,11 +378,19 @@ pub fn run_engine_suites(
         brightfield_shell::pipeline::LiveDashboard::load_str(&scenario.spec_text, spec_dir)
             .map_err(|e| format!("{}: live load error: {e}", scenario.name))?;
     dash.coordinator().session_mut().set_preagg_enabled(preagg);
-    dash.present()
-        .map_err(|e| format!("{}: first present: {e}", scenario.name))?;
+    // The compose-time memory window: `present` executes every mark and hands
+    // the whole result set to `compose_from_results`, which assembles every
+    // chunk of every mark and holds them while it builds the scene. Sampling
+    // wraps THIS call and stops before the timed applies below, so the poller
+    // cannot perturb a reported latency.
+    let sampler = RssSampler::start();
+    let present = dash.present();
+    let compose_memory = sampler.finish(arrow_chunk_bytes, arrow_assembled_bytes);
+    present.map_err(|e| format!("{}: first present: {e}", scenario.name))?;
     let mut live_ms = Vec::with_capacity(iterations);
     for i in 0..iterations {
-        let interaction = brush_select(
+        let interaction = drag_select(
+            scenario.drag,
             scenario.brush_column,
             scenario.brush_domain,
             &selection,
@@ -328,6 +413,7 @@ pub fn run_engine_suites(
         brushed_step_rows,
         unfiltered_step_rows,
         preagg: preagg_summary,
+        compose_memory,
     })
 }
 
@@ -366,7 +452,7 @@ mod tests {
         let domain = (0.8, 1.0);
         let mut seen = std::collections::HashSet::new();
         for i in 0..DISTINCT_BRUSH_INTERVALS {
-            let (lo, hi) = brush_interval_in(domain, i);
+            let (lo, hi) = Drag::Brush.interval_in(domain, i);
             assert!(lo < hi, "interval {i} is ordered");
             assert!(lo >= domain.0 && hi <= domain.1, "inside the domain");
             assert!(
@@ -375,6 +461,78 @@ mod tests {
             );
         }
         // The identity domain reproduces the unit intervals exactly.
-        assert_eq!(brush_interval_in((0.0, 100.0), 3), brush_interval(3));
+        assert_eq!(Drag::Brush.interval_in((0.0, 100.0), 3), brush_interval(3));
+    }
+
+    #[test]
+    fn slider_steps_stay_distinct_for_a_full_suite() {
+        let mut seen = std::collections::HashSet::new();
+        let mut last_hi = f64::NEG_INFINITY;
+        for i in 0..DISTINCT_SLIDER_STEPS {
+            let (lo, hi) = slider_interval(i);
+            assert!(lo < hi, "step {i} is ordered");
+            assert!(hi < 100.0, "step {i} keeps the handle inside the domain");
+            assert!(hi > last_hi, "step {i} advances the handle");
+            last_hi = hi;
+            assert!(
+                seen.insert(format!("{lo:.3}-{hi:.3}")),
+                "step {i} repeats — a repeated step would hit the SQL cache"
+            );
+        }
+    }
+
+    #[test]
+    fn slider_is_one_handle_and_the_brush_is_two() {
+        // The distinction the scenario exists to measure: the slider pins its
+        // lower end and only the upper handle moves; the brush moves both.
+        let los: std::collections::HashSet<String> = (0..8)
+            .map(|i| format!("{:.3}", slider_interval(i).0))
+            .collect();
+        assert_eq!(los.len(), 1, "a slider drag pins its lower end");
+        let brush_los: std::collections::HashSet<String> = (0..8)
+            .map(|i| format!("{:.3}", brush_interval(i).0))
+            .collect();
+        assert!(brush_los.len() > 1, "a brush drag moves both endpoints");
+    }
+
+    #[test]
+    fn one_iteration_cap_covers_both_drag_shapes() {
+        // The harness enforces a SINGLE iteration cap
+        // (`DISTINCT_BRUSH_INTERVALS`). That is only sound while no generator
+        // repeats earlier than it does — otherwise a run inside the cap could
+        // still re-issue a step and time the SQL cache.
+        assert_eq!(
+            DISTINCT_SLIDER_STEPS, DISTINCT_BRUSH_INTERVALS,
+            "the two generators must share one period for one cap to cover both"
+        );
+        assert_eq!(
+            slider_interval(DISTINCT_SLIDER_STEPS),
+            slider_interval(0),
+            "step {DISTINCT_SLIDER_STEPS} must collide with step 0"
+        );
+    }
+
+    #[test]
+    fn slider_steps_land_on_a_forty_stop_axis() {
+        // The bench slider sweeps a forty-value column. Every step must land
+        // exactly on a stop: a step BETWEEN two stops emits different SQL but
+        // selects the identical rows, which would report a re-query that did
+        // no new work as though it had.
+        for i in 0..DISTINCT_SLIDER_STEPS {
+            let (lo, hi) = Drag::Slider.interval_in((0.0, 40.0), i);
+            assert!((lo - 0.0).abs() < 1e-9, "step {i} pins the floor");
+            assert!(
+                (hi - hi.round()).abs() < 1e-9,
+                "step {i} lands between stops: {hi}"
+            );
+            assert!((5.0..40.0).contains(&hi), "step {i} stays in [0,40): {hi}");
+        }
+    }
+
+    #[test]
+    fn drag_dispatch_matches_the_generators() {
+        assert_eq!(Drag::Brush.interval(4), brush_interval(4));
+        assert_eq!(Drag::Slider.interval(4), slider_interval(4));
+        assert_ne!(Drag::Brush.interval(4), Drag::Slider.interval(4));
     }
 }
