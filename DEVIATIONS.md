@@ -33,10 +33,16 @@ selection state against Mosaic web's for the same events. Until
 something does, calling those cells green would be a lie and leaving
 them merely pending would make them invisible — so they are suppressed
 against this written record, which is the accounting surface. Retiring
-it is per-spec: wire the oracle, drop that filename from
-`affected_specs`, and the run judges the cell for real. The expectation
-assertion makes that safe in both directions, because a spec whose layer
-starts passing while still listed here reddens the run.
+it on purpose is per-spec and MANUAL: wire the oracle, drop that
+filename from `affected_specs`, flip the layer in the spec's
+`.expected.yaml`, and the run judges the cell for real. Retiring it
+involuntarily is the runner's job — the check runs even for a
+suppressed pair, and a check that PASSES where this record claims a
+divergence fails the cell as a stale deviation. So a spec whose layer
+starts passing while still listed here does redden the run; what this
+record cannot tell you is the difference between a layer that is still
+broken and one nobody has built an oracle for, because both come back
+not-passing.
 
 
 **Affected specs:** crossfilter.yaml, facet-interval.yaml, flights-200k.yaml, legends.yaml, line.yaml, mark-types.yaml, overview-detail.yaml, seattle-temp.yaml, sorted-bars.yaml, table.yaml

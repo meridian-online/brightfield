@@ -17,17 +17,20 @@ scriptable Interaction/Coordinator seam shipped long ago.
 
 Two things settle a cell, in this order:
 
-1. **Registry coverage.** A deviation naming this spec's filename in
-   `affected_specs` and this layer in `conformance_layers_suppressed`
-   makes the cell `Suppressed`, and the check does not run. A pair the
-   registry does not name can never come back `Suppressed`, so every
-   suppression traces to a reviewed record.
+1. **Registry coverage, held against the check.** Only a deviation naming
+   this spec's filename in `affected_specs` and this layer in
+   `conformance_layers_suppressed` can make the cell `Suppressed`, so every
+   suppression traces to a reviewed record. Coverage is necessary and *not*
+   sufficient: the check still runs for a covered pair, and a check that
+   **passes** where the deviation claims a divergence fails the cell as a
+   stale record. A suppression nothing can falsify is a comment.
 2. **The declared expectation.** A cell whose settled outcome differs from
    its `<name>.expected.yaml` becomes a `Fail` naming both sides. That is
    what makes the expectation an assertion rather than a note: a layer
-   regressing from pass to pending reddens the run, and so does a
-   suppressed layer quietly starting to pass while its deviation record
-   still claims otherwise.
+   regressing from pass to pending reddens the run. It cannot do more than
+   that — when the expectation and the registry agree (both say
+   `suppressed: DEV-0001`), the comparison can only ever match, so
+   falsifying a suppression is step 1's job and not this one's.
 
 ## `LoadDiagnostics` — what a spec load has to say
 
@@ -203,11 +206,15 @@ assert_eq!(report.summary.failed, 0);
 
 - **No encoding or interaction oracle.** Layers 3 and 4 make no judgement
   of their own; their cells are suppressed against `DEV-0001`, which
-  states in writing what is unproven and why. Retiring it is per-spec:
-  wire the oracle, drop that filename from `affected_specs`, and the run
-  then judges the cell for real. The expectation assertion makes that safe
-  in both directions, so neither a regression nor a silent improvement can
-  pass unremarked.
+  states in writing what is unproven and why. Retiring it on purpose is
+  per-spec and manual: wire the oracle, drop that filename from
+  `affected_specs`, flip the layer in the spec's `.expected.yaml`, and the
+  run then judges the cell for real. Retiring it involuntarily is the
+  runner's — the check runs for suppressed pairs too, so a layer that
+  starts passing while still listed fails as a stale deviation. What
+  suppression cannot distinguish is a layer that is *still* diverging from
+  one nobody has built an oracle for: both come back not-passing, which is
+  why the record has to say which it is in prose.
 - **No automatic `DEVIATIONS.md` regeneration in CI.** Manual
   `cargo run --bin generate-deviations` is sufficient for v1; the drift
   test catches out-of-date commits.

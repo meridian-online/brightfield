@@ -8,21 +8,33 @@
 //!
 //! Two things settle a cell, in this order:
 //!
-//! 1. **The deviation registry.** If some entry in `deviations.yaml` names
+//! 1. **The deviation registry.** Only an entry in `deviations.yaml` naming
 //!    this spec's filename in `affected_specs` AND this layer in
-//!    `conformance_layers_suppressed`, the cell is
-//!    [`LayerOutcome::Suppressed`] and the check does not run. Coverage is
-//!    the whole rule: a pair the registry does not cover can never come back
-//!    Suppressed, so a suppression is always traceable to a written-down,
-//!    reviewed deviation record rather than to a check's private judgement.
-//!    Every check used to bind the registry as `_registry`, which made
-//!    `Suppressed` unreachable and the registry decorative.
+//!    `conformance_layers_suppressed` can produce
+//!    [`LayerOutcome::Suppressed`]. Coverage is necessary: a pair the
+//!    registry does not cover can never come back Suppressed, so a
+//!    suppression is always traceable to a written-down, reviewed deviation
+//!    record rather than to a check's private judgement. Every check used to
+//!    bind the registry as `_registry`, which made `Suppressed` unreachable
+//!    and the registry decorative.
+//!
+//!    Coverage is **not sufficient**, and that is the second half of the
+//!    accounting. The check still runs for a covered pair, and its verdict is
+//!    held against the suppression: a check that PASSES where a deviation
+//!    says the behaviour diverges makes the cell a [`LayerOutcome::Fail`]
+//!    naming the stale record, because a suppression nothing can falsify is
+//!    a comment. Skipping the check for covered pairs — which is what this
+//!    used to do — made every covered cell structurally unable to change,
+//!    while the registry's own prose claimed the opposite.
 //! 2. **The declared expectation.** Each curated entry ships a
 //!    `<name>.expected.yaml`. A cell whose settled outcome differs from what
 //!    that file declares is turned into a [`LayerOutcome::Fail`] naming both.
 //!    That is what makes the expectation an ASSERTION: a layer regressing
-//!    Pass → Pending, or a suppressed layer quietly starting to pass while
-//!    its deviation record still claims otherwise, both redden the run.
+//!    Pass → Pending reddens the run. Note what this step alone cannot do —
+//!    it compares the settled outcome against the declaration, so when the
+//!    declaration and the registry agree (both say `suppressed: DEV-0001`)
+//!    it can only ever match. Falsifying a suppression is step 1's job, not
+//!    this one's.
 //!
 //! Unknown layers (outside 1..=4) are filtered silently.
 
@@ -293,15 +305,7 @@ pub fn run_conformance(
             let Some(check) = checks.iter().find(|c| c.layer() == *layer) else {
                 continue;
             };
-            // Registry coverage settles the cell before any check runs — see
-            // the module docs. A pair the registry does not name can never
-            // come back Suppressed.
-            let settled = match suppressing_deviation(registry, &spec_file, *layer) {
-                Some(dev) => LayerOutcome::Suppressed {
-                    deviation_id: dev.id.clone(),
-                },
-                None => run_check(check.as_ref(), &spec, entry, registry),
-            };
+            let settled = settle_cell(check.as_ref(), &spec, entry, registry, &spec_file, *layer);
             let outcome = match corpus {
                 Corpus::Curated => against_expectation(settled, *layer, entry),
                 Corpus::Observed => settled,
@@ -321,13 +325,60 @@ pub fn run_conformance(
     }
 }
 
-fn run_check(
+/// Settle one `(spec, layer)` cell: run its check, then hold the verdict
+/// against whatever the deviation registry says about the pair.
+///
+/// **Registry coverage is necessary for `Suppressed`, and not sufficient.**
+/// A pair the registry does not name reports its check's verdict verbatim, so
+/// no check can suppress itself. A pair the registry DOES name still has its
+/// check run, and the verdict decides which way the coverage lands:
+///
+/// - the check does not pass → the divergence the record describes is still
+///   there, and the cell is [`LayerOutcome::Suppressed`] against that record;
+/// - the check **passes** → the record claims a divergence that is no longer
+///   real, and the cell is a [`LayerOutcome::Fail`] naming it. That is the
+///   only thing that can retire a deviation by force, and it is the whole
+///   reason the check runs for covered pairs at all.
+///
+/// This used to short-circuit — coverage settled the cell and the check never
+/// ran — which made every covered cell structurally unfalsifiable: its
+/// outcome was `Suppressed` by construction, and `against_expectation`
+/// compared that against a declaration that also said `suppressed`, so the
+/// two always matched. All 20 curated layer-3/4 cells were in that state
+/// while the registry's rationale claimed in writing that a spec which
+/// started passing would redden the run. It could not have.
+///
+/// Retiring a deviation on purpose is still manual and still per-spec: drop
+/// the filename from `affected_specs`, flip the `.expected.yaml`, and the run
+/// judges the cell for real. What this adds is the involuntary half — a
+/// deviation that goes stale cannot stay quiet about it.
+fn settle_cell(
     check: &dyn LayerCheck,
     spec: &brightfield_spec::Spec,
     fixture: &CorpusEntry,
     registry: &DeviationRegistry,
+    spec_file: &str,
+    layer: ConformanceLayer,
 ) -> LayerOutcome {
-    check.run(spec, fixture, registry)
+    let outcome = check.run(spec, fixture, registry);
+    let Some(dev) = suppressing_deviation(registry, spec_file, layer) else {
+        return outcome;
+    };
+    if outcome == LayerOutcome::Pass {
+        return LayerOutcome::Fail {
+            details: format!(
+                "{} suppresses {spec_file} at {}, but the check PASSES — the \
+                 deviation no longer describes a real divergence. Retire it: \
+                 drop {spec_file} from its `affected_specs` and declare the \
+                 layer `pass` in the expectation file.",
+                dev.id,
+                layer.display_name(),
+            ),
+        };
+    }
+    LayerOutcome::Suppressed {
+        deviation_id: dev.id.clone(),
+    }
 }
 
 #[cfg(test)]
@@ -477,6 +528,115 @@ mod tests {
         assert_eq!(
             report.summary.suppressed, 20,
             "ten curated specs × the two layers the registry covers"
+        );
+    }
+
+    /// **A suppression the check disproves reddens the run.** The property the
+    /// registry's own rationale claims in writing, and the one that did not
+    /// hold: coverage used to settle the cell before the check ran, so a
+    /// covered cell was `Suppressed` by construction and could never be
+    /// observed to change. All 20 curated layer-3/4 cells were unfalsifiable.
+    ///
+    /// Built by suppressing a pair whose check demonstrably passes — layer 1
+    /// is green across the whole curated corpus, so a deviation naming
+    /// `line.yaml` there is claiming a divergence that is not happening.
+    #[test]
+    fn dfconf_a_deviation_the_check_disproves_reddens_the_run() {
+        let reg = registry_with(&["line.yaml"], &[ConformanceLayer::AstRoundTrip]);
+        let report = run_conformance(Corpus::Curated, &[ConformanceLayer::AstRoundTrip], &reg);
+        let rec = report
+            .records
+            .iter()
+            .find(|r| r.spec_name == "line")
+            .expect("line.yaml is in the curated corpus");
+        let LayerOutcome::Fail { details } = &rec.outcome else {
+            panic!(
+                "a deviation whose check passes is stale and must redden the \
+                 run, got {:?}",
+                rec.outcome
+            );
+        };
+        assert!(
+            details.contains("DEV-0009") && details.contains("line.yaml"),
+            "the message must name the stale record and the spec: {details}"
+        );
+        assert_eq!(
+            report.summary.failed, 1,
+            "exactly the one covered cell reddens: {:?}",
+            report.records
+        );
+        assert_eq!(
+            report.summary.suppressed, 0,
+            "a check that passes cannot be suppressed by anything"
+        );
+    }
+
+    /// Registry coverage is **necessary** for `Suppressed` and **not
+    /// sufficient** — the two halves of the rule, at the settling function
+    /// rather than through a whole corpus.
+    #[test]
+    fn dfconf_coverage_is_necessary_for_suppression_and_not_sufficient() {
+        use crate::layer::{AstRoundTripCheck, EncodingEquivalenceCheck};
+
+        let src = "plot:\n  - mark: line\n    data: { from: d }\n";
+        let spec = parse_spec(src, Format::Yaml).expect("parses").spec;
+        let entry = CorpusEntry {
+            name: "synthetic".to_string(),
+            source_path: std::path::PathBuf::from("synthetic.yaml"),
+            expectations: LayerExpectations {
+                layer_1: Layer1Expectation::Pass,
+                layer_2: LayerNExpectation::Pending,
+                layer_3: LayerNExpectation::Pending,
+                layer_4: LayerNExpectation::Pending,
+            },
+        };
+
+        // Not covered → the check's own verdict, verbatim. No check can
+        // suppress itself.
+        let uncovered = settle_cell(
+            &AstRoundTripCheck,
+            &spec,
+            &entry,
+            &DeviationRegistry::default(),
+            "synthetic.yaml",
+            ConformanceLayer::AstRoundTrip,
+        );
+        assert_eq!(uncovered, LayerOutcome::Pass, "coverage is necessary");
+
+        // Covered, and the check passes → the record is stale, and says so.
+        let stale = settle_cell(
+            &AstRoundTripCheck,
+            &spec,
+            &entry,
+            &registry_with(&["synthetic.yaml"], &[ConformanceLayer::AstRoundTrip]),
+            "synthetic.yaml",
+            ConformanceLayer::AstRoundTrip,
+        );
+        assert!(
+            matches!(stale, LayerOutcome::Fail { .. }),
+            "coverage is not sufficient — a passing check disproves the \
+             deviation, got {stale:?}"
+        );
+
+        // Covered, and the check does not pass → the divergence is still
+        // there, so the record accepts it. This is the shape all 20 curated
+        // layer-3/4 cells are in: no oracle, so `Pending`, so suppressed.
+        let held = settle_cell(
+            &EncodingEquivalenceCheck,
+            &spec,
+            &entry,
+            &registry_with(
+                &["synthetic.yaml"],
+                &[ConformanceLayer::EncodingEquivalence],
+            ),
+            "synthetic.yaml",
+            ConformanceLayer::EncodingEquivalence,
+        );
+        assert_eq!(
+            held,
+            LayerOutcome::Suppressed {
+                deviation_id: "DEV-0009".to_string()
+            }
         );
     }
 
