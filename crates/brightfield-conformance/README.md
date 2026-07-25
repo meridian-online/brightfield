@@ -2,13 +2,41 @@
 
 The portability contract between Mosaic-web specs and brightfield's rendering.
 
-This crate ships the *machinery* that makes conformance to Mosaic-web
-provable: a preflight support report, two vendored corpora, a deviation
-registry, a doc generator, and a layered conformance runner. V1 wires the
-trait seams and gates layer 1 (AST round-trip) over both corpora. Layers
-2–4 are scaffolded behind the same `LayerCheck` trait so that adding the
-SQL emitter, renderer, and event pump in later cards wires up without
-rework.
+This crate ships the machinery that makes conformance to Mosaic-web
+provable: a preflight support report, `LoadDiagnostics`, two vendored
+corpora, a deviation registry, a doc generator, and a layered conformance
+runner.
+
+Layer 1 (AST round-trip) gates both corpora. Layer 2 (data-source DDL
+equivalence) gates the curated corpus. Layers 3 and 4 are **suppressed
+against a written deviation record** rather than merely pending, because
+what is missing there is an *oracle* — nothing yet diffs a rendered
+brightfield scene, or a scripted interaction's resulting selection state,
+against Mosaic web's for the same spec. Both the renderer and the
+scriptable Interaction/Coordinator seam shipped long ago.
+
+Two things settle a cell, in this order:
+
+1. **Registry coverage.** A deviation naming this spec's filename in
+   `affected_specs` and this layer in `conformance_layers_suppressed`
+   makes the cell `Suppressed`, and the check does not run. A pair the
+   registry does not name can never come back `Suppressed`, so every
+   suppression traces to a reviewed record.
+2. **The declared expectation.** A cell whose settled outcome differs from
+   its `<name>.expected.yaml` becomes a `Fail` naming both sides. That is
+   what makes the expectation an assertion rather than a note: a layer
+   regressing from pass to pending reddens the run, and so does a
+   suppressed layer quietly starting to pass while its deviation record
+   still claims otherwise.
+
+## `LoadDiagnostics` — what a spec load has to say
+
+`LoadDiagnostics::collect` bundles the preflight walk's blocking entries
+with every warning the parse and the analysis produced, worded per line.
+It is what the shell puts in front of a person: the preflight mechanism
+and the `ParseOutput.warnings` were both fully built and both reached
+nobody — this crate was a dependency of no application crate, and all four
+spec-load entry points dropped their warnings.
 
 ## `SupportReport` — preflight
 
@@ -135,12 +163,25 @@ registry-integrity and curated-preflight gates, as `#[test]` functions.
 cargo run --bin conformance -- --layers 1,2,3,4 --corpus curated
 ```
 
-Exit code is non-zero iff any `LayerOutcome::Fail` is present. The footer
-line has a machine-readable summary:
+This is a named CI step with its own pass/fail. Exit code is non-zero iff
+any `LayerOutcome::Fail` is present — including a cell whose outcome
+differs from the expectation its `.expected.yaml` declares.
+
+Per-layer cell counts come first, because the roll-up alone cannot say
+*which* layer is carrying the greens, and that is the only question worth
+asking of a layered contract. Then the machine-readable footer:
 
 ```
-SUMMARY: passed=N failed=N suppressed=N pending=N
+LAYER 1: cells=10 passed=10 failed=0 suppressed=0  pending=0   layer 1: AST round-trip
+LAYER 2: cells=10 passed=9  failed=0 suppressed=0  pending=1   layer 2: SQL equivalence
+LAYER 3: cells=10 passed=0  failed=0 suppressed=10 pending=0   layer 3: encoding equivalence
+LAYER 4: cells=10 passed=0  failed=0 suppressed=10 pending=0   layer 4: interaction equivalence
+SUMMARY: cells=40 passed=19 failed=0 suppressed=20 pending=1
 ```
+
+The one layer-2 pending is `legends.yaml`, which declares no data sources:
+there is no data-source DDL for it to be equivalent about, and a green
+cell earned by having nothing to check is not a green cell.
 
 ### 3. Library API
 
@@ -158,17 +199,15 @@ let report = run_conformance(
 assert_eq!(report.summary.failed, 0);
 ```
 
-## v1 non-goals
+## Non-goals
 
-- **Layers 2–4 return `Pending`**, not fake-green. The concrete
-  `SqlEquivalenceCheck`, `EncodingEquivalenceCheck`, and
-  `InteractionEquivalenceCheck` impls each return
-  `LayerOutcome::Pending { reason }` naming the missing downstream
-  ("SQL emitter not yet available", "renderer not yet available",
-  "event pump not yet available"). Flipping any of these from `Pending`
-  to real `LayerCheck` logic requires a later card. This is deliberate:
-  an honest `Pending` today becomes a failing test the moment its
-  concrete impl goes in.
+- **No encoding or interaction oracle.** Layers 3 and 4 make no judgement
+  of their own; their cells are suppressed against `DEV-0001`, which
+  states in writing what is unproven and why. Retiring it is per-spec:
+  wire the oracle, drop that filename from `affected_specs`, and the run
+  then judges the cell for real. The expectation assertion makes that safe
+  in both directions, so neither a regression nor a silent improvement can
+  pass unremarked.
 - **No automatic `DEVIATIONS.md` regeneration in CI.** Manual
   `cargo run --bin generate-deviations` is sufficient for v1; the drift
   test catches out-of-date commits.

@@ -18,6 +18,7 @@
 use std::path::{Path, PathBuf};
 
 use arrow::record_batch::RecordBatch;
+use brightfield_conformance::LoadDiagnostics;
 use brightfield_engine::coordinator::{Coordinator, Interaction};
 use brightfield_engine::error::EngineError;
 use brightfield_engine::{assemble_batches, Engine};
@@ -33,7 +34,7 @@ use brightfield_spec::analysis::{
 };
 use brightfield_spec::layout::{collect_plot_nodes, placed_plots, resolve_plot_insets, Rect};
 use brightfield_spec::vocab::MarkKind;
-use brightfield_spec::{parse_spec, parse_spec_path, Format, Spec};
+use brightfield_spec::{parse_spec, parse_spec_path, Format, ParseOutput, Spec};
 use brightfield_sql::{collect_marks, collect_plot_groups};
 use brightfield_workbench::subject::RunState;
 use vello::Scene;
@@ -115,6 +116,15 @@ pub struct Composed {
     pub plots: Vec<PlotHandle>,
     /// The spec's slider-backed scalar params, for the controls rail.
     pub params: Vec<ParamControl>,
+    /// What the load of this spec had to SAY: the parts of it brightfield
+    /// cannot draw, and every warning the parse and the analysis produced.
+    ///
+    /// It rides on the composition because the composition is what the window
+    /// receives, and a diagnostic that arrives separately from the picture it
+    /// is about is a diagnostic that arrives at the wrong time. Empty for a
+    /// spec that renders whole — which is most of them, and is why a surface
+    /// can draw this unconditionally without becoming noise.
+    pub diagnostics: LoadDiagnostics,
     /// The run-state of materialised data this preview shows, when it shows
     /// any — the honesty channel at the preview surface.
     ///
@@ -151,8 +161,19 @@ impl Composed {
             title: None,
             plots: Vec::new(),
             params: Vec::new(),
+            diagnostics: LoadDiagnostics::default(),
             run_state: None,
         }
+    }
+
+    /// Attach what the load of this spec had to say. Consumes and returns
+    /// `self` for the reason [`Composed::with_run_state`] does: the
+    /// attachment happens at the compose call site rather than as a mutation
+    /// something else can forget to make.
+    #[must_use]
+    pub fn with_diagnostics(mut self, diagnostics: LoadDiagnostics) -> Self {
+        self.diagnostics = diagnostics;
+        self
     }
 
     /// Annotate this preview with the run-state of the materialised data it
@@ -189,7 +210,11 @@ impl Composed {
 /// renders.
 pub fn compose_spec(spec_path: &str) -> Result<Composed, String> {
     let parsed = parse_spec_path(spec_path).map_err(|e| format!("parse error: {e}"))?;
-    compose(parsed.spec, Path::new(spec_path).parent())
+    compose(
+        parsed,
+        Some(source_name(spec_path)),
+        Path::new(spec_path).parent(),
+    )
 }
 
 /// [`compose_spec`], with the session **kept**: the live dashboard holding
@@ -203,7 +228,11 @@ pub fn compose_spec(spec_path: &str) -> Result<Composed, String> {
 /// As [`compose_spec`].
 pub fn live_spec(spec_path: &str) -> Result<(LiveDashboard, Composed), String> {
     let parsed = parse_spec_path(spec_path).map_err(|e| format!("parse error: {e}"))?;
-    let mut dash = LiveDashboard::load(parsed.spec, Path::new(spec_path).parent())?;
+    let mut dash = LiveDashboard::load_parsed(
+        parsed,
+        Some(source_name(spec_path)),
+        Path::new(spec_path).parent(),
+    )?;
     let composed = dash.present()?;
     Ok((dash, composed))
 }
@@ -224,12 +253,33 @@ pub fn live_spec(spec_path: &str) -> Result<(LiveDashboard, Composed), String> {
 /// As [`compose_spec`].
 pub fn compose_spec_str(source: &str, base_dir: Option<&Path>) -> Result<Composed, String> {
     let parsed = parse_spec(source, Format::Yaml).map_err(|e| format!("parse error: {e}"))?;
-    compose(parsed.spec, base_dir)
+    compose(parsed, None, base_dir)
+}
+
+/// The name a diagnostic cites for a spec loaded from a path: its file name,
+/// which is what the reader has open, not the absolute path they did not type.
+fn source_name(spec_path: &str) -> String {
+    Path::new(spec_path).file_name().map_or_else(
+        || spec_path.to_string(),
+        |n| n.to_string_lossy().to_string(),
+    )
 }
 
 /// Everything after the parse, shared by both entry points above.
-fn compose(spec: Spec, spec_dir: Option<&Path>) -> Result<Composed, String> {
+///
+/// Takes the whole [`ParseOutput`] rather than `.spec` out of it, and that is
+/// the point: the previous signature took a `Spec`, so `.warnings` had to be
+/// dropped at each call site to satisfy it, and all four of them did. A
+/// function that cannot be called without the warnings is the only version of
+/// this that stays fixed.
+fn compose(
+    parsed: ParseOutput,
+    source: Option<String>,
+    spec_dir: Option<&Path>,
+) -> Result<Composed, String> {
+    let spec = parsed.spec;
     let analysis = analyse_spec(&spec).map_err(|e| format!("analysis error: {e}"))?;
+    let diagnostics = LoadDiagnostics::collect(source, &spec, &parsed.warnings, &analysis.warnings);
 
     let engine = Engine::new();
     let load = engine
@@ -239,7 +289,7 @@ fn compose(spec: Spec, spec_dir: Option<&Path>) -> Result<Composed, String> {
 
     // Execute every mark; assemble all its result chunks into one drawable batch.
     let results = session.execute_all();
-    compose_from_results(&spec, results)
+    Ok(compose_from_results(&spec, results)?.with_diagnostics(diagnostics))
 }
 
 /// A live, session-holding dashboard — the push-down seam at the presentation
@@ -263,20 +313,55 @@ fn compose(spec: Spec, spec_dir: Option<&Path>) -> Result<Composed, String> {
 pub struct LiveDashboard {
     coordinator: Coordinator,
     spec: Spec,
+    diagnostics: LoadDiagnostics,
 }
 
 impl LiveDashboard {
     /// Load a spec and hold its session live for interaction. `spec_dir` is
     /// where relative `file:` paths resolve (`None` for inline-data specs).
     ///
+    /// The caller here holds an already-parsed [`Spec`] and therefore no
+    /// parse warnings, so the diagnostics this dashboard reports cover the
+    /// preflight walk and the analysis only. A caller that still has its
+    /// `ParseOutput` should use [`LiveDashboard::load_parsed`] and keep the
+    /// whole picture.
+    ///
     /// # Errors
     ///
     /// As [`compose_spec`]: a human-readable message on analyse / load failure.
     pub fn load(spec: Spec, spec_dir: Option<&Path>) -> Result<Self, String> {
         let analysis = analyse_spec(&spec).map_err(|e| format!("analysis error: {e}"))?;
+        let diagnostics = LoadDiagnostics::collect(None, &spec, &[], &analysis.warnings);
         let coordinator = Coordinator::load(spec.clone(), analysis, spec_dir)
             .map_err(|e| format!("engine error: {e}"))?;
-        Ok(Self { coordinator, spec })
+        Ok(Self {
+            coordinator,
+            spec,
+            diagnostics,
+        })
+    }
+
+    /// Load from a whole [`ParseOutput`], keeping its warnings.
+    ///
+    /// # Errors
+    ///
+    /// As [`LiveDashboard::load`].
+    pub fn load_parsed(
+        parsed: ParseOutput,
+        source: Option<String>,
+        spec_dir: Option<&Path>,
+    ) -> Result<Self, String> {
+        let spec = parsed.spec;
+        let analysis = analyse_spec(&spec).map_err(|e| format!("analysis error: {e}"))?;
+        let diagnostics =
+            LoadDiagnostics::collect(source, &spec, &parsed.warnings, &analysis.warnings);
+        let coordinator = Coordinator::load(spec.clone(), analysis, spec_dir)
+            .map_err(|e| format!("engine error: {e}"))?;
+        Ok(Self {
+            coordinator,
+            spec,
+            diagnostics,
+        })
     }
 
     /// Load from spec text (mirrors [`compose_spec_str`]).
@@ -286,18 +371,29 @@ impl LiveDashboard {
     /// As [`LiveDashboard::load`].
     pub fn load_str(source: &str, spec_dir: Option<&Path>) -> Result<Self, String> {
         let parsed = parse_spec(source, Format::Yaml).map_err(|e| format!("parse error: {e}"))?;
-        Self::load(parsed.spec, spec_dir)
+        Self::load_parsed(parsed, None, spec_dir)
+    }
+
+    /// What this dashboard's load had to say.
+    #[must_use]
+    pub fn diagnostics(&self) -> &LoadDiagnostics {
+        &self.diagnostics
     }
 
     /// Composite the CURRENT materialisation into a dashboard scene — the first
     /// paint and every post-interaction re-paint go through here.
+    ///
+    /// Every composite carries the load's diagnostics, including the ones
+    /// after an interaction: the spec did not become renderable because
+    /// someone dragged a brush, so a re-present that dropped the warnings
+    /// would let a single gesture silence them.
     ///
     /// # Errors
     ///
     /// As [`compose_spec`] (returns `Err` when nothing renders).
     pub fn present(&mut self) -> Result<Composed, String> {
         let results = self.coordinator.session_mut().execute_all();
-        compose_from_results(&self.spec, results)
+        Ok(compose_from_results(&self.spec, results)?.with_diagnostics(self.diagnostics.clone()))
     }
 
     /// Apply one interaction — push its predicate/param into DuckDB, re-query,
@@ -519,6 +615,11 @@ fn compose_from_results(
         title,
         plots,
         params: param_controls(spec),
+        // Attached by the load path, which is the only place that holds the
+        // ParseOutput. `compose_from_results` is also reached on every
+        // re-present after an interaction, where re-deriving diagnostics from
+        // the spec alone would silently lose the parse warnings.
+        diagnostics: LoadDiagnostics::default(),
         // Live-queried this very composition — no materialised run output is
         // being previewed, so no currency claim is made (or owed). A caller
         // previewing run output annotates with `with_run_state`, ingesting
