@@ -185,6 +185,58 @@ is the last v2 record and is kept only as history: its frame cells for
 row-per-mark scenarios were measured on scenes drawing ~2048 rows per mark,
 whatever the row count in the same table row says.
 
+## Errata — what this directory has published and withdrawn
+
+Kept because a record that quietly corrects itself teaches nobody what to
+distrust next time.
+
+**A compose-memory column that measured two result sets.** The first record to
+carry `compose_memory` opened its sampling window while the coordinator-seam
+phase's complete Arrow result set was still alive: the coordinator was dropped,
+its result set was not. Resident size is a whole-process quantity, so the
+published figure was both phases summed. The arithmetic gave it away in the
+record's own JSON — the largest cell reported 210.6 MiB of growth for a compose
+assembling 729.5 MiB of fresh Arrow, which is only possible if the pages were
+already there. The shape pass now consumes the result set, and the whole record
+was re-measured rather than annotated.
+
+That defect was not confined to the memory column. Holding a second full result
+set through the timed loop cost latency at ten million rows, and re-measuring
+moved published figures the record presented as engine behaviour:
+
+| Figure (10⁷ rows, p50) | Contaminated | Re-measured |
+|---|---:|---:|
+| crossfilter-dots · step → data, direct | 305.3 ms | 135.3 ms |
+| brush-density · step → scene, direct | 4458.6 ms | 2859.1 ms |
+| brush-density · step → scene, cubed | 11958.1 ms | 2738.8 ms |
+| brush-density · step → data, cubed | 23.8 ms | 4.1 ms |
+| brush-binned-density · step → scene, cubed | 2596.5 ms | 1967.2 ms |
+
+**A data-seam claim built on that contamination.** The contaminated record
+showed `crossfilter-dots` at 10⁷ moving 2.3x at the coordinator seam — a seam
+that composes nothing — and the summary hedged its "the data seam barely moved"
+finding to "below 10⁷" to accommodate it. Re-measured, that cell reads 135.3 ms
+against the v2 record's 130.1 ms. **The data seam moved by at most ~13% at every
+magnitude measured, 10⁷ included**; the hedge was describing the defect, not the
+engine.
+
+**`Cube 2/40` never meant forty drag steps.** The generated summary's legend
+read "cubes built / drag steps served from a cube" while the engine counts one
+hit per MARK it serves. A twenty-step slider suite filtering two views records
+forty hits, in a document whose own preamble says twenty steps. The legend, this
+README and the methodology block now say "mark re-queries". A commit message on
+this branch describes that row as "all 40 steps served"; that wording is wrong
+and is corrected here rather than by rewriting history.
+
+**What the RSS peak still is not.** Even with the result set dropped, the peak
+at the largest magnitudes is a process high-water mark rather than the compose's
+marginal cost: the allocator does not return freed pages to the OS within a run,
+so the compose is partly served from pages the coordinator phase already had.
+`crossfilter-dots` at 10⁷ shows it plainly — 332 MiB of growth while assembling
+729.5 MiB of Arrow, which means most of that Arrow needed no new pages. Quote
+`arrow_chunks_mib`; treat the peak as an upper bound on the process, stated with
+its spread.
+
 ## When a frame cell is blank
 
 Frame suites are capped by **drawn row-level primitives**, not table rows. Each
@@ -200,6 +252,23 @@ Arrow chunk instead of the first: before that, a "ten-million-row" frame cell
 was a ~2048-row scene. Every skipped row records **why**, in the JSON
 (`frames_skipped`) and as a named list under the generated table. A blank
 frame cell is not a fast frame.
+
+**Three cells lost frame coverage under this cap**, and the current record has
+gaps where the v2 record had numbers:
+
+| Cell | v2 steady / interaction (p50, ms) | now |
+|---|---:|---|
+| crossfilter-dots @ 10⁶ | 1.6 / 21.8 | no frame |
+| brush-density @ 10⁷ | 1.6 / 9.0 | no frame |
+| brush-binned-density @ 10⁷ | 1.6 / 5.4 | no frame |
+
+Those v2 numbers are not a baseline the current record failed to beat — they
+timed scenes of ~2048 rows per row-per-mark mark, which is why they could be
+produced at all. The honest statement is that **at these magnitudes this
+renderer cannot produce a frame for a row-per-mark scene**, and the coverage
+that existed before was coverage of a different picture. Any claim that a
+re-measurement covered "every existing row" is true per row and false per
+cell: three cells regressed to gaps.
 
 ## Methodology honesty
 
