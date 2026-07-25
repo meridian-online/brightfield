@@ -63,8 +63,11 @@ struct SpecDef {
     /// Whether the enabled run must show the cube engaging (checked both
     /// ways — see the scenario module's non-vacuity guards).
     expect_cube: bool,
-    /// Whether frame suites are capped by row count for this scenario.
-    frames_capped: bool,
+    /// Marks in this spec that draw ONE primitive per materialised row, so
+    /// their contribution to the encoded scene scales with the table. An
+    /// aggregating mark counts zero: its picture stays O(bins) at any row
+    /// count. This is what [`FRAME_DRAWN_ROW_CAP`] is applied against.
+    row_level_marks: u64,
 }
 
 /// The scaling scenarios, in report order.
@@ -79,7 +82,8 @@ const SCENARIOS: &[SpecDef] = &[
         // dimensions are raw-valued in the first cut, so the cube grows with
         // the table — the record shows what that costs.
         expect_cube: true,
-        frames_capped: false,
+        // The scatter is row-per-mark; the densityX beside it is not.
+        row_level_marks: 1,
     },
     SpecDef {
         name: "brush-binned-density",
@@ -90,7 +94,8 @@ const SCENARIOS: &[SpecDef] = &[
         // Forty distinct brushed values: the cube stays O(bins × 40) at any
         // row count — the layer's intended shape.
         expect_cube: true,
-        frames_capped: false,
+        // Same shape as brush-density: one scatter, one aggregating mark.
+        row_level_marks: 1,
     },
     SpecDef {
         name: "crossfilter-dots",
@@ -101,7 +106,10 @@ const SCENARIOS: &[SpecDef] = &[
         // Row-level marks: nothing to pre-aggregate; the layer must stay
         // silent.
         expect_cube: false,
-        frames_capped: true,
+        // BOTH plots are row-per-mark — the scene carries two primitives per
+        // table row, so this scenario hits the encode cap a magnitude earlier
+        // than the single-scatter ones.
+        row_level_marks: 2,
     },
     SpecDef {
         name: "slider-drag",
@@ -114,16 +122,33 @@ const SCENARIOS: &[SpecDef] = &[
         // views subscribe and both get a cube, bounded at O(bins × 40).
         expect_cube: true,
         // Both views aggregate, so the drawn picture stays O(bins) at every
-        // magnitude — a drag frame here is the drag, not a raster.
-        frames_capped: false,
+        // magnitude — a drag frame here is the drag, not a raster, and no
+        // encode cap applies.
+        row_level_marks: 0,
     },
 ];
 
-/// Row counts above this skip the raw-dot scenario's FRAME suites (its engine
-/// suites run at every magnitude): an interaction frame over ten million raw
-/// dots spends its whole budget inside the apply the engine suites already
-/// time, and adds nothing but wall-clock to the run.
-const DOTS_FRAME_ROW_CAP: u64 = 1_000_000;
+/// The most row-level primitives a frame suite may ask the renderer to encode
+/// — summed across every row-per-mark mark in the scene. Above it the FRAME
+/// suites are skipped; the engine suites still run at every magnitude.
+///
+/// This is not a wall-clock convenience. Since the compose began assembling
+/// EVERY Arrow chunk rather than the first, a row-per-mark scene really does
+/// carry one primitive per table row, and the encoded scene buffer grows with
+/// it. On the reference machine (Apple M1 Pro, Metal) a two-scatter dashboard
+/// at 10⁶ rows encodes into a 2^28-byte binding and the frame does not render
+/// at all — wgpu rejects it against a `max_*_buffer_binding_size` of 2^27, and
+/// the process aborts inside the driver rather than returning an error the
+/// harness could record. A skipped cell is the only honest alternative to a
+/// crashed run.
+///
+/// The value is the measured boundary: 10⁶ primitives encode into exactly the
+/// 2^27-byte limit and render; 2 × 10⁶ take the next power of two and do not.
+/// That leaves the cap sitting ON the boundary rather than under it — a scene
+/// change that added a few bytes per primitive would double the buffer and
+/// reintroduce the abort, so lower this the moment a frame suite dies rather
+/// than raising it.
+const FRAME_DRAWN_ROW_CAP: u64 = 1_000_000;
 
 /// The device-pixel scale frames render at — 2.0 matches the Retina-class
 /// displays the live window actually runs on.
@@ -249,6 +274,11 @@ struct ScalingResult {
     engine_direct: EngineMeasurement,
     #[serde(skip_serializing_if = "Option::is_none")]
     frames: Option<frames::FrameMeasurement>,
+    /// Why this row has no frame cells, when it has none. A blank cell that
+    /// does not say why reads as "fast" to somebody skimming; this row's
+    /// frames were not slow, they were not produced.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frames_skipped: Option<String>,
 }
 
 /// One shipped example's steady-state frame time.
@@ -302,7 +332,7 @@ const METHODOLOGY: &[&str] = &[
     "steady frames draw with nothing changing (the shell's floor). interaction frames each push one committed brush step through the live document before drawing, so they carry re-query + re-composite + canvas re-raster + GPU wait.",
     "The composed scene draws EVERY materialised Arrow chunk: a mark's result batches are assembled into one drawable batch (assemble_batches), the same path the presentation layer uses. drawn_rows vs materialised_rows is the cross-check — they are equal, so the drawn picture holds every row the query answered (the raw-dot scenario spans many ~2048-row chunks and still draws them all). A future regression that reintroduced a first-chunk cap would show drawn_rows < materialised_rows here; an assembly that could not proceed fails the run loudly by name rather than reporting a smaller drawn count.",
     "cold open = Coordinator::load (DDL, no mark queries) then the first full materialisation of every mark, on a session in the same process; the Parquet file is warm in the OS page cache.",
-    "Datasets are deterministic pure functions of the row index via DuckDB hash() — no RNG. The raw-dot scenario's frame suites are capped at one million rows; its engine suites run at every magnitude.",
+    "Datasets are deterministic pure functions of the row index via DuckDB hash() — no RNG. Frame suites are capped by DRAWN row-level primitives, not by table rows: a scenario's row-per-mark marks each contribute one primitive per materialised row, and above one million summed primitives the composed scene exceeds the renderer's max buffer binding size and the frame does not render AT ALL (on the reference machine the process aborts inside the wgpu validation layer, so the harness cannot record an error — only skip). Engine suites run at every magnitude regardless. This cap became load-bearing when the compose began assembling every Arrow chunk instead of the first: a record measured before that change reports frame times for scenes that were drawing ~2048 rows per mark, whatever its row column says.",
     "The emitted SQL applies a selection predicate INSIDE an aggregating mark's query — it filters the base rows that get aggregated (row-level marks are wrapped whole). The aggregating scenarios keep their original brush-the-binned-column shape so the measured series stays comparable across harness runs.",
     "Each scenario's engine suites run twice on identical code: automatic pre-aggregation enabled (the shipped configuration) and disabled (the direct-query control). The delta between the two brush-step latencies is the layer's contribution. Cube engagement is verified per run — engaged and serving where the scenario expects it, silent where it does not — and a run whose cube behaviour contradicts the expectation FAILS instead of reporting.",
     "Active interval dimensions enter a cube at RAW data values in this first cut (answer-exactness over cube size). A cube over a ~unique-per-row brushed column (brush-density's value_a) therefore approaches the base table's size and buys little; the bounded-cardinality scenario (brush-binned-density, forty distinct brushed values) and the crosswalk scenario measure the shape the layer is built for. Frame suites run in the shipped configuration only.",
@@ -371,7 +401,8 @@ fn run(root: &Path, args: &Args) -> Result<Vec<PathBuf>, String> {
     for &rows in &args.rows {
         let dataset = data::ensure_dataset(&gen_conn, &args.data_dir, rows)?;
         for def in SCENARIOS {
-            let frames_capped = def.frames_capped && rows > DOTS_FRAME_ROW_CAP;
+            let drawn_primitives = def.row_level_marks * rows;
+            let frames_capped = drawn_primitives > FRAME_DRAWN_ROW_CAP;
             eprintln!("scenario {} @ {rows} rows ...", def.name);
             let spec_text = def.template.replace(
                 "__DATA_PARQUET__",
@@ -391,7 +422,18 @@ fn run(root: &Path, args: &Args) -> Result<Vec<PathBuf>, String> {
             let engine_direct = scenario::run_engine_suites(&sc, None, args.iterations, false)?;
             let engine = scenario::run_engine_suites(&sc, None, args.iterations, true)?;
 
-            let frames = if args.skip_frames || frames_capped {
+            let frames_skipped = if args.skip_frames {
+                Some("--skip-frames".to_string())
+            } else if frames_capped {
+                Some(format!(
+                    "{drawn_primitives} row-level primitives exceeds the \
+                     {FRAME_DRAWN_ROW_CAP} the renderer can encode in one \
+                     scene buffer — the frame does not render at all"
+                ))
+            } else {
+                None
+            };
+            let frames = if frames_skipped.is_some() {
                 None
             } else {
                 // The spec must exist as a file for the shell's boot path.
@@ -437,6 +479,7 @@ fn run(root: &Path, args: &Args) -> Result<Vec<PathBuf>, String> {
                 engine,
                 engine_direct,
                 frames,
+                frames_skipped,
             });
         }
     }
@@ -479,6 +522,9 @@ fn run(root: &Path, args: &Args) -> Result<Vec<PathBuf>, String> {
             engine,
             engine_direct,
             frames: None,
+            frames_skipped: Some(
+                "fixed-scale scenario: engine suites only, no frame suites".to_string(),
+            ),
         });
     }
 
@@ -700,6 +746,31 @@ fn render_markdown(r: &BaselineReport) -> String {
             .map_or("none", |s| s.engine_direct.compose_memory.sampler)
     );
     let _ = writeln!(md);
+    let skipped: Vec<&ScalingResult> = r
+        .scaling
+        .iter()
+        .filter(|s| s.frames.is_none() && s.frames_skipped.is_some())
+        .collect();
+    if !skipped.is_empty() {
+        let _ = writeln!(md, "### Rows with no frame cells, and why");
+        let _ = writeln!(md);
+        let _ = writeln!(
+            md,
+            "A blank frame cell is not a fast frame. These rows produced no \
+             frame at all:"
+        );
+        let _ = writeln!(md);
+        for s in skipped {
+            let _ = writeln!(
+                md,
+                "- **{} @ {} rows** — {}",
+                s.scenario,
+                s.rows,
+                s.frames_skipped.as_deref().unwrap_or("")
+            );
+        }
+        let _ = writeln!(md);
+    }
     if !r.corpus.is_empty() {
         let _ = writeln!(md, "## Example corpus — steady-state frame time");
         let _ = writeln!(md);
@@ -781,6 +852,34 @@ mod tests {
         for d in SCENARIOS {
             assert!(!drag_label(d.drag).is_empty(), "{} has a label", d.name);
         }
+    }
+
+    /// The frame cap is a MEASURED boundary on this machine, not a taste
+    /// call: at 10⁶ rows a one-scatter scene encodes and renders, and a
+    /// two-scatter scene aborts the process inside wgpu validation. The
+    /// per-scenario primitive counts are what put each row on the right side
+    /// of that line, so they are asserted rather than trusted.
+    #[test]
+    fn the_frame_cap_reproduces_the_measured_render_boundary() {
+        let caps = |name: &str, rows: u64| -> bool {
+            let d = SCENARIOS
+                .iter()
+                .find(|d| d.name == name)
+                .expect("committed scenario");
+            d.row_level_marks * rows > FRAME_DRAWN_ROW_CAP
+        };
+        // Observed to render: one scatter at a million rows.
+        assert!(!caps("brush-density", 1_000_000));
+        assert!(!caps("brush-binned-density", 1_000_000));
+        // Observed to abort: two scatters at a million rows.
+        assert!(caps("crossfilter-dots", 1_000_000));
+        // Observed to render: two scatters at a hundred thousand rows.
+        assert!(!caps("crossfilter-dots", 100_000));
+        // Ten million row-level rows is past the boundary in every shape.
+        assert!(caps("brush-density", 10_000_000));
+        assert!(caps("crossfilter-dots", 10_000_000));
+        // Aggregating-only scenes never hit it: their picture is O(bins).
+        assert!(!caps("slider-drag", 10_000_000));
     }
 
     /// The schema id must move when the field set does. v2 shipped
