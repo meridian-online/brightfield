@@ -1,6 +1,9 @@
 /target
 /.claude
 
+# Finder metadata; written anywhere a directory is opened on macOS.
+.DS_Store
+
 # Packaged distribution artifacts (scripts/package.sh output); regenerable.
 /dist
 
