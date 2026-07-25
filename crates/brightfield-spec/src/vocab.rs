@@ -269,11 +269,28 @@ vocab_enum! {
     /// [`InteractorKind`] / [`InputKind`]. These are the layout and
     /// legend-as-component forms.
     pub enum ComponentKind {
-        Plot => ("plot", Unimplemented),
-        HConcat => ("hconcat", Unimplemented),
-        VConcat => ("vconcat", Unimplemented),
-        HSpace => ("hspace", Unimplemented),
-        VSpace => ("vspace", Unimplemented),
+        // The five layout forms all render end-to-end, and have since the
+        // multi-view composite landed. `compute_layout` gives each a rect;
+        // `placed_plots` — the one call BOTH the live window (pipeline's
+        // `compose`) and the headless composite take — walks that tree, so a
+        // plot's position on the page IS the layout implementation. Leaving
+        // these Unimplemented made preflight declare every spec in the corpus
+        // unrenderable, including the ones the product ships as its own
+        // examples, which is the opposite of the honesty the report exists for.
+        //
+        // Evidence, per form: `examples/dashboard.yaml` (hconcat of two plots)
+        // and `examples/param-slider.yaml` (vconcat) compose in
+        // `examples_exercise.rs`; `examples/layout-spacer.yaml` places an
+        // `hspace: 64` between two plots and `hspace_offsets_subsequent_plot`
+        // pins the 64px offset through `placed_plots`;
+        // `vspace_offsets_subsequent_plot` pins the vspace twin. A spacer
+        // renders no ink by definition — reserving the gap is the whole of its
+        // implementation, and the gap is reserved.
+        Plot => ("plot", Implemented),
+        HConcat => ("hconcat", Implemented),
+        VConcat => ("vconcat", Implemented),
+        HSpace => ("hspace", Implemented),
+        VSpace => ("vspace", Implemented),
         // Standalone `legend:` nodes render end-to-end: resolved to
         // their `for:` plot's colour scale, drawn into the headless composite
         // AND hosted in the window as a display-only LegendElement at the same
@@ -500,16 +517,21 @@ mod tests {
         );
     }
 
-    /// Framed window. `ComponentKind::Legend` is
-    /// promoted to Implemented: standalone legends render in the headless
-    /// composite AND as hosted window elements at their layout rects. The
-    /// other layout components stay Unimplemented (DEV-0001 scaffolding).
+    /// Every composition-level component renders.
+    ///
+    /// `Legend` was promoted when standalone legends started rendering in the
+    /// headless composite AND as hosted window elements at their layout rects.
+    /// The five layout forms carry the status their shipped layout
+    /// implementation warrants: each is positioned by `compute_layout` and
+    /// consumed through `placed_plots`, the call the live window and the
+    /// headless composite share. Pinned as a whole list so a new component
+    /// kind cannot be added at `Implemented` without someone saying so here.
     #[test]
-    fn component_legend_implemented_when_hosted() {
+    fn every_component_kind_is_implemented() {
         assert_eq!(
             ComponentKind::Legend.status(),
             ImplStatus::Implemented,
-            "legend is hosted in the window — promoted"
+            "legend is hosted in the window"
         );
         let implemented: Vec<ComponentKind> = ComponentKind::all()
             .iter()
@@ -518,8 +540,16 @@ mod tests {
             .collect();
         assert_eq!(
             implemented,
-            vec![ComponentKind::Legend],
-            "only Legend is implemented; the layout components remain Unimplemented"
+            vec![
+                ComponentKind::Plot,
+                ComponentKind::HConcat,
+                ComponentKind::VConcat,
+                ComponentKind::HSpace,
+                ComponentKind::VSpace,
+                ComponentKind::Legend,
+            ],
+            "all six composition components render; a Legend whose CHANNEL is \
+             unimplemented is caught by preflight's channel arm, not here"
         );
     }
 }

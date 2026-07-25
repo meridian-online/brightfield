@@ -955,6 +955,39 @@ hconcat:
         );
     }
 
+    // The vspace twin of the above, and the evidence behind
+    // `ComponentKind::VSpace`'s status: a `vspace:` between two stacked plots
+    // pushes the lower plot down through the SAME `placed_plots` call the
+    // window and the composite both take. `sorted-bars.yaml` (vendored,
+    // unmodified) declares exactly this shape.
+    #[test]
+    fn vspace_offsets_subsequent_plot() {
+        let yaml = r#"
+data:
+  t:
+    - { x: 1, y: 2 }
+vconcat:
+  - plot:
+      - { mark: dot, data: { from: t }, x: x, y: y }
+    width: 300
+    height: 200
+  - vspace: 40
+  - plot:
+      - { mark: line, data: { from: t }, x: x, y: y }
+    width: 300
+    height: 200
+"#;
+        let parsed = parse_spec(yaml, Format::Yaml).expect("parse");
+        let plots = placed_plots(&parsed.spec, Rect::zero());
+        assert_eq!(plots.len(), 2, "spacers are not plots");
+        assert_eq!(plots[0].rect.y, 0.0);
+        // Second plot pushed down by plot-0 height (200) + the 40px spacer.
+        assert_eq!(
+            plots[1].rect.y, 240.0,
+            "the 40px vspace offsets the lower plot"
+        );
+    }
+
     // Standalone legend placement: a composition-level `legend:` node is emitted
     // by placed_legends (an inline plot legend is not), joined to its LegendNode.
     #[test]

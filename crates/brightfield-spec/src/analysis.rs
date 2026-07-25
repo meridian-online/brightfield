@@ -71,17 +71,28 @@ impl ParamDeclaredType {
 
     /// Whether a widget output type is provably incompatible with this
     /// declared type. Conservative: only flags clear mismatches.
+    ///
+    /// **A scalar widget bound to a selection param is NOT a mismatch.**
+    /// Upstream Mosaic binds a slider to a selection routinely — a slider
+    /// carrying `select: interval` publishes an interval clause into the
+    /// selection it names, which is exactly the shape the vendored
+    /// `athlete-height.yaml` uses (`input: slider, select: interval, as:
+    /// $query` over `query: { select: single }`). Flagging that direction
+    /// raised a false `ParamTypeMismatch` on a byte-for-byte unmodified
+    /// upstream spec, so the rule is gone.
+    ///
+    /// The reverse direction stands: a widget whose output IS a selection
+    /// (`input: table`) writing into a param declared as a plain scalar is a
+    /// real type error — the scalar has no clause list to receive.
     pub fn is_incompatible_with(&self, widget: WidgetOutputType) -> bool {
         match (self, widget) {
-            // Slider (numeric) writing to a selection param
-            (ParamDeclaredType::Selection, WidgetOutputType::ScalarNumeric) => true,
-            // Slider (numeric) writing to a string param — could be valid in some cases
-            // but we're conservative, so skip.
-            // Table (selection) writing to a scalar param
+            // Selection-producing widget (table) writing to a scalar param.
             (ParamDeclaredType::ScalarNumeric, WidgetOutputType::Selection) => true,
             (ParamDeclaredType::ScalarString, WidgetOutputType::Selection) => true,
             (ParamDeclaredType::ScalarBool, WidgetOutputType::Selection) => true,
-            // Selection param receiving a string/array — not necessarily wrong
+            // Everything else is either fine or not provably wrong: a scalar
+            // widget writing a selection is the Mosaic slider-clause form; a
+            // selection param receiving a string/array is not necessarily wrong.
             _ => false,
         }
     }
@@ -2499,22 +2510,60 @@ vconcat:
         }
     }
 
-    // type mismatch
+    // type mismatch — the pair. Arm one is the shape upstream Mosaic ships
+    // (a slider publishing an interval clause into a selection); arm two is
+    // the genuine error the same rule used to catch, and must keep catching.
     #[test]
-    fn slider_to_selection_mismatch() {
-        let yaml = r#"
+    fn slider_to_selection_is_legal_but_selection_to_scalar_still_warns() {
+        // Arm 1: a slider bound to a selection is CORRECT — this is the
+        // vendored athlete-height.yaml shape. No mismatch may be raised.
+        let legal = r#"
 params:
   brush: { select: crossfilter }
 input: slider
+select: interval
 as: $brush
+column: batch
+from: t
 "#;
-        let out = parse_spec(yaml, Format::Yaml).expect("parses");
+        let out = parse_spec(legal, Format::Yaml).expect("parses");
+        let warnings = check_param_type_mismatches(&out.spec);
+        assert!(
+            !warnings
+                .iter()
+                .any(|w| matches!(w, ParseWarning::ParamTypeMismatch { .. })),
+            "a slider bound to a selection is upstream-legal and must not warn: {warnings:?}"
+        );
+
+        // Arm 2: the reverse direction is a real type error and still warns —
+        // a selection-producing widget cannot write into a scalar param.
+        let genuine = r#"
+params:
+  count: 42
+input: table
+as: $count
+"#;
+        let out = parse_spec(genuine, Format::Yaml).expect("parses");
         let warnings = check_param_type_mismatches(&out.spec);
         assert!(
             warnings.iter().any(
-                |w| matches!(w, ParseWarning::ParamTypeMismatch { param, .. } if param == "brush")
+                |w| matches!(w, ParseWarning::ParamTypeMismatch { param, .. } if param == "count")
             ),
-            "slider writing to selection param should produce mismatch"
+            "a selection widget writing a scalar param is still a mismatch: {warnings:?}"
+        );
+    }
+
+    /// The whole reason the rule changed: the vendored, byte-for-byte
+    /// unmodified upstream spec must analyse clean of `ParamTypeMismatch`.
+    #[test]
+    fn vendored_athlete_height_raises_no_param_type_mismatch() {
+        let source = include_str!("../vendor/mosaic-specs/yaml/athlete-height.yaml");
+        let out = parse_spec(source, Format::Yaml).expect("vendored spec parses");
+        let warnings = check_param_type_mismatches(&out.spec);
+        assert!(
+            warnings.is_empty(),
+            "unmodified upstream athlete-height.yaml must raise no param type \
+             mismatch; got {warnings:?}"
         );
     }
 
