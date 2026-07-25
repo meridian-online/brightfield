@@ -1,0 +1,56 @@
+# Scaling scenario: a RANGE SLIDER dragged across its stops, filtering every
+# view in the dashboard.
+#
+# WHY THIS IS NOT A SCALAR PARAM. Upstream Mosaic expresses a range slider as
+# `select: interval` — the widget contributes an interval clause to a
+# selection, exactly like a brush does. This engine's pre-aggregation layer
+# keys its cubes off that structured clause (`Predicate::Interval`), and the
+# only path that reaches it is selection propagation. A slider wired to a
+# scalar param instead reaches the query layer as a substituted expression
+# predicate, which decomposes into no cube at all — measuring it would measure
+# a different mechanism and call the answer "the slider path". So the drag
+# here contributes an interval to a selection. The vocabulary has no
+# slider-to-selection widget form yet, so the contributor is declared as the
+# interval interactor the vocabulary does have; the harness drives it with
+# slider-shaped steps (one handle, fixed stops), not brush-shaped ones.
+#
+# WHY `intersect` AND NOT `crossfilter`. A slider is not a view. It has no
+# picture of its own to spare, so it filters EVERY subscriber — including the
+# plot that declares it. `crossfilter` would exempt the contributor's own plot
+# from its own predicate, which is right for a brush dragged inside a chart and
+# wrong for a slider: it would leave one of the two views unqueried and halve
+# the per-step work being measured.
+#
+# WHY THE BRUSHED AXIS IS BOUNDED. `value_c` holds exactly forty distinct
+# values, and a brightfield slider declares `min`/`max`/`step` — a slider IS a
+# stepped control, so forty stops is the honest shape, not a convenience. It
+# also keeps the derived cube at O(bins x 40) however many rows the table
+# holds, which is the shape the pre-aggregation layer is built for. Both views
+# aggregate, so the drawn picture stays O(bins) at every row count and the
+# frame suites measure the drag rather than a ten-million-dot raster.
+#
+# `__DATA_PARQUET__` is substituted by the harness with the absolute path of
+# the generated dataset before the spec is loaded. The dataset's columns are a
+# pure function of the row index — see the harness's data module.
+meta:
+  title: Baseline — range-slider drag filtering every view
+params:
+  range: { select: intersect }
+data:
+  t:
+    file: __DATA_PARQUET__
+hconcat:
+  - plot:
+      - mark: densityX
+        data: { from: t, filterBy: $range }
+        x: value_c
+      - select: intervalX
+        as: $range
+    width: 440
+    height: 300
+  - plot:
+      - mark: densityX
+        data: { from: t, filterBy: $range }
+        x: value_a
+    width: 440
+    height: 300

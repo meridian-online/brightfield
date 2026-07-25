@@ -65,8 +65,9 @@ fn unknown() -> String {
     "unknown".to_string()
 }
 
-/// Run a command and return its trimmed stdout, `None` on any failure.
-fn sh(cmd: &str, args: &[&str]) -> Option<String> {
+/// Run a command and return its trimmed stdout, `None` on any failure. Shared
+/// with the memory probe, which reads resident size the same best-effort way.
+pub(crate) fn sh(cmd: &str, args: &[&str]) -> Option<String> {
     let out = std::process::Command::new(cmd).args(args).output().ok()?;
     if !out.status.success() {
         return None;
