@@ -326,9 +326,99 @@ vocab_enum! {
     }
 }
 
+/// Every mark option key some lowerer or renderer actually reads.
+///
+/// A Mosaic mark carries an open bag of option keys, and brightfield's
+/// pipeline reads a small, nameable subset of it. Anything outside this list
+/// is parsed, held in the AST, serialised back out faithfully — and then
+/// **silently ignored** at render time. That silence is the defect this list
+/// exists to end: a spec that says `curve: monotone-x` and gets straight
+/// segments has been lied to, and only the reader could tell.
+///
+/// The list is hand-maintained against the consumers, ONE ENTRY PER READER,
+/// because the readers live in crates this one cannot see (a spec crate that
+/// depended on the renderer would be the dependency arrow pointing the wrong
+/// way). Adding a consumer means adding its key here, and
+/// `every_consumed_mark_option_key_is_named_once` keeps the list from growing
+/// duplicates. The cost of a stale entry is a missing diagnostic, never a
+/// false one — so when in doubt about a key, leave it OFF and let it warn.
+///
+/// Where each is read:
+///
+/// - `x` `y` `x1` `y1` `x2` `y2` `fill` `stroke` `size` `text` — the visual
+///   encoding channels. `brightfield_render::channel::ChannelMap::from_mark`
+///   maps each to a column, a numeric literal, or an aggregate output column;
+///   `brightfield_sql`'s lowerer additionally projects the positional six
+///   when they are bound to a `$param`.
+/// - `filterBy` — read by `brightfield_spec::analysis` when a mark declares
+///   the filter at mark level rather than inside its `data:` block.
+/// - `type` — the density lowerer's kernel/estimator discriminator.
+/// - `thresholds` `bins` `binWidth` `bandwidth` — the density / hexbin
+///   binning knobs, read by the lowerer and threaded back into the renderer
+///   on a colour-scheme rebuild.
+/// - `geometry` — the geo mark's geometry column, resolved in
+///   `brightfield_spec::layout`.
+pub const CONSUMED_MARK_OPTION_KEYS: &[&str] = &[
+    "x",
+    "y",
+    "x1",
+    "y1",
+    "x2",
+    "y2",
+    "fill",
+    "stroke",
+    "size",
+    "text",
+    "filterBy",
+    "type",
+    "thresholds",
+    "bins",
+    "binWidth",
+    "bandwidth",
+    "geometry",
+];
+
+/// Whether a mark option key reaches a lowerer or a renderer.
+///
+/// `false` means the key is carried through the AST intact and then dropped
+/// on the floor — see [`CONSUMED_MARK_OPTION_KEYS`].
+#[must_use]
+pub fn mark_option_is_consumed(key: &str) -> bool {
+    CONSUMED_MARK_OPTION_KEYS.contains(&key)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The consumed-key list is a registry, and a registry with a duplicate
+    /// in it is a registry someone edited without reading.
+    #[test]
+    fn every_consumed_mark_option_key_is_named_once() {
+        let mut seen: Vec<&str> = Vec::new();
+        for key in CONSUMED_MARK_OPTION_KEYS {
+            assert!(
+                !seen.contains(key),
+                "{key} is listed twice in CONSUMED_MARK_OPTION_KEYS"
+            );
+            seen.push(key);
+        }
+        // The channels the renderer maps are all present — the one subset
+        // whose absence would silence a diagnostic on every spec at once.
+        for channel in ["x", "y", "x1", "y1", "x2", "y2", "fill", "stroke", "size", "text"] {
+            assert!(
+                mark_option_is_consumed(channel),
+                "{channel} is a rendered channel and must be listed as consumed"
+            );
+        }
+        // And the keys the corpus proved unconsumed stay unconsumed.
+        for ignored in ["sort", "limit", "curve", "fillOpacity", "r"] {
+            assert!(
+                !mark_option_is_consumed(ignored),
+                "{ignored} has no reader; listing it as consumed would hide a real diagnostic"
+            );
+        }
+    }
 
     /// verification: every variant of every Kind enum exposes an
     /// `ImplStatus` via a `status()` method.
