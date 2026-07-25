@@ -32,7 +32,9 @@
 //!
 //! Node ids: `asset.<protocol>.<relation>` / `file.<protocol>.<path>` /
 //! `source.<protocol>.<url>` / `stmt.<protocol>.<step>#<n>` (INTERNAL
-//! statement intermediates and opaque chips). Everything is
+//! statement intermediates and opaque chips) / `stmt.<protocol>.<step>#<n>!partial`
+//! (the chip drawn BESIDE a statement recovered from its `WITH`-stripped form,
+//! whose lineage is real but incomplete). Everything is
 //! `BTreeMap`/`BTreeSet`/`Vec` — deterministic end-to-end.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -645,6 +647,7 @@ pub fn build_graph(
                         }
                     }
                     StatementAssets::Parsed {
+                        index,
                         produced,
                         consumed_relations,
                         consumed_files,
@@ -662,20 +665,42 @@ pub fn build_graph(
                         };
                         // A statement recovered from its WITH-stripped form is
                         // real but INCOMPLETE — whatever its malformed body
-                        // read is unknowable and has no edge here. Badge the
-                        // node it produces rather than draw a partial lineage
-                        // as a clean one. First badge wins, so the reason is
-                        // stable when several statements share a relation.
+                        // read is unknowable and has no edge here. Two things
+                        // carry that, because they are read in different
+                        // places:
+                        //
+                        // - the produced node gets the reason as its `issue`,
+                        //   which is what an inspector reads. First badge wins,
+                        //   so the reason is stable when several statements
+                        //   share a relation;
+                        // - an issue-badged CHIP is drawn feeding that node,
+                        //   because a renderer keys a tile's treatment on
+                        //   `kind` — a badged Table still paints as an ordinary
+                        //   healthy table. Without the chip the only on-canvas
+                        //   trace of the defect is gone, which is LESS than the
+                        //   whole-statement chip this recovery replaced. The
+                        //   incomplete lineage must be visible without
+                        //   selecting anything.
                         if let Some(reason) = degraded {
+                            let detail = format!(
+                                "partial lineage: this statement did not parse in full, so \
+                                 anything its malformed CTE body reads is missing from the \
+                                 graph. {reason}"
+                            );
                             if let Some(node) = b.nodes.get_mut(&target) {
                                 if node.issue.is_none() {
-                                    node.issue = Some(format!(
-                                        "partial lineage: this statement did not parse in \
-                                         full, so anything its malformed CTE body reads is \
-                                         missing from the graph. {reason}"
-                                    ));
+                                    node.issue = Some(detail.clone());
                                 }
                             }
+                            let chip = b.ensure_node(AssetNode {
+                                id: format!("stmt.{proto}.{}#{index}!partial", ir.name),
+                                kind: AssetKind::Opaque,
+                                label: format!("statement {} (partial)", index + 1),
+                                step: Some(ir.name.clone()),
+                                family_count: None,
+                                issue: Some(detail),
+                            });
+                            b.push_edge(&chip, &target, &ir.name);
                         }
                         let mut consumed: BTreeSet<AssetId> = BTreeSet::new();
                         for rel in consumed_relations {

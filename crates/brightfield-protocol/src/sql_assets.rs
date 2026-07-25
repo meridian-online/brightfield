@@ -19,11 +19,11 @@
 //!
 //! - a CTE whose body fails to parse degrades **alone** — its siblings, and the
 //!   statement's own target relation, survive. The recovered statement is
-//!   marked `degraded` so the relation it produces draws BADGED: the reads of a
-//!   body that did not parse are unknowable, and a partial lineage drawn as a
-//!   clean one is a lie. A statement that recovers no relation is not promoted
-//!   at all — a graph that draws only produced nodes would drop it entirely,
-//!   and a silent skip is exactly what this module refuses;
+//!   marked `degraded` so the relation it produces is drawn as INCOMPLETE — the
+//!   reads of a body that did not parse are unknowable, and a partial lineage
+//!   drawn as a clean one is a lie. A statement that recovers no relation is
+//!   not promoted at all — a graph that draws only produced nodes would drop it
+//!   entirely, and a silent skip is exactly what this module refuses;
 //! - reads are resolved against a **scope stack**, so a name declared in more
 //!   than one scope resolves to its INNERMOST declaration and a nested
 //!   declaration never masquerades as lineage;
@@ -36,8 +36,10 @@
 //! is untouched by any of this; the CTE fields are additive. One statement-level
 //! behaviour DOES change, and deliberately: a statement whose whole-statement
 //! parse fails but whose stripped form recovers a relation used to be a single
-//! opaque chip and is now that relation, badged with the parse error. The signal
-//! moves; it never disappears.
+//! opaque chip and is now that relation — badged with the parse error, and with
+//! an opaque chip still drawn feeding it, because a renderer that keys a tile's
+//! treatment on its kind would otherwise paint the recovered relation as a
+//! healthy one. The signal gains detail; it never disappears.
 
 use std::collections::BTreeSet;
 use std::ops::ControlFlow;
@@ -87,7 +89,8 @@ pub enum StatementAssets {
         /// statement was recovered from its `WITH`-stripped form. Everything
         /// here is real, but nothing here is complete: whatever a malformed
         /// body read is unknowable, so the consumer must badge the produced
-        /// node with this rather than draw it as a healthy relation.
+        /// node with this AND keep a degraded chip in the picture, rather than
+        /// draw the relation as a healthy one.
         degraded: Option<String>,
         /// Byte range in the source file.
         range: (usize, usize),
@@ -472,6 +475,10 @@ fn keyword_at(toks: &[(usize, &Token)], i: usize) -> Option<Keyword> {
 /// shape `name [ (cols) ] AS ( body )` must hold from the first depth-0 `WITH`
 /// onward, or nothing is claimed. Bailing keeps the statement on exactly the
 /// behaviour it had before CTEs were modelled.
+///
+/// A returned clause always carries **at least one** CTE: the only `Some` exit
+/// is inside the parse loop, past the push. Callers rely on that rather than
+/// re-checking emptiness at a distance.
 fn split_with_clause(sql: &str) -> Option<WithClause> {
     let dialect = DuckDbDialect {};
     let tokens = Tokenizer::new(&dialect, sql)
@@ -649,7 +656,8 @@ fn extract_ctes(stmt: &str) -> Option<CteView> {
 /// [`StatementAssets::Parsed`] — it keeps the relation it produces and every
 /// CTE that did parse, and the bad body degrades alone (see the module docs).
 /// Such a statement carries `degraded: Some(error)`, because its lineage is
-/// real but incomplete; a statement that recovers NO relation is never promoted
+/// real but incomplete — the consumer badges what it draws and keeps a degraded
+/// chip in the picture. A statement that recovers NO relation is never promoted
 /// at all, so it cannot vanish from a graph that draws only produced nodes.
 #[must_use]
 pub fn extract_statement_assets(sql: &str) -> Vec<StatementAssets> {
@@ -702,7 +710,14 @@ pub fn extract_statement_assets(sql: &str) -> Vec<StatementAssets> {
                 // node, no chip, no badge — which is the silent skip this
                 // module exists to prevent. Refuse the promotion and keep the
                 // chip.
-                Some(view) if view.produced.is_some() && !view.ctes.is_empty() => {
+                //
+                // The recovered relation is the ONLY condition here: a view
+                // exists only when a WITH clause was located, and locating one
+                // records at least one CTE (split_with_clause's only Some exit
+                // is past the push, and the invariant has its own test), so
+                // `view.ctes` is never empty and re-checking it here would be a
+                // conjunct no test could hold.
+                Some(view) if view.produced.is_some() => {
                     let mut consumed_relations = view.main.relations.clone();
                     let mut consumed_files = view.main.files.clone();
                     for cte in &view.ctes {
@@ -1065,6 +1080,37 @@ mod tests {
             panic!("expected Parsed")
         };
         assert!(degraded.is_none(), "{degraded:?}");
+    }
+
+    /// A located `WITH` clause always records at least one CTE. The promotion
+    /// guard leans on that instead of re-checking emptiness at a distance, so
+    /// the invariant is pinned here — across the shapes that make the locator
+    /// work hardest — rather than left to be read off the control flow.
+    #[test]
+    fn pds_a_located_with_clause_always_records_at_least_one_cte() {
+        for sql in [
+            "CREATE TABLE t AS WITH a AS (SELECT 1) SELECT * FROM a",
+            "CREATE TABLE t AS WITH a (x) AS (SELECT 1) SELECT * FROM a",
+            "CREATE TABLE t AS WITH a AS MATERIALIZED (SELECT 1) SELECT * FROM a",
+            "CREATE TABLE t AS WITH a AS NOT MATERIALIZED (SELECT 1) SELECT * FROM a",
+            "CREATE TABLE t AS WITH RECURSIVE a AS (SELECT 1) SELECT * FROM a",
+            "CREATE TABLE t AS WITH a AS (SELECT 1), b AS (SELECT 2) SELECT * FROM a JOIN b",
+            // The malformed-body case the guard actually runs on.
+            "CREATE TABLE t AS WITH a AS (SELEC nope) SELECT * FROM a",
+        ] {
+            let with = split_with_clause(sql)
+                .unwrap_or_else(|| panic!("{sql} has a locatable WITH clause"));
+            assert!(
+                !with.ctes.is_empty(),
+                "a located WITH clause records its CTEs: {sql}"
+            );
+            let view = extract_ctes(sql).unwrap_or_else(|| panic!("{sql} yields a CTE view"));
+            assert_eq!(
+                view.ctes.len(),
+                with.ctes.len(),
+                "the view maps one CteAssets per located slice: {sql}"
+            );
+        }
     }
 
     /// A `WITH` that is not a CTE clause claims nothing — the statement keeps

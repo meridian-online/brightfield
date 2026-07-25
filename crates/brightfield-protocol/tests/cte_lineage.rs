@@ -1,6 +1,6 @@
 //! CTE lineage: the joins INSIDE a SQL step, in graph form — no pixels.
 //!
-//! Five claims, one per test:
+//! Seven claims, one per test:
 //!
 //! 1. the two CTEs of the vendored `sec_entities.sql` become nodes under the
 //!    same ids whichever input path built the graph — the offline manifest, or
@@ -11,13 +11,18 @@
 //! 3. a CTE whose body fails to parse degrades alone — its sibling CTEs and its
 //!    sibling statements still explode.
 //!
-//! The last two are asserted against the FOLDED graph — the one the builders
+//! The rest are asserted against the FOLDED graph — the one the builders
 //! return and the shell renders today — because that is where a lost degrade
 //! signal would actually be seen:
 //!
 //! 4. a statement recovered from its `WITH`-stripped form draws its relation
 //!    BADGED, never as a clean healthy node;
-//! 5. a statement that produces no relation is never promoted out of its chip.
+//! 5. and it draws an issue-badged CHIP feeding that relation, because a
+//!    renderer keys a tile's treatment on its kind, so a badge alone is
+//!    invisible until something is selected;
+//! 6. when two degraded statements produce the same relation the FIRST reason
+//!    is the one that sticks, and each statement still carries its own chip;
+//! 7. a statement that produces no relation is never promoted out of its chip.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -288,14 +293,20 @@ fn a_malformed_cte_body_chips_alone() {
         "asset.degraded_cte.sibling"
     ));
 
-    // Exactly one chip in the whole graph: the bad body, nothing else.
-    let chips: Vec<&String> = graph
+    // Two chips in the whole graph, and both name the same defect from a
+    // different altitude: the bad body itself, and the partial-parse chip the
+    // fold already carried (a black-boxed STATEMENT is still not among them).
+    let chips: Vec<&str> = graph
         .nodes
         .iter()
         .filter(|(_, n)| n.kind == AssetKind::Opaque)
-        .map(|(id, _)| id)
+        .map(|(id, _)| id.as_str())
         .collect();
-    assert_eq!(chips, vec![&bad], "one chip, and it is the bad CTE");
+    assert_eq!(
+        chips,
+        vec![bad.as_str(), "stmt.degraded_cte.shape#0!partial"],
+        "the bad CTE body and the statement's partial-parse chip, nothing else"
+    );
 }
 
 /// The SAME malformed statement in the FOLDED graph — the one the builders
@@ -341,6 +352,119 @@ fn a_partly_parsed_statement_badges_the_relation_it_produces() {
         "asset.degraded_cte.sibling"
     ));
     assert!(graph.nodes["asset.degraded_cte.sibling"].issue.is_none());
+}
+
+/// The badge is not enough on its own, so the FOLDED graph also draws a chip.
+///
+/// A renderer keys a tile's treatment on its `kind`: a `Table` carrying an
+/// `issue` still paints as an ordinary, healthy-looking table, and the badge is
+/// reachable only by selecting it. Recovering the relation must not therefore
+/// make a broken model LESS visible than the whole-statement chip it replaced —
+/// so the recovered relation is drawn WITH an issue-badged `Opaque` chip
+/// feeding it. Remove the chip and this test fails.
+#[test]
+fn a_partly_parsed_statement_also_draws_a_chip_into_the_relation() {
+    let graph = folded_from_sql(
+        "degraded_cte",
+        "CREATE OR REPLACE TABLE degraded AS\n\
+           WITH good AS (SELECT * FROM real_table),\n\
+                bad AS (SELEC every FORM here IS deliberately unparseable)\n\
+           SELECT * FROM good JOIN bad USING (id);\n\
+         \n\
+         CREATE OR REPLACE TABLE sibling AS SELECT * FROM other_table;\n",
+    );
+
+    let target = "asset.degraded_cte.degraded";
+    let chips: Vec<&AssetNode> = graph
+        .nodes
+        .values()
+        .filter(|n| n.kind == AssetKind::Opaque)
+        .collect();
+    assert_eq!(
+        chips.len(),
+        1,
+        "the incomplete statement is visible without selecting anything: {:?}",
+        graph.nodes.keys().collect::<Vec<_>>()
+    );
+    let chip = chips[0];
+    assert_eq!(chip.id, "stmt.degraded_cte.shape#0!partial");
+    assert_eq!(chip.step.as_deref(), Some("shape"));
+    assert!(
+        chip.issue
+            .as_ref()
+            .is_some_and(|i| i.contains("partial lineage")),
+        "the chip carries the reason: {:?}",
+        chip.issue
+    );
+
+    // It sits IN the lineage, immediately upstream of the relation whose reads
+    // are incomplete — not adrift beside the graph.
+    assert!(
+        has_edge(&graph, &chip.id, target),
+        "the chip feeds the relation it degrades: {:?}",
+        graph.edges
+    );
+
+    // Both signals, not one instead of the other: the node keeps its badge for
+    // the inspector, and what DID parse is still lineage.
+    assert!(graph.nodes[target]
+        .issue
+        .as_ref()
+        .is_some_and(|i| i.contains("partial lineage")));
+    assert!(has_edge(&graph, "asset.degraded_cte.real_table", target));
+
+    // The healthy sibling statement earns no chip of its own.
+    assert!(graph.nodes["asset.degraded_cte.sibling"].issue.is_none());
+}
+
+/// FIRST badge wins when two degraded statements produce the same relation, so
+/// the reason on the node is stable rather than order-dependent — and the
+/// second statement's reason is not lost, because each statement draws its own
+/// chip carrying its own error.
+#[test]
+fn the_first_degrade_reason_wins_and_neither_statement_loses_its_chip() {
+    let graph = folded_from_sql(
+        "twice",
+        "CREATE OR REPLACE TABLE shared AS\n\
+           WITH bad AS (SELEC firstbroken)\n\
+           SELECT * FROM bad;\n\
+         \n\
+         CREATE OR REPLACE TABLE shared AS\n\
+           WITH worse AS (SELEC secondbroken FROM nowhere GROUP)\n\
+           SELECT * FROM worse;\n",
+    );
+
+    let issue = graph.nodes["asset.twice.shared"]
+        .issue
+        .as_ref()
+        .expect("the relation both statements produce is badged");
+    let first = graph.nodes["stmt.twice.shape#0!partial"]
+        .issue
+        .as_ref()
+        .expect("statement 1 draws its own chip");
+    let second = graph.nodes["stmt.twice.shape#1!partial"]
+        .issue
+        .as_ref()
+        .expect("statement 2 draws its own chip");
+
+    assert_ne!(first, second, "the two statements fail differently");
+    assert_eq!(
+        issue, first,
+        "the FIRST statement's reason is the one that sticks"
+    );
+    assert_ne!(
+        issue, second,
+        "a later statement must not overwrite the badge"
+    );
+
+    // Both chips feed the shared relation, so neither reason is off the canvas.
+    for chip in ["stmt.twice.shape#0!partial", "stmt.twice.shape#1!partial"] {
+        assert!(
+            has_edge(&graph, chip, "asset.twice.shared"),
+            "{chip} feeds the relation it degrades: {:?}",
+            graph.edges
+        );
+    }
 }
 
 /// A statement that produces no relation is NEVER promoted out of its chip.
