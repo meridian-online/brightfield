@@ -31,6 +31,7 @@
 pub mod collapse;
 pub mod contract;
 pub mod contract_graph;
+pub mod cte;
 pub mod error;
 pub mod graph;
 pub mod layout;
@@ -53,6 +54,7 @@ pub use contract_graph::{
     apply_stream, build_contract_view, downstream_steps, AssetMeta, ContractView, RunView,
     SeamStatus, StepView,
 };
+pub use cte::{contract_sql, cte_id, explode_ctes, manifest_sql};
 pub use error::Error;
 pub use graph::{AssetGraph, AssetKind, AssetNode, Edge, Seam, SeamKind};
 pub use layout::{layout, Flow, Layout, LayoutConfig};

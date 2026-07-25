@@ -1,0 +1,196 @@
+{
+  "contract_version": "b4/1",
+  "run": {
+    "run_id": "edgar-gleif-fixture",
+    "attempt_id": null,
+    "protocol": {
+      "name": "edgar_gleif",
+      "manifest_sha256": null,
+      "dir": null
+    },
+    "engine": null,
+    "params": [],
+    "started_at": null,
+    "finished_at": "2026-07-25T00:00:00Z",
+    "outcome": "success"
+  },
+  "assets": [
+    {
+      "id": "source:https://www.sec.gov/Archives/edgar/cik-lookup-data.txt",
+      "kind": "source",
+      "name": "https://www.sec.gov/Archives/edgar/cik-lookup-data.txt",
+      "path": null,
+      "bytes": null,
+      "row_count": null,
+      "content_hash": null,
+      "produced_by": null,
+      "consumed_by": [
+        "fetch_cik_lookup"
+      ]
+    },
+    {
+      "id": "source:https://openlake.meridian.online/edgar.parquet",
+      "kind": "source",
+      "name": "https://openlake.meridian.online/edgar.parquet",
+      "path": null,
+      "bytes": null,
+      "row_count": null,
+      "content_hash": null,
+      "produced_by": null,
+      "consumed_by": [
+        "fetch_edgar"
+      ]
+    },
+    {
+      "id": "file:build/cik_lookup.txt",
+      "kind": "file",
+      "name": "build/cik_lookup.txt",
+      "path": null,
+      "bytes": null,
+      "row_count": null,
+      "content_hash": null,
+      "produced_by": "fetch_cik_lookup",
+      "consumed_by": [
+        "build_sec_entities"
+      ]
+    },
+    {
+      "id": "file:build/edgar.parquet",
+      "kind": "file",
+      "name": "build/edgar.parquet",
+      "path": null,
+      "bytes": null,
+      "row_count": null,
+      "content_hash": null,
+      "produced_by": "fetch_edgar",
+      "consumed_by": [
+        "build_sec_entities"
+      ]
+    },
+    {
+      "id": "table:sec_entities",
+      "kind": "table",
+      "name": "sec_entities",
+      "path": null,
+      "bytes": null,
+      "row_count": null,
+      "content_hash": null,
+      "produced_by": "build_sec_entities",
+      "consumed_by": [
+        "export_sec_entities"
+      ]
+    },
+    {
+      "id": "file:build/sec_entities.parquet",
+      "kind": "file",
+      "name": "build/sec_entities.parquet",
+      "path": null,
+      "bytes": null,
+      "row_count": null,
+      "content_hash": null,
+      "produced_by": "export_sec_entities",
+      "consumed_by": []
+    }
+  ],
+  "steps": [
+    {
+      "name": "fetch_cik_lookup",
+      "kind": "op",
+      "op_ref": {
+        "name": "http_fetch",
+        "constraint": null,
+        "version_resolved": "1"
+      },
+      "resolved_with": null,
+      "sql": null,
+      "status": {
+        "state": "success",
+        "skip_reason": null
+      },
+      "attempts": null,
+      "duration_sec": null,
+      "retry": null,
+      "timeout_sec": null,
+      "io": null,
+      "ingress_meta": null,
+      "narrative": null
+    },
+    {
+      "name": "fetch_edgar",
+      "kind": "op",
+      "op_ref": {
+        "name": "http_fetch",
+        "constraint": null,
+        "version_resolved": "1"
+      },
+      "resolved_with": null,
+      "sql": null,
+      "status": {
+        "state": "success",
+        "skip_reason": null
+      },
+      "attempts": null,
+      "duration_sec": null,
+      "retry": null,
+      "timeout_sec": null,
+      "io": null,
+      "ingress_meta": null,
+      "narrative": null
+    },
+    {
+      "name": "build_sec_entities",
+      "kind": "sql",
+      "op_ref": null,
+      "resolved_with": null,
+      "sql": {
+        "model_path": "models/sec_entities.sql",
+        "sql_text": "-- Build the SEC entity resolution universe — the LEFT side of the crosswalk at full\n-- scale — as a table the `parquet_export` operator writes to build/sec_entities.parquet.\n--\n-- Every named SEC filer (CIK + name) from the full cik-lookup list (~1.05M name-variant\n-- rows, INCLUDING SEC former names → extra match surface), with ticker/exchange joined\n-- where the filer has one. Individuals (insider Form 3/4/5 filers) are left in: they\n-- carry no LEI, so they can never match GLEIF and the crosswalk OUTPUT is entity-only\n-- by construction.\n--\n-- Re-expressed from the retired scripts/fetch_sec_entities.sh: the `curl` of\n-- cik-lookup-data.txt is now the `fetch_cik_lookup` http_fetch step (→ build/cik_lookup.txt),\n-- and this SQL is the DuckDB transform that script inlined. `min(...)` replaces the\n-- script's `any_value(...)` for the per-CIK ticker/exchange pick so the build is\n-- DETERMINISTIC (any_value returned an arbitrary row under DuckDB's parallel scan);\n-- ticker/exchange are only enrichment (package.sql re-aggregates tickers), so the pick\n-- doesn't affect the crosswalk edge set, only which single ticker label is carried.\nCREATE OR REPLACE TABLE sec_entities AS\n  WITH ck AS (\n    -- CIK is the trailing :NNNNNNNNNN: ; names may themselves contain colons, so parse\n    -- the CIK off the end by regex rather than splitting on ':'.\n    SELECT CAST(regexp_extract(line, ':([0-9]{10}):$', 1) AS BIGINT)::VARCHAR AS cik,\n           regexp_replace(line, ':[0-9]{10}:$', '') AS company_name\n    FROM read_csv('build/cik_lookup.txt', delim='\\x1e', header=false, all_varchar=true,\n                  columns={'line':'VARCHAR'}, ignore_errors=true)\n    WHERE line SIMILAR TO '.*:[0-9]{10}:' AND regexp_replace(line, ':[0-9]{10}:$', '') <> ''\n  ),\n  tk AS (\n    SELECT CAST(cik AS BIGINT)::VARCHAR AS cik, min(ticker) AS ticker, min(exchange) AS exchange\n    FROM read_parquet('build/edgar.parquet') GROUP BY cik\n  )\n  SELECT c.cik, c.company_name, t.ticker, t.exchange\n  FROM ck c LEFT JOIN tk t USING (cik);\n",
+        "sql_hash": null,
+        "statements": [
+          {
+            "produces": [
+              "sec_entities"
+            ],
+            "reads": [
+              "build/cik_lookup.txt",
+              "build/edgar.parquet"
+            ]
+          }
+        ]
+      },
+      "status": {
+        "state": "success",
+        "skip_reason": null
+      },
+      "attempts": null,
+      "duration_sec": null,
+      "retry": null,
+      "timeout_sec": null,
+      "io": null,
+      "ingress_meta": null,
+      "narrative": null
+    },
+    {
+      "name": "export_sec_entities",
+      "kind": "op",
+      "op_ref": {
+        "name": "parquet_export",
+        "constraint": null,
+        "version_resolved": "1"
+      },
+      "resolved_with": null,
+      "sql": null,
+      "status": {
+        "state": "success",
+        "skip_reason": null
+      },
+      "attempts": null,
+      "duration_sec": null,
+      "retry": null,
+      "timeout_sec": null,
+      "io": null,
+      "ingress_meta": null,
+      "narrative": null
+    }
+  ]
+}
