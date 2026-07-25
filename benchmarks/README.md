@@ -151,10 +151,29 @@ Records carry a `schema` id and are **not** comparable across a bump.
   `drawn_rows`. The id stayed at v2 for one commit after the behaviour
   changed, which shipped two field sets under one version.
 - `brightfield-bench/v3` names what it holds: `drawn_rows`, plus `drag`,
-  per-mark chunk/byte shape, and `compose_memory`.
+  per-mark chunk/byte shape, `compose_memory`, and `frames_skipped`.
 
-**A v2 record's row counts describe code that no longer ships.** Do not quote
-one against a v3 record; re-measure instead.
+**A v2 record's numbers describe code that no longer ships.** Do not quote one
+against a v3 record; re-measure instead. `results/2026-07-23-apple-m1-pro.*`
+is the last v2 record and is kept only as history: its frame cells for
+row-per-mark scenarios were measured on scenes drawing ~2048 rows per mark,
+whatever the row count in the same table row says.
+
+## When a frame cell is blank
+
+Frame suites are capped by **drawn row-level primitives**, not table rows. Each
+row-per-mark mark contributes one primitive per materialised row (an
+aggregating mark contributes none — its picture stays O(bins)), and above one
+million summed primitives the composed scene exceeds the renderer's
+`max_*_buffer_binding_size` and **the frame does not render at all**. On the
+reference machine the process aborts inside the wgpu validation layer, so the
+harness cannot record an error — it can only decline to try.
+
+The cap became load-bearing the moment the compose began assembling every
+Arrow chunk instead of the first: before that, a "ten-million-row" frame cell
+was a ~2048-row scene. Every skipped row records **why**, in the JSON
+(`frames_skipped`) and as a named list under the generated table. A blank
+frame cell is not a fast frame.
 
 ## Methodology honesty
 
