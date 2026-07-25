@@ -464,6 +464,14 @@ impl Boot {
         // frame. The capture tiers build their boots through [`Boot::charts`]
         // and stay one-shot, which is what keeps a baseline a baseline.
         let (live, composed) = crate::pipeline::live_spec(spec)?;
+        // The command-line surface for the same diagnostics the window raises
+        // as banners. Both, not either: a headless capture never draws a
+        // banner, and `brightfield-shot` rendering a chart with a mark
+        // silently missing and saying nothing is the same defect one tier
+        // down.
+        for line in composed.diagnostics.lines() {
+            eprintln!("{spec}: {line}");
+        }
         let mut boot = Self::charts(composed);
         boot.live = Some(live);
         // The file the dashboard was composed from rides along, so the spec
@@ -735,6 +743,14 @@ pub struct MeridianApp {
     /// Persistent, id-deduplicated banners. A source that re-fails raises
     /// under the same composite id and *replaces* its banner — never stacks.
     notifications: NotificationLayer,
+    /// The banner ids the CURRENT chart document's load diagnostics raised.
+    ///
+    /// Held so opening a different document can take the previous document's
+    /// diagnostics down. Without it the banners would be sticky in the one way
+    /// that matters: a user who opens a spec with an unrenderable mark, reads
+    /// the banner, then opens a clean one would go on being warned about a
+    /// document they are no longer looking at.
+    diagnostic_banners: Vec<NotificationId>,
     /// Transient, self-expiring toasts — confirmations, not conditions.
     toasts: ToastLayer,
     /// What the status rail drew last frame — the ids in draw order and any
@@ -898,7 +914,7 @@ impl MeridianApp {
             protocol_doc.model.set_show_sheet(show);
         }
 
-        Self {
+        let mut app = Self {
             layout,
             charts: ChartView {
                 doc: chart_doc,
@@ -925,9 +941,119 @@ impl MeridianApp {
                 .and_then(brightfield_keys::VerbEntry::primary_key),
             recency: RecencyCounter::new(),
             notifications: NotificationLayer::new(),
+            diagnostic_banners: Vec::new(),
             toasts: ToastLayer::new(),
             rail: chrome::StatusDrawn::default(),
+        };
+        // Say what this document's load found, before its first frame. A
+        // diagnostic that waits for the user to go looking is a diagnostic
+        // that does not exist.
+        app.say_load_diagnostics();
+        app
+    }
+
+    /// Raise a banner for everything the chart document's load had to say,
+    /// and take down whatever the previous document's load had said.
+    ///
+    /// One banner per distinct unrenderable feature, titled with its Mosaic
+    /// **wire name** — the string the reader wrote in their own file, so the
+    /// banner names something they can search for — and bodied with where it
+    /// appeared and how often. Nine `voronoi` marks are one problem, so nine
+    /// occurrences make one banner; two different unrenderable features are
+    /// two problems and make two.
+    ///
+    /// Then one banner carrying every remaining diagnostic: the parse and
+    /// analysis warnings that four spec-load entry points used to drop on the
+    /// floor. Grouped rather than one-per-line because these are degradations
+    /// rather than failures and a wall of separate banners would bury the
+    /// blockers above them — but every distinct line is in the body, because
+    /// a warning summarised into a count has not been told.
+    fn say_load_diagnostics(&mut self) {
+        for id in std::mem::take(&mut self.diagnostic_banners) {
+            self.notifications.dismiss(id);
         }
+        let diagnostics = self.charts.doc.composed.diagnostics.clone();
+        let document = diagnostics
+            .source
+            .clone()
+            .unwrap_or_else(|| "this spec".to_string());
+
+        for name in diagnostics.blocking_names() {
+            let occurrences: Vec<&brightfield_conformance::Diagnostic> = diagnostics
+                .blocking()
+                .into_iter()
+                .filter(|d| d.wire_name == name)
+                .collect();
+            let mut surfaces: Vec<&str> = Vec::new();
+            for d in &occurrences {
+                if !surfaces.contains(&d.surface) {
+                    surfaces.push(d.surface);
+                }
+            }
+            let id = NotificationId::composite("spec-diagnostics", &name);
+            self.notifications.raise(
+                Notification::new(id, Severity::Error, format!("Cannot render `{name}`")).body(
+                    format!(
+                        "{} in {document}, {} — brightfield does not draw it, so that part of \
+                         the chart is missing.",
+                        plural(occurrences.len(), "occurrence", "occurrences"),
+                        surfaces.join(" / "),
+                    ),
+                ),
+            );
+            self.diagnostic_banners.push(id);
+        }
+
+        let mut lines: Vec<String> = Vec::new();
+        for d in diagnostics.advisory() {
+            let line = d.to_string();
+            if !lines.contains(&line) {
+                lines.push(line);
+            }
+        }
+        if !lines.is_empty() {
+            let id = NotificationId::new("spec-advisories");
+            self.notifications.raise(
+                Notification::new(
+                    id,
+                    Severity::Warning,
+                    format!(
+                        "{} in {document} had no effect",
+                        plural(lines.len(), "instruction", "instructions")
+                    ),
+                )
+                .body(lines.join("\n")),
+            );
+            self.diagnostic_banners.push(id);
+        }
+    }
+
+    /// What the current chart document's load had to say — the read-only hook
+    /// a headless test asks "did the window receive it?" through.
+    #[must_use]
+    pub fn load_diagnostics(&self) -> &brightfield_conformance::LoadDiagnostics {
+        &self.charts.doc.composed.diagnostics
+    }
+
+    /// Replace the chart document with `composed`, and say what its load
+    /// found.
+    ///
+    /// **The only sanctioned way to swap the chart document at runtime.**
+    /// `ChartDoc::open` alone cannot do it: the document does not own the
+    /// banner layer, so a caller reaching past this to open a document
+    /// directly inherits the previous spec's banners and publishes none of
+    /// its own — the original defect, re-made one level down.
+    ///
+    /// That is not a hypothetical. `open_home` did exactly that: it emptied
+    /// the chart document through `ChartDoc::open` and left the outgoing
+    /// spec's `Cannot render …` banner standing on the front door, for a
+    /// document nobody had open any more. There are two callers now
+    /// (`open_start` and `open_home`) and both go through here; a third that
+    /// does not is the same bug a third time, so the reviewer's question about
+    /// any new chart-document swap is "does it call this".
+    pub fn open_chart(&mut self, composed: Composed) {
+        self.charts.doc.open(composed);
+        self.say_load_diagnostics();
     }
 
     /// The arrangement the UI reads.
@@ -1772,17 +1898,24 @@ impl MeridianApp {
     /// to survive the trip home. The product owner locked that: Home keeps your
     /// place.
     ///
-    /// Both documents are emptied **through their own `open`**, which keeps the
-    /// wgpu host this window rasters through. A fresh `ChartDoc::empty()` /
+    /// Both documents are emptied **in place** rather than rebuilt, which keeps
+    /// the wgpu host this window rasters through. A fresh `ChartDoc::empty()` /
     /// `ProtocolDoc::empty()` would drop the device the next dashboard needs.
     /// A window already on the front door is left exactly as it is — the guard
     /// is what makes cmd-shift-h on the door a no-op rather than a needless
     /// re-clear that would flash the same empty pixels.
+    ///
+    /// The chart side goes through [`open_chart`](Self::open_chart), not
+    /// through `ChartDoc::open`: going Home is a document swap like any other,
+    /// and the empty document has nothing to say — so the outgoing spec's
+    /// banners come down with it. Calling `ChartDoc::open` here instead left
+    /// a `Cannot render …` banner raised on the front door, about a document
+    /// that was no longer open.
     fn open_home(&mut self, ctx: &egui::Context) {
         if self.front_door_is_live() {
             return;
         }
-        self.charts.doc.open(Composed::empty());
+        self.open_chart(Composed::empty());
         self.protocol.doc.open(ProtocolInputs::empty());
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
         ctx.request_repaint();
@@ -1823,7 +1956,9 @@ impl MeridianApp {
         };
         let view = opened.view();
         match opened {
-            crate::starts::Opened::Charts(composed) => self.charts.doc.open(*composed),
+            // A new chart document is a new set of things to say, and a
+            // reason to stop saying the last one's.
+            crate::starts::Opened::Charts(composed) => self.open_chart(*composed),
             crate::starts::Opened::Protocol(inputs) => self.protocol.doc.open(*inputs),
         }
         self.notifications.dismiss(banner);
@@ -2144,6 +2279,16 @@ fn steps_tab_is_active(tree: &egui_tiles::Tree<PaneKey>) -> Option<bool> {
         return None;
     };
     Some(tabs.active? == steps)
+}
+
+/// `3 occurrences` / `1 occurrence`. A banner that says "1 occurrences" is a
+/// banner the reader trusts a shade less than the one before it.
+fn plural(n: usize, one: &str, many: &str) -> String {
+    if n == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{n} {many}")
+    }
 }
 
 /// One front-door zone heading: the settled name, set apart from the zone's

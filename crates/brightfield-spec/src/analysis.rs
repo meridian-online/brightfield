@@ -29,7 +29,13 @@ pub enum WidgetOutputType {
 }
 
 impl WidgetOutputType {
-    /// Derive the output type from an `InputKind`.
+    /// Derive the output type from an `InputKind` **alone**, ignoring the
+    /// widget's options.
+    ///
+    /// The kind is not the whole answer, so this is not what the type checker
+    /// calls — see [`WidgetOutputType::from_input`]. It stays because the kind
+    /// → default-output mapping is the base case that function builds on, and
+    /// is worth pinning on its own.
     pub fn from_input_kind(kind: InputKind) -> Self {
         match kind {
             InputKind::Slider => WidgetOutputType::ScalarNumeric,
@@ -37,6 +43,40 @@ impl WidgetOutputType {
             InputKind::Search => WidgetOutputType::ScalarString,
             InputKind::Table => WidgetOutputType::Selection,
         }
+    }
+
+    /// What this widget actually publishes — its kind, **as modified by
+    /// `select:`**.
+    ///
+    /// `select:` is the switch. A widget carrying one does not publish its own
+    /// scalar value; it publishes a *clause* of that kind into the selection
+    /// named by `as:`. So `input: slider, select: interval, as: $query`
+    /// outputs a Selection whatever a slider outputs by default, and binding
+    /// it to `query: { select: single }` is correct — it is the shape the
+    /// vendored `athlete-height.yaml` ships.
+    ///
+    /// The kind alone cannot tell the two apart, and the difference decides
+    /// the rule: `input: slider` with **no** `select:` writing to a selection
+    /// param really is publishing a bare number into a clause list, which is
+    /// the error [`ParamDeclaredType::is_incompatible_with`] exists to catch.
+    /// One key separates the legal spec from the broken one, so one key is
+    /// what the classification reads.
+    ///
+    /// **Today this arm is a guard rather than a live path**, and the honest
+    /// version of that is worth writing down: `walk_component` tests `select`
+    /// *before* `input`, so a node carrying both parses as an interactor and
+    /// never reaches `Input` at all —
+    /// `input_carrying_select_parses_as_an_interactor` pins that. The guard
+    /// is here because the classification must not depend on which of two
+    /// discriminators the parser happens to check first: if that order ever
+    /// changes, this already answers correctly instead of newly mislabelling
+    /// every clause-publishing widget as a scalar.
+    #[must_use]
+    pub fn from_input(input: &Input) -> Self {
+        if input.options.contains_key("select") {
+            return WidgetOutputType::Selection;
+        }
+        Self::from_input_kind(input.kind)
     }
 }
 
@@ -71,17 +111,42 @@ impl ParamDeclaredType {
 
     /// Whether a widget output type is provably incompatible with this
     /// declared type. Conservative: only flags clear mismatches.
+    ///
+    /// Both directions of the scalar↔selection error are here, and both are
+    /// real — which is why the `widget` argument has to come from
+    /// [`WidgetOutputType::from_input`] rather than from the input's kind.
+    ///
+    /// - **A clause-producing widget writing to a plain scalar param** has
+    ///   nowhere to put the clause. `input: table` always produces a
+    ///   selection; any widget carrying `select:` produces one too.
+    /// - **A scalar-producing widget writing to a selection param** has no
+    ///   clause to contribute. `input: slider` with no `select:` publishes a
+    ///   number, and a number is not a clause.
+    ///
+    /// What must NOT be flagged is the shape upstream Mosaic ships:
+    /// `input: slider, select: interval, as: $query` over
+    /// `query: { select: single }`. That is not an exception to the second
+    /// rule — with `select:` read, the slider outputs a Selection and the
+    /// rule passes it. Reading the widget's KIND instead classifies it
+    /// ScalarNumeric, and the only way to keep it quiet is to delete the
+    /// second rule outright, which takes the genuine mismatch with it. The
+    /// second rule was deleted for exactly that reason, on the stated grounds
+    /// that it fired on the vendored `athlete-height.yaml`. It never did:
+    /// `walk_component` tests `select` before `input`, so that slider parses
+    /// as an interactor and `check_type_mismatches_in` — which visits only
+    /// `Component::Input` — never sees it.
     pub fn is_incompatible_with(&self, widget: WidgetOutputType) -> bool {
         match (self, widget) {
-            // Slider (numeric) writing to a selection param
-            (ParamDeclaredType::Selection, WidgetOutputType::ScalarNumeric) => true,
-            // Slider (numeric) writing to a string param — could be valid in some cases
-            // but we're conservative, so skip.
-            // Table (selection) writing to a scalar param
+            // A selection/clause-producing widget writing to a scalar param.
             (ParamDeclaredType::ScalarNumeric, WidgetOutputType::Selection) => true,
             (ParamDeclaredType::ScalarString, WidgetOutputType::Selection) => true,
             (ParamDeclaredType::ScalarBool, WidgetOutputType::Selection) => true,
-            // Selection param receiving a string/array — not necessarily wrong
+            // A bare scalar widget writing to a selection param — a number
+            // published into a clause list. Only reachable for a widget with
+            // no `select:`, because one carrying it is classified Selection.
+            (ParamDeclaredType::Selection, WidgetOutputType::ScalarNumeric) => true,
+            // Everything else is not provably wrong: a selection param
+            // receiving a string/array is a shape Mosaic does use.
             _ => false,
         }
     }
@@ -634,7 +699,12 @@ fn check_type_mismatches_in(
         Component::Input(inp) => {
             if let Some(ref pr) = inp.as_param {
                 if let Some(param_node) = params.get(&pr.0) {
-                    let widget_type = WidgetOutputType::from_input_kind(inp.kind);
+                    // From the whole input, not just its kind: `select:` is
+                    // what decides whether this widget publishes a value or a
+                    // clause, and reading the kind alone gets one of the two
+                    // scalar↔selection directions wrong whichever way it is
+                    // resolved.
+                    let widget_type = WidgetOutputType::from_input(inp);
                     let param_type = ParamDeclaredType::from_param_node(param_node);
                     if param_type.is_incompatible_with(widget_type) {
                         warnings.push(ParseWarning::ParamTypeMismatch {
@@ -2499,22 +2569,165 @@ vconcat:
         }
     }
 
-    // type mismatch
+    /// Whether the spec's inputs raise a `ParamTypeMismatch` on `param`.
+    fn warns_on(source: &str, param: &str) -> bool {
+        let out = parse_spec(source, Format::Yaml).expect("parses");
+        check_param_type_mismatches(&out.spec)
+            .iter()
+            .any(|w| matches!(w, ParseWarning::ParamTypeMismatch { param: p, .. } if p == param))
+    }
+
+    /// **A slider bound to a selection param warns iff it declares no
+    /// `select:`** — the pair, and the negative arm is the one that matters.
+    ///
+    /// Dropping `select:` must bring the warning back. Without that assertion
+    /// a test cannot tell a rule that reads `select:` from a rule that has
+    /// been deleted: both keep the legal arm quiet, and only one still catches
+    /// a bare number published into a clause list. Deleting it is what
+    /// happened, and nothing here failed.
     #[test]
-    fn slider_to_selection_mismatch() {
-        let yaml = r#"
+    fn a_slider_bound_to_a_selection_warns_only_without_select() {
+        // Arm 1: WITH `select:` — the vendored athlete-height.yaml shape. The
+        // slider publishes an interval clause into the selection it names,
+        // which is upstream-legal, so no mismatch may be raised.
+        //
+        // Note WHY this arm is quiet, because it is not the rule doing it:
+        // `walk_component` tests `select` before `input`, so this parses as an
+        // interactor and the type checker never visits it. That is pinned
+        // separately in `input_carrying_select_parses_as_an_interactor` —
+        // asserted here so this arm cannot be read as evidence about the rule.
+        let legal = r#"
+params:
+  brush: { select: crossfilter }
+input: slider
+select: interval
+as: $brush
+column: batch
+from: t
+"#;
+        assert!(
+            !warns_on(legal, "brush"),
+            "a slider carrying `select:` publishes a clause — upstream-legal"
+        );
+
+        // Arm 2: the SAME spec with `select:` dropped, which is also what
+        // turns it into an `Input` the checker walks. The slider now publishes
+        // a bare number into a clause list — the genuine mismatch, and the one
+        // the deleted rule used to catch.
+        let bare = r#"
 params:
   brush: { select: crossfilter }
 input: slider
 as: $brush
+column: batch
+from: t
 "#;
-        let out = parse_spec(yaml, Format::Yaml).expect("parses");
+        assert!(
+            warns_on(bare, "brush"),
+            "a slider with no `select:` publishes a number, and a number is \
+             not a clause — dropping `select:` must re-warn"
+        );
+
+        // Arm 3: the other direction, unchanged — a selection-producing
+        // widget cannot write into a scalar param.
+        let genuine = r#"
+params:
+  count: 42
+input: table
+as: $count
+"#;
+        assert!(
+            warns_on(genuine, "count"),
+            "a selection widget writing a scalar param is still a mismatch"
+        );
+    }
+
+    /// **A node carrying both `input:` and `select:` is an interactor, not an
+    /// input** — `walk_component` tests `select` first.
+    ///
+    /// The reason the vendored `athlete-height.yaml` analyses clean, and the
+    /// reason it always did: its clause-publishing slider is never an `Input`,
+    /// so `check_type_mismatches_in` never classifies it and no rule over
+    /// widget output types can fire on it either way. Pinned because the
+    /// slider-to-selection rule was removed on the stated grounds that it fired
+    /// here, and this is what refutes that.
+    #[test]
+    fn input_carrying_select_parses_as_an_interactor() {
+        let src = r#"
+params:
+  brush: { select: crossfilter }
+input: slider
+select: interval
+as: $brush
+column: batch
+from: t
+"#;
+        let out = parse_spec(src, Format::Yaml).expect("parses");
+        assert!(
+            matches!(out.spec.root, Some(Component::Interactor(_))),
+            "`select` wins the discriminator: {:?}",
+            out.spec.root
+        );
+    }
+
+    /// `select:` reclassifies the widget itself, whatever its kind — the unit
+    /// the rule above rests on.
+    ///
+    /// Built by hand rather than by parsing, because the parser cannot produce
+    /// this shape today (see `input_carrying_select_parses_as_an_interactor`).
+    /// The classification is asserted anyway: it is what stops the
+    /// discriminator's ordering from being load-bearing for correctness.
+    #[test]
+    fn select_makes_a_widget_publish_a_selection_whatever_its_kind() {
+        let mut options = IndexMap::new();
+        options.insert(
+            "select".to_string(),
+            ValueOrParamRef::Value(SpecValue::String("interval".to_string())),
+        );
+        let input = Input {
+            kind: InputKind::Slider,
+            status: crate::vocab::ImplStatus::Implemented,
+            as_param: Some(ParamRef("brush".to_string())),
+            from_source: None,
+            filter_by: None,
+            options,
+        };
+        assert_eq!(
+            WidgetOutputType::from_input(&input),
+            WidgetOutputType::Selection,
+            "a widget carrying `select:` publishes a clause"
+        );
+        assert_eq!(
+            WidgetOutputType::from_input_kind(input.kind),
+            WidgetOutputType::ScalarNumeric,
+            "…and its KIND alone says otherwise, which is why the type checker \
+             cannot classify by kind"
+        );
+        assert!(
+            !ParamDeclaredType::Selection
+                .is_incompatible_with(WidgetOutputType::from_input(&input)),
+            "so binding it to a selection param is legal"
+        );
+        assert!(
+            ParamDeclaredType::Selection
+                .is_incompatible_with(WidgetOutputType::from_input_kind(input.kind)),
+            "…while classifying by kind would call the same widget an error"
+        );
+    }
+
+    /// The vendored, byte-for-byte unmodified upstream spec analyses clean of
+    /// `ParamTypeMismatch`. True before the slider-to-selection rule was
+    /// removed and true after — see
+    /// `input_carrying_select_parses_as_an_interactor` for why.
+    #[test]
+    fn vendored_athlete_height_raises_no_param_type_mismatch() {
+        let source = include_str!("../vendor/mosaic-specs/yaml/athlete-height.yaml");
+        let out = parse_spec(source, Format::Yaml).expect("vendored spec parses");
         let warnings = check_param_type_mismatches(&out.spec);
         assert!(
-            warnings.iter().any(
-                |w| matches!(w, ParseWarning::ParamTypeMismatch { param, .. } if param == "brush")
-            ),
-            "slider writing to selection param should produce mismatch"
+            warnings.is_empty(),
+            "unmodified upstream athlete-height.yaml must raise no param type \
+             mismatch; got {warnings:?}"
         );
     }
 

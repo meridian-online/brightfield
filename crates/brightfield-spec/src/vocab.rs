@@ -269,11 +269,28 @@ vocab_enum! {
     /// [`InteractorKind`] / [`InputKind`]. These are the layout and
     /// legend-as-component forms.
     pub enum ComponentKind {
-        Plot => ("plot", Unimplemented),
-        HConcat => ("hconcat", Unimplemented),
-        VConcat => ("vconcat", Unimplemented),
-        HSpace => ("hspace", Unimplemented),
-        VSpace => ("vspace", Unimplemented),
+        // The five layout forms all render end-to-end, and have since the
+        // multi-view composite landed. `compute_layout` gives each a rect;
+        // `placed_plots` — the one call BOTH the live window (pipeline's
+        // `compose`) and the headless composite take — walks that tree, so a
+        // plot's position on the page IS the layout implementation. Leaving
+        // these Unimplemented made preflight declare every spec in the corpus
+        // unrenderable, including the ones the product ships as its own
+        // examples, which is the opposite of the honesty the report exists for.
+        //
+        // Evidence, per form: `examples/dashboard.yaml` (hconcat of two plots)
+        // and `examples/param-slider.yaml` (vconcat) compose in
+        // `examples_exercise.rs`; `examples/layout-spacer.yaml` places an
+        // `hspace: 64` between two plots and `hspace_offsets_subsequent_plot`
+        // pins the 64px offset through `placed_plots`;
+        // `vspace_offsets_subsequent_plot` pins the vspace twin. A spacer
+        // renders no ink by definition — reserving the gap is the whole of its
+        // implementation, and the gap is reserved.
+        Plot => ("plot", Implemented),
+        HConcat => ("hconcat", Implemented),
+        VConcat => ("vconcat", Implemented),
+        HSpace => ("hspace", Implemented),
+        VSpace => ("vspace", Implemented),
         // Standalone `legend:` nodes render end-to-end: resolved to
         // their `for:` plot's colour scale, drawn into the headless composite
         // AND hosted in the window as a display-only LegendElement at the same
@@ -309,9 +326,114 @@ vocab_enum! {
     }
 }
 
+/// Every mark option key some lowerer or renderer actually reads.
+///
+/// A Mosaic mark carries an open bag of option keys, and brightfield's
+/// pipeline reads a small, nameable subset of it. Anything outside this list
+/// is parsed, held in the AST, serialised back out faithfully — and then
+/// **silently ignored** at render time. That silence is the defect this list
+/// exists to end: a spec that says `curve: monotone-x` and gets straight
+/// segments has been lied to, and only the reader could tell.
+///
+/// The list is hand-maintained against the consumers, ONE ENTRY PER READER,
+/// because the readers live in crates this one cannot see (a spec crate that
+/// depended on the renderer would be the dependency arrow pointing the wrong
+/// way). Adding a consumer means adding its key here, and
+/// `every_consumed_mark_option_key_is_named_once` keeps the list from growing
+/// duplicates.
+///
+/// **The two ways this list goes wrong are not symmetric, and the dangerous
+/// one is omission.** [`mark_option_is_consumed`] returns `false` for anything
+/// not named here, and the parser warns on exactly that — so a key that IS
+/// read but is missing from the list produces a diagnostic telling an author
+/// their working instruction has no effect. That is a **false** diagnostic,
+/// and it is the one failure an honesty channel cannot survive: a reader who
+/// catches this channel lying once stops believing the true ones. The other
+/// error — a key listed here whose reader was since removed — costs only a
+/// missing diagnostic, which is where this list started.
+///
+/// So: **when in doubt about a key, go and check.** `rg` the key across the
+/// lowerers and the renderer, and name the reader in the section below. Do
+/// not leave it off "to be safe" — off is the unsafe side.
+///
+/// Where each is read:
+///
+/// - `x` `y` `x1` `y1` `x2` `y2` `fill` `stroke` `size` `text` — the visual
+///   encoding channels. `brightfield_render::channel::ChannelMap::from_mark`
+///   maps each to a column, a numeric literal, or an aggregate output column;
+///   `brightfield_sql`'s lowerer additionally projects the positional six
+///   when they are bound to a `$param`.
+/// - `filterBy` — read by `brightfield_spec::analysis` when a mark declares
+///   the filter at mark level rather than inside its `data:` block.
+/// - `type` — the density lowerer's kernel/estimator discriminator.
+/// - `thresholds` `bins` `binWidth` `bandwidth` — the density / hexbin
+///   binning knobs, read by the lowerer and threaded back into the renderer
+///   on a colour-scheme rebuild.
+/// - `geometry` — the geo mark's geometry column, resolved in
+///   `brightfield_spec::layout`.
+pub const CONSUMED_MARK_OPTION_KEYS: &[&str] = &[
+    "x",
+    "y",
+    "x1",
+    "y1",
+    "x2",
+    "y2",
+    "fill",
+    "stroke",
+    "size",
+    "text",
+    "filterBy",
+    "type",
+    "thresholds",
+    "bins",
+    "binWidth",
+    "bandwidth",
+    "geometry",
+];
+
+/// Whether a mark option key reaches a lowerer or a renderer.
+///
+/// `false` means the key is carried through the AST intact and then dropped
+/// on the floor — see [`CONSUMED_MARK_OPTION_KEYS`].
+#[must_use]
+pub fn mark_option_is_consumed(key: &str) -> bool {
+    CONSUMED_MARK_OPTION_KEYS.contains(&key)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The consumed-key list is a registry, and a registry with a duplicate
+    /// in it is a registry someone edited without reading.
+    #[test]
+    fn every_consumed_mark_option_key_is_named_once() {
+        let mut seen: Vec<&str> = Vec::new();
+        for key in CONSUMED_MARK_OPTION_KEYS {
+            assert!(
+                !seen.contains(key),
+                "{key} is listed twice in CONSUMED_MARK_OPTION_KEYS"
+            );
+            seen.push(key);
+        }
+        // The channels the renderer maps are all present — the one subset
+        // whose absence would silence a diagnostic on every spec at once.
+        for channel in [
+            "x", "y", "x1", "y1", "x2", "y2", "fill", "stroke", "size", "text",
+        ] {
+            assert!(
+                mark_option_is_consumed(channel),
+                "{channel} is a rendered channel and must be listed as consumed"
+            );
+        }
+        // And the keys the corpus proved unconsumed stay unconsumed.
+        for ignored in ["sort", "limit", "curve", "fillOpacity", "r"] {
+            assert!(
+                !mark_option_is_consumed(ignored),
+                "{ignored} has no reader; listing it as consumed would hide a real diagnostic"
+            );
+        }
+    }
 
     /// verification: every variant of every Kind enum exposes an
     /// `ImplStatus` via a `status()` method.
@@ -500,16 +622,21 @@ mod tests {
         );
     }
 
-    /// Framed window. `ComponentKind::Legend` is
-    /// promoted to Implemented: standalone legends render in the headless
-    /// composite AND as hosted window elements at their layout rects. The
-    /// other layout components stay Unimplemented (DEV-0001 scaffolding).
+    /// Every composition-level component renders.
+    ///
+    /// `Legend` was promoted when standalone legends started rendering in the
+    /// headless composite AND as hosted window elements at their layout rects.
+    /// The five layout forms carry the status their shipped layout
+    /// implementation warrants: each is positioned by `compute_layout` and
+    /// consumed through `placed_plots`, the call the live window and the
+    /// headless composite share. Pinned as a whole list so a new component
+    /// kind cannot be added at `Implemented` without someone saying so here.
     #[test]
-    fn component_legend_implemented_when_hosted() {
+    fn every_component_kind_is_implemented() {
         assert_eq!(
             ComponentKind::Legend.status(),
             ImplStatus::Implemented,
-            "legend is hosted in the window — promoted"
+            "legend is hosted in the window"
         );
         let implemented: Vec<ComponentKind> = ComponentKind::all()
             .iter()
@@ -518,8 +645,16 @@ mod tests {
             .collect();
         assert_eq!(
             implemented,
-            vec![ComponentKind::Legend],
-            "only Legend is implemented; the layout components remain Unimplemented"
+            vec![
+                ComponentKind::Plot,
+                ComponentKind::HConcat,
+                ComponentKind::VConcat,
+                ComponentKind::HSpace,
+                ComponentKind::VSpace,
+                ComponentKind::Legend,
+            ],
+            "all six composition components render; a Legend whose CHANNEL is \
+             unimplemented is caught by preflight's channel arm, not here"
         );
     }
 }

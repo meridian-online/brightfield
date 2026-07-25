@@ -116,9 +116,12 @@ pub enum LayerOutcome {
 pub trait LayerCheck: Send + Sync {
     /// Which layer this impl is responsible for.
     fn layer(&self) -> ConformanceLayer;
-    /// Run the check. The registry is threaded through so concrete impls can
-    /// resolve suppression themselves (e.g. SQL-equivalence may note that
-    /// the expected divergence is registered and emit `Suppressed`).
+    /// Run the check and report what it actually observed. **Do not resolve
+    /// suppression here** — an impl that returns `Suppressed` on its own makes
+    /// the cell unfalsifiable, which is the failure the caller's
+    /// coverage-is-not-sufficient rule exists to prevent. The registry is
+    /// threaded through for diagnostics only; the caller decides whether an
+    /// observed failure is suppressed.
     fn run(&self, spec: &Spec, fixture: &CorpusEntry, registry: &DeviationRegistry)
         -> LayerOutcome;
 }
@@ -193,6 +196,16 @@ impl LayerCheck for SqlEquivalenceCheck {
         fixture: &CorpusEntry,
         _registry: &DeviationRegistry,
     ) -> LayerOutcome {
+        // A spec with no `data:` block has no data-source DDL to be equivalent
+        // ABOUT. Answering Pass there is a green cell earned by having nothing
+        // to check — which is exactly how `legends.yaml` came to sit behind a
+        // zero-byte expected-SQL fixture and still count towards the curated
+        // pass total. Say what is true instead.
+        if spec.data.is_empty() {
+            return LayerOutcome::Pending {
+                reason: "spec declares no data sources",
+            };
+        }
         // Check for expected SQL fixture
         let expected_path = Self::expected_sql_path(fixture);
         if !expected_path.exists() {
@@ -255,8 +268,15 @@ impl LayerCheck for SqlEquivalenceCheck {
     }
 }
 
-/// Layer 3: visual-encoding equivalence. V1 stub — returns `Pending` until
-/// the renderer lands.
+/// Layer 3: visual-encoding equivalence.
+///
+/// Pending for want of an **oracle**, not for want of a renderer. The
+/// renderer shipped months ago and draws every curated spec; what does not
+/// exist is the thing that would compare a rendered brightfield scene's
+/// mark/scale/channel structure against Mosaic web's for the same spec. The
+/// reason string used to say "renderer not yet available", which was false in
+/// the product's own repo and contradicted in prose by the deviation registry
+/// on the very cells it was reported for.
 pub struct EncodingEquivalenceCheck;
 
 impl LayerCheck for EncodingEquivalenceCheck {
@@ -270,13 +290,19 @@ impl LayerCheck for EncodingEquivalenceCheck {
         _registry: &DeviationRegistry,
     ) -> LayerOutcome {
         LayerOutcome::Pending {
-            reason: "renderer not yet available",
+            reason:
+                "no encoding-equivalence oracle: nothing diffs a rendered scene against Mosaic web",
         }
     }
 }
 
-/// Layer 4: interaction equivalence. V1 stub — returns `Pending` until the
-/// event pump lands.
+/// Layer 4: interaction equivalence.
+///
+/// Pending for want of an oracle, not for want of an event pump. The shipped
+/// Interaction/Coordinator seam IS a scriptable event pump — an interaction
+/// resolves to a pushed predicate and a re-query, and headless tests drive it
+/// today. What is missing is Mosaic web's selection state for the same
+/// scripted events to compare against.
 pub struct InteractionEquivalenceCheck;
 
 impl LayerCheck for InteractionEquivalenceCheck {
@@ -290,7 +316,7 @@ impl LayerCheck for InteractionEquivalenceCheck {
         _registry: &DeviationRegistry,
     ) -> LayerOutcome {
         LayerOutcome::Pending {
-            reason: "event pump not yet available",
+            reason: "no interaction-equivalence oracle: no Mosaic-web selection state to compare against",
         }
     }
 }
@@ -368,8 +394,9 @@ mod tests {
 
     #[test]
     fn dfconf_layer_2_missing_fixture_is_pending() {
-        // Synthetic fixture with no .layer2.expected.sql sibling → Pending
-        let src = "plot:\n  - mark: line\n    data: { from: d }\n";
+        // Synthetic fixture with data sources but no .layer2.expected.sql
+        // sibling → Pending on the fixture, not on the data.
+        let src = "data:\n  d: { file: d.parquet }\nplot:\n  - mark: line\n    data: { from: d }\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
         let reg = DeviationRegistry::default();
         let outcome = SqlEquivalenceCheck.run(&spec, &test_fixture(), &reg);
@@ -381,17 +408,42 @@ mod tests {
         );
     }
 
+    /// A spec with no `data:` block has no data-source DDL to be equivalent
+    /// about, and must not bank a green cell for having nothing to check.
+    /// This is what the zero-byte `legends.layer2.expected.sql` was doing.
+    #[test]
+    fn dfconf_layer_2_dataless_spec_is_pending_not_pass() {
+        let src = "plot:\n  - mark: line\n    data: { from: d }\n";
+        let spec = parse_spec(src, Format::Yaml).unwrap().spec;
+        assert!(spec.data.is_empty(), "fixture declares no data sources");
+        let reg = DeviationRegistry::default();
+        let outcome = SqlEquivalenceCheck.run(&spec, &test_fixture(), &reg);
+        assert_eq!(
+            outcome,
+            LayerOutcome::Pending {
+                reason: "spec declares no data sources"
+            },
+            "a dataless spec must not pass layer 2 by vacuum"
+        );
+    }
+
     #[test]
     fn dfconf_layer_3_returns_pending() {
         let src = "plot:\n  - mark: line\n    data: { from: d }\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
         let reg = DeviationRegistry::default();
         let outcome = EncodingEquivalenceCheck.run(&spec, &test_fixture(), &reg);
-        assert_eq!(
-            outcome,
-            LayerOutcome::Pending {
-                reason: "renderer not yet available"
-            }
+        let LayerOutcome::Pending { reason } = outcome else {
+            panic!("layer 3 has no oracle yet: {outcome:?}");
+        };
+        assert!(
+            reason.contains("oracle"),
+            "the pending reason must name the missing ORACLE — the renderer \
+             shipped, and saying otherwise is the stale string this replaced: {reason}"
+        );
+        assert!(
+            !reason.contains("renderer not yet"),
+            "the renderer is available; {reason} is false"
         );
     }
 
@@ -401,11 +453,17 @@ mod tests {
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
         let reg = DeviationRegistry::default();
         let outcome = InteractionEquivalenceCheck.run(&spec, &test_fixture(), &reg);
-        assert_eq!(
-            outcome,
-            LayerOutcome::Pending {
-                reason: "event pump not yet available"
-            }
+        let LayerOutcome::Pending { reason } = outcome else {
+            panic!("layer 4 has no oracle yet: {outcome:?}");
+        };
+        assert!(
+            reason.contains("oracle"),
+            "the pending reason must name the missing ORACLE — the shipped \
+             Interaction/Coordinator seam IS a scriptable event pump: {reason}"
+        );
+        assert!(
+            !reason.contains("event pump not yet"),
+            "the event pump exists and is driven by headless tests; {reason} is false"
         );
     }
 

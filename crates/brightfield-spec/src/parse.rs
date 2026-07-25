@@ -11,6 +11,7 @@
 //! guarantee is AST idempotence: `parse → serialise → parse` yields an
 //! equal Spec, with `ParamRef` canonicalised to `$name` string form.
 
+use std::fmt;
 use std::path::Path;
 
 use indexmap::IndexMap;
@@ -359,6 +360,116 @@ pub enum ParseWarning {
         /// The unrecognised projection value (or `<non-string>` for a non-string).
         value: String,
     },
+
+    /// A mark carried an option key that **no lowerer and no renderer reads**
+    /// — see [`crate::vocab::CONSUMED_MARK_OPTION_KEYS`]. The key is parsed,
+    /// held in the AST and serialised back out faithfully, and then dropped:
+    /// the drawing it asks for never happens.
+    ///
+    /// Raised only for marks whose kind is `Implemented`. An unimplemented
+    /// mark already carries [`ParseWarning::Unimplemented`], and itemising the
+    /// options of something that draws nothing at all is noise, not honesty.
+    UnconsumedMarkOption {
+        /// The mark kind's wire name (e.g. `barX`).
+        mark: String,
+        /// The option key, dotted one level for a key nested inside an
+        /// ignored map (`sort.limit`).
+        key: String,
+    },
+}
+
+impl fmt::Display for ParseWarning {
+    /// One honest line per warning — what was seen and what it cost.
+    ///
+    /// This exists because a warning nobody can read is a warning nobody
+    /// receives: the window renders these strings, and a `{:?}` dump of a
+    /// struct variant is not something to put in front of a person.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownOption { path, key } => {
+                write!(f, "unknown option `{key}` at {path} — ignored")
+            }
+            Self::Unimplemented {
+                name,
+                surface,
+                status,
+            } => write!(
+                f,
+                "{} `{name}` is {status} — it parses but does not render",
+                surface.label()
+            ),
+            Self::VersionMismatch {
+                declared,
+                supported,
+            } => write!(
+                f,
+                "spec declares Mosaic version {declared}; this build targets {supported}"
+            ),
+            Self::DeadParam { name } => {
+                write!(f, "param `{name}` has no subscribers — nothing reads it")
+            }
+            Self::ParamTypeMismatch {
+                param,
+                expected,
+                widget_kind,
+            } => write!(
+                f,
+                "input `{widget_kind}` writes to param `{param}`, declared {expected}"
+            ),
+            Self::InteractorBindingMissing { name } => write!(
+                f,
+                "interactor binds `{name}`, which no `params:` entry declares"
+            ),
+            Self::InteractorBindingNonSelection { name } => write!(
+                f,
+                "interactor binds `{name}`, which is declared a value, not a selection"
+            ),
+            Self::LegendBindingMissing { name } => write!(
+                f,
+                "legend binds `{name}`, which no `params:` entry declares — legend stays display-only"
+            ),
+            Self::LegendBindingNonSelection { name } => write!(
+                f,
+                "legend binds `{name}`, which is declared a value, not a selection — legend stays display-only"
+            ),
+            Self::UnknownAggregate { field, name } => write!(
+                f,
+                "channel `{field}` names aggregate `{name}`, which is not a known aggregate — channel degrades"
+            ),
+            Self::LegendBindingNonCrossfilter { name, resolution } => write!(
+                f,
+                "legend binds `{name}`, resolved `{resolution}` rather than crossfilter — legend stays display-only"
+            ),
+            Self::NonNumericInset { attribute } => write!(
+                f,
+                "plot attribute `{attribute}` is not a number — inset falls back to the default"
+            ),
+            Self::HighlightBindingMissing { name } => write!(
+                f,
+                "highlight reads `{name}`, which is neither declared nor bound — highlight stays inert"
+            ),
+            Self::HighlightBindingNonSelection { name } => write!(
+                f,
+                "highlight reads `{name}`, which is declared a value, not a selection — highlight stays inert"
+            ),
+            Self::HighlightOnAggregate { selection, mark } => write!(
+                f,
+                "highlight on `{selection}` sits over aggregating mark `{mark}` — highlight is guarded off"
+            ),
+            Self::NonStringLabel { attribute } => write!(
+                f,
+                "plot attribute `{attribute}` is not a string — the label falls back to its derived form"
+            ),
+            Self::UnknownProjection { value } => write!(
+                f,
+                "projection `{value}` is not supported — the plot falls back to equirectangular"
+            ),
+            Self::UnconsumedMarkOption { mark, key } => write!(
+                f,
+                "mark `{mark}` sets `{key}`, which nothing in the render path reads — it has no effect"
+            ),
+        }
+    }
 }
 
 /// Result of a successful parse.
@@ -1004,12 +1115,50 @@ impl Walker {
             }
             options.insert(key.clone(), self.lift_field(&key, val));
         }
+        if status == ImplStatus::Implemented {
+            self.warn_unconsumed_mark_options(name, parent);
+        }
         Ok(Mark {
             kind,
             status,
             data,
             options,
         })
+    }
+
+    /// Name every option key on `mark_name`'s node that no lowerer and no
+    /// renderer reads — see [`crate::vocab::CONSUMED_MARK_OPTION_KEYS`].
+    ///
+    /// Walked over the SOURCE mapping rather than the lifted option bag,
+    /// because a key nested inside an ignored map (`sort: { y: -x, limit: 10 }`)
+    /// is a distinct ignored knob and deserves its own line: an author who
+    /// reads "`sort` has no effect" still does not know that the `limit: 10`
+    /// they wrote is gone too. One level of nesting only — deeper than that
+    /// and the path stops being something a person can find by eye.
+    fn warn_unconsumed_mark_options(&mut self, mark_name: &str, parent: &serde_yaml::Mapping) {
+        for (k, val) in parent {
+            let Some(key) = k.as_str() else { continue };
+            // `mark` is the discriminator and `data` is lifted into MarkData;
+            // neither is an option.
+            if key == "mark" || key == "data" || crate::vocab::mark_option_is_consumed(key) {
+                continue;
+            }
+            self.warnings.push(ParseWarning::UnconsumedMarkOption {
+                mark: mark_name.to_string(),
+                key: key.to_string(),
+            });
+            if let serde_yaml::Value::Mapping(nested) = val {
+                for (nk, _) in nested {
+                    let Some(nested_key) = nk.as_str() else {
+                        continue;
+                    };
+                    self.warnings.push(ParseWarning::UnconsumedMarkOption {
+                        mark: mark_name.to_string(),
+                        key: format!("{key}.{nested_key}"),
+                    });
+                }
+            }
+        }
     }
 
     fn walk_mark_data(&mut self, v: &serde_yaml::Value) -> Result<MarkData, ParseError> {
