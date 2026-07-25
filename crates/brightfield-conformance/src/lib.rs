@@ -15,8 +15,11 @@
 //! against Mosaic web's. Both the renderer and the scriptable
 //! Interaction/Coordinator seam shipped long ago; the missing piece is the
 //! comparison, not the capability. Where the registry names a deviation for a
-//! (spec, layer) pair, that pair reports [`LayerOutcome::Suppressed`] against
-//! the named record instead.
+//! (spec, layer) pair, the check still runs: coverage is necessary and *not*
+//! sufficient. A covered pair that genuinely fails reports
+//! [`LayerOutcome::Suppressed`] against the named record; one that has quietly
+//! started passing reports a failure, so a stale deviation cannot hide an
+//! improvement.
 //!
 //! What a spec load must SAY is [`LoadDiagnostics`]: the blocking preflight
 //! entries plus every warning the parse and the analysis produced, in one

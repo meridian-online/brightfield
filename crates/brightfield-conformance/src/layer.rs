@@ -116,9 +116,12 @@ pub enum LayerOutcome {
 pub trait LayerCheck: Send + Sync {
     /// Which layer this impl is responsible for.
     fn layer(&self) -> ConformanceLayer;
-    /// Run the check. The registry is threaded through so concrete impls can
-    /// resolve suppression themselves (e.g. SQL-equivalence may note that
-    /// the expected divergence is registered and emit `Suppressed`).
+    /// Run the check and report what it actually observed. **Do not resolve
+    /// suppression here** — an impl that returns `Suppressed` on its own makes
+    /// the cell unfalsifiable, which is the failure the caller's
+    /// coverage-is-not-sufficient rule exists to prevent. The registry is
+    /// threaded through for diagnostics only; the caller decides whether an
+    /// observed failure is suppressed.
     fn run(&self, spec: &Spec, fixture: &CorpusEntry, registry: &DeviationRegistry)
         -> LayerOutcome;
 }
