@@ -122,7 +122,7 @@ fn a_clean_spec_raises_no_banner() {
 #[test]
 fn opening_a_clean_document_clears_the_previous_ones_diagnostics() {
     let mut app = window_over(MIXED);
-    assert!(app.notifications().len() > 0, "the fixture warns");
+    assert!(!app.notifications().is_empty(), "the fixture warns");
 
     let clean = compose_spec_str(CLEAN, None).expect("clean fixture composes");
     app.open_chart(clean);

@@ -151,6 +151,16 @@ pub fn suppressing_deviation<'a>(
 /// A match passes the outcome through untouched. A mismatch becomes a
 /// `Fail` naming both sides, because a declared expectation that cannot fail
 /// a run is a comment.
+///
+/// **Curated only.** Observed entries ship no `<name>.expected.yaml`; their
+/// expectations come from [`LayerExpectations::observed_default`], which is a
+/// placeholder rather than a declaration. Asserting against a default is
+/// asserting against nothing — and worse than nothing here, since several
+/// observed filenames are the same upstream files the curated corpus copies,
+/// so a deviation naming `line.yaml` covers the observed `line.yaml` too and
+/// would fail it against a "pending" nobody wrote.
+///
+/// [`LayerExpectations::observed_default`]: crate::expectations::LayerExpectations::observed_default
 fn against_expectation(
     outcome: LayerOutcome,
     layer: ConformanceLayer,
@@ -292,7 +302,10 @@ pub fn run_conformance(
                 },
                 None => run_check(check.as_ref(), &spec, entry, registry),
             };
-            let outcome = against_expectation(settled, *layer, entry);
+            let outcome = match corpus {
+                Corpus::Curated => against_expectation(settled, *layer, entry),
+                Corpus::Observed => settled,
+            };
             summary.bump(&outcome);
             records.push(LayerRecord {
                 spec_name: entry.name.clone(),
@@ -470,6 +483,35 @@ mod tests {
     // -----------------------------------------------------------------------
     // The declared expectation is an assertion.
     // -----------------------------------------------------------------------
+
+    /// The observed corpus ships no `.expected.yaml`, so it has nothing
+    /// declared to assert against — and several of its filenames are the same
+    /// upstream files the curated corpus copies, so the real registry covers
+    /// them. A full observed run against the real registry must still be
+    /// green rather than failing every covered spec against a default nobody
+    /// wrote.
+    #[test]
+    fn dfconf_the_observed_corpus_is_not_asserted_against_a_default() {
+        let reg = load_deviations(
+            &std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../deviations.yaml"),
+        )
+        .expect("load registry");
+        let report = run_conformance(Corpus::Observed, &ConformanceLayer::all(), &reg);
+        assert_eq!(
+            report.summary.failed,
+            0,
+            "observed run must not fail: {:?}",
+            report
+                .records
+                .iter()
+                .filter(|r| matches!(r.outcome, LayerOutcome::Fail { .. }))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            report.summary.suppressed > 0,
+            "the registry still covers the observed copies of the curated files"
+        );
+    }
 
     /// A curated entry declaring `pass` where the run observes something else
     /// fails the run. Built by pointing an entry at a spec whose layer-1

@@ -125,7 +125,24 @@ impl LoadDiagnostics {
 
         // Then everything the parse and the analysis observed. Both are
         // ParseWarning, and both were being discarded.
+        //
+        // One exclusion: the parser raises `Unimplemented` for the same names
+        // preflight has just reported as blocking, so passing both through
+        // would say each unrenderable feature twice — once loudly and once
+        // quietly, in different words. The blocking line is the better of the
+        // two (it says what it costs), so the quiet twin is dropped. A
+        // `Planned` name is NOT blocking and keeps its advisory line.
+        let blocking_names: Vec<&str> = support
+            .blocking()
+            .iter()
+            .map(|e| e.identity.wire_name())
+            .collect();
         for warning in parse_warnings.iter().chain(analysis_warnings) {
+            if let ParseWarning::Unimplemented { name, .. } = warning {
+                if blocking_names.contains(&name.as_str()) {
+                    continue;
+                }
+            }
             diagnostics.push(Diagnostic {
                 severity: DiagnosticSeverity::Advisory,
                 wire_name: warning_wire_name(warning),
@@ -278,6 +295,22 @@ mod tests {
             blocking[0].message.contains("voronoi"),
             "the sentence names it too: {}",
             blocking[0].message
+        );
+    }
+
+    /// An unrenderable feature is reported once, not twice. Preflight and the
+    /// parser both notice it; only the blocking line — the one that says what
+    /// it costs — is shown.
+    #[test]
+    fn dfconf_an_unrenderable_feature_is_not_reported_twice() {
+        let d = diagnose(
+            "data:\n  t: { file: t.parquet }\nplot:\n  - mark: voronoi\n    data: { from: t }\n",
+        );
+        assert_eq!(d.blocking().len(), 1);
+        assert!(
+            !d.advisory().iter().any(|a| a.message.contains("voronoi")),
+            "the parser's quieter twin of the blocking line must not also show: {:?}",
+            d.lines()
         );
     }
 
