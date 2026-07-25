@@ -23,16 +23,20 @@ use crate::stats::Stats;
 /// Beyond this a suite would re-issue an interval it has already brushed, and
 /// the engine's renderer-side SQL cache would short-circuit the repeat: the
 /// measurement would time the cache rather than the engine, silently violating
-/// the "every timed brush is distinct" methodology guarantee. The harness caps
-/// its iteration count at this value (see `Args::parse`) so the guarantee holds
-/// by construction rather than by the operator remembering to stay under it.
+/// the "every timed step is distinct" methodology guarantee.
+///
+/// TWO independent step budgets are bounded by this value in `Args::parse`,
+/// because the harness has two: the engine suites' `--iterations`, and the
+/// frame suites' `--warmup-frames + --frames` (the interaction frame suite
+/// indexes its drag step by the frame counter). Validating only the first left
+/// the second free to wrap — with the shipped defaults summing to exactly this
+/// value, `--frames 31` was all it took.
 pub const DISTINCT_BRUSH_INTERVALS: usize = 35;
 
 /// The number of consecutive slider steps [`slider_interval`] yields before it
-/// wraps. Held equal to [`DISTINCT_BRUSH_INTERVALS`] (proved by test) so the
-/// harness's ONE iteration cap keeps the distinctness guarantee for BOTH drag
-/// shapes — a second, larger cap for the slider would let a brush suite
-/// silently re-issue an interval.
+/// wraps. Held equal to [`DISTINCT_BRUSH_INTERVALS`] (proved by test) so one
+/// period bounds BOTH drag shapes — a longer slider period would let a brush
+/// suite silently re-issue an interval under a bound sized for the slider.
 pub const DISTINCT_SLIDER_STEPS: usize = 35;
 
 /// Which gesture a scenario's timed steps imitate.
@@ -166,7 +170,12 @@ pub struct PreAggSummary {
     pub enabled: bool,
     /// Cubes materialised (one CREATE TEMP TABLE each).
     pub cubes_built: usize,
-    /// Brush-step re-queries served from a cube instead of the base table.
+    /// MARK re-queries served from a cube instead of the base table — the
+    /// engine increments this once per mark it serves, not once per drag
+    /// step. A scenario whose selection filters two subscribing marks records
+    /// two hits per step, so `cube_hits` is a multiple of the step count and
+    /// must never be reported as one. (Engine counterpart:
+    /// `PreAggStats::cube_hits`.)
     pub cube_hits: usize,
     /// Cube builds that failed (each falls back to the direct query).
     pub build_failures: usize,
@@ -251,6 +260,50 @@ fn shape_of(mark: usize, batches: &[RecordBatch]) -> Result<MarkRows, String> {
     })
 }
 
+/// Everything the record needs from one phase's complete result set — and
+/// nothing that keeps the batches alive.
+#[derive(Debug, Clone)]
+struct PhaseShapes {
+    /// Per-mark row and byte shape, in spec order.
+    marks: Vec<MarkRows>,
+    /// Exact Arrow bytes across every chunk of every mark.
+    chunk_bytes: u64,
+    /// Exact Arrow bytes across every mark's assembled drawable batch.
+    assembled_bytes: u64,
+}
+
+/// Measure the per-mark shape of a phase's complete result set, CONSUMING it.
+///
+/// Taking ownership is the measurement, not a style preference. At ten million
+/// row-level rows this result set is hundreds of mebibytes of Arrow, and the
+/// compose-memory window further down reports the process's resident size as
+/// the COMPOSE's client cost. A caller that still held these batches when that
+/// window opened would have two complete result sets resident and publish
+/// their sum under the compose's name — which is precisely what an earlier
+/// revision of this harness did, inflating the largest cell by the whole
+/// coordinator phase. Moving the batches in here makes that unrepresentable:
+/// they are dropped before this function returns, and the caller has no
+/// binding left to hold.
+fn consume_phase_shapes<E: std::fmt::Display>(
+    scenario: &str,
+    results: Vec<Result<Vec<RecordBatch>, E>>,
+) -> Result<PhaseShapes, String> {
+    let mut marks = Vec::with_capacity(results.len());
+    for (i, r) in results.into_iter().enumerate() {
+        let batches =
+            r.map_err(|e| format!("{scenario}: mark {i} failed on first materialise: {e}"))?;
+        marks.push(
+            shape_of(i, &batches).map_err(|e| format!("{scenario}: mark {i} assembly: {e}"))?,
+        );
+        // `batches` drops here, at the end of this iteration.
+    }
+    Ok(PhaseShapes {
+        chunk_bytes: marks.iter().map(|m| m.chunk_bytes).sum(),
+        assembled_bytes: marks.iter().map(|m| m.assembled_bytes).sum(),
+        marks,
+    })
+}
+
 /// Run the engine suites for one scenario over one dataset, with the
 /// automatic pre-aggregation layer switched on or off (`preagg`) — the two
 /// runs measure identical code, so their delta is the layer's contribution.
@@ -282,21 +335,14 @@ pub fn run_engine_suites(
     let results = coord.session_mut().execute_all();
     let first_materialise_ms = t.elapsed().as_secs_f64() * 1000.0;
 
-    let mut marks = Vec::new();
-    for (i, r) in results.iter().enumerate() {
-        let batches = r.as_ref().map_err(|e| {
-            format!(
-                "{}: mark {i} failed on first materialise: {e}",
-                scenario.name
-            )
-        })?;
-        marks.push(
-            shape_of(i, batches)
-                .map_err(|e| format!("{}: mark {i} assembly: {e}", scenario.name))?,
-        );
-    }
-    let arrow_chunk_bytes: u64 = marks.iter().map(|m| m.chunk_bytes).sum();
-    let arrow_assembled_bytes: u64 = marks.iter().map(|m| m.assembled_bytes).sum();
+    // The coordinator phase's whole result set is measured and DROPPED here —
+    // `consume_phase_shapes` takes it by value, so no binding survives this
+    // line. Nothing below holds Arrow from this phase, which is what lets the
+    // compose-memory window further down describe the compose alone.
+    let shapes = consume_phase_shapes(&scenario.name, results)?;
+    let marks = shapes.marks;
+    let arrow_chunk_bytes = shapes.chunk_bytes;
+    let arrow_assembled_bytes = shapes.assembled_bytes;
 
     // Non-vacuity ground: the cross-filtered mark's step, unfiltered.
     // Mark 1 is plot B's mark in every scenario (spec order).
@@ -383,6 +429,13 @@ pub fn run_engine_suites(
     // chunk of every mark and holds them while it builds the scene. Sampling
     // wraps THIS call and stops before the timed applies below, so the poller
     // cannot perturb a reported latency.
+    //
+    // Two things must already be gone when this opens, or the window measures
+    // more than one compose: the coordinator (dropped above, taking its
+    // session and its query cache) and the coordinator phase's result set
+    // (moved into `consume_phase_shapes`, which drops it — see the note
+    // there). Resident size is a whole-PROCESS quantity; anything still held
+    // is reported as the compose's cost.
     let sampler = RssSampler::start();
     let present = dash.present();
     let compose_memory = sampler.finish(arrow_chunk_bytes, arrow_assembled_bytes);
@@ -496,11 +549,15 @@ mod tests {
     }
 
     #[test]
-    fn one_iteration_cap_covers_both_drag_shapes() {
-        // The harness enforces a SINGLE iteration cap
-        // (`DISTINCT_BRUSH_INTERVALS`). That is only sound while no generator
-        // repeats earlier than it does — otherwise a run inside the cap could
-        // still re-issue a step and time the SQL cache.
+    fn one_period_covers_both_drag_shapes() {
+        // The harness bounds TWO step budgets against this one constant: the
+        // `--iterations` count of the engine suites, and the
+        // `--warmup-frames + --frames` budget of the frame suites (both in
+        // `main`, each with its own validator — a single validator never
+        // covered both, which is how the frame budget went unbounded).
+        // Sharing one constant is only sound while no generator repeats
+        // earlier than it does; otherwise a run inside the bound could still
+        // re-issue a step and time the SQL cache.
         assert_eq!(
             DISTINCT_SLIDER_STEPS, DISTINCT_BRUSH_INTERVALS,
             "the two generators must share one period for one cap to cover both"
@@ -527,6 +584,66 @@ mod tests {
             );
             assert!((5.0..40.0).contains(&hi), "step {i} stays in [0,40): {hi}");
         }
+    }
+
+    /// One int column, three rows — enough to be measured, small enough to
+    /// build inline. The returned `ArrayRef` is a second handle on the batch's
+    /// only buffer, so its reference count says whether the batch is still
+    /// alive anywhere.
+    fn one_batch() -> (RecordBatch, std::sync::Arc<dyn duckdb::arrow::array::Array>) {
+        use duckdb::arrow::array::{ArrayRef, Int32Array};
+        use std::sync::Arc;
+        let col: ArrayRef = Arc::new(Int32Array::from(vec![1, 2, 3]));
+        let batch =
+            RecordBatch::try_from_iter([("v", col.clone())]).expect("a one-column batch builds");
+        (batch, col)
+    }
+
+    #[test]
+    fn the_shape_pass_drops_the_batches_it_measured() {
+        // The compose-memory window opened later in a run reports the whole
+        // PROCESS's resident size. If the coordinator phase's result set were
+        // still alive then, the published figure would be two result sets, not
+        // one — the contamination this consuming signature exists to prevent.
+        use std::sync::Arc;
+        let (batch, col) = one_batch();
+        assert_eq!(
+            Arc::strong_count(&col),
+            2,
+            "the batch holds the only other handle on the column"
+        );
+
+        let shapes = consume_phase_shapes::<String>("t", vec![Ok(vec![batch])])
+            .expect("a well-formed result set measures");
+        assert_eq!(shapes.marks.len(), 1);
+        assert_eq!(shapes.marks[0].materialised_rows, 3);
+        assert_eq!(shapes.marks[0].drawn_rows, 3);
+        assert!(shapes.chunk_bytes > 0, "a measured batch has bytes");
+
+        assert_eq!(
+            Arc::strong_count(&col),
+            1,
+            "the measured batches must be dropped by the shape pass — a caller \
+             still holding them would put TWO complete result sets inside the \
+             compose-memory window and publish their sum as the compose's cost"
+        );
+    }
+
+    #[test]
+    fn the_shape_pass_drops_the_batches_even_when_a_mark_failed() {
+        // The error path drops the rest of the result set too: a run that
+        // fails still must not leave hundreds of megabytes of Arrow alive.
+        use std::sync::Arc;
+        let (batch, col) = one_batch();
+        let err =
+            consume_phase_shapes::<String>("t", vec![Err("boom".to_string()), Ok(vec![batch])])
+                .expect_err("a failed mark fails the phase");
+        assert!(err.contains("mark 0 failed on first materialise"), "{err}");
+        assert_eq!(
+            Arc::strong_count(&col),
+            1,
+            "the un-measured remainder is dropped with the iterator"
+        );
     }
 
     #[test]

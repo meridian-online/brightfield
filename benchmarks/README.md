@@ -89,9 +89,16 @@ rows — reporting a re-query that did no new work as though it had.
 pre-aggregation enabled (`engine`, the shipped configuration) and disabled
 (`engine_direct`, the direct-query control) — so the difference between the
 two brush-step latencies is attributable to the layer alone. The record
-carries the layer's behaviour counters (`preagg`: cubes built, brush steps
-served from a cube, failures), and a run whose cube behaviour contradicts
-the scenario's expectation **fails instead of reporting**.
+carries the layer's behaviour counters (`preagg`: cubes built, **mark
+re-queries** served from a cube, failures), and a run whose cube behaviour
+contradicts the scenario's expectation **fails instead of reporting**.
+
+`cube_hits` counts one hit per MARK the layer serves, not one per drag step.
+A scenario whose selection filters two subscribing marks records two hits per
+step, so a twenty-step slider suite reads `2/40` — two cubes, forty mark
+re-queries — in a document whose preamble says twenty steps. Reading that
+column as a step count is the misreading it invites; the generated summary's
+legend now says which it is.
 
 Per scenario × row count, the record holds:
 
@@ -101,7 +108,7 @@ Per scenario × row count, the record holds:
 | `first_materialise_ms` | first full materialisation of every mark |
 | `coordinator_apply` | per-brush-step latency at the coordinator seam: predicate push-down into DuckDB + re-query of every affected mark. Recorded twice: `engine_direct` (layer off) vs `engine` (layer on) — **the before/after pair the pre-aggregation layer is measured by.** |
 | `live_apply` | `coordinator_apply` plus the re-composite into a Vello scene — the full cost the live window's frame blocks on for one committed brush step (the shell applies interactions synchronously in-frame) |
-| `preagg` | what the layer did during the suite: enabled, cubes built, brush steps served from a cube, build/serve failures — the non-vacuity evidence beside the latencies |
+| `preagg` | what the layer did during the suite: enabled, cubes built, **mark re-queries** served from a cube (one per served mark per drag step — not a step count), build/serve failures — the non-vacuity evidence beside the latencies |
 | `frames.steady` | headless full-window frame time with nothing changing — the shell's floor |
 | `frames.interaction` | headless full-window frame time where every frame carries one committed brush step: re-query + re-composite + canvas re-raster + GPU wait |
 | `marks[].materialised_rows` / `drawn_rows` | how many rows the mark's query answered vs how many the composed scene draws — the presentation layer assembles **every** Arrow chunk (measured through that same assembly path), so the two are equal; a regression that reintroduced a first-chunk cap would show `drawn_rows` < `materialised_rows` here |
@@ -123,22 +130,41 @@ honest alone:
 - `arrow_chunks_mib` / `arrow_assembled_mib` — **exact and deterministic**,
   summed from the batches themselves (`RecordBatch::get_array_memory_size`).
   Identical on any host, independent of the allocator. This is the data the
-  compose holds.
+  compose holds, and **this is the figure to quote**.
 - `rss_before_mib` / `rss_peak_mib` / `rss_growth_mib` — the **process's**
   resident set size, polled across that window. It is the only figure that
   sees those buffers' real cost: the chunks are imported from DuckDB over the
   C data interface, so DuckDB's C++ allocator owns them and a Rust
   global-allocator counter would not see them at all.
 
-**Read the peak, not the growth.** RSS is cumulative within a run — a
-general-purpose allocator does not hand freed pages straight back, so a
-scenario measured late starts from an already-high floor and its growth can
-read near zero while the process holds hundreds of megabytes. The probe is
-best-effort and names itself (`sampler`): Linux reads `/proc/self/status`,
-macOS shells out to `ps -o rss=` (~5 ms resolution, so `rss_samples` states
-how coarse a given cell is), and a host with neither records `null` rather
-than a number it did not measure. The poller stops before the timed applies,
-so it cannot perturb a reported latency.
+**The RSS peak is one sample of a whole-process quantity, and it does not
+reproduce on its own.** Every scenario records two windows — layer off and
+layer on — over the *same* compose work, because the first present happens
+before any interaction and the toggle cannot change it. Their disagreement is
+this figure's run-to-run noise; in the committed record it reaches a factor of
+two. The generated summary prints both peaks and states the widest spread it
+observed, and **a peak must not be quoted without that spread**.
+
+**The pre-compose reading is not a floor that only rises.** The OS reclaims
+pages between windows: in the committed record `rss_before` falls sharply
+between adjacent scenarios as often as it climbs. So `rss_growth_mib` is
+neither the compose's cost nor a lower bound on it. An earlier revision of this
+README told readers to treat resident size as monotone within one harness run
+and to read the peak rather than the growth; the series printed beside it
+refuted both, and the guidance is withdrawn.
+
+The window measures ONE compose only because everything earlier is dropped
+first: the coordinator-seam phase's session goes, and its complete result set
+is moved into a consuming shape pass rather than left in scope. Resident size
+counts the whole process, so a phase still holding its Arrow lands in the
+compose's number — which is what an earlier revision of the harness did,
+adding the coordinator phase's entire result set to the largest cell.
+
+The probe is best-effort and names itself (`sampler`): Linux reads
+`/proc/self/status`, macOS shells out to `ps -o rss=` (~5 ms resolution, so
+`rss_samples` states how coarse a given cell is), and a host with neither
+records `null` rather than a number it did not measure. The poller stops
+before the timed applies, so it cannot perturb a reported latency.
 
 ## Record schema
 
@@ -178,10 +204,15 @@ frame cell is not a fast frame.
 ## Methodology honesty
 
 - **Drag steps never repeat an interval** — the engine caches repeated
-  identical SQL, and a repeated interval would time the cache, not the
-  engine. Both step generators (brush and slider) hold the same distinct
-  period, so the harness's single `--iterations` cap keeps the guarantee for
-  both shapes.
+  identical SQL, and a repeated interval would time the cache, not the engine.
+  Both step generators (brush and slider) hold the same 35-step period, so one
+  bound covers both shapes — but the harness has **two step budgets** and each
+  needs its own check. The engine suites step with `--iterations`; the
+  interaction *frame* suite indexes its step by the frame counter, so its
+  budget is `--warmup-frames + --frames`. Both are validated at startup and a
+  run that would wrap is **rejected**, not silently cached. The shipped default
+  (5 + 30) sits exactly on the period, so the frame check is load-bearing:
+  before it existed, `--frames 31` re-issued step 0 and timed the cache.
 - **Frame times are headless**: the real `MeridianApp` drawn by egui's real
   wgpu backend into an offscreen texture, timed per frame through GPU
   completion. No swapchain, no present, no vsync — the cost of *producing* a

@@ -50,6 +50,12 @@ const SPEC_SLIDER: &str = include_str!("../../../benchmarks/specs/slider-drag.ya
 /// `benchmarks/specs/`.
 const SPEC_CROSSWALK: &str = include_str!("../../../benchmarks/specs/crosswalk-confidence.yaml");
 
+/// The benchmarks README, compiled in for tests only: it makes claims ABOUT
+/// this harness, and a claim that drifts from the code is how a record grows a
+/// methodology section its own JSON refutes.
+#[cfg(test)]
+const BENCH_README: &str = include_str!("../../../benchmarks/README.md");
+
 /// One committed scaling scenario: which spec, which gesture, which column,
 /// what the pre-aggregation layer is expected to do.
 struct SpecDef {
@@ -154,6 +160,17 @@ const FRAME_DRAWN_ROW_CAP: u64 = 1_000_000;
 /// displays the live window actually runs on.
 const FRAME_SCALE: f32 = 2.0;
 
+/// Default discarded warm-up frames per frame suite.
+const DEFAULT_WARMUP_FRAMES: usize = 5;
+/// Default timed frames per frame suite. Chosen with
+/// [`DEFAULT_WARMUP_FRAMES`] so the summed budget lands exactly on the drag
+/// generators' distinct period — see [`validate_frame_steps`].
+const DEFAULT_MEASURED_FRAMES: usize = 30;
+/// `--quick` warm-up frames.
+const QUICK_WARMUP_FRAMES: usize = 2;
+/// `--quick` timed frames.
+const QUICK_MEASURED_FRAMES: usize = 8;
+
 #[derive(Debug)]
 struct Args {
     rows: Vec<u64>,
@@ -176,8 +193,8 @@ impl Args {
         let mut args = Self {
             rows: vec![10_000, 100_000, 1_000_000, 10_000_000],
             iterations: 20,
-            warmup_frames: 5,
-            measured_frames: 30,
+            warmup_frames: DEFAULT_WARMUP_FRAMES,
+            measured_frames: DEFAULT_MEASURED_FRAMES,
             corpus_frames: 20,
             skip_frames: false,
             skip_corpus: false,
@@ -222,8 +239,8 @@ impl Args {
                 "--quick" => {
                     args.rows = vec![10_000, 100_000];
                     args.iterations = 5;
-                    args.measured_frames = 8;
-                    args.warmup_frames = 2;
+                    args.measured_frames = QUICK_MEASURED_FRAMES;
+                    args.warmup_frames = QUICK_WARMUP_FRAMES;
                     args.corpus_frames = 6;
                 }
                 other => return Err(format!("unknown argument: {other}")),
@@ -233,6 +250,7 @@ impl Args {
             return Err("rows, iterations and frames must be non-zero".into());
         }
         validate_iterations(args.iterations)?;
+        validate_frame_steps(args.warmup_frames, args.measured_frames)?;
         Ok(args)
     }
 }
@@ -250,6 +268,35 @@ fn validate_iterations(iterations: usize) -> Result<(), String> {
         return Err(format!(
             "--iterations {iterations} exceeds the {} distinct brush intervals the \
              harness generates; a larger count would re-issue an interval and time \
+             the SQL cache instead of the engine",
+            scenario::DISTINCT_BRUSH_INTERVALS
+        ));
+    }
+    Ok(())
+}
+
+/// Reject a frame-suite step budget the drag generators cannot serve with
+/// distinct steps.
+///
+/// The interaction frame suite indexes its drag step with the FRAME counter,
+/// which runs over `warmup + measured` — a different budget from
+/// `--iterations`, driven by different flags, and for a long time validated by
+/// nothing. `--iterations` being capped did not protect it: the defaults
+/// ([`DEFAULT_WARMUP_FRAMES`] + [`DEFAULT_MEASURED_FRAMES`]) land exactly on
+/// the generators' period, so the first step past them wraps onto step 0 and
+/// the frame times the engine's SQL cache instead of the engine — the failure
+/// the methodology claims cannot happen. `--frames 31` was enough to cause it
+/// silently.
+///
+/// Both generators share one period (asserted in the scenario module), so one
+/// bound covers brush and slider suites alike.
+fn validate_frame_steps(warmup: usize, measured: usize) -> Result<(), String> {
+    let total = warmup.saturating_add(measured);
+    if total > scenario::DISTINCT_BRUSH_INTERVALS {
+        return Err(format!(
+            "--warmup-frames {warmup} + --frames {measured} = {total} frame steps exceeds \
+             the {} distinct drag steps the harness generates; the frame suite indexes its \
+             step by the frame counter, so a larger budget would re-issue a step and time \
              the SQL cache instead of the engine",
             scenario::DISTINCT_BRUSH_INTERVALS
         ));
@@ -327,7 +374,7 @@ const SCHEMA: &str = "brightfield-bench/v3";
 
 const METHODOLOGY: &[&str] = &[
     "Interaction latency is measured at the coordinator seam the live window blocks its frame on: one committed brush step = Coordinator::apply (predicate push-down into DuckDB + re-query of every affected mark). live_apply adds the re-composite into a Vello scene (LiveDashboard::apply), which is the full in-frame cost of a brush step in the live window.",
-    "Every timed brush uses a distinct interval: the engine caches repeated identical SQL, so a repeated interval would time the cache. A non-vacuity check requires the brush to have actually reduced the cross-filtered step's row count, and every apply must affect at least one mark.",
+    "Every timed drag step uses a distinct interval: the engine caches repeated identical SQL, so a repeated interval would time the cache. The harness has TWO step budgets and bounds BOTH against the generators' 35-step period — the engine suites' --iterations, and the frame suites' --warmup-frames + --frames (the interaction frame suite indexes its step by the frame counter, so it wraps independently of --iterations; validating only the latter left `--frames 31` free to re-issue step 0 silently). A non-vacuity check requires the drag to have actually reduced the cross-filtered step's row count, and every apply must affect at least one mark.",
     "Frame times are headless: the real MeridianApp drawn by egui's real wgpu backend into an offscreen texture, timed per frame through GPU completion (submit + blocking wait). No swapchain, no present, no vsync — the number is the cost of producing a frame, not displaying one. Warm-up frames are discarded.",
     "steady frames draw with nothing changing (the shell's floor). interaction frames each push one committed brush step through the live document before drawing, so they carry re-query + re-composite + canvas re-raster + GPU wait.",
     "The composed scene draws EVERY materialised Arrow chunk: a mark's result batches are assembled into one drawable batch (assemble_batches), the same path the presentation layer uses. drawn_rows vs materialised_rows is the cross-check — they are equal, so the drawn picture holds every row the query answered (the raw-dot scenario spans many ~2048-row chunks and still draws them all). A future regression that reintroduced a first-chunk cap would show drawn_rows < materialised_rows here; an assembly that could not proceed fails the run loudly by name rather than reporting a smaller drawn count.",
@@ -341,8 +388,8 @@ const METHODOLOGY: &[&str] = &[
     "Each row records which GESTURE drove its timed steps (`drag`). A brush moves BOTH interval endpoints as a rectangle is dragged inside a chart; a slider pins its lower end and advances one handle across fixed stops. They are not interchangeable: the slider's steps are monotone and land exactly on the brushed axis's forty stops (a step falling between two stops would emit different SQL while selecting identical rows, reporting a re-query that did no new work as though it had).",
     "The slider-drag scenario drives a SELECTION, not a scalar param. Upstream Mosaic expresses a range slider as `select: interval`, and this engine's pre-aggregation layer keys its cubes off that structured clause — the only path reaching it is selection propagation. A slider wired to a scalar param arrives at the query layer as a substituted expression predicate that decomposes into no cube at all, so measuring it would measure a different mechanism under the slider's name. The spec vocabulary has no slider-to-selection widget form yet, so the contributor is declared as the interval interactor it does have and the harness drives it with slider-shaped steps; no row in this record took the scalar-param path.",
     "slider-drag resolves its selection as `intersect`, not `crossfilter`. A slider is not a view and has no picture of its own to spare, so EVERY subscriber is filtered, including the plot that declares the contributor — both views re-query on every step. A crossfilter brush exempts its own plot, so a brush row's per-step work is one view lighter than a slider row's at the same row count; compare the two knowing that.",
-    "compose_memory is what the client held while the first full scene was composed — the window around LiveDashboard::present, which executes every mark and hands the whole result set to compose_from_results, which assembles every chunk of every mark and holds them all while it builds the scene. Two figures, because neither alone is honest. arrow_chunks_mib / arrow_assembled_mib are EXACT and deterministic, summed from the batches themselves (RecordBatch::get_array_memory_size) — the data the compose holds, identical on any host. A single-chunk mark assembles by pass-through, so its assembled bytes are the SAME allocation counted again, not a second copy.",
-    "rss_*_mib is the process's resident set size, polled from the OS across that same window (Linux /proc/self/status; macOS `ps -o rss=`, ~5ms resolution, so `rss_samples` states how coarse a given cell is). It is the only figure that sees the Arrow buffers' real cost: the chunks are imported from DuckDB over the C data interface, so DuckDB's C++ allocator owns them and a Rust allocator counter would not see them. Read the PEAK, not the growth: RSS is cumulative within one harness run because a general-purpose allocator does not return freed pages promptly, so a scenario measured late starts from an already-high floor and its growth can read near zero while holding hundreds of megabytes. The poller stops before the timed applies, so it cannot perturb a reported latency.",
+    "compose_memory is what the client held while the first full scene was composed — the window around LiveDashboard::present, which executes every mark and hands the whole result set to compose_from_results, which assembles every chunk of every mark and holds them all while it builds the scene. The window opens only after the coordinator-seam phase is gone: its session is dropped and its complete result set is moved into the shape pass, which consumes and drops it. That ordering is the measurement — resident size is a whole-process quantity, so a phase still holding its Arrow would be reported as this compose's cost. Two figures, because neither alone is honest. arrow_chunks_mib / arrow_assembled_mib are EXACT and deterministic, summed from the batches themselves (RecordBatch::get_array_memory_size) — the data the compose holds, identical on any host. A single-chunk mark assembles by pass-through, so its assembled bytes are the SAME allocation counted again, not a second copy.",
+    "rss_*_mib is the process's resident set size, polled from the OS across that same window (Linux /proc/self/status; macOS `ps -o rss=`, ~5ms resolution, so `rss_samples` states how coarse a given cell is). It is the only figure that sees the Arrow buffers' real cost: the chunks are imported from DuckDB over the C data interface, so DuckDB's C++ allocator owns them and a Rust allocator counter would not see them. It is also a SINGLE sample of a whole-process quantity and is NOT reproducible on its own. Every scenario records two windows — pre-aggregation off and on — over the same compose work (the first present precedes any interaction, so the toggle cannot change it); their disagreement is this figure's run-to-run noise and the generated summary states the widest one observed. Quote a peak only with that spread beside it; quote arrow_chunks_mib when a deterministic number is wanted. The pre-compose floor is not monotone: the OS reclaims pages between windows, so rss_before falls as often as it rises and rss_growth is not the compose's cost. The poller stops before the timed applies, so it cannot perturb a reported latency.",
     "Record schema v3. v2 carried `first_batch_rows` beside `materialised_rows` — the pre-assembly presentation that drew a mark's FIRST Arrow chunk only. That field is gone; `drawn_rows` names what the field now holds. A v2 record's row counts describe code that no longer ships and must not be quoted against a v3 one.",
 ];
 
@@ -618,6 +665,31 @@ fn fmt_stats(s: &Stats) -> String {
     format!("{:.1} / {:.1} / {:.1}", s.p50_ms, s.p95_ms, s.max_ms)
 }
 
+/// The widest disagreement between a row's two compose-memory windows, and the
+/// row it came from.
+///
+/// The two windows wrap the SAME compose work — the first present happens
+/// before any interaction, so the pre-aggregation toggle cannot change it — so
+/// their ratio is not a finding about the layer. It is the reproducibility of a
+/// single whole-process RSS sample, measured by the record on itself. The
+/// generated summary states it beside the column so no peak is quoted as
+/// though it were stable.
+fn worst_compose_rss_spread(r: &BaselineReport) -> Option<(f64, &ScalingResult)> {
+    r.scaling
+        .iter()
+        .filter_map(|s| {
+            let a = s.engine_direct.compose_memory.rss_peak_mib?;
+            let b = s.engine.compose_memory.rss_peak_mib?;
+            let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+            if lo > 0.0 {
+                Some((hi / lo, s))
+            } else {
+                None
+            }
+        })
+        .max_by(|x, y| x.0.total_cmp(&y.0))
+}
+
 /// The gesture name a report row carries.
 fn drag_label(d: Drag) -> &'static str {
     match d {
@@ -664,7 +736,10 @@ fn render_markdown(r: &BaselineReport) -> String {
         "`direct` disables the automatic pre-aggregation layer; `cubed` is the \
          shipped configuration. Identical code either side of the toggle — the \
          delta is the layer. `cube` shows what the enabled run's layer did: \
-         cubes built / drag steps served from a cube. `Drag` is the gesture the \
+         cubes built / **mark re-queries** served from a cube. The second \
+         number is not a step count: the engine counts one hit per mark it \
+         serves, so a scenario filtering two subscribing marks records two hits \
+         per drag step and a twenty-step suite reads `2/40`. `Drag` is the gesture the \
          timed steps imitate: a **brush** moves both interval endpoints inside a \
          chart and exempts its own plot (crossfilter); a **slider** pins its \
          lower end, advances one handle across fixed stops, and filters every \
@@ -678,7 +753,7 @@ fn render_markdown(r: &BaselineReport) -> String {
          Step → data, direct (ms) | Step → data, cubed (ms) | \
          Step → scene, direct (ms) | Step → scene, cubed (ms) | Cube | \
          Steady frame (ms) | Interaction frame (ms) | Drawn/materialised rows | \
-         Compose peak RSS (MiB) | Arrow held (MiB) |"
+         Arrow held (MiB) | Compose peak RSS, direct / cubed (MiB) |"
     );
     let _ = writeln!(
         md,
@@ -692,14 +767,16 @@ fn render_markdown(r: &BaselineReport) -> String {
             .map(|mk| format!("{}/{}", mk.drawn_rows, mk.materialised_rows))
             .collect::<Vec<_>>()
             .join(" · ");
-        // The DIRECT run's window: it runs first at each row count, so its
-        // allocator floor is the lower of the pair. The compose itself is
-        // identical either side of the toggle — the first present happens
-        // before any interaction, so no cube exists yet to change it.
-        let mem = &s.engine_direct.compose_memory;
+        // BOTH configurations' windows, because they measure the SAME compose
+        // work (the first present precedes any interaction, so no cube exists
+        // yet) — their disagreement is this figure's run-to-run noise, and
+        // printing one of them alone hides it.
+        let peak = |m: &crate::mem::ComposeMemory| {
+            m.rss_peak_mib.map_or("—".into(), |p| format!("{p:.0}"))
+        };
         let _ = writeln!(
             md,
-            "| {} | {} | {} | {:.1} + {:.1} | {} | {} | {} | {} | {}/{} | {} | {} | {} | {} | {:.1} |",
+            "| {} | {} | {} | {:.1} + {:.1} | {} | {} | {} | {} | {}/{} | {} | {} | {} | {:.1} | {} / {} |",
             s.scenario,
             drag_label(s.drag),
             s.rows,
@@ -719,31 +796,47 @@ fn render_markdown(r: &BaselineReport) -> String {
                 .and_then(|f| f.interaction.as_ref())
                 .map_or("—".into(), fmt_stats),
             drawn,
-            mem.rss_peak_mib.map_or("—".into(), |p| format!(
-                "{p:.0} (+{})",
-                mem.rss_growth_mib.map_or("?".into(), |g| format!("{g:.0}"))
-            )),
-            mem.arrow_chunks_mib,
+            s.engine_direct.compose_memory.arrow_chunks_mib,
+            peak(&s.engine_direct.compose_memory),
+            peak(&s.engine.compose_memory),
         );
     }
     let _ = writeln!(md);
     let _ = writeln!(
         md,
+        "**`Arrow held` is the figure to quote.** It is exact and \
+         deterministic — the summed size of every materialised chunk the \
+         compose holds at once, read from the batches themselves — so it is the \
+         same on any host and reproduces run to run."
+    );
+    let _ = writeln!(md);
+    let spread = worst_compose_rss_spread(r);
+    let _ = writeln!(
+        md,
         "`Compose peak RSS` is the whole process's high-water mark across the \
          first full compose — every mark executed, every Arrow chunk assembled, \
-         the scene built — with the growth over the pre-compose reading in \
-         brackets. It is CUMULATIVE within one run: the allocator does not \
-         return freed pages promptly, so a scenario measured late starts from an \
-         already-high floor and its growth understates what it held. Read the \
-         peak. The cell is the direct-configuration run (the first of the pair, \
-         so the lower floor); the cubed run's window is in the JSON beside it, \
-         and the compose is identical either way — the first present precedes \
-         any interaction, so no cube exists yet. `Arrow held` is exact and \
-         deterministic: the summed size of every materialised chunk the compose \
-         holds at once, read from the batches themselves. Sampler: {}.",
-        r.scaling
+         the scene built — sampled from the OS ({sampler}). Both configurations' \
+         windows are shown because they measure the SAME compose work: the first \
+         present precedes any interaction, so no cube exists yet either side of \
+         the toggle. Each cell is therefore a SINGLE sample of a whole-process \
+         quantity, and the gap between the pair is this measurement's \
+         run-to-run noise — {spread_note} **Do not quote a peak without that \
+         spread.** The pre-compose floor is not a monotone baseline either: the \
+         OS reclaims pages between windows, so it falls as often as it rises and \
+         the growth over it is not the compose's cost. `rss_before_mib`, \
+         `rss_peak_mib`, `rss_growth_mib` and `rss_samples` are in the JSON per \
+         configuration for anyone who wants them.",
+        sampler = r
+            .scaling
             .first()
-            .map_or("none", |s| s.engine_direct.compose_memory.sampler)
+            .map_or("none", |s| s.engine_direct.compose_memory.sampler),
+        spread_note = spread.map_or_else(
+            || "no row recorded both windows, so it cannot be stated here.".to_string(),
+            |(ratio, s)| format!(
+                "across the rows above it reaches {ratio:.1}x ({} @ {} rows).",
+                s.scenario, s.rows
+            )
+        ),
     );
     let _ = writeln!(md);
     let skipped: Vec<&ScalingResult> = r
@@ -914,6 +1007,318 @@ mod tests {
         assert!(
             err.contains("SQL cache"),
             "the error must explain why a larger count is unsound: {err}"
+        );
+    }
+
+    /// The frame suite's step budget is `--warmup-frames + --frames`, not
+    /// `--iterations`, and it is indexed by the frame counter. It needs its
+    /// own bound: `--iterations` being capped never constrained it.
+    #[test]
+    fn the_frame_step_budget_is_capped_at_the_distinct_period() {
+        assert!(validate_frame_steps(0, 1).is_ok());
+        assert!(
+            validate_frame_steps(0, scenario::DISTINCT_BRUSH_INTERVALS).is_ok(),
+            "the period itself is the largest distinct budget"
+        );
+        let err = validate_frame_steps(0, scenario::DISTINCT_BRUSH_INTERVALS + 1)
+            .expect_err("one step past the period re-issues step 0");
+        assert!(
+            err.contains("SQL cache"),
+            "the error must explain why a larger budget is unsound: {err}"
+        );
+    }
+
+    /// The two flags are summed, so a budget can breach the period without
+    /// either flag being large — the shape that made the default so close to
+    /// the edge.
+    #[test]
+    fn warmup_and_measured_frames_are_capped_together() {
+        assert!(
+            validate_frame_steps(DEFAULT_WARMUP_FRAMES, DEFAULT_MEASURED_FRAMES).is_ok(),
+            "the shipped default must be inside the period"
+        );
+        assert!(
+            validate_frame_steps(QUICK_WARMUP_FRAMES, QUICK_MEASURED_FRAMES).is_ok(),
+            "--quick must be inside the period"
+        );
+        // The default sits ON the boundary: one more measured frame breaches
+        // it. That is the silent failure the reviewer found — `--frames 31`
+        // with the shipped warm-up re-issues step 0.
+        assert_eq!(
+            DEFAULT_WARMUP_FRAMES + DEFAULT_MEASURED_FRAMES,
+            scenario::DISTINCT_BRUSH_INTERVALS,
+            "the default budget is exactly the period, so the cap is load-bearing"
+        );
+        assert!(
+            validate_frame_steps(DEFAULT_WARMUP_FRAMES, DEFAULT_MEASURED_FRAMES + 1).is_err(),
+            "one measured frame past the default must be rejected, not silently cached"
+        );
+        assert!(
+            validate_frame_steps(DEFAULT_WARMUP_FRAMES + 1, DEFAULT_MEASURED_FRAMES).is_err(),
+            "one warm-up frame past the default must be rejected too"
+        );
+    }
+
+    /// A budget large enough to overflow `usize` must be rejected, not panic
+    /// in a debug build.
+    #[test]
+    fn an_absurd_frame_budget_is_rejected_rather_than_overflowing() {
+        assert!(validate_frame_steps(usize::MAX, usize::MAX).is_err());
+    }
+
+    /// A minimal report shaped like the real one: twenty timed steps, a
+    /// two-mark scenario whose layer served both marks on every step (so
+    /// `cube_hits` is 40, twice the step count), and two compose-memory
+    /// windows that disagree by a factor of two on identical compose work.
+    /// Both are shapes the committed record actually contains.
+    fn synthetic_report() -> BaselineReport {
+        let stats = Stats::from_ms(vec![1.0, 2.0, 3.0]).expect("a non-empty sample");
+        let window = |peak: f64| mem::ComposeMemory {
+            sampler: "test probe",
+            rss_before_mib: Some(10.0),
+            rss_peak_mib: Some(peak),
+            rss_growth_mib: Some(peak - 10.0),
+            rss_samples: 3,
+            arrow_chunks_mib: 7.5,
+            arrow_assembled_mib: 7.5,
+        };
+        let measurement = |peak: f64| EngineMeasurement {
+            load_ms: 1.0,
+            first_materialise_ms: 2.0,
+            marks: vec![scenario::MarkRows {
+                mark: 0,
+                materialised_rows: 100,
+                drawn_rows: 100,
+                chunks: 1,
+                chunk_bytes: 1024,
+                assembled_bytes: 1024,
+            }],
+            coordinator_apply: stats.clone(),
+            live_apply: stats.clone(),
+            brushed_step_rows: 10,
+            unfiltered_step_rows: 100,
+            preagg: scenario::PreAggSummary {
+                enabled: true,
+                cubes_built: 2,
+                cube_hits: 40,
+                build_failures: 0,
+                serve_failures: 0,
+            },
+            compose_memory: window(peak),
+        };
+        let field = |s: &str| s.to_string();
+        BaselineReport {
+            schema: SCHEMA,
+            machine: MachineProfile {
+                cpu: field("Test CPU"),
+                logical_cpus: field("8"),
+                memory_gib: field("16"),
+                os: field("test os"),
+                gpu_adapter: field("test gpu"),
+                rustc: field("rustc test"),
+                build_profile: field("release"),
+                commit: field("0000000"),
+                captured_at: field("2026-07-25T00:00:00+00:00"),
+                duckdb: field("v1.5.2"),
+            },
+            config: RunConfig {
+                rows: vec![10_000_000],
+                iterations: 20,
+                warmup_frames: DEFAULT_WARMUP_FRAMES,
+                measured_frames: DEFAULT_MEASURED_FRAMES,
+                corpus_frames: 20,
+                frame_scale: FRAME_SCALE,
+            },
+            methodology: METHODOLOGY.to_vec(),
+            scaling: vec![ScalingResult {
+                scenario: field("slider-drag"),
+                drag: Drag::Slider,
+                rows: 10_000_000,
+                dataset: field("uniform.parquet"),
+                engine: measurement(200.0),
+                engine_direct: measurement(100.0),
+                frames: None,
+                frames_skipped: Some(field("capped")),
+            }],
+            corpus: vec![],
+        }
+    }
+
+    /// `cube_hits` counts MARK re-queries, one per mark the layer serves — so
+    /// a two-mark scenario over twenty steps reads `2/40`. Calling that column
+    /// "drag steps served from a cube" put a number twice the step count under
+    /// a step-count legend, in the same document whose preamble states the
+    /// step count.
+    #[test]
+    fn the_cube_legend_names_mark_requeries_not_drag_steps() {
+        let md = render_markdown(&synthetic_report());
+        assert!(
+            md.contains("20 timed drag steps"),
+            "the preamble states the step count"
+        );
+        assert!(md.contains("| 2/40 |"), "the cell holds cubes/hits: {md}");
+        assert!(
+            !md.contains("drag steps served from a cube"),
+            "40 hits over 20 steps are not 40 steps"
+        );
+        assert!(
+            md.contains("**mark re-queries** served from a cube"),
+            "the legend must name what the counter counts"
+        );
+        assert!(
+            md.contains("two hits per drag step"),
+            "the legend must explain why the number exceeds the step count"
+        );
+    }
+
+    /// Two windows over the same compose work, differing 2x. The record must
+    /// state that spread rather than presenting one peak as the compose's
+    /// client cost.
+    #[test]
+    fn the_memory_note_states_its_own_spread_and_drops_the_cumulative_claim() {
+        let md = render_markdown(&synthetic_report());
+        assert!(
+            md.contains("| Arrow held (MiB) | Compose peak RSS, direct / cubed (MiB) |"),
+            "both configurations' peaks are columns, and the deterministic \
+             figure leads: {md}"
+        );
+        assert!(md.contains("| 100 / 200 |"), "the pair is printed: {md}");
+        assert!(
+            md.contains("2.0x (slider-drag @ 10000000 rows)"),
+            "the note must state the widest observed spread and where: {md}"
+        );
+        assert!(
+            md.contains("Do not quote a peak without that spread"),
+            "the note must say so plainly"
+        );
+        assert!(
+            md.contains("`Arrow held` is the figure to quote"),
+            "the reproducible figure must be named as the quotable one"
+        );
+        // The refuted claims. `rss_before` falls between adjacent windows in
+        // the committed record, so RSS is not cumulative within a run, and
+        // "read the peak, not the growth" rests on that premise.
+        for refuted in [
+            "Read the peak",
+            "read the peak",
+            "CUMULATIVE within one run",
+            "the first of the pair, so the lower floor",
+            "the compose is identical either way",
+        ] {
+            assert!(
+                !md.contains(refuted),
+                "the record must not repeat the refuted claim {refuted:?}"
+            );
+        }
+    }
+
+    /// With one configuration's window missing there is no spread to state,
+    /// and the note must say that rather than printing a ratio it does not
+    /// have.
+    #[test]
+    fn a_report_with_no_paired_window_states_no_spread() {
+        let mut r = synthetic_report();
+        r.scaling[0].engine.compose_memory.rss_peak_mib = None;
+        assert!(worst_compose_rss_spread(&r).is_none());
+        let md = render_markdown(&r);
+        assert!(md.contains("it cannot be stated here"), "{md}");
+        assert!(
+            md.contains("| 100 / — |"),
+            "a missing window is a gap: {md}"
+        );
+    }
+
+    /// The methodology block ships inside every JSON record, so a claim left
+    /// there outlives this README and every summary. Three of its claims about
+    /// the memory column were refuted by the JSON printed beside them.
+    #[test]
+    fn the_methodology_block_carries_no_refuted_memory_claim() {
+        let all = METHODOLOGY.join("\n");
+        for refuted in [
+            "Read the PEAK",
+            "RSS is cumulative",
+            "cumulative within one harness run",
+        ] {
+            assert!(
+                !all.contains(refuted),
+                "the methodology must not repeat {refuted:?}: rss_before FALLS \
+                 between adjacent windows in the committed record"
+            );
+        }
+        assert!(
+            all.contains("SINGLE sample") && all.contains("run-to-run noise"),
+            "the methodology must state what the RSS figure actually is"
+        );
+        assert!(
+            all.contains("--warmup-frames + --frames"),
+            "the methodology must name the frame suites' own step budget"
+        );
+    }
+
+    /// The README describes this harness to anyone reading a record. Three of
+    /// its claims were refuted by the JSON printed beside them, and a fourth
+    /// described a cap the harness did not enforce.
+    #[test]
+    fn the_readme_makes_no_claim_the_harness_contradicts() {
+        for refuted in [
+            "Read the peak, not the growth",
+            "RSS is cumulative within a run",
+            "single `--iterations` cap keeps the guarantee",
+            "brush steps served from a cube",
+        ] {
+            assert!(
+                !BENCH_README.contains(refuted),
+                "the README still claims {refuted:?}"
+            );
+        }
+        // Line wrapping is not part of a claim, so match on the flattened
+        // text — a re-wrap must not turn this gate off.
+        let flat = BENCH_README
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        for required in [
+            "--warmup-frames + --frames",
+            "**mark re-queries** served from a cube",
+            "one sample of a whole-process quantity, and it does not reproduce on its own",
+            "a peak must not be quoted without that spread",
+        ] {
+            assert!(
+                flat.contains(required),
+                "the README must state {required:?}"
+            );
+        }
+    }
+
+    /// The scenario spec files are committed public documents and are compiled
+    /// into this harness, so a stale claim in one of them ships twice. The
+    /// dots spec described the pre-assembly presentation as current behaviour.
+    #[test]
+    fn no_committed_spec_still_describes_the_first_chunk_presentation() {
+        for (name, text) in [
+            ("crossfilter-density", SPEC_DENSITY),
+            ("crossfilter-binned-density", SPEC_BINNED),
+            ("crossfilter-dots", SPEC_DOTS),
+            ("slider-drag", SPEC_SLIDER),
+            ("crosswalk-confidence", SPEC_CROSSWALK),
+        ] {
+            let flat = text.replace("\n# ", " ").replace('\n', " ");
+            for stale in [
+                "draws a mark's first",
+                "first Arrow batch",
+                "first Arrow chunk",
+                "first batch only",
+            ] {
+                assert!(
+                    !flat.contains(stale),
+                    "{name}.yaml still states {stale:?} as current behaviour — the \
+                     compose assembles every chunk"
+                );
+            }
+        }
+        assert!(
+            SPEC_DOTS.contains("assembles every"),
+            "the dots spec must state the behaviour that ships"
         );
     }
 }

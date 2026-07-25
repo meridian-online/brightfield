@@ -15,10 +15,22 @@
 //! - **Resident set size across the compose window** — the process's actual
 //!   footprint, sampled from the OS. It sees DuckDB's C++ allocations (which
 //!   own the imported Arrow buffers) and the allocator's retained pages, which
-//!   the Arrow figure cannot. It is also *cumulative*: a general-purpose
-//!   allocator does not hand freed pages straight back, so a later scenario in
-//!   the same process starts from an already-high floor and its growth reads
-//!   near zero. Read the absolute peak, not the growth, when the run is long.
+//!   the Arrow figure cannot. It is a *single sample of a whole-process
+//!   quantity* and does not reproduce on its own: the harness opens two
+//!   windows per scenario over the same compose work (pre-aggregation off and
+//!   on), and in the committed record their peaks differ by up to a factor of
+//!   two. Report the pair, or report the peak with that spread stated.
+//!
+//! The pre-compose reading is **not** a floor that only rises. The OS reclaims
+//! pages between windows — in the committed record `rss_before` falls sharply
+//! between adjacent scenarios as often as it climbs — so `rss_growth_mib` is
+//! neither the compose's cost nor a lower bound on it, and any reading built
+//! on "RSS is cumulative within a run" is unsound here.
+//!
+//! What the window DOES depend on is the caller: resident size counts
+//! everything the process holds, so every earlier phase's result set must be
+//! dropped before [`RssSampler::start`] is called. The scenario module does
+//! that by moving the coordinator phase's batches into a consuming shape pass.
 //!
 //! Resident size is read from the OS the same way the machine profile reads
 //! physical memory: a best-effort platform probe with the parse split from the
@@ -53,13 +65,17 @@ const SAMPLE_INTERVAL: Duration = Duration::from_millis(5);
 pub struct ComposeMemory {
     /// How resident size was read on the measuring host (or why it was not).
     pub sampler: &'static str,
-    /// Resident set size immediately before the compose, MiB.
+    /// Resident set size immediately before the compose, MiB. Not a monotone
+    /// baseline: the OS reclaims pages between windows, so this falls between
+    /// adjacent scenarios as often as it rises.
     pub rss_before_mib: Option<f64>,
-    /// Highest resident set size observed across the compose window, MiB —
-    /// the peak this column exists for.
+    /// Highest resident set size observed across the compose window, MiB. One
+    /// sample of a whole-process quantity — pair it with the other
+    /// configuration's window before quoting it.
     pub rss_peak_mib: Option<f64>,
-    /// `rss_peak_mib - rss_before_mib`. Near zero late in a long run does NOT
-    /// mean the compose was free: the allocator's floor is already high.
+    /// `rss_peak_mib - rss_before_mib`. NOT the compose's cost in either
+    /// direction: the floor moves both ways between windows, so a small growth
+    /// may mean a high floor and a large one may mean a reclaimed floor.
     pub rss_growth_mib: Option<f64>,
     /// Resident-size samples taken inside the compose window, the two
     /// end-point reads included. A small count means coarse resolution, not a

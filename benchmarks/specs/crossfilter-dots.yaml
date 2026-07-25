@@ -4,8 +4,10 @@
 # the data path and the picture scale with row count. This is the literal
 # "two-view cross-filtered dashboard" shape, kept in the baseline precisely
 # because it does not aggregate — it shows where row-per-mark rendering stops
-# being honest at scale (the composed scene currently draws a mark's first
-# Arrow batch; the harness records materialised-vs-drawn row counts).
+# being honest at scale. The composed scene assembles every Arrow chunk a mark
+# materialised and draws them all, so at ten million rows the picture really
+# does carry ten million dots per plot; the harness records
+# materialised-vs-drawn row counts, and the two are equal.
 #
 # `__DATA_PARQUET__` is substituted by the harness with the absolute path of
 # the generated dataset before the spec is loaded.
