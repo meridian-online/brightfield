@@ -50,15 +50,36 @@ fn main() -> ExitCode {
             outcome_tag(&rec.outcome)
         );
     }
+    // Per-layer cell counts. The roll-up alone cannot say WHICH layer is
+    // carrying the greens, which is the only question worth asking of a
+    // layered contract — a CI step printing 20/40 without saying where would
+    // be a number, not a report.
+    for cells in report.per_layer() {
+        let c = cells.summary;
+        println!(
+            "LAYER {}: cells={} passed={} failed={} suppressed={} pending={}\t{}",
+            cells.layer.as_u8(),
+            c.cells(),
+            c.passed,
+            c.failed,
+            c.suppressed,
+            c.pending,
+            cells.layer.display_name(),
+        );
+    }
     let s = report.summary;
     println!(
-        "SUMMARY: passed={} failed={} suppressed={} pending={}",
-        s.passed, s.failed, s.suppressed, s.pending
+        "SUMMARY: cells={} passed={} failed={} suppressed={} pending={}",
+        s.cells(),
+        s.passed,
+        s.failed,
+        s.suppressed,
+        s.pending
     );
-    if s.failed > 0 {
-        ExitCode::from(1)
-    } else {
+    if report.is_green() {
         ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
     }
 }
 

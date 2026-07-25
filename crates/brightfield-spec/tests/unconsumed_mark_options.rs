@@ -47,7 +47,9 @@ fn sorted_bars_sort_and_limit_are_named() {
 /// opacity. Brightfield draws straight-edged areas at full opacity.
 #[test]
 fn seattle_temp_curve_and_fill_opacity_are_named() {
-    let found = unconsumed(include_str!("../vendor/mosaic-specs/yaml/seattle-temp.yaml"));
+    let found = unconsumed(include_str!(
+        "../vendor/mosaic-specs/yaml/seattle-temp.yaml"
+    ));
     assert!(
         found.contains("areaY:curve"),
         "the ignored `curve` option must be named: {found:?}"

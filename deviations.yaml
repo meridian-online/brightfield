@@ -16,27 +16,32 @@ deviations:
       frame, etc.), legends, and interactors (intervalX, intervalXY,
       highlight, toggle, nearest) against a live DuckDB session.
     brightfield_behaviour: |
-      The renderer has landed: marks, axes, scales, legends, and interactors
-      are drawn as a Vello 2D scene by the framework-free `brightfield-render`
-      crate and presented both live (egui/wgpu shell) and headless (PNG). 38
-      vocabulary entries in `brightfield-spec`'s registry are now marked
-      `Implemented`. The layered conformance runner, however, gates only
-      layers 1 (AST round-trip) and 2 (data-source SQL/DDL equivalence): both
-      pass across all 10 curated specs — 20 of the 40 spec×layer cells green.
-      Layers 3 (visual-encoding equivalence) and 4 (interaction equivalence)
-      still return `LayerOutcome::Pending`, because the oracles that would diff
-      a rendered Vello scene and a scripted-interaction selection state against
-      Mosaic-web output are not wired into the runner yet — even though the
-      renderer itself ships.
+      The renderer and the interaction seam both ship. Marks, axes, scales,
+      legends and interactors are drawn as a Vello 2D scene by the
+      framework-free `brightfield-render` crate and presented both live
+      (egui/wgpu shell) and headless (PNG); an interaction resolves to a
+      pushed predicate and a re-query through the Interaction/Coordinator
+      seam, which headless tests script today. The layered conformance runner
+      GATES layers 1 (AST round-trip) and 2 (data-source SQL/DDL equivalence):
+      layer 1 passes across all 10 curated specs, layer 2 across the 9 that
+      declare data sources. Layers 3 (visual-encoding equivalence) and 4
+      (interaction equivalence) are accounted for HERE — this record names all
+      10 curated specs at both layers, so the runner reports those 20 cells as
+      `LayerOutcome::Suppressed` against this id rather than leaving them to a
+      pending string nobody has to keep true.
     rationale: |
-      Honest scaffolding: conformance is only as strong as its oracle. Layers 3
-      and 4 return `Pending` rather than fake-green until an encoding-equivalence
-      oracle (rendered scene structure) and an interaction-equivalence oracle
-      (scripted events → selection state) are wired to the shipped renderer.
-      This deviation is the accounting surface that keeps the preflight gate
-      honest: flipping `EncodingEquivalenceCheck` / `InteractionEquivalenceCheck`
-      from `Pending` to `Pass`/`Fail` per curated spec is what retires the
-      remaining 20 cells.
+      Conformance is only as strong as its oracle, and what is missing at
+      layers 3 and 4 is the ORACLE, not the capability. Nothing yet diffs a
+      rendered brightfield scene's mark/scale/channel structure against Mosaic
+      web's, and nothing yet holds a scripted interaction's resulting
+      selection state against Mosaic web's for the same events. Until
+      something does, calling those cells green would be a lie and leaving
+      them merely pending would make them invisible — so they are suppressed
+      against this written record, which is the accounting surface. Retiring
+      it is per-spec: wire the oracle, drop that filename from
+      `affected_specs`, and the run judges the cell for real. The expectation
+      assertion makes that safe in both directions, because a spec whose layer
+      starts passing while still listed here reddens the run.
     affected_specs:
       - crossfilter.yaml
       - facet-interval.yaml

@@ -405,7 +405,9 @@ mod tests {
         }
         // The channels the renderer maps are all present — the one subset
         // whose absence would silence a diagnostic on every spec at once.
-        for channel in ["x", "y", "x1", "y1", "x2", "y2", "fill", "stroke", "size", "text"] {
+        for channel in [
+            "x", "y", "x1", "y1", "x2", "y2", "fill", "stroke", "size", "text",
+        ] {
             assert!(
                 mark_option_is_consumed(channel),
                 "{channel} is a rendered channel and must be listed as consumed"

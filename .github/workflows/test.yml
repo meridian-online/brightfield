@@ -83,6 +83,22 @@ jobs:
       - name: cargo test --workspace
         run: cargo test --locked --workspace -- --test-threads=1
 
+      # The portability contract's scoreboard, as its own step with its own
+      # pass/fail. Separate from the suite on purpose: the number that matters
+      # here — how many spec x layer cells are green, and at WHICH layer — is
+      # the one thing a reader wants at a glance, and it is unreadable buried
+      # in a thousand-line test log.
+      #
+      # The binary exits non-zero on any failing cell, and a cell fails when
+      # its outcome differs from what the spec's curated `.expected.yaml`
+      # declares. So this step reddens on a layer REGRESSING (a pass that went
+      # pending) as readily as on one breaking, which is the whole reason the
+      # expectations are assertions rather than notes.
+      #
+      # `--locked` for the same reason the suite above uses it.
+      - name: conformance cell counts
+        run: cargo run --locked --bin conformance -- --layers 1,2,3,4 --corpus curated
+
       # On failure, hand back what the pixel tier actually rendered plus its
       # perceptual diff, so a red visual gate is diagnosable without a Mac.
       - name: upload snapshot diffs

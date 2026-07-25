@@ -28,6 +28,21 @@ fn dfconf_generate_and_verify_layer2_fixtures() {
         let output = parse_spec_path(&entry.source_path)
             .unwrap_or_else(|e| panic!("Failed to parse {}: {e}", entry.name));
 
+        // A spec with no `data:` block emits no DDL, so its "expected SQL" is
+        // an empty file that asserts nothing while still counting as a green
+        // layer-2 cell. Write no fixture for it; the layer-2 check reports
+        // `pending: spec declares no data sources` instead, which is true.
+        if output.spec.data.is_empty() {
+            let fixture_path = expected_sql_path(&entry.source_path);
+            assert!(
+                !fixture_path.exists(),
+                "{} declares no data sources — an expected-SQL fixture for it \
+                 can only ever be empty, and an empty fixture asserts nothing",
+                entry.name
+            );
+            continue;
+        }
+
         // Pass None as base_dir — conformance canonical form uses relative paths
         let emit_output = emit_sources(&output.spec, None)
             .unwrap_or_else(|e| panic!("Failed to emit sources for {}: {e}", entry.name));
