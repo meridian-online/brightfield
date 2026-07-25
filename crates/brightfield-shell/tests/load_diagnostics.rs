@@ -134,6 +134,80 @@ fn opening_a_clean_document_clears_the_previous_ones_diagnostics() {
     );
 }
 
+/// One frame's worth of the `open-home` keystroke, cmd-shift-h. `command` and
+/// `shift` are what the key registry's logical match reads — mac_cmd/ctrl are
+/// platform detail the pattern ignores — so this fires the same on every
+/// runner.
+fn press_home() -> Vec<egui::Event> {
+    let modifiers = egui::Modifiers {
+        command: true,
+        shift: true,
+        ..Default::default()
+    };
+    [true, false]
+        .into_iter()
+        .map(|pressed| egui::Event::Key {
+            key: egui::Key::H,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers,
+        })
+        .collect()
+}
+
+/// **Going Home is a document swap, and takes the diagnostics with it.**
+///
+/// The other route out of a document.
+/// `opening_a_clean_document_clears_the_previous_ones_diagnostics` exercises
+/// `open_chart`, which was already right; the home route reached past it to
+/// `ChartDoc::open`, so nothing dismissed the outgoing spec's banners and the
+/// front door went on saying `Cannot render voronoi` about a document nobody
+/// had open. Driven through the live cmd-shift-h keystroke and real frames, so
+/// the route under test is the one a person takes.
+///
+/// GPU-free: `headless_with_layout` has no device, so no pane paints and every
+/// notification is still exactly what a reader would see.
+#[test]
+fn going_home_takes_the_previous_documents_diagnostics_down() {
+    let mut app = window_over(MIXED);
+    assert!(
+        !app.notifications().is_empty(),
+        "the fixture must warn, or this test proves nothing"
+    );
+
+    let ctx = egui::Context::default();
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0));
+    let frame = |app: &mut MeridianApp, events: Vec<egui::Event>| {
+        let raw = egui::RawInput {
+            screen_rect: Some(screen),
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(raw, |ui| app.draw(ui));
+    };
+    frame(&mut app, Vec::new());
+    assert!(
+        !app.front_door_is_live(),
+        "the fixture opened a document, so the dock — not the door"
+    );
+
+    frame(&mut app, press_home());
+    frame(&mut app, Vec::new());
+
+    assert!(
+        app.front_door_is_live(),
+        "cmd-shift-h left the window on the dock — the trip home never happened"
+    );
+    assert_eq!(
+        app.notifications().len(),
+        0,
+        "the front door is still warning about a document that is no longer \
+         open: {}",
+        banner_text(&app)
+    );
+}
+
 /// All four spec-load entry points carry the diagnostics. Each is exercised
 /// through its real signature, because "the type has a field" is not the
 /// property under test — "this entry point fills it" is.

@@ -1038,11 +1038,19 @@ impl MeridianApp {
     /// Replace the chart document with `composed`, and say what its load
     /// found.
     ///
-    /// The one way a chart document is swapped at runtime. `ChartDoc::open`
-    /// alone cannot do it: the document does not own the banner layer, so a
-    /// caller reaching past this to open a document directly would inherit
-    /// the previous spec's banners and publish none of its own — which is the
-    /// original defect, re-made one level down.
+    /// **The only sanctioned way to swap the chart document at runtime.**
+    /// `ChartDoc::open` alone cannot do it: the document does not own the
+    /// banner layer, so a caller reaching past this to open a document
+    /// directly inherits the previous spec's banners and publishes none of
+    /// its own — the original defect, re-made one level down.
+    ///
+    /// That is not a hypothetical. `open_home` did exactly that: it emptied
+    /// the chart document through `ChartDoc::open` and left the outgoing
+    /// spec's `Cannot render …` banner standing on the front door, for a
+    /// document nobody had open any more. There are two callers now
+    /// (`open_start` and `open_home`) and both go through here; a third that
+    /// does not is the same bug a third time, so the reviewer's question about
+    /// any new chart-document swap is "does it call this".
     pub fn open_chart(&mut self, composed: Composed) {
         self.charts.doc.open(composed);
         self.say_load_diagnostics();
@@ -1890,17 +1898,24 @@ impl MeridianApp {
     /// to survive the trip home. The product owner locked that: Home keeps your
     /// place.
     ///
-    /// Both documents are emptied **through their own `open`**, which keeps the
-    /// wgpu host this window rasters through. A fresh `ChartDoc::empty()` /
+    /// Both documents are emptied **in place** rather than rebuilt, which keeps
+    /// the wgpu host this window rasters through. A fresh `ChartDoc::empty()` /
     /// `ProtocolDoc::empty()` would drop the device the next dashboard needs.
     /// A window already on the front door is left exactly as it is — the guard
     /// is what makes cmd-shift-h on the door a no-op rather than a needless
     /// re-clear that would flash the same empty pixels.
+    ///
+    /// The chart side goes through [`open_chart`](Self::open_chart), not
+    /// through `ChartDoc::open`: going Home is a document swap like any other,
+    /// and the empty document has nothing to say — so the outgoing spec's
+    /// banners come down with it. Calling `ChartDoc::open` here instead left
+    /// a `Cannot render …` banner raised on the front door, about a document
+    /// that was no longer open.
     fn open_home(&mut self, ctx: &egui::Context) {
         if self.front_door_is_live() {
             return;
         }
-        self.charts.doc.open(Composed::empty());
+        self.open_chart(Composed::empty());
         self.protocol.doc.open(ProtocolInputs::empty());
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
         ctx.request_repaint();
