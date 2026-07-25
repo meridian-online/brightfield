@@ -18,8 +18,8 @@
 //!   the Arrow figure cannot. It is a *single sample of a whole-process
 //!   quantity* and does not reproduce on its own: the harness opens two
 //!   windows per scenario over the same compose work (pre-aggregation off and
-//!   on), and in the committed record their peaks differ by up to a factor of
-//!   two. Report the pair, or report the peak with that spread stated.
+//!   on), and in the committed record their peaks differ by as much as 2.4x.
+//!   Report the pair, or report the peak with that spread stated.
 //!
 //! The pre-compose reading is **not** a floor that only rises. The OS reclaims
 //! pages between windows — in the committed record `rss_before` falls sharply

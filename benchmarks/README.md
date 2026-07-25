@@ -42,8 +42,9 @@ and 10⁷ rows (columns are pure functions of the row index via DuckDB `hash()`
 - **crossfilter-dots** — two linked raw dot plots, each cross-filtering the
   other. The row-per-mark shape: both the data path and the picture scale
   with rows; there is nothing to pre-aggregate, and the harness verifies the
-  layer stays silent. Its frame suites cap at 10⁶ rows; its engine suites run
-  at every magnitude.
+  layer stays silent. Its engine suites run at every magnitude; its frame
+  suites stop after 10⁵, because two dot plots over 10⁶ rows is 2,000,000
+  drawn primitives against a uniform 1,000,000 cap.
 - **slider-drag** — a range slider dragged across its stops, filtering every
   view. The only scenario whose gesture is not a brush, and the reason the
   record carries a `drag` field per row (see *Two gestures* below).
