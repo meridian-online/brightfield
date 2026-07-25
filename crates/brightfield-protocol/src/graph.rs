@@ -648,6 +648,7 @@ pub fn build_graph(
                         produced,
                         consumed_relations,
                         consumed_files,
+                        degraded,
                         ..
                     } => {
                         // A targetless statement (INSERT/COPY/UPDATE — no
@@ -659,6 +660,23 @@ pub fn build_graph(
                         else {
                             continue;
                         };
+                        // A statement recovered from its WITH-stripped form is
+                        // real but INCOMPLETE — whatever its malformed body
+                        // read is unknowable and has no edge here. Badge the
+                        // node it produces rather than draw a partial lineage
+                        // as a clean one. First badge wins, so the reason is
+                        // stable when several statements share a relation.
+                        if let Some(reason) = degraded {
+                            if let Some(node) = b.nodes.get_mut(&target) {
+                                if node.issue.is_none() {
+                                    node.issue = Some(format!(
+                                        "partial lineage: this statement did not parse in \
+                                         full, so anything its malformed CTE body reads is \
+                                         missing from the graph. {reason}"
+                                    ));
+                                }
+                            }
+                        }
                         let mut consumed: BTreeSet<AssetId> = BTreeSet::new();
                         for rel in consumed_relations {
                             let id = resolve_rel(&mut b, rel);

@@ -1,6 +1,6 @@
 //! CTE lineage: the joins INSIDE a SQL step, in graph form — no pixels.
 //!
-//! Three claims, one per test:
+//! Five claims, one per test:
 //!
 //! 1. the two CTEs of the vendored `sec_entities.sql` become nodes under the
 //!    same ids whichever input path built the graph — the offline manifest, or
@@ -10,6 +10,14 @@
 //!    resolves to its innermost declaration;
 //! 3. a CTE whose body fails to parse degrades alone — its sibling CTEs and its
 //!    sibling statements still explode.
+//!
+//! The last two are asserted against the FOLDED graph — the one the builders
+//! return and the shell renders today — because that is where a lost degrade
+//! signal would actually be seen:
+//!
+//! 4. a statement recovered from its `WITH`-stripped form draws its relation
+//!    BADGED, never as a clean healthy node;
+//! 5. a statement that produces no relation is never promoted out of its chip.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -17,6 +25,7 @@ use std::path::PathBuf;
 use brightfield_protocol::graph::{build_graph, load_model_sources, AssetGraph, AssetKind};
 use brightfield_protocol::{
     contract_sql, cte_id, explode_ctes, load_contract, manifest_sql, parse_manifest_str, AssetNode,
+    Manifest,
 };
 
 const PROTOCOL: &str = "edgar_gleif";
@@ -78,14 +87,27 @@ fn has_edge(graph: &AssetGraph, from: &str, to: &str) -> bool {
     graph.edges.iter().any(|e| e.from == from && e.to == to)
 }
 
-/// Build and explode a one-step protocol from in-memory SQL.
-fn exploded_from_sql(name: &str, sql: &str) -> AssetGraph {
+/// A one-step protocol over in-memory SQL: its parsed manifest and its sources.
+fn one_step(name: &str, sql: &str) -> (Manifest, BTreeMap<String, Result<String, String>>) {
     let manifest_text = format!(
         "name: {name}\nengine: duckdb\nsteps:\n  - name: shape\n    sql: models/shape.sql\n"
     );
     let manifest = parse_manifest_str(&manifest_text).expect("the manifest parses");
     let mut sources: BTreeMap<String, Result<String, String>> = BTreeMap::new();
     sources.insert("shape".to_string(), Ok(sql.to_string()));
+    (manifest, sources)
+}
+
+/// The FOLDED graph of a one-step protocol — exactly what `build_graph` returns
+/// and what the shell renders today, with nothing exploded.
+fn folded_from_sql(name: &str, sql: &str) -> AssetGraph {
+    let (manifest, sources) = one_step(name, sql);
+    build_graph(&manifest, &sources)
+}
+
+/// Build and explode a one-step protocol from in-memory SQL.
+fn exploded_from_sql(name: &str, sql: &str) -> AssetGraph {
+    let (manifest, sources) = one_step(name, sql);
     let graph = build_graph(&manifest, &sources);
     explode_ctes(&graph, &manifest_sql(&sources))
 }
@@ -274,4 +296,77 @@ fn a_malformed_cte_body_chips_alone() {
         .map(|(id, _)| id)
         .collect();
     assert_eq!(chips, vec![&bad], "one chip, and it is the bad CTE");
+}
+
+/// The SAME malformed statement in the FOLDED graph — the one the builders
+/// return and the shell renders today, with no explode. Recovering the relation
+/// from the stripped statement must not present it as healthy: the node carries
+/// the parse error as its issue, because the bad body's reads are unknowable
+/// and its lineage is therefore incomplete.
+#[test]
+fn a_partly_parsed_statement_badges_the_relation_it_produces() {
+    let graph = folded_from_sql(
+        "degraded_cte",
+        "CREATE OR REPLACE TABLE degraded AS\n\
+           WITH good AS (SELECT * FROM real_table),\n\
+                bad AS (SELEC every FORM here IS deliberately unparseable)\n\
+           SELECT * FROM good JOIN bad USING (id);\n\
+         \n\
+         CREATE OR REPLACE TABLE sibling AS SELECT * FROM other_table;\n",
+    );
+
+    let target = "asset.degraded_cte.degraded";
+    let node = graph
+        .nodes
+        .get(target)
+        .unwrap_or_else(|| panic!("the folded graph draws {target}: {:?}", graph.nodes.keys()));
+
+    // The signal survives the fold: not a clean, healthy-looking relation.
+    let issue = node
+        .issue
+        .as_ref()
+        .expect("a statement that did not parse in full is badged, never drawn healthy");
+    assert!(
+        issue.contains("partial lineage"),
+        "the badge says the lineage is incomplete: {issue}"
+    );
+
+    // What DID parse is still lineage: the good body's read reaches the target.
+    assert!(has_edge(&graph, "asset.degraded_cte.real_table", target));
+
+    // The sibling statement is untouched, and carries no badge of its own.
+    assert!(has_edge(
+        &graph,
+        "asset.degraded_cte.other_table",
+        "asset.degraded_cte.sibling"
+    ));
+    assert!(graph.nodes["asset.degraded_cte.sibling"].issue.is_none());
+}
+
+/// A statement that produces no relation is NEVER promoted out of its chip.
+/// `build_graph` draws no node for a targetless statement, so promoting one
+/// would delete it from the picture — no node, no chip, no badge. It stays an
+/// issue-badged chip in the FOLDED graph, wired like any other degrade.
+#[test]
+fn a_targetless_statement_with_a_bad_cte_body_still_chips() {
+    for sql in [
+        "INSERT INTO sink WITH bad AS (SELEC every FORM here IS unparseable) SELECT * FROM bad;",
+        "WITH bad AS () SELECT 1;",
+    ] {
+        let graph = folded_from_sql("targetless", sql);
+        let chip = graph
+            .nodes
+            .get("stmt.targetless.shape#0")
+            .unwrap_or_else(|| {
+                panic!(
+                    "a targetless statement stays a chip, never a silent skip — {sql}: {:?}",
+                    graph.nodes.keys().collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(chip.kind, AssetKind::Opaque, "{sql}");
+        assert!(
+            chip.issue.as_ref().is_some_and(|i| !i.is_empty()),
+            "the chip carries its parse error — {sql}"
+        );
+    }
 }

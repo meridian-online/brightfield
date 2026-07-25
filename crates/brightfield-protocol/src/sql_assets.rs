@@ -18,7 +18,12 @@
 //! body's reads and the relation it produces. Three consequences:
 //!
 //! - a CTE whose body fails to parse degrades **alone** — its siblings, and the
-//!   statement's own target relation, survive;
+//!   statement's own target relation, survive. The recovered statement is
+//!   marked `degraded` so the relation it produces draws BADGED: the reads of a
+//!   body that did not parse are unknowable, and a partial lineage drawn as a
+//!   clean one is a lie. A statement that recovers no relation is not promoted
+//!   at all — a graph that draws only produced nodes would drop it entirely,
+//!   and a silent skip is exactly what this module refuses;
 //! - reads are resolved against a **scope stack**, so a name declared in more
 //!   than one scope resolves to its INNERMOST declaration and a nested
 //!   declaration never masquerades as lineage;
@@ -27,8 +32,12 @@
 //!   relation ([`ScopedReads::relations`]).
 //!
 //! `produced` / `consumed_relations` / `consumed_files` are still derived from
-//! the WHOLE-statement parse whenever it succeeds, so the statement-level graph
-//! is untouched by any of this; the CTE fields are additive.
+//! the WHOLE-statement parse whenever it succeeds, so a statement that parses
+//! is untouched by any of this; the CTE fields are additive. One statement-level
+//! behaviour DOES change, and deliberately: a statement whose whole-statement
+//! parse fails but whose stripped form recovers a relation used to be a single
+//! opaque chip and is now that relation, badged with the parse error. The signal
+//! moves; it never disappears.
 
 use std::collections::BTreeSet;
 use std::ops::ControlFlow;
@@ -74,6 +83,12 @@ pub enum StatementAssets {
         /// `WITH` clause is stripped. Its `ctes` name the CTEs that feed the
         /// produced relation; its relations/files are read directly.
         main_reads: ScopedReads,
+        /// `Some(error)` when the WHOLE-statement parse FAILED and the
+        /// statement was recovered from its `WITH`-stripped form. Everything
+        /// here is real, but nothing here is complete: whatever a malformed
+        /// body read is unknowable, so the consumer must badge the produced
+        /// node with this rather than draw it as a healthy relation.
+        degraded: Option<String>,
         /// Byte range in the source file.
         range: (usize, usize),
     },
@@ -633,6 +648,9 @@ fn extract_ctes(stmt: &str) -> Option<CteView> {
 /// A statement whose only defect is a malformed CTE body stays
 /// [`StatementAssets::Parsed`] — it keeps the relation it produces and every
 /// CTE that did parse, and the bad body degrades alone (see the module docs).
+/// Such a statement carries `degraded: Some(error)`, because its lineage is
+/// real but incomplete; a statement that recovers NO relation is never promoted
+/// at all, so it cannot vanish from a graph that draws only produced nodes.
 #[must_use]
 pub fn extract_statement_assets(sql: &str) -> Vec<StatementAssets> {
     let mut out = Vec::new();
@@ -668,14 +686,23 @@ pub fn extract_statement_assets(sql: &str) -> Vec<StatementAssets> {
                     consumed_files: collector.files,
                     ctes,
                     main_reads,
+                    degraded: None,
                     range,
                 });
             }
             Err(e) => match view {
-                // The statement parses once its WITH clause is stripped, so the
-                // defect is inside a CTE body: keep the target relation and
+                // The statement parses once its WITH clause is stripped AND
+                // that stripped parse recovered the relation it produces, so
+                // the defect is inside a CTE body: keep the target relation and
                 // every good CTE, and let the bad body be the only chip.
-                Some(view) if !view.ctes.is_empty() => {
+                //
+                // The recovered relation is the PRECONDITION, not a detail. A
+                // targetless statement (INSERT/COPY/UPDATE) draws no node at
+                // all, so promoting one would delete it from the graph — no
+                // node, no chip, no badge — which is the silent skip this
+                // module exists to prevent. Refuse the promotion and keep the
+                // chip.
+                Some(view) if view.produced.is_some() && !view.ctes.is_empty() => {
                     let mut consumed_relations = view.main.relations.clone();
                     let mut consumed_files = view.main.files.clone();
                     for cte in &view.ctes {
@@ -694,6 +721,10 @@ pub fn extract_statement_assets(sql: &str) -> Vec<StatementAssets> {
                         consumed_files,
                         ctes: view.ctes,
                         main_reads: view.main,
+                        // What the malformed body read is unknowable, so this
+                        // lineage is real but incomplete. Carry the reason so
+                        // the produced node is badged, never drawn healthy.
+                        degraded: Some(e.to_string()),
                         range,
                     });
                 }
@@ -980,6 +1011,7 @@ mod tests {
             consumed_relations,
             ctes,
             main_reads,
+            degraded,
             ..
         } = &assets[0]
         else {
@@ -996,6 +1028,43 @@ mod tests {
         };
         assert!(!error.is_empty(), "the chip carries its parse error");
         assert!(main_reads.ctes.contains("good") && main_reads.ctes.contains("bad"));
+        // Recovered, not clean: the consumer must badge what it draws.
+        assert!(
+            degraded.as_ref().is_some_and(|e| !e.is_empty()),
+            "a recovered statement is marked incomplete"
+        );
+    }
+
+    /// A statement whose stripped form recovers NO relation is never promoted.
+    /// A graph that draws only produced nodes would drop it entirely, so the
+    /// promotion that saves a `CREATE … AS` would delete an `INSERT` — chip and
+    /// all. It stays opaque.
+    #[test]
+    fn pds_targetless_statement_with_bad_cte_body_stays_opaque() {
+        for sql in [
+            "INSERT INTO sink WITH bad AS (SELEC every FORM here IS unparseable) SELECT * FROM bad",
+            "WITH bad AS () SELECT 1",
+        ] {
+            let assets = extract_statement_assets(sql);
+            assert!(
+                matches!(assets[0], StatementAssets::Opaque { index: 0, .. }),
+                "{sql} produces no relation, so it keeps its chip: {:?}",
+                assets[0]
+            );
+        }
+    }
+
+    /// A statement that parses whole is never marked incomplete, even when one
+    /// of its CTE bodies fails to parse ON ITS OWN — the whole-statement parse
+    /// already gave the full lineage, and a badge there would be a false alarm.
+    #[test]
+    fn pds_a_statement_that_parses_whole_is_never_marked_degraded() {
+        let sql = "CREATE TABLE out AS WITH c AS (SELECT * FROM real_table) SELECT * FROM c";
+        let assets = extract_statement_assets(sql);
+        let StatementAssets::Parsed { degraded, .. } = &assets[0] else {
+            panic!("expected Parsed")
+        };
+        assert!(degraded.is_none(), "{degraded:?}");
     }
 
     /// A `WITH` that is not a CTE clause claims nothing — the statement keeps
