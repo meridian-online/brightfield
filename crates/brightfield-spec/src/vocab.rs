@@ -340,8 +340,21 @@ vocab_enum! {
 /// depended on the renderer would be the dependency arrow pointing the wrong
 /// way). Adding a consumer means adding its key here, and
 /// `every_consumed_mark_option_key_is_named_once` keeps the list from growing
-/// duplicates. The cost of a stale entry is a missing diagnostic, never a
-/// false one — so when in doubt about a key, leave it OFF and let it warn.
+/// duplicates.
+///
+/// **The two ways this list goes wrong are not symmetric, and the dangerous
+/// one is omission.** [`mark_option_is_consumed`] returns `false` for anything
+/// not named here, and the parser warns on exactly that — so a key that IS
+/// read but is missing from the list produces a diagnostic telling an author
+/// their working instruction has no effect. That is a **false** diagnostic,
+/// and it is the one failure an honesty channel cannot survive: a reader who
+/// catches this channel lying once stops believing the true ones. The other
+/// error — a key listed here whose reader was since removed — costs only a
+/// missing diagnostic, which is where this list started.
+///
+/// So: **when in doubt about a key, go and check.** `rg` the key across the
+/// lowerers and the renderer, and name the reader in the section below. Do
+/// not leave it off "to be safe" — off is the unsafe side.
 ///
 /// Where each is read:
 ///

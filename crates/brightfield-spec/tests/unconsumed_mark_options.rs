@@ -121,6 +121,33 @@ fn an_unimplemented_mark_does_not_itemise_its_options() {
     );
 }
 
+/// **Absence from the consumed list is the whole cause of the diagnostic**,
+/// which is why omitting a key that IS read produces a *false* one.
+///
+/// One mark, two options, both real knobs on a density mark. `bandwidth` is
+/// named in `CONSUMED_MARK_OPTION_KEYS` and stays silent; `curve` is not named
+/// and warns. Nothing else about them differs — so a reader who reaches for
+/// "when in doubt, leave it off and let it warn" is choosing to tell an author
+/// their working instruction has no effect. Verify instead: `rg` the key
+/// across the lowerers and the renderer, and name the reader in the list's doc
+/// comment.
+#[test]
+fn list_membership_is_the_only_thing_separating_a_warn_from_a_silence() {
+    let found = unconsumed(
+        "plot:\n  - mark: densityY\n    data: { from: t }\n    x: a\n    bandwidth: 20\n    \
+         curve: monotone-x\n",
+    );
+    assert!(
+        !found.contains("densityY:bandwidth"),
+        "`bandwidth` is a listed reader and must stay silent: {found:?}"
+    );
+    assert!(
+        found.contains("densityY:curve"),
+        "`curve` has no reader and must warn — the diagnostic follows list \
+         membership and nothing else: {found:?}"
+    );
+}
+
 /// Every shipped example must stay clean. These are the specs the product
 /// hands a first-time user, and one of them silently ignoring an instruction
 /// is the same defect this gate exists to catch — caught at home instead.
