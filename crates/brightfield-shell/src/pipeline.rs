@@ -21,13 +21,18 @@ use arrow::record_batch::RecordBatch;
 use brightfield_conformance::LoadDiagnostics;
 use brightfield_engine::coordinator::{Coordinator, Interaction};
 use brightfield_engine::error::EngineError;
-use brightfield_engine::{assemble_batches, Engine};
+use brightfield_engine::facts::MarkFacts;
+use brightfield_engine::{assemble_batches, Engine, Session};
 use brightfield_render::channel::ChannelMap;
 use brightfield_render::inset::{resolve_insets_for_marks, DEFAULT_SCALE_INSET};
 use brightfield_render::layout::{ChartLayout, Margins};
 use brightfield_render::mark::{default_renderers, find_renderer, MarkRenderer};
+use brightfield_render::sample_notice::{sample_band_margins, SampleFact};
 use brightfield_render::scale::ScaleSet;
-use brightfield_render::scene::{build_multi_mark_scene, compose_dashboard, ChartData};
+use brightfield_render::scene::{
+    build_multi_mark_scene_with_domains, compose_dashboard, unrestorable_under_sampling, ChartData,
+    UnsampledDomains,
+};
 use brightfield_render::{grow_margins, resolve_titles};
 use brightfield_spec::analysis::{
     analyse_spec, build_brushable_bindings, BrushKind, ComponentPath,
@@ -35,6 +40,7 @@ use brightfield_spec::analysis::{
 use brightfield_spec::layout::{collect_plot_nodes, placed_plots, resolve_plot_insets, Rect};
 use brightfield_spec::vocab::MarkKind;
 use brightfield_spec::{parse_spec, parse_spec_path, Format, ParseOutput, Spec};
+use brightfield_sql::ir::SampleRate;
 use brightfield_sql::{collect_marks, collect_plot_groups};
 use brightfield_workbench::subject::RunState;
 use vello::Scene;
@@ -63,6 +69,11 @@ pub struct PlotHandle {
     pub marks: Vec<MarkKind>,
     /// The plot's brush/point gesture binding, when its spec declares one.
     pub gesture: Option<GestureBinding>,
+    /// `Some` when this plot drew a pushed-down sample — the mirror of
+    /// [`ChartData::sample`](brightfield_render::scene::ChartData::sample), so a
+    /// surface reading plot handles (chrome, a future export caption) can tell
+    /// a sampled plot from a complete one without re-deriving it.
+    pub sample: Option<SampleFact>,
 }
 
 /// A plot's declared interaction, resolved from the spec's brushable-interactor
@@ -209,11 +220,31 @@ impl Composed {
 /// Returns a human-readable message if any pipeline stage fails or no mark
 /// renders.
 pub fn compose_spec(spec_path: &str) -> Result<Composed, String> {
+    compose_spec_sampled(spec_path, None)
+}
+
+/// [`compose_spec`] at an explicit pushed-down sample rate.
+///
+/// `None` is [`compose_spec`] exactly. `Some(rate)` makes every row-level mark
+/// draw one row in `rate.modulus()` and say so in its own ink — the switch
+/// `--force-sample` turns, so that ONE spec can produce a complete PNG and a
+/// sampled PNG over the SAME rows. That comparison is the point: judging
+/// whether a sampled render reads as sampled against a different, denser
+/// dataset would confound the treatment with the density.
+///
+/// # Errors
+///
+/// As [`compose_spec`].
+pub fn compose_spec_sampled(
+    spec_path: &str,
+    sample: Option<SampleRate>,
+) -> Result<Composed, String> {
     let parsed = parse_spec_path(spec_path).map_err(|e| format!("parse error: {e}"))?;
     compose(
         parsed,
         Some(source_name(spec_path)),
         Path::new(spec_path).parent(),
+        sample,
     )
 }
 
@@ -227,12 +258,27 @@ pub fn compose_spec(spec_path: &str) -> Result<Composed, String> {
 ///
 /// As [`compose_spec`].
 pub fn live_spec(spec_path: &str) -> Result<(LiveDashboard, Composed), String> {
+    live_spec_sampled(spec_path, None)
+}
+
+/// [`live_spec`] at an explicit pushed-down sample rate — the live window's
+/// half of `--force-sample`, so the window and the captures are judged at the
+/// same rate rather than one of them being taken on trust.
+///
+/// # Errors
+///
+/// As [`live_spec`].
+pub fn live_spec_sampled(
+    spec_path: &str,
+    sample: Option<SampleRate>,
+) -> Result<(LiveDashboard, Composed), String> {
     let parsed = parse_spec_path(spec_path).map_err(|e| format!("parse error: {e}"))?;
     let mut dash = LiveDashboard::load_parsed(
         parsed,
         Some(source_name(spec_path)),
         Path::new(spec_path).parent(),
     )?;
+    dash.set_sample(sample);
     let composed = dash.present()?;
     Ok((dash, composed))
 }
@@ -253,7 +299,7 @@ pub fn live_spec(spec_path: &str) -> Result<(LiveDashboard, Composed), String> {
 /// As [`compose_spec`].
 pub fn compose_spec_str(source: &str, base_dir: Option<&Path>) -> Result<Composed, String> {
     let parsed = parse_spec(source, Format::Yaml).map_err(|e| format!("parse error: {e}"))?;
-    compose(parsed, None, base_dir)
+    compose(parsed, None, base_dir, None)
 }
 
 /// The name a diagnostic cites for a spec loaded from a path: its file name,
@@ -276,6 +322,7 @@ fn compose(
     parsed: ParseOutput,
     source: Option<String>,
     spec_dir: Option<&Path>,
+    sample: Option<SampleRate>,
 ) -> Result<Composed, String> {
     let spec = parsed.spec;
     let analysis = analyse_spec(&spec).map_err(|e| format!("analysis error: {e}"))?;
@@ -286,10 +333,12 @@ fn compose(
         .load_spec(spec.clone(), analysis, spec_dir)
         .map_err(|e| format!("engine error: {e}"))?;
     let mut session = load.session;
+    session.set_sample(sample);
 
     // Execute every mark; assemble all its result chunks into one drawable batch.
     let results = session.execute_all();
-    Ok(compose_from_results(&spec, results)?.with_diagnostics(diagnostics))
+    let facts = unsampled_facts(&session, results.len());
+    Ok(compose_from_results(&spec, results, &facts)?.with_diagnostics(diagnostics))
 }
 
 /// A live, session-holding dashboard — the push-down seam at the presentation
@@ -393,7 +442,13 @@ impl LiveDashboard {
     /// As [`compose_spec`] (returns `Err` when nothing renders).
     pub fn present(&mut self) -> Result<Composed, String> {
         let results = self.coordinator.session_mut().execute_all();
-        Ok(compose_from_results(&self.spec, results)?.with_diagnostics(self.diagnostics.clone()))
+        // Gathered on the SAME path as the first paint, not only there: a
+        // re-present after a brush that dropped the facts would erase the
+        // notice on the first gesture and leave a sampled picture looking
+        // complete.
+        let facts = unsampled_facts(self.coordinator.session_mut(), results.len());
+        Ok(compose_from_results(&self.spec, results, &facts)?
+            .with_diagnostics(self.diagnostics.clone()))
     }
 
     /// Apply one interaction — push its predicate/param into DuckDB, re-query,
@@ -417,6 +472,13 @@ impl LiveDashboard {
         }
         self.coordinator.apply(interaction);
         self.present()
+    }
+
+    /// Set the pushed-down sample rate every later query carries — including
+    /// every re-query a brush, a click or a slider triggers, which is the
+    /// point of holding it on the session rather than on the call.
+    pub fn set_sample(&mut self, sample: Option<SampleRate>) {
+        self.coordinator.session_mut().set_sample(sample);
     }
 
     /// The live coordinator, for surfaces that read the session directly (a grid
@@ -454,6 +516,28 @@ pub fn spec_data_files(spec: &Spec, spec_dir: Option<&Path>) -> Vec<PathBuf> {
         .collect()
 }
 
+/// The unsampled facts for every mark, or `None` per mark when the session is
+/// not sampling.
+///
+/// One query per SAMPLED mark and none at all otherwise, which is what keeps
+/// an unsampled chart's query count byte-unchanged by this feature's
+/// existence.
+fn unsampled_facts(session: &Session, marks: usize) -> Vec<Option<MarkFacts>> {
+    (0..marks)
+        .map(|i| match session.unsampled_mark_facts(i) {
+            None => None,
+            Some(Ok(f)) => Some(f),
+            Some(Err(e)) => {
+                // A failed facts query must not take the picture down with it:
+                // the chart still draws, it just cannot say what it is a
+                // sample of, and says so by not claiming.
+                eprintln!("warning: unsampled facts for mark {i}: {e}");
+                None
+            }
+        })
+        .collect()
+}
+
 /// Build the composited dashboard from a spec and its per-mark execution
 /// results. Shared by the one-shot [`compose`] path and the live
 /// [`LiveDashboard`] re-query seam, so a re-composite after an interaction takes
@@ -461,6 +545,7 @@ pub fn spec_data_files(spec: &Spec, spec_dir: Option<&Path>) -> Vec<PathBuf> {
 fn compose_from_results(
     spec: &Spec,
     results: Vec<Result<Vec<RecordBatch>, EngineError>>,
+    facts: &[Option<MarkFacts>],
 ) -> Result<Composed, String> {
     let marks = collect_marks(spec);
     let mut batches: Vec<Option<RecordBatch>> = Vec::with_capacity(marks.len());
@@ -500,6 +585,7 @@ fn compose_from_results(
 
         let mut chart_data: Vec<ChartData<'_>> = Vec::new();
         let mut plot_marks: Vec<MarkKind> = Vec::new();
+        let mut plot_domains = UnsampledDomains::default();
         for &mi in &group.mark_indices {
             let Some(batch) = batches.get(mi).and_then(|b| b.as_ref()) else {
                 continue;
@@ -512,6 +598,17 @@ fn compose_from_results(
                 }
             };
             plot_marks.push(kinds[mi]);
+            // A mark is sampled exactly when the session produced unsampled
+            // facts for it; `drawn` is what actually arrived, `of` is what the
+            // same query returns without the clause.
+            let sample = facts.get(mi).copied().flatten().map(|f| SampleFact {
+                drawn: batch.num_rows() as u64,
+                of: f.rows,
+            });
+            if let Some(f) = facts.get(mi).copied().flatten() {
+                plot_domains.x = plot_domains.x.or(f.x_domain);
+                plot_domains.y = plot_domains.y.or(f.y_domain);
+            }
             chart_data.push(ChartData {
                 batch,
                 channel_map: &channel_maps[mi],
@@ -519,6 +616,7 @@ fn compose_from_results(
                 layout: ChartLayout::new(plot.rect.width, plot.rect.height),
                 view_extent: None,
                 highlight: None,
+                sample,
             });
         }
         if chart_data.is_empty() {
@@ -547,7 +645,14 @@ fn compose_from_results(
         let insets = resolve_insets_for_marks(explicit_insets, &inset_entries, DEFAULT_SCALE_INSET);
         drop(inset_entries);
 
-        let margins = grow_margins(Margins::default(), &titles);
+        // Two bands, reserved the same way: one for the axis titles, one for
+        // the sampling notice. Growing the margin is what makes the device
+        // removable later without disturbing anything else's geometry.
+        let plot_sample = chart_data.iter().find_map(|d| d.sample);
+        let margins = sample_band_margins(
+            grow_margins(Margins::default(), &titles),
+            plot_sample.is_some(),
+        );
         let layout = ChartLayout::with_margins_and_insets(
             plot.rect.width,
             plot.rect.height,
@@ -564,9 +669,37 @@ fn compose_from_results(
         // rect, from the scales returned here — one legend per chart, one
         // source of truth, and no in-plot swatch block a margin copy could
         // drift from or that could sit on top of the marks.
-        let (scene, scales) = build_multi_mark_scene(&refs, false, &titles);
+        let (scene, scales) =
+            build_multi_mark_scene_with_domains(&refs, false, &titles, plot_domains);
         drop(refs);
         drop(chart_data);
+
+        // REFUSE rather than draw a confidently wrong picture. A sampled plot
+        // whose scale set carries a channel `apply_unsampled_domains` cannot
+        // restore renders with a different category-to-colour (or
+        // category-to-position) mapping than the complete one, under a notice
+        // that says only that rows were dropped. Checked here because here is
+        // where the scales exist — one seam covering `--force-sample` on
+        // `brightfield-shot`, on the live window, and every re-present after a
+        // gesture, rather than three argument parsers each remembering.
+        if plot_sample.is_some() {
+            let unrestorable = unrestorable_under_sampling(&scales);
+            if !unrestorable.is_empty() {
+                let names: Vec<&str> = unrestorable.iter().map(|c| c.wire_name()).collect();
+                let s = if names.len() == 1 { "" } else { "s" };
+                let names = names.join(", ");
+                return Err(format!(
+                    "refusing to sample plot {}: its {names} channel{s} carries a categorical \
+                     or ramp-anchored scale, whose domain is inferred from the rows actually \
+                     drawn. Sampling re-orders that domain, so the sampled render would give \
+                     the same value a DIFFERENT colour (or band position) than the complete \
+                     one — and the sampling notice would not say so. Sample a plot whose \
+                     channels are continuous x/y only, or drop {names} from this plot.",
+                    plot.path,
+                ));
+            }
+        }
+
         placements.push((plot.rect.x, plot.rect.y, scene));
 
         let gesture = brushable
@@ -586,6 +719,7 @@ fn compose_from_results(
             layout,
             marks: plot_marks,
             gesture,
+            sample: plot_sample,
         });
     }
 
@@ -913,13 +1047,13 @@ plot:
         // the path-count delta is purely the extra dots.
         let (full_results, total) = two_chunk_dot_results(first_rows, second_rows);
         assert_eq!(total, materialised);
-        let full = compose_from_results(&spec, full_results).expect("compose full");
+        let full = compose_from_results(&spec, full_results, &[]).expect("compose full");
 
         let first_only: Vec<Result<Vec<RecordBatch>, EngineError>> = vec![Ok(vec![xy_batch(
             (0..first_rows).map(|i| (i % 101) as f64).collect(),
             (0..first_rows).map(|i| (i % 101) as f64).collect(),
         )])];
-        let first = compose_from_results(&spec, first_only).expect("compose first");
+        let first = compose_from_results(&spec, first_only, &[]).expect("compose first");
 
         let drawn_delta = count_scene_paths(&full.scene) - count_scene_paths(&first.scene);
         assert_eq!(
@@ -932,7 +1066,7 @@ plot:
             (0..materialised).map(|i| (i % 101) as f64).collect(),
             (0..materialised).map(|i| (i % 101) as f64).collect(),
         )])];
-        let single = compose_from_results(&spec, single).expect("compose single");
+        let single = compose_from_results(&spec, single, &[]).expect("compose single");
         assert_eq!(
             count_scene_paths(&full.scene),
             count_scene_paths(&single.scene),
@@ -980,7 +1114,7 @@ plot:
         let results: Vec<Result<Vec<RecordBatch>, EngineError>> = vec![Ok(vec![a, b])];
         // `.err()` rather than `.expect_err()` — `Composed` is deliberately not
         // `Debug` (it holds a Vello scene), so we inspect the error side directly.
-        let err = compose_from_results(&spec, results)
+        let err = compose_from_results(&spec, results, &[])
             .err()
             .expect("must fail loudly");
         assert!(err.contains("mark 0"), "the failure names the mark: {err}");

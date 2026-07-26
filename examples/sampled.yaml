@@ -1,0 +1,64 @@
+meta:
+  title: Sampled render — the notice in the plot's own ink
+  description: |
+    A dense scatter, generated in DuckDB so there is no data file. Render it
+    twice — once complete, once forced through the pushed-down sampling
+    clause — and compare.
+
+      cargo run -p brightfield-shell --bin brightfield-shot -- \
+        --spec examples/sampled.yaml \
+        --out render-proof/dense-complete.png --vello-only
+      cargo run -p brightfield-shell --bin brightfield-shot -- \
+        --spec examples/sampled.yaml \
+        --out render-proof/dense-32.png --vello-only --force-sample 32
+
+    Same spec, same rows, same axes. The only differences are the points that
+    were not drawn and the hatched band that says so. `--vello-only` writes the
+    Vello scene with no egui chrome around it — the notice has to survive that
+    to be worth anything, because a chart exported or cropped out of the window
+    keeps exactly this and nothing else.
+
+    Live:
+
+      cargo run -p brightfield-shell -- examples/sampled.yaml --force-sample 32
+
+    **This pair does not isolate the treatment, and is not meant to.** 75,000
+    dots ink 74% of this plot: the complete render is a solid edge-to-edge
+    block and the sampled one is an open field of points. Any reader calls
+    that sampled at a glance, for a reason that has nothing to do with the
+    hatched band. It is here because it is honest about what over-plotting
+    looks like and about why sampling exists at all — not because it tests the
+    device.
+
+    Two companions do isolate it. `examples/sampled-legible.yaml` drops to a
+    row count where the complete picture still reads as a scatter, and adds a
+    sampled-vs-sampled control at two rates. `examples/sampled-matched.yaml`
+    goes further: it writes this file's sampling clause out by hand, so it
+    draws the SAME 2,394 points at the SAME density with no band. Set that
+    against `--force-sample 32` here and the band is the only systematic
+    difference left.
+
+    Modulus 32 is a floor, not a preference. Below it DuckDB's row hash is
+    blind to the appended `__bf_selected` boolean, so a sitting run at 16 could
+    not detect a brush-determinism regression even in principle. Measured in
+    `brightfield-engine`'s `sample_determinism` tests.
+
+    The row count is deliberate too. On an Apple M-series adapter a plot this
+    size draws about 104,600 dots before vello's fixed flattening buffers
+    overflow, after which the frame comes back BLANK — every pixel transparent,
+    exit 0, no error raised. 75,000 sits under that with headroom, so
+    "complete" here means complete.
+data:
+  points:
+    query: |
+      SELECT
+        (i * 2654435761 % 100003) / 1000.0            AS spread,
+        ((i * 40503 + 12345) % 100019) / 1000.0       AS depth
+      FROM range(75000) AS t(i)
+plot:
+  - mark: dot
+    data: { from: points }
+    x: spread
+    y: depth
+width: 640
+height: 480

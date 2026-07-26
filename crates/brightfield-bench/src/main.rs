@@ -140,21 +140,71 @@ const SCENARIOS: &[SpecDef] = &[
 ///
 /// This is not a wall-clock convenience. Since the compose began assembling
 /// EVERY Arrow chunk rather than the first, a row-per-mark scene really does
-/// carry one primitive per table row, and the encoded scene buffer grows with
-/// it. On the reference machine (Apple M1 Pro, Metal) a two-scatter dashboard
-/// at 10⁶ rows encodes into a 2^28-byte binding and the frame does not render
-/// at all — wgpu rejects it against a `max_*_buffer_binding_size` of 2^27, and
-/// the process aborts inside the driver rather than returning an error the
-/// harness could record. A skipped cell is the only honest alternative to a
-/// crashed run.
+/// carry one primitive per table row, and what the renderer can encode has a
+/// ceiling.
 ///
-/// The value is the measured boundary: 10⁶ primitives encode into exactly the
-/// 2^27-byte limit and render; 2 × 10⁶ take the next power of two and do not.
-/// That leaves the cap sitting ON the boundary rather than under it — a scene
-/// change that added a few bytes per primitive would double the buffer and
-/// reintroduce the abort, so lower this the moment a frame suite dies rather
-/// than raising it.
-const FRAME_DRAWN_ROW_CAP: u64 = 1_000_000;
+/// **The previous value, 10⁶, described the wrong ceiling.** It was derived
+/// from the storage-buffer binding size — the conservative 128 MiB the
+/// renderer used to ask for, at ~128 bytes per drawn primitive. Two things are
+/// now known about that. First, every device brightfield creates asks the
+/// adapter for its real limits, and a Metal adapter reports 4 GiB, so that
+/// ceiling moved by a factor of 32 and no longer binds. Second, and the reason
+/// the number here went DOWN rather than up: a much lower ceiling was always
+/// underneath it, and nothing was looking at it.
+///
+/// Vello's flattening and coarse-raster buffers are FIXED sizes chosen inside
+/// `vello_encoding` — 2^21 elements for `lines` / `tiles` / `seg_counts` /
+/// `segments`, 2^18 for `bin_data`. They do not scale with the scene and no
+/// wgpu limit moves them. When one overflows, vello sets a `failed` bit in a
+/// GPU-side counter, does not re-run coarse, and returns `Ok`. Brightfield
+/// never reads that counter, so **the render succeeds and the frame comes back
+/// BLANK** — which is worse than the abort this constant was written to avoid,
+/// because `Ok` and a written PNG is what an unattended capture records as a
+/// pass.
+///
+/// **Blank, not partial.** Once `seg_counts` overflows, coarse emits nothing at
+/// all: the counters come back with `segments = 0` and `ptcl = 0`, and the
+/// production render agrees — every pixel of the written PNG is
+/// `rgba(0, 0, 0, 0)`. An earlier version of this note said "partial" and
+/// "missing most of its ink", which would have had someone looking for a
+/// thinned picture instead of an empty one.
+///
+/// Measured on the reference machine (Apple M1 Pro, Metal) through the
+/// PRODUCTION path — `cargo run -p brightfield-shell --bin brightfield-shot --
+/// --vello-only`, a debug build, one dot scatter in a 640×480 plot at scale 2:
+///
+/// | dots | exit | written PNG |
+/// |---|---|---|
+/// | 50 000 | 0 | inked — 74 % of pixels carry mark or furniture |
+/// | 104 600 | 0 | inked |
+/// | 104 800 | 0 | **blank** — 1 280 × 960 px, every one `rgba(0,0,0,0)` |
+/// | 106 000 · 132 000 · 262 000 | 0 | blank |
+/// | 262 101 | 0 | blank |
+/// | 262 102 and up | 101 | `vello_encoding` `config.rs:185`, subtract overflow |
+///
+/// Two distinct ceilings, and they are an order of magnitude apart. The first
+/// is `seg_counts` (blank frame, exit 0, no diagnostic anywhere); its onset
+/// depends on how much rule each dot contributes, so the bracket above is
+/// fixture-specific rather than a constant. The second is exact and is not:
+/// `bin_data` is 2^18 = 262 144 elements and one solid-colour draw consumes one,
+/// so the subtraction goes negative at 262 144 filled paths. This plot carries
+/// 42 paths of frame, grid and axis rule, and the panic first fires at 262 102
+/// dots — 262 144 − 42, to the row.
+///
+/// **The panic is not the low ceiling.** An earlier version of this table
+/// attributed a 130 000–132 000 encode panic to `bin_data`. That panic is real
+/// but comes from `vello::DebugDownloads::map`, which slices the lines buffer to
+/// `bump.lines` without checking it against the buffer's own 2^21 length — and
+/// that function is `#[cfg(feature = "debug_layers")]`, so it exists only inside
+/// the probe below. It was the probe measuring itself. The production path runs
+/// clean through 262 101.
+///
+/// So the cap sits just under the lowest count proven to draw, and the frame
+/// suites above it are skipped for the same reason as before, against a real
+/// number instead of an inherited one. `vello_bump_ceiling.rs` in
+/// `brightfield-render` reproduces the counters; the table above is reproduced
+/// with `brightfield-shot` and a `range(N)` spec. Re-run both before moving this.
+const FRAME_DRAWN_ROW_CAP: u64 = 100_000;
 
 /// The device-pixel scale frames render at — 2.0 matches the Retina-class
 /// displays the live window actually runs on.
@@ -948,10 +998,18 @@ mod tests {
     }
 
     /// The frame cap is a MEASURED boundary on this machine, not a taste
-    /// call: at 10⁶ rows a one-scatter scene encodes and renders, and a
-    /// two-scatter scene aborts the process inside wgpu validation. The
-    /// per-scenario primitive counts are what put each row on the right side
-    /// of that line, so they are asserted rather than trusted.
+    /// call — and the measurement it reproduces is the one that looks at the
+    /// written PNG, not the one that waits for the process to abort.
+    ///
+    /// The old expectations asserted here said a one-scatter scene renders at
+    /// 10⁶ rows. It does return `Ok` and it does write a file. The file is
+    /// **blank**: past ~104,800 drawn primitives vello's fixed `seg_counts`
+    /// buffer overflows, coarse emits nothing, and every pixel comes back
+    /// transparent. A cap that only caught the abort was letting a whole
+    /// magnitude of empty frames through and timing them.
+    ///
+    /// The per-scenario primitive counts are what put each row on the right
+    /// side of the line, so they are asserted rather than trusted.
     #[test]
     fn the_frame_cap_reproduces_the_measured_render_boundary() {
         let caps = |name: &str, rows: u64| -> bool {
@@ -961,13 +1019,16 @@ mod tests {
                 .expect("committed scenario");
             d.row_level_marks * rows > FRAME_DRAWN_ROW_CAP
         };
-        // Observed to render: one scatter at a million rows.
-        assert!(!caps("brush-density", 1_000_000));
-        assert!(!caps("brush-binned-density", 1_000_000));
-        // Observed to abort: two scatters at a million rows.
-        assert!(caps("crossfilter-dots", 1_000_000));
-        // Observed to render: two scatters at a hundred thousand rows.
-        assert!(!caps("crossfilter-dots", 100_000));
+        // Measured inked: one scatter at a hundred thousand rows.
+        assert!(!caps("brush-density", 100_000));
+        assert!(!caps("brush-binned-density", 100_000));
+        // Measured BLANK (`Ok` returned, PNG written, every pixel transparent):
+        // one scatter an order of magnitude up, and two scatters at the same
+        // row count.
+        assert!(caps("brush-density", 1_000_000));
+        assert!(caps("crossfilter-dots", 100_000));
+        // Two scatters stay inside it at half that.
+        assert!(!caps("crossfilter-dots", 50_000));
         // Ten million row-level rows is past the boundary in every shape.
         assert!(caps("brush-density", 10_000_000));
         assert!(caps("crossfilter-dots", 10_000_000));

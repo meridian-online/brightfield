@@ -687,6 +687,7 @@ mod tests {
                 x_column: Some("x".to_string()),
                 y_column: Some("y".to_string()),
             }),
+            sample: None,
         }
     }
 

@@ -1,0 +1,54 @@
+meta:
+  title: Sampled render — the treatment, with the density held down
+  description: |
+    The isolating half of the sampling sign-off. Its twin, `sampled.yaml`, is
+    honest about what over-plotting looks like: 75,000 dots in this plot fill
+    74% of it, so the complete render is a solid block and the sampled one is
+    an open field of points. A reader says "obviously sampled" instantly — and
+    for a reason that has nothing to do with the hatched band under judgement.
+    The density difference does the work and the treatment is never tested.
+
+    6,000 dots ink 29% of the same plot: a legible scatter with recoverable
+    structure. Sample it at 1-in-32 and about 190 points remain — which reads
+    as a perfectly ordinary small dataset. Nothing about that picture claims to
+    be a sample. That is the question worth asking a human: shown a plausible
+    complete-looking scatter, does the band tell you it is not one?
+
+      cargo run -p brightfield-shell --bin brightfield-shot -- \
+        --spec examples/sampled-legible.yaml \
+        --out render-proof/legible-complete.png --vello-only
+      cargo run -p brightfield-shell --bin brightfield-shot -- \
+        --spec examples/sampled-legible.yaml \
+        --out render-proof/legible-32.png --vello-only --force-sample 32
+
+    And a sampled-vs-sampled control, where both pictures carry the band and
+    neither is complete — so the only thing to judge is whether the band reads
+    the same way twice and whether the counts in it are believed:
+
+      cargo run -p brightfield-shell --bin brightfield-shot -- \
+        --spec examples/sampled-legible.yaml \
+        --out render-proof/legible-64.png --vello-only --force-sample 64
+
+    Modulus 32 is a floor, not a preference. Below it DuckDB's row hash is
+    blind to the appended `__bf_selected` boolean, so a sitting run at 16 could
+    not detect a brush-determinism regression even in principle — the broken
+    and the correct nesting draw identical points there. Measured in
+    `brightfield-engine`'s `sample_determinism` tests.
+
+    Continuous x and y only. `--force-sample` refuses a plot with a categorical
+    or ramp-anchored channel, because sampling re-orders those domains and the
+    two renders would colour the same value differently.
+data:
+  points:
+    query: |
+      SELECT
+        (i * 2654435761 % 100003) / 1000.0            AS spread,
+        ((i * 40503 + 12345) % 100019) / 1000.0       AS depth
+      FROM range(6000) AS t(i)
+plot:
+  - mark: dot
+    data: { from: points }
+    x: spread
+    y: depth
+width: 640
+height: 480

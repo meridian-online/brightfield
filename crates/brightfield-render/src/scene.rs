@@ -13,6 +13,7 @@ use crate::ink::ink;
 use crate::layout::ChartLayout;
 use crate::legend::render_colour_legend;
 use crate::mark::{HighlightState, MarkRenderer};
+use crate::sample_notice::{render_sample_notice, SampleFact};
 use crate::scale::{infer_scales, infer_scales_multi, Scale, ScaleSet, ViewExtent};
 use crate::title::ResolvedTitles;
 
@@ -52,6 +53,19 @@ pub struct ChartData<'a> {
     /// Optional highlight state for per-row dim/emphasis.
     /// When `Some`, matching rows render at full alpha; non-matching rows are dimmed.
     pub highlight: Option<&'a HighlightState>,
+    /// `Some` when this mark's rows came back through a pushed-down sample —
+    /// what was drawn, and what it was drawn out of.
+    ///
+    /// Its only job here is to make the plot say so: a plot with any sampled
+    /// entry draws [`render_sample_notice`] into its own scene.
+    ///
+    /// Any path that rebuilds a `ChartData` after a gesture owes it forward.
+    /// Dropping it there would erase the notice on the first brush and leave a
+    /// sampled picture looking complete — which is the failure this whole
+    /// mechanism exists to prevent, so it is worth stating as an obligation
+    /// rather than an implementation detail. `LiveDashboard::present` is the
+    /// one path that does so today, and a test drives a brush through it.
+    pub sample: Option<SampleFact>,
 }
 
 /// Build a complete chart scene from data and configuration.
@@ -226,12 +240,135 @@ pub fn build_multi_mark_scene(
     draw_inline_legend: bool,
     titles: &ResolvedTitles,
 ) -> (Scene, ScaleSet) {
+    build_multi_mark_scene_with_domains(
+        entries,
+        draw_inline_legend,
+        titles,
+        UnsampledDomains::default(),
+    )
+}
+
+/// The positional extent a plot's data covers when nothing is sampled away.
+///
+/// A continuous domain is otherwise inferred by walking the DRAWN batch, so a
+/// sampled plot would infer a narrower one: the axis ticks would move, and
+/// because a brush inverts through those same scales, the same drag on a
+/// sampled plot would dispatch a different interval to every other plot than
+/// on a complete one. Restoring the unsampled extent also removes the wrong
+/// reason a sampled picture might look different — the judgement wanted is
+/// whether the sampling TREATMENT reads, not whether the axes moved.
+///
+/// `None` on a channel means "no continuous domain to restore" — either the
+/// plot is not sampled, or the column is categorical and its extent is not a
+/// pair of numbers. The categorical case does not fall through to a
+/// best-effort render: [`unrestorable_under_sampling`] refuses it, because the
+/// picture it would produce is wrong in a way the sampling notice does not
+/// describe.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct UnsampledDomains {
+    /// The x channel's unsampled `(min, max)`.
+    pub x: Option<(f64, f64)>,
+    /// The y channel's unsampled `(min, max)`.
+    pub y: Option<(f64, f64)>,
+}
+
+/// [`build_multi_mark_scene`] with the positional domains a sampled plot must
+/// keep — see [`UnsampledDomains`]. Applied AFTER inference and before any ink
+/// is laid down, so ticks, gridlines, mark positions and the pixel↔data
+/// inversion a gesture uses all agree on one domain.
+pub fn build_multi_mark_scene_with_domains(
+    entries: &[&ChartData<'_>],
+    draw_inline_legend: bool,
+    titles: &ResolvedTitles,
+    domains: UnsampledDomains,
+) -> (Scene, ScaleSet) {
     if entries.is_empty() {
         return (Scene::new(), ScaleSet::new());
     }
-    let scales = infer_multi_mark_scales(entries);
+    let mut scales = infer_multi_mark_scales(entries);
+    apply_unsampled_domains(&mut scales, domains);
     let scene = draw_multi_mark_scene(entries, draw_inline_legend, titles, &scales);
     (scene, scales)
+}
+
+/// Widen the positional scales back to their unsampled extent, in place.
+///
+/// Only continuous positional scales take an override. Every other scale kind
+/// is inferred from the drawn rows and is NOT restored here — see
+/// [`unrestorable_under_sampling`], which is the refusal that keeps a plot
+/// carrying one from being sampled at all.
+pub fn apply_unsampled_domains(scales: &mut ScaleSet, domains: UnsampledDomains) {
+    for (channel, bound) in [(Channel::X, domains.x), (Channel::Y, domains.y)] {
+        let Some((lo, hi)) = bound else { continue };
+        let Some(scale) = scales.get(channel) else {
+            continue;
+        };
+        if matches!(scale, Scale::Linear { .. } | Scale::Time { .. }) {
+            let widened = override_scale_domain(scale, lo, hi);
+            scales.insert(channel, widened);
+        }
+    }
+}
+
+/// The channels of `scales` whose domain a sample would move and
+/// [`apply_unsampled_domains`] cannot put back — empty when the plot is safe to
+/// sample.
+///
+/// **This exists because the alternative is a confidently wrong picture.** A
+/// categorical domain is a LIST, inferred by walking the drawn rows in
+/// first-appearance order, and the palette slot a category gets is its index in
+/// that list. Sampling changes which row appears first, so it re-orders the
+/// list, so it re-assigns the colours. Measured over a four-class scatter at
+/// `--force-sample 64`: complete draws `class-1` amber and `class-2` teal; the
+/// sampled render draws `class-1` teal and `class-2` amber. Nothing about that
+/// is visible to the reader — the notice says rows were dropped, and says
+/// nothing about the legend having been rewritten.
+///
+/// Three kinds are refused, for one reason each:
+///
+/// - [`Scale::Colour`] — the measured case above.
+/// - [`Scale::Band`] — a category missing from the sample loses its slot
+///   entirely and every later category slides one place along the axis.
+/// - [`Scale::Sequential`] — continuous, but its ramp is anchored to the drawn
+///   `(min, max)`, so the same value takes a different colour in the two
+///   renders. Same failure, continuous clothing.
+///
+/// **Why refuse rather than restore.** Restoring the list means reproducing
+/// first-appearance order from an unsampled query, and first-appearance order
+/// over a parallel scan is not something DuckDB promises. A restoration that is
+/// right most of the time reintroduces exactly this bug, intermittently, under
+/// a notice that says the picture is trustworthy — strictly worse than not
+/// drawing it. When a deterministic ordering lands, this list shrinks and the
+/// refusal narrows on its own.
+///
+/// The caller asks this per PLOT, over the plot's whole scale set, which is
+/// deliberately conservative: a plot mixing a sampled dot mark with an
+/// unsampled aggregating one is refused for the aggregating mark's ramp even
+/// though that ramp is over bins the sample never touched. Erring that way
+/// costs an unusual spec a loud, actionable error; erring the other way costs a
+/// reader a wrong picture they cannot see is wrong.
+#[must_use]
+pub fn unrestorable_under_sampling(scales: &ScaleSet) -> Vec<Channel> {
+    [
+        Channel::X,
+        Channel::Y,
+        Channel::Fill,
+        Channel::Stroke,
+        Channel::Size,
+        Channel::X1,
+        Channel::Y1,
+        Channel::X2,
+        Channel::Y2,
+        Channel::Text,
+    ]
+    .into_iter()
+    .filter(|&c| {
+        matches!(
+            scales.get(c),
+            Some(Scale::Band { .. } | Scale::Colour { .. } | Scale::Sequential { .. })
+        )
+    })
+    .collect()
 }
 
 /// Infer the shared scale set for a multi-mark plot: `infer_scales_multi` to
@@ -367,6 +504,13 @@ fn draw_multi_mark_scene(
         if let Some(fill_scale) = scales.get(Channel::Fill) {
             render_colour_legend(&mut scene, layout, fill_scale);
         }
+    }
+
+    // The sampling notice, last, so nothing draws over it. PER PLOT, from this
+    // plot's own entries — a dashboard may hold one sampled plot beside a
+    // complete one, and a page-level device would mark the complete one too.
+    if let Some(fact) = entries.iter().find_map(|e| e.sample) {
+        render_sample_notice(&mut scene, layout, fact);
     }
 
     scene
@@ -732,6 +876,88 @@ mod tests {
     use arrow::record_batch::RecordBatch;
     use std::sync::Arc;
 
+    /// **The restoration, asserted where the scales come out.** A sampled
+    /// batch spans less than the rows it was drawn from, and a continuous
+    /// domain is inferred by walking the batch, so without the override the
+    /// axis narrows toward the interior. That is not a cosmetic difference: a
+    /// brush inverts pixels through these same scales, so the same drag would
+    /// dispatch a different data interval on a sampled plot than on a complete
+    /// one.
+    ///
+    /// The control half matters as much as the treatment half — the SAME batch
+    /// with no domains must still infer the narrow extent, or the assertion
+    /// above would hold for a scene that never looked at the override at all.
+    #[test]
+    fn unsampled_domains_widen_the_scales_a_sampled_batch_would_narrow() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        // What a 1-in-N sample of a 0..100 field might leave behind.
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![40.0, 47.0, 55.0, 61.0])),
+                Arc::new(Float64Array::from(vec![12.0, 19.0, 24.0, 30.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        let dot = DotRenderer;
+        let data = ChartData {
+            batch: &batch,
+            channel_map: &cm,
+            renderer: &dot,
+            layout: ChartLayout::new(400.0, 300.0),
+            view_extent: None,
+            highlight: None,
+            sample: None,
+        };
+
+        let domain = |scales: &ScaleSet, ch: Channel| match scales.get(ch) {
+            Some(Scale::Linear {
+                domain_min,
+                domain_max,
+                ..
+            }) => (*domain_min, *domain_max),
+            other => panic!("expected a linear {ch:?} scale, got {other:?}"),
+        };
+
+        let (_, narrow) = build_multi_mark_scene(&[&data], false, &ResolvedTitles::default());
+        let narrow_x = domain(&narrow, Channel::X);
+        let narrow_y = domain(&narrow, Channel::Y);
+
+        let (_, restored) = build_multi_mark_scene_with_domains(
+            &[&data],
+            false,
+            &ResolvedTitles::default(),
+            UnsampledDomains {
+                x: Some((0.0, 100.0)),
+                y: Some((-5.0, 80.0)),
+            },
+        );
+        assert_eq!(
+            domain(&restored, Channel::X),
+            (0.0, 100.0),
+            "the x scale must come out at the UNSAMPLED extent, not the drawn batch's"
+        );
+        assert_eq!(domain(&restored, Channel::Y), (-5.0, 80.0));
+
+        // Control: without the override the same batch narrows, so the check
+        // above is about the override and not about the fixture.
+        assert!(
+            narrow_x.0 > 0.0 && narrow_x.1 < 100.0,
+            "fixture check: the drawn batch alone must infer a NARROWER x domain \
+             than the unsampled one, got {narrow_x:?}"
+        );
+        assert!(
+            narrow_y.0 > -5.0 && narrow_y.1 < 80.0,
+            "fixture check: same for y, got {narrow_y:?}"
+        );
+    }
+
     // A fill-colour plot draws an inline legend by default; `draw_inline_legend =
     // false` suppresses it, so the scale isn't drawn twice when a standalone
     // `legend:` node has relocated it. (multi-view inc 6 — two-legend fix)
@@ -763,6 +989,7 @@ mod tests {
             layout: ChartLayout::new(400.0, 300.0),
             view_extent: None,
             highlight: None,
+            sample: None,
         };
         let (with_legend, _) = build_multi_mark_scene(&[&data], true, &ResolvedTitles::default());
         let (without_legend, _) =
@@ -797,6 +1024,7 @@ mod tests {
             layout: ChartLayout::new(400.0, 300.0),
             view_extent: None,
             highlight: None,
+            sample: None,
         };
         let (geo_scene, _) = build_multi_mark_scene(&[&geo_data], true, &ResolvedTitles::default());
         let geo_paths = crate::mark::count_scene_paths(&geo_scene);
@@ -827,6 +1055,7 @@ mod tests {
             layout: ChartLayout::new(400.0, 300.0),
             view_extent: None,
             highlight: None,
+            sample: None,
         };
         let (dot_scene, _) = build_multi_mark_scene(&[&dot_data], true, &ResolvedTitles::default());
         // The geo plot (one outline, no frame) draws strictly fewer paths than a
@@ -862,6 +1091,7 @@ mod tests {
             layout: ChartLayout::new(300.0, 200.0),
             view_extent: None,
             highlight: None,
+            sample: None,
         };
         let d1 = ChartData {
             batch: &batch,
@@ -870,6 +1100,7 @@ mod tests {
             layout: ChartLayout::new(300.0, 200.0),
             view_extent: None,
             highlight: None,
+            sample: None,
         };
 
         // Each plot's scene is built independently, then composited.
@@ -923,6 +1154,7 @@ mod tests {
             layout,
             view_extent: None,
             highlight: None,
+            sample: None,
         };
 
         let (scene, scales) = build_chart_scene(&data);
@@ -972,6 +1204,7 @@ mod tests {
             layout,
             view_extent: None,
             highlight: None,
+            sample: None,
         };
 
         let (scene, _scales) = build_chart_scene(&data);
@@ -1009,6 +1242,7 @@ mod tests {
             layout: ChartLayout::new(640.0, 480.0),
             view_extent: None,
             highlight: None,
+            sample: None,
         };
         let (_scene, scales) = build_chart_scene(&data);
         let y = scales.get(Channel::Y).unwrap();
@@ -1045,6 +1279,7 @@ mod tests {
             layout: ChartLayout::new(640.0, 480.0),
             view_extent: None,
             highlight: None,
+            sample: None,
         };
         let (_scene, scales) = build_chart_scene(&data);
         let y = scales.get(Channel::Y).unwrap();
@@ -1089,6 +1324,7 @@ mod tests {
             layout,
             view_extent: None,
             highlight: None,
+            sample: None,
         };
 
         let (scene, _scales) = build_chart_scene(&data);
@@ -1130,6 +1366,7 @@ mod tests {
             layout,
             view_extent: None,
             highlight: None,
+            sample: None,
         };
         let (_scene, scales_full) = build_chart_scene(&data_full);
         let x_full = scales_full.get(Channel::X).unwrap();
@@ -1148,6 +1385,7 @@ mod tests {
             layout,
             view_extent: Some(&extent),
             highlight: None,
+            sample: None,
         };
         let (_scene, scales_zoomed) = build_chart_scene(&data_zoomed);
         let x_zoomed = scales_zoomed.get(Channel::X).unwrap();
@@ -1204,6 +1442,7 @@ mod tests {
             layout,
             view_extent: None,
             highlight: None,
+            sample: None,
         };
         let data2 = ChartData {
             batch: &batch2,
@@ -1212,6 +1451,7 @@ mod tests {
             layout,
             view_extent: None,
             highlight: None,
+            sample: None,
         };
 
         let (scene, scales) =
@@ -1279,6 +1519,7 @@ mod tests {
             layout: ChartLayout::new(400.0, 300.0),
             view_extent: None,
             highlight: None,
+            sample: None,
         };
         let titles = ResolvedTitles {
             x: Some("x".into()),
@@ -1342,6 +1583,7 @@ mod tests {
             layout,
             view_extent: None,
             highlight: Some(&hs),
+            sample: None,
         };
         let (scene, _scales) = build_chart_scene(&data);
         let encoding = scene.encoding();
@@ -1358,6 +1600,7 @@ mod tests {
             layout,
             view_extent: None,
             highlight: None,
+            sample: None,
         };
         let (scene2, _) = build_chart_scene(&data_no_hl);
         let encoding2 = scene2.encoding();

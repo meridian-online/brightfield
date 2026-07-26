@@ -809,6 +809,8 @@ impl<H: ReactiveHandle> CrossfilterCoordinator<H> {
                     layout,
                     view_extent: None,
                     highlight: highlight.as_ref(),
+                    // See `render_plot_scene` below for why this is `None`.
+                    sample: None,
                 })
             })
             .collect();
@@ -1274,6 +1276,17 @@ fn render_plot_scene(
                 layout: *layout,
                 view_extent: None,
                 highlight: highlight.as_ref(),
+                // NOT WIRED, and deliberately not papered over. A sampled
+                // plot's notice is carried by `LiveDashboard::present`
+                // (brightfield-shell's pipeline), which re-derives the fact
+                // from the session on every re-present — including after a
+                // brush. This coordinator is a second, older rebuild path
+                // that nothing in the workspace currently constructs, so
+                // threading the fact through it would add a claim no test
+                // could reach. If it is ever wired to a live surface, the
+                // fact has to come with it or the notice vanishes on the
+                // first gesture.
+                sample: None,
             })
         })
         .collect();
@@ -1665,6 +1678,7 @@ mod tests {
                     layout: *layout,
                     view_extent: None,
                     highlight: None,
+                    sample: None,
                 })
             })
             .collect();
@@ -1698,6 +1712,7 @@ mod tests {
                     layout: *layout,
                     view_extent: None,
                     highlight: None,
+                    sample: None,
                 })
             })
             .collect();
@@ -1758,6 +1773,7 @@ mod tests {
                 layout,
                 view_extent: None,
                 highlight: None,
+                sample: None,
             };
             let (scene, _) = build_multi_mark_scene(&[&cd], false, &ResolvedTitles::default());
             scene_bytes(&scene)

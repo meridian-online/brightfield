@@ -266,6 +266,7 @@ fn crossfilter_brush_in_plot_a_filters_plot_b() {
         layout: ChartLayout::new(360.0, 300.0),
         view_extent: None,
         highlight: None,
+        sample: None,
     };
     let (scene, _scales) = build_multi_mark_scene(
         &[&chart_data],

@@ -138,7 +138,7 @@ fn a_boot_publishes_before_it_reads_and_the_window_opens_where_it_was_left() {
     //         whole test: the file remembers a *charts* start and was left on
     //         the *protocol* view, so a restore that let the start choose the
     //         view lands on Charts and the persisted active view is dead.
-    let boot = opening_boot(None, restored.opened.as_deref(), Flow::Vertical)
+    let boot = opening_boot(None, restored.opened.as_deref(), Flow::Vertical, None)
         .expect("a launch that named nothing cannot fail");
     assert_eq!(
         boot.view, None,
@@ -165,6 +165,7 @@ fn a_boot_publishes_before_it_reads_and_the_window_opens_where_it_was_left() {
         Some("../../examples/dashboard.yaml"),
         restored.opened.as_deref(),
         Flow::Vertical,
+        None,
     )
     .expect("the named spec opens");
     assert_eq!(named.view, Some(ViewKind::Charts));

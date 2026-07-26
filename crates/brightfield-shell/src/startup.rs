@@ -158,9 +158,10 @@ pub fn opening_boot(
     spec: Option<&str>,
     opened: Option<&str>,
     flow: brightfield_protocol::layout::Flow,
+    sample: Option<brightfield_sql::ir::SampleRate>,
 ) -> Result<crate::window::Boot, String> {
     if let Some(spec) = spec {
-        return crate::window::Boot::open(spec, flow, None);
+        return crate::window::Boot::open_sampled(spec, flow, None, sample);
     }
     let Some(id) = opened else {
         return Ok(crate::window::Boot::empty());

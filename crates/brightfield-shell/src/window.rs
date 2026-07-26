@@ -58,6 +58,7 @@ use egui_tiles::{Container, Tile};
 
 use brightfield_keys::{Altitude, RecencyCounter};
 use brightfield_protocol::layout::{Flow, Layout};
+use brightfield_sql::ir::SampleRate;
 use brightfield_workbench::behavior::{TAB_BAR_HEIGHT, TILE_GAP};
 use brightfield_workbench::workspace::{tabs_holding, tile_of};
 use brightfield_workbench::{
@@ -451,6 +452,24 @@ impl Boot {
     /// [`crate::protocol::run_less_manifest_refusal`], which states that rule
     /// once for both callers — or if the pipeline rejects it.
     pub fn open(spec: &str, flow: Flow, focus: Option<String>) -> Result<Self, String> {
+        Self::open_sampled(spec, flow, focus, None)
+    }
+
+    /// [`Boot::open`] at an explicit pushed-down sample rate.
+    ///
+    /// `None` is [`Boot::open`] exactly — no clause, no extra query, the same
+    /// bytes. `Some(rate)` opens the same document drawing one row in
+    /// `rate.modulus()`, with the notice in the plot's own ink.
+    ///
+    /// # Errors
+    ///
+    /// As [`Boot::open`].
+    pub fn open_sampled(
+        spec: &str,
+        flow: Flow,
+        focus: Option<String>,
+        sample: Option<SampleRate>,
+    ) -> Result<Self, String> {
         let text = std::fs::read_to_string(spec).map_err(|e| format!("read {spec}: {e}"))?;
         if brightfield_protocol::is_protocol_manifest(&text) {
             if !crate::protocol::offline_optin() {
@@ -463,7 +482,7 @@ impl Boot {
         // resolves to a pushed predicate and a re-query rather than a still
         // frame. The capture tiers build their boots through [`Boot::charts`]
         // and stay one-shot, which is what keeps a baseline a baseline.
-        let (live, composed) = crate::pipeline::live_spec(spec)?;
+        let (live, composed) = crate::pipeline::live_spec_sampled(spec, sample)?;
         // The command-line surface for the same diagnostics the window raises
         // as banners. Both, not either: a headless capture never draws a
         // banner, and `brightfield-shot` rendering a chart with a mark

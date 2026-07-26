@@ -20,6 +20,7 @@ pub mod layout;
 pub mod legend;
 pub mod mark;
 pub mod nearest;
+pub mod sample_notice;
 pub mod scale;
 pub mod scene;
 pub mod text;

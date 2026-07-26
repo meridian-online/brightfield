@@ -91,7 +91,10 @@ fn validating_device() -> (wgpu::Device, wgpu::Queue) {
     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("keyed-canvas-test"),
         required_features: wgpu::Features::empty(),
-        required_limits: wgpu::Limits::default(),
+        // The adapter's real limits, as every other brightfield device asks
+        // for — a validating device on the conservative floor would validate
+        // a ceiling nothing else runs at.
+        required_limits: brightfield_render::vello_renderer::device_limits(&adapter),
         memory_hints: wgpu::MemoryHints::default(),
         ..Default::default()
     }))

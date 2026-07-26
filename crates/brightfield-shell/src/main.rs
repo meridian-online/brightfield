@@ -27,7 +27,8 @@
 //! on stdout and exit 0 *before* any window, layout read or spec boot happens.
 //!
 //! Usage: `brightfield-shell [SPEC.yaml] [--theme light|dark] [--shot-out PATH]
-//!         [--shot-after N] [--flow vertical|horizontal] [--help] [--version]`
+//!         [--shot-after N] [--force-sample N] [--flow vertical|horizontal]
+//!         [--help] [--version]`
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -50,6 +51,16 @@ struct Args {
     /// `Some(n)`: capture the window automatically after `n` frames, write it
     /// to `shot_out`, and close. The scriptable form of F12.
     shot_after: Option<u32>,
+    /// `--force-sample N`: open the document drawing one row in N through the
+    /// pushed-down sampling clause, with the notice in the plot's own ink.
+    /// The window's half of the flag `brightfield-shot` carries, so the live
+    /// surface and the captures are judged at the same rate.
+    ///
+    /// A plot with a categorical or ramp-anchored channel is REFUSED before the
+    /// window opens — sampling re-orders those domains, so the sampled render
+    /// would colour the same value differently from the complete one under a
+    /// notice that mentions only the dropped rows.
+    force_sample: Option<brightfield_sql::ir::SampleRate>,
 }
 
 /// What the command line asked `main` to do, resolved before any window work.
@@ -85,6 +96,10 @@ Options:
                                   (default: vertical).
   --shot-out <PATH>               Where F12 and --shot-after write the PNG
                                   (default: render-proof/live-screenshot.png).
+  --force-sample <N>              Draw one row in N (a power of two) through the
+                                  pushed-down sampling clause, with the notice
+                                  in the plot's own ink. Refuses a plot with a
+                                  categorical or ramp-anchored channel.
   --shot-after <N>                Render N frames, capture the window to
                                   --shot-out, then exit. Exit 0 means the PNG
                                   landed; for unattended smoke tests.
@@ -114,6 +129,7 @@ fn parse_args_from(mut it: impl Iterator<Item = String>) -> Result<Invocation, S
     let mut shot_out = PathBuf::from("render-proof/live-screenshot.png");
     let mut flow = Flow::Vertical;
     let mut shot_after: Option<u32> = None;
+    let mut force_sample: Option<brightfield_sql::ir::SampleRate> = None;
     while let Some(a) = it.next() {
         match a.as_str() {
             "--version" | "-V" => return Ok(Invocation::Version),
@@ -135,6 +151,21 @@ fn parse_args_from(mut it: impl Iterator<Item = String>) -> Result<Invocation, S
                         .map_err(|_| format!("--shot-after needs a frame count, not {v}"))?,
                 );
             }
+            "--force-sample" => {
+                let v = it.next().ok_or("--force-sample needs a power of two")?;
+                let raw: u32 = v
+                    .parse()
+                    .map_err(|_| format!("--force-sample needs a positive integer, not {v}"))?;
+                force_sample = Some(
+                    brightfield_sql::ir::SampleRate::from_modulus(raw).ok_or_else(|| {
+                        format!(
+                            "--force-sample {raw} is not a power of two. Power-of-two moduli \
+                             nest, so halving the rate can only ADD points; rounding {raw} \
+                             silently would keep that true while the stated rate was a lie."
+                        )
+                    })?,
+                );
+            }
             "--flow" => {
                 if let Some(v) = it.next() {
                     flow = if v == "horizontal" {
@@ -154,6 +185,7 @@ fn parse_args_from(mut it: impl Iterator<Item = String>) -> Result<Invocation, S
         shot_out,
         flow,
         shot_after,
+        force_sample,
     }))
 }
 
@@ -364,7 +396,12 @@ fn main() -> Result<(), String> {
     let (mut layout, outcome) = startup::boot_layout(path.as_deref());
     eprintln!("layout: {}", outcome.reason());
 
-    let boot = startup::opening_boot(args.spec.as_deref(), layout.opened.as_deref(), args.flow)?;
+    let boot = startup::opening_boot(
+        args.spec.as_deref(),
+        layout.opened.as_deref(),
+        args.flow,
+        args.force_sample,
+    )?;
 
     // Which view will actually be drawn, resolved once and asked three times.
     // A boot that named one wins — `MeridianApp::assemble` sets it active — and
@@ -392,9 +429,51 @@ fn main() -> Result<(), String> {
     }
     let title = boot.title(view);
 
+    // The live window rides eframe's wgpu device — the Vello canvases are built
+    // with `VelloRenderer::from_shared` on it — so the ceiling this window draws
+    // at is set HERE, not by anything brightfield's own device code does. Left
+    // at `Default`, `egui-wgpu` requests `Limits::default()`: the WebGL-friendly
+    // floor, whose 128 MiB storage-buffer binding is what an encoded
+    // row-per-mark scene runs out of first. Fixing only the in-repo devices
+    // would have left a headless capture reporting one ceiling and the window —
+    // the one surface an optical sign-off actually judges — dying at another.
+    //
+    // The adapter's limits are passed through UNMODIFIED, and no floor is
+    // raised over them. `required_limits` is a demand, not a wish: wgpu refuses
+    // device creation outright when a required limit exceeds what the adapter
+    // reports. An earlier version asked for
+    // `max_texture_dimension_2d.max(8192)` to "keep egui's 8192 floor" — on any
+    // adapter reporting less than 8192 that would have turned a smaller texture
+    // ceiling into no window at all, which is the opposite of what the comment
+    // beside it claimed. Whatever the adapter has is the most that can be asked
+    // for; a surface that needs more than that needs a different adapter.
+    //
+    // This REPLACES egui-wgpu's own descriptor rather than amending it, so what
+    // is given up is worth naming. Its version (setup.rs, 0.35) sets a label,
+    // picks downlevel-webgl2 limits on a GL backend and desktop defaults
+    // elsewhere, then forces `max_texture_dimension_2d: 8192` — and leaves
+    // `required_features` and `memory_hints` at `Default`, exactly as this does.
+    // So the only substantive difference is that 8192 floor, and dropping it is
+    // strictly safer: `required_limits` is a demand, so egui's version fails
+    // device creation outright on an adapter reporting less, where asking the
+    // adapter degrades instead. The GL branch is subsumed too, since the
+    // adapter's own limits are never below what that backend accepts.
+    let mut wgpu_setup = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+    wgpu_setup.device_descriptor =
+        std::sync::Arc::new(
+            |adapter: &eframe::wgpu::Adapter| eframe::wgpu::DeviceDescriptor {
+                label: Some("brightfield-window"),
+                required_limits: brightfield_render::vello_renderer::device_limits(adapter),
+                ..Default::default()
+            },
+        );
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport,
+        wgpu_options: egui_wgpu::WgpuConfiguration {
+            wgpu_setup: wgpu_setup.into(),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let mode = args.mode;
