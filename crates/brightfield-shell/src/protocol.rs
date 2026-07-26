@@ -95,6 +95,15 @@ pub struct ProtocolInputs {
     /// of their own — shown while the CTE fold is open. Built once, here,
     /// because both halves it needs are only in scope at load time.
     pub graph_exploded: AssetGraph,
+    /// The collapsed canvas with every run of single hand-offs drawn as the one
+    /// asset it ends at — shown while the chain fold is open.
+    ///
+    /// **Never the default**, and the reason is the same one the CTE fold has in
+    /// reverse: what this absorbs on the crosswalk is the intermediate build
+    /// artefacts and the hosts they came from, which is exactly the provenance
+    /// the protocol view exists to show. The geometry is right (23 nodes over 10
+    /// ranks become 15 over 6) and the default would be wrong.
+    pub graph_contracted: AssetGraph,
     /// Per-step execution status (empty offline).
     pub statuses: BTreeMap<StepId, SeamStatus>,
     /// Per-asset measurements (empty offline).
@@ -126,7 +135,8 @@ impl ProtocolInputs {
             protocol: String::new(),
             graph_collapsed: graph.clone(),
             graph_full: graph.clone(),
-            graph_exploded: graph,
+            graph_exploded: graph.clone(),
+            graph_contracted: graph,
             statuses: BTreeMap::new(),
             assets: BTreeMap::new(),
             steps: BTreeMap::new(),
@@ -311,12 +321,26 @@ fn inputs_from(
     // only CTE-bearing step is outside every family), so it is asserted in
     // `explode_then_collapse_keeps_the_ctes` rather than left to the surface.
     let graph_exploded = collapse_families(&explode_ctes(&graph_full, &manifest_sql(sources)));
+    // CONTRACT LAST — after the explode and after the collapse, and that is the
+    // same kind of fact as the line above rather than a preference.
+    //
+    // `explode_ctes` resolves what a CTE body reads against the relation-shaped
+    // nodes of the graph it is handed. A contraction that had already absorbed
+    // one of those relations leaves the explode nothing to wire from: the CTE
+    // box is still drawn, its input comes from nowhere, and the direct edge it
+    // should have re-routed is still there — the wrong-order failure of the
+    // line above, one pass further along. Asserted in
+    // `contracting_before_the_explode_orphans_the_ctes`, because the crosswalk
+    // cannot show it either: the relation its one CTE-bearing step reads is a
+    // fan-in, so no chain touches it and both orders are pixel-identical there.
+    let graph_contracted = brightfield_protocol::contract_chains(&graph_collapsed);
     let sheet_rows = synth_sheet_rows(&graph_full);
     ProtocolInputs {
         protocol: manifest.name.clone(),
         graph_collapsed,
         graph_full,
         graph_exploded,
+        graph_contracted,
         statuses: BTreeMap::new(),
         assets: BTreeMap::new(),
         steps: BTreeMap::new(),
@@ -403,6 +427,7 @@ pub struct ProtocolModel {
     graph_collapsed: AssetGraph,
     graph_full: AssetGraph,
     graph_exploded: AssetGraph,
+    graph_contracted: AssetGraph,
     statuses: BTreeMap<StepId, SeamStatus>,
     assets: BTreeMap<AssetId, AssetMeta>,
     steps: BTreeMap<StepId, StepView>,
@@ -427,6 +452,19 @@ pub struct ProtocolModel {
     /// two methods change — [`ProtocolModel::displayed_graph`] and
     /// [`ProtocolModel::toggle_fold`].
     cte_expanded: bool,
+    /// Whether the canvas draws each run of single hand-offs as the one asset it
+    /// ends at.
+    ///
+    /// Held to the same rule as [`ProtocolModel::cte_expanded`] and for the same
+    /// reason: true **only** while `graph_contracted` is the graph
+    /// [`ProtocolModel::displayed_graph`] returns. The two folds are mutually
+    /// exclusive — `graph_contracted` is built over the collapsed canvas, not
+    /// over the exploded one, so there is no picture in which both are open —
+    /// and opening either closes the other rather than stacking a flag behind
+    /// it. A combined graph is the larger increment this deliberately is not, for
+    /// the reason spelled out on `cte_expanded`: on the crosswalk it would buy a
+    /// state nothing reaches, because no chain touches the one CTE-bearing step.
+    chain_contracted: bool,
     /// The drill scope: when a node is drilled into (`Enter`), the canvas shows
     /// this induced local slice instead of the whole graph; `Esc` pops it.
     scope_graph: Option<AssetGraph>,
@@ -468,6 +506,7 @@ impl ProtocolModel {
             graph_collapsed: inputs.graph_collapsed,
             graph_full: inputs.graph_full,
             graph_exploded: inputs.graph_exploded,
+            graph_contracted: inputs.graph_contracted,
             statuses: inputs.statuses,
             assets: inputs.assets,
             steps: inputs.steps,
@@ -479,6 +518,7 @@ impl ProtocolModel {
             show_sheet: false,
             display_expanded: false,
             cte_expanded: false,
+            chain_contracted: false,
             scope_graph: None,
             pending_z: false,
             yank_flash: None,
@@ -512,6 +552,51 @@ impl ProtocolModel {
         brightfield_protocol::layout(&inputs.graph_collapsed, &cfg)
     }
 
+    /// The canvas the window has to fit: the componentwise largest of every
+    /// picture **one fold gesture** reaches from the boot canvas, at the boot
+    /// flow.
+    ///
+    /// # Why the boot canvas is the wrong thing to size a window from
+    ///
+    /// It was what [`crate::window::Boot::window_size`] used, and it fitted by
+    /// construction and by nothing else: the crosswalk laid out at 1034×1120 into
+    /// a 1034.4×1120.0 content box, under a point of slack in both axes. Every
+    /// state reachable from there by one keystroke overflowed it and stayed
+    /// overflowed, because a window is sized once at boot and never resized — so
+    /// the CTE fold's extra rank was guaranteed scroll, measured against a
+    /// configuration the user leaves immediately. There is no zoom in this binary
+    /// and no fit-to-view, so scroll is the whole of the recovery.
+    ///
+    /// # What counts as one gesture
+    ///
+    /// The three graphs `za` can put on the canvas at the flow the window opened
+    /// on: the boot canvas itself, the family unfolded, the CTEs exploded, and
+    /// the chains contracted. A drill scope is strictly smaller than the graph it
+    /// is induced from, so it never sets the envelope. The **flow transpose** is
+    /// deliberately excluded: it is a change of reading axis, not of detail, and
+    /// the horizontal render of this fixture is 2431 points across — sizing the
+    /// boot window to it would open a window several times the width of the
+    /// display to spare a keystroke nobody has pressed yet.
+    #[must_use]
+    pub fn boot_extent(inputs: &ProtocolInputs, flow: Flow) -> (f64, f64) {
+        let cfg = LayoutConfig {
+            flow,
+            ..LayoutConfig::default()
+        };
+        [
+            &inputs.graph_collapsed,
+            &inputs.graph_full,
+            &inputs.graph_exploded,
+            &inputs.graph_contracted,
+        ]
+        .into_iter()
+        .map(|g| {
+            let l = brightfield_protocol::layout(g, &cfg);
+            (l.width, l.height)
+        })
+        .fold((0.0, 0.0), |(w, h), (lw, lh)| (w.max(lw), h.max(lh)))
+    }
+
     /// Feed the nav the collapsed graph's rendered geometry at the current flow,
     /// so `hjkl` resolve to the on-screen producer/consumer/sibling. The nav
     /// always walks the collapsed graph, so this is its geometry regardless of a
@@ -527,7 +612,8 @@ impl ProtocolModel {
 
     /// The graph currently shown in the canvas: the drill scope when one is
     /// active, else the full graph when a family is unfolded, else the exploded
-    /// graph when the CTE fold is open, else the collapsed graph.
+    /// graph when the CTE fold is open, else the contracted graph when the chain
+    /// fold is open, else the collapsed graph.
     ///
     /// **These arms do not compete — they cannot both be taken.**
     /// `graph_exploded` is built over the *collapsed* canvas, so no graph in
@@ -570,6 +656,8 @@ impl ProtocolModel {
             &self.graph_full
         } else if self.cte_expanded {
             &self.graph_exploded
+        } else if self.chain_contracted {
+            &self.graph_contracted
         } else {
             &self.graph_collapsed
         }
@@ -644,15 +732,64 @@ impl ProtocolModel {
         self.cte_expanded
     }
 
-    /// The invariant the CTE fold is held to: **armed only while the exploded
-    /// graph is the one on screen** — see [`ProtocolModel::displayed_graph`].
+    /// Whether the canvas draws each run of single hand-offs as the one asset it
+    /// ends at.
+    #[must_use]
+    pub fn is_chain_contracted(&self) -> bool {
+        self.chain_contracted
+    }
+
+    /// Whether `id` is a node the chain fold would absorb — the cursor positions
+    /// the chain half of `za` answers to, and the ones whose ring the canvas has
+    /// to redirect while the fold is open.
     ///
-    /// Identity, not equality: it asks whether `displayed_graph` returned
-    /// *this struct's* `graph_exploded`, so a scope or a full graph that
-    /// happened to compare equal could not satisfy it.
+    /// Read off the two graphs rather than recomputed: a node the collapsed
+    /// canvas has and the contracted canvas does not is, by construction,
+    /// absorbed into a chain.
+    #[must_use]
+    pub fn is_absorbed_by_a_chain(&self, id: &AssetId) -> bool {
+        self.graph_collapsed.nodes.contains_key(id) && !self.graph_contracted.nodes.contains_key(id)
+    }
+
+    /// Where the selection's ring belongs on the canvas.
+    ///
+    /// Normally the selection itself. While the chain fold is open the selection
+    /// may name a node the fold absorbed — the outline still lists it, the nav
+    /// still walks to it, the inspector still answers for it, because all three
+    /// read the uncollapsed graph — and there is no rectangle under that id to
+    /// ring. This resolves it to the node it was folded **into**, so a keyboard
+    /// walk through an absorbed run lights the asset that run produced rather
+    /// than lighting nothing at all.
+    ///
+    /// It is not the whole of the asymmetry — see the note on
+    /// [`ProtocolModel::is_absorbed_by_a_chain`]'s callers — but it is the half
+    /// that decides whether the fold is navigable.
+    #[must_use]
+    pub fn selection_site(&self) -> Option<AssetId> {
+        let sel = self.selected.clone()?;
+        if !self.chain_contracted || self.layout.positions.contains_key(&sel) {
+            return Some(sel);
+        }
+        brightfield_protocol::chain_tails(&self.graph_collapsed)
+            .get(&sel)
+            .cloned()
+            .or(Some(sel))
+    }
+
+    /// The invariant both canvas folds are held to: **armed only while the graph
+    /// each names is the one on screen** — see
+    /// [`ProtocolModel::displayed_graph`].
+    ///
+    /// Identity, not equality: it asks whether `displayed_graph` returned *this
+    /// struct's* `graph_exploded` / `graph_contracted`, so a scope or a full
+    /// graph that happened to compare equal could not satisfy it. It also
+    /// rejects both flags being up at once, which no picture could show.
     #[cfg(test)]
-    fn cte_fold_is_on_screen(&self) -> bool {
-        !self.cte_expanded || std::ptr::eq(self.displayed_graph(), &self.graph_exploded)
+    fn folds_are_on_screen(&self) -> bool {
+        let shown = self.displayed_graph();
+        !(self.cte_expanded && self.chain_contracted)
+            && (!self.cte_expanded || std::ptr::eq(shown, &self.graph_exploded))
+            && (!self.chain_contracted || std::ptr::eq(shown, &self.graph_contracted))
     }
 
     /// The current selection (dotted asset id).
@@ -874,10 +1011,11 @@ impl ProtocolModel {
     /// itself), re-laid-out and re-rastered so the scope change is visible. A
     /// repeated `Enter` on the same node is a no-op.
     ///
-    /// **Drilling closes an open CTE fold; it does not suspend it.** The scope
-    /// is induced over the collapsed graph, so the CTEs leave the screen at
-    /// this keystroke either way — the only question is whether the flag leaves
-    /// with them. Left standing it would put them back on a later `Esc`, at a
+    /// **Drilling closes an open canvas fold; it does not suspend it.** The
+    /// scope is induced over the collapsed graph, so the CTEs (or the contracted
+    /// chains) leave the screen at this keystroke either way — the only question
+    /// is whether the flag leaves with them. Left standing it would put them
+    /// back on a later `Esc`, at a
     /// moment the user pressed nothing that means "explode". See
     /// [`ProtocolModel::displayed_graph`] for why `display_expanded` is not
     /// treated the same way.
@@ -886,6 +1024,7 @@ impl ProtocolModel {
             return false;
         }
         self.cte_expanded = false;
+        self.chain_contracted = false;
         if let Some(focus) = self.nav.cursor().cloned() {
             let keep = brightfield_protocol::graph::lineage(&self.graph_collapsed, &focus);
             self.scope_graph = Some(brightfield_protocol::graph::induced_subgraph(
@@ -934,13 +1073,21 @@ impl ProtocolModel {
     /// `za` — open or close the detail under the cursor, swapping the displayed
     /// graph and invalidating the layout so the canvas visibly re-lays-out.
     ///
-    /// Two things fold, resolved by what the cursor is on:
+    /// Three things fold, resolved by what the cursor is on:
     /// - a **family tile** unfolds to its members (the original behaviour);
     /// - a node **produced by a `sql:` step** opens that statement's CTEs onto
     ///   the canvas, so the joins inside the step are lineage rather than one
-    ///   rectangle.
+    ///   rectangle;
+    /// - a node a **run of single hand-offs would absorb** contracts every such
+    ///   run on the canvas to the asset it ends at. The cursor lands on the thing
+    ///   that folds away, which is the ordinary meaning of a fold key.
     ///
-    /// Both are the same verb, deliberately. `protocol_key_table` is a
+    /// The three are resolved in that order, and the order is what keeps the
+    /// third from shadowing the second: the crosswalk's one CTE-bearing relation
+    /// is also the head of a chain, so a chain arm tried first would make the CTE
+    /// fold unreachable from the only cursor position it answers to.
+    ///
+    /// All are the same verb, deliberately. `protocol_key_table` is a
     /// `BTreeMap` keyed by keystroke string, so a second Protocol-context verb
     /// bound to `z a` would silently overwrite the first and which one survived
     /// would depend on the order the registry happens to list them in. `z a` is
@@ -959,49 +1106,69 @@ impl ProtocolModel {
     ///   and neither fold can be drawn under one, so neither is armed under
     ///   one. This guard runs before [`ProtocolNav::toggle_fold`], so the
     ///   nav's own fold state is not mutated either;
-    /// - the cursor is on a SQL-produced node while a **family is unfolded**.
-    ///   The full graph is not an exploded graph (see
-    ///   [`ProtocolModel::displayed_graph`]), so opening the CTE fold here
-    ///   could only arm a flag with nothing on screen behind it.
+    /// - the cursor is on a SQL-produced node, or on one a chain would absorb,
+    ///   while a **family is unfolded**. The full graph is neither an exploded
+    ///   graph nor a contracted one (see [`ProtocolModel::displayed_graph`]), so
+    ///   opening either canvas fold here could only arm a flag with nothing on
+    ///   screen behind it.
     ///
     /// The alternative in each case is a keystroke that changes state the
     /// screen does not reflect, and surfaces it later unbidden. A refused
     /// gesture is the smaller cost.
     ///
-    /// When the family arm *does* fire it closes the CTE fold as it goes: the
-    /// unfolded graph has no CTEs in it, and a flag that outlived its picture
-    /// is the same defect one keystroke later.
+    /// When the family arm *does* fire it closes both canvas folds as it goes:
+    /// the unfolded graph is neither picture, and a flag that outlived its
+    /// picture is the same defect one keystroke later.
     fn toggle_fold(&mut self) -> bool {
         if self.scope_graph.is_some() {
             return false;
         }
         if self.nav.toggle_fold() == FoldOutcome::NotAFamily {
-            return self.toggle_cte_fold();
+            return self.toggle_canvas_fold();
         }
         self.display_expanded = self.family_ids.iter().any(|id| self.nav.is_expanded(id));
         self.cte_expanded = false;
+        self.chain_contracted = false;
         self.selected = self.nav.cursor().cloned();
         self.recompute_layout();
         true
     }
 
-    /// The CTE half of `za`: flip the whole-canvas explode when the cursor is on
-    /// a node a `sql:` step produced, and re-lay-out so the raster cache drops
-    /// the folded picture.
+    /// The two canvas halves of `za`: flip the whole-canvas CTE explode when the
+    /// cursor is on a node a `sql:` step produced, else the whole-canvas chain
+    /// contraction when it is on a node a chain would absorb — and re-lay-out so
+    /// the raster cache drops the picture it was showing.
     ///
-    /// Refused while a family is unfolded, because
-    /// [`ProtocolModel::displayed_graph`] would go on drawing `graph_full`.
-    /// The drill-scope half of the same rule is enforced by the caller, before
-    /// the nav is touched.
-    fn toggle_cte_fold(&mut self) -> bool {
+    /// Both are refused while a family is unfolded, because
+    /// [`ProtocolModel::displayed_graph`] would go on drawing `graph_full`. The
+    /// drill-scope half of the same rule is enforced by the caller, before the
+    /// nav is touched.
+    ///
+    /// **Opening one closes the other.** They are two pictures of the same
+    /// canvas and there is no third graph that is both, so a flag left standing
+    /// behind the other's picture is precisely the armed-but-invisible state the
+    /// CTE fold's rules exist to prevent.
+    fn toggle_canvas_fold(&mut self) -> bool {
         debug_assert!(
             self.scope_graph.is_none(),
             "toggle_fold refuses inside a drill scope before reaching here"
         );
-        if self.display_expanded || !self.cursor_is_sql_produced() {
+        if self.display_expanded {
             return false;
         }
-        self.cte_expanded = !self.cte_expanded;
+        if self.cursor_is_sql_produced() {
+            self.cte_expanded = !self.cte_expanded;
+            self.chain_contracted = false;
+        } else if self
+            .nav
+            .cursor()
+            .is_some_and(|id| self.is_absorbed_by_a_chain(id))
+        {
+            self.chain_contracted = !self.chain_contracted;
+            self.cte_expanded = false;
+        } else {
+            return false;
+        }
         self.recompute_layout();
         true
     }
@@ -1539,7 +1706,11 @@ impl Item<ProtocolDoc> for CanvasPane {
                 // chrome's second ring implementation; the hand-rolled 2px
                 // stroke at a 4px radius both replaced matched nothing else
                 // in the product.
-                if let Some(sel) = doc.model.selected().cloned() {
+                // `selection_site`, not `selected`: while the chain fold is open
+                // the selection can name a node the fold absorbed, which the
+                // outline and the inspector still answer for and the canvas has
+                // no rectangle for. The ring goes on the node it folded into.
+                if let Some(sel) = doc.model.selection_site() {
                     if let Some(node) = doc.model.layout().positions.get(&sel).cloned() {
                         let r = node_rect(rect.min, &node);
                         meridian_egui::widgets::focus_ring(ui, r, meridian_design::radius::CONTROL);
@@ -2669,7 +2840,7 @@ mod tests {
         assert!(za(&mut m), "the CTE fold opened");
         let exploded = m.displayed_graph().nodes.len();
         assert!(ctes_on_canvas(&m));
-        assert!(m.cte_fold_is_on_screen());
+        assert!(m.folds_are_on_screen());
 
         // Move to the family tile and press the same chord.
         let family = family_id(&m);
@@ -2686,7 +2857,7 @@ mod tests {
             !m.is_cte_expanded(),
             "and the fold went off with them — not left armed behind the family"
         );
-        assert!(m.cte_fold_is_on_screen());
+        assert!(m.folds_are_on_screen());
 
         // The keystroke that used to bring them back unbidden.
         assert!(za(&mut m), "the family folded again");
@@ -2731,7 +2902,7 @@ mod tests {
             before_gen,
             "no re-layout, so no repaint for a keystroke with nothing behind it"
         );
-        assert!(m.cte_fold_is_on_screen());
+        assert!(m.folds_are_on_screen());
     }
 
     /// **`za` is refused outright inside a drill scope** — both halves of it.
@@ -2774,7 +2945,7 @@ mod tests {
             "the refused family fold never reached the nav, so nothing unfolds on the way out"
         );
         assert!(!ctes_on_canvas(&m), "and no CTE appears on the way out");
-        assert!(m.cte_fold_is_on_screen());
+        assert!(m.folds_are_on_screen());
     }
 
     /// **Drilling in closes an open CTE fold**, so widening back out does not
@@ -2793,7 +2964,7 @@ mod tests {
         assert!(m.feed_events(&[key(egui::Key::Enter)]), "drilled in");
         assert!(!m.is_cte_expanded(), "the fold closed with the drill");
         assert!(!ctes_on_canvas(&m));
-        assert!(m.cte_fold_is_on_screen());
+        assert!(m.folds_are_on_screen());
 
         assert!(m.feed_events(&[key(egui::Key::Escape)]), "widened back out");
         assert!(!m.is_drilled());
@@ -2804,30 +2975,44 @@ mod tests {
         assert_eq!(m.displayed_graph(), &m.graph_collapsed);
     }
 
-    /// The invariant itself, swept over every gesture that can reach the fold.
+    /// The invariant itself, swept over every gesture that can reach **either**
+    /// canvas fold.
     ///
-    /// `cte_expanded` is true only while `graph_exploded` is the graph
-    /// `displayed_graph` returns — checked after *every* keystroke of a script
-    /// that walks the fold into the family fold, the drill scope, the flow
-    /// transpose and the steps sheet in turn. A single arm re-ordered in
-    /// `displayed_graph`, or a guard dropped from `toggle_fold`, reddens this
-    /// without anyone having to think of the sequence again.
+    /// `cte_expanded` is true only while `graph_exploded` is what
+    /// `displayed_graph` returns, `chain_contracted` only while
+    /// `graph_contracted` is, and never both — checked after *every* keystroke of
+    /// a script that walks the two folds into each other, into the family fold,
+    /// into the drill scope, through the flow transpose and back out. A single
+    /// arm re-ordered in `displayed_graph`, or a guard dropped from
+    /// `toggle_fold`, reddens this without anyone having to think of the sequence
+    /// again.
+    ///
+    /// Watched redden, one mutation: dropping `self.cte_expanded = false` from
+    /// the chain arm of `toggle_canvas_fold` fails at the step that opens the
+    /// chain fold over an open CTE fold, with both flags up and one picture.
     #[test]
-    fn no_gesture_arms_the_cte_fold_over_a_canvas_that_hides_it() {
+    fn no_gesture_arms_a_canvas_fold_the_canvas_does_not_show() {
         let mut m = model();
         let family = family_id(&m);
+        let chain = CHAIN_ABSORBED.to_string();
         // (cursor to place first, then the chord/keys to press there)
         let script: Vec<(Option<&str>, Vec<egui::Key>)> = vec![
             (Some(SQL_PRODUCED), vec![egui::Key::Z, egui::Key::A]),
+            (Some(chain.as_str()), vec![egui::Key::Z, egui::Key::A]),
+            (Some(SQL_PRODUCED), vec![egui::Key::Z, egui::Key::A]),
             (Some(family.as_str()), vec![egui::Key::Z, egui::Key::A]),
+            (Some(chain.as_str()), vec![egui::Key::Z, egui::Key::A]),
             (Some(SQL_PRODUCED), vec![egui::Key::Z, egui::Key::A]),
             (Some(family.as_str()), vec![egui::Key::Z, egui::Key::A]),
             (Some(SQL_PRODUCED), vec![egui::Key::Z, egui::Key::A]),
             (None, vec![egui::Key::T]),
+            (Some(chain.as_str()), vec![egui::Key::Z, egui::Key::A]),
             (Some(SQL_PRODUCED), vec![egui::Key::Enter]),
             (Some(SQL_PRODUCED), vec![egui::Key::Z, egui::Key::A]),
+            (Some(chain.as_str()), vec![egui::Key::Z, egui::Key::A]),
             (Some(family.as_str()), vec![egui::Key::Z, egui::Key::A]),
             (None, vec![egui::Key::Escape]),
+            (Some(chain.as_str()), vec![egui::Key::Z, egui::Key::A]),
             (Some(SQL_PRODUCED), vec![egui::Key::Z, egui::Key::A]),
             (None, vec![egui::Key::Backspace]),
         ];
@@ -2838,10 +3023,11 @@ mod tests {
             for k in keys {
                 m.feed_events(&[key(*k)]);
                 assert!(
-                    m.cte_fold_is_on_screen(),
-                    "step {step}: the CTE fold is armed but the canvas does not show it \
-                     (expanded={}, drilled={}, family={})",
+                    m.folds_are_on_screen(),
+                    "step {step}: a canvas fold is armed but the canvas does not \
+                     show it (cte={}, chain={}, drilled={}, family={})",
                     m.is_cte_expanded(),
+                    m.is_chain_contracted(),
                     m.is_drilled(),
                     m.is_expanded()
                 );
@@ -2853,6 +3039,295 @@ mod tests {
             "the last chord landed on a cursor the fold answers to"
         );
         assert!(ctes_on_canvas(&m));
+    }
+
+    /// A node the chain fold absorbs: the external host one `op:` step fetches a
+    /// single file from.
+    ///
+    /// **No `sql:` step produced it**, which is what makes it the chain arm of
+    /// `za` rather than the CTE arm — the two are resolved in that order, and
+    /// four of the eight nodes this fold absorbs *are* SQL-produced and reach the
+    /// CTE arm first. It is also the shape the textbook strict-linear criterion
+    /// refuses outright: a host has no producer of its own.
+    const CHAIN_ABSORBED: &str =
+        "source.edgar_gleif.https://openlake.meridian.online/edgar.parquet";
+
+    /// The asset [`CHAIN_ABSORBED`]'s run ends at — the node the fold keeps.
+    const CHAIN_TAIL: &str = "file.edgar_gleif.build/edgar.parquet";
+
+    /// `za` on a node a run of single hand-offs would absorb contracts every such
+    /// run on the canvas to the asset it ends at — and re-lays-out, so the raster
+    /// cache cannot serve the uncontracted picture.
+    #[test]
+    fn za_on_a_chain_absorbed_node_contracts_the_runs() {
+        let mut m = model();
+        assert!(
+            m.is_absorbed_by_a_chain(&CHAIN_ABSORBED.to_string()),
+            "the fixture no longer has a chain at this cursor"
+        );
+        m.select_id(CHAIN_ABSORBED.to_string());
+        assert!(!m.is_chain_contracted(), "the fold opens closed");
+
+        let before = node_ids(&m);
+        let before_gen = m.layout_gen();
+        assert!(za(&mut m), "za contracted the chains");
+        assert!(m.is_chain_contracted());
+
+        let after = node_ids(&m);
+        let gone: BTreeSet<&AssetId> = before.difference(&after).collect();
+        assert_eq!(gone.len(), 8, "eight nodes absorbed: {gone:?}");
+        assert!(
+            after.difference(&before).next().is_none(),
+            "the contraction invents no node"
+        );
+
+        // The merged node is the TAIL, whole. A joined label would have cost
+        // +294 points of canvas width on this fixture (941 -> 1235), 217 past the
+        // pane — a solved vertical scroll traded for a new horizontal one.
+        assert!(
+            after.contains(&CHAIN_TAIL.to_string()),
+            "the tail survives the merge"
+        );
+        assert_eq!(
+            m.displayed_graph().nodes[CHAIN_TAIL].label,
+            m.graph_collapsed.nodes[CHAIN_TAIL].label,
+            "the merged node kept the tail's own label"
+        );
+
+        // And the picture actually shrank, along the reading axis and across it.
+        let contracted = m.layout().clone();
+        assert_ne!(m.layout_gen(), before_gen, "a re-layout was forced");
+        assert!(za(&mut m), "za put them back");
+        assert!(
+            contracted.height < m.layout().height && contracted.width <= m.layout().width,
+            "the contracted canvas ({}x{}) is not smaller than the canvas it \
+             folded ({}x{})",
+            contracted.width,
+            contracted.height,
+            m.layout().width,
+            m.layout().height
+        );
+    }
+
+    /// A second `za` on the same node puts the runs back — the fold is a toggle,
+    /// and closing it restores the boot canvas exactly.
+    #[test]
+    fn za_twice_on_a_chain_absorbed_node_puts_the_runs_back() {
+        let mut m = model();
+        m.select_id(CHAIN_ABSORBED.to_string());
+        let closed = node_ids(&m);
+        let closed_edges = m.displayed_graph().edges.clone();
+
+        assert!(za(&mut m), "contracted");
+        assert!(m.is_chain_contracted());
+        assert!(za(&mut m), "restored");
+
+        assert!(!m.is_chain_contracted(), "the second press closed the fold");
+        assert_eq!(node_ids(&m), closed, "back to the graph it opened on");
+        assert_eq!(&m.displayed_graph().edges, &closed_edges);
+        assert_eq!(
+            m.displayed_graph(),
+            &m.graph_collapsed,
+            "it is the collapsed graph itself, not a re-derived twin"
+        );
+    }
+
+    /// **The boot canvas absorbs nothing.** The eight nodes this fold takes are
+    /// the intermediate build artefacts and the hosts they came from, which is
+    /// exactly the provenance the protocol view exists to show — so the geometry
+    /// is right and the default would be wrong.
+    ///
+    /// If this ever fails, the contraction has leaked into the built graph and
+    /// every committed protocol baseline is photographing a canvas that lost its
+    /// provenance — which is a defect in this code, not a reason to regenerate a
+    /// golden.
+    #[test]
+    fn the_boot_canvas_contracts_no_chain() {
+        let m = model();
+        assert!(!m.is_chain_contracted());
+        assert_eq!(
+            m.displayed_graph(),
+            &m.graph_collapsed,
+            "the boot canvas is the collapsed graph itself"
+        );
+        for id in [
+            "source.edgar_gleif.https://openlake.meridian.online/edgar.parquet",
+            "file.edgar_gleif.build/edgar_gleif.parquet",
+            "asset.edgar_gleif.sec_entities",
+        ] {
+            assert!(
+                m.layout().positions.contains_key(id),
+                "{id} is not drawn on the boot canvas"
+            );
+        }
+    }
+
+    /// **The two canvas folds are mutually exclusive, by closing rather than by
+    /// stacking.** There is no graph in this struct that is both exploded and
+    /// contracted, so a flag left standing behind the other's picture is the
+    /// armed-but-invisible state the fold rules exist to prevent.
+    ///
+    /// Watched redden, one mutation: dropping `self.chain_contracted = false`
+    /// from the CTE arm of `toggle_canvas_fold` fails here at *"the chain fold
+    /// went down with the CTEs coming up"*.
+    #[test]
+    fn opening_one_canvas_fold_closes_the_other() {
+        let mut m = model();
+        m.select_id(CHAIN_ABSORBED.to_string());
+        assert!(za(&mut m), "the chain fold opened");
+        assert!(m.is_chain_contracted());
+
+        m.select_id(SQL_PRODUCED.to_string());
+        assert!(za(&mut m), "the CTE fold opened");
+        assert!(m.is_cte_expanded());
+        assert!(
+            !m.is_chain_contracted(),
+            "the chain fold went down with the CTEs coming up"
+        );
+        assert!(m.folds_are_on_screen());
+
+        m.select_id(CHAIN_ABSORBED.to_string());
+        assert!(za(&mut m), "the chain fold opened again");
+        assert!(m.is_chain_contracted());
+        assert!(!m.is_cte_expanded(), "and the CTE fold went down with it");
+        assert!(!ctes_on_canvas(&m), "no CTE survives the swap");
+        assert!(m.folds_are_on_screen());
+    }
+
+    /// **An absorbed node stays addressable everywhere except the canvas, and on
+    /// the canvas its ring moves to the node it folded into.**
+    ///
+    /// This is the asymmetry already recorded against exploded CTEs, in reverse:
+    /// there, the canvas gained nodes the outline never listed. Here the canvas
+    /// loses nodes the outline still lists — and the outline, the nav and the
+    /// inspector all walk the *uncontracted* graph, so an absorbed asset is still
+    /// selectable, still walked to by `hjkl`, and still has an inspector.
+    ///
+    /// What is **not** covered, said plainly rather than implied: an absorbed
+    /// node has no rectangle of its own while the fold is open, so its selection
+    /// ring lands on its chain's tail rather than on it, and a canvas *click*
+    /// cannot reach it at all. Resolving that properly needs the merged tile to
+    /// carry its members' identities into hit-testing, which is a larger
+    /// increment than this one.
+    #[test]
+    fn an_absorbed_node_stays_addressable_off_the_canvas() {
+        let mut m = model();
+        m.select_id(CHAIN_ABSORBED.to_string());
+        assert!(za(&mut m), "the chain fold opened");
+
+        let id = CHAIN_ABSORBED.to_string();
+        assert!(
+            !m.displayed_graph().nodes.contains_key(&id),
+            "this fixture no longer absorbs the node the test is about"
+        );
+        assert!(m.has_selection(), "the inspector still answers for it");
+        let facts = m.inspector();
+        assert!(
+            facts.present,
+            "the inspector went empty on an absorbed node"
+        );
+        assert_eq!(
+            facts.address, id,
+            "and it answers for that node, not its tail"
+        );
+        assert!(
+            m.outline().iter().any(|row| row.id == id),
+            "the outline dropped the absorbed node"
+        );
+        assert!(
+            m.nav.cursor() == Some(&id),
+            "the nav cursor cannot rest on the absorbed node"
+        );
+        // The canvas half: no rectangle of its own, and the ring goes to the
+        // asset the run produced rather than nowhere.
+        assert!(!m.layout().positions.contains_key(&id));
+        let site = m.selection_site().expect("a selection has a site");
+        assert_ne!(site, id, "the ring would have been drawn nowhere");
+        assert!(
+            m.layout().positions.contains_key(&site),
+            "the redirected ring lands on nothing either"
+        );
+    }
+
+    /// CONTRACT LAST, and why the other order is not a preference.
+    ///
+    /// The sibling of `explode_then_collapse_keeps_the_ctes`, one pass further
+    /// along. [`brightfield_protocol::explode_ctes`] resolves what a CTE body
+    /// reads against the relation-shaped nodes of the graph it is handed; a
+    /// contraction that has already absorbed one of those relations leaves it
+    /// nothing to wire from, so the canvas draws a CTE box fed by nothing and
+    /// keeps the direct edge the explode should have re-routed.
+    ///
+    /// Asserted on a fixture built for it, because the crosswalk cannot show it:
+    /// the relation its one CTE-bearing step reads is a fan-in, so no chain
+    /// touches it and both orders are pixel-identical there.
+    #[test]
+    fn contracting_before_the_explode_orphans_the_ctes() {
+        const MANIFEST: &str = "\
+name: ordering
+engine: duckdb
+steps:
+  - name: stage
+    sql: models/stage.sql
+  - name: shape
+    sql: models/shape.sql
+";
+        // `staged` is produced by `stage` and read by exactly one consumer, and
+        // `shaped`'s CTE is that consumer — a chain, and the relation the CTE
+        // body resolves against.
+        let models = [
+            (
+                "models/stage.sql",
+                "CREATE OR REPLACE TABLE staged AS SELECT * FROM raw_in;",
+            ),
+            (
+                "models/shape.sql",
+                "CREATE OR REPLACE TABLE shaped AS \
+                 WITH keep AS (SELECT * FROM staged) SELECT * FROM keep;",
+            ),
+        ];
+        let inputs = load_protocol_str(MANIFEST, &models).expect("the ordering protocol loads");
+        let staged = "asset.ordering.staged";
+        let cte = "cte.ordering.shaped#keep";
+        let has = |g: &AssetGraph, from: &str, to: &str| {
+            g.edges.iter().any(|e| e.from == from && e.to == to)
+        };
+
+        // Right order — the CTE is fed by the relation its body reads.
+        assert!(
+            has(&inputs.graph_exploded, staged, cte),
+            "the shipped order does not wire the CTE, so the wrong order below \
+             proves nothing"
+        );
+
+        // Wrong order — contract first, then explode.
+        let sql_by_step: BTreeMap<StepId, String> = models
+            .iter()
+            .map(|(model, sql)| {
+                let step = model
+                    .trim_start_matches("models/")
+                    .trim_end_matches(".sql")
+                    .to_string();
+                (step, (*sql).to_string())
+            })
+            .collect();
+        let wrong = explode_ctes(
+            &brightfield_protocol::contract_chains(&collapse_families(&inputs.graph_full)),
+            &sql_by_step,
+        );
+        assert!(
+            !wrong.nodes.contains_key(staged),
+            "this fixture no longer contracts the relation the CTE reads"
+        );
+        assert!(
+            wrong.nodes.contains_key(cte),
+            "the wrong order still draws the box"
+        );
+        assert!(
+            !has(&wrong, staged, cte),
+            "...but nothing feeds it: the contraction had already absorbed the \
+             relation its body reads, so the explode had nothing to wire from"
+        );
     }
 
     /// EXPLODE THEN COLLAPSE, and why the other order is not a preference.
@@ -2991,18 +3466,52 @@ steps:
         );
     }
 
-    /// The flow toggle transposes the layout (vertical taller than wide →
-    /// horizontal wider than tall).
+    /// The flow toggle transposes the layout: vertical bounds the canvas's width
+    /// strictly below the horizontal render's, and horizontal is wider than tall.
+    ///
+    /// # What this used to assert, and why it stopped being true
+    ///
+    /// It asserted `vh > vw` — *"vertical is taller than wide"* — on this
+    /// fixture, and that clause was being held up by a defect. The collapsed
+    /// crosswalk is 10 ranks deep and its widest rank is 954 points of cards, so
+    /// the two axes were within 86 points of each other; the 48-point thickness
+    /// floor under every rank contributed 118 of those, and it was reserving room
+    /// for nothing (see `LANE_EXTENT` in `brightfield-protocol`'s layout module).
+    /// Take the floor away at the *old* pitch and the vertical canvas is
+    /// 1034 × 1002 — already wider than it is tall, before any gap moves.
+    ///
+    /// So the clause was not an invariant of the transpose. It was an accident of
+    /// this one graph plus 118 points of padding, and no value of `col_gap` on
+    /// the design system's spacing ladder can buy it back. What the transpose
+    /// actually promises is the thing that motivated it — the long axis moves
+    /// onto natural scroll — and that is what is asserted here: **vertical is
+    /// strictly narrower than horizontal** (1018 against 1950), and horizontal
+    /// puts its long axis across. A graph whose widest rank is wider than it is
+    /// deep is vertically wide, and saying otherwise would be a false claim about
+    /// the picture the user sees.
+    ///
+    /// `vertical_bounds_width_to_the_widest_layer` in the layout crate holds the
+    /// same property, and its fixture is deep enough that the taller-than-wide
+    /// clause is genuinely true there; it is untouched.
     #[test]
     fn flow_toggle_transposes_layout() {
         let mut m = model();
         assert_eq!(m.flow(), Flow::Vertical);
         let (vw, vh) = (m.layout().width, m.layout().height);
-        assert!(vh > vw, "vertical is taller than wide: {vw}x{vh}");
         m.toggle_flow();
         assert_eq!(m.flow(), Flow::Horizontal);
         let (hw, hh) = (m.layout().width, m.layout().height);
         assert!(hw > hh, "horizontal is wider than tall: {hw}x{hh}");
+        assert!(
+            vw < hw,
+            "vertical does not bound the width below horizontal's: \
+             {vw}x{vh} against {hw}x{hh} — the transpose bought nothing"
+        );
+        assert!(
+            vh > hh,
+            "the transpose did not move extent onto the scroll axis: \
+             {vw}x{vh} against {hw}x{hh}"
+        );
     }
 
     /// `Enter` drills into the selected node's FULL lineage: when the selection

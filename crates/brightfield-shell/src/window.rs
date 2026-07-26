@@ -259,13 +259,31 @@ pub fn chart_toolbar_band(composed: &Composed) -> f32 {
 /// reason — see the note there.
 #[must_use]
 pub fn protocol_window_size(layout: &Layout) -> (f32, f32) {
+    protocol_window_size_for(layout.width as f32, layout.height as f32)
+}
+
+/// [`protocol_window_size`] over a canvas extent that is not any one laid-out
+/// graph's.
+///
+/// The arithmetic is identical and lives here once; the two entry points differ
+/// only in what they are asked to fit. A single [`Layout`] is what the capture
+/// tiers have — they photograph one picture, and it is the picture their script
+/// produced. The live window has to fit something no `Layout` describes: the
+/// componentwise envelope of every picture one fold gesture reaches, because a
+/// window is sized once at boot and this binary has neither a zoom nor a
+/// fit-to-view to recover with. See
+/// [`ProtocolModel::boot_extent`](crate::protocol::ProtocolModel::boot_extent),
+/// which is where that envelope is defined and where the argument for it is
+/// written down.
+#[must_use]
+pub fn protocol_window_size_for(dag_w: f32, dag_h: f32) -> (f32, f32) {
     let centre = 1.0 - OUTLINE_SHARE - INSPECTOR_SHARE;
     let inset = chrome::pane_content_inset();
 
-    let tile_w = layout.width as f32 + 2.0 * inset;
+    let tile_w = dag_w + 2.0 * inset;
     let w = (tile_w / centre + 2.0 * TILE_GAP + 2.0 * DOCK_INSET).ceil();
 
-    let tile_h = layout.height as f32 + 2.0 * inset + TAB_BAR_HEIGHT;
+    let tile_h = dag_h + 2.0 * inset + TAB_BAR_HEIGHT;
     let h = (tile_h + 2.0 * DOCK_INSET + 2.0 * BAR_HEIGHT).ceil();
 
     (w, h)
@@ -530,7 +548,13 @@ impl Boot {
         match view {
             ViewKind::Charts => chart_window_size(&self.composed),
             ViewKind::Protocol => {
-                protocol_window_size(&ProtocolModel::boot_layout(&self.protocol, self.flow))
+                // The ENVELOPE, not the boot canvas. Sizing to the boot canvas
+                // fitted the graph the window opens on and nothing else: every
+                // state one keystroke away overflowed and stayed overflowed,
+                // because a window is sized once and never resized. See
+                // `ProtocolModel::boot_extent`.
+                let (w, h) = ProtocolModel::boot_extent(&self.protocol, self.flow);
+                protocol_window_size_for(w as f32, h as f32)
             }
         }
     }

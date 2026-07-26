@@ -6,6 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "egui/eframe shell hosting the Vello mosaic canvas on a shared wgpu device"
+# Three binaries ship from this package and only one of them is the product, so a
+# bare `cargo run -p brightfield-shell` failed on ambiguity rather than opening
+# the window. The other two are tools and stay reachable through `--bin
+# brightfield-shot` / `--bin bf-imgdiff`.
+default-run = "brightfield-shell"
 
 [dependencies]
 # The framework-free render/host seam + Vello renderer + scene builders.

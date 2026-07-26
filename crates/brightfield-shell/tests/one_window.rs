@@ -11,14 +11,14 @@
 //! paints — but both are handed the same rects either way, and each records the
 //! box it was given before it looks for a texture.
 
-use brightfield_protocol::layout::Flow;
+use brightfield_protocol::layout::{Flow, LayoutConfig};
 use brightfield_shell::app::chart_registry_with;
 use brightfield_shell::design::Mode;
 use brightfield_shell::pipeline::compose_spec;
 use brightfield_shell::protocol::{
     load_protocol_offline, protocol_registry, ProtocolInputs, ProtocolModel,
 };
-use brightfield_shell::window::{protocol_window_size, Boot, MeridianApp};
+use brightfield_shell::window::{protocol_window_size_for, Boot, MeridianApp};
 use brightfield_workbench::{ItemId, PaneKey, ViewKind};
 
 const DASHBOARD: &str = "../../examples/dashboard.yaml";
@@ -283,8 +283,8 @@ fn the_window_opens_on_the_view_the_boot_named_and_lays_out_only_that_view() {
 // The window the protocol view asks for
 // ---------------------------------------------------------------------------
 
-/// The window `protocol_window_size` asks for really does fit the DAG the
-/// canvas pane lays out — checked by laying a **real frame** out, not by
+/// The window `protocol_window_size` asks for really does fit **every canvas one
+/// fold gesture reaches** — checked by laying a **real frame** out, not by
 /// re-running the same arithmetic.
 ///
 /// The chart view has had this assertion since its window was caught clipping
@@ -295,25 +295,46 @@ fn the_window_opens_on_the_view_the_boot_named_and_lays_out_only_that_view() {
 /// asked for was `layout.height + 130.0`, floored and clamped, with nothing
 /// deriving the 130 and nothing able to see it.
 ///
-/// Watched redden, one mutation: dropping the `TAB_BAR_HEIGHT` term from
-/// `protocol_window_size` — the centre tab strip the canvas sits under — leaves
-/// the canvas pane 24 points short of the DAG and fails here by that much.
+/// # What moved: the thing the window is measured against
+///
+/// It used to be measured against the **boot** canvas, and it fitted that by
+/// construction and by nothing else — 1034×1120 into a 1034.4×1120.0 content
+/// box, under a point of slack in both axes. Every state one fold gesture away
+/// overflowed it and stayed overflowed, because a window is sized once at boot
+/// and nothing resizes it, and this binary has neither a zoom nor a fit-to-view
+/// to recover with. So the measure is now the envelope of the pictures `za` can
+/// produce — [`ProtocolModel::boot_extent`] — and the two assertions below are
+/// the two halves of that claim: the pane fits the envelope, and the envelope
+/// really does cover each state.
+///
+/// The no-fudge-factor rule is unchanged and is what keeps the first half
+/// honest: the slack against the envelope must still be under a logical point.
+///
+/// Watched redden, two mutations. Dropping the `TAB_BAR_HEIGHT` term from
+/// `protocol_window_size_for` — the centre tab strip the canvas sits under —
+/// leaves the canvas pane 24 points short and fails the fit by that much.
+/// Reverting `Boot::window_size` to `boot_layout` fails at *"the boot sized the
+/// window differently"*, `(1948, 842)` against `(3000, 910)` — 1052 points
+/// across and 68 down of guaranteed scroll, which is exactly what this increment
+/// removed.
 #[test]
-fn the_protocol_window_it_asks_for_fits_the_dag_it_lays_out() {
+fn the_protocol_window_it_asks_for_fits_every_canvas_a_fold_reaches() {
     let inputs = edgar();
-    let layout = ProtocolModel::boot_layout(&inputs, Flow::Vertical);
-    let (dag_w, dag_h) = (layout.width as f32, layout.height as f32);
+    let (env_w, env_h) = ProtocolModel::boot_extent(&inputs, Flow::Vertical);
+    #[allow(clippy::cast_possible_truncation)]
+    let (env_w, env_h) = (env_w as f32, env_h as f32);
     assert!(
-        dag_w > 0.0 && dag_h > 0.0,
+        env_w > 0.0 && env_h > 0.0,
         "the fixture laid out nothing, so this test proves nothing"
     );
-    let (w, h) = protocol_window_size(&layout);
+    let (w, h) = protocol_window_size_for(env_w, env_h);
 
     let mut win = Window::open(Boot::protocol(inputs, Flow::Vertical, None), Mode::Light);
     assert_eq!(
         (win.screen.width(), win.screen.height()),
         (w, h),
-        "the boot sized the window differently from `protocol_window_size`"
+        "the boot sized the window differently from `protocol_window_size_for` \
+         over the envelope"
     );
     win.settle();
 
@@ -322,30 +343,86 @@ fn the_protocol_window_it_asks_for_fits_the_dag_it_lays_out() {
         .canvas_viewport()
         .expect("the canvas pane drew, so it recorded the box it was given");
     assert!(
-        box_.width() >= dag_w && box_.height() >= dag_h,
+        box_.width() >= env_w && box_.height() >= env_h,
         "a {w}x{h} window gives the canvas pane a {:.2}x{:.2} content box, \
-         and it lays out a {dag_w:.0}x{dag_h:.0} DAG into it — the graph opens \
-         part-scrolled, which no baseline can tell from a graph that is large",
+         and one keystroke lays a {env_w:.0}x{env_h:.0} DAG into it — the graph \
+         opens part-scrolled the moment it is folded, which no baseline can tell \
+         from a graph that is large",
         box_.width(),
         box_.height(),
     );
 
     // And in neither axis is the leftover a fudge factor. Every term of
-    // `protocol_window_size` is read from the component that consumes it, so the
-    // only slack it may have is its rounding up to whole logical points. An
+    // `protocol_window_size_for` is read from the component that consumes it, so
+    // the only slack it may have is its rounding up to whole logical points. An
     // inequality any positive number satisfies is what let the chart view's
     // height budget be 95 points short while its own test stayed green.
     for (axis, slack) in [
-        ("across", box_.width() - dag_w),
-        ("down", box_.height() - dag_h),
+        ("across", box_.width() - env_w),
+        ("down", box_.height() - env_h),
     ] {
         assert!(
             slack < 1.0,
             "the canvas pane's content box has {slack:.2}pt of slack {axis} — \
-             more than the sub-point rounding `protocol_window_size` is allowed, \
-             so some of the budget is a fudge factor rather than a component"
+             more than the sub-point rounding `protocol_window_size_for` is \
+             allowed, so some of the budget is a fudge factor rather than a \
+             component"
         );
     }
+}
+
+/// The envelope really is an envelope: every canvas `za` can put on screen fits
+/// inside it, in both axes.
+///
+/// The other half of the test above, and the half that would otherwise be
+/// asserted by nothing. `boot_extent` could return the boot layout's own size and
+/// the fit assertion would pass perfectly — it would just be the defect this
+/// increment exists to remove, restated as a green test. So this one enumerates
+/// the pictures rather than trusting the fold: it lays out each of the four
+/// graphs a `ProtocolInputs` carries and asserts the envelope covers it, and
+/// asserts the envelope is not simply the boot canvas.
+///
+/// Watched redden, one mutation: dropping `graph_full` from `boot_extent`'s
+/// candidate list fails here at *"the envelope is 568pt short across for the
+/// unfolded family"*.
+#[test]
+fn the_boot_envelope_covers_every_graph_a_fold_can_draw() {
+    let inputs = edgar();
+    let (env_w, env_h) = ProtocolModel::boot_extent(&inputs, Flow::Vertical);
+    let cfg = LayoutConfig {
+        flow: Flow::Vertical,
+        ..LayoutConfig::default()
+    };
+    let mut covers_something_bigger = false;
+    for (name, graph) in [
+        ("the boot canvas", &inputs.graph_collapsed),
+        ("the unfolded family", &inputs.graph_full),
+        ("the exploded CTEs", &inputs.graph_exploded),
+        ("the contracted chains", &inputs.graph_contracted),
+    ] {
+        let l = brightfield_protocol::layout(graph, &cfg);
+        assert!(
+            l.width <= env_w,
+            "the envelope is {}pt short across for {name}",
+            l.width - env_w
+        );
+        assert!(
+            l.height <= env_h,
+            "the envelope is {}pt short down for {name}",
+            l.height - env_h
+        );
+        covers_something_bigger |= l.width > 0.0 && (l.width, l.height) != (env_w, env_h);
+    }
+    assert!(covers_something_bigger, "the fixture has only one picture");
+
+    let boot = ProtocolModel::boot_layout(&inputs, Flow::Vertical);
+    assert!(
+        (env_w, env_h) != (boot.width, boot.height),
+        "the envelope is the boot canvas itself ({}x{}) — the window is still \
+         measured against the configuration the user leaves immediately",
+        boot.width,
+        boot.height
+    );
 }
 
 // ---------------------------------------------------------------------------
