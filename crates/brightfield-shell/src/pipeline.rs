@@ -111,6 +111,109 @@ pub struct ParamControl {
     pub step: Option<f64>,
 }
 
+/// One spec-declared **interval slider**: a single-handle widget whose value is
+/// the moving end of an interval pushed into a named *selection*, rather than a
+/// scalar written into a param.
+///
+/// The vendored upstream corpus declares it as ONE node carrying BOTH
+/// discriminators — `input: slider` for the widget, `select: …` for what the
+/// widget writes — plus `column:` naming the column the interval is over. This
+/// crate's component discriminator tests `select` before `input`, so such a
+/// node parses as an [`Interactor`](brightfield_spec::ast::Component::Interactor)
+/// and can never reach the scalar-param collector, which matches
+/// [`Input`](brightfield_spec::ast::Component::Input) only. That is why this is
+/// a second control type with its own collector on the interactor side, not a
+/// widened `ParamControl`.
+///
+/// **Deviation from the upstream node, deliberately.** Upstream writes
+/// `select: interval`. In this build `interval` is registered Unimplemented —
+/// in the plot-brush position nothing consumes it — so a spec declaring it
+/// draws an "cannot render" banner, and promoting the name to Implemented to
+/// silence the banner would publish a capability the brush position does not
+/// have. The shipped example therefore declares `intervalX`, which is already
+/// Implemented and already maps to a real brush kind. The axis letter is inert
+/// here: a slider's interval is over the column `column:` names, not over a
+/// plotted axis.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IntervalControl {
+    /// The selection this slider contributes to (`as: $window` → `"window"`).
+    pub selection: String,
+    /// The column the pushed interval is over (`column: elapsed`).
+    pub column: String,
+    /// The contributor identity crossfilter self-exclusion compares against.
+    ///
+    /// A standalone slider has **no plot of its own**, so unlike a brush it
+    /// cannot borrow a parent plot's path — and it must not, because a slider
+    /// with no picture has no picture to spare: it has to filter *every*
+    /// subscriber, including a plot that declares it as a child. The path is
+    /// therefore synthetic — the widget's own position with an `input[slider]`
+    /// leaf — and the leaf is what makes it safe: the engine compares this
+    /// string RAW against
+    /// [`plot_node_path`](brightfield_spec::analysis::plot_node_path) of each
+    /// subscriber mark, and that function's output always ends at a `/plot[i]`
+    /// boundary (or at a `/mark[…]` leaf), so it can never equal a path ending
+    /// `/input[slider]`.
+    ///
+    /// Held by `a_plot_that_declares_the_slider_is_still_filtered_by_it`, and
+    /// by that one specifically. The structural sibling
+    /// (`an_interval_sliders_contributor_matches_no_plot_in_the_spec`) reads
+    /// like the guard and is not: give this field `plot_node_path(path)` —
+    /// which is exactly what a brush legitimately does — and the structural
+    /// test stays GREEN, because in the shipped example the slider and the
+    /// plot differ by accident of layout and collide with nothing. Only the
+    /// behavioural test, over a plot that declares the slider as its own
+    /// child, goes red. Name the test that fails, not the one that looks
+    /// like it would.
+    pub contributor: ComponentPath,
+    /// The widget's `label:`, when it declared one. The rail falls back to the
+    /// selection name.
+    pub label: Option<String>,
+    /// The interval's FIXED end, from the widget's `min:` — a slider's value is
+    /// one bound, so the other has to come from the declared range.
+    pub min: f64,
+    /// The widget's `max:` — the top of the handle's travel.
+    pub max: f64,
+    /// The widget's `step:` (`None` = continuous).
+    pub step: Option<f64>,
+    /// The handle's value as the spec declared it (`value:`, defaulting to
+    /// `max:` — the whole range admitted, which is what an untouched slider
+    /// should mean).
+    pub value: f64,
+}
+
+impl IntervalControl {
+    /// The stable key this control's UI-owned drag state is filed under. The
+    /// contributor path is already unique per widget, so it is the key.
+    #[must_use]
+    pub fn key(&self) -> &str {
+        &self.contributor.0
+    }
+
+    /// The interval `[min, value]` this slider means at `value` — the same
+    /// structured clause a plot brush pushes, which is what puts a drag on the
+    /// selection path (and so through the pre-aggregation cube) rather than the
+    /// param path.
+    #[must_use]
+    pub fn predicate(&self, value: f64) -> brightfield_engine::SqlPredicate {
+        brightfield_engine::SqlPredicate::Interval {
+            column: self.column.clone(),
+            lo: brightfield_sql::ir::ScalarValue::Float(self.min),
+            hi: brightfield_sql::ir::ScalarValue::Float(value),
+            meta: None,
+        }
+    }
+
+    /// The whole interaction this slider means at `value`.
+    #[must_use]
+    pub fn interaction(&self, value: f64) -> Interaction {
+        Interaction::Select {
+            name: self.selection.clone(),
+            contributor: self.contributor.clone(),
+            predicate: self.predicate(value),
+        }
+    }
+}
+
 /// One composited dashboard ready to present: the merged Vello scene, its
 /// logical bounding size, and the spec's declared title (for the window chrome).
 pub struct Composed {
@@ -127,6 +230,8 @@ pub struct Composed {
     pub plots: Vec<PlotHandle>,
     /// The spec's slider-backed scalar params, for the controls rail.
     pub params: Vec<ParamControl>,
+    /// The spec's interval sliders — the selection-writing half of the rail.
+    pub intervals: Vec<IntervalControl>,
     /// What the load of this spec had to SAY: the parts of it brightfield
     /// cannot draw, and every warning the parse and the analysis produced.
     ///
@@ -172,6 +277,7 @@ impl Composed {
             title: None,
             plots: Vec::new(),
             params: Vec::new(),
+            intervals: Vec::new(),
             diagnostics: LoadDiagnostics::default(),
             run_state: None,
         }
@@ -749,6 +855,7 @@ fn compose_from_results(
         title,
         plots,
         params: param_controls(spec),
+        intervals: interval_controls(spec),
         // Attached by the load path, which is the only place that holds the
         // ParseOutput. `compose_from_results` is also reached on every
         // re-present after an interaction, where re-deriving diagnostics from
@@ -829,6 +936,108 @@ fn param_controls(spec: &Spec) -> Vec<ParamControl> {
         });
     }
     out
+}
+
+/// The spec's interval sliders: every node that declares BOTH `input: slider`
+/// and an interval `select:` bound `as: $selection`, with a `column:` and a
+/// literal `min:`/`max:` range.
+///
+/// This is the interactor-side twin of [`param_controls`], and it exists
+/// because of where the parser's discriminator precedence puts such a node —
+/// `select` is tested first, so the node is an `Interactor` and the input-only
+/// collector never sees it.
+///
+/// Everything is read off the spec and nothing is derived from data. A slider
+/// whose range came from a domain query would put a query failure on the
+/// compose path, at the one moment a hand is already on the control; a range
+/// the spec did not declare is refused instead (the widget is dropped), which
+/// is visible.
+fn interval_controls(spec: &Spec) -> Vec<IntervalControl> {
+    let mut out = Vec::new();
+    if let Some(root) = &spec.root {
+        collect_interval_controls(root, "root", &mut out);
+    }
+    out
+}
+
+/// Walk `component`, appending one control per interval slider found.
+///
+/// The path scheme is `collect_marks_with_paths`' verbatim — each container
+/// contributes `/<container>[i]` per item — so the contributor paths this
+/// produces live in the same address space as the mark paths self-exclusion
+/// compares them against.
+fn collect_interval_controls(
+    component: &brightfield_spec::ast::Component,
+    path: &str,
+    out: &mut Vec<IntervalControl>,
+) {
+    use brightfield_spec::ast::{Component, SpecValue, ValueOrParamRef};
+    use brightfield_spec::vocab::InteractorKind;
+
+    match component {
+        Component::Interactor(node) => {
+            // Only the interval kinds: a slider writes an interval, and a
+            // toggle/highlight node that happened to carry `input:` would mean
+            // something this control cannot express.
+            if !matches!(
+                node.kind,
+                InteractorKind::IntervalX | InteractorKind::IntervalY | InteractorKind::IntervalXY
+            ) {
+                return;
+            }
+            let literal = |key: &str| match node.options.get(key) {
+                Some(ValueOrParamRef::Value(v)) => Some(v),
+                _ => None,
+            };
+            let number = |key: &str| match literal(key) {
+                Some(SpecValue::Integer(i)) => Some(*i as f64),
+                Some(SpecValue::Float(f)) => Some(*f),
+                _ => None,
+            };
+            let text = |key: &str| match literal(key) {
+                Some(SpecValue::String(s)) => Some(s.clone()),
+                _ => None,
+            };
+            if text("input").as_deref() != Some("slider") {
+                return;
+            }
+            let Some(ValueOrParamRef::Param(selection)) = node.options.get("as") else {
+                return;
+            };
+            let (Some(column), Some(min), Some(max)) =
+                (text("column"), number("min"), number("max"))
+            else {
+                return;
+            };
+            out.push(IntervalControl {
+                selection: selection.0.clone(),
+                column,
+                contributor: ComponentPath(format!("{path}/input[slider]")),
+                label: text("label"),
+                min,
+                max,
+                step: number("step"),
+                // An untouched slider admits its whole declared range.
+                value: number("value").unwrap_or(max),
+            });
+        }
+        Component::Plot(node) => {
+            for (i, item) in node.items.iter().enumerate() {
+                collect_interval_controls(item, &format!("{path}/plot[{i}]"), out);
+            }
+        }
+        Component::HConcat(node) => {
+            for (i, item) in node.items.iter().enumerate() {
+                collect_interval_controls(item, &format!("{path}/hconcat[{i}]"), out);
+            }
+        }
+        Component::VConcat(node) => {
+            for (i, item) in node.items.iter().enumerate() {
+                collect_interval_controls(item, &format!("{path}/vconcat[{i}]"), out);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]

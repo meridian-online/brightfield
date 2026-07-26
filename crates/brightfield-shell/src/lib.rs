@@ -19,6 +19,9 @@
 //!   binding brush/click gestures to the engine's coordinator seam.
 //! - [`legend`] — the chart legend as a native egui margin panel, outside the
 //!   plot rect, derived from the scales each chart was drawn against.
+//! - [`interval_drag`] — where an interval slider's handle is *while* it is
+//!   dragged, and the UI-thread coalescing that keeps a sustained drag from
+//!   executing values it has already superseded.
 //! - [`data_grid`] — the Data pane: the chart's peer, a DuckDB-backed grid
 //!   reading the SAME step materialisation through the engine's windowed
 //!   rows seam — and the one Meridian table chrome the Steps sheet renders
@@ -49,6 +52,7 @@ pub mod data_grid;
 pub mod devtools;
 pub mod editor;
 pub mod gallery;
+pub mod interval_drag;
 pub mod legend;
 pub mod overlays;
 pub mod pipeline;

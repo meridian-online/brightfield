@@ -1,0 +1,91 @@
+meta:
+  title: Interval slider — one handle, a live interval, a million rows
+  description: |
+    A million request traces, generated in DuckDB so there is no data file.
+    The slider under the chart is a SINGLE handle whose value is one end of an
+    interval: everything from the first minute up to where the handle sits.
+    Drag it and the density curve grows and shrinks with your hand.
+
+      cargo run --release -p brightfield-shell -- examples/interval-slider.yaml
+
+    Then take hold of the handle and sweep it slowly from one end to the other
+    without letting go. The question this spec exists to answer is whether that
+    reads as CONTINUOUS: whether the handle stays under the pointer for the
+    whole sweep, and whether the curve keeps changing while it moves rather
+    than freezing and catching up in jumps. What to watch is the right-hand
+    edge of the tall crest — it should walk across the plot with your hand.
+
+    Two things make that possible, and neither is a frame-rate trick.
+
+    The handle is owned by the window, not by the query. It renders where the
+    pointer last put it, not where the last finished query was — so it cannot
+    lag behind your hand, and a failed re-query cannot snap it backwards.
+
+    The drag writes a SELECTION, not a parameter. A selection carrying a
+    structured interval is what the automatic pre-aggregation layer keys on:
+    the first push builds one small cube over `elapsed × latency` and every
+    later push re-queries the cube instead of scanning a million rows. That is
+    what makes a sustained drag affordable at all. A slider bound `as:` a
+    scalar param would re-emit SQL against the base table on every step, and no
+    amount of coalescing would hide it.
+
+    One value is in flight at a time and the newest wins. Positions the drag
+    swept past while a query was running are superseded and never executed.
+    There is no debounce interval anywhere in it — a timer is a guess about how
+    fast the machine is, and it is wrong on some machine.
+
+    Headless, at the declared start:
+
+      cargo run -p brightfield-shell --bin brightfield-shot -- \
+        --spec examples/interval-slider.yaml --out out.png --vello-only
+
+    DEVIATION, deliberate. The upstream node for this widget writes
+    `select: interval`. In this build `interval` is registered as not
+    implemented — in the plot-brush position nothing consumes it — so
+    declaring it here would raise a "cannot render" banner over a chart that
+    renders perfectly, and promoting the name to silence the banner would
+    publish a capability the brush position does not have. `intervalX` is
+    already implemented and already maps to a real brush kind, so that is what
+    this declares. The axis letter is inert for a slider: the interval is over
+    the column `column:` names, and this widget has no axes of its own.
+
+    The range is written out rather than read off the data. A slider whose ends
+    came from a domain query would put a query failure on the composition path
+    at the exact moment a hand is on the control; nothing here needs one.
+params:
+  window:
+    select: crossfilter
+data:
+  # A million traces over a 200-minute run. Three quarters of them sit in a
+  # crest whose centre walks steadily later as the run goes on; the remaining
+  # quarter is a flat floor spread across the whole latency range at every
+  # minute. The floor is there on purpose: it holds the x axis still no matter
+  # where the handle sits, so a drag changes the SHAPE of the curve — the
+  # crest's right edge tracks the handle across the plot — instead of merely
+  # rescaling the axis under it, which would make a frozen chart and a
+  # tracking one look the same.
+  traces:
+    query: |
+      SELECT
+        i // 5000 AS elapsed,
+        CASE WHEN i % 4 = 0
+             THEN ((i * 2654435761) % 100003) / 1000.0
+             ELSE (i // 5000) * 0.475 + ((i * 40503) % 5003) / 1000.0
+        END AS latency
+      FROM range(1000000) AS t(i)
+vconcat:
+  - plot:
+      - mark: densityX
+        data: { from: traces, filterBy: $window }
+        x: latency
+    width: 720
+    height: 420
+  - select: intervalX
+    input: slider
+    as: $window
+    column: elapsed
+    label: Minutes elapsed
+    min: 0
+    max: 199
+    step: 1
+    value: 60
