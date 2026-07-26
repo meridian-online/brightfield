@@ -73,7 +73,8 @@ use meridian_design::{semantic, spacing};
 use crate::canvas::{CanvasSlot, EguiCanvasHost};
 use crate::chart_item::ChartItem;
 use crate::design::Mode;
-use crate::pipeline::{Composed, LiveDashboard};
+use crate::interval_drag::IntervalDrags;
+use crate::pipeline::{Composed, IntervalControl, LiveDashboard};
 use crate::watch::FileWatcher;
 
 // ---------------------------------------------------------------------------
@@ -122,6 +123,16 @@ pub struct ChartDoc {
     /// The rect the legend band occupied last frame — `None` when the
     /// dashboard calls for no legend, which is itself an assertable fact.
     pub legend_rect: Option<egui::Rect>,
+    /// Where each interval slider's track was drawn last frame, as
+    /// `(control key, rect)` in window-space logical points — empty until a
+    /// frame has laid the rail out, and empty for a spec that declares none.
+    ///
+    /// Recorded for the reason [`Self::overlay_checkbox`] is: the only
+    /// assertion worth making about a drag is one that aims a real pointer at
+    /// the widget a person would grab, and a coordinate typed by hand against
+    /// a layout nothing derived it from stops landing the first time a row
+    /// height moves without anything going red.
+    pub interval_slider_rects: Vec<(String, egui::Rect)>,
     /// The spec file this dashboard was composed from, when a named file
     /// composed it — what the spec editor opens beside the live chart.
     /// `None` for the shipped starts and the in-memory composes of the test
@@ -145,6 +156,11 @@ pub struct ChartDoc {
     /// Selections currently holding a committed gesture, as
     /// `(selection name, contributor)` — what `clear-selection` retracts.
     active_selections: Vec<(String, ComponentPath)>,
+    /// Where each interval slider's handle is *right now*, and which of a
+    /// drag's values are still owed a query. Public because the rail writes it
+    /// and a headless test drives it; see [`crate::interval_drag`] for why the
+    /// handle position cannot live in [`Self::composed`].
+    pub interval_drags: IntervalDrags,
     canvas: CanvasSlot<CanvasKey>,
 }
 
@@ -185,11 +201,13 @@ impl ChartDoc {
             overlay_checkbox: None,
             raster_rect: None,
             legend_rect: None,
+            interval_slider_rects: Vec::new(),
             spec_path: None,
             activity: ActivityLog::new(),
             watch: FileWatcher::new(),
             live: None,
             active_selections: Vec::new(),
+            interval_drags: IntervalDrags::new(),
             canvas: CanvasSlot::new(host),
         }
     }
@@ -204,11 +222,13 @@ impl ChartDoc {
             overlay_checkbox: None,
             raster_rect: None,
             legend_rect: None,
+            interval_slider_rects: Vec::new(),
             spec_path: None,
             activity: ActivityLog::new(),
             watch: FileWatcher::new(),
             live: None,
             active_selections: Vec::new(),
+            interval_drags: IntervalDrags::new(),
             canvas: CanvasSlot::headless(),
         }
     }
@@ -242,6 +262,8 @@ impl ChartDoc {
         self.composed = composed;
         self.live = None;
         self.active_selections.clear();
+        // The handle positions described the replaced document's sliders.
+        self.interval_drags.clear();
         self.spec_path = None;
         // The watch list described the replaced document's files, and any
         // in-flight marks belonged to its session — both go with it.
@@ -288,7 +310,13 @@ impl ChartDoc {
     /// data-grid pane's read path: the windowed step-rows seam, plus the
     /// interaction generation those reads are cache-keyed to. `None` for a
     /// one-shot composition, whose stillness has nothing to read back.
-    pub(crate) fn live_coordinator(&mut self) -> Option<&mut Coordinator> {
+    ///
+    /// Public because "did the picture actually change" has exactly one
+    /// honest answer — the rows the session now returns — and a gate that
+    /// asserted it from a field the code under test writes would be asserting
+    /// against itself. [`LiveDashboard::coordinator`] is public for the same
+    /// reason one level down.
+    pub fn live_coordinator(&mut self) -> Option<&mut Coordinator> {
         self.live.as_mut().map(LiveDashboard::coordinator)
     }
 
@@ -351,6 +379,42 @@ impl ChartDoc {
         for (name, contributor) in std::mem::take(&mut self.active_selections) {
             self.apply_interaction(Interaction::ClearSelect { name, contributor });
         }
+    }
+
+    /// Record that an interval slider's handle was dragged to `value`.
+    ///
+    /// Nothing is queried here. The value becomes what the handle renders at
+    /// and the newest value owed a query; [`Self::pump_interval_drags`] is
+    /// what turns at most one of them into an interaction. Splitting the two
+    /// is the coalescing — see [`crate::interval_drag`].
+    pub fn note_interval_drag(&mut self, control: &IntervalControl, value: f64) {
+        self.interval_drags.note(control.key(), value);
+    }
+
+    /// Dispatch at most one owed value per interval slider, newest only.
+    ///
+    /// Each dispatch is an `Interaction::Select` carrying the structured
+    /// interval clause — the SELECTION path, the one a plot brush takes, so a
+    /// drag gets the pre-aggregation cube. It is deliberately not
+    /// `set_param`: a param change is a re-emit with a new literal and no cube
+    /// behind it, which is what made a slider feel like a series of stalls.
+    ///
+    /// Returns the number of sliders that dispatched (0 or more), so the frame
+    /// loop can tell a settled rail from a moving one.
+    pub fn pump_interval_drags(&mut self, controls: &[IntervalControl]) -> usize {
+        let mut dispatched = 0;
+        for control in controls {
+            let Some(value) = self.interval_drags.take_dispatch(control.key()) else {
+                continue;
+            };
+            // Whether the re-query succeeded or failed, the dispatch is over:
+            // a handle left permanently outstanding would take the slider out
+            // of service for the rest of the session.
+            self.apply_interaction(control.interaction(value));
+            self.interval_drags.finish(control.key());
+            dispatched += 1;
+        }
+        dispatched
     }
 
     /// Drive one spec-declared scalar parameter — the controls rail's slider,
@@ -601,6 +665,42 @@ impl Item<ChartDoc> for ControlsPane {
                 if response.changed() && (value - control.value).abs() > f64::EPSILON {
                     doc.set_param(&control.name, value);
                 }
+            }
+        }
+        // The other slider: an interval slider writes a SELECTION, not a
+        // param, so it dispatches an `Interaction::Select` carrying the same
+        // structured interval clause a plot brush pushes — which is what puts
+        // a sustained drag on the pre-aggregated path.
+        //
+        // Three things separate it from the param slider above. Its handle is
+        // read out of the document's own drag state rather than re-seeded from
+        // the composition, so under a drag it shows the POINTER's value and
+        // not the last completed query's. It records rather than dispatches:
+        // the pump below sends at most one value per slider per frame, newest
+        // only. And it never touches the spec — no buffer, no file, no dirty
+        // flag moves, because a selection is live state and not an edit.
+        let intervals = doc.composed.intervals.clone();
+        doc.interval_slider_rects.clear();
+        if doc.is_live() && !intervals.is_empty() {
+            for control in &intervals {
+                ui.label(control.label.as_deref().unwrap_or(&control.selection));
+                let mut value = doc.interval_drags.shown(control.key(), control.value);
+                let mut slider = egui::Slider::new(&mut value, control.min..=control.max);
+                if let Some(step) = control.step {
+                    slider = slider.step_by(step);
+                }
+                let response = ui.add(slider);
+                doc.interval_slider_rects
+                    .push((control.key().to_string(), response.rect));
+                if response.changed() {
+                    doc.note_interval_drag(control, value);
+                }
+            }
+            if doc.pump_interval_drags(&intervals) > 0 || doc.interval_drags.any_pending() {
+                // A drag that outran its queries has work left; keep frames
+                // coming so the next one goes out without waiting on a
+                // pointer event that may never arrive.
+                ui.ctx().request_repaint();
             }
         }
         doc.overlay_checkbox = Some(ui.checkbox(&mut doc.overlay, "hover overlay").rect);
