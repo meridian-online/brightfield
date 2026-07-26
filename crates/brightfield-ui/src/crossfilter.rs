@@ -34,7 +34,6 @@ use brightfield_render::mark::{
     HighlightStyle, MarkRenderer, Projection,
 };
 use brightfield_render::nearest::SelectionValue;
-use brightfield_render::sample_notice::SampleFact;
 use brightfield_render::scale::{Scale, ScaleSet, SequentialScheme};
 use brightfield_render::scene::{
     build_multi_mark_scene, build_multi_mark_scene_anchored, ChartData,
@@ -125,16 +124,6 @@ pub struct MarkInput {
     /// `HighlightState` that dims the non-matching rows; an at-rest batch (empty
     /// selection → no `__bf_selected` column) renders every row normally.
     pub highlight_style: Option<HighlightStyle>,
-    /// `Some` when this mark's rows came back through a pushed-down sample.
-    ///
-    /// **This is the second place the fact has to live.** A crossfilter
-    /// rebuild constructs its own `ChartData` from these inputs rather than
-    /// reusing the compose path's, so a fact carried only there would be
-    /// dropped the moment a brush gesture rebuilt the plot — the notice would
-    /// vanish and a sampled picture would go on being drawn as if it were
-    /// complete. `drawn` is refreshed from the rebuilt batch; `of` is the
-    /// unsampled count the engine measured.
-    pub sample: Option<SampleFact>,
 }
 
 /// One plot in the live dashboard: its identity, the marks it owns, its layout,
@@ -820,7 +809,8 @@ impl<H: ReactiveHandle> CrossfilterCoordinator<H> {
                     layout,
                     view_extent: None,
                     highlight: highlight.as_ref(),
-                    sample: sample_for(m, batch),
+                    // See `render_plot_scene` below for why this is `None`.
+                    sample: None,
                 })
             })
             .collect();
@@ -1249,20 +1239,6 @@ impl<H: ReactiveHandle> CrossfilterCoordinator<H> {
 /// re-render honours the same choice rather than resurrecting the inline
 /// legend — which matters because every raster plot carries a Fill (Sequential)
 /// scale and would otherwise grow a gradient bar after the first gesture.
-/// The sampling fact for one rebuilt mark: the unsampled total the engine
-/// measured, against the row count THIS batch actually carries.
-///
-/// `drawn` is re-read from the rebuilt batch rather than carried, because a
-/// brush changes it — the sample rate is fixed but the filtered row count is
-/// not, and a notice quoting the pre-brush figure would be wrong in a way
-/// nobody could see.
-fn sample_for(mark: &MarkInput, batch: &RecordBatch) -> Option<SampleFact> {
-    mark.sample.map(|f| SampleFact {
-        drawn: batch.num_rows() as u64,
-        of: f.of,
-    })
-}
-
 fn render_plot_scene(
     marks: &[MarkInput],
     renderers: &[(MarkKind, Box<dyn MarkRenderer + Send + Sync>)],
@@ -1300,7 +1276,17 @@ fn render_plot_scene(
                 layout: *layout,
                 view_extent: None,
                 highlight: highlight.as_ref(),
-                sample: sample_for(m, batch),
+                // NOT WIRED, and deliberately not papered over. A sampled
+                // plot's notice is carried by `LiveDashboard::present`
+                // (brightfield-shell's pipeline), which re-derives the fact
+                // from the session on every re-present — including after a
+                // brush. This coordinator is a second, older rebuild path
+                // that nothing in the workspace currently constructs, so
+                // threading the fact through it would add a claim no test
+                // could reach. If it is ever wired to a live surface, the
+                // fact has to come with it or the notice vanishes on the
+                // first gesture.
+                sample: None,
             })
         })
         .collect();
@@ -1471,10 +1457,6 @@ fn build_fresh_mark_input(
         thresholds,
         bin_width,
         highlight_style,
-        // A structural edit rebuilds the mark from the spec; the sampling fact
-        // belongs to the session's current rate and is re-supplied by the next
-        // execution, not carried across a spec change.
-        sample: None,
     }
 }
 
@@ -1858,7 +1840,6 @@ vconcat:
             thresholds: None,
             bin_width: None,
             highlight_style: None,
-            sample: None,
         };
         // Old flat space: plot0 -> [0] (bw 0.11), plot1 -> [1] (bw 0.42).
         let plot_meta = vec![
@@ -2171,7 +2152,6 @@ vconcat:
             thresholds: None,
             bin_width: None,
             highlight_style: None,
-            sample: None,
         };
         let old_marks = vec![blank(0), blank(1), blank(2)];
         // Rebuild the AFFECTED plot0 (as a RemoveMark/AddMark on it would).
@@ -2227,7 +2207,6 @@ projectionType: albers
             thresholds: None,
             bin_width: None,
             highlight_style: None,
-            sample: None,
         };
         let old_marks = vec![blank(0), blank(1)];
         let (new_marks, new_indices, _) =
@@ -2335,7 +2314,6 @@ projectionType: albers
             thresholds: None,
             bin_width: None,
             highlight_style: None,
-            sample: None,
         }];
         let renderers = default_renderers();
         let layout = ChartLayout::new(400.0, 300.0);
@@ -2401,7 +2379,6 @@ projectionType: albers
                 thresholds: None,
                 bin_width: None,
                 highlight_style: None,
-                sample: None,
             }];
             match launch_scales(&marks, &renderers, &[0], &layout).get(Channel::Fill) {
                 Some(Scale::Sequential { stops, .. }) => stops.clone(),
@@ -2448,7 +2425,6 @@ projectionType: albers
             thresholds: None,
             bin_width: None,
             highlight_style: None,
-            sample: None,
         }];
         let mut launch = launch_scales(&viridis_marks, &renderers, &[0], &layout);
         match launch.get(Channel::Fill) {
@@ -2479,7 +2455,6 @@ projectionType: albers
             thresholds: None,
             bin_width: None,
             highlight_style: None,
-            sample: None,
         }];
 
         // Negative: the override swap alone is inert — anchor_scale copies launch
@@ -2576,7 +2551,6 @@ projectionType: albers
             thresholds: None,
             bin_width: None,
             highlight_style: None,
-            sample: None,
         }];
         assert!(has_sequential_fill(&launch_scales(
             &raster,
@@ -2667,7 +2641,6 @@ plot:
                     thresholds: None,
                     bin_width: None,
                     highlight_style: None,
-                    sample: None,
                 })
                 .collect();
             (session, marks)
@@ -2716,7 +2689,6 @@ plot:
                 thresholds: None,
                 bin_width: None,
                 highlight_style: None,
-                sample: None,
             };
             let ovr = recolour_override(&m, SequentialScheme::Blues);
             vec![MarkInput {
@@ -2879,7 +2851,6 @@ plot:
             thresholds: None,
             bin_width: None,
             highlight_style: None,
-            sample: None,
         }];
         let launch = launch_scales(&full_marks, &renderers, &[0], &layout);
 
@@ -2894,7 +2865,6 @@ plot:
             thresholds: None,
             bin_width: None,
             highlight_style: None,
-            sample: None,
         }];
         let reinferred = launch_scales(&filtered_marks, &renderers, &[0], &layout);
         let launch_gentoo = launch
@@ -2990,7 +2960,6 @@ plot:
                 thresholds: None,
                 bin_width: None,
                 highlight_style: None,
-                sample: None,
             }]
         };
         let hlaunch_marks = hmark(hbatch);
@@ -3114,7 +3083,6 @@ plot:
                     thresholds: None,
                     bin_width: None,
                     highlight_style: None,
-                    sample: None,
                 }]
             };
 
@@ -3197,7 +3165,6 @@ plot:
             thresholds: None,
             bin_width: None,
             highlight_style: None,
-            sample: None,
         }];
         match launch_scales(&blues, &renderers, &[0], &layout).get(Channel::Fill) {
             Some(Scale::Sequential { stops, .. }) => {
@@ -3236,7 +3203,6 @@ plot:
                 thresholds: None,
                 bin_width: None,
                 highlight_style: None,
-                sample: None,
             }]
         };
         let l1 = launch_scales(&marks_bw(Some(2.0)), &renderers, &[0], &layout);
@@ -3288,7 +3254,6 @@ plot:
                 thresholds: None,
                 bin_width: None,
                 highlight_style: None,
-                sample: None,
             }];
             let scales = launch_scales(&marks, &renderers, &[0], &layout);
             count_scene_paths(
@@ -3319,7 +3284,6 @@ plot:
             thresholds: None,
             bin_width: None,
             highlight_style: None,
-            sample: None,
         }];
         let scales = launch_scales(&dot, &renderers, &[0], &layout);
         assert!(
@@ -3381,7 +3345,6 @@ plot:
                 thresholds: None,
                 bin_width: None,
                 highlight_style: None,
-                sample: None,
             }]
         };
 
@@ -3511,7 +3474,6 @@ plot:
             thresholds: None,
             bin_width: None,
             highlight_style: None,
-            sample: None,
         };
         // Overlay (mark 1): a blues raster, EMPTY at launch.
         let mut marks = vec![
@@ -3532,7 +3494,6 @@ plot:
                 thresholds: None,
                 bin_width: None,
                 highlight_style: None,
-                sample: None,
             },
         ];
 
@@ -3663,7 +3624,6 @@ plot:
                 thresholds: None,
                 bin_width: None,
                 highlight_style: None,
-                sample: None,
             })
             .collect();
 
@@ -3748,7 +3708,6 @@ plot:
                 thresholds: None,
                 bin_width: None,
                 highlight_style: None,
-                sample: None,
             })
             .collect();
 
@@ -3821,7 +3780,6 @@ plot:
                 thresholds: None,
                 bin_width: None,
                 highlight_style: None,
-                sample: None,
             })
             .collect();
 
@@ -4035,7 +3993,6 @@ hconcat:
                 thresholds: None,
                 bin_width: None,
                 highlight_style: None,
-                sample: None,
             })
             .collect();
 

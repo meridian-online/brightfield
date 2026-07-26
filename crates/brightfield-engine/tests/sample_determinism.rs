@@ -8,7 +8,7 @@
 //! DuckDB actually linked in — not against a CLI on someone's PATH, which is a
 //! different build at a different version.
 //!
-//! Three properties are asserted:
+//! Four properties are asserted:
 //!
 //! 1. `TABLESAMPLE reservoir` **reshuffles** when the input changes. It is a
 //!    streaming reservoir over whatever rows reach it, so narrowing a filter
@@ -21,6 +21,12 @@
 //!    kept at `% 8 = 0` is also kept at `% 4 = 0` and `% 2 = 0`. Halving the
 //!    modulus can therefore only ADD points. A non-power-of-two modulus
 //!    forecloses that permanently, which is why the IR takes the exponent.
+//! 4. The **placement** of that modulus relative to the highlight projection is
+//!    what decides whether a brush reshuffles the drawn set — measured over rows
+//!    in both nestings, rather than argued from the emitted SQL. The emitter's
+//!    own guard lives in `brightfield-sql`'s `sampling` tests; this is the
+//!    measurement it stands on, and it is also where the "modulus ≥ 32" rule
+//!    that guard cites comes from.
 
 use duckdb::Connection;
 
@@ -210,4 +216,109 @@ fn the_emitted_clause_shape_binds_and_selects_the_expected_share() {
         (4_000..9_000).contains(&n),
         "a 1/16 sample of 100000 rows landed at {n} — far from the ~6250 a usable hash gives"
     );
+}
+
+/// **The placement, measured on rows.** The highlight pass appends a
+/// `(<pred>) AS __bf_selected` boolean; whether the sample sits ABOVE or BELOW
+/// that projection decides whether a brush redraws which points are on screen.
+///
+/// Both nestings are written out literally here rather than emitted, so this
+/// stays a measurement of DuckDB's behaviour and cannot go vacuous when the
+/// emitter changes. The emitter's own placement guard is
+/// `sample_sits_below_the_highlight_projection_so_a_brush_cannot_reshuffle_it`
+/// in `brightfield-sql`; this is what that guard is guarding.
+///
+/// It also establishes the **modulus ≥ 32** rule that guard cites. Below 32 the
+/// row hash is blind to the appended boolean — the same check at 8 or 16 passes
+/// in BOTH nestings and proves nothing — which is a second, independent way for
+/// a test of this property to be vacuous.
+///
+/// Measured on the bundled DuckDB over 200 000 rows, moving one brush:
+///
+/// | modulus | below (shipped) | above (mutant) |
+/// |---|---|---|
+/// | 32 | 6 255 drawn, 0 moved | 6 374 drawn, 2 636 moved (41 %) |
+/// | 64 | 3 136 drawn, 0 moved | 3 103 drawn, 1 304 moved (42 %) |
+/// | 128 | 1 561 drawn, 0 moved | 1 563 drawn, 673 moved (43 %) |
+#[test]
+fn the_highlight_flag_must_stay_outside_the_hashed_tuple() {
+    let conn = Connection::open_in_memory().expect("open");
+    seeded(&conn, 200_000);
+
+    /// The shipped nesting: hash the row, THEN append the flag.
+    fn below(pred: &str, m: u32) -> String {
+        format!(
+            "SELECT id FROM (SELECT *, ({pred}) AS __bf_selected \
+             FROM (SELECT * FROM t) AS _s WHERE hash(_s) % {m} = 0) ORDER BY id"
+        )
+    }
+    /// The mutant nesting: append the flag, THEN hash the row including it.
+    fn above(pred: &str, m: u32) -> String {
+        format!(
+            "SELECT id FROM (SELECT * FROM (SELECT *, ({pred}) AS __bf_selected FROM t) \
+             AS _s WHERE hash(_s) % {m} = 0) ORDER BY id"
+        )
+    }
+
+    // Two brush states over the same rows. Only the highlight predicate moves;
+    // no row is filtered out by either, so a stable sample must draw exactly
+    // the same points under both.
+    //
+    // `a` is spread over 0..100000, so these two flag exactly the rows in
+    // [50000, 90000) differently — 40 % of the table. That 40 % is also the
+    // fraction of the drawn set the broken nesting is EXPECTED to lose: a row
+    // whose flag did not change hashes the same either way and stays, and a row
+    // whose flag did change is re-rolled at 1-in-`m` and almost never survives.
+    // The assertion below is set against a fifth rather than against that 40 %,
+    // so it is a statement about "large" and not a fit to one hash's output.
+    let (brush_a, brush_b) = ("a < 50000", "a < 90000");
+
+    for m in [32_u32, 64, 128] {
+        let stable_a = ids(&conn, &below(brush_a, m));
+        let stable_b = ids(&conn, &below(brush_b, m));
+        assert!(
+            !stable_a.is_empty(),
+            "fixture check: a 1-in-{m} sample of 200000 rows must not be empty"
+        );
+        assert_eq!(
+            stable_a, stable_b,
+            "modulus {m}: with the flag OUTSIDE the hashed tuple, moving the brush must \
+             leave the drawn set byte-identical"
+        );
+
+        let shuffled_a = ids(&conn, &above(brush_a, m));
+        let shuffled_b = ids(&conn, &above(brush_b, m));
+        let moved = shuffled_a
+            .iter()
+            .filter(|id| !shuffled_b.contains(id))
+            .count();
+        eprintln!(
+            "modulus {m:>4}: below → {} drawn, 0 moved;  above → {} drawn, {moved} moved ({:.0} %)",
+            stable_a.len(),
+            shuffled_a.len(),
+            moved as f64 * 100.0 / shuffled_a.len() as f64,
+        );
+        assert!(
+            moved * 5 > shuffled_a.len(),
+            "modulus {m}: with the flag INSIDE the hashed tuple only {moved} of {} drawn \
+             rows changed under a brush. The whole point of pinning the placement is that \
+             this number is large — if it has collapsed, this test has stopped measuring \
+             the failure it exists to describe",
+            shuffled_a.len()
+        );
+    }
+
+    // And why the rule is "≥ 32": below that the hash does not see the boolean
+    // at all, so the mutant nesting looks perfectly stable. A guard written at
+    // 8 or 16 would pass on broken code.
+    for m in [8_u32, 16] {
+        let blind_a = ids(&conn, &above(brush_a, m));
+        let blind_b = ids(&conn, &above(brush_b, m));
+        assert_eq!(
+            blind_a, blind_b,
+            "modulus {m}: expected the row hash to be BLIND to the appended boolean here. \
+             If this now differs, the hash has changed and the ≥ 32 rule quoted in the \
+             emitter's placement guard needs re-measuring, not deleting"
+        );
+    }
 }

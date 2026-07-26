@@ -93,57 +93,120 @@ fn sample_sits_above_the_marks_projection() {
 /// points while looking like data movement.
 #[test]
 fn sample_sits_below_the_highlight_projection_so_a_brush_cannot_reshuffle_it() {
-    let src = "data:\n  t:\n    file: rows.parquet\nplot:\n  - mark: dot\n    data: { from: t }\n    x: xcol\n    y: ycol\n  - select: intervalXY\n    as: $range\n  - select: highlight\n    by: $range\n    opacity: 0.15\n";
-    let spec = spec_of(src);
-    let rate = SampleRate::from_modulus(8).expect("power of two");
+    let spec = spec_of(HIGHLIGHTED);
+    // Modulus 32, and not for taste. The consequence this guards is measured
+    // over real rows in `brightfield-engine`'s `sample_determinism`, and there
+    // DuckDB's `hash(struct_pack(…))` turns out to be BLIND to an appended
+    // boolean below modulus 32 — a runtime check at 8 or 16 passes in both
+    // nestings. Using the same rate here keeps the two files talking about the
+    // same thing.
+    let rate = SampleRate::from_modulus(32).expect("power of two");
 
-    let selection_a: Vec<SelectionPredicate> = vec![(
-        "range".to_string(),
-        vec![(
-            "root".to_string(),
-            Predicate::Expr("\"xcol\" > 1".to_string()),
-        )],
-    )];
-    let selection_b: Vec<SelectionPredicate> = vec![(
-        "range".to_string(),
-        vec![(
-            "root".to_string(),
-            Predicate::Expr("\"xcol\" > 900".to_string()),
-        )],
-    )];
+    let sql = emit_query_sampled(
+        &spec,
+        0,
+        None,
+        Some(&selection("\"xcol\" > 1")),
+        &no_passes(),
+        Some(rate),
+    )
+    .expect("emit")
+    .sql;
 
-    let sql_a = emit_query_sampled(&spec, 0, None, Some(&selection_a), &no_passes(), Some(rate))
-        .expect("emit a")
-        .sql;
-    let sql_b = emit_query_sampled(&spec, 0, None, Some(&selection_b), &no_passes(), Some(rate))
-        .expect("emit b")
-        .sql;
-
-    // Rendered SQL nests outward-in: the OUTERMOST select is the text that
-    // comes first. So the membership projection being outside the sampled
-    // subquery means it appears BEFORE the clause, and the flag is therefore
-    // not among the columns `hash(_s)` sees.
-    let selected_at = sql_a
-        .find("__bf_selected")
-        .expect("the highlight projection");
-    let sample_at = sql_a.find("AS _s WHERE hash(_s)").expect("sampling clause");
+    // The STRUCTURAL question, asked structurally. An earlier version of this
+    // test compared the two substrings' positions, which was vacuous: the
+    // marker it searched for is the sampled subquery's TRAILING `WHERE`, so it
+    // lands after the whole inner query text in either nesting and the
+    // assertion held under the very mutation it existed to catch. What is
+    // actually being asked is whether `__bf_selected` is one of the columns
+    // `_s` projects — i.e. whether it is INSIDE the sampled subquery's own
+    // text — so that is what is extracted and searched.
+    let hashed = hashed_subquery(&sql);
     assert!(
-        selected_at < sample_at,
-        "__bf_selected must be projected OUTSIDE the sampled subquery — inside it, the \
-         flag would enter the hashed tuple. Got: {sql_a}"
+        !hashed.contains("__bf_selected"),
+        "__bf_selected is inside the hashed tuple. `hash(_s)` hashes whatever `_s` \
+         projects, so the sample would be re-drawn on every selection change and the \
+         plot would silently redraw a different subset of points under a brush.\n  \
+         hashed subquery: {hashed}\n  full: {sql}"
+    );
+    // Not vacuous in the other direction either: the flag IS emitted, just
+    // outside. Without this, deleting the highlight pass would make the check
+    // above pass for the wrong reason.
+    assert!(
+        sql.contains("__bf_selected"),
+        "fixture check: this spec must produce a highlight projection at all, got: {sql}"
     );
 
-    // And the consequence that matters, asserted directly: the two emissions
-    // differ ONLY in the highlight predicate's own text. Everything else —
-    // the whole sampled subquery included — is byte-identical, so the set of
-    // rows the sample keeps cannot move when the brush does.
+    // A second, weaker check, kept and labelled as weak: the two emissions
+    // differ ONLY in the highlight predicate's own text. This is NECESSARY but
+    // NOT SUFFICIENT — verified by mutation, it holds in both nestings, because
+    // relocating the Sample node moves the predicate's text without changing
+    // it. It guards against unrelated drift inside the sampled subquery, not
+    // against the placement.
+    let sql_a = sql;
+    let sql_b = emit_query_sampled(
+        &spec,
+        0,
+        None,
+        Some(&selection("\"xcol\" > 900")),
+        &no_passes(),
+        Some(rate),
+    )
+    .expect("emit b")
+    .sql;
     assert_eq!(
         sql_a.replace("\"xcol\" > 1", "<PRED>"),
         sql_b.replace("\"xcol\" > 900", "<PRED>"),
-        "changing the selection changed something other than the highlight predicate; \
-         if that something is inside the sampled subquery the drawn points reshuffle \
-         under a brush.\n  a: {sql_a}\n  b: {sql_b}"
+        "changing the selection changed something other than the highlight predicate\n  \
+         a: {sql_a}\n  b: {sql_b}"
     );
+}
+
+/// A dot scatter whose plot carries a highlight interactor — the one shape in
+/// which the sample's placement relative to `__bf_selected` is observable.
+const HIGHLIGHTED: &str = "data:\n  t:\n    file: rows.parquet\nplot:\n  - mark: dot\n    data: { from: t }\n    x: xcol\n    y: ycol\n  - select: intervalXY\n    as: $range\n  - select: highlight\n    by: $range\n    opacity: 0.15\n";
+
+/// One live contributor to `$range`, carrying `expr` as its predicate.
+fn selection(expr: &str) -> Vec<SelectionPredicate> {
+    vec![(
+        "range".to_string(),
+        vec![("root".to_string(), Predicate::Expr(expr.to_string()))],
+    )]
+}
+
+/// The text of the subquery `hash(_s)` hashes — i.e. everything between the
+/// parentheses of `FROM (…) AS _s WHERE hash(_s)`.
+///
+/// Found by matching parentheses backwards from the closer, so it answers the
+/// NESTING question rather than a question about where two substrings happen to
+/// land in the rendered string. (The rendered IR puts no parentheses inside
+/// string literals, so a naive depth count is exact here.)
+fn hashed_subquery(sql: &str) -> &str {
+    const MARK: &str = " AS _s WHERE hash(_s)";
+    let mark_at = sql.find(MARK).expect("the sampling clause");
+    let close = mark_at - 1;
+    assert_eq!(
+        &sql[close..=close],
+        ")",
+        "the sampling clause is not shaped `(…) AS _s WHERE hash(_s)`: {sql}"
+    );
+    let bytes = sql.as_bytes();
+    let mut depth = 1_i32;
+    let mut i = close;
+    while i > 0 {
+        i -= 1;
+        match bytes[i] {
+            b')' => depth += 1,
+            b'(' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &sql[i + 1..close];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("unbalanced parentheses around the sampling clause: {sql}");
 }
 
 /// A sample is never applied to an aggregating plan, and the pre-aggregation

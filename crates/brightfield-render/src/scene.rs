@@ -810,6 +810,88 @@ mod tests {
     use arrow::record_batch::RecordBatch;
     use std::sync::Arc;
 
+    /// **The restoration, asserted where the scales come out.** A sampled
+    /// batch spans less than the rows it was drawn from, and a continuous
+    /// domain is inferred by walking the batch, so without the override the
+    /// axis narrows toward the interior. That is not a cosmetic difference: a
+    /// brush inverts pixels through these same scales, so the same drag would
+    /// dispatch a different data interval on a sampled plot than on a complete
+    /// one.
+    ///
+    /// The control half matters as much as the treatment half — the SAME batch
+    /// with no domains must still infer the narrow extent, or the assertion
+    /// above would hold for a scene that never looked at the override at all.
+    #[test]
+    fn unsampled_domains_widen_the_scales_a_sampled_batch_would_narrow() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        // What a 1-in-N sample of a 0..100 field might leave behind.
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![40.0, 47.0, 55.0, 61.0])),
+                Arc::new(Float64Array::from(vec![12.0, 19.0, 24.0, 30.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        let dot = DotRenderer;
+        let data = ChartData {
+            batch: &batch,
+            channel_map: &cm,
+            renderer: &dot,
+            layout: ChartLayout::new(400.0, 300.0),
+            view_extent: None,
+            highlight: None,
+            sample: None,
+        };
+
+        let domain = |scales: &ScaleSet, ch: Channel| match scales.get(ch) {
+            Some(Scale::Linear {
+                domain_min,
+                domain_max,
+                ..
+            }) => (*domain_min, *domain_max),
+            other => panic!("expected a linear {ch:?} scale, got {other:?}"),
+        };
+
+        let (_, narrow) = build_multi_mark_scene(&[&data], false, &ResolvedTitles::default());
+        let narrow_x = domain(&narrow, Channel::X);
+        let narrow_y = domain(&narrow, Channel::Y);
+
+        let (_, restored) = build_multi_mark_scene_with_domains(
+            &[&data],
+            false,
+            &ResolvedTitles::default(),
+            UnsampledDomains {
+                x: Some((0.0, 100.0)),
+                y: Some((-5.0, 80.0)),
+            },
+        );
+        assert_eq!(
+            domain(&restored, Channel::X),
+            (0.0, 100.0),
+            "the x scale must come out at the UNSAMPLED extent, not the drawn batch's"
+        );
+        assert_eq!(domain(&restored, Channel::Y), (-5.0, 80.0));
+
+        // Control: without the override the same batch narrows, so the check
+        // above is about the override and not about the fixture.
+        assert!(
+            narrow_x.0 > 0.0 && narrow_x.1 < 100.0,
+            "fixture check: the drawn batch alone must infer a NARROWER x domain \
+             than the unsampled one, got {narrow_x:?}"
+        );
+        assert!(
+            narrow_y.0 > -5.0 && narrow_y.1 < 80.0,
+            "fixture check: same for y, got {narrow_y:?}"
+        );
+    }
+
     // A fill-colour plot draws an inline legend by default; `draw_inline_legend =
     // false` suppresses it, so the scale isn't drawn twice when a standalone
     // `legend:` node has relocated it. (multi-view inc 6 — two-legend fix)

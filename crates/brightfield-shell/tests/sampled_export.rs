@@ -1,5 +1,5 @@
-//! The half of the sampling notice that can be machine-checked: that it
-//! survives a chart-only export.
+//! The two halves of the sampling notice that can be machine-checked: that it
+//! survives a chart-only export, and that it survives a brush.
 //!
 //! `capture_vello_only` rasterises the composed Vello scene and never
 //! constructs an egui context, so everything the shell draws — the top bar, the
@@ -8,15 +8,24 @@
 //! being cropped out of a screenshot", and it is exactly why the notice is
 //! drawn into the plot's own scene rather than into chrome.
 //!
-//! What is left for a human eye is the other half — whether a sampled render
-//! reads as sampled without reading the words. Nothing here claims to test
-//! that.
+//! The second half goes through [`LiveDashboard::present`], which is the path
+//! the live window repaints on — not the one-shot `compose_spec_sampled` call.
+//! Those are two different functions gathering the facts, and only one of them
+//! runs after a gesture; a suite that exercised only the one-shot call would be
+//! green with the live path erasing the notice on the first drag, which is
+//! precisely the invisible degradation this whole device exists to prevent.
+//!
+//! What is left for a human eye is the rest — whether a sampled render reads as
+//! sampled without reading the words. Nothing here claims to test that.
 
 use std::path::PathBuf;
 
+use brightfield_engine::coordinator::Interaction;
+use brightfield_engine::SqlPredicate;
 use brightfield_render::sample_notice::NOTICE_BAND;
 use brightfield_shell::capture::capture_vello_only;
-use brightfield_shell::pipeline::compose_spec_sampled;
+use brightfield_shell::pipeline::{compose_spec_sampled, live_spec_sampled};
+use brightfield_spec::analysis::ComponentPath;
 use brightfield_sql::ir::SampleRate;
 
 /// Small enough to render fast, dense enough to be a real scatter.
@@ -28,6 +37,25 @@ const SPEC: &str = "data:
 plot:
   - mark: dot
     data: { from: points }
+    x: a
+    y: b
+width: 400
+height: 300
+";
+
+/// The same scatter, brushable — the shape the live window actually runs, and
+/// the only shape in which a re-present after a gesture can be observed.
+const BRUSHABLE_SPEC: &str = "params:
+  brush:
+    select: intersect
+data:
+  points:
+    query: |
+      SELECT (i * 7919 % 1009) / 10.0 AS a, (i * 104729 % 1013) / 10.0 AS b
+      FROM range(4096) AS t(i)
+plot:
+  - mark: dot
+    data: { from: points, filterBy: $brush }
     x: a
     y: b
 width: 400
@@ -113,6 +141,143 @@ fn the_sampling_notice_is_in_the_chart_only_export() {
         sampled_ink > complete_ink * 3,
         "the band is supposed to be the DIFFERENCE between the two exports: sampled held \
          {sampled_ink} inked pixels there, complete held {complete_ink}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **A brush must not erase the notice.** Driven through
+/// [`LiveDashboard::present`] — the function the live window repaints on —
+/// rather than the one-shot compose call the test above uses.
+///
+/// The distinction is the whole point. `compose_spec_sampled` gathers the
+/// unsampled facts once and drops the session; `present` gathers them again on
+/// every repaint, and it is the only one of the two that runs after a gesture.
+/// Emptying `present`'s facts vector leaves every crate in this workspace green
+/// without this test, and leaves a sampled plot drawing as if it were complete
+/// the moment anyone touches it.
+///
+/// Both halves are asserted: the fact on the plot handle, and the ink in the
+/// exported PNG's notice band — so a repair that kept the struct field alive
+/// while dropping the drawn band would still be caught.
+#[test]
+fn a_brush_does_not_erase_the_sampling_notice() {
+    let dir = std::env::temp_dir().join(format!("bf-sampled-live-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = dir.join("sampled-live.yaml");
+    std::fs::write(&spec, BRUSHABLE_SPEC).expect("write spec");
+
+    let rate = SampleRate::from_modulus(32).expect("power of two");
+    let (mut dash, first) =
+        live_spec_sampled(spec.to_str().unwrap(), Some(rate)).expect("live sampled");
+
+    let before = first.plots[0]
+        .sample
+        .expect("the first paint's plot must carry its sampling fact");
+    assert_eq!(before.of, 4096, "`of` is the unsampled count, measured");
+    assert!(
+        before.drawn > 0 && before.drawn < before.of,
+        "a 1-in-32 sample of 4096 rows drew {} — expected some but not all",
+        before.drawn
+    );
+
+    // A brush, pushed the way a real drag pushes one. The contributor path is
+    // deliberately not this plot's own, so self-exclusion does not drop it.
+    let after_composed = dash
+        .apply(Interaction::Select {
+            name: "brush".to_string(),
+            contributor: ComponentPath("root/vconcat[99]".to_string()),
+            predicate: SqlPredicate::Expr("a < 50.0".to_string()),
+        })
+        .expect("re-present after the brush");
+
+    let after = after_composed.plots[0]
+        .sample
+        .expect("the notice must survive a brush — this is the invisible failure");
+    assert!(
+        after.drawn < before.drawn,
+        "fixture check: the brush must actually narrow the picture ({} -> {}), or the \
+         assertion above proves nothing about a re-present",
+        before.drawn,
+        after.drawn
+    );
+    assert!(
+        after.of < before.of,
+        "`of` is re-measured under the live selection, not carried: a notice quoting the \
+         pre-brush total would be wrong in a way nobody could see ({} -> {})",
+        before.of,
+        after.of
+    );
+    assert!(
+        after.drawn > 0,
+        "fixture check: the brushed sample must still draw something"
+    );
+
+    // And the ink, in the band, in the chart-only export — after the gesture.
+    let png = dir.join("after-brush.png");
+    capture_vello_only(after_composed, 1.0, &png).expect("capture after the brush");
+    let ink = ink_in_band(&png);
+    assert!(
+        ink > 400,
+        "the post-brush export's bottom band held {ink} inked pixels — the hatch and label \
+         should still be plainly there"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **A sampled plot's positional scales are the complete plot's.** Asserted
+/// where a gesture reads them — `PlotHandle::scales`, the set the shell inverts
+/// pixels through — rather than on the function that widens them.
+///
+/// This is the difference between a sampled picture being a thinner drawing of
+/// the same chart and being a different chart. Ticks in the same places, and a
+/// drag from the same pixel resolving to the same data interval. It is also
+/// what keeps the sign-off honest: a human comparing the two renders should be
+/// judging the sampling treatment, not noticing that the axes moved.
+#[test]
+fn a_sampled_plot_keeps_the_complete_plots_positional_scales() {
+    use brightfield_render::channel::Channel;
+    use brightfield_render::scale::Scale;
+
+    let dir = std::env::temp_dir().join(format!("bf-sampled-domains-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = write_spec(&dir);
+    let path = spec.to_str().unwrap();
+
+    let complete = compose_spec_sampled(path, None).expect("compose complete");
+    let rate = SampleRate::from_modulus(32).expect("power of two");
+    let sampled = compose_spec_sampled(path, Some(rate)).expect("compose sampled");
+
+    let domain =
+        |c: &brightfield_shell::pipeline::Composed, ch: Channel| match c.plots[0].scales.get(ch) {
+            Some(Scale::Linear {
+                domain_min,
+                domain_max,
+                ..
+            }) => (*domain_min, *domain_max),
+            other => panic!("expected a linear {ch:?} scale, got {other:?}"),
+        };
+
+    for ch in [Channel::X, Channel::Y] {
+        assert_eq!(
+            domain(&sampled, ch),
+            domain(&complete, ch),
+            "the sampled plot's {ch:?} domain must equal the complete plot's. If it has \
+             narrowed, the axis ticks have moved and a brush on this plot now inverts to a \
+             different data interval than the same brush on the complete one — a difference \
+             a reader cannot see and would not attribute to sampling."
+        );
+    }
+
+    // Not vacuous: the sample really did drop rows, so the domains had to be
+    // restored rather than merely happening to agree.
+    let fact = sampled.plots[0].sample.expect("sampled");
+    assert!(
+        fact.drawn * 4 < fact.of,
+        "fixture check: a 1-in-32 sample must drop most of the rows ({} of {})",
+        fact.drawn,
+        fact.of
     );
 
     let _ = std::fs::remove_dir_all(&dir);
