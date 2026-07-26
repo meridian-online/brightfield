@@ -569,14 +569,22 @@ impl ProtocolModel {
     ///
     /// # What counts as one gesture
     ///
-    /// The three graphs `za` can put on the canvas at the flow the window opened
-    /// on: the boot canvas itself, the family unfolded, the CTEs exploded, and
-    /// the chains contracted. A drill scope is strictly smaller than the graph it
-    /// is induced from, so it never sets the envelope. The **flow transpose** is
+    /// The graphs `za` can put on the canvas at the flow the window opened on:
+    /// the boot canvas itself, the family unfolded, the CTEs exploded, and the
+    /// chains contracted. A drill scope is strictly smaller than the graph it is
+    /// induced from, so it never sets the envelope. The **flow transpose** is
     /// deliberately excluded: it is a change of reading axis, not of detail, and
-    /// the horizontal render of this fixture is 2431 points across — sizing the
+    /// the horizontal render of the crosswalk is 2146 points across — sizing the
     /// boot window to it would open a window several times the width of the
     /// display to spare a keystroke nobody has pressed yet.
+    ///
+    /// The family unfold is the expensive candidate — it takes the crosswalk from
+    /// 1018 points across to 1586, and so the window from 1948 to 3000 — and it
+    /// is also the least avoidable one. [`ProtocolNav`] boots its cursor on the
+    /// first node with no producer in id order, and on this fixture that node is
+    /// the family tile: `za` pressed at boot, with no navigation at all, is the
+    /// unfold. A window sized to spare the *second* gesture and not the first
+    /// would be measuring against the same kind of assumption this replaced.
     #[must_use]
     pub fn boot_extent(inputs: &ProtocolInputs, flow: Flow) -> (f64, f64) {
         let cfg = LayoutConfig {
@@ -787,9 +795,13 @@ impl ProtocolModel {
     #[cfg(test)]
     fn folds_are_on_screen(&self) -> bool {
         let shown = self.displayed_graph();
-        !(self.cte_expanded && self.chain_contracted)
-            && (!self.cte_expanded || std::ptr::eq(shown, &self.graph_exploded))
-            && (!self.chain_contracted || std::ptr::eq(shown, &self.graph_contracted))
+        match (self.cte_expanded, self.chain_contracted) {
+            // Two flags, one canvas: no graph in this struct is both.
+            (true, true) => false,
+            (true, false) => std::ptr::eq(shown, &self.graph_exploded),
+            (false, true) => std::ptr::eq(shown, &self.graph_contracted),
+            (false, false) => true,
+        }
     }
 
     /// The current selection (dotted asset id).
@@ -3084,10 +3096,7 @@ mod tests {
         // The merged node is the TAIL, whole. A joined label would have cost
         // +294 points of canvas width on this fixture (941 -> 1235), 217 past the
         // pane — a solved vertical scroll traded for a new horizontal one.
-        assert!(
-            after.contains(&CHAIN_TAIL.to_string()),
-            "the tail survives the merge"
-        );
+        assert!(after.contains(CHAIN_TAIL), "the tail survives the merge");
         assert_eq!(
             m.displayed_graph().nodes[CHAIN_TAIL].label,
             m.graph_collapsed.nodes[CHAIN_TAIL].label,

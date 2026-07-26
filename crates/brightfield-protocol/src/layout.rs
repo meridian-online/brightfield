@@ -157,7 +157,7 @@ impl Default for LayoutConfig {
     ///   which is where a chevron starts touching the corner it is meant to sit
     ///   inside.
     /// - `row_gap` separates parallel lanes across the flow. A lane channel is
-    ///   [`LANE_EXTENT`] (10) wide, so 16 leaves more page between two lanes than
+    ///   `LANE_EXTENT` (10) wide, so 16 leaves more page between two lanes than
     ///   either lane occupies; [`spacing::SPACE_5`] (12) would leave less.
     ///
     /// Measured on the collapsed crosswalk, with the dead thickness floor also
