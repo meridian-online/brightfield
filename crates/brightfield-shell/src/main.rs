@@ -431,20 +431,25 @@ fn main() -> Result<(), String> {
     // row-per-mark scene runs out of first. Fixing only the in-repo devices
     // would have left a headless capture reporting one ceiling and the window —
     // the one surface an optical sign-off actually judges — dying at another.
-    // `max_texture_dimension_2d` keeps egui's 8192 floor, since an adapter may
-    // report a smaller one than the surface needs.
+    //
+    // The adapter's limits are passed through UNMODIFIED, and no floor is
+    // raised over them. `required_limits` is a demand, not a wish: wgpu refuses
+    // device creation outright when a required limit exceeds what the adapter
+    // reports. An earlier version asked for
+    // `max_texture_dimension_2d.max(8192)` to "keep egui's 8192 floor" — on any
+    // adapter reporting less than 8192 that would have turned a smaller texture
+    // ceiling into no window at all, which is the opposite of what the comment
+    // beside it claimed. Whatever the adapter has is the most that can be asked
+    // for; a surface that needs more than that needs a different adapter.
     let mut wgpu_setup = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
-    wgpu_setup.device_descriptor = std::sync::Arc::new(|adapter: &eframe::wgpu::Adapter| {
-        let limits = brightfield_render::vello_renderer::device_limits(adapter);
-        eframe::wgpu::DeviceDescriptor {
-            label: Some("brightfield-window"),
-            required_limits: eframe::wgpu::Limits {
-                max_texture_dimension_2d: limits.max_texture_dimension_2d.max(8192),
-                ..limits
+    wgpu_setup.device_descriptor =
+        std::sync::Arc::new(
+            |adapter: &eframe::wgpu::Adapter| eframe::wgpu::DeviceDescriptor {
+                label: Some("brightfield-window"),
+                required_limits: brightfield_render::vello_renderer::device_limits(adapter),
+                ..Default::default()
             },
-            ..Default::default()
-        }
-    });
+        );
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport,

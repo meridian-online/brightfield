@@ -157,25 +157,53 @@ const SCENARIOS: &[SpecDef] = &[
 /// `segments`, 2^18 for `bin_data`. They do not scale with the scene and no
 /// wgpu limit moves them. When one overflows, vello sets a `failed` bit in a
 /// GPU-side counter, does not re-run coarse, and returns `Ok`. Brightfield
-/// never reads that counter, so **the frame renders and is quietly missing
-/// ink** — which is worse than the abort this constant was written to avoid,
-/// because a truncated picture is still a picture and gets screenshotted.
+/// never reads that counter, so **the render succeeds and the frame comes back
+/// BLANK** — which is worse than the abort this constant was written to avoid,
+/// because `Ok` and a written PNG is what an unattended capture records as a
+/// pass.
 ///
-/// Measured on the reference machine (Apple M1 Pro, Metal) at the scale frames
-/// render at, one dot scatter in a 640×480 plot:
+/// **Blank, not partial.** Once `seg_counts` overflows, coarse emits nothing at
+/// all: the counters come back with `segments = 0` and `ptcl = 0`, and the
+/// production render agrees — every pixel of the written PNG is
+/// `rgba(0, 0, 0, 0)`. An earlier version of this note said "partial" and
+/// "missing most of its ink", which would have had someone looking for a
+/// thinned picture instead of an empty one.
 ///
-/// | dots | `seg_counts` / 2^21 | `failed` |
+/// Measured on the reference machine (Apple M1 Pro, Metal) through the
+/// PRODUCTION path — `cargo run -p brightfield-shell --bin brightfield-shot --
+/// --vello-only`, a debug build, one dot scatter in a 640×480 plot at scale 2:
+///
+/// | dots | exit | written PNG |
 /// |---|---|---|
-/// | 100 000 | 95.4 % | 0 — complete |
-/// | 104 000 | 99.2 % | 0 — complete |
-/// | 106 000 | 101.1 % | `PATH_COUNT` — partial |
-/// | 130 000 | — | `BINNING` — partial |
-/// | 132 000 | — | encode panics (`bin_data` minus the per-draw info stream) |
+/// | 50 000 | 0 | inked — 74 % of pixels carry mark or furniture |
+/// | 104 600 | 0 | inked |
+/// | 104 800 | 0 | **blank** — 1 280 × 960 px, every one `rgba(0,0,0,0)` |
+/// | 106 000 · 132 000 · 262 000 | 0 | blank |
+/// | 262 101 | 0 | blank |
+/// | 262 102 and up | 101 | `vello_encoding` `config.rs:185`, subtract overflow |
 ///
-/// So the cap is set just under the last count proven complete, and the frame
+/// Two distinct ceilings, and they are an order of magnitude apart. The first
+/// is `seg_counts` (blank frame, exit 0, no diagnostic anywhere); its onset
+/// depends on how much rule each dot contributes, so the bracket above is
+/// fixture-specific rather than a constant. The second is exact and is not:
+/// `bin_data` is 2^18 = 262 144 elements and one solid-colour draw consumes one,
+/// so the subtraction goes negative at 262 144 filled paths. This plot carries
+/// 42 paths of frame, grid and axis rule, and the panic first fires at 262 102
+/// dots — 262 144 − 42, to the row.
+///
+/// **The panic is not the low ceiling.** An earlier version of this table
+/// attributed a 130 000–132 000 encode panic to `bin_data`. That panic is real
+/// but comes from `vello::DebugDownloads::map`, which slices the lines buffer to
+/// `bump.lines` without checking it against the buffer's own 2^21 length — and
+/// that function is `#[cfg(feature = "debug_layers")]`, so it exists only inside
+/// the probe below. It was the probe measuring itself. The production path runs
+/// clean through 262 101.
+///
+/// So the cap sits just under the lowest count proven to draw, and the frame
 /// suites above it are skipped for the same reason as before, against a real
 /// number instead of an inherited one. `vello_bump_ceiling.rs` in
-/// `brightfield-render` reproduces the table; re-run it before moving this.
+/// `brightfield-render` reproduces the counters; the table above is reproduced
+/// with `brightfield-shot` and a `range(N)` spec. Re-run both before moving this.
 const FRAME_DRAWN_ROW_CAP: u64 = 100_000;
 
 /// The device-pixel scale frames render at — 2.0 matches the Retina-class
@@ -970,15 +998,15 @@ mod tests {
     }
 
     /// The frame cap is a MEASURED boundary on this machine, not a taste
-    /// call — and the measurement it reproduces is the one that reads vello's
-    /// own overflow counter, not the one that waits for the process to abort.
+    /// call — and the measurement it reproduces is the one that looks at the
+    /// written PNG, not the one that waits for the process to abort.
     ///
     /// The old expectations asserted here said a one-scatter scene renders at
-    /// 10⁶ rows. It does render. It renders **incomplete**: past ~105,000
-    /// drawn primitives vello's fixed `seg_counts` buffer overflows, coarse is
-    /// not re-run, and the frame comes back `Ok` with ink missing. A cap that
-    /// only caught the abort was letting a whole magnitude of quietly wrong
-    /// pictures through and timing them.
+    /// 10⁶ rows. It does return `Ok` and it does write a file. The file is
+    /// **blank**: past ~104,800 drawn primitives vello's fixed `seg_counts`
+    /// buffer overflows, coarse emits nothing, and every pixel comes back
+    /// transparent. A cap that only caught the abort was letting a whole
+    /// magnitude of empty frames through and timing them.
     ///
     /// The per-scenario primitive counts are what put each row on the right
     /// side of the line, so they are asserted rather than trusted.
@@ -991,11 +1019,12 @@ mod tests {
                 .expect("committed scenario");
             d.row_level_marks * rows > FRAME_DRAWN_ROW_CAP
         };
-        // Measured complete: one scatter at a hundred thousand rows.
+        // Measured inked: one scatter at a hundred thousand rows.
         assert!(!caps("brush-density", 100_000));
         assert!(!caps("brush-binned-density", 100_000));
-        // Measured incomplete (`failed` bit set, no error raised): one scatter
-        // an order of magnitude up, and two scatters at the same row count.
+        // Measured BLANK (`Ok` returned, PNG written, every pixel transparent):
+        // one scatter an order of magnitude up, and two scatters at the same
+        // row count.
         assert!(caps("brush-density", 1_000_000));
         assert!(caps("crossfilter-dots", 100_000));
         // Two scatters stay inside it at half that.

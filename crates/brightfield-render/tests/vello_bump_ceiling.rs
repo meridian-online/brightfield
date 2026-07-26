@@ -1,28 +1,56 @@
-//! Measure where a dot scene stops being drawn *completely*.
+//! Measure where a dot scene stops being drawn.
 //!
 //! Vello sizes its flattening and coarse-raster buffers from fixed constants
 //! that never scale with the primitive count — `vello_encoding`'s buffer table
 //! carries a source comment saying the numbers were hand-picked to fit that
 //! project's own test scenes. Nothing re-runs coarse when one of them
 //! overflows, and this renderer reads nothing back: it calls `.expect()` on a
-//! `Result` that is `Ok` either way. **Above those constants the picture is
-//! silently PARTIAL, not absent** — which makes an eyeball comparison against a
-//! "complete" reference worthless unless the reference is known to be complete.
+//! `Result` that is `Ok` either way.
+//!
+//! **Above those constants the frame comes back BLANK, with no error.** Not
+//! thinned, not partial: once `seg_counts` overflows, `segments` and `ptcl`
+//! both come back 0 and coarse emits nothing, and the production render agrees
+//! — a `brightfield-shot --vello-only` capture past the boundary exits 0 and
+//! writes a PNG whose every pixel is `rgba(0, 0, 0, 0)`. So an eyeball
+//! comparison against a "complete" reference is worthless unless the reference
+//! is known to have drawn at all.
 //!
 //! So this measures it. It renders a dot scatter at a ladder of row counts
 //! through the real mark renderer and the real scene builder, reads the GPU's
 //! `BumpAllocators` back, and prints each counter beside the capacity it is
-//! allocated against. `failed != 0` means the frame you are looking at is
-//! missing ink.
+//! allocated against. `failed != 0` means the frame you are looking at is empty.
 //!
-//! There is a second, lower ceiling this also finds, and it is not a GPU limit
-//! at all: the per-draw `info` stream is carved out of a **fixed 2^18-element**
-//! `bin_data` buffer, and the config computes `bin_data.len() - bin_data_start`
-//! as a `u32`. One solid-colour draw contributes one word to `bin_data_start`,
-//! so a scene of more than 2^18 filled paths makes that subtraction go
-//! negative: a debug build panics inside `vello_encoding`, and a release build
-//! wraps to ~4×10⁹ and tells the binning shader it has room it does not have.
-//! No wgpu limit moves it.
+//! There is a second, much higher ceiling this also finds, and it is not a GPU
+//! limit at all: the per-draw `info` stream is carved out of a **fixed
+//! 2^18-element** `bin_data` buffer, and the config computes
+//! `bin_data.len() - bin_data_start` as a `u32`. One solid-colour draw
+//! contributes one word to `bin_data_start`, so a scene of more than 2^18
+//! filled paths makes that subtraction go negative: a debug build panics inside
+//! `vello_encoding` (`config.rs:185`), and a release build wraps to ~4×10⁹ and
+//! tells the binning shader it has room it does not have. No wgpu limit moves
+//! it. Measured through the production path, it first fires at 262 102 dots in
+//! a plot carrying 42 paths of furniture — 2^18 = 262 144, to the row.
+//!
+//! # This instrument can panic for reasons that are only its own
+//!
+//! `vello::DebugDownloads::map` is `#[cfg(feature = "debug_layers")]` and slices
+//! the lines buffer to `bump.lines * size_of::<LineSoup>()` without checking
+//! that against the buffer's own length. The buffer is 2^21 × 24 = 50 331 648
+//! bytes, so once `lines` passes 2^21 the slice runs off the end and wgpu
+//! panics — and the message says so verbatim: *"slice offset 0 size 50 739 072
+//! is out of range for buffer of size 50 331 648"*. That is this instrument
+//! failing, inside a code path that exists ONLY because the probe turned
+//! `debug_layers` on. It is not a renderer ceiling, and the production path
+//! sails past every count that produces it.
+//!
+//! A panic seen here is therefore not evidence about the renderer until it has
+//! been reproduced without the feature, which is why the panic arm below prints
+//! the message and refuses to name a cause. Reproduce with:
+//!
+//! ```text
+//! cargo run -p brightfield-shell --bin brightfield-shot -- \
+//!     --spec <a range(N) scatter> --out /tmp/n.png --vello-only
+//! ```
 //!
 //! Feature-gated and ignored by default: it needs a real GPU adapter *and*
 //! vello's `debug_layers` readback, and it is an instrument, not a gate:
@@ -210,10 +238,27 @@ fn report_bump_headroom_across_dot_counts() {
         }));
 
         match rendered {
-            Err(_) => eprintln!(
-                "{rows:>9} dots  ENCODE PANIC — bin_data ({CAP_BIN_DATA}) minus the per-draw info \
-                 stream underflowed; a release build wraps this instead of stopping"
-            ),
+            // The panic's own message, and NO interpretation. This arm used to
+            // print a hardcoded `bin_data` explanation for any panic at all,
+            // and the explanation was wrong: what it kept catching was
+            // `vello::DebugDownloads::map`, a `debug_layers`-only readback
+            // slicing the lines buffer past its own length — a path that exists
+            // only because this probe enabled the feature. The probe was
+            // measuring its own instrument, and the resulting row went into the
+            // frame cap's record as a renderer property. A measurement tool
+            // must never name a cause it did not observe.
+            Err(payload) => {
+                let msg = payload
+                    .downcast_ref::<&str>()
+                    .map(|s| (*s).to_string())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "<non-string panic payload>".to_string());
+                eprintln!(
+                    "{rows:>9} dots  PANIC — cause NOT diagnosed here. Re-run this count \
+                     through brightfield-shot --vello-only (no debug_layers) before treating \
+                     it as a renderer ceiling. Message: {msg}"
+                );
+            }
             Ok(Err(e)) => eprintln!("{rows:>9} dots  render error: {e:?}"),
             Ok(Ok(None)) => eprintln!(
                 "{rows:>9} dots  no bump readback — build with --features vello-bump-probe"
