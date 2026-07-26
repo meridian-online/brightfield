@@ -1300,6 +1300,19 @@ impl Session {
     /// chart's emitted SQL **and its query count** are byte-unchanged — the
     /// extra query exists only where a sample does.
     ///
+    /// **And `None` for a mark the rate did not actually reach.** A session
+    /// rate is set on the session, but the emitter applies the clause only to
+    /// non-aggregating plans: an aggregating mark's rows are bins, and sampling
+    /// bins is not sampling data. Facts returned for such a mark come back with
+    /// `rows` equal to the drawn count, and the caller draws
+    /// `SAMPLED — 100 of 100 rows drawn` across a plot that was never sampled —
+    /// a notice that is false in the direction this whole device exists to make
+    /// impossible. So the question is asked of the EMITTER rather than
+    /// re-derived here: thread the rate, thread nothing, and compare. Equal SQL
+    /// means the clause did not apply, and there is no sample to be honest
+    /// about. A guard that re-implemented `plan_aggregates` would be one
+    /// refactor away from disagreeing with it silently.
+    ///
     /// # Errors
     /// Returns the DuckDB error if the facts query fails.
     pub fn unsampled_mark_facts(&self, index: usize) -> Option<Result<MarkFacts, EngineError>> {
@@ -1320,6 +1333,13 @@ impl Session {
             Ok(eq) => eq,
             Err(e) => return Some(Err(EngineError::EmitFailed { cause: e })),
         };
+        // Did the rate reach this mark at all? Same emitter, same passes, one
+        // with the rate and one without.
+        match self.emit_for_mark(index, params, selections_ref) {
+            Ok(sampled) if sampled.sql == unsampled.sql => return None,
+            Ok(_) => {}
+            Err(e) => return Some(Err(EngineError::EmitFailed { cause: e })),
+        }
         let (x_col, y_col) = positional_columns(&self.spec, index);
         let mut projections = vec!["count(*) AS \"__bf_rows\"".to_string()];
         for (i, col) in [&x_col, &y_col].into_iter().enumerate() {

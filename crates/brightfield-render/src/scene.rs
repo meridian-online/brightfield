@@ -336,6 +336,13 @@ pub fn apply_unsampled_domains(scales: &mut ScaleSet, domains: UnsampledDomains)
 /// a notice that says the picture is trustworthy — strictly worse than not
 /// drawing it. When a deterministic ordering lands, this list shrinks and the
 /// refusal narrows on its own.
+///
+/// The caller asks this per PLOT, over the plot's whole scale set, which is
+/// deliberately conservative: a plot mixing a sampled dot mark with an
+/// unsampled aggregating one is refused for the aggregating mark's ramp even
+/// though that ramp is over bins the sample never touched. Erring that way
+/// costs an unusual spec a loud, actionable error; erring the other way costs a
+/// reader a wrong picture they cannot see is wrong.
 #[must_use]
 pub fn unrestorable_under_sampling(scales: &ScaleSet) -> Vec<Channel> {
     [

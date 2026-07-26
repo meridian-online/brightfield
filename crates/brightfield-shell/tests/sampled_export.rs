@@ -410,3 +410,65 @@ fn the_matched_control_draws_exactly_the_rows_the_sample_draws() {
         fact.drawn
     );
 }
+
+/// An aggregating mark whose rows are BINS.
+const AGGREGATING_SPEC: &str = "data:
+  points:
+    query: |
+      SELECT (i * 7919 % 1009) / 10.0 AS a
+      FROM range(4096) AS t(i)
+plot:
+  - mark: densityX
+    data: { from: points }
+    x: a
+width: 400
+height: 300
+";
+
+/// **A plot the rate never reached must not claim to be sampled.**
+///
+/// The rate lives on the session, but the emitter applies the clause only to
+/// non-aggregating plans — an aggregating mark's rows are bins, and sampling
+/// bins is not sampling data. The facts query did not know that: it fired for
+/// every mark whenever a rate was set, and since the mark was not actually
+/// sampled it reported `drawn == of`. Measured before the fix: a `densityX`
+/// plot under `--force-sample 32` composed with
+/// `SampleFact { drawn: 100, of: 100 }` and drew the hatched band across a
+/// picture that had lost nothing.
+///
+/// A notice that fires on a complete plot is the same lie as a notice that
+/// fails to fire on a sampled one, and it is worse for the sign-off: it teaches
+/// a reader that the band means nothing.
+#[test]
+fn an_unsampled_aggregating_plot_carries_no_sampling_notice() {
+    let dir = std::env::temp_dir().join(format!("bf-sampled-agg-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = dir.join("aggregating.yaml");
+    std::fs::write(&spec, AGGREGATING_SPEC).expect("write spec");
+    let path = spec.to_str().unwrap();
+
+    let rate = SampleRate::from_modulus(32).expect("power of two");
+    let sampled = compose_spec_sampled(path, Some(rate))
+        .expect("an aggregating mark composes under a rate — it simply ignores it");
+    assert!(
+        sampled.plots[0].sample.is_none(),
+        "an aggregating mark is never sampled, so its plot must carry no fact and draw \
+         no band — got {:?}",
+        sampled.plots[0].sample
+    );
+
+    // And the picture is byte-for-byte the one the same spec draws with no rate
+    // at all: no reserved band, no shifted geometry, nothing.
+    let complete = compose_spec_sampled(path, None).expect("compose complete");
+    let png_a = dir.join("agg-complete.png");
+    let png_b = dir.join("agg-sampled.png");
+    capture_vello_only(complete, 1.0, &png_a).expect("capture complete");
+    capture_vello_only(sampled, 1.0, &png_b).expect("capture under a rate");
+    assert_eq!(
+        std::fs::read(&png_a).expect("read a"),
+        std::fs::read(&png_b).expect("read b"),
+        "setting a sample rate changed an aggregating plot's pixels — it should be inert"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
