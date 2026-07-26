@@ -1,0 +1,49 @@
+meta:
+  title: Sampled render — the same points, without the band
+  description: |
+    The control that isolates the treatment completely. Its query is the
+    sampling clause, written out by hand: the exact subquery-alias row hash
+    `--force-sample 32` pushes down, applied inside the spec instead. So this
+    spec's 2,394 points ARE the points `sampled.yaml --force-sample 32` draws
+    — the same rows, chosen the same way — but brightfield sees an ordinary
+    complete dataset and draws no notice.
+
+    Render it beside the sampled one:
+
+      cargo run -p brightfield-shell --bin brightfield-shot -- \
+        --spec examples/sampled.yaml \
+        --out render-proof/dense-32.png --vello-only --force-sample 32
+      cargo run -p brightfield-shell --bin brightfield-shot -- \
+        --spec examples/sampled-matched.yaml \
+        --out render-proof/matched-complete.png --vello-only
+
+    Two pictures of the same 2,394 points at the same density. Neither is a
+    solid block; neither is conspicuously sparser than the other. Every reason
+    a reader might have called the earlier pair "obviously sampled" is gone,
+    and what is left to judge is the hatched band and the margin it reserves.
+    If the treatment does not read here, it does not read.
+
+    Two differences besides the band are expected and are themselves worth
+    looking at. The sampled render gives up 22 points of plot height to the
+    reserved band, so its dots sit at a slightly smaller scale. And its axes
+    span the full 75,000-row extent rather than this file's 2,394-row one,
+    because the sampled path restores the unsampled domain — which is the
+    behaviour that keeps a brush on a sampled plot inverting through the same
+    scale as on a complete one.
+data:
+  points:
+    query: |
+      SELECT * FROM (
+        SELECT
+          (i * 2654435761 % 100003) / 1000.0            AS spread,
+          ((i * 40503 + 12345) % 100019) / 1000.0       AS depth
+        FROM range(75000) AS t(i)
+      ) AS _s
+      WHERE hash(_s) % 32 = 0
+plot:
+  - mark: dot
+    data: { from: points }
+    x: spread
+    y: depth
+width: 640
+height: 480

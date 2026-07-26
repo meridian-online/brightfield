@@ -358,3 +358,55 @@ fn sampling_a_categorical_channel_is_refused_with_a_reason() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The sign-off apparatus, verified rather than asserted: the matched control
+/// really does draw the rows the sampled render draws.
+///
+/// `examples/sampled-matched.yaml` writes the sampling clause out by hand — the
+/// same subquery-alias row hash at the same modulus — so brightfield loads it
+/// as an ordinary complete dataset. That is what makes it a control: two
+/// pictures of the SAME points at the SAME density, one carrying the band and
+/// one not, so a human judging them is judging the treatment and nothing else.
+///
+/// If the two counts ever diverge, the control has quietly become a comparison
+/// between two different point sets and the sitting is back to judging density.
+#[test]
+fn the_matched_control_draws_exactly_the_rows_the_sample_draws() {
+    let examples = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/");
+    let rate = SampleRate::from_modulus(32).expect("power of two");
+
+    let sampled = compose_spec_sampled(&format!("{examples}sampled.yaml"), Some(rate))
+        .expect("compose the sampled demo");
+    let fact = sampled.plots[0]
+        .sample
+        .expect("the demo spec must be sampleable");
+    assert_eq!(fact.of, 75_000, "the demo spec's row count moved");
+
+    let matched = compose_spec_sampled(&format!("{examples}sampled-matched.yaml"), None)
+        .expect("compose the matched control");
+    assert!(
+        matched.plots[0].sample.is_none(),
+        "the control must carry NO sampling fact — it is the picture without the band"
+    );
+
+    // The control's own row count, read back through the grid-side count the
+    // engine keeps for the mark.
+    let mut live = brightfield_shell::pipeline::LiveDashboard::load_str(
+        &std::fs::read_to_string(format!("{examples}sampled-matched.yaml")).expect("read control"),
+        None,
+    )
+    .expect("load the control live");
+    let control_rows = live
+        .coordinator()
+        .session()
+        .step_rows_count(0)
+        .expect("count the control's rows");
+
+    assert_eq!(
+        control_rows, fact.drawn,
+        "the matched control draws {control_rows} rows and the sampled render draws {}. \
+         They are supposed to be the same set, chosen by the same hash at the same modulus — \
+         if they have drifted, the pairing no longer isolates the treatment.",
+        fact.drawn
+    );
+}
