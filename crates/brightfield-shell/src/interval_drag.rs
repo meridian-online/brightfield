@@ -34,6 +34,22 @@
 //! — it needs a pending slot and a rule. The rule is here; the dispatch stays
 //! wherever the caller runs it.
 //!
+//! **The rule is correct and, today, it never fires.** `pump_interval_drags`
+//! applies the interaction synchronously and reports it finished in the same
+//! frame, in the same function, so `outstanding` is only ever true inside a
+//! blocking call that nothing re-enters. Instrumented across a full simulated
+//! pointer drag — grab, press, six move frames, release, idle — no value is
+//! ever superseded and no dispatch is ever blocked by another. What actually
+//! keeps a sustained drag smooth right now is egui's own per-frame input
+//! coalescing plus a cube-served query that returns in about a millisecond.
+//!
+//! This is written down rather than removed because the shape is the right one
+//! for the moment dispatch stops being synchronous, and because two of the
+//! three guarantees above — the released value landing, and one-at-a-time —
+//! are pinned only by unit tests driving `note` in sequences the rail cannot
+//! currently produce. Anyone reading a claim that coalescing is protecting a
+//! live drag should know it is not yet doing that work.
+//!
 //! [`QueryLoop`]: brightfield_engine::coordinator::QueryLoop
 
 use std::collections::HashMap;

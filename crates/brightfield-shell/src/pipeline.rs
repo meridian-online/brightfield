@@ -152,8 +152,18 @@ pub struct IntervalControl {
     /// [`plot_node_path`](brightfield_spec::analysis::plot_node_path) of each
     /// subscriber mark, and that function's output always ends at a `/plot[i]`
     /// boundary (or at a `/mark[…]` leaf), so it can never equal a path ending
-    /// `/input[slider]`. Held by
-    /// `an_interval_sliders_contributor_matches_no_plot_in_the_spec`.
+    /// `/input[slider]`.
+    ///
+    /// Held by `a_plot_that_declares_the_slider_is_still_filtered_by_it`, and
+    /// by that one specifically. The structural sibling
+    /// (`an_interval_sliders_contributor_matches_no_plot_in_the_spec`) reads
+    /// like the guard and is not: give this field `plot_node_path(path)` —
+    /// which is exactly what a brush legitimately does — and the structural
+    /// test stays GREEN, because in the shipped example the slider and the
+    /// plot differ by accident of layout and collide with nothing. Only the
+    /// behavioural test, over a plot that declares the slider as its own
+    /// child, goes red. Name the test that fails, not the one that looks
+    /// like it would.
     pub contributor: ComponentPath,
     /// The widget's `label:`, when it declared one. The rail falls back to the
     /// selection name.

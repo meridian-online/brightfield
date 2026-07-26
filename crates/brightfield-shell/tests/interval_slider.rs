@@ -202,6 +202,20 @@ fn the_example_loads_without_a_single_warning_banner() {
 ///
 /// Asserted against the identity the ENGINE compares — `plot_node_path` of
 /// each mark's own path — not against a second copy of the derivation.
+///
+/// **This test alone does not hold the law, and it is worth saying why here
+/// rather than letting the next reader assume it does.** The per-spec
+/// inequalities below pass under the realistic wrong implementation — giving
+/// the contributor `plot_node_path(path)`, which is what a brush does —
+/// because in this fixture the slider sits at `root/vconcat[1]` and the plot
+/// at `root/vconcat[0]`, so a wrong derivation still collides with nothing.
+/// Layout accident, not an invariant.
+///
+/// So the first assertion is the structural one: the contributor ends at an
+/// `input[slider]` leaf, and `plot_node_path` can never produce such a path.
+/// That holds for every spec, not just this one. The behavioural sibling
+/// `a_plot_that_declares_the_slider_is_still_filtered_by_it` is what actually
+/// reddens when the derivation is wrong.
 #[test]
 fn an_interval_sliders_contributor_matches_no_plot_in_the_spec() {
     use brightfield_spec::analysis::plot_node_path;
@@ -212,6 +226,18 @@ fn an_interval_sliders_contributor_matches_no_plot_in_the_spec() {
         .intervals
         .first()
         .expect("the example declares an interval slider");
+
+    // The spec-independent half: the leaf is what makes the identity safe, so
+    // assert the leaf. A derivation that dropped it would fail here on any
+    // fixture, where the inequalities below only fail on a fixture unlucky
+    // enough to place the slider and the plot at the same path.
+    assert!(
+        control.contributor.0.ends_with("/input[slider]"),
+        "the contributor lost its input[slider] leaf ({}) — without it the \
+         path is one a plot can legitimately own, and crossfilter would \
+         exempt that plot from its own slider",
+        control.contributor.0
+    );
 
     let marks = brightfield_sql::emit::collect_marks_with_paths(&parsed.spec);
     assert!(!marks.is_empty(), "the fixture has marks to check against");
@@ -558,9 +584,20 @@ fn a_drag_step_is_served_from_the_pre_aggregate_not_the_base_table() {
     // a claim about the machine and this one has to hold on all of them. The
     // number is here so a person about to sit down in front of the window
     // knows what a step costs, and so a regression that keeps the cube but
-    // loses the speed still leaves a trace. Measured on an Apple M-series
-    // release build: 1.0 ms served from the cube against 95 ms for the same
-    // step with the layer switched off.
+    // loses the speed still leaves a trace.
+    //
+    // WHAT THIS PRINT IS AND IS NOT. It is one sample, in whatever profile the
+    // suite was built with — a debug run prints several times the release
+    // figure, so a single number quoted next to it in either profile reads as
+    // a contradiction. It is not a paired measurement: the cube-off arm is not
+    // run here, so no ratio stated in this file could be reproduced from this
+    // file. The honest paired form — both arms, same footing, with spread —
+    // belongs in the bench harness, which already has a pre-aggregation
+    // on/off scenario. Quote that, not this.
+    //
+    // Note also that the timed region spans query, execute and a full scene
+    // recomposite. The quantity is "what a drag step costs the window", which
+    // is the user-facing one, not "what the query costs".
     let started = std::time::Instant::now();
     doc.note_interval_drag(&control, 120.0);
     assert_eq!(doc.pump_interval_drags(std::slice::from_ref(&control)), 1);
