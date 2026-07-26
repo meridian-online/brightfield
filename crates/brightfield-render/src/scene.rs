@@ -256,7 +256,10 @@ pub fn build_multi_mark_scene(
 ///
 /// `None` on a channel means "no continuous domain to restore" — either the
 /// plot is not sampled, or the column is categorical and its extent is not a
-/// pair of numbers.
+/// pair of numbers. The categorical case does not fall through to a
+/// best-effort render: [`unrestorable_under_sampling`] refuses it, because the
+/// picture it would produce is wrong in a way the sampling notice does not
+/// describe.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct UnsampledDomains {
     /// The x channel's unsampled `(min, max)`.
@@ -286,12 +289,10 @@ pub fn build_multi_mark_scene_with_domains(
 
 /// Widen the positional scales back to their unsampled extent, in place.
 ///
-/// Only continuous scales take an override: a Band or Colour domain is a list
-/// of categories, and restoring THAT from an unsampled query is a separate
-/// piece of work (a category absent from the sample loses its swatch and
-/// shifts every later category's palette slot). Until it lands, a sampled plot
-/// with a categorical channel is not safe to judge and the demo spec does not
-/// use one.
+/// Only continuous positional scales take an override. Every other scale kind
+/// is inferred from the drawn rows and is NOT restored here — see
+/// [`unrestorable_under_sampling`], which is the refusal that keeps a plot
+/// carrying one from being sampled at all.
 pub fn apply_unsampled_domains(scales: &mut ScaleSet, domains: UnsampledDomains) {
     for (channel, bound) in [(Channel::X, domains.x), (Channel::Y, domains.y)] {
         let Some((lo, hi)) = bound else { continue };
@@ -303,6 +304,60 @@ pub fn apply_unsampled_domains(scales: &mut ScaleSet, domains: UnsampledDomains)
             scales.insert(channel, widened);
         }
     }
+}
+
+/// The channels of `scales` whose domain a sample would move and
+/// [`apply_unsampled_domains`] cannot put back — empty when the plot is safe to
+/// sample.
+///
+/// **This exists because the alternative is a confidently wrong picture.** A
+/// categorical domain is a LIST, inferred by walking the drawn rows in
+/// first-appearance order, and the palette slot a category gets is its index in
+/// that list. Sampling changes which row appears first, so it re-orders the
+/// list, so it re-assigns the colours. Measured over a four-class scatter at
+/// `--force-sample 64`: complete draws `class-1` amber and `class-2` teal; the
+/// sampled render draws `class-1` teal and `class-2` amber. Nothing about that
+/// is visible to the reader — the notice says rows were dropped, and says
+/// nothing about the legend having been rewritten.
+///
+/// Three kinds are refused, for one reason each:
+///
+/// - [`Scale::Colour`] — the measured case above.
+/// - [`Scale::Band`] — a category missing from the sample loses its slot
+///   entirely and every later category slides one place along the axis.
+/// - [`Scale::Sequential`] — continuous, but its ramp is anchored to the drawn
+///   `(min, max)`, so the same value takes a different colour in the two
+///   renders. Same failure, continuous clothing.
+///
+/// **Why refuse rather than restore.** Restoring the list means reproducing
+/// first-appearance order from an unsampled query, and first-appearance order
+/// over a parallel scan is not something DuckDB promises. A restoration that is
+/// right most of the time reintroduces exactly this bug, intermittently, under
+/// a notice that says the picture is trustworthy — strictly worse than not
+/// drawing it. When a deterministic ordering lands, this list shrinks and the
+/// refusal narrows on its own.
+#[must_use]
+pub fn unrestorable_under_sampling(scales: &ScaleSet) -> Vec<Channel> {
+    [
+        Channel::X,
+        Channel::Y,
+        Channel::Fill,
+        Channel::Stroke,
+        Channel::Size,
+        Channel::X1,
+        Channel::Y1,
+        Channel::X2,
+        Channel::Y2,
+        Channel::Text,
+    ]
+    .into_iter()
+    .filter(|&c| {
+        matches!(
+            scales.get(c),
+            Some(Scale::Band { .. } | Scale::Colour { .. } | Scale::Sequential { .. })
+        )
+    })
+    .collect()
 }
 
 /// Infer the shared scale set for a multi-mark plot: `infer_scales_multi` to

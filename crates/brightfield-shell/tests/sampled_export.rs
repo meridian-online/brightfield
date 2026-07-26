@@ -282,3 +282,79 @@ fn a_sampled_plot_keeps_the_complete_plots_positional_scales() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A four-class scatter — the shape `--force-sample` silently miscolours, and
+/// the shape the refusal exists for.
+const CATEGORICAL_SPEC: &str = "data:
+  points:
+    query: |
+      SELECT (i * 7919 % 1009) / 10.0 AS a,
+             (i * 104729 % 1013) / 10.0 AS b,
+             'class-' || (i % 4) AS g
+      FROM range(20000) AS t(i)
+plot:
+  - mark: dot
+    data: { from: points }
+    x: a
+    y: b
+    fill: g
+width: 400
+height: 300
+";
+
+/// **Sampling a categorical channel is refused, not drawn.**
+///
+/// Measured before the refusal existed: rendering this spec complete and at
+/// `--force-sample 64`, the colour scale's category list came back as
+/// `[class-0, class-1, class-2, class-3]` complete and
+/// `[class-0, class-2, class-1, class-3]` sampled — so `class-1` was drawn
+/// amber in one picture and teal in the other. A palette slot is a category's
+/// INDEX in that list, and the list is built in first-appearance order over the
+/// rows that were drawn, so dropping rows re-assigns the colours. The sampling
+/// notice says rows were dropped. It does not, and could not, say the legend
+/// was rewritten.
+///
+/// `--force-sample` is a shipped flag on `brightfield-shot` and on the live
+/// window, so until categorical domains can be restored deterministically the
+/// only honest answer at the point of use is to decline and say why.
+#[test]
+fn sampling_a_categorical_channel_is_refused_with_a_reason() {
+    let dir = std::env::temp_dir().join(format!("bf-sampled-cat-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = dir.join("categorical.yaml");
+    std::fs::write(&spec, CATEGORICAL_SPEC).expect("write spec");
+    let path = spec.to_str().unwrap();
+
+    // Unsampled, the very same spec composes fine. The refusal is scoped to
+    // sampling and does not cost an ordinary chart anything.
+    compose_spec_sampled(path, None).expect("the complete render is unaffected");
+
+    let rate = SampleRate::from_modulus(64).expect("power of two");
+    let err = compose_spec_sampled(path, Some(rate))
+        .err()
+        .expect("sampling a categorical fill must be refused, not drawn");
+    assert!(
+        err.contains("refusing to sample"),
+        "the refusal must say it is refusing: {err}"
+    );
+    assert!(
+        err.contains("fill"),
+        "the refusal must name the offending channel so it is actionable: {err}"
+    );
+
+    // The live window takes the same path, so it refuses on the way in rather
+    // than opening a window onto a wrong picture.
+    let live = live_spec_sampled(path, Some(rate));
+    assert!(
+        live.is_err(),
+        "the live window's --force-sample must refuse the same spec"
+    );
+
+    // And the continuous spec beside it still samples, so the refusal is a
+    // scalpel and not a blanket.
+    let ok_spec = write_spec(&dir);
+    compose_spec_sampled(ok_spec.to_str().unwrap(), Some(rate))
+        .expect("a continuous x/y plot must still be sampleable");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

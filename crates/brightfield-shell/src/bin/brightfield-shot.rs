@@ -38,6 +38,13 @@
 //! what a chart-only export keeps, which is the half of the notice that a
 //! banner would fail.
 //!
+//! It **refuses** a plot with a categorical or ramp-anchored channel (`fill`,
+//! `stroke`, a band axis) and says which one. Those domains are inferred from
+//! the rows that were drawn, so sampling re-orders them and the same value
+//! takes a different colour in the two pictures — a wrong picture the notice
+//! does not describe. Measured: a four-class scatter at `--force-sample 64`
+//! swapped two classes' colours outright.
+//!
 //! `--gallery` renders one design-gallery component solo through the same
 //! deterministic capture path — an agent that just changed a primitive can
 //! see it without composing a dashboard. On this path `--size` is honoured

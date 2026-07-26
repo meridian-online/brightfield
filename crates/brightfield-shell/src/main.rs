@@ -55,6 +55,11 @@ struct Args {
     /// pushed-down sampling clause, with the notice in the plot's own ink.
     /// The window's half of the flag `brightfield-shot` carries, so the live
     /// surface and the captures are judged at the same rate.
+    ///
+    /// A plot with a categorical or ramp-anchored channel is REFUSED before the
+    /// window opens — sampling re-orders those domains, so the sampled render
+    /// would colour the same value differently from the complete one under a
+    /// notice that mentions only the dropped rows.
     force_sample: Option<brightfield_sql::ir::SampleRate>,
 }
 
@@ -93,7 +98,8 @@ Options:
                                   (default: render-proof/live-screenshot.png).
   --force-sample <N>              Draw one row in N (a power of two) through the
                                   pushed-down sampling clause, with the notice
-                                  in the plot's own ink
+                                  in the plot's own ink. Refuses a plot with a
+                                  categorical or ramp-anchored channel.
   --shot-after <N>                Render N frames, capture the window to
                                   --shot-out, then exit. Exit 0 means the PNG
                                   landed; for unattended smoke tests.

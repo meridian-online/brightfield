@@ -30,7 +30,8 @@ use brightfield_render::mark::{default_renderers, find_renderer, MarkRenderer};
 use brightfield_render::sample_notice::{sample_band_margins, SampleFact};
 use brightfield_render::scale::ScaleSet;
 use brightfield_render::scene::{
-    build_multi_mark_scene_with_domains, compose_dashboard, ChartData, UnsampledDomains,
+    build_multi_mark_scene_with_domains, compose_dashboard, unrestorable_under_sampling, ChartData,
+    UnsampledDomains,
 };
 use brightfield_render::{grow_margins, resolve_titles};
 use brightfield_spec::analysis::{
@@ -672,6 +673,33 @@ fn compose_from_results(
             build_multi_mark_scene_with_domains(&refs, false, &titles, plot_domains);
         drop(refs);
         drop(chart_data);
+
+        // REFUSE rather than draw a confidently wrong picture. A sampled plot
+        // whose scale set carries a channel `apply_unsampled_domains` cannot
+        // restore renders with a different category-to-colour (or
+        // category-to-position) mapping than the complete one, under a notice
+        // that says only that rows were dropped. Checked here because here is
+        // where the scales exist — one seam covering `--force-sample` on
+        // `brightfield-shot`, on the live window, and every re-present after a
+        // gesture, rather than three argument parsers each remembering.
+        if plot_sample.is_some() {
+            let unrestorable = unrestorable_under_sampling(&scales);
+            if !unrestorable.is_empty() {
+                let names: Vec<&str> = unrestorable.iter().map(|c| c.wire_name()).collect();
+                let s = if names.len() == 1 { "" } else { "s" };
+                let names = names.join(", ");
+                return Err(format!(
+                    "refusing to sample plot {}: its {names} channel{s} carries a categorical \
+                     or ramp-anchored scale, whose domain is inferred from the rows actually \
+                     drawn. Sampling re-orders that domain, so the sampled render would give \
+                     the same value a DIFFERENT colour (or band position) than the complete \
+                     one — and the sampling notice would not say so. Sample a plot whose \
+                     channels are continuous x/y only, or drop {names} from this plot.",
+                    plot.path,
+                ));
+            }
+        }
+
         placements.push((plot.rect.x, plot.rect.y, scene));
 
         let gesture = brushable
