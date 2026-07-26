@@ -64,7 +64,14 @@
 //! Regenerate with: `UPDATE_SNAPSHOTS=1 cargo +1.95.0 test -p brightfield-shell
 //! --test surfaces`. Thresholds come from `kittest.toml` at the workspace root;
 //! read the policy comment there before reaching for a per-test override. None
-//! of these five needs one.
+//! of the committed baselines needs one.
+//!
+//! Seven baselines now, not five: the two added for the CTE fold are the same
+//! protocol window with the fold key pressed, and they carry the same
+//! did-the-keystroke-land guard the steps-sheet capture does. The 0.87 MB
+//! figure above is the measured cost of the original five and has not been
+//! re-measured; see [`cte_surface`] for why the two canvas baselines could not
+//! simply be re-photographed.
 
 use std::path::PathBuf;
 
@@ -259,12 +266,19 @@ fn chart_layout(mode: Mode) -> (egui::Rect, egui::Rect) {
 }
 
 /// A boot on the protocol view over the checked-in fixture, in the default
-/// vertical flow.
+/// vertical flow, with the boot cursor wherever the nav puts it.
 fn protocol_boot() -> Boot {
+    protocol_boot_focused(None)
+}
+
+/// The same boot with the cursor placed on `focus` — the state
+/// `brightfield-shot --focus <dotted-id>` produces, and the state a click on
+/// that node produces in the live window.
+fn protocol_boot_focused(focus: Option<&str>) -> Boot {
     let spec = fixture("examples/protocol/edgar_gleif/arcform.yaml");
     let inputs = load_protocol_offline(spec.to_str().expect("utf-8 fixture path"))
         .unwrap_or_else(|e| panic!("load {}: {e}", spec.display()));
-    Boot::protocol(inputs, Flow::Vertical, None)
+    Boot::protocol(inputs, Flow::Vertical, focus.map(str::to_string))
 }
 
 /// Capture the window **booted on the protocol view**: the outline rail, the
@@ -272,21 +286,35 @@ fn protocol_boot() -> Boot {
 /// and hint bar around them, in the default vertical flow with the nav's boot
 /// cursor selected.
 fn protocol_capture(mode: Mode, name: &str, script: Vec<Vec<egui::Event>>) -> image::RgbaImage {
+    capture_boot(protocol_boot(), mode, name, script)
+}
+
+/// The capture itself, over a boot the caller chose.
+fn capture_boot(
+    boot: Boot,
+    mode: Mode,
+    name: &str,
+    script: Vec<Vec<egui::Event>>,
+) -> image::RgbaImage {
     // Hermetic capture: keep `BRIGHTFIELD_DEVTOOLS` from leaking the top-bar
     // renderer string into this golden (see `shell_capture`).
     std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
     let out = scratch(name);
-    let (w, h) = capture_png(protocol_boot(), mode, SCALE, &out, script)
+    let (w, h) = capture_png(boot, mode, SCALE, &out, script)
         .unwrap_or_else(|e| panic!("capture {name}: {e}"));
     assert!(w > 0 && h > 0, "{name}: empty capture");
     read_rgba(&out)
 }
 
 /// The same, diffed against the committed baseline.
-fn protocol_surface(mode: Mode, name: &str, script: Vec<Vec<egui::Event>>) -> image::RgbaImage {
+///
+/// For a capture with a **scripted keystroke**, do not reach for this: capture
+/// with [`protocol_capture`], assert the keystroke landed, and call
+/// `image_snapshot` last. Under `UPDATE_SNAPSHOTS=1` this writes whatever it
+/// was handed before any guard has run.
+fn protocol_surface(mode: Mode, name: &str, script: Vec<Vec<egui::Event>>) {
     let img = protocol_capture(mode, name, script);
     egui_kittest::image_snapshot(&img, name);
-    img
 }
 
 /// The rects the protocol view's layout produces at the window size it asks
@@ -371,9 +399,16 @@ fn protocol_light_surface() {
 /// tab already cover; a dark twin would cost another full-window image to
 /// re-photograph that. Covered here: the surface exists and renders. Not
 /// covered: this particular sheet in dark. Say so rather than imply otherwise.
+///
+/// The guard runs **before** the snapshot, for the reason spelled out on
+/// [`cte_surface`]: under `UPDATE_SNAPSHOTS=1` a snapshot call writes whatever
+/// it is handed, so a guard behind it would author a golden of the wrong tab
+/// and only complain about it afterwards. This test had them the other way
+/// round until the CTE captures arrived; the committed bytes are unchanged by
+/// the reorder.
 #[test]
 fn protocol_steps_light_surface() {
-    let steps = protocol_surface(
+    let steps = protocol_capture(
         Mode::Light,
         "protocol_steps_light",
         vec![press(egui::Key::S, true)],
@@ -393,6 +428,7 @@ fn protocol_steps_light_surface() {
         "the steps capture is pixel-identical to the canvas capture — \
          the steps verb did not dispatch, so this baseline photographs the wrong tab"
     );
+    egui_kittest::image_snapshot(&steps, "protocol_steps_light");
 }
 
 /// Pins the protocol panel in dark mode, chrome **and** DAG raster.
@@ -412,6 +448,89 @@ fn protocol_steps_light_surface() {
 #[test]
 fn protocol_dark_surface() {
     protocol_surface(Mode::Dark, "protocol_dark", Vec::new());
+}
+
+/// The node `build_sec_entities` produces — the crosswalk's one relation with
+/// CTEs behind it, and therefore the only cursor position on this fixture from
+/// which the CTE fold does anything.
+const CTE_FOCUS: &str = "asset.edgar_gleif.sec_entities";
+
+/// The **CTE fold open**: the joins inside a SQL step drawn as lineage of their
+/// own, rather than folded into the one rectangle that step is by default.
+///
+/// # Why these are new captures and not a re-photograph of the two above
+///
+/// The two committed canvas baselines are taken with an empty script and a
+/// fold-closed default, so they show the built graph — and a correct
+/// implementation leaves them **byte-identical**. Demanding a diff on them
+/// would have been a demand that this feature break its own default. So the
+/// opened state gets baselines of its own, and the two existing ones are
+/// evidence that nothing leaked into the boot canvas.
+///
+/// # The guard, and why it runs before the snapshot
+///
+/// A capture of a keystroke that did nothing would be perfectly stable and
+/// perfectly green forever — the failure the steps-sheet baseline above had on
+/// its first cut. The same guard applies here, against a reference capture of
+/// the **same boot** with **no script**: same window, same size, same focused
+/// node, differing only by what `za` did. If the chord ever stops dispatching,
+/// the two are identical and this fails.
+///
+/// It is asserted *before* `image_snapshot`. Under `UPDATE_SNAPSHOTS=1` a
+/// snapshot call writes whatever it was handed, so a guard that runs after it
+/// would author the wrong golden and only complain afterwards. Guard first,
+/// then commit the pixels. (The steps-sheet test above had them the other way
+/// round until this one arrived; it is now ordered the same way.)
+///
+/// # What these two baselines constrain: the LAYOUT, not the graph
+///
+/// **A pixel here is evidence about `layout.positions`, not about
+/// `displayed_graph()`.** `render_asset_graph_with_status` walks the layout's
+/// positions and looks each id up in the graph, so a graph node with no
+/// position is silently skipped — and the window is *sized* from
+/// `ProtocolModel::boot_layout`, which always lays out the collapsed graph.
+/// A change that puts nodes into the displayed graph without re-laying-out
+/// moves nothing on this image, and these two goldens would stay green
+/// photographing the picture they were authored against.
+///
+/// Nothing shipped can reach that today — every fold, drill and flow change
+/// calls `recompute_layout` — so this is a note for the next author, not a hole
+/// in the current cover. It is live for the per-step explode (one CTE fold per
+/// `sql:` step rather than one over the canvas): flipping an id in a set reads
+/// like a change to what is drawn, and it is not one until the layout is
+/// recomputed. If a new fold ever appears with these two baselines still green,
+/// suspect the layout before believing the pixels.
+fn cte_surface(mode: Mode, name: &str) {
+    let opened = capture_boot(
+        protocol_boot_focused(Some(CTE_FOCUS)),
+        mode,
+        name,
+        vec![press(egui::Key::Z, false), press(egui::Key::A, false)],
+    );
+    let folded = capture_boot(
+        protocol_boot_focused(Some(CTE_FOCUS)),
+        mode,
+        &format!("{name}_folded_reference"),
+        Vec::new(),
+    );
+    assert_ne!(
+        opened.as_raw(),
+        folded.as_raw(),
+        "{name} is pixel-identical to the same window with no keystroke — \
+         the fold chord did not dispatch, so this baseline photographs the \
+         folded canvas and would pass forever"
+    );
+    egui_kittest::image_snapshot(&opened, name);
+}
+
+#[test]
+fn protocol_cte_light_surface() {
+    cte_surface(Mode::Light, "protocol_cte_light");
+}
+
+#[test]
+fn protocol_cte_dark_surface() {
+    cte_surface(Mode::Dark, "protocol_cte_dark");
 }
 
 /// The DAG is still there after the user has been to the other view and back.

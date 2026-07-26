@@ -55,11 +55,16 @@ because they walk the graph's edges, not pixel geometry.
 | `protocol-consumer` | `l` | 5 / 4 / 5 | `l` = downstream/consumer (vim right); topological, survives re-layout |
 | `protocol-sibling-next` | `j` | 5 / 4 / 5 | `j` = next rank sibling (vim down); orders by node id within the layer |
 | `protocol-sibling-prev` | `k` | 5 / 4 / 5 | `k` = prev rank sibling (vim up); orders by node id within the layer |
-| `toggle-fold-family` | `z a` | 3 / 4 / 5 | `za` = toggle fold (vim fold family); a fold is a view change, never logged |
+| `toggle-fold` | `z a` | 3 / 4 / 5 | `za` = toggle fold (vim fold family); one verb over both folds (family members, or a `sql:` step's CTEs), resolved by what the cursor is on; a fold is a view change, never logged |
 | `protocol-drill-in` | `enter` | 4 / 4 / 5 | enter = dive (miller-columns); pushes the drill stack |
 | `protocol-drill-out` | `escape` | 4 / 4 / 5 | esc = pop one level (Esc ladder); breadcrumb tracks the pop |
 | `open-steps-sheet` | `shift-s` | 3 / 5 / 4 | `S` = steps sheet (VisiData sheet family); answers "where is my step list" |
 | `yank-address` | `y` | 3 / 5 / 4 | `y` = yank (vim); a Data verb — logged by longname + dotted address |
+
+> **Rename note.** The `z a` row was scored and recorded as `toggle-fold-family`, when the only thing
+> that folded was a parameterised family. The verb was later broadened to also open a `sql:` step's
+> CTEs under the cursor, so the row is now `toggle-fold`: same key, same scores, same rationale — a
+> longname that no longer named half of what the key does was a help sheet and a palette that lied.
 
 Reserved verbs are deliberately unscored (no key yet), shown greyed in the palette until their keys land:
 needs-keyboard-target (`filter-view`, `cross-filter-all`, `toggle-point-select`, `set-param`) and
