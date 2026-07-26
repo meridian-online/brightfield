@@ -515,11 +515,6 @@ pub fn spec_data_files(spec: &Spec, spec_dir: Option<&Path>) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Build the composited dashboard from a spec and its per-mark execution
-/// results. Shared by the one-shot [`compose`] path and the live
-/// [`LiveDashboard`] re-query seam, so a re-composite after an interaction takes
-/// the identical layout and scene path as the first paint.
-
 /// The unsampled facts for every mark, or `None` per mark when the session is
 /// not sampling.
 ///
@@ -542,6 +537,10 @@ fn unsampled_facts(session: &Session, marks: usize) -> Vec<Option<MarkFacts>> {
         .collect()
 }
 
+/// Build the composited dashboard from a spec and its per-mark execution
+/// results. Shared by the one-shot [`compose`] path and the live
+/// [`LiveDashboard`] re-query seam, so a re-composite after an interaction takes
+/// the identical layout and scene path as the first paint.
 fn compose_from_results(
     spec: &Spec,
     results: Vec<Result<Vec<RecordBatch>, EngineError>>,

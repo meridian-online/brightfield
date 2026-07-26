@@ -970,10 +970,18 @@ mod tests {
     }
 
     /// The frame cap is a MEASURED boundary on this machine, not a taste
-    /// call: at 10⁶ rows a one-scatter scene encodes and renders, and a
-    /// two-scatter scene aborts the process inside wgpu validation. The
-    /// per-scenario primitive counts are what put each row on the right side
-    /// of that line, so they are asserted rather than trusted.
+    /// call — and the measurement it reproduces is the one that reads vello's
+    /// own overflow counter, not the one that waits for the process to abort.
+    ///
+    /// The old expectations asserted here said a one-scatter scene renders at
+    /// 10⁶ rows. It does render. It renders **incomplete**: past ~105,000
+    /// drawn primitives vello's fixed `seg_counts` buffer overflows, coarse is
+    /// not re-run, and the frame comes back `Ok` with ink missing. A cap that
+    /// only caught the abort was letting a whole magnitude of quietly wrong
+    /// pictures through and timing them.
+    ///
+    /// The per-scenario primitive counts are what put each row on the right
+    /// side of the line, so they are asserted rather than trusted.
     #[test]
     fn the_frame_cap_reproduces_the_measured_render_boundary() {
         let caps = |name: &str, rows: u64| -> bool {
@@ -983,13 +991,15 @@ mod tests {
                 .expect("committed scenario");
             d.row_level_marks * rows > FRAME_DRAWN_ROW_CAP
         };
-        // Observed to render: one scatter at a million rows.
-        assert!(!caps("brush-density", 1_000_000));
-        assert!(!caps("brush-binned-density", 1_000_000));
-        // Observed to abort: two scatters at a million rows.
-        assert!(caps("crossfilter-dots", 1_000_000));
-        // Observed to render: two scatters at a hundred thousand rows.
-        assert!(!caps("crossfilter-dots", 100_000));
+        // Measured complete: one scatter at a hundred thousand rows.
+        assert!(!caps("brush-density", 100_000));
+        assert!(!caps("brush-binned-density", 100_000));
+        // Measured incomplete (`failed` bit set, no error raised): one scatter
+        // an order of magnitude up, and two scatters at the same row count.
+        assert!(caps("brush-density", 1_000_000));
+        assert!(caps("crossfilter-dots", 100_000));
+        // Two scatters stay inside it at half that.
+        assert!(!caps("crossfilter-dots", 50_000));
         // Ten million row-level rows is past the boundary in every shape.
         assert!(caps("brush-density", 10_000_000));
         assert!(caps("crossfilter-dots", 10_000_000));
