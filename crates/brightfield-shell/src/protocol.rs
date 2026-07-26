@@ -529,15 +529,39 @@ impl ProtocolModel {
     /// active, else the full graph when a family is unfolded, else the exploded
     /// graph when the CTE fold is open, else the collapsed graph.
     ///
-    /// **The family unfold outranks the CTE fold, and that is a real limit, not
-    /// a subtlety.** `graph_exploded` is built over the *collapsed* canvas, so
-    /// there is no graph in this struct that is both unfolded and exploded, and
-    /// opening a family while the CTEs are drawn puts them away until the
-    /// family closes again. Ordering the two arms the other way round would be
-    /// worse — the family fold would then read as a dead keystroke — and
-    /// building a fourth graph to serve the combination buys a state nothing on
-    /// the crosswalk reaches, because its one CTE-bearing step belongs to no
-    /// family.
+    /// **These arms do not compete — they cannot both be taken.**
+    /// `graph_exploded` is built over the *collapsed* canvas, so no graph in
+    /// this struct is both unfolded and exploded, and an earlier cut of this
+    /// method resolved that by precedence: the scope beat the family, the
+    /// family beat the CTE fold, and `cte_expanded` was left standing while the
+    /// canvas showed something else. That is a fold armed with nothing on the
+    /// screen to show for it — the user presses `za` on the family tile, both
+    /// CTEs vanish, and a later, unrelated keystroke brings them back unasked.
+    ///
+    /// So the flag is constrained instead of ranked. **`cte_expanded` is true
+    /// only while `graph_exploded` is the graph this returns**, held by three
+    /// rules in the private `toggle_fold` and `drill_in` (both documented on
+    /// themselves; they are not linked here because a public item may not
+    /// intra-doc-link a private one):
+    ///
+    /// - `za` is refused outright inside a drill scope — neither fold could be
+    ///   drawn under one, so neither is armed;
+    /// - the CTE half is refused while a family is unfolded (the full graph is
+    ///   not an exploded graph);
+    /// - unfolding a family, or drilling in, *closes* the CTE fold rather than
+    ///   suspending it, so nothing returns unbidden.
+    ///
+    /// `display_expanded` is not held to the same rule, and the asymmetry is
+    /// deliberate: it is a cache of the nav's own fold state
+    /// ([`ProtocolNav::is_expanded`]), which survives a drill because the nav's
+    /// cursor tree does. Clearing it here would leave this model disagreeing
+    /// with the nav, and the next `za` on that tile would be the dead keystroke
+    /// this is trying to prevent. `cte_expanded` has no other holder, so it can
+    /// be dropped honestly.
+    ///
+    /// Building a fourth graph to serve unfolded-*and*-exploded is the larger
+    /// increment this deliberately is not: on the crosswalk it buys a state
+    /// nothing reaches, because its one CTE-bearing step belongs to no family.
     #[must_use]
     pub fn displayed_graph(&self) -> &AssetGraph {
         if let Some(scope) = &self.scope_graph {
@@ -618,6 +642,17 @@ impl ProtocolModel {
     #[must_use]
     pub fn is_cte_expanded(&self) -> bool {
         self.cte_expanded
+    }
+
+    /// The invariant the CTE fold is held to: **armed only while the exploded
+    /// graph is the one on screen** — see [`ProtocolModel::displayed_graph`].
+    ///
+    /// Identity, not equality: it asks whether `displayed_graph` returned
+    /// *this struct's* `graph_exploded`, so a scope or a full graph that
+    /// happened to compare equal could not satisfy it.
+    #[cfg(test)]
+    fn cte_fold_is_on_screen(&self) -> bool {
+        !self.cte_expanded || std::ptr::eq(self.displayed_graph(), &self.graph_exploded)
     }
 
     /// The current selection (dotted asset id).
@@ -789,7 +824,7 @@ impl ProtocolModel {
                     self.move_dir(Dir::Up) // k
                 }
             }
-            "toggle-fold-family" => self.toggle_fold(),
+            "toggle-fold" => self.toggle_fold(),
             "protocol-drill-in" => self.drill_in(),
             "protocol-drill-out" => self.drill_out(),
             "open-steps-sheet" => {
@@ -838,10 +873,19 @@ impl ProtocolModel {
     /// upstream that feeds it + every descendant downstream it feeds + the node
     /// itself), re-laid-out and re-rastered so the scope change is visible. A
     /// repeated `Enter` on the same node is a no-op.
+    ///
+    /// **Drilling closes an open CTE fold; it does not suspend it.** The scope
+    /// is induced over the collapsed graph, so the CTEs leave the screen at
+    /// this keystroke either way — the only question is whether the flag leaves
+    /// with them. Left standing it would put them back on a later `Esc`, at a
+    /// moment the user pressed nothing that means "explode". See
+    /// [`ProtocolModel::displayed_graph`] for why `display_expanded` is not
+    /// treated the same way.
     fn drill_in(&mut self) -> bool {
         if !self.nav.drill_in() {
             return false;
         }
+        self.cte_expanded = false;
         if let Some(focus) = self.nav.cursor().cloned() {
             let keep = brightfield_protocol::graph::lineage(&self.graph_collapsed, &focus);
             self.scope_graph = Some(brightfield_protocol::graph::induced_subgraph(
@@ -905,14 +949,37 @@ impl ProtocolModel {
     /// through [`ProtocolModel::feed_key`]'s pending flag. So the verb is
     /// broadened, not duplicated.
     ///
-    /// A cursor on neither — a source file, an operator's output, a family
-    /// member — leaves the canvas alone and reports no change, so the frame is
-    /// not repainted for a keystroke that did nothing.
+    /// **Every path that reports no change leaves the model untouched**, and
+    /// the list is longer than "the cursor is on nothing foldable". `za` is a
+    /// no-op — no flag flipped, no re-layout, no repaint — when:
+    ///
+    /// - the cursor is on neither (a source file, an operator's output, a
+    ///   family member);
+    /// - a **drill scope** is active. The canvas is showing an induced slice,
+    ///   and neither fold can be drawn under one, so neither is armed under
+    ///   one. This guard runs before [`ProtocolNav::toggle_fold`], so the
+    ///   nav's own fold state is not mutated either;
+    /// - the cursor is on a SQL-produced node while a **family is unfolded**.
+    ///   The full graph is not an exploded graph (see
+    ///   [`ProtocolModel::displayed_graph`]), so opening the CTE fold here
+    ///   could only arm a flag with nothing on screen behind it.
+    ///
+    /// The alternative in each case is a keystroke that changes state the
+    /// screen does not reflect, and surfaces it later unbidden. A refused
+    /// gesture is the smaller cost.
+    ///
+    /// When the family arm *does* fire it closes the CTE fold as it goes: the
+    /// unfolded graph has no CTEs in it, and a flag that outlived its picture
+    /// is the same defect one keystroke later.
     fn toggle_fold(&mut self) -> bool {
+        if self.scope_graph.is_some() {
+            return false;
+        }
         if self.nav.toggle_fold() == FoldOutcome::NotAFamily {
             return self.toggle_cte_fold();
         }
         self.display_expanded = self.family_ids.iter().any(|id| self.nav.is_expanded(id));
+        self.cte_expanded = false;
         self.selected = self.nav.cursor().cloned();
         self.recompute_layout();
         true
@@ -921,8 +988,17 @@ impl ProtocolModel {
     /// The CTE half of `za`: flip the whole-canvas explode when the cursor is on
     /// a node a `sql:` step produced, and re-lay-out so the raster cache drops
     /// the folded picture.
+    ///
+    /// Refused while a family is unfolded, because
+    /// [`ProtocolModel::displayed_graph`] would go on drawing `graph_full`.
+    /// The drill-scope half of the same rule is enforced by the caller, before
+    /// the nav is touched.
     fn toggle_cte_fold(&mut self) -> bool {
-        if !self.cursor_is_sql_produced() {
+        debug_assert!(
+            self.scope_graph.is_none(),
+            "toggle_fold refuses inside a drill scope before reaching here"
+        );
+        if self.display_expanded || !self.cursor_is_sql_produced() {
             return false;
         }
         self.cte_expanded = !self.cte_expanded;
@@ -966,6 +1042,25 @@ impl ProtocolModel {
 
     /// Recompute the layout for the current displayed graph (scope / expand) +
     /// flow, and bump the generation so the raster cache invalidates.
+    ///
+    /// # The pixels follow the LAYOUT, not the graph — read this before adding
+    /// a fold
+    ///
+    /// `render_asset_graph_with_status` iterates `layout.positions` and looks
+    /// each id up in the graph: **a graph node with no position is silently
+    /// skipped, and a position with no node draws nothing.** So the displayed
+    /// graph only reaches the screen through this method, and a change to
+    /// [`ProtocolModel::displayed_graph`] that does not reach it is invisible
+    /// on the canvas *and* invisible to the two committed CTE pixel baselines,
+    /// which would stay green photographing the old picture.
+    ///
+    /// Nothing shipped can hit that today — every fold, drill and flow change
+    /// calls this — and the boot layout is laid out over
+    /// `graph_collapsed` regardless, so it is only ever the *first* frame that
+    /// is layout-pinned. The trap is live for the per-step explode this note's
+    /// sibling comment on `cte_expanded` sketches: flipping one step's id in a
+    /// set is exactly the kind of edit that reads as "the graph changed, so the
+    /// canvas changed". It does not. Re-lay-out, or nothing moves.
     fn recompute_layout(&mut self) {
         let cfg = LayoutConfig {
             flow: self.flow,
@@ -2130,7 +2225,7 @@ mod tests {
         assert_eq!(t.get("l").copied(), Some("protocol-consumer"));
         assert_eq!(t.get("j").copied(), Some("protocol-sibling-next"));
         assert_eq!(t.get("k").copied(), Some("protocol-sibling-prev"));
-        assert_eq!(t.get("z a").copied(), Some("toggle-fold-family"));
+        assert_eq!(t.get("z a").copied(), Some("toggle-fold"));
         assert_eq!(t.get("enter").copied(), Some("protocol-drill-in"));
         assert_eq!(t.get("escape").copied(), Some("protocol-drill-out"));
         assert_eq!(t.get("shift-s").copied(), Some("open-steps-sheet"));
@@ -2526,6 +2621,238 @@ mod tests {
             !m.layout().positions.keys().any(|id| id.starts_with("cte.")),
             "nothing exploded is laid out either"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // No fold is armed that the canvas does not show.
+    //
+    // The two folds cannot be drawn at once (`graph_exploded` is built over the
+    // collapsed canvas, `graph_full` is not exploded) and neither can be drawn
+    // inside a drill scope. The tests below pin what happens where they meet —
+    // a refusal or a close, never a flag left standing over a canvas that
+    // contradicts it. Each names the two-keystroke sequence that used to reach
+    // the bad state.
+    // -----------------------------------------------------------------------
+
+    /// The family tile on the crosswalk (`stage`/`shape` over its instances) —
+    /// the only cursor position from which the family half of `za` fires.
+    fn family_id(m: &ProtocolModel) -> AssetId {
+        m.graph_collapsed
+            .nodes
+            .iter()
+            .find(|(_, n)| n.kind == AssetKind::Family)
+            .map(|(id, _)| id.clone())
+            .expect("the crosswalk declares a parameterised family")
+    }
+
+    /// Whether any CTE node is on the canvas right now.
+    fn ctes_on_canvas(m: &ProtocolModel) -> bool {
+        m.displayed_graph()
+            .nodes
+            .keys()
+            .any(|id| id.starts_with("cte."))
+    }
+
+    /// **Open the CTEs, then unfold a family: the fold CLOSES, it does not
+    /// hide.** Two keystrokes from the state the pixel baselines photograph.
+    ///
+    /// The canvas swaps to the unfolded graph, which has no CTEs in it — that
+    /// much is a real limit and was always going to happen. What must not
+    /// happen is the flag surviving the swap: with `cte_expanded` still true,
+    /// the *next* `za` on the same tile folds the family back and the two CTEs
+    /// reappear, at a keystroke that means "close this family" and nothing
+    /// else. The user pressed nothing that means "explode".
+    #[test]
+    fn unfolding_a_family_closes_the_cte_fold_rather_than_hiding_it() {
+        let mut m = model();
+        m.select_id(SQL_PRODUCED.to_string());
+        assert!(za(&mut m), "the CTE fold opened");
+        let exploded = m.displayed_graph().nodes.len();
+        assert!(ctes_on_canvas(&m));
+        assert!(m.cte_fold_is_on_screen());
+
+        // Move to the family tile and press the same chord.
+        let family = family_id(&m);
+        m.select_id(family);
+        assert!(za(&mut m), "the family unfolded");
+        assert!(m.is_expanded(), "the canvas is on the unfolded graph");
+        assert!(
+            m.displayed_graph().nodes.len() > exploded,
+            "the unfolded graph is the bigger one ({} > {exploded})",
+            m.displayed_graph().nodes.len()
+        );
+        assert!(!ctes_on_canvas(&m), "the CTEs are off the canvas");
+        assert!(
+            !m.is_cte_expanded(),
+            "and the fold went off with them — not left armed behind the family"
+        );
+        assert!(m.cte_fold_is_on_screen());
+
+        // The keystroke that used to bring them back unbidden.
+        assert!(za(&mut m), "the family folded again");
+        assert!(!m.is_expanded());
+        assert!(
+            !ctes_on_canvas(&m),
+            "closing the family returns the collapsed canvas, not the exploded one"
+        );
+        assert_eq!(
+            m.displayed_graph(),
+            &m.graph_collapsed,
+            "it is the collapsed graph itself"
+        );
+    }
+
+    /// **The CTE fold is refused while a family is unfolded**, rather than
+    /// arming a flag `displayed_graph` will ignore.
+    ///
+    /// The reverse order of the test above: unfold first, then put the cursor
+    /// on the SQL-produced relation. `graph_full` is not an exploded graph, so
+    /// there is nothing this keystroke could draw — it reports no change, the
+    /// layout generation does not move (so no repaint is requested for it), and
+    /// the flag stays down.
+    #[test]
+    fn the_cte_fold_is_refused_while_a_family_is_unfolded() {
+        let mut m = model();
+        let family = family_id(&m);
+        m.select_id(family);
+        assert!(za(&mut m), "the family unfolded");
+        assert!(m.is_expanded());
+
+        m.select_id(SQL_PRODUCED.to_string());
+        let before = node_ids(&m);
+        let before_gen = m.layout_gen();
+
+        assert!(!za(&mut m), "za reported no change");
+        assert!(!m.is_cte_expanded(), "no fold was armed");
+        assert!(m.is_expanded(), "and the family is untouched");
+        assert_eq!(node_ids(&m), before, "the canvas did not move");
+        assert_eq!(
+            m.layout_gen(),
+            before_gen,
+            "no re-layout, so no repaint for a keystroke with nothing behind it"
+        );
+        assert!(m.cte_fold_is_on_screen());
+    }
+
+    /// **`za` is refused outright inside a drill scope** — both halves of it.
+    ///
+    /// A scope draws an induced slice of the collapsed graph, so neither fold
+    /// has a picture under one. The CTE half used to flip the flag and bump the
+    /// layout generation here: a forced repaint of an unchanged canvas, zero
+    /// feedback, and two CTE nodes waiting to appear on a later `Esc`.
+    ///
+    /// The family half is refused by the same guard, and the guard runs *before*
+    /// [`ProtocolNav::toggle_fold`] — so the nav's own fold state is not
+    /// mutated either. Widening back out proves it: the family is still folded.
+    #[test]
+    fn za_is_refused_inside_a_drill_scope() {
+        let mut m = model();
+        m.select_id(SQL_PRODUCED.to_string());
+        assert!(m.feed_events(&[key(egui::Key::Enter)]), "drilled in");
+        assert!(m.is_drilled());
+
+        let scoped = node_ids(&m);
+        let before_gen = m.layout_gen();
+
+        // The CTE half: the cursor is on the SQL-produced relation.
+        assert!(!za(&mut m), "za reported no change inside the scope");
+        assert!(!m.is_cte_expanded(), "no fold was armed under the scope");
+        assert_eq!(node_ids(&m), scoped, "the scope is unchanged");
+        assert_eq!(m.layout_gen(), before_gen, "and nothing was re-laid-out");
+
+        // The family half: same guard, and the nav is left alone.
+        let family = family_id(&m);
+        m.select_id(family);
+        assert!(!za(&mut m), "the family half is refused too");
+        assert!(!m.is_expanded());
+        assert_eq!(m.layout_gen(), before_gen, "still no re-layout");
+
+        assert!(m.feed_events(&[key(egui::Key::Escape)]), "widened back out");
+        assert!(!m.is_drilled());
+        assert!(
+            !m.is_expanded(),
+            "the refused family fold never reached the nav, so nothing unfolds on the way out"
+        );
+        assert!(!ctes_on_canvas(&m), "and no CTE appears on the way out");
+        assert!(m.cte_fold_is_on_screen());
+    }
+
+    /// **Drilling in closes an open CTE fold**, so widening back out does not
+    /// hand the CTEs back at a keystroke that means "widen".
+    ///
+    /// The CTEs leave the screen at the `Enter` either way — the scope is
+    /// induced over the collapsed graph. The only question is whether the flag
+    /// leaves with them, and it does.
+    #[test]
+    fn drilling_in_closes_the_cte_fold_rather_than_suspending_it() {
+        let mut m = model();
+        m.select_id(SQL_PRODUCED.to_string());
+        assert!(za(&mut m), "the CTE fold opened");
+        assert!(ctes_on_canvas(&m));
+
+        assert!(m.feed_events(&[key(egui::Key::Enter)]), "drilled in");
+        assert!(!m.is_cte_expanded(), "the fold closed with the drill");
+        assert!(!ctes_on_canvas(&m));
+        assert!(m.cte_fold_is_on_screen());
+
+        assert!(m.feed_events(&[key(egui::Key::Escape)]), "widened back out");
+        assert!(!m.is_drilled());
+        assert!(
+            !ctes_on_canvas(&m),
+            "Esc widened the canvas; it did not re-explode it"
+        );
+        assert_eq!(m.displayed_graph(), &m.graph_collapsed);
+    }
+
+    /// The invariant itself, swept over every gesture that can reach the fold.
+    ///
+    /// `cte_expanded` is true only while `graph_exploded` is the graph
+    /// `displayed_graph` returns — checked after *every* keystroke of a script
+    /// that walks the fold into the family fold, the drill scope, the flow
+    /// transpose and the steps sheet in turn. A single arm re-ordered in
+    /// `displayed_graph`, or a guard dropped from `toggle_fold`, reddens this
+    /// without anyone having to think of the sequence again.
+    #[test]
+    fn no_gesture_arms_the_cte_fold_over_a_canvas_that_hides_it() {
+        let mut m = model();
+        let family = family_id(&m);
+        // (cursor to place first, then the chord/keys to press there)
+        let script: Vec<(Option<&str>, Vec<egui::Key>)> = vec![
+            (Some(SQL_PRODUCED), vec![egui::Key::Z, egui::Key::A]),
+            (Some(family.as_str()), vec![egui::Key::Z, egui::Key::A]),
+            (Some(SQL_PRODUCED), vec![egui::Key::Z, egui::Key::A]),
+            (Some(family.as_str()), vec![egui::Key::Z, egui::Key::A]),
+            (Some(SQL_PRODUCED), vec![egui::Key::Z, egui::Key::A]),
+            (None, vec![egui::Key::T]),
+            (Some(SQL_PRODUCED), vec![egui::Key::Enter]),
+            (Some(SQL_PRODUCED), vec![egui::Key::Z, egui::Key::A]),
+            (Some(family.as_str()), vec![egui::Key::Z, egui::Key::A]),
+            (None, vec![egui::Key::Escape]),
+            (Some(SQL_PRODUCED), vec![egui::Key::Z, egui::Key::A]),
+            (None, vec![egui::Key::Backspace]),
+        ];
+        for (step, (cursor, keys)) in script.iter().enumerate() {
+            if let Some(id) = cursor {
+                m.select_id((*id).to_string());
+            }
+            for k in keys {
+                m.feed_events(&[key(*k)]);
+                assert!(
+                    m.cte_fold_is_on_screen(),
+                    "step {step}: the CTE fold is armed but the canvas does not show it \
+                     (expanded={}, drilled={}, family={})",
+                    m.is_cte_expanded(),
+                    m.is_drilled(),
+                    m.is_expanded()
+                );
+            }
+        }
+        // The sweep ended somewhere real, not on an early bail-out.
+        assert!(
+            m.is_cte_expanded(),
+            "the last chord landed on a cursor the fold answers to"
+        );
+        assert!(ctes_on_canvas(&m));
     }
 
     /// EXPLODE THEN COLLAPSE, and why the other order is not a preference.

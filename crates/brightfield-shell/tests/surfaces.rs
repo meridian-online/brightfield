@@ -307,10 +307,14 @@ fn capture_boot(
 }
 
 /// The same, diffed against the committed baseline.
-fn protocol_surface(mode: Mode, name: &str, script: Vec<Vec<egui::Event>>) -> image::RgbaImage {
+///
+/// For a capture with a **scripted keystroke**, do not reach for this: capture
+/// with [`protocol_capture`], assert the keystroke landed, and call
+/// `image_snapshot` last. Under `UPDATE_SNAPSHOTS=1` this writes whatever it
+/// was handed before any guard has run.
+fn protocol_surface(mode: Mode, name: &str, script: Vec<Vec<egui::Event>>) {
     let img = protocol_capture(mode, name, script);
     egui_kittest::image_snapshot(&img, name);
-    img
 }
 
 /// The rects the protocol view's layout produces at the window size it asks
@@ -395,9 +399,16 @@ fn protocol_light_surface() {
 /// tab already cover; a dark twin would cost another full-window image to
 /// re-photograph that. Covered here: the surface exists and renders. Not
 /// covered: this particular sheet in dark. Say so rather than imply otherwise.
+///
+/// The guard runs **before** the snapshot, for the reason spelled out on
+/// [`cte_surface`]: under `UPDATE_SNAPSHOTS=1` a snapshot call writes whatever
+/// it is handed, so a guard behind it would author a golden of the wrong tab
+/// and only complain about it afterwards. This test had them the other way
+/// round until the CTE captures arrived; the committed bytes are unchanged by
+/// the reorder.
 #[test]
 fn protocol_steps_light_surface() {
-    let steps = protocol_surface(
+    let steps = protocol_capture(
         Mode::Light,
         "protocol_steps_light",
         vec![press(egui::Key::S, true)],
@@ -417,6 +428,7 @@ fn protocol_steps_light_surface() {
         "the steps capture is pixel-identical to the canvas capture — \
          the steps verb did not dispatch, so this baseline photographs the wrong tab"
     );
+    egui_kittest::image_snapshot(&steps, "protocol_steps_light");
 }
 
 /// Pins the protocol panel in dark mode, chrome **and** DAG raster.
@@ -464,10 +476,30 @@ const CTE_FOCUS: &str = "asset.edgar_gleif.sec_entities";
 /// node, differing only by what `za` did. If the chord ever stops dispatching,
 /// the two are identical and this fails.
 ///
-/// It is asserted *before* `image_snapshot`, which the steps test does the
-/// other way round. Under `UPDATE_SNAPSHOTS=1` a snapshot call writes whatever
-/// it was handed, so a guard that runs after it would author the wrong golden
-/// and only complain afterwards. Guard first, then commit the pixels.
+/// It is asserted *before* `image_snapshot`. Under `UPDATE_SNAPSHOTS=1` a
+/// snapshot call writes whatever it was handed, so a guard that runs after it
+/// would author the wrong golden and only complain afterwards. Guard first,
+/// then commit the pixels. (The steps-sheet test above had them the other way
+/// round until this one arrived; it is now ordered the same way.)
+///
+/// # What these two baselines constrain: the LAYOUT, not the graph
+///
+/// **A pixel here is evidence about `layout.positions`, not about
+/// `displayed_graph()`.** `render_asset_graph_with_status` walks the layout's
+/// positions and looks each id up in the graph, so a graph node with no
+/// position is silently skipped — and the window is *sized* from
+/// `ProtocolModel::boot_layout`, which always lays out the collapsed graph.
+/// A change that puts nodes into the displayed graph without re-laying-out
+/// moves nothing on this image, and these two goldens would stay green
+/// photographing the picture they were authored against.
+///
+/// Nothing shipped can reach that today — every fold, drill and flow change
+/// calls `recompute_layout` — so this is a note for the next author, not a hole
+/// in the current cover. It is live for the per-step explode (one CTE fold per
+/// `sql:` step rather than one over the canvas): flipping an id in a set reads
+/// like a change to what is drawn, and it is not one until the layout is
+/// recomputed. If a new fold ever appears with these two baselines still green,
+/// suspect the layout before believing the pixels.
 fn cte_surface(mode: Mode, name: &str) {
     let opened = capture_boot(
         protocol_boot_focused(Some(CTE_FOCUS)),

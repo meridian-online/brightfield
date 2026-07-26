@@ -514,15 +514,15 @@ pub fn registry() -> Vec<VerbEntry> {
             scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "k = up; producer along a vertical flow, previous sibling across a horizontal one — nearest in the pressed direction" }),
         },
         VerbEntry {
-            longname: "toggle-fold-family",
+            longname: "toggle-fold",
             tier: CommandTier::View,
             binding_specs: vec![proto("z a")],
             scope_applicability: vec![Protocol],
             drives: D::Navigation,
             status: VerbStatus::Built,
             reserved_reason: None,
-            help: "Fold/unfold the parameterised family under the cursor",
-            scores: Some(Scores { frequency: 3, mnemonic: 4, convention: 5, motor_note: "za = toggle fold (vim fold family); a fold is a view change, never logged" }),
+            help: "Open/close the detail under the cursor: a parameterised family's members, or the CTEs inside a sql: step",
+            scores: Some(Scores { frequency: 3, mnemonic: 4, convention: 5, motor_note: "za = toggle fold (vim fold family); one verb over both folds, resolved by what the cursor is on; a fold is a view change, never logged" }),
         },
         VerbEntry {
             longname: "protocol-drill-in",
@@ -906,7 +906,7 @@ mod tests {
             "protocol-consumer",
             "protocol-sibling-next",
             "protocol-sibling-prev",
-            "toggle-fold-family",
+            "toggle-fold",
             "protocol-drill-in",
             "protocol-drill-out",
             "open-steps-sheet",
@@ -956,7 +956,7 @@ mod tests {
             "protocol-consumer",
             "protocol-sibling-next",
             "protocol-sibling-prev",
-            "toggle-fold-family",
+            "toggle-fold",
             "protocol-drill-in",
             "protocol-drill-out",
             "open-steps-sheet",
@@ -1015,7 +1015,7 @@ mod tests {
         let reg = registry();
         for v in reg.iter().filter(|v| {
             v.longname.starts_with("protocol-")
-                || v.longname == "toggle-fold-family"
+                || v.longname == "toggle-fold"
                 || v.longname == "open-steps-sheet"
                 || v.longname == "yank-address"
         }) {
