@@ -392,9 +392,35 @@ fn main() -> Result<(), String> {
     }
     let title = boot.title(view);
 
+    // The live window rides eframe's wgpu device — the Vello canvases are built
+    // with `VelloRenderer::from_shared` on it — so the ceiling this window draws
+    // at is set HERE, not by anything brightfield's own device code does. Left
+    // at `Default`, `egui-wgpu` requests `Limits::default()`: the WebGL-friendly
+    // floor, whose 128 MiB storage-buffer binding is what an encoded
+    // row-per-mark scene runs out of first. Fixing only the in-repo devices
+    // would have left a headless capture reporting one ceiling and the window —
+    // the one surface an optical sign-off actually judges — dying at another.
+    // `max_texture_dimension_2d` keeps egui's 8192 floor, since an adapter may
+    // report a smaller one than the surface needs.
+    let mut wgpu_setup = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+    wgpu_setup.device_descriptor = std::sync::Arc::new(|adapter: &eframe::wgpu::Adapter| {
+        let limits = brightfield_render::vello_renderer::device_limits(adapter);
+        eframe::wgpu::DeviceDescriptor {
+            label: Some("brightfield-window"),
+            required_limits: eframe::wgpu::Limits {
+                max_texture_dimension_2d: limits.max_texture_dimension_2d.max(8192),
+                ..limits
+            },
+            ..Default::default()
+        }
+    });
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport,
+        wgpu_options: egui_wgpu::WgpuConfiguration {
+            wgpu_setup: wgpu_setup.into(),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let mode = args.mode;

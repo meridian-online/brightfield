@@ -13,7 +13,7 @@ use brightfield_spec::vocab::{ImplStatus, InteractorKind, SelectionResolution};
 
 use crate::binding::{Binding, EmittedQuery, ParamValues};
 use crate::error::EmitError;
-use crate::ir::{Predicate, QueryPlan, SelectionPredicate};
+use crate::ir::{Predicate, QueryPlan, SampleRate, SelectionPredicate};
 use crate::lower::{compile_selection, default_lowerers, find_lowerer, LowerCtx};
 use crate::passes::apply_passes;
 use crate::render::render_query;
@@ -677,7 +677,8 @@ pub fn interpolate_sql(sql: &str, params: &ParamValues) -> String {
 /// Emit a query for a single mark, applying the given passes to the plan.
 ///
 /// Pass-aware variant of [`emit_query`]. Same `param_values` /
-/// `selection_predicates` contract.
+/// `selection_predicates` contract, and never sampled — see
+/// [`emit_query_sampled`].
 pub fn emit_query_with_passes(
     spec: &Spec,
     mark_index: usize,
@@ -685,11 +686,83 @@ pub fn emit_query_with_passes(
     selection_predicates: Option<&[SelectionPredicate]>,
     extra_passes: &[Box<dyn crate::passes::Pass>],
 ) -> Result<EmittedQuery, EmitError> {
+    emit_query_sampled(
+        spec,
+        mark_index,
+        param_values,
+        selection_predicates,
+        extra_passes,
+        None,
+    )
+}
+
+/// [`emit_query_with_passes`], plus the one place a pushed-down sample is
+/// introduced.
+///
+/// `sample: None` reproduces the unsampled emission **byte for byte** — the
+/// plan is not touched, so an unsampled chart's SQL and its query count are
+/// unchanged by this feature's existence, which
+/// `sample_leaves_unsampled_emission_byte_identical` asserts.
+///
+/// # Where the clause goes, and why both bounds are silent if broken
+///
+/// The sample is inserted immediately after the mark's plan is lowered, which
+/// puts it in the one position that satisfies two constraints pulling in
+/// opposite directions:
+///
+/// - **Above the mark's projection.** [`QueryPlan::Sample`] renders
+///   `hash(_s)`, and `_s` is whatever the subquery beneath it projects. Placed
+///   under the mark's channel projection it would hash the SOURCE row — which
+///   DuckDB compiles to `hash(struct_pack(<every column>))` and which
+///   therefore requires reading every column, destroying parquet projection
+///   pushdown on the exact query that needed it most.
+/// - **Below the highlight projection.** The highlight pass appends a
+///   `(<pred>) AS __bf_selected` column. If the sample sat above that, the
+///   selected-flag would be part of the hashed tuple and **the sample would
+///   reshuffle on every selection change** — a brush would silently redraw a
+///   different subset of points, which is precisely the determinism the whole
+///   scheme exists to provide. `sample_is_below_the_highlight_projection`
+///   pins this.
+///
+/// The [`Predicate`] threading in between is order-free: the hash is a function
+/// of the row, so sampling then filtering and filtering then sampling select
+/// the same rows.
+///
+/// Emitting here also keeps the pre-aggregation layer consistent for free.
+/// [`lower_mark_plan`] is what the cube derivation analyses, and it runs
+/// *before* this, so the cube never sees a `Sample` node. The two paths cannot
+/// both engage anyway: a sample is only applied to a NON-aggregating plan (an
+/// aggregating mark's picture is O(bins), not O(rows), so it has nothing to
+/// gain and its output rows are not the rows anyone means), while the cube only
+/// serves aggregating plans — and the cube's own chain check rejects unknown
+/// node kinds through a catch-all, so a `Sample` in a chain would decline the
+/// cube rather than mis-serve it. `sampling_and_the_cube_are_disjoint` asserts
+/// the guard rather than trusting the argument.
+pub fn emit_query_sampled(
+    spec: &Spec,
+    mark_index: usize,
+    param_values: Option<&ParamValues>,
+    selection_predicates: Option<&[SelectionPredicate]>,
+    extra_passes: &[Box<dyn crate::passes::Pass>],
+    sample: Option<SampleRate>,
+) -> Result<EmittedQuery, EmitError> {
     let (mut plan, mark_path) = lower_mark_plan(spec, mark_index)?;
     let marks_with_paths = collect_marks_with_paths(spec);
     let (mark, _) = marks_with_paths
         .get(mark_index)
         .expect("bounds checked by lower_mark_plan");
+
+    // The sample, at the one position that is above the mark's projection and
+    // below the highlight projection. An aggregating plan is guarded out: its
+    // rows are bins, and sampling bins is not sampling data.
+    if let Some(rate) = sample {
+        if !plan_aggregates(&plan) {
+            plan = QueryPlan::Sample {
+                input: Box::new(plan),
+                modulus: rate.modulus(),
+            };
+        }
+    }
 
     // Selection threading: if the mark has a filter_by reference and the
     // referenced name is a SelectionNode in spec.params, compile the live
@@ -807,14 +880,24 @@ pub fn emit_query_with_passes(
 /// selection predicate the chart's [`emit_query`] applies to that mark.
 ///
 /// This is the seam that makes a tabular ("grid") surface and a chart surface at
-/// one step **unable to disagree**: both read from the identical source view and
-/// both push the identical predicate into DuckDB. The chart query then projects
-/// its channels (and may aggregate); the grid query keeps `SELECT *`. Because the
-/// filter is compiled by the one code path here — the same `mark_filter_by_name`
-/// and `compile_selection(sel_node, plot_node_path(mark_path), contributors)`
-/// call that [`emit_query_with_passes`] uses — the two surfaces cannot resolve
-/// different row sets from the same selection state. Neither surface filters a
-/// materialised result client-side; the predicate lives in the SQL `WHERE`.
+/// one step **unable to disagree about the PREDICATE**: both read from the
+/// identical source view and both push the identical predicate into DuckDB. The
+/// chart query then projects its channels (and may aggregate); the grid query
+/// keeps `SELECT *`. Because the filter is compiled by the one code path here —
+/// the same `mark_filter_by_name` and
+/// `compile_selection(sel_node, plot_node_path(mark_path), contributors)` call
+/// that [`emit_query_with_passes`] uses — one selection state cannot resolve to
+/// two different WHERE clauses. Neither surface filters a materialised result
+/// client-side; the predicate lives in the SQL `WHERE`.
+///
+/// It is **not** a claim that the two draw the same rows, and since sampling
+/// landed it would be false as one. Above the renderer's drawable ceiling the
+/// chart's plan carries an extra [`QueryPlan::Sample`] clause — a
+/// `hash(row) % 2^k = 0` predicate on the row's own bytes — and says so in the
+/// plot's ink. This function emits no such clause and is never given the sample
+/// rate: **the grid is the unsampled view**, deliberately, because it is where
+/// someone goes when they doubt the picture. One divergence, in one direction,
+/// declared on the surface that has it.
 ///
 /// Only marks with `data: { from: <source> }` have a materialisation to grid;
 /// an inline-data or data-less mark returns [`EmitError::UnsupportedMark`].
@@ -1065,7 +1148,8 @@ fn plan_aggregates(plan: &QueryPlan) -> bool {
         | QueryPlan::Projection { input, .. }
         | QueryPlan::Bin { input, .. }
         | QueryPlan::Order { input, .. }
-        | QueryPlan::Limit { input, .. } => plan_aggregates(input),
+        | QueryPlan::Limit { input, .. }
+        | QueryPlan::Sample { input, .. } => plan_aggregates(input),
         QueryPlan::Source { .. } | QueryPlan::Singleton { .. } => false,
     }
 }

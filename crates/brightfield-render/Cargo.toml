@@ -33,6 +33,12 @@ serde_json = "1"
 [features]
 # GPU-backed VelloRenderer tests (opt-in: they create a real wgpu device).
 gpu-tests = []
+# Turns on vello's bump-allocator readback so a render can be asked whether it
+# drew everything. Vello downloads its `BumpAllocators` only when `debug_layers`
+# is on (`robust = cfg!(feature = "debug_layers")` in its async render path), so
+# without this the counters come back `None`. Off in every normal build and in
+# CI — it makes a frame pay a GPU→CPU readback. Gates `tests/vello_bump_ceiling.rs`.
+vello-bump-probe = ["vello/debug_layers"]
 
 [dev-dependencies]
 vello = { version = "0.9", features = ["wgpu"] }

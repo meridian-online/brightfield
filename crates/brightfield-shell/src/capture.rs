@@ -10,7 +10,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use brightfield_render::vello_renderer::VelloRenderer;
+use brightfield_render::vello_renderer::{device_limits, VelloRenderer};
 use meridian_design::chrome::{INK_DARK, INK_LIGHT};
 use vello::wgpu;
 
@@ -23,6 +23,11 @@ use brightfield_workbench::ViewKind;
 
 /// Create a headless (surface-less) wgpu device on the default adapter.
 ///
+/// Asks for [`device_limits`] — the adapter's real limits — so a capture and
+/// the live window share one ceiling. A capture on the conservative default
+/// limits would refuse scenes the window draws, or draw scenes the window
+/// refuses, and either way the PNG would stop being evidence about the window.
+///
 /// # Errors
 /// Returns a message if no adapter or device is available.
 pub fn headless_device() -> Result<(wgpu::Device, wgpu::Queue), String> {
@@ -33,7 +38,7 @@ pub fn headless_device() -> Result<(wgpu::Device, wgpu::Queue), String> {
     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("brightfield-shot"),
         required_features: wgpu::Features::empty(),
-        required_limits: wgpu::Limits::default(),
+        required_limits: device_limits(&adapter),
         memory_hints: wgpu::MemoryHints::default(),
         ..Default::default()
     }))

@@ -33,6 +33,36 @@ pub struct VelloRenderer {
     renderer: VelloInner,
 }
 
+/// The limits a brightfield device asks for: **the adapter's own**, not
+/// `wgpu::Limits::default()`.
+///
+/// `Limits::default()` is the conservative, WebGL-friendly floor — most
+/// visibly a `max_storage_buffer_binding_size` of 128 MiB. The encoded scene
+/// buffer for a row-per-mark chart is one of those bindings and grows with the
+/// drawn primitive count, so the floor puts a hard, self-imposed lid on how big
+/// a picture can be submitted at all: past it wgpu rejects the binding inside
+/// its own validation, below the level any Rust error handling can intercept.
+/// A discrete GPU typically reports a limit two orders of magnitude above the
+/// floor (an Apple M-series adapter reports 4 GiB), so asking for what the
+/// adapter actually has costs nothing and removes that lid.
+///
+/// It removes only that one. Vello's flattening and coarse-raster buffers are
+/// **fixed** sizes chosen inside `vello_encoding` — they do not scale with the
+/// scene and no wgpu limit moves them — so a scene can still exhaust them, and
+/// when it does vello reports the overflow in a GPU-side counter that this
+/// renderer does not read. `crates/brightfield-render/tests/vello_bump_ceiling.rs`
+/// measures where that happens; it is a far lower ceiling than this one.
+///
+/// Every device brightfield creates goes through here, including the one
+/// `eframe` creates for the live window (via `NativeOptions::wgpu_options`),
+/// because the live window is the only path an optical sign-off judges: fixing
+/// the in-repo devices alone would leave a bench reporting one ceiling and a
+/// window dying at another.
+#[must_use]
+pub fn device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
+    adapter.limits()
+}
+
 impl VelloRenderer {
     /// Create a new VelloRenderer with a dedicated wgpu device.
     ///
@@ -56,7 +86,7 @@ impl VelloRenderer {
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("brightfield-vello"),
             required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
+            required_limits: device_limits(&adapter),
             memory_hints: wgpu::MemoryHints::default(),
             ..Default::default()
         }))

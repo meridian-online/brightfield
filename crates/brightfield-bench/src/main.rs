@@ -140,21 +140,43 @@ const SCENARIOS: &[SpecDef] = &[
 ///
 /// This is not a wall-clock convenience. Since the compose began assembling
 /// EVERY Arrow chunk rather than the first, a row-per-mark scene really does
-/// carry one primitive per table row, and the encoded scene buffer grows with
-/// it. On the reference machine (Apple M1 Pro, Metal) a two-scatter dashboard
-/// at 10⁶ rows encodes into a 2^28-byte binding and the frame does not render
-/// at all — wgpu rejects it against a `max_*_buffer_binding_size` of 2^27, and
-/// the process aborts inside the driver rather than returning an error the
-/// harness could record. A skipped cell is the only honest alternative to a
-/// crashed run.
+/// carry one primitive per table row, and what the renderer can encode has a
+/// ceiling.
 ///
-/// The value is the measured boundary: 10⁶ primitives encode into exactly the
-/// 2^27-byte limit and render; 2 × 10⁶ take the next power of two and do not.
-/// That leaves the cap sitting ON the boundary rather than under it — a scene
-/// change that added a few bytes per primitive would double the buffer and
-/// reintroduce the abort, so lower this the moment a frame suite dies rather
-/// than raising it.
-const FRAME_DRAWN_ROW_CAP: u64 = 1_000_000;
+/// **The previous value, 10⁶, described the wrong ceiling.** It was derived
+/// from the storage-buffer binding size — the conservative 128 MiB the
+/// renderer used to ask for, at ~128 bytes per drawn primitive. Two things are
+/// now known about that. First, every device brightfield creates asks the
+/// adapter for its real limits, and a Metal adapter reports 4 GiB, so that
+/// ceiling moved by a factor of 32 and no longer binds. Second, and the reason
+/// the number here went DOWN rather than up: a much lower ceiling was always
+/// underneath it, and nothing was looking at it.
+///
+/// Vello's flattening and coarse-raster buffers are FIXED sizes chosen inside
+/// `vello_encoding` — 2^21 elements for `lines` / `tiles` / `seg_counts` /
+/// `segments`, 2^18 for `bin_data`. They do not scale with the scene and no
+/// wgpu limit moves them. When one overflows, vello sets a `failed` bit in a
+/// GPU-side counter, does not re-run coarse, and returns `Ok`. Brightfield
+/// never reads that counter, so **the frame renders and is quietly missing
+/// ink** — which is worse than the abort this constant was written to avoid,
+/// because a truncated picture is still a picture and gets screenshotted.
+///
+/// Measured on the reference machine (Apple M1 Pro, Metal) at the scale frames
+/// render at, one dot scatter in a 640×480 plot:
+///
+/// | dots | `seg_counts` / 2^21 | `failed` |
+/// |---|---|---|
+/// | 100 000 | 95.4 % | 0 — complete |
+/// | 104 000 | 99.2 % | 0 — complete |
+/// | 106 000 | 101.1 % | `PATH_COUNT` — partial |
+/// | 130 000 | — | `BINNING` — partial |
+/// | 132 000 | — | encode panics (`bin_data` minus the per-draw info stream) |
+///
+/// So the cap is set just under the last count proven complete, and the frame
+/// suites above it are skipped for the same reason as before, against a real
+/// number instead of an inherited one. `vello_bump_ceiling.rs` in
+/// `brightfield-render` reproduces the table; re-run it before moving this.
+const FRAME_DRAWN_ROW_CAP: u64 = 100_000;
 
 /// The device-pixel scale frames render at — 2.0 matches the Retina-class
 /// displays the live window actually runs on.

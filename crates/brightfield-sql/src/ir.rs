@@ -519,6 +519,84 @@ pub enum QueryPlan {
         limit: usize,
         offset: Option<usize>,
     },
+
+    /// A **pushed-down deterministic sample**: keep one row in `modulus`,
+    /// chosen by a hash of the row's own bytes.
+    ///
+    /// Renders `SELECT * FROM ({inner}) AS _s WHERE hash(_s) % {modulus} = 0`.
+    /// Three properties, each load-bearing rather than incidental:
+    ///
+    /// - **Pushed down, not truncated.** It is a predicate DuckDB evaluates, so
+    ///   the rows never cross the seam. Dropping Arrow batches after the fact
+    ///   would cut the drawn primitive count and leave the memory cost intact.
+    /// - **Row-determined.** `hash` over the row's values means the surviving
+    ///   set does not depend on scan order, on how many rows reached the
+    ///   operator, or on a seed. A drag cannot reshuffle which points are
+    ///   drawn; the sample changes only when the rows do. `TABLESAMPLE
+    ///   reservoir` and seeded `bernoulli` both fail this — measured against
+    ///   the linked DuckDB in `brightfield-engine`'s `sample_determinism`
+    ///   tests, not assumed.
+    /// - **`modulus` MUST be a power of two,** and that is not stylistic.
+    ///   Power-of-two moduli NEST: every row kept at `% 8 = 0` is also kept at
+    ///   `% 4 = 0`, so halving the modulus can only ADD points and a later
+    ///   change of sample rate densifies the picture rather than reshuffling
+    ///   it. Any other modulus forecloses that permanently. Construct through
+    ///   [`SampleRate`], which is the only thing that can produce one.
+    Sample {
+        input: Box<QueryPlan>,
+        /// The power-of-two modulus; one row in `modulus` survives.
+        modulus: u32,
+    },
+}
+
+/// A sample rate that can only be a power of two.
+///
+/// Stored as the exponent, so the invariant [`QueryPlan::Sample`] depends on is
+/// unrepresentable-if-wrong rather than asserted. `SampleRate::from_modulus`
+/// exists for the CLI, and rejects anything that is not a power of two instead
+/// of rounding — a silently rounded rate would make the nesting guarantee true
+/// while the operator's stated rate was false.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SampleRate {
+    exponent: u32,
+}
+
+impl SampleRate {
+    /// The largest modulus that stays inside `u32`, and therefore the largest
+    /// exponent [`Self::from_exponent`] accepts.
+    pub const MAX_EXPONENT: u32 = 31;
+
+    /// A rate of `1 / 2^exponent`. `exponent = 0` is "keep everything", which
+    /// is a legal rate and renders as a clause that keeps every row — callers
+    /// that mean "do not sample at all" pass `None`, not this.
+    #[must_use]
+    pub fn from_exponent(exponent: u32) -> Option<Self> {
+        (exponent <= Self::MAX_EXPONENT).then_some(Self { exponent })
+    }
+
+    /// A rate from the modulus itself. `None` unless `modulus` is a power of
+    /// two in `1..=2^31`.
+    #[must_use]
+    pub fn from_modulus(modulus: u32) -> Option<Self> {
+        modulus
+            .is_power_of_two()
+            .then(|| Self {
+                exponent: modulus.trailing_zeros(),
+            })
+            .filter(|r| r.exponent <= Self::MAX_EXPONENT)
+    }
+
+    /// The modulus this rate renders with — always a power of two.
+    #[must_use]
+    pub fn modulus(self) -> u32 {
+        1u32 << self.exponent
+    }
+
+    /// The exponent, for callers that need to compare or step rates.
+    #[must_use]
+    pub fn exponent(self) -> u32 {
+        self.exponent
+    }
 }
 
 impl QueryPlan {

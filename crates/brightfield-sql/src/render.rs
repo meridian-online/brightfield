@@ -252,6 +252,15 @@ pub fn render_query(plan: &QueryPlan, bindings: &mut Vec<Binding>) -> String {
                 None => format!("SELECT * FROM ({inner}) AS _l LIMIT {limit}"),
             }
         }
+        // The alias is what makes this a whole-ROW hash: `hash(_s)` over a
+        // subquery alias hashes the row as a struct of the columns that
+        // subquery projects. WHICH columns those are is therefore load-bearing,
+        // in both directions — see the two placement rules recorded on the
+        // sampling seam in `emit`.
+        QueryPlan::Sample { input, modulus } => {
+            let inner = render_query(input, bindings);
+            format!("SELECT * FROM ({inner}) AS _s WHERE hash(_s) % {modulus} = 0")
+        }
     }
 }
 

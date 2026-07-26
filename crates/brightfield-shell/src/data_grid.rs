@@ -7,10 +7,23 @@
 //! grid keeps the row shape. Both queries are compiled by the one emission
 //! path in `brightfield-sql` (the chart through `emit_query`, the grid through
 //! `emit_rows_query`, sharing one `compile_selection`), so the two surfaces
-//! **cannot disagree** about which rows the current interaction state selects
-//! — neither is authoritative over the other, and neither ever filters a
-//! materialised batch client-side. That is why they are peers: two
-//! projections of one step, one toggle between them (the centre tab strip).
+//! **cannot disagree about the PREDICATE** — the selection state resolves to
+//! one WHERE clause, neither surface is authoritative over the other, and
+//! neither ever filters a materialised batch client-side. That is why they are
+//! peers: two projections of one step, one toggle between them (the centre tab
+//! strip).
+//!
+//! ## The sampling clause is the one deliberate divergence
+//!
+//! There is exactly one way the two can now show different rows, and it is on
+//! purpose. Above the renderer's drawable ceiling the chart draws a pushed-down
+//! sample — a `hash(row) % 2^k = 0` clause the chart's query carries and this
+//! grid's does not — and the chart says so in its own ink. **The grid never
+//! samples.** It is the unsampled view: the place someone goes precisely
+//! because they doubt the picture, and a grid that quietly agreed with a
+//! sampled chart would answer the doubt with the same partial evidence that
+//! caused it. So the honest statement is the narrow one above: same predicate,
+//! same materialisation, and one clause the chart adds and labels.
 //!
 //! # The visible window is all that ever exists client-side
 //!
