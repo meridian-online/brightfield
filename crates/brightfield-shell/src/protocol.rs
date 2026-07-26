@@ -53,7 +53,10 @@ use brightfield_protocol::layout::{Flow, Layout, LayoutConfig, Rect};
 use brightfield_protocol::panel::{
     inspector_for, kind_label, outline_rows, InspectorFacts, OutlineRow,
 };
-use brightfield_protocol::{collapse_families, Dir, FoldOutcome, ProtocolNav, StepRow, StepsSheet};
+use brightfield_protocol::{
+    collapse_families, explode_ctes, manifest_sql, Dir, FoldOutcome, ProtocolNav, StepRow,
+    StepsSheet,
+};
 
 use brightfield_render::canvas_host::{Color, PixelSize};
 
@@ -77,9 +80,10 @@ use crate::starts;
 
 /// Everything the Protocol panel needs, assembled from the offline manifest
 /// path (`BRIGHTFIELD_PROTOCOL_OFFLINE=1`): the collapsed + uncollapsed graphs
-/// (the fold swaps between them), and the run-ordered step rows. Measured
-/// contract maps (`statuses`/`assets`/`steps`) are empty offline — the inspector
-/// then shows lineage detail only.
+/// (the fold swaps between them), the same collapsed canvas with each SQL step's
+/// CTEs drawn out, and the run-ordered step rows. Measured contract maps
+/// (`statuses`/`assets`/`steps`) are empty offline — the inspector then shows
+/// lineage detail only.
 pub struct ProtocolInputs {
     /// The protocol name (breadcrumb + window title).
     pub protocol: String,
@@ -87,6 +91,10 @@ pub struct ProtocolInputs {
     pub graph_collapsed: AssetGraph,
     /// The full graph — shown when a family is unfolded.
     pub graph_full: AssetGraph,
+    /// The collapsed canvas with every SQL step's top-level CTEs drawn as nodes
+    /// of their own — shown while the CTE fold is open. Built once, here,
+    /// because both halves it needs are only in scope at load time.
+    pub graph_exploded: AssetGraph,
     /// Per-step execution status (empty offline).
     pub statuses: BTreeMap<StepId, SeamStatus>,
     /// Per-asset measurements (empty offline).
@@ -117,7 +125,8 @@ impl ProtocolInputs {
         Self {
             protocol: String::new(),
             graph_collapsed: graph.clone(),
-            graph_full: graph,
+            graph_full: graph.clone(),
+            graph_exploded: graph,
             statuses: BTreeMap::new(),
             assets: BTreeMap::new(),
             steps: BTreeMap::new(),
@@ -287,11 +296,27 @@ fn inputs_from(
 ) -> ProtocolInputs {
     let graph_full = brightfield_protocol::graph::build_graph(manifest, sources);
     let graph_collapsed = collapse_families(&graph_full);
+    // EXPLODE, THEN COLLAPSE — the order is load-bearing, not a preference.
+    //
+    // A CTE node carries the step that declared it, and `collapse_families`
+    // retains every node whose step is a family member, so exploding first and
+    // collapsing after is closed: the CTEs of a family member survive the
+    // collapse with the rest of that member's assets.
+    //
+    // The other order is broken by construction. A family TILE carries no step
+    // at all, so a CTE declared inside a collapsed step has nothing to resolve
+    // its producing relation against, and the explode would skip it silently —
+    // an empty fold rather than a visible failure. Composing the two the wrong
+    // way round is the one bug this line cannot show on the crosswalk (whose
+    // only CTE-bearing step is outside every family), so it is asserted in
+    // `explode_then_collapse_keeps_the_ctes` rather than left to the surface.
+    let graph_exploded = collapse_families(&explode_ctes(&graph_full, &manifest_sql(sources)));
     let sheet_rows = synth_sheet_rows(&graph_full);
     ProtocolInputs {
         protocol: manifest.name.clone(),
         graph_collapsed,
         graph_full,
+        graph_exploded,
         statuses: BTreeMap::new(),
         assets: BTreeMap::new(),
         steps: BTreeMap::new(),
@@ -377,6 +402,7 @@ pub struct ProtocolModel {
     pub protocol: String,
     graph_collapsed: AssetGraph,
     graph_full: AssetGraph,
+    graph_exploded: AssetGraph,
     statuses: BTreeMap<StepId, SeamStatus>,
     assets: BTreeMap<AssetId, AssetMeta>,
     steps: BTreeMap<StepId, StepView>,
@@ -390,6 +416,17 @@ pub struct ProtocolModel {
     show_sheet: bool,
     /// Whether the canvas shows the full (unfolded) graph.
     display_expanded: bool,
+    /// Whether the canvas draws each SQL step's CTEs as nodes of their own.
+    ///
+    /// **One flag over the whole canvas, not one per step.** The alternative —
+    /// a set of exploded step ids — is a strictly larger interface, and on the
+    /// only surface this is being judged against it is unfalsifiable: the
+    /// crosswalk has exactly one SQL step that declares CTEs, so global and
+    /// per-step render the same pixels. If a protocol with two such steps ever
+    /// wants them opened independently, this becomes a `BTreeSet<StepId>` and
+    /// two methods change — [`ProtocolModel::displayed_graph`] and
+    /// [`ProtocolModel::toggle_fold`].
+    cte_expanded: bool,
     /// The drill scope: when a node is drilled into (`Enter`), the canvas shows
     /// this induced local slice instead of the whole graph; `Esc` pops it.
     scope_graph: Option<AssetGraph>,
@@ -430,6 +467,7 @@ impl ProtocolModel {
             protocol: inputs.protocol,
             graph_collapsed: inputs.graph_collapsed,
             graph_full: inputs.graph_full,
+            graph_exploded: inputs.graph_exploded,
             statuses: inputs.statuses,
             assets: inputs.assets,
             steps: inputs.steps,
@@ -440,6 +478,7 @@ impl ProtocolModel {
             flow,
             show_sheet: false,
             display_expanded: false,
+            cte_expanded: false,
             scope_graph: None,
             pending_z: false,
             yank_flash: None,
@@ -487,14 +526,26 @@ impl ProtocolModel {
     }
 
     /// The graph currently shown in the canvas: the drill scope when one is
-    /// active, else the full graph when a family is unfolded, else the collapsed
-    /// graph.
+    /// active, else the full graph when a family is unfolded, else the exploded
+    /// graph when the CTE fold is open, else the collapsed graph.
+    ///
+    /// **The family unfold outranks the CTE fold, and that is a real limit, not
+    /// a subtlety.** `graph_exploded` is built over the *collapsed* canvas, so
+    /// there is no graph in this struct that is both unfolded and exploded, and
+    /// opening a family while the CTEs are drawn puts them away until the
+    /// family closes again. Ordering the two arms the other way round would be
+    /// worse — the family fold would then read as a dead keystroke — and
+    /// building a fourth graph to serve the combination buys a state nothing on
+    /// the crosswalk reaches, because its one CTE-bearing step belongs to no
+    /// family.
     #[must_use]
     pub fn displayed_graph(&self) -> &AssetGraph {
         if let Some(scope) = &self.scope_graph {
             scope
         } else if self.display_expanded {
             &self.graph_full
+        } else if self.cte_expanded {
+            &self.graph_exploded
         } else {
             &self.graph_collapsed
         }
@@ -561,6 +612,12 @@ impl ProtocolModel {
     #[must_use]
     pub fn is_expanded(&self) -> bool {
         self.display_expanded
+    }
+
+    /// Whether the canvas draws each SQL step's CTEs as nodes of their own.
+    #[must_use]
+    pub fn is_cte_expanded(&self) -> bool {
+        self.cte_expanded
     }
 
     /// The current selection (dotted asset id).
@@ -830,16 +887,69 @@ impl ProtocolModel {
         true
     }
 
-    /// `za` — fold/unfold the family under the cursor, swapping the displayed
+    /// `za` — open or close the detail under the cursor, swapping the displayed
     /// graph and invalidating the layout so the canvas visibly re-lays-out.
+    ///
+    /// Two things fold, resolved by what the cursor is on:
+    /// - a **family tile** unfolds to its members (the original behaviour);
+    /// - a node **produced by a `sql:` step** opens that statement's CTEs onto
+    ///   the canvas, so the joins inside the step are lineage rather than one
+    ///   rectangle.
+    ///
+    /// Both are the same verb, deliberately. `protocol_key_table` is a
+    /// `BTreeMap` keyed by keystroke string, so a second Protocol-context verb
+    /// bound to `z a` would silently overwrite the first and which one survived
+    /// would depend on the order the registry happens to list them in. `z a` is
+    /// also the only `z`-prefixed binding in the registry — there is no
+    /// `zo`/`zc`/`zR`/`zM` family to extend, and the chord is resolved by hand
+    /// through [`ProtocolModel::feed_key`]'s pending flag. So the verb is
+    /// broadened, not duplicated.
+    ///
+    /// A cursor on neither — a source file, an operator's output, a family
+    /// member — leaves the canvas alone and reports no change, so the frame is
+    /// not repainted for a keystroke that did nothing.
     fn toggle_fold(&mut self) -> bool {
         if self.nav.toggle_fold() == FoldOutcome::NotAFamily {
-            return false;
+            return self.toggle_cte_fold();
         }
         self.display_expanded = self.family_ids.iter().any(|id| self.nav.is_expanded(id));
         self.selected = self.nav.cursor().cloned();
         self.recompute_layout();
         true
+    }
+
+    /// The CTE half of `za`: flip the whole-canvas explode when the cursor is on
+    /// a node a `sql:` step produced, and re-lay-out so the raster cache drops
+    /// the folded picture.
+    fn toggle_cte_fold(&mut self) -> bool {
+        if !self.cursor_is_sql_produced() {
+            return false;
+        }
+        self.cte_expanded = !self.cte_expanded;
+        self.recompute_layout();
+        true
+    }
+
+    /// Whether the node under the cursor was produced by a `sql:` step.
+    ///
+    /// Read off the COLLAPSED graph, which is the graph the nav walks: a cursor
+    /// the nav can hold is always a node of it, exploded or not.
+    fn cursor_is_sql_produced(&self) -> bool {
+        let Some(cursor) = self.nav.cursor() else {
+            return false;
+        };
+        let Some(step) = self
+            .graph_collapsed
+            .nodes
+            .get(cursor)
+            .and_then(|n| n.step.as_ref())
+        else {
+            return false;
+        };
+        self.graph_collapsed
+            .seams
+            .get(step)
+            .is_some_and(|seam| matches!(seam.kind, SeamKind::Sql { .. }))
     }
 
     /// `y` — request the selected asset's dotted address be yanked (the shell
@@ -2254,6 +2364,304 @@ mod tests {
         m.feed_events(&[key(egui::Key::A)]);
         assert!(!m.is_expanded(), "za again folded the family");
         assert_eq!(m.layout().positions.len(), before_nodes, "back to the tile");
+    }
+
+    // -----------------------------------------------------------------------
+    // The CTE fold: `za` on a node a `sql:` step produced.
+    // -----------------------------------------------------------------------
+
+    /// The crosswalk's one relation with CTEs behind it: `sec_entities.sql`
+    /// reads two files, joins them, and draws as a single rectangle until this
+    /// fold is opened.
+    const SQL_PRODUCED: &str = "asset.edgar_gleif.sec_entities";
+
+    /// The two CTEs that statement declares, in the id order the canvas gains
+    /// them. Pinned here as well as in the lineage suite so a change to the
+    /// derivation cannot quietly change what this gesture puts on screen.
+    const STEP_CTES: [&str; 2] = [
+        "cte.edgar_gleif.sec_entities#ck",
+        "cte.edgar_gleif.sec_entities#tk",
+    ];
+
+    /// A node no `sql:` step produced: `fetch_edgar` is an `op:` step, and it
+    /// belongs to no family, so it survives the collapse as itself.
+    const OP_PRODUCED: &str = "file.edgar_gleif.build/edgar.parquet";
+
+    fn node_ids(m: &ProtocolModel) -> BTreeSet<AssetId> {
+        m.displayed_graph().nodes.keys().cloned().collect()
+    }
+
+    /// Send the `z` then `a` of the chord, returning whether the second press
+    /// changed anything.
+    fn za(m: &mut ProtocolModel) -> bool {
+        m.feed_events(&[key(egui::Key::Z)]);
+        m.feed_events(&[key(egui::Key::A)])
+    }
+
+    /// `za` with the cursor on a SQL-produced relation draws that statement's
+    /// CTEs — **exactly** those two ids, nothing else added and nothing
+    /// removed — and re-lays-out so the raster cache cannot serve the folded
+    /// picture over the unfolded one.
+    #[test]
+    fn za_on_a_sql_produced_node_draws_that_steps_ctes() {
+        let mut m = model();
+        m.select_id(SQL_PRODUCED.to_string());
+        assert!(!m.is_cte_expanded(), "the fold opens closed");
+
+        let before = node_ids(&m);
+        let before_edges = m.displayed_graph().edges.len();
+        let before_gen = m.layout_gen();
+
+        assert!(za(&mut m), "za opened the CTE fold");
+        assert!(m.is_cte_expanded());
+
+        let after = node_ids(&m);
+        let added: Vec<&str> = after.difference(&before).map(String::as_str).collect();
+        assert_eq!(added, STEP_CTES, "exactly the CTEs of that one statement");
+        let removed: Vec<&str> = before.difference(&after).map(String::as_str).collect();
+        assert!(
+            removed.is_empty(),
+            "the fold takes nothing away: {removed:?}"
+        );
+
+        // The re-routing is visible as lineage, not just as two loose boxes:
+        // each CTE feeds the relation, and the files now reach it through them.
+        let edges = &m.displayed_graph().edges;
+        let has = |from: &str, to: &str| edges.iter().any(|e| e.from == from && e.to == to);
+        for cte in STEP_CTES {
+            assert!(has(cte, SQL_PRODUCED), "{cte} feeds the relation");
+        }
+        assert!(has("file.edgar_gleif.build/cik_lookup.txt", STEP_CTES[0]));
+        assert!(has("file.edgar_gleif.build/edgar.parquet", STEP_CTES[1]));
+        assert!(
+            !has("file.edgar_gleif.build/cik_lookup.txt", SQL_PRODUCED),
+            "the direct read is re-routed through the CTE, not drawn beside it"
+        );
+        assert_eq!(
+            edges.len() as i64 - before_edges as i64,
+            2,
+            "four edges in, two dropped — the net delta the canvas gains"
+        );
+
+        // The raster cache key moved, so the canvas repaints.
+        assert_ne!(m.layout_gen(), before_gen, "a re-layout was forced");
+        assert!(
+            m.layout().positions.contains_key(STEP_CTES[0])
+                && m.layout().positions.contains_key(STEP_CTES[1]),
+            "both CTEs are laid out, not merely in the graph"
+        );
+    }
+
+    /// A second `za` on the same node puts them away again — the fold is a
+    /// toggle, and closing it restores the boot canvas exactly.
+    #[test]
+    fn za_twice_on_a_sql_produced_node_puts_the_ctes_away() {
+        let mut m = model();
+        m.select_id(SQL_PRODUCED.to_string());
+        let closed = node_ids(&m);
+        let closed_edges = m.displayed_graph().edges.clone();
+
+        assert!(za(&mut m), "opened");
+        assert!(m.is_cte_expanded());
+        assert!(za(&mut m), "closed");
+
+        assert!(!m.is_cte_expanded(), "the second press closed the fold");
+        assert_eq!(node_ids(&m), closed, "back to the graph it opened on");
+        assert_eq!(
+            &m.displayed_graph().edges,
+            &closed_edges,
+            "the re-routed edges came back too"
+        );
+        assert!(
+            !m.displayed_graph()
+                .nodes
+                .keys()
+                .any(|id| id.starts_with("cte.")),
+            "no CTE survives a close"
+        );
+    }
+
+    /// `za` on a node no `sql:` step produced does nothing at all: no state
+    /// change, no re-layout, and — because the dispatch reports no change — no
+    /// repaint for a keystroke with nothing behind it.
+    #[test]
+    fn za_on_a_node_no_sql_step_produced_changes_nothing() {
+        let mut m = model();
+        m.select_id(OP_PRODUCED.to_string());
+        let before = node_ids(&m);
+        let before_gen = m.layout_gen();
+
+        assert!(!za(&mut m), "za reported no change");
+        assert!(!m.is_cte_expanded(), "the fold stayed closed");
+        assert!(!m.is_expanded(), "and no family opened either");
+        assert_eq!(node_ids(&m), before, "the canvas is untouched");
+        assert_eq!(m.layout_gen(), before_gen, "nothing was re-laid-out");
+    }
+
+    /// **The boot canvas is unchanged by this increment.** Nothing exploded
+    /// until a key is pressed, so the two committed protocol baselines
+    /// photograph the same graph they always did.
+    ///
+    /// This is the assertion behind the fold-closed default. If it ever fails,
+    /// the CTEs have leaked into the built graph and both baselines are wrong —
+    /// which is a defect in this code, not a reason to regenerate a golden.
+    #[test]
+    fn the_boot_canvas_draws_no_cte_nodes() {
+        let m = model();
+        assert!(!m.is_cte_expanded());
+        assert!(!m.is_expanded());
+        let boot: Vec<&AssetId> = m
+            .displayed_graph()
+            .nodes
+            .keys()
+            .filter(|id| id.starts_with("cte."))
+            .collect();
+        assert!(boot.is_empty(), "the boot canvas is CTE-free: {boot:?}");
+        assert_eq!(
+            m.displayed_graph(),
+            &m.graph_collapsed,
+            "and it is the collapsed graph itself, not a re-derived twin"
+        );
+        assert!(
+            !m.layout().positions.keys().any(|id| id.starts_with("cte.")),
+            "nothing exploded is laid out either"
+        );
+    }
+
+    /// EXPLODE THEN COLLAPSE, and why the other order is not a preference.
+    ///
+    /// The protocol below has a parameterised family of four `sql:` steps
+    /// (`stage`/`shape` over two instances) and one step outside it whose CTE
+    /// reads a relation the family produces.
+    ///
+    /// Right order — the composition is closed. The collapse still detects the
+    /// family (the explode adds nodes and edges, never seams, so detection sees
+    /// the same input), the family members' CTEs fold away into the tile with
+    /// the rest of their steps' assets, and the outside step's CTE survives
+    /// **wired to the tile**.
+    ///
+    /// Wrong order — the outside CTE is orphaned. Collapsing first deletes the
+    /// relation the CTE body reads, so the explode's read-resolution finds
+    /// nothing to wire from, the direct tile→product edge is never re-routed,
+    /// and the canvas draws a CTE box whose input came from nowhere. Asserted
+    /// here, because the crosswalk cannot show it: its one CTE-bearing step
+    /// belongs to no family, so both orders are pixel-identical there and the
+    /// mistake would ship invisible.
+    #[test]
+    fn explode_then_collapse_keeps_the_ctes() {
+        const MANIFEST: &str = "\
+name: composition
+engine: duckdb
+steps:
+  - name: stage_a
+    sql: models/stage_a.sql
+  - name: shape_a
+    sql: models/shape_a.sql
+  - name: stage_b
+    sql: models/stage_b.sql
+  - name: shape_b
+    sql: models/shape_b.sql
+  - name: outside
+    sql: models/outside.sql
+";
+        let models = [
+            (
+                "models/stage_a.sql",
+                "CREATE OR REPLACE TABLE staged_a AS \
+                 WITH pick_a AS (SELECT * FROM src_a) SELECT * FROM pick_a;",
+            ),
+            (
+                "models/shape_a.sql",
+                "CREATE OR REPLACE TABLE shaped_a AS \
+                 WITH trim_a AS (SELECT * FROM staged_a) SELECT * FROM trim_a;",
+            ),
+            (
+                "models/stage_b.sql",
+                "CREATE OR REPLACE TABLE staged_b AS \
+                 WITH pick_b AS (SELECT * FROM src_b) SELECT * FROM pick_b;",
+            ),
+            (
+                "models/shape_b.sql",
+                "CREATE OR REPLACE TABLE shaped_b AS \
+                 WITH trim_b AS (SELECT * FROM staged_b) SELECT * FROM trim_b;",
+            ),
+            (
+                "models/outside.sql",
+                "CREATE OR REPLACE TABLE outside_out AS \
+                 WITH keep AS (SELECT * FROM shaped_a) SELECT * FROM keep;",
+            ),
+        ];
+        let inputs = load_protocol_str(MANIFEST, &models).expect("the composition protocol loads");
+        let tile = "family.composition.stage+shape";
+        let outside_cte = "cte.composition.outside_out#keep";
+        let member_cte = "cte.composition.staged_a#pick_a";
+
+        // The collapse still detects the family over the exploded graph.
+        assert_eq!(
+            inputs.graph_exploded.nodes[tile].family_count,
+            Some(2),
+            "the explode did not disturb family detection"
+        );
+
+        // A family member's CTE folds into the tile with everything else that
+        // step owns — the detail inside a closed tile stays inside it.
+        assert!(
+            !inputs.graph_exploded.nodes.contains_key(member_cte),
+            "a collapsed member's CTE is not loose on the canvas"
+        );
+
+        // The exploded canvas is the collapsed canvas plus exactly the CTEs
+        // that survived the fold.
+        let collapsed: BTreeSet<&AssetId> = inputs.graph_collapsed.nodes.keys().collect();
+        let exploded: BTreeSet<&AssetId> = inputs.graph_exploded.nodes.keys().collect();
+        let gained: Vec<&str> = exploded
+            .difference(&collapsed)
+            .map(|id| id.as_str())
+            .collect();
+        assert_eq!(gained, [outside_cte], "only the outside CTE");
+        assert!(
+            collapsed.difference(&exploded).next().is_none(),
+            "the explode never removes a node the collapsed canvas had"
+        );
+
+        // ...and it is real lineage: fed by the tile, feeding the product, with
+        // the direct edge it re-routed gone.
+        let has = |g: &AssetGraph, from: &str, to: &str| {
+            g.edges.iter().any(|e| e.from == from && e.to == to)
+        };
+        let product = "asset.composition.outside_out";
+        assert!(has(&inputs.graph_exploded, tile, outside_cte));
+        assert!(has(&inputs.graph_exploded, outside_cte, product));
+        assert!(
+            !has(&inputs.graph_exploded, tile, product),
+            "the read is re-routed through the CTE"
+        );
+
+        // The other order, on the same inputs: an orphan.
+        let sql_by_step: BTreeMap<StepId, String> = models
+            .iter()
+            .map(|(model, sql)| {
+                let step = model
+                    .trim_start_matches("models/")
+                    .trim_end_matches(".sql")
+                    .to_string();
+                (step, (*sql).to_string())
+            })
+            .collect();
+        let wrong = explode_ctes(&collapse_families(&inputs.graph_full), &sql_by_step);
+        assert!(
+            wrong.nodes.contains_key(outside_cte),
+            "the wrong order still draws the box"
+        );
+        assert!(
+            !has(&wrong, tile, outside_cte),
+            "...but nothing feeds it: collapsing first deleted the relation \
+             its body reads, so the explode had nothing to wire from"
+        );
+        assert!(
+            has(&wrong, tile, product),
+            "...and the direct edge it should have re-routed is still there"
+        );
     }
 
     /// The flow toggle transposes the layout (vertical taller than wide →
