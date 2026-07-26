@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use brightfield_protocol::graph::{build_graph, load_model_sources, AssetGraph, AssetKind};
 use brightfield_protocol::layout::{layout, LayoutConfig};
-use brightfield_protocol::{collapse_families, parse_manifest_str};
+use brightfield_protocol::{collapse_families, explode_ctes, manifest_sql, parse_manifest_str};
 
 fn fixture_dir(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -25,6 +25,21 @@ fn fixture_graph(manifest_rel: &str) -> AssetGraph {
         .to_path_buf();
     let sources = load_model_sources(&manifest, &dir);
     build_graph(&manifest, &sources)
+}
+
+/// The same fixture with every SQL step's CTEs drawn out, then collapsed — the
+/// composition order the shell builds its exploded canvas in.
+fn fixture_graph_exploded(manifest_rel: &str) -> AssetGraph {
+    let path = fixture_dir(manifest_rel);
+    let text = std::fs::read_to_string(&path).expect("fixture manifest present");
+    let manifest = parse_manifest_str(&text).expect("fixture manifest parses");
+    let dir = path
+        .parent()
+        .expect("manifest has a parent dir")
+        .to_path_buf();
+    let sources = load_model_sources(&manifest, &dir);
+    let full = build_graph(&manifest, &sources);
+    collapse_families(&explode_ctes(&full, &manifest_sql(&sources)))
 }
 
 /// Find the node for a relation label produced by `step`.
@@ -176,6 +191,46 @@ fn fixture_kinds_gate_and_sink() {
         .iter()
         .any(|e| e.from == "file.edgar_gleif.build/gleif.parquet"
             && e.to == "file.edgar_gleif.build/resolved.parquet"));
+}
+
+/// **How big the crosswalk canvas actually is** — measured, not estimated.
+///
+/// The figure in circulation was an estimate of the wrong thing. It read as
+/// forty-odd assets *with families collapsed*; forty-odd is roughly the
+/// UNCOLLAPSED count, and the canvas a reader actually opens on is a third
+/// smaller than that. Nothing in the code held either number, so the estimate
+/// had nothing to disagree with and survived unchallenged.
+///
+/// Three counts, one per view a reader can be looking at:
+/// - **uncollapsed** — every quarter of the fund family drawn separately;
+/// - **as it opens** — families folded to one tile each; the default canvas,
+///   and the size any readability judgement is actually about;
+/// - **CTE fold open** — the same canvas with the one statement that declares
+///   CTEs drawn out. Two nodes, two net edges.
+///
+/// Read them as a budget, not a target: if a change moves one, update the
+/// number here and say in the message what the canvas gained or lost.
+#[test]
+fn fixture_canvas_size_is_pinned() {
+    let full = fixture_graph("edgar_gleif/arcform.yaml");
+    let collapsed = collapse_families(&full);
+    let exploded = fixture_graph_exploded("edgar_gleif/arcform.yaml");
+
+    assert_eq!(
+        (full.nodes.len(), full.edges.len()),
+        (34, 40),
+        "uncollapsed: every quarter of the fund family drawn separately"
+    );
+    assert_eq!(
+        (collapsed.nodes.len(), collapsed.edges.len()),
+        (23, 26),
+        "the canvas as it opens — families folded to one tile each"
+    );
+    assert_eq!(
+        (exploded.nodes.len(), exploded.edges.len()),
+        (25, 28),
+        "the same canvas with the one CTE-bearing step opened"
+    );
 }
 
 #[test]
