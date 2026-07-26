@@ -19,7 +19,7 @@
 //! ```text
 //! brightfield-shot --spec S.yaml --out out.png
 //!                  [--size WxH] [--scale N] [--theme light|dark]
-//!                  [--script keys.ndjson]
+//!                  [--script keys.ndjson] [--force-sample N]
 //!                  [--flow vertical|horizontal] [--focus <dotted-id>]
 //! brightfield-shot --gallery <component-id> --out out.png
 //!                  [--size WxH] [--scale N] [--theme light|dark]
@@ -28,6 +28,15 @@
 //! `--flow` / `--focus` apply to the Protocol panel: the reading axis (vertical
 //! by default) and the boot selection (the dotted asset id a click would target,
 //! so a scripted `za`/`Enter` has a cursor to act on).
+//!
+//! `--force-sample N` draws one row in N — a power of two — through the same
+//! pushed-down clause the renderer reaches for above its drawable ceiling, and
+//! draws the sampling notice in the plot's own ink. It exists so ONE spec can
+//! produce a complete PNG and a sampled PNG over the SAME rows: judging whether
+//! a sampled render reads as sampled against a different, denser dataset would
+//! confound the treatment with the density. Combine with `--vello-only` to see
+//! what a chart-only export keeps, which is the half of the notice that a
+//! banner would fail.
 //!
 //! `--gallery` renders one design-gallery component solo through the same
 //! deterministic capture path — an agent that just changed a primitive can
@@ -45,6 +54,7 @@ use brightfield_shell::capture::{
 };
 use brightfield_shell::design::Mode;
 use brightfield_shell::window::Boot;
+use brightfield_sql::ir::SampleRate;
 use brightfield_workbench::ViewKind;
 
 struct Args {
@@ -58,6 +68,9 @@ struct Args {
     vello_only: bool,
     flow: Flow,
     focus: Option<String>,
+    /// `--force-sample N`: draw one row in N, with the sampling notice, at a
+    /// row count the spec did not have to change to produce.
+    force_sample: Option<SampleRate>,
 }
 
 fn main() -> ExitCode {
@@ -68,7 +81,8 @@ fn main() -> ExitCode {
             eprintln!(
                 "usage: brightfield-shot --spec S.yaml --out O.png \
                  [--scale N] [--theme light|dark] [--script keys.ndjson] \
-                 [--size WxH] [--flow vertical|horizontal] [--focus <dotted-id>]\n\
+                 [--size WxH] [--force-sample N] [--flow vertical|horizontal] \
+                 [--focus <dotted-id>]\n\
                  \x20      brightfield-shot --gallery <component-id> --out O.png \
                  [--scale N] [--theme light|dark] [--size WxH]"
             );
@@ -105,7 +119,7 @@ fn main() -> ExitCode {
         None => Vec::new(),
     };
 
-    let boot = match Boot::open(spec, args.flow, args.focus.clone()) {
+    let boot = match Boot::open_sampled(spec, args.flow, args.focus.clone(), args.force_sample) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("error: {e}");
@@ -173,6 +187,7 @@ fn parse_args() -> Result<Args, String> {
     let mut vello_only = false;
     let mut flow = Flow::Vertical;
     let mut focus = None;
+    let mut force_sample = None;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         let mut next = || it.next().ok_or_else(|| format!("{a} needs a value"));
@@ -193,6 +208,20 @@ fn parse_args() -> Result<Args, String> {
                 }
             }
             "--vello-only" => vello_only = true,
+            "--force-sample" => {
+                let raw: u32 = next()?
+                    .parse()
+                    .map_err(|_| "--force-sample needs a positive integer".to_string())?;
+                force_sample = Some(SampleRate::from_modulus(raw).ok_or_else(|| {
+                    format!(
+                        "--force-sample {raw} is not a power of two. The modulus must be one, \
+                         and it is not a formality: power-of-two moduli NEST, so halving the \
+                         rate can only ADD points and a later rate change densifies the picture \
+                         instead of redrawing it. Rounding {raw} silently would make that true \
+                         while the stated rate was a lie."
+                    )
+                })?);
+            }
             "--script" => script = Some(PathBuf::from(next()?)),
             "--flow" => {
                 flow = match next()?.as_str() {
@@ -233,5 +262,6 @@ fn parse_args() -> Result<Args, String> {
         vello_only,
         flow,
         focus,
+        force_sample,
     })
 }

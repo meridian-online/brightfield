@@ -1,0 +1,40 @@
+meta:
+  title: Sampled render — the notice in the plot's own ink
+  description: |
+    A dense scatter, generated in DuckDB so there is no data file. Render it
+    twice — once complete, once forced through the pushed-down sampling
+    clause — and compare.
+
+      cargo run -p brightfield-shell --bin brightfield-shot -- \
+        --spec examples/sampled.yaml --out complete.png --vello-only
+      cargo run -p brightfield-shell --bin brightfield-shot -- \
+        --spec examples/sampled.yaml --out sampled.png --vello-only --force-sample 16
+
+    Same spec, same rows, same axes. The only differences are the points that
+    were not drawn and the hatched band that says so. `--vello-only` writes the
+    Vello scene with no egui chrome around it — the notice has to survive that
+    to be worth anything, because a chart exported or cropped out of the window
+    keeps exactly this and nothing else.
+
+    Live:
+
+      cargo run -p brightfield-shell -- examples/sampled.yaml --force-sample 16
+
+    The row count is deliberate. On an Apple M-series adapter a plot this size
+    draws about 105,000 dots before vello's fixed flattening buffers overflow,
+    after which the picture is silently missing ink and no error is raised.
+    75,000 sits under that with headroom, so "complete" here means complete.
+data:
+  points:
+    query: |
+      SELECT
+        (i * 2654435761 % 100003) / 1000.0            AS spread,
+        ((i * 40503 + 12345) % 100019) / 1000.0       AS depth
+      FROM range(75000) AS t(i)
+plot:
+  - mark: dot
+    data: { from: points }
+    x: spread
+    y: depth
+width: 640
+height: 480

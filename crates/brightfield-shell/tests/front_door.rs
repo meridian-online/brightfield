@@ -626,7 +626,7 @@ fn a_launch_with_something_to_restore_shows_no_front_door() {
 
     // Through the same function `main` calls, with the same two arguments it
     // has: no spec on the command line, and whatever the layout remembered.
-    let boot = opening_boot(None, layout.opened.as_deref(), Flow::Vertical)
+    let boot = opening_boot(None, layout.opened.as_deref(), Flow::Vertical, None)
         .expect("an unnamed launch cannot fail");
     let mut win = Window {
         app: MeridianApp::headless_with_layout(boot, layout, Mode::Light),
@@ -718,7 +718,7 @@ fn going_home_returns_to_the_door_but_keeps_the_session() {
     layout.opened = Some(starts::CROSSWALK.to_string());
     layout.workspace.set_active(ViewKind::Protocol);
 
-    let boot = opening_boot(None, layout.opened.as_deref(), Flow::Vertical)
+    let boot = opening_boot(None, layout.opened.as_deref(), Flow::Vertical, None)
         .expect("an unnamed launch cannot fail");
     let mut win = Window {
         app: MeridianApp::headless_with_layout(boot, layout, Mode::Light),

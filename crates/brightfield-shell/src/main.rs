@@ -27,7 +27,8 @@
 //! on stdout and exit 0 *before* any window, layout read or spec boot happens.
 //!
 //! Usage: `brightfield-shell [SPEC.yaml] [--theme light|dark] [--shot-out PATH]
-//!         [--shot-after N] [--flow vertical|horizontal] [--help] [--version]`
+//!         [--shot-after N] [--force-sample N] [--flow vertical|horizontal]
+//!         [--help] [--version]`
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -50,6 +51,11 @@ struct Args {
     /// `Some(n)`: capture the window automatically after `n` frames, write it
     /// to `shot_out`, and close. The scriptable form of F12.
     shot_after: Option<u32>,
+    /// `--force-sample N`: open the document drawing one row in N through the
+    /// pushed-down sampling clause, with the notice in the plot's own ink.
+    /// The window's half of the flag `brightfield-shot` carries, so the live
+    /// surface and the captures are judged at the same rate.
+    force_sample: Option<brightfield_sql::ir::SampleRate>,
 }
 
 /// What the command line asked `main` to do, resolved before any window work.
@@ -85,6 +91,9 @@ Options:
                                   (default: vertical).
   --shot-out <PATH>               Where F12 and --shot-after write the PNG
                                   (default: render-proof/live-screenshot.png).
+  --force-sample <N>              Draw one row in N (a power of two) through the
+                                  pushed-down sampling clause, with the notice
+                                  in the plot's own ink
   --shot-after <N>                Render N frames, capture the window to
                                   --shot-out, then exit. Exit 0 means the PNG
                                   landed; for unattended smoke tests.
@@ -114,6 +123,7 @@ fn parse_args_from(mut it: impl Iterator<Item = String>) -> Result<Invocation, S
     let mut shot_out = PathBuf::from("render-proof/live-screenshot.png");
     let mut flow = Flow::Vertical;
     let mut shot_after: Option<u32> = None;
+    let mut force_sample: Option<brightfield_sql::ir::SampleRate> = None;
     while let Some(a) = it.next() {
         match a.as_str() {
             "--version" | "-V" => return Ok(Invocation::Version),
@@ -135,6 +145,21 @@ fn parse_args_from(mut it: impl Iterator<Item = String>) -> Result<Invocation, S
                         .map_err(|_| format!("--shot-after needs a frame count, not {v}"))?,
                 );
             }
+            "--force-sample" => {
+                let v = it.next().ok_or("--force-sample needs a power of two")?;
+                let raw: u32 = v
+                    .parse()
+                    .map_err(|_| format!("--force-sample needs a positive integer, not {v}"))?;
+                force_sample = Some(
+                    brightfield_sql::ir::SampleRate::from_modulus(raw).ok_or_else(|| {
+                        format!(
+                            "--force-sample {raw} is not a power of two. Power-of-two moduli \
+                             nest, so halving the rate can only ADD points; rounding {raw} \
+                             silently would keep that true while the stated rate was a lie."
+                        )
+                    })?,
+                );
+            }
             "--flow" => {
                 if let Some(v) = it.next() {
                     flow = if v == "horizontal" {
@@ -154,6 +179,7 @@ fn parse_args_from(mut it: impl Iterator<Item = String>) -> Result<Invocation, S
         shot_out,
         flow,
         shot_after,
+        force_sample,
     }))
 }
 
@@ -364,7 +390,12 @@ fn main() -> Result<(), String> {
     let (mut layout, outcome) = startup::boot_layout(path.as_deref());
     eprintln!("layout: {}", outcome.reason());
 
-    let boot = startup::opening_boot(args.spec.as_deref(), layout.opened.as_deref(), args.flow)?;
+    let boot = startup::opening_boot(
+        args.spec.as_deref(),
+        layout.opened.as_deref(),
+        args.flow,
+        args.force_sample,
+    )?;
 
     // Which view will actually be drawn, resolved once and asked three times.
     // A boot that named one wins — `MeridianApp::assemble` sets it active — and

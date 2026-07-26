@@ -9,6 +9,7 @@
 
 pub mod coordinator;
 pub mod error;
+pub mod facts;
 pub mod preagg;
 pub mod profile;
 
@@ -186,13 +187,14 @@ use brightfield_spec::vocab::MarkKind;
 
 use brightfield_sql::binding::{Binding, EmittedQuery, ParamValues};
 use brightfield_sql::emit::{
-    collect_marks, emit_query, emit_query_with_passes, emit_rows_query, emit_sources, SourceKindTag,
+    collect_marks, emit_query, emit_query_sampled, emit_rows_query, emit_sources, SourceKindTag,
 };
-use brightfield_sql::ir::{Predicate, SelectionPredicate};
+use brightfield_sql::ir::{Predicate, SampleRate, SelectionPredicate};
 use brightfield_sql::navigation_filter_pass::NavigationFilterPass;
 use brightfield_sql::passes::Pass;
 
 use crate::error::EngineError;
+use crate::facts::{positional_columns, read_mark_facts, MarkFacts};
 
 /// One dispatched mark's re-query outcome: the mark's depth-first index paired
 /// with the batches it produced, or the error that stopped it.
@@ -536,6 +538,7 @@ impl Engine {
             preagg: preagg::PreAgg::default(),
             data_fingerprint: None,
             remote_sources,
+            sample: None,
         };
 
         Ok(LoadResult {
@@ -645,6 +648,15 @@ pub struct Session {
     /// may be the network dropping mid-session — see
     /// [`Session::classify_query_failure`].
     remote_sources: HashMap<String, String>,
+    /// The pushed-down sample rate every row-level mark's query carries, when
+    /// the session is sampling. `None` — the default — means every query is
+    /// emitted exactly as it was before sampling existed, byte for byte.
+    ///
+    /// Held on the session rather than passed per call so there is one answer
+    /// to "is this session sampling"; a per-call parameter is how a re-query
+    /// path gets forgotten and a brush quietly restores the full picture under
+    /// a notice that still says otherwise.
+    sample: Option<SampleRate>,
 }
 
 /// A cached SQL string with its binding metadata.
@@ -951,7 +963,7 @@ impl Session {
 
         let mut results = Vec::new();
         for idx in mark_indices {
-            let emitted = match emit_query(&self.spec, idx, params_ref, selections_ref) {
+            let emitted = match self.emit_for_mark(idx, params_ref, selections_ref) {
                 Ok(eq) => eq,
                 Err(e) => {
                     results.push((idx, Err(EngineError::EmitFailed { cause: e })));
@@ -1026,7 +1038,7 @@ impl Session {
 
         let mut results = Vec::new();
         for idx in mark_indices {
-            let emitted = match emit_query(&self.spec, idx, params_ref, selections_ref) {
+            let emitted = match self.emit_for_mark(idx, params_ref, selections_ref) {
                 Ok(eq) => eq,
                 Err(e) => {
                     results.push((idx, Err(EngineError::EmitFailed { cause: e })));
@@ -1059,7 +1071,8 @@ impl Session {
         } else {
             Some(selections.as_slice())
         };
-        let emitted = emit_query(&self.spec, index, params, selections_ref)
+        let emitted = self
+            .emit_for_mark(index, params, selections_ref)
             .map_err(|e| EngineError::EmitFailed { cause: e })?;
 
         let mark_kind = self.mark_kind_at(index);
@@ -1232,6 +1245,109 @@ impl Session {
         self.conn.interrupt_handle()
     }
 
+    /// Turn on (or off) the pushed-down sample every row-level mark's query
+    /// carries.
+    ///
+    /// This is the whole of the switch. Aggregating marks are unaffected —
+    /// their pictures are O(bins), and the emitter guards them out — and so is
+    /// the grid, which emits through `emit_rows_query` and is never handed a
+    /// rate: the grid is deliberately the one unsampled view.
+    pub fn set_sample(&mut self, rate: Option<SampleRate>) {
+        if self.sample != rate {
+            // The cached SQL is keyed by plan hash and literal SQL text, and
+            // both change with the clause. Clearing is cheaper than reasoning
+            // about which entries survive, and a stale hit here would serve a
+            // sampled batch under an unsampled notice or the reverse.
+            self.cache.clear();
+            self.sql_cache = SqlCache::default();
+        }
+        self.sample = rate;
+    }
+
+    /// The rate this session is sampling at, if any.
+    #[must_use]
+    pub fn sample(&self) -> Option<SampleRate> {
+        self.sample
+    }
+
+    /// The one emit site every execution path goes through, so a re-query
+    /// cannot silently drop the sample the first paint applied.
+    fn emit_for_mark(
+        &self,
+        index: usize,
+        params: Option<&ParamValues>,
+        selections: Option<&[SelectionPredicate]>,
+    ) -> Result<EmittedQuery, brightfield_sql::error::EmitError> {
+        let passes: Vec<Box<dyn Pass>> = vec![];
+        emit_query_sampled(&self.spec, index, params, selections, &passes, self.sample)
+    }
+
+    /// What a sampled mark's plot needs to stay honest: the row count the
+    /// query would have returned unsampled, and the positional domains it
+    /// would have spanned.
+    ///
+    /// **Why the domains, and not just the count.** A continuous domain is
+    /// inferred client-side by walking the drawn batch. Draw one row in
+    /// sixteen and the inferred extent shrinks toward the interior, so the
+    /// axis ticks move — and the brush inverts through those same scales, so a
+    /// drag on a sampled plot would dispatch a different interval to every
+    /// other plot than the same drag on the complete one. That would also make
+    /// a sampled chart distinguishable from a complete one for entirely the
+    /// wrong reason: the sign-off is about whether the treatment reads, not
+    /// about whether the axes moved.
+    ///
+    /// Returns `None` when the session is not sampling, so an unsampled
+    /// chart's emitted SQL **and its query count** are byte-unchanged — the
+    /// extra query exists only where a sample does.
+    ///
+    /// # Errors
+    /// Returns the DuckDB error if the facts query fails.
+    pub fn unsampled_mark_facts(&self, index: usize) -> Option<Result<MarkFacts, EngineError>> {
+        self.sample?;
+        let params = if self.param_state.is_empty() {
+            None
+        } else {
+            Some(&self.param_state)
+        };
+        let selections = self.selection_predicates_for_emit();
+        let selections_ref: Option<&[SelectionPredicate]> = if selections.is_empty() {
+            None
+        } else {
+            Some(selections.as_slice())
+        };
+        // Emitted with NO rate: this is the picture the sample is a sample OF.
+        let unsampled = match emit_query(&self.spec, index, params, selections_ref) {
+            Ok(eq) => eq,
+            Err(e) => return Some(Err(EngineError::EmitFailed { cause: e })),
+        };
+        let (x_col, y_col) = positional_columns(&self.spec, index);
+        let mut projections = vec!["count(*) AS \"__bf_rows\"".to_string()];
+        for (i, col) in [&x_col, &y_col].into_iter().enumerate() {
+            if let Some(col) = col {
+                // TRY_CAST, not CAST: a categorical positional column is a
+                // perfectly ordinary thing to plot, and its min/max are not
+                // numbers. Nulls here mean "no continuous domain to restore",
+                // which is the truth, rather than a failed query.
+                projections.push(format!(
+                    "min(TRY_CAST({col} AS DOUBLE)) AS \"__bf_lo{i}\", \
+                     max(TRY_CAST({col} AS DOUBLE)) AS \"__bf_hi{i}\""
+                ));
+            }
+        }
+        let sql = format!(
+            "SELECT {} FROM ({}) AS __bf_facts",
+            projections.join(", "),
+            unsampled.sql
+        );
+        Some(read_mark_facts(
+            &self.conn,
+            &sql,
+            index,
+            x_col.is_some(),
+            y_col.is_some(),
+        ))
+    }
+
     /// Execute all marks. Returns one result per mark in depth-first order.
     /// Partial failure is possible.
     pub fn execute_all(&mut self) -> Vec<Result<Vec<RecordBatch>, EngineError>> {
@@ -1273,7 +1389,7 @@ impl Session {
 
         let mut results = Vec::new();
         for idx in mark_indices {
-            let emitted = match emit_query(&self.spec, idx, Some(&param_values), selections_ref) {
+            let emitted = match self.emit_for_mark(idx, Some(&param_values), selections_ref) {
                 Ok(eq) => eq,
                 Err(e) => {
                     results.push((idx, Err(EngineError::EmitFailed { cause: e })));
@@ -1380,14 +1496,14 @@ impl Session {
                 if !dispatched.insert(idx) {
                     continue;
                 }
-                let emitted =
-                    match emit_query(&self.spec, idx, Some(&self.param_state), selections_ref) {
-                        Ok(eq) => eq,
-                        Err(e) => {
-                            results.push((idx, Err(EngineError::EmitFailed { cause: e })));
-                            continue;
-                        }
-                    };
+                let emitted = match self.emit_for_mark(idx, Some(&self.param_state), selections_ref)
+                {
+                    Ok(eq) => eq,
+                    Err(e) => {
+                        results.push((idx, Err(EngineError::EmitFailed { cause: e })));
+                        continue;
+                    }
+                };
 
                 let mark_kind = self.mark_kind_at(idx);
                 let result = self.execute_emitted(idx, &mark_kind, &emitted);
@@ -1444,12 +1560,13 @@ impl Session {
         };
 
         for idx in 0..mark_count {
-            let emitted = match emit_query_with_passes(
+            let emitted = match emit_query_sampled(
                 &self.spec,
                 idx,
                 params_ref,
                 selections_ref,
                 &passes,
+                self.sample,
             ) {
                 Ok(eq) => eq,
                 Err(e) => {

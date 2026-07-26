@@ -543,7 +543,8 @@ fn a_layout_missing_a_view_is_repaired_without_resizing_the_window() {
 /// "a restored start claimed a view".
 #[test]
 fn what_the_window_opens_on_prefers_the_command_line_then_what_was_open() {
-    let nothing = opening_boot(None, None, Flow::Vertical).expect("an empty boot cannot fail");
+    let nothing =
+        opening_boot(None, None, Flow::Vertical, None).expect("an empty boot cannot fail");
     assert!(
         nothing.is_empty(),
         "a launch with nothing named opened something"
@@ -554,6 +555,7 @@ fn what_the_window_opens_on_prefers_the_command_line_then_what_was_open() {
         None,
         Some(brightfield_shell::starts::CROSSWALK),
         Flow::Vertical,
+        None,
     )
     .expect("the remembered start loads");
     assert!(
@@ -577,6 +579,7 @@ fn what_the_window_opens_on_prefers_the_command_line_then_what_was_open() {
         Some("../../examples/dashboard.yaml"),
         Some(brightfield_shell::starts::CROSSWALK),
         Flow::Vertical,
+        None,
     )
     .expect("the named spec opens");
     assert_eq!(named.view, Some(ViewKind::Charts));
@@ -584,7 +587,7 @@ fn what_the_window_opens_on_prefers_the_command_line_then_what_was_open() {
 
     // An id from a build that shipped a start this one does not is dropped,
     // not propagated: a stale config line may not stop the window opening.
-    let stale = opening_boot(None, Some("a-start-from-the-future"), Flow::Vertical)
+    let stale = opening_boot(None, Some("a-start-from-the-future"), Flow::Vertical, None)
         .expect("an unrecognised start still opens a window");
     assert!(stale.is_empty());
 }
@@ -787,7 +790,7 @@ fn a_restored_session_is_titled_for_the_view_it_draws() {
     saved.workspace.set_active(ViewKind::Protocol);
 
     // Exactly what `main` does, in the order it does it.
-    let boot = opening_boot(None, saved.opened.as_deref(), Flow::Vertical)
+    let boot = opening_boot(None, saved.opened.as_deref(), Flow::Vertical, None)
         .expect("the remembered start loads");
     let view = boot.view_or(saved.workspace.active());
     let title = boot.title(view);
