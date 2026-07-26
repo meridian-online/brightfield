@@ -120,7 +120,7 @@ pub struct ParamControl {
 /// widget writes — plus `column:` naming the column the interval is over. This
 /// crate's component discriminator tests `select` before `input`, so such a
 /// node parses as an [`Interactor`](brightfield_spec::ast::Component::Interactor)
-/// and can never reach [`param_controls`], which matches
+/// and can never reach the scalar-param collector, which matches
 /// [`Input`](brightfield_spec::ast::Component::Input) only. That is why this is
 /// a second control type with its own collector on the interactor side, not a
 /// widened `ParamControl`.

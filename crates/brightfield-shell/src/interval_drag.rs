@@ -167,7 +167,7 @@ impl IntervalDrags {
     }
 
     /// The values actually handed out for dispatch, oldest first (bounded to
-    /// the most recent [`DISPATCH_LOG_CAP`]).
+    /// most recent `DISPATCH_LOG_CAP`).
     #[must_use]
     pub fn dispatched(&self) -> &[f64] {
         &self.dispatched
