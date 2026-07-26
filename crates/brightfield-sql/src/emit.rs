@@ -721,8 +721,15 @@ pub fn emit_query_with_passes(
 ///   selected-flag would be part of the hashed tuple and **the sample would
 ///   reshuffle on every selection change** — a brush would silently redraw a
 ///   different subset of points, which is precisely the determinism the whole
-///   scheme exists to provide. `sample_is_below_the_highlight_projection`
-///   pins this.
+///   scheme exists to provide.
+///   `sample_sits_below_the_highlight_projection_so_a_brush_cannot_reshuffle_it`
+///   pins this structurally — by extracting the hashed subquery's own text and
+///   requiring the flag to be absent from it, not by comparing where two
+///   substrings land, which an earlier version did and which held under the
+///   very relocation it existed to catch. What that placement costs when it is
+///   wrong is measured over rows in `brightfield-engine`'s
+///   `the_highlight_flag_must_stay_outside_the_hashed_tuple`: 41-43% of the
+///   drawn set re-drawn by a single brush move.
 ///
 /// The [`Predicate`] threading in between is order-free: the hash is a function
 /// of the row, so sampling then filtering and filtering then sampling select
@@ -736,7 +743,7 @@ pub fn emit_query_with_passes(
 /// gain and its output rows are not the rows anyone means), while the cube only
 /// serves aggregating plans — and the cube's own chain check rejects unknown
 /// node kinds through a catch-all, so a `Sample` in a chain would decline the
-/// cube rather than mis-serve it. `sampling_and_the_cube_are_disjoint` asserts
+/// cube rather than mis-serve it. `sampling_and_the_cube_stay_disjoint` asserts
 /// the guard rather than trusting the argument.
 pub fn emit_query_sampled(
     spec: &Spec,
