@@ -447,6 +447,17 @@ fn main() -> Result<(), String> {
     // ceiling into no window at all, which is the opposite of what the comment
     // beside it claimed. Whatever the adapter has is the most that can be asked
     // for; a surface that needs more than that needs a different adapter.
+    //
+    // This REPLACES egui-wgpu's own descriptor rather than amending it, so what
+    // is given up is worth naming. Its version (setup.rs, 0.35) sets a label,
+    // picks downlevel-webgl2 limits on a GL backend and desktop defaults
+    // elsewhere, then forces `max_texture_dimension_2d: 8192` — and leaves
+    // `required_features` and `memory_hints` at `Default`, exactly as this does.
+    // So the only substantive difference is that 8192 floor, and dropping it is
+    // strictly safer: `required_limits` is a demand, so egui's version fails
+    // device creation outright on an adapter reporting less, where asking the
+    // adapter degrades instead. The GL branch is subsumed too, since the
+    // adapter's own limits are never below what that backend accepts.
     let mut wgpu_setup = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
     wgpu_setup.device_descriptor =
         std::sync::Arc::new(

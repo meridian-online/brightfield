@@ -57,10 +57,14 @@ pub struct ChartData<'a> {
     /// what was drawn, and what it was drawn out of.
     ///
     /// Its only job here is to make the plot say so: a plot with any sampled
-    /// entry draws [`render_sample_notice`] into its own scene. It is `Copy` so
-    /// that the crossfilter rebuild path carries it forward by assignment; a
-    /// rebuild that dropped it would erase the notice on the first brush
-    /// gesture and leave a sampled picture looking complete.
+    /// entry draws [`render_sample_notice`] into its own scene.
+    ///
+    /// Any path that rebuilds a `ChartData` after a gesture owes it forward.
+    /// Dropping it there would erase the notice on the first brush and leave a
+    /// sampled picture looking complete — which is the failure this whole
+    /// mechanism exists to prevent, so it is worth stating as an obligation
+    /// rather than an implementation detail. `LiveDashboard::present` is the
+    /// one path that does so today, and a test drives a brush through it.
     pub sample: Option<SampleFact>,
 }
 
