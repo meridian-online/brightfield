@@ -25,6 +25,12 @@ arc = { git = "https://github.com/meridian-online/arcform", rev = "4b4501926b6c3
 # unification, so the workspace builds hermetically everywhere. Drop it if arc
 # ever stops linking DuckDB into the library target.
 duckdb = { version = "1.2", features = ["bundled"] }
+# The Meridian design tokens. Dependency-free by its own contract (ADR 0003) and
+# framework-neutral — plain floats — so it costs this crate none of its
+# no-UI-framework, no-vello property. It is here for one reason: the layout's
+# three spacing constants ARE design-system spacing, and two of the three had
+# drifted off the ladder while they were bare floats in `layout.rs`.
+meridian-design = { git = "https://github.com/meridian-online/design", rev = "d50b8c3f8c6c99f20ed380d8af96eedae37b2e27" }
 brightfield-sql = { path = "../brightfield-sql" }
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"

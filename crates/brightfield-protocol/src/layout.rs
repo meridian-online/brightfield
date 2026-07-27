@@ -12,6 +12,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use meridian_design::spacing;
+
 use crate::graph::{AssetGraph, AssetId, AssetKind, StepId};
 
 /// A node's placed rectangle, whole pixels.
@@ -76,7 +78,53 @@ pub enum Flow {
     Vertical,
 }
 
+/// A dummy lane slot's extent, the same measure both ways.
+///
+/// **Across** the flow it is the lane's width — the channel one routed polyline
+/// occupies inside a rank, and what the crossing reduction packs sibling lanes
+/// at. That is what it always was.
+///
+/// **Along** the flow it used to be zero, with a blanket `48.0` floor under
+/// every rank's thickness standing in for it (*"floored so a sparse layer still
+/// reserves a lane"*). That floor was taller than every card this model draws —
+/// the tallest, a `Family` tile, is 46 — so it applied to **every** rank rather
+/// than to the sparse ones it was written for: on the collapsed crosswalk it
+/// reserved 118 points, 10.5% of the canvas, for nothing at all.
+///
+/// So the reservation moved onto the thing that needs it. A rank's thickness is
+/// now a plain max over what its slots declare, and a rank holding only dummy
+/// lanes declares this.
+///
+/// **Derived, not chosen.** A lane declares exactly one measure — its width —
+/// and taking the same along the flow makes a lane-only rank exactly as thick as
+/// the lanes crossing it are wide. Checked against the ink the renderer puts on
+/// a lane hop: `asset_scene::orthogonal_path` draws each hop as a dogleg out to
+/// the hop's midpoint and back, so the run either side of the crossbar is half
+/// the lane-point separation — `(LANE_EXTENT + col_gap) / 2` = 21 points between
+/// two lane-only ranks — against the 9 points the seam chevron occupies along
+/// the flow (`draw_chevron` puts two arrows at offsets −3 and +2, each ±2 about
+/// its offset: −5…+4). Twice the glyph, so the hop still reads as a step.
+///
+/// **It does not bind on any graph this crate can build today, and that is a
+/// property of the layering rather than of this number.** Longest-path layering
+/// gives every node at layer `L > 0` a predecessor at `L − 1`, so every rank
+/// from 0 to the deepest holds at least one real card, and the shortest card
+/// (`Internal`/`Opaque`, 26) is taller than a lane. The value is here so that a
+/// layering which *can* produce a lane-only rank still reserves the lane's own
+/// channel rather than collapsing it to a line.
+const LANE_EXTENT: f64 = 10.0;
+
 /// Tunable spacing; the default is the dump arm's configuration.
+///
+/// # The three gaps are design-system spacing, not layout-local numbers
+///
+/// [`margin`](LayoutConfig::margin), [`col_gap`](LayoutConfig::col_gap) and
+/// [`row_gap`](LayoutConfig::row_gap) shipped as bare floats — `32.0`, `64.0`,
+/// `20.0` — and two of the three were off the Meridian spacing ladder
+/// altogether: the ladder tops out at [`spacing::SPACE_9`] (48), so a 64-point
+/// gap was a fourth spacing vocabulary in a product that has one. They are drawn
+/// from the ladder now, and `pds_the_spacing_defaults_are_ladder_steps` holds
+/// them there.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LayoutConfig {
     /// Canvas margin on all sides.
@@ -92,11 +140,36 @@ pub struct LayoutConfig {
 }
 
 impl Default for LayoutConfig {
+    /// The shipped pitch: page gutter [`spacing::SPACE_8`] (32), rank pitch
+    /// [`spacing::SPACE_8`] (32), sibling pitch [`spacing::SPACE_6`] (16).
+    ///
+    /// # Why these rungs and not the tighter pair below them
+    ///
+    /// The canvas was 90.3% whitespace at the old `(32, 64, 20)`, so the
+    /// question was how far down the ladder to go before a multi-rank edge stops
+    /// being followable. Both terms bottom out on the ink the renderer draws:
+    ///
+    /// - `col_gap` sets the separation between consecutive lane points, and
+    ///   `asset_scene::orthogonal_path` puts half of it either side of each
+    ///   dogleg's crossbar. At 32 that run is at least 16 points — comfortably
+    ///   past the 9-point seam chevron and the 5-point arrowhead that sit on it.
+    ///   At [`spacing::SPACE_7`] (24) it would be 12, three points of clearance,
+    ///   which is where a chevron starts touching the corner it is meant to sit
+    ///   inside.
+    /// - `row_gap` separates parallel lanes across the flow. A lane channel is
+    ///   `LANE_EXTENT` (10) wide, so 16 leaves more page between two lanes than
+    ///   either lane occupies; [`spacing::SPACE_5`] (12) would leave less.
+    ///
+    /// Measured on the collapsed crosswalk, with the dead thickness floor also
+    /// gone: 1034×1120 → 1018×714, a 36.3% cut down the reading axis. (An
+    /// earlier revision of this line said 962×786; no combination of ladder
+    /// rungs produces that height, and the figure the rest of the tree carries
+    /// is this one.)
     fn default() -> Self {
         Self {
-            margin: 32.0,
-            col_gap: 64.0,
-            row_gap: 20.0,
+            margin: f64::from(spacing::SPACE_8),
+            col_gap: f64::from(spacing::SPACE_8),
+            row_gap: f64::from(spacing::SPACE_6),
             flow: Flow::Horizontal,
         }
     }
@@ -306,12 +379,12 @@ pub fn layout(graph: &AssetGraph, config: &LayoutConfig) -> Layout {
                 let node = &graph.nodes[id];
                 (node_width(node.kind, &node.label), node_height(node.kind))
             }
-            Slot::Dummy { .. } => (0.0, 10.0),
+            Slot::Dummy { .. } => (LANE_EXTENT, LANE_EXTENT),
         }
     };
-    // (along, cross) extent of a slot. A dummy is a thin lane in BOTH flows: 0
-    // along, 10 across — so transposing must not swap those, hence the explicit
-    // form rather than reusing `size_of`.
+    // (along, cross) extent of a slot. A dummy is a square lane cell in BOTH
+    // flows — see `LANE_EXTENT` — so transposing must not swap a card's two
+    // sides into it, hence the explicit form rather than reusing `size_of`.
     let extents = |slot: &Slot| -> (f64, f64) {
         match slot {
             Slot::Real(_) => {
@@ -322,14 +395,18 @@ pub fn layout(graph: &AssetGraph, config: &LayoutConfig) -> Layout {
                     (w, h)
                 }
             }
-            Slot::Dummy { .. } => (0.0, 10.0),
+            Slot::Dummy { .. } => (LANE_EXTENT, LANE_EXTENT),
         }
     };
-    // Layer "thickness" along the flow (widest/tallest card), floored so a
-    // sparse layer still reserves a lane; layer "length" across it.
+    // Layer "thickness" along the flow: the tallest/widest thing the layer
+    // actually holds, card or lane. **Content-driven, with no constant under
+    // it** — the 48.0 floor that used to sit here was taller than every card in
+    // the model, so it was not a floor at all, it was 118 points of reserved
+    // nothing on the collapsed crosswalk. `LANE_EXTENT` carries what the floor
+    // was written for. Layer "length" is the extent across it.
     let thickness: Vec<f64> = layers
         .iter()
-        .map(|l| l.iter().map(|s| extents(s).0).fold(48.0, f64::max))
+        .map(|l| l.iter().map(|s| extents(s).0).fold(0.0, f64::max))
         .collect();
     let lengths: Vec<f64> = layers
         .iter()
@@ -512,6 +589,150 @@ steps:
                 .to_string()),
         );
         build_graph(&manifest, &sources)
+    }
+
+    /// The three spacing defaults are steps of the Meridian ladder, not numbers
+    /// this file invented.
+    ///
+    /// Two of the three were not, before this: `col_gap` was 64, past the top of
+    /// the ladder ([`spacing::SPACE_9`] = 48), and `row_gap` was 20, which is a
+    /// *row height* rung and not a gap at all. A fourth spacing vocabulary in a
+    /// product with one design system is a bug, and it is the kind that spreads
+    /// silently, so it is mechanically checked rather than remembered.
+    #[test]
+    fn pds_the_spacing_defaults_are_ladder_steps() {
+        let cfg = LayoutConfig::default();
+        for (name, value) in [
+            ("margin", cfg.margin),
+            ("col_gap", cfg.col_gap),
+            ("row_gap", cfg.row_gap),
+        ] {
+            #[allow(clippy::cast_possible_truncation)]
+            let v = value as f32;
+            assert!(
+                spacing::SPACE.contains(&v),
+                "{name} = {value} is not a step of the Meridian spacing ladder \
+                 {:?} — it is a fourth spacing vocabulary",
+                spacing::SPACE
+            );
+        }
+    }
+
+    /// The ranks of a laid-out canvas, recovered from the outside: each rank's
+    /// centre along the flow and the extent of the deepest card on it.
+    ///
+    /// Every card is centred within its rank's thickness, so `start + extent / 2`
+    /// is the rank's own centre — but the coordinates are quantised to whole
+    /// pixels and a card whose extent differs from the rank's thickness by an odd
+    /// number rounds half a point off that centre. Hence the clustering rather
+    /// than an exact key: ranks are `col_gap` apart, so anything within a point
+    /// is the same rank and nothing else can be.
+    fn ranks_of(l: &Layout, flow: Flow) -> Vec<f64> {
+        let along = |r: &Rect| {
+            if matches!(flow, Flow::Vertical) {
+                (r.y, r.height)
+            } else {
+                (r.x, r.width)
+            }
+        };
+        let mut cards: Vec<(f64, f64)> = l
+            .positions
+            .values()
+            .map(|r| {
+                let (start, extent) = along(r);
+                (start + extent / 2.0, extent)
+            })
+            .collect();
+        cards.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut ranks: Vec<f64> = Vec::new();
+        let mut centre = f64::NEG_INFINITY;
+        for (c, extent) in cards {
+            if c - centre > 1.0 {
+                ranks.push(extent);
+                centre = c;
+            } else if let Some(deepest) = ranks.last_mut() {
+                *deepest = deepest.max(extent);
+            }
+        }
+        ranks
+    }
+
+    /// **A rank is exactly as thick as the deepest card on it.** No constant
+    /// sits under that.
+    ///
+    /// Asserted as an equation over the canvas the caller is handed, not over an
+    /// internal: the canvas's along-flow extent must be exactly its two margins,
+    /// its per-rank maxima, and one `col_gap` between each neighbouring pair.
+    ///
+    /// Watched redden, one mutation: putting the old `fold(48.0, f64::max)` back
+    /// under `thickness` fails here with *"58 points are reserved for nothing"*
+    /// on this fixture — the same defect that cost the collapsed crosswalk 118.
+    #[test]
+    fn pds_rank_thickness_is_content_driven_with_no_floor_under_it() {
+        let g = diamond();
+        for flow in [Flow::Vertical, Flow::Horizontal] {
+            let cfg = LayoutConfig {
+                flow,
+                ..LayoutConfig::default()
+            };
+            let l = layout(&g, &cfg);
+            let ranks = ranks_of(&l, flow);
+            assert!(ranks.len() > 1, "{flow:?}: one rank proves nothing");
+            let sum: f64 = ranks.iter().sum();
+            let expected = 2.0 * cfg.margin + sum + cfg.col_gap * (ranks.len() - 1) as f64;
+            let actual = if matches!(flow, Flow::Vertical) {
+                l.height
+            } else {
+                l.width
+            };
+            assert!(
+                (actual - expected).abs() < f64::EPSILON,
+                "{flow:?}: the canvas is {actual} along the flow but its \
+                 {} ranks, its margins and its gaps account for {expected} — \
+                 {} points are reserved for nothing",
+                ranks.len(),
+                actual - expected
+            );
+        }
+    }
+
+    /// A lane declares the same extent both ways, so a rank that held only lanes
+    /// would be as thick as the lanes crossing it are wide — and the hop through
+    /// it would still carry the seam glyph the renderer draws on it.
+    ///
+    /// The clearance is the point of the number, and it is checked
+    /// arithmetically rather than photographed: `orthogonal_path` puts half the
+    /// lane-point separation either side of each dogleg's crossbar, and
+    /// `draw_chevron` occupies 9 points along the flow.
+    #[test]
+    fn pds_a_lane_reserves_its_own_channel_along_the_flow() {
+        /// `draw_chevron`'s along-flow extent: two arrows at offsets −3 and +2,
+        /// each ±2 about its offset, so −5…+4.
+        const CHEVRON_EXTENT: f64 = 9.0;
+        let cfg = LayoutConfig::default();
+        let run = LANE_EXTENT + cfg.col_gap;
+        assert!(
+            run / 2.0 >= 2.0 * CHEVRON_EXTENT,
+            "a hop between two lane-only ranks gives each side of its crossbar \
+             {}pt, which does not clear the {CHEVRON_EXTENT}pt seam chevron with \
+             room to spare",
+            run / 2.0
+        );
+        // And the layering this crate ships cannot actually produce a lane-only
+        // rank: longest-path layering gives every node above layer 0 a
+        // predecessor one layer down, so every rank holds at least one real card
+        // and the shortest card is deeper than a lane. Stated here so the number
+        // above reads as a guard on a layering rule rather than as something the
+        // shipped graphs exercise.
+        let l = layout(&diamond(), &cfg);
+        for (rank, deepest) in ranks_of(&l, Flow::Vertical).into_iter().enumerate() {
+            assert!(
+                deepest >= node_height(AssetKind::Internal),
+                "rank {rank} is {deepest}pt deep — shallower than the shortest \
+                 card, so a lane-only rank is reachable after all and \
+                 LANE_EXTENT is load-bearing rather than defensive"
+            );
+        }
     }
 
     #[test]

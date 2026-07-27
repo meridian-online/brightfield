@@ -252,23 +252,158 @@ pub fn chart_toolbar_band(composed: &Composed) -> f32 {
 /// Nothing derived the 130, no test could see it, and the canvas pane scrolls
 /// rather than clips, so a budget several points short opened the graph
 /// part-scrolled in silence. The clamps are gone with it: a window that lies
-/// about fitting is this crate's defect, and a window larger than the display
-/// is the compositor's to resolve.
+/// about fitting is this crate's defect.
 ///
-/// Read by the same tiers as [`chart_window_size`], and kept for the same
-/// reason — see the note there.
+/// This still answers only what the *content* wants. A display too small to
+/// show it is a separate question with a separate answer —
+/// [`window_size_on_display`] — because leaving it to the compositor was itself
+/// the defect: what the compositor grants is silent, and a canvas pane that
+/// scrolls looks exactly the same whether it was sized or clamped.
+///
+/// **No caller today**, and the note that used to sit here claimed otherwise —
+/// that this was read by the same tiers as [`chart_window_size`]. That stopped
+/// being true when the boot moved to [`protocol_window_size_for`] over an
+/// envelope, because a single [`Layout`] is no longer what the window is sized
+/// against. Kept because it is the one-graph spelling of the same arithmetic
+/// and the capture tiers are its obvious next caller — but kept honestly, as a
+/// convenience with no consumer rather than as load-bearing API.
 #[must_use]
 pub fn protocol_window_size(layout: &Layout) -> (f32, f32) {
+    protocol_window_size_for(layout.width as f32, layout.height as f32)
+}
+
+/// [`protocol_window_size`] over a canvas extent that is not any one laid-out
+/// graph's.
+///
+/// The arithmetic is identical and lives here once; the two entry points differ
+/// only in what they are asked to fit. A single [`Layout`] is what the capture
+/// tiers have — they photograph one picture, and it is the picture their script
+/// produced. The live window has to fit something no `Layout` describes: the
+/// componentwise envelope of the states it is sized for, because a window is
+/// sized once at boot and this binary has neither a zoom nor a fit-to-view to
+/// recover with. See
+/// [`ProtocolModel::boot_extent`](crate::protocol::ProtocolModel::boot_extent),
+/// which is where that envelope is defined, and where the states left to scroll
+/// are named and argued.
+#[must_use]
+pub fn protocol_window_size_for(dag_w: f32, dag_h: f32) -> (f32, f32) {
     let centre = 1.0 - OUTLINE_SHARE - INSPECTOR_SHARE;
     let inset = chrome::pane_content_inset();
 
-    let tile_w = layout.width as f32 + 2.0 * inset;
+    let tile_w = dag_w + 2.0 * inset;
     let w = (tile_w / centre + 2.0 * TILE_GAP + 2.0 * DOCK_INSET).ceil();
 
-    let tile_h = layout.height as f32 + 2.0 * inset + TAB_BAR_HEIGHT;
+    let tile_h = dag_h + 2.0 * inset + TAB_BAR_HEIGHT;
     let h = (tile_h + 2.0 * DOCK_INSET + 2.0 * BAR_HEIGHT).ceil();
 
     (w, h)
+}
+
+// ---------------------------------------------------------------------------
+// What the display will actually grant.
+// ---------------------------------------------------------------------------
+
+/// `natural` capped, in each axis independently, at what `display` can show.
+///
+/// [`chart_window_size`] and [`protocol_window_size`] answer what the *content*
+/// wants, and until this existed nothing anywhere in the boot path had a term
+/// for the screen — the window size bore no relationship to the display at all.
+/// That was not theoretical. The protocol view's own envelope asks for 1948
+/// points across on the shipped crosswalk, and 3972 in the horizontal flow,
+/// against a laptop panel 1512 points wide: the request was routinely larger
+/// than the monitor, and what arrived was whatever the compositor chose to
+/// grant. A window larger than the monitor is not a bigger window. It is a
+/// window with its right-hand edge off the screen.
+///
+/// Capping is the whole of it, and the direction is the point: a display
+/// smaller than the content degrades to **scrolling** — `CanvasPane` wraps the
+/// raster in a `ScrollArea`, so every node is still reachable — rather than to
+/// a window that cannot be brought onto the screen. A display larger than the
+/// content changes nothing; this never grows a window.
+///
+/// # `display` is the monitor, not its work area
+///
+/// Said rather than implied, because the two differ by the OS's own bands — a
+/// menu bar, a dock, a taskbar — and nothing reachable from here can see that
+/// difference. winit 0.30, which eframe 0.35 is built on, exposes a monitor's
+/// resolution, position and scale factor and **no work area, on any platform**,
+/// so a work-area figure could only be a constant invented here. A window
+/// capped at the monitor may therefore still overlap those bands by however
+/// tall they are, and the platform resolves that as it always has: macOS
+/// constrains a window's height to the visible frame itself, which is the axis
+/// the menu bar and the dock take from. The axis it does *not* constrain is the
+/// width — and the width is what was off the screen.
+///
+/// A non-positive extent is "unknown" and leaves its axis alone: a headless
+/// context reports no monitor at all, and a caller that answered `0.0` would
+/// otherwise ask for a window with no width.
+#[must_use]
+pub fn window_size_on_display(natural: (f32, f32), display: (f32, f32)) -> (f32, f32) {
+    let cap = |want: f32, have: f32| if have > 0.0 { want.min(have) } else { want };
+    (cap(natural.0, display.0), cap(natural.1, display.1))
+}
+
+/// What one frame's attempt to fit the window to its display found.
+///
+/// Three outcomes rather than a `bool`, because the caller has to be able to
+/// tell "this display is bigger than the window, we are done" from "no monitor
+/// has been reported yet, ask again next frame". Collapsing those two retires
+/// the check on the first frame of a window that has not yet been mapped —
+/// which is the frame most likely to report nothing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DisplayFit {
+    /// No monitor was reported this frame, so nothing was decided. Ask again.
+    MonitorUnknown,
+    /// The window already fits the monitor it opened on, in both axes.
+    Fits,
+    /// The window was larger than the monitor, and this smaller size was asked
+    /// for instead.
+    Shrunk(egui::Vec2),
+}
+
+/// Ask the OS to shrink this window to the monitor it opened on, when the size
+/// it was created at does not fit.
+///
+/// **The live window's, and only the live window's.** Deliberately not part of
+/// [`MeridianApp::draw`], which is the one frame source every tier shares: the
+/// headless capture path and the pixel tier are sized from their content on
+/// purpose — a baseline that changed with the reviewer's monitor would be no
+/// baseline — and they have no viewport to command anyway.
+///
+/// # Why this is a frame and not a `ViewportBuilder`
+///
+/// Because the monitor cannot be reached before the window exists. eframe 0.35
+/// offers two pre-creation hooks and neither carries one:
+/// `NativeOptions::event_loop_builder` is handed a `winit::EventLoopBuilder`,
+/// which has no monitor methods, and `NativeOptions::window_builder` is handed
+/// an `egui::ViewportBuilder`, which has none either. winit's monitor list
+/// hangs off a *built* `EventLoop`, and winit refuses to build a second one for
+/// the life of the process (`EventLoopError::RecreationAttempt`), so a
+/// throwaway query loop ahead of `run_native` would cost the real one. The
+/// first frame is the earliest point a real monitor is readable, and a measured
+/// cap one frame late is worth more than a constant that was never measured.
+///
+/// # eframe's own clamp is not this one
+///
+/// It applies `ViewportBuilder::clamp_size_to_monitor_size` at creation and
+/// defaults it on, so a request is already capped — at the size of the
+/// **largest monitor attached**. A laptop with an ultrawide plugged in
+/// therefore has its request checked against the ultrawide, and opens on the
+/// laptop panel a window the laptop panel cannot show. That case is the reason
+/// this exists, and it is why the cap here is against
+/// `ViewportInfo::monitor_size`, which is the monitor this window is actually
+/// on.
+pub fn fit_window_to_display(ctx: &egui::Context, natural: (f32, f32)) -> DisplayFit {
+    let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) else {
+        return DisplayFit::MonitorUnknown;
+    };
+    let fitted = window_size_on_display(natural, (monitor.x, monitor.y));
+    if fitted == natural {
+        return DisplayFit::Fits;
+    }
+    let size = egui::vec2(fitted.0, fitted.1);
+    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+    DisplayFit::Shrunk(size)
 }
 
 // ---------------------------------------------------------------------------
@@ -525,12 +660,26 @@ impl Boot {
     /// [`Boot::is_empty`]. The headless capture path and the pixel tier have
     /// no saved layout and no user to have arranged one, so this stays their
     /// only answer.
+    ///
+    /// **And the display outranks the answer.** *Natural* is the operative
+    /// word: this is what the content wants, in a vacuum, and on the protocol
+    /// view it is routinely wider than a laptop panel. The live binary caps it
+    /// at the monitor the window opened on — [`window_size_on_display`] — and
+    /// the capture tiers, which have no monitor and must not acquire one, do
+    /// not.
     #[must_use]
     pub fn window_size(&self, view: ViewKind) -> (f32, f32) {
         match view {
             ViewKind::Charts => chart_window_size(&self.composed),
             ViewKind::Protocol => {
-                protocol_window_size(&ProtocolModel::boot_layout(&self.protocol, self.flow))
+                // The ENVELOPE, not the boot canvas. Sizing to the boot canvas
+                // fitted the graph the window opens on and nothing else: every
+                // state one keystroke away overflowed and stayed overflowed,
+                // because a window is sized once and never resized. See
+                // `ProtocolModel::boot_extent`, which also names the two states
+                // the envelope deliberately leaves to scroll.
+                let (w, h) = ProtocolModel::boot_extent(&self.protocol, self.flow);
+                protocol_window_size_for(w as f32, h as f32)
             }
         }
     }

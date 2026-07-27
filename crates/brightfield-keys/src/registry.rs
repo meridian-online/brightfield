@@ -521,7 +521,7 @@ pub fn registry() -> Vec<VerbEntry> {
             drives: D::Navigation,
             status: VerbStatus::Built,
             reserved_reason: None,
-            help: "Open/close the detail under the cursor: a parameterised family's members, or the CTEs inside a sql: step",
+            help: "Open/close the detail under the cursor: a parameterised family's members, the CTEs inside a sql: step, or a run of single hand-offs folded to the asset it ends at",
             scores: Some(Scores { frequency: 3, mnemonic: 4, convention: 5, motor_note: "za = toggle fold (vim fold family); one verb over both folds, resolved by what the cursor is on; a fold is a view change, never logged" }),
         },
         VerbEntry {
