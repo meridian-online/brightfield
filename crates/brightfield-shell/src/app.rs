@@ -350,6 +350,18 @@ impl ChartDoc {
         self.live.as_mut().map(LiveDashboard::coordinator)
     }
 
+    /// The live dashboard behind this document, read-only — the extent stores
+    /// and the spec it was composed from.
+    ///
+    /// Public for the reason [`Self::live_coordinator`] is: "do the axes and
+    /// the rows describe the same range" has exactly one honest answer, and a
+    /// gate that asserted it from a field the code under test writes would be
+    /// asserting against itself.
+    #[must_use]
+    pub fn live_dashboard(&self) -> Option<&LiveDashboard> {
+        self.live.as_ref()
+    }
+
     /// Whether any selection currently holds a committed gesture.
     #[must_use]
     pub fn selection_active(&self) -> bool {
