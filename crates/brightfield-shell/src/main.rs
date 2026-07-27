@@ -40,7 +40,7 @@ use brightfield_render::vello_renderer::VelloRenderer;
 use brightfield_shell::canvas::EguiCanvasHost;
 use brightfield_shell::design::Mode;
 use brightfield_shell::startup;
-use brightfield_shell::window::MeridianApp;
+use brightfield_shell::window::{fit_window_to_display, DisplayFit, MeridianApp};
 use brightfield_workbench::persist::SAVE_DEBOUNCE_MS;
 
 struct Args {
@@ -296,11 +296,43 @@ struct BrightfieldApp {
     /// `pub`, take any `&Path`, and `layout_wiring.rs` uses them to write real
     /// files into a scratch directory.
     layout_path: Option<PathBuf>,
+    /// The window this launch asked for because of what it loaded, held until
+    /// a frame has checked it against the monitor the window landed on — then
+    /// `None`, and the user's own resizes are their business.
+    ///
+    /// `None` from the start for the two launches the cap has no business
+    /// touching: one that restored the user's saved geometry, and one that
+    /// opened on nothing and took `WindowGeometry`'s default. See the call in
+    /// `main` that sets it.
+    fit: Option<(f32, f32)>,
 }
 
 impl eframe::App for BrightfieldApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+
+        // The size this window was created at was read outwards from the graph
+        // and knows nothing about the screen it landed on. This is the first
+        // frame that can say — `window::fit_window_to_display` carries the
+        // whole argument for why it cannot be said sooner, and why eframe's own
+        // creation-time clamp does not cover this case.
+        if let Some(natural) = self.fit {
+            match fit_window_to_display(&ctx, natural) {
+                // No monitor reported yet. Ask again next frame rather than
+                // retiring the check on a window that is not mapped.
+                DisplayFit::MonitorUnknown => {}
+                DisplayFit::Fits => self.fit = None,
+                DisplayFit::Shrunk(size) => {
+                    eprintln!(
+                        "window: this display shows {}x{} of the {}x{} the document asks for — \
+                         the canvas scrolls the rest",
+                        size.x, size.y, natural.0, natural.1
+                    );
+                    self.fit = None;
+                }
+            }
+        }
+
         self.app.draw(ui);
         self.shot.tick(&ctx);
 
@@ -419,9 +451,18 @@ fn main() -> Result<(), String> {
     // A window size the user chose is authoritative. Otherwise the boot's own
     // budget stands — unless it has no document to derive one from, in which
     // case `WindowGeometry`'s default is already in `layout.window`.
+    //
+    // A budget derived from content knows what the graph wants and nothing
+    // about the screen, so it is also the only case the display cap applies to:
+    // a window the *user* sized is theirs to have made too big, and a default
+    // is small by construction. `fit` carries that size to the first frame,
+    // which is the earliest point a real monitor can be read — see
+    // `window::fit_window_to_display` for why it cannot be read before then.
+    let mut fit = None;
     if !startup::kept_window_geometry(outcome) && !boot.is_empty() {
         let (w, h) = boot.window_size(view);
         layout.window.size = [w, h];
+        fit = Some((w, h));
     }
     let mut viewport = egui::ViewportBuilder::default().with_inner_size(layout.window.size);
     if let Some([x, y]) = layout.window.position {
@@ -491,6 +532,7 @@ fn main() -> Result<(), String> {
                 app: MeridianApp::with_layout(boot, layout, chart_host, protocol_host, mode),
                 shot: ShotLatch::new(shot_out, shot_after, saved),
                 layout_path: path,
+                fit,
             }) as Box<dyn eframe::App>)
         }),
     )

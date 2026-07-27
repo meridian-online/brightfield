@@ -18,7 +18,10 @@ use brightfield_shell::pipeline::compose_spec;
 use brightfield_shell::protocol::{
     load_protocol_offline, protocol_registry, ProtocolInputs, ProtocolModel,
 };
-use brightfield_shell::window::{protocol_window_size_for, Boot, MeridianApp};
+use brightfield_shell::window::{
+    fit_window_to_display, protocol_window_size_for, window_size_on_display, Boot, DisplayFit,
+    MeridianApp,
+};
 use brightfield_workbench::{ItemId, PaneKey, ViewKind};
 
 const DASHBOARD: &str = "../../examples/dashboard.yaml";
@@ -283,9 +286,22 @@ fn the_window_opens_on_the_view_the_boot_named_and_lays_out_only_that_view() {
 // The window the protocol view asks for
 // ---------------------------------------------------------------------------
 
-/// The window `protocol_window_size` asks for really does fit **every canvas one
-/// fold gesture reaches** — checked by laying a **real frame** out, not by
-/// re-running the same arithmetic.
+/// Two real displays, in logical points, that this window has to open onto.
+///
+/// Not thresholds and not policy — [`window_size_on_display`] takes whatever it
+/// is handed. They are here so the assertions below are about a screen someone
+/// actually uses rather than a number chosen to make them pass: `LAPTOP` is the
+/// built-in Retina panel of the machine this product is developed and demoed
+/// on, and `ULTRAWIDE` is the external display beside it, which is where the
+/// protocol view's screenshots have been taken. The defect these tests exist
+/// for is exactly the gap between them — a window sized on the second and
+/// unopenable on the first.
+const LAPTOP: (f32, f32) = (1512.0, 982.0);
+const ULTRAWIDE: (f32, f32) = (3440.0, 1440.0);
+
+/// The window `protocol_window_size` asks for really does fit **every state it
+/// is sized for** — checked by laying a **real frame** out, not by re-running
+/// the same arithmetic.
 ///
 /// The chart view has had this assertion since its window was caught clipping
 /// the bottom seventeen rows of its own raster. The protocol view had nothing
@@ -302,23 +318,29 @@ fn the_window_opens_on_the_view_the_boot_named_and_lays_out_only_that_view() {
 /// box, under a point of slack in both axes. Every state one fold gesture away
 /// overflowed it and stayed overflowed, because a window is sized once at boot
 /// and nothing resizes it, and this binary has neither a zoom nor a fit-to-view
-/// to recover with. So the measure is now the envelope of the pictures `za` can
-/// produce — [`ProtocolModel::boot_extent`] — and the two assertions below are
-/// the two halves of that claim: the pane fits the envelope, and the envelope
-/// really does cover each state.
+/// to recover with. So the measure is now [`ProtocolModel::boot_extent`], the
+/// envelope of the states this view spends its time in.
 ///
-/// The no-fudge-factor rule is unchanged and is what keeps the first half
-/// honest: the slack against the envelope must still be under a logical point.
+/// The no-fudge-factor rule is unchanged and is what keeps this honest: the
+/// slack against the envelope must still be under a logical point.
+///
+/// # What this one cannot see, and which test does
+///
+/// It asserts that the window brightfield *requests* fits the envelope, and
+/// that is true by construction — both sides are `protocol_window_size_for` of
+/// the same extent. The moment the OS grants something smaller the canvas pane
+/// is short again and every assertion here still passes. That gap is the whole
+/// of `the_window_a_small_display_grants_leaves_the_canvas_short` below,
+/// which lays its frame out at the **granted** size instead.
 ///
 /// Watched redden, two mutations. Dropping the `TAB_BAR_HEIGHT` term from
 /// `protocol_window_size_for` — the centre tab strip the canvas sits under —
 /// leaves the canvas pane 24 points short and fails the fit by that much.
 /// Reverting `Boot::window_size` to `boot_layout` fails at *"the boot sized the
-/// window differently"*, `(1948, 842)` against `(3000, 910)` — 1052 points
-/// across and 68 down of guaranteed scroll, which is exactly what this increment
-/// removed.
+/// window differently"*, `(1948, 842)` against `(1948, 910)` — 68 points down
+/// of guaranteed scroll, which is what measuring the envelope removed.
 #[test]
-fn the_protocol_window_it_asks_for_fits_every_canvas_a_fold_reaches() {
+fn the_protocol_window_it_asks_for_fits_the_states_it_is_sized_for() {
     let inputs = edgar();
     let (env_w, env_h) = ProtocolModel::boot_extent(&inputs, Flow::Vertical);
     #[allow(clippy::cast_possible_truncation)]
@@ -371,49 +393,74 @@ fn the_protocol_window_it_asks_for_fits_every_canvas_a_fold_reaches() {
     }
 }
 
-/// The envelope really is an envelope: every canvas `za` can put on screen fits
-/// inside it, in both axes.
+/// The envelope covers each state the window is sized for, and deliberately
+/// does **not** cover the family unfold — which is the trade, stated where a
+/// reader will trip over it.
 ///
 /// The other half of the test above, and the half that would otherwise be
-/// asserted by nothing. `boot_extent` could return the boot layout's own size and
-/// the fit assertion would pass perfectly — it would just be the defect this
-/// increment exists to remove, restated as a green test. So this one enumerates
-/// the pictures rather than trusting the fold: it lays out each of the four
-/// graphs a `ProtocolInputs` carries and asserts the envelope covers it, and
-/// asserts the envelope is not simply the boot canvas.
+/// asserted by nothing. `boot_extent` could return the boot layout's own size
+/// and the fit assertion would pass perfectly — it would just be the original
+/// defect restated as a green test. So this one enumerates the pictures rather
+/// than trusting the fold.
 ///
-/// Watched redden, one mutation: dropping `graph_full` from `boot_extent`'s
-/// candidate list fails here at *"the envelope is 568pt short across for the
-/// unfolded family"*.
+/// # Why the family unfold is asserted *out*
+///
+/// It was in the envelope for one increment, on an argument that is not wrong:
+/// the nav boots its cursor on the crosswalk's family tile, so `za` at boot —
+/// with no navigation at all — is the unfold. It came out because sizing for it
+/// costs 1052 points of window width on **every** launch, taking the vertical
+/// window from 1948 across to 3000, against a laptop panel 1512 points wide. A
+/// window twice the width of the display is not a convenience.
+///
+/// So the exclusion is asserted, not merely implemented: putting `graph_full`
+/// back reddens this test rather than silently costing a thousand points again.
+///
+/// Watched redden, two mutations. Putting `graph_full` back into
+/// `boot_extent`'s candidate list fails at *"the envelope grew to cover the
+/// unfolded family"*. Dropping `graph_exploded` fails at *"the envelope is 68pt
+/// short down for the exploded CTEs"*.
 #[test]
-fn the_boot_envelope_covers_every_graph_a_fold_can_draw() {
+fn the_boot_envelope_covers_what_it_sizes_for_and_not_the_family_unfold() {
     let inputs = edgar();
     let (env_w, env_h) = ProtocolModel::boot_extent(&inputs, Flow::Vertical);
     let cfg = LayoutConfig {
         flow: Flow::Vertical,
         ..LayoutConfig::default()
     };
+    let laid_out = |graph| {
+        let l: brightfield_protocol::layout::Layout = brightfield_protocol::layout(graph, &cfg);
+        (l.width, l.height)
+    };
+
     let mut covers_something_bigger = false;
     for (name, graph) in [
         ("the boot canvas", &inputs.graph_collapsed),
-        ("the unfolded family", &inputs.graph_full),
         ("the exploded CTEs", &inputs.graph_exploded),
         ("the contracted chains", &inputs.graph_contracted),
     ] {
-        let l = brightfield_protocol::layout(graph, &cfg);
+        let (w, h) = laid_out(graph);
         assert!(
-            l.width <= env_w,
+            w <= env_w,
             "the envelope is {}pt short across for {name}",
-            l.width - env_w
+            w - env_w
         );
         assert!(
-            l.height <= env_h,
+            h <= env_h,
             "the envelope is {}pt short down for {name}",
-            l.height - env_h
+            h - env_h
         );
-        covers_something_bigger |= l.width > 0.0 && (l.width, l.height) != (env_w, env_h);
+        covers_something_bigger |= w > 0.0 && (w, h) != (env_w, env_h);
     }
     assert!(covers_something_bigger, "the fixture has only one picture");
+
+    let (full_w, full_h) = laid_out(&inputs.graph_full);
+    assert!(
+        full_w > env_w || full_h > env_h,
+        "the envelope grew to cover the unfolded family ({full_w}x{full_h} \
+         inside {env_w}x{env_h}) — that is a thousand points of window width on \
+         every launch, on a display that may be 1512 points wide, to spare one \
+         keystroke in a state that is left immediately"
+    );
 
     let boot = ProtocolModel::boot_layout(&inputs, Flow::Vertical);
     assert!(
@@ -422,6 +469,244 @@ fn the_boot_envelope_covers_every_graph_a_fold_can_draw() {
          measured against the configuration the user leaves immediately",
         boot.width,
         boot.height
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The window the display grants
+// ---------------------------------------------------------------------------
+
+/// Whatever the content asks for, the window asked of the OS fits the monitor —
+/// on both of the displays this product is used on, in both flows.
+///
+/// **The assertion that had no home before.** Nothing in the boot path had a
+/// term for the screen at all: the size was read outwards from the graph and
+/// handed to `run_native`, and a request larger than the display was left to
+/// the compositor. On the shipped crosswalk that request is 1948 points across
+/// vertically and 3972 horizontally — the first is wider than a laptop panel
+/// and the second is wider than either display here — so "larger than the
+/// monitor" was the normal case, not the edge one.
+///
+/// Watched redden, one mutation: making `window_size_on_display` return
+/// `natural` unchanged fails at *"a 1948x910 window on a 1512x982 display"*.
+#[test]
+fn the_window_asked_of_the_os_never_exceeds_the_display() {
+    for flow in [Flow::Vertical, Flow::Horizontal] {
+        let natural = Boot::protocol(edgar(), flow, None).window_size(ViewKind::Protocol);
+        for (screen, display) in [("the laptop panel", LAPTOP), ("the ultrawide", ULTRAWIDE)] {
+            let (w, h) = window_size_on_display(natural, display);
+            assert!(
+                w <= display.0 && h <= display.1,
+                "{flow:?} asks for {natural:?} and this leaves a {w}x{h} window \
+                 on {screen} ({}x{}) — the part of it past the edge cannot be \
+                 read, scrolled to, or dragged back",
+                display.0,
+                display.1,
+            );
+            assert!(
+                w <= natural.0 && h <= natural.1,
+                "the display cap grew the window from {natural:?} to {w}x{h}; it \
+                 may only ever cap"
+            );
+        }
+    }
+}
+
+/// The size a display **grants** is not the size the boot **requested**, and
+/// the difference is a canvas that no longer covers its own envelope — asserted
+/// on two real frames, one laid out at each size.
+///
+/// # The hole this closes
+///
+/// `the_protocol_window_it_asks_for_fits_the_states_it_is_sized_for` asserts
+/// that the requested window fits the envelope, and it always will: both sides
+/// of that comparison are the same arithmetic over the same extent. It lays its
+/// frame out at the request, so it passes identically whether the OS granted
+/// that request or halved it. The failure this branch was opened for — a window
+/// twice the width of the laptop panel, silently truncated to the panel, with
+/// the graph scrolled — was therefore invisible to the one test whose job was
+/// watching the window.
+///
+/// So this one asks the question the other cannot: lay the frame out at what
+/// the display *gives*, and does the canvas still cover the graph? On the
+/// laptop panel it does not, and saying so is the point — the degradation is
+/// named and measured rather than being a scrollbar nobody attributed. On the
+/// ultrawide it does, which is the positive control that stops a cap that
+/// shrank everything from satisfying the first half.
+///
+/// The loss is asserted as a **bound**, not an equality, and deliberately: the
+/// canvas is one share of the dock between two rails, so a window short by *n*
+/// points hands the canvas somewhere between nothing and *n* of them. Restating
+/// that share here would be re-deriving `protocol_window_size_for` against
+/// itself, which is the failure mode this whole file exists to avoid.
+///
+/// Watched redden, three mutations. Making `window_size_on_display` return
+/// `natural` fails at *"a display that clamps nothing proves nothing"*. Giving
+/// it a floor that stops it capping below the envelope fails the same way.
+/// Transposing its two `cap` calls so the height is capped at the width's
+/// extent fails at *"the canvas came up 344.00pt short down"*.
+#[test]
+fn the_window_a_small_display_grants_leaves_the_canvas_short() {
+    let (env_w, env_h) = ProtocolModel::boot_extent(&edgar(), Flow::Vertical);
+    #[allow(clippy::cast_possible_truncation)]
+    let (env_w, env_h) = (env_w as f32, env_h as f32);
+
+    let natural = Boot::protocol(edgar(), Flow::Vertical, None).window_size(ViewKind::Protocol);
+    let granted = window_size_on_display(natural, LAPTOP);
+    assert!(
+        granted.0 < natural.0,
+        "a display that clamps nothing proves nothing: the laptop panel granted \
+         the whole {natural:?} window, so this test would pass on a build with \
+         no cap at all"
+    );
+    let clamped_away = natural.0 - granted.0;
+
+    // The canvas the window ASKED for, and the canvas the display GRANTED.
+    let canvas_at = |size: (f32, f32)| {
+        let mut win = Window::open_at(
+            Boot::protocol(edgar(), Flow::Vertical, None),
+            Mode::Light,
+            egui::vec2(size.0, size.1),
+        );
+        win.settle();
+        win.app
+            .canvas_viewport()
+            .expect("the canvas pane drew, so it recorded the box it was given")
+    };
+
+    // The positive control: a display bigger than the window in both axes grants
+    // it whole, and the canvas covers the graph.
+    assert_eq!(
+        window_size_on_display(natural, ULTRAWIDE),
+        natural,
+        "the ultrawide is larger than this window in both axes, so it must grant \
+         it whole"
+    );
+    let asked = canvas_at(natural);
+    assert!(
+        asked.width() >= env_w,
+        "the canvas is already {:.2}pt short across at the size the boot asked \
+         for, before any display has clamped anything",
+        env_w - asked.width()
+    );
+
+    let given = canvas_at(granted);
+    assert!(
+        given.width() < env_w,
+        "the laptop panel clamped {clamped_away:.0}pt off a {}pt window and the \
+         canvas still covers the {env_w:.0}pt graph — either the cap did nothing \
+         or the canvas is not where the window's width goes, and in both cases \
+         this test has stopped watching what it claims to",
+        natural.0
+    );
+
+    let lost = asked.width() - given.width();
+    assert!(
+        lost > 0.0 && lost <= clamped_away,
+        "the clamp took {clamped_away:.0}pt off the window and {lost:.2}pt off \
+         the canvas — the canvas is one share of the dock between two rails, so \
+         its loss must be positive and no larger than the window's"
+    );
+    assert!(
+        given.height() >= env_h,
+        "the laptop panel is taller than this window, so nothing was clamped \
+         down — but the canvas came up {:.2}pt short down anyway",
+        env_h - given.height()
+    );
+}
+
+/// The first frame of a live window measures the monitor it landed on and asks
+/// the OS to shrink to it — and asks for nothing when it already fits.
+///
+/// The wiring, not the arithmetic: `window_size_on_display` is a pure function
+/// three tests above already hold, and this asserts that a running window
+/// actually *sends* its answer. It reads the monitor the way the live binary
+/// does, out of `ViewportInfo`, and reads the emitted
+/// `ViewportCommand::InnerSize` back off the frame's own output.
+///
+/// The `MonitorUnknown` arm is the one with teeth. egui reports no monitor at
+/// all in a headless context and on a window that is not yet mapped, and a
+/// check that treated "don't know" as "fits" would retire itself on frame one
+/// and never cap anything — green here, and dead in the product.
+///
+/// Watched redden, two mutations. Returning `DisplayFit::Fits` instead of
+/// `MonitorUnknown` for an unreported monitor fails at *"a context with no
+/// monitor answered Fits"*. Dropping the `send_viewport_cmd` fails at *"the
+/// frame emitted no InnerSize"*.
+#[test]
+fn the_first_frame_shrinks_a_window_bigger_than_its_monitor() {
+    let natural = (1948.0, 910.0);
+
+    let ask = |monitor: Option<(f32, f32)>| {
+        let ctx = egui::Context::default();
+        let mut raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(natural.0, natural.1),
+            )),
+            ..Default::default()
+        };
+        let id = raw.viewport_id;
+        raw.viewports
+            .get_mut(&id)
+            .expect("egui's own RawInput default carries the root viewport")
+            .monitor_size = monitor.map(|(w, h)| egui::vec2(w, h));
+
+        let mut fit = None;
+        let out = ctx.run_ui(raw, |_ui| fit = Some(fit_window_to_display(&ctx, natural)));
+        let sent: Vec<egui::Vec2> = out
+            .viewport_output
+            .get(&id)
+            .map(|v| {
+                v.commands
+                    .iter()
+                    .filter_map(|c| match c {
+                        egui::ViewportCommand::InnerSize(size) => Some(*size),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        (fit.expect("the frame ran"), sent)
+    };
+
+    let (fit, sent) = ask(None);
+    assert_eq!(
+        fit,
+        DisplayFit::MonitorUnknown,
+        "a context with no monitor answered {fit:?} — a window that has not been \
+         mapped yet reports none, so answering anything else retires the cap on \
+         the one frame it is most likely to be wrong about"
+    );
+    assert!(
+        sent.is_empty(),
+        "a frame that could not read the monitor resized the window anyway, to {sent:?}"
+    );
+
+    let (fit, sent) = ask(Some(ULTRAWIDE));
+    assert_eq!(
+        fit,
+        DisplayFit::Fits,
+        "the ultrawide fits this window whole"
+    );
+    assert!(
+        sent.is_empty(),
+        "a window that already fits its display was resized to {sent:?} anyway"
+    );
+
+    let (fit, sent) = ask(Some(LAPTOP));
+    let want = egui::vec2(LAPTOP.0, natural.1);
+    assert_eq!(
+        fit,
+        DisplayFit::Shrunk(want),
+        "the laptop panel is narrower than this window, so the frame should have \
+         asked for {want:?}"
+    );
+    assert_eq!(
+        sent,
+        vec![want],
+        "the frame emitted no InnerSize the integration could act on — the cap \
+         was computed and thrown away"
     );
 }
 

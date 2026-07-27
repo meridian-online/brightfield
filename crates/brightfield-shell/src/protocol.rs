@@ -552,11 +552,10 @@ impl ProtocolModel {
         brightfield_protocol::layout(&inputs.graph_collapsed, &cfg)
     }
 
-    /// The canvas the window has to fit: the componentwise largest of every
-    /// picture **one fold gesture** reaches from the boot canvas, at the boot
-    /// flow.
+    /// The canvas the window is **sized for**: the componentwise largest of the
+    /// states this view spends its time in, at the boot flow.
     ///
-    /// # Why the boot canvas is the wrong thing to size a window from
+    /// # Why the boot canvas alone is the wrong thing to size a window from
     ///
     /// It was what [`crate::window::Boot::window_size`] used, and it fitted by
     /// construction and by nothing else: the crosswalk laid out at 1034×1120 into
@@ -567,24 +566,44 @@ impl ProtocolModel {
     /// configuration the user leaves immediately. There is no zoom in this binary
     /// and no fit-to-view, so scroll is the whole of the recovery.
     ///
-    /// # What counts as one gesture
+    /// # What is sized for, and what is left to scroll
     ///
-    /// The graphs `za` can put on the canvas at the flow the window opened on:
-    /// the boot canvas itself, the family unfolded, the CTEs exploded, and the
-    /// chains contracted. A drill scope is strictly smaller than the graph it is
-    /// induced from, so it never sets the envelope. The **flow transpose** is
-    /// deliberately excluded: it is a change of reading axis, not of detail, and
-    /// the horizontal render of the crosswalk is 2146 points across — sizing the
-    /// boot window to it would open a window several times the width of the
-    /// display to spare a keystroke nobody has pressed yet.
+    /// Sized for: the boot canvas itself, the CTEs exploded, and the chains
+    /// contracted — the states `za` reaches at the flow the window opened on
+    /// whose cost is a rank or two. A drill scope is strictly smaller than the
+    /// graph it is induced from, so it never sets the envelope.
     ///
-    /// The family unfold is the expensive candidate — it takes the crosswalk from
-    /// 1018 points across to 1586, and so the window from 1948 to 3000 — and it
-    /// is also the least avoidable one. [`ProtocolNav`] boots its cursor on the
-    /// first node with no producer in id order, and on this fixture that node is
-    /// the family tile: `za` pressed at boot, with no navigation at all, is the
-    /// unfold. A window sized to spare the *second* gesture and not the first
-    /// would be measuring against the same kind of assumption this replaced.
+    /// Left to scroll: the **flow transpose**, which is a change of reading axis
+    /// rather than of detail and lays the crosswalk out 2146 points across; and
+    /// the **family unfold**, which is the trade this makes and is argued below.
+    ///
+    /// # The family unfold: the case for sizing to it, and why it loses anyway
+    ///
+    /// The case is real and is kept here rather than deleted, because a reader
+    /// who re-derives it from scratch will re-add the graph. It is not an
+    /// unlikely state: [`ProtocolNav`] boots its cursor on the first node with no
+    /// producer in id order, and on the crosswalk that node is the family tile,
+    /// so `za` pressed at boot — with no navigation at all — is the unfold. It
+    /// really is one keystroke away, and a window sized to spare the *second*
+    /// gesture but not the first would be measuring against the same kind of
+    /// assumption this function was written to replace.
+    ///
+    /// It loses on what it costs every other session. The unfold takes the
+    /// crosswalk from 1018 points across to 1586, and so the window from 1948 to
+    /// 3000: a thousand points of window, on every launch, to spare one keystroke
+    /// in a state that is opened rarely and left immediately. And 3000 points is
+    /// twice the width of a 1512-point laptop panel — so sizing for it does not
+    /// merely waste space on a large display, it asks for a window a laptop
+    /// cannot show at all, and what then arrives is whatever the compositor chose
+    /// to grant. One keystroke's convenience is not worth that, in either
+    /// direction, so the unfold scrolls like the transpose does.
+    ///
+    /// # This answers what the content wants, not what the screen will give
+    ///
+    /// Even at 1948 points the vertical crosswalk is wider than a laptop panel,
+    /// and nothing here knows that — the two questions are separate and are
+    /// answered separately. See [`crate::window::window_size_on_display`], which
+    /// caps what is asked for against the monitor the window opens on.
     #[must_use]
     pub fn boot_extent(inputs: &ProtocolInputs, flow: Flow) -> (f64, f64) {
         let cfg = LayoutConfig {
@@ -593,7 +612,6 @@ impl ProtocolModel {
         };
         [
             &inputs.graph_collapsed,
-            &inputs.graph_full,
             &inputs.graph_exploded,
             &inputs.graph_contracted,
         ]
