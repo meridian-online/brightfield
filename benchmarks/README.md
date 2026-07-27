@@ -55,6 +55,23 @@ company-identifier crosswalk (an interval brush over its `confidence`
 column, re-aggregating a density). Pass a local copy of the published
 parquet: `--crosswalk-parquet <path>`.
 
+Every scenario is additionally measured under a **settled pan/zoom**: one
+navigation extent applied to plot B along that plot's own x channel, with every
+mark of that plot re-queried. It is a third gesture rather than a fourth
+scenario, because what it measures is a different PATH over the same shapes:
+navigation resolves to an extent on the session, not to a selection, and the
+pre-aggregation layer's only call site is selection propagation — so a
+navigation re-query takes the direct query at every row count, whichever
+configuration the run is in. The record prints it in one column, `Settled zoom
+→ data`, and it is quoted from the direct run alone for that reason.
+
+The harness reads the navigated column and its range off the mark's own drawn
+batch rather than reusing the brushed column, and fails the run if the extent
+did not reduce that mark's rows. An earlier revision reused the brush column,
+which two of the four scenarios do not plot on that axis: the extent matched no
+mark, the emitted SQL came back unchanged, the cache served it, and the record
+printed 0.0 ms for a gesture that had done nothing.
+
 ## Two gestures, and why the slider drives a selection
 
 A brush and a slider are not the same interaction wearing different clothes,
