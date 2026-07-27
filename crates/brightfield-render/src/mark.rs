@@ -158,6 +158,38 @@ pub trait MarkRenderer {
         highlight: Option<&HighlightState>,
     );
 
+    /// Render the mark knowing its query could **not** be narrowed to the
+    /// plot's frame — it still summarises rows that are off screen.
+    ///
+    /// A navigated plot filters the marks whose plans can carry a bound; a
+    /// scalar aggregate with no grouping key beneath it cannot, so it returns
+    /// the byte-identical row it returned at full extent and its drawing is
+    /// clipped at the frame edge. What a reader then sees is a fit that looks
+    /// exactly like a fit over the visible points. The panel says otherwise in
+    /// a sentence, but a screenshot carries the picture and drops the sentence,
+    /// and the picture is what people keep. So the difference has to be in the
+    /// data ink.
+    ///
+    /// **The default is deliberately `render` unchanged, and that is a hazard
+    /// worth naming.** Most marks are row-level: they rescope, this is never
+    /// called for them, and inventing a treatment they would never wear is
+    /// worse than nothing. But it means a mark that *should* distinguish itself
+    /// and does not looks perfectly healthy from here. The obligation travels
+    /// with the mark: if a summarising mark is added — and `declined` names
+    /// mark kinds, not just this one — it owes an override, and the test that
+    /// holds this one (`the_unrescoped_fit_is_dashed_in_the_exported_picture`)
+    /// is the shape to copy.
+    fn render_beyond_frame(
+        &self,
+        scene: &mut Scene,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        scales: &ScaleSet,
+        highlight: Option<&HighlightState>,
+    ) {
+        self.render(scene, batch, channel_map, scales, highlight);
+    }
+
     /// Render with interpolation between previous and current positions.
     ///
     /// `prev_positions` are pixel (x, y) pairs from the previous frame.
@@ -253,6 +285,102 @@ const NULL_INK: Color = crate::ink::ink(meridian_design::viz::NULL_INK_LIGHT);
 
 /// Default line stroke width.
 const LINE_STROKE_WIDTH: f64 = 2.0;
+
+/// The dash rhythm a mark wears when its query could not be narrowed to the
+/// plot's frame: **6 px of ink, 4 px of gap**.
+///
+/// Neither number is chosen here. Both are named steps off the design system's
+/// spacing ladder — `SPACE_3`, the icon-to-label gap, and `SPACE_2`, the base
+/// unit — which is that ladder's whole purpose: a consumer that needs a length
+/// picks a rung instead of inventing a fifth value. The rhythm is a texture and
+/// not a colour, so it takes no colour token; see [`dash_polyline`] for why the
+/// treatment is texture rather than hue.
+const BEYOND_FRAME_DASH: f64 = meridian_design::spacing::SPACE_3 as f64;
+
+/// The gap between dashes — see [`BEYOND_FRAME_DASH`].
+const BEYOND_FRAME_GAP: f64 = meridian_design::spacing::SPACE_2 as f64;
+
+/// Cut a pixel-space polyline into the drawn runs of a dash pattern.
+///
+/// # Why a dash, and not desaturation or an end-cap
+///
+/// The job is to make a mark that could not rescope tell a reader so **in the
+/// picture**, without them reading a word. Three treatments were on the table.
+///
+/// *Desaturation* is the one the design system argues against. `colour.md`'s
+/// rules are rules about identity: colour follows the entity, never its rank,
+/// and a filter that changes what is on screen must not repaint the survivors.
+/// Fading a series off its assigned palette slot is exactly that repaint, and
+/// it walks the mark toward `null_ink`, the one grey the system reserves for
+/// "this value is NULL". The fit is not null and its colour has not changed
+/// meaning. Desaturation also fails on its own terms: it is only visible beside
+/// something at full chroma, and a lone fit line has no such neighbour in
+/// frame.
+///
+/// *An end-cap or fade where the mark's true domain leaves the frame* is the
+/// most literal statement — "my data continues past here" — and it is the one
+/// this cannot do yet, for a reason worth writing down rather than rediscover-
+/// ing. The wired signal (`NavigationFilterPass::declined`) names the AXIS
+/// COLUMNS the extent could not be pushed into. It does not say which SIDE the
+/// mark's data runs off, and deriving that from the batch would stand a second,
+/// independent detection beside the first — two answers to one question is how
+/// they drift apart. A cap also has to overcome its own ambiguity: a marker at
+/// the frame edge reads about as easily as "the data stops here", which is the
+/// opposite of the message.
+///
+/// *A dash* asks nothing of the colour channel. It invents no token, cannot
+/// collide with a reserved status hue or with a second series in a grouped
+/// regression, and needs no reference in frame to be read. It survives what a
+/// screenshot survives — greyscale, colour-vision deficiency, and being scaled
+/// down in someone's slide deck — which matters here more than usual, because
+/// the whole premise of this treatment is that the picture travels and the
+/// sentence beside it does not. It is also unspent: nothing else in this
+/// renderer draws a dashed anything, so the vocabulary is free.
+///
+/// # What it does
+///
+/// Walks arc length across the whole polyline, so the rhythm is continuous over
+/// segment joins rather than restarting at each one — a phase reset per segment
+/// would bunch the dashes wherever the sampling happens to be dense.
+fn dash_polyline(points: &[(f64, f64)], on: f64, off: f64) -> Vec<Line> {
+    let mut out = Vec::new();
+    if on <= 0.0 || off <= 0.0 {
+        return out;
+    }
+    let period = on + off;
+    let mut travelled = 0.0f64;
+    for w in points.windows(2) {
+        let (x0, y0) = w[0];
+        let (x1, y1) = w[1];
+        let len = (x1 - x0).hypot(y1 - y0);
+        // NaN or a zero-length segment contributes nothing and must not enter
+        // the walk; written as an inclusion so a NaN falls out rather than
+        // through.
+        if !(len.is_finite() && len > 0.0) {
+            continue;
+        }
+        let mut s = 0.0f64;
+        while s < len {
+            let phase = (travelled + s) % period;
+            // A floor on the step, so a run that rounds to nothing cannot spin
+            // here. At 1e-6 px it is far below anything that reaches a pixel.
+            let step = if phase < on {
+                let run = (on - phase).min(len - s).max(1e-6);
+                let (a, b) = (s / len, (s + run).min(len) / len);
+                out.push(Line::new(
+                    kurbo::Point::new(x0 + (x1 - x0) * a, y0 + (y1 - y0) * a),
+                    kurbo::Point::new(x0 + (x1 - x0) * b, y0 + (y1 - y0) * b),
+                ));
+                run
+            } else {
+                (period - phase).min(len - s).max(1e-6)
+            };
+            s += step;
+        }
+        travelled += len;
+    }
+    out
+}
 
 /// Reserved output-column name the density lowerers emit for the per-bin
 /// occupancy count. Kept distinct from any user column so a density positional
@@ -2952,14 +3080,18 @@ impl Default for RegressionRenderer {
     }
 }
 
-impl MarkRenderer for RegressionRenderer {
-    fn render(
+impl RegressionRenderer {
+    /// The one drawing routine. `beyond_frame` decides only how the fitted line
+    /// is stroked — everything the fit CLAIMS is computed identically either
+    /// way, because recomputing it over the visible rows would be a different
+    /// answer to a question nobody asked, and it was considered and not taken.
+    fn draw(
         &self,
         scene: &mut Scene,
         batch: &RecordBatch,
         channel_map: &ChannelMap,
         scales: &ScaleSet,
-        _highlight: Option<&HighlightState>,
+        beyond_frame: bool,
     ) {
         let x_scale = match scales.get(Channel::X) {
             Some(s) => s,
@@ -3091,16 +3223,56 @@ impl MarkRenderer for RegressionRenderer {
                 scene.fill(Fill::NonZero, Affine::IDENTITY, band_colour, None, &band);
             }
 
-            // Draw the fitted line on top.
+            // Draw the fitted line on top — solid when the fit describes what
+            // is on screen, dashed when it still summarises rows that are not.
+            // Same colour, same width, same geometry: only the texture moves,
+            // so the mark keeps its identity while ceasing to look like a fit
+            // over the visible points.
             let stroke = kurbo::Stroke::new(LINE_STROKE_WIDTH);
-            for w in line_pts.windows(2) {
-                let line = Line::new(
-                    kurbo::Point::new(w[0].0, w[0].1),
-                    kurbo::Point::new(w[1].0, w[1].1),
-                );
+            let segments = if beyond_frame {
+                dash_polyline(&line_pts, BEYOND_FRAME_DASH, BEYOND_FRAME_GAP)
+            } else {
+                line_pts
+                    .windows(2)
+                    .map(|w| {
+                        Line::new(
+                            kurbo::Point::new(w[0].0, w[0].1),
+                            kurbo::Point::new(w[1].0, w[1].1),
+                        )
+                    })
+                    .collect()
+            };
+            for line in segments {
                 scene.stroke(&stroke, Affine::IDENTITY, colour, None, &line);
             }
         }
+    }
+}
+
+impl MarkRenderer for RegressionRenderer {
+    fn render(
+        &self,
+        scene: &mut Scene,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        scales: &ScaleSet,
+        _highlight: Option<&HighlightState>,
+    ) {
+        self.draw(scene, batch, channel_map, scales, false);
+    }
+
+    /// The fit is dashed — same colour, same width, same geometry, only the
+    /// texture moves. `dash_polyline` in this module carries the argument for
+    /// that treatment over the two beside it (desaturation, an end-cap).
+    fn render_beyond_frame(
+        &self,
+        scene: &mut Scene,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        scales: &ScaleSet,
+        _highlight: Option<&HighlightState>,
+    ) {
+        self.draw(scene, batch, channel_map, scales, true);
     }
 
     fn augment_scales(
@@ -6456,6 +6628,169 @@ mod tests {
             (intercept - 3.0).abs() < 0.05,
             "Anscombe I intercept ≈ 3.0 ({intercept})"
         );
+    }
+
+    /// **The dash is intermittent, it inks about six pixels in every ten, and
+    /// its rhythm survives a segment join.**
+    ///
+    /// Asserted on total drawn LENGTH, not on a count of segments: a "dash"
+    /// that emitted a hundred runs butted end to end would satisfy a count and
+    /// look exactly like a solid line.
+    ///
+    /// The polyline is deliberately sampled at 7 px against a 10 px period, so
+    /// the phase does not line up with the joins. Under a walker that reset its
+    /// phase at each segment — the natural wrong implementation — every dash
+    /// would start at a join and none would continue across one, which is what
+    /// the last assertion catches.
+    #[test]
+    fn a_dash_draws_gaps_and_carries_its_rhythm_across_joins() {
+        let pts: Vec<(f64, f64)> = (0..=10).map(|i| (f64::from(i) * 7.0, 50.0)).collect();
+        let runs = dash_polyline(&pts, BEYOND_FRAME_DASH, BEYOND_FRAME_GAP);
+        let inked: f64 = runs.iter().map(|l| (l.p1 - l.p0).hypot()).sum();
+        let total = 70.0;
+
+        assert!(!runs.is_empty(), "a dashed 70 px run drew nothing");
+        assert!(
+            (inked / total - 0.6).abs() < 0.08,
+            "a 6-on/4-off dash inked {:.0}% of the path, expected about 60% — a pattern \
+             that inks all of it is a solid line with extra steps in it",
+            inked / total * 100.0
+        );
+
+        let joined = runs
+            .windows(2)
+            .filter(|w| (w[0].p1.x - w[1].p0.x).abs() < 1e-6)
+            .count();
+        assert!(
+            joined > 0,
+            "no dash continued across a segment join, so the phase is being reset at each \
+             one — the dashes would bunch wherever the sampling happens to be dense"
+        );
+    }
+
+    /// **A fit that could not rescope is drawn differently from one that did**,
+    /// through the two entry points the scene builder chooses between.
+    ///
+    /// This is a structural check and says so: it holds that the dashed call
+    /// emits more, shorter strokes over the same path from the same batch. What
+    /// holds that the difference reaches a PICTURE is the shell's
+    /// `the_unrescoped_fit_is_dashed_in_the_exported_picture`, which counts
+    /// runs of mark ink in an exported PNG. Name the test that fails.
+    #[test]
+    fn the_two_entry_points_draw_the_fit_differently() {
+        let (batch, cm, scales) = anscombe_fit();
+        let renderer = RegressionRenderer::default();
+
+        let mut solid = Scene::new();
+        renderer.render(&mut solid, &batch, &cm, &scales, None);
+        let mut dashed = Scene::new();
+        renderer.render_beyond_frame(&mut dashed, &batch, &cm, &scales, None);
+
+        let (solid_paths, dashed_paths) = (count_scene_paths(&solid), count_scene_paths(&dashed));
+        assert!(
+            dashed_paths > solid_paths,
+            "the dashed fit emitted {dashed_paths} paths against the solid fit's \
+             {solid_paths} — if they are equal, `render_beyond_frame` is still the \
+             default forward and the picture says nothing"
+        );
+
+        // …and the extra paths are gaps, not subdivision: the dashed geometry
+        // covers well under the whole path.
+        let path = sampled_fit_path(&scales);
+        let full: f64 = path
+            .windows(2)
+            .map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1))
+            .sum();
+        let inked: f64 = dash_polyline(&path, BEYOND_FRAME_DASH, BEYOND_FRAME_GAP)
+            .iter()
+            .map(|l| (l.p1 - l.p0).hypot())
+            .sum();
+        assert!(
+            inked < full * 0.8,
+            "the dashed fit covers {:.0}% of the path — too close to solid to read as a \
+             different treatment",
+            inked / full * 100.0
+        );
+    }
+
+    /// Anscombe I as a one-row regression batch plus the scales the fit is
+    /// sampled over — the fixture two tests share.
+    fn anscombe_fit() -> (RecordBatch, ChannelMap, ScaleSet) {
+        let xs = [10.0, 8.0, 13.0, 9.0, 11.0, 14.0, 6.0, 4.0, 12.0, 7.0, 5.0];
+        let ys = [
+            8.04, 6.95, 7.58, 8.81, 8.33, 9.96, 7.24, 4.26, 10.84, 4.82, 5.68,
+        ];
+        let n = xs.len() as f64;
+        let x_bar = xs.iter().sum::<f64>() / n;
+        let mean_y = ys.iter().sum::<f64>() / n;
+        let sxx: f64 = xs.iter().map(|x| (x - x_bar).powi(2)).sum();
+        let syy: f64 = ys.iter().map(|y| (y - mean_y).powi(2)).sum();
+        let sxy: f64 = xs
+            .iter()
+            .zip(ys.iter())
+            .map(|(x, y)| (x - x_bar) * (y - mean_y))
+            .sum();
+        let slope = sxy / sxx;
+        let intercept = mean_y - slope * x_bar;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("slope", DataType::Float64, false),
+            Field::new("intercept", DataType::Float64, false),
+            Field::new("n", DataType::Float64, false),
+            Field::new("x_bar", DataType::Float64, false),
+            Field::new("sxx", DataType::Float64, false),
+            Field::new("sxy", DataType::Float64, false),
+            Field::new("syy", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![slope])),
+                Arc::new(Float64Array::from(vec![intercept])),
+                Arc::new(Float64Array::from(vec![n])),
+                Arc::new(Float64Array::from(vec![x_bar])),
+                Arc::new(Float64Array::from(vec![sxx])),
+                Arc::new(Float64Array::from(vec![sxy])),
+                Arc::new(Float64Array::from(vec![syy])),
+            ],
+        )
+        .unwrap();
+
+        let mut scales = ScaleSet::new();
+        scales.insert(
+            Channel::X,
+            Scale::Linear {
+                domain_min: 0.0,
+                domain_max: 20.0,
+                range_start: 40.0,
+                range_end: 600.0,
+            },
+        );
+        scales.insert(
+            Channel::Y,
+            Scale::Linear {
+                domain_min: 0.0,
+                domain_max: 12.0,
+                range_start: 450.0,
+                range_end: 20.0,
+            },
+        );
+        (batch, ChannelMap::new(), scales)
+    }
+
+    /// The pixel path the fit is stroked along, in the same 32 samples the
+    /// renderer takes.
+    fn sampled_fit_path(scales: &ScaleSet) -> Vec<(f64, f64)> {
+        let x = scales.get(Channel::X).expect("x scale");
+        let y = scales.get(Channel::Y).expect("y scale");
+        let (lo, hi) = (x.domain_min().unwrap(), x.domain_max().unwrap());
+        (0..32)
+            .map(|i| {
+                let t = f64::from(i) / 31.0;
+                let xv = lo + (hi - lo) * t;
+                (x.map_f64(xv), y.map_f64(0.5 * xv + 3.0))
+            })
+            .collect()
     }
 
     #[test]
