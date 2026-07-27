@@ -990,6 +990,22 @@ pub fn validate_crossfilter_columns(spec: &Spec) -> Result<(), ParseError> {
                 column: lb.colour_column.clone(),
             });
     }
+    // Interval sliders dispatch an interval over their OWN `column:`, which is
+    // not any plot's channel — so `build_brushable_bindings` above cannot see
+    // it, and before this a typo'd `column:` reached the user as a chart that
+    // never filtered under a handle that said it did. Its contributor path
+    // ends `/input[slider]`, which `plot_node_path` can never produce, so the
+    // self-exclusion test below never drops it: a slider filters every
+    // subscriber, including a plot that declares it as a child.
+    for slider in build_interval_sliders(spec, &mut sink) {
+        producers
+            .entry(slider.selection.clone())
+            .or_default()
+            .push(ProducerColumn {
+                plot: slider.path.0.clone(),
+                column: slider.column.clone(),
+            });
+    }
     if producers.is_empty() {
         return Ok(());
     }
@@ -1097,6 +1113,173 @@ fn inline_source_columns(spec: &Spec, source: &str) -> Option<Vec<String>> {
         SpecValue::Object(first) => Some(first.keys().cloned().collect()),
         SpecValue::Array(first) => Some((0..first.len()).map(|i| format!("c{i}")).collect()),
         _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Interval sliders
+// ---------------------------------------------------------------------------
+
+/// One spec-declared **interval slider**: a node carrying BOTH `input: slider`
+/// and an interval `select:`, whose single handle pushes an interval over
+/// `column:` into the selection named by `as:`.
+///
+/// This lives here rather than in the shell because two things need the same
+/// answer and must not derive it twice. The shell builds a widget from it; the
+/// cross-filter column check needs the `column:` it will filter on, and could
+/// not see it while the collection lived downstream of analysis — which is
+/// exactly why a typo'd `column:` used to reach the user as a chart that never
+/// filtered under a handle that said it did.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IntervalSlider {
+    /// The widget's own component path, with an `input[slider]` leaf.
+    ///
+    /// The leaf is load-bearing: it is the contributor identity crossfilter
+    /// self-exclusion compares RAW against [`plot_node_path`] of each
+    /// subscriber mark, and that function's output always ends at a `/plot[i]`
+    /// boundary or a `/mark[…]` leaf — so it can never equal this. A slider
+    /// has no picture of its own to spare, so it must filter every subscriber
+    /// including a plot that declares it as a child.
+    pub path: ComponentPath,
+    /// The selection it contributes to (`as: $window` → `"window"`).
+    pub selection: String,
+    /// The column the pushed interval is over (`column: elapsed`).
+    pub column: String,
+    /// The widget's `label:`, when it declared one.
+    pub label: Option<String>,
+    /// The interval's FIXED end, from `min:` — a slider's value is one bound,
+    /// so the other has to come from the declared range.
+    pub min: f64,
+    /// The top of the handle's travel, from `max:`.
+    pub max: f64,
+    /// The widget's `step:` (`None` = continuous).
+    pub step: Option<f64>,
+    /// The handle's value as the spec declared it (`value:`, defaulting to
+    /// `max:` — the whole range admitted, which is what an untouched slider
+    /// should mean).
+    pub value: f64,
+}
+
+/// Every interval slider the spec declares, and a warning for every node that
+/// asked for one and will not get one.
+///
+/// Everything is read off the spec and nothing is derived from data: a slider
+/// whose range came from a domain query would put a query failure on the
+/// compose path at the one moment a hand is already on the control. A range
+/// the spec did not declare is refused — and, since this function is the only
+/// place that refusal happens, refused **out loud**: the returned warnings name
+/// the node and the literals it lacks, so a dropped control never again looks
+/// like a control that was never asked for.
+pub fn build_interval_sliders(
+    spec: &Spec,
+    warnings: &mut Vec<ParseWarning>,
+) -> Vec<IntervalSlider> {
+    let mut out = Vec::new();
+    if let Some(root) = &spec.root {
+        collect_interval_sliders(root, "root", &mut out, warnings);
+    }
+    out
+}
+
+/// Walk `component`, appending one slider per interval slider found.
+///
+/// The path scheme is [`crate::analysis::plot_node_path`]'s address space —
+/// each container contributes `/<container>[i]` per item — so the paths this
+/// produces are comparable with the mark paths self-exclusion tests them
+/// against.
+fn collect_interval_sliders(
+    component: &Component,
+    path: &str,
+    out: &mut Vec<IntervalSlider>,
+    warnings: &mut Vec<ParseWarning>,
+) {
+    match component {
+        Component::Interactor(node) => {
+            // Only the interval kinds: a slider writes an interval, and a
+            // toggle/highlight node that happened to carry `input:` would mean
+            // something this control cannot express.
+            if !matches!(
+                node.kind,
+                InteractorKind::IntervalX | InteractorKind::IntervalY | InteractorKind::IntervalXY
+            ) {
+                return;
+            }
+            let literal = |key: &str| match node.options.get(key) {
+                Some(ValueOrParamRef::Value(v)) => Some(v),
+                _ => None,
+            };
+            let number = |key: &str| match literal(key) {
+                Some(SpecValue::Integer(i)) => Some(*i as f64),
+                Some(SpecValue::Float(f)) => Some(*f),
+                _ => None,
+            };
+            let text = |key: &str| match literal(key) {
+                Some(SpecValue::String(s)) => Some(s.clone()),
+                _ => None,
+            };
+            if text("input").as_deref() != Some("slider") {
+                return;
+            }
+            let widget_path = ComponentPath(format!("{path}/input[slider]"));
+            let selection = match node.options.get("as") {
+                Some(ValueOrParamRef::Param(p)) => Some(p.0.clone()),
+                _ => None,
+            };
+            let (column, min, max) = (text("column"), number("min"), number("max"));
+            // One pass over the four literals, in the order they are read, so
+            // the warning itemises everything wrong rather than the first
+            // thing wrong — an author fixing `min:` only to be told about
+            // `max:` has been told half the truth twice.
+            let mut missing: Vec<String> = Vec::new();
+            if selection.is_none() {
+                missing.push("as".to_string());
+            }
+            if column.is_none() {
+                missing.push("column".to_string());
+            }
+            if min.is_none() {
+                missing.push("min".to_string());
+            }
+            if max.is_none() {
+                missing.push("max".to_string());
+            }
+            let (Some(selection), Some(column), Some(min), Some(max)) =
+                (selection, column, min, max)
+            else {
+                warnings.push(ParseWarning::IntervalSliderIncomplete {
+                    path: widget_path.0,
+                    missing,
+                });
+                return;
+            };
+            out.push(IntervalSlider {
+                path: widget_path,
+                selection,
+                column,
+                label: text("label"),
+                min,
+                max,
+                step: number("step"),
+                // An untouched slider admits its whole declared range.
+                value: number("value").unwrap_or(max),
+            });
+        }
+        Component::Plot(node) => {
+            for (i, item) in node.items.iter().enumerate() {
+                collect_interval_sliders(item, &format!("{path}/plot[{i}]"), out, warnings);
+            }
+        }
+        Component::HConcat(node) => {
+            for (i, item) in node.items.iter().enumerate() {
+                collect_interval_sliders(item, &format!("{path}/hconcat[{i}]"), out, warnings);
+            }
+        }
+        Component::VConcat(node) => {
+            for (i, item) in node.items.iter().enumerate() {
+                collect_interval_sliders(item, &format!("{path}/vconcat[{i}]"), out, warnings);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -2145,6 +2328,11 @@ pub fn analyse_spec(spec: &Spec) -> Result<SpecAnalysis, ParseError> {
 
     // Interactor binding warnings.
     warnings.extend(validate_interactor_bindings(spec));
+
+    // Interval sliders — the sliders themselves are collected by whoever
+    // draws them; what analysis owes is the warning for every node that asked
+    // for one and will not get one, so a control that never appears says why.
+    let _ = build_interval_sliders(spec, &mut warnings);
 
     // Selection subscriber graph.
     let selection_subscribers = build_selection_subscriber_graph(spec);

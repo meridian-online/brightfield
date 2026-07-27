@@ -479,6 +479,211 @@ vconcat:
     // And the slider is not wedged: the next drag still dispatches.
     doc.note_interval_drag(&control, 8.0);
     assert_eq!(doc.pump_interval_drags(std::slice::from_ref(&control)), 1);
+
+    // The handle is where the hand left it — and the picture under it is now
+    // EMPTY, because the mark whose query the binder rejected was dropped from
+    // the composition. That was the whole of what this test used to judge, and
+    // it left the interesting half unjudged: the document has to be able to say
+    // what went wrong, or a chart that emptied itself is indistinguishable from
+    // a filter that matched no rows.
+    let fault = doc
+        .chart_fault()
+        .expect("the document must know why its mark did not draw");
+    assert!(
+        fault.contains("no_such_column"),
+        "the fault must name the column the engine refused, or it is not worth \
+         showing anyone: {fault}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A slider's column is validated
+// ---------------------------------------------------------------------------
+
+/// **A typo'd `column:` over a `query:` source reaches the window as a banner.**
+///
+/// The static check cannot decide this one and should not pretend to: a
+/// `query:` source has no schema until DuckDB has one, so nothing in the spec
+/// text says whether `no_such_column` exists. What can be held is that the
+/// moment the binder DOES know, a person is told — through the notification
+/// layer a real frame draws, not through stderr.
+///
+/// Asserted at the surface: the banner the window is showing after the drag.
+#[test]
+fn a_slider_column_the_source_lacks_raises_a_banner_when_it_is_dragged() {
+    const SPEC: &str = r#"
+params:
+  window:
+    select: crossfilter
+data:
+  t: { query: "SELECT i AS k FROM range(50) t(i)" }
+vconcat:
+  - plot:
+      - mark: dot
+        data: { from: t, filterBy: $window }
+        x: k
+        y: k
+  - select: intervalX
+    input: slider
+    as: $window
+    column: no_such_column
+    min: 0
+    max: 49
+    value: 49
+"#;
+    let ctx = egui::Context::default();
+
+    // The control first, because a banner that shows for every slider says
+    // nothing about any of them. Same window, same frames, same drag, over the
+    // shipped example — which works — and the window must stay silent.
+    let mut working = live_window(&example_path());
+    frame(&mut working, &ctx, Vec::new());
+    frame(&mut working, &ctx, Vec::new());
+    let good = control(&working);
+    working.chart_doc_mut().note_interval_drag(&good, 30.0);
+    frame(&mut working, &ctx, Vec::new());
+    assert_eq!(
+        working.notifications().len(),
+        0,
+        "a slider that works must raise nothing; the window is showing {:?}",
+        working
+            .notifications()
+            .iter()
+            .map(|n| n.title.clone())
+            .collect::<Vec<_>>()
+    );
+
+    let dir = std::env::temp_dir().join(format!("bf-slider-column-{}", std::process::id()));
+    fs::create_dir_all(&dir).expect("scratch dir");
+    let path = dir.join("bad-column.yaml");
+    fs::write(&path, SPEC).expect("write the spec");
+
+    let mut app = live_window(&path);
+    frame(&mut app, &ctx, Vec::new());
+    frame(&mut app, &ctx, Vec::new());
+
+    let control = control(&app);
+    app.chart_doc_mut().note_interval_drag(&control, 12.0);
+    // One frame: the rail dispatches the queued value inside its own draw, so
+    // the gesture and the banner it earns belong to the same frame.
+    frame(&mut app, &ctx, Vec::new());
+
+    let said: Vec<String> = app
+        .notifications()
+        .iter()
+        .map(|n| format!("{}\n{}", n.title, n.body.clone().unwrap_or_default()))
+        .collect();
+    assert!(
+        said.iter().any(|b| b.contains("no_such_column")),
+        "after a drag the window must be SHOWING why the chart stopped filtering, \
+         and it must name the column; it is showing {said:?}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// **The same typo over an INLINE source is refused at load**, because there
+/// the schema is in the spec text and there is nothing to wait for.
+///
+/// This is the half the brief calls statically decidable, and it is decidable
+/// for exactly the reason the mark's own columns are: an inline source's
+/// columns are the first row's keys. The load fails, naming the column and the
+/// ones that exist — the failure a `query:` source can only report after a
+/// gesture, reported here before the window opens.
+#[test]
+fn a_slider_column_an_inline_source_lacks_is_refused_at_load() {
+    const SPEC: &str = r#"
+params:
+  window:
+    select: crossfilter
+data:
+  t:
+    - { k: 1, v: 10 }
+    - { k: 2, v: 20 }
+vconcat:
+  - plot:
+      - mark: dot
+        data: { from: t, filterBy: $window }
+        x: k
+        y: v
+  - select: intervalX
+    input: slider
+    as: $window
+    column: no_such_column
+    min: 0
+    max: 49
+    value: 49
+"#;
+    let err = LiveDashboard::load_str(SPEC, None)
+        .err()
+        .expect("a slider filtering on a column the inline source cannot bind must not load");
+    assert!(
+        err.contains("no_such_column"),
+        "the refusal must name the column: {err}"
+    );
+    assert!(
+        err.contains('k') && err.contains('v'),
+        "…and the columns that DO exist, which is the whole of the fix: {err}"
+    );
+}
+
+/// **A slider the collector drops says why it was dropped.**
+///
+/// `min:`/`max:`/`column:`/`as:` are refused rather than guessed at — a range
+/// read off a domain query would put a query failure on the compose path with
+/// a hand already on the control. The refusal is right; the silence was not.
+/// Before this the widget simply did not appear and nothing, anywhere,
+/// explained the absence.
+///
+/// Asserted through the composition the window receives, and through the
+/// window's own banner — the two places a person could learn it.
+#[test]
+fn a_slider_missing_its_range_is_dropped_out_loud() {
+    const SPEC: &str = r#"
+params:
+  window:
+    select: crossfilter
+data:
+  t: { query: "SELECT i AS k FROM range(50) t(i)" }
+vconcat:
+  - plot:
+      - mark: dot
+        data: { from: t, filterBy: $window }
+        x: k
+        y: k
+  - select: intervalX
+    input: slider
+    as: $window
+    column: k
+    min: 0
+"#;
+    let dir = std::env::temp_dir().join(format!("bf-slider-norange-{}", std::process::id()));
+    fs::create_dir_all(&dir).expect("scratch dir");
+    let path = dir.join("no-range.yaml");
+    fs::write(&path, SPEC).expect("write the spec");
+
+    let app = live_window(&path);
+    assert!(
+        app.chart_doc().composed.intervals.is_empty(),
+        "a slider with no `max:` cannot be built, and still is not"
+    );
+
+    let lines = app.load_diagnostics().lines();
+    assert!(
+        lines.iter().any(|l| l.contains("max")),
+        "the drop must name the literal that is missing: {lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("input[slider]")),
+        "…and where the node is, so the author can find it: {lines:?}"
+    );
+    assert!(
+        !app.notifications().is_empty(),
+        "and the window must be showing it — a diagnostic nobody sees is the \
+         silence this replaces"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
 }
 
 // ---------------------------------------------------------------------------

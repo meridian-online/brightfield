@@ -376,6 +376,23 @@ pub enum ParseWarning {
         /// ignored map (`sort.limit`).
         key: String,
     },
+
+    /// A node declaring `input: slider` over an interval `select:` is missing
+    /// one of the four literals the widget cannot be built without — `as:`,
+    /// `column:`, `min:`, `max:` — so **no control is drawn for it at all**.
+    ///
+    /// The drop is deliberate (a range the spec did not declare is refused
+    /// rather than guessed at from a domain query), but until this warning it
+    /// was also silent: the widget simply did not appear and nothing said why.
+    /// Statically decidable in full — all four are literals in the spec text,
+    /// so no data is needed to know the control will be missing.
+    IntervalSliderIncomplete {
+        /// Component path of the slider node, so the author can find it.
+        path: String,
+        /// The option keys it needs and does not have as literals, in the
+        /// order the collector reads them.
+        missing: Vec<String>,
+    },
 }
 
 impl fmt::Display for ParseWarning {
@@ -467,6 +484,15 @@ impl fmt::Display for ParseWarning {
             Self::UnconsumedMarkOption { mark, key } => write!(
                 f,
                 "mark `{mark}` sets `{key}`, which nothing in the render path reads — it has no effect"
+            ),
+            Self::IntervalSliderIncomplete { path, missing } => write!(
+                f,
+                "interval slider at {path} declares no {} — no control is drawn for it",
+                missing
+                    .iter()
+                    .map(|k| format!("`{k}:`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
         }
     }

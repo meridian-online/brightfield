@@ -1196,6 +1196,40 @@ impl MeridianApp {
         }
     }
 
+    /// Raise a banner for a chart the engine would not fully draw, and take it
+    /// down again the moment it would.
+    ///
+    /// A load diagnostic is what a spec had to say before anyone touched it;
+    /// this is what a spec had to say only once someone did. The two cannot be
+    /// merged, because the failure this reports is **not decidable at load**:
+    /// a cross-filter column that a `query:` source does not expose has no
+    /// schema to check against until DuckDB has one, so the binder's rejection
+    /// is the first moment the fact exists. It used to go to stderr, which for
+    /// a windowed application means the chart quietly emptied itself under a
+    /// control that claimed to be filtering it and nothing on screen said so.
+    ///
+    /// One banner, replaced in place while the fault persists — a drag emits a
+    /// value per frame and a stack of identical banners would bury the picture
+    /// it is about.
+    fn say_interaction_fault(&mut self) {
+        let id = NotificationId::new("chart-interaction-fault");
+        match self.charts.doc.chart_fault() {
+            Some(detail) => {
+                self.notifications.raise(
+                    Notification::new(
+                        id,
+                        Severity::Error,
+                        "The chart is missing data the engine refused to query",
+                    )
+                    .body(detail),
+                );
+            }
+            None => {
+                self.notifications.dismiss(id);
+            }
+        }
+    }
+
     /// What the current chart document's load had to say — the read-only hook
     /// a headless test asks "did the window receive it?" through.
     #[must_use]
@@ -1654,6 +1688,11 @@ impl MeridianApp {
             self.ws_mut().set_active(next);
             ctx.request_repaint();
         }
+
+        // After the panes have drawn, because the controls rail dispatches a
+        // slider's queued value inside its own draw — so this frame's gesture
+        // is answered in this frame's banner, not the next one's.
+        self.say_interaction_fault();
 
         // The overlay plane, over everything the frame drew, then the two
         // notification layers over that. All three draw nothing when empty,
