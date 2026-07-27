@@ -5,8 +5,12 @@ use std::path::Path;
 use std::time::Instant;
 
 use brightfield_engine::coordinator::{Coordinator, Interaction};
-use brightfield_engine::{assemble_batches, RecordBatch, SqlPredicate};
-use brightfield_spec::analysis::{analyse_spec, build_brushable_bindings, ComponentPath};
+use brightfield_engine::{
+    assemble_batches, AxisExtent, NavigationExtent, RecordBatch, SqlPredicate,
+};
+use brightfield_spec::analysis::{
+    analyse_spec, build_brushable_bindings, plot_node_path, ComponentPath,
+};
 use brightfield_spec::{parse_spec, Format};
 use brightfield_sql::ir::ScalarValue;
 use serde::Serialize;
@@ -200,6 +204,17 @@ pub struct EngineMeasurement {
     /// plus the re-composite into a Vello scene — the full cost the live
     /// window's frame blocks on for one committed brush step.
     pub live_apply: Stats,
+    /// Per-gesture `Coordinator::apply` latency for a **settled navigation** —
+    /// the pan/zoom extent pushed at the aggregating mark's plot and every mark
+    /// of that plot re-queried.
+    ///
+    /// Measured beside the brush rather than instead of it because they take
+    /// different paths: a brush goes through selection propagation, which is
+    /// the pre-aggregation layer's only call site, and a navigation does not.
+    /// A navigation therefore takes the DIRECT query however this run is
+    /// configured, and comparing the two columns in one row is what makes that
+    /// visible rather than argued.
+    pub navigation_apply: Stats,
     /// Row count of the cross-filtered mark's step under the final brush —
     /// the non-vacuity evidence that the brush actually filtered.
     pub brushed_step_rows: u64,
@@ -381,6 +396,54 @@ pub fn run_engine_suites(
         }
     }
 
+    // --- Navigation seam: per-SETTLED-GESTURE apply latency. ---------------
+    //
+    // The aggregating mark (index 1 in every scenario) and its plot. A
+    // navigation extent belongs to a plot, so the identity is derived the same
+    // way the engine derives it — through `plot_node_path` — rather than by a
+    // second copy of the rule.
+    let nav_plot = {
+        let marks = brightfield_sql::emit::collect_marks_with_paths(&spec);
+        let (_, path) = marks
+            .get(1)
+            .ok_or_else(|| format!("{}: no second mark to navigate", scenario.name))?;
+        plot_node_path(path).to_string()
+    };
+    let mut nav_ms = Vec::with_capacity(iterations);
+    for i in 0..iterations {
+        let (lo, hi) = scenario.drag.interval_in(scenario.brush_domain, i);
+        let interaction = Interaction::Navigate {
+            plot: ComponentPath(nav_plot.clone()),
+            extent: NavigationExtent {
+                x: Some(AxisExtent::new(scenario.brush_column, lo, hi)),
+                y: None,
+            },
+        };
+        let t = Instant::now();
+        let requery = coord.apply(interaction);
+        nav_ms.push(t.elapsed().as_secs_f64() * 1000.0);
+        if requery.affected.is_empty() {
+            return Err(format!(
+                "{}: navigation {i} affected no marks — the measurement would be vacuous",
+                scenario.name
+            ));
+        }
+        for (mark_index, r) in &requery.affected {
+            r.as_ref().map_err(|e| {
+                format!(
+                    "{}: navigation {i} failed re-querying mark {mark_index}: {e}",
+                    scenario.name
+                )
+            })?;
+        }
+    }
+    // Put the frame back before anything else is measured: a leftover extent
+    // would scope every figure below under a gesture the record does not name.
+    coord.apply(Interaction::Navigate {
+        plot: ComponentPath(nav_plot),
+        extent: NavigationExtent::default(),
+    });
+
     // Non-vacuity: under the final brush, the cross-filtered step must hold
     // fewer rows than unfiltered — otherwise the applies filtered nothing.
     let brushed_step_rows = coord
@@ -462,6 +525,7 @@ pub fn run_engine_suites(
         first_materialise_ms: (first_materialise_ms * 1000.0).round() / 1000.0,
         marks,
         coordinator_apply: Stats::from_ms(apply_ms).expect("iterations > 0"),
+        navigation_apply: Stats::from_ms(nav_ms).expect("iterations > 0"),
         live_apply: Stats::from_ms(live_ms).expect("iterations > 0"),
         brushed_step_rows,
         unfiltered_step_rows,

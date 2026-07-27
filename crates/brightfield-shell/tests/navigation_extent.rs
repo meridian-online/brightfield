@@ -690,3 +690,39 @@ fn the_two_extent_stores_agree_once_a_gesture_has_settled() {
     assert!(live.view_extents().is_empty(), "the axes stayed moved");
     assert!(live.query_extents().is_empty(), "the rows stayed scoped");
 }
+
+/// The same law at the seam a caller who holds only an `Interaction` reaches.
+///
+/// The chart pane happens to write the render store on its way past, so the
+/// gate above would pass on a `LiveDashboard::apply` that wrote nothing — it
+/// holds the pane's path, not the seam's. This one hands the interaction
+/// straight to the dashboard, which is what any other consumer of the
+/// coordinator seam would do, and fails if the axes are left behind.
+#[test]
+fn applying_a_navigation_interaction_moves_the_axes_and_the_rows_together() {
+    use brightfield_engine::coordinator::Interaction;
+    use brightfield_engine::{AxisExtent, NavigationExtent};
+    use brightfield_spec::analysis::ComponentPath;
+
+    let mut live = LiveDashboard::load_str(SPREAD_DENSITY, None).expect("loads live");
+    let composed = live.present().expect("first paint");
+    let path = composed.plots[0].path.clone();
+
+    live.apply(Interaction::Navigate {
+        plot: ComponentPath(path.clone()),
+        extent: NavigationExtent {
+            x: Some(AxisExtent::new("v", 1.0, 6.0)),
+            y: None,
+        },
+    })
+    .expect("the navigation re-composites");
+
+    let drawn = live
+        .view_extents()
+        .get(&path)
+        .expect("the seam left the axes at full extent while the rows were scoped");
+    assert_eq!(drawn.x, Some((1.0, 6.0)));
+    let queried = live.query_extents().get(&path).expect("the rows are scoped");
+    let x = queried.x.as_ref().expect("an x bound");
+    assert!((x.min - 1.0).abs() < f64::EPSILON && (x.max - 6.0).abs() < f64::EPSILON);
+}
