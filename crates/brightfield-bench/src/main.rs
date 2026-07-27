@@ -433,6 +433,7 @@ const METHODOLOGY: &[&str] = &[
     "The emitted SQL applies a selection predicate INSIDE an aggregating mark's query — it filters the base rows that get aggregated (row-level marks are wrapped whole). The aggregating scenarios keep their original brush-the-binned-column shape so the measured series stays comparable across harness runs.",
     "Each scenario's engine suites run twice on identical code: automatic pre-aggregation enabled (the shipped configuration) and disabled (the direct-query control). The delta between the two brush-step latencies is the layer's contribution. Cube engagement is verified per run — engaged and serving where the scenario expects it, silent where it does not — and a run whose cube behaviour contradicts the expectation FAILS instead of reporting.",
     "Active interval dimensions enter a cube at RAW data values in this first cut (answer-exactness over cube size). A cube over a ~unique-per-row brushed column (brush-density's value_a) therefore approaches the base table's size and buys little; the bounded-cardinality scenario (brush-binned-density, forty distinct brushed values) and the crosswalk scenario measure the shape the layer is built for. Frame suites run in the shipped configuration only.",
+    "THE SETTLED-ZOOM NUMBERS DO NOT GENERALISE ACROSS COLUMN CARDINALITY, and the committed scenarios are the favourable case. The raw-values rule above applies to a navigated column exactly as it does to a brushed one, but bites harder: on navigation the active column is usually the same column being binned, so the cube becomes GROUP BY bin(x), x. Measured on a densityX over 20,000 distinct doubles, the cube materialises 20,000 rows against a 20,000-row source — no reduction at all, plus the build cost, and every later zoom scans a table the size of the base. Answers stay exact; only the speed collapses. Every navigated column in the committed scenarios is low-cardinality, so this shape is absent from the recorded figures and must not be read out of them.",
     "The crosswalk scenario is opt-in (--crosswalk-parquet) and fixed-scale: it measures the published company-identifier crosswalk dataset as-is; the harness records the file's row count rather than generating data.",
     "In the enabled run, the FIRST brush step carries the one-time cube build (a full-table aggregation); it surfaces in the max percentile, while p50 reflects the steady per-step serve cost. Cubes are session-scoped and never persist.",
     "Each row records which GESTURE drove its timed steps (`drag`). A brush moves BOTH interval endpoints as a rectangle is dragged inside a chart; a slider pins its lower end and advances one handle across fixed stops. They are not interchangeable: the slider's steps are monotone and land exactly on the brushed axis's forty stops (a step falling between two stops would emit different SQL while selecting identical rows, reporting a re-query that did no new work as though it had).",
@@ -1339,18 +1340,28 @@ mod tests {
     /// cubed would send a reader looking for the wrong number.
     #[test]
     fn the_readme_makes_no_claim_the_harness_contradicts() {
-        for refuted in [
-            "Read the peak, not the growth",
-            "RSS is cumulative within a run",
-            "single `--iterations` cap keeps the guarantee",
-            "brush steps served from a cube",
-            "only call site is selection propagation",
-            "quoted from the direct run alone",
-        ] {
-            assert!(
-                !BENCH_README.contains(refuted),
-                "the README still claims {refuted:?}"
-            );
+        // BOTH surfaces, because a retired claim can come back on either and
+        // only one of them was ever checked. The README is what someone reads
+        // before running the harness; `METHODOLOGY` is what ships inside every
+        // record and is rendered into the markdown beside it — so it is what a
+        // reader of a *result* sees, which is the more consequential of the
+        // two. A review found both retired sentences could be re-inserted into
+        // the rendered blurb with all 42 tests still green.
+        let rendered = METHODOLOGY.join("\n");
+        for (surface, text) in [("README", BENCH_README), ("methodology", &rendered[..])] {
+            for refuted in [
+                "Read the peak, not the growth",
+                "RSS is cumulative within a run",
+                "single `--iterations` cap keeps the guarantee",
+                "brush steps served from a cube",
+                "only call site is selection propagation",
+                "quoted from the direct run alone",
+            ] {
+                assert!(
+                    !text.contains(refuted),
+                    "the {surface} still claims {refuted:?}"
+                );
+            }
         }
         // Line wrapping is not part of a claim, so match on the flattened
         // text — a re-wrap must not turn this gate off.

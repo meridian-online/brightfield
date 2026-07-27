@@ -704,10 +704,22 @@ mod tests {
     }
 
     /// A row-level plan takes the extent at the TOP, which is not what an
-    /// active cube dimension filters — so the whole pass bails rather than
-    /// contributing a dimension that would be placed differently.
+    /// active cube dimension filters — so it keys no cube.
+    ///
+    /// **This does not test the bail, and the name it used to carry claimed it
+    /// did.** With a single top-placed axis, dropping that axis and bailing the
+    /// whole derivation both yield `None`, so the two are indistinguishable
+    /// here — a review confirmed that changing the bail to a per-axis skip
+    /// leaves this green. The bail is only observable on a MIXED plan, one axis
+    /// top-placed and another under the group-by, and that plan cannot be
+    /// constructed: `axis_pushdown` recurses without consulting the column
+    /// except in the `Aggregation` arm, so `Top` is a property of where the
+    /// walk terminates and is therefore identical for every column of a given
+    /// plan. The bail is defensive code against a shape the type system does
+    /// not currently forbid, and it is correct to keep — but it is unprovable
+    /// by construction, which is worth saying rather than implying a guard.
     #[test]
-    fn a_top_placed_axis_bails_the_whole_key_derivation() {
+    fn a_top_placed_axis_keys_no_cube() {
         let plan = QueryPlan::Projection {
             input: Box::new(QueryPlan::Source {
                 table: "t".to_string(),
