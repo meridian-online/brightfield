@@ -52,7 +52,7 @@
 //! makes the chart wrong *and silent*, which is the state this pass was written
 //! in and the reason this paragraph exists.
 
-use crate::ir::{Predicate, QueryPlan};
+use crate::ir::{Predicate, QueryPlan, ScalarValue};
 use crate::passes::Pass;
 
 /// A filter specification for one axis: column name and domain bounds.
@@ -236,6 +236,67 @@ impl NavigationFilterPass {
             .filter(|f| axis_pushdown(plan, &f.column) == Pushdown::Decline)
             .map(|f| f.column.clone())
             .collect()
+    }
+
+    /// The axes this pass DOES push beneath the `GROUP BY` of `plan`, expressed
+    /// as structured [`Predicate::Interval`] clauses — the key derivation the
+    /// automatic pre-aggregation layer builds a *navigation* cube from.
+    ///
+    /// A cube keys off a structured clause, and an extent already is one. What
+    /// this function exists to get right is **which** axes may enter it, because
+    /// a cube whose active dimensions do not match the predicate the emitter
+    /// actually lands would serve a different row set under the same SQL — the
+    /// one failure mode in this area worse than a slow query.
+    ///
+    /// So each axis is resolved through the same [`axis_pushdown`] the emission
+    /// uses, against the same plan, and the three answers are treated
+    /// differently:
+    ///
+    /// - [`Pushdown::UnderGroupBy`] — the predicate filters the aggregation's
+    ///   INPUT rows, which is exactly what an active cube dimension filters.
+    ///   The axis becomes a clause.
+    /// - [`Pushdown::Decline`] — the pass emits nothing for this axis, so the
+    ///   cube must not filter on it either. Dropped, silently, the same way the
+    ///   emission drops it.
+    /// - [`Pushdown::Top`] — the predicate would wrap the FINISHED plan, which
+    ///   is not what an active dimension does. A row-level plan (the only shape
+    ///   that resolves this way today) decomposes into no cube at all, so this
+    ///   is unreachable in practice; it returns `None` for the whole pass rather
+    ///   than dropping one axis, because a mix of placements is the shape that
+    ///   would silently under-filter, and bailing costs nothing but a direct
+    ///   query.
+    ///
+    /// `None` also when no axis pushes down — there is nothing for a cube to be
+    /// keyed on, and the caller runs the direct query.
+    ///
+    /// Answer it against the plan the pass is applied to
+    /// ([`plan_for_mark`](crate::emit::plan_for_mark)), for the same reason
+    /// [`Self::declined`] must be.
+    #[must_use]
+    pub fn cube_active_clauses(&self, plan: &QueryPlan) -> Option<Vec<Predicate>> {
+        let mut out = Vec::with_capacity(self.filters.len());
+        for f in &self.filters {
+            match axis_pushdown(plan, &f.column) {
+                // The quoting matches `Pass::apply`'s predicate exactly, and
+                // `ScalarValue::Float`'s literal is `f64::to_string` — the same
+                // text the `{}` in `apply` writes. The two forms render
+                // byte-identically; `a_cube_clause_renders_exactly_what_the_pass_emits`
+                // holds them to it.
+                Pushdown::UnderGroupBy => out.push(Predicate::Interval {
+                    column: format!("\"{}\"", f.column),
+                    lo: ScalarValue::Float(f.min),
+                    hi: ScalarValue::Float(f.max),
+                    meta: None,
+                }),
+                Pushdown::Decline => {}
+                Pushdown::Top => return None,
+            }
+        }
+        if out.is_empty() {
+            None
+        } else {
+            Some(out)
+        }
     }
 }
 
@@ -526,6 +587,144 @@ mod tests {
 
     fn pass_over(plan: &QueryPlan, column: &str) -> QueryPlan {
         NavigationFilterPass::from_extents(Some((column, 0.0, 1.0)), None).apply(plan.clone())
+    }
+
+    // -----------------------------------------------------------------------
+    // The cube key derivation — which axes may become active dimensions
+    // -----------------------------------------------------------------------
+
+    use crate::render::render_query;
+
+    /// Render one predicate the way the emitter would.
+    fn rendered(predicate: Predicate) -> String {
+        let mut bindings = Vec::new();
+        let sql = render_query(
+            &QueryPlan::Filter {
+                input: Box::new(source_plan()),
+                predicate,
+            },
+            &mut bindings,
+        );
+        assert!(bindings.is_empty(), "no placeholders in a navigation bound");
+        sql
+    }
+
+    /// **The clause a cube is keyed on and the predicate the emitter lands are
+    /// the same filter.** If they ever diverge — different quoting, a different
+    /// float literal, an exclusive bound against an inclusive one — the cube
+    /// would answer a question the direct query did not ask, and the SQL text
+    /// would give no sign of it. So they are compared as rendered SQL.
+    #[test]
+    fn a_cube_clause_renders_exactly_what_the_pass_emits() {
+        for (lo, hi) in [
+            (2.0_f64, 4.0_f64),
+            (0.1, 0.30000000000000004),
+            (-1.5e-7, 12345.678901234567),
+        ] {
+            let pass = NavigationFilterPass::from_extents(Some(("latency", lo, hi)), None);
+            let plan = binned_density_plan();
+
+            // What `apply` lands, extracted from the plan it built.
+            let applied = pass.apply(plan.clone());
+            let QueryPlan::Aggregation { input, .. } = aggregation_of(&applied) else {
+                panic!("expected the aggregation to survive: {applied:?}");
+            };
+            let QueryPlan::Filter { predicate, .. } = input.as_ref() else {
+                panic!("expected the navigation filter beneath the GROUP BY: {input:?}");
+            };
+
+            // What the cube would be keyed on.
+            let clauses = pass.cube_active_clauses(&plan).expect("one pushed axis");
+            assert_eq!(clauses.len(), 1);
+
+            assert_eq!(
+                rendered(clauses[0].clone()),
+                rendered(predicate.clone()),
+                "the cube's active clause and the emitted predicate must be the \
+                 same filter over [{lo}, {hi}]"
+            );
+        }
+    }
+
+    /// A declined axis contributes NO active dimension: the emission drops it,
+    /// so a cube that filtered on it would return fewer rows than the query it
+    /// claims to substitute.
+    #[test]
+    fn a_declined_axis_never_becomes_an_active_dimension() {
+        let plan = binned_density_plan();
+
+        // Declined alone: nothing to key a cube on at all.
+        let only_declined =
+            NavigationFilterPass::from_extents(None, Some(("__bf_count", 10.0, 90.0)));
+        assert_eq!(only_declined.declined(&plan), vec!["__bf_count".to_string()]);
+        assert!(
+            only_declined.cube_active_clauses(&plan).is_none(),
+            "an extent the emission ignores must not key a cube"
+        );
+
+        // Mixed: the grouping axis keys the cube, the aggregate-output axis is
+        // dropped — exactly as `apply` drops it.
+        let mixed = NavigationFilterPass::from_extents(
+            Some(("latency", 2.0, 4.0)),
+            Some(("__bf_count", 10.0, 90.0)),
+        );
+        let clauses = mixed.cube_active_clauses(&plan).expect("one axis pushes");
+        assert_eq!(clauses.len(), 1, "only the pushed axis: {clauses:?}");
+        assert_eq!(rendered(clauses[0].clone()), rendered(Predicate::And(vec![
+            Predicate::Expr("\"latency\" >= 2".to_string()),
+            Predicate::Expr("\"latency\" <= 4".to_string()),
+        ])));
+    }
+
+    /// Both grouping axes key the cube when both push down.
+    #[test]
+    fn two_pushed_axes_give_two_active_dimensions() {
+        let plan = QueryPlan::Aggregation {
+            input: Box::new(QueryPlan::Source {
+                table: "points".to_string(),
+            }),
+            group_by: vec![
+                "CAST(cx AS DOUBLE) AS \"x\"".to_string(),
+                "CAST(cy AS DOUBLE) AS \"y\"".to_string(),
+            ],
+            aggregates: vec![AggregateExpr::Raw("count(*) AS __bf_count".to_string())],
+        };
+        let pass =
+            NavigationFilterPass::from_extents(Some(("x", 1.0, 3.0)), Some(("y", 10.0, 30.0)));
+        let clauses = pass.cube_active_clauses(&plan).expect("both push");
+        assert_eq!(clauses.len(), 2);
+        assert!(rendered(clauses[0].clone()).contains("\"x\" >= 1"));
+        assert!(rendered(clauses[1].clone()).contains("\"y\" >= 10"));
+    }
+
+    /// A row-level plan takes the extent at the TOP, which is not what an
+    /// active cube dimension filters — so the whole pass bails rather than
+    /// contributing a dimension that would be placed differently.
+    #[test]
+    fn a_top_placed_axis_bails_the_whole_key_derivation() {
+        let plan = QueryPlan::Projection {
+            input: Box::new(QueryPlan::Source {
+                table: "t".to_string(),
+            }),
+            columns: vec!["\"x\"".to_string()],
+        };
+        assert_eq!(axis_pushdown(&plan, "x"), Pushdown::Top);
+        let pass = NavigationFilterPass::from_extents(Some(("x", 1.0, 3.0)), None);
+        assert!(pass.cube_active_clauses(&plan).is_none());
+    }
+
+    /// A scalar aggregate declines every axis, so it keys no cube — the shape
+    /// where a served re-query would move a fit line the emission left alone.
+    #[test]
+    fn a_scalar_aggregate_keys_no_cube() {
+        let plan = QueryPlan::AggregateScalar {
+            input: Box::new(QueryPlan::Source {
+                table: "t".to_string(),
+            }),
+            aggregates: vec![AggregateExpr::Raw("regr_slope(y, x) AS slope".to_string())],
+        };
+        let pass = NavigationFilterPass::from_extents(Some(("x", 1.0, 3.0)), None);
+        assert!(pass.cube_active_clauses(&plan).is_none());
     }
 
     /// A row-drawing plan still wraps at the top — the aggregate-aware walk

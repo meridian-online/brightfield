@@ -1386,6 +1386,12 @@ impl Session {
     /// best waste a query and at worst filter it on a column it does not have.
     pub fn navigate(&mut self, plot: &str, extent: NavigationExtent) -> Vec<DispatchResult> {
         self.set_navigation_extent(plot, extent);
+        // Automatic pre-aggregation, the navigation half: derive/refresh this
+        // plot's cube serves BEFORE dispatch, so the re-queries below are served
+        // from a pre-aggregate when one derives. Every bail inside simply leaves
+        // no serve registered and the dispatch runs the direct query — the same
+        // transparent fallback the selection path has.
+        self.preagg_prepare_navigation(plot);
         let indices: Vec<usize> = (0..self.mark_index_map.len())
             .filter(|&i| self.mark_plot_path(i).as_deref() == Some(plot))
             .collect();
@@ -1807,8 +1813,15 @@ impl Session {
             .collect();
         plots.sort_unstable();
         plots.dedup();
-        for plot in plots {
-            self.set_navigation_extent(&plot, extent.clone());
+        for plot in &plots {
+            self.set_navigation_extent(plot, extent.clone());
+        }
+        // Every extent is stored before any cube is derived: a serve is keyed on
+        // the emitted SQL, and emitting a mark's SQL while a sibling plot's
+        // extent was still the old one would register a serve against a query
+        // this call is not going to run.
+        for plot in &plots {
+            self.preagg_prepare_navigation(plot);
         }
         self.execute_all().into_iter().enumerate().collect()
     }

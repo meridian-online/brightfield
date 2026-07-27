@@ -11,6 +11,14 @@
 //!   session-scoped TEMP table, and registers a *serve*: the exact direct SQL
 //!   the dispatch is about to execute, paired with the cube re-query that
 //!   produces the identical result set.
+//! - **The second trigger: navigation.** A settled pan/zoom is not a selection
+//!   and reaches none of the above, so for a long time it took the direct query
+//!   at every row count — a chart whose brush was instant and whose zoom was
+//!   not. It needs no parallel machinery: a navigation extent already IS a
+//!   structured interval clause, so `Session::preagg_prepare_navigation` keys a
+//!   cube off it exactly as the selection path keys one off a brush. The one
+//!   thing it must get right is WHICH axes may enter the cube — see
+//!   [`NavigationFilterPass::cube_active_clauses`](brightfield_sql::navigation_filter_pass::NavigationFilterPass::cube_active_clauses).
 //! - **Serving.** `execute_emitted` consults the serve table on a SQL-cache
 //!   miss: when the emitted SQL matches a registered serve byte-for-byte, the
 //!   cube re-query runs instead of the direct query and the batches are cached
@@ -29,7 +37,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use brightfield_spec::analysis::{plot_node_path, ComponentPath};
 use brightfield_spec::ast::ParamNode;
 use brightfield_sql::cube;
-use brightfield_sql::emit::{emit_query, interpolate_sql, lower_mark_plan, mark_selection_name};
+use brightfield_sql::emit::{
+    emit_query, interpolate_sql, lower_mark_plan, mark_selection_name, plan_for_mark,
+};
 use brightfield_sql::ir::{Predicate, SelectionPredicate, SelectionResolution};
 
 use crate::Session;
@@ -282,6 +292,106 @@ impl Session {
             .ok()?
             .sql;
 
+        self.preagg_finish_serve(derivation, direct_sql)
+    }
+
+    /// Derive / refresh the cube serves of `plot`'s marks after a **settled
+    /// navigation** changed its extent. The navigation-side trigger, called by
+    /// [`Session::navigate`] before it dispatches; nothing in the spec declares
+    /// it.
+    ///
+    /// Symmetric with [`Session::preagg_prepare`]: every bail leaves the mark
+    /// WITHOUT a serve, and the dispatch then runs the direct query — the same
+    /// transparent fallback, which is what keeps a mark that cannot be cubed
+    /// (a scatter, a scalar fit, an axis the extent could not be pushed into)
+    /// correct and quiet rather than merely fast.
+    pub(crate) fn preagg_prepare_navigation(&mut self, plot: &str) {
+        let marks: Vec<usize> = (0..self.mark_index_map.len())
+            .filter(|&i| self.mark_plot_path(i).as_deref() == Some(plot))
+            .collect();
+        // The extent that just arrived supersedes every serve prepared for the
+        // previous one; they are re-registered below when still derivable. A
+        // stale serve could not mis-serve — the direct SQL is matched
+        // byte-for-byte and the extent is IN it — but a serve nobody can reach
+        // is state, and state is what goes wrong later.
+        for idx in &marks {
+            self.preagg.serves.remove(idx);
+        }
+        if self.preagg.disabled {
+            return;
+        }
+        for idx in marks {
+            if let Some(serve) = self.preagg_prepare_navigation_one(idx) {
+                self.preagg.serves.insert(idx, serve);
+            }
+        }
+    }
+
+    /// Prepare one mark's navigation serve. `None` bails to the direct query.
+    fn preagg_prepare_navigation_one(&mut self, mark_index: usize) -> Option<CubeServe> {
+        // The pass the emission is ABOUT to apply — the session's own
+        // construction of it, not a second one built here. A re-derivation
+        // beside the emitter is one refactor away from disagreeing with it, and
+        // a disagreement in this direction is a cube that filters on an axis the
+        // query does not.
+        let pass = self.navigation_pass(mark_index)?;
+
+        let params_owned = self.param_state.clone();
+        let params_ref = if params_owned.is_empty() {
+            None
+        } else {
+            Some(&params_owned)
+        };
+        let selections = self.selection_predicates_for_emit();
+        let selections_ref: Option<&[SelectionPredicate]> = if selections.is_empty() {
+            None
+        } else {
+            Some(selections.as_slice())
+        };
+
+        // The plan the pass is handed: everything the emitter builds BEFORE the
+        // navigation pass runs — the live selection filter and any pushed-down
+        // sample included.
+        //
+        // Deriving from THIS rather than from the bare lowered plan is what lets
+        // `rest` be `None`: whatever else scopes this mark is already inside the
+        // cube's base rows, so a brush held while the frame is zoomed cannot
+        // fall out of the cube and quietly widen the answer. (The selection path
+        // above starts from the lowered plan instead because there the active
+        // clause has to be REMOVED from the base and re-expressed as a
+        // dimension. Here the extent is not in this plan at all — the pass adds
+        // it afterwards — so there is nothing to remove.)
+        let plan = plan_for_mark(&self.spec, mark_index, selections_ref, self.sample).ok()?;
+        let mut clauses = pass.cube_active_clauses(&plan)?;
+        let active = if clauses.len() == 1 {
+            clauses.remove(0)
+        } else {
+            Predicate::And(clauses)
+        };
+        let derivation = cube::derive_cube(&plan, &active, None)?;
+
+        // The exact SQL the dispatch will run for this mark under the CURRENT
+        // extent — through the session's one emit site, so the navigation pass
+        // and the sample are on it by construction and the serve can only match
+        // the query it substitutes.
+        let direct_sql = self
+            .emit_for_mark(mark_index, params_ref, selections_ref)
+            .ok()?
+            .sql;
+
+        self.preagg_finish_serve(derivation, direct_sql)
+    }
+
+    /// Materialise a derived cube and pair its re-query with the direct SQL it
+    /// substitutes — the half of serve preparation both triggers share.
+    ///
+    /// `None` on any failure (probe, center mismatch, build, re-query render):
+    /// no serve is registered and the caller's dispatch runs the direct query.
+    fn preagg_finish_serve(
+        &mut self,
+        derivation: cube::CubeDerivation,
+        direct_sql: String,
+    ) -> Option<CubeServe> {
         // Centering probe (regression aggregates only).
         let centers: Vec<f64> = match derivation.probe_sql() {
             Some(probe) => {

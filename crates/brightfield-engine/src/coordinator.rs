@@ -1296,6 +1296,306 @@ plot:
         );
     }
 
+    // --- automatic pre-aggregation: a SETTLED ZOOM, served from the cube ----
+
+    /// The plot node path a navigation extent for `mark_index` is filed under —
+    /// resolved through the same `plot_node_path` the session uses, so a test
+    /// cannot navigate a plot the engine does not believe in.
+    fn plot_path_of(yaml: &str, mark_index: usize) -> ComponentPath {
+        let parsed = parse_spec(yaml, Format::Yaml).expect("parse");
+        let marks = brightfield_sql::emit::collect_marks_with_paths(&parsed.spec);
+        let (_, path) = marks.get(mark_index).expect("mark exists");
+        ComponentPath(brightfield_spec::analysis::plot_node_path(path).to_string())
+    }
+
+    /// A settled pan/zoom of `plot` along one continuous x axis.
+    fn zoom(plot: &ComponentPath, column: &str, lo: f64, hi: f64) -> Interaction {
+        Interaction::Navigate {
+            plot: plot.clone(),
+            extent: NavigationExtent {
+                x: Some(crate::AxisExtent::new(column, lo, hi)),
+                y: None,
+            },
+        }
+    }
+
+    /// THE MERGE GATE for navigation: a settled zoom re-queries from the
+    /// automatically derived pre-aggregate, not from a scan of the base table.
+    ///
+    /// Proven from the executed-statement log and DuckDB's own plan for the
+    /// serving query — **not from timing**. A latency threshold is a claim about
+    /// the machine this happens to run on; the statement log is a claim about
+    /// which table the code read, which is the thing that was actually wrong:
+    /// `preagg_prepare`'s only engine call site was inside selection
+    /// propagation, so navigation reached the layer by no path at all and took
+    /// the direct query at every row count.
+    #[test]
+    fn a_settled_zoom_is_served_from_the_cube_not_the_base_table() {
+        let mut coord = coordinator_from(DENSITY_UNDER_BRUSH);
+        let plot = plot_path_of(DENSITY_UNDER_BRUSH, 0);
+
+        // Warm the first paint (direct, full extent — no gesture yet).
+        let at_rest = coord.chart_rows(0).expect("initial render");
+        assert!(rows(&at_rest) > 0);
+        coord.session_mut().clear_executed_sql();
+
+        // First settled zoom: the cube is materialised once and the re-query is
+        // served from it.
+        let requery = coord.apply(zoom(&plot, "x", 10.0, 120.0));
+        assert!(requery.affected.iter().all(|(_, r)| r.is_ok()));
+        assert_eq!(requery.affected.len(), 1, "the plot's one mark re-queried");
+        let stats = coord.session().preagg_stats().clone();
+        assert_eq!(stats.cubes_built, 1, "one cube materialised");
+        assert_eq!(stats.cube_hits, 1, "the settled re-query was served from it");
+        assert_eq!(stats.serve_failures, 0);
+        assert_eq!(stats.build_failures, 0);
+
+        let log = coord.session().executed_sql();
+        assert!(
+            log.iter()
+                .any(|s| s.starts_with("CREATE TEMP TABLE \"__bf_preagg_")),
+            "the build statement ran: {log:#?}"
+        );
+        let serving: Vec<&String> = log
+            .iter()
+            .filter(|s| !s.starts_with("CREATE TEMP TABLE"))
+            .collect();
+        assert!(
+            serving.iter().all(|s| !s.contains("\"events_base\"")),
+            "after the one-time build, no executed statement touches the base \
+             table: {log:#?}"
+        );
+        let cube_query = serving
+            .iter()
+            .find(|s| s.contains("__bf_preagg_"))
+            .expect("the serving query reads the cube")
+            .to_string();
+
+        // DuckDB's own plan for the serving query scans the pre-aggregate.
+        let plan_batches = coord
+            .session()
+            .execute_raw_sql(&format!("EXPLAIN {cube_query}"))
+            .expect("EXPLAIN runs");
+        let mut plan_text = String::new();
+        for b in &plan_batches {
+            for c in 0..b.num_columns() {
+                use duckdb::arrow::array::StringArray;
+                if let Some(col) = b.column(c).as_any().downcast_ref::<StringArray>() {
+                    for r in 0..col.len() {
+                        plan_text.push_str(col.value(r));
+                        plan_text.push('\n');
+                    }
+                }
+            }
+        }
+        assert!(
+            plan_text.contains("__bf_preagg_"),
+            "plan scans the cube: {plan_text}"
+        );
+        assert!(
+            !plan_text.contains("events_base"),
+            "plan never scans the base table: {plan_text}"
+        );
+
+        // Non-vacuity: the gesture actually scoped the mark.
+        let zoomed = coord.chart_rows(0).expect("zoomed rows");
+        assert!(
+            rows(&zoomed) > 0 && rows(&zoomed) < rows(&at_rest),
+            "the zoom narrowed the picture: {} of {}",
+            rows(&zoomed),
+            rows(&at_rest)
+        );
+
+        // A second settled gesture: the SAME cube serves — no rebuild, exactly
+        // one more DuckDB execute, still no base-table statement.
+        coord.session_mut().clear_executed_sql();
+        let execs_before = coord.session().duckdb_execute_count();
+        let requery2 = coord.apply(zoom(&plot, "x", 30.0, 150.0));
+        assert!(requery2.affected.iter().all(|(_, r)| r.is_ok()));
+        let stats2 = coord.session().preagg_stats().clone();
+        assert_eq!(stats2.cubes_built, 1, "cube reused across gestures");
+        assert_eq!(stats2.cube_hits, 2);
+        assert_eq!(
+            coord.session().duckdb_execute_count(),
+            execs_before + 1,
+            "one settled gesture costs exactly one query"
+        );
+        let log2 = coord.session().executed_sql();
+        assert!(
+            log2.iter().all(|s| !s.contains("\"events_base\"")),
+            "no settled gesture rescans the base table: {log2:#?}"
+        );
+    }
+
+    /// Transparency, the thing that matters more than the speed: a cube-served
+    /// zoom IS the direct zoom. The control runs the identical gestures with the
+    /// layer switched off, so the two coordinators execute the same code over
+    /// the same bytes and differ only in which table answered.
+    ///
+    /// Run at two successive extents and then with a brush held — a cube that
+    /// served the FIRST extent's rows under the second's SQL, or that lost the
+    /// live selection when the frame moved, would be a silent wrong answer where
+    /// the previous behaviour was merely a slow right one.
+    #[test]
+    fn a_cube_served_zoom_equals_the_direct_zoom() {
+        let plot = plot_path_of(DENSITY_UNDER_BRUSH, 0);
+        let contributor = ComponentPath("root/vconcat[99]".to_string());
+
+        let mut served = coordinator_from(DENSITY_UNDER_BRUSH);
+        let mut direct = coordinator_from(DENSITY_UNDER_BRUSH);
+        direct.session_mut().set_preagg_enabled(false);
+
+        let compare = |served: &mut Coordinator, direct: &mut Coordinator, what: &str| {
+            let a = served.chart_rows(0).expect("served rows");
+            let b = direct.chart_rows(0).expect("direct rows");
+            assert!(rows(&a) > 0, "{what}: non-vacuous comparison");
+            assert_eq!(rows(&a), rows(&b), "{what}: same row count");
+            assert_eq!(a[0].schema(), b[0].schema(), "{what}: identical schema");
+            assert_eq!(column_f64(&a, "x"), column_f64(&b, "x"), "{what}: bin centres");
+            assert_eq!(
+                column_f64(&a, "__bf_count"),
+                column_f64(&b, "__bf_count"),
+                "{what}: per-bin counts"
+            );
+            rows(&a)
+        };
+
+        let full = compare(&mut served, &mut direct, "at full extent");
+
+        for (i, (lo, hi)) in [(10.0, 120.0), (40.0, 90.0)].into_iter().enumerate() {
+            served.apply(zoom(&plot, "x", lo, hi));
+            direct.apply(zoom(&plot, "x", lo, hi));
+            let n = compare(&mut served, &mut direct, &format!("at extent {i}"));
+            assert!(n < full, "extent {i} narrowed the picture: {n} of {full}");
+        }
+        assert_eq!(
+            served.session().preagg_stats().cube_hits,
+            2,
+            "both settled gestures were served from the cube"
+        );
+        assert_eq!(direct.session().preagg_stats().cubes_built, 0, "control");
+
+        // And with a brush held while the frame stays zoomed: whatever else
+        // scopes the mark is baked into the cube's base rows, so the selection
+        // cannot fall out of the answer.
+        let brushed = |c: &mut Coordinator| {
+            c.apply(Interaction::Select {
+                name: "brush".to_string(),
+                contributor: contributor.clone(),
+                predicate: structured_y_interval(10.0, 49.0),
+            });
+        };
+        brushed(&mut served);
+        brushed(&mut direct);
+        served.apply(zoom(&plot, "x", 20.0, 100.0));
+        direct.apply(zoom(&plot, "x", 20.0, 100.0));
+        let n = compare(&mut served, &mut direct, "zoomed with a brush held");
+        assert!(n > 0 && n < full, "still scoped: {n} of {full}");
+        assert!(
+            served.session().preagg_stats().cube_hits > 2,
+            "the zoom under a brush was served too"
+        );
+    }
+
+    /// **A mark with no cube stays correct, and says nothing about having been
+    /// optimised.** A dot scatter draws rows; there is nothing to pre-aggregate,
+    /// and the layer must leave no trace at all rather than report an engagement
+    /// it did not have.
+    #[test]
+    fn a_zoom_on_a_row_level_mark_gets_no_cube_and_stays_correct() {
+        let mut coord = coordinator_from(BRUSH_DASHBOARD);
+        let plot = plot_path_of(BRUSH_DASHBOARD, 0);
+        assert_eq!(rows(&coord.chart_rows(0).expect("first paint")), 5);
+        coord.session_mut().clear_executed_sql();
+
+        let requery = coord.apply(zoom(&plot, "x", 2.0, 4.0));
+        assert!(requery.affected.iter().all(|(_, r)| r.is_ok()));
+        assert_eq!(
+            coord.session().preagg_stats().cubes_built,
+            0,
+            "a row-level mark decomposes into no cube"
+        );
+        assert_eq!(coord.session().preagg_stats().cube_hits, 0, "and none serves");
+        assert_eq!(
+            coord.session().preagg_stats().build_failures,
+            0,
+            "bailing is the designed path, not a failure to report"
+        );
+        assert_eq!(
+            rows(&coord.chart_rows(0).expect("zoomed")),
+            3,
+            "x in {{2,3,4}} — the direct query is still right"
+        );
+        assert!(
+            coord
+                .session()
+                .executed_sql()
+                .iter()
+                .any(|s| s.contains("\"t\"")),
+            "the direct query ran against the base table"
+        );
+    }
+
+    /// **An axis the extent could not be pushed into keys no cube, and the fit
+    /// does not move.**
+    ///
+    /// A `regressionY` is a scalar aggregate with no grouping key beneath which
+    /// the bound could go, so `axis_pushdown` declines and the emitted SQL is
+    /// byte-identical to the one that ran at full extent. That mark IS
+    /// cube-derivable — the regr family decomposes into mean-centered moment
+    /// sums — so an implementation that keyed the cube off the extent without
+    /// asking where the predicate landed would build one, serve it, and move a
+    /// fit line the emission deliberately left alone. Nothing in the picture
+    /// would say so.
+    ///
+    /// Navigated before the first paint on purpose: with the query already
+    /// cached, such an implementation would be caught only by a counter. Here it
+    /// is caught by the coefficients.
+    #[test]
+    fn a_declined_axis_keys_no_cube_and_the_fit_does_not_move() {
+        const REGRESSION_ALONE: &str = r#"
+data:
+  events_base: { query: "SELECT CAST(i % 97 AS DOUBLE) AS w, CAST(2.5 * (i % 97) + 3 + (i % 7) AS DOUBLE) AS h FROM range(5000) t(i)" }
+plot:
+  - mark: regressionY
+    data: { from: events_base }
+    x: w
+    y: h
+"#;
+        let plot = plot_path_of(REGRESSION_ALONE, 0);
+
+        // The oracle: the same spec, never navigated.
+        let mut at_rest = coordinator_from(REGRESSION_ALONE);
+        let rest = at_rest.chart_rows(0).expect("the fit at full extent");
+
+        let mut coord = coordinator_from(REGRESSION_ALONE);
+        let requery = coord.apply(zoom(&plot, "w", 10.0, 50.0));
+        assert!(requery.affected.iter().all(|(_, r)| r.is_ok()));
+
+        // The consequence first: the coefficients. A counter can only say a cube
+        // was built; these say whether one ANSWERED, and answering is the harm.
+        let after = coord.chart_rows(0).expect("the fit under the extent");
+        assert_eq!(rows(&after), 1);
+        for col in ["slope", "intercept", "n", "x_min", "x_max"] {
+            assert_eq!(
+                column_f64(&after, col),
+                column_f64(&rest, col),
+                "{col} moved under an extent the query never applied"
+            );
+        }
+        assert_eq!(
+            coord.session().preagg_stats().cubes_built,
+            0,
+            "a declined axis must not key a cube"
+        );
+        assert_eq!(coord.session().preagg_stats().cube_hits, 0);
+
+        // The bail is still SAID — the signal a surface rails, unchanged.
+        let declined = coord.session().declined_navigation(&plot.0);
+        assert_eq!(declined.len(), 1, "the mark is named: {declined:?}");
+        assert_eq!(declined[0].axes, vec!["w".to_string()]);
+    }
+
     // --- offline, file-backed spec (no network) ---
 
     #[test]
