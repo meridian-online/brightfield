@@ -485,9 +485,14 @@ impl fmt::Display for ParseWarning {
                 f,
                 "mark `{mark}` sets `{key}`, which nothing in the render path reads — it has no effect"
             ),
+            // "no literal", not "no value". A slider may well declare
+            // `min: $lo`, and telling its author they declared no `min:` sends
+            // them looking for a line that is already there. The rail needs the
+            // ends as numbers it can draw against; a param reference is a value
+            // the spec has and this control cannot use.
             Self::IntervalSliderIncomplete { path, missing } => write!(
                 f,
-                "interval slider at {path} declares no {} — no control is drawn for it",
+                "interval slider at {path} gives no literal {} — no control is drawn for it",
                 missing
                     .iter()
                     .map(|k| format!("`{k}:`"))

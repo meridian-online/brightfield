@@ -582,6 +582,152 @@ vconcat:
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// **A dismissed fault banner stays dismissed.**
+///
+/// The banner is raised from a fault that does not clear until the spec is
+/// edited, and `raise` replaces in place — so raising it every frame puts it
+/// back one frame after the × is clicked. The × appears to work and the banner
+/// is back before the next paint, which is worse than having no × at all.
+///
+/// It is still raised again when the fault says something *different*, because
+/// that is new information rather than the same complaint repeated.
+#[test]
+fn a_dismissed_fault_banner_does_not_come_straight_back() {
+    const SPEC: &str = r#"
+params:
+  window:
+    select: crossfilter
+data:
+  t: { query: "SELECT i AS k FROM range(50) t(i)" }
+vconcat:
+  - plot:
+      - mark: dot
+        data: { from: t, filterBy: $window }
+        x: k
+        y: k
+  - select: intervalX
+    input: slider
+    as: $window
+    column: no_such_column
+    min: 0
+    max: 49
+    value: 49
+"#;
+    let ctx = egui::Context::default();
+    let dir = std::env::temp_dir().join(format!("bf-slider-dismiss-{}", std::process::id()));
+    fs::create_dir_all(&dir).expect("scratch dir");
+    let path = dir.join("bad-column.yaml");
+    fs::write(&path, SPEC).expect("write the spec");
+
+    let mut app = live_window(&path);
+    frame(&mut app, &ctx, Vec::new());
+    frame(&mut app, &ctx, Vec::new());
+    assert!(
+        !app.notifications().is_empty(),
+        "no banner was raised, so there is nothing to dismiss and this proves nothing"
+    );
+
+    assert!(
+        app.dismiss_chart_fault(),
+        "the banner was not there to dismiss"
+    );
+
+    // The fault is unchanged and unfixable without editing the spec, so every
+    // frame from here is a chance to undo the dismissal.
+    for _ in 0..3 {
+        frame(&mut app, &ctx, Vec::new());
+    }
+    let said: Vec<String> = app
+        .notifications()
+        .iter()
+        .map(|n| n.title.clone())
+        .collect();
+    assert!(
+        !said.iter().any(|t| t.contains("refused to query")),
+        "the dismissed banner came back on a later frame — the × works and \
+         undoes itself, which reads as a broken control. Showing {said:?}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// **One bad mark among several does not fail the composition — it leaves a
+/// hole in it, and the hole must still speak.**
+///
+/// This is the common case, and until this test it was the unguarded one. Every
+/// other assertion about the fault banner goes through a single-mark plot,
+/// where a refused mark means the whole compose fails and the message rides out
+/// on the error. Here the compose SUCCEEDS: the mark that can bind draws, the
+/// mark that cannot is dropped, and the only thing standing between the user
+/// and a silently missing layer is the fault carried on a composition that
+/// otherwise looks healthy.
+///
+/// Both sources are `query:`, so neither column is decidable in the spec text —
+/// this is the dynamic half by construction.
+#[test]
+fn a_mark_lost_from_a_composition_that_still_draws_is_reported() {
+    const SPEC: &str = r#"
+params:
+  window:
+    select: crossfilter
+data:
+  t: { query: "SELECT i AS k FROM range(50) t(i)" }
+  u: { query: "SELECT i AS j FROM range(50) t(i)" }
+vconcat:
+  - plot:
+      - mark: dot
+        data: { from: t, filterBy: $window }
+        x: k
+        y: k
+      - mark: dot
+        data: { from: u, filterBy: $window }
+        x: j
+        y: j
+  - select: intervalX
+    input: slider
+    as: $window
+    column: k
+    min: 0
+    max: 49
+    value: 49
+"#;
+    let ctx = egui::Context::default();
+    let dir = std::env::temp_dir().join(format!("bf-slider-partial-{}", std::process::id()));
+    fs::create_dir_all(&dir).expect("scratch dir");
+    let path = dir.join("one-bad-mark.yaml");
+    fs::write(&path, SPEC).expect("write the spec");
+
+    let mut app = live_window(&path);
+    frame(&mut app, &ctx, Vec::new());
+    frame(&mut app, &ctx, Vec::new());
+
+    let control = control(&app);
+    app.chart_doc_mut().note_interval_drag(&control, 12.0);
+    frame(&mut app, &ctx, Vec::new());
+
+    // The composition survived — this is the whole point. If the plot failed
+    // outright we would be testing the path that was already covered.
+    assert!(
+        !app.chart_doc().composed.plots.is_empty(),
+        "the plot failed entirely, so this is not the partial-loss case and \
+         proves nothing about it"
+    );
+
+    let said: Vec<String> = app
+        .notifications()
+        .iter()
+        .map(|n| format!("{}\n{}", n.title, n.body.clone().unwrap_or_default()))
+        .collect();
+    assert!(
+        said.iter().any(|b| b.contains('k')),
+        "a mark was dropped from a composition that still drew, and the window \
+         said nothing — which is the silently-missing-layer failure this whole \
+         change exists to end. It is showing {said:?}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// **The same typo over an INLINE source is refused at load**, because there
 /// the schema is in the spec text and there is nothing to wait for.
 ///

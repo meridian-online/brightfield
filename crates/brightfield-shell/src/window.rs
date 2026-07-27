@@ -911,6 +911,16 @@ pub struct MeridianApp {
     /// Persistent, id-deduplicated banners. A source that re-fails raises
     /// under the same composite id and *replaces* its banner — never stacks.
     notifications: NotificationLayer,
+    /// The chart fault the interaction banner was last raised for, so it is
+    /// raised on the frame the fault appears and not on every frame after.
+    ///
+    /// `raise` replaces in place, so re-raising an unchanged fault every frame
+    /// silently undoes the dismiss the user just clicked — the × works and the
+    /// banner is back before the next paint. For a fault that cannot clear
+    /// without editing the spec, which is exactly the mistyped column this
+    /// banner exists to report, that makes it permanent furniture. A fault that
+    /// *changes* still re-raises, because it is new information.
+    last_chart_fault: Option<String>,
     /// The banner ids the CURRENT chart document's load diagnostics raised.
     ///
     /// Held so opening a different document can take the previous document's
@@ -1109,6 +1119,7 @@ impl MeridianApp {
                 .and_then(brightfield_keys::VerbEntry::primary_key),
             recency: RecencyCounter::new(),
             notifications: NotificationLayer::new(),
+            last_chart_fault: None,
             diagnostic_banners: Vec::new(),
             toasts: ToastLayer::new(),
             rail: chrome::StatusDrawn::default(),
@@ -1214,7 +1225,13 @@ impl MeridianApp {
     fn say_interaction_fault(&mut self) {
         let id = NotificationId::new("chart-interaction-fault");
         match self.charts.doc.chart_fault() {
-            Some(detail) => {
+            // Raise on the frame the fault appears, and on any frame it says
+            // something different. NOT on every frame it persists: `raise`
+            // replaces in place, so that would put the banner back one frame
+            // after the user dismissed it, and a mistyped column does not clear
+            // until the spec is edited.
+            Some(detail) if self.last_chart_fault.as_deref() != Some(detail.as_str()) => {
+                self.last_chart_fault = Some(detail.clone());
                 self.notifications.raise(
                     Notification::new(
                         id,
@@ -1224,7 +1241,9 @@ impl MeridianApp {
                     .body(detail),
                 );
             }
+            Some(_) => {}
             None => {
+                self.last_chart_fault = None;
                 self.notifications.dismiss(id);
             }
         }
@@ -1851,6 +1870,18 @@ impl MeridianApp {
     #[must_use]
     pub fn notifications(&self) -> &NotificationLayer {
         &self.notifications
+    }
+
+    /// Dismiss the chart-fault banner, as clicking its × does.
+    ///
+    /// Exists so the dismissal can be driven from outside a real pointer: the ×
+    /// is handled inside the notification layer's own draw, and a banner that
+    /// comes straight back is indistinguishable from one that was never
+    /// dismissed unless a test can perform the gesture. Returns whether a
+    /// banner was showing to dismiss.
+    pub fn dismiss_chart_fault(&mut self) -> bool {
+        self.notifications
+            .dismiss(NotificationId::new("chart-interaction-fault"))
     }
 
     /// The transient toast layer, read-only.
