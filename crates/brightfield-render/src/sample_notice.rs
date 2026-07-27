@@ -323,9 +323,17 @@ mod tests {
     /// resolve through the design system and can still be unreadable.
     ///
     /// 4.5:1 is WCAG AA for body text. The pairing in force measures 4.66:1;
-    /// warning's measured 6.45:1. Both clear it. Taking warning's own ink onto
-    /// this fill would measure 3.42:1 and fail here, which is the mistake this
-    /// guards.
+    /// warning's measured 6.45:1. Both clear it.
+    ///
+    /// **This test cannot catch a MIXED pairing, and an earlier version of this
+    /// doc claimed it could.** It reads one role's own foreground against that
+    /// same role's own background, so a fill from one role and an ink from
+    /// another is structurally unreachable from here — a review drifted
+    /// `label_ink()` to warning's foreground with the fill left on info and
+    /// watched this test pass. The drift is caught, but by
+    /// `the_band_is_the_info_solid_and_the_words_are_its_own_ink`, which reads
+    /// the scene. What this test holds is narrower and still worth holding:
+    /// that whichever role the notice takes, its own pair clears AA.
     #[test]
     fn the_words_clear_the_text_contrast_bar_on_the_band() {
         use meridian_design::validate::contrast;
