@@ -40,9 +40,9 @@
 //! full extent. Put such a mark in a plot beside a row-drawing one — which
 //! `examples/regression.yaml` does, a `regressionY` over a `dot` on the same
 //! two columns — and one zoom produces a picture whose two halves describe
-//! different data: three points on screen under an ordinary-least-squares fit
+//! different data: ten points on screen under an ordinary-least-squares fit
 //! computed from fifteen, spanning an x range wider than the frame. Nothing in
-//! the drawing distinguishes that from a fit over the three.
+//! the drawing distinguishes that from a fit over the ten.
 //!
 //! So [`NavigationFilterPass::declined`] is not diagnostics. It is the only
 //! signal that exists for the case, and it has a production consumer:

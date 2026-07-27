@@ -578,6 +578,19 @@ fn a_mark_that_did_not_rescope_is_named_on_the_chart_rail() {
         scatter_after < scatter_before,
         "`=` did not narrow the scatter: {scatter_after} vs {scatter_before}"
     );
+    // Pinned, because it is QUOTED. The filter pass's module doc and
+    // `Session::declined_navigation` both describe this exact gesture by its
+    // numbers, and a figure in prose that nothing enforces is how a wrong one
+    // shipped in the first place. The zoom is a function of the data's domain
+    // and the step alone — no screen size in it — so this is stable: fifteen
+    // rows in, the frame settles at weight 56.3–90.7 and height 161.1–185.9,
+    // and ten rows satisfy both bounds.
+    assert_eq!(
+        (scatter_before, scatter_after),
+        (15, 10),
+        "the survivor count moved; the two doc comments that quote it have to \
+         move with it"
+    );
     let fit_after = (
         scalar(doc, 1, "n"),
         scalar(doc, 1, "x_min"),
@@ -654,12 +667,62 @@ fn a_plot_whose_marks_all_rescoped_claims_nothing() {
     );
 }
 
-/// **A settled gesture that draws nothing does not leave the query store
-/// claiming it did.** A pan far enough off the data returns no rows, the
-/// re-composite fails, and the caller keeps the picture it had — which is the
-/// UNSCOPED one. The session's extent has to go back with it, or every later
+/// **The refusal and the scope notice hold the rail at the same time.**
+///
+/// They are two entries rather than two vocabularies, and the reason is that
+/// they differ in lifetime: the refusal is about the gesture just made and the
+/// next one replaces it, the scope notice is about the extent in force and
+/// stands until a reset. Given one id, whichever was written last would silence
+/// the other — and both are true here, so the reader would lose one of them
+/// with nothing to say it had gone.
+///
+/// Real keystrokes throughout: `=` to hold the plot at an extent its fit cannot
+/// follow, then `x` to change which axes move, which is a refusal-shaped
+/// statement about a gesture that has nothing to do with the first.
+#[test]
+fn a_refusal_and_a_scope_notice_can_hold_the_rail_at_once() {
+    use egui::Key;
+    let mut app = live_window(&example("regression.yaml"));
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx, Vec::new());
+
+    frame(&mut app, &ctx, vec![press(Key::Equals)]);
+    frame(&mut app, &ctx, vec![press(Key::X)]);
+
+    let rail = chart_rail(app.chart_doc());
+    let refusal = rail
+        .iter()
+        .find(|(id, _)| *id == "chart-navigation")
+        .unwrap_or_else(|| panic!("the axis-lock change went unsaid: {rail:?}"));
+    let scope = rail
+        .iter()
+        .find(|(id, _)| *id == "chart-navigation-scope")
+        .unwrap_or_else(|| panic!("the unscoped fit went unsaid: {rail:?}"));
+    assert!(
+        refusal.1 != scope.1,
+        "the two entries are carrying the same sentence, which means one of them \
+         is not saying its own thing: {rail:?}"
+    );
+    assert!(
+        scope.1.contains("regressionY"),
+        "the scope notice lost its subject: {rail:?}"
+    );
+}
+
+/// **A settled gesture that draws nothing puts the query store back where the
+/// picture is.** A pan far enough off the data returns no rows, the
+/// re-composite fails, and the caller keeps the picture it had. The session's
+/// extent has to go back to the one that picture was drawn at, or every later
 /// re-query is emitted at a range the reader never saw a picture of, and the
 /// store disagrees with the rows on screen.
+///
+/// **It restores, it does not clear**, and the difference is the whole of the
+/// mechanism. So this zooms SUCCESSFULLY first and only then walks off the
+/// data: from full extent the value being restored is the default and the
+/// engine drops the key for it, which makes a rollback that put the previous
+/// extent back and a rollback that simply forgot the plot produce identical
+/// stores. Held here against the zoomed extent by value, so the two are told
+/// apart.
 ///
 /// The render store deliberately stays moved: the axes did move, so
 /// `navigated()` is true and the reset affordance does something. Both halves
@@ -687,6 +750,24 @@ fn a_settled_gesture_that_drew_nothing_rolls_the_query_store_back() {
         banner_text(&app)
     );
 
+    // A zoom that WORKS, first — the state the rollback has to restore. One
+    // real keystroke, so the extent under test is one a person can produce.
+    frame(&mut app, &ctx, vec![press(egui::Key::Equals)]);
+    let zoomed_rows = mark_rows(app.chart_doc_mut(), 0);
+    assert!(
+        zoomed_rows > 0 && zoomed_rows < full,
+        "the zoom has to leave a NARROWER picture that still draws, or there is \
+         no restorable state to lose: {zoomed_rows} vs {full}"
+    );
+    let zoomed = app
+        .chart_doc()
+        .live_dashboard()
+        .expect("a live document")
+        .query_extents()
+        .get(&path)
+        .cloned()
+        .expect("the settled zoom is in the query store");
+
     // Walk the frame off the data. Each keyboard pan is one settled gesture.
     let mut left_the_data = false;
     for _ in 0..40 {
@@ -702,9 +783,13 @@ fn a_settled_gesture_that_drew_nothing_rolls_the_query_store_back() {
 
     let doc = app.chart_doc();
     let live = doc.live_dashboard().expect("a live document");
-    assert!(
-        !live.query_extents().contains_key(&path),
-        "the query store kept an extent that returned no rows: {:?}",
+    assert_eq!(
+        live.query_extents().get(&path),
+        Some(&zoomed),
+        "the query store did not go back to the extent the picture on screen was \
+         drawn at. Clearing the plot instead of restoring it looks the same from \
+         full extent and is not the same thing: it silently throws the zoom away. \
+         Store: {:?}",
         live.query_extents()
     );
     assert!(
@@ -713,10 +798,11 @@ fn a_settled_gesture_that_drew_nothing_rolls_the_query_store_back() {
     );
     assert!(doc.navigated(), "so there is still a frame to reset");
 
-    // The rows the session serves are the ones the picture was drawn from.
+    // The rows the session serves are the ones the picture was drawn from —
+    // the zoomed set, not the full one.
     assert_eq!(
         mark_rows(app.chart_doc_mut(), 0),
-        full,
+        zoomed_rows,
         "the session is still filtering at an extent that drew nothing"
     );
 

@@ -1466,7 +1466,7 @@ impl Session {
     /// leaves the mark's SQL byte-identical, so an aggregating mark beside a
     /// row-drawing one keeps summarising the WHOLE column while its neighbour
     /// narrows to the frame — a regression fit over fifteen points drawn
-    /// beneath three of them, spanning an x range wider than the plot. Nothing
+    /// beneath ten of them, spanning an x range wider than the plot. Nothing
     /// in the picture says which of the two happened, so the surface has to,
     /// and this is what it reads.
     ///
