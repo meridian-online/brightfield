@@ -72,7 +72,7 @@ use meridian_egui::{
 
 use meridian_design::{radius, semantic, spacing};
 
-use crate::app::{chart_registry, ChartDoc, CHART, CONTROLS_SHARE};
+use crate::app::{chart_registry, ChartDoc, ChartFault, CHART, CONTROLS_SHARE};
 use crate::canvas::EguiCanvasHost;
 use crate::design::{self, Mode};
 use crate::overlays::{CommandPalette, HelpSheet, JumpTarget, JumpToNode};
@@ -824,8 +824,66 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
         "cmd-shift-h" => {
             ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::H))
         }
+        // The navigation family. Bare keys, and mapped here for the same
+        // reason the overlay openers are: the shell may not invent a binding,
+        // so the token comes off the registry and only its egui spelling lives
+        // in this table.
+        "left" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowLeft)),
+        "right" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowRight)),
+        "up" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowUp)),
+        "down" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowDown)),
+        // `=` and `+` are one key: egui reports the logical key, and a reader
+        // pressing shift to say "bigger" means the same verb.
+        "=" => ctx.input_mut(|i| {
+            i.consume_key(Modifiers::NONE, Key::Equals)
+                || i.consume_key(Modifiers::SHIFT, Key::Equals)
+                || i.consume_key(Modifiers::NONE, Key::Plus)
+        }),
+        "-" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Minus)),
+        "x" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::X)),
+        "0" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Num0)),
         _ => false,
     }
+}
+
+/// The navigation family's `(keystroke token, longname)` pairs, off the
+/// registry. A verb the registry leaves unbound simply does not appear, so it
+/// stays reachable from the palette and unreachable by key — which is what
+/// "unbound" means.
+fn navigation_bindings() -> Vec<(&'static str, &'static str)> {
+    let reg = brightfield_keys::registry();
+    crate::navigation::verb::ALL
+        .iter()
+        .filter_map(|longname| {
+            let entry = reg.iter().find(|v| v.longname == *longname)?;
+            Some((entry.primary_key()?, entry.longname))
+        })
+        .collect()
+}
+
+/// Perform a navigation verb on the chart document, or report that this is not
+/// one. The one place a longname becomes a frame movement.
+fn navigation_verb(doc: &mut crate::app::ChartDoc, longname: &str) -> bool {
+    use crate::navigation::{verb, KEY_PAN_FRACTION, KEY_ZOOM_FACTOR};
+    let f = KEY_PAN_FRACTION;
+    match longname {
+        verb::PAN_LEFT => doc.pan_view(f, 0.0),
+        verb::PAN_RIGHT => doc.pan_view(-f, 0.0),
+        verb::PAN_UP => doc.pan_view(0.0, f),
+        verb::PAN_DOWN => doc.pan_view(0.0, -f),
+        verb::ZOOM_IN => doc.zoom_view(KEY_ZOOM_FACTOR),
+        verb::ZOOM_OUT => doc.zoom_view(1.0 / KEY_ZOOM_FACTOR),
+        verb::CYCLE_AXIS_LOCK => {
+            doc.cycle_axis_lock();
+            true
+        }
+        verb::RESET_EXTENT => {
+            doc.reset_navigation();
+            true
+        }
+        _ => return false,
+    };
+    true
 }
 
 /// The chart view's half: its document and its live items.
@@ -904,6 +962,11 @@ pub struct MeridianApp {
     /// dispatch, not an overlay opener, and that struct's contents are pinned
     /// by `the_overlay_keys_come_from_the_registry`.
     home_binding: Option<&'static str>,
+    /// The navigation family's keystroke tokens paired with their verb
+    /// longnames, read off the registry at boot — same rule as
+    /// [`Self::home_binding`]: the shell wires the binding the registry
+    /// declares and invents none. Empty for a verb the registry leaves unbound.
+    nav_bindings: Vec<(&'static str, &'static str)>,
     /// The per-session palette recency: verbs run from the palette rank
     /// higher on its next empty-query open. Session-scoped by design (the
     /// sanctioned v1 simplification); it resets each launch.
@@ -919,8 +982,10 @@ pub struct MeridianApp {
     /// banner is back before the next paint. For a fault that cannot clear
     /// without editing the spec, which is exactly the mistyped column this
     /// banner exists to report, that makes it permanent furniture. A fault that
-    /// *changes* still re-raises, because it is new information.
-    last_chart_fault: Option<String>,
+    /// *changes* still re-raises, because it is new information — and the
+    /// headline counts as part of it, so a pan onto empty space still speaks
+    /// after a mistyped column has been dismissed.
+    last_chart_fault: Option<ChartFault>,
     /// The banner ids the CURRENT chart document's load diagnostics raised.
     ///
     /// Held so opening a different document can take the previous document's
@@ -1117,6 +1182,7 @@ impl MeridianApp {
                 .iter()
                 .find(|v| v.longname == "open-home")
                 .and_then(brightfield_keys::VerbEntry::primary_key),
+            nav_bindings: navigation_bindings(),
             recency: RecencyCounter::new(),
             notifications: NotificationLayer::new(),
             last_chart_fault: None,
@@ -1228,6 +1294,11 @@ impl MeridianApp {
     /// One banner, replaced in place while the fault persists — a drag emits a
     /// value per frame and a stack of identical banners would bury the picture
     /// it is about.
+    ///
+    /// The headline comes from the fault rather than from here. A mark the
+    /// binder rejected and a pan onto empty space are both "the gesture did not
+    /// change the picture" and are not the same news, and the document is where
+    /// the difference is known — see [`ChartFault`].
     fn say_interaction_fault(&mut self) {
         let id = NotificationId::new("chart-interaction-fault");
         match self.charts.doc.chart_fault() {
@@ -1236,16 +1307,10 @@ impl MeridianApp {
             // replaces in place, so that would put the banner back one frame
             // after the user dismissed it, and a mistyped column does not clear
             // until the spec is edited.
-            Some(detail) if self.last_chart_fault.as_deref() != Some(detail.as_str()) => {
-                self.last_chart_fault = Some(detail.clone());
-                self.notifications.raise(
-                    Notification::new(
-                        id,
-                        Severity::Error,
-                        "The chart is missing data the engine refused to query",
-                    )
-                    .body(detail),
-                );
+            Some(fault) if self.last_chart_fault.as_ref() != Some(&fault) => {
+                self.last_chart_fault = Some(fault.clone());
+                self.notifications
+                    .raise(Notification::new(id, Severity::Error, fault.title).body(fault.detail));
             }
             Some(_) => {}
             None => {
@@ -1557,6 +1622,10 @@ impl MeridianApp {
         // it is deliberately not an overlay-opener (so the registry cross-ref
         // that pins those three stays pinned).
         self.home_key(&ctx);
+        // The frame verbs, on the same gate and only over the chart view: they
+        // are bare keys, so an overlay or a text field must own the keyboard
+        // first.
+        self.navigation_keys(&ctx, view);
 
         // Whether this frame is the front door. Decided once, **after**
         // `home_key`, because three branches below have to agree which frame
@@ -1773,6 +1842,23 @@ impl MeridianApp {
         }
         if self.home_binding.is_some_and(|t| consume_token(ctx, t)) {
             self.open_home(ctx);
+        }
+    }
+
+    /// Perform whichever navigation verb's key is down this frame.
+    ///
+    /// Gated exactly as [`Self::home_key`] is — no overlay open, no widget
+    /// holding the keyboard — plus the chart view being the one on screen,
+    /// because a frame verb over the protocol graph has no frame to move and
+    /// its bare keys would shadow that view's own grammar.
+    fn navigation_keys(&mut self, ctx: &egui::Context, view: ViewKind) {
+        if view != ViewKind::Charts || self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        for (token, longname) in self.nav_bindings.clone() {
+            if consume_token(ctx, token) && navigation_verb(&mut self.charts.doc, longname) {
+                ctx.request_repaint();
+            }
         }
     }
 
@@ -2115,6 +2201,8 @@ impl MeridianApp {
                     ViewKind::Charts => {
                         if verb.as_str() == "clear-selection" {
                             self.charts.doc.clear_selection();
+                            ctx.request_repaint();
+                        } else if navigation_verb(&mut self.charts.doc, verb.as_str()) {
                             ctx.request_repaint();
                         }
                     }

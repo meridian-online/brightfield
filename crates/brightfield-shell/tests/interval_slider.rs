@@ -490,9 +490,13 @@ vconcat:
         .chart_fault()
         .expect("the document must know why its mark did not draw");
     assert!(
-        fault.contains("no_such_column"),
+        fault.detail.contains("no_such_column"),
         "the fault must name the column the engine refused, or it is not worth \
-         showing anyone: {fault}"
+         showing anyone: {fault:?}"
+    );
+    assert!(
+        fault.title.contains("refused to query"),
+        "and it has to go under the engine's headline, not a gesture's: {fault:?}"
     );
 }
 

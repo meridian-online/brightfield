@@ -794,20 +794,28 @@ fn render_markdown(r: &BaselineReport) -> String {
          chart and exempts its own plot (crossfilter); a **slider** pins its \
          lower end, advances one handle across fixed stops, and filters every \
          view including the contributor's (intersect) — so a slider step \
-         re-queries one more view than a brush step at the same row count."
+         re-queries one more view than a brush step at the same row count. \
+         **`Settled zoom → data`** is one pan/zoom extent applied to the \
+         aggregating plot and every mark of that plot re-queried — the cost a \
+         gesture pays ONCE, when it stops. It is quoted from the direct run \
+         alone because navigation gets no cube either way: the pre-aggregation \
+         layer's only call site is selection propagation, so a navigation \
+         re-query takes the direct path however the run is configured. Read it \
+         beside `Step → data, direct`, not beside the cubed column."
     );
     let _ = writeln!(md);
     let _ = writeln!(
         md,
         "| Scenario | Drag | Rows | Cold open (load + first query, ms) | \
          Step → data, direct (ms) | Step → data, cubed (ms) | \
+         Settled zoom → data (ms) | \
          Step → scene, direct (ms) | Step → scene, cubed (ms) | Cube | \
          Steady frame (ms) | Interaction frame (ms) | Drawn/materialised rows | \
          Arrow held (MiB) | Compose peak RSS, direct / cubed (MiB) |"
     );
     let _ = writeln!(
         md,
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
     );
     for s in &r.scaling {
         let drawn = s
@@ -826,7 +834,7 @@ fn render_markdown(r: &BaselineReport) -> String {
         };
         let _ = writeln!(
             md,
-            "| {} | {} | {} | {:.1} + {:.1} | {} | {} | {} | {} | {}/{} | {} | {} | {} | {:.1} | {} / {} |",
+            "| {} | {} | {} | {:.1} + {:.1} | {} | {} | {} | {} | {} | {}/{} | {} | {} | {} | {:.1} | {} / {} |",
             s.scenario,
             drag_label(s.drag),
             s.rows,
@@ -834,6 +842,7 @@ fn render_markdown(r: &BaselineReport) -> String {
             s.engine.first_materialise_ms,
             fmt_stats(&s.engine_direct.coordinator_apply),
             fmt_stats(&s.engine.coordinator_apply),
+            fmt_stats(&s.engine_direct.navigation_apply),
             fmt_stats(&s.engine_direct.live_apply),
             fmt_stats(&s.engine.live_apply),
             s.engine.preagg.cubes_built,
@@ -1155,6 +1164,7 @@ mod tests {
                 assembled_bytes: 1024,
             }],
             coordinator_apply: stats.clone(),
+            navigation_apply: stats.clone(),
             live_apply: stats.clone(),
             brushed_step_rows: 10,
             unfiltered_step_rows: 100,

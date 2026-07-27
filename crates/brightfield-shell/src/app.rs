@@ -57,6 +57,7 @@
 use std::collections::BTreeSet;
 
 use brightfield_engine::coordinator::{Coordinator, Interaction};
+use brightfield_engine::{AxisExtent, NavigationExtent};
 use brightfield_keys::BindingContext;
 use brightfield_render::canvas_host::{Color, PixelSize};
 use brightfield_spec::analysis::ComponentPath;
@@ -74,12 +75,41 @@ use crate::canvas::{CanvasSlot, EguiCanvasHost};
 use crate::chart_item::ChartItem;
 use crate::design::Mode;
 use crate::interval_drag::IntervalDrags;
+use crate::navigation::{AxisLock, NavGesture, NavOutcome};
 use crate::pipeline::{Composed, IntervalControl, LiveDashboard};
 use crate::watch::FileWatcher;
 
 // ---------------------------------------------------------------------------
 // ChartDoc — the state every pane in this view shares.
 // ---------------------------------------------------------------------------
+
+/// The headline over a fault the engine itself reported — a mark it would not
+/// run, or a re-composite that produced nothing and left the previous picture
+/// standing.
+const ENGINE_REFUSED: &str = "The chart is missing data the engine refused to query";
+
+/// The headline over a settled navigation whose re-query drew nothing.
+///
+/// A separate sentence from [`ENGINE_REFUSED`] because it is a separate event.
+/// The engine did not refuse anything here: it ran the query the frame asked
+/// for and the frame asked about empty space. Filed under the engine's own
+/// wording it would read as a fault in the spec, which is the one thing it is
+/// not.
+const FRAME_OFF_THE_DATA: &str = "The frame moved off the data";
+
+/// **What is wrong with the picture on screen** — one banner's worth of it.
+///
+/// A headline and the line under it, together, because they are read together
+/// and a caller that could take one without the other would eventually put the
+/// wrong headline over the right detail. See [`ChartDoc::chart_fault`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChartFault {
+    /// What happened, in the reader's terms — the banner's title.
+    pub title: String,
+    /// The supporting line: the engine's own words where they help, the
+    /// gesture's where they help more.
+    pub detail: String,
+}
 
 /// The chart view's **document**: the composited dashboard, the canvas it
 /// rasters into, and the chart state the panes read.
@@ -162,9 +192,35 @@ pub struct ChartDoc {
     /// handle position cannot live in [`Self::composed`].
     pub interval_drags: IntervalDrags,
     /// Why the last gesture failed to change the picture, if it did — read
-    /// through [`Self::interaction_fault`], written only by
-    /// [`Self::apply_interaction`].
-    interaction_fault: Option<String>,
+    /// through [`Self::chart_fault`].
+    ///
+    /// Written by [`Self::apply_interaction`], which knows only that the
+    /// engine refused, and RESTATED by [`Self::pump_navigation`], which knows
+    /// what the refused gesture meant. A pan onto empty space fails as
+    /// `no marks rendered successfully`; that is the mechanism, not the event,
+    /// and the caller is the only place with enough context to say the event.
+    interaction_fault: Option<ChartFault>,
+    /// The pan/zoom gesture in progress and the settle rule that decides when
+    /// it becomes a query. Public because a headless test drives it through the
+    /// same entry points the chart pane uses.
+    pub nav: NavGesture,
+    /// Which axes a navigation gesture may move — cycled from the keyboard, a
+    /// property of the view rather than of the spec.
+    pub axis_lock: AxisLock,
+    /// Which plot the keyboard navigation verbs address. Follows the last plot
+    /// a pointer gesture navigated, so `zoom-in` after a wheel zoom keeps
+    /// working on the plot the hand was on; 0 until one has.
+    nav_plot: usize,
+    /// The last thing a navigation gesture REFUSED to do, and why — surfaced
+    /// on the chart pane's subject so a categorical axis that will not pan says
+    /// so instead of reading as a dead control. Cleared by the next gesture
+    /// that does something.
+    ///
+    /// A **refusal**, never a failure: the gesture was understood and declined
+    /// before anything was queried. A gesture that ran and could not be drawn
+    /// is a different event with a different lifetime, and it goes to
+    /// [`Self::interaction_fault`] and the window's banner instead.
+    nav_notice: Option<String>,
     canvas: CanvasSlot<CanvasKey>,
 }
 
@@ -213,6 +269,10 @@ impl ChartDoc {
             active_selections: Vec::new(),
             interval_drags: IntervalDrags::new(),
             interaction_fault: None,
+            nav: NavGesture::new(),
+            axis_lock: AxisLock::default(),
+            nav_plot: 0,
+            nav_notice: None,
             canvas: CanvasSlot::new(host),
         }
     }
@@ -235,6 +295,10 @@ impl ChartDoc {
             active_selections: Vec::new(),
             interval_drags: IntervalDrags::new(),
             interaction_fault: None,
+            nav: NavGesture::new(),
+            axis_lock: AxisLock::default(),
+            nav_plot: 0,
+            nav_notice: None,
             canvas: CanvasSlot::headless(),
         }
     }
@@ -275,6 +339,10 @@ impl ChartDoc {
         // spec's chart — the defect `open_chart` exists to prevent, re-made
         // one field down.
         self.interaction_fault = None;
+        // …and the extent described the replaced document's plots.
+        self.nav.clear();
+        self.nav_notice = None;
+        self.nav_plot = 0;
         self.spec_path = None;
         // The watch list described the replaced document's files, and any
         // in-flight marks belonged to its session — both go with it.
@@ -331,6 +399,18 @@ impl ChartDoc {
         self.live.as_mut().map(LiveDashboard::coordinator)
     }
 
+    /// The live dashboard behind this document, read-only — the extent stores
+    /// and the spec it was composed from.
+    ///
+    /// Public for the reason [`Self::live_coordinator`] is: "do the axes and
+    /// the rows describe the same range" has exactly one honest answer, and a
+    /// gate that asserted it from a field the code under test writes would be
+    /// asserting against itself.
+    #[must_use]
+    pub fn live_dashboard(&self) -> Option<&LiveDashboard> {
+        self.live.as_ref()
+    }
+
     /// Whether any selection currently holds a committed gesture.
     #[must_use]
     pub fn selection_active(&self) -> bool {
@@ -366,7 +446,7 @@ impl ChartDoc {
                 self.active_selections
                     .retain(|(n, c)| !(n == name && c == contributor));
             }
-            Interaction::SetParam { .. } => {}
+            Interaction::SetParam { .. } | Interaction::Navigate { .. } => {}
         }
         // The engine seam marks its work. Synchronous today, so begin/end
         // resolve inside one frame and no cue is drawn — see the activity
@@ -386,7 +466,10 @@ impl ChartDoc {
             }
             Err(e) => {
                 eprintln!("warning: interaction re-composite failed: {e}");
-                self.interaction_fault = Some(e.to_string());
+                self.interaction_fault = Some(ChartFault {
+                    title: ENGINE_REFUSED.to_string(),
+                    detail: e.to_string(),
+                });
                 false
             }
         }
@@ -412,21 +495,23 @@ impl ChartDoc {
     /// decidable at load by anything — it can only be caught when the binder
     /// rejects it, and the only question left is whether anyone is told.
     #[must_use]
-    pub fn chart_fault(&self) -> Option<String> {
-        if let Some(e) = &self.interaction_fault {
-            return Some(e.clone());
+    pub fn chart_fault(&self) -> Option<ChartFault> {
+        if let Some(fault) = &self.interaction_fault {
+            return Some(fault.clone());
         }
         if self.composed.mark_faults.is_empty() {
             return None;
         }
-        Some(
-            self.composed
+        Some(ChartFault {
+            title: ENGINE_REFUSED.to_string(),
+            detail: self
+                .composed
                 .mark_faults
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
                 .join("\n"),
-        )
+        })
     }
 
     /// Retract every committed gesture — the `clear-selection` verb's chart
@@ -471,6 +556,262 @@ impl ChartDoc {
             dispatched += 1;
         }
         dispatched
+    }
+
+    // -----------------------------------------------------------------------
+    // Navigation — the frame moves continuously, the data re-queries once.
+    // -----------------------------------------------------------------------
+
+    /// Which plot the keyboard navigation verbs address.
+    #[must_use]
+    pub fn nav_plot(&self) -> usize {
+        self.nav_plot
+    }
+
+    /// What the last navigation gesture refused to do, if it refused anything.
+    #[must_use]
+    pub fn nav_notice(&self) -> Option<&str> {
+        self.nav_notice.as_deref()
+    }
+
+    /// Whether any plot is currently held at a navigation extent — what the
+    /// reset affordance keys its enabled state on.
+    ///
+    /// Read off the RENDER store, which is where the axes are: a settled
+    /// gesture whose re-query drew nothing rolls the query store back and
+    /// leaves the axes moved (see [`LiveDashboard::apply`]), and in that state
+    /// there is still a frame to reset.
+    #[must_use]
+    pub fn navigated(&self) -> bool {
+        self.live
+            .as_ref()
+            .is_some_and(|live| !live.view_extents().is_empty())
+    }
+
+    /// **What the frame does not scope.** The marks on navigated plots whose
+    /// query the extent could not be pushed into, named by kind — the sentence
+    /// the chart pane rails for as long as such a plot is held at an extent.
+    ///
+    /// This is the honesty channel for a bail that is otherwise invisible.
+    /// `examples/regression.yaml` is the case: a `dot` scatter and a
+    /// `regressionY` fit share one plot and one pair of columns, the scatter
+    /// narrows to the frame, and the fit — a scalar aggregate with no grouping
+    /// key to filter beneath — returns the byte-identical row it returned at
+    /// full extent. The reader is then shown an ordinary-least-squares line
+    /// computed from points that are not on screen, spanning an x range wider
+    /// than the frame. Nothing about the drawing says so, so the pane does.
+    ///
+    /// Derived, never stored: it is a fact about the extent in force, and it
+    /// has to stop being said the moment a reset widens the frame back out.
+    /// `None` at full extent, on a still document, and when every mark
+    /// rescoped.
+    #[must_use]
+    pub fn nav_scope_notice(&self) -> Option<String> {
+        let live = self.live.as_ref()?;
+        if live.view_extents().is_empty() {
+            return None;
+        }
+        let mut kinds: Vec<String> = Vec::new();
+        for plot in &self.composed.plots {
+            for declined in live.declined_navigation(&plot.path) {
+                let name = declined.kind.to_string();
+                if !kinds.contains(&name) {
+                    kinds.push(name);
+                }
+            }
+        }
+        if kinds.is_empty() {
+            return None;
+        }
+        // Plural agreement done rather than dodged: this line is read by
+        // someone deciding whether to trust a number on the screen, and
+        // "the regressionY, heatmap mark still summarises" reads as a bug.
+        let (subject, verb, them) = if kinds.len() == 1 {
+            (format!("the {} mark", kinds[0]), "summarises", "it")
+        } else {
+            (
+                format!("the {} marks", kinds.join(", ")),
+                "summarise",
+                "them",
+            )
+        };
+        Some(format!(
+            "{subject} still {verb} data outside the frame — navigation cannot rescope {them}"
+        ))
+    }
+
+    /// Cycle the axis lock and say so.
+    pub fn cycle_axis_lock(&mut self) {
+        self.axis_lock = self.axis_lock.cycle();
+        self.nav_notice = Some(format!("navigation moves {}", self.axis_lock.label()));
+    }
+
+    /// Record one step of a navigation gesture on `plot`: the axes move NOW,
+    /// and nothing is queried.
+    ///
+    /// Returns whether the frame actually moved. A gesture every axis refused
+    /// leaves the extent alone and files the reason, so the pane can say why
+    /// rather than look broken.
+    pub fn note_navigation(&mut self, plot: usize, outcome: &NavOutcome) -> bool {
+        self.nav_plot = plot;
+        self.nav_notice = outcome.refused.first().map(|(axis, why)| why.message(axis));
+        if outcome.extent.x.is_none() && outcome.extent.y.is_none() {
+            return false;
+        }
+        let Some(path) = self.composed.plots.get(plot).map(|p| p.path.clone()) else {
+            return false;
+        };
+        self.nav.moved(plot, outcome.extent.clone());
+        let Some(live) = self.live.as_mut() else {
+            return true;
+        };
+        live.set_view_extent(&path, outcome.extent.clone());
+        // Re-composite at the new extent WITHOUT re-querying. Every mark's SQL
+        // is unchanged — the session's extent moves only on settle — so this
+        // is served from the batches already materialised, and the axes track
+        // the hand while the data waits for the gesture to stop. A failed
+        // re-composite (a frame moved onto empty space) keeps the previous
+        // picture, the same posture an interaction takes.
+        match live.present() {
+            Ok(composed) => {
+                self.composed = composed;
+                self.canvas.invalidate();
+            }
+            Err(e) => eprintln!("warning: navigation re-composite failed: {e}"),
+        }
+        true
+    }
+
+    /// The gesture on the plot has ended — the extent it stopped at is now owed
+    /// exactly one query.
+    pub fn settle_navigation(&mut self) {
+        self.nav.settle();
+    }
+
+    /// Issue the settled gesture's re-query, if one is owed. Returns whether a
+    /// query was issued — **at most one per settled gesture, ever**.
+    ///
+    /// The extent is translated to the engine's own form here, against the
+    /// plot's channel columns: an axis whose plot names no column for it is
+    /// dropped, because a bound with no column to bind to is not a filter.
+    pub fn pump_navigation(&mut self) -> bool {
+        let Some((plot, extent)) = self.nav.take_settled() else {
+            return false;
+        };
+        let Some(handle) = self.composed.plots.get(plot) else {
+            return false;
+        };
+        let (path, x_col, y_col) = (
+            handle.path.clone(),
+            handle.x_column.clone(),
+            handle.y_column.clone(),
+        );
+        let engine_extent = NavigationExtent {
+            x: extent
+                .x
+                .zip(x_col)
+                .map(|((lo, hi), col)| AxisExtent::new(col, lo, hi)),
+            y: extent
+                .y
+                .zip(y_col)
+                .map(|((lo, hi), col)| AxisExtent::new(col, lo, hi)),
+        };
+        let applied = self.apply_interaction(Interaction::Navigate {
+            plot: ComponentPath(path),
+            extent: engine_extent,
+        });
+        if !applied {
+            // The settled frame composed nothing — a gesture that landed off
+            // the data. The dashboard has rolled its query store back, so the
+            // rows on screen are honest; what would still be missing is anyone
+            // saying why the picture stopped changing.
+            //
+            // It is said ONCE, on the banner, and deliberately not also on the
+            // rail. The two surfaces are not two audiences, they are two
+            // lifetimes: the rail carries what is true of the extent currently
+            // in force — `nav_scope_notice`'s declining mark, which stands
+            // until a reset — and the banner carries what one gesture just did,
+            // which the reader can dismiss because it is over. A dead end is
+            // the second kind. Saying it in both places would put a permanent
+            // rail entry under a dismissable banner about the same instant, and
+            // the reader would have to work out that they are one event.
+            //
+            // `apply_interaction` has already filed the engine's own account of
+            // it — `no marks rendered successfully`, which names the mechanism
+            // and leaves the reader to guess the cause. This replaces it,
+            // because this is the frame that knows the gesture was a pan.
+            self.interaction_fault = Some(ChartFault {
+                title: FRAME_OFF_THE_DATA.to_string(),
+                detail: "Nothing to draw in this range. The rows on screen are the \
+                         ones from before the gesture; the axes are where the gesture \
+                         left them. Reset the frame to bring the two back together."
+                    .to_string(),
+            });
+        }
+        applied
+    }
+
+    /// Return every plot to full extent — the **explicit reset**, and the only
+    /// thing that clears a navigation extent.
+    ///
+    /// Deliberately not folded into `clear-selection`: a brush and a frame are
+    /// different state, and one key that silently undid both would make a zoom
+    /// impossible to keep while working a cross-filter.
+    pub fn reset_navigation(&mut self) -> bool {
+        let paths: Vec<String> = self
+            .live
+            .as_ref()
+            .map(|live| live.view_extents().keys().cloned().collect())
+            .unwrap_or_default();
+        self.nav.clear();
+        self.nav_notice = None;
+        if paths.is_empty() {
+            return false;
+        }
+        let mut applied = false;
+        for path in paths {
+            if let Some(live) = self.live.as_mut() {
+                live.set_view_extent(&path, brightfield_render::scale::ViewExtent::default());
+            }
+            applied |= self.apply_interaction(Interaction::Navigate {
+                plot: ComponentPath(path),
+                extent: NavigationExtent::default(),
+            });
+        }
+        applied
+    }
+
+    /// A keyboard pan of the addressed plot, by a fraction of the frame's
+    /// width/height — one discrete gesture, so it settles the moment it happens.
+    pub fn pan_view(&mut self, fx: f64, fy: f64) -> bool {
+        let plot = self.nav_plot;
+        let Some(handle) = self.composed.plots.get(plot) else {
+            return false;
+        };
+        let (dx, dy) = (handle.rect.width * fx, handle.rect.height * fy);
+        let outcome = crate::navigation::pan(&handle.scales, self.axis_lock, dx, dy);
+        self.discrete_navigation(plot, &outcome)
+    }
+
+    /// A keyboard zoom of the addressed plot about its centre — one discrete
+    /// gesture. `factor` above 1 zooms in.
+    pub fn zoom_view(&mut self, factor: f64) -> bool {
+        let plot = self.nav_plot;
+        let Some(handle) = self.composed.plots.get(plot) else {
+            return false;
+        };
+        let outcome = crate::navigation::zoom(&handle.scales, self.axis_lock, None, factor);
+        self.discrete_navigation(plot, &outcome)
+    }
+
+    /// A gesture that begins and ends in the same instant (a keystroke): step,
+    /// settle, query — one of each.
+    fn discrete_navigation(&mut self, plot: usize, outcome: &NavOutcome) -> bool {
+        if !self.note_navigation(plot, outcome) {
+            return false;
+        }
+        self.settle_navigation();
+        self.pump_navigation()
     }
 
     /// Drive one spec-declared scalar parameter — the controls rail's slider,

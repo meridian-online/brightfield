@@ -531,10 +531,28 @@ mod tests {
         );
     }
 
-    /// (nav) — REVERSED (harden, 2026-07-02). The six Pan/PanZoom variants
-    /// are demoted to `Unimplemented`: `apply_pan`/`apply_zoom`/
-    /// `ChartState::set_navigation` exist and are unit-tested, but no production
-    /// caller wires them (no scroll/wheel handler; navigation is always None).
+    /// The six Pan/PanZoom variants stay `Unimplemented`, and the reason has
+    /// been restated because the old one cited functions that no longer have a
+    /// caller.
+    ///
+    /// It used to say `apply_pan` / `apply_zoom` / `ChartState::set_navigation`
+    /// existed unit-tested and unwired. Those live in modules the shipped
+    /// binary cannot reach; navigation is BUILT now, with its own gesture
+    /// arithmetic, its own settle rule, a persistent extent on the session and
+    /// pointer plus keyboard bindings.
+    ///
+    /// What these six variants are is a way for a SPEC to declare that a plot
+    /// is navigable and along which axes. Nothing reads them: navigation is
+    /// offered on any plot with a continuous positional scale, and the axis
+    /// lock is a view-level toggle the reader cycles rather than something the
+    /// spec pins. So the vocabulary entries remain genuinely unconsumed, which
+    /// is what `Unimplemented` means here, and promoting them would publish a
+    /// spec capability that changes nothing about what the app does.
+    ///
+    /// Nothing about conformance turns on this either way: `panZoom` appears in
+    /// exactly one of the 54 vendored upstream specs, and that spec also uses
+    /// `mark: frame`, which stays unimplemented — so these six unblock no
+    /// spec.
     #[test]
     fn pan_variants_unimplemented_until_wired() {
         for variant in [
@@ -548,7 +566,8 @@ mod tests {
             assert_eq!(
                 variant.status(),
                 ImplStatus::Unimplemented,
-                "{variant:?} is parsed but unwired — demoted until navigation is consumed"
+                "{variant:?} is parsed, and nothing consumes it: navigation is a view \
+                 gesture rather than a spec-declared capability"
             );
         }
     }

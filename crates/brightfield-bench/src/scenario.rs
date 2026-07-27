@@ -5,8 +5,12 @@ use std::path::Path;
 use std::time::Instant;
 
 use brightfield_engine::coordinator::{Coordinator, Interaction};
-use brightfield_engine::{assemble_batches, RecordBatch, SqlPredicate};
-use brightfield_spec::analysis::{analyse_spec, build_brushable_bindings, ComponentPath};
+use brightfield_engine::{
+    assemble_batches, AxisExtent, NavigationExtent, RecordBatch, SqlPredicate,
+};
+use brightfield_spec::analysis::{
+    analyse_spec, build_brushable_bindings, plot_node_path, ComponentPath,
+};
 use brightfield_spec::{parse_spec, Format};
 use brightfield_sql::ir::ScalarValue;
 use serde::Serialize;
@@ -200,6 +204,17 @@ pub struct EngineMeasurement {
     /// plus the re-composite into a Vello scene — the full cost the live
     /// window's frame blocks on for one committed brush step.
     pub live_apply: Stats,
+    /// Per-gesture `Coordinator::apply` latency for a **settled navigation** —
+    /// the pan/zoom extent pushed at the aggregating mark's plot and every mark
+    /// of that plot re-queried.
+    ///
+    /// Measured beside the brush rather than instead of it because they take
+    /// different paths: a brush goes through selection propagation, which is
+    /// the pre-aggregation layer's only call site, and a navigation does not.
+    /// A navigation therefore takes the DIRECT query however this run is
+    /// configured, and comparing the two columns in one row is what makes that
+    /// visible rather than argued.
+    pub navigation_apply: Stats,
     /// Row count of the cross-filtered mark's step under the final brush —
     /// the non-vacuity evidence that the brush actually filtered.
     pub brushed_step_rows: u64,
@@ -258,6 +273,37 @@ fn shape_of(mark: usize, batches: &[RecordBatch]) -> Result<MarkRows, String> {
             .as_ref()
             .map_or(0, RecordBatch::get_array_memory_size) as u64,
     })
+}
+
+/// The `[min, max]` a column spans across a mark's drawn batches, or `None`
+/// when the mark has no such column or no numeric rows in it.
+fn column_domain(batches: &[RecordBatch], column: &str) -> Option<(f64, f64)> {
+    use duckdb::arrow::array::{Array, Float64Array};
+    use duckdb::arrow::compute::cast;
+    use duckdb::arrow::datatypes::DataType;
+    let mut domain: Option<(f64, f64)> = None;
+    for batch in batches {
+        let Ok(idx) = batch.schema().index_of(column) else {
+            continue;
+        };
+        let Ok(col) = cast(batch.column(idx), &DataType::Float64) else {
+            continue;
+        };
+        let Some(arr) = col.as_any().downcast_ref::<Float64Array>() else {
+            continue;
+        };
+        for i in 0..arr.len() {
+            if arr.is_null(i) {
+                continue;
+            }
+            let v = arr.value(i);
+            domain = Some(match domain {
+                None => (v, v),
+                Some((lo, hi)) => (lo.min(v), hi.max(v)),
+            });
+        }
+    }
+    domain.filter(|(lo, hi)| hi > lo)
 }
 
 /// Everything the record needs from one phase's complete result set — and
@@ -381,6 +427,102 @@ pub fn run_engine_suites(
         }
     }
 
+    // --- Navigation seam: per-SETTLED-GESTURE apply latency. ---------------
+    //
+    // Navigated on mark 1 (plot B in every scenario) along ITS OWN x channel,
+    // over the range that mark's rows actually span. Reusing the brush column
+    // and the brush domain would have been shorter and was wrong: two of the
+    // four scenarios brush a column plot B does not draw, so the extent matched
+    // no mark, the SQL came back byte-identical, the cache served it and the
+    // record printed 0.0 ms for a gesture that did nothing. The non-vacuity
+    // check below is what makes that unrepeatable.
+    let (nav_plot, nav_column) = {
+        let marks = brightfield_sql::emit::collect_marks_with_paths(&spec);
+        let (mark, path) = marks
+            .get(1)
+            .ok_or_else(|| format!("{}: no second mark to navigate", scenario.name))?;
+        let column = match mark.options.get("x") {
+            Some(brightfield_spec::ast::ValueOrParamRef::Value(v)) => v
+                .as_str()
+                .ok_or_else(|| format!("{}: mark 1's x is not a column", scenario.name))?
+                .to_string(),
+            _ => return Err(format!("{}: mark 1 declares no x column", scenario.name)),
+        };
+        (plot_node_path(path).to_string(), column)
+    };
+    // The range that column actually spans, read off the mark's own drawn
+    // batch — no assumption about how the dataset was generated.
+    let nav_domain = {
+        let batches = coord
+            .session_mut()
+            .execute_mark(1)
+            .map_err(|e| format!("{}: reading mark 1 for its domain: {e}", scenario.name))?;
+        column_domain(&batches, &nav_column).ok_or_else(|| {
+            format!(
+                "{}: mark 1 draws no {nav_column} to navigate",
+                scenario.name
+            )
+        })?
+    };
+    let unnavigated_rows: usize = coord
+        .session_mut()
+        .execute_mark(1)
+        .map_err(|e| format!("{}: mark 1 at full extent: {e}", scenario.name))?
+        .iter()
+        .map(RecordBatch::num_rows)
+        .sum();
+
+    let mut nav_ms = Vec::with_capacity(iterations);
+    let mut navigated_rows = unnavigated_rows;
+    for i in 0..iterations {
+        let (lo, hi) = scenario.drag.interval_in(nav_domain, i);
+        let interaction = Interaction::Navigate {
+            plot: ComponentPath(nav_plot.clone()),
+            extent: NavigationExtent {
+                x: Some(AxisExtent::new(nav_column.clone(), lo, hi)),
+                y: None,
+            },
+        };
+        let t = Instant::now();
+        let requery = coord.apply(interaction);
+        nav_ms.push(t.elapsed().as_secs_f64() * 1000.0);
+        if requery.affected.is_empty() {
+            return Err(format!(
+                "{}: navigation {i} affected no marks — the measurement would be vacuous",
+                scenario.name
+            ));
+        }
+        for (mark_index, r) in &requery.affected {
+            let batches = r.as_ref().map_err(|e| {
+                format!(
+                    "{}: navigation {i} failed re-querying mark {mark_index}: {e}",
+                    scenario.name
+                )
+            })?;
+            if *mark_index == 1 {
+                navigated_rows = batches.iter().map(RecordBatch::num_rows).sum();
+            }
+        }
+    }
+    // Non-vacuity: the last extent must have scoped the mark. A navigation that
+    // changed nothing costs a cache lookup, and reporting that as the price of
+    // a zoom is exactly the borrowed-number failure this directory exists to
+    // prevent.
+    if navigated_rows >= unnavigated_rows {
+        return Err(format!(
+            "{}: the navigation extent filtered nothing on mark 1 ({navigated_rows} rows \
+             against {unnavigated_rows} unnavigated) — the measured cost would be a cache hit",
+            scenario.name
+        ));
+    }
+
+    // Put the frame back before anything else is measured: a leftover extent
+    // would scope every figure below under a gesture the record does not name.
+    coord.apply(Interaction::Navigate {
+        plot: ComponentPath(nav_plot),
+        extent: NavigationExtent::default(),
+    });
+
     // Non-vacuity: under the final brush, the cross-filtered step must hold
     // fewer rows than unfiltered — otherwise the applies filtered nothing.
     let brushed_step_rows = coord
@@ -462,6 +604,7 @@ pub fn run_engine_suites(
         first_materialise_ms: (first_materialise_ms * 1000.0).round() / 1000.0,
         marks,
         coordinator_apply: Stats::from_ms(apply_ms).expect("iterations > 0"),
+        navigation_apply: Stats::from_ms(nav_ms).expect("iterations > 0"),
         live_apply: Stats::from_ms(live_ms).expect("iterations > 0"),
         brushed_step_rows,
         unfiltered_step_rows,

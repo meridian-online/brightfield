@@ -19,6 +19,9 @@
 //!   binding brush/click gestures to the engine's coordinator seam.
 //! - [`legend`] — the chart legend as a native egui margin panel, outside the
 //!   plot rect, derived from the scales each chart was drawn against.
+//! - [`navigation`] — pan/zoom: the gesture arithmetic read off the displayed
+//!   scales, the axis lock, and the settle rule that makes a continuously
+//!   moving frame issue exactly one re-query per gesture.
 //! - [`interval_drag`] — where an interval slider's handle is *while* it is
 //!   dragged, and the UI-thread coalescing that keeps a sustained drag from
 //!   executing values it has already superseded.
@@ -54,6 +57,7 @@ pub mod editor;
 pub mod gallery;
 pub mod interval_drag;
 pub mod legend;
+pub mod navigation;
 pub mod overlays;
 pub mod pipeline;
 pub mod protocol;
