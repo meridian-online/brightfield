@@ -656,7 +656,10 @@ mod tests {
         // Declined alone: nothing to key a cube on at all.
         let only_declined =
             NavigationFilterPass::from_extents(None, Some(("__bf_count", 10.0, 90.0)));
-        assert_eq!(only_declined.declined(&plan), vec!["__bf_count".to_string()]);
+        assert_eq!(
+            only_declined.declined(&plan),
+            vec!["__bf_count".to_string()]
+        );
         assert!(
             only_declined.cube_active_clauses(&plan).is_none(),
             "an extent the emission ignores must not key a cube"
@@ -670,10 +673,13 @@ mod tests {
         );
         let clauses = mixed.cube_active_clauses(&plan).expect("one axis pushes");
         assert_eq!(clauses.len(), 1, "only the pushed axis: {clauses:?}");
-        assert_eq!(rendered(clauses[0].clone()), rendered(Predicate::And(vec![
-            Predicate::Expr("\"latency\" >= 2".to_string()),
-            Predicate::Expr("\"latency\" <= 4".to_string()),
-        ])));
+        assert_eq!(
+            rendered(clauses[0].clone()),
+            rendered(Predicate::And(vec![
+                Predicate::Expr("\"latency\" >= 2".to_string()),
+                Predicate::Expr("\"latency\" <= 4".to_string()),
+            ]))
+        );
     }
 
     /// Both grouping axes key the cube when both push down.

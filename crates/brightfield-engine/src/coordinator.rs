@@ -1346,7 +1346,10 @@ plot:
         assert_eq!(requery.affected.len(), 1, "the plot's one mark re-queried");
         let stats = coord.session().preagg_stats().clone();
         assert_eq!(stats.cubes_built, 1, "one cube materialised");
-        assert_eq!(stats.cube_hits, 1, "the settled re-query was served from it");
+        assert_eq!(
+            stats.cube_hits, 1,
+            "the settled re-query was served from it"
+        );
         assert_eq!(stats.serve_failures, 0);
         assert_eq!(stats.build_failures, 0);
 
@@ -1451,7 +1454,11 @@ plot:
             assert!(rows(&a) > 0, "{what}: non-vacuous comparison");
             assert_eq!(rows(&a), rows(&b), "{what}: same row count");
             assert_eq!(a[0].schema(), b[0].schema(), "{what}: identical schema");
-            assert_eq!(column_f64(&a, "x"), column_f64(&b, "x"), "{what}: bin centres");
+            assert_eq!(
+                column_f64(&a, "x"),
+                column_f64(&b, "x"),
+                "{what}: bin centres"
+            );
             assert_eq!(
                 column_f64(&a, "__bf_count"),
                 column_f64(&b, "__bf_count"),
@@ -1515,7 +1522,11 @@ plot:
             0,
             "a row-level mark decomposes into no cube"
         );
-        assert_eq!(coord.session().preagg_stats().cube_hits, 0, "and none serves");
+        assert_eq!(
+            coord.session().preagg_stats().cube_hits,
+            0,
+            "and none serves"
+        );
         assert_eq!(
             coord.session().preagg_stats().build_failures,
             0,
