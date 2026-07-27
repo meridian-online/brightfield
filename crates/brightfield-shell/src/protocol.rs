@@ -3042,6 +3042,16 @@ mod tests {
             (Some(chain.as_str()), vec![egui::Key::Z, egui::Key::A]),
             (Some(family.as_str()), vec![egui::Key::Z, egui::Key::A]),
             (None, vec![egui::Key::Escape]),
+            // A chain fold OPEN, then a family unfolded on top of it, with no
+            // scope in the way. The pair at steps 12-13 above looks like this
+            // and is not: a drill scope is active there, so the chain fold is
+            // refused and the family arm has nothing to close. Without a clean
+            // adjacency the family arm's `chain_contracted = false` can be
+            // deleted and this sweep stays green, which is how the guard came
+            // to be unheld.
+            (Some(chain.as_str()), vec![egui::Key::Z, egui::Key::A]),
+            (Some(family.as_str()), vec![egui::Key::Z, egui::Key::A]),
+            (Some(family.as_str()), vec![egui::Key::Z, egui::Key::A]),
             (Some(chain.as_str()), vec![egui::Key::Z, egui::Key::A]),
             (Some(SQL_PRODUCED), vec![egui::Key::Z, egui::Key::A]),
             (None, vec![egui::Key::Backspace]),

@@ -260,8 +260,13 @@ pub fn chart_toolbar_band(composed: &Composed) -> f32 {
 /// the defect: what the compositor grants is silent, and a canvas pane that
 /// scrolls looks exactly the same whether it was sized or clamped.
 ///
-/// Read by the same tiers as [`chart_window_size`], and kept for the same
-/// reason — see the note there.
+/// **No caller today**, and the note that used to sit here claimed otherwise —
+/// that this was read by the same tiers as [`chart_window_size`]. That stopped
+/// being true when the boot moved to [`protocol_window_size_for`] over an
+/// envelope, because a single [`Layout`] is no longer what the window is sized
+/// against. Kept because it is the one-graph spelling of the same arithmetic
+/// and the capture tiers are its obvious next caller — but kept honestly, as a
+/// convenience with no consumer rather than as load-bearing API.
 #[must_use]
 pub fn protocol_window_size(layout: &Layout) -> (f32, f32) {
     protocol_window_size_for(layout.width as f32, layout.height as f32)

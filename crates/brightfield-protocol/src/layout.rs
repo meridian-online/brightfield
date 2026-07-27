@@ -161,7 +161,10 @@ impl Default for LayoutConfig {
     ///   either lane occupies; [`spacing::SPACE_5`] (12) would leave less.
     ///
     /// Measured on the collapsed crosswalk, with the dead thickness floor also
-    /// gone: 1034×1120 → 962×786, a 29.8% cut down the reading axis.
+    /// gone: 1034×1120 → 1018×714, a 36.3% cut down the reading axis. (An
+    /// earlier revision of this line said 962×786; no combination of ladder
+    /// rungs produces that height, and the figure the rest of the tree carries
+    /// is this one.)
     fn default() -> Self {
         Self {
             margin: f64::from(spacing::SPACE_8),

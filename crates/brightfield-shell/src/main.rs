@@ -307,6 +307,36 @@ struct BrightfieldApp {
     fit: Option<(f32, f32)>,
 }
 
+/// Whether a frame reporting `outcome` is the last one that needs to ask.
+///
+/// One line of logic, lifted out of the frame loop because it is the whole of
+/// the display cap's decision and inside `ui` it was reachable only through an
+/// `eframe::Frame` — so nothing held it. Retiring on `MonitorUnknown` and never
+/// arming the slot are, between them, exactly the two edits that put a window
+/// back off the side of the screen, and a review found both with the entire
+/// suite green. `window::fit_window_to_display` correctly *reports*
+/// `MonitorUnknown`; whether the caller then retries or gives up is what
+/// decides if the cap ever fires at all, and that belongs to this side.
+const fn retires_the_fit(outcome: &DisplayFit) -> bool {
+    match outcome {
+        // Not mapped yet, so nothing was decided. Asking again costs one
+        // comparison a frame until a monitor appears; giving up costs the cap.
+        DisplayFit::MonitorUnknown => false,
+        DisplayFit::Fits | DisplayFit::Shrunk(_) => true,
+    }
+}
+
+/// Whether this launch's window size is the cap's business.
+///
+/// Only a content-derived size is: a geometry the user themselves dragged out
+/// is theirs to have made too big, and the default a bootless launch takes is
+/// small by construction. Extracted alongside [`retires_the_fit`] for the same
+/// reason — the arming decision is half of the mechanism, and a `main` that
+/// never arms is indistinguishable from one that has no cap.
+const fn cap_applies(kept_geometry: bool, boot_is_empty: bool) -> bool {
+    !kept_geometry && !boot_is_empty
+}
+
 impl eframe::App for BrightfieldApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -317,19 +347,16 @@ impl eframe::App for BrightfieldApp {
         // whole argument for why it cannot be said sooner, and why eframe's own
         // creation-time clamp does not cover this case.
         if let Some(natural) = self.fit {
-            match fit_window_to_display(&ctx, natural) {
-                // No monitor reported yet. Ask again next frame rather than
-                // retiring the check on a window that is not mapped.
-                DisplayFit::MonitorUnknown => {}
-                DisplayFit::Fits => self.fit = None,
-                DisplayFit::Shrunk(size) => {
-                    eprintln!(
-                        "window: this display shows {}x{} of the {}x{} the document asks for — \
-                         the canvas scrolls the rest",
-                        size.x, size.y, natural.0, natural.1
-                    );
-                    self.fit = None;
-                }
+            let outcome = fit_window_to_display(&ctx, natural);
+            if let DisplayFit::Shrunk(size) = outcome {
+                eprintln!(
+                    "window: this display shows {}x{} of the {}x{} the document asks for — \
+                     the canvas scrolls the rest",
+                    size.x, size.y, natural.0, natural.1
+                );
+            }
+            if retires_the_fit(&outcome) {
+                self.fit = None;
             }
         }
 
@@ -459,7 +486,7 @@ fn main() -> Result<(), String> {
     // which is the earliest point a real monitor can be read — see
     // `window::fit_window_to_display` for why it cannot be read before then.
     let mut fit = None;
-    if !startup::kept_window_geometry(outcome) && !boot.is_empty() {
+    if cap_applies(startup::kept_window_geometry(outcome), boot.is_empty()) {
         let (w, h) = boot.window_size(view);
         layout.window.size = [w, h];
         fit = Some((w, h));
@@ -557,6 +584,57 @@ mod tests {
 
     fn parse(list: &[&str]) -> Result<Invocation, String> {
         parse_args_from(list.iter().map(|s| (*s).to_string()))
+    }
+
+    /// The frame that reports no monitor must not be the last one that asks.
+    ///
+    /// This is the arm a review disarmed with the whole suite green: a window
+    /// is not mapped on its first frames, so retiring here retires the cap
+    /// before it has ever seen a screen, and the window stays at the size the
+    /// graph asked for — which is the exact defect the cap exists to prevent,
+    /// restored invisibly.
+    #[test]
+    fn an_unmapped_frame_keeps_the_cap_waiting() {
+        assert!(
+            !retires_the_fit(&DisplayFit::MonitorUnknown),
+            "a frame with no monitor retired the display cap — it would never \
+             fire, and a window larger than the screen would open with every \
+             test still green"
+        );
+    }
+
+    /// Both decided outcomes are final: there is no second monitor to wait for,
+    /// and re-asking every frame would re-send an `InnerSize` the user may have
+    /// since dragged away from.
+    #[test]
+    fn a_decided_frame_retires_the_cap() {
+        assert!(
+            retires_the_fit(&DisplayFit::Fits),
+            "a fitting window asked again"
+        );
+        assert!(
+            retires_the_fit(&DisplayFit::Shrunk(egui::Vec2::new(800.0, 600.0))),
+            "a shrunk window asked again, so it would fight a later resize"
+        );
+    }
+
+    /// The other half of the mechanism. A `main` that never arms the slot is
+    /// indistinguishable from one with no cap at all, and the two together are
+    /// what the review removed to restore the original defect.
+    #[test]
+    fn only_a_content_derived_window_is_capped() {
+        assert!(
+            cap_applies(false, false),
+            "a content-sized window was not armed, so the cap never runs"
+        );
+        assert!(
+            !cap_applies(true, false),
+            "a geometry the user dragged out was capped — theirs to have made too big"
+        );
+        assert!(
+            !cap_applies(false, true),
+            "a bootless launch was capped, and its default is small by construction"
+        );
     }
 
     /// The `Run` arguments, or a panic — for the cases that are meant to open a
