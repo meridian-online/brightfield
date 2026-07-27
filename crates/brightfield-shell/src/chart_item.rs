@@ -320,7 +320,7 @@ impl ChartItem {
         let mut repaint = false;
         // Gestures and the transient overlay, before the legend band so
         // the frame borrow ends inside this scope.
-        let input = surface_input(&ctx, rect);
+        let input = surface_input(ctx, rect);
         let hovered = input.hovered;
         let pointer = input.pointer_pos;
         let down = matches!(
