@@ -209,11 +209,16 @@ pub struct EngineMeasurement {
     /// of that plot re-queried.
     ///
     /// Measured beside the brush rather than instead of it because they take
-    /// different paths: a brush goes through selection propagation, which is
-    /// the pre-aggregation layer's only call site, and a navigation does not.
-    /// A navigation therefore takes the DIRECT query however this run is
-    /// configured, and comparing the two columns in one row is what makes that
-    /// visible rather than argued.
+    /// different paths: a brush goes through selection propagation and a
+    /// navigation resolves to an extent on the session. This column is why the
+    /// difference stopped being invisible — it recorded a zoom taking the
+    /// direct query in BOTH configurations while the brush beside it was served
+    /// from a cube, which is what showed that the layer had one trigger and
+    /// navigation reached it by no path.
+    ///
+    /// It is now measured under both configurations for the same reason the
+    /// brush is: the engine keys a cube off an extent as well, so this figure
+    /// has a delta to report, and quoting one arm would hide it.
     pub navigation_apply: Stats,
     /// Row count of the cross-filtered mark's step under the final brush —
     /// the non-vacuity evidence that the brush actually filtered.

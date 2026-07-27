@@ -797,25 +797,29 @@ fn render_markdown(r: &BaselineReport) -> String {
          re-queries one more view than a brush step at the same row count. \
          **`Settled zoom → data`** is one pan/zoom extent applied to the \
          aggregating plot and every mark of that plot re-queried — the cost a \
-         gesture pays ONCE, when it stops. It is quoted from the direct run \
-         alone because navigation gets no cube either way: the pre-aggregation \
-         layer's only call site is selection propagation, so a navigation \
-         re-query takes the direct path however the run is configured. Read it \
-         beside `Step → data, direct`, not beside the cubed column."
+         gesture pays ONCE, when it stops. It is printed for both \
+         configurations, because the engine now keys a cube off a navigation \
+         extent as well as off a selection clause: an extent IS a structured \
+         interval clause, and the axes of one that push beneath the `GROUP BY` \
+         become the cube's active dimensions. Where the shape yields a cube, \
+         read the cubed figure beside `Step → data, cubed` — the two gestures \
+         are then the same kind of query over the same pre-aggregate. Where it \
+         does not (a row-level mark, or an axis naming an aggregate output), \
+         the two zoom columns should agree."
     );
     let _ = writeln!(md);
     let _ = writeln!(
         md,
         "| Scenario | Drag | Rows | Cold open (load + first query, ms) | \
          Step → data, direct (ms) | Step → data, cubed (ms) | \
-         Settled zoom → data (ms) | \
+         Settled zoom → data, direct (ms) | Settled zoom → data, cubed (ms) | \
          Step → scene, direct (ms) | Step → scene, cubed (ms) | Cube | \
          Steady frame (ms) | Interaction frame (ms) | Drawn/materialised rows | \
          Arrow held (MiB) | Compose peak RSS, direct / cubed (MiB) |"
     );
     let _ = writeln!(
         md,
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
     );
     for s in &r.scaling {
         let drawn = s
@@ -834,7 +838,7 @@ fn render_markdown(r: &BaselineReport) -> String {
         };
         let _ = writeln!(
             md,
-            "| {} | {} | {} | {:.1} + {:.1} | {} | {} | {} | {} | {} | {}/{} | {} | {} | {} | {:.1} | {} / {} |",
+            "| {} | {} | {} | {:.1} + {:.1} | {} | {} | {} | {} | {} | {} | {}/{} | {} | {} | {} | {:.1} | {} / {} |",
             s.scenario,
             drag_label(s.drag),
             s.rows,
@@ -843,6 +847,7 @@ fn render_markdown(r: &BaselineReport) -> String {
             fmt_stats(&s.engine_direct.coordinator_apply),
             fmt_stats(&s.engine.coordinator_apply),
             fmt_stats(&s.engine_direct.navigation_apply),
+            fmt_stats(&s.engine.navigation_apply),
             fmt_stats(&s.engine_direct.live_apply),
             fmt_stats(&s.engine.live_apply),
             s.engine.preagg.cubes_built,
@@ -1327,8 +1332,11 @@ mod tests {
     }
 
     /// The README describes this harness to anyone reading a record. Three of
-    /// its claims were refuted by the JSON printed beside them, and a fourth
-    /// described a cap the harness did not enforce.
+    /// its claims were refuted by the JSON printed beside them, a fourth
+    /// described a cap the harness did not enforce, and two more outlived the
+    /// engine: navigation had exactly one thing wrong with it, it was fixed,
+    /// and a methodology section that still explained why a zoom can never be
+    /// cubed would send a reader looking for the wrong number.
     #[test]
     fn the_readme_makes_no_claim_the_harness_contradicts() {
         for refuted in [
@@ -1336,6 +1344,8 @@ mod tests {
             "RSS is cumulative within a run",
             "single `--iterations` cap keeps the guarantee",
             "brush steps served from a cube",
+            "only call site is selection propagation",
+            "quoted from the direct run alone",
         ] {
             assert!(
                 !BENCH_README.contains(refuted),
