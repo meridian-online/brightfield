@@ -1715,7 +1715,7 @@ impl Session {
     ///
     /// It is not a one-shot: the extent it sets is the session's, so a later
     /// brush, slider step or `execute_all` still carries it. That persistence is
-    /// the point — see [`Session::nav_extents`].
+    /// the point — see the session's own navigation-extent store.
     pub fn update_extent(
         &mut self,
         x_extent: Option<(&str, f64, f64)>,

@@ -367,7 +367,7 @@ impl NavGesture {
     }
 
     /// The extents actually handed out for dispatch, oldest first (bounded to
-    /// the most recent [`DISPATCH_LOG_CAP`]).
+    /// the most recent few).
     #[must_use]
     pub fn dispatched(&self) -> &[(usize, ViewExtent)] {
         &self.dispatched
