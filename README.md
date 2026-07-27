@@ -38,7 +38,7 @@ The live window and the headless shot both run on the egui/wgpu stack. macOS (Me
 - **Grammar-of-graphics marks** — dot, bar, rect, cell, text, tick, rule, line, area, density (KDE), regression, geo (GeoJSON), hexbin, contour, raster/heatmap
 - **Interactive navigation** — pan, zoom, brush (`intervalX/Y/XY`), toggle, nearest-point hover, highlight
 - **Multi-view composition** — `hconcat`, `vconcat`, `hspace`, `vspace` arrange plots, inputs, and legends into dashboards
-- **Query optimisation** — automatic pre-aggregation at pixel resolution, M4 downsampling for line/area marks, result caching, priority queuing
+- **Query optimisation** — automatic pre-aggregation at pixel resolution, M4 downsampling for line/area marks, result caching, priority queuing. Interaction cost stops tracking row count *where a summary can be pre-computed*: 0.5–3.6 ms per gesture at ten million rows on an aggregating mark, against 65–80 ms without one. [What makes an interaction fast](docs/interaction-speed.md) sets out when you get that and when you do not
 - **Direct data loading** — Parquet, CSV, JSON, inline data, and DuckDB database files
 - **Single native binary** — no webview, no HTTP server, no runtime dependencies beyond system graphics drivers
 
