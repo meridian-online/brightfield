@@ -42,6 +42,32 @@ by the provenance test; scores mirror `VerbEntry.scores` (frequency / mnemonic /
 | `save-spec` | `cmd-s` | 3 / 5 / 5 | cmd-s = save (universal; shipped, editor-scoped) |
 | `cycle-colour-scheme` | `c` | 3 / 5 / 3 | `c` = colour (mnemonic); view-scoped, transient preview |
 
+### Navigating the frame — pan, zoom, axis lock, reset
+
+Added when the navigation extent landed. Scored against the same three axes as every row above,
+and against one extra constraint this family has and the others do not: **the chart grammar's
+home row is already spoken for.** `h`/`j`/`k`/`l` move FOCUS across the component tree, and a
+family that borrowed them for panning would give one key two meanings resolved by an invisible
+mode. So the frame verbs take the arrow keys, which every map, canvas and image viewer already
+uses for exactly this, and which no bound verb in this registry claims. Convention scores of 5 are
+earned rather than assumed: panning by arrow key and zooming by `+`/`-`/`0` are the two most
+widely shared bindings in software that shows a viewport.
+
+Direction is four verbs rather than one parameterised verb because the registry has no
+parameterised verbs — a longname resolves to an action, and inventing an argument channel for this
+family alone would be a bigger change than four rows.
+
+| longname | key(s) | freq / mnem / conv | motor note |
+|----------|--------|--------------------|------------|
+| `pan-left` | `left` | 4 / 5 / 5 | arrow keys = pan (every map and canvas); free of the `hjkl` focus grammar |
+| `pan-right` | `right` | 4 / 5 / 5 | arrow keys = pan (every map and canvas); free of the `hjkl` focus grammar |
+| `pan-up` | `up` | 4 / 5 / 5 | arrow keys = pan (every map and canvas); free of the `hjkl` focus grammar |
+| `pan-down` | `down` | 4 / 5 / 5 | arrow keys = pan (every map and canvas); free of the `hjkl` focus grammar |
+| `zoom-in` | `=` | 4 / 5 / 5 | `=` is the unshifted `+` (browsers, maps, editors); no shift reach for the common direction |
+| `zoom-out` | `-` | 4 / 5 / 5 | `-` = zoom out, the universal twin of `+`; adjacent to `=` on every layout |
+| `cycle-axis-lock` | `x` | 2 / 4 / 3 | `x` = axis (mnemonic); a view-scoped mode toggle, free of the shipped chart grammar. Cycles both → x → y |
+| `reset-extent` | `0` | 3 / 4 / 5 | `0` = reset zoom (browsers `cmd-0`, maps); bare here because the chart owns the digit row. Separate from `escape`: a brush and a frame are different state |
+
 ### Protocol altitude — the asset-graph grammar
 
 The protocol panel is a distinct altitude, so its verbs never collide with the chart grammar. Motion,

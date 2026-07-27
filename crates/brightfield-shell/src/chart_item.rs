@@ -56,8 +56,17 @@ use crate::app::{ChartDoc, CHART};
 use crate::canvas::{surface_input, EguiChartFrame};
 use crate::design::Mode;
 use crate::legend;
+use crate::navigation::{self, verb::RESET_EXTENT};
 use crate::pipeline::{GestureBinding, PlotHandle};
 use crate::starts;
+
+/// How many logical pixels of wheel travel double the visible span.
+///
+/// It is a GESTURE-SHAPE constant, not a timing one: it converts the wheel's
+/// own units into a zoom factor, the way a scroll surface converts travel into
+/// distance. Ln-2 scaled, so travelling this far in and then back out returns
+/// the frame to exactly where it started rather than somewhere near it.
+const WHEEL_ZOOM_PIXELS: f64 = 180.0 / std::f64::consts::LN_2;
 
 /// The mode's overlay tokens — the transient-gesture ink group.
 fn overlay_tokens(mode: Mode) -> &'static OverlayTokens {
@@ -190,6 +199,20 @@ pub struct ChartItem {
     /// Whether the primary button was down over the raster last frame — the
     /// edge detector the drag state machine runs on.
     was_down: bool,
+    /// The plot a secondary-button pan is being dragged on, and where the
+    /// pointer was last frame. `None` when no pan is in progress.
+    ///
+    /// A pan is the SECONDARY button on purpose: the primary drag is the brush,
+    /// and one button cannot mean both "select these rows" and "move the frame"
+    /// without a mode nobody can see.
+    pan: Option<(usize, kurbo::Point)>,
+    /// Whether the secondary button was down last frame — the pan's edge
+    /// detector, and its settle: the release is the gesture's end.
+    was_secondary_down: bool,
+    /// Whether a wheel zoom was still arriving last frame. A frame with no
+    /// wheel delta after one that had some IS the gesture's end — the settle
+    /// test for a gesture with no button to let go of.
+    was_scrolling: bool,
 }
 
 impl ChartItem {
@@ -199,6 +222,9 @@ impl ChartItem {
         Self {
             drag: None,
             was_down: false,
+            pan: None,
+            was_secondary_down: false,
+            was_scrolling: false,
         }
     }
 
@@ -229,7 +255,23 @@ impl ChartItem {
         if !bindable {
             entry = entry.at(ToolbarLocation::Hidden);
         }
-        vec![entry]
+
+        // The navigation reset. Declared beside the selection clear and kept
+        // separate from it on purpose: a brush and a frame are different state,
+        // and one control that undid both would make a zoom impossible to keep
+        // while working a cross-filter.
+        let navigated = doc.navigated();
+        let mut reset =
+            ToolbarEntry::button("chart-reset-extent", "Reset view", Verb::new(RESET_EXTENT))
+                .enabled(navigated);
+        reset.tooltip = Some("Return every plot to its full extent".to_string());
+        if !navigated {
+            // Quiet when there is nothing to undo: a chart nobody has
+            // navigated has no view to reset, and a permanently greyed button
+            // on every chart is chrome that means nothing.
+            reset = reset.at(ToolbarLocation::Hidden);
+        }
+        vec![entry, reset]
     }
 }
 
@@ -299,6 +341,19 @@ impl Item<ChartDoc> for ChartItem {
         }
         for entry in doc.watch.entries() {
             subject = subject.with_status(entry);
+        }
+        // What a navigation gesture refused to do, and why. A categorical axis
+        // cannot be panned or zoomed — there is no continuous range to move —
+        // and a control that simply did nothing would read as broken. The
+        // refusal is stated instead.
+        if let Some(text) = doc.nav_notice() {
+            subject = subject.with_status(brightfield_workbench::subject::StatusEntry {
+                id: "chart-navigation",
+                side: brightfield_workbench::subject::StatusSide::Trailing,
+                text: text.to_string(),
+                tone: brightfield_workbench::subject::Tone::Neutral,
+                hide: brightfield_workbench::subject::HideAffordance::WithRail,
+            });
         }
         subject
     }
@@ -400,6 +455,74 @@ impl Item<ChartDoc> for ChartItem {
             let released = !down && self.was_down;
             self.was_down = down;
 
+            // ---------------------------------------------------------------
+            // Navigation: the frame moves on every sample, the data re-queries
+            // once the gesture has ended. See `crate::navigation`.
+            // ---------------------------------------------------------------
+            let secondary_down = matches!(
+                input.pointer_secondary,
+                brightfield_render::canvas_host::ButtonState::Down
+            );
+            if doc.is_live() {
+                // A secondary-button drag pans the plot it started on. The
+                // delta is measured against the pointer's own previous
+                // position rather than against the gesture's origin, so each
+                // step moves the frame by exactly what the hand moved.
+                if secondary_down && !self.was_secondary_down {
+                    self.pan = pointer
+                        .and_then(|p| plot_at(&doc.composed.plots, p).map(|plot| (plot, p)));
+                } else if secondary_down {
+                    if let (Some((plot, last)), Some(p)) = (self.pan, pointer) {
+                        let lock = doc.axis_lock;
+                        let outcome = doc.composed.plots.get(plot).map(|handle| {
+                            navigation::pan(&handle.scales, lock, p.x - last.x, p.y - last.y)
+                        });
+                        if let Some(outcome) = outcome {
+                            doc.note_navigation(plot, &outcome);
+                        }
+                        self.pan = Some((plot, p));
+                    }
+                }
+                if !secondary_down && self.was_secondary_down {
+                    // Release IS the settle.
+                    self.pan = None;
+                    doc.settle_navigation();
+                }
+
+                // The wheel zooms about the pointer. `scroll_delta.y` is
+                // logical pixels of wheel travel; the exponent turns it into a
+                // multiplicative factor so zooming in and back out by the same
+                // travel returns to the same frame.
+                let scroll = input.scroll_delta.y;
+                let scrolling = scroll.abs() > f64::EPSILON;
+                if scrolling {
+                    if let Some(p) = pointer {
+                        if let Some(plot) = plot_at(&doc.composed.plots, p) {
+                            let lock = doc.axis_lock;
+                            let outcome = doc.composed.plots.get(plot).map(|handle| {
+                                let local =
+                                    (p.x - handle.rect.x, p.y - handle.rect.y);
+                                navigation::zoom(
+                                    &handle.scales,
+                                    lock,
+                                    Some(local),
+                                    (scroll / WHEEL_ZOOM_PIXELS).exp(),
+                                )
+                            });
+                            if let Some(outcome) = outcome {
+                                doc.note_navigation(plot, &outcome);
+                            }
+                        }
+                    }
+                } else if self.was_scrolling {
+                    // A frame with no wheel travel after one that had some is
+                    // the end of the gesture — no clock in it.
+                    doc.settle_navigation();
+                }
+                self.was_scrolling = scrolling;
+            }
+            self.was_secondary_down = secondary_down;
+
             // The one transient-gesture treatment: the overlay token group.
             if let Some(drag) = self.drag {
                 let tokens = overlay_tokens(mode);
@@ -438,6 +561,10 @@ impl Item<ChartDoc> for ChartItem {
             // it through the seam. A click (no sweep) on an interval binding
             // clears that plot's contribution instead — the crossfilter
             // convention — and on a point binding toggles the category.
+            if doc.pump_navigation() {
+                cx.request_repaint();
+            }
+
             if released {
                 if let Some(drag) = self.drag.take() {
                     let plot = &doc.composed.plots[drag.plot];
@@ -913,8 +1040,14 @@ mod tests {
     fn the_clear_selection_control_is_hidden_exactly_when_it_cannot_act() {
         let doc = ChartDoc::empty();
         let entries = ChartItem::toolbar_entries(&doc);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].location, ToolbarLocation::Hidden);
+        // Both controls are declared — the vocabulary stays greppable — and
+        // both are hidden on a dashboard with nothing to brush and no plot to
+        // navigate.
+        assert_eq!(entries.len(), 2, "both controls stay declared");
+        assert!(
+            entries.iter().all(|e| e.location == ToolbarLocation::Hidden),
+            "{entries:#?}"
+        );
         assert!(
             !chrome::Toolbar::new(&entries).has_something_to_say(),
             "a hidden-only toolbar summons no row"

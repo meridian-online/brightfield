@@ -36,6 +36,52 @@
 use brightfield_render::scale::{Scale, ScaleSet, ViewExtent};
 use brightfield_render::channel::Channel;
 
+/// The verb longnames the navigation family is reachable by, spelled once.
+///
+/// The registry (`brightfield-keys`) owns the KEYS; these are the names both
+/// the registry entry and the shell's dispatch arm must agree on, and having
+/// one spelling of each is what stops a rename leaving a palette entry that
+/// silently does nothing.
+pub mod verb {
+    /// Pan the addressed plot left.
+    pub const PAN_LEFT: &str = "pan-left";
+    /// Pan the addressed plot right.
+    pub const PAN_RIGHT: &str = "pan-right";
+    /// Pan the addressed plot up.
+    pub const PAN_UP: &str = "pan-up";
+    /// Pan the addressed plot down.
+    pub const PAN_DOWN: &str = "pan-down";
+    /// Zoom the addressed plot in.
+    pub const ZOOM_IN: &str = "zoom-in";
+    /// Zoom the addressed plot out.
+    pub const ZOOM_OUT: &str = "zoom-out";
+    /// Cycle which axes navigation moves.
+    pub const CYCLE_AXIS_LOCK: &str = "cycle-axis-lock";
+    /// Return every plot to full extent.
+    pub const RESET_EXTENT: &str = "reset-extent";
+
+    /// Every navigation verb, in the order the registry declares them — the
+    /// list the shell resolves keystrokes for.
+    pub const ALL: &[&str] = &[
+        PAN_LEFT,
+        PAN_RIGHT,
+        PAN_UP,
+        PAN_DOWN,
+        ZOOM_IN,
+        ZOOM_OUT,
+        CYCLE_AXIS_LOCK,
+        RESET_EXTENT,
+    ];
+}
+
+/// How far one keyboard pan moves the frame, as a fraction of its own width or
+/// height. A gesture-shape constant like the wheel's, not a timing one.
+pub const KEY_PAN_FRACTION: f64 = 0.15;
+
+/// What one keyboard zoom-in multiplies the visible span's inverse by. Its
+/// reciprocal is the zoom-out step, so in-then-out returns the exact frame.
+pub const KEY_ZOOM_FACTOR: f64 = 1.25;
+
 /// Which axes a navigation gesture may move.
 ///
 /// The lock is a property of the VIEW, not of the spec: it is the reader

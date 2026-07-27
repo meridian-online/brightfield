@@ -184,15 +184,18 @@ fn the_toolbar_is_declared_but_the_row_vanishes_when_nothing_can_act() {
     let chart = &subjects[&CHART];
     assert_eq!(
         chart.toolbar.len(),
-        1,
-        "the chart pane declares exactly its clear-selection control"
+        2,
+        "the chart pane declares its clear-selection and reset-view controls"
     );
     assert_eq!(chart.toolbar[0].verb.as_str(), "clear-selection");
-    assert_eq!(
-        chart.toolbar[0].location,
-        ToolbarLocation::Hidden,
-        "no plot of examples/dashboard.yaml declares a gesture, so the \
-         control is declared-but-withheld"
+    assert_eq!(chart.toolbar[1].verb.as_str(), "reset-extent");
+    assert!(
+        chart
+            .toolbar
+            .iter()
+            .all(|e| e.location == ToolbarLocation::Hidden),
+        "no plot of examples/dashboard.yaml declares a gesture and nothing is \
+         navigated, so both controls are declared-but-withheld"
     );
     assert!(
         !chrome::Toolbar::new(&chart.toolbar).has_something_to_say(),
@@ -214,11 +217,16 @@ fn the_toolbar_is_declared_but_the_row_vanishes_when_nothing_can_act() {
 fn a_brushable_dashboard_offers_the_clear_selection_control() {
     let doc = ChartDoc::headless(compose_spec(CROSSFILTER).expect("compose crossfilter"));
     let chart = &subjects(&doc)[&CHART];
-    assert_eq!(chart.toolbar.len(), 1);
+    assert_eq!(chart.toolbar.len(), 2);
     assert_eq!(
         chart.toolbar[0].location,
         ToolbarLocation::Leading,
         "a brushable plot offers the control in the row"
+    );
+    assert_eq!(
+        chart.toolbar[1].location,
+        ToolbarLocation::Hidden,
+        "nothing is navigated, so the reset stays withheld"
     );
     assert!(
         !chart.toolbar[0].enabled,
