@@ -433,6 +433,7 @@ const METHODOLOGY: &[&str] = &[
     "The emitted SQL applies a selection predicate INSIDE an aggregating mark's query — it filters the base rows that get aggregated (row-level marks are wrapped whole). The aggregating scenarios keep their original brush-the-binned-column shape so the measured series stays comparable across harness runs.",
     "Each scenario's engine suites run twice on identical code: automatic pre-aggregation enabled (the shipped configuration) and disabled (the direct-query control). The delta between the two brush-step latencies is the layer's contribution. Cube engagement is verified per run — engaged and serving where the scenario expects it, silent where it does not — and a run whose cube behaviour contradicts the expectation FAILS instead of reporting.",
     "Active interval dimensions enter a cube at RAW data values in this first cut (answer-exactness over cube size). A cube over a ~unique-per-row brushed column (brush-density's value_a) therefore approaches the base table's size and buys little; the bounded-cardinality scenario (brush-binned-density, forty distinct brushed values) and the crosswalk scenario measure the shape the layer is built for. Frame suites run in the shipped configuration only.",
+    "THE SETTLED-ZOOM NUMBERS DO NOT GENERALISE ACROSS COLUMN CARDINALITY, and the committed scenarios are the favourable case. The raw-values rule above applies to a navigated column exactly as it does to a brushed one, but bites harder: on navigation the active column is usually the same column being binned, so the cube becomes GROUP BY bin(x), x. Measured on a densityX over 20,000 distinct doubles, the cube materialises 20,000 rows against a 20,000-row source — no reduction at all, plus the build cost, and every later zoom scans a table the size of the base. Answers stay exact; only the speed collapses. Every navigated column in the committed scenarios is low-cardinality, so this shape is absent from the recorded figures and must not be read out of them.",
     "The crosswalk scenario is opt-in (--crosswalk-parquet) and fixed-scale: it measures the published company-identifier crosswalk dataset as-is; the harness records the file's row count rather than generating data.",
     "In the enabled run, the FIRST brush step carries the one-time cube build (a full-table aggregation); it surfaces in the max percentile, while p50 reflects the steady per-step serve cost. Cubes are session-scoped and never persist.",
     "Each row records which GESTURE drove its timed steps (`drag`). A brush moves BOTH interval endpoints as a rectangle is dragged inside a chart; a slider pins its lower end and advances one handle across fixed stops. They are not interchangeable: the slider's steps are monotone and land exactly on the brushed axis's forty stops (a step falling between two stops would emit different SQL while selecting identical rows, reporting a re-query that did no new work as though it had).",
@@ -797,25 +798,29 @@ fn render_markdown(r: &BaselineReport) -> String {
          re-queries one more view than a brush step at the same row count. \
          **`Settled zoom → data`** is one pan/zoom extent applied to the \
          aggregating plot and every mark of that plot re-queried — the cost a \
-         gesture pays ONCE, when it stops. It is quoted from the direct run \
-         alone because navigation gets no cube either way: the pre-aggregation \
-         layer's only call site is selection propagation, so a navigation \
-         re-query takes the direct path however the run is configured. Read it \
-         beside `Step → data, direct`, not beside the cubed column."
+         gesture pays ONCE, when it stops. It is printed for both \
+         configurations, because the engine now keys a cube off a navigation \
+         extent as well as off a selection clause: an extent IS a structured \
+         interval clause, and the axes of one that push beneath the `GROUP BY` \
+         become the cube's active dimensions. Where the shape yields a cube, \
+         read the cubed figure beside `Step → data, cubed` — the two gestures \
+         are then the same kind of query over the same pre-aggregate. Where it \
+         does not (a row-level mark, or an axis naming an aggregate output), \
+         the two zoom columns should agree."
     );
     let _ = writeln!(md);
     let _ = writeln!(
         md,
         "| Scenario | Drag | Rows | Cold open (load + first query, ms) | \
          Step → data, direct (ms) | Step → data, cubed (ms) | \
-         Settled zoom → data (ms) | \
+         Settled zoom → data, direct (ms) | Settled zoom → data, cubed (ms) | \
          Step → scene, direct (ms) | Step → scene, cubed (ms) | Cube | \
          Steady frame (ms) | Interaction frame (ms) | Drawn/materialised rows | \
          Arrow held (MiB) | Compose peak RSS, direct / cubed (MiB) |"
     );
     let _ = writeln!(
         md,
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
     );
     for s in &r.scaling {
         let drawn = s
@@ -834,7 +839,7 @@ fn render_markdown(r: &BaselineReport) -> String {
         };
         let _ = writeln!(
             md,
-            "| {} | {} | {} | {:.1} + {:.1} | {} | {} | {} | {} | {} | {}/{} | {} | {} | {} | {:.1} | {} / {} |",
+            "| {} | {} | {} | {:.1} + {:.1} | {} | {} | {} | {} | {} | {} | {}/{} | {} | {} | {} | {:.1} | {} / {} |",
             s.scenario,
             drag_label(s.drag),
             s.rows,
@@ -843,6 +848,7 @@ fn render_markdown(r: &BaselineReport) -> String {
             fmt_stats(&s.engine_direct.coordinator_apply),
             fmt_stats(&s.engine.coordinator_apply),
             fmt_stats(&s.engine_direct.navigation_apply),
+            fmt_stats(&s.engine.navigation_apply),
             fmt_stats(&s.engine_direct.live_apply),
             fmt_stats(&s.engine.live_apply),
             s.engine.preagg.cubes_built,
@@ -1327,20 +1333,35 @@ mod tests {
     }
 
     /// The README describes this harness to anyone reading a record. Three of
-    /// its claims were refuted by the JSON printed beside them, and a fourth
-    /// described a cap the harness did not enforce.
+    /// its claims were refuted by the JSON printed beside them, a fourth
+    /// described a cap the harness did not enforce, and two more outlived the
+    /// engine: navigation had exactly one thing wrong with it, it was fixed,
+    /// and a methodology section that still explained why a zoom can never be
+    /// cubed would send a reader looking for the wrong number.
     #[test]
     fn the_readme_makes_no_claim_the_harness_contradicts() {
-        for refuted in [
-            "Read the peak, not the growth",
-            "RSS is cumulative within a run",
-            "single `--iterations` cap keeps the guarantee",
-            "brush steps served from a cube",
-        ] {
-            assert!(
-                !BENCH_README.contains(refuted),
-                "the README still claims {refuted:?}"
-            );
+        // BOTH surfaces, because a retired claim can come back on either and
+        // only one of them was ever checked. The README is what someone reads
+        // before running the harness; `METHODOLOGY` is what ships inside every
+        // record and is rendered into the markdown beside it — so it is what a
+        // reader of a *result* sees, which is the more consequential of the
+        // two. A review found both retired sentences could be re-inserted into
+        // the rendered blurb with all 42 tests still green.
+        let rendered = METHODOLOGY.join("\n");
+        for (surface, text) in [("README", BENCH_README), ("methodology", &rendered[..])] {
+            for refuted in [
+                "Read the peak, not the growth",
+                "RSS is cumulative within a run",
+                "single `--iterations` cap keeps the guarantee",
+                "brush steps served from a cube",
+                "only call site is selection propagation",
+                "quoted from the direct run alone",
+            ] {
+                assert!(
+                    !text.contains(refuted),
+                    "the {surface} still claims {refuted:?}"
+                );
+            }
         }
         // Line wrapping is not part of a claim, so match on the flattened
         // text — a re-wrap must not turn this gate off.

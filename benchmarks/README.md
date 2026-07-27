@@ -59,11 +59,21 @@ Every scenario is additionally measured under a **settled pan/zoom**: one
 navigation extent applied to plot B along that plot's own x channel, with every
 mark of that plot re-queried. It is a third gesture rather than a fourth
 scenario, because what it measures is a different PATH over the same shapes:
-navigation resolves to an extent on the session, not to a selection, and the
-pre-aggregation layer's only call site is selection propagation — so a
-navigation re-query takes the direct query at every row count, whichever
-configuration the run is in. The record prints it in one column, `Settled zoom
-→ data`, and it is quoted from the direct run alone for that reason.
+navigation resolves to an extent on the session, not to a selection.
+
+That column is why this gesture is measured at all. It used to record a
+navigation taking the direct query at every row count in BOTH configurations,
+because the pre-aggregation layer's only trigger was selection propagation and
+an extent reached it by no path — a chart whose brush was instant and whose
+zoom was not, on the same plot, in the same session. The engine now keys a cube
+off the extent as well, so the column is printed for both configurations,
+`Settled zoom → data, direct` and `… cubed`, and their delta is what the
+connection bought. Read the cubed figure beside `Step → data, cubed`: on a
+shape whose cube derives, a settled zoom and a brush step are now the same kind
+of query over the same pre-aggregate. On a shape whose cube does not derive —
+a row-level mark has nothing to pre-aggregate, and an axis naming an aggregate
+output cannot be pushed beneath the `GROUP BY` — the two settled-zoom columns
+should agree, and a difference there is a finding, not a speed-up.
 
 The harness reads the navigated column and its range off the mark's own drawn
 batch rather than reusing the brushed column, and fails the run if the extent

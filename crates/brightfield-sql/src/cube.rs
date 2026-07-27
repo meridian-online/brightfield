@@ -355,10 +355,17 @@ impl CubeSqls {
     }
 }
 
-/// Derive a cube from a mark's lowered (pre-selection) plan and an
-/// interaction's active clause.
+/// Derive a cube from a mark's plan and an interaction's active clause.
 ///
-/// * `plan` — the lowered plan, **without** any live selection filter.
+/// * `plan` — the plan the cube's base rows are built from, and the two callers
+///   pass **deliberately different things**. The SELECTION path passes the
+///   lowered plan *without* any live selection filter, because there the active
+///   clause has to come out of the base. The NAVIGATION path passes a plan that
+///   still carries the selection filter and any sample: an extent is not in the
+///   plan at all — the pass adds it afterwards — so there is nothing to remove,
+///   and starting from the bare plan would drop a held brush out of the cube and
+///   serve rows the user has already filtered away. Both are correct; they are
+///   not the same argument, and a refactor that unifies them breaks one.
 /// * `active` — the active structured clause ([`active_clauses`] must accept it).
 /// * `rest` — the rest of the mark's compiled selection (other contributors'
 ///   predicates), applied to the cube's base rows at build time; `None` when
