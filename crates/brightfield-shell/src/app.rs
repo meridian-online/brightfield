@@ -506,8 +506,22 @@ impl ChartDoc {
             return false;
         };
         self.nav.moved(plot, outcome.extent.clone());
-        if let Some(live) = self.live.as_mut() {
-            live.set_view_extent(&path, outcome.extent.clone());
+        let Some(live) = self.live.as_mut() else {
+            return true;
+        };
+        live.set_view_extent(&path, outcome.extent.clone());
+        // Re-composite at the new extent WITHOUT re-querying. Every mark's SQL
+        // is unchanged — the session's extent moves only on settle — so this
+        // is served from the batches already materialised, and the axes track
+        // the hand while the data waits for the gesture to stop. A failed
+        // re-composite (a frame moved onto empty space) keeps the previous
+        // picture, the same posture an interaction takes.
+        match live.present() {
+            Ok(composed) => {
+                self.composed = composed;
+                self.canvas.invalidate();
+            }
+            Err(e) => eprintln!("warning: navigation re-composite failed: {e}"),
         }
         true
     }

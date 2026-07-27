@@ -12,12 +12,16 @@
 //! zoom produces one per notch. Issuing a query per step would put a DuckDB
 //! round trip inside the pointer loop.
 //!
-//! The rule is **settle**: the extent moves the displayed scales on every step,
-//! and exactly one re-query is issued once the gesture has ended. There is no
-//! duration in it — the gesture-end test is the gesture's own shape (a released
-//! button, a frame with no wheel delta, a keystroke that is over the moment it
-//! is pressed), which is a fact about the input rather than a guess about how
-//! fast a machine is.
+//! The rule is **settle**: the extent moves the displayed scales on every step
+//! — the pane re-composites from the batches it already has, which needs no
+//! query — and exactly one re-query is issued once the gesture has ended.
+//!
+//! There is no duration in it. The gesture-end test is the gesture's own shape:
+//! a released button, a frame carrying no wheel EVENT, a keystroke that is over
+//! the moment it is pressed. Each is a fact about the input rather than a guess
+//! about how fast a machine is. (Note *event*, not *delta* — egui smooths the
+//! scroll delta, so it goes on decaying for frames after the wheel has stopped,
+//! and "the delta is zero" would settle the gesture some frames late.)
 //!
 //! [`NavGesture`] is that rule and nothing else: steps go in, at most one
 //! settled extent comes out per gesture, and the extents a gesture swept

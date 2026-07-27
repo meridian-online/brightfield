@@ -275,6 +275,37 @@ fn shape_of(mark: usize, batches: &[RecordBatch]) -> Result<MarkRows, String> {
     })
 }
 
+/// The `[min, max]` a column spans across a mark's drawn batches, or `None`
+/// when the mark has no such column or no numeric rows in it.
+fn column_domain(batches: &[RecordBatch], column: &str) -> Option<(f64, f64)> {
+    use duckdb::arrow::array::{Array, Float64Array};
+    use duckdb::arrow::compute::cast;
+    use duckdb::arrow::datatypes::DataType;
+    let mut domain: Option<(f64, f64)> = None;
+    for batch in batches {
+        let Ok(idx) = batch.schema().index_of(column) else {
+            continue;
+        };
+        let Ok(col) = cast(batch.column(idx), &DataType::Float64) else {
+            continue;
+        };
+        let Some(arr) = col.as_any().downcast_ref::<Float64Array>() else {
+            continue;
+        };
+        for i in 0..arr.len() {
+            if arr.is_null(i) {
+                continue;
+            }
+            let v = arr.value(i);
+            domain = Some(match domain {
+                None => (v, v),
+                Some((lo, hi)) => (lo.min(v), hi.max(v)),
+            });
+        }
+    }
+    domain.filter(|(lo, hi)| hi > lo)
+}
+
 /// Everything the record needs from one phase's complete result set — and
 /// nothing that keeps the batches alive.
 #[derive(Debug, Clone)]
@@ -398,24 +429,57 @@ pub fn run_engine_suites(
 
     // --- Navigation seam: per-SETTLED-GESTURE apply latency. ---------------
     //
-    // The aggregating mark (index 1 in every scenario) and its plot. A
-    // navigation extent belongs to a plot, so the identity is derived the same
-    // way the engine derives it — through `plot_node_path` — rather than by a
-    // second copy of the rule.
-    let nav_plot = {
+    // Navigated on mark 1 (plot B in every scenario) along ITS OWN x channel,
+    // over the range that mark's rows actually span. Reusing the brush column
+    // and the brush domain would have been shorter and was wrong: two of the
+    // four scenarios brush a column plot B does not draw, so the extent matched
+    // no mark, the SQL came back byte-identical, the cache served it and the
+    // record printed 0.0 ms for a gesture that did nothing. The non-vacuity
+    // check below is what makes that unrepeatable.
+    let (nav_plot, nav_column) = {
         let marks = brightfield_sql::emit::collect_marks_with_paths(&spec);
-        let (_, path) = marks
+        let (mark, path) = marks
             .get(1)
             .ok_or_else(|| format!("{}: no second mark to navigate", scenario.name))?;
-        plot_node_path(path).to_string()
+        let column = match mark.options.get("x") {
+            Some(brightfield_spec::ast::ValueOrParamRef::Value(v)) => v
+                .as_str()
+                .ok_or_else(|| format!("{}: mark 1's x is not a column", scenario.name))?
+                .to_string(),
+            _ => return Err(format!("{}: mark 1 declares no x column", scenario.name)),
+        };
+        (plot_node_path(path).to_string(), column)
     };
+    // The range that column actually spans, read off the mark's own drawn
+    // batch — no assumption about how the dataset was generated.
+    let nav_domain = {
+        let batches = coord
+            .session_mut()
+            .execute_mark(1)
+            .map_err(|e| format!("{}: reading mark 1 for its domain: {e}", scenario.name))?;
+        column_domain(&batches, &nav_column).ok_or_else(|| {
+            format!(
+                "{}: mark 1 draws no {nav_column} to navigate",
+                scenario.name
+            )
+        })?
+    };
+    let unnavigated_rows: usize = coord
+        .session_mut()
+        .execute_mark(1)
+        .map_err(|e| format!("{}: mark 1 at full extent: {e}", scenario.name))?
+        .iter()
+        .map(RecordBatch::num_rows)
+        .sum();
+
     let mut nav_ms = Vec::with_capacity(iterations);
+    let mut navigated_rows = unnavigated_rows;
     for i in 0..iterations {
-        let (lo, hi) = scenario.drag.interval_in(scenario.brush_domain, i);
+        let (lo, hi) = scenario.drag.interval_in(nav_domain, i);
         let interaction = Interaction::Navigate {
             plot: ComponentPath(nav_plot.clone()),
             extent: NavigationExtent {
-                x: Some(AxisExtent::new(scenario.brush_column, lo, hi)),
+                x: Some(AxisExtent::new(nav_column.clone(), lo, hi)),
                 y: None,
             },
         };
@@ -429,14 +493,29 @@ pub fn run_engine_suites(
             ));
         }
         for (mark_index, r) in &requery.affected {
-            r.as_ref().map_err(|e| {
+            let batches = r.as_ref().map_err(|e| {
                 format!(
                     "{}: navigation {i} failed re-querying mark {mark_index}: {e}",
                     scenario.name
                 )
             })?;
+            if *mark_index == 1 {
+                navigated_rows = batches.iter().map(RecordBatch::num_rows).sum();
+            }
         }
     }
+    // Non-vacuity: the last extent must have scoped the mark. A navigation that
+    // changed nothing costs a cache lookup, and reporting that as the price of
+    // a zoom is exactly the borrowed-number failure this directory exists to
+    // prevent.
+    if navigated_rows >= unnavigated_rows {
+        return Err(format!(
+            "{}: the navigation extent filtered nothing on mark 1 ({navigated_rows} rows \
+             against {unnavigated_rows} unnavigated) — the measured cost would be a cache hit",
+            scenario.name
+        ));
+    }
+
     // Put the frame back before anything else is measured: a leftover extent
     // would scope every figure below under a gesture the record does not name.
     coord.apply(Interaction::Navigate {

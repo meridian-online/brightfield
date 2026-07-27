@@ -68,6 +68,32 @@ use crate::starts;
 /// the frame to exactly where it started rather than somewhere near it.
 const WHEEL_ZOOM_PIXELS: f64 = 180.0 / std::f64::consts::LN_2;
 
+/// This frame's wheel travel in logical pixels, summed from the raw events.
+///
+/// Line and page units are converted through egui's own configured speeds, so
+/// a wheel that reports lines and a trackpad that reports points agree about
+/// how far the hand moved.
+fn wheel_travel(ctx: &egui::Context) -> f64 {
+    let per_line = ctx.options(|o| f64::from(o.input_options.line_scroll_speed));
+    // A page is a screenful. egui has no constant for one, so it is expressed
+    // in lines rather than invented in pixels — twenty of them, the usual
+    // terminal page.
+    let per_page = per_line * 20.0;
+    ctx.input(|i| {
+        i.events
+            .iter()
+            .filter_map(|e| match e {
+                egui::Event::MouseWheel { unit, delta, .. } => Some(match unit {
+                    egui::MouseWheelUnit::Point => f64::from(delta.y),
+                    egui::MouseWheelUnit::Line => f64::from(delta.y) * per_line,
+                    egui::MouseWheelUnit::Page => f64::from(delta.y) * per_page,
+                }),
+                _ => None,
+            })
+            .sum()
+    })
+}
+
 /// The mode's overlay tokens — the transient-gesture ink group.
 fn overlay_tokens(mode: Mode) -> &'static OverlayTokens {
     match mode {
@@ -273,6 +299,163 @@ impl ChartItem {
         }
         vec![entry, reset]
     }
+    /// The pointer gesture machine: the brush drag, the pan, the wheel zoom
+    /// and the settled navigation's one re-query.
+    ///
+    /// **Lifted out of the texture branch on purpose.** It used to sit inside
+    /// the arm that runs only when a wgpu device is behind the document, so a
+    /// GPU-free window laid the raster out and then returned before any gesture
+    /// was read — every pointer gesture on the chart was unreachable to a
+    /// headless test, including the brush that shipped before this. Nothing in
+    /// here needs the frame: the gesture reads input and writes the document,
+    /// and only the transient overlay needs somewhere to paint.
+    ///
+    /// Returns whether the caller should ask for another frame.
+    fn drive_gestures(
+        &mut self,
+        doc: &mut ChartDoc,
+        ctx: &egui::Context,
+        rect: egui::Rect,
+    ) -> (bool, GestureFrame) {
+        let mut repaint = false;
+        // Gestures and the transient overlay, before the legend band so
+        // the frame borrow ends inside this scope.
+        let input = surface_input(&ctx, rect);
+        let hovered = input.hovered;
+        let pointer = input.pointer_pos;
+        let down = matches!(
+            input.pointer_primary,
+            brightfield_render::canvas_host::ButtonState::Down
+        );
+
+        // The drag state machine: press starts a brush in the plot under
+        // the pointer, release commits it. Edge-triggered on the button.
+        if down && !self.was_down {
+            if let Some(p) = pointer {
+                if let Some(plot) = plot_at(&doc.composed.plots, p) {
+                    if doc.composed.plots[plot].gesture.is_some() && doc.is_live() {
+                        self.drag = Some(Drag {
+                            plot,
+                            start: p,
+                            current: p,
+                        });
+                    }
+                }
+            }
+        } else if down {
+            if let (Some(drag), Some(p)) = (self.drag.as_mut(), pointer) {
+                drag.current = p;
+            }
+        }
+        let released = !down && self.was_down;
+        self.was_down = down;
+
+        // ---------------------------------------------------------------
+        // Navigation: the frame moves on every sample, the data re-queries
+        // once the gesture has ended. See `crate::navigation`.
+        // ---------------------------------------------------------------
+        let secondary_down = matches!(
+            input.pointer_secondary,
+            brightfield_render::canvas_host::ButtonState::Down
+        );
+        if doc.is_live() {
+            // A secondary-button drag pans the plot it started on. The
+            // delta is measured against the pointer's own previous
+            // position rather than against the gesture's origin, so each
+            // step moves the frame by exactly what the hand moved.
+            if secondary_down && !self.was_secondary_down {
+                self.pan =
+                    pointer.and_then(|p| plot_at(&doc.composed.plots, p).map(|plot| (plot, p)));
+            } else if secondary_down {
+                if let (Some((plot, last)), Some(p)) = (self.pan, pointer) {
+                    let lock = doc.axis_lock;
+                    let outcome = doc.composed.plots.get(plot).map(|handle| {
+                        navigation::pan(&handle.scales, lock, p.x - last.x, p.y - last.y)
+                    });
+                    if let Some(outcome) = outcome {
+                        doc.note_navigation(plot, &outcome);
+                    }
+                    self.pan = Some((plot, p));
+                }
+            }
+            if !secondary_down && self.was_secondary_down {
+                // Release IS the settle.
+                self.pan = None;
+                doc.settle_navigation();
+            }
+
+            // The wheel zooms about the pointer. Read from THIS frame's wheel
+            // EVENTS rather than from the smoothed delta, and both halves of
+            // that matter.
+            //
+            // The magnitude has to be the travel the hand actually produced:
+            // the exponent below turns pixels into a multiplicative factor, so
+            // zooming in and back out by the same travel returns to exactly the
+            // frame you started from — a property a smoothed, lagging delta
+            // does not have.
+            //
+            // And the SETTLE has to be a fact about the input. The smoothed
+            // delta decays across frames after the wheel stops (measured: 47 →
+            // 32 with no further travel), so "the delta is zero" is not the end
+            // of a gesture, it is some frames after it. A frame carrying no
+            // wheel event is.
+            let scroll = wheel_travel(ctx);
+            let scrolling = scroll.abs() > f64::EPSILON;
+            if scrolling {
+                if let Some(p) = pointer {
+                    if let Some(plot) = plot_at(&doc.composed.plots, p) {
+                        let lock = doc.axis_lock;
+                        let outcome = doc.composed.plots.get(plot).map(|handle| {
+                            let local = (p.x - handle.rect.x, p.y - handle.rect.y);
+                            navigation::zoom(
+                                &handle.scales,
+                                lock,
+                                Some(local),
+                                (scroll / WHEEL_ZOOM_PIXELS).exp(),
+                            )
+                        });
+                        if let Some(outcome) = outcome {
+                            doc.note_navigation(plot, &outcome);
+                        }
+                    }
+                }
+            } else if self.was_scrolling {
+                // A frame with no wheel travel after one that had some is
+                // the end of the gesture — no clock in it.
+                doc.settle_navigation();
+            }
+            self.was_scrolling = scrolling;
+        }
+        self.was_secondary_down = secondary_down;
+        // Release: resolve the gesture to a structured predicate and push
+        // it through the seam. A click (no sweep) on an interval binding
+        // clears that plot's contribution instead — the crossfilter
+        // convention — and on a point binding toggles the category.
+        if doc.pump_navigation() {
+            repaint = true;
+        }
+
+        if released {
+            if let Some(drag) = self.drag.take() {
+                let plot = &doc.composed.plots[drag.plot];
+                if let Some(binding) = plot.gesture.clone() {
+                    if let Some(interaction) = resolve_gesture(&binding, plot, drag) {
+                        doc.apply_interaction(interaction);
+                        repaint = true;
+                    }
+                }
+            }
+        }
+        (repaint, GestureFrame { hovered, pointer })
+    }
+}
+
+/// What the gesture machine leaves for the overlay to draw with.
+struct GestureFrame {
+    /// Whether the pointer is over the raster.
+    hovered: bool,
+    /// Where it is, in raster-local logical pixels.
+    pointer: Option<kurbo::Point>,
 }
 
 impl Default for ChartItem {
@@ -402,6 +585,12 @@ impl Item<ChartDoc> for ChartItem {
                     egui::Sense::click_and_drag(),
                 );
                 raster_rect = Some(rect);
+                // Same gestures, no device. The overlay has nowhere to paint,
+                // which is the only thing a headless document loses.
+                let (repaint, _) = self.drive_gestures(doc, &ctx, rect);
+                if repaint {
+                    cx.request_repaint();
+                }
                 if band > 0.0 {
                     ui.add_space(meridian_design::spacing::CONTROL_GAP);
                     let (band_rect, _) = ui.allocate_exact_size(
@@ -423,104 +612,11 @@ impl Item<ChartDoc> for ChartItem {
             };
             raster_rect = Some(rect);
 
-            // Gestures and the transient overlay, before the legend band so
-            // the frame borrow ends inside this scope.
-            let input = surface_input(&ctx, rect);
-            let hovered = input.hovered;
-            let pointer = input.pointer_pos;
-            let down = matches!(
-                input.pointer_primary,
-                brightfield_render::canvas_host::ButtonState::Down
-            );
-
-            // The drag state machine: press starts a brush in the plot under
-            // the pointer, release commits it. Edge-triggered on the button.
-            if down && !self.was_down {
-                if let Some(p) = pointer {
-                    if let Some(plot) = plot_at(&doc.composed.plots, p) {
-                        if doc.composed.plots[plot].gesture.is_some() && doc.is_live() {
-                            self.drag = Some(Drag {
-                                plot,
-                                start: p,
-                                current: p,
-                            });
-                        }
-                    }
-                }
-            } else if down {
-                if let (Some(drag), Some(p)) = (self.drag.as_mut(), pointer) {
-                    drag.current = p;
-                }
+            let (repaint, gesture) = self.drive_gestures(doc, &ctx, rect);
+            if repaint {
+                cx.request_repaint();
             }
-            let released = !down && self.was_down;
-            self.was_down = down;
-
-            // ---------------------------------------------------------------
-            // Navigation: the frame moves on every sample, the data re-queries
-            // once the gesture has ended. See `crate::navigation`.
-            // ---------------------------------------------------------------
-            let secondary_down = matches!(
-                input.pointer_secondary,
-                brightfield_render::canvas_host::ButtonState::Down
-            );
-            if doc.is_live() {
-                // A secondary-button drag pans the plot it started on. The
-                // delta is measured against the pointer's own previous
-                // position rather than against the gesture's origin, so each
-                // step moves the frame by exactly what the hand moved.
-                if secondary_down && !self.was_secondary_down {
-                    self.pan =
-                        pointer.and_then(|p| plot_at(&doc.composed.plots, p).map(|plot| (plot, p)));
-                } else if secondary_down {
-                    if let (Some((plot, last)), Some(p)) = (self.pan, pointer) {
-                        let lock = doc.axis_lock;
-                        let outcome = doc.composed.plots.get(plot).map(|handle| {
-                            navigation::pan(&handle.scales, lock, p.x - last.x, p.y - last.y)
-                        });
-                        if let Some(outcome) = outcome {
-                            doc.note_navigation(plot, &outcome);
-                        }
-                        self.pan = Some((plot, p));
-                    }
-                }
-                if !secondary_down && self.was_secondary_down {
-                    // Release IS the settle.
-                    self.pan = None;
-                    doc.settle_navigation();
-                }
-
-                // The wheel zooms about the pointer. `scroll_delta.y` is
-                // logical pixels of wheel travel; the exponent turns it into a
-                // multiplicative factor so zooming in and back out by the same
-                // travel returns to the same frame.
-                let scroll = input.scroll_delta.y;
-                let scrolling = scroll.abs() > f64::EPSILON;
-                if scrolling {
-                    if let Some(p) = pointer {
-                        if let Some(plot) = plot_at(&doc.composed.plots, p) {
-                            let lock = doc.axis_lock;
-                            let outcome = doc.composed.plots.get(plot).map(|handle| {
-                                let local = (p.x - handle.rect.x, p.y - handle.rect.y);
-                                navigation::zoom(
-                                    &handle.scales,
-                                    lock,
-                                    Some(local),
-                                    (scroll / WHEEL_ZOOM_PIXELS).exp(),
-                                )
-                            });
-                            if let Some(outcome) = outcome {
-                                doc.note_navigation(plot, &outcome);
-                            }
-                        }
-                    }
-                } else if self.was_scrolling {
-                    // A frame with no wheel travel after one that had some is
-                    // the end of the gesture — no clock in it.
-                    doc.settle_navigation();
-                }
-                self.was_scrolling = scrolling;
-            }
-            self.was_secondary_down = secondary_down;
+            let (hovered, pointer) = (gesture.hovered, gesture.pointer);
 
             // The one transient-gesture treatment: the overlay token group.
             if let Some(drag) = self.drag {
@@ -554,26 +650,6 @@ impl Item<ChartDoc> for ChartItem {
                     painter.fill_circle(p, 3.0, ink);
                 }
                 frame.set_cursor(Some(SurfaceCursor::Grab));
-            }
-
-            // Release: resolve the gesture to a structured predicate and push
-            // it through the seam. A click (no sweep) on an interval binding
-            // clears that plot's contribution instead — the crossfilter
-            // convention — and on a point binding toggles the category.
-            if doc.pump_navigation() {
-                cx.request_repaint();
-            }
-
-            if released {
-                if let Some(drag) = self.drag.take() {
-                    let plot = &doc.composed.plots[drag.plot];
-                    if let Some(binding) = plot.gesture.clone() {
-                        if let Some(interaction) = resolve_gesture(&binding, plot, drag) {
-                            doc.apply_interaction(interaction);
-                            cx.request_repaint();
-                        }
-                    }
-                }
             }
 
             // The legend band, drawn from the same scales the raster was

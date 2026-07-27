@@ -586,6 +586,136 @@ fn the_frame_moves_under_real_keystrokes() {
     );
 }
 
+/// **The wheel zooms, and it settles by itself.** A gesture with no button to
+/// let go of ends on the first frame that carries no wheel travel — which is a
+/// fact about the input, not a duration anyone had to pick.
+///
+/// Driven with real `MouseWheel` events at a coordinate taken off the rect the
+/// raster was actually presented into, so a layout change moves the aim rather
+/// than leaving this passing against empty space.
+#[test]
+fn the_wheel_zooms_the_plot_under_the_pointer_and_settles_on_its_own() {
+    let mut app = live_window(&example("scatter.yaml"));
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx, Vec::new());
+    frame(&mut app, &ctx, Vec::new());
+
+    let raster = app
+        .chart_doc()
+        .raster_rect
+        .expect("the raster was presented");
+    let plot = app.chart_doc().composed.plots[0].rect;
+    let aim = egui::pos2(
+        raster.min.x + (plot.x + plot.width / 2.0) as f32,
+        raster.min.y + (plot.y + plot.height / 2.0) as f32,
+    );
+    let full = mark_rows(app.chart_doc_mut(), 0);
+    let before = executes(app.chart_doc_mut());
+
+    // Four frames of one continuous wheel gesture.
+    for _ in 0..4 {
+        frame(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(aim),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, 60.0),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: egui::Modifiers::default(),
+                },
+            ],
+        );
+    }
+    assert_eq!(
+        executes(app.chart_doc_mut()),
+        before,
+        "the wheel queried mid-gesture"
+    );
+
+    // A frame with no wheel travel: the gesture is over.
+    frame(&mut app, &ctx, vec![egui::Event::PointerMoved(aim)]);
+    assert!(
+        executes(app.chart_doc_mut()) > before,
+        "the settled wheel gesture never queried"
+    );
+    let zoomed = mark_rows(app.chart_doc_mut(), 0);
+    assert!(
+        zoomed < full,
+        "the wheel did not zoom: {zoomed} vs {full} rows"
+    );
+    assert!(app.chart_doc().navigated());
+}
+
+/// **A secondary-button drag pans, and the release is the settle.** The primary
+/// button is the brush; one button cannot mean both without an invisible mode.
+#[test]
+fn a_secondary_button_drag_pans_and_queries_on_release() {
+    let mut app = live_window(&example("scatter.yaml"));
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx, Vec::new());
+    frame(&mut app, &ctx, Vec::new());
+
+    let raster = app
+        .chart_doc()
+        .raster_rect
+        .expect("the raster was presented");
+    let plot = app.chart_doc().composed.plots[0].rect;
+    let at = |dx: f32| {
+        egui::pos2(
+            raster.min.x + (plot.x + plot.width / 2.0) as f32 + dx,
+            raster.min.y + (plot.y + plot.height / 2.0) as f32,
+        )
+    };
+    let domain_min = |app: &MeridianApp| {
+        app.chart_doc().composed.plots[0]
+            .scales
+            .get(brightfield_render::channel::Channel::X)
+            .and_then(brightfield_render::scale::Scale::domain_min)
+            .expect("a continuous x scale")
+    };
+    let start = domain_min(&app);
+    let before = executes(app.chart_doc_mut());
+
+    let down = |p: egui::Pos2, pressed: bool| egui::Event::PointerButton {
+        pos: p,
+        button: egui::PointerButton::Secondary,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    };
+
+    frame(
+        &mut app,
+        &ctx,
+        vec![egui::Event::PointerMoved(at(0.0)), down(at(0.0), true)],
+    );
+    for step in 1..=4 {
+        frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(at(-15.0 * step as f32))],
+        );
+    }
+    assert_eq!(
+        executes(app.chart_doc_mut()),
+        before,
+        "the pan queried mid-drag"
+    );
+    let dragged = domain_min(&app);
+    assert!(
+        dragged > start,
+        "the axes did not move under the drag: {dragged} vs {start}"
+    );
+
+    frame(&mut app, &ctx, vec![down(at(-60.0), false)]);
+    assert!(
+        executes(app.chart_doc_mut()) > before,
+        "releasing the pan never queried"
+    );
+    assert!(app.chart_doc().navigated());
+}
+
 // ---------------------------------------------------------------------------
 // 5. One query per settled gesture
 // ---------------------------------------------------------------------------
