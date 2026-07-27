@@ -83,6 +83,34 @@ use crate::watch::FileWatcher;
 // ChartDoc — the state every pane in this view shares.
 // ---------------------------------------------------------------------------
 
+/// The headline over a fault the engine itself reported — a mark it would not
+/// run, or a re-composite that produced nothing and left the previous picture
+/// standing.
+const ENGINE_REFUSED: &str = "The chart is missing data the engine refused to query";
+
+/// The headline over a settled navigation whose re-query drew nothing.
+///
+/// A separate sentence from [`ENGINE_REFUSED`] because it is a separate event.
+/// The engine did not refuse anything here: it ran the query the frame asked
+/// for and the frame asked about empty space. Filed under the engine's own
+/// wording it would read as a fault in the spec, which is the one thing it is
+/// not.
+const FRAME_OFF_THE_DATA: &str = "The frame moved off the data";
+
+/// **What is wrong with the picture on screen** — one banner's worth of it.
+///
+/// A headline and the line under it, together, because they are read together
+/// and a caller that could take one without the other would eventually put the
+/// wrong headline over the right detail. See [`ChartDoc::chart_fault`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChartFault {
+    /// What happened, in the reader's terms — the banner's title.
+    pub title: String,
+    /// The supporting line: the engine's own words where they help, the
+    /// gesture's where they help more.
+    pub detail: String,
+}
+
 /// The chart view's **document**: the composited dashboard, the canvas it
 /// rasters into, and the chart state the panes read.
 ///
@@ -163,6 +191,15 @@ pub struct ChartDoc {
     /// and a headless test drives it; see [`crate::interval_drag`] for why the
     /// handle position cannot live in [`Self::composed`].
     pub interval_drags: IntervalDrags,
+    /// Why the last gesture failed to change the picture, if it did — read
+    /// through [`Self::chart_fault`].
+    ///
+    /// Written by [`Self::apply_interaction`], which knows only that the
+    /// engine refused, and RESTATED by [`Self::pump_navigation`], which knows
+    /// what the refused gesture meant. A pan onto empty space fails as
+    /// `no marks rendered successfully`; that is the mechanism, not the event,
+    /// and the caller is the only place with enough context to say the event.
+    interaction_fault: Option<ChartFault>,
     /// The pan/zoom gesture in progress and the settle rule that decides when
     /// it becomes a query. Public because a headless test drives it through the
     /// same entry points the chart pane uses.
@@ -178,6 +215,11 @@ pub struct ChartDoc {
     /// on the chart pane's subject so a categorical axis that will not pan says
     /// so instead of reading as a dead control. Cleared by the next gesture
     /// that does something.
+    ///
+    /// A **refusal**, never a failure: the gesture was understood and declined
+    /// before anything was queried. A gesture that ran and could not be drawn
+    /// is a different event with a different lifetime, and it goes to
+    /// [`Self::interaction_fault`] and the window's banner instead.
     nav_notice: Option<String>,
     canvas: CanvasSlot<CanvasKey>,
 }
@@ -226,6 +268,7 @@ impl ChartDoc {
             live: None,
             active_selections: Vec::new(),
             interval_drags: IntervalDrags::new(),
+            interaction_fault: None,
             nav: NavGesture::new(),
             axis_lock: AxisLock::default(),
             nav_plot: 0,
@@ -251,6 +294,7 @@ impl ChartDoc {
             live: None,
             active_selections: Vec::new(),
             interval_drags: IntervalDrags::new(),
+            interaction_fault: None,
             nav: NavGesture::new(),
             axis_lock: AxisLock::default(),
             nav_plot: 0,
@@ -290,6 +334,11 @@ impl ChartDoc {
         self.active_selections.clear();
         // The handle positions described the replaced document's sliders.
         self.interval_drags.clear();
+        // …and the fault described the replaced document's gesture. Left
+        // standing it would put the outgoing spec's banner over the incoming
+        // spec's chart — the defect `open_chart` exists to prevent, re-made
+        // one field down.
+        self.interaction_fault = None;
         // …and the extent described the replaced document's plots.
         self.nav.clear();
         self.nav_notice = None;
@@ -373,9 +422,13 @@ impl ChartDoc {
     /// re-query, and the identical layout/scene path repaints. Returns whether
     /// anything was applied (`false` on a document with no live session).
     ///
-    /// A failed re-composite keeps the previous picture and reports to stderr
-    /// — the same posture the compose warnings take — rather than blanking a
-    /// window over one gesture.
+    /// A failed re-composite keeps the previous picture rather than blanking a
+    /// window over one gesture, and records what went wrong for
+    /// [`Self::chart_fault`] — which is where the window gets the banner it
+    /// raises. It used to report to stderr and nowhere else, which for a
+    /// windowed application is the same as not reporting: a control that
+    /// quietly stops filtering, under a handle that says it does, is exactly
+    /// the failure nobody sees.
     pub fn apply_interaction(&mut self, interaction: Interaction) -> bool {
         let Some(live) = self.live.as_mut() else {
             return false;
@@ -406,13 +459,59 @@ impl ChartDoc {
             Ok(composed) => {
                 self.composed = composed;
                 self.canvas.invalidate();
+                // A gesture that lands clears the last one that did not: the
+                // fault describes the picture on screen, and this is a new one.
+                self.interaction_fault = None;
                 true
             }
             Err(e) => {
                 eprintln!("warning: interaction re-composite failed: {e}");
+                self.interaction_fault = Some(ChartFault {
+                    title: ENGINE_REFUSED.to_string(),
+                    detail: e.to_string(),
+                });
                 false
             }
         }
+    }
+
+    /// What is wrong with the picture on screen, if anything — the words the
+    /// window puts in a banner.
+    ///
+    /// Two sources, folded here because a reader has one question. A whole
+    /// re-composite that failed leaves the previous picture standing and is
+    /// recorded by [`Self::apply_interaction`]; a composition that ran but had
+    /// marks the engine refused carries them on
+    /// [`Composed::mark_faults`](crate::pipeline::Composed::mark_faults), and
+    /// that is the common case — one bad mark does not fail a composition, it
+    /// silently leaves a hole in it.
+    ///
+    /// This is the runtime half of a defence whose other half is static. A
+    /// cross-filter column a subscriber's INLINE source cannot bind is refused
+    /// at load by
+    /// [`validate_crossfilter_columns`](brightfield_spec::analysis::validate_crossfilter_columns),
+    /// because there the schema is in the spec text. Against a `query:` source
+    /// there is no schema until DuckDB has one, so the same typo is not
+    /// decidable at load by anything — it can only be caught when the binder
+    /// rejects it, and the only question left is whether anyone is told.
+    #[must_use]
+    pub fn chart_fault(&self) -> Option<ChartFault> {
+        if let Some(fault) = &self.interaction_fault {
+            return Some(fault.clone());
+        }
+        if self.composed.mark_faults.is_empty() {
+            return None;
+        }
+        Some(ChartFault {
+            title: ENGINE_REFUSED.to_string(),
+            detail: self
+                .composed
+                .mark_faults
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        })
     }
 
     /// Retract every committed gesture — the `clear-selection` verb's chart
@@ -626,8 +725,28 @@ impl ChartDoc {
             // the data. The dashboard has rolled its query store back, so the
             // rows on screen are honest; what would still be missing is anyone
             // saying why the picture stopped changing.
-            self.nav_notice =
-                Some("nothing to draw in this range — the frame moved off the data".to_string());
+            //
+            // It is said ONCE, on the banner, and deliberately not also on the
+            // rail. The two surfaces are not two audiences, they are two
+            // lifetimes: the rail carries what is true of the extent currently
+            // in force — `nav_scope_notice`'s declining mark, which stands
+            // until a reset — and the banner carries what one gesture just did,
+            // which the reader can dismiss because it is over. A dead end is
+            // the second kind. Saying it in both places would put a permanent
+            // rail entry under a dismissable banner about the same instant, and
+            // the reader would have to work out that they are one event.
+            //
+            // `apply_interaction` has already filed the engine's own account of
+            // it — `no marks rendered successfully`, which names the mechanism
+            // and leaves the reader to guess the cause. This replaces it,
+            // because this is the frame that knows the gesture was a pan.
+            self.interaction_fault = Some(ChartFault {
+                title: FRAME_OFF_THE_DATA.to_string(),
+                detail: "Nothing to draw in this range. The rows on screen are the \
+                         ones from before the gesture; the axes are where the gesture \
+                         left them. Reset the frame to bring the two back together."
+                    .to_string(),
+            });
         }
         applied
     }

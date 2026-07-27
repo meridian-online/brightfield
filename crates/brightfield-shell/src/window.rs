@@ -72,7 +72,7 @@ use meridian_egui::{
 
 use meridian_design::{radius, semantic, spacing};
 
-use crate::app::{chart_registry, ChartDoc, CHART, CONTROLS_SHARE};
+use crate::app::{chart_registry, ChartDoc, ChartFault, CHART, CONTROLS_SHARE};
 use crate::canvas::EguiCanvasHost;
 use crate::design::{self, Mode};
 use crate::overlays::{CommandPalette, HelpSheet, JumpTarget, JumpToNode};
@@ -974,6 +974,18 @@ pub struct MeridianApp {
     /// Persistent, id-deduplicated banners. A source that re-fails raises
     /// under the same composite id and *replaces* its banner — never stacks.
     notifications: NotificationLayer,
+    /// The chart fault the interaction banner was last raised for, so it is
+    /// raised on the frame the fault appears and not on every frame after.
+    ///
+    /// `raise` replaces in place, so re-raising an unchanged fault every frame
+    /// silently undoes the dismiss the user just clicked — the × works and the
+    /// banner is back before the next paint. For a fault that cannot clear
+    /// without editing the spec, which is exactly the mistyped column this
+    /// banner exists to report, that makes it permanent furniture. A fault that
+    /// *changes* still re-raises, because it is new information — and the
+    /// headline counts as part of it, so a pan onto empty space still speaks
+    /// after a mistyped column has been dismissed.
+    last_chart_fault: Option<ChartFault>,
     /// The banner ids the CURRENT chart document's load diagnostics raised.
     ///
     /// Held so opening a different document can take the previous document's
@@ -1173,6 +1185,7 @@ impl MeridianApp {
             nav_bindings: navigation_bindings(),
             recency: RecencyCounter::new(),
             notifications: NotificationLayer::new(),
+            last_chart_fault: None,
             diagnostic_banners: Vec::new(),
             toasts: ToastLayer::new(),
             rail: chrome::StatusDrawn::default(),
@@ -1204,6 +1217,12 @@ impl MeridianApp {
         for id in std::mem::take(&mut self.diagnostic_banners) {
             self.notifications.dismiss(id);
         }
+        // The dismissed-fault memory belongs to the document that raised it.
+        // Two documents can produce a byte-identical fault, and without this a
+        // fault dismissed on the first would open the second already silenced —
+        // narrow, since any fault-free frame resets it, but free to close here
+        // beside the banners it travels with.
+        self.last_chart_fault = None;
         let diagnostics = self.charts.doc.composed.diagnostics.clone();
         let document = diagnostics
             .source
@@ -1257,6 +1276,47 @@ impl MeridianApp {
                 .body(lines.join("\n")),
             );
             self.diagnostic_banners.push(id);
+        }
+    }
+
+    /// Raise a banner for a chart the engine would not fully draw, and take it
+    /// down again the moment it would.
+    ///
+    /// A load diagnostic is what a spec had to say before anyone touched it;
+    /// this is what a spec had to say only once someone did. The two cannot be
+    /// merged, because the failure this reports is **not decidable at load**:
+    /// a cross-filter column that a `query:` source does not expose has no
+    /// schema to check against until DuckDB has one, so the binder's rejection
+    /// is the first moment the fact exists. It used to go to stderr, which for
+    /// a windowed application means the chart quietly emptied itself under a
+    /// control that claimed to be filtering it and nothing on screen said so.
+    ///
+    /// One banner, replaced in place while the fault persists — a drag emits a
+    /// value per frame and a stack of identical banners would bury the picture
+    /// it is about.
+    ///
+    /// The headline comes from the fault rather than from here. A mark the
+    /// binder rejected and a pan onto empty space are both "the gesture did not
+    /// change the picture" and are not the same news, and the document is where
+    /// the difference is known — see [`ChartFault`].
+    fn say_interaction_fault(&mut self) {
+        let id = NotificationId::new("chart-interaction-fault");
+        match self.charts.doc.chart_fault() {
+            // Raise on the frame the fault appears, and on any frame it says
+            // something different. NOT on every frame it persists: `raise`
+            // replaces in place, so that would put the banner back one frame
+            // after the user dismissed it, and a mistyped column does not clear
+            // until the spec is edited.
+            Some(fault) if self.last_chart_fault.as_ref() != Some(&fault) => {
+                self.last_chart_fault = Some(fault.clone());
+                self.notifications
+                    .raise(Notification::new(id, Severity::Error, fault.title).body(fault.detail));
+            }
+            Some(_) => {}
+            None => {
+                self.last_chart_fault = None;
+                self.notifications.dismiss(id);
+            }
         }
     }
 
@@ -1723,6 +1783,11 @@ impl MeridianApp {
             ctx.request_repaint();
         }
 
+        // After the panes have drawn, because the controls rail dispatches a
+        // slider's queued value inside its own draw — so this frame's gesture
+        // is answered in this frame's banner, not the next one's.
+        self.say_interaction_fault();
+
         // The overlay plane, over everything the frame drew, then the two
         // notification layers over that. All three draw nothing when empty,
         // so a frame with no overlay, no banner and no toast is
@@ -1897,6 +1962,18 @@ impl MeridianApp {
     #[must_use]
     pub fn notifications(&self) -> &NotificationLayer {
         &self.notifications
+    }
+
+    /// Dismiss the chart-fault banner, as clicking its × does.
+    ///
+    /// Exists so the dismissal can be driven from outside a real pointer: the ×
+    /// is handled inside the notification layer's own draw, and a banner that
+    /// comes straight back is indistinguishable from one that was never
+    /// dismissed unless a test can perform the gesture. Returns whether a
+    /// banner was showing to dismiss.
+    pub fn dismiss_chart_fault(&mut self) -> bool {
+        self.notifications
+            .dismiss(NotificationId::new("chart-interaction-fault"))
     }
 
     /// The transient toast layer, read-only.

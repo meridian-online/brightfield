@@ -188,6 +188,15 @@ fn chart_rail(doc: &ChartDoc) -> Vec<(&'static str, String)> {
         .collect()
 }
 
+/// Every banner the window is currently showing, headline and body together —
+/// the surface a reader actually looks at for a fault.
+fn banner_text(app: &MeridianApp) -> Vec<String> {
+    app.notifications()
+        .iter()
+        .map(|n| format!("{}\n{}", n.title, n.body.clone().unwrap_or_default()))
+        .collect()
+}
+
 fn mark_rows(doc: &mut ChartDoc, mark: usize) -> usize {
     doc.live_coordinator()
         .expect("a live document")
@@ -656,6 +665,12 @@ fn a_plot_whose_marks_all_rescoped_claims_nothing() {
 /// `navigated()` is true and the reset affordance does something. Both halves
 /// are asserted, because a rollback that took the axes with it would be the
 /// same bug pointed the other way.
+///
+/// The dead end is said ONCE, on the banner, and the rail must stay out of it.
+/// The banner is the surface for what one gesture just did — dismissable,
+/// because the gesture is over — and the rail is the surface for what is true
+/// of the extent in force. Both firing would put a standing rail entry under a
+/// dismissable banner about one instant.
 #[test]
 fn a_settled_gesture_that_drew_nothing_rolls_the_query_store_back() {
     let mut app = live_window(&example("scatter.yaml"));
@@ -665,6 +680,12 @@ fn a_settled_gesture_that_drew_nothing_rolls_the_query_store_back() {
 
     let full = mark_rows(app.chart_doc_mut(), 0);
     assert!(full > 0, "the fixture draws rows");
+    assert!(
+        app.notifications().is_empty(),
+        "the fixture opens with a banner already up, so a banner below proves \
+         nothing: {:?}",
+        banner_text(&app)
+    );
 
     // Walk the frame off the data. Each keyboard pan is one settled gesture.
     let mut left_the_data = false;
@@ -699,15 +720,24 @@ fn a_settled_gesture_that_drew_nothing_rolls_the_query_store_back() {
         "the session is still filtering at an extent that drew nothing"
     );
 
-    // And the dead-end is not silent either.
-    let notice = app
-        .chart_doc()
-        .nav_notice()
-        .expect("a gesture that drew nothing said so")
-        .to_string();
+    // And the dead end is not silent — it is on the banner, in the gesture's
+    // own words rather than the engine's.
+    frame(&mut app, &ctx, Vec::new());
+    let said = banner_text(&app);
     assert!(
-        notice.contains("nothing to draw"),
-        "the notice has to say what happened: {notice}"
+        said.iter().any(|b| b.contains("moved off the data")),
+        "a gesture that drew nothing left the window silent, or said it in the \
+         engine's words instead of its own; showing {said:?}"
+    );
+
+    // One event, one vocabulary. The rail carries the scope in force, not this.
+    let rail = chart_rail(app.chart_doc());
+    assert!(
+        rail.iter()
+            .all(|(_, text)| !text.contains("nothing to draw")
+                && !text.contains("moved off the data")),
+        "the dead end is reported twice — once on the banner and once on the \
+         rail: {rail:?}"
     );
 }
 

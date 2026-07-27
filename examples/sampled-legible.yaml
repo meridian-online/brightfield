@@ -5,7 +5,7 @@ meta:
     honest about what over-plotting looks like: 75,000 dots in this plot fill
     74% of it, so the complete render is a solid block and the sampled one is
     an open field of points. A reader says "obviously sampled" instantly — and
-    for a reason that has nothing to do with the hatched band under judgement.
+    for a reason that has nothing to do with the notice band under judgement.
     The density difference does the work and the treatment is never tested.
 
     6,000 dots ink 29% of the same plot: a legible scatter with recoverable
