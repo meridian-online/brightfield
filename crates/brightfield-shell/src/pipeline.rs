@@ -23,7 +23,7 @@ use brightfield_conformance::LoadDiagnostics;
 use brightfield_engine::coordinator::{Coordinator, Interaction};
 use brightfield_engine::error::EngineError;
 use brightfield_engine::facts::MarkFacts;
-use brightfield_engine::{assemble_batches, Engine, NavigationExtent, Session};
+use brightfield_engine::{assemble_batches, DeclinedMark, Engine, NavigationExtent, Session};
 use brightfield_render::channel::{Channel, ChannelMap};
 use brightfield_render::inset::{resolve_insets_for_marks, DEFAULT_SCALE_INSET};
 use brightfield_render::layout::{ChartLayout, Margins};
@@ -623,11 +623,48 @@ impl LiveDashboard {
         // A settled navigation writes BOTH stores from the one value it
         // carries. Leaving the render side to the caller is how a settled zoom
         // ends up querying one range and drawing another.
-        if let Interaction::Navigate { plot, extent } = &interaction {
-            self.set_view_extent(&plot.0, view_extent_of(extent));
-        }
+        //
+        // The QUERY store is written speculatively and rolled back below if the
+        // extent turns out to draw nothing: see the note on that arm.
+        let rollback = match &interaction {
+            Interaction::Navigate { plot, extent } => {
+                let key = plot.0.clone();
+                let previous = self
+                    .coordinator
+                    .session()
+                    .navigation_extent(&key)
+                    .cloned()
+                    .unwrap_or_default();
+                self.set_view_extent(&key, view_extent_of(extent));
+                Some((key, previous))
+            }
+            _ => None,
+        };
         self.coordinator.apply(interaction);
-        self.present()
+        let composed = self.present();
+
+        // A gesture onto empty space composes nothing ("no marks rendered
+        // successfully"), and the caller keeps the picture it already had. The
+        // query store must go back with it: left holding the new extent it
+        // would claim the drawn rows are scoped to a range that returned none
+        // of them, and every later re-query — a brush, a slider, a full
+        // `execute_all` — would re-emit at a range the reader never saw a
+        // picture of.
+        //
+        // The RENDER store is deliberately NOT rolled back. The axes did move,
+        // on this step and on every step of the gesture before it; the frame on
+        // screen is the moved one, `navigated()` is true because it is, and the
+        // reset affordance is offered because pressing it does something. So
+        // after a failed settle the two stores disagree ON PURPOSE, and each is
+        // true of the half it governs: the render store says where the axes
+        // are, the query store says what the rows are. They re-converge on the
+        // next settle that draws, or on a reset.
+        if let (Err(_), Some((key, previous))) = (&composed, rollback) {
+            self.coordinator
+                .session_mut()
+                .set_navigation_extent(&key, previous);
+        }
+        composed
     }
 
     /// Draw `plot`'s axes at `extent` from the next composite on, WITHOUT
@@ -654,6 +691,17 @@ impl LiveDashboard {
     #[must_use]
     pub fn query_extents(&self) -> &std::collections::HashMap<String, NavigationExtent> {
         self.coordinator.session().navigation_extents()
+    }
+
+    /// The marks of `plot` that did NOT rescope under the extent it is held
+    /// at — see [`brightfield_engine::Session::declined_navigation`].
+    ///
+    /// Empty for a plot at full extent. Read live rather than remembered: it is
+    /// a property of the extent currently in force, and a cached copy would go
+    /// on claiming a mark is unscoped after a reset widened the frame back out.
+    #[must_use]
+    pub fn declined_navigation(&self, plot: &str) -> Vec<DeclinedMark> {
+        self.coordinator.session().declined_navigation(plot)
     }
 
     /// Set the pushed-down sample rate every later query carries — including

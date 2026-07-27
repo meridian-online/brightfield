@@ -431,6 +431,17 @@ impl ChartItem {
         // it through the seam. A click (no sweep) on an interval binding
         // clears that plot's contribution instead — the crossfilter
         // convention — and on a point binding toggles the category.
+        //
+        // **This take now happens BEFORE the overlay is painted**, where it used
+        // to happen after — the one shipped-rendering consequence of lifting
+        // the gesture machine out of the texture branch, and a deliberate
+        // choice rather than an accident of the move. The brush rectangle is
+        // the transient picture of an UNCOMMITTED sweep; the frame the button
+        // comes up on is the frame the sweep stops being a sweep and becomes a
+        // selection. Painting it once more would draw a control that has
+        // already been resolved, over a raster that is about to be replaced by
+        // the result of resolving it. It costs one frame of ink (~16 ms) and no
+        // golden covers it, which is why it has to be said here instead.
         if doc.pump_navigation() {
             repaint = true;
         }
@@ -538,6 +549,26 @@ impl Item<ChartDoc> for ChartItem {
                 hide: brightfield_workbench::subject::HideAffordance::WithRail,
             });
         }
+        // What the frame did NOT scope. A second entry rather than a second
+        // vocabulary: the same rail, the same `StatusEntry`, and deliberately
+        // not folded into the refusal above, because the two differ in what
+        // they are about and in how long they last. The refusal is about one
+        // gesture and is replaced by the next; this is about the extent
+        // currently in force and stands until it is reset. Sharing one id would
+        // let whichever was written last silence the other, and the pair can be
+        // true at once.
+        //
+        // `Warning`, not `Neutral`: a declining mark is not an inert control,
+        // it is a drawn quantitative claim about rows the reader cannot see.
+        if let Some(text) = doc.nav_scope_notice() {
+            subject = subject.with_status(brightfield_workbench::subject::StatusEntry {
+                id: "chart-navigation-scope",
+                side: brightfield_workbench::subject::StatusSide::Trailing,
+                text,
+                tone: brightfield_workbench::subject::Tone::Warning,
+                hide: brightfield_workbench::subject::HideAffordance::WithRail,
+            });
+        }
         subject
     }
 
@@ -619,6 +650,9 @@ impl Item<ChartDoc> for ChartItem {
             let (hovered, pointer) = (gesture.hovered, gesture.pointer);
 
             // The one transient-gesture treatment: the overlay token group.
+            // `drive_gestures` above has already taken a released drag, so the
+            // rectangle is gone on the release frame rather than one frame
+            // later — see the note at that take.
             if let Some(drag) = self.drag {
                 let tokens = overlay_tokens(mode);
                 let r = drag_rect(&doc.composed.plots[drag.plot], drag);

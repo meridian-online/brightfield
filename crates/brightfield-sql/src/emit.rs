@@ -753,6 +753,64 @@ pub fn emit_query_sampled(
     extra_passes: &[Box<dyn crate::passes::Pass>],
     sample: Option<SampleRate>,
 ) -> Result<EmittedQuery, EmitError> {
+    let plan = plan_for_mark(spec, mark_index, selection_predicates, sample)?;
+
+    // Apply optimisation passes (built-in + caller-provided).
+    let plan = apply_passes(plan, extra_passes);
+
+    let plan_hash = plan.hash_structural();
+    let mut bindings: Vec<Binding> = Vec::new();
+    let rendered = render_query(&plan, &mut bindings);
+
+    // Interpolate scalar param values into the emitted SQL (Decision 1).
+    // `$name` placeholders in lowerer-emitted projections / filter
+    // expressions are substituted with escaped literals via
+    // `spec_value_to_sql_literal`; names absent from `param_values` are left
+    // intact. `plan_hash` stays STRUCTURAL — `execute_emitted` runs this concrete
+    // `sql` directly and dedups on the literal SQL string via the LRU sql_cache,
+    // so the value need not enter the hash. (An earlier value-fold into plan_hash
+    // was removed: it was redundant with the direct execution and made the
+    // plan-stability cache grow unbounded under a swept param — see
+    // engine::execute_emitted.)
+    let sql = match param_values {
+        Some(params) => interpolate_params(&rendered, params),
+        None => rendered,
+    };
+
+    Ok(EmittedQuery {
+        sql,
+        bindings,
+        plan_hash,
+    })
+}
+
+/// The plan a mark's caller-provided passes are handed — everything
+/// [`emit_query_sampled`] builds **before** `extra_passes` run, and nothing
+/// after.
+///
+/// It exists so a caller can ask a pass a question ABOUT the plan it is going
+/// to be applied to and get an answer from the same plan the emitter will use.
+/// The one caller today is the navigation layer: a
+/// [`NavigationFilterPass`](crate::navigation_filter_pass::NavigationFilterPass)
+/// resolves each axis against the plan's shape and emits nothing for an axis it
+/// cannot place honestly, and the chart pane has to be able to SAY that a mark
+/// did not rescope. Re-deriving "does this mark aggregate" beside the emitter
+/// would be one refactor away from disagreeing with it silently, which is
+/// exactly how the decline came to be computed and thrown away in the first
+/// place.
+///
+/// `param_values` is deliberately absent: scalar params are interpolated into
+/// the rendered SQL, never into the plan, so the plan does not depend on them.
+///
+/// # Errors
+///
+/// As [`emit_query_sampled`].
+pub fn plan_for_mark(
+    spec: &Spec,
+    mark_index: usize,
+    selection_predicates: Option<&[SelectionPredicate]>,
+    sample: Option<SampleRate>,
+) -> Result<QueryPlan, EmitError> {
     let (mut plan, mark_path) = lower_mark_plan(spec, mark_index)?;
     let marks_with_paths = collect_marks_with_paths(spec);
     let (mark, _) = marks_with_paths
@@ -853,33 +911,7 @@ pub fn emit_query_sampled(
         }
     }
 
-    // Apply optimisation passes (built-in + caller-provided).
-    let plan = apply_passes(plan, extra_passes);
-
-    let plan_hash = plan.hash_structural();
-    let mut bindings: Vec<Binding> = Vec::new();
-    let rendered = render_query(&plan, &mut bindings);
-
-    // Interpolate scalar param values into the emitted SQL (Decision 1).
-    // `$name` placeholders in lowerer-emitted projections / filter
-    // expressions are substituted with escaped literals via
-    // `spec_value_to_sql_literal`; names absent from `param_values` are left
-    // intact. `plan_hash` stays STRUCTURAL — `execute_emitted` runs this concrete
-    // `sql` directly and dedups on the literal SQL string via the LRU sql_cache,
-    // so the value need not enter the hash. (An earlier value-fold into plan_hash
-    // was removed: it was redundant with the direct execution and made the
-    // plan-stability cache grow unbounded under a swept param — see
-    // engine::execute_emitted.)
-    let sql = match param_values {
-        Some(params) => interpolate_params(&rendered, params),
-        None => rendered,
-    };
-
-    Ok(EmittedQuery {
-        sql,
-        bindings,
-        plan_hash,
-    })
+    Ok(plan)
 }
 
 /// Emit the ROW-LEVEL query for a mark's step — every column of the step's

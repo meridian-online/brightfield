@@ -25,14 +25,32 @@
 //!   `GROUP BY`, exactly where the selection path puts a brush's predicate, and
 //!   the aggregate is recomputed over the visible range.
 //! - [`Pushdown::Decline`] — the axis's column is produced BY the aggregate
-//!   (`count(*) AS …`). There is no such column below the `GROUP BY` to filter
-//!   on, and filtering above would drop finished bins by their own height,
-//!   which is not what "show me this range" means. The axis is dropped:
-//!   nothing is emitted for it, the mark still draws, and the scale override
-//!   crops it visually.
+//!   (`count(*) AS …`), or the plan is a scalar aggregate with no grouping keys
+//!   at all. There is no such column below the `GROUP BY` to filter on, and
+//!   filtering above would drop finished bins by their own height, which is not
+//!   what "show me this range" means. The axis is dropped: nothing is emitted
+//!   for it, the mark still draws, and the scale override crops it visually.
 //!
 //! Declining is a BAIL, not an error. A navigation gesture must never take a
 //! chart down.
+//!
+//! # A bail has to be SAID, because the picture will not say it
+//!
+//! A declined axis leaves the mark's SQL byte-identical to the one it ran at
+//! full extent. Put such a mark in a plot beside a row-drawing one — which
+//! `examples/regression.yaml` does, a `regressionY` over a `dot` on the same
+//! two columns — and one zoom produces a picture whose two halves describe
+//! different data: three points on screen under an ordinary-least-squares fit
+//! computed from fifteen, spanning an x range wider than the frame. Nothing in
+//! the drawing distinguishes that from a fit over the three.
+//!
+//! So [`NavigationFilterPass::declined`] is not diagnostics. It is the only
+//! signal that exists for the case, and it has a production consumer:
+//! `Session::declined_navigation` resolves it against the very plan the emitter
+//! passes here, and the chart pane rails the answer for as long as the plot is
+//! held at the extent. Removing that path does not make the chart wrong — it
+//! makes the chart wrong *and silent*, which is the state this pass was written
+//! in and the reason this paragraph exists.
 
 use crate::ir::{Predicate, QueryPlan};
 use crate::passes::Pass;
@@ -206,6 +224,11 @@ impl NavigationFilterPass {
     /// The axes this pass would emit nothing for against `plan` — the bail
     /// list, exposed so a caller can say so rather than let a gesture look
     /// applied when it was not.
+    ///
+    /// Answer it against the plan the pass is actually applied to
+    /// ([`plan_for_mark`](crate::emit::plan_for_mark)), never against a
+    /// re-derivation of it: the whole value here is that the report and the
+    /// emission cannot disagree.
     #[must_use]
     pub fn declined(&self, plan: &QueryPlan) -> Vec<String> {
         self.filters

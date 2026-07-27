@@ -477,11 +477,68 @@ impl ChartDoc {
 
     /// Whether any plot is currently held at a navigation extent — what the
     /// reset affordance keys its enabled state on.
+    ///
+    /// Read off the RENDER store, which is where the axes are: a settled
+    /// gesture whose re-query drew nothing rolls the query store back and
+    /// leaves the axes moved (see [`LiveDashboard::apply`]), and in that state
+    /// there is still a frame to reset.
     #[must_use]
     pub fn navigated(&self) -> bool {
         self.live
             .as_ref()
             .is_some_and(|live| !live.view_extents().is_empty())
+    }
+
+    /// **What the frame does not scope.** The marks on navigated plots whose
+    /// query the extent could not be pushed into, named by kind — the sentence
+    /// the chart pane rails for as long as such a plot is held at an extent.
+    ///
+    /// This is the honesty channel for a bail that is otherwise invisible.
+    /// `examples/regression.yaml` is the case: a `dot` scatter and a
+    /// `regressionY` fit share one plot and one pair of columns, the scatter
+    /// narrows to the frame, and the fit — a scalar aggregate with no grouping
+    /// key to filter beneath — returns the byte-identical row it returned at
+    /// full extent. The reader is then shown an ordinary-least-squares line
+    /// computed from points that are not on screen, spanning an x range wider
+    /// than the frame. Nothing about the drawing says so, so the pane does.
+    ///
+    /// Derived, never stored: it is a fact about the extent in force, and it
+    /// has to stop being said the moment a reset widens the frame back out.
+    /// `None` at full extent, on a still document, and when every mark
+    /// rescoped.
+    #[must_use]
+    pub fn nav_scope_notice(&self) -> Option<String> {
+        let live = self.live.as_ref()?;
+        if live.view_extents().is_empty() {
+            return None;
+        }
+        let mut kinds: Vec<String> = Vec::new();
+        for plot in &self.composed.plots {
+            for declined in live.declined_navigation(&plot.path) {
+                let name = declined.kind.to_string();
+                if !kinds.contains(&name) {
+                    kinds.push(name);
+                }
+            }
+        }
+        if kinds.is_empty() {
+            return None;
+        }
+        // Plural agreement done rather than dodged: this line is read by
+        // someone deciding whether to trust a number on the screen, and
+        // "the regressionY, heatmap mark still summarises" reads as a bug.
+        let (subject, verb, them) = if kinds.len() == 1 {
+            (format!("the {} mark", kinds[0]), "summarises", "it")
+        } else {
+            (
+                format!("the {} marks", kinds.join(", ")),
+                "summarise",
+                "them",
+            )
+        };
+        Some(format!(
+            "{subject} still {verb} data outside the frame — navigation cannot rescope {them}"
+        ))
     }
 
     /// Cycle the axis lock and say so.
@@ -560,10 +617,19 @@ impl ChartDoc {
                 .zip(y_col)
                 .map(|((lo, hi), col)| AxisExtent::new(col, lo, hi)),
         };
-        self.apply_interaction(Interaction::Navigate {
+        let applied = self.apply_interaction(Interaction::Navigate {
             plot: ComponentPath(path),
             extent: engine_extent,
-        })
+        });
+        if !applied {
+            // The settled frame composed nothing — a gesture that landed off
+            // the data. The dashboard has rolled its query store back, so the
+            // rows on screen are honest; what would still be missing is anyone
+            // saying why the picture stopped changing.
+            self.nav_notice =
+                Some("nothing to draw in this range — the frame moved off the data".to_string());
+        }
+        applied
     }
 
     /// Return every plot to full extent — the **explicit reset**, and the only

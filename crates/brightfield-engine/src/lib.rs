@@ -718,6 +718,24 @@ impl NavigationExtent {
     }
 }
 
+/// One mark the navigation extent could not be pushed into: it is drawn from
+/// the whole column while its plot's frame says otherwise.
+///
+/// Produced by [`Session::declined_navigation`]. It exists because the bail is
+/// invisible in the picture: the mark's query is byte-identical to the one it
+/// ran at full extent, so a fit line or a summary keeps making a quantitative
+/// claim about rows that are no longer on screen. A surface that shows a
+/// navigated plot is expected to say this out loud.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclinedMark {
+    /// The mark's flat depth-first index within the spec.
+    pub index: usize,
+    /// What the mark is, by the name the spec author wrote (`regressionY`).
+    pub kind: brightfield_spec::vocab::MarkKind,
+    /// The axis columns the extent named and the pass emitted nothing for.
+    pub axes: Vec<String>,
+}
+
 /// A cached SQL string with its binding metadata.
 ///
 /// **Design note:** This stores the SQL string rather than a DuckDB
@@ -1412,12 +1430,18 @@ impl Session {
     /// `rule` or `hexgrid` sibling with no positional column of its own is
     /// skipped rather than filtered on a column it never selected.
     fn navigation_passes(&self, index: usize) -> Vec<Box<dyn Pass>> {
-        let Some(extent) = self
+        match self.navigation_pass(index) {
+            Some(pass) => vec![Box::new(pass)],
+            None => Vec::new(),
+        }
+    }
+
+    /// [`Session::navigation_passes`] as the concrete pass, so a caller can ask
+    /// it what it DECLINED as well as apply it.
+    fn navigation_pass(&self, index: usize) -> Option<NavigationFilterPass> {
+        let extent = self
             .mark_plot_path(index)
-            .and_then(|plot| self.nav_extents.get(&plot))
-        else {
-            return Vec::new();
-        };
+            .and_then(|plot| self.nav_extents.get(&plot))?;
         let (x_col, y_col) = self.positional_column_names(index);
         fn axis<'a>(
             a: Option<&'a AxisExtent>,
@@ -1429,9 +1453,62 @@ impl Session {
         let x = axis(extent.x.as_ref(), x_col.as_ref());
         let y = axis(extent.y.as_ref(), y_col.as_ref());
         if x.is_none() && y.is_none() {
+            return None;
+        }
+        Some(NavigationFilterPass::from_extents(x, y))
+    }
+
+    /// The marks of `plot` whose navigation extent could not be applied, and
+    /// the axis columns each one bailed on.
+    ///
+    /// **The signal the pass computes and would otherwise throw away.** A
+    /// [`Pushdown::Decline`](brightfield_sql::navigation_filter_pass::Pushdown)
+    /// leaves the mark's SQL byte-identical, so an aggregating mark beside a
+    /// row-drawing one keeps summarising the WHOLE column while its neighbour
+    /// narrows to the frame — a regression fit over fifteen points drawn
+    /// beneath three of them, spanning an x range wider than the plot. Nothing
+    /// in the picture says which of the two happened, so the surface has to,
+    /// and this is what it reads.
+    ///
+    /// Empty for a plot at full extent, for a plot every mark of which
+    /// rescoped, and for a plot the extent names no column of. The plan each
+    /// axis is resolved against comes from
+    /// [`plan_for_mark`](brightfield_sql::emit::plan_for_mark) — the same plan
+    /// the emitter hands the pass, not a second guess at it.
+    #[must_use]
+    pub fn declined_navigation(&self, plot: &str) -> Vec<DeclinedMark> {
+        if !self.nav_extents.contains_key(plot) {
             return Vec::new();
         }
-        vec![Box::new(NavigationFilterPass::from_extents(x, y))]
+        let selections = self.selection_predicates_for_emit();
+        let selections_ref: Option<&[SelectionPredicate]> = if selections.is_empty() {
+            None
+        } else {
+            Some(selections.as_slice())
+        };
+        let kinds = brightfield_sql::emit::collect_marks(&self.spec);
+        (0..self.mark_index_map.len())
+            .filter(|&i| self.mark_plot_path(i).as_deref() == Some(plot))
+            .filter_map(|index| {
+                let pass = self.navigation_pass(index)?;
+                let plan = brightfield_sql::emit::plan_for_mark(
+                    &self.spec,
+                    index,
+                    selections_ref,
+                    self.sample,
+                )
+                .ok()?;
+                let axes = pass.declined(&plan);
+                if axes.is_empty() {
+                    return None;
+                }
+                Some(DeclinedMark {
+                    index,
+                    kind: kinds.get(index).map(|m| m.kind)?,
+                    axes,
+                })
+            })
+            .collect()
     }
 
     /// The one emit site every chart execution path goes through, so a re-query

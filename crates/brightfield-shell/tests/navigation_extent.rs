@@ -7,7 +7,7 @@
 //! read back off the live DuckDB session rather than off a field the code
 //! under test writes. GPU-free throughout.
 //!
-//! Five ways this feature can look finished and be broken, one section each:
+//! Seven ways this feature can look finished and be broken, one section each:
 //!
 //! - **The extent reverts.** A zoom that is dropped by the next brush, slider
 //!   step or re-execute is worse than no zoom: the frame moves under the hand
@@ -19,9 +19,16 @@
 //! - **A mark that cannot take the extent takes the chart down with it.** A
 //!   decorative sibling with no positional columns of its own must be left
 //!   alone, not filtered on a column it never selected.
+//! - **A mark that cannot take the extent is drawn as though it had.** The
+//!   sibling above bails harmlessly because it draws a constant. A regression
+//!   fit bails and goes on drawing a line whose slope is a claim about rows
+//!   that left the frame. The bail has to reach the reader.
 //! - **A categorical axis does nothing, silently.** A band axis has no range to
 //!   pan. Saying so is the difference between a considered refusal and a dead
 //!   control.
+//! - **A gesture onto empty space leaves the stores lying.** A settle that
+//!   draws nothing must not leave the session filtering at a range no picture
+//!   was ever made of.
 //! - **A sustained gesture queries per frame.** The frame has to move
 //!   continuously and the data has to re-query once.
 
@@ -139,6 +146,46 @@ fn drawn_range(doc: &mut ChartDoc, mark: usize, column: &str) -> Option<(f64, f6
         }
     }
     range
+}
+
+/// One numeric column of a one-row mark, as a float. A regression's whole
+/// output is such a row, so this is how "the fit did not move" is read off the
+/// numbers the mark actually returned rather than off its SQL.
+fn scalar(doc: &mut ChartDoc, mark: usize, column: &str) -> f64 {
+    use arrow::array::Float64Array;
+    use arrow::compute::cast;
+    use arrow::datatypes::DataType;
+    let batches = doc
+        .live_coordinator()
+        .expect("a live document")
+        .chart_rows(mark)
+        .expect("the mark queries");
+    for batch in &batches {
+        let Ok(idx) = batch.schema().index_of(column) else {
+            continue;
+        };
+        if batch.num_rows() == 0 {
+            continue;
+        }
+        let col = cast(batch.column(idx), &DataType::Float64).expect("numeric");
+        return col
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .expect("f64 column")
+            .value(0);
+    }
+    panic!("mark {mark} returned no `{column}`");
+}
+
+/// The chart pane's status rail, as `(id, text)` — what a reader is actually
+/// shown, read through the same `Item::subject` the window renders from.
+fn chart_rail(doc: &ChartDoc) -> Vec<(&'static str, String)> {
+    brightfield_shell::chart_item::ChartItem::new()
+        .subject(doc)
+        .status
+        .iter()
+        .map(|e| (e.id, e.text.clone()))
+        .collect()
 }
 
 fn mark_rows(doc: &mut ChartDoc, mark: usize) -> usize {
@@ -322,9 +369,17 @@ height: 300
 /// The realistic wrong implementation is the one that shipped: wrap the
 /// finished aggregate in the extent. Bin centres are computed from the whole
 /// table, so bin 0's centre is 0.45 and the extent below ends at 0.4 — that
-/// implementation therefore drops every bin and draws an empty plot, where
-/// this one recounts bin 0 to the ninety rows actually inside the range. The
-/// two answers are 90 and 0.
+/// implementation therefore drops every bin, where this one recounts bin 0 to
+/// the ninety rows actually inside the range.
+///
+/// **What that failure actually looks like, measured by mutating
+/// `axis_pushdown` to return `Top` for every column and running this test:**
+/// the mark returns no rows at all, so the re-composite has nothing to draw
+/// and fails outright with `no marks rendered successfully`, and
+/// `pump_navigation` returns false. The assertion that catches it is therefore
+/// `the settled zoom re-queried` on the line above the read — not the mass
+/// comparison below it, which is never reached. Both answers exist (90 against
+/// 0) but only one of them is ever computed.
 #[test]
 fn zooming_an_aggregating_mark_recounts_beneath_the_group_by() {
     let mut live = LiveDashboard::load_str(SKEWED_DENSITY, None).expect("loads live");
@@ -463,6 +518,197 @@ fn a_categorical_axis_refuses_and_the_pane_says_so() {
         .find(|e| e.id == "chart-navigation")
         .expect("the chart pane rails the refusal");
     assert!(entry.text.contains("categorical"), "{}", entry.text);
+}
+
+/// **A mark that did not rescope is named, and the picture stops being a
+/// silent lie.**
+///
+/// `examples/regression.yaml` puts a `regressionY` and a `dot` in ONE plot over
+/// ONE pair of columns. The scatter's plan is row-level, so a zoom filters it;
+/// the fit's plan is a scalar aggregate with no grouping key beneath which the
+/// bound could go, so `axis_pushdown` declines and the emitted SQL is
+/// byte-identical to the one that ran at full extent. The two halves of the
+/// same picture therefore describe different data — an ordinary-least-squares
+/// line computed from points that are not on screen, spanning an x range wider
+/// than the frame — and until this gate the pane said nothing about it.
+///
+/// The premise is asserted first, off the marks' own returned rows, so this
+/// test cannot pass by the decline having quietly gone away: the scatter has to
+/// narrow AND the fit's `n` / `x_min` / `x_max` have to be untouched. Only then
+/// is the consequence read, through `Item::subject` — the surface a reader
+/// looks at, not the function that computes it.
+#[test]
+fn a_mark_that_did_not_rescope_is_named_on_the_chart_rail() {
+    use egui::Key;
+    let mut app = live_window(&example("regression.yaml"));
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx, Vec::new());
+
+    // Mark 0 is the dot scatter, mark 1 the regressionY fit (spec order).
+    let doc = app.chart_doc_mut();
+    let scatter_before = mark_rows(doc, 0);
+    let fit_before = (
+        scalar(doc, 1, "n"),
+        scalar(doc, 1, "x_min"),
+        scalar(doc, 1, "x_max"),
+    );
+    assert!(scatter_before > 0, "the scatter draws rows to start");
+    assert!(
+        chart_rail(app.chart_doc())
+            .iter()
+            .all(|(id, _)| *id != "chart-navigation-scope"),
+        "an unnavigated chart claims nothing about its scope"
+    );
+
+    frame(&mut app, &ctx, vec![press(Key::Equals)]);
+
+    // The premise, both halves of it.
+    let doc = app.chart_doc_mut();
+    let scatter_after = mark_rows(doc, 0);
+    assert!(
+        scatter_after < scatter_before,
+        "`=` did not narrow the scatter: {scatter_after} vs {scatter_before}"
+    );
+    let fit_after = (
+        scalar(doc, 1, "n"),
+        scalar(doc, 1, "x_min"),
+        scalar(doc, 1, "x_max"),
+    );
+    assert_eq!(
+        fit_after, fit_before,
+        "the fit rescoped after all — this gate is about the case where it does not"
+    );
+
+    // The consequence: the reader can tell.
+    let rail = chart_rail(app.chart_doc());
+    let (_, text) = rail
+        .iter()
+        .find(|(id, _)| *id == "chart-navigation-scope")
+        .unwrap_or_else(|| panic!("the pane said nothing about the unscoped fit: {rail:?}"));
+    assert!(
+        text.contains("regressionY"),
+        "the notice has to name WHICH mark: {text}"
+    );
+    let entry = brightfield_shell::chart_item::ChartItem::new()
+        .subject(app.chart_doc())
+        .status
+        .into_iter()
+        .find(|e| e.id == "chart-navigation-scope")
+        .expect("the entry is on the rail");
+    assert_eq!(
+        entry.tone,
+        brightfield_workbench::subject::Tone::Warning,
+        "a drawn claim about invisible data is not neutral chrome"
+    );
+
+    // And it is a statement about the extent in force, not a sticker: the
+    // reset that widens the frame back out takes it away.
+    frame(&mut app, &ctx, vec![press(Key::Num0)]);
+    assert!(!app.chart_doc().navigated(), "`0` did not reset the frame");
+    let rail = chart_rail(app.chart_doc());
+    assert!(
+        rail.iter().all(|(id, _)| *id != "chart-navigation-scope"),
+        "the notice outlived the extent it was about: {rail:?}"
+    );
+}
+
+/// The other half of the gate above, and the one that catches the cheapest
+/// wrong implementation: a notice that is always on.
+///
+/// `examples/scatter.yaml` draws one row-level mark, which rescopes completely.
+/// A plot where nothing declined must say nothing — otherwise the warning is
+/// noise and a reader learns to ignore the case that matters.
+#[test]
+fn a_plot_whose_marks_all_rescoped_claims_nothing() {
+    let mut app = live_window(&example("scatter.yaml"));
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx, Vec::new());
+
+    let full = mark_rows(app.chart_doc_mut(), 0);
+    frame(&mut app, &ctx, vec![press(egui::Key::Equals)]);
+    let zoomed = mark_rows(app.chart_doc_mut(), 0);
+    assert!(zoomed < full, "the zoom scoped nothing: {zoomed} vs {full}");
+    assert!(
+        app.chart_doc().navigated(),
+        "the frame is held at an extent"
+    );
+
+    let rail = chart_rail(app.chart_doc());
+    assert!(
+        rail.iter().all(|(id, _)| *id != "chart-navigation-scope"),
+        "a plot that rescoped whole warned about itself: {rail:?}"
+    );
+    assert_eq!(
+        app.chart_doc().nav_scope_notice(),
+        None,
+        "and the document agrees with its own pane"
+    );
+}
+
+/// **A settled gesture that draws nothing does not leave the query store
+/// claiming it did.** A pan far enough off the data returns no rows, the
+/// re-composite fails, and the caller keeps the picture it had — which is the
+/// UNSCOPED one. The session's extent has to go back with it, or every later
+/// re-query is emitted at a range the reader never saw a picture of, and the
+/// store disagrees with the rows on screen.
+///
+/// The render store deliberately stays moved: the axes did move, so
+/// `navigated()` is true and the reset affordance does something. Both halves
+/// are asserted, because a rollback that took the axes with it would be the
+/// same bug pointed the other way.
+#[test]
+fn a_settled_gesture_that_drew_nothing_rolls_the_query_store_back() {
+    let mut app = live_window(&example("scatter.yaml"));
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx, Vec::new());
+    let path = app.chart_doc().composed.plots[0].path.clone();
+
+    let full = mark_rows(app.chart_doc_mut(), 0);
+    assert!(full > 0, "the fixture draws rows");
+
+    // Walk the frame off the data. Each keyboard pan is one settled gesture.
+    let mut left_the_data = false;
+    for _ in 0..40 {
+        if !app.chart_doc_mut().pan_view(1.5, 0.0) {
+            left_the_data = true;
+            break;
+        }
+    }
+    assert!(
+        left_the_data,
+        "the pan never left the data — this gate needs a settle that draws nothing"
+    );
+
+    let doc = app.chart_doc();
+    let live = doc.live_dashboard().expect("a live document");
+    assert!(
+        !live.query_extents().contains_key(&path),
+        "the query store kept an extent that returned no rows: {:?}",
+        live.query_extents()
+    );
+    assert!(
+        live.view_extents().contains_key(&path),
+        "the axes were rolled back too — the frame on screen IS the moved one"
+    );
+    assert!(doc.navigated(), "so there is still a frame to reset");
+
+    // The rows the session serves are the ones the picture was drawn from.
+    assert_eq!(
+        mark_rows(app.chart_doc_mut(), 0),
+        full,
+        "the session is still filtering at an extent that drew nothing"
+    );
+
+    // And the dead-end is not silent either.
+    let notice = app
+        .chart_doc()
+        .nav_notice()
+        .expect("a gesture that drew nothing said so")
+        .to_string();
+    assert!(
+        notice.contains("nothing to draw"),
+        "the notice has to say what happened: {notice}"
+    );
 }
 
 /// The axis lock is honoured end to end: locked to y, an x-only continuous
