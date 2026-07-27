@@ -32,11 +32,11 @@
 //! `--force-sample N` draws one row in N — a power of two — through the same
 //! pushed-down clause the renderer reaches for above its drawable ceiling, and
 //! draws the sampling notice in the plot's own ink. It exists so ONE spec can
-//! produce a complete PNG and a sampled PNG over the SAME rows: judging whether
-//! a sampled render reads as sampled against a different, denser dataset would
-//! confound the treatment with the density. Combine with `--vello-only` to see
-//! what a chart-only export keeps, which is the half of the notice that a
-//! banner would fail.
+//! produce a complete PNG and a sampled PNG over the SAME rows: judging the
+//! treatment against a different, denser dataset would confound it with the
+//! density. Combine with `--vello-only` to see what a chart-only export keeps
+//! — the notice is in the scene precisely so it travels with the chart, which
+//! a banner would not.
 //!
 //! It **refuses** a plot with a categorical or ramp-anchored channel (`fill`,
 //! `stroke`, a band axis) and says which one. Those domains are inferred from

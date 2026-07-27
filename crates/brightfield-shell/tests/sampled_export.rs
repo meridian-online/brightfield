@@ -4,9 +4,12 @@
 //! `capture_vello_only` rasterises the composed Vello scene and never
 //! constructs an egui context, so everything the shell draws — the top bar, the
 //! margin legend, any banner anyone might be tempted to add — is absent from
-//! that PNG **by construction**. That is the mechanical meaning of "survives
-//! being cropped out of a screenshot", and it is exactly why the notice is
-//! drawn into the plot's own scene rather than into chrome.
+//! that PNG **by construction**. It is the mechanical meaning of "the notice
+//! travels with the chart through the ordinary export path", which is why the
+//! notice is drawn into the plot's own scene rather than into chrome. That is
+//! an argument about *informing a reader who exports a chart*, and no longer an
+//! argument about defeating one who crops it — anti-tamper is out of scope for
+//! this surface, and designing against it buys ink without buying honesty.
 //!
 //! The second half goes through [`LiveDashboard::present`], which is the path
 //! the live window repaints on — not the one-shot `compose_spec_sampled` call.
@@ -14,9 +17,6 @@
 //! runs after a gesture; a suite that exercised only the one-shot call would be
 //! green with the live path erasing the notice on the first drag, which is
 //! precisely the invisible degradation this whole device exists to prevent.
-//!
-//! What is left for a human eye is the rest — whether a sampled render reads as
-//! sampled without reading the words. Nothing here claims to test that.
 
 use std::path::PathBuf;
 
@@ -69,6 +69,41 @@ fn write_spec(dir: &std::path::Path) -> PathBuf {
     let p = dir.join("sampled-export.yaml");
     std::fs::write(&p, SPEC).expect("write spec");
     p
+}
+
+/// Count pixels in the band that are the notice's **attention fill** — the
+/// design system's warning solid, read from the token layer rather than
+/// transcribed, so a token bump moves the expectation with it.
+///
+/// This is the assertion `ink_in_band` cannot make. "Not near-white" was
+/// satisfied by any ink at all: the old hatch, a stray axis rule, a mark that
+/// escaped its clip. What has to be true is that the band a reader's eye is
+/// meant to catch is *the colour that catches it*, and that it is filled rather
+/// than trimmed.
+fn attention_fill_in_band(png: &std::path::Path) -> u64 {
+    let want = meridian_design::semantic(false)
+        .role(meridian_design::Role::Warning)
+        .background
+        .base;
+    let want = [
+        (want.r * 255.0).round() as i32,
+        (want.g * 255.0).round() as i32,
+        (want.b * 255.0).round() as i32,
+    ];
+    let img = image::open(png).expect("open png").to_rgba8();
+    let band_top = H - NOTICE_BAND.ceil() as u32;
+    let mut hits = 0u64;
+    for y in band_top..H {
+        for x in 0..W {
+            let p = img.get_pixel(x, y).0;
+            // A tolerance of a few levels per channel, for the compositor's
+            // rounding — not enough to admit a different token.
+            if (0..3).all(|c| (i32::from(p[c]) - want[c]).abs() <= 4) {
+                hits += 1;
+            }
+        }
+    }
+    hits
 }
 
 /// Count pixels that are not the near-white page/surface, in the bottom
@@ -133,7 +168,7 @@ fn the_sampling_notice_is_in_the_chart_only_export() {
 
     assert!(
         sampled_ink > 400,
-        "the sampled export's bottom band held {sampled_ink} inked pixels — the hatch and \
+        "the sampled export's bottom band held {sampled_ink} inked pixels — the fill and \
          label should be plainly there. If this is near zero the notice did not survive the \
          chart-only export, which is the whole reason it is not a banner."
     );
@@ -141,6 +176,26 @@ fn the_sampling_notice_is_in_the_chart_only_export() {
         sampled_ink > complete_ink * 3,
         "the band is supposed to be the DIFFERENCE between the two exports: sampled held \
          {sampled_ink} inked pixels there, complete held {complete_ink}"
+    );
+
+    // …and the ink is the attention fill, filling the band rather than
+    // trimming it. The band spans the plot's own width, so its area is at least
+    // (W - both margins) × NOTICE_BAND; two thirds of the plot width, at full
+    // band height, is a floor no partial treatment clears and the label's own
+    // glyphs cannot lift a lesser one over.
+    let filled = attention_fill_in_band(&sampled_png);
+    let floor = (u64::from(W) * 2 / 3) * NOTICE_BAND.floor() as u64;
+    assert!(
+        filled > floor,
+        "the band held {filled} pixels of the warning solid, under the {floor} a filled \
+         band owes — colour is what draws the eye to the sentence, and a band that is \
+         only text is a band nobody looks at"
+    );
+    assert_eq!(
+        attention_fill_in_band(&complete_png),
+        0,
+        "a COMPLETE export must carry none of it — an attention fill that appears on an \
+         unsampled chart teaches a reader that the band means nothing"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -219,7 +274,7 @@ fn a_brush_does_not_erase_the_sampling_notice() {
     let ink = ink_in_band(&png);
     assert!(
         ink > 400,
-        "the post-brush export's bottom band held {ink} inked pixels — the hatch and label \
+        "the post-brush export's bottom band held {ink} inked pixels — the fill and label \
          should still be plainly there"
     );
 
@@ -433,7 +488,7 @@ height: 300
 /// every mark whenever a rate was set, and since the mark was not actually
 /// sampled it reported `drawn == of`. Measured before the fix: a `densityX`
 /// plot under `--force-sample 32` composed with
-/// `SampleFact { drawn: 100, of: 100 }` and drew the hatched band across a
+/// `SampleFact { drawn: 100, of: 100 }` and drew the notice band across a
 /// picture that had lost nothing.
 ///
 /// A notice that fires on a complete plot is the same lie as a notice that

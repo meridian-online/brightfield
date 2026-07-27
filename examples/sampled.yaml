@@ -13,10 +13,11 @@ meta:
         --out render-proof/dense-32.png --vello-only --force-sample 32
 
     Same spec, same rows, same axes. The only differences are the points that
-    were not drawn and the hatched band that says so. `--vello-only` writes the
+    were not drawn and the notice band that says so. `--vello-only` writes the
     Vello scene with no egui chrome around it — the notice has to survive that
-    to be worth anything, because a chart exported or cropped out of the window
-    keeps exactly this and nothing else.
+    to be worth anything, because an exported chart keeps exactly this and
+    nothing else, and a reader who exports one is owed the same statement of
+    what they are looking at as the one who ran it.
 
     Live:
 
@@ -26,7 +27,7 @@ meta:
     dots ink 74% of this plot: the complete render is a solid edge-to-edge
     block and the sampled one is an open field of points. Any reader calls
     that sampled at a glance, for a reason that has nothing to do with the
-    hatched band. It is here because it is honest about what over-plotting
+    notice band. It is here because it is honest about what over-plotting
     looks like and about why sampling exists at all — not because it tests the
     device.
 

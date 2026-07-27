@@ -373,9 +373,9 @@ pub fn compose_spec(spec_path: &str) -> Result<Composed, String> {
 /// `None` is [`compose_spec`] exactly. `Some(rate)` makes every row-level mark
 /// draw one row in `rate.modulus()` and say so in its own ink — the switch
 /// `--force-sample` turns, so that ONE spec can produce a complete PNG and a
-/// sampled PNG over the SAME rows. That comparison is the point: judging
-/// whether a sampled render reads as sampled against a different, denser
-/// dataset would confound the treatment with the density.
+/// sampled PNG over the SAME rows. That comparison is the point: judging the
+/// treatment against a different, denser dataset would confound it with the
+/// density.
 ///
 /// # Errors
 ///
