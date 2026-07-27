@@ -15,6 +15,7 @@
 //! single ~2048-row chunk draws all its rows, and an assembly that cannot
 //! proceed fails loudly by name rather than silently drawing the first chunk.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use arrow::record_batch::RecordBatch;
@@ -22,13 +23,13 @@ use brightfield_conformance::LoadDiagnostics;
 use brightfield_engine::coordinator::{Coordinator, Interaction};
 use brightfield_engine::error::EngineError;
 use brightfield_engine::facts::MarkFacts;
-use brightfield_engine::{assemble_batches, Engine, Session};
-use brightfield_render::channel::ChannelMap;
+use brightfield_engine::{assemble_batches, Engine, NavigationExtent, Session};
+use brightfield_render::channel::{Channel, ChannelMap};
 use brightfield_render::inset::{resolve_insets_for_marks, DEFAULT_SCALE_INSET};
 use brightfield_render::layout::{ChartLayout, Margins};
 use brightfield_render::mark::{default_renderers, find_renderer, MarkRenderer};
 use brightfield_render::sample_notice::{sample_band_margins, SampleFact};
-use brightfield_render::scale::ScaleSet;
+use brightfield_render::scale::{ScaleSet, ViewExtent};
 use brightfield_render::scene::{
     build_multi_mark_scene_with_domains, compose_dashboard, unrestorable_under_sampling, ChartData,
     UnsampledDomains,
@@ -69,6 +70,14 @@ pub struct PlotHandle {
     pub marks: Vec<MarkKind>,
     /// The plot's brush/point gesture binding, when its spec declares one.
     pub gesture: Option<GestureBinding>,
+    /// The x channel's column on this plot's first mark — the column a
+    /// navigation extent over its x axis names. Carried here rather than
+    /// re-derived at gesture time because a plot with no brush interactor is
+    /// still navigable, so `gesture` cannot be the only place columns live.
+    pub x_column: Option<String>,
+    /// The y channel's column on this plot's first mark. See
+    /// [`PlotHandle::x_column`].
+    pub y_column: Option<String>,
     /// `Some` when this plot drew a pushed-down sample — the mirror of
     /// [`ChartData::sample`](brightfield_render::scene::ChartData::sample), so a
     /// surface reading plot handles (chrome, a future export caption) can tell
@@ -444,7 +453,8 @@ fn compose(
     // Execute every mark; assemble all its result chunks into one drawable batch.
     let results = session.execute_all();
     let facts = unsampled_facts(&session, results.len());
-    Ok(compose_from_results(&spec, results, &facts)?.with_diagnostics(diagnostics))
+    Ok(compose_from_results(&spec, results, &facts, &ViewExtents::new())?
+        .with_diagnostics(diagnostics))
 }
 
 /// A live, session-holding dashboard — the push-down seam at the presentation
@@ -469,6 +479,34 @@ pub struct LiveDashboard {
     coordinator: Coordinator,
     spec: Spec,
     diagnostics: LoadDiagnostics,
+    /// What each plot's axes are DRAWN at, keyed by plot node path — the
+    /// render-side half of navigation.
+    ///
+    /// It exists beside the session's own extent store for one reason: a pan
+    /// moves the frame on every pointer sample and re-queries once, when the
+    /// gesture settles. Between those two moments the axes have to be somewhere,
+    /// and that somewhere cannot be the session — writing the session per sample
+    /// is the per-frame re-query the settle rule exists to prevent.
+    ///
+    /// The two cannot drift, because [`LiveDashboard::apply`] writes this one
+    /// from the settled interaction itself rather than trusting a caller to
+    /// keep them in step. At rest they are equal, and
+    /// `the_two_extent_stores_agree_once_a_gesture_has_settled` holds that.
+    view_extents: ViewExtents,
+}
+
+/// What each plot's axes are drawn at, keyed by plot node path.
+pub type ViewExtents = HashMap<String, ViewExtent>;
+
+/// The render-side extent of an engine-side navigation extent — the one
+/// conversion between the two, so a bound cannot be transcribed differently in
+/// two places.
+#[must_use]
+pub fn view_extent_of(extent: &NavigationExtent) -> ViewExtent {
+    ViewExtent {
+        x: extent.x.as_ref().map(|a| (a.min, a.max)),
+        y: extent.y.as_ref().map(|a| (a.min, a.max)),
+    }
 }
 
 impl LiveDashboard {
@@ -493,6 +531,7 @@ impl LiveDashboard {
             coordinator,
             spec,
             diagnostics,
+            view_extents: ViewExtents::new(),
         })
     }
 
@@ -516,6 +555,7 @@ impl LiveDashboard {
             coordinator,
             spec,
             diagnostics,
+            view_extents: ViewExtents::new(),
         })
     }
 
@@ -553,8 +593,10 @@ impl LiveDashboard {
         // notice on the first gesture and leave a sampled picture looking
         // complete.
         let facts = unsampled_facts(self.coordinator.session_mut(), results.len());
-        Ok(compose_from_results(&self.spec, results, &facts)?
-            .with_diagnostics(self.diagnostics.clone()))
+        Ok(
+            compose_from_results(&self.spec, results, &facts, &self.view_extents)?
+                .with_diagnostics(self.diagnostics.clone()),
+        )
     }
 
     /// Apply one interaction — push its predicate/param into DuckDB, re-query,
@@ -576,8 +618,40 @@ impl LiveDashboard {
                 *node = ParamNode::Value(value.clone());
             }
         }
+        // A settled navigation writes BOTH stores from the one value it
+        // carries. Leaving the render side to the caller is how a settled zoom
+        // ends up querying one range and drawing another.
+        if let Interaction::Navigate { plot, extent } = &interaction {
+            self.set_view_extent(&plot.0, view_extent_of(extent));
+        }
         self.coordinator.apply(interaction);
         self.present()
+    }
+
+    /// Draw `plot`'s axes at `extent` from the next composite on, WITHOUT
+    /// re-querying — what a pan or zoom in progress writes on every step.
+    ///
+    /// A full extent removes the override, so a reset leaves the map exactly as
+    /// a never-navigated dashboard's.
+    pub fn set_view_extent(&mut self, plot: &str, extent: ViewExtent) {
+        if extent.x.is_none() && extent.y.is_none() {
+            self.view_extents.remove(plot);
+        } else {
+            self.view_extents.insert(plot.to_string(), extent);
+        }
+    }
+
+    /// What each plot's axes are currently drawn at.
+    #[must_use]
+    pub fn view_extents(&self) -> &ViewExtents {
+        &self.view_extents
+    }
+
+    /// What each plot's QUERIES are currently filtered to — the session's own
+    /// store, the durable half. Read by the gate that holds the two in step.
+    #[must_use]
+    pub fn query_extents(&self) -> &std::collections::HashMap<String, NavigationExtent> {
+        self.coordinator.session().navigation_extents()
     }
 
     /// Set the pushed-down sample rate every later query carries — including
@@ -652,6 +726,7 @@ fn compose_from_results(
     spec: &Spec,
     results: Vec<Result<Vec<RecordBatch>, EngineError>>,
     facts: &[Option<MarkFacts>],
+    extents: &ViewExtents,
 ) -> Result<Composed, String> {
     let marks = collect_marks(spec);
     let mut batches: Vec<Option<RecordBatch>> = Vec::with_capacity(marks.len());
@@ -689,9 +764,16 @@ fn compose_from_results(
             continue;
         };
 
+        // The extent this plot is navigated to, if any — read from the ONE
+        // store the engine also filters on, so the axes and the numbers cannot
+        // describe different ranges.
+        let plot_extent = extents.get(&plot.path);
+
         let mut chart_data: Vec<ChartData<'_>> = Vec::new();
         let mut plot_marks: Vec<MarkKind> = Vec::new();
         let mut plot_domains = UnsampledDomains::default();
+        let mut plot_x_column: Option<String> = None;
+        let mut plot_y_column: Option<String> = None;
         for &mi in &group.mark_indices {
             let Some(batch) = batches.get(mi).and_then(|b| b.as_ref()) else {
                 continue;
@@ -704,6 +786,12 @@ fn compose_from_results(
                 }
             };
             plot_marks.push(kinds[mi]);
+            if plot_x_column.is_none() {
+                plot_x_column = channel_maps[mi].get(Channel::X).map(str::to_string);
+            }
+            if plot_y_column.is_none() {
+                plot_y_column = channel_maps[mi].get(Channel::Y).map(str::to_string);
+            }
             // A mark is sampled exactly when the session produced unsampled
             // facts for it; `drawn` is what actually arrived, `of` is what the
             // same query returns without the clause.
@@ -720,7 +808,7 @@ fn compose_from_results(
                 channel_map: &channel_maps[mi],
                 renderer,
                 layout: ChartLayout::new(plot.rect.width, plot.rect.height),
-                view_extent: None,
+                view_extent: plot_extent,
                 highlight: None,
                 sample,
             });
@@ -825,6 +913,8 @@ fn compose_from_results(
             layout,
             marks: plot_marks,
             gesture,
+            x_column: plot_x_column,
+            y_column: plot_y_column,
             sample: plot_sample,
         });
     }
@@ -1256,13 +1346,13 @@ plot:
         // the path-count delta is purely the extra dots.
         let (full_results, total) = two_chunk_dot_results(first_rows, second_rows);
         assert_eq!(total, materialised);
-        let full = compose_from_results(&spec, full_results, &[]).expect("compose full");
+        let full = compose_from_results(&spec, full_results, &[], &ViewExtents::new()).expect("compose full");
 
         let first_only: Vec<Result<Vec<RecordBatch>, EngineError>> = vec![Ok(vec![xy_batch(
             (0..first_rows).map(|i| (i % 101) as f64).collect(),
             (0..first_rows).map(|i| (i % 101) as f64).collect(),
         )])];
-        let first = compose_from_results(&spec, first_only, &[]).expect("compose first");
+        let first = compose_from_results(&spec, first_only, &[], &ViewExtents::new()).expect("compose first");
 
         let drawn_delta = count_scene_paths(&full.scene) - count_scene_paths(&first.scene);
         assert_eq!(
@@ -1275,7 +1365,7 @@ plot:
             (0..materialised).map(|i| (i % 101) as f64).collect(),
             (0..materialised).map(|i| (i % 101) as f64).collect(),
         )])];
-        let single = compose_from_results(&spec, single, &[]).expect("compose single");
+        let single = compose_from_results(&spec, single, &[], &ViewExtents::new()).expect("compose single");
         assert_eq!(
             count_scene_paths(&full.scene),
             count_scene_paths(&single.scene),
@@ -1323,7 +1413,7 @@ plot:
         let results: Vec<Result<Vec<RecordBatch>, EngineError>> = vec![Ok(vec![a, b])];
         // `.err()` rather than `.expect_err()` — `Composed` is deliberately not
         // `Debug` (it holds a Vello scene), so we inspect the error side directly.
-        let err = compose_from_results(&spec, results, &[])
+        let err = compose_from_results(&spec, results, &[], &ViewExtents::new())
             .err()
             .expect("must fail loudly");
         assert!(err.contains("mark 0"), "the failure names the mark: {err}");

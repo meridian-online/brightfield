@@ -57,6 +57,7 @@
 use std::collections::BTreeSet;
 
 use brightfield_engine::coordinator::{Coordinator, Interaction};
+use brightfield_engine::{AxisExtent, NavigationExtent};
 use brightfield_keys::BindingContext;
 use brightfield_render::canvas_host::{Color, PixelSize};
 use brightfield_spec::analysis::ComponentPath;
@@ -74,6 +75,7 @@ use crate::canvas::{CanvasSlot, EguiCanvasHost};
 use crate::chart_item::ChartItem;
 use crate::design::Mode;
 use crate::interval_drag::IntervalDrags;
+use crate::navigation::{AxisLock, NavGesture, NavOutcome};
 use crate::pipeline::{Composed, IntervalControl, LiveDashboard};
 use crate::watch::FileWatcher;
 
@@ -161,6 +163,22 @@ pub struct ChartDoc {
     /// and a headless test drives it; see [`crate::interval_drag`] for why the
     /// handle position cannot live in [`Self::composed`].
     pub interval_drags: IntervalDrags,
+    /// The pan/zoom gesture in progress and the settle rule that decides when
+    /// it becomes a query. Public because a headless test drives it through the
+    /// same entry points the chart pane uses.
+    pub nav: NavGesture,
+    /// Which axes a navigation gesture may move — cycled from the keyboard, a
+    /// property of the view rather than of the spec.
+    pub axis_lock: AxisLock,
+    /// Which plot the keyboard navigation verbs address. Follows the last plot
+    /// a pointer gesture navigated, so `zoom-in` after a wheel zoom keeps
+    /// working on the plot the hand was on; 0 until one has.
+    nav_plot: usize,
+    /// The last thing a navigation gesture REFUSED to do, and why — surfaced
+    /// on the chart pane's subject so a categorical axis that will not pan says
+    /// so instead of reading as a dead control. Cleared by the next gesture
+    /// that does something.
+    nav_notice: Option<String>,
     canvas: CanvasSlot<CanvasKey>,
 }
 
@@ -208,6 +226,10 @@ impl ChartDoc {
             live: None,
             active_selections: Vec::new(),
             interval_drags: IntervalDrags::new(),
+            nav: NavGesture::new(),
+            axis_lock: AxisLock::default(),
+            nav_plot: 0,
+            nav_notice: None,
             canvas: CanvasSlot::new(host),
         }
     }
@@ -229,6 +251,10 @@ impl ChartDoc {
             live: None,
             active_selections: Vec::new(),
             interval_drags: IntervalDrags::new(),
+            nav: NavGesture::new(),
+            axis_lock: AxisLock::default(),
+            nav_plot: 0,
+            nav_notice: None,
             canvas: CanvasSlot::headless(),
         }
     }
@@ -264,6 +290,10 @@ impl ChartDoc {
         self.active_selections.clear();
         // The handle positions described the replaced document's sliders.
         self.interval_drags.clear();
+        // …and the extent described the replaced document's plots.
+        self.nav.clear();
+        self.nav_notice = None;
+        self.nav_plot = 0;
         self.spec_path = None;
         // The watch list described the replaced document's files, and any
         // in-flight marks belonged to its session — both go with it.
@@ -351,7 +381,7 @@ impl ChartDoc {
                 self.active_selections
                     .retain(|(n, c)| !(n == name && c == contributor));
             }
-            Interaction::SetParam { .. } => {}
+            Interaction::SetParam { .. } | Interaction::Navigate { .. } => {}
         }
         // The engine seam marks its work. Synchronous today, so begin/end
         // resolve inside one frame and no cue is drawn — see the activity
@@ -415,6 +445,165 @@ impl ChartDoc {
             dispatched += 1;
         }
         dispatched
+    }
+
+    // -----------------------------------------------------------------------
+    // Navigation — the frame moves continuously, the data re-queries once.
+    // -----------------------------------------------------------------------
+
+    /// Which plot the keyboard navigation verbs address.
+    #[must_use]
+    pub fn nav_plot(&self) -> usize {
+        self.nav_plot
+    }
+
+    /// What the last navigation gesture refused to do, if it refused anything.
+    #[must_use]
+    pub fn nav_notice(&self) -> Option<&str> {
+        self.nav_notice.as_deref()
+    }
+
+    /// Whether any plot is currently held at a navigation extent — what the
+    /// reset affordance keys its enabled state on.
+    #[must_use]
+    pub fn navigated(&self) -> bool {
+        self.live
+            .as_ref()
+            .is_some_and(|live| !live.view_extents().is_empty())
+    }
+
+    /// Cycle the axis lock and say so.
+    pub fn cycle_axis_lock(&mut self) {
+        self.axis_lock = self.axis_lock.cycle();
+        self.nav_notice = Some(format!("navigation moves {}", self.axis_lock.label()));
+    }
+
+    /// Record one step of a navigation gesture on `plot`: the axes move NOW,
+    /// and nothing is queried.
+    ///
+    /// Returns whether the frame actually moved. A gesture every axis refused
+    /// leaves the extent alone and files the reason, so the pane can say why
+    /// rather than look broken.
+    pub fn note_navigation(&mut self, plot: usize, outcome: &NavOutcome) -> bool {
+        self.nav_plot = plot;
+        self.nav_notice = outcome
+            .refused
+            .first()
+            .map(|(axis, why)| why.message(axis));
+        if outcome.extent.x.is_none() && outcome.extent.y.is_none() {
+            return false;
+        }
+        let Some(path) = self.composed.plots.get(plot).map(|p| p.path.clone()) else {
+            return false;
+        };
+        self.nav.moved(plot, outcome.extent.clone());
+        if let Some(live) = self.live.as_mut() {
+            live.set_view_extent(&path, outcome.extent.clone());
+        }
+        true
+    }
+
+    /// The gesture on the plot has ended — the extent it stopped at is now owed
+    /// exactly one query.
+    pub fn settle_navigation(&mut self) {
+        self.nav.settle();
+    }
+
+    /// Issue the settled gesture's re-query, if one is owed. Returns whether a
+    /// query was issued — **at most one per settled gesture, ever**.
+    ///
+    /// The extent is translated to the engine's own form here, against the
+    /// plot's channel columns: an axis whose plot names no column for it is
+    /// dropped, because a bound with no column to bind to is not a filter.
+    pub fn pump_navigation(&mut self) -> bool {
+        let Some((plot, extent)) = self.nav.take_settled() else {
+            return false;
+        };
+        let Some(handle) = self.composed.plots.get(plot) else {
+            return false;
+        };
+        let (path, x_col, y_col) = (
+            handle.path.clone(),
+            handle.x_column.clone(),
+            handle.y_column.clone(),
+        );
+        let engine_extent = NavigationExtent {
+            x: extent
+                .x
+                .zip(x_col)
+                .map(|((lo, hi), col)| AxisExtent::new(col, lo, hi)),
+            y: extent
+                .y
+                .zip(y_col)
+                .map(|((lo, hi), col)| AxisExtent::new(col, lo, hi)),
+        };
+        self.apply_interaction(Interaction::Navigate {
+            plot: ComponentPath(path),
+            extent: engine_extent,
+        })
+    }
+
+    /// Return every plot to full extent — the **explicit reset**, and the only
+    /// thing that clears a navigation extent.
+    ///
+    /// Deliberately not folded into `clear-selection`: a brush and a frame are
+    /// different state, and one key that silently undid both would make a zoom
+    /// impossible to keep while working a cross-filter.
+    pub fn reset_navigation(&mut self) -> bool {
+        let paths: Vec<String> = self
+            .live
+            .as_ref()
+            .map(|live| live.view_extents().keys().cloned().collect())
+            .unwrap_or_default();
+        self.nav.clear();
+        self.nav_notice = None;
+        if paths.is_empty() {
+            return false;
+        }
+        let mut applied = false;
+        for path in paths {
+            if let Some(live) = self.live.as_mut() {
+                live.set_view_extent(&path, brightfield_render::scale::ViewExtent::default());
+            }
+            applied |= self.apply_interaction(Interaction::Navigate {
+                plot: ComponentPath(path),
+                extent: NavigationExtent::default(),
+            });
+        }
+        applied
+    }
+
+    /// A keyboard pan of the addressed plot, by a fraction of the frame's
+    /// width/height — one discrete gesture, so it settles the moment it happens.
+    pub fn pan_view(&mut self, fx: f64, fy: f64) -> bool {
+        let plot = self.nav_plot;
+        let Some(handle) = self.composed.plots.get(plot) else {
+            return false;
+        };
+        let (dx, dy) = (handle.rect.width * fx, handle.rect.height * fy);
+        let outcome = crate::navigation::pan(&handle.scales, self.axis_lock, dx, dy);
+        self.discrete_navigation(plot, &outcome)
+    }
+
+    /// A keyboard zoom of the addressed plot about its centre — one discrete
+    /// gesture. `factor` above 1 zooms in.
+    pub fn zoom_view(&mut self, factor: f64) -> bool {
+        let plot = self.nav_plot;
+        let Some(handle) = self.composed.plots.get(plot) else {
+            return false;
+        };
+        let outcome = crate::navigation::zoom(&handle.scales, self.axis_lock, None, factor);
+        self.discrete_navigation(plot, &outcome)
+    }
+
+    /// A gesture that begins and ends in the same instant (a keystroke): step,
+    /// settle, query — one of each.
+    fn discrete_navigation(&mut self, plot: usize, outcome: &NavOutcome) -> bool {
+        if !self.note_navigation(plot, outcome) {
+            return false;
+        }
+        self.settle_navigation();
+        self.pump_navigation()
     }
 
     /// Drive one spec-declared scalar parameter — the controls rail's slider,

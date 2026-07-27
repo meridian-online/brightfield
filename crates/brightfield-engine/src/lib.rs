@@ -187,7 +187,7 @@ use brightfield_spec::vocab::MarkKind;
 
 use brightfield_sql::binding::{Binding, EmittedQuery, ParamValues};
 use brightfield_sql::emit::{
-    collect_marks, emit_query, emit_query_sampled, emit_rows_query, emit_sources, SourceKindTag,
+    collect_marks, emit_query_sampled, emit_rows_query, emit_sources, SourceKindTag,
 };
 use brightfield_sql::ir::{Predicate, SampleRate, SelectionPredicate};
 use brightfield_sql::navigation_filter_pass::NavigationFilterPass;
@@ -539,6 +539,7 @@ impl Engine {
             data_fingerprint: None,
             remote_sources,
             sample: None,
+            nav_extents: HashMap::new(),
         };
 
         Ok(LoadResult {
@@ -657,6 +658,64 @@ pub struct Session {
     /// path gets forgotten and a brush quietly restores the full picture under
     /// a notice that still says otherwise.
     sample: Option<SampleRate>,
+    /// The navigation extent each plot has been panned/zoomed to, keyed by the
+    /// plot node path — **the durable half of navigation**.
+    ///
+    /// Held on the session for the same reason [`Session::sample`] is, and the
+    /// failure it prevents is sharper: an extent that lived only for the length
+    /// of one call meant a zoom followed by ANY other gesture — a brush, a
+    /// slider step, a re-present — silently snapped the frame back to full
+    /// extent, because the next emission knew nothing about it. Every chart
+    /// emission goes through [`Session::emit_for_mark`], so the extent survives
+    /// each of them by construction rather than by each path remembering to
+    /// carry it. Only an explicit reset (a full extent) removes one.
+    nav_extents: HashMap<String, NavigationExtent>,
+}
+
+/// One navigable axis of a navigation extent: the column the gesture moved
+/// along, and the inclusive data bounds now in view.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AxisExtent {
+    /// The column the axis is drawn from — the mark's own positional channel
+    /// column, unquoted.
+    pub column: String,
+    /// Inclusive lower bound in data units.
+    pub min: f64,
+    /// Inclusive upper bound in data units.
+    pub max: f64,
+}
+
+impl AxisExtent {
+    /// An axis extent over `column` spanning `min..=max`.
+    #[must_use]
+    pub fn new(column: impl Into<String>, min: f64, max: f64) -> Self {
+        Self {
+            column: column.into(),
+            min,
+            max,
+        }
+    }
+}
+
+/// What one plot has been navigated to: an optional extent per positional axis.
+///
+/// The full value ([`NavigationExtent::default`]) is the reset — the state a
+/// plot that has never been navigated is in. There is deliberately no separate
+/// "cleared" flag: an axis either constrains the query or does not.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct NavigationExtent {
+    /// The x axis's visible range, or `None` for the full data range.
+    pub x: Option<AxisExtent>,
+    /// The y axis's visible range, or `None` for the full data range.
+    pub y: Option<AxisExtent>,
+}
+
+impl NavigationExtent {
+    /// Whether this extent constrains nothing — the reset value.
+    #[must_use]
+    pub fn is_full(&self) -> bool {
+        self.x.is_none() && self.y.is_none()
+    }
 }
 
 /// A cached SQL string with its binding metadata.
@@ -1270,15 +1329,121 @@ impl Session {
         self.sample
     }
 
-    /// The one emit site every execution path goes through, so a re-query
-    /// cannot silently drop the sample the first paint applied.
+    /// The navigation extent a plot is currently held at, if any.
+    #[must_use]
+    pub fn navigation_extent(&self, plot: &str) -> Option<&NavigationExtent> {
+        self.nav_extents.get(plot)
+    }
+
+    /// Every plot's navigation extent — the one store the QUERY side and the
+    /// render side both read, so a chart's axes and its numbers cannot describe
+    /// different ranges.
+    #[must_use]
+    pub fn navigation_extents(&self) -> &HashMap<String, NavigationExtent> {
+        &self.nav_extents
+    }
+
+    /// Hold `plot` at `extent` from now on, WITHOUT re-querying.
+    ///
+    /// A full extent removes the entry outright rather than storing an empty
+    /// one, so "is this plot navigated" has one answer and a reset leaves the
+    /// session byte-identical to one that was never navigated.
+    ///
+    /// Nothing is invalidated here on purpose. Cached batches are keyed by the
+    /// literal emitted SQL, and the extent is IN that SQL — so an extent change
+    /// cannot serve a stale batch, and returning to a previous extent (zoom out
+    /// to where you were) is a cache hit rather than a re-scan.
+    pub fn set_navigation_extent(&mut self, plot: &str, extent: NavigationExtent) {
+        if extent.is_full() {
+            self.nav_extents.remove(plot);
+        } else {
+            self.nav_extents.insert(plot.to_string(), extent);
+        }
+    }
+
+    /// Hold `plot` at `extent` and re-query the marks that plot draws.
+    ///
+    /// The marks of OTHER plots are untouched: a navigation extent belongs to
+    /// the plot the gesture happened on, and re-emitting a sibling would at
+    /// best waste a query and at worst filter it on a column it does not have.
+    pub fn navigate(&mut self, plot: &str, extent: NavigationExtent) -> Vec<DispatchResult> {
+        self.set_navigation_extent(plot, extent);
+        let indices: Vec<usize> = (0..self.mark_index_map.len())
+            .filter(|&i| self.mark_plot_path(i).as_deref() == Some(plot))
+            .collect();
+        indices
+            .into_iter()
+            .map(|i| {
+                let result = self.execute_mark(i);
+                (i, result)
+            })
+            .collect()
+    }
+
+    /// The plot node path of a mark, by depth-first index — the identity a
+    /// navigation extent is filed under, derived through the same
+    /// `plot_node_path` the selection layer uses for self-exclusion so the two
+    /// cannot disagree about which plot a mark belongs to.
+    fn mark_plot_path(&self, index: usize) -> Option<String> {
+        self.mark_index_map
+            .iter()
+            .find(|(_, (i, _))| *i == index)
+            .map(|(path, _)| brightfield_spec::analysis::plot_node_path(path).to_string())
+    }
+
+    /// The mark's positional channel columns, unquoted — the names a navigation
+    /// extent has to match to apply to this mark.
+    fn positional_column_names(&self, index: usize) -> (Option<String>, Option<String>) {
+        let unquote = |c: String| {
+            c.strip_prefix('"')
+                .and_then(|s| s.strip_suffix('"'))
+                .map(|s| s.replace("\"\"", "\""))
+                .unwrap_or(c)
+        };
+        let (x, y) = positional_columns(&self.spec, index);
+        (x.map(unquote), y.map(unquote))
+    }
+
+    /// The navigation passes this mark's emission carries: at most one, built
+    /// from its own plot's extent.
+    ///
+    /// An axis applies only when the extent's column IS this mark's positional
+    /// channel column. That match is what makes a multi-mark plot safe — a
+    /// `rule` or `hexgrid` sibling with no positional column of its own is
+    /// skipped rather than filtered on a column it never selected.
+    fn navigation_passes(&self, index: usize) -> Vec<Box<dyn Pass>> {
+        let Some(extent) = self
+            .mark_plot_path(index)
+            .and_then(|plot| self.nav_extents.get(&plot))
+        else {
+            return Vec::new();
+        };
+        let (x_col, y_col) = self.positional_column_names(index);
+        fn axis<'a>(
+            a: Option<&'a AxisExtent>,
+            col: Option<&String>,
+        ) -> Option<(&'a str, f64, f64)> {
+            a.filter(|a| col.is_some_and(|c| *c == a.column))
+                .map(|a| (a.column.as_str(), a.min, a.max))
+        }
+        let x = axis(extent.x.as_ref(), x_col.as_ref());
+        let y = axis(extent.y.as_ref(), y_col.as_ref());
+        if x.is_none() && y.is_none() {
+            return Vec::new();
+        }
+        vec![Box::new(NavigationFilterPass::from_extents(x, y))]
+    }
+
+    /// The one emit site every chart execution path goes through, so a re-query
+    /// cannot silently drop the sample the first paint applied — nor the extent
+    /// the last navigation gesture settled on.
     fn emit_for_mark(
         &self,
         index: usize,
         params: Option<&ParamValues>,
         selections: Option<&[SelectionPredicate]>,
     ) -> Result<EmittedQuery, brightfield_sql::error::EmitError> {
-        let passes: Vec<Box<dyn Pass>> = vec![];
+        let passes = self.navigation_passes(index);
         emit_query_sampled(&self.spec, index, params, selections, &passes, self.sample)
     }
 
@@ -1329,10 +1494,16 @@ impl Session {
             Some(selections.as_slice())
         };
         // Emitted with NO rate: this is the picture the sample is a sample OF.
-        let unsampled = match emit_query(&self.spec, index, params, selections_ref) {
-            Ok(eq) => eq,
-            Err(e) => return Some(Err(EngineError::EmitFailed { cause: e })),
-        };
+        // The navigation passes are carried on BOTH sides of the comparison
+        // below — the question is whether the RATE reached this mark, and a
+        // navigated plot whose extent appeared on only one side would answer it
+        // by accident.
+        let nav = self.navigation_passes(index);
+        let unsampled =
+            match emit_query_sampled(&self.spec, index, params, selections_ref, &nav, None) {
+                Ok(eq) => eq,
+                Err(e) => return Some(Err(EngineError::EmitFailed { cause: e })),
+            };
         // Did the rate reach this mark at all? Same emitter, same passes, one
         // with the rate and one without.
         match self.emit_for_mark(index, params, selections_ref) {
@@ -1534,73 +1705,35 @@ impl Session {
         results
     }
 
-    /// Re-execute all marks with a navigation filter applied for the visible extent.
+    /// Hold EVERY plot at the given extent and re-execute every mark.
     ///
-    /// Constructs a [`NavigationFilterPass`] from the given column-extent pairs
-    /// and re-emits + re-executes all marks with the filter injected into the
-    /// query plan. Marks whose emitter fails (unsupported) produce errors in
-    /// the result vector, same as `execute_all`.
+    /// The dashboard-wide convenience over [`Session::navigate`], for a caller
+    /// that has one extent and one picture rather than a gesture on a named
+    /// plot. `x_extent` and `y_extent` are `Option<(column_name, min, max)>`;
+    /// both `None` is the **reset** — every plot's extent is dropped and the
+    /// emitted SQL returns to what it was before any navigation.
     ///
-    /// `x_extent` and `y_extent` are `Option<(column_name, min, max)>` — when
-    /// `None`, that axis is not filtered (full data range). When both are `None`,
-    /// this is equivalent to `execute_all` (no filter pass is registered).
+    /// It is not a one-shot: the extent it sets is the session's, so a later
+    /// brush, slider step or `execute_all` still carries it. That persistence is
+    /// the point — see [`Session::nav_extents`].
     pub fn update_extent(
         &mut self,
         x_extent: Option<(&str, f64, f64)>,
         y_extent: Option<(&str, f64, f64)>,
     ) -> Vec<DispatchResult> {
-        // Only register the pass when at least one axis has an extent —
-        // at full extent (None, None) no pass is needed.
-        let passes: Vec<Box<dyn Pass>> = if x_extent.is_some() || y_extent.is_some() {
-            let pass = NavigationFilterPass::from_extents(x_extent, y_extent);
-            vec![Box::new(pass)]
-        } else {
-            vec![]
+        let extent = NavigationExtent {
+            x: x_extent.map(|(c, lo, hi)| AxisExtent::new(c, lo, hi)),
+            y: y_extent.map(|(c, lo, hi)| AxisExtent::new(c, lo, hi)),
         };
-
-        let mark_count = self.mark_index_map.len();
-        let mut results = Vec::new();
-
-        let selections = self.selection_predicates_for_emit();
-        let selections_ref: Option<&[SelectionPredicate]> = if selections.is_empty() {
-            None
-        } else {
-            Some(selections.as_slice())
-        };
-
-        // Pass the current param_state so a positional `$param` channel
-        // is interpolated during navigation too — otherwise `$name` would
-        // reach DuckDB as an unbound placeholder and the mark would fail on every
-        // pan/zoom.
-        let params_owned: ParamValues = self.param_state.clone();
-        let params_ref = if params_owned.is_empty() {
-            None
-        } else {
-            Some(&params_owned)
-        };
-
-        for idx in 0..mark_count {
-            let emitted = match emit_query_sampled(
-                &self.spec,
-                idx,
-                params_ref,
-                selections_ref,
-                &passes,
-                self.sample,
-            ) {
-                Ok(eq) => eq,
-                Err(e) => {
-                    results.push((idx, Err(EngineError::EmitFailed { cause: e })));
-                    continue;
-                }
-            };
-
-            let mark_kind = self.mark_kind_at(idx);
-            let result = self.execute_emitted(idx, &mark_kind, &emitted);
-            results.push((idx, result));
+        let mut plots: Vec<String> = (0..self.mark_index_map.len())
+            .filter_map(|i| self.mark_plot_path(i))
+            .collect();
+        plots.sort_unstable();
+        plots.dedup();
+        for plot in plots {
+            self.set_navigation_extent(&plot, extent.clone());
         }
-
-        results
+        self.execute_all().into_iter().enumerate().collect()
     }
 
     /// Execute an emitted query, using the SQL-string cache when plan_hash matches.
@@ -2069,6 +2202,7 @@ mod tests {
     use super::*;
     use brightfield_spec::analysis::analyse_spec;
     use brightfield_spec::{parse_spec, Format};
+    use brightfield_sql::emit::emit_query;
     use brightfield_sql::error::EmitError;
 
     fn parse_and_analyse(yaml: &str) -> (Spec, SpecAnalysis) {

@@ -44,7 +44,7 @@ use brightfield_spec::analysis::{ComponentPath, SpecAnalysis};
 use brightfield_spec::ast::{Spec, SpecValue};
 
 use crate::error::EngineError;
-use crate::{DispatchResult, Engine, RecordBatch, Session, SqlPredicate};
+use crate::{DispatchResult, Engine, NavigationExtent, RecordBatch, Session, SqlPredicate};
 
 /// A monotonically increasing stamp identifying one applied interaction — the
 /// version of the materialisation state after that interaction. The consumer
@@ -80,6 +80,22 @@ pub enum Interaction {
         name: String,
         /// The new value.
         value: SpecValue,
+    },
+    /// A **settled** pan/zoom on one plot: the extent the frame now shows.
+    ///
+    /// Unlike the three above, this one is not sent per gesture step. A pan or
+    /// a zoom moves the frame continuously and the re-query happens once the
+    /// gesture has settled — the extent that arrives here is the one the user
+    /// stopped at, not one of the positions swept through. The UI owns that
+    /// decision; the engine's job is only that the extent it is handed
+    /// PERSISTS across every later interaction until an explicit reset.
+    ///
+    /// A [`NavigationExtent::is_full`] extent IS the reset.
+    Navigate {
+        /// The plot node path the gesture happened on.
+        plot: ComponentPath,
+        /// The visible range per axis after the gesture.
+        extent: NavigationExtent,
     },
 }
 
@@ -170,6 +186,7 @@ impl Coordinator {
                 self.session.clear_selection(&name, contributor)
             }
             Interaction::SetParam { name, value } => self.session.propagate_param(&name, value),
+            Interaction::Navigate { plot, extent } => self.session.navigate(&plot.0, extent),
         };
         Requery {
             generation: self.generation,
