@@ -71,20 +71,10 @@ fn write_spec(dir: &std::path::Path) -> PathBuf {
     p
 }
 
-/// Count pixels in the band that are the notice's **attention fill** — the
-/// design system's warning solid, read from the token layer rather than
-/// transcribed, so a token bump moves the expectation with it.
-///
-/// This is the assertion `ink_in_band` cannot make. "Not near-white" was
-/// satisfied by any ink at all: the old hatch, a stray axis rule, a mark that
-/// escaped its clip. What has to be true is that the band a reader's eye is
-/// meant to catch is *the colour that catches it*, and that it is filled rather
-/// than trimmed.
-fn attention_fill_in_band(png: &std::path::Path) -> u64 {
-    let want = meridian_design::semantic(false)
-        .role(meridian_design::Role::Warning)
-        .background
-        .base;
+/// Count pixels in the bottom band that match `want`, within a tolerance of a
+/// few levels per channel for the compositor's rounding — not enough to admit a
+/// different token.
+fn band_pixels_matching(png: &std::path::Path, want: meridian_design::Rgba) -> u64 {
     let want = [
         (want.r * 255.0).round() as i32,
         (want.g * 255.0).round() as i32,
@@ -96,9 +86,96 @@ fn attention_fill_in_band(png: &std::path::Path) -> u64 {
     for y in band_top..H {
         for x in 0..W {
             let p = img.get_pixel(x, y).0;
-            // A tolerance of a few levels per channel, for the compositor's
-            // rounding — not enough to admit a different token.
             if (0..3).all(|c| (i32::from(p[c]) - want[c]).abs() <= 4) {
+                hits += 1;
+            }
+        }
+    }
+    hits
+}
+
+/// The role the notice speaks in: **info**, not warning. Sampling is a
+/// deliberate performance accommodation on a healthy plot, and the band advises
+/// a reader rather than reporting a fault; a caution hue spent on a working
+/// state either reads as breakage or, repeated, stops meaning anything.
+fn notice_role() -> meridian_design::semantic::RoleColours {
+    *meridian_design::semantic(false).role(meridian_design::Role::Info)
+}
+
+/// Count pixels in the band that are the notice's **attention fill** — the
+/// design system's info solid, read from the token layer rather than
+/// transcribed, so a token bump moves the expectation with it.
+///
+/// This is the assertion `ink_in_band` cannot make. "Not near-white" was
+/// satisfied by any ink at all: the old hatch, a stray axis rule, a mark that
+/// escaped its clip. What has to be true is that the band a reader's eye is
+/// meant to catch is *the colour that catches it*, and that it is filled rather
+/// than trimmed.
+fn attention_fill_in_band(png: &std::path::Path) -> u64 {
+    band_pixels_matching(png, notice_role().background.base)
+}
+
+/// Count pixels of the notice's **label ink** that landed *inside the fill* —
+/// the glyphs, as pixels, not as a paint the scene requested.
+///
+/// The design system's rule is that a status hue is never colour alone. The
+/// scene-level check for that counts encoded glyph resources, which a label
+/// drawn in the fill's own colour, or shoved off the edge of the band,
+/// satisfies just as well. This is the version of the rule a screenshot can be
+/// held to.
+///
+/// The horizontal window is **found, not assumed**: the scan is confined to the
+/// columns the attention fill actually occupies, which is self-locating against
+/// a margin change and is, incidentally, the assertion that the words are on
+/// the band rather than beside it. A picture with no fill has no window and
+/// scores zero.
+///
+/// Inside that window a pixel is scored by which of the two paints it is
+/// *nearer* to, rather than by an exact match. Glyphs at label size are mostly
+/// anti-aliased edge — an exact match counts 23 pixels of a plainly legible
+/// sentence and would have to be floored so low it proved nothing. Nearest-of-
+/// two is the same question asked at the resolution the type is actually drawn
+/// at, and it still cannot be satisfied by a label painted in the fill's own
+/// colour, which is the failure it exists to catch.
+fn label_ink_inside_the_fill(png: &std::path::Path) -> u64 {
+    let quantise = |c: meridian_design::Rgba| {
+        [
+            (c.r * 255.0) as f64,
+            (c.g * 255.0) as f64,
+            (c.b * 255.0) as f64,
+        ]
+    };
+    let fill = quantise(notice_role().background.base);
+    let ink = quantise(notice_role().foreground.base);
+    let dist2 = |p: &[u8; 4], want: &[f64; 3]| {
+        (0..3)
+            .map(|c| (f64::from(p[c]) - want[c]).powi(2))
+            .sum::<f64>()
+    };
+    // A pixel counts as fill only if it is genuinely that colour, so an
+    // anti-aliased glyph edge cannot widen the window.
+    let is_fill = |p: &[u8; 4]| (0..3).all(|c| (f64::from(p[c]) - fill[c]).abs() <= 4.0);
+
+    let img = image::open(png).expect("open png").to_rgba8();
+    let band_top = H - NOTICE_BAND.ceil() as u32;
+
+    let mut left = None;
+    let mut right = 0u32;
+    for y in band_top..H {
+        for x in 0..W {
+            if is_fill(&img.get_pixel(x, y).0) {
+                left = Some(left.map_or(x, |l: u32| l.min(x)));
+                right = right.max(x);
+            }
+        }
+    }
+    let Some(left) = left else { return 0 };
+
+    let mut hits = 0u64;
+    for y in band_top..H {
+        for x in left..=right {
+            let p = img.get_pixel(x, y).0;
+            if dist2(&p, &ink) < dist2(&p, &fill) {
                 hits += 1;
             }
         }
@@ -187,7 +264,7 @@ fn the_sampling_notice_is_in_the_chart_only_export() {
     let floor = (u64::from(W) * 2 / 3) * NOTICE_BAND.floor() as u64;
     assert!(
         filled > floor,
-        "the band held {filled} pixels of the warning solid, under the {floor} a filled \
+        "the band held {filled} pixels of the info solid, under the {floor} a filled \
          band owes — colour is what draws the eye to the sentence, and a band that is \
          only text is a band nobody looks at"
     );
@@ -196,6 +273,22 @@ fn the_sampling_notice_is_in_the_chart_only_export() {
         0,
         "a COMPLETE export must carry none of it — an attention fill that appears on an \
          unsampled chart teaches a reader that the band means nothing"
+    );
+
+    // …and the SENTENCE landed on that fill, in pixels. Colour alone is the one
+    // thing the design system forbids, and a band that is only colour says a
+    // reader should care without saying what about.
+    let words = label_ink_inside_the_fill(&sampled_png);
+    assert!(
+        words > 200,
+        "only {words} pixels of the notice's label ink landed on the fill — the band is \
+         colour without a sentence, which tells a reader something is different and \
+         nothing about what"
+    );
+    assert_eq!(
+        label_ink_inside_the_fill(&complete_png),
+        0,
+        "there is no fill on a complete export, so there is nothing for a label to be on"
     );
 
     let _ = std::fs::remove_dir_all(&dir);

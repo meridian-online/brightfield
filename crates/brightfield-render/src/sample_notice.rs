@@ -30,15 +30,35 @@
 //! based on 225,931 sessions (2.66% of sessions)"* — in an attention-taking
 //! fill. Text does the informing; colour does the noticing. This is that shape:
 //! a band below the plot carrying [`notice_label`], filled with the design
-//! system's **warning solid** and inked with that role's own foreground.
+//! system's **info solid** and inked with that role's own foreground.
+//!
+//! # Why `Role::Info` and not `Role::Warning`
+//!
+//! The band's first build wore `Role::Warning`'s solid, and that was the
+//! token-sanctioned pairing for the constraints then in hand: an attention fill
+//! that is contrast-checked against its own ink and identical in both modes.
+//! The open question was never whether that pairing worked — it was which
+//! *role* a sampled plot is in, and it is not caution.
+//!
+//! Sampling here is a deliberate performance accommodation on a healthy plot,
+//! and the device **advises an honest reader** rather than policing a dishonest
+//! one (see above). A hue a product reserves for things going wrong, spent on a
+//! working state, buys one of two losses: a reader who thinks the chart is
+//! broken, or — after the third harmless amber band — a reader for whom amber
+//! has stopped meaning anything. `Role::Info` is defined in the design system
+//! as *neutral information, never used for "good"*, which is this exactly.
+//!
+//! Every property the warning pairing was chosen for survives the move, and
+//! each is checked here rather than assumed: the ink clears the AA text bar on
+//! the fill (4.66:1, against warning's 6.45:1 — both above 4.5:1, and the
+//! design system's own `chrome_gate` holds every role's base pairing to that
+//! floor), and both paints are byte-identical in light and dark. One property
+//! improves: the fill now stands 4.66:1 off the chart surface it sits on, where
+//! amber stood 2.47:1 — the band is *more* findable, not less.
 //!
 //! The design system's hard rule is that a status colour is never colour-alone
 //! — always paired with a label. A fill plus a sentence is colour plus text and
-//! is compliant. The fill and its ink are taken from the token layer rather
-//! than invented: `Role::Warning`'s background and foreground, the same pairing
-//! the protocol canvas's issue badge wears, which is contrast-checked and is
-//! identical in light and dark (a solid and the ink chosen for it are both
-//! paints).
+//! is compliant.
 //!
 //! The band is reserved exactly the way axis titles reserve theirs —
 //! [`sample_band_margins`] grows the bottom margin by [`NOTICE_BAND`] when a
@@ -72,27 +92,29 @@ pub struct SampleFact {
 /// The band reserved below the plot for the notice, in logical pixels.
 pub const NOTICE_BAND: f64 = 22.0;
 
-/// The attention fill the band wears — the design system's warning solid.
+/// The attention fill the band wears — the design system's info solid.
 ///
-/// Not a hue picked here. `Role::Warning`'s background is the one token whose
-/// job is *caution, look at this*, it is reserved (never a series colour), and
-/// it is the same value in both modes, which is what lets a scene with no mode
-/// plumbing use it without lying in one of them. Paired below with
-/// [`label_ink`], which is that role's own foreground and NOT the near-white
-/// every other role takes — amber is a bright solid and needs dark text.
+/// Not a hue picked here. `Role::Info`'s background is the token whose job is
+/// *neutral information*, which is the register a sampling notice speaks in,
+/// and it is the same value in both modes — which is what lets a scene with no
+/// mode plumbing use it without lying in one of them. Paired below with
+/// [`label_ink`], which is that role's own declared foreground rather than a
+/// second guess at what reads on it.
 fn band_fill() -> Color {
-    ink(meridian_design::semantic(false)
-        .role(meridian_design::Role::Warning)
-        .background
-        .base)
+    ink(notice_role().background.base)
 }
 
-/// The ink the words wear: the warning role's own foreground.
+/// The ink the words wear: the info role's own foreground.
 fn label_ink() -> Color {
-    ink(meridian_design::semantic(false)
-        .role(meridian_design::Role::Warning)
-        .foreground
-        .base)
+    ink(notice_role().foreground.base)
+}
+
+/// The one place the notice's role is named. Both paints come through here so
+/// they cannot drift apart into a fill from one role and an ink from another —
+/// which is the failure mode that produces a legible-looking band nobody can
+/// actually read.
+fn notice_role() -> meridian_design::semantic::RoleColours {
+    *meridian_design::semantic(false).role(meridian_design::Role::Info)
 }
 
 /// Grow `margins` to reserve the notice band when the plot is sampled.
@@ -243,24 +265,25 @@ mod tests {
         );
     }
 
-    /// The band is the design system's warning solid, and the words are that
+    /// The band is the design system's **info** solid, and the words are that
     /// role's own foreground — both probed out of what was actually ENCODED
     /// into the scene, not re-derived from the same constants the code reads.
     ///
-    /// The pairing is the point. Amber is a bright solid: the near-white
-    /// `text.on_solid` every other role takes measures 2.47:1 on it and this
-    /// role's own foreground 6.45:1, so taking the generic on-solid ink would
-    /// resolve through the design system and still be wrong.
+    /// The role is the point. Warning's solid is the hue this product spends on
+    /// things going wrong; a sampled plot is a healthy plot drawn cheaply, and
+    /// spending caution on it either alarms a reader or, repeated, teaches them
+    /// the hue is noise. Asserting the fill is NOT warning's is what stops a
+    /// well-meant revert.
     ///
     /// **This test does not hold the fill, and the next reader should not
     /// assume it does.** It asks whether those two paints were encoded, which a
     /// notice reduced to a hairline in the same colour also satisfies —
     /// measured. What holds the band's *coverage* is the shell's
-    /// `the_sampling_notice_is_in_the_chart_only_export`, which counts the
-    /// warning solid's pixels in an exported PNG against a floor. Name the test
-    /// that fails, not the one that looks like it would.
+    /// `the_sampling_notice_is_in_the_chart_only_export`, which counts the info
+    /// solid's pixels in an exported PNG against a floor. Name the test that
+    /// fails, not the one that looks like it would.
     #[test]
-    fn the_band_is_the_warning_solid_and_the_words_are_its_own_ink() {
+    fn the_band_is_the_info_solid_and_the_words_are_its_own_ink() {
         let layout =
             ChartLayout::with_margins(400.0, 300.0, sample_band_margins(Margins::default(), true));
         let mut scene = Scene::new();
@@ -268,31 +291,68 @@ mod tests {
 
         let drawn: Vec<u32> = scene.encoding().draw_data.to_vec();
         let sem = meridian_design::semantic(false);
-        let fill = packed(ink(sem
-            .role(meridian_design::Role::Warning)
-            .background
-            .base));
-        let text = packed(ink(sem
-            .role(meridian_design::Role::Warning)
-            .foreground
-            .base));
+        let info = sem.role(meridian_design::Role::Info);
+        let fill = packed(ink(info.background.base));
+        let text = packed(ink(info.foreground.base));
         assert!(
             drawn.contains(&fill),
-            "the band must be filled with the warning solid"
+            "the band must be filled with the info solid"
         );
         assert!(
             drawn.contains(&text),
-            "the label must wear the warning role's own foreground"
+            "the label must wear the info role's own foreground"
         );
-        assert_ne!(
-            text,
-            packed(ink(sem.text.on_solid)),
-            "on_solid is the ink slot this must NOT take — it is 2.47:1 on amber"
+        assert!(
+            !drawn.contains(&packed(ink(sem
+                .role(meridian_design::Role::Warning)
+                .background
+                .base))),
+            "the warning solid must not appear anywhere in this scene — sampling is a \
+             performance accommodation on a working plot, not a fault, and a caution hue \
+             spent here costs the caution hue its meaning"
         );
         assert!(
             count_scene_glyphs(&scene) > 0,
             "colour without the sentence is the one thing the design system \
              forbids: a status hue alone"
+        );
+    }
+
+    /// **The words are legible on the band**, measured rather than trusted to
+    /// the role pairing — a fill from one role and an ink from another both
+    /// resolve through the design system and can still be unreadable.
+    ///
+    /// 4.5:1 is WCAG AA for body text. The pairing in force measures 4.66:1;
+    /// warning's measured 6.45:1. Both clear it. Taking warning's own ink onto
+    /// this fill would measure 3.42:1 and fail here, which is the mistake this
+    /// guards.
+    #[test]
+    fn the_words_clear_the_text_contrast_bar_on_the_band() {
+        use meridian_design::validate::contrast;
+        let role = notice_role();
+        let c = contrast(role.foreground.base, role.background.base);
+        assert!(
+            c >= 4.5,
+            "the notice's label measures {c:.2}:1 on its own band, below the 4.5:1 AA text \
+             bar — a notice nobody can read is worse than no notice, because the band still \
+             takes the space"
+        );
+    }
+
+    /// **The band is more findable than the plot surface it sits under.** Not a
+    /// nicety: a fill that melts into the chart background is a band a reader's
+    /// eye skips, and then the sentence inside it is never read.
+    #[test]
+    fn the_band_stands_off_the_chart_surface() {
+        use meridian_design::validate::contrast;
+        let c = contrast(
+            notice_role().background.base,
+            meridian_design::chrome::INK_LIGHT.surface,
+        );
+        assert!(
+            c >= 3.0,
+            "the band measures {c:.2}:1 against the chart surface, under the 3:1 WCAG \
+             non-text bar — it is a shape a reader has to notice before they can read it"
         );
     }
 
@@ -303,13 +363,13 @@ mod tests {
         for role_colour in [
             |dark: bool| {
                 meridian_design::semantic(dark)
-                    .role(meridian_design::Role::Warning)
+                    .role(meridian_design::Role::Info)
                     .background
                     .base
             },
             |dark: bool| {
                 meridian_design::semantic(dark)
-                    .role(meridian_design::Role::Warning)
+                    .role(meridian_design::Role::Info)
                     .foreground
                     .base
             },
