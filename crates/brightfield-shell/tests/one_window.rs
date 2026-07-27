@@ -488,7 +488,8 @@ fn the_boot_envelope_covers_what_it_sizes_for_and_not_the_family_unfold() {
 /// monitor" was the normal case, not the edge one.
 ///
 /// Watched redden, one mutation: making `window_size_on_display` return
-/// `natural` unchanged fails at *"a 1948x910 window on a 1512x982 display"*.
+/// `natural` unchanged fails at *"Vertical asks for (1948.0, 910.0) and this
+/// leaves a 1948x910 window on the laptop panel (1512x982)"*.
 #[test]
 fn the_window_asked_of_the_os_never_exceeds_the_display() {
     for flow in [Flow::Vertical, Flow::Horizontal] {
@@ -509,6 +510,52 @@ fn the_window_asked_of_the_os_never_exceeds_the_display() {
                  may only ever cap"
             );
         }
+    }
+}
+
+/// The cap works one axis at a time: a display short in one dimension leaves
+/// the other alone, and an unknown extent caps nothing.
+///
+/// The extents here are **not** displays anyone owns — that is the point. The
+/// two real displays above are both wider than they are tall and both wider
+/// than the window, so between them they exercise the width cap twice and the
+/// height cap never; a version of `window_size_on_display` that capped the
+/// height against the *width's* extent passed every assertion in this file.
+/// These are chosen instead to make each axis bite on its own, and to bite the
+/// wrong way round if the two are ever crossed.
+///
+/// The `0.0` case is the headless one, and it is a behaviour rather than an
+/// omission: egui reports no monitor at all before a window is mapped, and a
+/// cap that read that as a zero-width display would ask for a window with no
+/// width in it.
+///
+/// Watched redden, two mutations. Capping the height against `display.0`
+/// (transposing the two calls) fails at *"a 2000x900 window on a 3000x500
+/// display came out 2000x900, not 2000x500"*. Treating a `0.0` extent as a real
+/// one fails at *"a 2000x900 window on a 0x0 display came out 0x0"*.
+#[test]
+fn the_display_cap_bites_one_axis_at_a_time() {
+    let natural = (2000.0, 900.0);
+    for (display, want) in [
+        // Narrow and tall: the width is capped, the height is untouched.
+        ((1000.0, 2000.0), (1000.0, 900.0)),
+        // Wide and short: the height is capped, the width is untouched.
+        ((3000.0, 500.0), (2000.0, 500.0)),
+        // Larger in both: nothing is capped.
+        ((3000.0, 2000.0), natural),
+        // Smaller in both: both are capped.
+        ((1000.0, 500.0), (1000.0, 500.0)),
+        // Unknown in both, and in each singly: the unknown axis is left alone.
+        ((0.0, 0.0), natural),
+        ((0.0, 500.0), (2000.0, 500.0)),
+        ((1000.0, 0.0), (1000.0, 900.0)),
+    ] {
+        let got = window_size_on_display(natural, display);
+        assert_eq!(
+            got, want,
+            "a {}x{} window on a {}x{} display came out {}x{}, not {}x{}",
+            natural.0, natural.1, display.0, display.1, got.0, got.1, want.0, want.1,
+        );
     }
 }
 
@@ -540,11 +587,9 @@ fn the_window_asked_of_the_os_never_exceeds_the_display() {
 /// that share here would be re-deriving `protocol_window_size_for` against
 /// itself, which is the failure mode this whole file exists to avoid.
 ///
-/// Watched redden, three mutations. Making `window_size_on_display` return
-/// `natural` fails at *"a display that clamps nothing proves nothing"*. Giving
-/// it a floor that stops it capping below the envelope fails the same way.
-/// Transposing its two `cap` calls so the height is capped at the width's
-/// extent fails at *"the canvas came up 344.00pt short down"*.
+/// Watched redden, one mutation: making `window_size_on_display` return
+/// `natural` unchanged fails at *"a display that clamps nothing proves
+/// nothing"*.
 #[test]
 fn the_window_a_small_display_grants_leaves_the_canvas_short() {
     let (env_w, env_h) = ProtocolModel::boot_extent(&edgar(), Flow::Vertical);
