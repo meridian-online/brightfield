@@ -705,12 +705,22 @@ vconcat:
     app.chart_doc_mut().note_interval_drag(&control, 12.0);
     frame(&mut app, &ctx, Vec::new());
 
-    // The composition survived — this is the whole point. If the plot failed
-    // outright we would be testing the path that was already covered.
+    // The composition survived AND it is carrying the loss — this is the whole
+    // point, and both halves have to be said. A non-empty plot list alone
+    // cannot distinguish the partial path from a stale composition left
+    // standing by a failed re-composite, because a failed apply keeps the
+    // previous one. The fault count is what says it directly.
     assert!(
         !app.chart_doc().composed.plots.is_empty(),
         "the plot failed entirely, so this is not the partial-loss case and \
          proves nothing about it"
+    );
+    assert_eq!(
+        app.chart_doc().composed.mark_faults.len(),
+        1,
+        "expected exactly one mark to be lost and reported; the composition \
+         carries {:?}",
+        app.chart_doc().composed.mark_faults
     );
 
     let said: Vec<String> = app

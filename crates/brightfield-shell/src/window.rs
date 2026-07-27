@@ -1151,6 +1151,12 @@ impl MeridianApp {
         for id in std::mem::take(&mut self.diagnostic_banners) {
             self.notifications.dismiss(id);
         }
+        // The dismissed-fault memory belongs to the document that raised it.
+        // Two documents can produce a byte-identical fault, and without this a
+        // fault dismissed on the first would open the second already silenced —
+        // narrow, since any fault-free frame resets it, but free to close here
+        // beside the banners it travels with.
+        self.last_chart_fault = None;
         let diagnostics = self.charts.doc.composed.diagnostics.clone();
         let document = diagnostics
             .source
