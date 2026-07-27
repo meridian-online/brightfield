@@ -224,6 +224,9 @@ fn warning_wire_name(warning: &ParseWarning) -> String {
         ParseWarning::NonNumericInset { attribute }
         | ParseWarning::NonStringLabel { attribute } => attribute.clone(),
         ParseWarning::UnknownProjection { value } => value.clone(),
+        // The widget the author asked for by name, so the banner names
+        // something they can search their own file for.
+        ParseWarning::IntervalSliderIncomplete { .. } => "slider".to_string(),
         ParseWarning::VersionMismatch { .. } => String::new(),
     }
 }
@@ -239,6 +242,10 @@ fn warning_surface(warning: &ParseWarning) -> &'static str {
         | ParseWarning::InteractorBindingNonSelection { .. }
         | ParseWarning::HighlightBindingMissing { .. }
         | ParseWarning::HighlightBindingNonSelection { .. } => "interactor",
+        // The node parses as an interactor (`select:` wins the discriminator)
+        // but what is missing is the input widget's, so the surface a reader
+        // should look at is the input.
+        ParseWarning::IntervalSliderIncomplete { .. } => "input",
         ParseWarning::LegendBindingMissing { .. }
         | ParseWarning::LegendBindingNonSelection { .. }
         | ParseWarning::LegendBindingNonCrossfilter { .. } => "legend",

@@ -161,6 +161,10 @@ pub struct ChartDoc {
     /// and a headless test drives it; see [`crate::interval_drag`] for why the
     /// handle position cannot live in [`Self::composed`].
     pub interval_drags: IntervalDrags,
+    /// Why the last gesture failed to change the picture, if it did — read
+    /// through [`Self::interaction_fault`], written only by
+    /// [`Self::apply_interaction`].
+    interaction_fault: Option<String>,
     canvas: CanvasSlot<CanvasKey>,
 }
 
@@ -208,6 +212,7 @@ impl ChartDoc {
             live: None,
             active_selections: Vec::new(),
             interval_drags: IntervalDrags::new(),
+            interaction_fault: None,
             canvas: CanvasSlot::new(host),
         }
     }
@@ -229,6 +234,7 @@ impl ChartDoc {
             live: None,
             active_selections: Vec::new(),
             interval_drags: IntervalDrags::new(),
+            interaction_fault: None,
             canvas: CanvasSlot::headless(),
         }
     }
@@ -264,6 +270,11 @@ impl ChartDoc {
         self.active_selections.clear();
         // The handle positions described the replaced document's sliders.
         self.interval_drags.clear();
+        // …and the fault described the replaced document's gesture. Left
+        // standing it would put the outgoing spec's banner over the incoming
+        // spec's chart — the defect `open_chart` exists to prevent, re-made
+        // one field down.
+        self.interaction_fault = None;
         self.spec_path = None;
         // The watch list described the replaced document's files, and any
         // in-flight marks belonged to its session — both go with it.
@@ -331,9 +342,13 @@ impl ChartDoc {
     /// re-query, and the identical layout/scene path repaints. Returns whether
     /// anything was applied (`false` on a document with no live session).
     ///
-    /// A failed re-composite keeps the previous picture and reports to stderr
-    /// — the same posture the compose warnings take — rather than blanking a
-    /// window over one gesture.
+    /// A failed re-composite keeps the previous picture rather than blanking a
+    /// window over one gesture, and records what went wrong for
+    /// [`Self::chart_fault`] — which is where the window gets the banner it
+    /// raises. It used to report to stderr and nowhere else, which for a
+    /// windowed application is the same as not reporting: a control that
+    /// quietly stops filtering, under a handle that says it does, is exactly
+    /// the failure nobody sees.
     pub fn apply_interaction(&mut self, interaction: Interaction) -> bool {
         let Some(live) = self.live.as_mut() else {
             return false;
@@ -364,13 +379,54 @@ impl ChartDoc {
             Ok(composed) => {
                 self.composed = composed;
                 self.canvas.invalidate();
+                // A gesture that lands clears the last one that did not: the
+                // fault describes the picture on screen, and this is a new one.
+                self.interaction_fault = None;
                 true
             }
             Err(e) => {
                 eprintln!("warning: interaction re-composite failed: {e}");
+                self.interaction_fault = Some(e.to_string());
                 false
             }
         }
+    }
+
+    /// What is wrong with the picture on screen, if anything — the words the
+    /// window puts in a banner.
+    ///
+    /// Two sources, folded here because a reader has one question. A whole
+    /// re-composite that failed leaves the previous picture standing and is
+    /// recorded by [`Self::apply_interaction`]; a composition that ran but had
+    /// marks the engine refused carries them on
+    /// [`Composed::mark_faults`](crate::pipeline::Composed::mark_faults), and
+    /// that is the common case — one bad mark does not fail a composition, it
+    /// silently leaves a hole in it.
+    ///
+    /// This is the runtime half of a defence whose other half is static. A
+    /// cross-filter column a subscriber's INLINE source cannot bind is refused
+    /// at load by
+    /// [`validate_crossfilter_columns`](brightfield_spec::analysis::validate_crossfilter_columns),
+    /// because there the schema is in the spec text. Against a `query:` source
+    /// there is no schema until DuckDB has one, so the same typo is not
+    /// decidable at load by anything — it can only be caught when the binder
+    /// rejects it, and the only question left is whether anyone is told.
+    #[must_use]
+    pub fn chart_fault(&self) -> Option<String> {
+        if let Some(e) = &self.interaction_fault {
+            return Some(e.clone());
+        }
+        if self.composed.mark_faults.is_empty() {
+            return None;
+        }
+        Some(
+            self.composed
+                .mark_faults
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
     }
 
     /// Retract every committed gesture — the `clear-selection` verb's chart

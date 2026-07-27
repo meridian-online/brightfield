@@ -122,8 +122,14 @@ pub struct ParamControl {
 /// node parses as an [`Interactor`](brightfield_spec::ast::Component::Interactor)
 /// and can never reach the scalar-param collector, which matches
 /// [`Input`](brightfield_spec::ast::Component::Input) only. That is why this is
-/// a second control type with its own collector on the interactor side, not a
-/// widened `ParamControl`.
+/// a second control type collected on the interactor side, not a widened
+/// `ParamControl`.
+///
+/// The collection itself lives in the spec crate
+/// ([`build_interval_sliders`](brightfield_spec::analysis::build_interval_sliders));
+/// this type is the rail's view of it. It used to be collected here, and the
+/// cost was that spec analysis could not see a slider's `column:` — so the
+/// cross-filter column check, derived from plot channels, never looked at it.
 ///
 /// **Deviation from the upstream node, deliberately.** Upstream writes
 /// `select: interval`. In this build `interval` is registered Unimplemented —
@@ -256,6 +262,38 @@ pub struct Composed {
     /// arrives with the chart-side status work and must consume this same
     /// vocabulary rather than define a second one.
     pub run_state: Option<RunState>,
+    /// The marks whose query the engine REFUSED for this composition — empty
+    /// for every composition that ran whole, which is nearly all of them.
+    ///
+    /// A mark whose query fails is dropped from the picture and the rest of
+    /// the dashboard still draws, which is the right posture: one bad mark
+    /// must not take a window down. What was missing is the other half. The
+    /// drop went to stderr and nowhere else, so the visible result of, say, an
+    /// interval slider naming a column its source does not have was a chart
+    /// that emptied itself under a handle that claimed to be filtering it —
+    /// indistinguishable, on screen, from a filter that matched no rows.
+    ///
+    /// It rides on the composition for the reason [`Self::diagnostics`] does:
+    /// a diagnostic that arrives separately from the picture it is about
+    /// arrives at the wrong time.
+    pub mark_faults: Vec<MarkFault>,
+}
+
+/// One mark the engine would not run, and what it said.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarkFault {
+    /// The mark's index in the spec's mark order.
+    pub mark: usize,
+    /// The engine's own words — for a cross-filter onto a column the source
+    /// does not expose, DuckDB's binder names the column and lists the ones
+    /// that exist, which is the whole of what an author needs.
+    pub message: String,
+}
+
+impl std::fmt::Display for MarkFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "mark {} did not run: {}", self.mark, self.message)
+    }
 }
 
 impl Composed {
@@ -280,6 +318,7 @@ impl Composed {
             intervals: Vec::new(),
             diagnostics: LoadDiagnostics::default(),
             run_state: None,
+            mark_faults: Vec::new(),
         }
     }
 
@@ -334,9 +373,9 @@ pub fn compose_spec(spec_path: &str) -> Result<Composed, String> {
 /// `None` is [`compose_spec`] exactly. `Some(rate)` makes every row-level mark
 /// draw one row in `rate.modulus()` and say so in its own ink — the switch
 /// `--force-sample` turns, so that ONE spec can produce a complete PNG and a
-/// sampled PNG over the SAME rows. That comparison is the point: judging
-/// whether a sampled render reads as sampled against a different, denser
-/// dataset would confound the treatment with the density.
+/// sampled PNG over the SAME rows. That comparison is the point: judging the
+/// treatment against a different, denser dataset would confound it with the
+/// density.
 ///
 /// # Errors
 ///
@@ -657,6 +696,7 @@ fn compose_from_results(
     let mut batches: Vec<Option<RecordBatch>> = Vec::with_capacity(marks.len());
     let mut channel_maps: Vec<ChannelMap> = Vec::with_capacity(marks.len());
     let mut kinds = Vec::with_capacity(marks.len());
+    let mut mark_faults: Vec<MarkFault> = Vec::new();
     for (i, result) in results.into_iter().enumerate() {
         // Assemble EVERY materialised chunk into the one batch this mark draws,
         // not just the first ~2048-row chunk. A row-per-mark chart wider than one
@@ -666,7 +706,14 @@ fn compose_from_results(
         let batch = match result {
             Ok(bs) => assemble_batches(bs).map_err(|e| format!("mark {i}: {e}"))?,
             Err(e) => {
+                // Kept out of the picture, and no longer kept quiet: the fault
+                // rides out on the composition so the window can say which
+                // mark the engine refused and why. See [`Composed::mark_faults`].
                 eprintln!("warning: skipping mark {i}: {e}");
+                mark_faults.push(MarkFault {
+                    mark: i,
+                    message: e.to_string(),
+                });
                 None
             }
         };
@@ -830,7 +877,23 @@ fn compose_from_results(
     }
 
     if placements.is_empty() {
-        return Err("no marks rendered successfully".to_string());
+        // Carry the reasons out with the failure. When EVERY mark is refused
+        // there is no composition to hang [`Composed::mark_faults`] on, and
+        // this is exactly the case where the reasons matter most — a bare "no
+        // marks rendered successfully" is the sentence a user got instead of
+        // DuckDB naming the column it could not bind.
+        return Err(if mark_faults.is_empty() {
+            "no marks rendered successfully".to_string()
+        } else {
+            format!(
+                "no marks rendered successfully — {}",
+                mark_faults
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )
+        });
     }
 
     let width = placed
@@ -866,6 +929,7 @@ fn compose_from_results(
         // previewing run output annotates with `with_run_state`, ingesting
         // from the run's contract.
         run_state: None,
+        mark_faults,
     })
 }
 
@@ -938,106 +1002,34 @@ fn param_controls(spec: &Spec) -> Vec<ParamControl> {
     out
 }
 
-/// The spec's interval sliders: every node that declares BOTH `input: slider`
-/// and an interval `select:` bound `as: $selection`, with a `column:` and a
-/// literal `min:`/`max:` range.
+/// The spec's interval sliders as the rail's control type.
 ///
-/// This is the interactor-side twin of [`param_controls`], and it exists
-/// because of where the parser's discriminator precedence puts such a node —
-/// `select` is tested first, so the node is an `Interactor` and the input-only
-/// collector never sees it.
+/// A thin map over [`brightfield_spec::analysis::build_interval_sliders`],
+/// which owns the walk and the acceptance rule. It used to own them here, and
+/// the cost was that the spec layer could not see a slider's `column:` — so
+/// the cross-filter column check, which is derived from plot channels, never
+/// looked at it and a typo'd column reached the user as a chart that never
+/// filtered. One collector, one rule, and both consumers read it.
 ///
-/// Everything is read off the spec and nothing is derived from data. A slider
-/// whose range came from a domain query would put a query failure on the
-/// compose path, at the one moment a hand is already on the control; a range
-/// the spec did not declare is refused instead (the widget is dropped), which
-/// is visible.
+/// The warnings for nodes that asked for a slider and will not get one are
+/// raised by `analyse_spec` (they ride to the surface on the composition's
+/// diagnostics), so the sink here is correct: this call re-walks for the
+/// widgets, not for the diagnosis.
 fn interval_controls(spec: &Spec) -> Vec<IntervalControl> {
-    let mut out = Vec::new();
-    if let Some(root) = &spec.root {
-        collect_interval_controls(root, "root", &mut out);
-    }
-    out
-}
-
-/// Walk `component`, appending one control per interval slider found.
-///
-/// The path scheme is `collect_marks_with_paths`' verbatim — each container
-/// contributes `/<container>[i]` per item — so the contributor paths this
-/// produces live in the same address space as the mark paths self-exclusion
-/// compares them against.
-fn collect_interval_controls(
-    component: &brightfield_spec::ast::Component,
-    path: &str,
-    out: &mut Vec<IntervalControl>,
-) {
-    use brightfield_spec::ast::{Component, SpecValue, ValueOrParamRef};
-    use brightfield_spec::vocab::InteractorKind;
-
-    match component {
-        Component::Interactor(node) => {
-            // Only the interval kinds: a slider writes an interval, and a
-            // toggle/highlight node that happened to carry `input:` would mean
-            // something this control cannot express.
-            if !matches!(
-                node.kind,
-                InteractorKind::IntervalX | InteractorKind::IntervalY | InteractorKind::IntervalXY
-            ) {
-                return;
-            }
-            let literal = |key: &str| match node.options.get(key) {
-                Some(ValueOrParamRef::Value(v)) => Some(v),
-                _ => None,
-            };
-            let number = |key: &str| match literal(key) {
-                Some(SpecValue::Integer(i)) => Some(*i as f64),
-                Some(SpecValue::Float(f)) => Some(*f),
-                _ => None,
-            };
-            let text = |key: &str| match literal(key) {
-                Some(SpecValue::String(s)) => Some(s.clone()),
-                _ => None,
-            };
-            if text("input").as_deref() != Some("slider") {
-                return;
-            }
-            let Some(ValueOrParamRef::Param(selection)) = node.options.get("as") else {
-                return;
-            };
-            let (Some(column), Some(min), Some(max)) =
-                (text("column"), number("min"), number("max"))
-            else {
-                return;
-            };
-            out.push(IntervalControl {
-                selection: selection.0.clone(),
-                column,
-                contributor: ComponentPath(format!("{path}/input[slider]")),
-                label: text("label"),
-                min,
-                max,
-                step: number("step"),
-                // An untouched slider admits its whole declared range.
-                value: number("value").unwrap_or(max),
-            });
-        }
-        Component::Plot(node) => {
-            for (i, item) in node.items.iter().enumerate() {
-                collect_interval_controls(item, &format!("{path}/plot[{i}]"), out);
-            }
-        }
-        Component::HConcat(node) => {
-            for (i, item) in node.items.iter().enumerate() {
-                collect_interval_controls(item, &format!("{path}/hconcat[{i}]"), out);
-            }
-        }
-        Component::VConcat(node) => {
-            for (i, item) in node.items.iter().enumerate() {
-                collect_interval_controls(item, &format!("{path}/vconcat[{i}]"), out);
-            }
-        }
-        _ => {}
-    }
+    let mut sink = Vec::new();
+    brightfield_spec::analysis::build_interval_sliders(spec, &mut sink)
+        .into_iter()
+        .map(|s| IntervalControl {
+            selection: s.selection,
+            column: s.column,
+            contributor: s.path,
+            label: s.label,
+            min: s.min,
+            max: s.max,
+            step: s.step,
+            value: s.value,
+        })
+        .collect()
 }
 
 #[cfg(test)]
