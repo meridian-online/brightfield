@@ -372,9 +372,7 @@ mod tests {
                     }),
                     predicate: Predicate::Expr("\"latency\" IS NOT NULL".to_string()),
                 }),
-                group_by: vec![
-                    "floor(\"latency\" / 0.5) * 0.5 + 0.25 AS \"latency\"".to_string()
-                ],
+                group_by: vec!["floor(\"latency\" / 0.5) * 0.5 + 0.25 AS \"latency\"".to_string()],
                 aggregates: vec![AggregateExpr::Call(AggregateCall {
                     func: AggregateFunction::Count,
                     args: vec!["*".to_string()],

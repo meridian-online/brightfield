@@ -272,7 +272,10 @@ fn clearing_the_selection_leaves_the_navigation_extent_alone() {
         zoomed,
         "clear-selection widened the navigation extent back out"
     );
-    assert!(doc.navigated(), "and the frame is still reported as navigated");
+    assert!(
+        doc.navigated(),
+        "and the frame is still reported as navigated"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -436,12 +439,8 @@ fn a_mark_with_no_column_for_the_extent_is_left_alone_rather_than_failed() {
 /// pan, and the pane rails the reason rather than doing nothing in silence.
 #[test]
 fn a_categorical_axis_refuses_and_the_pane_says_so() {
-    let composed = compose_spec(
-        example("cell.yaml")
-            .to_str()
-            .expect("utf-8 path"),
-    )
-    .expect("cell.yaml composes");
+    let composed = compose_spec(example("cell.yaml").to_str().expect("utf-8 path"))
+        .expect("cell.yaml composes");
     let mut doc = ChartDoc::headless(composed);
 
     assert!(
@@ -482,9 +481,7 @@ fn an_axis_lock_is_honoured_through_the_document() {
 
     doc.cycle_axis_lock();
     assert_eq!(doc.axis_lock, AxisLock::YOnly);
-    assert!(doc
-        .nav_notice()
-        .is_some_and(|n| n.contains("y axis only")));
+    assert!(doc.nav_notice().is_some_and(|n| n.contains("y axis only")));
 }
 
 // ---------------------------------------------------------------------------
@@ -541,7 +538,11 @@ fn the_frame_moves_under_real_keystrokes() {
         .composed
         .plots
         .first()
-        .and_then(|p| p.scales.get(brightfield_render::channel::Channel::X).cloned())
+        .and_then(|p| {
+            p.scales
+                .get(brightfield_render::channel::Channel::X)
+                .cloned()
+        })
         .expect("an x scale");
     frame(&mut app, &ctx, vec![press(Key::ArrowRight)]);
     let after_pan = app
@@ -549,7 +550,11 @@ fn the_frame_moves_under_real_keystrokes() {
         .composed
         .plots
         .first()
-        .and_then(|p| p.scales.get(brightfield_render::channel::Channel::X).cloned())
+        .and_then(|p| {
+            p.scales
+                .get(brightfield_render::channel::Channel::X)
+                .cloned()
+        })
         .expect("an x scale");
     let span = |s: &brightfield_render::scale::Scale| {
         s.domain_max().expect("continuous") - s.domain_min().expect("continuous")
@@ -561,8 +566,7 @@ fn the_frame_moves_under_real_keystrokes() {
         span(&after_pan)
     );
     assert!(
-        after_pan.domain_min().expect("continuous")
-            > before_pan.domain_min().expect("continuous"),
+        after_pan.domain_min().expect("continuous") > before_pan.domain_min().expect("continuous"),
         "`right` did not move the frame right"
     );
 
@@ -675,7 +679,10 @@ fn the_two_extent_stores_agree_once_a_gesture_has_settled() {
 
     let live = doc.live_dashboard().expect("a live document");
     let drawn = live.view_extents().get(&path).expect("the axes are moved");
-    let queried = live.query_extents().get(&path).expect("the rows are scoped");
+    let queried = live
+        .query_extents()
+        .get(&path)
+        .expect("the rows are scoped");
     assert_eq!(drawn.x, Some((1.0, 6.0)));
     let x = queried.x.as_ref().expect("an x bound reached the engine");
     assert_eq!(x.column, "v");
@@ -722,7 +729,10 @@ fn applying_a_navigation_interaction_moves_the_axes_and_the_rows_together() {
         .get(&path)
         .expect("the seam left the axes at full extent while the rows were scoped");
     assert_eq!(drawn.x, Some((1.0, 6.0)));
-    let queried = live.query_extents().get(&path).expect("the rows are scoped");
+    let queried = live
+        .query_extents()
+        .get(&path)
+        .expect("the rows are scoped");
     let x = queried.x.as_ref().expect("an x bound");
     assert!((x.min - 1.0).abs() < f64::EPSILON && (x.max - 6.0).abs() < f64::EPSILON);
 }

@@ -498,10 +498,7 @@ impl ChartDoc {
     /// rather than look broken.
     pub fn note_navigation(&mut self, plot: usize, outcome: &NavOutcome) -> bool {
         self.nav_plot = plot;
-        self.nav_notice = outcome
-            .refused
-            .first()
-            .map(|(axis, why)| why.message(axis));
+        self.nav_notice = outcome.refused.first().map(|(axis, why)| why.message(axis));
         if outcome.extent.x.is_none() && outcome.extent.y.is_none() {
             return false;
         }

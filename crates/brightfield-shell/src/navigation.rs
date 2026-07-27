@@ -33,8 +33,8 @@
 //! ([`AxisRefusal`]) for the pane to say, rather than the gesture silently
 //! doing nothing on that axis and reading as a broken control.
 
-use brightfield_render::scale::{Scale, ScaleSet, ViewExtent};
 use brightfield_render::channel::Channel;
+use brightfield_render::scale::{Scale, ScaleSet, ViewExtent};
 
 /// The verb longnames the navigation family is reachable by, spelled once.
 ///
@@ -147,9 +147,9 @@ impl AxisRefusal {
     #[must_use]
     pub fn message(self, axis: &str) -> String {
         match self {
-            Self::Categorical => format!(
-                "the {axis} axis is categorical — pan and zoom need a continuous range"
-            ),
+            Self::Categorical => {
+                format!("the {axis} axis is categorical — pan and zoom need a continuous range")
+            }
             Self::Missing => format!("this plot has no {axis} axis to navigate"),
         }
     }

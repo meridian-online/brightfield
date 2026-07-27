@@ -469,8 +469,8 @@ impl Item<ChartDoc> for ChartItem {
                 // position rather than against the gesture's origin, so each
                 // step moves the frame by exactly what the hand moved.
                 if secondary_down && !self.was_secondary_down {
-                    self.pan = pointer
-                        .and_then(|p| plot_at(&doc.composed.plots, p).map(|plot| (plot, p)));
+                    self.pan =
+                        pointer.and_then(|p| plot_at(&doc.composed.plots, p).map(|plot| (plot, p)));
                 } else if secondary_down {
                     if let (Some((plot, last)), Some(p)) = (self.pan, pointer) {
                         let lock = doc.axis_lock;
@@ -500,8 +500,7 @@ impl Item<ChartDoc> for ChartItem {
                         if let Some(plot) = plot_at(&doc.composed.plots, p) {
                             let lock = doc.axis_lock;
                             let outcome = doc.composed.plots.get(plot).map(|handle| {
-                                let local =
-                                    (p.x - handle.rect.x, p.y - handle.rect.y);
+                                let local = (p.x - handle.rect.x, p.y - handle.rect.y);
                                 navigation::zoom(
                                     &handle.scales,
                                     lock,
@@ -1045,7 +1044,9 @@ mod tests {
         // navigate.
         assert_eq!(entries.len(), 2, "both controls stay declared");
         assert!(
-            entries.iter().all(|e| e.location == ToolbarLocation::Hidden),
+            entries
+                .iter()
+                .all(|e| e.location == ToolbarLocation::Hidden),
             "{entries:#?}"
         );
         assert!(

@@ -453,8 +453,10 @@ fn compose(
     // Execute every mark; assemble all its result chunks into one drawable batch.
     let results = session.execute_all();
     let facts = unsampled_facts(&session, results.len());
-    Ok(compose_from_results(&spec, results, &facts, &ViewExtents::new())?
-        .with_diagnostics(diagnostics))
+    Ok(
+        compose_from_results(&spec, results, &facts, &ViewExtents::new())?
+            .with_diagnostics(diagnostics),
+    )
 }
 
 /// A live, session-holding dashboard — the push-down seam at the presentation
@@ -1346,13 +1348,15 @@ plot:
         // the path-count delta is purely the extra dots.
         let (full_results, total) = two_chunk_dot_results(first_rows, second_rows);
         assert_eq!(total, materialised);
-        let full = compose_from_results(&spec, full_results, &[], &ViewExtents::new()).expect("compose full");
+        let full = compose_from_results(&spec, full_results, &[], &ViewExtents::new())
+            .expect("compose full");
 
         let first_only: Vec<Result<Vec<RecordBatch>, EngineError>> = vec![Ok(vec![xy_batch(
             (0..first_rows).map(|i| (i % 101) as f64).collect(),
             (0..first_rows).map(|i| (i % 101) as f64).collect(),
         )])];
-        let first = compose_from_results(&spec, first_only, &[], &ViewExtents::new()).expect("compose first");
+        let first = compose_from_results(&spec, first_only, &[], &ViewExtents::new())
+            .expect("compose first");
 
         let drawn_delta = count_scene_paths(&full.scene) - count_scene_paths(&first.scene);
         assert_eq!(
@@ -1365,7 +1369,8 @@ plot:
             (0..materialised).map(|i| (i % 101) as f64).collect(),
             (0..materialised).map(|i| (i % 101) as f64).collect(),
         )])];
-        let single = compose_from_results(&spec, single, &[], &ViewExtents::new()).expect("compose single");
+        let single =
+            compose_from_results(&spec, single, &[], &ViewExtents::new()).expect("compose single");
         assert_eq!(
             count_scene_paths(&full.scene),
             count_scene_paths(&single.scene),
