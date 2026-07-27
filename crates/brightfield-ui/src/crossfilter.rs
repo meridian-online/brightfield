@@ -811,6 +811,7 @@ impl<H: ReactiveHandle> CrossfilterCoordinator<H> {
                     highlight: highlight.as_ref(),
                     // See `render_plot_scene` below for why this is `None`.
                     sample: None,
+                    beyond_frame: false,
                 })
             })
             .collect();
@@ -1287,6 +1288,7 @@ fn render_plot_scene(
                 // fact has to come with it or the notice vanishes on the
                 // first gesture.
                 sample: None,
+                beyond_frame: false,
             })
         })
         .collect();
@@ -1679,6 +1681,7 @@ mod tests {
                     view_extent: None,
                     highlight: None,
                     sample: None,
+                    beyond_frame: false,
                 })
             })
             .collect();
@@ -1713,6 +1716,7 @@ mod tests {
                     view_extent: None,
                     highlight: None,
                     sample: None,
+                    beyond_frame: false,
                 })
             })
             .collect();
@@ -1774,6 +1778,7 @@ mod tests {
                 view_extent: None,
                 highlight: None,
                 sample: None,
+                beyond_frame: false,
             };
             let (scene, _) = build_multi_mark_scene(&[&cd], false, &ResolvedTitles::default());
             scene_bytes(&scene)

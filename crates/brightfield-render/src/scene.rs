@@ -66,6 +66,45 @@ pub struct ChartData<'a> {
     /// rather than an implementation detail. `LiveDashboard::present` is the
     /// one path that does so today, and a test drives a brush through it.
     pub sample: Option<SampleFact>,
+    /// `true` when the plot's navigation extent could **not** be pushed into
+    /// this mark's query — it is still drawn from the whole column while the
+    /// frame around it says otherwise.
+    ///
+    /// The mark then makes a quantitative claim about rows that are not on
+    /// screen, and its drawing, clipped at the frame edge, looks exactly like
+    /// one that rescoped. Setting this makes the renderer say so in ink; see
+    /// [`MarkRenderer::render_beyond_frame`].
+    ///
+    /// The fact comes from `Session::declined_navigation` — the one detection,
+    /// resolved against the very plan the emitter ran. It is deliberately never
+    /// re-derived here from the batch's own extents: a second answer to the
+    /// same question is how two answers start disagreeing.
+    pub beyond_frame: bool,
+}
+
+/// Draw one mark layer, on whichever of the renderer's two entry points its
+/// relationship to the frame calls for.
+///
+/// One function rather than an `if` at each of the two builders, so a third
+/// builder cannot quietly acquire the un-navigated behaviour for both cases.
+fn render_entry(scene: &mut Scene, entry: &ChartData<'_>, scales: &ScaleSet) {
+    if entry.beyond_frame {
+        entry.renderer.render_beyond_frame(
+            scene,
+            entry.batch,
+            entry.channel_map,
+            scales,
+            entry.highlight,
+        );
+    } else {
+        entry.renderer.render(
+            scene,
+            entry.batch,
+            entry.channel_map,
+            scales,
+            entry.highlight,
+        );
+    }
 }
 
 /// Build a complete chart scene from data and configuration.
@@ -196,13 +235,7 @@ pub fn build_chart_scene(data: &ChartData<'_>) -> (Scene, ScaleSet) {
     // Marks, clipped to the plot area so geometry can't spill onto axes/margins.
     let plot_clip = plot_area_rect(&data.layout);
     scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &plot_clip);
-    data.renderer.render(
-        &mut scene,
-        data.batch,
-        data.channel_map,
-        &scales,
-        data.highlight,
-    );
+    render_entry(&mut scene, data, &scales);
     scene.pop_layer();
 
     // Axes (on top of grid/marks). The legacy single-mark path carries no
@@ -471,13 +504,7 @@ fn draw_multi_mark_scene(
     let plot_clip = plot_area_rect(layout);
     scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &plot_clip);
     for entry in entries {
-        entry.renderer.render(
-            &mut scene,
-            entry.batch,
-            entry.channel_map,
-            scales,
-            entry.highlight,
-        );
+        render_entry(&mut scene, entry, scales);
     }
     scene.pop_layer();
 
@@ -914,6 +941,7 @@ mod tests {
             view_extent: None,
             highlight: None,
             sample: None,
+            beyond_frame: false,
         };
 
         let domain = |scales: &ScaleSet, ch: Channel| match scales.get(ch) {
@@ -990,6 +1018,7 @@ mod tests {
             view_extent: None,
             highlight: None,
             sample: None,
+            beyond_frame: false,
         };
         let (with_legend, _) = build_multi_mark_scene(&[&data], true, &ResolvedTitles::default());
         let (without_legend, _) =
@@ -1025,6 +1054,7 @@ mod tests {
             view_extent: None,
             highlight: None,
             sample: None,
+            beyond_frame: false,
         };
         let (geo_scene, _) = build_multi_mark_scene(&[&geo_data], true, &ResolvedTitles::default());
         let geo_paths = crate::mark::count_scene_paths(&geo_scene);
@@ -1056,6 +1086,7 @@ mod tests {
             view_extent: None,
             highlight: None,
             sample: None,
+            beyond_frame: false,
         };
         let (dot_scene, _) = build_multi_mark_scene(&[&dot_data], true, &ResolvedTitles::default());
         // The geo plot (one outline, no frame) draws strictly fewer paths than a
@@ -1092,6 +1123,7 @@ mod tests {
             view_extent: None,
             highlight: None,
             sample: None,
+            beyond_frame: false,
         };
         let d1 = ChartData {
             batch: &batch,
@@ -1101,6 +1133,7 @@ mod tests {
             view_extent: None,
             highlight: None,
             sample: None,
+            beyond_frame: false,
         };
 
         // Each plot's scene is built independently, then composited.
@@ -1155,6 +1188,7 @@ mod tests {
             view_extent: None,
             highlight: None,
             sample: None,
+            beyond_frame: false,
         };
 
         let (scene, scales) = build_chart_scene(&data);
@@ -1205,6 +1239,7 @@ mod tests {
             view_extent: None,
             highlight: None,
             sample: None,
+            beyond_frame: false,
         };
 
         let (scene, _scales) = build_chart_scene(&data);
@@ -1243,6 +1278,7 @@ mod tests {
             view_extent: None,
             highlight: None,
             sample: None,
+            beyond_frame: false,
         };
         let (_scene, scales) = build_chart_scene(&data);
         let y = scales.get(Channel::Y).unwrap();
@@ -1280,6 +1316,7 @@ mod tests {
             view_extent: None,
             highlight: None,
             sample: None,
+            beyond_frame: false,
         };
         let (_scene, scales) = build_chart_scene(&data);
         let y = scales.get(Channel::Y).unwrap();
@@ -1325,6 +1362,7 @@ mod tests {
             view_extent: None,
             highlight: None,
             sample: None,
+            beyond_frame: false,
         };
 
         let (scene, _scales) = build_chart_scene(&data);
@@ -1367,6 +1405,7 @@ mod tests {
             view_extent: None,
             highlight: None,
             sample: None,
+            beyond_frame: false,
         };
         let (_scene, scales_full) = build_chart_scene(&data_full);
         let x_full = scales_full.get(Channel::X).unwrap();
@@ -1386,6 +1425,7 @@ mod tests {
             view_extent: Some(&extent),
             highlight: None,
             sample: None,
+            beyond_frame: false,
         };
         let (_scene, scales_zoomed) = build_chart_scene(&data_zoomed);
         let x_zoomed = scales_zoomed.get(Channel::X).unwrap();
@@ -1443,6 +1483,7 @@ mod tests {
             view_extent: None,
             highlight: None,
             sample: None,
+            beyond_frame: false,
         };
         let data2 = ChartData {
             batch: &batch2,
@@ -1452,6 +1493,7 @@ mod tests {
             view_extent: None,
             highlight: None,
             sample: None,
+            beyond_frame: false,
         };
 
         let (scene, scales) =
@@ -1520,6 +1562,7 @@ mod tests {
             view_extent: None,
             highlight: None,
             sample: None,
+            beyond_frame: false,
         };
         let titles = ResolvedTitles {
             x: Some("x".into()),
@@ -1584,6 +1627,7 @@ mod tests {
             view_extent: None,
             highlight: Some(&hs),
             sample: None,
+            beyond_frame: false,
         };
         let (scene, _scales) = build_chart_scene(&data);
         let encoding = scene.encoding();
@@ -1601,6 +1645,7 @@ mod tests {
             view_extent: None,
             highlight: None,
             sample: None,
+            beyond_frame: false,
         };
         let (scene2, _) = build_chart_scene(&data_no_hl);
         let encoding2 = scene2.encoding();

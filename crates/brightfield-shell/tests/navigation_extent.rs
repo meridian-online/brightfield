@@ -709,6 +709,202 @@ fn a_refusal_and_a_scope_notice_can_hold_the_rail_at_once() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// The same fact, in the data ink
+// ---------------------------------------------------------------------------
+
+/// The mark colour a `dot` and a `regressionY` both take when nothing binds a
+/// colour channel — Harbour slot 1, read from the token layer so a palette bump
+/// moves the expectation with it.
+fn mark_ink() -> [i32; 3] {
+    let c = meridian_design::viz::MARK_DEFAULT_LIGHT;
+    [
+        (c.r * 255.0).round() as i32,
+        (c.g * 255.0).round() as i32,
+        (c.b * 255.0).round() as i32,
+    ]
+}
+
+/// How many separate horizontal RUNS of mark ink an exported chart holds.
+///
+/// A column counts as inked when any pixel in it is within [`MARK_INK_TOL`] of
+/// the mark colour on every channel — the stroke's core and the first ring of
+/// its anti-aliasing, which is what "the mark landed here" means at 2 px wide.
+/// The count is of maximal runs of adjacent inked columns: a solid line drawn
+/// across the plot is one run whatever its slope, a dashed one is many.
+///
+/// Nothing else in the picture is admitted. The confidence band is the same hue
+/// at 0.20 alpha and composites to roughly `#c9e4f0`, nowhere near; gridlines
+/// are grey, axis type is near-black, the surface is near-white.
+///
+/// This is deliberately a measure of the PICTURE. A test that asked the scene
+/// how many stroke ops it encoded would be satisfied by a dash pattern that
+/// never reached a pixel, and by one drawn outside the plot clip.
+const MARK_INK_TOL: i32 = 20;
+
+fn mark_ink_runs(png: &std::path::Path) -> usize {
+    let img = image::open(png).expect("open png").to_rgba8();
+    let (w, h) = img.dimensions();
+    let want = mark_ink();
+    let mut runs = 0usize;
+    let mut inside = false;
+    for x in 0..w {
+        let inked = (0..h).any(|y| {
+            let p = img.get_pixel(x, y).0;
+            (0..3).all(|c| (i32::from(p[c]) - want[c]).abs() <= MARK_INK_TOL)
+        });
+        if inked && !inside {
+            runs += 1;
+        }
+        inside = inked;
+    }
+    runs
+}
+
+/// Navigate `dash` to an interval inside the data and hand back the composite.
+///
+/// Any narrowing extent makes the fit decline — it is a scalar aggregate with
+/// no grouping key beneath which a bound could go — so the numbers here are
+/// chosen only to keep points on both sides of them, not tuned to provoke
+/// anything.
+fn zoom_to(dash: &mut LiveDashboard, plot: &str) -> brightfield_shell::pipeline::Composed {
+    use brightfield_engine::coordinator::Interaction;
+    use brightfield_engine::{AxisExtent, NavigationExtent};
+    use brightfield_spec::analysis::ComponentPath;
+    dash.apply(Interaction::Navigate {
+        plot: ComponentPath(plot.to_string()),
+        extent: NavigationExtent {
+            x: Some(AxisExtent::new("weight", 60.0, 88.0)),
+            y: None,
+        },
+    })
+    .expect("the navigation re-composites")
+}
+
+/// **A fit that outlived its frame says so in the picture, not only in the
+/// panel.**
+///
+/// `examples/regression.yaml` holds a `dot` scatter and a `regressionY` over one
+/// pair of columns. Narrow the frame and the scatter follows; the fit cannot —
+/// its plan is a scalar aggregate with nothing beneath it to bind — so it goes
+/// on drawing a line computed from every row, clipped at the frame edge, which
+/// is exactly what a fit over the visible points looks like. The pane says
+/// otherwise in a sentence. A screenshot carries the picture and drops the
+/// sentence, and the picture is what people keep.
+///
+/// So this is asserted on an EXPORTED PNG, counting runs of mark ink across the
+/// plot. Before the zoom the fit is one unbroken run; after it, many. Nothing
+/// here reads the renderer's intent — a dash requested but clipped away, or
+/// drawn in a colour that never lands, scores as solid.
+///
+/// The premise is asserted first, so this cannot pass by the decline having
+/// quietly gone away.
+#[test]
+fn the_unrescoped_fit_is_dashed_in_the_exported_picture() {
+    use brightfield_shell::capture::capture_vello_only;
+
+    let dir = std::env::temp_dir().join(format!("bf-unrescoped-ink-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+
+    let (mut dash, first) =
+        live_spec(example("regression.yaml").to_str().unwrap()).expect("the fixture loads live");
+    let plot = first.plots[0].path.clone();
+    let before_png = dir.join("full-extent.png");
+    capture_vello_only(first, 1.0, &before_png).expect("export at full extent");
+
+    let zoomed = zoom_to(&mut dash, &plot);
+    // The premise: the fit really did decline, and it is the fit that did.
+    let declined = dash.declined_navigation(&plot);
+    assert_eq!(
+        declined.len(),
+        1,
+        "expected exactly the fit to decline, got {declined:?}"
+    );
+    assert_eq!(declined[0].kind.to_string(), "regressionY");
+
+    let after_png = dir.join("navigated.png");
+    capture_vello_only(zoomed, 1.0, &after_png).expect("export at the extent");
+
+    let solid = mark_ink_runs(&before_png);
+    let dashed = mark_ink_runs(&after_png);
+    assert!(
+        solid <= 3,
+        "the full-extent fit drew {solid} separate runs of ink — it is supposed to be one \
+         continuous line, so this measure is not measuring what it thinks it is"
+    );
+    assert!(
+        dashed >= 20,
+        "the navigated export drew {dashed} runs of mark ink against the full-extent \
+         picture's {solid}. A fit that still summarises rows off screen has to LOOK \
+         different from one that does not — a reader holding this screenshot has no \
+         sentence to fall back on"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **The ink and the rail sentence are independent statements of the same
+/// fact.** Neither is derived from the other, and losing one must not take the
+/// other with it.
+///
+/// The proof is in which artefact each is found in. `capture_vello_only`
+/// rasterises the composed Vello scene and never constructs an egui context, so
+/// every word the shell draws — the status rail included — is absent from that
+/// PNG **by construction**; ink found there cannot have come from the sentence.
+/// The document half runs the real window over real keystrokes and reads
+/// `nav_scope_notice`, which is computed from `Session::declined_navigation`
+/// and never rasterises a thing; a sentence found there cannot have come from
+/// the ink.
+///
+/// The failure this guards is a later tidy-up that makes one the source of the
+/// other — most plausibly by having the pane ask the composed scene whether it
+/// drew a dash. That would read as a simplification and would mean a headless
+/// export silently stops carrying the caveat, or the pane goes quiet whenever
+/// the mark that declined happens to have no treatment of its own.
+#[test]
+fn the_ink_and_the_rail_sentence_do_not_depend_on_each_other() {
+    use brightfield_shell::capture::capture_vello_only;
+    use egui::Key;
+
+    let dir = std::env::temp_dir().join(format!("bf-ink-and-sentence-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+
+    // The sentence, on a document that never rasterises.
+    let mut app = live_window(&example("regression.yaml"));
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx, Vec::new());
+    assert_eq!(
+        app.chart_doc().nav_scope_notice(),
+        None,
+        "an unnavigated chart claims nothing"
+    );
+    frame(&mut app, &ctx, vec![press(Key::Equals)]);
+    let sentence = app
+        .chart_doc()
+        .nav_scope_notice()
+        .expect("the pane still owes the reader the sentence");
+    assert!(
+        sentence.contains("regressionY"),
+        "the sentence lost its subject: {sentence}"
+    );
+
+    // The ink, in an artefact that holds no chrome at all.
+    let (mut dash, first) =
+        live_spec(example("regression.yaml").to_str().unwrap()).expect("the fixture loads live");
+    let plot = first.plots[0].path.clone();
+    drop(first);
+    let zoomed = zoom_to(&mut dash, &plot);
+    let png = dir.join("chart-only.png");
+    capture_vello_only(zoomed, 1.0, &png).expect("export the navigated chart");
+    assert!(
+        mark_ink_runs(&png) >= 20,
+        "the chart-only export carries no dash, so everything the reader is told about \
+         this fit lives in chrome a screenshot drops"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// **A settled gesture that draws nothing puts the query store back where the
 /// picture is.** A pan far enough off the data returns no rows, the
 /// re-composite fails, and the caller keeps the picture it had. The session's

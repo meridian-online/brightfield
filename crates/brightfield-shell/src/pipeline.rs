@@ -492,8 +492,11 @@ fn compose(
     // Execute every mark; assemble all its result chunks into one drawable batch.
     let results = session.execute_all();
     let facts = unsampled_facts(&session, results.len());
+    // A one-shot compose never navigates, so nothing can have declined; read it
+    // through the same helper anyway rather than hard-coding the empty answer.
+    let beyond = marks_beyond_frame(&session, &spec, results.len());
     Ok(
-        compose_from_results(&spec, results, &facts, &ViewExtents::new())?
+        compose_from_results(&spec, results, &facts, &ViewExtents::new(), &beyond)?
             .with_diagnostics(diagnostics),
     )
 }
@@ -634,8 +637,11 @@ impl LiveDashboard {
         // notice on the first gesture and leave a sampled picture looking
         // complete.
         let facts = unsampled_facts(self.coordinator.session_mut(), results.len());
+        // Same reasoning, same seam: a mark that could not be narrowed to the
+        // frame has to keep saying so on every repaint, not only the first.
+        let beyond = marks_beyond_frame(self.coordinator.session(), &self.spec, results.len());
         Ok(
-            compose_from_results(&self.spec, results, &facts, &self.view_extents)?
+            compose_from_results(&self.spec, results, &facts, &self.view_extents, &beyond)?
                 .with_diagnostics(self.diagnostics.clone()),
         )
     }
@@ -807,6 +813,29 @@ fn unsampled_facts(session: &Session, marks: usize) -> Vec<Option<MarkFacts>> {
         .collect()
 }
 
+/// Which marks still summarise rows their plot's frame excludes, by flat mark
+/// index.
+///
+/// Read off [`brightfield_engine::Session::declined_navigation`] — the ONE
+/// detection, resolved against the very plan the emitter ran — and gathered
+/// here beside [`unsampled_facts`] for the same reason that one is: the live
+/// re-present after a gesture takes this path too, so a fact gathered only on
+/// the first paint would be silently dropped by the first drag.
+///
+/// Costs nothing on an unnavigated dashboard: `declined_navigation` returns
+/// empty for any plot with no extent in force, without planning a thing.
+fn marks_beyond_frame(session: &Session, spec: &Spec, marks: usize) -> Vec<bool> {
+    let mut out = vec![false; marks];
+    for group in collect_plot_groups(spec) {
+        for declined in session.declined_navigation(&group.plot_path) {
+            if let Some(slot) = out.get_mut(declined.index) {
+                *slot = true;
+            }
+        }
+    }
+    out
+}
+
 /// Build the composited dashboard from a spec and its per-mark execution
 /// results. Shared by the one-shot [`compose`] path and the live
 /// [`LiveDashboard`] re-query seam, so a re-composite after an interaction takes
@@ -816,6 +845,7 @@ fn compose_from_results(
     results: Vec<Result<Vec<RecordBatch>, EngineError>>,
     facts: &[Option<MarkFacts>],
     extents: &ViewExtents,
+    beyond_frame: &[bool],
 ) -> Result<Composed, String> {
     let marks = collect_marks(spec);
     let mut batches: Vec<Option<RecordBatch>> = Vec::with_capacity(marks.len());
@@ -908,6 +938,7 @@ fn compose_from_results(
                 view_extent: plot_extent,
                 highlight: None,
                 sample,
+                beyond_frame: beyond_frame.get(mi).copied().unwrap_or(false),
             });
         }
         if chart_data.is_empty() {
@@ -1388,14 +1419,14 @@ plot:
         // the path-count delta is purely the extra dots.
         let (full_results, total) = two_chunk_dot_results(first_rows, second_rows);
         assert_eq!(total, materialised);
-        let full = compose_from_results(&spec, full_results, &[], &ViewExtents::new())
+        let full = compose_from_results(&spec, full_results, &[], &ViewExtents::new(), &[])
             .expect("compose full");
 
         let first_only: Vec<Result<Vec<RecordBatch>, EngineError>> = vec![Ok(vec![xy_batch(
             (0..first_rows).map(|i| (i % 101) as f64).collect(),
             (0..first_rows).map(|i| (i % 101) as f64).collect(),
         )])];
-        let first = compose_from_results(&spec, first_only, &[], &ViewExtents::new())
+        let first = compose_from_results(&spec, first_only, &[], &ViewExtents::new(), &[])
             .expect("compose first");
 
         let drawn_delta = count_scene_paths(&full.scene) - count_scene_paths(&first.scene);
@@ -1409,8 +1440,8 @@ plot:
             (0..materialised).map(|i| (i % 101) as f64).collect(),
             (0..materialised).map(|i| (i % 101) as f64).collect(),
         )])];
-        let single =
-            compose_from_results(&spec, single, &[], &ViewExtents::new()).expect("compose single");
+        let single = compose_from_results(&spec, single, &[], &ViewExtents::new(), &[])
+            .expect("compose single");
         assert_eq!(
             count_scene_paths(&full.scene),
             count_scene_paths(&single.scene),
@@ -1458,7 +1489,7 @@ plot:
         let results: Vec<Result<Vec<RecordBatch>, EngineError>> = vec![Ok(vec![a, b])];
         // `.err()` rather than `.expect_err()` — `Composed` is deliberately not
         // `Debug` (it holds a Vello scene), so we inspect the error side directly.
-        let err = compose_from_results(&spec, results, &[], &ViewExtents::new())
+        let err = compose_from_results(&spec, results, &[], &ViewExtents::new(), &[])
             .err()
             .expect("must fail loudly");
         assert!(err.contains("mark 0"), "the failure names the mark: {err}");

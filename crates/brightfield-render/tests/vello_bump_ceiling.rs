@@ -212,6 +212,7 @@ fn report_bump_headroom_across_dot_counts() {
             view_extent: None,
             highlight: None,
             sample: None,
+            beyond_frame: false,
         };
         let (plot, _scales) = build_multi_mark_scene(&[&data], false, &ResolvedTitles::default());
         let mut scaled = vello::Scene::new();
