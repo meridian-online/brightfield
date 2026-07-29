@@ -745,10 +745,26 @@ fn drag_rect(plot: &PlotHandle, drag: Drag) -> brightfield_render::canvas_host::
         plot.rect.y + plot.layout.plot_y_start(),
         plot.rect.y + plot.layout.plot_y_end(),
     );
+    // BOTH corners clamp, not just the near one. `x0.max(px0)` alone leaves the
+    // ORIGIN untouched when the whole drag lies past the far edge: x0 stays out
+    // in the margin, x1 pulls back to the frame, and the `.max(0.0)` below only
+    // collapses the width — so the rect is pinned at an origin the plot does not
+    // own and strokes a zero-width line across the tick labels it is supposed to
+    // stop above. Clamping both ends degenerates the rect AT the frame edge
+    // instead, which is where a gesture that left the plot belongs.
     let (x0, x1, y0, y1) = match kind {
-        Some(BrushKind::IntervalX | BrushKind::PointX) => (x0.max(px0), x1.min(px1), py0, py1),
-        Some(BrushKind::IntervalY | BrushKind::PointY) => (px0, px1, y0.max(py0), y1.min(py1)),
-        _ => (x0.max(px0), x1.min(px1), y0.max(py0), y1.min(py1)),
+        Some(BrushKind::IntervalX | BrushKind::PointX) => {
+            (x0.clamp(px0, px1), x1.clamp(px0, px1), py0, py1)
+        }
+        Some(BrushKind::IntervalY | BrushKind::PointY) => {
+            (px0, px1, y0.clamp(py0, py1), y1.clamp(py0, py1))
+        }
+        _ => (
+            x0.clamp(px0, px1),
+            x1.clamp(px0, px1),
+            y0.clamp(py0, py1),
+            y1.clamp(py0, py1),
+        ),
     };
     SurfaceRect::new(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0))
 }
@@ -1247,6 +1263,51 @@ mod tests {
         let r = drag_rect(&plot, drag((400.0, 200.0), (300.0, 150.0)));
         assert!(close(r.x, 300.0) && close(r.width, 100.0), "x {r:?}");
         assert!(close(r.y, 150.0) && close(r.height, 50.0), "y {r:?}");
+    }
+
+    /// AC1 at the FAR edges — the case a near-corner-only clamp gets wrong.
+    ///
+    /// A drag lying ENTIRELY past the right or bottom edge used to keep its
+    /// unclamped origin: `x1` pulled back to the frame, `x0` did not, and the
+    /// width collapsed to zero — leaving a full-height stroke standing in the
+    /// margin, which is the sighted symptom (ink over the axis furniture) in its
+    /// most literal form. Degenerate is fine; degenerate OUTSIDE the frame is not.
+    #[test]
+    fn a_sweep_wholly_past_the_far_edge_degenerates_at_the_frame_not_in_the_margin() {
+        // Entirely right of the data area, and short of the allocation's edge.
+        let plot = placed(BrushKind::IntervalX);
+        let r = drag_rect(&plot, drag((DATA_RIGHT + 6.0, 150.0), (DATA_RIGHT + 16.0, 160.0)));
+        assert!(
+            close(r.x, DATA_RIGHT) && close(r.width, 0.0),
+            "an x sweep past the right edge must degenerate AT it: {r:?}"
+        );
+        assert!(
+            r.x + r.width <= DATA_RIGHT + 1e-9,
+            "the brush reaches into the right margin: {r:?}"
+        );
+
+        // Entirely below the data area, where the tick labels and title live.
+        let plot = placed(BrushKind::IntervalXY);
+        let r = drag_rect(
+            &plot,
+            drag((300.0, DATA_BOTTOM + 10.0), (500.0, DATA_BOTTOM + 25.0)),
+        );
+        assert!(
+            close(r.y, DATA_BOTTOM) && close(r.height, 0.0),
+            "a y sweep below the bottom edge must degenerate AT it: {r:?}"
+        );
+        assert!(
+            r.y + r.height <= DATA_BOTTOM + 1e-9,
+            "the brush reaches into the axis band: {r:?}"
+        );
+
+        // And the near side, for symmetry — wholly left of the frame.
+        let plot = placed(BrushKind::IntervalX);
+        let r = drag_rect(&plot, drag((DATA_LEFT - 30.0, 150.0), (DATA_LEFT - 5.0, 160.0)));
+        assert!(
+            close(r.x, DATA_LEFT) && close(r.width, 0.0),
+            "an x sweep left of the frame must degenerate AT it: {r:?}"
+        );
     }
 
     // The claim "the brush clamps to the renderer's own plot rect" is made by
