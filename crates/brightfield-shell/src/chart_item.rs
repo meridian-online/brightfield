@@ -719,16 +719,32 @@ fn plot_at(plots: &[PlotHandle], p: kurbo::Point) -> Option<usize> {
     })
 }
 
-/// The brush rectangle a drag paints, clamped to its plot and axis-locked to
-/// the binding's brush kind (an x-interval sweeps full plot height, a
-/// y-interval full width).
+/// The brush rectangle a drag paints, clamped to its plot's DATA AREA and
+/// axis-locked to the binding's brush kind (an x-interval sweeps the data
+/// area's full height, a y-interval its full width).
+///
+/// Full span across the locked axis is what the gesture *means* — an x-range
+/// brush selects that range at every y — but the span stops at the data frame,
+/// not at the placed allocation. `plot.rect` is the whole allocation, margins
+/// included, and the margins are where the tick labels and the axis titles are
+/// drawn; clamping to it paints the brush over its own axis furniture. The
+/// data area is this plot's layout offset into raster-local coordinates — the
+/// same `plot_x_start`..`plot_y_end` rect the renderer clips the frame and
+/// draws the axis lines against, so there is one notion of "the plot area"
+/// here, not a second one invented beside it.
 fn drag_rect(plot: &PlotHandle, drag: Drag) -> brightfield_render::canvas_host::SurfaceRect {
     use brightfield_render::canvas_host::SurfaceRect;
     let kind = plot.gesture.as_ref().map(|g| g.kind);
     let (x0, x1) = min_max(drag.start.x, drag.current.x);
     let (y0, y1) = min_max(drag.start.y, drag.current.y);
-    let (px0, px1) = (plot.rect.x, plot.rect.x + plot.rect.width);
-    let (py0, py1) = (plot.rect.y, plot.rect.y + plot.rect.height);
+    let (px0, px1) = (
+        plot.rect.x + plot.layout.plot_x_start(),
+        plot.rect.x + plot.layout.plot_x_end(),
+    );
+    let (py0, py1) = (
+        plot.rect.y + plot.layout.plot_y_start(),
+        plot.rect.y + plot.layout.plot_y_end(),
+    );
     let (x0, x1, y0, y1) = match kind {
         Some(BrushKind::IntervalX | BrushKind::PointX) => (x0.max(px0), x1.min(px1), py0, py1),
         Some(BrushKind::IntervalY | BrushKind::PointY) => (px0, px1, y0.max(py0), y1.min(py1)),
@@ -1078,6 +1094,144 @@ mod tests {
         };
         let binding = point.gesture.clone().expect("bound");
         assert_eq!(resolve_gesture(&binding, &point, sweep), None);
+    }
+
+    // -- The brush rectangle stops at the data frame -----------------------
+
+    /// A plot placed away from the raster origin, so a test that passes on a
+    /// rect at (0, 0) cannot pass here by accident: the data area is the
+    /// PLACED origin plus the layout's margins, and getting either term wrong
+    /// moves the brush.
+    ///
+    /// 300×200 at (200, 100) with Observable Plot's default margins puts the
+    /// data area at x 240..480 and y 120..270 in raster-local pixels.
+    const PLACED: Rect = Rect {
+        x: 200.0,
+        y: 100.0,
+        width: 300.0,
+        height: 200.0,
+    };
+    const DATA_LEFT: f64 = 240.0; // 200 + margin.left 40
+    const DATA_RIGHT: f64 = 480.0; // 200 + 300 - margin.right 20
+    const DATA_TOP: f64 = 120.0; // 100 + margin.top 20
+    const DATA_BOTTOM: f64 = 270.0; // 100 + 200 - margin.bottom 30
+
+    /// The `plot` helper's handle, re-placed at [`PLACED`] with the layout
+    /// that placement implies. Scales are irrelevant to `drag_rect` — it is
+    /// pure geometry — so the set stays empty.
+    fn placed(kind: BrushKind) -> PlotHandle {
+        let mut plot = plot(ScaleSet::new(), kind);
+        plot.rect = PLACED;
+        plot.layout = ChartLayout::new(PLACED.width, PLACED.height);
+        plot
+    }
+
+    fn drag(start: (f64, f64), current: (f64, f64)) -> Drag {
+        Drag {
+            plot: 0,
+            start: kurbo::Point::new(start.0, start.1),
+            current: kurbo::Point::new(current.0, current.1),
+        }
+    }
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-9
+    }
+
+    /// AC1. An x-range brush spans the DATA AREA's full height — the whole of
+    /// it, because that is the gesture's meaning — and stops at its bottom
+    /// edge, a clear margin above the allocation's own bottom where the tick
+    /// labels and the axis title are drawn.
+    #[test]
+    fn an_x_brush_spans_the_data_area_and_clears_the_axis_furniture() {
+        let plot = placed(BrushKind::IntervalX);
+        let r = drag_rect(&plot, drag((300.0, 150.0), (400.0, 160.0)));
+
+        // Swept on x, exactly as dragged — the sweep is inside the data area.
+        assert!(close(r.x, 300.0), "x {r:?}");
+        assert!(close(r.width, 100.0), "width {r:?}");
+
+        // Full height of the data area, top and bottom.
+        assert!(close(r.y, DATA_TOP), "top {r:?}");
+        assert!(close(r.y + r.height, DATA_BOTTOM), "bottom {r:?}");
+        assert!(close(r.height, plot.layout.plot_height()), "height {r:?}");
+
+        // And that bottom is a whole bottom margin clear of the allocation —
+        // the band the tick labels and the axis title live in.
+        let allocation_bottom = PLACED.y + PLACED.height;
+        assert!(
+            close(allocation_bottom - (r.y + r.height), 30.0),
+            "the brush reaches into the {}px axis band: {r:?}",
+            allocation_bottom - (r.y + r.height)
+        );
+        assert!(
+            r.y > PLACED.y,
+            "the brush reaches into the top margin: {r:?}"
+        );
+    }
+
+    /// AC1, the other half: the swept axis clamps to the DATA AREA too, so a
+    /// drag begun out in the left margin starts at the frame, not at the
+    /// allocation's edge.
+    #[test]
+    fn an_x_brush_clamps_its_sweep_to_the_data_area_not_the_allocation() {
+        let plot = placed(BrushKind::IntervalX);
+        let r = drag_rect(&plot, drag((205.0, 150.0), (900.0, 160.0)));
+        assert!(close(r.x, DATA_LEFT), "left {r:?}");
+        assert!(close(r.x + r.width, DATA_RIGHT), "right {r:?}");
+    }
+
+    /// AC2. The y-range case is the same rule on the other axis: full data-area
+    /// WIDTH, stopping clear of the left margin the y tick labels occupy, with
+    /// the swept axis left as dragged.
+    #[test]
+    fn a_y_brush_spans_the_data_area_width_and_clears_the_tick_labels() {
+        let plot = placed(BrushKind::IntervalY);
+        let r = drag_rect(&plot, drag((300.0, 140.0), (310.0, 200.0)));
+
+        // Swept on y, exactly as dragged.
+        assert!(close(r.y, 140.0), "y {r:?}");
+        assert!(close(r.height, 60.0), "height {r:?}");
+
+        // Full width of the data area — not of the allocation.
+        assert!(close(r.x, DATA_LEFT), "left {r:?}");
+        assert!(close(r.x + r.width, DATA_RIGHT), "right {r:?}");
+        assert!(close(r.width, plot.layout.plot_width()), "width {r:?}");
+        assert!(
+            close(r.x - PLACED.x, 40.0),
+            "the brush reaches into the y-label margin: {r:?}"
+        );
+    }
+
+    /// AC2. The two-dimensional case clamps BOTH axes to the data area: a
+    /// drag that overshoots the allocation on every side paints the data
+    /// frame exactly, and no part of the margins.
+    #[test]
+    fn an_xy_brush_clamps_both_axes_to_the_data_area() {
+        let plot = placed(BrushKind::IntervalXY);
+        let r = drag_rect(&plot, drag((0.0, 0.0), (900.0, 900.0)));
+        assert!(close(r.x, DATA_LEFT), "left {r:?}");
+        assert!(close(r.x + r.width, DATA_RIGHT), "right {r:?}");
+        assert!(close(r.y, DATA_TOP), "top {r:?}");
+        assert!(close(r.y + r.height, DATA_BOTTOM), "bottom {r:?}");
+
+        // An in-bounds XY sweep is left exactly as dragged.
+        let r = drag_rect(&plot, drag((400.0, 200.0), (300.0, 150.0)));
+        assert!(close(r.x, 300.0) && close(r.width, 100.0), "x {r:?}");
+        assert!(close(r.y, 150.0) && close(r.height, 50.0), "y {r:?}");
+    }
+
+    /// The data area the brush clamps to is the one the RENDERER uses — the
+    /// rect it clips the frame and draws the axis lines against — not a second
+    /// notion of "the plot area" invented beside it.
+    #[test]
+    fn the_brush_clamps_to_the_renderers_own_plot_rect() {
+        let plot = placed(BrushKind::IntervalXY);
+        let r = drag_rect(&plot, drag((0.0, 0.0), (900.0, 900.0)));
+        assert!(close(r.x, plot.rect.x + plot.layout.plot_x_start()));
+        assert!(close(r.x + r.width, plot.rect.x + plot.layout.plot_x_end()));
+        assert!(close(r.y, plot.rect.y + plot.layout.plot_y_start()));
+        assert!(close(r.y + r.height, plot.rect.y + plot.layout.plot_y_end()));
     }
 
     /// One implementation, every mark kind: the parameterisation is total —
