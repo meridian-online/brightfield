@@ -300,6 +300,24 @@ const BEYOND_FRAME_DASH: f64 = meridian_design::spacing::SPACE_3 as f64;
 /// The gap between dashes — see [`BEYOND_FRAME_DASH`].
 const BEYOND_FRAME_GAP: f64 = meridian_design::spacing::SPACE_2 as f64;
 
+/// The alpha a confidence band is drawn at — its fill, and its edge when that
+/// edge is drawn.
+///
+/// One constant for both because they are one mark. The band is a WEAKER
+/// statement than the fit it surrounds and has to stay weaker: it covers far
+/// more of the plot, and an edge at the fit's own opacity would out-shout the
+/// fit and read as a second, thicker pair of fitted lines.
+///
+/// Holding the edge here also keeps the band out of the measure
+/// `the_unrescoped_fit_is_dashed_in_the_exported_picture` counts runs with.
+/// That test asks whether the FIT is dashed and admits only pixels near full
+/// mark colour; at this alpha the band composites nowhere near it, so the
+/// measure still sees the fit alone. The hazard is worth naming precisely,
+/// because it is not a failing test: that assertion is a lower bound on runs,
+/// so an edge drawn at full opacity would be counted, the test would go on
+/// PASSING, and it would quietly stop holding the thing it is named for.
+const BAND_ALPHA: f32 = 0.20;
+
 /// Cut a pixel-space polyline into the drawn runs of a dash pattern.
 ///
 /// # Why a dash, and not desaturation or an end-cap
@@ -3082,9 +3100,30 @@ impl Default for RegressionRenderer {
 
 impl RegressionRenderer {
     /// The one drawing routine. `beyond_frame` decides only how the fitted line
-    /// is stroked — everything the fit CLAIMS is computed identically either
-    /// way, because recomputing it over the visible rows would be a different
-    /// answer to a question nobody asked, and it was considered and not taken.
+    /// and the band's edges are stroked — everything the fit CLAIMS is computed
+    /// identically either way, because recomputing it over the visible rows
+    /// would be a different answer to a question nobody asked, and it was
+    /// considered and not taken.
+    ///
+    /// # Why the band wears the caveat too
+    ///
+    /// The band is the interval claim itself, it is computed from the same rows
+    /// the frame excludes, and it is by area the larger half of this mark. A
+    /// treatment that dashed only the fitted line would leave the bigger object
+    /// asserting confidence over a range the fit no longer speaks for — half
+    /// the mark saying "this summarises data outside the frame" and half not.
+    ///
+    /// The band keeps its FILL at full [`BAND_ALPHA`] and gains a dashed edge on
+    /// the fit's own [`BEYOND_FRAME_DASH`]/[`BEYOND_FRAME_GAP`] rhythm. Both
+    /// halves of that are constrained rather than chosen. Dropping or hollowing
+    /// the fill is the "refuse to draw" that was rejected for the whole mark,
+    /// applied to half of it — the interval would simply stop being stated,
+    /// which is a worse answer than an unqualified one. Thinning or fading
+    /// the fill is the desaturation that [`dash_polyline`] argues against at
+    /// length, and it fails here for the extra reason that a band's alpha is
+    /// read as its confidence level. What is left is texture, and the texture
+    /// the fit already uses, so the mark speaks with one vocabulary instead of
+    /// growing a second.
     fn draw(
         &self,
         scene: &mut Scene,
@@ -3219,8 +3258,21 @@ impl RegressionRenderer {
                 band.close_path();
 
                 let [cr, cg, cb, _] = colour.components;
-                let band_colour = Color::new([cr, cg, cb, 0.20]);
+                let band_colour = Color::new([cr, cg, cb, BAND_ALPHA]);
                 scene.fill(Fill::NonZero, Affine::IDENTITY, band_colour, None, &band);
+
+                // …and, when the interval it draws was computed from rows the
+                // frame excludes, break its two edges on the fit's own rhythm.
+                // The fill stays; only the boundary picks up the texture, at
+                // the band's own alpha so it stays the quieter statement.
+                if beyond_frame {
+                    let edge = kurbo::Stroke::new(LINE_STROKE_WIDTH);
+                    for bound in [&upper, &lower] {
+                        for run in dash_polyline(bound, BEYOND_FRAME_DASH, BEYOND_FRAME_GAP) {
+                            scene.stroke(&edge, Affine::IDENTITY, band_colour, None, &run);
+                        }
+                    }
+                }
             }
 
             // Draw the fitted line on top — solid when the fit describes what
@@ -3261,9 +3313,11 @@ impl MarkRenderer for RegressionRenderer {
         self.draw(scene, batch, channel_map, scales, false);
     }
 
-    /// The fit is dashed — same colour, same width, same geometry, only the
-    /// texture moves. `dash_polyline` in this module carries the argument for
-    /// that treatment over the two beside it (desaturation, an end-cap).
+    /// The fit is dashed and so are the two edges of its confidence band —
+    /// same colour, same widths, same geometry, only the texture moves.
+    /// `dash_polyline` in this module carries the argument for that treatment
+    /// over the two beside it (desaturation, an end-cap); the private `draw`
+    /// below carries the argument for the band wearing it as well as the line.
     fn render_beyond_frame(
         &self,
         scene: &mut Scene,
@@ -6710,6 +6764,226 @@ mod tests {
             "the dashed fit covers {:.0}% of the path — too close to solid to read as a \
              different treatment",
             inked / full * 100.0
+        );
+    }
+
+    /// A census of the ink a scene draws in: packed premultiplied RGBA8 word →
+    /// how many path-producing ops were drawn with it.
+    ///
+    /// `Scene::fill` and `Scene::stroke` with a solid brush each push exactly
+    /// one such word onto the encoding's draw-data stream (`encode_color`), so
+    /// this is a faithful account of what was drawn AND in what ink — the ALPHA
+    /// channel included, which is the channel this treatment is forbidden from
+    /// touching. The word is little-endian with red in the low byte, so alpha
+    /// is the top one.
+    fn ink_census(scene: &Scene) -> std::collections::BTreeMap<u32, usize> {
+        let mut out = std::collections::BTreeMap::new();
+        for &word in &scene.encoding().draw_data {
+            *out.entry(word).or_insert(0usize) += 1;
+        }
+        out
+    }
+
+    /// Split a regression scene's paths into (band paths, fit-line paths) by
+    /// the alpha they were drawn at.
+    ///
+    /// The band is the only thing `RegressionRenderer` draws below full
+    /// opacity, so a sub-alpha path is a band path BY CONSTRUCTION and the
+    /// fitted line's dashes — full alpha, every one — cannot inflate that
+    /// count. That is the whole point of measuring this way: a test that
+    /// counted the scene's paths would be satisfied by a treatment applied to
+    /// the line alone, which is exactly the state this work is fixing.
+    ///
+    /// The two-ink requirement is asserted rather than assumed. If a third ever
+    /// appears the premise is gone, and this fails loudly instead of quietly
+    /// counting the wrong thing.
+    fn band_and_fit_paths(scene: &Scene) -> (usize, usize) {
+        let census = ink_census(scene);
+        assert_eq!(
+            census.len(),
+            2,
+            "a one-group regression is supposed to draw in exactly two inks — the \
+             fit at full alpha and its band below it — but the scene holds {}: \
+             {census:?}. Until that is understood, sub-alpha no longer means band",
+            census.len()
+        );
+        let mut band = 0usize;
+        let mut fit = 0usize;
+        for (word, count) in census {
+            if (word >> 24) as u8 == 0xff {
+                fit += count;
+            } else {
+                band += count;
+            }
+        }
+        (band, fit)
+    }
+
+    /// **A confidence band belonging to a fit that could not rescope is drawn
+    /// differently from one that did**, and the difference is the BAND's, not
+    /// borrowed from the fitted line beside it.
+    ///
+    /// The band is the interval claim itself and by area the larger half of the
+    /// mark. Before this, it was filled identically either way: half the mark
+    /// said "computed from rows outside this frame" and half went on asserting
+    /// a confidence interval over exactly those rows.
+    ///
+    /// Counted on sub-alpha paths, so the fit line's own dashes cannot pay for
+    /// the band's caveat — see [`band_and_fit_paths`].
+    #[test]
+    fn the_band_of_an_unrescoped_fit_is_drawn_differently_from_one_that_rescoped() {
+        let (batch, cm, scales) = anscombe_fit();
+        let renderer = RegressionRenderer::default();
+
+        let mut solid = Scene::new();
+        renderer.render(&mut solid, &batch, &cm, &scales, None);
+        let mut dashed = Scene::new();
+        renderer.render_beyond_frame(&mut dashed, &batch, &cm, &scales, None);
+
+        let (solid_band, _) = band_and_fit_paths(&solid);
+        let (dashed_band, _) = band_and_fit_paths(&dashed);
+
+        assert_eq!(
+            solid_band, 1,
+            "a fit that rescoped draws its band as one filled polygon and nothing \
+             else; this scene drew {solid_band} band paths, so the baseline the \
+             comparison below rests on has moved"
+        );
+        assert!(
+            dashed_band > solid_band,
+            "the band drew {dashed_band} paths whether or not the fit outlived its \
+             frame, so the caveat sits on the fitted line alone — the larger half of \
+             the mark still asserts an interval over rows that are off screen"
+        );
+    }
+
+    /// **The band's caveat is the fit's own dash, not a second vocabulary** —
+    /// asserted as two separate claims, because they fail separately.
+    ///
+    /// The RHYTHM. Each band edge is a slightly bowed copy of the fitted line
+    /// over the same x span, so at one shared 6-on/4-off period the two edges
+    /// together must ink about twice the runs the line does. A period twice as
+    /// coarse lands near 1×, one twice as fine near 4×, and a solid outline at
+    /// two paths for the pair — none of those survive the bound.
+    ///
+    /// The INK. The set of colours the scene draws in does not change. The
+    /// treatment moves texture and nothing else: `dash_polyline`'s own comment
+    /// records why desaturation was refused for the line, and a band answering
+    /// the caveat by fading, by thinning to some third alpha, or by reaching
+    /// for a status hue would put a word in this set that the untreated scene
+    /// does not hold. [`BAND_ALPHA`] records what else rides on the edge
+    /// keeping the fill's own alpha, and why that one is not guarded by a test
+    /// that fails.
+    #[test]
+    fn the_bands_caveat_is_the_fits_own_dash_and_not_a_second_vocabulary() {
+        let (batch, cm, scales) = anscombe_fit();
+        let renderer = RegressionRenderer::default();
+
+        let mut solid = Scene::new();
+        renderer.render(&mut solid, &batch, &cm, &scales, None);
+        let mut dashed = Scene::new();
+        renderer.render_beyond_frame(&mut dashed, &batch, &cm, &scales, None);
+
+        let (solid_band, _) = band_and_fit_paths(&solid);
+        let (dashed_band, dashed_fit) = band_and_fit_paths(&dashed);
+
+        // The band's fill is one path in either scene; what is left is the edge.
+        let edge_runs = dashed_band - solid_band;
+        let ratio = edge_runs as f64 / dashed_fit as f64;
+        assert!(
+            (1.8..=2.6).contains(&ratio),
+            "the two band edges inked {edge_runs} runs against the fitted line's \
+             {dashed_fit} — {ratio:.2}× where one shared rhythm over two bowed \
+             copies of the same span has to land near 2×. Near 1× is a coarser \
+             period, near 4× a finer one, and a handful is a solid outline: any of \
+             them is a second texture in a mark that is supposed to speak once"
+        );
+
+        let solid_inks: Vec<u32> = ink_census(&solid).into_keys().collect();
+        let dashed_inks: Vec<u32> = ink_census(&dashed).into_keys().collect();
+        assert_eq!(
+            solid_inks, dashed_inks,
+            "the treated mark draws in inks the untreated one does not. Only the \
+             texture is allowed to move: a new word here is a fade, a third alpha, \
+             or a hue this vocabulary has not earned"
+        );
+    }
+
+    /// Whether a scene encodes at least one FILL, as against strokes only.
+    ///
+    /// vello packs "fill or stroke" into the top bit of its style stream's
+    /// `flags_and_miter_limit` — `Style::FLAGS_STYLE_BIT`, 0 for a fill and 1
+    /// for a stroke. The constant is public but sits on a type vello does not
+    /// re-export, so it is written out here rather than imported. The test
+    /// below proves the bit is being read the right way round before it trusts
+    /// the answer.
+    fn draws_a_fill(scene: &Scene) -> bool {
+        const STYLE_BIT: u32 = 0x8000_0000;
+        scene
+            .encoding()
+            .styles
+            .iter()
+            .any(|s| s.flags_and_miter_limit & STYLE_BIT == 0)
+    }
+
+    /// The same fit with `n` overridden.
+    ///
+    /// `n` is the one knob that turns the band off — below 3 the variance
+    /// estimate has no degrees of freedom — without moving the fitted line,
+    /// whose pixels are slope and intercept alone.
+    fn with_n(batch: &RecordBatch, n: f64) -> RecordBatch {
+        let idx = batch.schema().index_of("n").expect("n column");
+        let mut cols = batch.columns().to_vec();
+        cols[idx] = Arc::new(Float64Array::from(vec![n]));
+        RecordBatch::try_new(batch.schema(), cols).expect("rebuilt batch")
+    }
+
+    /// **A band that wears the caveat still states its interval.** The dash is
+    /// a texture on the boundary, not the loss of what the boundary encloses.
+    ///
+    /// Neither test above holds this. Both count band paths, and an
+    /// implementation that dropped the fill and drew only the two dashed edges
+    /// would satisfy them both — while being the "refuse to draw" answer that
+    /// was rejected for the whole mark, applied to half of it. A reader would
+    /// lose the interval on a gesture they read as a camera move, which is a
+    /// worse state than the unqualified band this work started from.
+    ///
+    /// The `n = 2` scene is here to prove the measure discriminates: it
+    /// suppresses the band and leaves a stroked line, so a `draws_a_fill` that
+    /// answered yes to everything — the bit read the wrong way round — fails
+    /// there instead of passing silently below.
+    #[test]
+    fn the_band_that_wears_the_caveat_still_states_its_interval() {
+        let (batch, cm, scales) = anscombe_fit();
+        let renderer = RegressionRenderer::default();
+
+        let mut bandless = Scene::new();
+        renderer.render_beyond_frame(&mut bandless, &with_n(&batch, 2.0), &cm, &scales, None);
+        assert!(
+            !draws_a_fill(&bandless),
+            "a fit drawn with its band suppressed encodes nothing but strokes, yet \
+             the fill probe says otherwise — it is not reading vello's style bit, so \
+             the assertion below would pass on anything"
+        );
+
+        let mut dashed = Scene::new();
+        renderer.render_beyond_frame(&mut dashed, &batch, &cm, &scales, None);
+        assert!(
+            draws_a_fill(&dashed),
+            "the band that could not rescope has stopped being filled. Dashing its \
+             edge is meant to qualify the interval, not withdraw it — a hollow \
+             outline says the fit no longer states one at all"
+        );
+
+        // …and the fill is still the band's own, at the band's own alpha: one
+        // sub-alpha path over and above the two dashed edges.
+        let mut solid = Scene::new();
+        renderer.render(&mut solid, &batch, &cm, &scales, None);
+        let (solid_band, _) = band_and_fit_paths(&solid);
+        assert_eq!(
+            solid_band, 1,
+            "the untreated band is supposed to be exactly one filled path at its own \
+             alpha, got {solid_band}"
         );
     }
 

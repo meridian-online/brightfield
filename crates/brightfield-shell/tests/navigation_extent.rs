@@ -843,6 +843,156 @@ fn the_unrescoped_fit_is_dashed_in_the_exported_picture() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// How many image COLUMNS carry mark-hued ink at a strength between the
+/// confidence band's own fill and the fit line's full opacity.
+///
+/// The band is filled at one fixed alpha. Stroking its boundary in the same ink
+/// lays a second coat over the first, so the edge lands strictly darker than
+/// the fill and strictly lighter than the fit — a level the picture holds
+/// nowhere else, which is what makes it countable.
+///
+/// Three things make this a measure of the BAND and not of everything nearby.
+///
+/// The page tone is read from the image (its modal colour — the plot surface is
+/// most of the frame) rather than named, so a token bump moves the reference
+/// with the picture instead of silently emptying the count.
+///
+/// A pixel qualifies only if the alpha implied by its three channels AGREES
+/// across them. That is what "on the mark's hue" means, and it is what keeps
+/// grey gridlines and near-black axis type out: they are not this hue at any
+/// opacity.
+///
+/// And a pixel within `CORE_GUARD` rows of full-strength mark ink is thrown
+/// out. Everything drawn opaque — the fitted line, every scatter dot — has an
+/// antialiasing skirt that passes through this alpha window on its way from
+/// opaque to nothing, and that skirt is not the band. That exclusion is what
+/// makes the measure mean anything: without it the full-extent picture scores
+/// 342 columns rather than 17, which is the skirt, not a band edge it does not
+/// have.
+fn band_edge_ink_columns(png: &std::path::Path) -> usize {
+    /// Rows either side of a full-strength pixel that its antialiasing can
+    /// reach at 2 px of stroke width. Measured rather than guessed: over the
+    /// two fixtures below the full-extent count is 17 at 2, at 3 and at 5, so
+    /// the answer does not hang off this number.
+    const CORE_GUARD: u32 = 3;
+    /// Alpha window the band's doubled edge falls in: above the fill's own
+    /// level once antialiasing is allowed for, well below opaque.
+    const EDGE_LO: f64 = 0.28;
+    const EDGE_HI: f64 = 0.60;
+    /// Alpha above which a pixel is full-strength mark ink rather than band.
+    const CORE: f64 = 0.75;
+    /// How far the three channels' implied alphas may disagree and still count
+    /// as one colour laid over the page at one opacity.
+    const HUE_SPREAD: f64 = 0.06;
+
+    let img = image::open(png).expect("open png").to_rgba8();
+    let (w, h) = img.dimensions();
+
+    let mut hist: std::collections::HashMap<[u8; 3], usize> = std::collections::HashMap::new();
+    for px in img.pixels() {
+        *hist.entry([px.0[0], px.0[1], px.0[2]]).or_insert(0) += 1;
+    }
+    let page = hist
+        .into_iter()
+        .max_by_key(|&(_, n)| n)
+        .map(|(c, _)| c)
+        .expect("a non-empty picture");
+    let page = [f64::from(page[0]), f64::from(page[1]), f64::from(page[2])];
+    let mark = mark_ink().map(f64::from);
+
+    let alpha_at = |x: u32, y: u32| -> Option<f64> {
+        let px = img.get_pixel(x, y).0;
+        let per_channel: Vec<f64> = (0..3)
+            .map(|c| (f64::from(px[c]) - page[c]) / (mark[c] - page[c]))
+            .collect();
+        let lo = per_channel.iter().copied().fold(f64::MAX, f64::min);
+        let hi = per_channel.iter().copied().fold(f64::MIN, f64::max);
+        (hi - lo <= HUE_SPREAD).then(|| per_channel.iter().sum::<f64>() / 3.0)
+    };
+
+    (0..w)
+        .filter(|&x| {
+            (0..h).any(|y| {
+                alpha_at(x, y).is_some_and(|a| {
+                    (EDGE_LO..=EDGE_HI).contains(&a)
+                        && !(y.saturating_sub(CORE_GUARD)..=(y + CORE_GUARD).min(h - 1))
+                            .any(|yy| alpha_at(x, yy).is_some_and(|v| v > CORE))
+                })
+            })
+        })
+        .count()
+}
+
+/// **The band's half of the caveat reaches the picture too.**
+///
+/// The fit was already dashed when it outlived its frame. Its confidence band
+/// was not: it went on filling the same interval at the same strength, so the
+/// larger half of the mark — the interval claim itself, computed from exactly
+/// the rows the frame excludes — still read as a statement about what is on
+/// screen. Half the mark said "this summarises data outside the frame" and half
+/// did not.
+///
+/// Asserted on an EXPORTED PNG for the same reason the fit's own dash is: the
+/// panel's sentence does not travel with a screenshot, and the picture is what
+/// people keep. Nothing here reads the renderer's intent — an edge requested
+/// but clipped away, or drawn at an alpha that never separates from the fill,
+/// scores as untreated.
+///
+/// **What this does NOT hold is the rhythm.** Column counts say the band's
+/// boundary carries ink it did not carry before; they say nothing about that
+/// ink being broken on the fit's own 6-on/4-off period, because the band's two
+/// edges dash independently and partly fill each other's gaps. The renderer's
+/// `the_bands_caveat_is_the_fits_own_dash_and_not_a_second_vocabulary` holds the
+/// rhythm, against the encoded scene where the two edges can be told apart.
+/// Name the test that fails.
+#[test]
+fn the_unrescoped_fits_band_is_edged_in_the_exported_picture() {
+    use brightfield_shell::capture::capture_vello_only;
+
+    let dir = std::env::temp_dir().join(format!("bf-unrescoped-band-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+
+    let (mut dash, first) =
+        live_spec(example("regression.yaml").to_str().unwrap()).expect("the fixture loads live");
+    let plot = first.plots[0].path.clone();
+    let before_png = dir.join("full-extent.png");
+    capture_vello_only(first, 1.0, &before_png).expect("export at full extent");
+
+    let zoomed = zoom_to(&mut dash, &plot);
+    // The premise, asserted first: the fit really did decline, so this cannot
+    // pass by the decline having quietly gone away.
+    let declined = dash.declined_navigation(&plot);
+    assert_eq!(
+        declined.len(),
+        1,
+        "expected exactly the fit to decline, got {declined:?}"
+    );
+    assert_eq!(declined[0].kind.to_string(), "regressionY");
+
+    let after_png = dir.join("navigated.png");
+    capture_vello_only(zoomed, 1.0, &after_png).expect("export at the extent");
+
+    let untreated = band_edge_ink_columns(&before_png);
+    let treated = band_edge_ink_columns(&after_png);
+
+    assert!(
+        untreated <= 40,
+        "the full-extent picture already carries {untreated} columns of edge-strength \
+         band ink, and its band has no edge — so this measure is picking up something \
+         else and the comparison below would prove nothing"
+    );
+    assert!(
+        treated >= 200,
+        "the navigated export carries {treated} columns of edge-strength band ink \
+         against the full-extent picture's {untreated}. The band is the interval claim \
+         and it is the larger half of this mark: if it draws the same either way, the \
+         reader holding this screenshot is told the fit outlived its frame and shown a \
+         confidence interval that says otherwise"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// **The ink and the rail sentence are independent statements of the same
 /// fact.** Neither is derived from the other, and losing one must not take the
 /// other with it.
