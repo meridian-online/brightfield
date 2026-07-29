@@ -766,7 +766,8 @@ fn min_max(a: f64, b: f64) -> (f64, f64) {
 ///
 /// - An **interval** sweep becomes [`SqlPredicate::Interval`] per swept axis
 ///   (both, `And`-ed, for `intervalXY`), bounds inverted through the plot's
-///   displayed scales.
+///   displayed scales — from the corners of the rectangle [`drag_rect`] paints,
+///   so what the sweep selects is what the sweep drew.
 /// - An interval **click** (no sweep) retracts this plot's contribution —
 ///   the click-clears convention.
 /// - A **point** click becomes [`SqlPredicate::Point`] over the category the
@@ -784,7 +785,22 @@ fn resolve_gesture(binding: &GestureBinding, plot: &PlotHandle, drag: Drag) -> O
                     contributor: binding.contributor.clone(),
                 });
             }
-            let predicate = interval_predicate(binding, plot, drag.start, drag.current)?;
+            // Resolve the bounds from the rectangle that was PAINTED, not from
+            // the raw pointer. `drag_rect` is the one place the drag is clamped
+            // to the data area, and this is the same call the overlay makes, so
+            // the SQL and the ink cannot disagree. Inverting the raw pointer
+            // instead feeds `Scale::inverse_f64` a pixel outside the scale's own
+            // range, and it extrapolates rather than clamping — a sweep begun in
+            // the margin then selects a band of data no part of the rectangle
+            // ever covered, which on a `view_extent`-overridden domain is real
+            // rows rather than empty space.
+            let painted = drag_rect(plot, drag);
+            let predicate = interval_predicate(
+                binding,
+                plot,
+                kurbo::Point::new(painted.x, painted.y),
+                kurbo::Point::new(painted.x + painted.width, painted.y + painted.height),
+            )?;
             Some(Interaction::Select {
                 name: binding.selection.clone(),
                 contributor: binding.contributor.clone(),
@@ -808,6 +824,13 @@ fn resolve_gesture(binding: &GestureBinding, plot: &PlotHandle, drag: Drag) -> O
 /// The structured interval clause(s) a sweep from `a` to `b` (raster-local)
 /// means on this plot: per-axis `Interval`s, `And`-ed when the binding
 /// sweeps both.
+///
+/// `a` and `b` are the opposite corners of the rectangle the overlay PAINTS —
+/// [`drag_rect`]'s output, already clamped to the data area — not the raw
+/// pointer. Callers must keep it that way: the corners are inverted through
+/// scales whose pixel range is the data area, and `Scale::inverse_f64`
+/// extrapolates outside it rather than clamping, so a corner from beyond the
+/// frame resolves to a bound the painted rectangle never reached.
 fn interval_predicate(
     binding: &GestureBinding,
     plot: &PlotHandle,
@@ -1117,13 +1140,18 @@ mod tests {
     const DATA_BOTTOM: f64 = 270.0; // 100 + 200 - margin.bottom 30
 
     /// The `plot` helper's handle, re-placed at [`PLACED`] with the layout
-    /// that placement implies. Scales are irrelevant to `drag_rect` — it is
-    /// pure geometry — so the set stays empty.
-    fn placed(kind: BrushKind) -> PlotHandle {
-        let mut plot = plot(ScaleSet::new(), kind);
+    /// that placement implies, carrying `scales`.
+    fn placed_with(scales: ScaleSet, kind: BrushKind) -> PlotHandle {
+        let mut plot = plot(scales, kind);
         plot.rect = PLACED;
         plot.layout = ChartLayout::new(PLACED.width, PLACED.height);
         plot
+    }
+
+    /// The same handle with no scales at all. Scales are irrelevant to
+    /// `drag_rect` — it is pure geometry — so the set stays empty.
+    fn placed(kind: BrushKind) -> PlotHandle {
+        placed_with(ScaleSet::new(), kind)
     }
 
     fn drag(start: (f64, f64), current: (f64, f64)) -> Drag {
@@ -1221,17 +1249,107 @@ mod tests {
         assert!(close(r.y, 150.0) && close(r.height, 50.0), "y {r:?}");
     }
 
-    /// The data area the brush clamps to is the one the RENDERER uses — the
-    /// rect it clips the frame and draws the axis lines against — not a second
-    /// notion of "the plot area" invented beside it.
+    // The claim "the brush clamps to the renderer's own plot rect" is made by
+    // the three tests above, in hardcoded raster constants. It was also made by
+    // a fourth test that asserted the output against
+    // `plot.rect.x + plot.layout.plot_x_start()` — the implementation
+    // expression, copied. Both sides moved together, so it was blind: adding
+    // 7px to `plot_x_start()` left it green while all three constant-based
+    // tests reddened. It is deleted rather than rewritten because the renderer
+    // has no independent statement of the frame to check against — its
+    // `plot_area_rect` (scene.rs) is private and computes the identical
+    // expression from the identical accessors, so routing the assertion
+    // through it would swap one re-derivation for another. The constants are
+    // the independent statement.
+
+    // -- The predicate is the painted rectangle ----------------------------
+
+    /// The SQL and the ink describe the same rectangle.
+    ///
+    /// A drag begun out in the left margin paints from the frame edge — that
+    /// is the clamp above — so it must SELECT from the frame edge too.
+    /// Resolving the bound from the raw pointer instead inverts a pixel that
+    /// lies outside the scale's own range, and `inverse_f64` extrapolates
+    /// rather than clamps: the bound lands outside the domain, and on a plot
+    /// whose `view_extent` has overridden that domain there is real data out
+    /// there for it to select — rows the rectangle never covered.
     #[test]
-    fn the_brush_clamps_to_the_renderers_own_plot_rect() {
-        let plot = placed(BrushKind::IntervalXY);
-        let r = drag_rect(&plot, drag((0.0, 0.0), (900.0, 900.0)));
-        assert!(close(r.x, plot.rect.x + plot.layout.plot_x_start()));
-        assert!(close(r.x + r.width, plot.rect.x + plot.layout.plot_x_end()));
-        assert!(close(r.y, plot.rect.y + plot.layout.plot_y_start()));
-        assert!(close(r.y + r.height, plot.rect.y + plot.layout.plot_y_end()));
+    fn a_sweep_begun_in_the_margin_selects_only_what_it_painted() {
+        let mut scales = ScaleSet::new();
+        // A plot's positional range IS its data area, in plot-local pixels:
+        // 40..280 across a 300-wide plot at the default margins.
+        scales.insert(Channel::X, linear((40.0, 280.0), (0.0, 100.0)));
+        let plot = placed_with(scales, BrushKind::IntervalX);
+        let binding = plot.gesture.clone().expect("bound");
+
+        // Down 35px inside the left margin, released well within the frame.
+        let swept = drag((205.0, 150.0), (360.0, 200.0));
+
+        // What the user saw: a rectangle that starts at the frame edge,
+        // 35px right of where the pointer went down.
+        let painted = drag_rect(&plot, swept);
+        assert!(close(painted.x, DATA_LEFT), "painted left {painted:?}");
+
+        let Some(Interaction::Select { predicate, .. }) = resolve_gesture(&binding, &plot, swept)
+        else {
+            panic!("a sweep selects");
+        };
+        let SqlPredicate::Interval { lo, hi, .. } = &predicate else {
+            panic!("an x sweep is one interval, got {predicate:?}");
+        };
+        let (ScalarValue::Float(lo), ScalarValue::Float(hi)) = (lo, hi) else {
+            panic!("linear bounds are floats");
+        };
+
+        // The painted left edge is raster 240 = plot-local 40 = the domain's
+        // own start, 0. NOT the -14.583 the raw pointer at raster 205
+        // extrapolates to — 14.6 units of data the rectangle never covered.
+        assert!(
+            close(*lo, 0.0),
+            "lo {lo}: the predicate ran past the painted rectangle"
+        );
+        // The release is inside the frame, so it is taken as dragged: raster
+        // 360 = plot-local 160, two thirds along a 40..280 range = 50.
+        assert!(close(*hi, 50.0), "hi {hi}");
+    }
+
+    /// The same rule on the other axis and the other corner, so a fix that
+    /// picks the wrong edge off the rect cannot pass: a y sweep begun above
+    /// the frame selects from the frame's TOP, which on a downward pixel
+    /// range is the domain's maximum.
+    #[test]
+    fn a_y_sweep_begun_above_the_frame_selects_only_what_it_painted() {
+        let mut scales = ScaleSet::new();
+        // y runs downward: plot-local 170 (bottom) is the domain min, 20 the max.
+        scales.insert(Channel::Y, linear((170.0, 20.0), (0.0, 100.0)));
+        let plot = placed_with(scales, BrushKind::IntervalY);
+        let binding = plot.gesture.clone().expect("bound");
+
+        // Down 15px above the frame, in the top margin.
+        let swept = drag((300.0, 105.0), (310.0, 195.0));
+
+        let painted = drag_rect(&plot, swept);
+        assert!(close(painted.y, DATA_TOP), "painted top {painted:?}");
+
+        let Some(Interaction::Select { predicate, .. }) = resolve_gesture(&binding, &plot, swept)
+        else {
+            panic!("a sweep selects");
+        };
+        let SqlPredicate::Interval { lo, hi, .. } = &predicate else {
+            panic!("a y sweep is one interval, got {predicate:?}");
+        };
+        let (ScalarValue::Float(lo), ScalarValue::Float(hi)) = (lo, hi) else {
+            panic!("linear bounds are floats");
+        };
+
+        // Raster 195 = plot-local 95, halfway up a 170..20 range = 50.
+        assert!(close(*lo, 50.0), "lo {lo}");
+        // The painted top edge is raster 120 = plot-local 20 = the domain's
+        // own maximum, 100. NOT the 110 the raw pointer at raster 105 reaches.
+        assert!(
+            close(*hi, 100.0),
+            "hi {hi}: the predicate ran past the painted rectangle"
+        );
     }
 
     /// One implementation, every mark kind: the parameterisation is total —
