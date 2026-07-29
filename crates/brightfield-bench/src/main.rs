@@ -206,6 +206,72 @@ const SCENARIOS: &[SpecDef] = &[
 /// with `brightfield-shot` and a `range(N)` spec. Re-run both before moving this.
 const FRAME_DRAWN_ROW_CAP: u64 = 100_000;
 
+/// The largest one-scatter dot count MEASURED to ink a frame — the last count
+/// below the `seg_counts` ceiling, from the table on [`FRAME_DRAWN_ROW_CAP`].
+///
+/// This is the number a record has to state. [`FRAME_DRAWN_ROW_CAP`] is a
+/// policy cap chosen to sit under it with margin; quoting the cap as "what the
+/// renderer can do" understates the renderer by the margin and, worse, names
+/// a harness constant as though it were a property of the machine.
+const MEASURED_INKED_MAX: u64 = 104_600;
+
+/// The smallest one-scatter dot count MEASURED to come back BLANK: vello
+/// returns `Ok`, a frame is written, and every pixel is `rgba(0, 0, 0, 0)`.
+///
+/// The gap to [`MEASURED_INKED_MAX`] is the bracket the probe resolved to, not
+/// a tolerance — the onset depends on how much rule each dot contributes, so
+/// it is fixture-specific rather than a constant of the renderer.
+const MEASURED_BLANK_MIN: u64 = 104_800;
+
+/// `bin_data`, the second and exact ceiling: 2^18 elements, one consumed per
+/// solid-colour draw, so the subtraction underflows a u32 at 2^18 filled paths.
+const VELLO_BIN_DATA_ELEMENTS: u64 = 1 << 18;
+
+/// Where that underflow first fired in the probe fixture, measured to the row:
+/// [`VELLO_BIN_DATA_ELEMENTS`] less the 42 paths of frame, grid and axis rule
+/// the plot carries. 262 101 dots exits 0 (blank); 262 102 exits 101.
+const VELLO_BIN_DATA_PANIC_DOTS: u64 = 262_102;
+
+// The relationships between the four numbers above are the guard, and they are
+// compile-time facts — so the build checks them, rather than a test that has to
+// be run to say so.
+//
+// The cap must stay UNDER the largest count measured to ink a frame: a cap at
+// or above `MEASURED_BLANK_MIN` would let the harness time a frame already
+// proven blank, which is the defect the cap exists to prevent.
+const _: () = assert!(FRAME_DRAWN_ROW_CAP < MEASURED_INKED_MAX);
+const _: () = assert!(MEASURED_INKED_MAX < MEASURED_BLANK_MIN);
+// The second ceiling is derived, not observed loose: 2^18 elements less the 42
+// paths of furniture. Edit either number without the other and this stops
+// holding.
+const _: () = assert!(VELLO_BIN_DATA_ELEMENTS - 42 == VELLO_BIN_DATA_PANIC_DOTS);
+const _: () = assert!(VELLO_BIN_DATA_PANIC_DOTS > MEASURED_BLANK_MIN);
+
+/// Why a frame suite was declined, in the words a reader of the record sees.
+///
+/// The string this replaced said the primitive count "exceeds the
+/// {FRAME_DRAWN_ROW_CAP} the renderer can encode in one scene buffer — the
+/// frame does not render at all". Both halves are refuted by the measurement
+/// documented on [`FRAME_DRAWN_ROW_CAP`]. The cap is this harness's POLICY
+/// number, not what the renderer can encode — the renderer inks past it, up to
+/// [`MEASURED_INKED_MAX`]. And "one scene buffer" pointed at the storage-buffer
+/// binding size, which this adapter reports as 4 GiB and which does not bind;
+/// what binds is vello's FIXED 2^21-element `seg_counts`, which no adapter
+/// limit moves. A reader given the old sentence goes looking for a bigger GPU.
+fn frames_skipped_reason(drawn_primitives: u64) -> String {
+    format!(
+        "{drawn_primitives} row-level primitives is past the MEASURED \
+         drawn-primitive ceiling: {MEASURED_INKED_MAX} dots is the largest \
+         count measured to ink a frame and {MEASURED_BLANK_MIN} the smallest \
+         measured to come back BLANK — vello returns Ok, a frame is written, \
+         and every pixel is transparent. The ceiling is vello's fixed \
+         2^21-element seg_counts buffer, NOT a device limit: this adapter \
+         reports a 4 GiB max storage buffer binding size and no adapter limit \
+         moves seg_counts. The harness declines the suite at \
+         {FRAME_DRAWN_ROW_CAP} rather than time a picture that is not there."
+    )
+}
+
 /// The device-pixel scale frames render at — 2.0 matches the Retina-class
 /// displays the live window actually runs on.
 const FRAME_SCALE: f32 = 2.0;
@@ -429,7 +495,7 @@ const METHODOLOGY: &[&str] = &[
     "steady frames draw with nothing changing (the shell's floor). interaction frames each push one committed brush step through the live document before drawing, so they carry re-query + re-composite + canvas re-raster + GPU wait.",
     "The composed scene draws EVERY materialised Arrow chunk: a mark's result batches are assembled into one drawable batch (assemble_batches), the same path the presentation layer uses. drawn_rows vs materialised_rows is the cross-check — they are equal, so the drawn picture holds every row the query answered (the raw-dot scenario spans many ~2048-row chunks and still draws them all). A future regression that reintroduced a first-chunk cap would show drawn_rows < materialised_rows here; an assembly that could not proceed fails the run loudly by name rather than reporting a smaller drawn count.",
     "cold open = Coordinator::load (DDL, no mark queries) then the first full materialisation of every mark, on a session in the same process; the Parquet file is warm in the OS page cache.",
-    "Datasets are deterministic pure functions of the row index via DuckDB hash() — no RNG. Frame suites are capped by DRAWN row-level primitives, not by table rows: a scenario's row-per-mark marks each contribute one primitive per materialised row, and above one million summed primitives the composed scene exceeds the renderer's max buffer binding size and the frame does not render AT ALL (on the reference machine the process aborts inside the wgpu validation layer, so the harness cannot record an error — only skip). Engine suites run at every magnitude regardless. This cap became load-bearing when the compose began assembling every Arrow chunk instead of the first: a record measured before that change reports frame times for scenes that were drawing ~2048 rows per mark, whatever its row column says.",
+    "Datasets are deterministic pure functions of the row index via DuckDB hash() — no RNG. Frame suites are capped by DRAWN row-level primitives, not by table rows: a scenario's row-per-mark marks each contribute one primitive per materialised row, an aggregating mark contributes none, and past the drawn-primitive ceiling the frame comes back BLANK. THE CEILING IS MEASURED, NOT INHERITED, and it is not the cap: on the reference machine through the production render path, 104600 dots is the largest count that inked a frame and 104800 the smallest that came back with every pixel rgba(0,0,0,0). It is vello's FIXED 2^21-element seg_counts buffer and NOT a device limit — this adapter reports a 4 GiB max storage buffer binding size, and no adapter limit moves seg_counts. Vello sets a failed bit in a GPU-side counter, does not re-run coarse and returns Ok, so nothing in the render path raises an error and a blank frame is indistinguishable from a fast one by timing alone; the harness therefore declines the suite at a policy cap of 100000, under the measured ceiling with margin, rather than time a picture that is not there. A second and exact ceiling sits an order of magnitude above: bin_data is 2^18 elements and the encode panics at 262102 dots in that fixture. Engine suites run at every magnitude regardless. This cap became load-bearing when the compose began assembling every Arrow chunk instead of the first: a record measured before that change reports frame times for scenes that were drawing ~2048 rows per mark, whatever its row column says.",
     "The emitted SQL applies a selection predicate INSIDE an aggregating mark's query — it filters the base rows that get aggregated (row-level marks are wrapped whole). The aggregating scenarios keep their original brush-the-binned-column shape so the measured series stays comparable across harness runs.",
     "Each scenario's engine suites run twice on identical code: automatic pre-aggregation enabled (the shipped configuration) and disabled (the direct-query control). The delta between the two brush-step latencies is the layer's contribution. Cube engagement is verified per run — engaged and serving where the scenario expects it, silent where it does not — and a run whose cube behaviour contradicts the expectation FAILS instead of reporting.",
     "Active interval dimensions enter a cube at RAW data values in this first cut (answer-exactness over cube size). A cube over a ~unique-per-row brushed column (brush-density's value_a) therefore approaches the base table's size and buys little; the bounded-cardinality scenario (brush-binned-density, forty distinct brushed values) and the crosswalk scenario measure the shape the layer is built for. Frame suites run in the shipped configuration only.",
@@ -523,11 +589,7 @@ fn run(root: &Path, args: &Args) -> Result<Vec<PathBuf>, String> {
             let frames_skipped = if args.skip_frames {
                 Some("--skip-frames".to_string())
             } else if frames_capped {
-                Some(format!(
-                    "{drawn_primitives} row-level primitives exceeds the \
-                     {FRAME_DRAWN_ROW_CAP} the renderer can encode in one \
-                     scene buffer — the frame does not render at all"
-                ))
+                Some(frames_skipped_reason(drawn_primitives))
             } else {
                 None
             };
@@ -1049,6 +1111,76 @@ mod tests {
         assert!(caps("crossfilter-dots", 10_000_000));
         // Aggregating-only scenes never hit it: their picture is O(bins).
         assert!(!caps("slider-drag", 10_000_000));
+    }
+
+    /// A blank frame was explained, on every surface a reader could reach, by a
+    /// mechanism that measurement refuted: the storage-buffer binding size (4
+    /// GiB on this adapter — it does not bind) and a wgpu validation abort
+    /// (vello returns `Ok`; the frame is written and empty). Sending a reader
+    /// after a bigger GPU is worse than saying nothing.
+    ///
+    /// Checked on ALL THREE surfaces because they fail independently: the
+    /// README is read before a run, `METHODOLOGY` ships inside every record,
+    /// and `frames_skipped_reason` is the sentence printed against the very
+    /// cell that has no number in it.
+    #[test]
+    fn no_surface_still_explains_a_blank_frame_with_the_refuted_mechanism() {
+        let flatten = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        let methodology = flatten(&METHODOLOGY.join("\n"));
+        let readme = flatten(BENCH_README);
+        let reason = flatten(&frames_skipped_reason(200_000));
+
+        for (surface, text) in [
+            ("README", &readme),
+            ("methodology", &methodology),
+            ("skip reason", &reason),
+        ] {
+            for refuted in [
+                "aborts inside the wgpu validation layer",
+                "max_*_buffer_binding_size",
+                "exceeds the renderer's max buffer binding size",
+                "the renderer can encode in one scene buffer",
+            ] {
+                assert!(
+                    !text.contains(refuted),
+                    "the {surface} still explains a blank frame with {refuted:?}"
+                );
+            }
+        }
+    }
+
+    /// AC5's ask, on the surfaces that can carry it without a re-run: the
+    /// MEASURED ceiling, not only the policy cap. A record that states 100000
+    /// and stops has told the reader a harness constant and called it a
+    /// property of the renderer.
+    #[test]
+    fn every_generated_surface_states_the_measured_ceiling_not_only_the_cap() {
+        let flatten = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        let methodology = flatten(&METHODOLOGY.join("\n"));
+        let reason = flatten(&frames_skipped_reason(200_000));
+        // The README writes its figures for humans, with thousands separators.
+        let readme = flatten(BENCH_README);
+
+        for (surface, text, inked, blank) in [
+            ("methodology", &methodology, "104600", "104800"),
+            ("skip reason", &reason, "104600", "104800"),
+            ("README", &readme, "104,600", "104,800"),
+        ] {
+            assert!(
+                text.contains(inked) && text.contains(blank),
+                "the {surface} must state the measured bracket, not only the cap"
+            );
+            assert!(
+                text.contains("seg_counts"),
+                "the {surface} must name what actually sets the ceiling"
+            );
+        }
+        // The cap may still be named — it is what the harness enforces — but
+        // never as the renderer's own limit.
+        assert!(
+            reason.contains(&FRAME_DRAWN_ROW_CAP.to_string()),
+            "the reason must still say where the harness drew its line"
+        );
     }
 
     /// The schema id must move when the field set does. v2 shipped

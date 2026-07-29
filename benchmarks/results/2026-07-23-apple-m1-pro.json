@@ -1,5 +1,83 @@
 {
   "schema": "brightfield-bench/v2",
+  "record_status": {
+    "state": "frame_cells_withdrawn",
+    "superseded_by": "2026-07-27-apple-m1-pro.json",
+    "annotation": "Added by hand on 2026-07-29, after the fact. STRICTLY ADDITIVE: no measured value in this record was altered. Every number below this block is exactly as the harness serialised it.",
+    "warning": "DO NOT QUOTE THE FRAME COLUMNS OF THIS RECORD. They are honest timings of a scene that is not the one their Rows column names: the compose of this era drew a mark's FIRST Arrow chunk only, so every frame cell here timed about 2048 primitives per row-level mark whatever the row count beside it says (see first_batch_rows). No cell in this record is above the measured render ceiling, and none of them timed a blank frame - but none of them measures frame time at its stated row count either. The engine, latency, cold-open and cube columns are unaffected and stand.",
+    "frame_cap_at_capture": {
+      "constant": "DOTS_FRAME_ROW_CAP",
+      "value": 1000000,
+      "unit": "TABLE ROWS, not drawn primitives",
+      "applies_to": "the crossfilter-dots scenario only",
+      "note": "A table-row cap on one scenario. It is why crossfilter-dots @ 10000000 has no frame cells while brush-density @ 10000000 does."
+    },
+    "frame_cap_now": {
+      "constant": "FRAME_DRAWN_ROW_CAP",
+      "value": 100000,
+      "unit": "drawn row-level primitives",
+      "applies_to": "every scenario",
+      "source": "crates/brightfield-bench/src/main.rs",
+      "note": "A POLICY cap, chosen to sit under the measured ceiling with margin. It is not what the renderer can encode - the renderer inks up to 104600."
+    },
+    "measured_frame_render_ceiling": {
+      "inked_max_dots": 104600,
+      "blank_min_dots": 104800,
+      "unit": "drawn row-level primitives (dots)",
+      "cause": "vello 0.9's FIXED 2^21-element seg_counts buffer",
+      "is_a_device_limit": false,
+      "why_not_a_device_limit": "No adapter limit moves seg_counts. This adapter reports a 4 GiB max storage buffer binding size, which does not bind. A bigger GPU does not raise this ceiling.",
+      "failure_mode": "Past the ceiling vello sets a failed bit in a GPU-side counter, does not re-run coarse, and returns Ok. The frame is written and every pixel is rgba(0,0,0,0) - blank, not thinned; segments and ptcl come back zero. Nothing raises an error, so a blank frame is indistinguishable from a fast one by timing alone.",
+      "measured_on": "Apple M1 Pro (Metal), through the production render path: brightfield-shot --vello-only, one dot scatter in a 640x480 plot at scale 2.",
+      "fixture_specific": "Onset depends on how much rule each dot contributes, so the bracket is specific to that fixture rather than a constant of the renderer.",
+      "second_ceiling": {
+        "panics_at_dots": 262102,
+        "cause": "bin_data is 2^18 = 262144 elements and one solid-colour draw consumes one, so the subtraction underflows a u32 at 2^18 filled paths. That fixture carries 42 paths of frame, grid and axis rule: 262144 - 42 = 262102, to the row.",
+        "note": "262101 dots exits 0 and is blank; 262102 exits 101."
+      }
+    },
+    "cells_above_the_measured_ceiling": {
+      "count": 0,
+      "note": "None. Every frame cell here drew at most 4096 primitives (2048 per row-level mark; crossfilter-dots has two such marks), which is two orders of magnitude below the 104600 boundary."
+    },
+    "frame_cells_todays_harness_would_skip": {
+      "count": 6,
+      "of_rows_carrying_frame_cells": 11,
+      "note": "Drawn primitives are counted as they would be TODAY - the compose assembles every chunk, so a row-level mark contributes one primitive per table row.",
+      "cells": [
+        {
+          "scenario": "crossfilter-dots",
+          "rows": 100000,
+          "drawn_primitives_today": 200000
+        },
+        {
+          "scenario": "brush-density",
+          "rows": 1000000,
+          "drawn_primitives_today": 1000000
+        },
+        {
+          "scenario": "brush-binned-density",
+          "rows": 1000000,
+          "drawn_primitives_today": 1000000
+        },
+        {
+          "scenario": "crossfilter-dots",
+          "rows": 1000000,
+          "drawn_primitives_today": 2000000
+        },
+        {
+          "scenario": "brush-density",
+          "rows": 10000000,
+          "drawn_primitives_today": 10000000
+        },
+        {
+          "scenario": "brush-binned-density",
+          "rows": 10000000,
+          "drawn_primitives_today": 10000000
+        }
+      ]
+    }
+  },
   "machine": {
     "cpu": "Apple M1 Pro",
     "logical_cpus": "8",
