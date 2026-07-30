@@ -221,6 +221,10 @@ fn warning_wire_name(warning: &ParseWarning) -> String {
         ParseWarning::HighlightOnAggregate { mark, .. } => mark.clone(),
         ParseWarning::UnknownOption { key, .. } => key.clone(),
         ParseWarning::UnknownAggregate { name, .. } => name.clone(),
+        // The transform, not the channel. A banner headlined `x` names
+        // something every spec in the corpus contains; `bin` names the word
+        // the author actually wrote and can search their own file for.
+        ParseWarning::UnconsumedChannelTransform { transform, .. } => transform.clone(),
         ParseWarning::NonNumericInset { attribute }
         | ParseWarning::NonStringLabel { attribute } => attribute.clone(),
         ParseWarning::UnknownProjection { value } => value.clone(),
@@ -253,7 +257,9 @@ fn warning_surface(warning: &ParseWarning) -> &'static str {
         ParseWarning::NonNumericInset { .. }
         | ParseWarning::NonStringLabel { .. }
         | ParseWarning::UnknownProjection { .. } => "plot",
-        ParseWarning::UnknownAggregate { .. } => "channel",
+        ParseWarning::UnknownAggregate { .. } | ParseWarning::UnconsumedChannelTransform { .. } => {
+            "channel"
+        }
         ParseWarning::UnknownOption { .. } | ParseWarning::VersionMismatch { .. } => "spec",
     }
 }

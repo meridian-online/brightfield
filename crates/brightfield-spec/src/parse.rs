@@ -182,6 +182,19 @@ pub const AGGREGATE_CHANNEL_FIELDS: &[&str] = &["fill", "r"];
 /// carry as a plain object; only a genuinely unknown key warns.
 const CHANNEL_TRANSFORM_KEYS: &[&str] = &["sql"];
 
+/// The mark channels a renderer maps to ink. A single-key map on one of these
+/// is a request to *compute* the channel — `x: {bin: t}`, `y: {count:}` — and
+/// no lowerer computes any of them, so each one is a hole in the drawing
+/// rather than an ignored knob.
+///
+/// Deliberately narrower than [`crate::vocab::CONSUMED_MARK_OPTION_KEYS`],
+/// which also carries scalars (`bins`, `binWidth`, `thresholds`, `geometry`,
+/// `type`, `filterBy`) read as plain values that never carry a transform.
+/// Warning on those would be guessing at a shape the corpus does not show.
+const RENDERED_CHANNEL_FIELDS: &[&str] = &[
+    "x", "y", "x1", "y1", "x2", "y2", "fill", "stroke", "size", "text",
+];
+
 /// Wire format of the source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -393,6 +406,25 @@ pub enum ParseWarning {
         /// order the collector reads them.
         missing: Vec<String>,
     },
+
+    /// A channel the renderer maps carried a single-key **transform** map —
+    /// `x: {bin: t}`, `y: {count:}` — that no lowerer computes. The channel is
+    /// held in the AST as a plain object, the renderer's channel extraction
+    /// finds no column in it, and the mark draws nothing at all.
+    ///
+    /// Distinct from [`ParseWarning::UnconsumedMarkOption`], which is about a
+    /// *key* nothing reads. Here the key is one the renderer very much reads;
+    /// it is the *value shape* that has no reader. That is why the key-level
+    /// check passes silently and this one is needed: `x` is on
+    /// [`crate::vocab::CONSUMED_MARK_OPTION_KEYS`], so an unconsumed transform
+    /// sitting on it was the one degradation that cost a whole frame and said
+    /// nothing.
+    UnconsumedChannelTransform {
+        /// The channel the transform sat on (e.g. `x`).
+        channel: String,
+        /// The transform key as written (e.g. `bin`, `count`).
+        transform: String,
+    },
 }
 
 impl fmt::Display for ParseWarning {
@@ -498,6 +530,15 @@ impl fmt::Display for ParseWarning {
                     .map(|k| format!("`{k}:`"))
                     .collect::<Vec<_>>()
                     .join(", ")
+            ),
+            // Says the cost, not just the fact. `x: {bin: t}` does not degrade
+            // the mark, it empties it — and the author is looking at a blank
+            // frame, so the line has to account for the whole blank frame or
+            // they will keep looking elsewhere.
+            Self::UnconsumedChannelTransform { channel, transform } => write!(
+                f,
+                "channel `{channel}` asks for `{transform}`, which brightfield does not compute — \
+                 the channel resolves to nothing and the mark draws no ink"
             ),
         }
     }
@@ -1144,6 +1185,7 @@ impl Walker {
                 options.insert(key.clone(), lifted);
                 continue;
             }
+            self.warn_unconsumed_channel_transform(&key, val);
             options.insert(key.clone(), self.lift_field(&key, val));
         }
         if status == ImplStatus::Implemented {
@@ -1155,6 +1197,51 @@ impl Walker {
             data,
             options,
         })
+    }
+
+    /// Name a transform sitting on a channel the renderer maps but no lowerer
+    /// computes, so an author who wrote `x: {bin: t}` and got a blank frame is
+    /// told which channel and which transform emptied it.
+    ///
+    /// Fires only for a single-key map on a [`RENDERED_CHANNEL_FIELDS`] channel
+    /// whose key is neither a lift (`{param: …}` / `{selection: …}`) nor a
+    /// recognised channel transform ([`CHANNEL_TRANSFORM_KEYS`]).
+    ///
+    /// Aggregate-capable channels never reach here: the caller tries
+    /// [`Self::maybe_aggregate_channel`] first, and for a single-key non-lift
+    /// non-`sql` map on `fill`/`r` that always returns `Some` — consuming a
+    /// recognised aggregate, or warning [`ParseWarning::UnknownAggregate`] for
+    /// an unrecognised one. Either way it has been spoken for, so there is no
+    /// guard for them here and no double line about the same key.
+    fn warn_unconsumed_channel_transform(&mut self, field: &str, v: &serde_yaml::Value) {
+        if !RENDERED_CHANNEL_FIELDS.contains(&field) {
+            return;
+        }
+        // `{param: name}` / `{selection: name}` is a param lift the lowerer
+        // does read — ordinary lifting handles it.
+        if maybe_lift(v).is_some() {
+            return;
+        }
+        let serde_yaml::Value::Mapping(m) = v else {
+            return;
+        };
+        // A multi-key map on a channel is not transform-shaped. Mosaic writes
+        // one transform per channel, so widening past a single key would start
+        // guessing at objects the corpus has not shown us.
+        if m.len() != 1 {
+            return;
+        }
+        let Some(key) = m.iter().next().and_then(|(k, _)| k.as_str()) else {
+            return;
+        };
+        if CHANNEL_TRANSFORM_KEYS.contains(&key) {
+            return;
+        }
+        self.warnings
+            .push(ParseWarning::UnconsumedChannelTransform {
+                channel: field.to_string(),
+                transform: key.to_string(),
+            });
     }
 
     /// Name every option key on `mark_name`'s node that no lowerer and no
