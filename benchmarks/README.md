@@ -43,8 +43,8 @@ and 10⁷ rows (columns are pure functions of the row index via DuckDB `hash()`
   other. The row-per-mark shape: both the data path and the picture scale
   with rows; there is nothing to pre-aggregate, and the harness verifies the
   layer stays silent. Its engine suites run at every magnitude; its frame
-  suites stop after 10⁵, because two dot plots over 10⁶ rows is 2,000,000
-  drawn primitives against a uniform 1,000,000 cap.
+  suites stop after 10⁴, because two dot plots over 10⁵ rows is 200,000
+  drawn primitives against a uniform 100,000 cap.
 - **slider-drag** — a range slider dragged across its stops, filtering every
   view. The only scenario whose gesture is not a brush, and the reason the
   record carries a `drag` field per row (see *Two gestures* below).
@@ -269,26 +269,113 @@ its spread.
 
 Frame suites are capped by **drawn row-level primitives**, not table rows. Each
 row-per-mark mark contributes one primitive per materialised row (an
-aggregating mark contributes none — its picture stays O(bins)), and above one
-million summed primitives the composed scene exceeds the renderer's
-`max_*_buffer_binding_size` and **the frame does not render at all**. On the
-reference machine the process aborts inside the wgpu validation layer, so the
-harness cannot record an error — it can only decline to try.
+aggregating mark contributes none — its picture stays O(bins)), and past the
+drawn-primitive ceiling **the frame comes back blank**.
+
+### The ceiling is measured, and it is not the cap
+
+Two numbers get confused here, so they are stated apart.
+
+| | value | what it is |
+|---|---:|---|
+| **Measured ceiling** | **104,600 inked / 104,800 blank** | where the renderer stops drawing, measured |
+| Harness cap | 100,000 | the policy line the harness declines at, chosen under the ceiling with margin |
+
+The measured bracket comes from the production render path on the reference
+machine (Apple M1 Pro, Metal) — `brightfield-shot --vello-only`, one dot
+scatter in a 640×480 plot at scale 2. 104,600 dots inks. 104,800 dots returns
+exit 0, writes a 1280×960 PNG, and **every pixel of it is `rgba(0,0,0,0)`**.
+Blank, not thinned: once the buffer overflows, coarse emits nothing at all and
+the counters come back `segments = 0`, `ptcl = 0`.
+
+**It is not a device limit, and buying a bigger GPU does not move it.** What
+overflows is vello's `seg_counts` — one of the flattening and coarse-raster
+buffers `vello_encoding` allocates at a **fixed** 2^21 elements. They do not
+scale with the scene and no wgpu limit touches them. The storage-buffer binding
+size, which an earlier revision of this section blamed, is 4 GiB on this
+adapter and does not bind.
+
+**Nothing raises an error, either.** That same revision said the process died
+inside wgpu's validation and that this was why the harness could only skip.
+It does not die: **vello returns `Ok`**. It sets a `failed` bit in a GPU-side
+counter, does not re-run coarse, and reports success — and nothing in
+brightfield reads that counter. So the blank frame is not a crash the harness
+is dodging; it is a silent success, which is the harder thing, because `Ok`
+plus a written frame is what an unattended capture records as a pass.
+
+The onset depends on how much rule each dot contributes, so the bracket is
+specific to that fixture rather than a constant of the renderer. Treat it as
+the order of magnitude it establishes, and re-measure with
+`crates/brightfield-render/tests/vello_bump_ceiling.rs` before moving anything
+that depends on it.
+
+A **second** ceiling sits an order of magnitude above and is exact: `bin_data`
+is 2^18 = 262,144 elements, one consumed per solid-colour draw, so the
+subtraction underflows a `u32` at 2^18 filled paths. That fixture carries 42
+paths of frame, grid and axis rule, and the panic first fires at 262,102 dots
+— 262,144 − 42, to the row. 262,101 exits 0 and is blank. It matters only when
+choosing a top magnitude; the blank frame arrives first and silently.
+
+### Which committed cells sit above it
+
+`slider-drag` is absent from every list below: both its marks aggregate, so its
+scene is O(bins) at every magnitude and it never approaches the ceiling.
+
+- **`2026-07-27` (current)** — nothing. Every cell that carries a frame number
+  drew at most 100,000 primitives. The two at exactly 100,000
+  (`brush-density` and `brush-binned-density` @ 10⁵) are the closest to the
+  boundary and the first to re-verify if the fixture changes.
+- **`2026-07-25`** — three cells carry frame timings for scenes above the
+  ceiling and are **withdrawn**: `crossfilter-dots` @ 10⁵ (200,000
+  primitives), `brush-density` @ 10⁶ and `brush-binned-density` @ 10⁶
+  (1,000,000 each). They were produced under the 1,000,000 cap of the day,
+  which sat an order of magnitude above the real boundary.
+- **`2026-07-23`** — none above the ceiling, for a different reason: the
+  compose of that era drew a mark's **first Arrow chunk only**, so every frame
+  cell in it timed a scene of ~2048 primitives per row-level mark whatever its
+  row column says. Its frame columns are withdrawn as frame times *at those row
+  counts*; six of its eleven would be skipped outright today.
+
+Each record states this in its own `record_status` block and at the top of its
+generated markdown, so a reader who opens one file learns it from that file.
+
+### A skip is the report, and what it does not cover
+
+Every declined row records **why**, in the JSON (`frames_skipped`) and as a
+named list under the generated table, and no timing is emitted for it. A blank
+frame cell is not a fast frame.
+
+That is a **guard, not a detector**. The harness predicts the blank from a
+primitive count it computes before rendering; it never asks the renderer
+whether the frame it produced had ink in it. Below the cap a blank frame would
+still be timed and published as a fast one — which is exactly how
+`crossfilter-dots` @ 10⁵ got its numbers in the `2026-07-25` record, under a
+cap that was legitimate at the time. Closing that needs the `failed` bit read
+back out of vello's bump counters through the shell's paint path and the suite
+failed on it; until then the cap is doing prediction's job and its margin is
+what makes it safe.
 
 The cap became load-bearing the moment the compose began assembling every
 Arrow chunk instead of the first: before that, a "ten-million-row" frame cell
-was a ~2048-row scene. Every skipped row records **why**, in the JSON
-(`frames_skipped`) and as a named list under the generated table. A blank
-frame cell is not a fast frame.
+was a ~2048-row scene.
 
-**Three cells lost frame coverage under this cap**, and the current record has
-gaps where the v2 record had numbers:
+**Six cells lost frame coverage under this cap**, and the current record has
+gaps where the v2 record had numbers. Three of them went when the cap was
+1,000,000; the other three went when it came down to 100,000 and the real
+boundary was measured:
 
-| Cell | v2 steady / interaction (p50, ms) | now |
-|---|---:|---|
-| crossfilter-dots @ 10⁶ | 1.6 / 21.8 | no frame |
-| brush-density @ 10⁷ | 1.6 / 9.0 | no frame |
-| brush-binned-density @ 10⁷ | 1.6 / 5.4 | no frame |
+| Cell | drawn primitives | v2 steady / interaction (p50, ms) | now |
+|---|---:|---:|---|
+| crossfilter-dots @ 10⁵ | 200,000 | 1.6 / 7.9 | no frame |
+| brush-density @ 10⁶ | 1,000,000 | 1.6 / 7.0 | no frame |
+| brush-binned-density @ 10⁶ | 1,000,000 | 1.6 / 4.8 | no frame |
+| crossfilter-dots @ 10⁶ | 2,000,000 | 1.6 / 21.8 | no frame |
+| brush-density @ 10⁷ | 10,000,000 | 1.6 / 9.0 | no frame |
+| brush-binned-density @ 10⁷ | 10,000,000 | 1.6 / 5.4 | no frame |
+
+The `drawn primitives` column is what the scene would carry **today**; the v2
+numbers beside it were produced by a compose that drew ~2048 per row-level
+mark, which is the whole reason they exist.
 
 Those v2 numbers are not a baseline the current record failed to beat — they
 timed scenes of ~2048 rows per row-per-mark mark, which is why they could be
