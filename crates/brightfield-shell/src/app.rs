@@ -417,6 +417,60 @@ impl ChartDoc {
         !self.active_selections.is_empty()
     }
 
+    /// **The SQL the gestures on this chart are currently holding**, as one
+    /// line — `$brush = (temp >= 8.6 AND temp <= 15.2)`, several selections
+    /// joined by ` · `. `None` when nothing is held, which is what makes a
+    /// cleared selection clear the readout rather than leave `WHERE TRUE`
+    /// standing.
+    ///
+    /// The clause text is [`LiveDashboard::selection_clauses`]'s, verbatim: the
+    /// same `Display` of the same [`SqlPredicate`](brightfield_engine::SqlPredicate)
+    /// value that goes into the
+    /// emitted query. **Not rounded and not prettified** — a brush lands on
+    /// `8.600000000000001` because inverting a pixel through a linear scale
+    /// lands there, Mosaic's `literalToSQL` renders a number as bare
+    /// `${value}` exactly the same way, and a readout that tidied the digits
+    /// would be showing a string nothing executed. Shown *is* executed, or the
+    /// readout is a second opinion about the filter rather than a view of it.
+    ///
+    /// # Why `$name = clause` and not "Filter:"
+    ///
+    /// Four things make "the filter" ambiguous, and this phrasing is chosen to
+    /// be true under all of them — it reports the VALUE a selection holds, and
+    /// claims nothing about which rows any particular query dropped.
+    ///
+    /// 1. **Crossfilter self-exclusion.** Under `select: crossfilter` a plot's
+    ///    own query omits its own clause, so "this is your filter" is false for
+    ///    exactly the plot the reader is looking at. What every consumer *does*
+    ///    agree on is what `$name` holds.
+    /// 2. **The executed WHERE is wider than this.** A static `data.filter`, a
+    ///    navigation extent pushed into a plot's query and a pushed-down sample
+    ///    are all in the SQL and in no selection store. This line is a floor on
+    ///    what ran; saying `$name =` rather than `WHERE` is what keeps it from
+    ///    reading as the whole clause.
+    /// 3. **Highlight does not filter.** Under `highlight, by: $sel` the same
+    ///    clause is projected as a per-row boolean and DIMS rows instead of
+    ///    removing them, so the word "filter" would be wrong there. "`$sel`
+    ///    holds this" is right in both modes, because it is a statement about
+    ///    the selection rather than about the rows.
+    /// 4. **Nothing held.** No entry at all — not "no filter", which would be a
+    ///    claim about the query, and not `TRUE`, which is a clause nobody drew.
+    ///
+    /// [`LiveDashboard::selection_clauses`]: crate::pipeline::LiveDashboard::selection_clauses
+    #[must_use]
+    pub fn selection_sql(&self) -> Option<String> {
+        let held = self.live.as_ref()?.selection_clauses();
+        if held.is_empty() {
+            return None;
+        }
+        Some(
+            held.iter()
+                .map(|(name, clause)| format!("${name} = {clause}"))
+                .collect::<Vec<_>>()
+                .join(" · "),
+        )
+    }
+
     /// Push one interaction through the coordinator seam and present the
     /// re-composite: the predicate goes into DuckDB, the affected marks
     /// re-query, and the identical layout/scene path repaints. Returns whether

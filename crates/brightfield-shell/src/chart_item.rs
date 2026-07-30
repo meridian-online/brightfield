@@ -60,6 +60,11 @@ use crate::navigation::{self, verb::RESET_EXTENT};
 use crate::pipeline::{GestureBinding, PlotHandle};
 use crate::starts;
 
+/// The predicate readout's status-entry id — the handle a headless test asserts
+/// the readout by, and the id that replaces the line in place rather than
+/// stacking a second one beside it as a brush is redrawn.
+pub const PREDICATE_READOUT: &str = "chart-predicate";
+
 /// How many logical pixels of wheel travel double the visible span.
 ///
 /// It is a GESTURE-SHAPE constant, not a timing one: it converts the wheel's
@@ -567,6 +572,33 @@ impl Item<ChartDoc> for ChartItem {
                 text,
                 tone: brightfield_workbench::subject::Tone::Warning,
                 hide: brightfield_workbench::subject::HideAffordance::WithRail,
+            });
+        }
+        // **The predicate readout** — the SQL the gestures on this chart are
+        // holding, said out loud instead of only executed. A chart that can
+        // report how many rows are selected but never the condition that
+        // selected them is asking to be trusted; this is the answer to "what
+        // am I looking at", and it is the condition itself, byte for byte.
+        //
+        // Leading, not trailing: it is what the reader came for, not a notice
+        // about the frame, and the trailing end is where the navigation
+        // entries and the run state stand. The wording — `$name = clause`
+        // rather than "Filter:" — is argued at [`ChartDoc::selection_sql`],
+        // which is the only place that judgement should have to be made.
+        //
+        // Dismissed by `clear-selection`, the verb that actually retracts it.
+        // `WithRail` would offer to hide a line while the state it describes
+        // went on filtering the picture, which is the one dismissal a readout
+        // like this must not have.
+        if let Some(text) = doc.selection_sql() {
+            subject = subject.with_status(brightfield_workbench::subject::StatusEntry {
+                id: PREDICATE_READOUT,
+                side: brightfield_workbench::subject::StatusSide::Leading,
+                text,
+                tone: brightfield_workbench::subject::Tone::Neutral,
+                hide: brightfield_workbench::subject::HideAffordance::Verb(Verb::new(
+                    "clear-selection",
+                )),
             });
         }
         subject
