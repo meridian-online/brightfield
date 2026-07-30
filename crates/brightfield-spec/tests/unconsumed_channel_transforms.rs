@@ -158,6 +158,45 @@ plot:
         "`fill: {{count:}}` is a consumed aggregate and must not be reported \
          as an uncomputed transform: {doubled:?}"
     );
+
+    // The multi-key case, which the widening brought into scope. It DOES reach
+    // the channel-transform check, because `maybe_aggregate_channel` bails on
+    // `m.len() != 1` — so the thing to pin is that it earns exactly ONE line,
+    // not that it earns none. Without this the test's name overpromises: it
+    // would only ever have exercised the single-key shape.
+    let multi = parse_spec(
+        r"
+data:
+  quakes: { file: data/earthquakes.parquet }
+plot:
+- mark: dot
+  data: { from: quakes }
+  x: longitude
+  y: latitude
+  fill: { avg: magnitude, orderby: time }
+",
+        Format::Yaml,
+    )
+    .expect("spec parses");
+    let about_fill: Vec<String> = multi
+        .warnings
+        .iter()
+        .filter(|w| {
+            matches!(w, ParseWarning::UnconsumedChannelTransform { channel, .. } if channel == "fill")
+                || matches!(w, ParseWarning::UnknownAggregate { field, .. } if field == "fill")
+        })
+        .map(std::string::ToString::to_string)
+        .collect();
+    assert_eq!(
+        about_fill.len(),
+        1,
+        "a multi-key map on an aggregate-capable channel must earn exactly one \
+         line — two would read as two problems: {about_fill:?}"
+    );
+    assert!(
+        about_fill[0].contains("`avg`"),
+        "and it should name the transform the author wrote: {about_fill:?}"
+    );
 }
 
 /// The corpus regression. Every vendored spec that brightfield renders

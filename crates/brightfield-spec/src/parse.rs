@@ -1222,12 +1222,19 @@ impl Walker {
     /// modifier — still pointing at the right channel, and still true that the
     /// channel is uncomputed, so it degrades honestly rather than silently.
     ///
-    /// Aggregate-capable channels never reach here: the caller tries
-    /// [`Self::maybe_aggregate_channel`] first, and for a single-key non-lift
-    /// non-`sql` map on `fill`/`r` that always returns `Some` — consuming a
-    /// recognised aggregate, or warning [`ParseWarning::UnknownAggregate`] for
-    /// an unrecognised one. Either way it has been spoken for, so there is no
-    /// guard for them here and no double line about the same key.
+    /// Aggregate-capable channels reach here only when multi-key. The caller
+    /// tries [`Self::maybe_aggregate_channel`] first, and for a **single**-key
+    /// non-lift non-`sql` map on `fill`/`r` that always returns `Some` —
+    /// consuming a recognised aggregate, or warning
+    /// [`ParseWarning::UnknownAggregate`] for an unrecognised one. Those never
+    /// arrive.
+    ///
+    /// A multi-key one does, because `maybe_aggregate_channel` bails on
+    /// `m.len() != 1`. `fill: {avg: c, orderby: t}` is therefore reported here
+    /// as an uncomputed `avg` on `fill`, which is the accurate line: brightfield
+    /// computes no windowed average on any channel. It is still exactly ONE
+    /// line — the aggregate path returned before its own warn — so there is no
+    /// guard for them here and no double report.
     fn warn_unconsumed_channel_transform(&mut self, field: &str, v: &serde_yaml::Value) {
         if !RENDERED_CHANNEL_FIELDS.contains(&field) {
             return;
