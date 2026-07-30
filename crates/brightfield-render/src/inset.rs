@@ -305,7 +305,7 @@ mod tests {
         use super::*;
         use crate::channel::{Channel, ChannelMap};
         use crate::layout::ChartLayout;
-        use crate::mark::{BarRenderer, DotRenderer};
+        use crate::mark::{BarAxis, BarRenderer, DotRenderer};
         use crate::scale::Scale;
         use arrow::array::{Float64Array, StringArray};
         use arrow::datatypes::{DataType, Field, Schema};
@@ -366,6 +366,15 @@ mod tests {
             cm
         }
 
+        /// `bar_channels` transposed — the band on y, the value on x, which is
+        /// what a `barX` binds.
+        fn barx_channels() -> ChannelMap {
+            let mut cm = ChannelMap::new();
+            cm.insert(Channel::X, "val".into());
+            cm.insert(Channel::Y, "cat".into());
+            cm
+        }
+
         #[test]
         fn scatter_fixture_insets_all_four_ends() {
             let batch = dot_batch();
@@ -390,7 +399,7 @@ mod tests {
             // (range start), only the top continuous end insets.
             let batch = bar_batch();
             let cm = bar_channels();
-            let bar = BarRenderer;
+            let bar = BarRenderer { axis: BarAxis::Y };
             let entries: Vec<MarkInsetEntry> = vec![(&batch, &cm, &bar)];
             let insets = resolve_insets_for_marks(SideInsets::default(), &entries, D);
             assert_eq!(
@@ -405,6 +414,31 @@ mod tests {
         }
 
         #[test]
+        fn barx_fixture_stays_flush_at_the_left_baseline() {
+            // The transpose, and barX's THIRD symptom — the one nobody had
+            // named. `zero_pinned_end` also reads `zero_baseline_channel()`;
+            // asked about Y for a barX it hit `domain_min()` on a Band scale,
+            // which is `None`, so the `?` bailed, no end was exempted, and the
+            // continuous x axis got the default inset at BOTH ends. The bars
+            // then floated 5 px off the baseline they are supposed to sit on.
+            // Band y → no inset; positive value x → flush at the left.
+            let batch = bar_batch();
+            let cm = barx_channels();
+            let bar = BarRenderer { axis: BarAxis::X };
+            let entries: Vec<MarkInsetEntry> = vec![(&batch, &cm, &bar)];
+            let insets = resolve_insets_for_marks(SideInsets::default(), &entries, D);
+            assert_eq!(
+                insets,
+                Insets {
+                    left: 0.0,
+                    right: D,
+                    top: 0.0,
+                    bottom: 0.0
+                }
+            );
+        }
+
+        #[test]
         fn multi_mark_exempts_baseline_if_any_mark_declares_it() {
             // A bar (declares a Y zero baseline) overlaid with a dot (does not).
             // The baseline end must stay flush because SOME mark declares it —
@@ -413,7 +447,7 @@ mod tests {
             let bcm = bar_channels();
             let dotb = dot_batch();
             let dcm = dot_channels();
-            let barr = BarRenderer;
+            let barr = BarRenderer { axis: BarAxis::Y };
             let dot = DotRenderer;
             let entries: Vec<MarkInsetEntry> = vec![(&bar, &bcm, &barr), (&dotb, &dcm, &dot)];
             let insets = resolve_insets_for_marks(SideInsets::default(), &entries, D);
@@ -430,7 +464,7 @@ mod tests {
             // axis is all-nonpositive → top stays flush, bottom insets.
             let bar = bar_batch_vals(vec![-5.0, -3.0, -2.0]);
             let bcm = bar_channels();
-            let barr = BarRenderer;
+            let barr = BarRenderer { axis: BarAxis::Y };
             let entries: Vec<MarkInsetEntry> = vec![(&bar, &bcm, &barr)];
             let insets = resolve_insets_for_marks(SideInsets::default(), &entries, D);
             assert_eq!(
@@ -446,7 +480,7 @@ mod tests {
             // both continuous ends inset.
             let bar = bar_batch_vals(vec![-3.0, 2.0, 4.0]);
             let bcm = bar_channels();
-            let barr = BarRenderer;
+            let barr = BarRenderer { axis: BarAxis::Y };
             let entries: Vec<MarkInsetEntry> = vec![(&bar, &bcm, &barr)];
             let insets = resolve_insets_for_marks(SideInsets::default(), &entries, D);
             assert_eq!(insets.top, D);

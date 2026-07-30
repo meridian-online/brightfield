@@ -1,0 +1,29 @@
+meta:
+  title: Bars X — Brightfield example
+  description: |
+    A `barX` mark — the horizontal mirror of barY. The categorical band sits on
+    the y axis and the bars run from the x=0 baseline rightward to their value,
+    which is the shape a ranked count-plot wants.
+
+      cargo run -p brightfield-shell -- examples/bars-x.yaml
+
+    Same data as `examples/bars.yaml`, transposed, so the two can be read
+    against each other. Until the renderer learned its orientation this spec
+    drew axes, gridlines and category labels and no bars at all, while exiting
+    zero — which is why `tests/bar_orientation.rs` counts mark ink rather than
+    checking that a PNG was written.
+data:
+  fruit:
+    - { name: Apples, count: 30 }
+    - { name: Pears, count: 18 }
+    - { name: Cherries, count: 45 }
+    - { name: Plums, count: 22 }
+    - { name: Figs, count: 12 }
+    - { name: Grapes, count: 38 }
+plot:
+  - mark: barX
+    data: { from: fruit }
+    x: count
+    y: name
+width: 640
+height: 480

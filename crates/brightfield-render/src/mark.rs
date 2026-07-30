@@ -700,8 +700,29 @@ impl MarkRenderer for DotRenderer {
 // BarRenderer
 // ---------------------------------------------------------------------------
 
-/// Renders bar marks as rectangles on a band (x) + linear (y) scale.
-pub struct BarRenderer;
+/// Which axis a bar mark is oriented along.
+#[derive(Clone, Copy)]
+pub enum BarAxis {
+    /// `barY`: categorical band on x, value on y, baselined at `y = 0`.
+    Y,
+    /// `barX`: categorical band on y, value on x, baselined at `x = 0`.
+    X,
+}
+
+/// Renders bar marks as rectangles spanning a categorical band on one axis and
+/// running from a zero baseline to the value on the other.
+///
+/// The `axis` discriminator is load-bearing in three places, all reading it
+/// through [`MarkRenderer::zero_baseline_channel`] or the match below, and all
+/// three were wrong for `barX` while this struct was a bare unit: the bars
+/// (band read off the wrong scale, so `band_width()` returned `None` and this
+/// returned before a single fill), the value axis (never extended to zero), and
+/// the baseline inset (never exempted, so the value axis got a 5 px gap at the
+/// end the bars are supposed to sit flush against).
+pub struct BarRenderer {
+    /// Orientation — `Y` for barY, `X` for barX.
+    pub axis: BarAxis,
+}
 
 impl MarkRenderer for BarRenderer {
     fn render(
@@ -712,74 +733,90 @@ impl MarkRenderer for BarRenderer {
         scales: &ScaleSet,
         highlight: Option<&HighlightState>,
     ) {
-        let x_col = match channel_map.get(Channel::X) {
+        let (band_channel, value_channel) = match self.axis {
+            BarAxis::Y => (Channel::X, Channel::Y),
+            BarAxis::X => (Channel::Y, Channel::X),
+        };
+
+        let band_col = match channel_map.get(band_channel) {
             Some(c) => c,
             None => return,
         };
-        let y_col = match channel_map.get(Channel::Y) {
+        let value_col = match channel_map.get(value_channel) {
             Some(c) => c,
             None => return,
         };
-        let x_scale = match scales.get(Channel::X) {
+        let band_scale = match scales.get(band_channel) {
             Some(s) => s,
             None => return,
         };
-        let y_scale = match scales.get(Channel::Y) {
+        let value_scale = match scales.get(value_channel) {
             Some(s) => s,
             None => return,
         };
 
-        let band_width = match x_scale.band_width() {
+        let band_width = match band_scale.band_width() {
             Some(bw) => bw,
             None => return,
         };
 
-        let x_str = match column_as_string(batch, x_col) {
+        let band_str = match column_as_string(batch, band_col) {
             Some(v) => v,
             None => return,
         };
-        let y_f64 = match column_as_f64(batch, y_col) {
+        let value_f64 = match column_as_f64(batch, value_col) {
             Some(v) => v,
             None => return,
         };
 
-        // Baseline: y=0 mapped through the y scale.
-        let baseline = y_scale.map_f64(0.0);
+        // Baseline: 0 mapped through the value scale.
+        let baseline = value_scale.map_f64(0.0);
 
         let n = batch.num_rows();
         for i in 0..n {
-            let cat = match x_str[i].as_deref() {
+            let cat = match band_str[i].as_deref() {
                 Some(c) => c,
                 None => continue,
             };
-            let value = match y_f64[i] {
+            let value = match value_f64[i] {
                 Some(v) => v,
                 None => continue,
             };
 
-            let cx = match x_scale.map_category(cat) {
+            let centre = match band_scale.map_category(cat) {
                 Some(p) => p,
                 None => continue,
             };
-            let py = y_scale.map_f64(value);
+            let tip = value_scale.map_f64(value);
 
-            let x0 = cx - band_width / 2.0;
-            let (y_top, y_bottom) = if py < baseline {
-                (py, baseline)
+            let band_lo = centre - band_width / 2.0;
+            let band_hi = band_lo + band_width;
+            // Order the value span low-to-high so a negative bar, and a y scale
+            // whose pixel range runs downward, both give a non-inverted Rect.
+            let (val_lo, val_hi) = if tip < baseline {
+                (tip, baseline)
             } else {
-                (baseline, py)
+                (baseline, tip)
             };
 
             let colour = resolve_colour(scales, channel_map, batch, i);
             let colour = apply_highlight(colour, i, highlight);
-            let rect = Rect::new(x0, y_top, x0 + band_width, y_bottom);
+            let rect = match self.axis {
+                BarAxis::Y => Rect::new(band_lo, val_lo, band_hi, val_hi),
+                BarAxis::X => Rect::new(val_lo, band_lo, val_hi, band_hi),
+            };
             scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &rect);
         }
     }
 
     fn zero_baseline_channel(&self) -> Option<Channel> {
-        // Bars baseline at zero on the value (y) axis.
-        Some(Channel::Y)
+        // Bars baseline at zero on the VALUE axis, so that axis's domain has to
+        // include 0. Answering Y unconditionally is what left barX's value axis
+        // starting at the data minimum and its baseline end inset off the frame.
+        match self.axis {
+            BarAxis::Y => Some(Channel::Y),
+            BarAxis::X => Some(Channel::X),
+        }
     }
 }
 
@@ -990,7 +1027,7 @@ pub enum RectKind {
 }
 
 /// Renders a rectangle per row spanning an x-extent × y-extent. Unlike
-/// [`BarRenderer`] (categorical band x + value y), rect works in a purely
+/// [`BarRenderer`] (categorical band axis + value axis), rect works in a purely
 /// quantitative frame: the extents come from `x1`/`x2`/`y1`/`y2` columns, or —
 /// for the `rectX`/`rectY` value forms — from a zero baseline to the `x`/`y`
 /// value. This is the substrate for binned 2-D charts and histograms with
@@ -3756,8 +3793,8 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
         (MarkKind::DotX, Box::new(DotRenderer)),
         (MarkKind::DotY, Box::new(DotRenderer)),
         (MarkKind::Circle, Box::new(DotRenderer)),
-        (MarkKind::BarX, Box::new(BarRenderer)),
-        (MarkKind::BarY, Box::new(BarRenderer)),
+        (MarkKind::BarX, Box::new(BarRenderer { axis: BarAxis::X })),
+        (MarkKind::BarY, Box::new(BarRenderer { axis: BarAxis::Y })),
         (MarkKind::Line, Box::new(LineRenderer)),
         (MarkKind::LineX, Box::new(LineRenderer)),
         (MarkKind::LineY, Box::new(LineRenderer)),
@@ -4104,7 +4141,7 @@ mod tests {
         let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
 
         let mut scene = Scene::new();
-        let renderer = BarRenderer;
+        let renderer = BarRenderer { axis: BarAxis::Y };
         renderer.render(&mut scene, &batch, &cm, &scales, None);
 
         let encoding = scene.encoding();
@@ -4446,7 +4483,7 @@ mod tests {
         };
 
         let mut scene = Scene::new();
-        let renderer = BarRenderer;
+        let renderer = BarRenderer { axis: BarAxis::Y };
         renderer.render(&mut scene, &batch, &cm, &scales, Some(&hs));
 
         let encoding = scene.encoding();
@@ -7113,7 +7150,7 @@ mod tests {
         let prev_positions = vec![(100.0, 100.0), (200.0, 200.0)];
 
         let mut scene = Scene::new();
-        let renderer = BarRenderer;
+        let renderer = BarRenderer { axis: BarAxis::Y };
         // Default impl should forward to render()
         renderer.render_interpolated(&mut scene, &batch, &cm, &scales, &prev_positions, 0.5, None);
 

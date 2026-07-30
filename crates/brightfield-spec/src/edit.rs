@@ -582,14 +582,19 @@ fn inherited_positional(
 /// The axis a mark kind baselines at zero on — a framework-free MIRROR of the
 /// render-side `MarkRenderer::zero_baseline_channel` (bar/area/rect value forms,
 /// mark.rs) so the classifier can predict the axis-inset flip a retype causes.
-/// `BarRenderer` baselines Y for BOTH barX and barY; area/rect
-/// value forms baseline their value axis; every other mark has no baseline.
+/// Every bar/area/rect value form baselines on its OWN value axis: barY/areaY/
+/// rectY on y, barX/areaX/rectX on x. Every other mark has no baseline.
+///
+/// This used to put `BarX` in the `y` arm, mirroring a `BarRenderer` that
+/// baselined Y for both orientations. That was the renderer's bug, not a
+/// convention, and it is fixed — so barX belongs beside areaX and rectX.
+///
 /// Keep in sync with the render-side mapping by hand: the cross-crate
 /// agreement test that pinned the two retired with the gpui shell.
 fn mark_zero_baseline_axis(kind: MarkKind) -> Option<&'static str> {
     match kind {
-        MarkKind::BarX | MarkKind::BarY | MarkKind::AreaY | MarkKind::RectY => Some("y"),
-        MarkKind::AreaX | MarkKind::RectX => Some("x"),
+        MarkKind::BarY | MarkKind::AreaY | MarkKind::RectY => Some("y"),
+        MarkKind::BarX | MarkKind::AreaX | MarkKind::RectX => Some("x"),
         _ => None,
     }
 }

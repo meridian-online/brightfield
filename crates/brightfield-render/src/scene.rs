@@ -812,7 +812,7 @@ mod tests {
     use super::*;
     use crate::channel::{Channel, ChannelMap};
     use crate::layout::ChartLayout;
-    use crate::mark::{BarRenderer, DotRenderer, GeoRenderer, LineRenderer};
+    use crate::mark::{BarAxis, BarRenderer, DotRenderer, GeoRenderer, LineRenderer};
 
     // render_slider draws exactly two shapes — the track
     // and the thumb — into the scene (headless proof the widget renders).
@@ -1229,7 +1229,7 @@ mod tests {
         cm.insert(Channel::Y, "value".to_string());
 
         let layout = ChartLayout::new(640.0, 480.0);
-        let renderer = BarRenderer;
+        let renderer = BarRenderer { axis: BarAxis::Y };
 
         let data = ChartData {
             batch: &batch,
@@ -1273,7 +1273,7 @@ mod tests {
         let data = ChartData {
             batch: &batch,
             channel_map: &cm,
-            renderer: &BarRenderer,
+            renderer: &BarRenderer { axis: BarAxis::Y },
             layout: ChartLayout::new(640.0, 480.0),
             view_extent: None,
             highlight: None,
@@ -1288,6 +1288,49 @@ mod tests {
             y.domain_min()
         );
         assert!((y.domain_max().unwrap() - 30.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn gpu_barx_zero_baseline_anchors_the_x_value_axis() {
+        // The transpose of the test above, pinning the second of barX's three
+        // symptoms. `zero_baseline_channel` used to answer Y for both
+        // orientations, so for barX it named the BAND scale —
+        // `extend_domain_to_zero` is a no-op on a Band, and the real value axis
+        // (x) was left starting at the data minimum. Values [10, 20, 30] gave a
+        // domain of [10, 30], so the bars' lengths meant nothing.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("category", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+                Arc::new(Float64Array::from(vec![10.0, 20.0, 30.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "value".to_string());
+        cm.insert(Channel::Y, "category".to_string());
+        let data = ChartData {
+            batch: &batch,
+            channel_map: &cm,
+            renderer: &BarRenderer { axis: BarAxis::X },
+            layout: ChartLayout::new(640.0, 480.0),
+            view_extent: None,
+            highlight: None,
+            sample: None,
+            beyond_frame: false,
+        };
+        let (_scene, scales) = build_chart_scene(&data);
+        let x = scales.get(Channel::X).unwrap();
+        assert!(
+            (x.domain_min().unwrap() - 0.0).abs() < f64::EPSILON,
+            "barX x-domain should start at 0, got {:?}",
+            x.domain_min()
+        );
+        assert!((x.domain_max().unwrap() - 30.0).abs() < f64::EPSILON);
     }
 
     #[test]
