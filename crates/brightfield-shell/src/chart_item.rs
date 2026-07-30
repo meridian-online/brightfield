@@ -737,34 +737,39 @@ fn drag_rect(plot: &PlotHandle, drag: Drag) -> brightfield_render::canvas_host::
     let kind = plot.gesture.as_ref().map(|g| g.kind);
     let (x0, x1) = min_max(drag.start.x, drag.current.x);
     let (y0, y1) = min_max(drag.start.y, drag.current.y);
-    let (px0, px1) = (
+    // NORMALISE THE FRAME BEFORE CLAMPING. `plot_x_end()` is `width - margins.right`
+    // and margins only ever grow, so a plot allocated narrower than its own margins
+    // yields px0 > px1 — and `f64::clamp` ASSERTS min <= max. The previous
+    // `.max(px0)`/`.min(px1)` pair could not panic; clamp can, inside the egui paint
+    // closure, on an ordinary drag. Reachable from any spec that puts a brush on a
+    // plot under ~60px wide (or ~50px tall): plot size is spec-driven with no floor
+    // and brightfield-spec ships no validator. Found by review, not by me — I wrote
+    // the clamp and verified it myself, and this is exactly what that misses.
+    let (px0, px1) = min_max(
         plot.rect.x + plot.layout.plot_x_start(),
         plot.rect.x + plot.layout.plot_x_end(),
     );
-    let (py0, py1) = (
+    let (py0, py1) = min_max(
         plot.rect.y + plot.layout.plot_y_start(),
         plot.rect.y + plot.layout.plot_y_end(),
     );
-    // BOTH corners clamp, not just the near one. `x0.max(px0)` alone leaves the
-    // ORIGIN untouched when the whole drag lies past the far edge: x0 stays out
-    // in the margin, x1 pulls back to the frame, and the `.max(0.0)` below only
-    // collapses the width — so the rect is pinned at an origin the plot does not
-    // own and strokes a zero-width line across the tick labels it is supposed to
-    // stop above. Clamping both ends degenerates the rect AT the frame edge
-    // instead, which is where a gesture that left the plot belongs.
+    // Both corners clamp, not just the near one. `x0.max(px0)` alone leaves the
+    // ORIGIN untouched when the whole drag lies past the far edge: x0 stays out in
+    // the margin, x1 pulls back to the frame, and the width collapses to zero — so
+    // the rect is pinned at an origin the plot does not own and strokes a zero-width
+    // line across the tick labels it is meant to stop above. Clamping both ends
+    // degenerates the rect AT the frame edge, which is where a gesture that left the
+    // plot belongs.
+    //
+    // Hoisted out of the `match`: the axes drifting apart inside the arms is what the
+    // previous commit had to come back and fix.
+    let (cx0, cx1) = (x0.clamp(px0, px1), x1.clamp(px0, px1));
+    let (cy0, cy1) = (y0.clamp(py0, py1), y1.clamp(py0, py1));
     let (x0, x1, y0, y1) = match kind {
-        Some(BrushKind::IntervalX | BrushKind::PointX) => {
-            (x0.clamp(px0, px1), x1.clamp(px0, px1), py0, py1)
-        }
-        Some(BrushKind::IntervalY | BrushKind::PointY) => {
-            (px0, px1, y0.clamp(py0, py1), y1.clamp(py0, py1))
-        }
-        _ => (
-            x0.clamp(px0, px1),
-            x1.clamp(px0, px1),
-            y0.clamp(py0, py1),
-            y1.clamp(py0, py1),
-        ),
+        // The locked axis spans the whole data area — that is the gesture's meaning.
+        Some(BrushKind::IntervalX | BrushKind::PointX) => (cx0, cx1, py0, py1),
+        Some(BrushKind::IntervalY | BrushKind::PointY) => (px0, px1, cy0, cy1),
+        _ => (cx0, cx1, cy0, cy1),
     };
     SurfaceRect::new(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0))
 }
@@ -1263,6 +1268,46 @@ mod tests {
         let r = drag_rect(&plot, drag((400.0, 200.0), (300.0, 150.0)));
         assert!(close(r.x, 300.0) && close(r.width, 100.0), "x {r:?}");
         assert!(close(r.y, 150.0) && close(r.height, 50.0), "y {r:?}");
+    }
+
+    /// A plot narrower than its own margins must not PANIC.
+    ///
+    /// `plot_x_end()` is `width - margins.right` and margins only ever grow, so a
+    /// small allocation inverts the frame: px0 > px1. `f64::clamp` asserts
+    /// `min <= max`, so the clamp that fixed the far-edge defect introduced an abort
+    /// where the previous `.max`/`.min` pair merely degraded. Plot size is
+    /// spec-driven with no floor and there is no validator, so a user spec with a
+    /// brush on a ~55px plot reaches this inside the egui paint closure. The vendored
+    /// corpus already contains 55px plots; none carries a brush, which is the only
+    /// reason it has not fired.
+    #[test]
+    fn an_inverted_frame_degenerates_instead_of_panicking() {
+        // 50px wide against default margins (left 40 + right 20) -> px0 40 > px1 30.
+        let narrow = Rect { x: 0.0, y: 0.0, width: 50.0, height: 200.0 };
+        for kind in [
+            BrushKind::IntervalX,
+            BrushKind::IntervalY,
+            BrushKind::IntervalXY,
+            BrushKind::PointX,
+            BrushKind::PointY,
+        ] {
+            let mut plot = plot(ScaleSet::new(), kind);
+            plot.rect = narrow;
+            plot.layout = ChartLayout::new(narrow.width, narrow.height);
+            // The assertion under test is "does not panic"; a degenerate rect is fine.
+            let r = drag_rect(&plot, drag((10.0, 50.0), (30.0, 100.0)));
+            assert!(r.width >= 0.0 && r.height >= 0.0, "{kind:?} -> {r:?}");
+        }
+
+        // And short rather than narrow: 40px tall against top 20 + bottom 30.
+        let short = Rect { x: 0.0, y: 0.0, width: 300.0, height: 40.0 };
+        for kind in [BrushKind::IntervalXY, BrushKind::IntervalY] {
+            let mut plot = plot(ScaleSet::new(), kind);
+            plot.rect = short;
+            plot.layout = ChartLayout::new(short.width, short.height);
+            let r = drag_rect(&plot, drag((100.0, 10.0), (150.0, 30.0)));
+            assert!(r.width >= 0.0 && r.height >= 0.0, "{kind:?} -> {r:?}");
+        }
     }
 
     /// AC1 at the FAR edges — the case a near-corner-only clamp gets wrong.
