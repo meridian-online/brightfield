@@ -1,15 +1,18 @@
 //! Gate: a transform on a channel we cannot compute is SAID, not swallowed.
 //!
-//! `x: { bin: delay }` + `y: { count: }` is the commonest histogram idiom in
-//! the Mosaic corpus, and brightfield computes neither half. Until this gate
-//! went in the whole thing was silent in a way nothing else is: an unknown
-//! mark errors, an unconsumed mark *option* is named, an unsubscribed param is
-//! named — but a spec whose positional channels asked to be computed parsed
-//! clean, exited zero, and drew an empty frame.
+//! An unknown mark errors, an unconsumed mark *option* is named, an
+//! unsubscribed param is named — but until this gate went in, a spec whose
+//! positional channels asked to be computed parsed clean, exited zero and drew
+//! an empty frame. It was silent for a findable reason: `x` and `y` are on
+//! `CONSUMED_MARK_OPTION_KEYS`, correctly — the renderer reads them — so the
+//! key-level check passed and nothing looked at the value SHAPE.
 //!
-//! It was silent for a findable reason. `x` and `y` are on
-//! `CONSUMED_MARK_OPTION_KEYS`, correctly — the renderer reads them. The
-//! key-level check therefore passed, and nothing looked at the value SHAPE.
+//! **The list this file pins is meant to SHRINK, and it just did.**
+//! `x: {bin: delay}` + `y: {count:}` is the commonest histogram idiom in the
+//! Mosaic corpus and brightfield now computes it, so the six vendored specs
+//! that only ever asked for that idiom went quiet in the same commit that made
+//! them draw. A gate that kept warning about a chart that now renders would be
+//! the same defect from the other side.
 //!
 //! Every proof below is a vendored, byte-for-byte unmodified upstream Mosaic
 //! spec, so what they assert is portability truth rather than a fixture
@@ -45,36 +48,44 @@ fn lines(source: &str) -> Vec<String> {
 }
 
 /// `flights-200k.yaml` is the canonical cross-filter histogram: three `rectY`
-/// plots, each binning a column on `x` and counting on `y`. Brightfield draws
-/// nothing for any of them. Both halves of the idiom are named.
+/// plots, each binning a column on `x` and counting on `y`. Brightfield now
+/// COMPUTES that idiom, so the diagnostic must be gone from it entirely.
+///
+/// This test used to assert the opposite, and inverting it is the point: the
+/// capability and the diagnostic move together or the product lies in one
+/// direction or the other. A warning on a chart that draws is how a diagnostic
+/// channel earns the habit of being ignored.
 #[test]
-fn flights_200k_bin_and_count_are_named() {
+fn flights_200k_computes_and_no_longer_speaks() {
     let found = transforms(include_str!(
         "../vendor/mosaic-specs/yaml/flights-200k.yaml"
     ));
     assert!(
-        found.contains("x:bin"),
-        "the uncomputed `bin` on `x` must be named: {found:?}"
-    );
-    assert!(
-        found.contains("y:count"),
-        "the uncomputed `count` on `y` must be named: {found:?}"
+        found.is_empty(),
+        "every channel transform in flights-200k is a positional bin or count, \
+         and both are computed — nothing here may still warn: {found:?}"
     );
 }
 
 /// The diagnostic names the CHANNEL and the TRANSFORM, and says what it cost.
 ///
-/// Asserted on the rendered message, not on the variant: AC2 of the card is
-/// that this test fails if the diagnostic is removed, and a `matches!` on the
+/// Asserted on the rendered message, not on the variant: a `matches!` on the
 /// enum would keep passing against a variant whose `Display` had been gutted.
+///
+/// Read off `protein-design.yaml`, which is where the histogram idiom still
+/// goes dark: its binned `rectY` binds `fill: version`, a GROUPING colour that
+/// Mosaic stacks. Brightfield does not stack yet, and merging the groups would
+/// draw one bar per bin that looks right and under-reports every version but
+/// one — so the lift is refused and the line stays.
 #[test]
 fn the_message_names_the_channel_the_transform_and_the_cost() {
     let rendered = lines(include_str!(
-        "../vendor/mosaic-specs/yaml/flights-200k.yaml"
+        "../vendor/mosaic-specs/yaml/protein-design.yaml"
     ));
     assert!(
         !rendered.is_empty(),
-        "flights-200k bins on `x` and counts on `y`; both must produce a line"
+        "protein-design bins on `x` and counts on `y` under a grouping fill; \
+         both must still produce a line"
     );
     let bin = rendered
         .iter()
@@ -95,11 +106,16 @@ fn the_message_names_the_channel_the_transform_and_the_cost() {
     );
 }
 
-/// A `{sql: …}` channel expression IS lowered, and a `{param: …}` channel IS
-/// bound. Neither may be reported: a diagnostic that fires on working specs
-/// is one readers learn to skip, and both shapes are single-key maps on a
-/// rendered channel, so both are exactly the near-miss this check must not
-/// take.
+/// A `{param: …}` channel IS bound, and a `{sql: …}` expression channel is
+/// carried as an ordinary object rather than mistaken for a typo'd aggregate.
+/// Neither may be reported here: both shapes are single-key maps on a rendered
+/// channel, so both are exactly the near-miss this check must not take.
+///
+/// The `sql:` half is an *exclusion*, not a claim that the expression is
+/// lowered — nothing in `brightfield-sql` or `brightfield-render` reads `sql`
+/// today. An earlier version of this docstring said it "IS lowered"; that was
+/// wrong, and it matters, because it is the reason `athlete-birth-waffle.yaml`
+/// cannot go quiet even in principle.
 #[test]
 fn computed_and_bound_channels_stay_quiet() {
     let sql = transforms(
@@ -245,33 +261,32 @@ fn only_the_specs_that_bin_or_count_positionally_are_reported() {
 }
 
 /// The vendored specs that ask for a channel transform brightfield does not
-/// compute — 18 of 54, each drawing a blank or a partial frame today, every
-/// one of them silent before this gate.
+/// compute — **12** of 54, each drawing a blank or a partial frame, every one
+/// of them silent before this gate.
 ///
-/// It was 16 until the check stopped skipping multi-key maps. `moving-average`
-/// and `window-frame` join on the windowed-average shape
-/// (`{avg: …, orderby: …, rows: …}`), and `protein-design` — already listed —
-/// went from a half-report to naming both of its marks' channels.
+/// It was 18. **Six left when the positional bin+count landed**: `crossfilter`,
+/// `flights-200k`, `flights-10m`, `gaia`, `nyc-taxi-rides` and
+/// `flights-hexbin`, whose two binned rects take both orientations. Each of
+/// those now draws a histogram, which is the only reason it is allowed to stop
+/// warning.
 ///
-/// The transforms behind them, so a reader knows what the list is made of
-/// without re-running it: the histogram idiom (`bin`, `count`), positional
-/// aggregates (`sum`, `avg`, `min`, `max`), date binning (`dateMonth`,
-/// `dateMonthDay`), geo centroids (`centroidX`, `centroidY`) and the
+/// The transforms behind what remains, so a reader knows what the list is made
+/// of without re-running it: positional aggregates (`sum`, `avg`, `min`,
+/// `max`), the windowed average (`{avg: …, orderby: …, rows: …}`), date binning
+/// (`dateMonth`, `dateMonthDay`), geo centroids (`centroidX`, `centroidY`), the
 /// param-driven column selector (`column`, as `x: { column: $x }` — the
-/// dropdown in `symbols.yaml` chooses a column nothing then resolves).
+/// dropdown in `symbols.yaml` chooses a column nothing then resolves), and one
+/// entry that is still the histogram idiom: `protein-design`, whose binned
+/// rects carry `fill: version`. Mosaic STACKS a binned rect with a grouping
+/// colour and brightfield does not yet, so the lift is refused and the
+/// diagnostic is the truth about that chart.
 ///
 /// This list SHRINKING is the point: each entry that leaves is a capability
 /// that landed. Nothing here is a defect in this check.
 const EXPECTED_SPEAKING: &[&str] = &[
     "athlete-birth-waffle.yaml",
     "athlete-height.yaml",
-    "crossfilter.yaml",
-    "flights-10m.yaml",
-    "flights-200k.yaml",
-    "flights-hexbin.yaml",
-    "gaia.yaml",
     "moving-average.yaml",
-    "nyc-taxi-rides.yaml",
     "observable-latency.yaml",
     "protein-design.yaml",
     "seattle-temp.yaml",
@@ -286,13 +301,14 @@ const EXPECTED_SPEAKING: &[&str] = &[
 /// A transform carrying modifiers is still a transform, and both halves of a
 /// two-part failure get named.
 ///
-/// `protein-design.yaml` is the case that forced this. One `rectY` binds
-/// `x: { bin: plddt_total, steps: 60 }` and `y: { count: }`. A check that only
-/// looked at single-key maps named the `count` and said nothing about the
-/// `bin` — so an author who fixed the half they were told about was still
-/// looking at a blank frame with nothing left to explain it. **A partial
-/// diagnostic on a two-part failure is a wrong diagnostic**, and it is worse
-/// than silence because it looks like the whole answer.
+/// `protein-design.yaml` is the case that forced this and is still the case
+/// that proves it — though for a different reason than when it was written.
+/// Its `x: { bin: plddt_total, steps: 60 }` is now a shape the lowerer honours
+/// modifier and all; what keeps the spec dark is `fill: version` on the same
+/// mark. Both halves must still be named: an author who fixed only the half
+/// they were told about would be back at a blank frame with nothing left to
+/// account for it, and **a partial diagnostic on a two-part failure is a wrong
+/// diagnostic** — worse than silence, because it looks like the whole answer.
 #[test]
 fn a_transform_with_modifiers_beside_it_is_still_named() {
     let found = transforms(include_str!(
@@ -300,8 +316,7 @@ fn a_transform_with_modifiers_beside_it_is_still_named() {
     ));
     assert!(
         found.contains("x:bin"),
-        "`x: {{ bin: …, steps: 60 }}` carries a modifier, and is still an \
-         uncomputed bin: {found:?}"
+        "the refused bin must still be named: {found:?}"
     );
     assert!(
         found.contains("y:count"),
@@ -316,6 +331,107 @@ fn a_transform_with_modifiers_beside_it_is_still_named() {
         ma.contains("y:avg"),
         "`y: {{ avg: cases, orderby: day, rows: $frame }}` is a windowed average \
          brightfield does not compute: {ma:?}"
+    );
+}
+
+/// The line the whole `bin`+`count` lift walks: a colour CONSTANT on the fill
+/// is a plain histogram and computes; a COLUMN on the fill is a stack, which
+/// brightfield does not draw, so the pair stays uncomputed and keeps saying so.
+///
+/// Two identical specs but for that one word. If the predicate ever collapses
+/// — every fill treated as a constant, or every fill treated as a column — one
+/// half of this fails, which is the only cheap way to notice. The failure the
+/// COLUMN half prevents is the expensive one: a merged histogram draws bars of
+/// exactly the right total height in a single colour and looks entirely
+/// correct while having discarded the grouping the author asked for.
+#[test]
+fn a_grouping_fill_refuses_the_lift_and_a_colour_constant_takes_it() {
+    let histogram = |fill: &str| {
+        transforms(&format!(
+            "data:\n  flights: {{ file: data/flights.parquet }}\n\
+             plot:\n- mark: rectY\n  data: {{ from: flights }}\n  \
+             x: {{ bin: delay }}\n  y: {{ count: }}\n  fill: {fill}\n"
+        ))
+    };
+    assert!(
+        histogram("steelblue").is_empty(),
+        "`fill: steelblue` is a CSS colour keyword, so the rect carries no \
+         groups and its bin+count is computed"
+    );
+    assert!(
+        histogram("'#4682b4'").is_empty(),
+        "a hex colour is a constant too"
+    );
+    let grouped = histogram("version");
+    assert!(
+        grouped.contains("x:bin") && grouped.contains("y:count"),
+        "`fill: version` names a column, which Mosaic stacks — the pair must \
+         stay uncomputed and both halves must be named: {grouped:?}"
+    );
+    // `z` is Mosaic's explicit grouping channel and refuses on its own, so a
+    // spec that grouped by `z` while colouring by a constant cannot slip past.
+    let z_grouped = transforms(
+        "data:
+  flights: { file: data/flights.parquet }
+plot:
+- mark: rectY
+  data: { from: flights }
+  x: { bin: delay }
+  y: { count: }
+  z: version
+  fill: steelblue
+",
+    );
+    assert!(
+        z_grouped.contains("x:bin"),
+        "an explicit `z:` grouping refuses the lift whatever the fill is: {z_grouped:?}"
+    );
+}
+
+/// The trap the lift was designed around: **positional aggregates other than
+/// the histogram `count` are still uncomputed, and still say so.**
+///
+/// The cheap way to make `y: {count:}` parse would have been to add `x` and `y`
+/// to the aggregate-capable channel list. That one line would also have
+/// consumed `weather.yaml`'s `x: {count:}` on a `barX`, `sorted-bars.yaml`'s
+/// `x: {sum: gold}` and `seattle-temp.yaml`'s `y1: {max: …}` — none of which
+/// any lowerer computes. Every one would have gone quiet while still drawing
+/// nothing: this milestone's defect arriving through the back door.
+#[test]
+fn positional_aggregates_no_lowerer_computes_still_speak() {
+    let weather = transforms(include_str!("../vendor/mosaic-specs/yaml/weather.yaml"));
+    assert!(
+        weather.contains("x:count"),
+        "`x: {{count:}}` on a barX is not the rect histogram idiom and nothing \
+         computes it: {weather:?}"
+    );
+    let sorted = transforms(include_str!("../vendor/mosaic-specs/yaml/sorted-bars.yaml"));
+    assert!(
+        sorted.contains("x:sum"),
+        "a positional `sum` has no lowerer: {sorted:?}"
+    );
+    let seattle = transforms(include_str!(
+        "../vendor/mosaic-specs/yaml/seattle-temp.yaml"
+    ));
+    assert!(
+        seattle.iter().any(|t| t.ends_with(":max")),
+        "a positional `max` has no lowerer: {seattle:?}"
+    );
+    // And a `count` with no `bin` opposite it has nothing to group by, so it
+    // is not the idiom either — the pair is what makes it computable.
+    let lone_count = transforms(
+        "data:
+  flights: { file: data/flights.parquet }
+plot:
+- mark: rectY
+  data: { from: flights }
+  x: delay
+  y: { count: }
+",
+    );
+    assert!(
+        lone_count.contains("y:count"),
+        "a `count` with no positional `bin` opposite it is uncomputed: {lone_count:?}"
     );
 }
 

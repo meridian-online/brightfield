@@ -292,6 +292,11 @@ pub(crate) fn spec_value_to_sql_literal(val: &SpecValue) -> String {
             Some(col) => format!("{}(\"{}\")", func.wire_name(), col),
             None => format!("{}(*)", func.wire_name()),
         },
+        // A positional bin reaching a kwarg/literal position is likewise
+        // degenerate — bins belong on a rect's positional channel, consumed by
+        // `RectLowerer`. Render the source column so the output is at least
+        // valid SQL naming the right thing.
+        SpecValue::Bin { column, .. } => format!("\"{column}\""),
     }
 }
 

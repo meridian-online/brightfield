@@ -463,9 +463,10 @@ fn equiwidth_bin_centre(table: &str, col: &str, bins: i64) -> String {
     )
 }
 
-/// The density lowerers' per-bucket occupancy count as a typed aggregate call
-/// — renders `CAST(COUNT(*) AS DOUBLE) AS __bf_count`, byte-identical to the
-/// string form it replaced.
+/// The per-bucket occupancy count as a typed aggregate call — renders
+/// `CAST(COUNT(*) AS DOUBLE) AS __bf_count`, byte-identical to the string form
+/// it replaced. Shared by the density lowerers and by [`RectLowerer`]'s binned
+/// histogram, which reads the same reserved column on the renderer side.
 fn density_count_expr() -> AggregateExpr {
     AggregateExpr::Call(AggregateCall {
         func: AggregateFunction::Count,
@@ -822,6 +823,260 @@ fn build_hexbin_plan(
     }
 }
 
+/// Reserved HIGH bin-edge columns a binned rect emits. Keyed by AXIS rather
+/// than by column, so a future doubly-binned `rect` (both axes) is not
+/// foreclosed. The LOW edge takes the source column's own name instead — that
+/// is what makes `group_key_provides` match, so a navigation extent resolves
+/// `UnderGroupBy` rather than `Decline`, and what gives the axis its derived
+/// title. Must match `brightfield-render`'s `BIN_HI_X_COL` / `BIN_HI_Y_COL`.
+const BIN_HI_X_COL: &str = "__bf_bin_x2";
+const BIN_HI_Y_COL: &str = "__bf_bin_y2";
+
+/// Reserved columns carrying the resolved bin scheme — the snapped low extent
+/// and the bin width — projected ONCE beneath the aggregation and read by both
+/// edge expressions above it.
+///
+/// They exist so the scheme is written once. Both are constant over the whole
+/// table, and inlining them where they are used would repeat a nine-deep
+/// subquery eight times per mark: ~9 KB of SQL and eight `min`/`max` scans for
+/// two numbers. They never reach the renderer — the aggregation projects only
+/// its group keys and its count.
+const BIN_LO_EXTENT_COL: &str = "__bf_bin_lo";
+const BIN_STEP_COL: &str = "__bf_bin_step";
+
+/// Mosaic's default bin-count **hint** — `binSpec`'s `steps = 25`, read from
+/// `mosaic-sql/src/transforms/util/bin-step.ts`.
+///
+/// Emphatically NOT the density lowerer's 100: that number is a KDE grid
+/// resolution, and reusing it here would put four times Mosaic's bar count on
+/// every histogram brightfield draws, with non-round tick values, from the same
+/// spec. The vendored corpus is a portability claim, so a difference from the
+/// reference belongs in `deviations.yaml` as a considered choice — not arriving
+/// by copy-paste from a lowerer that had a different job.
+const DEFAULT_BIN_STEPS: i64 = 25;
+
+/// `Math.LN10` to the bit. The reference implementation derives every logarithm
+/// as `Math.log(x) / Math.LN10`; emitting DuckDB's own `log10` instead would be
+/// the same value up to a rounding that decides which side of a `floor` a
+/// borderline span lands on, and so which step a histogram gets.
+const JS_LN10: &str = "2.302585092994046";
+
+/// Lowerer for the rect family, handling BOTH the pre-aggregated path and the
+/// **binned histogram** — `x: {bin: col}` with `y: {count:}` and its transpose.
+///
+/// When the parser lifted a positional [`SpecValue::Bin`], this GROUP BYs the
+/// two bin edges and counts; otherwise it delegates to [`SimpleLowerer`] and the
+/// shipped explicit-interval rect path stays byte-for-byte identical.
+///
+/// **Why the lowerer and not the renderer.** Binning here is forced, not
+/// preferred: `apply_selection_filter` threads a crossfilter predicate *beneath*
+/// an `Aggregation`, and `axis_pushdown` resolves a navigation extent to
+/// `UnderGroupBy` when a group key aliases back to the channel column. Both
+/// arrive free with an `Aggregation` and are unreachable if binning happens at
+/// draw time — which is the whole point of a histogram you can brush.
+pub struct RectLowerer;
+
+impl MarkLower for RectLowerer {
+    fn lower(&self, mark: &Mark, ctx: &LowerCtx<'_>) -> Result<QueryPlan, EmitError> {
+        let Some((axis, column, steps)) = positional_bin(&mark.options) else {
+            // Pre-aggregated rect — unchanged (rect-histogram.png byte-identical).
+            return SimpleLowerer.lower(mark, ctx);
+        };
+        let (source, filter) = match &mark.data {
+            Some(MarkData::From { source, extras, .. }) => {
+                (source.clone(), data_filter_sql(extras))
+            }
+            _ => {
+                return Err(EmitError::UnsupportedMark {
+                    kind: "rect (a binned rect requires data: { from: ... })".to_string(),
+                })
+            }
+        };
+
+        let row_filter = filter.map(|f| format!(" AND ({f})")).unwrap_or_default();
+        let filtered = QueryPlan::Filter {
+            input: Box::new(QueryPlan::Source {
+                table: source.clone(),
+            }),
+            predicate: Predicate::Expr(format!("\"{column}\" IS NOT NULL{row_filter}")),
+        };
+
+        // The bin scheme is resolved over the WHOLE table and carried alongside
+        // the rows. Two consequences, both wanted: the edges are written once
+        // rather than eight times, and the extent does not move when a brush
+        // narrows the rows — a cross-filtered histogram whose bars re-bin on
+        // every drag is not a histogram. Mosaic reaches the same place from the
+        // other direction, asking for the field's min/max as *stats* and handing
+        // `binHistogram` a fixed numeric extent.
+        //
+        // A selection predicate lands between this projection and the
+        // aggregation (`apply_selection_filter` filters an aggregation's direct
+        // input), and the projection passes `*` through, so the brushed column
+        // is still in scope where the predicate is applied.
+        let steps = steps.filter(|s| *s > 0).unwrap_or(DEFAULT_BIN_STEPS);
+        let binned = QueryPlan::Projection {
+            input: Box::new(filtered),
+            columns: vec![
+                "*".to_string(),
+                format!(
+                    "{} AS {BIN_LO_EXTENT_COL}",
+                    bin_spec_field(&source, &column, steps, BinSpecField::Min)
+                ),
+                format!(
+                    "{} AS {BIN_STEP_COL}",
+                    bin_spec_field(&source, &column, steps, BinSpecField::Alpha)
+                ),
+            ],
+        };
+
+        let hi_col = match axis {
+            BinAxis::X => BIN_HI_X_COL,
+            BinAxis::Y => BIN_HI_Y_COL,
+        };
+        Ok(QueryPlan::Order {
+            input: Box::new(QueryPlan::Aggregation {
+                input: Box::new(binned),
+                group_by: vec![
+                    format!("{} AS \"{column}\"", bin_edge(&column, BinEdge::Low)),
+                    format!("{} AS {hi_col}", bin_edge(&column, BinEdge::High)),
+                ],
+                aggregates: vec![density_count_expr()],
+            }),
+            // Deterministic row order — the same reason the density lowerers
+            // order: GROUP BY output order is unspecified in DuckDB and the
+            // renderer draws in row order.
+            keys: vec![(format!("\"{column}\""), SortDir::Asc)],
+        })
+    }
+}
+
+/// Which positional axis a rect's `bin` sits on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BinAxis {
+    X,
+    Y,
+}
+
+/// Which edge of a bin an expression produces. Mosaic emits the two as one
+/// function differing only by an integer bin `offset` (0 and 1), and so do we.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BinEdge {
+    Low,
+    High,
+}
+
+impl BinEdge {
+    /// Mosaic's `offset` option — the number of bin steps to shift the result.
+    fn offset(self) -> u8 {
+        match self {
+            Self::Low => 0,
+            Self::High => 1,
+        }
+    }
+}
+
+/// The positional bin a rect carries, as `(axis, column, steps hint)`.
+fn positional_bin(
+    options: &IndexMap<String, ValueOrParamRef<SpecValue>>,
+) -> Option<(BinAxis, String, Option<i64>)> {
+    for (key, axis) in [("x", BinAxis::X), ("y", BinAxis::Y)] {
+        if let Some(ValueOrParamRef::Value(SpecValue::Bin { column, steps })) = options.get(key) {
+            return Some((axis, column.clone(), *steps));
+        }
+    }
+    None
+}
+
+/// One edge of the bin containing `col`, in data units, as Mosaic's
+/// `binHistogram` writes it: `b.min + alpha * FLOOR((col - b.min) / alpha)`,
+/// with the high edge taking the same expression at bin offset 1.
+///
+/// **There is deliberately no top-bin fold here**, and its absence is the
+/// difference between this and `equiwidth_bin_centre` above. The density
+/// lowerer bins over the RAW extent, so the maximum value always lands one
+/// bucket past the last legitimate one and has to be clamped. Mosaic's extent
+/// is snapped OUTWARD to a nice step first, so the fold is not needed — and
+/// where the raw maximum does fall exactly on a step boundary, Mosaic puts it
+/// in a bin of its own. Clamping would be a silent divergence from the
+/// reference on a shape the vendored corpus contains.
+fn bin_edge(col: &str, edge: BinEdge) -> String {
+    let index =
+        format!("floor((\"{col}\" - {BIN_LO_EXTENT_COL}) / CAST({BIN_STEP_COL} AS DOUBLE))");
+    let index = match edge.offset() {
+        0 => index,
+        n => format!("({n} + {index})"),
+    };
+    format!("CAST({BIN_LO_EXTENT_COL} + {BIN_STEP_COL} * {index} AS DOUBLE)")
+}
+
+/// The two numbers a bin scheme reduces to: the snapped low extent and the bin
+/// width. Mosaic computes both in JavaScript from a stats query; brightfield has
+/// no stats phase, so each is a scalar subquery over the raw table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BinSpecField {
+    Min,
+    Alpha,
+}
+
+/// One field of the bin scheme as a scalar subquery.
+///
+/// The degenerate `max == min` column takes Mosaic's degenerate branch —
+/// `binHistogram` returns a bare `floor(field)` when the extent has no width,
+/// which is what `bmin = 0`, `alpha = 1` reproduces exactly.
+fn bin_spec_field(table: &str, col: &str, steps: i64, field: BinSpecField) -> String {
+    let projection = match field {
+        BinSpecField::Min => "CASE WHEN span IS NULL THEN 0 ELSE bmin END",
+        BinSpecField::Alpha => {
+            "CASE WHEN span IS NULL THEN 1 ELSE (bmax - bmin) / round((bmax - bmin) / step) END"
+        }
+    };
+    format!(
+        "(SELECT {projection} FROM ({}) AS _bs)",
+        bin_spec_query(table, col, steps)
+    )
+}
+
+/// Mosaic's `binSpec`, transliterated into a chain of one-row subqueries.
+///
+/// Each layer names the value the next one needs, which is what keeps the SQL
+/// linear in the number of steps rather than exponential — `step` is derived
+/// from `span`, and both are referenced several times.
+///
+/// Two departures from a literal transliteration, both forced and neither
+/// arithmetic: `Math.LN10` is written as a literal ([`JS_LN10`]) so the
+/// logarithms match the reference's rounding, and `binStep`'s `while (ceil(span
+/// / step) > steps) step *= 10` becomes a three-way `CASE`. That loop runs **at
+/// most twice**: `step` starts at `10^(round(log10 span) − ceil(log10 steps))`,
+/// so `span / step ≤ 10^(0.5 + level)` while `steps > 10^(level − 1)`, giving a
+/// ratio below `10^1.5 < 32`; two decades of division take it under 1.
+///
+/// `minstep` is 0 throughout (brightfield exposes no such knob), so `binStep`'s
+/// two `v >= minstep` guards are vacuous and are not emitted.
+fn bin_spec_query(table: &str, col: &str, steps: i64) -> String {
+    // `Math.ceil(Math.log(steps) / Math.LN10)`. `steps` is a spec literal, so
+    // this is a plan-time constant rather than more SQL.
+    let level = ((steps as f64).ln() / std::f64::consts::LN_10).ceil();
+    // The `eps` nudge Mosaic applies before flooring the low extent, expressed
+    // over `step`: `precision = step >= 1 ? 0 : trunc(-ln(step)/LN10) + 1`,
+    // `eps = 10^(-precision - 1)`.
+    let eps = format!(
+        "pow(10, -(CASE WHEN ln(step) >= 0 THEN 0 ELSE trunc(-ln(step) / {JS_LN10}) + 1 END) - 1)"
+    );
+    format!(
+        "SELECT span, step, CASE WHEN lo < v THEN v - step ELSE v END AS bmin, \
+         ceil(hi / step) * step AS bmax FROM (\
+         SELECT lo, hi, span, step, floor(lo / step + {eps}) * step AS v FROM (\
+         SELECT lo, hi, span, CASE WHEN span / (s2 / 2) <= {steps} THEN s2 / 2 ELSE s2 END AS step FROM (\
+         SELECT lo, hi, span, CASE WHEN span / (s1 / 5) <= {steps} THEN s1 / 5 ELSE s1 END AS s2 FROM (\
+         SELECT lo, hi, span, CASE WHEN ceil(span / s0) <= {steps} THEN s0 \
+         WHEN ceil(span / (s0 * 10)) <= {steps} THEN s0 * 10 ELSE s0 * 100 END AS s1 FROM (\
+         SELECT lo, hi, span, pow(10, floor(ln(span) / {JS_LN10} + 0.5) - {level}) AS s0 FROM (\
+         SELECT lo, hi, nullif(hi - lo, 0) AS span FROM (\
+         SELECT min(\"{col}\") AS lo, max(\"{col}\") AS hi FROM \"{table}\"\
+         ) AS _b0) AS _b1) AS _b2) AS _b3) AS _b4) AS _b5) AS _b6"
+    )
+}
+
 /// Lowerer for the cell mark, handling BOTH the pre-aggregated path and the
 /// self-aggregating form. When `fill` is a self-aggregating channel
 /// (`{count:}` / `{avg: col}`) on Band × Band categorical axes, it GROUP BYs
@@ -950,9 +1205,14 @@ pub fn default_lowerers() -> Vec<(MarkKind, Box<dyn MarkLower>)> {
         (MarkKind::Text, Box::new(SimpleLowerer)),
         (MarkKind::BarX, Box::new(SimpleLowerer)),
         (MarkKind::BarY, Box::new(SimpleLowerer)),
-        (MarkKind::Rect, Box::new(SimpleLowerer)),
-        (MarkKind::RectX, Box::new(SimpleLowerer)),
-        (MarkKind::RectY, Box::new(SimpleLowerer)),
+        // Rect family — pre-aggregated x1/x2 rects delegate to SimpleLowerer;
+        // a positional `{bin: col}` + `{count:}` pair becomes a GROUP BY over
+        // the two bin edges. Registered for exactly the kinds
+        // `MarkKind::bins_positionally` names, so the parser cannot lift a pair
+        // this lowerer would then ignore.
+        (MarkKind::Rect, Box::new(RectLowerer)),
+        (MarkKind::RectX, Box::new(RectLowerer)),
+        (MarkKind::RectY, Box::new(RectLowerer)),
         // Cell handles BOTH the pre-aggregated path (pass-through via
         // SimpleLowerer — one row per (x category, y category) pair with a
         // numeric fill column) AND the self-aggregating form (fill: {count:}/
@@ -2105,6 +2365,184 @@ mod tests {
             QueryPlan::Source {
                 table: "events".to_string()
             }
+        );
+    }
+
+    // --- RectLowerer: the positional bin + count histogram ---
+
+    /// A `rectY` binning `delay` and counting, with an optional `steps` hint.
+    fn binned_rect(kind: MarkKind, bin_channel: &str, steps: Option<i64>) -> Mark {
+        let count_channel = if bin_channel == "x" { "y" } else { "x" };
+        let mut options = IndexMap::new();
+        options.insert(
+            bin_channel.into(),
+            ValueOrParamRef::Value(SpecValue::Bin {
+                column: "delay".into(),
+                steps,
+            }),
+        );
+        options.insert(
+            count_channel.into(),
+            ValueOrParamRef::Value(SpecValue::Aggregate {
+                func: AggregateFunc::Count,
+                column: None,
+            }),
+        );
+        Mark {
+            kind,
+            status: brightfield_spec::vocab::ImplStatus::Implemented,
+            data: Some(MarkData::From {
+                source: "flights".into(),
+                filter_by: None,
+                extras: IndexMap::new(),
+            }),
+            options,
+        }
+    }
+
+    /// The emitted shape: two group keys — the low edge under the SOURCE
+    /// column's own name, the high edge under the axis-keyed reserved name —
+    /// and the shared `__bf_count` aggregate, all under a deterministic order.
+    #[test]
+    fn binned_rect_groups_by_both_edges_and_counts() {
+        let plan = RectLowerer
+            .lower(&binned_rect(MarkKind::RectY, "x", None), &make_ctx())
+            .expect("lowers");
+        let QueryPlan::Order { input, keys } = plan else {
+            panic!("expected Order-wrapped Aggregation");
+        };
+        assert_eq!(keys, vec![("\"delay\"".to_string(), SortDir::Asc)]);
+        let QueryPlan::Aggregation {
+            group_by,
+            aggregates,
+            ..
+        } = *input
+        else {
+            panic!("expected Aggregation under Order");
+        };
+        assert_eq!(group_by.len(), 2, "one key per bin edge: {group_by:?}");
+        assert!(
+            group_by[0].ends_with("AS \"delay\""),
+            "the LOW edge takes the source column's own name — that alias is \
+             what `group_key_provides` matches: {group_by:?}"
+        );
+        assert!(
+            group_by[1].ends_with("AS __bf_bin_x2"),
+            "the HIGH edge is keyed by AXIS, not by column: {group_by:?}"
+        );
+        assert!(matches!(
+            aggregates.as_slice(),
+            [AggregateExpr::Call(c)]
+                if c.func == AggregateFunction::Count
+                    && c.alias.as_deref() == Some("__bf_count")
+        ));
+    }
+
+    /// The transpose keys its high edge to the y axis, so a doubly-binned rect
+    /// would not collide with itself.
+    #[test]
+    fn a_binned_rect_x_keys_its_high_edge_to_the_y_axis() {
+        let plan = RectLowerer
+            .lower(&binned_rect(MarkKind::RectX, "y", None), &make_ctx())
+            .expect("lowers");
+        let mut bindings = Vec::new();
+        let sql = crate::render::render_query(&plan, &mut bindings);
+        assert!(sql.contains("AS __bf_bin_y2"), "{sql}");
+        assert!(!sql.contains("__bf_bin_x2"), "{sql}");
+    }
+
+    /// The rendered SQL: positional `GROUP BY`, the bin scheme resolved once
+    /// beneath the aggregation, and the extent read from the RAW table so a
+    /// brush cannot move the bin edges.
+    #[test]
+    fn binned_rect_sql_resolves_the_scheme_once_over_the_raw_table() {
+        let plan = RectLowerer
+            .lower(&binned_rect(MarkKind::RectY, "x", None), &make_ctx())
+            .expect("lowers");
+        let mut bindings = Vec::new();
+        let sql = crate::render::render_query(&plan, &mut bindings);
+        assert!(sql.contains("GROUP BY 1, 2"), "{sql}");
+        assert!(
+            sql.contains("SELECT min(\"delay\") AS lo, max(\"delay\") AS hi FROM \"flights\""),
+            "the extent is the raw table's, not the filtered rows': {sql}"
+        );
+        assert_eq!(
+            sql.matches("__bf_bin_lo").count(),
+            5,
+            "the scheme is projected ONCE and referenced by name — one alias \
+             plus two references per edge: {sql}"
+        );
+        // Mosaic's default hint, not the density lowerer's 100.
+        assert!(sql.contains("<= 25"), "{sql}");
+        assert!(!sql.contains("<= 100"), "{sql}");
+    }
+
+    /// A `steps:` hint reaches the emitted arithmetic. Honouring the `bin` and
+    /// dropping the hint would draw a different chart from the one written.
+    #[test]
+    fn the_steps_hint_reaches_the_emitted_sql() {
+        let plan = RectLowerer
+            .lower(&binned_rect(MarkKind::RectY, "x", Some(60)), &make_ctx())
+            .expect("lowers");
+        let mut bindings = Vec::new();
+        let sql = crate::render::render_query(&plan, &mut bindings);
+        assert!(sql.contains("<= 60"), "{sql}");
+        assert!(!sql.contains("<= 25"), "{sql}");
+    }
+
+    /// The reason binning lives in the lowerer at all: a navigation extent on
+    /// the binned axis resolves UNDER the `GROUP BY` rather than declining, so
+    /// a brush filters the rows that get counted instead of the bins that came
+    /// out. Asserted on `axis_pushdown` directly — the property, not a proxy.
+    #[test]
+    fn a_binned_axis_pushes_navigation_under_the_group_by() {
+        let plan = RectLowerer
+            .lower(&binned_rect(MarkKind::RectY, "x", None), &make_ctx())
+            .expect("lowers");
+        assert_eq!(
+            crate::navigation_filter_pass::axis_pushdown(&plan, "delay"),
+            crate::navigation_filter_pass::Pushdown::UnderGroupBy,
+            "the low edge aliases back to `delay`, so the extent is pushable"
+        );
+    }
+
+    /// A rect with no positional bin delegates to [`SimpleLowerer`] and the
+    /// shipped explicit-interval path is untouched — `rect-histogram.yaml` and
+    /// `rect-cells.yaml` emit exactly what they emitted before.
+    #[test]
+    fn an_unbinned_rect_still_lowers_to_a_bare_source() {
+        let mut mark = binned_rect(MarkKind::RectY, "x", None);
+        mark.options.insert(
+            "x".into(),
+            ValueOrParamRef::Value(SpecValue::String("lo".into())),
+        );
+        let plan = RectLowerer.lower(&mark, &make_ctx()).expect("lowers");
+        assert_eq!(
+            plan,
+            QueryPlan::Source {
+                table: "flights".to_string()
+            }
+        );
+    }
+
+    /// `data: { filter }` scopes the counted rows. The extent deliberately does
+    /// NOT move with it — see the lowerer.
+    #[test]
+    fn a_binned_rect_honours_its_data_filter_on_the_rows() {
+        let mut mark = binned_rect(MarkKind::RectY, "x", None);
+        let mut extras = IndexMap::new();
+        extras.insert("filter".to_string(), SpecValue::String("delay > 5".into()));
+        mark.data = Some(MarkData::From {
+            source: "flights".into(),
+            filter_by: None,
+            extras,
+        });
+        let plan = RectLowerer.lower(&mark, &make_ctx()).expect("lowers");
+        let mut bindings = Vec::new();
+        let sql = crate::render::render_query(&plan, &mut bindings);
+        assert!(
+            sql.contains("\"delay\" IS NOT NULL AND (delay > 5)"),
+            "row filter absent: {sql}"
         );
     }
 

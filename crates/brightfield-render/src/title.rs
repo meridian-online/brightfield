@@ -37,17 +37,29 @@ impl ResolvedTitles {
     }
 }
 
+/// Prefix on every column a lowerer synthesises — `__bf_count`, `__bf_bin_x2`,
+/// `__bf_hex_dx`. Deriving a title from one would put an internal alias in
+/// front of a reader: a histogram counting rows would label its y-axis
+/// `__bf_count`, which names nothing the author wrote.
+const RESERVED_COLUMN_PREFIX: &str = "__bf_";
+
 /// Resolve one axis's decision against the mark channel maps. A `Derive` axis
 /// takes the FIRST map (in mark order) that binds the positional channel to a
-/// COLUMN — subsuming the `entries[0]` default and covering a literal-first mark
-/// (e.g. a `ruleY` at a constant) whose bound sibling names the axis. An
-/// interval-only axis (`x1`/`x2`, `y1`/`y2` — no plain `x`/`y` column) or an
-/// augment-only axis binds no column, so `Derive` yields `None`.
+/// COLUMN the author could have named — subsuming the `entries[0]` default and
+/// covering a literal-first mark (e.g. a `ruleY` at a constant) whose bound
+/// sibling names the axis. An interval-only axis (`x1`/`x2`, `y1`/`y2` — no
+/// plain `x`/`y` column), an augment-only axis, and an axis bound only to a
+/// reserved lowerer output ([`RESERVED_COLUMN_PREFIX`]) each name no field, so
+/// `Derive` yields `None`.
 fn resolve_axis(decision: &AxisTitle, channel: Channel, maps: &[&ChannelMap]) -> Option<String> {
     match decision {
         AxisTitle::Override(s) => Some(s.clone()),
         AxisTitle::Suppress => None,
-        AxisTitle::Derive => maps.iter().find_map(|m| m.get(channel).map(str::to_string)),
+        AxisTitle::Derive => maps.iter().find_map(|m| {
+            m.get(channel)
+                .filter(|col| !col.starts_with(RESERVED_COLUMN_PREFIX))
+                .map(str::to_string)
+        }),
     }
 }
 
@@ -146,6 +158,38 @@ mod tests {
             "interval-only x names no single field → no title"
         );
         assert_eq!(t.y.as_deref(), Some("count"));
+    }
+
+    /// A reserved lowerer output names no field, so it never becomes a title.
+    ///
+    /// The computed histogram is the case: its `y` is bound to `__bf_count`,
+    /// the count column the SQL layer synthesises, and deriving from it would
+    /// print an internal alias down the side of the chart. Its `x` is bound to
+    /// the column the author actually wrote, and must still title the axis.
+    #[test]
+    fn a_reserved_lowerer_column_names_no_axis() {
+        let histogram = map_cols(&[
+            (Channel::X, "delay"),
+            (Channel::X1, "delay"),
+            (Channel::X2, "__bf_bin_x2"),
+            (Channel::Y, "__bf_count"),
+        ]);
+        let t = resolve_titles(&plot_with(&[]), &[&histogram]);
+        assert_eq!(t.x.as_deref(), Some("delay"), "the binned column titles x");
+        assert_eq!(t.y, None, "`__bf_count` is not a field an author named");
+
+        // A sibling that DOES bind a real column still names the axis — the
+        // reserved binding is skipped over, not treated as an answer.
+        let sibling = map_cols(&[(Channel::Y, "level")]);
+        let t = resolve_titles(&plot_with(&[]), &[&histogram, &sibling]);
+        assert_eq!(t.y.as_deref(), Some("level"));
+
+        // An explicit override still wins — suppression is about DERIVE only.
+        let t = resolve_titles(
+            &plot_with(&[("yLabel", SpecValue::String("Flights".into()))]),
+            &[&histogram],
+        );
+        assert_eq!(t.y.as_deref(), Some("Flights"));
     }
 
     #[test]

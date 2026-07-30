@@ -26,7 +26,8 @@ use crate::ast::{
 use crate::error::{NameSurface, ParseError, SourceSpan};
 use crate::expr;
 use crate::vocab::{
-    ImplStatus, InputKind, InteractorKind, LegendChannel, MarkKind, SelectionResolution,
+    is_colour_literal, ImplStatus, InputKind, InteractorKind, LegendChannel, MarkKind,
+    SelectionResolution,
 };
 
 /// Surface of field positions at which a bare `$param` string or a
@@ -194,6 +195,33 @@ const CHANNEL_TRANSFORM_KEYS: &[&str] = &["sql"];
 const RENDERED_CHANNEL_FIELDS: &[&str] = &[
     "x", "y", "x1", "y1", "x2", "y2", "fill", "stroke", "size", "text",
 ];
+
+/// The two positional channels a `bin` + `count` pair can occupy, in the order
+/// [`binned_histogram`] tries them: `bin` on `x` counting on `y` (a `rectY`
+/// histogram), then the transpose (`rectX`).
+const BIN_COUNT_AXES: [(&str, &str); 2] = [("x", "y"), ("y", "x")];
+
+/// The modifier keys a `{bin: col, …}` map may carry and still be lifted.
+/// Anything else means the author asked for something the lowerer does not do,
+/// and the pair is left uncomputed rather than half-honoured.
+const BIN_MODIFIER_KEYS: &[&str] = &["steps"];
+
+/// The channels that, bound to a COLUMN, make a binned rect a **stacked** one.
+/// `z` is Mosaic's explicit grouping channel; `fill`/`stroke` group implicitly
+/// when they name a field rather than a colour constant.
+const GROUPING_CHANNEL_FIELDS: &[&str] = &["z", "fill", "stroke"];
+
+/// One mark's lifted positional `bin` + `count` pair.
+struct BinnedHistogram {
+    /// The positional channel carrying `{bin: …}` (`"x"` or `"y"`).
+    bin_channel: &'static str,
+    /// The opposite positional channel, carrying `{count:}`.
+    count_channel: &'static str,
+    /// The column named by the `bin`.
+    column: String,
+    /// The `steps:` hint, when written.
+    steps: Option<i64>,
+}
 
 /// Wire format of the source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1170,6 +1198,12 @@ impl Walker {
             });
         }
 
+        // Resolved BEFORE the per-key loop, because it is a property of the
+        // PAIR: a `bin` is only computable when the opposite positional channel
+        // counts, and vice versa. Deciding it per key would let `x` lift while
+        // `y` warned — parse and lowerer disagreeing about the same mark.
+        let histogram = binned_histogram(kind, parent);
+
         let mut data: Option<MarkData> = None;
         let mut options = IndexMap::new();
         for (k, val) in parent {
@@ -1180,6 +1214,28 @@ impl Walker {
             if key == "data" {
                 data = Some(self.walk_mark_data(val)?);
                 continue;
+            }
+            if let Some(h) = &histogram {
+                if key == h.bin_channel {
+                    options.insert(
+                        key.clone(),
+                        ValueOrParamRef::Value(SpecValue::Bin {
+                            column: h.column.clone(),
+                            steps: h.steps,
+                        }),
+                    );
+                    continue;
+                }
+                if key == h.count_channel {
+                    options.insert(
+                        key.clone(),
+                        ValueOrParamRef::Value(SpecValue::Aggregate {
+                            func: AggregateFunc::Count,
+                            column: None,
+                        }),
+                    );
+                    continue;
+                }
             }
             if let Some(lifted) = self.maybe_aggregate_channel(&key, val) {
                 options.insert(key.clone(), lifted);
@@ -1574,6 +1630,98 @@ impl Walker {
     }
 }
 
+/// Resolve a mark's positional `bin` + `count` pair, or `None` when the mark
+/// is not the histogram idiom brightfield computes.
+///
+/// Every condition below is a refusal that keeps a spec's uncomputed-transform
+/// diagnostic rather than drawing something wrong:
+///
+/// - **The mark kind** must bin positionally ([`MarkKind::bins_positionally`]).
+/// - **Both halves** must be present, on opposite positional axes. A lone
+///   `x: {bin: t}` has nothing to aggregate and a lone `y: {count:}` has
+///   nothing to group by; either alone keeps warning.
+/// - **The `bin` map's keys** must be `bin` plus [`BIN_MODIFIER_KEYS`].
+///   `protein-design.yaml` writes `{bin: plddt_total, steps: 60}`, and lifting
+///   the `bin` while dropping a modifier would silently draw a different chart
+///   from the one asked for.
+/// - **No grouping channel** ([`GROUPING_CHANNEL_FIELDS`]). Mosaic STACKS a
+///   binned rect that carries a grouping colour; brightfield does not yet, and
+///   merging the groups draws one bar per bin that looks right and under-reports
+///   every group but one.
+fn binned_histogram(kind: MarkKind, parent: &serde_yaml::Mapping) -> Option<BinnedHistogram> {
+    if !kind.bins_positionally() || mark_is_grouped(parent) {
+        return None;
+    }
+    BIN_COUNT_AXES
+        .iter()
+        .find_map(|(bin_channel, count_channel)| {
+            let (column, steps) = bin_transform(channel_map_at(parent, bin_channel)?)?;
+            is_count_transform(channel_map_at(parent, count_channel)?).then_some(BinnedHistogram {
+                bin_channel,
+                count_channel,
+                column,
+                steps,
+            })
+        })
+}
+
+/// The mapping written at `channel`, or `None` when the channel is absent or
+/// is not a map (a plain column, a literal, a `$param`).
+fn channel_map_at<'a>(
+    parent: &'a serde_yaml::Mapping,
+    channel: &str,
+) -> Option<&'a serde_yaml::Mapping> {
+    match parent.get(serde_yaml::Value::String(channel.to_string()))? {
+        serde_yaml::Value::Mapping(m) => Some(m),
+        _ => None,
+    }
+}
+
+/// The `(column, steps)` of a `{bin: col}` / `{bin: col, steps: n}` map.
+/// `None` for any other shape — including a `bin` whose value is not a column
+/// name, and a map carrying a modifier this lowerer does not honour.
+fn bin_transform(m: &serde_yaml::Mapping) -> Option<(String, Option<i64>)> {
+    let mut column: Option<String> = None;
+    let mut steps: Option<i64> = None;
+    for (k, v) in m {
+        match k.as_str()? {
+            "bin" => column = Some(v.as_str()?.to_string()),
+            "steps" => steps = Some(v.as_i64()?),
+            other if BIN_MODIFIER_KEYS.contains(&other) => {}
+            _ => return None,
+        }
+    }
+    Some((column?, steps))
+}
+
+/// Whether a channel map is exactly `{count:}` — the corpus writes it both
+/// bare and as `{count: null}`, and both mean "count the rows in the group".
+fn is_count_transform(m: &serde_yaml::Mapping) -> bool {
+    let mut entries = m.iter();
+    let Some((k, v)) = entries.next() else {
+        return false;
+    };
+    entries.next().is_none() && k.as_str() == Some("count") && v.is_null()
+}
+
+/// Whether a mark binds a channel that splits each bin into groups — the case
+/// Mosaic stacks. Conservative in both directions that matter: an explicit `z`
+/// is a grouping whatever its value, and a `fill`/`stroke` that is not a
+/// recognised colour constant is read as a field name (Plot's own rule; see
+/// [`is_colour_literal`]).
+fn mark_is_grouped(parent: &serde_yaml::Mapping) -> bool {
+    GROUPING_CHANNEL_FIELDS.iter().any(|field| {
+        match parent.get(serde_yaml::Value::String((*field).to_string())) {
+            None => false,
+            Some(_) if *field == "z" => true,
+            Some(serde_yaml::Value::String(s)) => !is_colour_literal(s),
+            // A non-string binding on a colour channel (a map, a `$param`, a
+            // number) is not a colour constant, so it may carry groups.
+            Some(_) => true,
+        }
+    })
+}
+
 /// If `v` is a lift-shaped form, return the lifted ParamRef.
 /// Accepts: bare `"$name"`; `{param: name}`; `{selection: name}`.
 fn maybe_lift(v: &serde_yaml::Value) -> Option<ParamRef> {
@@ -1878,6 +2026,17 @@ impl Serialize for SerSpecValue<'_> {
                 match column {
                     Some(col) => map.serialize_entry(func.wire_name(), col)?,
                     None => map.serialize_entry(func.wire_name(), &())?,
+                }
+                map.end()
+            }
+            // Likewise for the positional bin: back to `{bin: col}` — plus
+            // `{steps: n}` only when the spec wrote one, so a spec that took
+            // the default does not gain a key it never had.
+            SpecValue::Bin { column, steps } => {
+                let mut map = s.serialize_map(Some(1 + usize::from(steps.is_some())))?;
+                map.serialize_entry("bin", column)?;
+                if let Some(n) = steps {
+                    map.serialize_entry("steps", n)?;
                 }
                 map.end()
             }
@@ -2606,6 +2765,115 @@ plot:
             m.options.get("fill"),
             Some(ValueOrParamRef::Value(SpecValue::Object(_)))
         ));
+    }
+
+    // -----------------------------------------------------------------------
+    // Positional bin + count (the rect histogram idiom)
+    // -----------------------------------------------------------------------
+
+    /// A `rectY` binding `{bin: col}` on one positional channel and `{count:}`
+    /// on the other lifts BOTH, as a pair — with the `steps:` hint carried.
+    #[test]
+    fn a_rect_bin_and_count_pair_lifts_together() {
+        let src = "mark: rectY\nx: { bin: delay, steps: 60 }\ny: { count: }\nfill: steelblue\n";
+        assert_eq!(
+            mark_channel(src, "x"),
+            ValueOrParamRef::Value(SpecValue::Bin {
+                column: "delay".to_string(),
+                steps: Some(60),
+            })
+        );
+        assert_eq!(
+            mark_channel(src, "y"),
+            ValueOrParamRef::Value(SpecValue::Aggregate {
+                func: AggregateFunc::Count,
+                column: None,
+            })
+        );
+        // The transpose, and the bare `{bin: col}` with no hint.
+        assert_eq!(
+            mark_channel("mark: rectX\nx: { count: }\ny: { bin: delay }\n", "y"),
+            ValueOrParamRef::Value(SpecValue::Bin {
+                column: "delay".to_string(),
+                steps: None,
+            })
+        );
+    }
+
+    /// Every refusal, in one place. Each leaves the channels as plain objects,
+    /// which is what keeps the uncomputed-transform diagnostic firing.
+    #[test]
+    fn the_bin_lift_refuses_everything_it_cannot_compute() {
+        let refused = |src: &str, why: &str| {
+            let entry = mark_channel(src, if src.contains("y: { bin") { "y" } else { "x" });
+            assert!(
+                !matches!(entry, ValueOrParamRef::Value(SpecValue::Bin { .. })),
+                "{why}: lifted anyway ({entry:?})"
+            );
+        };
+        // A mark kind with no binning lowerer.
+        refused(
+            "mark: dot\nx: { bin: delay }\ny: { count: }\n",
+            "only the rect family bins positionally",
+        );
+        // Half the idiom: a bin with nothing to aggregate.
+        refused(
+            "mark: rectY\nx: { bin: delay }\ny: value\n",
+            "a bin with no count opposite it has nothing to group",
+        );
+        // A grouping colour, which Mosaic stacks.
+        refused(
+            "mark: rectY\nx: { bin: delay }\ny: { count: }\nfill: version\n",
+            "a column-valued fill is a stack, not a histogram",
+        );
+        // An explicit `z`, whatever the fill.
+        refused(
+            "mark: rectY\nx: { bin: delay }\ny: { count: }\nz: version\nfill: steelblue\n",
+            "`z` is Mosaic's grouping channel",
+        );
+        // A modifier the lowerer does not honour. Honouring the `bin` and
+        // ignoring the modifier would draw a chart nobody asked for.
+        refused(
+            "mark: rectY\nx: { bin: delay, interval: day }\ny: { count: }\n",
+            "an unknown modifier beside the bin",
+        );
+        // A bin whose value is not a column name.
+        refused(
+            "mark: rectY\nx: { bin: { sql: 'a + b' } }\ny: { count: }\n",
+            "the bin must name a column",
+        );
+    }
+
+    /// The lifted pair re-serialises to the shape it was written in, so
+    /// `parse → serialise → parse` stays idempotent. The `steps:` key appears
+    /// only when the spec wrote one.
+    #[test]
+    fn a_lifted_bin_re_serialises_to_its_wire_form() {
+        for src in [
+            "mark: rectY\nx: { bin: delay }\ny: { count: }\n",
+            "mark: rectY\nx: { bin: delay, steps: 60 }\ny: { count: }\n",
+        ] {
+            let first = parse_spec(src, Format::Yaml).expect("parses");
+            let wire = serialise_spec(&first.spec).expect("serialises");
+            let second = parse_spec(&wire, Format::Yaml).expect("re-parses");
+            assert_eq!(
+                first.spec, second.spec,
+                "round trip changed the spec; wire form was:\n{wire}"
+            );
+        }
+        let wire = serialise_spec(
+            &parse_spec(
+                "mark: rectY\nx: { bin: delay }\ny: { count: }\n",
+                Format::Yaml,
+            )
+            .expect("parses")
+            .spec,
+        )
+        .expect("serialises");
+        assert!(
+            !wire.contains("steps"),
+            "a spec that took the default must not gain a `steps` key: {wire}"
+        );
     }
 
     /// plain column/literal/param fill channels are untouched by

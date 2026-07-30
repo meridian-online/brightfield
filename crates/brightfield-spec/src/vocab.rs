@@ -208,6 +208,23 @@ vocab_enum! {
     }
 }
 
+impl MarkKind {
+    /// Whether this mark kind computes a **positional** `bin` + `count` pair —
+    /// `x: {bin: col}` with `y: {count:}` and its transpose.
+    ///
+    /// The one registry both halves read: the parser lifts the pair only for a
+    /// kind named here, and `RectLowerer` is registered only for the same
+    /// kinds, so a spec cannot parse as binned and then lower as `SELECT *`.
+    /// Mosaic's own list is the `EXTENT` set in `vgplot/plot/transforms/bin.js`
+    /// (`rectY-x`, `rectX-y`, `rect-x`, `rect-y`, `ruleY-x`, `ruleX-y`);
+    /// the rules are left off because brightfield's rule lowerer does not
+    /// aggregate, and a binned rule would parse quiet and still draw nothing.
+    #[must_use]
+    pub fn bins_positionally(self) -> bool {
+        matches!(self, Self::Rect | Self::RectX | Self::RectY)
+    }
+}
+
 vocab_enum! {
     /// Known interactor kinds used as a plot item's `select:` discriminator.
     ///
@@ -400,9 +417,253 @@ pub fn mark_option_is_consumed(key: &str) -> bool {
     CONSUMED_MARK_OPTION_KEYS.contains(&key)
 }
 
+/// The CSS Color Module Level 4 named colours, plus the three keywords a Plot
+/// spec may write in a colour slot (`none`, `transparent`, `currentColor`).
+/// Sorted, so [`is_colour_literal`] can binary-search it.
+///
+/// A fixed, standardised vocabulary — it does not grow with brightfield.
+const CSS_COLOUR_KEYWORDS: &[&str] = &[
+    "aliceblue",
+    "antiquewhite",
+    "aqua",
+    "aquamarine",
+    "azure",
+    "beige",
+    "bisque",
+    "black",
+    "blanchedalmond",
+    "blue",
+    "blueviolet",
+    "brown",
+    "burlywood",
+    "cadetblue",
+    "chartreuse",
+    "chocolate",
+    "coral",
+    "cornflowerblue",
+    "cornsilk",
+    "crimson",
+    "currentcolor",
+    "cyan",
+    "darkblue",
+    "darkcyan",
+    "darkgoldenrod",
+    "darkgray",
+    "darkgreen",
+    "darkgrey",
+    "darkkhaki",
+    "darkmagenta",
+    "darkolivegreen",
+    "darkorange",
+    "darkorchid",
+    "darkred",
+    "darksalmon",
+    "darkseagreen",
+    "darkslateblue",
+    "darkslategray",
+    "darkslategrey",
+    "darkturquoise",
+    "darkviolet",
+    "deeppink",
+    "deepskyblue",
+    "dimgray",
+    "dimgrey",
+    "dodgerblue",
+    "firebrick",
+    "floralwhite",
+    "forestgreen",
+    "fuchsia",
+    "gainsboro",
+    "ghostwhite",
+    "gold",
+    "goldenrod",
+    "gray",
+    "green",
+    "greenyellow",
+    "grey",
+    "honeydew",
+    "hotpink",
+    "indianred",
+    "indigo",
+    "ivory",
+    "khaki",
+    "lavender",
+    "lavenderblush",
+    "lawngreen",
+    "lemonchiffon",
+    "lightblue",
+    "lightcoral",
+    "lightcyan",
+    "lightgoldenrodyellow",
+    "lightgray",
+    "lightgreen",
+    "lightgrey",
+    "lightpink",
+    "lightsalmon",
+    "lightseagreen",
+    "lightskyblue",
+    "lightslategray",
+    "lightslategrey",
+    "lightsteelblue",
+    "lightyellow",
+    "lime",
+    "limegreen",
+    "linen",
+    "magenta",
+    "maroon",
+    "mediumaquamarine",
+    "mediumblue",
+    "mediumorchid",
+    "mediumpurple",
+    "mediumseagreen",
+    "mediumslateblue",
+    "mediumspringgreen",
+    "mediumturquoise",
+    "mediumvioletred",
+    "midnightblue",
+    "mintcream",
+    "mistyrose",
+    "moccasin",
+    "navajowhite",
+    "navy",
+    "none",
+    "oldlace",
+    "olive",
+    "olivedrab",
+    "orange",
+    "orangered",
+    "orchid",
+    "palegoldenrod",
+    "palegreen",
+    "paleturquoise",
+    "palevioletred",
+    "papayawhip",
+    "peachpuff",
+    "peru",
+    "pink",
+    "plum",
+    "powderblue",
+    "purple",
+    "rebeccapurple",
+    "red",
+    "rosybrown",
+    "royalblue",
+    "saddlebrown",
+    "salmon",
+    "sandybrown",
+    "seagreen",
+    "seashell",
+    "sienna",
+    "silver",
+    "skyblue",
+    "slateblue",
+    "slategray",
+    "slategrey",
+    "snow",
+    "springgreen",
+    "steelblue",
+    "tan",
+    "teal",
+    "thistle",
+    "tomato",
+    "transparent",
+    "turquoise",
+    "violet",
+    "wheat",
+    "white",
+    "whitesmoke",
+    "yellow",
+    "yellowgreen",
+];
+
+/// Whether a colour-channel string is a **constant colour** rather than a
+/// column name — `fill: steelblue` versus `fill: version`.
+///
+/// This is Observable Plot's rule, not one invented here: Plot's
+/// `maybeColorChannel` treats a string that `isColor()` accepts as a constant
+/// and everything else as a field name, which is why the same spec can write
+/// `fill: steelblue` and `fill: weather` and mean different things. Plot is not
+/// vendored in this tree, so the keyword table is the CSS Level 4 list rather
+/// than a port.
+///
+/// It decides one thing here: a rect binding a colour CONSTANT carries no
+/// groups, so its `bin` + `count` is a plain histogram and can be lifted; a
+/// rect binding a COLUMN is one Mosaic stacks, and lifting it would merge the
+/// groups into a single bar that looks right and under-reports every group but
+/// one. Unrecognised ⇒ treated as a column, which is the safe direction: the
+/// spec keeps its uncomputed-transform diagnostic instead of drawing a lie.
+#[must_use]
+pub fn is_colour_literal(value: &str) -> bool {
+    let v = value.trim();
+    if let Some(hex) = v.strip_prefix('#') {
+        return matches!(hex.len(), 3 | 4 | 6 | 8) && hex.chars().all(|c| c.is_ascii_hexdigit());
+    }
+    // `rgb(…)` / `rgba(…)` / `hsl(…)` / `hwb(…)` / `lab(…)` / `color(…)` …
+    if v.ends_with(')') && v.contains('(') {
+        return true;
+    }
+    let lower = v.to_ascii_lowercase();
+    CSS_COLOUR_KEYWORDS.binary_search(&lower.as_str()).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`is_colour_literal`] binary-searches the keyword table, so an
+    /// out-of-order entry would make some colours invisible — and the failure
+    /// would look like a stacking bug in a chart, three crates away.
+    #[test]
+    fn the_colour_keyword_table_is_sorted_and_unique() {
+        for pair in CSS_COLOUR_KEYWORDS.windows(2) {
+            assert!(
+                pair[0] < pair[1],
+                "CSS_COLOUR_KEYWORDS must be sorted and duplicate-free, but \
+                 {:?} precedes {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+    }
+
+    /// The distinction the binned-rect lift turns on: a colour CONSTANT is not
+    /// a grouping, a bare word that is not a colour is a column name.
+    #[test]
+    fn colour_constants_are_told_from_column_names() {
+        for constant in [
+            "steelblue",
+            "black",
+            "SteelBlue",
+            "#ccc",
+            "#4682b4",
+            "#4682b4ff",
+            "rgb(70, 130, 180)",
+            "currentColor",
+            "transparent",
+            "none",
+        ] {
+            assert!(is_colour_literal(constant), "{constant} is a colour");
+        }
+        for column in ["version", "weather", "delay", "count", "#zzz", "#12345"] {
+            assert!(
+                !is_colour_literal(column),
+                "{column} is not a colour, so a fill bound to it may carry groups"
+            );
+        }
+    }
+
+    /// The registry that keeps the parser and the lowerer from disagreeing:
+    /// the kinds that lift a positional bin are exactly the kinds `RectLowerer`
+    /// is registered for.
+    #[test]
+    fn only_the_rect_family_bins_positionally() {
+        let binning: Vec<&str> = MarkKind::all()
+            .iter()
+            .filter(|k| k.bins_positionally())
+            .map(|k| k.wire_name())
+            .collect();
+        assert_eq!(binning, vec!["rect", "rectX", "rectY"]);
+    }
 
     /// The consumed-key list is a registry, and a registry with a duplicate
     /// in it is a registry someone edited without reading.
