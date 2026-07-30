@@ -1203,9 +1203,24 @@ impl Walker {
     /// computes, so an author who wrote `x: {bin: t}` and got a blank frame is
     /// told which channel and which transform emptied it.
     ///
-    /// Fires only for a single-key map on a [`RENDERED_CHANNEL_FIELDS`] channel
-    /// whose key is neither a lift (`{param: …}` / `{selection: …}`) nor a
-    /// recognised channel transform ([`CHANNEL_TRANSFORM_KEYS`]).
+    /// Fires for a map on a [`RENDERED_CHANNEL_FIELDS`] channel whose leading
+    /// key is neither a lift (`{param: …}` / `{selection: …}`) nor a recognised
+    /// channel transform ([`CHANNEL_TRANSFORM_KEYS`]).
+    ///
+    /// **Multi-key maps count.** A transform can carry modifiers beside it —
+    /// `x: {bin: plddt_total, steps: 60}`, `y: {avg: cases, orderby: day, rows:
+    /// $frame}` — and the corpus vendored in this crate holds five such maps
+    /// across `protein-design`, `moving-average` and `window-frame`. Skipping
+    /// them was worse than saying nothing: `protein-design` binds `bin` on `x`
+    /// and `count` on `y` of the *same* mark, so a single-key-only check named
+    /// the `count`, stayed silent on the `bin`, and left an author who fixed the
+    /// named half still looking at a blank frame with nothing to explain it. A
+    /// partial diagnostic on a two-part failure is a wrong diagnostic.
+    ///
+    /// The transform is the **leading** key in all five, so that is what gets
+    /// named. If a spec ever put the modifier first the line would name the
+    /// modifier — still pointing at the right channel, and still true that the
+    /// channel is uncomputed, so it degrades honestly rather than silently.
     ///
     /// Aggregate-capable channels never reach here: the caller tries
     /// [`Self::maybe_aggregate_channel`] first, and for a single-key non-lift
@@ -1225,10 +1240,8 @@ impl Walker {
         let serde_yaml::Value::Mapping(m) = v else {
             return;
         };
-        // A multi-key map on a channel is not transform-shaped. Mosaic writes
-        // one transform per channel, so widening past a single key would start
-        // guessing at objects the corpus has not shown us.
-        if m.len() != 1 {
+        // An empty map asks for nothing and is not a transform.
+        if m.is_empty() {
             return;
         }
         let Some(key) = m.iter().next().and_then(|(k, _)| k.as_str()) else {

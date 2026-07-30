@@ -206,8 +206,13 @@ fn only_the_specs_that_bin_or_count_positionally_are_reported() {
 }
 
 /// The vendored specs that ask for a channel transform brightfield does not
-/// compute — 16 of 54, each drawing a blank or a partial frame today, every
+/// compute — 18 of 54, each drawing a blank or a partial frame today, every
 /// one of them silent before this gate.
+///
+/// It was 16 until the check stopped skipping multi-key maps. `moving-average`
+/// and `window-frame` join on the windowed-average shape
+/// (`{avg: …, orderby: …, rows: …}`), and `protein-design` — already listed —
+/// went from a half-report to naming both of its marks' channels.
 ///
 /// The transforms behind them, so a reader knows what the list is made of
 /// without re-running it: the histogram idiom (`bin`, `count`), positional
@@ -226,6 +231,7 @@ const EXPECTED_SPEAKING: &[&str] = &[
     "flights-200k.yaml",
     "flights-hexbin.yaml",
     "gaia.yaml",
+    "moving-average.yaml",
     "nyc-taxi-rides.yaml",
     "observable-latency.yaml",
     "protein-design.yaml",
@@ -235,7 +241,44 @@ const EXPECTED_SPEAKING: &[&str] = &[
     "us-county-map.yaml",
     "us-state-map.yaml",
     "weather.yaml",
+    "window-frame.yaml",
 ];
+
+/// A transform carrying modifiers is still a transform, and both halves of a
+/// two-part failure get named.
+///
+/// `protein-design.yaml` is the case that forced this. One `rectY` binds
+/// `x: { bin: plddt_total, steps: 60 }` and `y: { count: }`. A check that only
+/// looked at single-key maps named the `count` and said nothing about the
+/// `bin` — so an author who fixed the half they were told about was still
+/// looking at a blank frame with nothing left to explain it. **A partial
+/// diagnostic on a two-part failure is a wrong diagnostic**, and it is worse
+/// than silence because it looks like the whole answer.
+#[test]
+fn a_transform_with_modifiers_beside_it_is_still_named() {
+    let found = transforms(include_str!(
+        "../vendor/mosaic-specs/yaml/protein-design.yaml"
+    ));
+    assert!(
+        found.contains("x:bin"),
+        "`x: {{ bin: …, steps: 60 }}` carries a modifier, and is still an \
+         uncomputed bin: {found:?}"
+    );
+    assert!(
+        found.contains("y:count"),
+        "the `count` half was already named and must stay named: {found:?}"
+    );
+    // The windowed-average shape from a different file, so this does not pass
+    // on one spec's quirk.
+    let ma = transforms(include_str!(
+        "../vendor/mosaic-specs/yaml/moving-average.yaml"
+    ));
+    assert!(
+        ma.contains("y:avg"),
+        "`y: {{ avg: cases, orderby: day, rows: $frame }}` is a windowed average \
+         brightfield does not compute: {ma:?}"
+    );
+}
 
 /// The false-positive gate, and the one that matters most.
 ///
@@ -277,11 +320,16 @@ fn brightfields_own_examples_stay_silent() {
         }
     });
     // A zero-file walk would pass this assertion while proving nothing — the
-    // exact shape of a structural guard passing on broken code.
+    // exact shape of a structural guard passing on broken code. Pinned at the
+    // real count rather than a loose floor: `examples/` holds 38 `.yaml`, of
+    // which 36 parse as Mosaic specs and 2 are protocol manifests with no plot
+    // discriminator (`protocol/degrade.yaml`, `protocol/edgar_gleif/arcform.yaml`).
+    // A floor of 30 would let six examples silently stop parsing while this
+    // gate still reported the corpus clean.
     assert!(
-        checked >= 30,
-        "expected to walk brightfield's own example corpus; only {checked} \
-         specs parsed, so this gate proved nothing"
+        checked >= 36,
+        "expected to walk brightfield's own example corpus; only {checked} of \
+         the 36 parseable specs were read, so this gate proved less than it claims"
     );
     assert!(
         speaking.is_empty(),
