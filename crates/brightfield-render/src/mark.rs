@@ -789,10 +789,18 @@ impl MarkRenderer for BarRenderer {
             };
             let tip = value_scale.map_f64(value);
 
+            // The BAND span is NOT normalised, and for `BarAxis::X` it is
+            // genuinely inverted: a y Band's pixel range runs downward
+            // (`layout.rs` `y_range()` is `(bottom, top)`), so `band_width()` is
+            // negative and `band_hi < band_lo`. That is fine here —
+            // `Fill::NonZero` does not care about winding, and `CellRenderer`
+            // already emits the same shape — but it means `Rect::height()` and
+            // `Rect::contains()` would be wrong on this rect, so do not hand it
+            // to a consumer that reads either without normalising first.
             let band_lo = centre - band_width / 2.0;
             let band_hi = band_lo + band_width;
-            // Order the value span low-to-high so a negative bar, and a y scale
-            // whose pixel range runs downward, both give a non-inverted Rect.
+            // The VALUE span, by contrast, IS ordered low-to-high, so a negative
+            // bar draws from its tip back to the baseline rather than inside out.
             let (val_lo, val_hi) = if tip < baseline {
                 (tip, baseline)
             } else {

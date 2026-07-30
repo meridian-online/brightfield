@@ -116,6 +116,84 @@ fn both_bar_orientations_put_ink_on_the_page() {
     );
 }
 
+/// The distinct bar LENGTHS in a `barX` export, longest first.
+///
+/// Every barX bar starts at the zero baseline, so a bar's length is the
+/// rightmost inked pixel on its rows minus the leftmost. Rows inside one band
+/// all share a length, so collecting per-row extents and deduplicating gives
+/// one entry per bar.
+///
+/// Tolerance of 2 px when deduplicating: anti-aliasing moves an edge by a
+/// fraction of a pixel between rows, and without it a single bar reports as
+/// two or three near-identical lengths.
+fn bar_lengths(png: &std::path::Path) -> Vec<u32> {
+    let img = image::open(png).expect("open png").to_rgba8();
+    let (w, h) = img.dimensions();
+    let want = mark_ink();
+    let inked = |x: u32, y: u32| {
+        let p = img.get_pixel(x, y).0;
+        (0..3).all(|c| (i32::from(p[c]) - want[c]).abs() <= MARK_INK_TOL)
+    };
+    let mut lengths: Vec<u32> = Vec::new();
+    for y in 0..h {
+        let first = (0..w).find(|&x| inked(x, y));
+        let last = (0..w).rev().find(|&x| inked(x, y));
+        if let (Some(a), Some(b)) = (first, last) {
+            let len = b - a;
+            if !lengths.iter().any(|l| l.abs_diff(len) <= 2) {
+                lengths.push(len);
+            }
+        }
+    }
+    lengths.sort_unstable_by(|a, b| b.cmp(a));
+    lengths
+}
+
+/// A `barX`'s bar lengths are PROPORTIONAL to its values.
+///
+/// The ink gate above only asks whether anything was drawn. A renderer that
+/// mapped every bar through the wrong scale, or dropped the value channel and
+/// drew six identical bars, would sail through it — and so would a scene-op
+/// count. This is the assertion that says the picture means what the data says.
+///
+/// `examples/bars-x.yaml` holds 30/18/45/22/12/38. Sorted descending that is
+/// 45/38/30/22/18/12, so every length divided by its value must give the same
+/// pixels-per-unit.
+#[test]
+fn barx_bar_lengths_are_proportional_to_their_values() {
+    let dir = std::env::temp_dir().join("bf-bar-orientation");
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let png = dir.join("barx-lengths.png");
+    let composed = compose_spec(example("bars-x.yaml").to_str().expect("utf-8 path"))
+        .expect("the example composes");
+    capture_vello_only(composed, 1.0, &png).expect("export");
+
+    let lengths = bar_lengths(&png);
+    let mut values = [30.0_f64, 18.0, 45.0, 22.0, 12.0, 38.0];
+    values.sort_by(|a, b| b.partial_cmp(a).expect("no NaN"));
+
+    assert_eq!(
+        lengths.len(),
+        values.len(),
+        "expected one distinct length per bar, got {lengths:?} for {values:?}"
+    );
+
+    let ppu: Vec<f64> = lengths
+        .iter()
+        .zip(values.iter())
+        .map(|(l, v)| f64::from(*l) / v)
+        .collect();
+    let lo = ppu.iter().copied().fold(f64::INFINITY, f64::min);
+    let hi = ppu.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    // 3% covers anti-aliased edges and the half-open pixel grid; a genuine
+    // mapping error is off by tens of percent or more.
+    assert!(
+        hi / lo < 1.03,
+        "bar lengths are not proportional to their values: pixels-per-unit \
+         ranged {lo:.2}..{hi:.2} across {lengths:?} for {values:?}"
+    );
+}
+
 /// The value axis of a `barX` starts at zero, and the bars sit flush against
 /// it.
 ///
