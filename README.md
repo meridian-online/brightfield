@@ -258,3 +258,5 @@ Built with [Vello](https://github.com/linebender/vello) (Linebender's GPU 2D sce
 Chart labels are rendered with [Inter](https://rsms.me/inter/), bundled (with its SIL Open Font License 1.1) via the Meridian design crate.
 
 Spec format, grammar-of-graphics semantics, param/selection model, and query optimisation strategies derived from the [Mosaic](https://idl.uw.edu/mosaic/) project (UW IDL + CMU DIG — see [Mosaic TVCG'24](https://idl.uw.edu/papers/mosaic)).
+
+Interaction and dashboard design informed by [Embedding Atlas](https://github.com/apple/embedding-atlas) (Apple, MIT licence) — its schema-inferred default dashboard, ghosted total-behind-filtered histograms, saved SQL predicates, and point-map-as-chart treatment. Design study only; no Embedding Atlas code is vendored here. See Ren, Hohman, Lin & Moritz, *Embedding Atlas: Low-Friction, Interactive Embedding Visualization*, [arXiv:2505.06386](https://arxiv.org/abs/2505.06386).
