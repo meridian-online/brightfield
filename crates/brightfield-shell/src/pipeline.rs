@@ -792,6 +792,19 @@ impl LiveDashboard {
     /// to `TRUE` (nothing constrained), is absent — the empty state is an empty
     /// list, never a `WHERE TRUE` nobody drew.
     ///
+    /// **`TRUE` is the only value dropped, and `FALSE` is deliberately not.**
+    /// A `Predicate::Point` with no values and an empty `Predicate::Or` both
+    /// render as `FALSE`, so the question is whether a gesture can make one:
+    /// it cannot. Every structured point a click produces carries exactly one
+    /// value — `chart_item`'s band-scale resolution and `brightfield_ui`'s
+    /// `point_to_structured` each build a one-element `values` — nothing
+    /// removes a value from a held clause, and `compile_selection` returns
+    /// `TRUE` rather than an empty `Or`/`And` when a selection has no live
+    /// contributor. If some future producer ever did hold one, `$name = FALSE`
+    /// is the honest line for it: the selection genuinely admits no rows,
+    /// which is a fact to show rather than a rest state to hide. `TRUE` is
+    /// filtered because it is the one value that means "nothing is held".
+    ///
     /// A selection created only by an `as:` binding and never declared in
     /// `params:` — `highlight.yaml`'s `$range` — resolves through
     /// [`as_bound_selection_default`], the same fallback the highlight emit

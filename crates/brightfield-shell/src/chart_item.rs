@@ -61,8 +61,18 @@ use crate::pipeline::{GestureBinding, PlotHandle};
 use crate::starts;
 
 /// The predicate readout's status-entry id — the handle a headless test asserts
-/// the readout by, and the id that replaces the line in place rather than
-/// stacking a second one beside it as a brush is redrawn.
+/// the readout by, and the name the rail records in [`chrome::StatusDrawn`]
+/// when it draws the line.
+///
+/// **Not a replacement key.** Nothing dedups status entries by id:
+/// [`chrome::status_rail`] draws every entry it is handed, in order. A redrawn
+/// brush cannot stack a second readout beside the first because [`Subject`] is
+/// rebuilt from scratch each time [`Item::subject`] is called — it takes
+/// `&self` and `&ChartDoc`, starts from an empty [`Subject`], and adds this
+/// entry at most once — so the rail's contents are a function of the document,
+/// not an accumulation over frames. What the id buys is that a reader of the
+/// rail (a test, the dismissal routing) can pick this line out of the several
+/// the same rail carries without matching on its text.
 pub const PREDICATE_READOUT: &str = "chart-predicate";
 
 /// How many logical pixels of wheel travel double the visible span.

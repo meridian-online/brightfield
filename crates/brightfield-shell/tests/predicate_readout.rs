@@ -8,7 +8,7 @@
 //! any other way and the readout becomes a second opinion about the filter.
 //!
 //! Everything here is TEXT, read through the same `Item::subject` the window
-//! rails from, and GPU-free. Four failures are worth a section each:
+//! rails from, and GPU-free. Five failures are worth a section each:
 //!
 //! - **The readout paraphrases.** A `temp >= 8.600000000000001` rounded to
 //!   `8.6` on the way to the screen reads better and is a different predicate.
@@ -23,8 +23,14 @@
 //!   instead of removing them. Held by asserting what the emitted SQL does with
 //!   the shown clause in both shapes.
 //! - **The readout will not go away.** A cleared selection that leaves the line
-//!   standing is the worst of the four — it is a claim about a filter that is
-//!   no longer in force.
+//!   standing is the worst of them — it is a claim about a filter that is no
+//!   longer in force.
+//! - **The readout has only ever met one clause shape.** An interval brush is
+//!   not the only gesture: a click on a category resolves a
+//!   [`SqlPredicate::Point`], which renders by cardinality — a bare equality
+//!   over a QUOTED string literal for one value, a parenthesised OR chain for
+//!   several, `FALSE` for none. Held by clicking real bars and by holding a
+//!   multi-value clause.
 
 use brightfield_engine::coordinator::Interaction;
 use brightfield_engine::{RecordBatch, Session, SqlPredicate};
@@ -37,6 +43,7 @@ use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_spec::{parse_spec, Format, Spec};
 use brightfield_sql::emit::{emit_query, emit_rows_query};
+use brightfield_sql::ir::ScalarValue;
 use brightfield_workbench::Item;
 
 use std::path::{Path, PathBuf};
@@ -150,6 +157,34 @@ fn brush_x(app: &mut MeridianApp, ctx: &egui::Context, plot: usize, from: f32, t
     frame(app, ctx, Vec::new());
 }
 
+/// **A real pointer click on a plot** — pressed and released on the same pixel,
+/// which is what the gesture router's click slop separates from a one-pixel
+/// sweep, and the only way to get the value a `toggleX` interactor really
+/// resolves out of the band scale it was drawn with.
+///
+/// `at` is a fraction of the plot's width; the click lands halfway down the
+/// plot, inside the clicked category's bar.
+fn click_x(app: &mut MeridianApp, ctx: &egui::Context, plot: usize, at: f32) {
+    let raster = app
+        .chart_doc()
+        .raster_rect
+        .expect("a settled frame presented the raster");
+    let rect = app.chart_doc().composed.plots[plot].rect;
+    let pos = egui::pos2(
+        raster.min.x + rect.x as f32 + rect.width as f32 * at,
+        raster.min.y + rect.y as f32 + rect.height as f32 * 0.5,
+    );
+    let button = |pressed: bool| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    };
+    frame(app, ctx, vec![egui::Event::PointerMoved(pos), button(true)]);
+    frame(app, ctx, vec![button(false)]);
+    frame(app, ctx, Vec::new());
+}
+
 /// The row-level SQL the engine emits for `mark` under the session's CURRENT
 /// selection state — the grid's read path, which shares its one
 /// `compile_selection` with the chart's `emit_query`, so the WHERE in it is the
@@ -197,24 +232,27 @@ fn mark_rows(doc: &mut ChartDoc, mark: usize) -> usize {
 
 /// **Hand the shown string back to DuckDB on its own**, and count what it
 /// selects: `clause` becomes the static `data.filter` of a spec built from the
-/// fixture's own text, over the fixture's own rows, and the marks are executed
-/// for real.
+/// fixture's own text — every `filterBy: $selection` in it — over the fixture's
+/// own rows, and `mark` is executed for real.
 ///
 /// The point is that nothing here goes near a selection. If the readout has
-/// been rewritten on its way to the rail — rounded, re-spaced, re-parenthesised
-/// — this is a second, independent engine run that says so in rows.
-fn rows_selected_by(fixture: &Path, clause: &str) -> usize {
+/// been rewritten on its way to the rail — rounded, re-spaced, re-parenthesised,
+/// re-quoted — this is a second, independent engine run that says so in rows.
+fn rows_selected_by(fixture: &Path, clause: &str, selection: &str, mark: usize) -> usize {
     assert!(
         !clause.contains('"'),
         "the probe spec quotes the clause: {clause}"
     );
     let source = std::fs::read_to_string(fixture).expect("read the fixture");
-    let probed = source.replace("filterBy: $brush", &format!("filter: \"{clause}\""));
+    let probed = source.replace(
+        &format!("filterBy: ${selection}"),
+        &format!("filter: \"{clause}\""),
+    );
     assert_ne!(probed, source, "the probe spec substituted nothing");
     let mut live = LiveDashboard::load_str(&probed, None).expect("the probe spec loads");
     live.present().expect("the probe spec draws");
     live.coordinator()
-        .chart_rows(0)
+        .chart_rows(mark)
         .expect("the probe mark queries")
         .iter()
         .map(RecordBatch::num_rows)
@@ -285,7 +323,7 @@ fn the_predicate_shown_is_the_predicate_executed() {
     // …and it selects, on its own and through a second engine run that never
     // sees a selection, exactly the rows the filtered plot drew.
     assert_eq!(
-        rows_selected_by(&path, &clause),
+        rows_selected_by(&path, &clause, "brush", 0),
         drawn,
         "the shown clause selects a different row set than the plot it is \
          supposed to describe: {clause}"
@@ -397,6 +435,63 @@ fn a_second_brush_replaces_the_line_the_first_one_left() {
         .filter(|(id, _)| *id == PREDICATE_READOUT)
         .count();
     assert_eq!(readouts, 1, "one readout, replaced — never a stack of them");
+}
+
+/// **What actually stops the line stacking**, asserted where it would show:
+/// the rail the window really drew, over many frames and two gestures.
+///
+/// Worth its own test because the mechanism is easy to misremember. Nothing
+/// dedups status entries by id — `status_rail` draws every entry it is handed,
+/// in order — so the readout's id is a handle and not a replacement key. The
+/// property is `Item::subject`'s: it takes `&self` and `&ChartDoc`, builds a
+/// fresh `Subject`, and adds the readout at most once, so the rail is a
+/// function of the document rather than an accumulation over frames. Two calls
+/// over one document must agree, and twenty frames over each of two successive
+/// selections must draw the line exactly once every time.
+#[test]
+fn the_readout_is_rebuilt_from_the_document_and_never_accumulates() {
+    let path = example("crossfilter.yaml");
+    let mut app = live_window(&path);
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx, Vec::new());
+    frame(&mut app, &ctx, Vec::new());
+    brush_x(&mut app, &ctx, 0, 0.3, 0.65);
+
+    // `subject` is a read, not an update: asking twice cannot change the answer.
+    let item = ChartItem::new();
+    assert_eq!(
+        item.subject(app.chart_doc()).status,
+        item.subject(app.chart_doc()).status,
+        "a second `subject` over one document disagreed with the first"
+    );
+
+    let drawn_readouts = |app: &MeridianApp| {
+        app.rail()
+            .drawn
+            .iter()
+            .filter(|id| **id == PREDICATE_READOUT)
+            .count()
+    };
+    for _ in 0..20 {
+        frame(&mut app, &ctx, Vec::new());
+        assert_eq!(
+            drawn_readouts(&app),
+            1,
+            "the rail drew the readout {} times over one unchanged selection",
+            drawn_readouts(&app)
+        );
+    }
+    // …and a second gesture replaces the line rather than adding one beside it.
+    brush_x(&mut app, &ctx, 0, 0.55, 0.9);
+    for _ in 0..20 {
+        frame(&mut app, &ctx, Vec::new());
+        assert_eq!(
+            drawn_readouts(&app),
+            1,
+            "a re-brushed chart rails {} readouts",
+            drawn_readouts(&app)
+        );
+    }
 }
 
 /// **Clearing the selection clears the readout** (AC2), and brushing again
@@ -659,5 +754,215 @@ fn the_readout_is_leading_and_dismissed_by_the_verb_that_retracts_it() {
         app.rail().drawn.contains(&PREDICATE_READOUT),
         "the window drew {:?}",
         app.rail().drawn
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 5. The other gesture: a point selection
+// ---------------------------------------------------------------------------
+
+/// **A category click reads back as its own equality, quotes and all.** The
+/// gesture the interval brush is not: `toggleX` over a band scale resolves the
+/// clicked category and dispatches a [`SqlPredicate::Point`], which renders a
+/// single value as a bare `region = 'North'` — a QUOTED string literal, which
+/// is the part an interval brush's bare numbers never exercised.
+///
+/// The same two identities as the interval case, because they are the ones
+/// that matter: the shown clause is a verbatim substring of the consumer's
+/// emitted SQL, and handed back to a second engine on its own it selects the
+/// rows the consumer plot drew. A readout that re-quoted the literal — or
+/// dropped the quotes, or escaped them — fails both.
+#[test]
+fn a_category_click_reads_back_as_the_clicked_values_own_equality() {
+    let path = example("point-select-categorical.yaml");
+    let mut app = live_window(&path);
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx, Vec::new());
+    frame(&mut app, &ctx, Vec::new());
+    assert!(
+        readout(app.chart_doc()).is_none(),
+        "at rest nothing is held, so nothing is claimed"
+    );
+
+    // The three bars sit at a quarter, the middle and five sixths of the plot's
+    // width; this one is the first of them.
+    click_x(&mut app, &ctx, 0, 0.25);
+
+    let line = readout(app.chart_doc()).expect("a committed click is shown");
+    assert_eq!(
+        line, "$pick = (region = 'North')",
+        "the readout is not the clicked category's own equality"
+    );
+    let clause = clause_of(&line);
+
+    // The store's own clause, verbatim — a single-value `Point` is the bare
+    // equality and NOT the OR chain several values would render as. The one
+    // thing wrapped around it is `compile_selection`'s AND-of-one, exactly as
+    // in the interval case.
+    let contributor = app.chart_doc().composed.plots[0].path.clone();
+    let held = app
+        .chart_doc_mut()
+        .live_coordinator()
+        .expect("a live document")
+        .session()
+        .contributor_predicate("pick", &contributor)
+        .expect("the clicked plot contributed to $pick")
+        .to_string();
+    assert_eq!(held, "region = 'North'");
+    assert_eq!(line, format!("$pick = ({held})"));
+
+    let spec = spec_of(&path);
+    let drawn = mark_rows(app.chart_doc_mut(), 1);
+    assert_eq!(
+        drawn, 2,
+        "fixture check: the clicked region has two rows in the detail plot"
+    );
+    let session = app
+        .chart_doc_mut()
+        .live_coordinator()
+        .expect("a live document")
+        .session();
+    let sql = emitted_rows_sql(session, &spec, 1);
+    assert!(
+        sql.contains(&clause),
+        "the shown clause is not in the executed SQL byte for byte — \
+         something re-quoted it on the way to the rail.\nshown:    {clause}\nexecuted: {sql}"
+    );
+    assert_eq!(
+        rows_selected_by(&path, &clause, "pick", 1),
+        drawn,
+        "the shown clause selects a different row set than the plot it is \
+         supposed to describe: {clause}"
+    );
+
+    // And the line follows the next click, as it follows the next brush.
+    click_x(&mut app, &ctx, 0, 0.85);
+    assert_eq!(
+        readout(app.chart_doc()).as_deref(),
+        Some("$pick = (region = 'East')"),
+        "the readout did not follow the second click"
+    );
+}
+
+/// **Several values in one point clause read back as the OR chain.** A
+/// `Point`'s rendering is cardinality-dependent, and the readout shows whatever
+/// the store holds because that is the string the emitters interpolate — so
+/// both shapes have to reach the rail intact, not just the single-value one a
+/// click produces today.
+///
+/// Held rather than clicked: no gesture accumulates values into one clause yet
+/// (see `a_point_gesture_can_never_hold_an_empty_clause`), so the multi-value
+/// shape is pushed through the same `apply_interaction` seam the gestures use.
+/// It is then executed, which is what makes this more than a `Display` test —
+/// the OR chain has to be a legal WHERE over the fixture's own rows.
+#[test]
+fn a_multi_value_point_reads_back_as_the_or_chain_it_emits() {
+    let path = example("point-select.yaml");
+    let mut doc = live_doc(include_str!("../../../examples/point-select.yaml"));
+    let point = |values: Vec<&str>| SqlPredicate::Point {
+        column: "g".to_string(),
+        values: values
+            .into_iter()
+            .map(|v| ScalarValue::Text(v.to_string()))
+            .collect(),
+        meta: None,
+    };
+    let select = |doc: &mut ChartDoc, predicate: SqlPredicate| {
+        doc.apply_interaction(Interaction::Select {
+            name: "pick".to_string(),
+            contributor: ComponentPath("root/hconcat[0]".to_string()),
+            predicate,
+        });
+    };
+
+    select(&mut doc, point(vec!["a", "b"]));
+    let line = doc.selection_sql().expect("a point selection is held");
+    assert_eq!(
+        line, "$pick = ((g = 'a' OR g = 'b'))",
+        "several values render as the parenthesised OR chain; the outer \
+         parentheses are `compile_selection`'s AND-of-one, and both are in the \
+         emitted SQL"
+    );
+
+    let clause = clause_of(&line);
+    let spec = spec_of(&path);
+    let drawn = mark_rows(&mut doc, 1);
+    assert_eq!(
+        drawn, 6,
+        "fixture check: three rows are `a` and three are `b`"
+    );
+    let session = doc.live_coordinator().expect("a live document").session();
+    assert!(
+        emitted_rows_sql(session, &spec, 1).contains(&clause),
+        "the shown OR chain is not the executed one: {clause}"
+    );
+    assert_eq!(
+        rows_selected_by(&path, &clause, "pick", 1),
+        drawn,
+        "the shown OR chain selects a different row set than the plot drew"
+    );
+
+    // The cardinality is read off the value, not fixed at the first render: one
+    // value collapses the same clause back to the bare equality.
+    select(&mut doc, point(vec!["c"]));
+    assert_eq!(
+        doc.selection_sql().as_deref(),
+        Some("$pick = (g = 'c')"),
+        "the readout kept the OR chain after the clause narrowed to one value"
+    );
+}
+
+/// **`$name = FALSE` is not reachable from a gesture** — the fact the
+/// `TRUE`-only guard in `LiveDashboard::selection_clauses` rests on, and the
+/// reason an empty `Point` is not filtered out there.
+///
+/// A `Point` with no values renders as `FALSE`, so a readout could in principle
+/// rail `$pick = FALSE`. It cannot today, and this pins why: every point a
+/// click produces carries exactly one value, and a click that resolves nothing
+/// — the gap between two bars, past the last one — dispatches no interaction at
+/// all rather than an empty clause, leaving the previous selection standing.
+/// If a producer ever does hold an empty clause, this test goes red and the
+/// comment on the guard has to be revisited rather than quietly outlived.
+#[test]
+fn a_point_gesture_can_never_hold_an_empty_clause() {
+    let path = example("point-select-categorical.yaml");
+    let mut app = live_window(&path);
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx, Vec::new());
+    frame(&mut app, &ctx, Vec::new());
+    let contributor = app.chart_doc().composed.plots[0].path.clone();
+
+    for (at, region) in [(0.25, "North"), (0.55, "South"), (0.85, "East")] {
+        click_x(&mut app, &ctx, 0, at);
+        let held = app
+            .chart_doc_mut()
+            .live_coordinator()
+            .expect("a live document")
+            .session()
+            .contributor_predicate("pick", &contributor)
+            .expect("the clicked plot contributed to $pick")
+            .clone();
+        match &held {
+            SqlPredicate::Point { values, .. } => assert_eq!(
+                values.len(),
+                1,
+                "a click produced a point clause of {} values: {held}",
+                values.len()
+            ),
+            other => panic!("a category click produced {other:?}, not a point clause"),
+        }
+        assert_eq!(
+            readout(app.chart_doc()).as_deref(),
+            Some(format!("$pick = (region = '{region}')").as_str())
+        );
+    }
+
+    // A click on no band at all — past the right-hand end of the last bar — is
+    // not a selection of nothing. It is not a selection.
+    click_x(&mut app, &ctx, 0, 0.99);
+    assert_eq!(
+        readout(app.chart_doc()).as_deref(),
+        Some("$pick = (region = 'East')"),
+        "a click that resolved no category disturbed the held selection"
     );
 }
