@@ -225,6 +225,9 @@ fn warning_wire_name(warning: &ParseWarning) -> String {
         // something every spec in the corpus contains; `bin` names the word
         // the author actually wrote and can search their own file for.
         ParseWarning::UnconsumedChannelTransform { transform, .. } => transform.clone(),
+        // The colliding NAME, not the channel: it is the word the author wrote
+        // and the one they can search their own file for.
+        ParseWarning::ColourNameShadowsColumn { name, .. } => name.clone(),
         ParseWarning::NonNumericInset { attribute }
         | ParseWarning::NonStringLabel { attribute } => attribute.clone(),
         ParseWarning::UnknownProjection { value } => value.clone(),
@@ -257,9 +260,9 @@ fn warning_surface(warning: &ParseWarning) -> &'static str {
         ParseWarning::NonNumericInset { .. }
         | ParseWarning::NonStringLabel { .. }
         | ParseWarning::UnknownProjection { .. } => "plot",
-        ParseWarning::UnknownAggregate { .. } | ParseWarning::UnconsumedChannelTransform { .. } => {
-            "channel"
-        }
+        ParseWarning::UnknownAggregate { .. }
+        | ParseWarning::UnconsumedChannelTransform { .. }
+        | ParseWarning::ColourNameShadowsColumn { .. } => "channel",
         ParseWarning::UnknownOption { .. } | ParseWarning::VersionMismatch { .. } => "spec",
     }
 }

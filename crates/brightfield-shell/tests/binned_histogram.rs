@@ -228,3 +228,45 @@ fn the_transposed_histogram_draws_the_same_shape_lying_down() {
         "rectX must draw the same counts as rectY, along the other axis"
     );
 }
+
+/// **Out of scope has to be loud.** A DATE-typed column bound to
+/// `x: {bin: col}` is not a histogram brightfield computes: Mosaic routes a
+/// temporal field to `binDate` (`vgplot/plot/src/transforms/bin.js` —
+/// `isDate ? binDate(…) : binHistogram(…)`), and only `binHistogram` is
+/// transliterated here. The bin arithmetic emitted instead divides a DATE by a
+/// step, which DuckDB refuses to bind.
+///
+/// **It is not gated at the lift, and the reason is structural.** Mosaic gets
+/// `isDate` from `mark.channelField(channel).type`, filled in by `prepare()`'s
+/// `queryFieldInfo` round-trip — it ASKS the database. Brightfield's parse →
+/// emit path never does: the parser sees the document, `LowerCtx` carries data
+/// SOURCES and params, and neither carries a column type. The only `DESCRIBE`
+/// in the tree is `Session::profile_sources`, which runs after the views exist,
+/// serves the sidebar, and is not consulted by emit. So the refusal cannot
+/// happen where a grouping fill's does, and the diagnostic a refusal would keep
+/// is a `ParseWarning` that only exists if the lift is declined at parse time.
+///
+/// What this pins meanwhile is the property that is not negotiable: the
+/// failure is LOUD and names the mark. A change that made it quiet — a
+/// swallowed error, an empty batch, a blank frame and a zero exit — would be
+/// strictly worse than an ugly error, and is what this test fails on. It
+/// deliberately does not assert DuckDB's wording.
+#[test]
+fn a_date_typed_bin_fails_loudly_and_names_the_mark() {
+    let spec = "data:\n  days:\n    query: \"SELECT DATE '2020-01-01' + CAST(i AS INTEGER) AS \
+                day FROM range(40) t(i)\"\nplot:\n  - mark: rectY\n    data: { from: days }\n    \
+                x: { bin: day }\n    y: { count: }\n    fill: steelblue\nwidth: 640\n\
+                height: 400\n";
+    let err = match brightfield_shell::pipeline::compose_spec_str(spec, None) {
+        Err(e) => e,
+        Ok(_) => panic!("a date-typed bin cannot draw, so composing it must not succeed"),
+    };
+    assert!(
+        err.contains("mark 0"),
+        "the failure must name which mark it was: {err}"
+    );
+    assert!(
+        err.contains("rectY"),
+        "…and what kind, so a six-mark dashboard is readable: {err}"
+    );
+}
