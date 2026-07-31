@@ -878,7 +878,7 @@ pub fn plan_for_mark(
     // limitation, out of this card's scope; left untouched deliberately.)
     let mark_highlight_by = collect_mark_highlight_by(spec);
     if let Some(Some(selection_name)) = mark_highlight_by.get(mark_index) {
-        let default_node = default_highlight_selection();
+        let default_node = as_bound_selection_default();
         let sel_node = match spec.params.get(selection_name) {
             Some(ParamNode::Selection(sel)) => Some(sel),
             // A declared value param is not a selection — never projects.
@@ -1151,21 +1151,30 @@ fn plot_highlight_by_name(items: &[Component]) -> Option<String> {
 /// this (unlike filterBy) because "brush a region, grey the rest" must dim the
 /// brushed plot's OWN rows too — a highlight-bound mark self-excluding its own
 /// plot's contribution would leave the brushed plot un-dimmed (FIX B).
-/// Real contributor paths are component paths (`root`, `root/hconcat[0]`, …), so
-/// this NUL-prefixed sentinel can never collide.
-const HIGHLIGHT_NO_SELF_EXCLUDE: &str = "\u{0}__bf_highlight_no_self_exclude";
+///
+/// The sentinel itself is [`crate::lower::NO_SELF_EXCLUDE`], shared rather than
+/// re-spelled: two independently declared "can never collide" strings are two
+/// things that have to go on not colliding.
+const HIGHLIGHT_NO_SELF_EXCLUDE: &str = crate::lower::NO_SELF_EXCLUDE;
 
-/// The resolution synthesised for a highlight's `by:` selection that is created
-/// ONLY by an `as:` binding (never declared in `params:`) — e.g. weather's
-/// `$range`, which exists solely via `intervalX as: $range`. `compile_selection`
-/// still reads the live contributors; only the resolution needs a default.
+/// The resolution synthesised for a selection that is created ONLY by an `as:`
+/// binding and never declared in `params:` — e.g. `highlight.yaml`'s `$range`,
+/// which exists solely via `intervalXY as: $range`. `compile_selection` still
+/// reads the live contributors; only the resolution needs a default.
 ///
 /// `Single` matches every EXPLICIT resolution in the highlight corpus (splom's
 /// `$brush`, weather's `$click` are both `single`), never self-excludes, and —
 /// for a single-contributor brush (the corpus shape) — resolves identically to
-/// any other resolution. Multi-contributor as-bound highlights are a documented
+/// any other resolution. Multi-contributor as-bound selections are a documented
 /// edge (they combine as "most recent" under `single`).
-fn default_highlight_selection() -> SelectionNode {
+///
+/// Public because a surface that READS what a selection holds has to reach the
+/// same answer the emit path reaches. A readout that skipped the undeclared
+/// names would go silent on exactly the specs whose selection is born from a
+/// gesture; one that guessed a second default would eventually disagree with
+/// the SQL about what the brush means.
+#[must_use]
+pub fn as_bound_selection_default() -> SelectionNode {
     SelectionNode {
         select: SelectionResolution::Single,
         status: ImplStatus::Implemented,

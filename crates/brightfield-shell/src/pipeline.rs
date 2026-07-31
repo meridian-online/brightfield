@@ -38,10 +38,13 @@ use brightfield_render::{grow_margins, resolve_titles};
 use brightfield_spec::analysis::{
     analyse_spec, build_brushable_bindings, BrushKind, ComponentPath,
 };
+use brightfield_spec::ast::ParamNode;
 use brightfield_spec::layout::{collect_plot_nodes, placed_plots, resolve_plot_insets, Rect};
 use brightfield_spec::vocab::MarkKind;
 use brightfield_spec::{parse_spec, parse_spec_path, Format, ParseOutput, Spec};
-use brightfield_sql::ir::SampleRate;
+use brightfield_sql::emit::as_bound_selection_default;
+use brightfield_sql::ir::{Predicate, SampleRate};
+use brightfield_sql::lower::{compile_selection, NO_SELF_EXCLUDE};
 use brightfield_sql::{collect_marks, collect_plot_groups};
 use brightfield_workbench::subject::RunState;
 use vello::Scene;
@@ -660,7 +663,6 @@ impl LiveDashboard {
     /// As [`LiveDashboard::present`].
     pub fn apply(&mut self, interaction: Interaction) -> Result<Composed, String> {
         if let Interaction::SetParam { name, value } = &interaction {
-            use brightfield_spec::ast::ParamNode;
             if let Some(node @ ParamNode::Value(_)) = self.spec.params.get_mut(name) {
                 *node = ParamNode::Value(value.clone());
             }
@@ -760,6 +762,80 @@ impl LiveDashboard {
     /// at a step, distinct-value option lists) or hold the interrupt handle.
     pub fn coordinator(&mut self) -> &mut Coordinator {
         &mut self.coordinator
+    }
+
+    /// **What each live selection currently HOLDS**, as `(name, clause)` pairs
+    /// ordered by name — the store's own values, resolved through the very
+    /// [`compile_selection`] every emitted query resolves them through, so a
+    /// surface that shows one of these clauses is showing the string DuckDB
+    /// was handed rather than a second rendering of it.
+    ///
+    /// Sorted because the store is a `HashMap`: iteration order is arbitrary
+    /// and a readout that reordered itself between frames would read as
+    /// flicker.
+    ///
+    /// **Held, not applied** — the distinction the wording of any readout over
+    /// this has to keep:
+    ///
+    /// - Under `select: crossfilter` each consumer drops a *different* clause
+    ///   (its own), so no single consumer's WHERE can stand for the value.
+    ///   [`NO_SELF_EXCLUDE`] drops none, which is the value itself.
+    /// - A static `data.filter`, a navigation extent pushed into a plot's
+    ///   query, and a pushed-down sample rate all add to the executed WHERE
+    ///   and appear in no selection store, so this is a floor on what ran, not
+    ///   the whole of it.
+    /// - Under `highlight, by: $sel` the clause is projected as a per-row
+    ///   boolean and DIMS rather than filtering. The clause is the same string;
+    ///   what it does to the rows is not.
+    ///
+    /// A selection with no live contributor, or one whose contributors compile
+    /// to `TRUE` (nothing constrained), is absent — the empty state is an empty
+    /// list, never a `WHERE TRUE` nobody drew.
+    ///
+    /// **`TRUE` is the only value dropped, and `FALSE` is deliberately not.**
+    /// A `Predicate::Point` with no values and an empty `Predicate::Or` both
+    /// render as `FALSE`, so the question is whether a gesture can make one:
+    /// it cannot. Every structured point a click produces carries exactly one
+    /// value — `chart_item`'s band-scale resolution and `brightfield_ui`'s
+    /// `point_to_structured` each build a one-element `values` — nothing
+    /// removes a value from a held clause, and `compile_selection` returns
+    /// `TRUE` rather than an empty `Or`/`And` when a selection has no live
+    /// contributor. If some future producer ever did hold one, `$name = FALSE`
+    /// is the honest line for it: the selection genuinely admits no rows,
+    /// which is a fact to show rather than a rest state to hide. `TRUE` is
+    /// filtered because it is the one value that means "nothing is held".
+    ///
+    /// A selection created only by an `as:` binding and never declared in
+    /// `params:` — `highlight.yaml`'s `$range` — resolves through
+    /// [`as_bound_selection_default`], the same fallback the highlight emit
+    /// path takes. Skipping those names would go silent on exactly the specs
+    /// whose selection is born from the gesture rather than declared ahead of
+    /// it. A declared VALUE param of the same name is not a selection and is
+    /// skipped, as it is at emit.
+    #[must_use]
+    pub fn selection_clauses(&self) -> Vec<(String, Predicate)> {
+        let as_bound = as_bound_selection_default();
+        let mut held: Vec<(String, Predicate)> = self
+            .coordinator
+            .session()
+            .current_selections()
+            .iter()
+            .filter_map(|(name, contributors)| {
+                let node = match self.spec.params.get(name) {
+                    Some(ParamNode::Selection(node)) => node,
+                    Some(ParamNode::Value(_)) => return None,
+                    None => &as_bound,
+                };
+                let by_source: Vec<(String, Predicate)> = contributors
+                    .iter()
+                    .map(|(path, predicate)| (path.0.clone(), predicate.clone()))
+                    .collect();
+                let clause = compile_selection(node, NO_SELF_EXCLUDE, &by_source);
+                (clause != Predicate::True).then(|| (name.clone(), clause))
+            })
+            .collect();
+        held.sort_by(|(a, _), (b, _)| a.cmp(b));
+        held
     }
 
     /// The local files this dashboard's spec reads through `file:` data

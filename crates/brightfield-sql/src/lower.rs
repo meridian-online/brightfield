@@ -1025,6 +1025,22 @@ pub fn find_lowerer(kind: MarkKind, registry: &[(MarkKind, Box<dyn MarkLower>)])
         .unwrap_or(&DefaultLowerer)
 }
 
+/// A `self_source` that matches no real contributor path, so
+/// [`compile_selection`]'s crossfilter branch excludes NOTHING.
+///
+/// Contributor paths are component paths (`root`, `root/hconcat[0]`, …), so a
+/// NUL-prefixed sentinel can never collide with one.
+///
+/// Two callers pass it, for the same reason spelled two ways. A `highlight`
+/// interactor must dim the brushed plot's OWN rows, so its membership
+/// projection never self-excludes. And a reader asking what a selection
+/// currently *holds* is not asking what one plot's WHERE resolved to: under
+/// crossfilter every consumer drops a different clause, so there is no single
+/// consumer whose resolution could stand for the selection's value. Compiling
+/// against this sentinel gives the value itself — the resolution applied
+/// (`AND` / `OR` / most-recent), nothing excluded.
+pub const NO_SELF_EXCLUDE: &str = "\u{0}__bf_no_self_exclude";
+
 /// Compile a selection into a predicate.
 ///
 /// Crossfilter resolution drops predicates whose source matches `self_source`.
