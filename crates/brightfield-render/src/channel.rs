@@ -14,6 +14,17 @@ use brightfield_spec::ast::{AggregateFunc, Mark, SpecValue, ValueOrParamRef};
 /// channel is read from this column, not a user column.
 const AGGREGATE_COUNT_COL: &str = "__bf_count";
 
+/// Reserved HIGH bin-edge columns a binned rect's lowerer emits, one per axis.
+/// Must match `brightfield-sql`'s `BIN_HI_X_COL` / `BIN_HI_Y_COL`. The LOW edge
+/// carries the source column's own name, so it needs no reserved name here.
+///
+/// The two sides agree by CONVENTION rather than by construction, exactly as
+/// `__bf_count` and `__bf_hex_dx` already do: [`ChannelMap::from_mark`] is
+/// handed the mark AST and never the plan, so there is nothing to read the
+/// emitted alias off.
+const BIN_HI_X_COL: &str = "__bf_bin_x2";
+const BIN_HI_Y_COL: &str = "__bf_bin_y2";
+
 /// Visual encoding channels recognised by the rendering pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Channel {
@@ -168,6 +179,26 @@ impl ChannelMap {
                         };
                         cm.insert(*ch, col);
                     }
+                    // A positional bin binds THREE channels off one key. The
+                    // two interval channels are what the rect actually draws
+                    // (its lowerer emits the low edge under the source column's
+                    // own name and the high edge under a reserved one); the
+                    // bare positional channel is bound as well, so the axis
+                    // still derives its title from the column the author named
+                    // and `infer_scales` sees a quantitative axis there.
+                    ValueOrParamRef::Value(SpecValue::Bin { column, .. }) => {
+                        let (lo, hi, hi_col) = match ch {
+                            Channel::X => (Channel::X1, Channel::X2, BIN_HI_X_COL),
+                            Channel::Y => (Channel::Y1, Channel::Y2, BIN_HI_Y_COL),
+                            // A bin on a non-positional channel has no interval
+                            // to draw and no lowerer; leave it unbound rather
+                            // than invent a column the batch does not carry.
+                            _ => continue,
+                        };
+                        cm.insert(lo, column.clone());
+                        cm.insert(hi, hi_col.to_string());
+                        cm.insert(*ch, column.clone());
+                    }
                     ValueOrParamRef::Param(param_ref) => {
                         // A positional channel bound to a `$param` is projected
                         // into the query as `$param AS "<param>"` by the lowerer
@@ -318,5 +349,79 @@ mod tests {
             "literal y captured as 0.0"
         );
         assert_eq!(cm.literal(Channel::X), None, "x has no literal");
+    }
+
+    /// A positional bin binds THREE channels off one key, and the columns it
+    /// names are the ones `RectLowerer` emits.
+    ///
+    /// The interval pair is what `RectRenderer` actually draws — a `rectY`
+    /// reads `X1`/`X2` and never `X` for its edges — so binding only the bare
+    /// channel would leave `axis_edges` returning `None` and the mark blank.
+    /// Binding `X` as well is what gives the axis its derived title and puts a
+    /// quantitative scale on it.
+    #[test]
+    fn from_mark_synthesises_the_interval_pair_for_a_positional_bin() {
+        use brightfield_spec::ast::{AggregateFunc, Mark, SpecValue, ValueOrParamRef};
+        use brightfield_spec::vocab::{ImplStatus, MarkKind};
+
+        let mut options: indexmap::IndexMap<String, ValueOrParamRef<SpecValue>> =
+            Default::default();
+        options.insert(
+            "x".to_string(),
+            ValueOrParamRef::Value(SpecValue::Bin {
+                column: "delay".to_string(),
+                steps: None,
+            }),
+        );
+        options.insert(
+            "y".to_string(),
+            ValueOrParamRef::Value(SpecValue::Aggregate {
+                func: AggregateFunc::Count,
+                column: None,
+            }),
+        );
+
+        let cm = ChannelMap::from_mark(&Mark {
+            kind: MarkKind::RectY,
+            status: ImplStatus::Implemented,
+            data: None,
+            options: options.clone(),
+        });
+        assert_eq!(
+            cm.get(Channel::X1),
+            Some("delay"),
+            "the LOW edge is emitted under the source column's own name"
+        );
+        assert_eq!(cm.get(Channel::X2), Some(BIN_HI_X_COL));
+        assert_eq!(
+            cm.get(Channel::X),
+            Some("delay"),
+            "the bare channel names the field, so the axis has a title"
+        );
+        assert_eq!(
+            cm.get(Channel::Y),
+            Some(AGGREGATE_COUNT_COL),
+            "the count half needs no new code — the aggregate arm already maps it"
+        );
+
+        // The transpose keys its high edge to the other axis, so the two
+        // orientations cannot read each other's column.
+        let mut transposed: indexmap::IndexMap<String, ValueOrParamRef<SpecValue>> =
+            Default::default();
+        transposed.insert("y".to_string(), options["x"].clone());
+        transposed.insert("x".to_string(), options["y"].clone());
+        let cm = ChannelMap::from_mark(&Mark {
+            kind: MarkKind::RectX,
+            status: ImplStatus::Implemented,
+            data: None,
+            options: transposed,
+        });
+        assert_eq!(cm.get(Channel::Y1), Some("delay"));
+        assert_eq!(cm.get(Channel::Y2), Some(BIN_HI_Y_COL));
+        assert_eq!(cm.get(Channel::X), Some(AGGREGATE_COUNT_COL));
+        assert!(
+            !cm.has(Channel::X1) && !cm.has(Channel::X2),
+            "a rectX binds no x interval — its x is the counted value"
+        );
     }
 }

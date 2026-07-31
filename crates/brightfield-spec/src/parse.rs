@@ -26,7 +26,8 @@ use crate::ast::{
 use crate::error::{NameSurface, ParseError, SourceSpan};
 use crate::expr;
 use crate::vocab::{
-    ImplStatus, InputKind, InteractorKind, LegendChannel, MarkKind, SelectionResolution,
+    is_colour_literal, ImplStatus, InputKind, InteractorKind, LegendChannel, MarkKind,
+    SelectionResolution,
 };
 
 /// Surface of field positions at which a bare `$param` string or a
@@ -194,6 +195,33 @@ const CHANNEL_TRANSFORM_KEYS: &[&str] = &["sql"];
 const RENDERED_CHANNEL_FIELDS: &[&str] = &[
     "x", "y", "x1", "y1", "x2", "y2", "fill", "stroke", "size", "text",
 ];
+
+/// The two positional channels a `bin` + `count` pair can occupy, in the order
+/// [`binned_histogram`] tries them: `bin` on `x` counting on `y` (a `rectY`
+/// histogram), then the transpose (`rectX`).
+const BIN_COUNT_AXES: [(&str, &str); 2] = [("x", "y"), ("y", "x")];
+
+/// The modifier keys a `{bin: col, …}` map may carry and still be lifted.
+/// Anything else means the author asked for something the lowerer does not do,
+/// and the pair is left uncomputed rather than half-honoured.
+const BIN_MODIFIER_KEYS: &[&str] = &["steps"];
+
+/// The channels that, bound to a COLUMN, split a binned rect into groups. `z`
+/// is the explicit grouping channel; `fill`/`stroke` group implicitly when they
+/// name a field rather than a colour constant.
+const GROUPING_CHANNEL_FIELDS: &[&str] = &["z", "fill", "stroke"];
+
+/// One mark's lifted positional `bin` + `count` pair.
+struct BinnedHistogram {
+    /// The positional channel carrying `{bin: …}` (`"x"` or `"y"`).
+    bin_channel: &'static str,
+    /// The opposite positional channel, carrying `{count:}`.
+    count_channel: &'static str,
+    /// The column named by the `bin`.
+    column: String,
+    /// The `steps:` hint, when written.
+    steps: Option<i64>,
+}
 
 /// Wire format of the source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -425,6 +453,45 @@ pub enum ParseWarning {
         /// The transform key as written (e.g. `bin`, `count`).
         transform: String,
     },
+
+    /// A binned mark's `fill`/`stroke` named a CSS colour keyword that is ALSO
+    /// a column of the inline source the mark reads — `fill: gold` over rows
+    /// with a `gold` column.
+    ///
+    /// **Advisory only — nothing about the render changes.** The colour reading
+    /// stands and the histogram lifts, so its bins carry whole-row counts. All
+    /// this warning does is tell an author who meant the COLUMN that the spec
+    /// does not say so; see `shadowed_colour` for why that is a warning and
+    /// not a refusal.
+    ///
+    /// **It offers no remedy, because there is none.** The obvious one —
+    /// `z: {name}` to mean the column — is dead advice: `z` is in
+    /// `GROUPING_CHANNEL_FIELDS`, so it refuses the lift, and nothing
+    /// downstream reads it either (`brightfield-render`'s `Channel` has no `z`
+    /// variant and no `"z"` arm in `from_wire`). A spec that takes the advice
+    /// draws a blank frame.
+    ///
+    /// The message also says the bars stay the default colour. Brightfield
+    /// carries no CSS keyword table: `ChannelMap::from_mark` binds a string
+    /// `fill` as a COLUMN name, and `resolve_colour` returns the default mark
+    /// colour for a fill that resolves to no colour-scale entry.
+    ///
+    /// Deliberately absent from `deviations.yaml`. That register holds
+    /// *considered* differences from Mosaic; an unbuilt capability is not one,
+    /// and filling the register with gaps would make it a to-do list wearing
+    /// the clothes of a decision. Tracked as work instead.
+    ///
+    /// Only ever raised where the shadow is provable — see
+    /// `inline_source_columns`. A `file:` or `query:` source's schema is not
+    /// in the document, so the same collision there stays silent.
+    ColourNameShadowsColumn {
+        /// The channel it sat on (`fill` or `stroke`).
+        field: String,
+        /// The name that is both a colour and a column.
+        name: String,
+        /// The data source that has a column by that name.
+        source: String,
+    },
 }
 
 impl fmt::Display for ParseWarning {
@@ -540,6 +607,20 @@ impl fmt::Display for ParseWarning {
                 "channel `{channel}` asks for `{transform}`, which brightfield does not compute — \
                  the channel resolves to nothing and the mark draws no ink"
             ),
+            // States the reading and the two things the author does not get,
+            // and stops. No remedy is offered; the variant doc says why.
+            Self::ColourNameShadowsColumn {
+                field,
+                name,
+                source,
+            } => write!(
+                f,
+                "`{field}: {name}` names a CSS colour and also a column of `{source}` — it is \
+                 read as a colour constant, the same as Mosaic, so each bin counts every row in \
+                 it rather than splitting by `{name}`. Brightfield cannot group a binned rect \
+                 yet, so that split is not available from this spec; and it does not resolve \
+                 CSS colour names either, so the bars stay the default colour"
+            ),
         }
     }
 }
@@ -627,6 +708,11 @@ pub fn parse_spec_path(path: impl AsRef<Path>) -> Result<ParseOutput, ParseError
 #[derive(Default)]
 struct Walker {
     warnings: Vec<ParseWarning>,
+    /// Column names per INLINE data source — the only schema a spec carries in
+    /// itself. Harvested from the raw document before anything is walked,
+    /// because YAML key order is the author's and `plot:` may precede `data:`.
+    /// See `inline_source_columns`.
+    inline_columns: InlineColumns,
 }
 
 impl Walker {
@@ -642,6 +728,11 @@ impl Walker {
                 })
             }
         };
+
+        // Before the walk, not during it: a mark's colour/column disambiguation
+        // needs the schema of a source that may be declared further down the
+        // file than the mark that reads it.
+        self.inline_columns = inline_source_columns(map);
 
         let mut spec = Spec::default();
         let mut root_map = serde_yaml::Mapping::new();
@@ -1170,6 +1261,22 @@ impl Walker {
             });
         }
 
+        // Resolved BEFORE the per-key loop, because it is a property of the
+        // PAIR: a `bin` is only computable when the opposite positional channel
+        // counts, and vice versa. Deciding it per key would let `x` lift while
+        // `y` warned. The shadow check sits outside [`binned_histogram`]
+        // because it only reports and never changes the lift.
+        let histogram = binned_histogram(kind, parent);
+        if histogram.is_some() {
+            if let Some(shadow) = shadowed_colour(parent, &self.inline_columns) {
+                self.warnings.push(ParseWarning::ColourNameShadowsColumn {
+                    field: shadow.field.to_string(),
+                    name: shadow.name,
+                    source: shadow.source,
+                });
+            }
+        }
+
         let mut data: Option<MarkData> = None;
         let mut options = IndexMap::new();
         for (k, val) in parent {
@@ -1180,6 +1287,28 @@ impl Walker {
             if key == "data" {
                 data = Some(self.walk_mark_data(val)?);
                 continue;
+            }
+            if let Some(h) = &histogram {
+                if key == h.bin_channel {
+                    options.insert(
+                        key.clone(),
+                        ValueOrParamRef::Value(SpecValue::Bin {
+                            column: h.column.clone(),
+                            steps: h.steps,
+                        }),
+                    );
+                    continue;
+                }
+                if key == h.count_channel {
+                    options.insert(
+                        key.clone(),
+                        ValueOrParamRef::Value(SpecValue::Aggregate {
+                            func: AggregateFunc::Count,
+                            column: None,
+                        }),
+                    );
+                    continue;
+                }
             }
             if let Some(lifted) = self.maybe_aggregate_channel(&key, val) {
                 options.insert(key.clone(), lifted);
@@ -1574,6 +1703,201 @@ impl Walker {
     }
 }
 
+/// Resolve a mark's positional `bin` + `count` pair, or `None` when the mark
+/// is not the histogram idiom brightfield computes.
+///
+/// Every condition below is a refusal that keeps a spec's uncomputed-transform
+/// diagnostic rather than drawing something wrong:
+///
+/// - **The mark kind** must bin positionally ([`MarkKind::bins_positionally`]).
+/// - **Both halves** must be present, on opposite positional axes. A lone
+///   `x: {bin: t}` has nothing to aggregate and a lone `y: {count:}` has
+///   nothing to group by; either alone keeps warning.
+/// - **The `bin` map's keys** must be `bin`, `steps`, or a
+///   [`BIN_MODIFIER_KEYS`] entry. An unrecognised modifier refuses the lift
+///   rather than dropping it: honouring the `bin` and ignoring the modifier
+///   would draw a different chart from the one asked for.
+/// - **No grouping channel** (`GROUPING_CHANNEL_FIELDS`). `RectLowerer`
+///   groups on the bin edges alone, so lifting a grouped mark would collapse
+///   its groups into one bar per bin — the right TOTAL, with the composition
+///   the author asked for silently gone. A different chart, drawn confidently.
+fn binned_histogram(kind: MarkKind, parent: &serde_yaml::Mapping) -> Option<BinnedHistogram> {
+    if !kind.bins_positionally() || mark_is_grouped(parent) {
+        return None;
+    }
+    BIN_COUNT_AXES
+        .iter()
+        .find_map(|(bin_channel, count_channel)| {
+            let (column, steps) = bin_transform(channel_map_at(parent, bin_channel)?)?;
+            is_count_transform(channel_map_at(parent, count_channel)?).then_some(BinnedHistogram {
+                bin_channel,
+                count_channel,
+                column,
+                steps,
+            })
+        })
+}
+
+/// The mapping written at `channel`, or `None` when the channel is absent or
+/// is not a map (a plain column, a literal, a `$param`).
+fn channel_map_at<'a>(
+    parent: &'a serde_yaml::Mapping,
+    channel: &str,
+) -> Option<&'a serde_yaml::Mapping> {
+    match parent.get(serde_yaml::Value::String(channel.to_string()))? {
+        serde_yaml::Value::Mapping(m) => Some(m),
+        _ => None,
+    }
+}
+
+/// The `(column, steps)` of a `{bin: col}` / `{bin: col, steps: n}` map.
+/// `None` for any other shape — including a `bin` whose value is not a column
+/// name, and a map carrying a modifier this lowerer does not honour.
+fn bin_transform(m: &serde_yaml::Mapping) -> Option<(String, Option<i64>)> {
+    let mut column: Option<String> = None;
+    let mut steps: Option<i64> = None;
+    for (k, v) in m {
+        match k.as_str()? {
+            "bin" => column = Some(v.as_str()?.to_string()),
+            "steps" => steps = Some(v.as_i64()?),
+            other if BIN_MODIFIER_KEYS.contains(&other) => {}
+            _ => return None,
+        }
+    }
+    Some((column?, steps))
+}
+
+/// Whether a channel map is exactly `{count:}` — the corpus writes it both
+/// bare and as `{count: null}`, and both mean "count the rows in the group".
+fn is_count_transform(m: &serde_yaml::Mapping) -> bool {
+    let mut entries = m.iter();
+    let Some((k, v)) = entries.next() else {
+        return false;
+    };
+    entries.next().is_none() && k.as_str() == Some("count") && v.is_null()
+}
+
+/// Column names per inline data source, keyed by the `data:` entry's name.
+///
+/// An inline `data: { obs: [ {v: 1}, … ] }` is the only schema a spec carries
+/// in itself; a `file:` or `query:` source's columns are DuckDB's and the
+/// parser never asks.
+type InlineColumns = std::collections::HashMap<String, std::collections::HashSet<String>>;
+
+/// Harvest [`InlineColumns`] from the raw root mapping.
+///
+/// Every key of every row object counts, not just the first row's: a ragged
+/// source still HAS the column its later rows carry, and the question asked of
+/// this map is "could this name be a column", where a false negative is the
+/// expensive answer.
+fn inline_source_columns(root: &serde_yaml::Mapping) -> InlineColumns {
+    let mut out = InlineColumns::new();
+    let Some(serde_yaml::Value::Mapping(data)) =
+        root.get(serde_yaml::Value::String("data".to_string()))
+    else {
+        return out;
+    };
+    for (name, def) in data {
+        let (Some(name), serde_yaml::Value::Sequence(rows)) = (name.as_str(), def) else {
+            continue;
+        };
+        let columns: std::collections::HashSet<String> = rows
+            .iter()
+            .filter_map(|row| match row {
+                serde_yaml::Value::Mapping(m) => Some(m),
+                _ => None,
+            })
+            .flat_map(|m| m.keys().filter_map(|k| k.as_str().map(str::to_string)))
+            .collect();
+        if !columns.is_empty() {
+            out.insert(name.to_string(), columns);
+        }
+    }
+    out
+}
+
+/// A `fill`/`stroke` string that reads as a colour constant but is also a
+/// COLUMN of the mark's own source.
+struct ShadowedColour {
+    /// The channel it sat on (`fill` or `stroke`).
+    field: &'static str,
+    /// The name that is both, as written.
+    name: String,
+    /// The data source that has a column by that name.
+    source: String,
+}
+
+/// The colour-versus-column collision, reported where the schema is knowable.
+///
+/// **This changes NOTHING about what is drawn — it reports, and that is all.**
+/// The temptation is to refuse the histogram lift here, on the theory that a
+/// real column means real groups. Refusing would blank a frame Mosaic renders:
+/// unlifted, the two channels stay plain objects, which is exactly the
+/// [`ParseWarning::UnconsumedChannelTransform`] case — no column reaches the
+/// renderer and the mark draws no ink. Under the colour-constant rule
+/// ([`is_colour_literal`]) `fill: gold` means the constant, so one bar per bin
+/// carrying whole-row counts is the correct reading and there is no ambiguity
+/// to protect the author from. Only their intent is in doubt, and a warning is
+/// the right instrument for that.
+///
+/// Raised only where the shadow is PROVABLE: the mark reads an inline source
+/// and that source has a column by that name.
+fn shadowed_colour(parent: &serde_yaml::Mapping, inline: &InlineColumns) -> Option<ShadowedColour> {
+    let columns = mark_source_columns(parent, inline)?;
+    GROUPING_CHANNEL_FIELDS.iter().find_map(|field| {
+        if *field == "z" {
+            return None;
+        }
+        let name = parent
+            .get(serde_yaml::Value::String((*field).to_string()))?
+            .as_str()?;
+        (is_colour_literal(name) && columns.contains(name)).then(|| ShadowedColour {
+            field,
+            name: name.to_string(),
+            source: mark_source_name(parent).unwrap_or_default().to_string(),
+        })
+    })
+}
+
+/// The inline columns of the source a mark reads, when it reads one.
+fn mark_source_columns<'a>(
+    parent: &serde_yaml::Mapping,
+    inline: &'a InlineColumns,
+) -> Option<&'a std::collections::HashSet<String>> {
+    inline.get(mark_source_name(parent)?)
+}
+
+/// The `data: { from: … }` source name a mark reads.
+fn mark_source_name(parent: &serde_yaml::Mapping) -> Option<&str> {
+    let serde_yaml::Value::Mapping(data) =
+        parent.get(serde_yaml::Value::String("data".to_string()))?
+    else {
+        return None;
+    };
+    data.get(serde_yaml::Value::String("from".to_string()))?
+        .as_str()
+}
+
+/// Whether a mark binds a channel that splits each bin into groups.
+/// Conservative in both directions that matter: an explicit `z` is a grouping
+/// whatever its value, and a `fill`/`stroke` that is not a recognised colour
+/// constant is read as a field name (see [`is_colour_literal`]).
+///
+/// A name that is BOTH classifies as a colour constant here, and is reported
+/// one level up by `shadowed_colour` rather than silently taken.
+fn mark_is_grouped(parent: &serde_yaml::Mapping) -> bool {
+    GROUPING_CHANNEL_FIELDS.iter().any(|field| {
+        match parent.get(serde_yaml::Value::String((*field).to_string())) {
+            None => false,
+            Some(_) if *field == "z" => true,
+            Some(serde_yaml::Value::String(s)) => !is_colour_literal(s),
+            // A non-string binding on a colour channel (a map, a `$param`, a
+            // number) is not a colour constant, so it may carry groups.
+            Some(_) => true,
+        }
+    })
+}
+
 /// If `v` is a lift-shaped form, return the lifted ParamRef.
 /// Accepts: bare `"$name"`; `{param: name}`; `{selection: name}`.
 fn maybe_lift(v: &serde_yaml::Value) -> Option<ParamRef> {
@@ -1878,6 +2202,17 @@ impl Serialize for SerSpecValue<'_> {
                 match column {
                     Some(col) => map.serialize_entry(func.wire_name(), col)?,
                     None => map.serialize_entry(func.wire_name(), &())?,
+                }
+                map.end()
+            }
+            // Likewise for the positional bin: back to `{bin: col}` — plus
+            // `{steps: n}` only when the spec wrote one, so a spec that took
+            // the default does not gain a key it never had.
+            SpecValue::Bin { column, steps } => {
+                let mut map = s.serialize_map(Some(1 + usize::from(steps.is_some())))?;
+                map.serialize_entry("bin", column)?;
+                if let Some(n) = steps {
+                    map.serialize_entry("steps", n)?;
                 }
                 map.end()
             }
@@ -2606,6 +2941,293 @@ plot:
             m.options.get("fill"),
             Some(ValueOrParamRef::Value(SpecValue::Object(_)))
         ));
+    }
+
+    // -----------------------------------------------------------------------
+    // Positional bin + count (the rect histogram idiom)
+    // -----------------------------------------------------------------------
+
+    /// A `rectY` binding `{bin: col}` on one positional channel and `{count:}`
+    /// on the other lifts BOTH, as a pair — with the `steps:` hint carried.
+    #[test]
+    fn a_rect_bin_and_count_pair_lifts_together() {
+        let src = "mark: rectY\nx: { bin: delay, steps: 60 }\ny: { count: }\nfill: steelblue\n";
+        assert_eq!(
+            mark_channel(src, "x"),
+            ValueOrParamRef::Value(SpecValue::Bin {
+                column: "delay".to_string(),
+                steps: Some(60),
+            })
+        );
+        assert_eq!(
+            mark_channel(src, "y"),
+            ValueOrParamRef::Value(SpecValue::Aggregate {
+                func: AggregateFunc::Count,
+                column: None,
+            })
+        );
+        // The transpose, and the bare `{bin: col}` with no hint.
+        assert_eq!(
+            mark_channel("mark: rectX\nx: { count: }\ny: { bin: delay }\n", "y"),
+            ValueOrParamRef::Value(SpecValue::Bin {
+                column: "delay".to_string(),
+                steps: None,
+            })
+        );
+    }
+
+    /// Every refusal, in one place. Each leaves the channels as plain objects,
+    /// which is what keeps the uncomputed-transform diagnostic firing.
+    #[test]
+    fn the_bin_lift_refuses_everything_it_cannot_compute() {
+        let refused = |src: &str, why: &str| {
+            let entry = mark_channel(src, if src.contains("y: { bin") { "y" } else { "x" });
+            assert!(
+                !matches!(entry, ValueOrParamRef::Value(SpecValue::Bin { .. })),
+                "{why}: lifted anyway ({entry:?})"
+            );
+        };
+        // A mark kind with no binning lowerer.
+        refused(
+            "mark: dot\nx: { bin: delay }\ny: { count: }\n",
+            "only the rect family bins positionally",
+        );
+        // Half the idiom: a bin with nothing to aggregate.
+        refused(
+            "mark: rectY\nx: { bin: delay }\ny: value\n",
+            "a bin with no count opposite it has nothing to group",
+        );
+        // A column-valued fill: a grouping, not a plain histogram.
+        refused(
+            "mark: rectY\nx: { bin: delay }\ny: { count: }\nfill: version\n",
+            "a column-valued fill is a stack, not a histogram",
+        );
+        // An explicit `z`, whatever the fill.
+        refused(
+            "mark: rectY\nx: { bin: delay }\ny: { count: }\nz: version\nfill: steelblue\n",
+            "`z` is Mosaic's grouping channel",
+        );
+        // A modifier the lowerer does not honour. Honouring the `bin` and
+        // ignoring the modifier would draw a chart nobody asked for.
+        refused(
+            "mark: rectY\nx: { bin: delay, interval: day }\ny: { count: }\n",
+            "an unknown modifier beside the bin",
+        );
+        // A bin whose value is not a column name.
+        refused(
+            "mark: rectY\nx: { bin: { sql: 'a + b' } }\ny: { count: }\n",
+            "the bin must name a column",
+        );
+    }
+
+    /// A CSS colour keyword that is also a COLUMN of the mark's own source
+    /// still draws, and says so.
+    ///
+    /// **The histogram must still lift.** Refusing it would blank a frame
+    /// Mosaic renders, over a grouping the spec never asked for. Only the
+    /// author's intent is in doubt, which no amount of parsing can settle —
+    /// hence a warning and not a refusal. This pins both halves at once,
+    /// because getting the warning right while quietly dropping the picture is
+    /// the failure that shipped here first.
+    ///
+    /// Two sources make it a test of the RESOLUTION rather than of the keyword:
+    /// identical mark text, one source with a `gold` column and one without,
+    /// same lifted result, different diagnostic.
+    #[test]
+    fn a_colour_name_that_is_also_a_column_still_lifts_and_says_so() {
+        let spec = |rows: &str| {
+            format!(
+                "data:\n  obs: {rows}\nplot:\n  - mark: rectY\n    data: {{ from: obs }}\n    \
+                 x: {{ bin: v }}\n    y: {{ count: }}\n    fill: gold\n"
+            )
+        };
+        let parse = |src: &str| parse_spec(src, Format::Yaml).expect("parses");
+
+        // No `gold` column: `fill: gold` is unambiguously the colour, the pair
+        // lifts, and nothing is said.
+        let clean = parse(&spec("[ { v: 1 }, { v: 2 } ]"));
+        let mark = match &clean.spec.root {
+            Some(Component::Plot(p)) => match &p.items[0] {
+                Component::Mark(m) => m.clone(),
+                other => panic!("expected mark, got {other:?}"),
+            },
+            other => panic!("expected plot, got {other:?}"),
+        };
+        assert!(
+            matches!(
+                mark.options.get("x"),
+                Some(ValueOrParamRef::Value(SpecValue::Bin { .. }))
+            ),
+            "an unshadowed colour keyword still lifts: {:?}",
+            mark.options.get("x")
+        );
+        assert!(
+            !clean
+                .warnings
+                .iter()
+                .any(|w| matches!(w, ParseWarning::ColourNameShadowsColumn { .. })),
+            "nothing to shadow, so nothing to say: {:?}",
+            clean.warnings
+        );
+
+        // Same mark, a source that HAS a `gold` column. The lift is identical;
+        // the only difference is that the collision is named.
+        let shadowed = parse(&spec("[ { v: 1, gold: 3 }, { v: 2, gold: 4 } ]"));
+        let mark = match &shadowed.spec.root {
+            Some(Component::Plot(p)) => match &p.items[0] {
+                Component::Mark(m) => m.clone(),
+                other => panic!("expected mark, got {other:?}"),
+            },
+            other => panic!("expected plot, got {other:?}"),
+        };
+        assert!(
+            matches!(
+                mark.options.get("x"),
+                Some(ValueOrParamRef::Value(SpecValue::Bin { .. }))
+            ),
+            "a shadowed colour name must not blank a frame Mosaic renders: {:?}",
+            mark.options.get("x")
+        );
+        let uncomputed: Vec<String> = shadowed
+            .warnings
+            .iter()
+            .filter(|w| matches!(w, ParseWarning::UnconsumedChannelTransform { .. }))
+            .map(ToString::to_string)
+            .collect();
+        assert!(
+            uncomputed.is_empty(),
+            "the pair lifted, so neither channel is uncomputed: {uncomputed:?}"
+        );
+
+        // And the collision names itself, so an author who meant the column
+        // learns that the spec does not say so.
+        let said = shadowed
+            .warnings
+            .iter()
+            .find(|w| matches!(w, ParseWarning::ColourNameShadowsColumn { .. }))
+            .map(ToString::to_string)
+            .expect("the shadow must be reported");
+        assert!(
+            said.contains("fill: gold"),
+            "names what was written: {said}"
+        );
+        assert!(said.contains('`'), "quotes the names: {said}");
+        assert!(
+            said.contains("obs"),
+            "names the source that has the column: {said}"
+        );
+
+        // The three above pin the message's SHAPE — which names it mentions —
+        // and the false message this line replaced satisfied every one, so they
+        // are not enough on their own. What follows pins CLAIMS.
+        //
+        // Both are stated as bans on saying something FALSE, never as a
+        // required phrase. An earlier attempt asserted the exact wording and
+        // rejected a truer rewrite for not matching it; a message can be
+        // rephrased freely, it just may not assert either of these.
+        assert!(
+            !said.contains("z: "),
+            "must not offer `z:` as the remedy — it is dead advice. `z` is a \
+             GROUPING_CHANNEL_FIELD, so it refuses the lift, and nothing in the \
+             render path reads it: a spec that takes the advice draws a blank \
+             frame. Measured, not reasoned — {said}"
+        );
+        assert!(
+            !said.contains("uncomputed"),
+            "must not say the pair was left uncomputed: it lifted, and the \
+             assertion above proves it — {said}"
+        );
+    }
+
+    /// The shadow check reads the mark's OWN source, reads the whole file, and
+    /// reads every row of it.
+    ///
+    /// Four failure modes it would be easy to ship: keying off any inline
+    /// source rather than the one the mark names (which would report a
+    /// collision over a source that does not have the column), depending on
+    /// `data:` preceding `plot:` in the document, which is the author's key
+    /// order and not a guarantee, harvesting only the first row's keys, which
+    /// misses a ragged source, and mistaking the `file:` gap for coverage.
+    #[test]
+    fn the_shadow_is_resolved_against_the_marks_own_source_whatever_the_key_order() {
+        let quiet = |src: &str| {
+            let out = parse_spec(src, Format::Yaml).expect("parses");
+            !out.warnings
+                .iter()
+                .any(|w| matches!(w, ParseWarning::ColourNameShadowsColumn { .. }))
+        };
+        // `plot:` written first, `data:` last: the harvest is a pre-pass, so
+        // the column is still found.
+        assert!(
+            !quiet(
+                "plot:\n  - mark: rectY\n    data: { from: obs }\n    x: { bin: v }\n    \
+                 y: { count: }\n    fill: gold\ndata:\n  obs: [ { v: 1, gold: 3 } ]\n"
+            ),
+            "a source declared after the mark that reads it is still its source"
+        );
+        // A `gold` column on a DIFFERENT source is not this mark's problem.
+        assert!(
+            quiet(
+                "data:\n  obs: [ { v: 1 } ]\n  other: [ { gold: 3 } ]\nplot:\n  - mark: rectY\n    \
+                 data: { from: obs }\n    x: { bin: v }\n    y: { count: }\n    fill: gold\n"
+            ),
+            "the shadow is per-source, not per-document"
+        );
+        // A RAGGED source: `gold` appears only on the second row. Inline rows
+        // are free-form mappings, so the column set is the union of every
+        // row's keys and not the first row's. Harvesting one row would go
+        // quiet here, which is the expensive direction to be wrong in — the
+        // author who meant the column would never learn they lost it.
+        assert!(
+            !quiet(
+                "data:\n  obs: [ { v: 1 }, { v: 2, gold: 3 } ]\nplot:\n  - mark: rectY\n    \
+                 data: { from: obs }\n    x: { bin: v }\n    y: { count: }\n    fill: gold\n"
+            ),
+            "the column set is the union of every row's keys, not the first row's"
+        );
+        // A `file:` source carries no schema here, so the same spec is
+        // unresolvable and keeps the reference reading. This is the honest
+        // limit of the check, and pinning it stops it being mistaken for
+        // coverage it does not have.
+        assert!(
+            quiet(
+                "data:\n  obs: { file: obs.parquet }\nplot:\n  - mark: rectY\n    \
+                 data: { from: obs }\n    x: { bin: v }\n    y: { count: }\n    fill: gold\n"
+            ),
+            "nothing in the parse path knows a parquet's columns"
+        );
+    }
+
+    /// The lifted pair re-serialises to the shape it was written in, so
+    /// `parse → serialise → parse` stays idempotent. The `steps:` key appears
+    /// only when the spec wrote one.
+    #[test]
+    fn a_lifted_bin_re_serialises_to_its_wire_form() {
+        for src in [
+            "mark: rectY\nx: { bin: delay }\ny: { count: }\n",
+            "mark: rectY\nx: { bin: delay, steps: 60 }\ny: { count: }\n",
+        ] {
+            let first = parse_spec(src, Format::Yaml).expect("parses");
+            let wire = serialise_spec(&first.spec).expect("serialises");
+            let second = parse_spec(&wire, Format::Yaml).expect("re-parses");
+            assert_eq!(
+                first.spec, second.spec,
+                "round trip changed the spec; wire form was:\n{wire}"
+            );
+        }
+        let wire = serialise_spec(
+            &parse_spec(
+                "mark: rectY\nx: { bin: delay }\ny: { count: }\n",
+                Format::Yaml,
+            )
+            .expect("parses")
+            .spec,
+        )
+        .expect("serialises");
+        assert!(
+            !wire.contains("steps"),
+            "a spec that took the default must not gain a `steps` key: {wire}"
+        );
     }
 
     /// plain column/literal/param fill channels are untouched by

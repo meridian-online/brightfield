@@ -208,6 +208,30 @@ vocab_enum! {
     }
 }
 
+impl MarkKind {
+    /// Whether this mark kind computes a **positional** `bin` + `count` pair —
+    /// `x: {bin: col}` with `y: {count:}` and its transpose.
+    ///
+    /// The one list the lift consults, so a spec cannot parse as binned and
+    /// then lower as `SELECT *`: the parser lifts the pair only for a kind
+    /// named here, and `brightfield-sql` registers `RectLowerer` for both.
+    ///
+    /// **Plain `rect` is deliberately absent.** `RectLowerer` is *registered*
+    /// for it too — every kind needs a lowerer, and it delegates to
+    /// `SimpleLowerer` when there is no positional bin — but it must not lift:
+    /// the renderer's `RectKind::Xy` needs **both** `x1`/`x2` and `y1`/`y2`,
+    /// while a bin+count binds one interval pair only, so the mark returns
+    /// before drawing. Listing `Rect` here silenced its uncomputed-transform
+    /// diagnostic and put nothing on the page in its place.
+    ///
+    /// So a kind belongs here only once something downstream **draws** what it
+    /// produces. Quieting the diagnostic is the easy half.
+    #[must_use]
+    pub fn bins_positionally(self) -> bool {
+        matches!(self, Self::RectX | Self::RectY)
+    }
+}
+
 vocab_enum! {
     /// Known interactor kinds used as a plot item's `select:` discriminator.
     ///
@@ -400,9 +424,257 @@ pub fn mark_option_is_consumed(key: &str) -> bool {
     CONSUMED_MARK_OPTION_KEYS.contains(&key)
 }
 
+/// The CSS Color Module Level 4 named colours, plus the three keywords a spec
+/// may write in a colour slot (`none`, `transparent`, `currentColor`). Sorted,
+/// so [`is_colour_literal`] can binary-search it.
+///
+/// A fixed, standardised vocabulary — it does not grow with brightfield.
+const CSS_COLOUR_KEYWORDS: &[&str] = &[
+    "aliceblue",
+    "antiquewhite",
+    "aqua",
+    "aquamarine",
+    "azure",
+    "beige",
+    "bisque",
+    "black",
+    "blanchedalmond",
+    "blue",
+    "blueviolet",
+    "brown",
+    "burlywood",
+    "cadetblue",
+    "chartreuse",
+    "chocolate",
+    "coral",
+    "cornflowerblue",
+    "cornsilk",
+    "crimson",
+    "currentcolor",
+    "cyan",
+    "darkblue",
+    "darkcyan",
+    "darkgoldenrod",
+    "darkgray",
+    "darkgreen",
+    "darkgrey",
+    "darkkhaki",
+    "darkmagenta",
+    "darkolivegreen",
+    "darkorange",
+    "darkorchid",
+    "darkred",
+    "darksalmon",
+    "darkseagreen",
+    "darkslateblue",
+    "darkslategray",
+    "darkslategrey",
+    "darkturquoise",
+    "darkviolet",
+    "deeppink",
+    "deepskyblue",
+    "dimgray",
+    "dimgrey",
+    "dodgerblue",
+    "firebrick",
+    "floralwhite",
+    "forestgreen",
+    "fuchsia",
+    "gainsboro",
+    "ghostwhite",
+    "gold",
+    "goldenrod",
+    "gray",
+    "green",
+    "greenyellow",
+    "grey",
+    "honeydew",
+    "hotpink",
+    "indianred",
+    "indigo",
+    "ivory",
+    "khaki",
+    "lavender",
+    "lavenderblush",
+    "lawngreen",
+    "lemonchiffon",
+    "lightblue",
+    "lightcoral",
+    "lightcyan",
+    "lightgoldenrodyellow",
+    "lightgray",
+    "lightgreen",
+    "lightgrey",
+    "lightpink",
+    "lightsalmon",
+    "lightseagreen",
+    "lightskyblue",
+    "lightslategray",
+    "lightslategrey",
+    "lightsteelblue",
+    "lightyellow",
+    "lime",
+    "limegreen",
+    "linen",
+    "magenta",
+    "maroon",
+    "mediumaquamarine",
+    "mediumblue",
+    "mediumorchid",
+    "mediumpurple",
+    "mediumseagreen",
+    "mediumslateblue",
+    "mediumspringgreen",
+    "mediumturquoise",
+    "mediumvioletred",
+    "midnightblue",
+    "mintcream",
+    "mistyrose",
+    "moccasin",
+    "navajowhite",
+    "navy",
+    "none",
+    "oldlace",
+    "olive",
+    "olivedrab",
+    "orange",
+    "orangered",
+    "orchid",
+    "palegoldenrod",
+    "palegreen",
+    "paleturquoise",
+    "palevioletred",
+    "papayawhip",
+    "peachpuff",
+    "peru",
+    "pink",
+    "plum",
+    "powderblue",
+    "purple",
+    "rebeccapurple",
+    "red",
+    "rosybrown",
+    "royalblue",
+    "saddlebrown",
+    "salmon",
+    "sandybrown",
+    "seagreen",
+    "seashell",
+    "sienna",
+    "silver",
+    "skyblue",
+    "slateblue",
+    "slategray",
+    "slategrey",
+    "snow",
+    "springgreen",
+    "steelblue",
+    "tan",
+    "teal",
+    "thistle",
+    "tomato",
+    "transparent",
+    "turquoise",
+    "violet",
+    "wheat",
+    "white",
+    "whitesmoke",
+    "yellow",
+    "yellowgreen",
+];
+
+/// Whether a colour-channel string is a **constant colour** rather than a
+/// column name — `fill: steelblue` versus `fill: version`.
+///
+/// A colour channel is overloaded in this spec language — one spec writes both
+/// `fill: steelblue` and `fill: weather` and means different things by them —
+/// so the string itself is the only discriminator. No upstream source is
+/// vendored here to port a keyword table from, so `CSS_COLOUR_KEYWORDS` is
+/// the CSS Level 4 list.
+///
+/// It decides one thing: a rect binding a colour CONSTANT carries no groups, so
+/// its `bin` + `count` is a plain histogram and can be lifted (see
+/// `parse::binned_histogram` for why a grouped one may not be). Unrecognised ⇒
+/// treated as a column, which is the safe direction: the spec keeps its
+/// uncomputed-transform diagnostic instead of drawing a lie.
+#[must_use]
+pub fn is_colour_literal(value: &str) -> bool {
+    let v = value.trim();
+    if let Some(hex) = v.strip_prefix('#') {
+        return matches!(hex.len(), 3 | 4 | 6 | 8) && hex.chars().all(|c| c.is_ascii_hexdigit());
+    }
+    // `rgb(…)` / `rgba(…)` / `hsl(…)` / `hwb(…)` / `lab(…)` / `color(…)` …
+    if v.ends_with(')') && v.contains('(') {
+        return true;
+    }
+    let lower = v.to_ascii_lowercase();
+    CSS_COLOUR_KEYWORDS.binary_search(&lower.as_str()).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`is_colour_literal`] binary-searches the keyword table, so an
+    /// out-of-order entry would make some colours invisible — and the failure
+    /// would look like a stacking bug in a chart, three crates away.
+    #[test]
+    fn the_colour_keyword_table_is_sorted_and_unique() {
+        for pair in CSS_COLOUR_KEYWORDS.windows(2) {
+            assert!(
+                pair[0] < pair[1],
+                "CSS_COLOUR_KEYWORDS must be sorted and duplicate-free, but \
+                 {:?} precedes {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+    }
+
+    /// The distinction the binned-rect lift turns on: a colour CONSTANT is not
+    /// a grouping, a bare word that is not a colour is a column name.
+    #[test]
+    fn colour_constants_are_told_from_column_names() {
+        for constant in [
+            "steelblue",
+            "black",
+            "SteelBlue",
+            "#ccc",
+            "#4682b4",
+            "#4682b4ff",
+            "rgb(70, 130, 180)",
+            "currentColor",
+            "transparent",
+            "none",
+        ] {
+            assert!(is_colour_literal(constant), "{constant} is a colour");
+        }
+        for column in ["version", "weather", "delay", "count", "#zzz", "#12345"] {
+            assert!(
+                !is_colour_literal(column),
+                "{column} is not a colour, so a fill bound to it may carry groups"
+            );
+        }
+    }
+
+    /// The list is the two oriented rect kinds, and **`rect` is deliberately
+    /// absent** — pinning that is the point of the second assertion. It was
+    /// listed once, and drew nothing while its uncomputed-transform diagnostic
+    /// was silenced; see [`MarkKind::bins_positionally`] for why.
+    #[test]
+    fn only_the_oriented_rect_kinds_bin_positionally() {
+        let binning: Vec<&str> = MarkKind::all()
+            .iter()
+            .filter(|k| k.bins_positionally())
+            .map(|k| k.wire_name())
+            .collect();
+        assert_eq!(binning, vec!["rectX", "rectY"]);
+        assert!(
+            !MarkKind::Rect.bins_positionally(),
+            "plain `rect` needs BOTH interval pairs; binning it removes the \
+             diagnostic and draws nothing in its place"
+        );
+    }
 
     /// The consumed-key list is a registry, and a registry with a duplicate
     /// in it is a registry someone edited without reading.

@@ -485,6 +485,23 @@ pub enum SpecValue {
         /// The source column (`None` for `count`).
         column: Option<String>,
     },
+    /// A **positional** bin transform, lifted from `x: {bin: col}` /
+    /// `y: {bin: col, steps: n}` on a rect-family mark whose OTHER positional
+    /// channel counts.
+    ///
+    /// Deliberately a separate variant rather than a widening of
+    /// [`Self::Aggregate`]'s channel list: `fill`/`r` stay the only
+    /// aggregate-capable channels, so lifting a bin can never quieten
+    /// `weather.yaml`'s `x: {count:}` or `sorted-bars.yaml`'s `x: {sum: gold}`
+    /// — positional aggregates no lowerer computes, which must keep warning.
+    Bin {
+        /// The source column to bin.
+        column: String,
+        /// Mosaic's `steps:` bin-count **hint**, when the spec gave one. It
+        /// selects the 1/2/5 × 10ⁿ step; it does not fix the bar count — see
+        /// `binSpec` in `mosaic-sql`'s `transforms/util/bin-step.ts`.
+        steps: Option<i64>,
+    },
 }
 
 impl SpecValue {

@@ -1,0 +1,64 @@
+# Histogram computed from raw rows (rectY + positional bin + count).
+#
+# The companion to rect-histogram.yaml, which ships its bins pre-aggregated.
+# Here the spec hands over 37 RAW observations and asks for the histogram:
+# `x: {bin: v}` picks the bin edges, `y: {count:}` counts the rows in each. The
+# SQL does both — one GROUP BY over the two bin edges — so the picture is the
+# data rather than a table someone rolled up first.
+#
+# Binning follows Mosaic exactly: `steps` defaults to 25 as a HINT, the step is
+# a nice 1/2/5 x 10^n value, and the extent snaps outward to align with it. Over
+# these values (1..97) that resolves to 20 bins of width 5 across [0, 100], of
+# which 15 are occupied. The counts are deliberately asymmetric and unimodal —
+# 3, 3, 6, 8, 4, 3, 2, then a long thin tail — so a renderer drawing a uniform
+# block, or one that lost the count channel, cannot pass for this picture.
+#
+# Preview headlessly:
+#   cargo run -p brightfield-shell --bin brightfield-shot -- --spec examples/rect-bin-count.yaml --out out.png --vello-only
+data:
+  observations:
+    - { v: 1 }
+    - { v: 3 }
+    - { v: 4 }
+    - { v: 6 }
+    - { v: 7 }
+    - { v: 9 }
+    - { v: 11 }
+    - { v: 12 }
+    - { v: 12 }
+    - { v: 13 }
+    - { v: 14 }
+    - { v: 14 }
+    - { v: 15 }
+    - { v: 16 }
+    - { v: 16 }
+    - { v: 17 }
+    - { v: 17 }
+    - { v: 18 }
+    - { v: 19 }
+    - { v: 19 }
+    - { v: 21 }
+    - { v: 22 }
+    - { v: 23 }
+    - { v: 24 }
+    - { v: 26 }
+    - { v: 27 }
+    - { v: 29 }
+    - { v: 31 }
+    - { v: 34 }
+    - { v: 38 }
+    - { v: 42 }
+    - { v: 47 }
+    - { v: 53 }
+    - { v: 61 }
+    - { v: 72 }
+    - { v: 88 }
+    - { v: 97 }
+plot:
+  - mark: rectY
+    data: { from: observations }
+    x: { bin: v }
+    y: { count: }
+    fill: steelblue
+width: 640
+height: 400

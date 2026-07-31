@@ -103,7 +103,8 @@ impl ParamDeclaredType {
                 | SpecValue::Null
                 | SpecValue::Param(_)
                 | SpecValue::Expression(_)
-                | SpecValue::Aggregate { .. } => ParamDeclaredType::ScalarString,
+                | SpecValue::Aggregate { .. }
+                | SpecValue::Bin { .. } => ParamDeclaredType::ScalarString,
             },
             ParamNode::Selection(_) => ParamDeclaredType::Selection,
         }
