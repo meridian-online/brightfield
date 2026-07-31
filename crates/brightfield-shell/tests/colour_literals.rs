@@ -43,11 +43,6 @@ const TOL: i32 = 20;
 
 /// How much of a colour counts as "the mark is drawn in it", over and above
 /// what the same chart holds without a colour channel.
-///
-/// Every fixture below draws a filled area or a 2 px stroke across a 640×400
-/// plot at 2× device scale, so the true counts run from ~6,000 (a line) to
-/// ~160,000 (a histogram). A thousand pixels is far below any real mark and far
-/// above the anti-aliasing spill a neighbouring hue contributes.
 const INK_FLOOR: u64 = 1_000;
 
 /// CSS steelblue — the keyword six curated specs write, and the one the
