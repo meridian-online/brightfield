@@ -316,6 +316,36 @@ fn the_status_rail_draws_both_sides() {
     assert!(out.dismissed.is_empty());
 }
 
+/// **An id is a name, not a slot.** Two entries sharing one id draw BOTH, in
+/// the order they were handed over. Nothing in this tree dedups status entries
+/// by id: `Subject::with_status` pushes onto a `Vec` and the rail iterates it.
+///
+/// This is asserted because three separate comments claimed the opposite — that
+/// an id "replaces an entry in place" — and one of them drew the consequence
+/// backwards, saying a shared id would let the last write *silence* the other.
+/// A reader reasoning from either would design against a mechanism that is not
+/// here: they would reuse an id expecting a swap and get two lines, or avoid a
+/// duplicate id to prevent a loss that cannot happen. The comments are gone; the
+/// behaviour they were about now has a test, so restoring them would be
+/// restoring a claim this file refutes by name.
+#[test]
+fn two_entries_sharing_an_id_both_draw() {
+    let line = |text: &str| StatusEntry {
+        id: "same",
+        side: StatusSide::Trailing,
+        text: text.into(),
+        tone: Tone::Neutral,
+        hide: HideAffordance::WithRail,
+    };
+    let entries = vec![line("first"), line("second")];
+    let out = frame(|ui| chrome::status_rail(ui, &entries, Mode::Light));
+    assert_eq!(
+        out.drawn,
+        vec!["same", "same"],
+        "the rail draws every entry it is handed; an id does not replace one"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The focus spike
 // ---------------------------------------------------------------------------
