@@ -54,11 +54,15 @@ const RESERVED_COLUMN_PREFIX: &str = "__bf_";
 /// meaning has a name in the reader's language. A histogram's y-axis is
 /// counting rows, so it says `Count`.
 ///
-/// **This is brightfield choosing a word, not matching one.** What was read
-/// from the vendored mosaic checkout is narrow and exact: `markPlotSpec` passes
-/// `channelOption`'s value and nothing else, so no label reaches Plot on this
-/// channel. That Plot therefore draws the axis untitled is an inference — Plot
-/// is not vendored here, so its labelling behaviour was not observed.
+/// **This is brightfield choosing a word, not matching one.** What was read is
+/// narrow and exact: `markPlotSpec` passes `channelOption`'s value and nothing
+/// else, so no label reaches Plot on this channel. That Plot therefore draws
+/// the axis untitled is an inference — Plot's own labelling was not observed.
+///
+/// Provenance, because it is easy to overstate: this tree vendors mosaic's
+/// SPEC CORPUS only (`vendor/mosaic-specs/`, YAML). `markPlotSpec` is source,
+/// read from a separate local `uwdata/mosaic` clone at a different commit from
+/// the vendored corpus. Reproducible only where that clone exists.
 ///
 /// Brightfield derives axis titles itself, which is what makes any word
 /// reachable at all. `Count` is the obvious English for it. Whether Observable

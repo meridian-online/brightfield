@@ -467,20 +467,26 @@ pub enum ParseWarning {
     /// is tell an author who meant the COLUMN that the spec does not say so —
     /// a doubt about intent, which nothing in the document can settle.
     ///
-    /// **It says the name is taken as a colour constant, and stops there —
-    /// which is a claim about CLASSIFICATION, not about paint.** Do not extend
-    /// it to promise the colour. Brightfield does not resolve CSS keywords to
-    /// colours at all today: there is no keyword table in `brightfield-render`,
-    /// a string `fill` resolves as a column name, and an unresolvable one falls
-    /// back to the default. So `fill: steelblue` draws Harbour blue, here and
-    /// in `examples/rect-bin-count.yaml` alike — rendered and read off the
-    /// pixels, not inferred. A reader of this line may still expect gold bars
-    /// and get the default; that gap is real, separate, and unfixed, and this
-    /// variant must not imply otherwise.
+    /// **It names both things the author does not get, and offers no remedy,
+    /// because there is none.** The obvious one — `z: {name}` to mean the
+    /// column — is dead advice: `z` is in [`GROUPING_CHANNEL_FIELDS`], so it
+    /// refuses the lift, and nothing in the render path reads it either. A spec
+    /// that takes it draws a BLANK FRAME **[measured: rendered it]**. Saying so
+    /// would be worse than saying nothing.
     ///
-    /// Not in `deviations.yaml` on purpose. That register is for *considered*
-    /// differences, and the binning decision is explicit that filling it with
-    /// capability gaps inverts its meaning. This is a gap, so it wants a card.
+    /// The second is paint. Brightfield does not resolve CSS colour names at
+    /// all today: there is no keyword table in `brightfield-render`, a string
+    /// `fill` resolves as a column name, and an unresolvable one falls back to
+    /// the default. So a bar under `fill: gold` is Harbour blue, exactly as
+    /// `examples/rect-bin-count.yaml`'s `fill: steelblue` is — rendered and
+    /// read off the pixels, not inferred. That gap is real, separate and
+    /// unfixed, and the message states it rather than leaving the reader to
+    /// expect gold bars.
+    ///
+    /// Deliberately absent from `deviations.yaml`. That register holds
+    /// *considered* differences from Mosaic; an unbuilt capability is not one,
+    /// and filling the register with gaps would make it a to-do list wearing
+    /// the clothes of a decision. Tracked as work instead.
     ///
     /// Only ever raised where the shadow is provable. A `file:` or `query:`
     /// source's schema is not in the document and nothing in the parse → emit
@@ -611,10 +617,13 @@ impl fmt::Display for ParseWarning {
                 "channel `{channel}` asks for `{transform}`, which brightfield does not compute — \
                  the channel resolves to nothing and the mark draws no ink"
             ),
-            // Names the remedy, because there is one and it is not obvious: a
-            // `z:` says the grouping out loud if the column is what was meant.
-            // Advisory, not a failure — so it reports the READING taken, and
-            // says nothing about paint, which is a separate question here.
+            // Offers NO remedy, because there is none. `z: {name}` was the
+            // obvious one and it is dead advice: `z` is a grouping channel, so
+            // it refuses the lift, and nothing in the render path reads it —
+            // taking that advice turns a drawn histogram into a blank frame,
+            // which brightfield then says out loud in three more lines
+            // **[measured: rendered it]**. So this states the reading and the
+            // two things the author does not get, and stops.
             Self::ColourNameShadowsColumn {
                 field,
                 name,
@@ -622,8 +631,10 @@ impl fmt::Display for ParseWarning {
             } => write!(
                 f,
                 "`{field}: {name}` names a CSS colour and also a column of `{source}` — it is \
-                 taken as a colour constant and not as a grouping, the same as Mosaic, so the \
-                 bins carry whole-row counts; say `z: {name}` if you meant to group by the column"
+                 read as a colour constant, the same as Mosaic, so each bin counts every row in \
+                 it rather than splitting by `{name}`. Brightfield cannot group a binned rect \
+                 yet, so that split is not available from this spec; and it does not resolve \
+                 CSS colour names either, so the bars stay the default colour"
             ),
         }
     }
@@ -1727,9 +1738,10 @@ impl Walker {
 ///   from the one asked for.
 /// - **No grouping channel** ([`GROUPING_CHANNEL_FIELDS`]). Mosaic STACKS a
 ///   binned rect that carries a grouping colour; brightfield does not yet.
-///   Merging would draw one bar per bin at the RIGHT TOTAL — the same height as
-///   the top of Mosaic's stack — with the composition the author asked for
+///   Merging would group on the bin edges alone, so each bar carries every row
+///   in its bin — the RIGHT TOTAL, with the composition the author asked for
 ///   silently gone. Not an under-report: a different chart, drawn confidently.
+///   (Read off `RectLowerer::lower`'s `group_by`, not from upstream.)
 fn binned_histogram(kind: MarkKind, parent: &serde_yaml::Mapping) -> Option<BinnedHistogram> {
     if !kind.bins_positionally() || mark_is_grouped(parent) {
         return None;
@@ -3146,32 +3158,26 @@ plot:
             said.contains("obs"),
             "names the source that has the column: {said}"
         );
-        assert!(
-            said.contains("z: gold"),
-            "names the remedy for meaning the column: {said}"
-        );
 
-        // The four above pin the message's SHAPE — the names it mentions — and
-        // the exact false message this line replaced satisfied every one of
-        // them. So they are not enough on their own, and these pin the CLAIM.
+        // The three above pin the message's SHAPE — which names it mentions —
+        // and the false message this line replaced satisfied every one, so they
+        // are not enough on their own. What follows pins CLAIMS.
         //
-        // Both forbidden words were in that message, and both were untrue of
-        // what the code does. Restoring it must redden this test.
+        // Both are stated as bans on saying something FALSE, never as a
+        // required phrase. An earlier attempt asserted the exact wording and
+        // rejected a truer rewrite for not matching it; a message can be
+        // rephrased freely, it just may not assert either of these.
         assert!(
-            !said.contains("paint"),
-            "must not promise paint: nothing in brightfield-render resolves a \
-             CSS keyword to a colour, so the bar takes the default fill \
-             whatever this says — {said}"
+            !said.contains("z: "),
+            "must not offer `z:` as the remedy — it is dead advice. `z` is a \
+             GROUPING_CHANNEL_FIELD, so it refuses the lift, and nothing in the \
+             render path reads it: a spec that takes the advice draws a blank \
+             frame. Measured, not reasoned — {said}"
         );
         assert!(
             !said.contains("uncomputed"),
             "must not say the pair was left uncomputed: it lifted, and the \
              assertion above proves it — {said}"
-        );
-        assert!(
-            said.contains("whole-row counts"),
-            "must say what the bins actually carry, because that is the whole \
-             consequence of taking the name as a constant: {said}"
         );
     }
 
