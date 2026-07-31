@@ -70,9 +70,10 @@ use crate::starts;
 /// rebuilt from scratch each time [`Item::subject`] is called — it takes
 /// `&self` and `&ChartDoc`, starts from an empty [`Subject`], and adds this
 /// entry at most once — so the rail's contents are a function of the document,
-/// not an accumulation over frames. What the id buys is that a reader of the
-/// rail (a test, the dismissal routing) can pick this line out of the several
-/// the same rail carries without matching on its text.
+/// not an accumulation over frames. What the id buys is that a headless test
+/// can pick this line out of the several the same rail carries without matching
+/// on its text. Nothing in production reads it: dismissal routes on the
+/// entry's [`brightfield_workbench::subject::Verb`], never on this.
 pub const PREDICATE_READOUT: &str = "chart-predicate";
 
 /// How many logical pixels of wheel travel double the visible span.

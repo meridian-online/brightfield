@@ -919,8 +919,13 @@ fn a_multi_value_point_reads_back_as_the_or_chain_it_emits() {
 /// A `Point` with no values renders as `FALSE`, so a readout could in principle
 /// rail `$pick = FALSE`. It cannot today, and this pins why: every point a
 /// click produces carries exactly one value, and a click that resolves nothing
-/// — the gap between two bars, past the last one — dispatches no interaction at
-/// all rather than an empty clause, leaving the previous selection standing.
+/// — past the last band, or before the first — dispatches no interaction at all
+/// rather than an empty clause, leaving the previous selection standing.
+///
+/// Only a pixel OUTSIDE the axis range resolves nothing. Band slots tile the
+/// range contiguously and `band_category` floors into them, ignoring the
+/// scale's `padding` — so a click in the visible gap between two bars still
+/// lands in the slot it falls in. That is why the click below is at 0.99.
 /// If a producer ever does hold an empty clause, this test goes red and the
 /// comment on the guard has to be revisited rather than quietly outlived.
 #[test]
