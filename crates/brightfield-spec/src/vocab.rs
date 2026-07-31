@@ -212,16 +212,34 @@ impl MarkKind {
     /// Whether this mark kind computes a **positional** `bin` + `count` pair —
     /// `x: {bin: col}` with `y: {count:}` and its transpose.
     ///
-    /// The one registry both halves read: the parser lifts the pair only for a
-    /// kind named here, and `RectLowerer` is registered only for the same
-    /// kinds, so a spec cannot parse as binned and then lower as `SELECT *`.
+    /// The one registry both halves read, so a spec cannot parse as binned and
+    /// then lower as `SELECT *`. The parser lifts the pair only for a kind
+    /// named here, and `RectLowerer` consults the same predicate before
+    /// building a histogram plan.
+    ///
+    /// Note the two lists are not identical and should not be: `RectLowerer` is
+    /// *registered* for plain `Rect` as well, because every kind needs a
+    /// lowerer, and it delegates to `SimpleLowerer` whenever there is no
+    /// positional bin. `Rect` simply always takes that delegation.
     /// Mosaic's own list is the `EXTENT` set in `vgplot/plot/transforms/bin.js`
-    /// (`rectY-x`, `rectX-y`, `rect-x`, `rect-y`, `ruleY-x`, `ruleX-y`);
-    /// the rules are left off because brightfield's rule lowerer does not
-    /// aggregate, and a binned rule would parse quiet and still draw nothing.
+    /// (`rectY-x`, `rectX-y`, `rect-x`, `rect-y`, `ruleY-x`, `ruleX-y`).
+    ///
+    /// **Two of Mosaic's six are left off, for one reason.** A binned
+    /// `ruleY`/`ruleX` would parse quiet and still draw nothing, because
+    /// brightfield's rule lowerer does not aggregate. Plain `rect` is the same
+    /// trap one step further in: `RectRenderer` at `RectKind::Xy` requires
+    /// **both** `x1`/`x2` and `y1`/`y2`, while a bin+count pair binds only one
+    /// interval pair, so the mark returns before drawing. Listing `Rect` here
+    /// removed its uncomputed-transform diagnostic and put nothing on the page
+    /// in its place — measured at **zero** pixels of mark ink, against
+    /// `rectY`'s 170k over the same data.
+    ///
+    /// So a kind belongs here only once something downstream **draws** what it
+    /// produces. Quieting the diagnostic is the easy half, and on its own it
+    /// makes the product less honest rather than more capable.
     #[must_use]
     pub fn bins_positionally(self) -> bool {
-        matches!(self, Self::Rect | Self::RectX | Self::RectY)
+        matches!(self, Self::RectX | Self::RectY)
     }
 }
 
@@ -655,14 +673,25 @@ mod tests {
     /// The registry that keeps the parser and the lowerer from disagreeing:
     /// the kinds that lift a positional bin are exactly the kinds `RectLowerer`
     /// is registered for.
+    ///
+    /// **`rect` is deliberately absent**, and pinning that is the point of the
+    /// second assertion. It was listed once; `RectKind::Xy` needs both interval
+    /// pairs and a bin+count binds only one, so the mark drew zero pixels while
+    /// its uncomputed-transform diagnostic had been silenced. A kind belongs
+    /// here only when something downstream draws what it produces.
     #[test]
-    fn only_the_rect_family_bins_positionally() {
+    fn only_the_oriented_rect_kinds_bin_positionally() {
         let binning: Vec<&str> = MarkKind::all()
             .iter()
             .filter(|k| k.bins_positionally())
             .map(|k| k.wire_name())
             .collect();
-        assert_eq!(binning, vec!["rect", "rectX", "rectY"]);
+        assert_eq!(binning, vec!["rectX", "rectY"]);
+        assert!(
+            !MarkKind::Rect.bins_positionally(),
+            "plain `rect` needs BOTH interval pairs; binning it removes the \
+             diagnostic and draws nothing in its place"
+        );
     }
 
     /// The consumed-key list is a registry, and a registry with a duplicate
