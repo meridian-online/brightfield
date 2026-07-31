@@ -441,10 +441,8 @@ pub fn mark_option_is_consumed(key: &str) -> bool {
 ///   so this table has nothing honest to return for it — see
 ///   [`css_colour_keyword_rgb`].
 ///
-/// The 148 triples were taken from the `color-name` package (v1.1.4) and
-/// independently cross-checked against `d3-color`'s parser: all 148 names and
-/// all 148 triples agree between the two, and the name set is byte-identical to
-/// the one this table carried before the values were added.
+/// Adding the values did not change the name set: it is byte-identical to the
+/// one this table carried before.
 const CSS_COLOUR_KEYWORDS: &[(&str, Option<[u8; 3]>)] = &[
     ("aliceblue", Some([0xf0, 0xf8, 0xff])),
     ("antiquewhite", Some([0xfa, 0xeb, 0xd7])),
