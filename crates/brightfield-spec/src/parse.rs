@@ -467,12 +467,20 @@ pub enum ParseWarning {
     /// is tell an author who meant the COLUMN that the spec does not say so —
     /// a doubt about intent, which nothing in the document can settle.
     ///
-    /// It deliberately says nothing about what gets PAINTED. Brightfield does
-    /// not resolve CSS keywords to colours at all today — there is no keyword
-    /// table in `brightfield-render`, so `fill: steelblue` draws the default
-    /// Harbour fill, in this case and in `examples/rect-bin-count.yaml` alike
-    /// **[V, rendered]**. That is a real divergence from Mosaic and a separate
-    /// one; this variant must not imply it has been handled.
+    /// **It says the name is taken as a colour constant, and stops there —
+    /// which is a claim about CLASSIFICATION, not about paint.** Do not extend
+    /// it to promise the colour. Brightfield does not resolve CSS keywords to
+    /// colours at all today: there is no keyword table in `brightfield-render`,
+    /// a string `fill` resolves as a column name, and an unresolvable one falls
+    /// back to the default. So `fill: steelblue` draws Harbour blue, here and
+    /// in `examples/rect-bin-count.yaml` alike — rendered and read off the
+    /// pixels, not inferred. A reader of this line may still expect gold bars
+    /// and get the default; that gap is real, separate, and unfixed, and this
+    /// variant must not imply otherwise.
+    ///
+    /// Not in `deviations.yaml` on purpose. That register is for *considered*
+    /// differences, and the binning decision is explicit that filling it with
+    /// capability gaps inverts its meaning. This is a gap, so it wants a card.
     ///
     /// Only ever raised where the shadow is provable. A `file:` or `query:`
     /// source's schema is not in the document and nothing in the parse → emit
@@ -1718,9 +1726,10 @@ impl Walker {
 ///   the `bin` while dropping a modifier would silently draw a different chart
 ///   from the one asked for.
 /// - **No grouping channel** ([`GROUPING_CHANNEL_FIELDS`]). Mosaic STACKS a
-///   binned rect that carries a grouping colour; brightfield does not yet, and
-///   merging the groups draws one bar per bin that looks right and under-reports
-///   every group but one.
+///   binned rect that carries a grouping colour; brightfield does not yet.
+///   Merging would draw one bar per bin at the RIGHT TOTAL — the same height as
+///   the top of Mosaic's stack — with the composition the author asked for
+///   silently gone. Not an under-report: a different chart, drawn confidently.
 fn binned_histogram(kind: MarkKind, parent: &serde_yaml::Mapping) -> Option<BinnedHistogram> {
     if !kind.bins_positionally() || mark_is_grouped(parent) {
         return None;
@@ -3140,6 +3149,29 @@ plot:
         assert!(
             said.contains("z: gold"),
             "names the remedy for meaning the column: {said}"
+        );
+
+        // The four above pin the message's SHAPE — the names it mentions — and
+        // the exact false message this line replaced satisfied every one of
+        // them. So they are not enough on their own, and these pin the CLAIM.
+        //
+        // Both forbidden words were in that message, and both were untrue of
+        // what the code does. Restoring it must redden this test.
+        assert!(
+            !said.contains("paint"),
+            "must not promise paint: nothing in brightfield-render resolves a \
+             CSS keyword to a colour, so the bar takes the default fill \
+             whatever this says — {said}"
+        );
+        assert!(
+            !said.contains("uncomputed"),
+            "must not say the pair was left uncomputed: it lifted, and the \
+             assertion above proves it — {said}"
+        );
+        assert!(
+            said.contains("whole-row counts"),
+            "must say what the bins actually carry, because that is the whole \
+             consequence of taking the name as a constant: {said}"
         );
     }
 

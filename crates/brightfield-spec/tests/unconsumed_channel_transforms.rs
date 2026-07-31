@@ -75,8 +75,8 @@ fn flights_200k_computes_and_no_longer_speaks() {
 /// Read off `protein-design.yaml`, which is where the histogram idiom still
 /// goes dark: its binned `rectY` binds `fill: version`, a GROUPING colour that
 /// Mosaic stacks. Brightfield does not stack yet, and merging the groups would
-/// draw one bar per bin that looks right and under-reports every version but
-/// one — so the lift is refused and the line stays.
+/// draw one bar per bin at the right TOTAL with every version's share
+/// invisible — so the lift is refused and the line stays.
 #[test]
 fn the_message_names_the_channel_the_transform_and_the_cost() {
     let rendered = lines(include_str!(

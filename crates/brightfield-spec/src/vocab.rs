@@ -607,9 +607,10 @@ const CSS_COLOUR_KEYWORDS: &[&str] = &[
 /// It decides one thing here: a rect binding a colour CONSTANT carries no
 /// groups, so its `bin` + `count` is a plain histogram and can be lifted; a
 /// rect binding a COLUMN is one Mosaic stacks, and lifting it would merge the
-/// groups into a single bar that looks right and under-reports every group but
-/// one. Unrecognised ⇒ treated as a column, which is the safe direction: the
-/// spec keeps its uncomputed-transform diagnostic instead of drawing a lie.
+/// groups into a single bar carrying the right TOTAL and no composition — the
+/// breakdown the author asked for gone without a word. Unrecognised ⇒ treated
+/// as a column, which is the safe direction: the spec keeps its
+/// uncomputed-transform diagnostic instead of drawing a lie.
 #[must_use]
 pub fn is_colour_literal(value: &str) -> bool {
     let v = value.trim();

@@ -54,15 +54,16 @@ const RESERVED_COLUMN_PREFIX: &str = "__bf_";
 /// meaning has a name in the reader's language. A histogram's y-axis is
 /// counting rows, so it says `Count`.
 ///
-/// **This is brightfield choosing a word, not matching one.** Mosaic-web draws
-/// that axis untitled: it bins in SQL and hands Plot a bare column array
-/// (`markPlotSpec` passes `channelOption`'s value and nothing else), so Plot
-/// has no field name to label from **[V, read from the vendored checkout]**.
+/// **This is brightfield choosing a word, not matching one.** What was read
+/// from the vendored mosaic checkout is narrow and exact: `markPlotSpec` passes
+/// `channelOption`'s value and nothing else, so no label reaches Plot on this
+/// channel. That Plot therefore draws the axis untitled is an inference — Plot
+/// is not vendored here, so its labelling behaviour was not observed.
+///
 /// Brightfield derives axis titles itself, which is what makes any word
-/// reachable here. `Count` is the obvious English for it; whether Observable
-/// Plot's own `binX`/`groupX` reducers use that exact string is UNVERIFIED —
-/// Plot is not vendored in this tree, and nothing here should be read as
-/// claiming a match with it.
+/// reachable at all. `Count` is the obvious English for it. Whether Observable
+/// Plot's own `binX`/`groupX` reducers use that exact string is **unverified**
+/// for the same reason, and nothing here should be read as claiming a match.
 const COUNT_COLUMN: &str = "__bf_count";
 /// The axis title [`COUNT_COLUMN`] resolves to.
 const COUNT_TITLE: &str = "Count";
