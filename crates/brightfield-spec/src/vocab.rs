@@ -424,163 +424,179 @@ pub fn mark_option_is_consumed(key: &str) -> bool {
     CONSUMED_MARK_OPTION_KEYS.contains(&key)
 }
 
-/// The CSS Color Module Level 4 named colours, plus the three keywords a spec
-/// may write in a colour slot (`none`, `transparent`, `currentColor`). Sorted,
-/// so [`is_colour_literal`] can binary-search it.
+/// The CSS Color Module Level 4 named colours **and their sRGB values**, plus
+/// the three keywords a spec may write in a colour slot (`none`,
+/// `transparent`, `currentColor`). Sorted by name, so [`is_colour_literal`] and
+/// [`css_colour_keyword_rgb`] can binary-search it.
 ///
 /// A fixed, standardised vocabulary — it does not grow with brightfield.
-const CSS_COLOUR_KEYWORDS: &[&str] = &[
-    "aliceblue",
-    "antiquewhite",
-    "aqua",
-    "aquamarine",
-    "azure",
-    "beige",
-    "bisque",
-    "black",
-    "blanchedalmond",
-    "blue",
-    "blueviolet",
-    "brown",
-    "burlywood",
-    "cadetblue",
-    "chartreuse",
-    "chocolate",
-    "coral",
-    "cornflowerblue",
-    "cornsilk",
-    "crimson",
-    "currentcolor",
-    "cyan",
-    "darkblue",
-    "darkcyan",
-    "darkgoldenrod",
-    "darkgray",
-    "darkgreen",
-    "darkgrey",
-    "darkkhaki",
-    "darkmagenta",
-    "darkolivegreen",
-    "darkorange",
-    "darkorchid",
-    "darkred",
-    "darksalmon",
-    "darkseagreen",
-    "darkslateblue",
-    "darkslategray",
-    "darkslategrey",
-    "darkturquoise",
-    "darkviolet",
-    "deeppink",
-    "deepskyblue",
-    "dimgray",
-    "dimgrey",
-    "dodgerblue",
-    "firebrick",
-    "floralwhite",
-    "forestgreen",
-    "fuchsia",
-    "gainsboro",
-    "ghostwhite",
-    "gold",
-    "goldenrod",
-    "gray",
-    "green",
-    "greenyellow",
-    "grey",
-    "honeydew",
-    "hotpink",
-    "indianred",
-    "indigo",
-    "ivory",
-    "khaki",
-    "lavender",
-    "lavenderblush",
-    "lawngreen",
-    "lemonchiffon",
-    "lightblue",
-    "lightcoral",
-    "lightcyan",
-    "lightgoldenrodyellow",
-    "lightgray",
-    "lightgreen",
-    "lightgrey",
-    "lightpink",
-    "lightsalmon",
-    "lightseagreen",
-    "lightskyblue",
-    "lightslategray",
-    "lightslategrey",
-    "lightsteelblue",
-    "lightyellow",
-    "lime",
-    "limegreen",
-    "linen",
-    "magenta",
-    "maroon",
-    "mediumaquamarine",
-    "mediumblue",
-    "mediumorchid",
-    "mediumpurple",
-    "mediumseagreen",
-    "mediumslateblue",
-    "mediumspringgreen",
-    "mediumturquoise",
-    "mediumvioletred",
-    "midnightblue",
-    "mintcream",
-    "mistyrose",
-    "moccasin",
-    "navajowhite",
-    "navy",
-    "none",
-    "oldlace",
-    "olive",
-    "olivedrab",
-    "orange",
-    "orangered",
-    "orchid",
-    "palegoldenrod",
-    "palegreen",
-    "paleturquoise",
-    "palevioletred",
-    "papayawhip",
-    "peachpuff",
-    "peru",
-    "pink",
-    "plum",
-    "powderblue",
-    "purple",
-    "rebeccapurple",
-    "red",
-    "rosybrown",
-    "royalblue",
-    "saddlebrown",
-    "salmon",
-    "sandybrown",
-    "seagreen",
-    "seashell",
-    "sienna",
-    "silver",
-    "skyblue",
-    "slateblue",
-    "slategray",
-    "slategrey",
-    "snow",
-    "springgreen",
-    "steelblue",
-    "tan",
-    "teal",
-    "thistle",
-    "tomato",
-    "transparent",
-    "turquoise",
-    "violet",
-    "wheat",
-    "white",
-    "whitesmoke",
-    "yellow",
-    "yellowgreen",
+///
+/// `None` marks the three entries that name **no** sRGB triple:
+///
+/// - `none` and `transparent` paint nothing. They are a colour-slot value, not
+///   a colour, so the byte triple would be a fiction; the caller decides what
+///   "paint nothing" means for the channel it is resolving.
+/// - `currentColor` resolves against an inherited text colour, which comes out
+///   of a CSS cascade. There is no cascade here and no inherited ink to read,
+///   so this table has nothing honest to return for it — see
+///   [`css_colour_keyword_rgb`].
+///
+/// The 148 triples were taken from the `color-name` package (v1.1.4) and
+/// independently cross-checked against `d3-color`'s parser: all 148 names and
+/// all 148 triples agree between the two, and the name set is byte-identical to
+/// the one this table carried before the values were added.
+const CSS_COLOUR_KEYWORDS: &[(&str, Option<[u8; 3]>)] = &[
+    ("aliceblue", Some([0xf0, 0xf8, 0xff])),
+    ("antiquewhite", Some([0xfa, 0xeb, 0xd7])),
+    ("aqua", Some([0x00, 0xff, 0xff])),
+    ("aquamarine", Some([0x7f, 0xff, 0xd4])),
+    ("azure", Some([0xf0, 0xff, 0xff])),
+    ("beige", Some([0xf5, 0xf5, 0xdc])),
+    ("bisque", Some([0xff, 0xe4, 0xc4])),
+    ("black", Some([0x00, 0x00, 0x00])),
+    ("blanchedalmond", Some([0xff, 0xeb, 0xcd])),
+    ("blue", Some([0x00, 0x00, 0xff])),
+    ("blueviolet", Some([0x8a, 0x2b, 0xe2])),
+    ("brown", Some([0xa5, 0x2a, 0x2a])),
+    ("burlywood", Some([0xde, 0xb8, 0x87])),
+    ("cadetblue", Some([0x5f, 0x9e, 0xa0])),
+    ("chartreuse", Some([0x7f, 0xff, 0x00])),
+    ("chocolate", Some([0xd2, 0x69, 0x1e])),
+    ("coral", Some([0xff, 0x7f, 0x50])),
+    ("cornflowerblue", Some([0x64, 0x95, 0xed])),
+    ("cornsilk", Some([0xff, 0xf8, 0xdc])),
+    ("crimson", Some([0xdc, 0x14, 0x3c])),
+    ("currentcolor", None),
+    ("cyan", Some([0x00, 0xff, 0xff])),
+    ("darkblue", Some([0x00, 0x00, 0x8b])),
+    ("darkcyan", Some([0x00, 0x8b, 0x8b])),
+    ("darkgoldenrod", Some([0xb8, 0x86, 0x0b])),
+    ("darkgray", Some([0xa9, 0xa9, 0xa9])),
+    ("darkgreen", Some([0x00, 0x64, 0x00])),
+    ("darkgrey", Some([0xa9, 0xa9, 0xa9])),
+    ("darkkhaki", Some([0xbd, 0xb7, 0x6b])),
+    ("darkmagenta", Some([0x8b, 0x00, 0x8b])),
+    ("darkolivegreen", Some([0x55, 0x6b, 0x2f])),
+    ("darkorange", Some([0xff, 0x8c, 0x00])),
+    ("darkorchid", Some([0x99, 0x32, 0xcc])),
+    ("darkred", Some([0x8b, 0x00, 0x00])),
+    ("darksalmon", Some([0xe9, 0x96, 0x7a])),
+    ("darkseagreen", Some([0x8f, 0xbc, 0x8f])),
+    ("darkslateblue", Some([0x48, 0x3d, 0x8b])),
+    ("darkslategray", Some([0x2f, 0x4f, 0x4f])),
+    ("darkslategrey", Some([0x2f, 0x4f, 0x4f])),
+    ("darkturquoise", Some([0x00, 0xce, 0xd1])),
+    ("darkviolet", Some([0x94, 0x00, 0xd3])),
+    ("deeppink", Some([0xff, 0x14, 0x93])),
+    ("deepskyblue", Some([0x00, 0xbf, 0xff])),
+    ("dimgray", Some([0x69, 0x69, 0x69])),
+    ("dimgrey", Some([0x69, 0x69, 0x69])),
+    ("dodgerblue", Some([0x1e, 0x90, 0xff])),
+    ("firebrick", Some([0xb2, 0x22, 0x22])),
+    ("floralwhite", Some([0xff, 0xfa, 0xf0])),
+    ("forestgreen", Some([0x22, 0x8b, 0x22])),
+    ("fuchsia", Some([0xff, 0x00, 0xff])),
+    ("gainsboro", Some([0xdc, 0xdc, 0xdc])),
+    ("ghostwhite", Some([0xf8, 0xf8, 0xff])),
+    ("gold", Some([0xff, 0xd7, 0x00])),
+    ("goldenrod", Some([0xda, 0xa5, 0x20])),
+    ("gray", Some([0x80, 0x80, 0x80])),
+    ("green", Some([0x00, 0x80, 0x00])),
+    ("greenyellow", Some([0xad, 0xff, 0x2f])),
+    ("grey", Some([0x80, 0x80, 0x80])),
+    ("honeydew", Some([0xf0, 0xff, 0xf0])),
+    ("hotpink", Some([0xff, 0x69, 0xb4])),
+    ("indianred", Some([0xcd, 0x5c, 0x5c])),
+    ("indigo", Some([0x4b, 0x00, 0x82])),
+    ("ivory", Some([0xff, 0xff, 0xf0])),
+    ("khaki", Some([0xf0, 0xe6, 0x8c])),
+    ("lavender", Some([0xe6, 0xe6, 0xfa])),
+    ("lavenderblush", Some([0xff, 0xf0, 0xf5])),
+    ("lawngreen", Some([0x7c, 0xfc, 0x00])),
+    ("lemonchiffon", Some([0xff, 0xfa, 0xcd])),
+    ("lightblue", Some([0xad, 0xd8, 0xe6])),
+    ("lightcoral", Some([0xf0, 0x80, 0x80])),
+    ("lightcyan", Some([0xe0, 0xff, 0xff])),
+    ("lightgoldenrodyellow", Some([0xfa, 0xfa, 0xd2])),
+    ("lightgray", Some([0xd3, 0xd3, 0xd3])),
+    ("lightgreen", Some([0x90, 0xee, 0x90])),
+    ("lightgrey", Some([0xd3, 0xd3, 0xd3])),
+    ("lightpink", Some([0xff, 0xb6, 0xc1])),
+    ("lightsalmon", Some([0xff, 0xa0, 0x7a])),
+    ("lightseagreen", Some([0x20, 0xb2, 0xaa])),
+    ("lightskyblue", Some([0x87, 0xce, 0xfa])),
+    ("lightslategray", Some([0x77, 0x88, 0x99])),
+    ("lightslategrey", Some([0x77, 0x88, 0x99])),
+    ("lightsteelblue", Some([0xb0, 0xc4, 0xde])),
+    ("lightyellow", Some([0xff, 0xff, 0xe0])),
+    ("lime", Some([0x00, 0xff, 0x00])),
+    ("limegreen", Some([0x32, 0xcd, 0x32])),
+    ("linen", Some([0xfa, 0xf0, 0xe6])),
+    ("magenta", Some([0xff, 0x00, 0xff])),
+    ("maroon", Some([0x80, 0x00, 0x00])),
+    ("mediumaquamarine", Some([0x66, 0xcd, 0xaa])),
+    ("mediumblue", Some([0x00, 0x00, 0xcd])),
+    ("mediumorchid", Some([0xba, 0x55, 0xd3])),
+    ("mediumpurple", Some([0x93, 0x70, 0xdb])),
+    ("mediumseagreen", Some([0x3c, 0xb3, 0x71])),
+    ("mediumslateblue", Some([0x7b, 0x68, 0xee])),
+    ("mediumspringgreen", Some([0x00, 0xfa, 0x9a])),
+    ("mediumturquoise", Some([0x48, 0xd1, 0xcc])),
+    ("mediumvioletred", Some([0xc7, 0x15, 0x85])),
+    ("midnightblue", Some([0x19, 0x19, 0x70])),
+    ("mintcream", Some([0xf5, 0xff, 0xfa])),
+    ("mistyrose", Some([0xff, 0xe4, 0xe1])),
+    ("moccasin", Some([0xff, 0xe4, 0xb5])),
+    ("navajowhite", Some([0xff, 0xde, 0xad])),
+    ("navy", Some([0x00, 0x00, 0x80])),
+    ("none", None),
+    ("oldlace", Some([0xfd, 0xf5, 0xe6])),
+    ("olive", Some([0x80, 0x80, 0x00])),
+    ("olivedrab", Some([0x6b, 0x8e, 0x23])),
+    ("orange", Some([0xff, 0xa5, 0x00])),
+    ("orangered", Some([0xff, 0x45, 0x00])),
+    ("orchid", Some([0xda, 0x70, 0xd6])),
+    ("palegoldenrod", Some([0xee, 0xe8, 0xaa])),
+    ("palegreen", Some([0x98, 0xfb, 0x98])),
+    ("paleturquoise", Some([0xaf, 0xee, 0xee])),
+    ("palevioletred", Some([0xdb, 0x70, 0x93])),
+    ("papayawhip", Some([0xff, 0xef, 0xd5])),
+    ("peachpuff", Some([0xff, 0xda, 0xb9])),
+    ("peru", Some([0xcd, 0x85, 0x3f])),
+    ("pink", Some([0xff, 0xc0, 0xcb])),
+    ("plum", Some([0xdd, 0xa0, 0xdd])),
+    ("powderblue", Some([0xb0, 0xe0, 0xe6])),
+    ("purple", Some([0x80, 0x00, 0x80])),
+    ("rebeccapurple", Some([0x66, 0x33, 0x99])),
+    ("red", Some([0xff, 0x00, 0x00])),
+    ("rosybrown", Some([0xbc, 0x8f, 0x8f])),
+    ("royalblue", Some([0x41, 0x69, 0xe1])),
+    ("saddlebrown", Some([0x8b, 0x45, 0x13])),
+    ("salmon", Some([0xfa, 0x80, 0x72])),
+    ("sandybrown", Some([0xf4, 0xa4, 0x60])),
+    ("seagreen", Some([0x2e, 0x8b, 0x57])),
+    ("seashell", Some([0xff, 0xf5, 0xee])),
+    ("sienna", Some([0xa0, 0x52, 0x2d])),
+    ("silver", Some([0xc0, 0xc0, 0xc0])),
+    ("skyblue", Some([0x87, 0xce, 0xeb])),
+    ("slateblue", Some([0x6a, 0x5a, 0xcd])),
+    ("slategray", Some([0x70, 0x80, 0x90])),
+    ("slategrey", Some([0x70, 0x80, 0x90])),
+    ("snow", Some([0xff, 0xfa, 0xfa])),
+    ("springgreen", Some([0x00, 0xff, 0x7f])),
+    ("steelblue", Some([0x46, 0x82, 0xb4])),
+    ("tan", Some([0xd2, 0xb4, 0x8c])),
+    ("teal", Some([0x00, 0x80, 0x80])),
+    ("thistle", Some([0xd8, 0xbf, 0xd8])),
+    ("tomato", Some([0xff, 0x63, 0x47])),
+    ("transparent", None),
+    ("turquoise", Some([0x40, 0xe0, 0xd0])),
+    ("violet", Some([0xee, 0x82, 0xee])),
+    ("wheat", Some([0xf5, 0xde, 0xb3])),
+    ("white", Some([0xff, 0xff, 0xff])),
+    ("whitesmoke", Some([0xf5, 0xf5, 0xf5])),
+    ("yellow", Some([0xff, 0xff, 0x00])),
+    ("yellowgreen", Some([0x9a, 0xcd, 0x32])),
 ];
 
 /// Whether a colour-channel string is a **constant colour** rather than a
@@ -592,11 +608,17 @@ const CSS_COLOUR_KEYWORDS: &[&str] = &[
 /// vendored here to port a keyword table from, so `CSS_COLOUR_KEYWORDS` is
 /// the CSS Level 4 list.
 ///
-/// It decides one thing: a rect binding a colour CONSTANT carries no groups, so
+/// It decides two things. A rect binding a colour CONSTANT carries no groups, so
 /// its `bin` + `count` is a plain histogram and can be lifted (see
-/// `parse::binned_histogram` for why a grouped one may not be). Unrecognised ⇒
-/// treated as a column, which is the safe direction: the spec keeps its
+/// `parse::binned_histogram` for why a grouped one may not be); and
+/// `brightfield_render::channel::ChannelMap::from_mark` binds such a string as
+/// the mark's constant ink instead of as a column name. Unrecognised ⇒ treated
+/// as a column, which is the safe direction: the spec keeps its
 /// uncomputed-transform diagnostic instead of drawing a lie.
+///
+/// **Recognising a literal is not the same as being able to paint it.** This
+/// answers "is it a colour, or a column"; [`css_colour_keyword_rgb`] answers
+/// "what colour", and returns `None` for keywords this build cannot resolve.
 #[must_use]
 pub fn is_colour_literal(value: &str) -> bool {
     let v = value.trim();
@@ -608,7 +630,40 @@ pub fn is_colour_literal(value: &str) -> bool {
         return true;
     }
     let lower = v.to_ascii_lowercase();
-    CSS_COLOUR_KEYWORDS.binary_search(&lower.as_str()).is_ok()
+    CSS_COLOUR_KEYWORDS
+        .binary_search_by_key(&lower.as_str(), |(name, _)| *name)
+        .is_ok()
+}
+
+/// What a colour-slot **keyword** paints, as straight-alpha sRGB bytes.
+///
+/// - A named colour → its sRGB triple, opaque.
+/// - `none` / `transparent` → `[0, 0, 0, 0]`, i.e. paint nothing. CSS treats
+///   both as the fully transparent black, and so does Observable Plot's colour
+///   slot; a mark that asks for no ink gets no ink.
+/// - Anything else, **including `currentColor`** → `None`. There is no CSS
+///   cascade in this renderer and therefore no inherited text colour to be
+///   "current", so any value returned for it would be invented. The caller
+///   keeps whatever default it already had, which is the honest fallthrough.
+///
+/// Case-insensitive (`SteelBlue` is `steelblue`) and whitespace-trimmed, so it
+/// accepts exactly the strings [`is_colour_literal`] accepts as keywords.
+/// **Hex and functional notation are not handled here** — hex is parsed by
+/// `brightfield_render::mark::parse_css_hex`, and `rgb(…)`/`hsl(…)` are
+/// unresolved in this build.
+#[must_use]
+pub fn css_colour_keyword_rgb(value: &str) -> Option<[u8; 4]> {
+    let lower = value.trim().to_ascii_lowercase();
+    match CSS_COLOUR_KEYWORDS.binary_search_by_key(&lower.as_str(), |(name, _)| *name) {
+        Ok(i) => match CSS_COLOUR_KEYWORDS[i] {
+            (_, Some([r, g, b])) => Some([r, g, b, 0xff]),
+            // `none` and `transparent` paint nothing; `currentColor` has no
+            // value here at all and must NOT be confused with them.
+            ("none" | "transparent", None) => Some([0, 0, 0, 0]),
+            (_, None) => None,
+        },
+        Err(_) => None,
+    }
 }
 
 #[cfg(test)]
@@ -622,11 +677,77 @@ mod tests {
     fn the_colour_keyword_table_is_sorted_and_unique() {
         for pair in CSS_COLOUR_KEYWORDS.windows(2) {
             assert!(
-                pair[0] < pair[1],
+                pair[0].0 < pair[1].0,
                 "CSS_COLOUR_KEYWORDS must be sorted and duplicate-free, but \
                  {:?} precedes {:?}",
-                pair[0],
-                pair[1]
+                pair[0].0,
+                pair[1].0
+            );
+        }
+    }
+
+    /// The keyword table is the CSS list and nothing else: exactly three
+    /// entries carry no triple, and they are the three colour-slot keywords
+    /// that are not colours. A named colour silently landing a `None` here
+    /// would make that ONE colour unpaintable while every other keyword worked
+    /// — the kind of gap `is_colour_literal` cannot see, because it only asks
+    /// whether the name is in the table.
+    #[test]
+    fn only_the_three_non_colour_keywords_carry_no_value() {
+        let valueless: Vec<&str> = CSS_COLOUR_KEYWORDS
+            .iter()
+            .filter(|(_, rgb)| rgb.is_none())
+            .map(|(name, _)| *name)
+            .collect();
+        assert_eq!(valueless, vec!["currentcolor", "none", "transparent"]);
+        assert_eq!(
+            CSS_COLOUR_KEYWORDS.len(),
+            148 + 3,
+            "the CSS Level 4 named-colour list is 148 entries; the other three \
+             are `none`, `transparent` and `currentColor`"
+        );
+    }
+
+    /// The values, spot-checked against the CSS specification — including the
+    /// two the corpus actually writes. A transposed or mistyped byte here is
+    /// invisible to every other test in this crate, because nothing else in
+    /// `brightfield-spec` looks at a colour VALUE.
+    #[test]
+    fn keywords_resolve_to_their_css_values() {
+        for (name, want) in [
+            ("steelblue", [0x46, 0x82, 0xb4, 0xff]),
+            ("SteelBlue", [0x46, 0x82, 0xb4, 0xff]),
+            ("  steelblue  ", [0x46, 0x82, 0xb4, 0xff]),
+            ("crimson", [0xdc, 0x14, 0x3c, 0xff]),
+            ("gold", [0xff, 0xd7, 0x00, 0xff]),
+            ("rebeccapurple", [0x66, 0x33, 0x99, 0xff]),
+            ("black", [0x00, 0x00, 0x00, 0xff]),
+            ("white", [0xff, 0xff, 0xff, 0xff]),
+            // Paints nothing — a colour-slot value, not a colour.
+            ("none", [0, 0, 0, 0]),
+            ("transparent", [0, 0, 0, 0]),
+        ] {
+            assert_eq!(
+                css_colour_keyword_rgb(name),
+                Some(want),
+                "`{name}` must resolve to its CSS value"
+            );
+        }
+
+        // `currentColor` is recognised as a literal and has NO value here: it
+        // reads an inherited text colour out of a cascade this renderer does
+        // not have. Returning `[0,0,0,0]` for it would silently blank the mark;
+        // returning black would invent a colour the spec never named.
+        assert!(is_colour_literal("currentColor"));
+        assert_eq!(css_colour_keyword_rgb("currentColor"), None);
+
+        // Not keywords. Hex is the hex parser's job and functional notation is
+        // unresolved; both must fall through rather than land on a neighbour.
+        for other in ["#4682b4", "rgb(70, 130, 180)", "version", "steel blue", ""] {
+            assert_eq!(
+                css_colour_keyword_rgb(other),
+                None,
+                "`{other}` is not a colour keyword"
             );
         }
     }
