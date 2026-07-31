@@ -300,10 +300,11 @@ pub struct StatusEntry {
     /// entries sharing an id draw twice
     /// (`tests/chrome_rules.rs::two_entries_sharing_an_id_both_draw`).
     ///
-    /// It is read in exactly one place in production: [`Activity::of_entry`]
-    /// matches it against the ids in [`Activity::ALL`], which is how the window
-    /// tells a pane's own activity report from its other lines and folds it into
-    /// the one merged indicator instead of railing it twice. Every other id is a
+    /// It is read in exactly one place in production:
+    /// [`crate::activity::Activity::of_entry`] matches it against the ids in
+    /// [`crate::activity::Activity::ALL`], which is how the window tells a
+    /// pane's own activity report from its other lines and folds it into the
+    /// one merged indicator instead of railing it twice. Every other id is a
     /// handle a headless test selects a line by without matching on its text,
     /// and the name the rail records in `chrome::StatusDrawn::drawn`.
     ///

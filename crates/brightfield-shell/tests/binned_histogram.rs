@@ -93,7 +93,10 @@ fn column_heights(png: &Path, want: [i32; 3]) -> Vec<u32> {
 
 /// Total mark ink in the export, in the given colour.
 fn ink(png: &Path, want: [i32; 3]) -> u64 {
-    column_heights(png, want).iter().map(|&h| u64::from(h)).sum()
+    column_heights(png, want)
+        .iter()
+        .map(|&h| u64::from(h))
+        .sum()
 }
 
 /// The distinct bar heights present, as MULTIPLES of the shortest bar, in

@@ -140,7 +140,8 @@ fn assert_painted(name: &str, fixture: Fixture, colour_line: &str, want: [u8; 3]
 
     let leftover = pixels_near(&png, default_mark_ink());
     assert_eq!(
-        leftover, 0,
+        leftover,
+        0,
         "{name}: {leftover} px of the DEFAULT mark ink are still on the page \
          beside {got} px of the colour `{colour_line}` asked for. The mark cannot \
          be both; a picture holding the default is one whose constant never \
@@ -345,7 +346,8 @@ fn every_colour_literal_the_curated_corpus_writes_is_painted() {
             .unwrap_or_else(|e| panic!("parse {}: {e}", entry.name));
         for mark in brightfield_sql::collect_marks(&parsed.spec) {
             for channel in ["fill", "stroke"] {
-                if let Some(ValueOrParamRef::Value(SpecValue::String(s))) = mark.options.get(channel)
+                if let Some(ValueOrParamRef::Value(SpecValue::String(s))) =
+                    mark.options.get(channel)
                 {
                     if brightfield_spec::vocab::is_colour_literal(s) {
                         found.push((entry.name.clone(), s.clone()));
