@@ -212,31 +212,20 @@ impl MarkKind {
     /// Whether this mark kind computes a **positional** `bin` + `count` pair —
     /// `x: {bin: col}` with `y: {count:}` and its transpose.
     ///
-    /// The one registry both halves read, so a spec cannot parse as binned and
-    /// then lower as `SELECT *`. The parser lifts the pair only for a kind
-    /// named here, and `RectLowerer` consults the same predicate before
-    /// building a histogram plan.
+    /// The one list the lift consults, so a spec cannot parse as binned and
+    /// then lower as `SELECT *`: the parser lifts the pair only for a kind
+    /// named here, and `brightfield-sql` registers `RectLowerer` for both.
     ///
-    /// Note the two lists are not identical and should not be: `RectLowerer` is
-    /// *registered* for plain `Rect` as well, because every kind needs a
-    /// lowerer, and it delegates to `SimpleLowerer` whenever there is no
-    /// positional bin. `Rect` simply always takes that delegation.
-    /// Mosaic's own list is the `EXTENT` set in `vgplot/plot/transforms/bin.js`
-    /// (`rectY-x`, `rectX-y`, `rect-x`, `rect-y`, `ruleY-x`, `ruleX-y`).
-    ///
-    /// **Two of Mosaic's six are left off, for one reason.** A binned
-    /// `ruleY`/`ruleX` would parse quiet and still draw nothing, because
-    /// brightfield's rule lowerer does not aggregate. Plain `rect` is the same
-    /// trap one step further in: `RectRenderer` at `RectKind::Xy` requires
-    /// **both** `x1`/`x2` and `y1`/`y2`, while a bin+count pair binds only one
-    /// interval pair, so the mark returns before drawing. Listing `Rect` here
-    /// removed its uncomputed-transform diagnostic and put nothing on the page
-    /// in its place — measured at **zero** pixels of mark ink, against
-    /// `rectY`'s 170k over the same data.
+    /// **Plain `rect` is deliberately absent.** `RectLowerer` is *registered*
+    /// for it too — every kind needs a lowerer, and it delegates to
+    /// `SimpleLowerer` when there is no positional bin — but it must not lift:
+    /// the renderer's `RectKind::Xy` needs **both** `x1`/`x2` and `y1`/`y2`,
+    /// while a bin+count binds one interval pair only, so the mark returns
+    /// before drawing. Listing `Rect` here silenced its uncomputed-transform
+    /// diagnostic and put nothing on the page in its place.
     ///
     /// So a kind belongs here only once something downstream **draws** what it
-    /// produces. Quieting the diagnostic is the easy half, and on its own it
-    /// makes the product less honest rather than more capable.
+    /// produces. Quieting the diagnostic is the easy half.
     #[must_use]
     pub fn bins_positionally(self) -> bool {
         matches!(self, Self::RectX | Self::RectY)
@@ -435,9 +424,9 @@ pub fn mark_option_is_consumed(key: &str) -> bool {
     CONSUMED_MARK_OPTION_KEYS.contains(&key)
 }
 
-/// The CSS Color Module Level 4 named colours, plus the three keywords a Plot
-/// spec may write in a colour slot (`none`, `transparent`, `currentColor`).
-/// Sorted, so [`is_colour_literal`] can binary-search it.
+/// The CSS Color Module Level 4 named colours, plus the three keywords a spec
+/// may write in a colour slot (`none`, `transparent`, `currentColor`). Sorted,
+/// so [`is_colour_literal`] can binary-search it.
 ///
 /// A fixed, standardised vocabulary — it does not grow with brightfield.
 const CSS_COLOUR_KEYWORDS: &[&str] = &[
@@ -597,19 +586,16 @@ const CSS_COLOUR_KEYWORDS: &[&str] = &[
 /// Whether a colour-channel string is a **constant colour** rather than a
 /// column name — `fill: steelblue` versus `fill: version`.
 ///
-/// This is Observable Plot's rule, not one invented here: Plot's
-/// `maybeColorChannel` treats a string that `isColor()` accepts as a constant
-/// and everything else as a field name, which is why the same spec can write
-/// `fill: steelblue` and `fill: weather` and mean different things. Plot is not
-/// vendored in this tree, so the keyword table is the CSS Level 4 list rather
-/// than a port.
+/// A colour channel is overloaded in this spec language — one spec writes both
+/// `fill: steelblue` and `fill: weather` and means different things by them —
+/// so the string itself is the only discriminator. No upstream source is
+/// vendored here to port a keyword table from, so [`CSS_COLOUR_KEYWORDS`] is
+/// the CSS Level 4 list.
 ///
-/// It decides one thing here: a rect binding a colour CONSTANT carries no
-/// groups, so its `bin` + `count` is a plain histogram and can be lifted; a
-/// rect binding a COLUMN is one Mosaic stacks, and lifting it would merge the
-/// groups into a single bar carrying the right TOTAL and no composition — the
-/// breakdown the author asked for gone without a word. Unrecognised ⇒ treated
-/// as a column, which is the safe direction: the spec keeps its
+/// It decides one thing: a rect binding a colour CONSTANT carries no groups, so
+/// its `bin` + `count` is a plain histogram and can be lifted (see
+/// `parse::binned_histogram` for why a grouped one may not be). Unrecognised ⇒
+/// treated as a column, which is the safe direction: the spec keeps its
 /// uncomputed-transform diagnostic instead of drawing a lie.
 #[must_use]
 pub fn is_colour_literal(value: &str) -> bool {
@@ -671,15 +657,10 @@ mod tests {
         }
     }
 
-    /// The registry that keeps the parser and the lowerer from disagreeing:
-    /// the kinds that lift a positional bin are exactly the kinds `RectLowerer`
-    /// is registered for.
-    ///
-    /// **`rect` is deliberately absent**, and pinning that is the point of the
-    /// second assertion. It was listed once; `RectKind::Xy` needs both interval
-    /// pairs and a bin+count binds only one, so the mark drew zero pixels while
-    /// its uncomputed-transform diagnostic had been silenced. A kind belongs
-    /// here only when something downstream draws what it produces.
+    /// The list is the two oriented rect kinds, and **`rect` is deliberately
+    /// absent** — pinning that is the point of the second assertion. It was
+    /// listed once, and drew nothing while its uncomputed-transform diagnostic
+    /// was silenced; see [`MarkKind::bins_positionally`] for why.
     #[test]
     fn only_the_oriented_rect_kinds_bin_positionally() {
         let binning: Vec<&str> = MarkKind::all()

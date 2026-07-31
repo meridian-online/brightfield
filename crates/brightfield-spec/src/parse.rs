@@ -206,9 +206,9 @@ const BIN_COUNT_AXES: [(&str, &str); 2] = [("x", "y"), ("y", "x")];
 /// and the pair is left uncomputed rather than half-honoured.
 const BIN_MODIFIER_KEYS: &[&str] = &["steps"];
 
-/// The channels that, bound to a COLUMN, make a binned rect a **stacked** one.
-/// `z` is Mosaic's explicit grouping channel; `fill`/`stroke` group implicitly
-/// when they name a field rather than a colour constant.
+/// The channels that, bound to a COLUMN, split a binned rect into groups. `z`
+/// is the explicit grouping channel; `fill`/`stroke` group implicitly when they
+/// name a field rather than a colour constant.
 const GROUPING_CHANNEL_FIELDS: &[&str] = &["z", "fill", "stroke"];
 
 /// One mark's lifted positional `bin` + `count` pair.
@@ -456,44 +456,34 @@ pub enum ParseWarning {
 
     /// A binned mark's `fill`/`stroke` named a CSS colour keyword that is ALSO
     /// a column of the inline source the mark reads — `fill: gold` over rows
-    /// with a `gold` column. Dozens of the keywords are plausible field names
-    /// (`gold`, `plum`, `tan`, `salmon`, `orange`, `lime`, `navy`, `olive`,
-    /// `teal`, `ivory`, `coral`, `silver`, …), so the collision is not exotic.
+    /// with a `gold` column.
     ///
-    /// **Advisory only — nothing about the render changes.** The constant
-    /// reading stands, because it is the reference's: Mosaic decides this in
-    /// `Mark`'s constructor, lexically, before it knows any schema. So the
-    /// histogram lifts and its bins carry whole-row counts. All this line does
-    /// is tell an author who meant the COLUMN that the spec does not say so —
-    /// a doubt about intent, which nothing in the document can settle.
+    /// **Advisory only — nothing about the render changes.** The colour reading
+    /// stands and the histogram lifts, so its bins carry whole-row counts. All
+    /// this warning does is tell an author who meant the COLUMN that the spec
+    /// does not say so; see [`shadowed_colour`] for why that is a warning and
+    /// not a refusal.
     ///
-    /// **It names both things the author does not get, and offers no remedy,
-    /// because there is none.** The obvious one — `z: {name}` to mean the
-    /// column — is dead advice: `z` is in [`GROUPING_CHANNEL_FIELDS`], so it
-    /// refuses the lift, and nothing in the render path reads it either. A spec
-    /// that takes it draws a BLANK FRAME **[measured: rendered it]**. Saying so
-    /// would be worse than saying nothing.
+    /// **It offers no remedy, because there is none.** The obvious one —
+    /// `z: {name}` to mean the column — is dead advice: `z` is in
+    /// [`GROUPING_CHANNEL_FIELDS`], so it refuses the lift, and nothing
+    /// downstream reads it either (`brightfield-render`'s `Channel` has no `z`
+    /// variant and no `"z"` arm in `from_wire`). A spec that takes the advice
+    /// draws a blank frame.
     ///
-    /// The second is paint. Brightfield does not resolve CSS colour names at
-    /// all today: there is no keyword table in `brightfield-render`, a string
-    /// `fill` resolves as a column name, and an unresolvable one falls back to
-    /// the default. So a bar under `fill: gold` is Harbour blue, exactly as
-    /// `examples/rect-bin-count.yaml`'s `fill: steelblue` is — rendered and
-    /// read off the pixels, not inferred. That gap is real, separate and
-    /// unfixed, and the message states it rather than leaving the reader to
-    /// expect gold bars.
+    /// The message also says the bars stay the default colour. Brightfield
+    /// carries no CSS keyword table: `ChannelMap::from_mark` binds a string
+    /// `fill` as a COLUMN name, and `resolve_colour` returns the default mark
+    /// colour for a fill that resolves to no colour-scale entry.
     ///
     /// Deliberately absent from `deviations.yaml`. That register holds
     /// *considered* differences from Mosaic; an unbuilt capability is not one,
     /// and filling the register with gaps would make it a to-do list wearing
     /// the clothes of a decision. Tracked as work instead.
     ///
-    /// Only ever raised where the shadow is provable. A `file:` or `query:`
-    /// source's schema is not in the document and nothing in the parse → emit
-    /// path asks DuckDB for it, so the same collision there is undetectable and
-    /// stays silent. The same missing schema is why a DATE-typed bin is not
-    /// gated either — `brightfield-shell`'s `binned_histogram.rs` carries that
-    /// account, and both close together or not at all.
+    /// Only ever raised where the shadow is provable — see
+    /// [`inline_source_columns`]. A `file:` or `query:` source's schema is not
+    /// in the document, so the same collision there stays silent.
     ColourNameShadowsColumn {
         /// The channel it sat on (`fill` or `stroke`).
         field: String,
@@ -617,13 +607,8 @@ impl fmt::Display for ParseWarning {
                 "channel `{channel}` asks for `{transform}`, which brightfield does not compute — \
                  the channel resolves to nothing and the mark draws no ink"
             ),
-            // Offers NO remedy, because there is none. `z: {name}` was the
-            // obvious one and it is dead advice: `z` is a grouping channel, so
-            // it refuses the lift, and nothing in the render path reads it —
-            // taking that advice turns a drawn histogram into a blank frame,
-            // which brightfield then says out loud in three more lines
-            // **[measured: rendered it]**. So this states the reading and the
-            // two things the author does not get, and stops.
+            // States the reading and the two things the author does not get,
+            // and stops. No remedy is offered; the variant doc says why.
             Self::ColourNameShadowsColumn {
                 field,
                 name,
@@ -1279,12 +1264,8 @@ impl Walker {
         // Resolved BEFORE the per-key loop, because it is a property of the
         // PAIR: a `bin` is only computable when the opposite positional channel
         // counts, and vice versa. Deciding it per key would let `x` lift while
-        // `y` warned — parse and lowerer disagreeing about the same mark.
-        //
-        // The shadow check is applied HERE rather than inside
-        // [`binned_histogram`] because it does not change the lift — it only
-        // reports. A shadowed name is worth saying out loud and NOT worth
-        // diverging over; see [`shadowed_colour`].
+        // `y` warned. The shadow check sits outside [`binned_histogram`]
+        // because it only reports and never changes the lift.
         let histogram = binned_histogram(kind, parent);
         if histogram.is_some() {
             if let Some(shadow) = shadowed_colour(parent, &self.inline_columns) {
@@ -1732,16 +1713,14 @@ impl Walker {
 /// - **Both halves** must be present, on opposite positional axes. A lone
 ///   `x: {bin: t}` has nothing to aggregate and a lone `y: {count:}` has
 ///   nothing to group by; either alone keeps warning.
-/// - **The `bin` map's keys** must be `bin` plus [`BIN_MODIFIER_KEYS`].
-///   `protein-design.yaml` writes `{bin: plddt_total, steps: 60}`, and lifting
-///   the `bin` while dropping a modifier would silently draw a different chart
-///   from the one asked for.
-/// - **No grouping channel** ([`GROUPING_CHANNEL_FIELDS`]). Mosaic STACKS a
-///   binned rect that carries a grouping colour; brightfield does not yet.
-///   Merging would group on the bin edges alone, so each bar carries every row
-///   in its bin — the RIGHT TOTAL, with the composition the author asked for
-///   silently gone. Not an under-report: a different chart, drawn confidently.
-///   (Read off `RectLowerer::lower`'s `group_by`, not from upstream.)
+/// - **The `bin` map's keys** must be `bin`, `steps`, or a
+///   [`BIN_MODIFIER_KEYS`] entry. An unrecognised modifier refuses the lift
+///   rather than dropping it: honouring the `bin` and ignoring the modifier
+///   would draw a different chart from the one asked for.
+/// - **No grouping channel** ([`GROUPING_CHANNEL_FIELDS`]). `RectLowerer`
+///   groups on the bin edges alone, so lifting a grouped mark would collapse
+///   its groups into one bar per bin — the right TOTAL, with the composition
+///   the author asked for silently gone. A different chart, drawn confidently.
 fn binned_histogram(kind: MarkKind, parent: &serde_yaml::Mapping) -> Option<BinnedHistogram> {
     if !kind.bins_positionally() || mark_is_grouped(parent) {
         return None;
@@ -1800,19 +1779,17 @@ fn is_count_transform(m: &serde_yaml::Mapping) -> bool {
 
 /// Column names per inline data source, keyed by the `data:` entry's name.
 ///
-/// A spec's `file:` and `query:` sources name a schema that only DuckDB holds,
-/// and nothing in the parse → emit path ever asks it — `LowerCtx` carries data
-/// SOURCES, never column types. An inline `data: { rows: [ {v: 1}, … ] }` is
-/// the exception: the columns are written in the document, so the parser can
-/// read them without asking anything.
+/// An inline `data: { obs: [ {v: 1}, … ] }` is the only schema a spec carries
+/// in itself; a `file:` or `query:` source's columns are DuckDB's and the
+/// parser never asks.
 type InlineColumns = std::collections::HashMap<String, std::collections::HashSet<String>>;
 
 /// Harvest [`InlineColumns`] from the raw root mapping.
 ///
-/// Every key of every row object counts, not just the first row's: a source
-/// whose later rows carry a column the first omits still HAS that column once
-/// DuckDB sees it, and the question asked of this map is "could this name be a
-/// column", where a false negative is the expensive answer.
+/// Every key of every row object counts, not just the first row's: a ragged
+/// source still HAS the column its later rows carry, and the question asked of
+/// this map is "could this name be a column", where a false negative is the
+/// expensive answer.
 fn inline_source_columns(root: &serde_yaml::Mapping) -> InlineColumns {
     let mut out = InlineColumns::new();
     let Some(serde_yaml::Value::Mapping(data)) =
@@ -1840,8 +1817,7 @@ fn inline_source_columns(root: &serde_yaml::Mapping) -> InlineColumns {
 }
 
 /// A `fill`/`stroke` string that reads as a colour constant but is also a
-/// COLUMN of the mark's own source — the one case where Plot's rule is
-/// unambiguous to the parser and ambiguous to the author.
+/// COLUMN of the mark's own source.
 struct ShadowedColour {
     /// The channel it sat on (`fill` or `stroke`).
     field: &'static str,
@@ -1851,29 +1827,21 @@ struct ShadowedColour {
     source: String,
 }
 
-/// The colour-versus-column ambiguity, resolved where the schema is knowable.
+/// The colour-versus-column collision, reported where the schema is knowable.
 ///
-/// **The rule itself is not brightfield's and is not changed here.** Mosaic
-/// decides this lexically in `Mark`'s constructor — `isColorChannel(channel) &&
-/// isColor(entry)` makes the string a VALUE, everything else a field — and it
-/// does so *before* `prepare()` ever runs `queryFieldInfo`, so a column named
-/// `gold` loses upstream too (`packages/vgplot/plot/src/marks/Mark.js`,
-/// `marks/util/is-color.js`). Reading `fill: gold` as the colour is therefore
-/// the portable answer, not a bug.
-///
-/// So this changes NOTHING about what is drawn. It reports, and that is all.
-/// The temptation is to refuse the histogram lift here on the theory that a
-/// real column means real groups; refusing would draw a blank frame for a spec
-/// Mosaic renders, which trades a picture the author can read for one they
-/// cannot, in the name of a grouping the spec does not actually ask for. There
-/// is no ambiguity to protect them from: under Plot's rule `fill: gold` MEANS
-/// the constant, so one bar per bin carrying whole-row counts is the correct
-/// reading, not a merged stack. Only the author's intent is in doubt, and a
-/// warning is the right instrument for a doubt about intent.
+/// **This changes NOTHING about what is drawn — it reports, and that is all.**
+/// The temptation is to refuse the histogram lift here, on the theory that a
+/// real column means real groups. Refusing would blank a frame Mosaic renders:
+/// unlifted, the two channels stay plain objects, which is exactly the
+/// [`ParseWarning::UnconsumedChannelTransform`] case — no column reaches the
+/// renderer and the mark draws no ink. Under the colour-constant rule
+/// ([`is_colour_literal`]) `fill: gold` means the constant, so one bar per bin
+/// carrying whole-row counts is the correct reading and there is no ambiguity
+/// to protect the author from. Only their intent is in doubt, and a warning is
+/// the right instrument for that.
 ///
 /// Raised only where the shadow is PROVABLE: the mark reads an inline source
-/// and that source has a column by that name. A `file:` or `query:` source,
-/// whose schema nothing here can see, stays silent.
+/// and that source has a column by that name.
 fn shadowed_colour(parent: &serde_yaml::Mapping, inline: &InlineColumns) -> Option<ShadowedColour> {
     let columns = mark_source_columns(parent, inline)?;
     GROUPING_CHANNEL_FIELDS.iter().find_map(|field| {
@@ -1910,15 +1878,13 @@ fn mark_source_name(parent: &serde_yaml::Mapping) -> Option<&str> {
         .as_str()
 }
 
-/// Whether a mark binds a channel that splits each bin into groups — the case
-/// Mosaic stacks. Conservative in both directions that matter: an explicit `z`
-/// is a grouping whatever its value, and a `fill`/`stroke` that is not a
-/// recognised colour constant is read as a field name (Plot's own rule; see
-/// [`is_colour_literal`]).
+/// Whether a mark binds a channel that splits each bin into groups.
+/// Conservative in both directions that matter: an explicit `z` is a grouping
+/// whatever its value, and a `fill`/`stroke` that is not a recognised colour
+/// constant is read as a field name (see [`is_colour_literal`]).
 ///
-/// A name that is BOTH classifies as a colour constant here, the same as
-/// upstream, and is reported one level up by [`shadowed_colour`] rather than
-/// silently taken.
+/// A name that is BOTH classifies as a colour constant here, and is reported
+/// one level up by [`shadowed_colour`] rather than silently taken.
 fn mark_is_grouped(parent: &serde_yaml::Mapping) -> bool {
     GROUPING_CHANNEL_FIELDS.iter().any(|field| {
         match parent.get(serde_yaml::Value::String((*field).to_string())) {
@@ -3031,7 +2997,7 @@ plot:
             "mark: rectY\nx: { bin: delay }\ny: value\n",
             "a bin with no count opposite it has nothing to group",
         );
-        // A grouping colour, which Mosaic stacks.
+        // A column-valued fill: a grouping, not a plain histogram.
         refused(
             "mark: rectY\nx: { bin: delay }\ny: { count: }\nfill: version\n",
             "a column-valued fill is a stack, not a histogram",
@@ -3057,23 +3023,16 @@ plot:
     /// A CSS colour keyword that is also a COLUMN of the mark's own source
     /// still draws, and says so.
     ///
-    /// Dozens of keywords are plausible field names — `gold`, `plum`, `tan`,
-    /// `salmon`, `navy`, `teal` — and Plot's rule reads every one of them as a
-    /// constant. That reading is the reference's and it stands: Mosaic decides
-    /// it in `Mark`'s constructor, lexically, before it knows any schema, so
-    /// `fill: gold` MEANS the colour and a flat gold histogram is the correct
-    /// picture, not a merged stack.
+    /// **The histogram must still lift.** Refusing it would blank a frame
+    /// Mosaic renders, over a grouping the spec never asked for. Only the
+    /// author's intent is in doubt, which no amount of parsing can settle —
+    /// hence a warning and not a refusal. This pins both halves at once,
+    /// because getting the warning right while quietly dropping the picture is
+    /// the failure that shipped here first.
     ///
-    /// **So the histogram must still lift.** Refusing it would blank a frame
-    /// Mosaic renders, over a grouping the spec never asked for. The only
-    /// thing in doubt is what the AUTHOR meant, which no amount of parsing can
-    /// settle — hence a warning and not a refusal. This pins both halves at
-    /// once, because getting the warning right while quietly dropping the
-    /// picture is the failure that shipped here first.
-    ///
-    /// The ledger of two sources is what makes it a test of the RESOLUTION
-    /// rather than of the keyword: identical mark text, one source with a
-    /// `gold` column and one without, same drawn result, different diagnostic.
+    /// Two sources make it a test of the RESOLUTION rather than of the keyword:
+    /// identical mark text, one source with a `gold` column and one without,
+    /// same lifted result, different diagnostic.
     #[test]
     fn a_colour_name_that_is_also_a_column_still_lifts_and_says_so() {
         let spec = |rows: &str| {
@@ -3111,9 +3070,8 @@ plot:
             clean.warnings
         );
 
-        // Same mark, a source that HAS a `gold` column. The picture is
-        // IDENTICAL — Plot's rule is unchanged by what the schema happens to
-        // contain — and the only difference is that the collision is named.
+        // Same mark, a source that HAS a `gold` column. The lift is identical;
+        // the only difference is that the collision is named.
         let shadowed = parse(&spec("[ { v: 1, gold: 3 }, { v: 2, gold: 4 } ]"));
         let mark = match &shadowed.spec.root {
             Some(Component::Plot(p)) => match &p.items[0] {

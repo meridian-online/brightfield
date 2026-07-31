@@ -37,37 +37,23 @@ impl ResolvedTitles {
     }
 }
 
-/// Prefix on every column a lowerer synthesises — `__bf_count`, `__bf_bin_x2`,
-/// `__bf_hex_dx`. Deriving a title from one would put an internal alias in
-/// front of a reader: a histogram counting rows would label its y-axis
-/// `__bf_count`, which names nothing the author wrote.
+/// Prefix marking a column brightfield synthesised rather than read from the
+/// author's data — `__bf_count`, `__bf_bin_x2`, `__bf_hex_dx`. Deriving a title
+/// from one would put an internal alias in front of a reader: a histogram
+/// counting rows would label its y-axis `__bf_count`, which names nothing the
+/// author wrote.
 const RESERVED_COLUMN_PREFIX: &str = "__bf_";
 
 /// The reserved column a counting aggregate lands in, and the axis title it
-/// earns. The same string is spelled out by a const in each crate that emits
-/// it — `channel::AGGREGATE_COUNT_COL` and `mark::DENSITY_COUNT_COL` here,
-/// `HEX_COUNT_COL` in `brightfield-sql` — all of them private, which is why
-/// this matches on the literal rather than importing one.
+/// earns. Every crate that emits or reads this name spells it out in its own
+/// PRIVATE const — `channel::AGGREGATE_COUNT_COL` and `mark::DENSITY_COUNT_COL`
+/// here, `HEX_COUNT_COL` in `brightfield-sql` — which is why this matches on
+/// the literal rather than importing one.
 ///
-/// Suppression is the right default for a reserved column, but it is the wrong
-/// answer for this one: `__bf_count` is the ONLY synthesised column whose
-/// meaning has a name in the reader's language. A histogram's y-axis is
-/// counting rows, so it says `Count`.
-///
-/// **This is brightfield choosing a word, not matching one.** What was read is
-/// narrow and exact: `markPlotSpec` passes `channelOption`'s value and nothing
-/// else, so no label reaches Plot on this channel. That Plot therefore draws
-/// the axis untitled is an inference — Plot's own labelling was not observed.
-///
-/// Provenance, because it is easy to overstate: this tree vendors mosaic's
-/// SPEC CORPUS only (`vendor/mosaic-specs/`, YAML). `markPlotSpec` is source,
-/// read from a separate local `uwdata/mosaic` clone at a different commit from
-/// the vendored corpus. Reproducible only where that clone exists.
-///
-/// Brightfield derives axis titles itself, which is what makes any word
-/// reachable at all. `Count` is the obvious English for it. Whether Observable
-/// Plot's own `binX`/`groupX` reducers use that exact string is **unverified**
-/// for the same reason, and nothing here should be read as claiming a match.
+/// Suppression is the right default for a reserved column and the wrong answer
+/// for this one: `__bf_count` is the ONLY synthesised column whose meaning has
+/// a name in the reader's language. A histogram's y-axis is counting rows, so
+/// it says `Count` — brightfield choosing a word, not matching one.
 const COUNT_COLUMN: &str = "__bf_count";
 /// The axis title [`COUNT_COLUMN`] resolves to.
 const COUNT_TITLE: &str = "Count";
@@ -192,12 +178,10 @@ mod tests {
         assert_eq!(t.y.as_deref(), Some("count"));
     }
 
-    /// A reserved lowerer output names no field, so it never becomes a title.
-    ///
-    /// The computed histogram is the case: its `x2` is bound to `__bf_bin_x2`,
-    /// the high bin edge the SQL layer synthesises, and deriving from it would
-    /// print an internal alias in front of a reader. Its `x` is bound to the
-    /// column the author actually wrote, and must still title the axis.
+    /// A reserved column names no field, so it never becomes a title — while
+    /// the author's own column on the same mark still must. The computed
+    /// histogram is the case: `x2` is the synthesised high bin edge, `x` is the
+    /// column the author wrote.
     #[test]
     fn a_reserved_lowerer_column_names_no_axis() {
         // An interval-only x whose high edge is reserved: neither half may
@@ -223,14 +207,9 @@ mod tests {
         assert_eq!(t.y.as_deref(), Some("level"));
     }
 
-    /// The counting axis says `Count`.
-    ///
-    /// `__bf_count` is reserved, so the blanket suppression above would leave a
-    /// computed histogram's y-axis untitled — the axis whose whole subject is
-    /// how many rows fell in each bin, with no word for it. It is the one
-    /// synthesised column that names a quantity a reader has a word for, so it
-    /// is mapped rather than suppressed. Every other `__bf_` column stays
-    /// suppressed, which the assertions above pin.
+    /// The counting axis says `Count` — the one exception to the suppression
+    /// above (see [`COUNT_COLUMN`]), in both orientations, and a DERIVE-time
+    /// one only: a sibling's real column and an explicit label both still win.
     #[test]
     fn the_count_column_titles_its_axis_count() {
         let histogram = map_cols(&[
