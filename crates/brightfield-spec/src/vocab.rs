@@ -589,7 +589,7 @@ const CSS_COLOUR_KEYWORDS: &[&str] = &[
 /// A colour channel is overloaded in this spec language — one spec writes both
 /// `fill: steelblue` and `fill: weather` and means different things by them —
 /// so the string itself is the only discriminator. No upstream source is
-/// vendored here to port a keyword table from, so [`CSS_COLOUR_KEYWORDS`] is
+/// vendored here to port a keyword table from, so `CSS_COLOUR_KEYWORDS` is
 /// the CSS Level 4 list.
 ///
 /// It decides one thing: a rect binding a colour CONSTANT carries no groups, so

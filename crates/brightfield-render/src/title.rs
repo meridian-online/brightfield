@@ -45,10 +45,11 @@ impl ResolvedTitles {
 const RESERVED_COLUMN_PREFIX: &str = "__bf_";
 
 /// The reserved column a counting aggregate lands in, and the axis title it
-/// earns. Every crate that emits or reads this name spells it out in its own
-/// PRIVATE const — `channel::AGGREGATE_COUNT_COL` and `mark::DENSITY_COUNT_COL`
-/// here, `HEX_COUNT_COL` in `brightfield-sql` — which is why this matches on
-/// the literal rather than importing one.
+/// earns. There is no shared const to import: this crate's own two are private
+/// (`channel::AGGREGATE_COUNT_COL`, `mark::DENSITY_COUNT_COL`), and
+/// `brightfield-sql` mostly writes the bare literal anyway — `"__bf_count"`
+/// appears there seven times against two uses of its own `HEX_COUNT_COL`. So
+/// this matches the literal, like everything else that touches the name.
 ///
 /// Suppression is the right default for a reserved column and the wrong answer
 /// for this one: `__bf_count` is the ONLY synthesised column whose meaning has

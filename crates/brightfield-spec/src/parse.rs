@@ -461,12 +461,12 @@ pub enum ParseWarning {
     /// **Advisory only — nothing about the render changes.** The colour reading
     /// stands and the histogram lifts, so its bins carry whole-row counts. All
     /// this warning does is tell an author who meant the COLUMN that the spec
-    /// does not say so; see [`shadowed_colour`] for why that is a warning and
+    /// does not say so; see `shadowed_colour` for why that is a warning and
     /// not a refusal.
     ///
     /// **It offers no remedy, because there is none.** The obvious one —
     /// `z: {name}` to mean the column — is dead advice: `z` is in
-    /// [`GROUPING_CHANNEL_FIELDS`], so it refuses the lift, and nothing
+    /// `GROUPING_CHANNEL_FIELDS`, so it refuses the lift, and nothing
     /// downstream reads it either (`brightfield-render`'s `Channel` has no `z`
     /// variant and no `"z"` arm in `from_wire`). A spec that takes the advice
     /// draws a blank frame.
@@ -482,7 +482,7 @@ pub enum ParseWarning {
     /// the clothes of a decision. Tracked as work instead.
     ///
     /// Only ever raised where the shadow is provable — see
-    /// [`inline_source_columns`]. A `file:` or `query:` source's schema is not
+    /// `inline_source_columns`. A `file:` or `query:` source's schema is not
     /// in the document, so the same collision there stays silent.
     ColourNameShadowsColumn {
         /// The channel it sat on (`fill` or `stroke`).
@@ -711,7 +711,7 @@ struct Walker {
     /// Column names per INLINE data source — the only schema a spec carries in
     /// itself. Harvested from the raw document before anything is walked,
     /// because YAML key order is the author's and `plot:` may precede `data:`.
-    /// See [`inline_source_columns`].
+    /// See `inline_source_columns`.
     inline_columns: InlineColumns,
 }
 
@@ -1717,7 +1717,7 @@ impl Walker {
 ///   [`BIN_MODIFIER_KEYS`] entry. An unrecognised modifier refuses the lift
 ///   rather than dropping it: honouring the `bin` and ignoring the modifier
 ///   would draw a different chart from the one asked for.
-/// - **No grouping channel** ([`GROUPING_CHANNEL_FIELDS`]). `RectLowerer`
+/// - **No grouping channel** (`GROUPING_CHANNEL_FIELDS`). `RectLowerer`
 ///   groups on the bin edges alone, so lifting a grouped mark would collapse
 ///   its groups into one bar per bin — the right TOTAL, with the composition
 ///   the author asked for silently gone. A different chart, drawn confidently.
@@ -1884,7 +1884,7 @@ fn mark_source_name(parent: &serde_yaml::Mapping) -> Option<&str> {
 /// constant is read as a field name (see [`is_colour_literal`]).
 ///
 /// A name that is BOTH classifies as a colour constant here, and is reported
-/// one level up by [`shadowed_colour`] rather than silently taken.
+/// one level up by `shadowed_colour` rather than silently taken.
 fn mark_is_grouped(parent: &serde_yaml::Mapping) -> bool {
     GROUPING_CHANNEL_FIELDS.iter().any(|field| {
         match parent.get(serde_yaml::Value::String((*field).to_string())) {
