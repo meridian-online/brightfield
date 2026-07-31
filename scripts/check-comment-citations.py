@@ -211,36 +211,116 @@ def check(pairs: list[tuple[Path, list[tuple[int, str]]]]) -> list[str]:
 
 
 def self_test() -> int:
-    """Prove the gate detects. Each case is a comment body + expected verdict."""
-    known = crates()
-    real_crate = "brightfield-render" if "brightfield-render" in known else sorted(known)[0]
+    """Prove the gate detects — on fixtures DERIVED from this repo, not named.
+
+    The first port of this script to a second repo failed 6 of 10 cases purely
+    because the fixtures named the first repo's crates. Hardcoded fixtures do
+    not travel; derived ones do. If the repo is too small to derive a case, that
+    is a loud failure rather than a silent skip.
+    """
+    known = sorted(crates())
+    if len(known) < 2:
+        print("self-test: need >= 2 crates to derive an attribution case")
+        return 1
+
+    # A symbol one crate defines and another does not — the real defect shape.
+    sym = home = other = None
+    for c in known:
+        for f in sorted((ROOT / "crates" / c).glob("**/*.rs")):
+            for m in re.finditer(r"\bconst\s+([A-Z][A-Z0-9_]{4,})\b", f.read_text(errors="replace")):
+                cand = m.group(1)
+                elsewhere = [k for k in known if k != c and defines(k, cand)]
+                if len(elsewhere) < len(known) - 1:
+                    wrong = next((k for k in known if k != c and not defines(k, cand)), None)
+                    if wrong:
+                        sym, home, other = cand, c, wrong
+                        break
+            if sym:
+                break
+        if sym:
+            break
+    if not sym:
+        print("self-test: could not derive a crate-exclusive symbol")
+        return 1
+
+    real_file = next(iter(sorted((ROOT / "crates" / home).glob("**/*.rs")))).relative_to(ROOT)
+    missing = f"crates/{home}/src/definitely_not_here_{abs(hash(home)) % 9973}.rs"
+
     cases = [
-        ("`brightfield-sql`'s `AGGREGATE_COUNT_COL` holds it", False,
-         "a const attributed to the crate that only reads it (the real defect)"),
-        ("`AGGREGATE_COUNT_COL` in `brightfield-sql` holds it", False,
+        (f"`{other}`'s `{sym}` holds it", False,
+         f"a const attributed to a crate that does not define it ({sym} -> {other})"),
+        (f"`{sym}` in `{other}` holds it", False,
          "the same claim in the other word order"),
-        (f"`{real_crate}`'s `AGGREGATE_COUNT_COL` holds it", True,
-         "STAYS GREEN: the true attribution"),
-        ("see `crates/brightfield-spec/src/parse.rs:1` for why", True,
-         "STAYS GREEN: a path that exists, with a line number"),
-        ("see `crates/brightfield-spec/src/nonexistent.rs` for why", False,
+        (f"`{home}`'s `{sym}` holds it", True,
+         f"STAYS GREEN: the true attribution ({sym} -> {home})"),
+        (f"see `{real_file}:1` for why", True,
+         "STAYS GREEN: a real path with a line number"),
+        (f"see `{missing}` for why", False,
          "a cited file that is not there"),
-        ("`markPlotSpec` passes the value and nothing else", True,
-         "STAYS GREEN: registered in ACKNOWLEDGED as upstream"),
-        ("`brightfield-sql`'s `TotallyMadeUpThing` is used", False,
+        (f"`{home}`'s `TotallyMadeUpThing_{abs(hash(sym)) % 97}` is used", False,
          "a symbol no crate defines at all"),
-        # The three resolution modes below were each a FALSE POSITIVE on this
-        # gate's first whole-tree run. Pinned so they cannot come back.
-        ("its own guard lives in `brightfield-sql`'s `sampling` tests", True,
-         "STAYS GREEN: a test file, not an item (tests/sampling.rs)"),
-        ("must match `brightfield-sql`'s `__bf_count` alias", True,
-         "STAYS GREEN: a reserved string literal, not a const"),
-        ("read from `vendor/mosaic-specs/yaml/`", True,
-         "STAYS GREEN: a crate-relative path, real under crates/brightfield-spec"),
     ]
+    # --- the three PRECISION fixtures -------------------------------------
+    # Each was a false positive on this gate's first whole-tree run, when it
+    # scored 7 hits of which 5 were wrong. They are regression tests for the
+    # noise, and a gate that cries wolf gets switched off — so they are derived
+    # here too rather than named, which is how they went missing when this
+    # script was first ported to a second repo.
+    test_file = next(iter(sorted(ROOT.glob("crates/*/tests/*.rs"))), None)
+    if test_file is None:
+        print("self-test: no crates/*/tests/*.rs to derive the test-file case from")
+        return 1
+    test_crate, test_stem = test_file.parts[-3], test_file.stem
+
+    literal = lit_crate = None
+    for c in known:
+        for f in sorted((ROOT / "crates" / c).glob("**/*.rs")):
+            text = f.read_text(errors="replace")
+            m = re.search(r'"([a-z_][a-z0-9_]{4,})"', text)
+            # Wanted: a token present as a QUOTED STRING but not as an item.
+            # `defines()` resolves it through the literal branch, which is the
+            # behaviour under test — so check the item pattern directly here,
+            # not `defines()`, or the condition is circular and never holds.
+            if m and not re.search(
+                DEFN.format(sym=re.escape(m.group(1))),
+                text,
+            ):
+                literal, lit_crate = m.group(1), c
+                break
+        if literal:
+            break
+    if literal is None:
+        print("self-test: no crate-local string literal to derive the literal case from")
+        return 1
+
+    rel_path = None
+    for c in known:
+        for cand in ("src/lib.rs", "src/main.rs", "tests"):
+            if (ROOT / "crates" / c / cand).exists() and not (ROOT / cand).exists():
+                rel_path = cand
+                break
+        if rel_path:
+            break
+    if rel_path is None:
+        print("self-test: no crate-relative path to derive the path case from")
+        return 1
+
+    cases += [
+        (f"its own guard lives in `{test_crate}`'s `{test_stem}` tests", True,
+         f"STAYS GREEN: a test file, not an item ({test_crate}/tests/{test_stem}.rs)"),
+        (f"must match `{lit_crate}`'s `{literal}` alias", True,
+         f"STAYS GREEN: a string literal, not a const (\"{literal}\")"),
+        (f"read from `{rel_path}`", True,
+         f"STAYS GREEN: a crate-relative path, real under crates/*/{rel_path}"),
+    ]
+
+    for name, why in list(ACKNOWLEDGED.items())[:1]:
+        cases.append((f"`{name}` is called here", True,
+                      f"STAYS GREEN: ACKNOWLEDGED as external ({why})"))
+
     bad = 0
     for body, should_pass, label in cases:
-        fake = [(ROOT / "crates" / "x" / "src" / "y.rs", [(1, body)])]
+        fake = [(ROOT / "crates" / home / "src" / "probe.rs", [(1, body)])]
         got = not check(fake)
         ok = got == should_pass
         print(f"  {'ok  ' if ok else 'MISS'} {label}")
@@ -249,7 +329,7 @@ def self_test() -> int:
     if bad:
         print(f"\nself-test FAILED: {bad} of {len(cases)} cases wrong")
         return 1
-    print(f"\nself-test passed: {len(cases)} cases, detection and control both correct")
+    print(f"\nself-test passed: {len(cases)} derived cases, detection and control both correct")
     return 0
 
 
