@@ -456,15 +456,23 @@ pub enum ParseWarning {
 
     /// A binned mark's `fill`/`stroke` named a CSS colour keyword that is ALSO
     /// a column of the inline source the mark reads — `fill: gold` over rows
-    /// with a `gold` column. Six keywords are ordinary field names (`gold`,
-    /// `plum`, `tan`, `salmon`, `orange`, `lime`), and the ambiguity is real.
+    /// with a `gold` column. Dozens of the keywords are plausible field names
+    /// (`gold`, `plum`, `tan`, `salmon`, `orange`, `lime`, `navy`, `olive`,
+    /// `teal`, `ivory`, `coral`, `silver`, …), so the collision is not exotic.
     ///
-    /// The colour reading stands, because it is the reference's: Mosaic decides
-    /// this in `Mark`'s constructor, lexically, before it knows any schema. What
-    /// is refused is the `bin` + `count` LIFT, which is licensed only by the
-    /// fill carrying no groups — and this names the refusal, because the
-    /// uncomputed-transform lines that follow point at the `bin`, which is not
-    /// what went wrong.
+    /// **Advisory only — nothing about the render changes.** The constant
+    /// reading stands, because it is the reference's: Mosaic decides this in
+    /// `Mark`'s constructor, lexically, before it knows any schema. So the
+    /// histogram lifts and its bins carry whole-row counts. All this line does
+    /// is tell an author who meant the COLUMN that the spec does not say so —
+    /// a doubt about intent, which nothing in the document can settle.
+    ///
+    /// It deliberately says nothing about what gets PAINTED. Brightfield does
+    /// not resolve CSS keywords to colours at all today — there is no keyword
+    /// table in `brightfield-render`, so `fill: steelblue` draws the default
+    /// Harbour fill, in this case and in `examples/rect-bin-count.yaml` alike
+    /// **[V, rendered]**. That is a real divergence from Mosaic and a separate
+    /// one; this variant must not imply it has been handled.
     ///
     /// Only ever raised where the shadow is provable. A `file:` or `query:`
     /// source's schema is not in the document and nothing in the parse → emit
@@ -596,8 +604,9 @@ impl fmt::Display for ParseWarning {
                  the channel resolves to nothing and the mark draws no ink"
             ),
             // Names the remedy, because there is one and it is not obvious: a
-            // hex is unambiguous where a keyword is not, and a `z:` says the
-            // grouping out loud if the column is what was meant.
+            // `z:` says the grouping out loud if the column is what was meant.
+            // Advisory, not a failure — so it reports the READING taken, and
+            // says nothing about paint, which is a separate question here.
             Self::ColourNameShadowsColumn {
                 field,
                 name,
@@ -605,9 +614,8 @@ impl fmt::Display for ParseWarning {
             } => write!(
                 f,
                 "`{field}: {name}` names a CSS colour and also a column of `{source}` — it is \
-                 painted as the colour, but the `bin` + `count` pair is left uncomputed rather \
-                 than merge groups that may be there; write the colour as a hex, or say \
-                 `z: {name}` to mean the column"
+                 taken as a colour constant and not as a grouping, the same as Mosaic, so the \
+                 bins carry whole-row counts; say `z: {name}` if you meant to group by the column"
             ),
         }
     }
@@ -1255,24 +1263,19 @@ impl Walker {
         // `y` warned — parse and lowerer disagreeing about the same mark.
         //
         // The shadow check is applied HERE rather than inside
-        // [`binned_histogram`] so the refusal can say its own name: the pair is
-        // otherwise liftable, and a reader given only the uncomputed-transform
-        // lines would go looking at their `bin`, which is not the problem.
-        let histogram = match (
-            binned_histogram(kind, parent),
-            shadowed_colour(parent, &self.inline_columns),
-        ) {
-            (Some(h), None) => Some(h),
-            (Some(_), Some(shadow)) => {
+        // [`binned_histogram`] because it does not change the lift — it only
+        // reports. A shadowed name is worth saying out loud and NOT worth
+        // diverging over; see [`shadowed_colour`].
+        let histogram = binned_histogram(kind, parent);
+        if histogram.is_some() {
+            if let Some(shadow) = shadowed_colour(parent, &self.inline_columns) {
                 self.warnings.push(ParseWarning::ColourNameShadowsColumn {
                     field: shadow.field.to_string(),
                     name: shadow.name,
                     source: shadow.source,
                 });
-                None
             }
-            (None, _) => None,
-        };
+        }
 
         let mut data: Option<MarkData> = None;
         let mut options = IndexMap::new();
@@ -1816,8 +1819,8 @@ fn inline_source_columns(root: &serde_yaml::Mapping) -> InlineColumns {
 }
 
 /// A `fill`/`stroke` string that reads as a colour constant but is also a
-/// COLUMN of the mark's own source — the one case where Plot's rule picks the
-/// wrong meaning and the cost is a merged stack.
+/// COLUMN of the mark's own source — the one case where Plot's rule is
+/// unambiguous to the parser and ambiguous to the author.
 struct ShadowedColour {
     /// The channel it sat on (`fill` or `stroke`).
     field: &'static str,
@@ -1837,16 +1840,19 @@ struct ShadowedColour {
 /// `marks/util/is-color.js`). Reading `fill: gold` as the colour is therefore
 /// the portable answer, not a bug.
 ///
-/// What is not acceptable is taking the histogram lift on the strength of it.
-/// A flat fill is the whole licence for the lift: it says the bins carry no
-/// groups. If the name is a real column, that licence is void and merging the
-/// groups draws one bar per bin that looks right and under-reports every group
-/// but one — the failure the scope guard exists for.
+/// So this changes NOTHING about what is drawn. It reports, and that is all.
+/// The temptation is to refuse the histogram lift here on the theory that a
+/// real column means real groups; refusing would draw a blank frame for a spec
+/// Mosaic renders, which trades a picture the author can read for one they
+/// cannot, in the name of a grouping the spec does not actually ask for. There
+/// is no ambiguity to protect them from: under Plot's rule `fill: gold` MEANS
+/// the constant, so one bar per bin carrying whole-row counts is the correct
+/// reading, not a merged stack. Only the author's intent is in doubt, and a
+/// warning is the right instrument for a doubt about intent.
 ///
-/// So the lift, and only the lift, is refused where the shadow is PROVABLE:
-/// the mark reads an inline source and that source has a column by that name.
-/// Nothing else changes — the fill still paints the colour, and a `file:` or
-/// `query:` source, whose schema nothing here can see, is unaffected.
+/// Raised only where the shadow is PROVABLE: the mark reads an inline source
+/// and that source has a column by that name. A `file:` or `query:` source,
+/// whose schema nothing here can see, stays silent.
 fn shadowed_colour(parent: &serde_yaml::Mapping, inline: &InlineColumns) -> Option<ShadowedColour> {
     let columns = mark_source_columns(parent, inline)?;
     GROUPING_CHANNEL_FIELDS.iter().find_map(|field| {
@@ -1889,8 +1895,9 @@ fn mark_source_name(parent: &serde_yaml::Mapping) -> Option<&str> {
 /// recognised colour constant is read as a field name (Plot's own rule; see
 /// [`is_colour_literal`]).
 ///
-/// A name that is BOTH is handled one level up, by [`shadowed_colour`], so that
-/// the refusal it causes can be reported rather than merely happening.
+/// A name that is BOTH classifies as a colour constant here, the same as
+/// upstream, and is reported one level up by [`shadowed_colour`] rather than
+/// silently taken.
 fn mark_is_grouped(parent: &serde_yaml::Mapping) -> bool {
     GROUPING_CHANNEL_FIELDS.iter().any(|field| {
         match parent.get(serde_yaml::Value::String((*field).to_string())) {
@@ -3027,21 +3034,27 @@ plot:
     }
 
     /// A CSS colour keyword that is also a COLUMN of the mark's own source
-    /// refuses the lift, and says so.
+    /// still draws, and says so.
     ///
-    /// Six keywords are ordinary field names — `gold`, `plum`, `tan`,
-    /// `salmon`, `orange`, `lime` — and Plot's rule reads every one of them as
-    /// a constant. That reading is the reference's and stands (Mosaic decides
-    /// it in `Mark`'s constructor, before it knows any schema), but taking the
-    /// histogram lift on the strength of it does not: a flat fill is the whole
-    /// licence for the lift, and if the name is a real column the licence is
-    /// void and the groups get merged into one bar.
+    /// Dozens of keywords are plausible field names — `gold`, `plum`, `tan`,
+    /// `salmon`, `navy`, `teal` — and Plot's rule reads every one of them as a
+    /// constant. That reading is the reference's and it stands: Mosaic decides
+    /// it in `Mark`'s constructor, lexically, before it knows any schema, so
+    /// `fill: gold` MEANS the colour and a flat gold histogram is the correct
+    /// picture, not a merged stack.
     ///
-    /// The proof is the ledger of the two sources. The SAME mark text lifts
-    /// over a source without the column and refuses over one with it, so what
-    /// is being tested is the resolution and not the keyword.
+    /// **So the histogram must still lift.** Refusing it would blank a frame
+    /// Mosaic renders, over a grouping the spec never asked for. The only
+    /// thing in doubt is what the AUTHOR meant, which no amount of parsing can
+    /// settle — hence a warning and not a refusal. This pins both halves at
+    /// once, because getting the warning right while quietly dropping the
+    /// picture is the failure that shipped here first.
+    ///
+    /// The ledger of two sources is what makes it a test of the RESOLUTION
+    /// rather than of the keyword: identical mark text, one source with a
+    /// `gold` column and one without, same drawn result, different diagnostic.
     #[test]
-    fn a_colour_name_that_is_also_a_column_refuses_the_lift_and_says_so() {
+    fn a_colour_name_that_is_also_a_column_still_lifts_and_says_so() {
         let spec = |rows: &str| {
             format!(
                 "data:\n  obs: {rows}\nplot:\n  - mark: rectY\n    data: {{ from: obs }}\n    \
@@ -3077,8 +3090,9 @@ plot:
             clean.warnings
         );
 
-        // Same mark, a source that HAS a `gold` column: the lift is refused
-        // and both channels keep their uncomputed-transform lines.
+        // Same mark, a source that HAS a `gold` column. The picture is
+        // IDENTICAL — Plot's rule is unchanged by what the schema happens to
+        // contain — and the only difference is that the collision is named.
         let shadowed = parse(&spec("[ { v: 1, gold: 3 }, { v: 2, gold: 4 } ]"));
         let mark = match &shadowed.spec.root {
             Some(Component::Plot(p)) => match &p.items[0] {
@@ -3088,12 +3102,12 @@ plot:
             other => panic!("expected plot, got {other:?}"),
         };
         assert!(
-            !matches!(
+            matches!(
                 mark.options.get("x"),
                 Some(ValueOrParamRef::Value(SpecValue::Bin { .. }))
             ),
-            "a fill that names a real column may carry groups — the lift must \
-             be refused rather than merge them"
+            "a shadowed colour name must not blank a frame Mosaic renders: {:?}",
+            mark.options.get("x")
         );
         let uncomputed: Vec<String> = shadowed
             .warnings
@@ -3101,14 +3115,13 @@ plot:
             .filter(|w| matches!(w, ParseWarning::UnconsumedChannelTransform { .. }))
             .map(ToString::to_string)
             .collect();
-        assert_eq!(
-            uncomputed.len(),
-            2,
-            "the refused pair keeps BOTH diagnostics: {uncomputed:?}"
+        assert!(
+            uncomputed.is_empty(),
+            "the pair lifted, so neither channel is uncomputed: {uncomputed:?}"
         );
 
-        // And the refusal names itself, because the lines above point at the
-        // `bin`, which is not what went wrong.
+        // And the collision names itself, so an author who meant the column
+        // learns that the spec does not say so.
         let said = shadowed
             .warnings
             .iter()
@@ -3130,16 +3143,18 @@ plot:
         );
     }
 
-    /// The shadow check reads the mark's OWN source, and reads the whole file.
+    /// The shadow check reads the mark's OWN source, reads the whole file, and
+    /// reads every row of it.
     ///
-    /// Two failure modes it would be easy to ship: keying off any inline source
-    /// rather than the one the mark names (which would refuse a lift over a
-    /// source that does not have the column), and depending on `data:`
-    /// preceding `plot:` in the document, which is the author's key order and
-    /// not a guarantee.
+    /// Four failure modes it would be easy to ship: keying off any inline
+    /// source rather than the one the mark names (which would report a
+    /// collision over a source that does not have the column), depending on
+    /// `data:` preceding `plot:` in the document, which is the author's key
+    /// order and not a guarantee, harvesting only the first row's keys, which
+    /// misses a ragged source, and mistaking the `file:` gap for coverage.
     #[test]
     fn the_shadow_is_resolved_against_the_marks_own_source_whatever_the_key_order() {
-        let lifts = |src: &str| {
+        let quiet = |src: &str| {
             let out = parse_spec(src, Format::Yaml).expect("parses");
             !out.warnings
                 .iter()
@@ -3148,7 +3163,7 @@ plot:
         // `plot:` written first, `data:` last: the harvest is a pre-pass, so
         // the column is still found.
         assert!(
-            !lifts(
+            !quiet(
                 "plot:\n  - mark: rectY\n    data: { from: obs }\n    x: { bin: v }\n    \
                  y: { count: }\n    fill: gold\ndata:\n  obs: [ { v: 1, gold: 3 } ]\n"
             ),
@@ -3156,18 +3171,30 @@ plot:
         );
         // A `gold` column on a DIFFERENT source is not this mark's problem.
         assert!(
-            lifts(
+            quiet(
                 "data:\n  obs: [ { v: 1 } ]\n  other: [ { gold: 3 } ]\nplot:\n  - mark: rectY\n    \
                  data: { from: obs }\n    x: { bin: v }\n    y: { count: }\n    fill: gold\n"
             ),
             "the shadow is per-source, not per-document"
+        );
+        // A RAGGED source: `gold` appears only on the second row. Inline rows
+        // are free-form mappings, so the column set is the union of every
+        // row's keys and not the first row's. Harvesting one row would go
+        // quiet here, which is the expensive direction to be wrong in — the
+        // author who meant the column would never learn they lost it.
+        assert!(
+            !quiet(
+                "data:\n  obs: [ { v: 1 }, { v: 2, gold: 3 } ]\nplot:\n  - mark: rectY\n    \
+                 data: { from: obs }\n    x: { bin: v }\n    y: { count: }\n    fill: gold\n"
+            ),
+            "the column set is the union of every row's keys, not the first row's"
         );
         // A `file:` source carries no schema here, so the same spec is
         // unresolvable and keeps the reference reading. This is the honest
         // limit of the check, and pinning it stops it being mistaken for
         // coverage it does not have.
         assert!(
-            lifts(
+            quiet(
                 "data:\n  obs: { file: obs.parquet }\nplot:\n  - mark: rectY\n    \
                  data: { from: obs }\n    x: { bin: v }\n    y: { count: }\n    fill: gold\n"
             ),

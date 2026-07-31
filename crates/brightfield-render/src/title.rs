@@ -43,21 +43,26 @@ impl ResolvedTitles {
 /// `__bf_count`, which names nothing the author wrote.
 const RESERVED_COLUMN_PREFIX: &str = "__bf_";
 
-/// The reserved column a counting aggregate lands in (`brightfield-sql`'s
-/// `AGGREGATE_COUNT_COL` / `HEX_COUNT_COL`), and the axis title it earns.
+/// The reserved column a counting aggregate lands in, and the axis title it
+/// earns. The same string is spelled out by a const in each crate that emits
+/// it — `channel::AGGREGATE_COUNT_COL` and `mark::DENSITY_COUNT_COL` here,
+/// `HEX_COUNT_COL` in `brightfield-sql` — all of them private, which is why
+/// this matches on the literal rather than importing one.
 ///
 /// Suppression is the right default for a reserved column, but it is the wrong
 /// answer for this one: `__bf_count` is the ONLY synthesised column whose
 /// meaning has a name in the reader's language. A histogram's y-axis is
-/// counting rows, so it says `Count` — the word Observable Plot's own `binX` /
-/// `groupX` transforms put on the axis when the output channel is `count`.
+/// counting rows, so it says `Count`.
 ///
-/// Mosaic-web does not reach that word, and the difference is a plumbing
-/// accident rather than a decision: it bins in SQL and hands Plot a bare
-/// column array (`markPlotSpec` passes `channelOption`'s value and nothing
-/// else), so Plot has no field name to label from and draws the axis untitled.
-/// Brightfield derives axis titles itself, which is what makes the word
-/// reachable here at all.
+/// **This is brightfield choosing a word, not matching one.** Mosaic-web draws
+/// that axis untitled: it bins in SQL and hands Plot a bare column array
+/// (`markPlotSpec` passes `channelOption`'s value and nothing else), so Plot
+/// has no field name to label from **[V, read from the vendored checkout]**.
+/// Brightfield derives axis titles itself, which is what makes any word
+/// reachable here. `Count` is the obvious English for it; whether Observable
+/// Plot's own `binX`/`groupX` reducers use that exact string is UNVERIFIED —
+/// Plot is not vendored in this tree, and nothing here should be read as
+/// claiming a match with it.
 const COUNT_COLUMN: &str = "__bf_count";
 /// The axis title [`COUNT_COLUMN`] resolves to.
 const COUNT_TITLE: &str = "Count";
