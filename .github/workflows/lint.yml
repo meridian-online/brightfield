@@ -118,3 +118,23 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --no-deps --document-private-items
+
+      # `cargo doc` resolves what a comment writes AS a link. It says nothing
+      # about the same claim written as prose — "`brightfield-sql`'s
+      # `AGGREGATE_COUNT_COL`", which lives in brightfield-render and was
+      # asserted wrongly twice in two days, both times one grep from refutation.
+      # This checks those, on added comment lines only, so it stops new claims
+      # rather than auditing old ones.
+      # The script refuses to report success when it cannot resolve a merge base,
+      # so a shallow checkout reddens here rather than passing over an unread
+      # diff. This unshallows instead of relying on that.
+      - name: comment citations resolve
+        run: |
+          git fetch --no-tags --unshallow origin main || git fetch --no-tags origin main
+          scripts/check-comment-citations.py
+
+      # The gate proves it can still fail, every run. This repo already carries
+      # checkers that report without gating; the way that happens is that
+      # nobody notices the day detection quietly stopped working.
+      - name: comment citations — self-test
+        run: scripts/check-comment-citations.py --self-test
