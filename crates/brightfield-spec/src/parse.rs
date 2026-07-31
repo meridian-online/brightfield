@@ -471,15 +471,15 @@ pub enum ParseWarning {
     /// variant and no `"z"` arm in `from_wire`). A spec that takes the advice
     /// draws a blank frame.
     ///
-    /// The message also says the bars stay the default colour. Brightfield
-    /// carries no CSS keyword table: `ChannelMap::from_mark` binds a string
-    /// `fill` as a COLUMN name, and `resolve_colour` returns the default mark
-    /// colour for a fill that resolves to no colour-scale entry.
+    /// **The bars are painted the named colour.** `brightfield_render`'s
+    /// `ChannelMap::from_mark` binds a colour-channel string this module
+    /// classifies with [`is_colour_literal`] as constant ink rather than as a
+    /// column name, and `resolve_colour` returns it. The message said the
+    /// opposite until the keyword table landed, which was true when written and
+    /// is the reason this paragraph exists rather than a bare statement.
     ///
-    /// Deliberately absent from `deviations.yaml`. That register holds
-    /// *considered* differences from Mosaic; an unbuilt capability is not one,
-    /// and filling the register with gaps would make it a to-do list wearing
-    /// the clothes of a decision. Tracked as work instead.
+    /// So the only thing the author loses is the SPLIT, and that is all the
+    /// message now claims.
     ///
     /// Only ever raised where the shadow is provable — see
     /// `inline_source_columns`. A `file:` or `query:` source's schema is not
@@ -607,8 +607,14 @@ impl fmt::Display for ParseWarning {
                 "channel `{channel}` asks for `{transform}`, which brightfield does not compute — \
                  the channel resolves to nothing and the mark draws no ink"
             ),
-            // States the reading and the two things the author does not get,
+            // States the reading and the ONE thing the author does not get,
             // and stops. No remedy is offered; the variant doc says why.
+            //
+            // It said "and the bars stay the default colour" too, until
+            // brightfield learned to resolve CSS keywords. That clause is now
+            // false — the bars ARE the named colour — and a warning that
+            // overstates the cost sends an author looking for a second problem
+            // that is not there.
             Self::ColourNameShadowsColumn {
                 field,
                 name,
@@ -618,8 +624,7 @@ impl fmt::Display for ParseWarning {
                 "`{field}: {name}` names a CSS colour and also a column of `{source}` — it is \
                  read as a colour constant, the same as Mosaic, so each bin counts every row in \
                  it rather than splitting by `{name}`. Brightfield cannot group a binned rect \
-                 yet, so that split is not available from this spec; and it does not resolve \
-                 CSS colour names either, so the bars stay the default colour"
+                 yet, so that split is not available from this spec"
             ),
         }
     }
@@ -3136,6 +3141,14 @@ plot:
             !said.contains("uncomputed"),
             "must not say the pair was left uncomputed: it lifted, and the \
              assertion above proves it — {said}"
+        );
+        assert!(
+            !said.contains("default colour"),
+            "must not say the bars stay the default colour: a colour keyword \
+             now reaches the canvas, and this clause outlived the gap it \
+             described. `crates/brightfield-shell/tests/colour_literals.rs` \
+             renders `fill: gold` over a source WITH a `gold` column and reads \
+             #ffd700 off the picture — {said}"
         );
     }
 
