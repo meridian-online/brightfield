@@ -151,7 +151,15 @@ impl Activity {
 pub struct ActivityIndicator;
 
 impl ActivityIndicator {
-    /// The composed entry's stable id, for tests and for replacing in place.
+    /// The composed entry's stable id.
+    ///
+    /// **Nothing replaces anything by it.** [`Self::compose`] returns at most
+    /// one entry, so there is never a second to replace — and the rail would not
+    /// replace it if there were: it draws every entry it is handed. Unlike
+    /// [`Activity::id`], which production reads to recognise a pane's own
+    /// activity line, this one has no reader outside tests; it is how
+    /// `status_rail.rs` picks the indicator out of a rail carrying several
+    /// lines.
     pub const ID: &'static str = "activity";
 
     /// Collapse every activity entry in `subjects` into at most one rail

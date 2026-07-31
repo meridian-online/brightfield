@@ -569,10 +569,14 @@ impl Item<ChartDoc> for ChartItem {
         // vocabulary: the same rail, the same `StatusEntry`, and deliberately
         // not folded into the refusal above, because the two differ in what
         // they are about and in how long they last. The refusal is about one
-        // gesture and is replaced by the next; this is about the extent
-        // currently in force and stands until it is reset. Sharing one id would
-        // let whichever was written last silence the other, and the pair can be
-        // true at once.
+        // gesture and stops being said when the next one succeeds; this is about
+        // the extent currently in force and stands until it is reset.
+        //
+        // The two ids differ because the two lines do, not to keep them from
+        // colliding: sharing one id would draw BOTH, one after the other under a
+        // single name, since nothing dedups by id and the rail draws every entry
+        // it is handed. What the separate ids buy is that a test — and the rail's
+        // own `StatusDrawn` record — can tell which of the two is on screen.
         //
         // `Warning`, not `Neutral`: a declining mark is not an inert control,
         // it is a drawn quantitative claim about rows the reader cannot see.

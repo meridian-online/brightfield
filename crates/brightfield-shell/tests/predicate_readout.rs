@@ -428,13 +428,14 @@ fn a_second_brush_replaces_the_line_the_first_one_left() {
         "the readout moved, but not to what the store now holds"
     );
 
-    // Exactly one line, replaced in place — a readout that appended would grow
-    // a rail entry per gesture.
+    // Exactly one line, and it says the new predicate — a readout that appended
+    // would grow a rail entry per gesture. Nothing replaces anything by id;
+    // the next test says what actually holds this, and says it where it shows.
     let readouts = chart_rail(app.chart_doc())
         .into_iter()
         .filter(|(id, _)| *id == PREDICATE_READOUT)
         .count();
-    assert_eq!(readouts, 1, "one readout, replaced — never a stack of them");
+    assert_eq!(readouts, 1, "one readout, never a stack of them");
 }
 
 /// **What actually stops the line stacking**, asserted where it would show:

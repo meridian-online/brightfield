@@ -31,11 +31,23 @@ fn example(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// The mark colour a rect takes when nothing binds a colour SCALE — Harbour
-/// slot 1, read from the token layer so a palette bump moves the expectation
-/// with the picture. (`fill: steelblue` is a colour constant, and brightfield
-/// paints constants in the default mark ink; see `resolve_colour`.)
-fn mark_ink() -> [i32; 3] {
+/// The ink each of the two examples is measured in.
+///
+/// They differ, and the difference is the point. `rect-histogram.yaml` binds no
+/// colour channel at all, so it takes the default mark colour — Harbour slot 1,
+/// read from the token layer so a palette bump moves the expectation with the
+/// picture. `rect-bin-count.yaml` writes `fill: steelblue`, a colour CONSTANT,
+/// and brightfield paints it: CSS steelblue, `#4682b4`.
+///
+/// Until the keyword table landed, both were measured in the default ink,
+/// because a constant fill fell through to it — and this file's comment said so
+/// as though it were the design. Measuring the computed histogram in steelblue
+/// is therefore also a live check that the constant still reaches the canvas:
+/// revert `resolve_colour`'s constant arm and the shape assertions below stop
+/// finding any bar at all.
+const STEELBLUE: [i32; 3] = [0x46, 0x82, 0xb4];
+
+fn default_mark_ink() -> [i32; 3] {
     let c = meridian_design::viz::MARK_DEFAULT_LIGHT;
     [
         (c.r * 255.0).round() as i32,
@@ -64,10 +76,9 @@ fn export(spec: &str, out: &str) -> PathBuf {
 /// A rectY bar sits on the baseline, so a column's inked count is that bar's
 /// height in pixels — which is what makes the count channel measurable from
 /// the picture rather than from the scene.
-fn column_heights(png: &Path) -> Vec<u32> {
+fn column_heights(png: &Path, want: [i32; 3]) -> Vec<u32> {
     let img = image::open(png).expect("open png").to_rgba8();
     let (w, h) = img.dimensions();
-    let want = mark_ink();
     (0..w)
         .map(|x| {
             (0..h)
@@ -80,9 +91,12 @@ fn column_heights(png: &Path) -> Vec<u32> {
         .collect()
 }
 
-/// Total mark ink in the export.
-fn ink(png: &Path) -> u64 {
-    column_heights(png).iter().map(|&h| u64::from(h)).sum()
+/// Total mark ink in the export, in the given colour.
+fn ink(png: &Path, want: [i32; 3]) -> u64 {
+    column_heights(png, want)
+        .iter()
+        .map(|&h| u64::from(h))
+        .sum()
 }
 
 /// The distinct bar heights present, as MULTIPLES of the shortest bar, in
@@ -92,10 +106,10 @@ fn ink(png: &Path) -> u64 {
 /// their own bar, so a column is only counted when at least `RUN` of its
 /// neighbours agree with it — a real bar is tens of pixels wide, an edge is
 /// one or two.
-fn bar_heights_in_units(png: &Path) -> Vec<u32> {
+fn bar_heights_in_units(png: &Path, want: [i32; 3]) -> Vec<u32> {
     const RUN: usize = 5;
     const TOL: u32 = 2;
-    let cols = column_heights(png);
+    let cols = column_heights(png, want);
     let solid: Vec<u32> = cols
         .windows(RUN)
         .filter(|w| w[0] > 0 && w.iter().all(|h| h.abs_diff(w[0]) <= TOL))
@@ -117,17 +131,20 @@ fn bar_heights_in_units(png: &Path) -> Vec<u32> {
 fn a_binned_counted_rect_draws_the_histogram_its_counts_describe() {
     // The control, first. Pre-aggregated bins through the same renderer; it
     // drew before this change and has to draw after it.
-    let control = ink(&export("rect-histogram.yaml", "pre-binned.png"));
+    let control = ink(
+        &export("rect-histogram.yaml", "pre-binned.png"),
+        default_mark_ink(),
+    );
     assert!(
         control > 1_000,
         "the PRE-BINNED control drew {control} px of mark ink. That path is \
          untouched by binning, so this is the harness failing — check \
-         mark_ink() against the current palette before believing anything \
-         else in this file."
+         default_mark_ink() against the current palette before believing \
+         anything else in this file."
     );
 
     let png = export("rect-bin-count.yaml", "computed.png");
-    let computed = ink(&png);
+    let computed = ink(&png, STEELBLUE);
     assert!(
         computed > 1_000,
         "the COMPUTED histogram drew {computed} px of mark ink against the \
@@ -137,12 +154,24 @@ fn a_binned_counted_rect_draws_the_histogram_its_counts_describe() {
          from and RectRenderer returns before its first fill."
     );
 
+    // …and it drew the histogram in the colour the spec ASKED for, not
+    // alongside it. The bars cannot be both, so a picture holding default ink
+    // here is one whose fill constant did not reach the canvas — which is
+    // exactly what this drew before the keyword table landed, and what a
+    // revert of `resolve_colour`'s constant arm restores.
+    let leftover = ink(&png, default_mark_ink());
+    assert_eq!(
+        leftover, 0,
+        "`fill: steelblue` must PAINT steelblue: {leftover} px of the default \
+         mark ink are still on the page beside {computed} px of #4682b4"
+    );
+
     // The shape. 37 observations over 15 occupied bins of width 5, counting
     // 3, 3, 6, 8, 4, 3, 2 and then ones — so six distinct heights, in exactly
     // these ratios. A constant-height bar per bin gives [1]; a lost count
     // channel gives [1]; a bin expression that collapses the column gives one
     // bar. Every one of those clears the ink floor above.
-    let heights = bar_heights_in_units(&png);
+    let heights = bar_heights_in_units(&png, STEELBLUE);
     assert_eq!(
         heights,
         vec![1, 2, 3, 4, 6, 8],
@@ -152,7 +181,7 @@ fn a_binned_counted_rect_draws_the_histogram_its_counts_describe() {
 
     // Unimodal: the tallest bar is one bin wide, so the peak is a peak rather
     // than a plateau the arithmetic smeared.
-    let cols = column_heights(&png);
+    let cols = column_heights(&png, STEELBLUE);
     let tallest = *cols.iter().max().expect("inked");
     let at_peak = cols.iter().filter(|&&h| h + 2 >= tallest).count();
     let widest = cols.iter().filter(|&&h| h > 0).count();
@@ -194,7 +223,7 @@ fn the_transposed_histogram_draws_the_same_shape_lying_down() {
     // across the columns, which is what transposing the mark means.
     let img = image::open(&png).expect("open png").to_rgba8();
     let (w, h) = img.dimensions();
-    let want = mark_ink();
+    let want = STEELBLUE;
     let rows: Vec<u32> = (0..h)
         .map(|y| {
             (0..w)

@@ -104,13 +104,18 @@ pub fn build_highlight_state(
     })
 }
 
-/// Parse a CSS hex colour (`#rgb`, `#rrggbb`, or `#rrggbbaa`) into a [`Color`].
-/// `None` for any other form (a named colour, `none`, or malformed hex) — the
-/// caller then leaves the resolved colour's RGB untouched. Alpha defaults to
-/// opaque when not given.
+/// Parse a CSS hex colour (`#rgb`, `#rgba`, `#rrggbb`, or `#rrggbbaa`) into a
+/// [`Color`]. `None` for any other form (a named colour, `none`, or malformed
+/// hex) — the caller then leaves the resolved colour's RGB untouched. Alpha
+/// defaults to opaque when not given.
+///
+/// The four accepted lengths are exactly the four
+/// `brightfield_spec::vocab::is_colour_literal` recognises. They have to match:
+/// a form classified as a colour but not parseable here is a spec the chart
+/// silently draws in the wrong ink.
 #[must_use]
 pub fn parse_css_hex(s: &str) -> Option<Color> {
-    let hex = s.strip_prefix('#')?;
+    let hex = s.trim().strip_prefix('#')?;
     let to = |b: &[u8]| -> Option<f32> {
         let s = std::str::from_utf8(b).ok()?;
         Some(u8::from_str_radix(s, 16).ok()? as f32 / 255.0)
@@ -124,6 +129,7 @@ pub fn parse_css_hex(s: &str) -> Option<Color> {
     let b = hex.as_bytes();
     match b.len() {
         3 => Some(Color::new([dup(b[0])?, dup(b[1])?, dup(b[2])?, 1.0])),
+        4 => Some(Color::new([dup(b[0])?, dup(b[1])?, dup(b[2])?, dup(b[3])?])),
         6 => Some(Color::new([
             to(&b[0..2])?,
             to(&b[2..4])?,
@@ -138,6 +144,40 @@ pub fn parse_css_hex(s: &str) -> Option<Color> {
         ])),
         _ => None,
     }
+}
+
+/// Resolve a colour-channel **constant** — what a spec means by
+/// `fill: steelblue`, `fill: '#ccc'` or `stroke: none` — into the ink to paint.
+///
+/// Hex first (this crate's own parser), then the CSS keyword table in
+/// `brightfield-spec`, which is the same table
+/// [`brightfield_spec::vocab::is_colour_literal`] classifies against — so a
+/// string classified as a colour and a string paintable as one cannot drift
+/// apart in the keyword direction.
+///
+/// `None` means **recognised but not resolvable here**, and the caller keeps
+/// whatever default it had. Two forms land there deliberately:
+///
+/// - `currentColor`, which names an inherited text colour from a CSS cascade
+///   this renderer does not have.
+/// - functional notation — `rgb(…)`, `hsl(…)`, `lab(…)` — which
+///   `is_colour_literal` accepts by shape (so a binned rect binding one is
+///   correctly read as carrying no groups) and nothing here parses.
+///
+/// Both are gaps, not decisions, and a spec that writes one gets the default
+/// mark ink rather than an invented colour.
+#[must_use]
+pub fn parse_colour_literal(s: &str) -> Option<Color> {
+    if let Some(c) = parse_css_hex(s) {
+        return Some(c);
+    }
+    let [r, g, b, a] = brightfield_spec::vocab::css_colour_keyword_rgb(s)?;
+    Some(Color::new([
+        f32::from(r) / 255.0,
+        f32::from(g) / 255.0,
+        f32::from(b) / 255.0,
+        f32::from(a) / 255.0,
+    ]))
 }
 
 /// Trait for per-mark-family rendering.
@@ -494,16 +534,23 @@ fn fill_value_is_null(batch: &RecordBatch, fill_col: &str, row: usize) -> bool {
     row < col.len() && col.is_null(row)
 }
 
-/// Resolve the colour for a data point. A bound fill whose value is genuinely
-/// NULL at this row renders [`NULL_INK`] — never [`DEFAULT_COLOUR`], which
-/// would impersonate a data value; every OTHER fallthrough (no fill channel,
-/// no colour scale, unmapped category) keeps the default mark colour.
+/// Resolve the colour for a data point.
+///
+/// A `fill` bound to a colour CONSTANT (`fill: steelblue`, `fill: '#ccc'`) is
+/// that colour for every row, and is checked first because it is not a column
+/// and there is nothing per-row to look up. A bound fill whose value is
+/// genuinely NULL at this row renders [`NULL_INK`] — never [`DEFAULT_COLOUR`],
+/// which would impersonate a data value; every OTHER fallthrough (no fill
+/// channel, no colour scale, unmapped category) keeps the default mark colour.
 fn resolve_colour(
     scales: &ScaleSet,
     channel_map: &ChannelMap,
     batch: &RecordBatch,
     row: usize,
 ) -> Color {
+    if let Some(constant) = channel_map.colour(Channel::Fill) {
+        return constant;
+    }
     if let Some(fill_col) = channel_map.get(Channel::Fill) {
         if let Some(fill_scale) = scales.get(Channel::Fill) {
             if let Some(strings) = column_as_string(batch, fill_col) {
@@ -519,6 +566,27 @@ fn resolve_colour(
         }
     }
     DEFAULT_COLOUR
+}
+
+/// The constant ink a mark's spec named, if it named one — `stroke` first, then
+/// `fill`, then [`DEFAULT_COLOUR`].
+///
+/// This is the *whole* colour story for the marks that draw one shape in one
+/// colour and have no per-row colour path at all: line, rule, contour, the 1-D
+/// density band. Each of those hard-coded [`DEFAULT_COLOUR`] before, which is
+/// correct only for a spec that names no colour — and silently wrong for one
+/// that does.
+///
+/// `stroke` outranks `fill` because these marks are drawn with a stroke; a spec
+/// that sets both is naming the outline with the more specific channel.
+/// Column-bound colour channels are deliberately NOT consulted here: mapping a
+/// column to a stroke is a per-row question, these renderers emit one path, and
+/// answering it from row 0 would be a guess wearing the clothes of a scale.
+fn constant_ink(channel_map: &ChannelMap) -> Color {
+    channel_map
+        .colour(Channel::Stroke)
+        .or_else(|| channel_map.colour(Channel::Fill))
+        .unwrap_or(DEFAULT_COLOUR)
 }
 
 /// Apply a highlight's deemphasis to a resolved colour.
@@ -888,7 +956,7 @@ impl MarkRenderer for LineRenderer {
         }
 
         // Draw connected line segments.
-        let colour = DEFAULT_COLOUR;
+        let colour = constant_ink(channel_map);
         let stroke = kurbo::Stroke::new(LINE_STROKE_WIDTH);
         for window in points.windows(2) {
             let line = Line::new(
@@ -1290,12 +1358,13 @@ impl MarkRenderer for RuleRenderer {
         };
 
         let stroke = kurbo::Stroke::new(LINE_STROKE_WIDTH);
+        let colour = constant_ink(channel_map);
         for p in positions {
             let line = match self.axis {
                 RuleAxis::X => Line::new((p, span0), (p, span1)),
                 RuleAxis::Y => Line::new((span0, p), (span1, p)),
             };
-            scene.stroke(&stroke, Affine::IDENTITY, DEFAULT_COLOUR, None, &line);
+            scene.stroke(&stroke, Affine::IDENTITY, colour, None, &line);
         }
     }
 }
@@ -1550,7 +1619,7 @@ impl MarkRenderer for Density1DRenderer {
         }
         path.close_path();
 
-        let colour = DEFAULT_COLOUR;
+        let colour = constant_ink(channel_map);
         scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &path);
     }
 
@@ -2413,6 +2482,7 @@ impl MarkRenderer for ContourRenderer {
             self.thresholds.unwrap_or(DEFAULT_CONTOUR_LEVELS),
         );
         let stroke = kurbo::Stroke::new(LINE_STROKE_WIDTH);
+        let colour = constant_ink(channel_map);
         for level in levels {
             let lines = crate::contour::contour_polylines(
                 &grid.density,
@@ -2433,7 +2503,7 @@ impl MarkRenderer for ContourRenderer {
                 for p in points {
                     path.line_to(p);
                 }
-                scene.stroke(&stroke, Affine::IDENTITY, DEFAULT_COLOUR, None, &path);
+                scene.stroke(&stroke, Affine::IDENTITY, colour, None, &path);
             }
         }
     }
@@ -3406,13 +3476,17 @@ fn column_extent(batch: &RecordBatch, min_col: &str, max_col: &str) -> Option<(f
 }
 
 /// Resolve stroke colour for regression — checks `stroke` channel value first,
-/// falls back to fill, then default.
+/// falls back to fill, then default. A `stroke` bound to a colour CONSTANT wins
+/// outright, for the reason [`resolve_colour`] checks its own constant first.
 fn resolve_stroke_colour(
     scales: &ScaleSet,
     channel_map: &ChannelMap,
     batch: &RecordBatch,
     row: usize,
 ) -> Color {
+    if let Some(constant) = channel_map.colour(Channel::Stroke) {
+        return constant;
+    }
     if let Some(stroke_col) = channel_map.get(Channel::Stroke) {
         if let Some(stroke_scale) = scales.get(Channel::Stroke) {
             if let Some(strings) = column_as_string(batch, stroke_col) {

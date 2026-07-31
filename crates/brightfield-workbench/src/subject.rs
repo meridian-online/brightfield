@@ -294,7 +294,22 @@ pub enum HideAffordance {
 /// One entry in the status rail.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StatusEntry {
-    /// Stable id, for a test hook and for replacing an entry in place.
+    /// Stable name for this line. **Not a replacement key** — nothing here
+    /// dedups by it: [`Subject::with_status`] pushes onto a `Vec` and
+    /// `chrome::status_rail` draws every entry it is handed, in order, so two
+    /// entries sharing an id draw twice
+    /// (`tests/chrome_rules.rs::two_entries_sharing_an_id_both_draw`).
+    ///
+    /// In production it is read by [`crate::activity::Activity::of_entry`],
+    /// which matches it against the ids in [`crate::activity::Activity::ALL`]
+    /// — that is how the window tells a pane's own activity report from its
+    /// other lines and folds it into the one merged indicator instead of
+    /// railing it twice. Every other id is a handle a headless test selects a
+    /// line by without matching on its text, and the name the rail records in
+    /// `chrome::StatusDrawn::drawn`.
+    ///
+    /// Dismissal does **not** travel on it — that is the entry's
+    /// [`HideAffordance`].
     pub id: &'static str,
     /// Which end it sits at.
     pub side: StatusSide,

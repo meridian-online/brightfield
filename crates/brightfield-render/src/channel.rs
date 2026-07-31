@@ -7,6 +7,8 @@
 use std::collections::HashMap;
 
 use brightfield_spec::ast::{AggregateFunc, Mark, SpecValue, ValueOrParamRef};
+use brightfield_spec::vocab::is_colour_literal;
+use peniko::Color;
 
 /// Reserved output column the density / hexbin / cell lowerers alias their
 /// per-group occupancy count to. Must match `brightfield-sql`'s `__bf_count`
@@ -94,13 +96,15 @@ impl Channel {
 
 /// Maps visual encoding channels to column names in the RecordBatch, plus any
 /// channels bound to a constant **literal** value (e.g. `y: 0` for a baseline
-/// rule). Columns and literals are kept in separate maps so existing
-/// column-based renderers are unaffected; renderers that accept constants read
-/// [`ChannelMap::literal`].
+/// rule, or `fill: steelblue` for constant ink). Columns and literals are kept
+/// in separate maps so existing column-based renderers are unaffected;
+/// renderers that accept constants read [`ChannelMap::literal`] or
+/// [`ChannelMap::colour`].
 #[derive(Debug, Clone, Default)]
 pub struct ChannelMap {
     map: HashMap<Channel, String>,
     literals: HashMap<Channel, f64>,
+    colours: HashMap<Channel, Color>,
 }
 
 impl ChannelMap {
@@ -117,6 +121,22 @@ impl ChannelMap {
     /// Insert a channel -> constant literal value (e.g. `y: 0`).
     pub fn insert_literal(&mut self, channel: Channel, value: f64) {
         self.literals.insert(channel, value);
+    }
+
+    /// Insert a channel -> constant COLOUR (e.g. `fill: steelblue`).
+    pub fn insert_colour(&mut self, channel: Channel, colour: Color) {
+        self.colours.insert(channel, colour);
+    }
+
+    /// The constant colour bound to a channel, if the spec wrote a colour
+    /// literal there rather than a column name.
+    ///
+    /// A channel is never in both this map and [`ChannelMap::get`]'s — a
+    /// colour-channel string is one or the other, decided lexically by
+    /// [`is_colour_literal`]. A renderer that consults this FIRST and the
+    /// column path second therefore cannot double-resolve.
+    pub fn colour(&self, channel: Channel) -> Option<Color> {
+        self.colours.get(&channel).copied()
     }
 
     /// Look up the column name for a channel.
@@ -145,11 +165,36 @@ impl ChannelMap {
     /// and maps them to column name strings. ParamRef channels are skipped
     /// with a warning — they require reactive parameter resolution which is
     /// not yet implemented.
+    ///
+    /// **A colour channel is the one place a string is not always a column.**
+    /// `fill: steelblue` is constant ink and `fill: species` is a column, and
+    /// the string itself is the only discriminator — the same overload
+    /// [`is_colour_literal`] exists to settle, and the same call the parser
+    /// makes when it decides whether a binned rect carries groups. Reading both
+    /// through one predicate is what keeps the two sides from disagreeing about
+    /// which one a spec wrote.
     pub fn from_mark(mark: &Mark) -> Self {
         let mut cm = Self::new();
         for ch in Channel::all() {
             if let Some(val) = mark.options.get(ch.wire_name()) {
                 match val {
+                    ValueOrParamRef::Value(SpecValue::String(col))
+                        if matches!(ch, Channel::Fill | Channel::Stroke)
+                            && is_colour_literal(col) =>
+                    {
+                        // A colour constant is NOT a column name, so it must not
+                        // be bound as one: doing that sends the renderer looking
+                        // for a column no batch carries, and the fall-through
+                        // paints the default mark ink — which is the whole
+                        // defect this arm exists to close.
+                        //
+                        // Unresolvable-but-recognised forms (`currentColor`,
+                        // `rgb(…)`) bind NOTHING and keep the default. That is a
+                        // gap; see `mark::parse_colour_literal`.
+                        if let Some(colour) = crate::mark::parse_colour_literal(col) {
+                            cm.insert_colour(*ch, colour);
+                        }
+                    }
                     ValueOrParamRef::Value(SpecValue::String(col)) => {
                         cm.insert(*ch, col.clone());
                     }
