@@ -6,12 +6,11 @@
 //! re-derived itself from the rows left after each gesture — the reader saw a
 //! chart redraw at a new scale where its author asked for one that held.
 //!
-//! Every assertion here is taken from `PlotHandle::scales`, which is the set
-//! the plot's ticks, gridlines and mark positions were all drawn from and the
-//! set a brush inverts through. Reading it is reading what was drawn, not what
-//! was intended.
+//! Assertions about a domain read `PlotHandle::scales`, which is the set the
+//! plot's ticks, gridlines and mark positions were drawn from and the set a
+//! brush inverts through.
 //!
-//! **Each pinned case is paired with the same spec unpinned.** A domain that
+//! A pinned case is worth pairing with the same spec unpinned. A domain that
 //! held could be a domain nothing moved, and a test that only watched the
 //! pinned arm would pass just as happily on a fixture whose filter never
 //! narrowed anything. The unpinned arm is what makes the pinned arm mean
