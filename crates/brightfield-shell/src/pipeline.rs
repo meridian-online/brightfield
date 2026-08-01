@@ -865,8 +865,7 @@ impl LiveDashboard {
 /// Applied to the composed dashboard rather than threaded through
 /// [`compose_from_results`] because a [`PlotHandle`] already carries every
 /// input the band needs — the placed rect, the layout, and the *displayed*
-/// scales the gesture inverted through — so reading them back is the one way
-/// the band cannot be drawn against a different scale set than the marks were.
+/// scales the gesture inverted through.
 fn ink_committed_selections(composed: &mut Composed, session: &Session) {
     for plot in &composed.plots {
         let held = plot_selection(session, plot);
@@ -934,9 +933,6 @@ fn gather_selected(predicate: &Predicate, plot: &PlotHandle, held: &mut Committe
                     _ => None,
                 })
                 .collect();
-            // A membership clause is drawn as band slots, so it is drawn only
-            // when every one of its values names a slot. A mixed clause would
-            // otherwise mark a subset of what it selects.
             if categories.is_empty() || categories.len() != values.len() {
                 return;
             }

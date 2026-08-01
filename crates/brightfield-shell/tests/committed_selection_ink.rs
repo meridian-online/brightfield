@@ -61,8 +61,6 @@ fn bound_ink() -> [i32; 3] {
 /// Narrow enough that nothing else in this fixture's picture is inside it —
 /// the mark ink, its blend against the background, the gridlines, the axis
 /// rules and the tick labels are each further than this from the focus hue.
-/// `the_bands_ink_is_not_the_in_progress_gestures_ink` holds the one
-/// separation that a token bump could close.
 const BOUND_TOL: i32 = 24;
 
 fn is_bound(p: [u8; 4], want: [i32; 3]) -> bool {
@@ -333,13 +331,9 @@ fn a_committed_brush_is_drawn_on_the_plot_that_produced_it_and_goes_when_it_is_c
 
 /// **The band's ink is not the in-progress gesture's ink.**
 ///
-/// The two treatments are told apart at a glance by hue, and the test above
-/// measures the band in exactly one of them. This pins the separation the
-/// measurement depends on: the design system's overlay group is the neutral
+/// The design system's overlay group is the neutral
 /// wash and border the transient rectangle is painted with, and the band is
-/// the chart's own focus ink. Should a token bump ever bring the two within
-/// `BOUND_TOL` of each other, the picture stops distinguishing them and this
-/// says so — before the test above starts counting one as the other.
+/// the chart's own focus ink.
 #[test]
 fn the_bands_ink_is_not_the_in_progress_gestures_ink() {
     let want = bound_ink();
