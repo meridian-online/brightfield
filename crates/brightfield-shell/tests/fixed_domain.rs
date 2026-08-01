@@ -123,7 +123,8 @@ fn bars_spec(pin: &str) -> String {
     BARS_TEMPLATE.replace("PIN", pin)
 }
 
-/// **AC1, categorical.** A filter that empties four of six bars leaves the
+/// **A categorical axis keeps its slots.** A filter that empties four of six
+/// bars leaves the
 /// pinned axis holding all six slots, in their original order.
 #[test]
 fn a_pinned_band_axis_keeps_every_slot_a_filter_empties() {
@@ -149,7 +150,7 @@ fn a_pinned_band_axis_keeps_every_slot_a_filter_empties() {
     );
 }
 
-/// **AC3, categorical.** The same spec without the pin: the axis re-derives
+/// **The same spec without the pin.** The axis re-derives
 /// from the rows drawn, exactly as it did before the pin existed. This is what
 /// makes the assertion above a claim about the pin rather than about the
 /// fixture.
@@ -186,7 +187,7 @@ fn brushable_path(spec_source: &str) -> String {
         .clone()
 }
 
-/// **AC2 — the capture moment, trap included.** Mosaic fixes a domain after the
+/// **The capture moment, trap included.** Mosaic fixes a domain after the
 /// first render, on whatever data the marks then hold, so a plot whose first
 /// render is already filtered pins the FILTERED domain. brightfield copies
 /// that: a spec renders the same way here as it does upstream, which is the one
@@ -355,7 +356,8 @@ fn vendored_second_plot_x_domain(spec: Spec) -> ((f64, f64), (f64, f64)) {
     (at_rest, after)
 }
 
-/// **AC4.** The pin instruction under test is the one the vendored upstream
+/// **The instruction under test is the vendored corpus's own.** It is the one
+/// the vendored upstream
 /// corpus carries, read off the file rather than retyped.
 #[test]
 fn the_vendored_spec_declares_the_pin_this_reads() {
@@ -375,7 +377,8 @@ fn the_vendored_spec_declares_the_pin_this_reads() {
     }
 }
 
-/// **AC1 + AC4, continuous.** The vendored cross-filter dashboard: brushing one
+/// **A continuous axis holds, on a vendored spec.** The upstream cross-filter
+/// dashboard: brushing one
 /// histogram leaves the other's pinned x axis exactly where it was.
 #[test]
 fn the_vendored_pinned_histogram_holds_its_x_domain_under_a_cross_filter() {
@@ -387,7 +390,7 @@ fn the_vendored_pinned_histogram_holds_its_x_domain_under_a_cross_filter() {
     );
 }
 
-/// **AC3 + the mutation guard for the test above.** The same vendored spec with
+/// **The mutation guard for the test above.** The same vendored spec with
 /// its `xDomain` attributes dropped — the state of the tree before this pin
 /// existed — still re-derives the axis from the rows the filter left.
 ///
