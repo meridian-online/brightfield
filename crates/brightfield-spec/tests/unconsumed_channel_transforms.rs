@@ -476,15 +476,15 @@ fn brightfields_own_examples_stay_silent() {
     });
     // A zero-file walk would pass this assertion while proving nothing — the
     // exact shape of a structural guard passing on broken code. Pinned at the
-    // real count rather than a loose floor: `examples/` holds 38 `.yaml`, of
-    // which 36 parse as Mosaic specs and 2 are protocol manifests with no plot
+    // real count rather than a loose floor: `examples/` holds 41 `.yaml`, of
+    // which 39 parse as Mosaic specs and 2 are protocol manifests with no plot
     // discriminator (`protocol/degrade.yaml`, `protocol/edgar_gleif/arcform.yaml`).
-    // A floor of 30 would let six examples silently stop parsing while this
-    // gate still reported the corpus clean.
+    // A loose floor would let examples silently stop parsing while this gate
+    // still reported the corpus clean.
     assert!(
-        checked >= 36,
+        checked >= 39,
         "expected to walk brightfield's own example corpus; only {checked} of \
-         the 36 parseable specs were read, so this gate proved less than it claims"
+         the 39 parseable specs were read, so this gate proved less than it claims"
     );
     assert!(
         speaking.is_empty(),
