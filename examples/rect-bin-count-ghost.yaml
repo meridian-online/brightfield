@@ -1,0 +1,83 @@
+# The ghosted cross-filtered histogram — the unfiltered total kept behind the
+# filtered subset, so the denominator never leaves the page.
+#
+# Drag an x-range on the LEFT scatter. The RIGHT plot is one plot carrying two
+# rectY layers over the same table and the same `x: {bin: power}` + `y:
+# {count:}` transform:
+#
+#   * the first layer reads `observations` straight and never narrows — the
+#     ghost, drawn pale;
+#   * the second reads it through `filterBy: $brush` and narrows to the rows the
+#     drag selected, drawn in the default mark ink on top.
+#
+# Both layers share the plot's scales, so the count axis and the pixel mapping
+# are fixed by the total. A subset therefore reads as a fraction of the bars
+# behind it rather than as a chart that redrew itself at a new scale — which is
+# the whole point of the device, and the thing a single filtered layer cannot do.
+#
+# At rest the two layers coincide and the solid one covers the ghost, which is
+# correct: nothing is filtered, so the subset IS the total.
+#
+#   cargo run -p brightfield-shell -- examples/rect-bin-count-ghost.yaml
+params:
+  brush: { select: crossfilter }
+data:
+  observations:
+    - { temp: 1,  power: 4 }
+    - { temp: 2,  power: 12 }
+    - { temp: 3,  power: 7 }
+    - { temp: 4,  power: 16 }
+    - { temp: 5,  power: 9 }
+    - { temp: 6,  power: 21 }
+    - { temp: 7,  power: 13 }
+    - { temp: 8,  power: 18 }
+    - { temp: 9,  power: 24 }
+    - { temp: 10, power: 11 }
+    - { temp: 11, power: 27 }
+    - { temp: 12, power: 19 }
+    - { temp: 13, power: 33 }
+    - { temp: 14, power: 22 }
+    - { temp: 15, power: 38 }
+    - { temp: 16, power: 26 }
+    - { temp: 17, power: 41 }
+    - { temp: 18, power: 29 }
+    - { temp: 19, power: 47 }
+    - { temp: 20, power: 34 }
+    - { temp: 21, power: 52 }
+    - { temp: 22, power: 44 }
+    - { temp: 23, power: 58 }
+    - { temp: 24, power: 49 }
+    - { temp: 25, power: 63 }
+    - { temp: 26, power: 54 }
+    - { temp: 27, power: 68 }
+    - { temp: 28, power: 61 }
+    - { temp: 29, power: 72 }
+    - { temp: 30, power: 66 }
+    - { temp: 31, power: 77 }
+    - { temp: 32, power: 71 }
+    - { temp: 33, power: 83 }
+    - { temp: 34, power: 79 }
+    - { temp: 35, power: 88 }
+    - { temp: 36, power: 94 }
+hconcat:
+  - plot:
+      - mark: dot
+        data: { from: observations }
+        x: temp
+        y: power
+      - select: intervalX
+        as: $brush
+    width: 360
+    height: 320
+  - plot:
+      - mark: rectY
+        data: { from: observations }
+        x: { bin: power }
+        y: { count: }
+        fill: "#c4bcb0"
+      - mark: rectY
+        data: { from: observations, filterBy: $brush }
+        x: { bin: power }
+        y: { count: }
+    width: 360
+    height: 320
