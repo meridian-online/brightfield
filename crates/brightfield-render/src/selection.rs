@@ -62,7 +62,12 @@ const WASH: Color = ink_with_alpha(meridian_design::chrome::INK_LIGHT.focus, WAS
 const BOUND: Color = ink(meridian_design::chrome::INK_LIGHT.focus);
 
 /// The bound rules' width in pixels.
-const BOUND_WIDTH: f64 = 1.5;
+///
+/// Two, not one. A rule this wide covers at least one whole pixel column
+/// wherever its centre falls between pixels, so the bound reaches the raster at
+/// full strength rather than as a pair of half-covered columns — which is what
+/// lets a test find it in the picture at all.
+const BOUND_WIDTH: f64 = 2.0;
 
 /// What a plot's own gesture is holding, per positional channel, in the data
 /// units the channel's scale reads.
