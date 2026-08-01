@@ -714,8 +714,7 @@ fn the_overlay_toggle_still_reaches_the_chart_pane() {
 /// A dashboard is **one** chart document rendered to **one** raster, and
 /// `examples/dashboard.yaml` puts two plots on it side by side. Ink spanning
 /// the raster therefore crosses a plot the pointer is nowhere near, and the
-/// reading is a crosshair on a plot that has no pointer in it — which is what
-/// Hugh saw, on both plots at once.
+/// reading is a crosshair on a plot that has no pointer in it.
 ///
 /// Asked in pixels because that is where the claim lives: the segments are
 /// painted through the overlay painter onto the presented texture's rect, so
