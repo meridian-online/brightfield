@@ -60,8 +60,7 @@ fn bound_ink() -> [i32; 3] {
 /// Per-channel tolerance: the rule's core and the near-opaque end of its
 /// anti-aliasing.
 ///
-/// Wide enough to catch a 1.5px rule however it lands on the pixel grid, and
-/// narrow enough that nothing else in this fixture's picture is inside it —
+/// Narrow enough that nothing else in this fixture's picture is inside it —
 /// the mark ink, its blend against the background, the gridlines, the axis
 /// rules and the tick labels are each further than this from the focus hue.
 /// `the_bands_ink_is_not_the_in_progress_gestures_ink` holds the one
@@ -96,14 +95,18 @@ fn bound_columns(img: &RgbaImage) -> Vec<u32> {
     let want = bound_ink();
     let (w, h) = img.dimensions();
     (0..w)
-        .map(|x| (0..h).filter(|&y| is_bound(img.get_pixel(x, y).0, want)).count() as u32)
+        .map(|x| {
+            (0..h)
+                .filter(|&y| is_bound(img.get_pixel(x, y).0, want))
+                .count() as u32
+        })
         .collect()
 }
 
 /// The bound rules in a picture, as the pixel centre of each run of adjacent
 /// heavily-inked columns.
 ///
-/// A rule 1.5px wide lands on one or two columns depending on where its centre
+/// A rule lands on one or two fully-inked columns depending on where its centre
 /// falls between pixels, so runs are grouped before being counted — otherwise
 /// the same rule reads as one bound or two according to sub-pixel luck.
 ///
@@ -343,7 +346,10 @@ fn a_committed_brush_is_drawn_on_the_plot_that_produced_it_and_goes_when_it_is_c
 fn the_bands_ink_is_not_the_in_progress_gestures_ink() {
     let want = bound_ink();
     for (name, token) in [
-        ("brush_fill", meridian_design::chrome::OVERLAY_LIGHT.brush_fill),
+        (
+            "brush_fill",
+            meridian_design::chrome::OVERLAY_LIGHT.brush_fill,
+        ),
         (
             "brush_border",
             meridian_design::chrome::OVERLAY_LIGHT.brush_border,

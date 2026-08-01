@@ -252,7 +252,11 @@ mod tests {
                 "east".to_string(),
             ]),
         );
-        assert_eq!(placed.len(), 2, "two of the three name a slot on this scale");
+        assert_eq!(
+            placed.len(),
+            2,
+            "two of the three name a slot on this scale"
+        );
         for (i, name) in ["south", "east"].iter().enumerate() {
             let centre = scale.map_category(name).expect("carried category");
             assert!((placed[i].0 - (centre - width / 2.0)).abs() < 1e-9);
