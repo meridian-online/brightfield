@@ -184,7 +184,7 @@ jobs:
             ./brightfield examples/bars.yaml
             ```
 
-            31 example specs and the EDGAR↔GLEIF Protocol manifest are in the archive, alongside the binary, its LICENSE (MIT) and a README. The Protocol manifest renders from the manifest alone, without a run:
+            The example specs and the EDGAR↔GLEIF Protocol manifest are in the archive, alongside the binary, its LICENSE (MIT) and a README. The Protocol manifest renders from the manifest alone, without a run:
 
             ```
             BRIGHTFIELD_PROTOCOL_OFFLINE=1 ./brightfield examples/protocol/edgar_gleif/arcform.yaml
