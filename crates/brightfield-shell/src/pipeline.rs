@@ -34,6 +34,7 @@ use brightfield_render::scene::{
     build_multi_mark_scene_with_domains, compose_dashboard, unrestorable_under_sampling, ChartData,
     UnsampledDomains,
 };
+use brightfield_render::selection::{render_committed_selection, CommittedSelection, Selected};
 use brightfield_render::{grow_margins, resolve_titles};
 use brightfield_spec::analysis::{
     analyse_spec, build_brushable_bindings, BrushKind, ComponentPath,
@@ -43,7 +44,7 @@ use brightfield_spec::layout::{collect_plot_nodes, placed_plots, resolve_plot_in
 use brightfield_spec::vocab::MarkKind;
 use brightfield_spec::{parse_spec, parse_spec_path, Format, ParseOutput, Spec};
 use brightfield_sql::emit::as_bound_selection_default;
-use brightfield_sql::ir::{Predicate, SampleRate};
+use brightfield_sql::ir::{Predicate, SampleRate, ScalarValue};
 use brightfield_sql::lower::{compile_selection, NO_SELF_EXCLUDE};
 use brightfield_sql::{collect_marks, collect_plot_groups};
 use brightfield_workbench::subject::RunState;
@@ -630,6 +631,11 @@ impl LiveDashboard {
     /// someone dragged a brush, so a re-present that dropped the warnings
     /// would let a single gesture silence them.
     ///
+    /// The committed selections are inked here for the same reason, and it is
+    /// the same obligation: the picture is rebuilt from scratch on every
+    /// gesture, so a path that composed without them would erase the band on
+    /// the next brush and leave a filtered dashboard looking unfiltered.
+    ///
     /// # Errors
     ///
     /// As [`compose_spec`] (returns `Err` when nothing renders).
@@ -643,10 +649,11 @@ impl LiveDashboard {
         // Same reasoning, same seam: a mark that could not be narrowed to the
         // frame has to keep saying so on every repaint, not only the first.
         let beyond = marks_beyond_frame(self.coordinator.session(), &self.spec, results.len());
-        Ok(
+        let mut composed =
             compose_from_results(&self.spec, results, &facts, &self.view_extents, &beyond)?
-                .with_diagnostics(self.diagnostics.clone()),
-        )
+                .with_diagnostics(self.diagnostics.clone());
+        ink_committed_selections(&mut composed, self.coordinator.session());
+        Ok(composed)
     }
 
     /// Apply one interaction — push its predicate/param into DuckDB, re-query,
@@ -844,6 +851,139 @@ impl LiveDashboard {
     #[must_use]
     pub fn data_files(&self, spec_dir: Option<&Path>) -> Vec<PathBuf> {
         spec_data_files(&self.spec, spec_dir)
+    }
+}
+
+/// **Draw each plot's own committed selection onto the dashboard scene** — the
+/// half of a cross-filter that had no picture.
+///
+/// The receiving plot narrows and says so by narrowing. The plot the gesture
+/// happened on says nothing once the pointer is up: the brush rectangle is an
+/// egui quad painted from the drag state, and a committed selection lived only
+/// as a predicate in the engine. This is where it acquires ink.
+///
+/// Applied to the composed dashboard rather than threaded through
+/// [`compose_from_results`] because a [`PlotHandle`] already carries every
+/// input the band needs — the placed rect, the layout, and the *displayed*
+/// scales the gesture inverted through — so reading them back is the one way
+/// the band cannot be drawn against a different scale set than the marks were.
+/// The static compose paths hold no session and reach this with nothing to
+/// draw, which is correct: a spec that has just been loaded holds no gesture.
+fn ink_committed_selections(composed: &mut Composed, session: &Session) {
+    for plot in &composed.plots {
+        let held = plot_selection(session, plot);
+        if held.is_empty() {
+            continue;
+        }
+        let mut band = Scene::new();
+        render_committed_selection(&mut band, &plot.layout, &plot.scales, &held);
+        composed.scene.append(
+            &band,
+            Some(kurbo::Affine::translate((plot.rect.x, plot.rect.y))),
+        );
+    }
+}
+
+/// What `plot`'s own gesture is holding right now, read from the live
+/// per-contributor selection store.
+///
+/// Keyed on the contributor path, which is the plot's own node path — so a
+/// plot draws the clause IT contributed and never a sibling's, whatever the
+/// selection's resolution mode does with the two downstream. That is what
+/// makes the band true under `crossfilter`, where the brushed plot's own query
+/// omits its own clause and the rows under the band are therefore unfiltered.
+fn plot_selection(session: &Session, plot: &PlotHandle) -> CommittedSelection {
+    let mut held = CommittedSelection::default();
+    for contributors in session.current_selections().values() {
+        for (contributor, predicate) in contributors {
+            if contributor.0 == plot.path {
+                gather_selected(predicate, plot, &mut held);
+            }
+        }
+    }
+    held
+}
+
+/// Fold one contributor's clause into the channels it constrains.
+///
+/// `And` is walked because an `intervalXY` sweep dispatches one clause per
+/// swept axis, `And`-ed. `Or` is deliberately NOT walked: a disjunction of
+/// intervals is several disjoint regions, and drawing one of them as though it
+/// were the selection is a picture that reads as a narrower filter than the one
+/// in force. Nothing is drawn for a shape this cannot represent.
+///
+/// The first clause naming a channel is the one drawn.
+fn gather_selected(predicate: &Predicate, plot: &PlotHandle, held: &mut CommittedSelection) {
+    match predicate {
+        Predicate::And(parts) => {
+            for part in parts {
+                gather_selected(part, plot, held);
+            }
+        }
+        Predicate::Interval { column, lo, hi, .. } => {
+            let (Some(lo), Some(hi)) = (bound_position(lo), bound_position(hi)) else {
+                return;
+            };
+            if let Some(slot) = channel_slot(plot, column, held) {
+                *slot = Some(Selected::Interval(lo, hi));
+            }
+        }
+        Predicate::Point { column, values, .. } => {
+            let categories: Vec<String> = values
+                .iter()
+                .filter_map(|v| match v {
+                    ScalarValue::Text(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .collect();
+            // A membership clause is drawn as band slots, so it is drawn only
+            // when every one of its values names a slot. A mixed clause would
+            // otherwise mark a subset of what it selects.
+            if categories.is_empty() || categories.len() != values.len() {
+                return;
+            }
+            if let Some(slot) = channel_slot(plot, column, held) {
+                *slot = Some(Selected::Categories(categories));
+            }
+        }
+        Predicate::Expr(_)
+        | Predicate::Param { .. }
+        | Predicate::Or(_)
+        | Predicate::True
+        | Predicate::False => {}
+    }
+}
+
+/// The channel slot `column` occupies on this plot, when the plot draws that
+/// column on a positional channel and has not already taken the slot.
+///
+/// Matched against the plot's OWN channel columns rather than the gesture
+/// binding's, so a clause a plot did not draw an axis for gets no band. That is
+/// what keeps a legend selection — whose contributor is the plot it is `for:`,
+/// over a colour column — from being placed on that plot's x axis.
+fn channel_slot<'a>(
+    plot: &PlotHandle,
+    column: &str,
+    held: &'a mut CommittedSelection,
+) -> Option<&'a mut Option<Selected>> {
+    if plot.x_column.as_deref() == Some(column) && held.x.is_none() {
+        return Some(&mut held.x);
+    }
+    if plot.y_column.as_deref() == Some(column) && held.y.is_none() {
+        return Some(&mut held.y);
+    }
+    None
+}
+
+/// A bound's position in the units its scale reads — microseconds for the two
+/// timestamp forms, matching what `Scale::inverse_f64` returned to build them.
+/// `None` for a text bound, which no continuous scale can place.
+fn bound_position(value: &ScalarValue) -> Option<f64> {
+    match value {
+        ScalarValue::Float(n) => Some(*n),
+        ScalarValue::Int(i) => Some(*i as f64),
+        ScalarValue::TimestampMicros(us) | ScalarValue::TimestampTzMicros(us) => Some(*us as f64),
+        ScalarValue::Text(_) => None,
     }
 }
 
