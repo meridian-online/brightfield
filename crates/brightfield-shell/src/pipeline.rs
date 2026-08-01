@@ -29,9 +29,9 @@ use brightfield_render::inset::{resolve_insets_for_marks, DEFAULT_SCALE_INSET};
 use brightfield_render::layout::{ChartLayout, Margins};
 use brightfield_render::mark::{default_renderers, find_renderer, MarkRenderer};
 use brightfield_render::sample_notice::{sample_band_margins, SampleFact};
-use brightfield_render::scale::{ScaleSet, ViewExtent};
+use brightfield_render::scale::{PinnedDomains, ScaleSet, ViewExtent};
 use brightfield_render::scene::{
-    build_multi_mark_scene_with_domains, compose_dashboard, unrestorable_under_sampling, ChartData,
+    build_multi_mark_scene_pinned, compose_dashboard, unrestorable_under_sampling, ChartData,
     UnsampledDomains,
 };
 use brightfield_render::selection::{render_committed_selection, CommittedSelection, Selected};
@@ -40,7 +40,9 @@ use brightfield_spec::analysis::{
     analyse_spec, build_brushable_bindings, BrushKind, ComponentPath,
 };
 use brightfield_spec::ast::ParamNode;
-use brightfield_spec::layout::{collect_plot_nodes, placed_plots, resolve_plot_insets, Rect};
+use brightfield_spec::layout::{
+    collect_plot_nodes, placed_plots, resolve_fixed_domains, resolve_plot_insets, Rect,
+};
 use brightfield_spec::vocab::MarkKind;
 use brightfield_spec::{parse_spec, parse_spec_path, Format, ParseOutput, Spec};
 use brightfield_sql::emit::as_bound_selection_default;
@@ -499,10 +501,15 @@ fn compose(
     // A one-shot compose never navigates, so nothing can have declined; read it
     // through the same helper anyway rather than hard-coding the empty answer.
     let beyond = marks_beyond_frame(&session, &spec, results.len());
-    Ok(
-        compose_from_results(&spec, results, &facts, &ViewExtents::new(), &beyond)?
-            .with_diagnostics(diagnostics),
-    )
+    Ok(compose_from_results(
+        &spec,
+        results,
+        &facts,
+        &ViewExtents::new(),
+        &beyond,
+        &mut PlotPins::new(),
+    )?
+    .with_diagnostics(diagnostics))
 }
 
 /// A live, session-holding dashboard — the push-down seam at the presentation
@@ -541,10 +548,23 @@ pub struct LiveDashboard {
     /// keep them in step. At rest they are equal, and
     /// `the_two_extent_stores_agree_once_a_gesture_has_settled` holds that.
     view_extents: ViewExtents,
+    /// What each `Domain: Fixed` plot's axes are pinned to — the frame of
+    /// reference a spec asked to hold while filters move the rows.
+    ///
+    /// It lives here because it is the only thing in the composition that is
+    /// deliberately NOT a function of the current query: a pin is captured
+    /// from the first composition and re-applied to every later one, so it has
+    /// to outlive the composition that produced it. The one-shot compose path
+    /// holds no equivalent and needs none.
+    pins: PlotPins,
 }
 
 /// What each plot's axes are drawn at, keyed by plot node path.
 pub type ViewExtents = HashMap<String, ViewExtent>;
+
+/// What each plot's `Domain: Fixed` axes are pinned to, keyed by plot node
+/// path. Absent for a plot whose spec asks for no pin.
+pub type PlotPins = HashMap<String, PinnedDomains>;
 
 /// The render-side extent of an engine-side navigation extent — the one
 /// conversion between the two, so a bound cannot be transcribed differently in
@@ -580,6 +600,7 @@ impl LiveDashboard {
             spec,
             diagnostics,
             view_extents: ViewExtents::new(),
+            pins: PlotPins::new(),
         })
     }
 
@@ -604,6 +625,7 @@ impl LiveDashboard {
             spec,
             diagnostics,
             view_extents: ViewExtents::new(),
+            pins: PlotPins::new(),
         })
     }
 
@@ -649,9 +671,15 @@ impl LiveDashboard {
         // Same reasoning, same seam: a mark that could not be narrowed to the
         // frame has to keep saying so on every repaint, not only the first.
         let beyond = marks_beyond_frame(self.coordinator.session(), &self.spec, results.len());
-        let mut composed =
-            compose_from_results(&self.spec, results, &facts, &self.view_extents, &beyond)?
-                .with_diagnostics(self.diagnostics.clone());
+        let mut composed = compose_from_results(
+            &self.spec,
+            results,
+            &facts,
+            &self.view_extents,
+            &beyond,
+            &mut self.pins,
+        )?
+        .with_diagnostics(self.diagnostics.clone());
         ink_committed_selections(&mut composed, self.coordinator.session());
         Ok(composed)
     }
@@ -1048,12 +1076,20 @@ fn marks_beyond_frame(session: &Session, spec: &Spec, marks: usize) -> Vec<bool>
 /// results. Shared by the one-shot [`compose`] path and the live
 /// [`LiveDashboard`] re-query seam, so a re-composite after an interaction takes
 /// the identical layout and scene path as the first paint.
+///
+/// `pins` is the one piece of state that must survive between compositions:
+/// a `Domain: Fixed` axis is pinned to the scales its FIRST composition drew
+/// against, so this reads a plot's pin from the store before drawing and
+/// captures it back afterwards. A caller with nowhere to keep the store passes
+/// a fresh one — a composition that is never repeated cannot observe a pin, so
+/// the one-shot path is unaffected by construction.
 fn compose_from_results(
     spec: &Spec,
     results: Vec<Result<Vec<RecordBatch>, EngineError>>,
     facts: &[Option<MarkFacts>],
     extents: &ViewExtents,
     beyond_frame: &[bool],
+    pins: &mut PlotPins,
 ) -> Result<Composed, String> {
     let marks = collect_marks(spec);
     let mut batches: Vec<Option<RecordBatch>> = Vec::with_capacity(marks.len());
@@ -1193,6 +1229,17 @@ fn compose_from_results(
             d.layout = layout;
         }
 
+        // What this plot's spec asked to hold still, and what it is holding
+        // still so far. The pin is READ before the draw and CAPTURED after, so
+        // the first composition draws against its own inference (there is
+        // nothing to hold to yet) and every later one draws against that.
+        let fixed = plot_nodes
+            .iter()
+            .find(|(p, _)| *p == plot.path)
+            .map(|(_, node)| resolve_fixed_domains(node))
+            .unwrap_or_default();
+        let plot_pins = pins.get(&plot.path).cloned().unwrap_or_default();
+
         let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
         // `draw_inline_legend = false`: the legend is NOT baked into the data
         // scene. The shell draws it as a native margin panel outside the plot
@@ -1200,9 +1247,15 @@ fn compose_from_results(
         // source of truth, and no in-plot swatch block a margin copy could
         // drift from or that could sit on top of the marks.
         let (scene, scales) =
-            build_multi_mark_scene_with_domains(&refs, false, &titles, plot_domains);
+            build_multi_mark_scene_pinned(&refs, false, &titles, plot_domains, &plot_pins);
         drop(refs);
         drop(chart_data);
+
+        if !fixed.is_empty() {
+            let mut held = plot_pins;
+            held.capture(&scales, fixed);
+            pins.insert(plot.path.clone(), held);
+        }
 
         // REFUSE rather than draw a confidently wrong picture. A sampled plot
         // whose scale set carries a channel `apply_unsampled_domains` cannot
@@ -1627,15 +1680,29 @@ plot:
         // the path-count delta is purely the extra dots.
         let (full_results, total) = two_chunk_dot_results(first_rows, second_rows);
         assert_eq!(total, materialised);
-        let full = compose_from_results(&spec, full_results, &[], &ViewExtents::new(), &[])
-            .expect("compose full");
+        let full = compose_from_results(
+            &spec,
+            full_results,
+            &[],
+            &ViewExtents::new(),
+            &[],
+            &mut PlotPins::new(),
+        )
+        .expect("compose full");
 
         let first_only: Vec<Result<Vec<RecordBatch>, EngineError>> = vec![Ok(vec![xy_batch(
             (0..first_rows).map(|i| (i % 101) as f64).collect(),
             (0..first_rows).map(|i| (i % 101) as f64).collect(),
         )])];
-        let first = compose_from_results(&spec, first_only, &[], &ViewExtents::new(), &[])
-            .expect("compose first");
+        let first = compose_from_results(
+            &spec,
+            first_only,
+            &[],
+            &ViewExtents::new(),
+            &[],
+            &mut PlotPins::new(),
+        )
+        .expect("compose first");
 
         let drawn_delta = count_scene_paths(&full.scene) - count_scene_paths(&first.scene);
         assert_eq!(
@@ -1648,8 +1715,15 @@ plot:
             (0..materialised).map(|i| (i % 101) as f64).collect(),
             (0..materialised).map(|i| (i % 101) as f64).collect(),
         )])];
-        let single = compose_from_results(&spec, single, &[], &ViewExtents::new(), &[])
-            .expect("compose single");
+        let single = compose_from_results(
+            &spec,
+            single,
+            &[],
+            &ViewExtents::new(),
+            &[],
+            &mut PlotPins::new(),
+        )
+        .expect("compose single");
         assert_eq!(
             count_scene_paths(&full.scene),
             count_scene_paths(&single.scene),
@@ -1697,9 +1771,16 @@ plot:
         let results: Vec<Result<Vec<RecordBatch>, EngineError>> = vec![Ok(vec![a, b])];
         // `.err()` rather than `.expect_err()` — `Composed` is deliberately not
         // `Debug` (it holds a Vello scene), so we inspect the error side directly.
-        let err = compose_from_results(&spec, results, &[], &ViewExtents::new(), &[])
-            .err()
-            .expect("must fail loudly");
+        let err = compose_from_results(
+            &spec,
+            results,
+            &[],
+            &ViewExtents::new(),
+            &[],
+            &mut PlotPins::new(),
+        )
+        .err()
+        .expect("must fail loudly");
         assert!(err.contains("mark 0"), "the failure names the mark: {err}");
         assert!(
             err.contains("batch-assembly limit"),

@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use arrow::array::{Array, Float64Array, StringArray, TimestampMicrosecondArray};
 use arrow::datatypes::{DataType, TimeUnit};
 use arrow::record_batch::RecordBatch;
+use brightfield_spec::layout::FixedDomains;
 
 use crate::channel::{Channel, ChannelMap};
 
@@ -398,6 +399,173 @@ fn anchor_scale(launch: &Scale, fresh: &Scale) -> Scale {
         },
         // Categorical (Band / Colour) or a scale-kind mismatch: launch wins.
         (l, _) => l.clone(),
+    }
+}
+
+/// One positional axis's pinned domain — the frame of reference a
+/// `xDomain: Fixed` / `yDomain: Fixed` plot keeps while filters move the rows
+/// underneath it.
+///
+/// A domain and nothing else. The pixel RANGE is deliberately not carried: a
+/// range belongs to the layout the scale was inferred against, and a window
+/// resize gives the same plot a new one. Applying a pin re-domains the scale
+/// the current layout produced, so a pinned plot resizes like any other.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PinnedDomain {
+    /// A continuous numeric extent, from a [`Scale::Linear`].
+    Linear(f64, f64),
+    /// A microsecond-timestamp extent, from a [`Scale::Time`].
+    Time(i64, i64),
+    /// A categorical ORDER, from a [`Scale::Band`] — the list whose index
+    /// assigns each category its slot along the axis. Pinning it is what keeps
+    /// a filtered-away category's slot open instead of closing the gap and
+    /// sliding every later category one place.
+    Band(Vec<String>),
+}
+
+impl PinnedDomain {
+    /// The pin `scale` hands back, or `None` for a scale carrying no positional
+    /// domain to pin.
+    ///
+    /// [`Scale::Colour`] and [`Scale::Sequential`] answer `None` here because
+    /// they are the COLOUR channels' scales; a positional axis never resolves
+    /// to one, and the explicit `colorDomain` instruction is a separate
+    /// mechanism ([`ColourOverride`]).
+    #[must_use]
+    pub fn of(scale: &Scale) -> Option<Self> {
+        match scale {
+            Scale::Linear {
+                domain_min,
+                domain_max,
+                ..
+            } => Some(Self::Linear(*domain_min, *domain_max)),
+            Scale::Time {
+                domain_min_us,
+                domain_max_us,
+                ..
+            } => Some(Self::Time(*domain_min_us, *domain_max_us)),
+            Scale::Band { categories, .. } => Some(Self::Band(categories.clone())),
+            Scale::Colour { .. } | Scale::Sequential { .. } => None,
+        }
+    }
+
+    /// `scale` re-domained onto this pin, keeping its own pixel range (and, for
+    /// a band, its own padding).
+    ///
+    /// `None` when the pin and the scale are different kinds — a column that
+    /// came back numeric at launch and categorical after a gesture has changed
+    /// what the axis IS, and re-domaining across that would place rows by a
+    /// rule neither render used. The freshly-inferred scale stands instead.
+    #[must_use]
+    fn applied_to(&self, scale: &Scale) -> Option<Scale> {
+        match (self, scale) {
+            (
+                Self::Linear(lo, hi),
+                Scale::Linear {
+                    range_start,
+                    range_end,
+                    ..
+                },
+            ) => Some(Scale::Linear {
+                domain_min: *lo,
+                domain_max: *hi,
+                range_start: *range_start,
+                range_end: *range_end,
+            }),
+            (
+                Self::Time(lo, hi),
+                Scale::Time {
+                    range_start,
+                    range_end,
+                    ..
+                },
+            ) => Some(Scale::Time {
+                domain_min_us: *lo,
+                domain_max_us: *hi,
+                range_start: *range_start,
+                range_end: *range_end,
+            }),
+            (
+                Self::Band(categories),
+                Scale::Band {
+                    range_start,
+                    range_end,
+                    padding,
+                    ..
+                },
+            ) => Some(Scale::Band {
+                categories: categories.clone(),
+                range_start: *range_start,
+                range_end: *range_end,
+                padding: *padding,
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// One plot's pinned positional domains, captured from the scales its FIRST
+/// composition drew against and re-applied to every later one.
+///
+/// **The capture moment is Mosaic's, trap included.** Mosaic's `Fixed` fixes a
+/// domain after the first render, on whatever data the marks then hold, so a
+/// plot whose first render is already filtered pins the filtered domain.
+/// brightfield does the same rather than resolving an unfiltered extent the
+/// author never asked for: `Fixed` is a portability instruction, and a spec
+/// that renders differently here than in Mosaic has failed at the thing the
+/// instruction exists for. `deviations.yaml` DEV-0005 records the scope that
+/// is NOT read.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PinnedDomains {
+    /// The x axis's pin, once captured.
+    pub x: Option<PinnedDomain>,
+    /// The y axis's pin, once captured.
+    pub y: Option<PinnedDomain>,
+}
+
+impl PinnedDomains {
+    /// Whether nothing is pinned — the state of every plot whose spec asks for
+    /// no pin, and the state in which [`apply_pinned_domains`] is a no-op.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.x.is_none() && self.y.is_none()
+    }
+
+    /// Capture, from `scales`, each axis `request` asks to pin and this does not
+    /// hold yet.
+    ///
+    /// Idempotent after the first capture: an axis already pinned is left
+    /// alone, which is what makes this safe to call on every composition and is
+    /// where "the FIRST render" is enforced. An axis whose scale is absent (a
+    /// mark whose batch was empty) captures nothing and is offered the same
+    /// chance on the next composition.
+    pub fn capture(&mut self, scales: &ScaleSet, request: FixedDomains) {
+        for (wanted, slot, channel) in [
+            (request.x, &mut self.x, Channel::X),
+            (request.y, &mut self.y, Channel::Y),
+        ] {
+            if !wanted || slot.is_some() {
+                continue;
+            }
+            *slot = scales.get(channel).and_then(PinnedDomain::of);
+        }
+    }
+}
+
+/// Re-domain `scales`' positional channels onto `pins`, in place.
+///
+/// A channel with no pin, or whose freshly-inferred scale is a different kind
+/// from its pin, is left exactly as inference produced it — so an empty
+/// [`PinnedDomains`] leaves the whole set untouched.
+pub fn apply_pinned_domains(scales: &mut ScaleSet, pins: &PinnedDomains) {
+    for (pin, channel) in [(&pins.x, Channel::X), (&pins.y, Channel::Y)] {
+        let Some(pin) = pin else { continue };
+        let Some(scale) = scales.get(channel) else {
+            continue;
+        };
+        if let Some(pinned) = pin.applied_to(scale) {
+            scales.insert(channel, pinned);
+        }
     }
 }
 

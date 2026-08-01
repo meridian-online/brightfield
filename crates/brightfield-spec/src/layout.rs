@@ -376,6 +376,58 @@ pub fn resolve_axis_titles(plot: &PlotNode) -> AxisTitles {
     }
 }
 
+/// Which of a plot's positional axes are pinned by a `Domain: Fixed`
+/// attribute — the request that an axis hold its frame of reference while the
+/// dashboard is filtered around it.
+///
+/// A pure spec reading, mirroring [`resolve_plot_insets`] and
+/// [`resolve_axis_titles`]: it says what the author asked for, and holds no
+/// opinion about what a scale then does with it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FixedDomains {
+    /// `xDomain: Fixed` is declared on this plot.
+    pub x: bool,
+    /// `yDomain: Fixed` is declared on this plot.
+    pub y: bool,
+}
+
+impl FixedDomains {
+    /// Whether neither axis asks for a pin — the shape of every plot in the
+    /// examples corpus, and the one a caller may skip work for.
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        !self.x && !self.y
+    }
+}
+
+/// The attribute value Mosaic reads as "pin this domain".
+///
+/// In a Mosaic spec `Fixed` is a JavaScript symbol; on the YAML/JSON wire it
+/// arrives as this bare string, which is the form the vendored corpus carries.
+/// Matched exactly rather than case-insensitively: a spec written for Mosaic is
+/// the thing being read, and Mosaic resolves the name, not a spelling of it.
+const FIXED: &str = "Fixed";
+
+/// Resolve a plot's `xDomain` / `yDomain` pin request from its attributes.
+///
+/// Literal-only and per-axis, the same reading [`resolve_plot_insets`] gives
+/// its keys. Any other value — a two-element array of explicit endpoints, a
+/// lifted `$param`, an absent key — leaves that axis unpinned here; explicit
+/// endpoints are a different instruction with a different effect, not a weaker
+/// version of this one.
+///
+/// `xyDomain`, `fxDomain` and `fyDomain` are NOT read: see `deviations.yaml`
+/// DEV-0005.
+#[must_use]
+pub fn resolve_fixed_domains(plot: &PlotNode) -> FixedDomains {
+    let pinned =
+        |key: &str| matches!(plot.attributes.get(key), Some(SpecValue::String(s)) if s == FIXED);
+    FixedDomains {
+        x: pinned("xDomain"),
+        y: pinned("yDomain"),
+    }
+}
+
 /// The map projection a geo plot resolves to (geo mark). Which
 /// projection is a PURE spec decision (this resolver, reading plot-level
 /// `projectionType`); the forward MATH lives render-side in

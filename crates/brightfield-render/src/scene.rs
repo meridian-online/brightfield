@@ -14,7 +14,10 @@ use crate::layout::ChartLayout;
 use crate::legend::render_colour_legend;
 use crate::mark::{HighlightState, MarkRenderer};
 use crate::sample_notice::{render_sample_notice, SampleFact};
-use crate::scale::{infer_scales, infer_scales_multi, Scale, ScaleSet, ViewExtent};
+use crate::scale::{
+    apply_pinned_domains, infer_scales, infer_scales_multi, PinnedDomains, Scale, ScaleSet,
+    ViewExtent,
+};
 use crate::title::ResolvedTitles;
 
 /// Opaque chart background — the Meridian warm chart surface. Drawn first so
@@ -315,13 +318,59 @@ pub fn build_multi_mark_scene_with_domains(
     titles: &ResolvedTitles,
     domains: UnsampledDomains,
 ) -> (Scene, ScaleSet) {
+    build_multi_mark_scene_pinned(
+        entries,
+        draw_inline_legend,
+        titles,
+        domains,
+        &PinnedDomains::default(),
+    )
+}
+
+/// [`build_multi_mark_scene_with_domains`] with the positional domains this
+/// plot's spec asked to hold still — see [`PinnedDomains`].
+///
+/// The pin lands AFTER inference and after [`apply_unsampled_domains`], so the
+/// author's instruction outranks both what the drawn rows imply and what a
+/// sample restoration put back. It lands BEFORE nothing: the reader's own
+/// navigation gesture is applied inside the inference, and an axis the reader
+/// has navigated is dropped from the pin here rather than overwritten, so a
+/// pinned plot pans and zooms like an unpinned one. A filter is the dashboard
+/// moving; a pan is the reader moving, and only the first is what `Fixed`
+/// declines.
+///
+/// An empty `pins` reproduces [`build_multi_mark_scene_with_domains`] scale for
+/// scale — [`apply_pinned_domains`] writes nothing without a pin to write.
+pub fn build_multi_mark_scene_pinned(
+    entries: &[&ChartData<'_>],
+    draw_inline_legend: bool,
+    titles: &ResolvedTitles,
+    domains: UnsampledDomains,
+    pins: &PinnedDomains,
+) -> (Scene, ScaleSet) {
     if entries.is_empty() {
         return (Scene::new(), ScaleSet::new());
     }
     let mut scales = infer_multi_mark_scales(entries);
     apply_unsampled_domains(&mut scales, domains);
+    apply_pinned_domains(&mut scales, &pins_yielding_to_navigation(pins, entries[0]));
     let scene = draw_multi_mark_scene(entries, draw_inline_legend, titles, &scales);
     (scene, scales)
+}
+
+/// `pins` with every axis the reader has navigated dropped.
+///
+/// The view extent is already on the scale by the time a pin would be applied
+/// (`infer_multi_mark_scales` ends with it), so re-domaining a navigated axis
+/// onto its pin would silently undo the pan or zoom that produced it.
+fn pins_yielding_to_navigation(pins: &PinnedDomains, entry: &ChartData<'_>) -> PinnedDomains {
+    let Some(extent) = entry.view_extent else {
+        return pins.clone();
+    };
+    PinnedDomains {
+        x: extent.x.is_none().then(|| pins.x.clone()).flatten(),
+        y: extent.y.is_none().then(|| pins.y.clone()).flatten(),
+    }
 }
 
 /// Widen the positional scales back to their unsampled extent, in place.
