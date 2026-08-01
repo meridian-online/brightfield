@@ -118,3 +118,55 @@ export) diverge.
 
 **Conformance layers suppressed:** 3
 
+## DEV-0005 — scales — positional domain pinning (`Domain: Fixed`)
+
+**Mosaic behaviour.** Mosaic accepts `Fixed` at `xDomain`, `yDomain`, the `xyDomain`
+both-axes shorthand, and the facet axes `fxDomain` / `fyDomain`, at a
+plot and under `plotDefaults`. The domain is fixed after the first
+render, on whatever data the marks then hold, and later filtering
+leaves it where it is.
+
+
+**Brightfield behaviour.** `Fixed` is read from a plot's own `xDomain` and `yDomain`, and the
+capture moment is Mosaic's: the pin is taken from the scales the
+plot's FIRST composition drew against, so a plot whose first render is
+already filtered pins the filtered domain. The pin holds the domain
+through a filter, a selection and a re-query, and a band scale keeps
+its category ORDER, so a filtered-away category keeps its slot rather
+than closing the gap.
+
+Four positions are NOT read, and a spec using one gets a domain
+inferred from the rows it is currently drawing: the `xyDomain`
+shorthand, the facet axes `fxDomain` / `fyDomain`, `Fixed` written
+under `plotDefaults`, and any spelling other than the exact string
+`Fixed`. An explicit two-element domain (`xDomain: [0, 100]`) is a
+different instruction and is likewise not read here.
+
+One brightfield-local rule sits on top: pan and zoom are offered on
+any plot with a continuous positional scale, and an axis the reader
+has navigated is drawn at the navigated extent rather than the pin,
+until the navigation is reset.
+
+
+**Rationale.** The pin is a portability instruction, so the capture moment is copied
+rather than improved on: resolving an unfiltered extent instead would
+make a spec render differently here than in Mosaic, which is the one
+thing `Fixed` exists to prevent.
+
+The unread positions are scoped by what the renderer can act on rather
+than by what the parser accepts. Facets are not rendered, so `fxDomain`
+/ `fyDomain` name axes that do not exist here; `plotDefaults` is parsed
+and round-tripped but applied to no plot, so honouring one key from it
+would make that block half-live and hide the rest.
+
+Navigation takes precedence because the two instructions come from
+different people about different events. `Fixed` is the author saying
+the frame must not move when the DASHBOARD moves; a pan is the reader
+moving the frame on purpose. A pin that outranked the gesture would
+make a plot silently refuse to pan.
+
+
+**Affected specs:** facet-interval.yaml
+
+**Conformance layers suppressed:** 3
+
