@@ -2362,4 +2362,237 @@ mod tests {
             Some(AxisClass::Continuous)
         );
     }
+
+    // --- positional domain pinning (`Domain: Fixed`) ---
+
+    /// The pin carries a DOMAIN and nothing else, so applying it onto a scale
+    /// built for a different layout keeps that layout's pixel range. A window
+    /// resize gives a plot a new range; a pinned plot has to resize with it.
+    #[test]
+    fn a_pin_re_domains_a_scale_without_touching_its_range() {
+        let pin = PinnedDomain::of(&Scale::Linear {
+            domain_min: 0.0,
+            domain_max: 100.0,
+            range_start: 40.0,
+            range_end: 600.0,
+        })
+        .expect("a linear scale offers a pin");
+
+        let mut set = ScaleSet::new();
+        set.insert(
+            Channel::X,
+            Scale::Linear {
+                domain_min: 10.0,
+                domain_max: 20.0,
+                range_start: 40.0,
+                range_end: 900.0,
+            },
+        );
+        apply_pinned_domains(
+            &mut set,
+            &PinnedDomains {
+                x: Some(pin),
+                y: None,
+            },
+        );
+        match set.get(Channel::X).expect("x scale kept") {
+            Scale::Linear {
+                domain_min,
+                domain_max,
+                range_start,
+                range_end,
+            } => {
+                assert_eq!((*domain_min, *domain_max), (0.0, 100.0), "domain pinned");
+                assert_eq!(
+                    (*range_start, *range_end),
+                    (40.0, 900.0),
+                    "the range is the current layout's, not the pin's"
+                );
+            }
+            other => panic!("expected a linear scale, got {other:?}"),
+        }
+    }
+
+    /// A band pin carries the category ORDER, which is what assigns each
+    /// category its slot. Pinning it is how a filtered-away category keeps its
+    /// place instead of every later one sliding along.
+    #[test]
+    fn a_band_pin_restores_the_categories_a_filter_removed() {
+        let pin = PinnedDomain::of(&Scale::Band {
+            categories: vec!["a".into(), "b".into(), "c".into()],
+            range_start: 0.0,
+            range_end: 300.0,
+            padding: 0.1,
+        })
+        .expect("a band scale offers a pin");
+
+        let mut set = ScaleSet::new();
+        set.insert(
+            Channel::X,
+            Scale::Band {
+                categories: vec!["a".into()],
+                range_start: 0.0,
+                range_end: 300.0,
+                padding: 0.2,
+            },
+        );
+        apply_pinned_domains(
+            &mut set,
+            &PinnedDomains {
+                x: Some(pin),
+                y: None,
+            },
+        );
+        match set.get(Channel::X).expect("x scale kept") {
+            Scale::Band {
+                categories,
+                padding,
+                ..
+            } => {
+                assert_eq!(categories, &["a", "b", "c"], "every slot is back, in order");
+                assert!(
+                    (*padding - 0.2).abs() < f64::EPSILON,
+                    "padding belongs to the current scale, not the pin"
+                );
+            }
+            other => panic!("expected a band scale, got {other:?}"),
+        }
+    }
+
+    /// A colour channel offers no positional pin: `colorDomain` is a separate
+    /// instruction with its own mechanism ([`ColourOverride`]).
+    #[test]
+    fn colour_scales_offer_no_positional_pin() {
+        assert!(PinnedDomain::of(&Scale::Colour {
+            categories: vec!["a".into()],
+            palette: CATEGORICAL_PALETTE.to_vec(),
+        })
+        .is_none());
+        assert!(PinnedDomain::of(&Scale::Sequential {
+            domain_min: 0.0,
+            domain_max: 1.0,
+            stops: vec![[0.0; 4], [1.0; 4]],
+        })
+        .is_none());
+    }
+
+    /// A column that came back numeric at launch and categorical after a
+    /// gesture has changed what the axis IS. Re-domaining across that would
+    /// place rows by a rule neither render used, so the fresh scale stands.
+    #[test]
+    fn a_pin_of_the_wrong_kind_leaves_the_fresh_scale_alone() {
+        let mut set = ScaleSet::new();
+        set.insert(
+            Channel::X,
+            Scale::Band {
+                categories: vec!["a".into(), "b".into()],
+                range_start: 0.0,
+                range_end: 300.0,
+                padding: 0.1,
+            },
+        );
+        apply_pinned_domains(
+            &mut set,
+            &PinnedDomains {
+                x: Some(PinnedDomain::Linear(0.0, 100.0)),
+                y: None,
+            },
+        );
+        match set.get(Channel::X).expect("x scale kept") {
+            Scale::Band { categories, .. } => {
+                assert_eq!(categories, &["a", "b"], "the fresh band scale is untouched");
+            }
+            other => panic!("expected the band scale to survive, got {other:?}"),
+        }
+    }
+
+    /// **Nothing pinned, nothing written.** The default path through
+    /// `build_multi_mark_scene_with_domains` passes an empty set, so this is
+    /// what makes a spec asking for no pin take the behaviour it always had.
+    #[test]
+    fn an_empty_pin_set_writes_nothing() {
+        let mut set = ScaleSet::new();
+        set.insert(
+            Channel::X,
+            Scale::Linear {
+                domain_min: 3.0,
+                domain_max: 7.0,
+                range_start: 0.0,
+                range_end: 100.0,
+            },
+        );
+        let empty = PinnedDomains::default();
+        assert!(empty.is_empty());
+        apply_pinned_domains(&mut set, &empty);
+        match set.get(Channel::X).expect("x scale kept") {
+            Scale::Linear {
+                domain_min,
+                domain_max,
+                ..
+            } => assert_eq!((*domain_min, *domain_max), (3.0, 7.0)),
+            other => panic!("expected the scale untouched, got {other:?}"),
+        }
+    }
+
+    /// **The first composition is the one that pins.** `capture` is called on
+    /// every composition, so it is here that "first render" is enforced: an
+    /// axis already holding a pin keeps it, whatever a later set of scales
+    /// says.
+    #[test]
+    fn capture_takes_the_first_answer_and_keeps_it() {
+        let both = FixedDomains { x: true, y: true };
+        let scales_at = |lo: f64, hi: f64| {
+            let mut s = ScaleSet::new();
+            s.insert(
+                Channel::X,
+                Scale::Linear {
+                    domain_min: lo,
+                    domain_max: hi,
+                    range_start: 0.0,
+                    range_end: 100.0,
+                },
+            );
+            s
+        };
+
+        let mut pins = PinnedDomains::default();
+        pins.capture(&scales_at(0.0, 50.0), both);
+        assert_eq!(pins.x, Some(PinnedDomain::Linear(0.0, 50.0)));
+        pins.capture(&scales_at(2.0, 9.0), both);
+        assert_eq!(
+            pins.x,
+            Some(PinnedDomain::Linear(0.0, 50.0)),
+            "a later composition does not re-pin"
+        );
+        assert_eq!(pins.y, None, "no y scale existed to pin");
+    }
+
+    /// An axis the spec did not ask to pin is never captured, so it can never
+    /// be applied.
+    #[test]
+    fn capture_ignores_an_axis_the_spec_did_not_pin() {
+        let mut set = ScaleSet::new();
+        set.insert(
+            Channel::X,
+            Scale::Linear {
+                domain_min: 0.0,
+                domain_max: 1.0,
+                range_start: 0.0,
+                range_end: 10.0,
+            },
+        );
+        set.insert(
+            Channel::Y,
+            Scale::Linear {
+                domain_min: 0.0,
+                domain_max: 1.0,
+                range_start: 0.0,
+                range_end: 10.0,
+            },
+        );
+        let mut pins = PinnedDomains::default();
+        pins.capture(&set, FixedDomains { x: false, y: true });
+        assert_eq!(pins.x, None, "x was not requested");
+        assert_eq!(pins.y, Some(PinnedDomain::Linear(0.0, 1.0)));
+    }
 }

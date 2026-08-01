@@ -1840,4 +1840,87 @@ vconcat:
             "non-menu kinds ignore the menu-family style keys"
         );
     }
+
+    // --- positional domain pinning (`Domain: Fixed`) ---
+
+    /// Each positional axis is read on its own key, and neither reaches across.
+    #[test]
+    fn fixed_is_read_per_axis() {
+        let fixed = || SpecValue::String("Fixed".to_string());
+        assert_eq!(
+            resolve_fixed_domains(&plot_with(&[("xDomain", fixed())])),
+            FixedDomains { x: true, y: false }
+        );
+        assert_eq!(
+            resolve_fixed_domains(&plot_with(&[("yDomain", fixed())])),
+            FixedDomains { x: false, y: true }
+        );
+        assert_eq!(
+            resolve_fixed_domains(&plot_with(&[("xDomain", fixed()), ("yDomain", fixed())])),
+            FixedDomains { x: true, y: true }
+        );
+        assert!(resolve_fixed_domains(&plot_with(&[])).is_empty());
+    }
+
+    /// **Every other value at these keys leaves the axis unpinned.** A
+    /// two-element domain and a `$param` are different instructions with
+    /// different effects, and the positions `deviations.yaml` DEV-0005 records
+    /// as unread have to stay unread — a resolver that treated any `xDomain` as
+    /// a pin would silently freeze `mark-types.yaml`'s explicit `[-1, 8]`.
+    #[test]
+    fn only_the_fixed_literal_pins_an_axis() {
+        for value in [
+            SpecValue::Array(vec![SpecValue::Integer(0), SpecValue::Integer(100)]),
+            SpecValue::Param(ParamRef::new("domain")),
+            SpecValue::String("fixed".to_string()),
+            SpecValue::String("FIXED".to_string()),
+            SpecValue::Null,
+            SpecValue::Bool(true),
+        ] {
+            let p = plot_with(&[("xDomain", value.clone())]);
+            assert!(
+                resolve_fixed_domains(&p).is_empty(),
+                "xDomain: {value:?} is not the Fixed literal and must not pin the axis"
+            );
+        }
+    }
+
+    /// The both-axes shorthand and the facet axes are recorded as unread
+    /// (DEV-0005), so the resolver must not answer for them.
+    #[test]
+    fn the_shorthand_and_facet_keys_are_not_read() {
+        for key in ["xyDomain", "fxDomain", "fyDomain"] {
+            let p = plot_with(&[(key, SpecValue::String("Fixed".to_string()))]);
+            assert!(
+                resolve_fixed_domains(&p).is_empty(),
+                "{key} is not read here; DEV-0005 is what says so"
+            );
+        }
+    }
+
+    /// A pin written under `plotDefaults` reaches no plot: the block is parsed
+    /// and round-tripped and applied to nothing, so a plot's own attributes are
+    /// the whole of what this reads.
+    #[test]
+    fn a_plot_defaults_pin_does_not_reach_the_plot() {
+        let parsed = parse_spec(
+            r"
+data:
+  t:
+    - { x: 1, y: 2 }
+plotDefaults:
+  xDomain: Fixed
+plot:
+  - { mark: dot, data: { from: t }, x: x, y: y }
+",
+            Format::Yaml,
+        )
+        .expect("parse");
+        let nodes = collect_plot_nodes(&parsed.spec);
+        assert_eq!(nodes.len(), 1, "one plot");
+        assert!(
+            resolve_fixed_domains(nodes[0].1).is_empty(),
+            "plotDefaults is applied to no plot; DEV-0005 records that"
+        );
+    }
 }
