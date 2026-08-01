@@ -63,10 +63,9 @@ fn matches(p: [u8; 4], want: [i32; 3]) -> bool {
 /// **The ghost is measurable only while its ink is nobody else's.**
 ///
 /// The example picks a literal, the chrome comes from tokens, and neither
-/// knows about the other. Every grey the plot frame lays down is checked
-/// against the ghost's measurement tolerance here, so a palette bump that
-/// walked one of them into the ghost's range would redden this rather than
-/// silently turn `columns_with(GHOST)` into a reading of the gridlines.
+/// knows about the other. A palette bump that walked one of them into the
+/// ghost's range would redden this rather than silently turn
+/// `columns_with(GHOST)` into a reading of the gridlines.
 #[test]
 fn the_ghost_ink_is_not_the_charts_own_chrome() {
     let ink = meridian_design::chrome::INK_LIGHT;

@@ -867,8 +867,6 @@ impl LiveDashboard {
 /// input the band needs — the placed rect, the layout, and the *displayed*
 /// scales the gesture inverted through — so reading them back is the one way
 /// the band cannot be drawn against a different scale set than the marks were.
-/// The static compose paths hold no session and reach this with nothing to
-/// draw, which is correct: a spec that has just been loaded holds no gesture.
 fn ink_committed_selections(composed: &mut Composed, session: &Session) {
     for plot in &composed.plots {
         let held = plot_selection(session, plot);
@@ -958,9 +956,7 @@ fn gather_selected(predicate: &Predicate, plot: &PlotHandle, held: &mut Committe
 /// column on a positional channel and has not already taken the slot.
 ///
 /// Matched against the plot's OWN channel columns rather than the gesture
-/// binding's, so a clause a plot did not draw an axis for gets no band. That is
-/// what keeps a legend selection — whose contributor is the plot it is `for:`,
-/// over a colour column — from being placed on that plot's x axis.
+/// binding's, so a clause a plot did not draw an axis for gets no band.
 fn channel_slot<'a>(
     plot: &PlotHandle,
     column: &str,

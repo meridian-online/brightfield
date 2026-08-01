@@ -25,9 +25,9 @@
 //! And it is what separates this from the transient brush rectangle. That
 //! rectangle is an egui quad over the raster, painted from the drag state and
 //! gone the frame the button comes up; this is chart ink, laid down by the
-//! composition the gesture produced. The two never appear in the same picture,
-//! and they are told apart at a glance by hue: the overlay's wash is the
-//! design system's neutral `brush_fill`, and this is the chart's own focus ink.
+//! composition the gesture produced. They are told apart at a glance by hue:
+//! the overlay's wash is the design system's neutral `brush_fill`, and this is
+//! the chart's own focus ink.
 //!
 //! # The treatment
 //!

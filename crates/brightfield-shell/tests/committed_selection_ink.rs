@@ -6,12 +6,11 @@
 //! became real it stopped being drawn, and a reader could see that a filter had
 //! happened without being able to see what it was.
 //!
-//! Everything below is asserted **through the rendered raster**, never through
-//! the drag state, and every gesture is a real pointer sweep through the whole
-//! window: press, move, release, on the raster the last frame presented. That
-//! pairing is the point. A test that read `ChartItem::drag` would pass on the
-//! code as it stood before this file existed, because the drag state was
-//! already right — it was the picture that was missing.
+//! Every gesture is a real pointer sweep through the whole window: press,
+//! move, release, on the raster the last frame presented. A test that read
+//! `ChartItem::drag` would pass on the code as it stood before this file
+//! existed, because the drag state was already right — it was the picture that
+//! was missing.
 //!
 //! Five things are held:
 //!
@@ -20,8 +19,7 @@
 //!   than passing everything below vacuously.
 //! - **A gesture in progress draws no band either.** Between press and release
 //!   the chart ink is untouched — the sweep is an egui quad over the raster and
-//!   the raster is what this reads. That is the distinction between the two
-//!   treatments, measured rather than asserted about tokens.
+//!   the raster is what this reads.
 //! - **Release puts the band in.** Two bound rules, both inside the plot that
 //!   produced the gesture and none in the plot receiving it.
 //! - **The band is the clause, not a decoration.** Brushing an adjoining range
