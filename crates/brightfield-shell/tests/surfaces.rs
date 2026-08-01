@@ -42,9 +42,9 @@
 //! either path. **No baseline capture moves a pointer**, so the chart's hover
 //! crosshair overlay is never armed in one; the only scripted input a baseline
 //! takes is one keypress, and it is a keypress with no cursor-position
-//! component. The one test here that does move a pointer —
-//! [`the_overlay_toggle_still_reaches_the_chart_pane`] — has no baseline at all:
-//! it compares three captures against each other, so nothing about it is stored.
+//! component. The tests here that do move a pointer have no baseline at all:
+//! each compares its captures against one another and calls no snapshot, so no
+//! pointer position reaches a committed file.
 //! The capture path already runs a warm-up frame (font atlas + layout settle),
 //! then the scripted frames, then a final settle frame which is the one captured
 //! — that is what makes a first-frame layout pass invisible to the baseline.
@@ -242,6 +242,18 @@ fn region_diff(a: &image::RgbaImage, b: &image::RgbaImage, r: Region) -> Option<
 /// derived it from. It landed, but it would have gone on being green while
 /// clicking empty rail the first time the rail's share or a row height moved.
 fn chart_layout(mode: Mode) -> (egui::Rect, egui::Rect) {
+    let app = settled_chart_app(mode);
+    (
+        app.chart_viewport().expect("the chart pane drew"),
+        app.overlay_checkbox()
+            .expect("the controls rail drew its overlay checkbox"),
+    )
+}
+
+/// A chart-view window run through a real layout pass over a **headless**
+/// document — no GPU, no capture — for the same two frames `capture_png` runs
+/// before the one it photographs, so every rect read back off it is settled.
+fn settled_chart_app(mode: Mode) -> MeridianApp {
     let spec = fixture("examples/dashboard.yaml");
     let composed = compose_spec(spec.to_str().expect("utf-8 fixture path"))
         .unwrap_or_else(|e| panic!("compose {}: {e}", spec.display()));
@@ -258,11 +270,33 @@ fn chart_layout(mode: Mode) -> (egui::Rect, egui::Rect) {
     for _ in 0..2 {
         let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
     }
-    (
-        app.chart_viewport().expect("the chart pane drew"),
-        app.overlay_checkbox()
-            .expect("the controls rail drew its overlay checkbox"),
-    )
+    app
+}
+
+/// Where each plot of the composed dashboard landed **in window coordinates**:
+/// the placed rect the composition gave it, which is raster-local, offset by
+/// where the chart pane put the raster.
+///
+/// Derived from the same headless pass [`chart_layout`] runs rather than typed
+/// in, for the reason recorded there — and a second time over here, because a
+/// per-plot rectangle is exactly the kind of coordinate that goes on being
+/// green while pointing at empty raster once a margin moves.
+fn chart_plot_rects(mode: Mode) -> Vec<egui::Rect> {
+    let app = settled_chart_app(mode);
+    let doc = app.chart_doc();
+    let raster = doc
+        .raster_rect
+        .expect("the chart pane reserved its raster rect");
+    doc.composed
+        .plots
+        .iter()
+        .map(|plot| {
+            egui::Rect::from_min_size(
+                raster.min + egui::vec2(plot.rect.x as f32, plot.rect.y as f32),
+                egui::vec2(plot.rect.width as f32, plot.rect.height as f32),
+            )
+        })
+        .collect()
 }
 
 /// A boot on the protocol view over the checked-in fixture, in the default
@@ -673,4 +707,93 @@ fn the_overlay_toggle_still_reaches_the_chart_pane() {
          the click did land — see above), so the flag the rail writes is not the \
          flag the chart pane reads"
     );
+}
+
+/// One pointer, one crosshair, on the plot the pointer is actually over.
+///
+/// A dashboard is **one** chart document rendered to **one** raster, and
+/// `examples/dashboard.yaml` puts two plots on it side by side. Ink spanning
+/// the raster therefore crosses a plot the pointer is nowhere near, and the
+/// reading is a crosshair on a plot that has no pointer in it.
+///
+/// Asked in pixels because that is where the claim lives: the segments are
+/// painted through the overlay painter onto the presented texture's rect, so
+/// nothing about which plot they cross is visible to an accesskit query or to a
+/// layout assertion. `crosshair_segments` in `chart_item.rs` holds the geometry
+/// as arithmetic; this holds it as photographs of the shipped surface.
+///
+/// Four captures of the chart window, compared over rectangles strictly inside
+/// each plot's placed rect ([`chart_plot_rects`], derived from a headless
+/// layout pass rather than typed in):
+///
+/// - pointer nowhere — the idle reference,
+/// - pointer at the centre of the left plot,
+/// - pointer at the centre of the right plot,
+/// - pointer at the centre of the left plot, then gone from the window.
+///
+/// For each hover: the hovered plot must differ from idle (the crosshair drew,
+/// so the reading below is not vacuous) and the *other* plot must be byte-
+/// identical to idle. Both directions, because a fix that clipped to
+/// `plots[0]` rather than to the plot under the pointer passes one of them.
+/// Then the departure: with the pointer gone, both plots return to idle.
+///
+/// Light only, for the reason [`the_overlay_toggle_still_reaches_the_chart_pane`]
+/// gives: the geometry is mode-independent and a dark twin would cost four more
+/// GPU captures to re-photograph the same arithmetic.
+#[test]
+fn the_crosshair_is_bounded_by_the_plot_under_the_pointer() {
+    let plots = chart_plot_rects(Mode::Light);
+    assert_eq!(
+        plots.len(),
+        2,
+        "this test reads one plot against another, so the fixture has to place \
+         two — examples/dashboard.yaml is an hconcat of a scatter and a bar chart"
+    );
+    // Clear of each plot's own boundary, so a segment stopping exactly on the
+    // shared edge cannot redden the neighbour through one antialiased pixel,
+    // while the rest of the neighbour — including the row the raster-wide line
+    // would have crossed — stays inside the region.
+    let inside: Vec<Region> = plots.iter().map(|r| Region::inside(*r, 2.0)).collect();
+
+    let idle = shell_capture(Mode::Light, "crosshair_idle", Vec::new());
+
+    for (hovered, other) in [(0usize, 1usize), (1, 0)] {
+        let at = plots[hovered].center();
+        let over = shell_capture(
+            Mode::Light,
+            &format!("crosshair_over_plot_{hovered}"),
+            vec![move_to(at.x, at.y)],
+        );
+        assert!(
+            region_diff(&idle, &over, inside[hovered]).is_some(),
+            "hovering the centre of plot {hovered} at {at:?} drew nothing inside \
+             it — the pointer missed the raster or the crosshair is gone, so the \
+             neighbour reading below would prove nothing"
+        );
+        assert_eq!(
+            region_diff(&idle, &over, inside[other]),
+            None,
+            "hovering plot {hovered} changed pixels inside plot {other} (and the \
+             hover did land — see above), so the crosshair is drawn across the \
+             raster rather than across the plot the pointer is in"
+        );
+    }
+
+    // The departure. The overlay is painted immediate-mode into the frame, so
+    // this cannot regress without a retained layer appearing — which is exactly
+    // the mechanism to be told about if one ever does.
+    let at = plots[0].center();
+    let left = shell_capture(
+        Mode::Light,
+        "crosshair_pointer_gone",
+        vec![move_to(at.x, at.y), vec![egui::Event::PointerGone]],
+    );
+    for (i, region) in inside.iter().enumerate() {
+        assert_eq!(
+            region_diff(&idle, &left, *region),
+            None,
+            "plot {i} still differs from idle after the pointer left the window, \
+             so ink from a frame the pointer was in survived it"
+        );
+    }
 }

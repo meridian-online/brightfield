@@ -708,27 +708,21 @@ impl Item<ChartDoc> for ChartItem {
                 painter.stroke_rect(r, Color::from_token(tokens.brush_border), 1.0);
             } else if overlay_on && hovered {
                 // The hover crosshair — the chart's own ink layer, matched to
-                // the raster's palette rather than the chrome's.
+                // the raster's palette rather than the chrome's, and bounded by
+                // the plot the pointer is in. See `crosshair_segments`.
                 if let Some(p) = pointer {
-                    let focus = match mode {
-                        Mode::Light => INK_LIGHT.focus,
-                        Mode::Dark => INK_DARK.focus,
-                    };
-                    let ink = Color::from_token_alpha(focus, 0.9);
-                    let painter = frame.overlay();
-                    painter.line(
-                        kurbo::Point::new(p.x, 0.0),
-                        kurbo::Point::new(p.x, f64::from(h)),
-                        ink,
-                        1.0,
-                    );
-                    painter.line(
-                        kurbo::Point::new(0.0, p.y),
-                        kurbo::Point::new(f64::from(w), p.y),
-                        ink,
-                        1.0,
-                    );
-                    painter.fill_circle(p, 3.0, ink);
+                    if let Some(segments) = crosshair_segments(&doc.composed.plots, p) {
+                        let focus = match mode {
+                            Mode::Light => INK_LIGHT.focus,
+                            Mode::Dark => INK_DARK.focus,
+                        };
+                        let ink = Color::from_token_alpha(focus, 0.9);
+                        let painter = frame.overlay();
+                        for (a, b) in segments {
+                            painter.line(a, b, ink, 1.0);
+                        }
+                        painter.fill_circle(p, 3.0, ink);
+                    }
                 }
                 frame.set_cursor(Some(SurfaceCursor::Grab));
             }
@@ -764,6 +758,32 @@ fn plot_at(plots: &[PlotHandle], p: kurbo::Point) -> Option<usize> {
             && p.y >= plot.rect.y
             && p.y <= plot.rect.y + plot.rect.height
     })
+}
+
+/// The two segments a hover crosshair draws at `p` (raster-local logical
+/// pixels): the vertical one first, then the horizontal one. Each spans the
+/// placed rect of the plot **under the pointer** and stops there.
+///
+/// `None` when the pointer is over the raster but over no plot. A crosshair
+/// reads out a position within a plot, so there is nothing to read out there.
+///
+/// A dashboard is one chart document rendered to one raster, so the plot rect
+/// — not the raster — is the extent a reader can attribute a line to.
+fn crosshair_segments(
+    plots: &[PlotHandle],
+    p: kurbo::Point,
+) -> Option<[(kurbo::Point, kurbo::Point); 2]> {
+    let rect = plots.get(plot_at(plots, p)?)?.rect;
+    Some([
+        (
+            kurbo::Point::new(p.x, rect.y),
+            kurbo::Point::new(p.x, rect.y + rect.height),
+        ),
+        (
+            kurbo::Point::new(rect.x, p.y),
+            kurbo::Point::new(rect.x + rect.width, p.y),
+        ),
+    ])
 }
 
 /// The brush rectangle a drag paints, clamped to its plot and axis-locked to
@@ -1125,6 +1145,91 @@ mod tests {
         };
         let binding = point.gesture.clone().expect("bound");
         assert_eq!(resolve_gesture(&binding, &point, sweep), None);
+    }
+
+    /// Two plots placed side by side on one raster, as a root `hconcat` of
+    /// two places them: same height, edge-adjacent, the first at the raster's
+    /// origin.
+    fn two_placed_plots() -> Vec<PlotHandle> {
+        let mut left = plot(ScaleSet::new(), BrushKind::IntervalX);
+        left.rect = Rect::new(0.0, 0.0, 360.0, 300.0);
+        let mut right = plot(ScaleSet::new(), BrushKind::IntervalX);
+        right.path = "root/hconcat[1]".to_string();
+        right.rect = Rect::new(360.0, 0.0, 360.0, 300.0);
+        vec![left, right]
+    }
+
+    /// The crosshair spans the plot the pointer is in, and stops at its edges.
+    #[test]
+    fn a_crosshair_spans_the_hovered_plot_and_no_more() {
+        let plots = two_placed_plots();
+        let at = kurbo::Point::new(100.0, 70.0);
+        let [(v0, v1), (h0, h1)] =
+            crosshair_segments(&plots, at).expect("the pointer is on a plot");
+
+        // Vertical: held at the pointer's x, spanning the plot's own height.
+        assert_eq!((v0.x, v1.x), (100.0, 100.0));
+        assert_eq!((v0.y, v1.y), (0.0, 300.0));
+        // Horizontal: held at the pointer's y, spanning the plot's own width.
+        assert_eq!((h0.y, h1.y), (70.0, 70.0));
+        assert_eq!((h0.x, h1.x), (0.0, 360.0));
+    }
+
+    /// The neighbour is untouched: a segment drawn for a pointer on one plot
+    /// stays out of the other's interior. These two share a boundary, so an
+    /// endpoint landing on it is placement; ink past it is the sighting this
+    /// fix answers — one pointer, crosshairs on both plots of a two-plot
+    /// dashboard.
+    #[test]
+    fn a_crosshair_stays_out_of_the_neighbouring_plots_interior() {
+        let plots = two_placed_plots();
+        for (hovered, neighbour) in [(0usize, 1usize), (1, 0)] {
+            let r = plots[hovered].rect;
+            let at = kurbo::Point::new(r.x + r.width / 2.0, r.y + r.height / 2.0);
+            let segments = crosshair_segments(&plots, at).expect("the pointer is on a plot");
+            let n = plots[neighbour].rect;
+            for (a, b) in segments {
+                let (x0, x1) = min_max(a.x, b.x);
+                let (y0, y1) = min_max(a.y, b.y);
+                assert!(
+                    x1 <= n.x || x0 >= n.x + n.width || y1 <= n.y || y0 >= n.y + n.height,
+                    "a segment drawn for plot {hovered} runs {a:?} to {b:?}, \
+                     through plot {neighbour}'s interior"
+                );
+            }
+        }
+    }
+
+    /// A pointer the plot rects do not contain draws no crosshair, rather than
+    /// one attributed to whichever plot comes first.
+    #[test]
+    fn a_pointer_on_no_plot_draws_no_crosshair() {
+        let plots = two_placed_plots();
+        assert_eq!(
+            crosshair_segments(&plots, kurbo::Point::new(800.0, 150.0)),
+            None
+        );
+        assert_eq!(
+            crosshair_segments(&plots, kurbo::Point::new(100.0, 400.0)),
+            None
+        );
+        assert_eq!(
+            crosshair_segments(&[], kurbo::Point::new(100.0, 70.0)),
+            None
+        );
+
+        // A ragged `vconcat`: the row takes the widest child's width, so the
+        // area beside a narrower plot is on the raster and on no plot.
+        let mut wide = plot(ScaleSet::new(), BrushKind::IntervalX);
+        wide.path = "root/vconcat[0]".to_string();
+        wide.rect = Rect::new(0.0, 0.0, 720.0, 300.0);
+        let mut narrow = plot(ScaleSet::new(), BrushKind::IntervalX);
+        narrow.path = "root/vconcat[1]".to_string();
+        narrow.rect = Rect::new(0.0, 300.0, 360.0, 300.0);
+        assert_eq!(
+            crosshair_segments(&[wide, narrow], kurbo::Point::new(540.0, 450.0)),
+            None
+        );
     }
 
     /// One implementation, every mark kind: the parameterisation is total —
