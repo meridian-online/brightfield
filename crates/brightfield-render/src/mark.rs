@@ -93,13 +93,13 @@ const SELECTED_COUNT_COLUMN: &str = "__bf_selected_count";
 ///   (`Send + Sync + 'static`). A NULL membership (a predicate over a NULL
 ///   column) reads as not-selected → deemphasised, matching Mosaic (only rows
 ///   the predicate proves in stay lit).
-/// * [`SELECTED_COUNT_COLUMN`], a per-group count, for a mark whose rows are
-///   groups. There is no whole element to keep lit here — a group is selected in
-///   PART — so every group reads as non-matching and the mark is deemphasised
-///   whole, which is Mosaic's `highlight` reading of a group. What this state
-///   adds over the batch alone is the author's `otherwise`: a renderer that can
-///   draw a part of its own shape reads the counts straight off the batch
-///   ([`selected_counts`]) either way.
+/// * The private `SELECTED_COUNT_COLUMN`, a per-group count, for a mark whose
+///   rows are groups. There is no whole element to keep lit here — a group is
+///   selected in PART — so every group reads as non-matching and the mark is
+///   deemphasised whole, which is Mosaic's `highlight` reading of a group. What
+///   this state adds over the batch alone is the author's `otherwise`: a
+///   renderer that can draw a part of its own shape reads the counts straight
+///   off the batch either way.
 #[must_use]
 pub fn build_highlight_state(
     batch: &RecordBatch,

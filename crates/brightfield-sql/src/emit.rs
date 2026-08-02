@@ -21,8 +21,8 @@ use crate::source;
 
 /// Reserved column carrying the per-GROUP count of selected rows — the
 /// aggregating counterpart of
-/// [`SELECTED_COLUMN`](brightfield_spec::analysis::SELECTED_COLUMN), which is a
-/// per-ROW boolean and cannot exist once the rows are groups.
+/// [`SELECTED_COLUMN`], which is a per-ROW boolean and cannot exist once the
+/// rows are groups.
 ///
 /// Shared across the SQL/render boundary by name, the way `__bf_count` already
 /// is: `brightfield-render`'s `SELECTED_COUNT_COLUMN` holds the same literal and
