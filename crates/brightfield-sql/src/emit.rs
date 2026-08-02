@@ -886,9 +886,15 @@ pub fn plan_for_mark(
     // is neither grouped nor aggregated — DuckDB rejects it whenever the
     // brushed column is not one of the mark's own grouping dimensions, which is
     // exactly the cross-filter case. What changes is that the branch no longer
-    // ends in silence: the group gets a COUNT of its selected rows instead
+    // ends in silence: a group gets a COUNT of its selected rows instead
     // (`selected_count_aggregate`), which is a number the renderer can draw a
     // part of a bar from.
+    //
+    // That second branch is narrowed to the families
+    // `mark_honours_highlight` names, which is where the render side reads a
+    // highlight at all. A column no renderer looks at is SQL a chart pays for
+    // and nobody sees, and the aggregating families outside that list — the
+    // heatmaps, rasters, hexbins and contours — have no bar to draw a part of.
     //
     // Two departures from the filterBy path above:
     //   FIX A — the `by:` selection may be created ONLY by an `as:` binding and
@@ -923,7 +929,11 @@ pub fn plan_for_mark(
             let predicate = compile_selection(sel_node, HIGHLIGHT_NO_SELF_EXCLUDE, contributors);
             if predicate != Predicate::True {
                 plan = if plan_aggregates(&plan) {
-                    project_selected_count(plan, &predicate)
+                    if brightfield_spec::analysis::mark_honours_highlight(mark.kind) {
+                        project_selected_count(plan, &predicate)
+                    } else {
+                        plan
+                    }
                 } else {
                     QueryPlan::Projection {
                         input: Box::new(plan),
@@ -1943,6 +1953,89 @@ plot:
             !emitted.sql.contains(SELECTED_COLUMN),
             "aggregate plan is guarded out of the projection: {}",
             emitted.sql
+        );
+    }
+
+    /// A BINNED RECT aggregates, and is a honouring family, so its highlight
+    /// arrives as a per-GROUP count of selected rows rather than a per-row
+    /// boolean — summed as a boolean inside the aggregate, over a column the
+    /// mark does not group by.
+    #[test]
+    fn aggregating_honouring_mark_counts_the_selected_rows_per_group() {
+        let yaml = r#"
+params:
+  brush: { select: single }
+plot:
+  - mark: rectY
+    data: { from: t }
+    x: { bin: power }
+    y: { count: }
+  - select: highlight
+    by: $brush
+"#;
+        let spec = parse_spec(yaml, Format::Yaml).unwrap().spec;
+        let selections = vec![(
+            "brush".to_string(),
+            vec![(
+                "root/other".to_string(),
+                Predicate::Expr("temp > 1".to_string()),
+            )],
+        )];
+        let emitted = emit_query(&spec, 0, None, Some(&selections)).expect("emit");
+        assert!(
+            emitted.sql.contains(&format!(
+                "SUM(CAST((temp > 1) AS INT)) AS DOUBLE) AS {SELECTED_COUNT_COLUMN}"
+            )),
+            "the selected count is summed as a boolean inside the aggregate: {}",
+            emitted.sql
+        );
+        // The predicate is inside the aggregate, never a WHERE: the group keeps
+        // its full count, so the bar drawn from it is still the whole.
+        assert!(
+            !emitted.sql.to_uppercase().contains("WHERE (TEMP > 1)"),
+            "highlight must not filter the rows it counts: {}",
+            emitted.sql
+        );
+        // And no per-row boolean: `__bf_selected_count` contains that name as a
+        // prefix, so the absence has to be asked with the counts removed first.
+        assert!(
+            !emitted
+                .sql
+                .replace(SELECTED_COUNT_COLUMN, "")
+                .contains(SELECTED_COLUMN),
+            "no per-row membership boolean on a grouped plan: {}",
+            emitted.sql
+        );
+    }
+
+    /// The same binned rect, at rest, emits SQL byte-identical to the plot
+    /// without any highlight interactor.
+    #[test]
+    fn an_aggregating_mark_at_rest_is_byte_identical() {
+        let with = r#"
+params:
+  brush: { select: single }
+plot:
+  - mark: rectY
+    data: { from: t }
+    x: { bin: power }
+    y: { count: }
+  - select: highlight
+    by: $brush
+"#;
+        let without = r#"
+plot:
+  - mark: rectY
+    data: { from: t }
+    x: { bin: power }
+    y: { count: }
+"#;
+        let a = parse_spec(with, Format::Yaml).unwrap().spec;
+        let b = parse_spec(without, Format::Yaml).unwrap().spec;
+        assert_eq!(
+            emit_query(&a, 0, None, None).expect("emit").sql,
+            emit_query(&b, 0, None, None).expect("emit").sql,
+            "at rest, highlight is invisible in an aggregating mark's SQL too"
         );
     }
 

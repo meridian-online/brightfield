@@ -4741,6 +4741,65 @@ mod tests {
         assert!((a - 0.2).abs() < 1e-6, "fillOpacity sets alpha");
     }
 
+    /// A selection too small to fill a pixel is still DRAWN. The floor is what
+    /// separates "almost none of this bar" from "none of it", which are
+    /// different answers and must not look the same.
+    ///
+    /// The extents below are written as literals rather than read off
+    /// `MIN_SELECTED_EXTENT_PX`: a test that takes its expectation from the
+    /// constant it is checking passes at every value of it, including zero.
+    #[test]
+    fn a_sub_pixel_selection_is_a_hairline_not_nothing() {
+        // A 200px bar growing upward (pixel y decreases), one row in a thousand
+        // selected: 0.2px of extent before any floor.
+        let (base, tip) = (300.0, 100.0);
+        let edge = selected_tip(base, tip, 0.001);
+        assert!(
+            edge < base,
+            "the part grows the way the bar does: {edge} is not above {base}"
+        );
+        assert!(
+            (base - edge) >= 0.25,
+            "a non-empty selection is drawn at least a quarter of a pixel: {}px",
+            base - edge
+        );
+        // A bar shorter than that gets its own extent, never more.
+        let short = selected_tip(300.0, 299.9, 0.001);
+        assert!(
+            (299.9..=300.0).contains(&short),
+            "the part never runs past the bar it is part of: {short}"
+        );
+        // A downward bar (a negative value) floors downward.
+        let down = selected_tip(100.0, 300.0, 0.001);
+        assert!(
+            down - 100.0 >= 0.25,
+            "the floor follows the bar's direction: {down}"
+        );
+        // Above the floor the fraction is honoured exactly.
+        let half = selected_tip(300.0, 100.0, 0.5);
+        assert!(
+            (half - 200.0).abs() < 1e-9,
+            "half a 200px bar is 100px: {half}"
+        );
+    }
+
+    /// The fraction is a proportion of the group's own drawn value, clamped to
+    /// the bar. No count, a zero count, or a group with nothing to be a
+    /// fraction of yields nothing to draw.
+    #[test]
+    fn selected_fraction_is_a_proportion_of_the_group() {
+        let counts = vec![Some(3.0), Some(0.0), None, Some(9.0)];
+        assert_eq!(selected_fraction_of(Some(&counts), 0, 12.0), Some(0.25));
+        assert_eq!(selected_fraction_of(Some(&counts), 1, 12.0), None);
+        assert_eq!(selected_fraction_of(Some(&counts), 2, 12.0), None);
+        assert_eq!(selected_fraction_of(Some(&counts), 3, 0.0), None);
+        // A count exceeding the drawn total cannot make a part longer than its
+        // whole.
+        assert_eq!(selected_fraction_of(Some(&counts), 3, 4.0), Some(1.0));
+        assert_eq!(selected_fraction_of(None, 0, 12.0), None);
+        assert_eq!(selected_fraction_of(Some(&counts), 9, 12.0), None);
+    }
+
     /// a matching row (predicate true) is returned unchanged.
     #[test]
     fn apply_highlight_matching_row_untouched() {
