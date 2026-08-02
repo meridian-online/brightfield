@@ -2627,4 +2627,57 @@ mod tests {
         assert_eq!(pins.x, None, "x was not requested");
         assert_eq!(pins.y, Some(PinnedDomain::Linear(0.0, 1.0)));
     }
+
+    /// **A colour domain's order is the ordering rule's; a band domain's is the
+    /// rows'.** One column, two channels, and the two answers differ — which is
+    /// the whole of why `order_categories` is scoped to colour.
+    ///
+    /// A band scale's category order is where the marks ARE, and the query that
+    /// produced these rows may have ordered them on purpose. Sorting it would
+    /// answer a determinism problem by discarding an author's `ORDER BY`.
+    #[test]
+    fn colour_inference_orders_categories_and_band_inference_does_not() {
+        let col = StringArray::from(vec!["zulu", "alpha", "zulu", "mike"]);
+
+        let fill = infer_column_scale(&col, 0.0, 0.0, Channel::Fill)
+            .expect("a string column gives the fill channel a colour scale");
+        match &fill {
+            Scale::Colour { categories, .. } => assert_eq!(
+                categories,
+                &["alpha".to_string(), "mike".to_string(), "zulu".to_string()],
+                "a palette slot must be a function of the category set, not of arrival order"
+            ),
+            other => panic!("expected a colour scale, got {other:?}"),
+        }
+
+        let x = infer_column_scale(&col, 0.0, 100.0, Channel::X)
+            .expect("a string column gives a positional channel a band scale");
+        match &x {
+            Scale::Band { categories, .. } => assert_eq!(
+                categories,
+                &["zulu".to_string(), "alpha".to_string(), "mike".to_string()],
+                "the bands must stay in the order the rows arrived in"
+            ),
+            other => panic!("expected a band scale, got {other:?}"),
+        }
+    }
+
+    /// The union of two ordered lists is not ordered, so the merge re-applies
+    /// the rule rather than inheriting it from the parts.
+    #[test]
+    fn unioning_two_colour_scales_re_orders_the_merged_set() {
+        let left = infer_column_scale(&StringArray::from(vec!["alpha", "zulu"]), 0.0, 0.0, Channel::Fill)
+            .expect("colour scale");
+        let right = infer_column_scale(&StringArray::from(vec!["mike"]), 0.0, 0.0, Channel::Fill)
+            .expect("colour scale");
+
+        match union_scales(&[left, right], 0.0, 0.0).expect("a union of colour scales") {
+            Scale::Colour { categories, .. } => assert_eq!(
+                categories,
+                vec!["alpha".to_string(), "mike".to_string(), "zulu".to_string()],
+                "appending the second list to the first would leave `mike` after `zulu`"
+            ),
+            other => panic!("expected a colour scale, got {other:?}"),
+        }
+    }
 }

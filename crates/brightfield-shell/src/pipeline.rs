@@ -1287,18 +1287,19 @@ fn compose_from_results(
         if plot_sample.is_some() {
             let unrestorable = unrestorable_under_sampling(&scales, &plot_domains);
             if !unrestorable.is_empty() {
-                let names: Vec<&str> = unrestorable.iter().map(|c| c.wire_name()).collect();
-                let s = if names.len() == 1 { "" } else { "s" };
+                let names: Vec<&str> = unrestorable.iter().map(|(c, _)| c.wire_name()).collect();
+                let faults: Vec<String> = unrestorable
+                    .iter()
+                    .map(|(c, why)| format!("{} is {}", c.wire_name(), why.reason()))
+                    .collect();
                 let names = names.join(", ");
                 return Err(format!(
-                    "refusing to sample plot {}: its {names} channel{s} carries a scale whose \
-                     domain is inferred from the rows actually drawn and cannot be put back \
-                     from the unsampled query — a band scale's order is where the bars are, \
-                     and a sequential ramp is anchored to the drawn extent. The sampled render \
-                     would give the same value a DIFFERENT band position (or colour) than the \
-                     complete one, and the sampling notice would not say so. Drop {names} from \
-                     this plot, or plot a continuous column there.",
+                    "refusing to sample plot {}: {}. The sampled render would place or colour \
+                     the same value differently from the complete one, and the sampling notice \
+                     would not say so. Drop {names} from this plot, or bind {names} to a column \
+                     whose domain the unsampled query can put back.",
                     plot.path,
+                    faults.join("; "),
                 ));
             }
         }

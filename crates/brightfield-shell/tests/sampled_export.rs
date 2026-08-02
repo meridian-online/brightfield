@@ -431,14 +431,21 @@ fn a_sampled_plot_keeps_the_complete_plots_positional_scales() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A four-class scatter — the shape `--force-sample` silently miscolours, and
-/// the shape the refusal exists for.
+/// A scatter whose fill has one class far rarer than the others, and whose
+/// classes' names do not sort into the order the rows arrive in.
+///
+/// Both properties are load-bearing. The rare class is the one a sample drops
+/// outright, which is what makes the unsampled value SET do work rather than
+/// merely agreeing with the drawn one. And `earlybird` arriving first while
+/// sorting last is what tells first-appearance order apart from the ordering
+/// rule — a domain that came out `[earlybird, …]` would be the scan's order
+/// wearing the new rule's clothes.
 const CATEGORICAL_SPEC: &str = "data:
   points:
     query: |
       SELECT (i * 7919 % 1009) / 10.0 AS a,
              (i * 104729 % 1013) / 10.0 AS b,
-             'class-' || (i % 4) AS g
+             CASE WHEN i < 3 THEN 'earlybird' ELSE 'class-' || (i % 4) END AS g
       FROM range(20000) AS t(i)
 plot:
   - mark: dot
@@ -450,27 +457,204 @@ width: 400
 height: 300
 ";
 
-/// **Sampling a categorical channel is refused, not drawn.**
+/// The colour a category is drawn in, read off the scale a plot handed back.
 ///
-/// Measured before the refusal existed: rendering this spec complete and at
-/// `--force-sample 64`, the colour scale's category list came back as
-/// `[class-0, class-1, class-2, class-3]` complete and
-/// `[class-0, class-2, class-1, class-3]` sampled — so `class-1` was drawn
-/// amber in one picture and teal in the other. A palette slot is a category's
-/// INDEX in that list, and the list is built in first-appearance order over the
-/// rows that were drawn, so dropping rows re-assigns the colours. The sampling
-/// notice says rows were dropped. It does not, and could not, say the legend
-/// was rewritten.
+/// Through [`Scale::map_colour`] rather than off the category list, because the
+/// colour is the thing that has to agree; the list is only how it is decided.
+/// An assertion on the list alone would go green on a repair that kept the list
+/// and changed the palette lookup.
+fn category_ink(
+    c: &brightfield_shell::pipeline::Composed,
+    channel: brightfield_render::channel::Channel,
+    category: &str,
+) -> [f32; 4] {
+    c.plots[0]
+        .scales
+        .get(channel)
+        .unwrap_or_else(|| panic!("the plot must carry a {channel:?} scale"))
+        .map_colour(category)
+        .unwrap_or_else(|| panic!("{category} must have a colour on the {channel:?} scale"))
+}
+
+/// The category list of a plot's colour scale.
+fn colour_categories(
+    c: &brightfield_shell::pipeline::Composed,
+    channel: brightfield_render::channel::Channel,
+) -> Vec<String> {
+    match c.plots[0].scales.get(channel) {
+        Some(brightfield_render::scale::Scale::Colour { categories, .. }) => categories.clone(),
+        other => panic!("expected a colour {channel:?} scale, got {other:?}"),
+    }
+}
+
+/// **A sampled plot's colour channel draws, in the complete plot's colours.**
 ///
-/// `--force-sample` is a shipped flag on `brightfield-shot` and on the live
-/// window, so until categorical domains can be restored deterministically the
-/// only honest answer at the point of use is to decline and say why.
+/// Measured before this was true: rendering this spec complete and at
+/// `--force-sample 64`, the colour scale's category list came back in one order
+/// complete and another sampled, so a class was drawn amber in one picture and
+/// teal in the other. A palette slot is a category's INDEX in that list, the
+/// list was built in first-appearance order over the rows that were DRAWN, and
+/// dropping rows therefore re-assigned the colours. The sampling notice says
+/// rows were dropped. It does not, and could not, say the legend was rewritten.
+///
+/// Asserted through `PlotHandle::scales` — the set the shell draws and legends
+/// from — and per category, so a picture that agreed on the list while
+/// disagreeing on any one class's ink would still fail.
 #[test]
-fn sampling_a_categorical_channel_is_refused_with_a_reason() {
+fn a_sampled_colour_channel_draws_in_the_complete_renders_colours() {
+    use brightfield_render::channel::Channel;
+
     let dir = std::env::temp_dir().join(format!("bf-sampled-cat-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
     let spec = dir.join("categorical.yaml");
     std::fs::write(&spec, CATEGORICAL_SPEC).expect("write spec");
+    let path = spec.to_str().unwrap();
+
+    let complete = compose_spec_sampled(path, None).expect("the complete render is unaffected");
+    let rate = SampleRate::from_modulus(64).expect("power of two");
+    let sampled = compose_spec_sampled(path, Some(rate))
+        .expect("a sampled plot carrying a colour channel must DRAW, not be refused");
+
+    let complete_cats = colour_categories(&complete, Channel::Fill);
+    let sampled_cats = colour_categories(&sampled, Channel::Fill);
+    assert_eq!(
+        sampled_cats, complete_cats,
+        "the sampled plot's colour domain must be the complete plot's, category for \
+         category and slot for slot"
+    );
+    for cat in &complete_cats {
+        assert_eq!(
+            category_ink(&sampled, Channel::Fill, cat),
+            category_ink(&complete, Channel::Fill, cat),
+            "{cat} is drawn in a different colour by the two renders — the reader sees a \
+             legend that was rewritten under a notice that says only that rows were dropped"
+        );
+    }
+
+    // Fixture check, and the reason the unsampled value SET is doing work here
+    // rather than agreeing by luck: the rare class is in the complete render's
+    // domain and absent from the rows the sample drew, so a domain built from
+    // the drawn rows alone would be short by one and every class after it would
+    // slide a slot.
+    assert!(
+        complete_cats.iter().any(|c| c == "earlybird"),
+        "fixture check: the complete render must see the rare class, got {complete_cats:?}"
+    );
+    let fact = sampled.plots[0]
+        .sample
+        .expect("the sampled composition's plot must carry its fact");
+    assert!(
+        fact.drawn > 0 && fact.drawn < fact.of,
+        "fixture check: the sample must drop rows ({} of {})",
+        fact.drawn,
+        fact.of
+    );
+
+    // The live window takes the same path, so it draws the same colours rather
+    // than opening a window onto a differently-coloured picture.
+    let (_, first) = live_spec_sampled(path, Some(rate))
+        .expect("the live window's --force-sample must draw the same spec");
+    assert_eq!(
+        colour_categories(&first, Channel::Fill),
+        complete_cats,
+        "the live window's first paint must agree with the one-shot render"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **The category order is a function of the category set, not of the scan.**
+///
+/// The rule the restoration depends on. DuckDB does not promise to repeat the
+/// row order of a parallel scan, so a domain built in first-appearance order is
+/// a domain that can differ between two runs of one spec — and the sampled
+/// render agreeing with the complete one is worth nothing if neither agrees
+/// with itself.
+///
+/// Two assertions, because either alone is weak. Repeated composition catches a
+/// rule that is not a function of the set at all. The order the fixture arrives
+/// in catches a rule that is one but is still the scan's: `earlybird` is
+/// written to arrive first and sorts last, so a domain that leads with it is
+/// first appearance, however stable.
+#[test]
+fn the_sampled_category_order_does_not_come_from_the_scan() {
+    use brightfield_render::channel::Channel;
+
+    let dir = std::env::temp_dir().join(format!("bf-sampled-order-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = dir.join("categorical.yaml");
+    std::fs::write(&spec, CATEGORICAL_SPEC).expect("write spec");
+    let path = spec.to_str().unwrap();
+    let rate = SampleRate::from_modulus(64).expect("power of two");
+
+    let first = colour_categories(
+        &compose_spec_sampled(path, Some(rate)).expect("compose sampled"),
+        Channel::Fill,
+    );
+
+    let mut sorted = first.clone();
+    sorted.sort();
+    assert_eq!(
+        first, sorted,
+        "the colour domain must be ordered by the category's own text. `earlybird` is \
+         written into the fixture to arrive before every `class-` row and to sort after \
+         them all, so a domain in any other order is the scan's order."
+    );
+    assert_ne!(
+        first.first().map(String::as_str),
+        Some("earlybird"),
+        "fixture check: the rule under test must be distinguishable from first appearance"
+    );
+
+    for run in 1..4 {
+        let again = colour_categories(
+            &compose_spec_sampled(path, Some(rate)).expect("compose sampled again"),
+            Channel::Fill,
+        );
+        assert_eq!(
+            again, first,
+            "run {run} of the same spec produced a different colour domain — a palette \
+             slot that moves between runs is a legend that moves between runs"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A scatter positioned on a categorical x — a BAND scale, which the ordering
+/// rule deliberately does not cover.
+const BAND_SPEC: &str = "data:
+  points:
+    query: |
+      SELECT 'class-' || (i % 4) AS g,
+             (i * 104729 % 1013) / 10.0 AS b
+      FROM range(20000) AS t(i)
+plot:
+  - mark: dot
+    data: { from: points }
+    x: g
+    y: b
+width: 400
+height: 300
+";
+
+/// **A band scale is still refused under sampling, and says which channel.**
+///
+/// The refusal narrowed; it did not go. A band domain's order is where the bars
+/// ARE, so the ordering that fixes a colour scale would here overwrite whatever
+/// order the query put the rows in — restoring one needs the unsampled ORDER
+/// and not merely the unsampled set. A sequential ramp is anchored to the drawn
+/// extent, which a category list puts nothing back for either.
+///
+/// This is what keeps the narrowing honest: the same spec shape that now draws
+/// with a colour channel is refused with a positional one, so "the refusal was
+/// removed for the kinds the ordering covers" is a claim with a failing case.
+#[test]
+fn sampling_a_band_channel_is_still_refused_with_a_reason() {
+    let dir = std::env::temp_dir().join(format!("bf-sampled-band-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = dir.join("band.yaml");
+    std::fs::write(&spec, BAND_SPEC).expect("write spec");
     let path = spec.to_str().unwrap();
 
     // Unsampled, the very same spec composes fine. The refusal is scoped to
@@ -480,21 +664,20 @@ fn sampling_a_categorical_channel_is_refused_with_a_reason() {
     let rate = SampleRate::from_modulus(64).expect("power of two");
     let err = compose_spec_sampled(path, Some(rate))
         .err()
-        .expect("sampling a categorical fill must be refused, not drawn");
+        .expect("sampling a band x must be refused, not drawn");
     assert!(
         err.contains("refusing to sample"),
         "the refusal must say it is refusing: {err}"
     );
     assert!(
-        err.contains("fill"),
+        err.contains('x'),
         "the refusal must name the offending channel so it is actionable: {err}"
     );
 
     // The live window takes the same path, so it refuses on the way in rather
     // than opening a window onto a wrong picture.
-    let live = live_spec_sampled(path, Some(rate));
     assert!(
-        live.is_err(),
+        live_spec_sampled(path, Some(rate)).is_err(),
         "the live window's --force-sample must refuse the same spec"
     );
 
@@ -503,6 +686,55 @@ fn sampling_a_categorical_channel_is_refused_with_a_reason() {
     let ok_spec = write_spec(&dir);
     compose_spec_sampled(ok_spec.to_str().unwrap(), Some(rate))
         .expect("a continuous x/y plot must still be sampleable");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A scatter whose `fill` names a literal colour rather than a column.
+const LITERAL_FILL_SPEC: &str = "data:
+  points:
+    query: |
+      SELECT (i * 7919 % 1009) / 10.0 AS a, (i * 104729 % 1013) / 10.0 AS b
+      FROM range(4096) AS t(i)
+plot:
+  - mark: dot
+    data: { from: points }
+    x: a
+    y: b
+    fill: steelblue
+width: 400
+height: 300
+";
+
+/// **A fill that names a colour rather than a column still carries its notice.**
+///
+/// The measurement that lifts the refusal is a query per colour channel, and a
+/// literal colour is indistinguishable from a column name in the spec, so
+/// `"steelblue"` is handed to DuckDB as an identifier and refused. That failure
+/// has to stay inside its own channel: the caller reads a facts error as "no
+/// facts", and a facts error would leave a plot that really is sampled drawing
+/// with no notice at all — the exact invisible degradation the notice exists to
+/// prevent.
+#[test]
+fn a_literal_colour_fill_does_not_cost_a_sampled_plot_its_notice() {
+    let dir = std::env::temp_dir().join(format!("bf-sampled-literal-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = dir.join("literal-fill.yaml");
+    std::fs::write(&spec, LITERAL_FILL_SPEC).expect("write spec");
+    let path = spec.to_str().unwrap();
+
+    let rate = SampleRate::from_modulus(8).expect("power of two");
+    let sampled = compose_spec_sampled(path, Some(rate)).expect("compose sampled");
+    let fact = sampled.plots[0]
+        .sample
+        .expect("a sampled plot whose fill is a literal colour must still carry its fact");
+    assert_eq!(fact.of, 4096, "`of` is the unsampled count, measured");
+    assert!(
+        fact.drawn > 0 && fact.drawn < fact.of,
+        "fixture check: the sample must drop rows ({} of {})",
+        fact.drawn,
+        fact.of
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
