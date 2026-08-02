@@ -541,9 +541,9 @@ impl Unrestorable {
 /// costs an unusual spec a loud, actionable error; erring the other way costs a
 /// reader a wrong picture they cannot see is wrong.
 ///
-/// Ask this of the scales `apply_unsampled_domains` has already run over —
-/// [`restored_colour_categories`] answers the same for a restored scale as for
-/// the scale it restored, so the two calls agree in either order.
+/// Ask this of the scales [`apply_unsampled_domains`] has already run over. The
+/// private helper both share answers the same for a restored scale as for the
+/// scale it restored, so the two calls agree in either order.
 #[must_use]
 pub fn unrestorable_under_sampling(
     scales: &ScaleSet,
