@@ -616,6 +616,113 @@ fn the_sampled_category_order_does_not_come_from_the_scan() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Two dot marks in one plot, each colouring by its own column, the two columns
+/// holding different class sets.
+///
+/// `apex` is written to belong to the SECOND mark's column, to be rare enough
+/// that a sample drops it, and to sort ahead of `mid` — so a measured set that
+/// took the first mark's answer for the shared `fill` channel is short of it,
+/// and `mid` slides a palette slot.
+const TWO_MARK_CATEGORICAL_SPEC: &str = "data:
+  points:
+    query: |
+      SELECT (i * 7919 % 1009) / 10.0 AS a,
+             (i * 104729 % 1013) / 10.0 AS b,
+             CASE WHEN i % 2 = 0 THEN 'mid' ELSE 'zulu' END AS g,
+             CASE WHEN i < 3 THEN 'apex' ELSE 'zulu' END AS h
+      FROM range(4096) AS t(i)
+plot:
+  - mark: dot
+    data: { from: points }
+    x: a
+    y: b
+    fill: g
+  - mark: dot
+    data: { from: points }
+    x: a
+    y: b
+    fill: h
+width: 400
+height: 300
+";
+
+/// **A sibling mark's classes are in the restored colour domain too.**
+///
+/// A plot draws ONE scale per channel, and the drawn domain that scale carries
+/// is the union across the plot's marks (`infer_scales_multi` → `union_scales`).
+/// The measured set it is checked against is built the same way, mark by mark,
+/// because the two are compared: a measured set assembled from the first mark
+/// that answered still CONTAINS a drawn union that a sample has shrunk back
+/// inside it, so the containment test passes and installs a domain the complete
+/// render does not have.
+///
+/// Measured on this fixture with the first mark's answer taken for the channel:
+/// the complete render's domain came back `["apex", "mid", "zulu"]` and the
+/// sampled one `["mid", "zulu"]`, which moves `mid` from the palette's second
+/// slot to its first — a class drawn in one colour complete and another
+/// sampled, under a notice that says rows were dropped.
+///
+/// Asserted through `Scale::map_colour` per class, as in the single-mark case:
+/// the colour is what has to agree, and the list is how it is decided.
+#[test]
+fn a_sibling_marks_colour_classes_survive_the_restored_domain() {
+    use brightfield_render::channel::Channel;
+
+    let dir = std::env::temp_dir().join(format!("bf-sampled-two-mark-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = dir.join("two-mark-categorical.yaml");
+    std::fs::write(&spec, TWO_MARK_CATEGORICAL_SPEC).expect("write spec");
+    let path = spec.to_str().unwrap();
+
+    let complete = compose_spec_sampled(path, None).expect("the complete render is unaffected");
+    let rate = SampleRate::from_modulus(64).expect("power of two");
+    let sampled = compose_spec_sampled(path, Some(rate))
+        .expect("a sampled two-mark plot carrying colour channels must DRAW, not be refused");
+
+    let complete_cats = colour_categories(&complete, Channel::Fill);
+    assert_eq!(
+        complete_cats,
+        ["apex", "mid", "zulu"],
+        "fixture check: the complete render's colour domain is the union of the two \
+         marks' classes, in the ordering rule's order"
+    );
+
+    assert_eq!(
+        colour_categories(&sampled, Channel::Fill),
+        complete_cats,
+        "the sampled plot's colour domain must be the complete plot's, class for class \
+         and slot for slot"
+    );
+    for cat in &complete_cats {
+        assert_eq!(
+            category_ink(&sampled, Channel::Fill, cat),
+            category_ink(&complete, Channel::Fill, cat),
+            "{cat} is drawn in a different colour by the two renders of a two-mark plot"
+        );
+    }
+
+    let fact = sampled.plots[0]
+        .sample
+        .expect("the sampled composition's plot must carry its fact");
+    assert!(
+        fact.drawn * 4 < fact.of,
+        "fixture check: a 1-in-64 sample must drop most of the rows ({} of {})",
+        fact.drawn,
+        fact.of
+    );
+
+    // The live window takes the same path, so it draws the same colours.
+    let (_, first) = live_spec_sampled(path, Some(rate))
+        .expect("the live window's --force-sample must draw the same spec");
+    assert_eq!(
+        colour_categories(&first, Channel::Fill),
+        complete_cats,
+        "the live window's first paint must agree with the one-shot render"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A scatter positioned on a categorical x — a BAND scale, which the ordering
 /// rule deliberately does not cover.
 const BAND_SPEC: &str = "data:

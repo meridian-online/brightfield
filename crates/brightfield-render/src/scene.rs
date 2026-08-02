@@ -309,8 +309,10 @@ pub struct UnsampledDomains {
     /// The y channel's unsampled `(min, max)`.
     pub y: Option<(f64, f64)>,
     /// The unsampled category set of each colour-bearing channel whose column
-    /// holds strings. The ORDER here is not read: [`order_categories`] decides
-    /// it, so a restored list and an inferred one are built by one rule.
+    /// holds strings, unioned across the plot's marks by
+    /// [`UnsampledDomains::merge_categories`]. The ORDER here is not read:
+    /// [`order_categories`] decides it, so a restored list and an inferred one
+    /// are built by one rule.
     pub categories: Vec<(Channel, Vec<String>)>,
 }
 
@@ -322,6 +324,33 @@ impl UnsampledDomains {
             .iter()
             .find(|(c, _)| *c == channel)
             .map(|(_, cats)| cats.as_slice())
+    }
+
+    /// Fold one mark's measured category set for `channel` into this plot's.
+    ///
+    /// A UNION, because the drawn domain the plot's scale carries is the union
+    /// across its marks (`infer_scales_multi` → `union_scales`), and the
+    /// private helper behind [`apply_unsampled_domains`] compares the two.
+    /// Keeping one mark's answer for the channel leaves the measured set short
+    /// of a sibling mark's categories — and a sibling category that a sample
+    /// drops shrinks the drawn union back INSIDE that short set, where the
+    /// containment test passes and installs a domain the complete render does
+    /// not have.
+    ///
+    /// Duplicates are dropped rather than appended: a category's palette slot
+    /// is its index, and two marks naming the same class are one class.
+    pub fn merge_categories(&mut self, channel: Channel, measured: &[String]) {
+        if !self.categories.iter().any(|(c, _)| *c == channel) {
+            self.categories.push((channel, Vec::new()));
+        }
+        let Some((_, slot)) = self.categories.iter_mut().find(|(c, _)| *c == channel) else {
+            return;
+        };
+        for cat in measured {
+            if !slot.contains(cat) {
+                slot.push(cat.clone());
+            }
+        }
     }
 }
 

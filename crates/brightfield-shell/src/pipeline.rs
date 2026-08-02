@@ -1173,19 +1173,17 @@ fn compose_from_results(
                 plot_domains.x = plot_domains.x.or(f.x_domain);
                 plot_domains.y = plot_domains.y.or(f.y_domain);
                 // Keyed by the channel's Mosaic wire name on the way out of the
-                // engine, which owns no view vocabulary. First mark to measure a
-                // channel wins, matching the positional domains above: the plot
-                // draws one scale per channel, so a second opinion on the same
-                // channel would have to be reconciled rather than appended, and
-                // a plot whose marks disagree about a category set is refused by
-                // the containment check rather than merged into a third answer.
+                // engine, which owns no view vocabulary. Unioned across the
+                // plot's marks, because the scale this is checked against is: a
+                // plot draws one scale per channel and its drawn domain is the
+                // union of what its marks drew, so the measured set has to be
+                // the union of what its marks measured or the comparison is
+                // between two differently-assembled lists.
                 for (wire, cats) in &f.categories {
                     let Some(channel) = Channel::from_wire(wire) else {
                         continue;
                     };
-                    if plot_domains.categories_for(channel).is_none() {
-                        plot_domains.categories.push((channel, cats.clone()));
-                    }
+                    plot_domains.merge_categories(channel, cats);
                 }
             }
             chart_data.push(ChartData {
