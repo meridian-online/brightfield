@@ -452,7 +452,13 @@ pub fn apply_unsampled_domains(scales: &mut ScaleSet, domains: &UnsampledDomains
             continue;
         };
         let palette = palette.clone();
-        scales.insert(channel, Scale::Colour { categories, palette });
+        scales.insert(
+            channel,
+            Scale::Colour {
+                categories,
+                palette,
+            },
+        );
     }
 }
 
@@ -1856,7 +1862,11 @@ mod tests {
     fn colour_scale(cats: &[&str]) -> Scale {
         Scale::Colour {
             categories: cats.iter().map(|c| (*c).to_string()).collect(),
-            palette: vec![[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]],
+            palette: vec![
+                [1.0, 0.0, 0.0, 1.0],
+                [0.0, 1.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0, 1.0],
+            ],
         }
     }
 

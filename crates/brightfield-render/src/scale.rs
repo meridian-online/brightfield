@@ -2666,8 +2666,13 @@ mod tests {
     /// the rule rather than inheriting it from the parts.
     #[test]
     fn unioning_two_colour_scales_re_orders_the_merged_set() {
-        let left = infer_column_scale(&StringArray::from(vec!["alpha", "zulu"]), 0.0, 0.0, Channel::Fill)
-            .expect("colour scale");
+        let left = infer_column_scale(
+            &StringArray::from(vec!["alpha", "zulu"]),
+            0.0,
+            0.0,
+            Channel::Fill,
+        )
+        .expect("colour scale");
         let right = infer_column_scale(&StringArray::from(vec!["mike"]), 0.0, 0.0, Channel::Fill)
             .expect("colour scale");
 

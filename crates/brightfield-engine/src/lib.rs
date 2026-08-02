@@ -1615,16 +1615,11 @@ impl Session {
             projections.join(", "),
             unsampled.sql
         );
-        let mut out = match read_mark_facts(
-            &self.conn,
-            &sql,
-            index,
-            x_col.is_some(),
-            y_col.is_some(),
-        ) {
-            Ok(f) => f,
-            Err(e) => return Some(Err(e)),
-        };
+        let mut out =
+            match read_mark_facts(&self.conn, &sql, index, x_col.is_some(), y_col.is_some()) {
+                Ok(f) => f,
+                Err(e) => return Some(Err(e)),
+            };
 
         // The colour channels' unsampled value sets, one statement each and
         // each one's failure confined to its own channel.
