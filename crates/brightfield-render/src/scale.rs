@@ -13,6 +13,33 @@ use brightfield_spec::layout::FixedDomains;
 
 use crate::channel::{Channel, ChannelMap};
 
+/// Put a colour scale's category list into the order that fixes each category's
+/// palette slot: ascending by the category's own text.
+///
+/// A palette slot is a category's INDEX in this list, so whatever produces the
+/// list decides the colours. Left to first appearance, that producer is the row
+/// order of a scan — which DuckDB does not promise to repeat, and which a
+/// sample changes outright. Ordering by the value instead makes the slot a
+/// function of the category set alone, so two renders of the same spec agree,
+/// and a render over a subset of the rows agrees with the render over all of
+/// them as long as the subset's set is the same.
+///
+/// **Colour only, and positional band scales deliberately not.** A band scale's
+/// order is where the bars are, and the query that produced the rows may have
+/// ordered them on purpose — re-ordering it alphabetically would answer a
+/// determinism problem by discarding an author's `ORDER BY`. A colour scale has
+/// no such claim on it: nothing in the picture says which category should be
+/// first, only that the same one should be first every time.
+///
+/// Ordering here rather than in SQL keeps one comparator for both producers.
+/// The categories a render infers come out of an Arrow batch and the ones a
+/// restoration supplies come out of a query, and a DuckDB collation ordering
+/// the second could disagree with a Rust comparator ordering the first on
+/// exactly the inputs where it matters.
+pub fn order_categories(categories: &mut [String]) {
+    categories.sort_unstable();
+}
+
 /// A single scale mapping a data domain to a pixel range.
 #[derive(Debug, Clone)]
 pub enum Scale {
@@ -912,7 +939,8 @@ pub fn infer_scales(
 /// For each channel that appears in any channel map, collects domain values from
 /// all batches and produces a single scale spanning the combined range:
 /// - Linear: min(all_mins), max(all_maxes)
-/// - Band/Colour: set union of categories (preserving insertion order)
+/// - Band: set union of categories, preserving insertion order
+/// - Colour: set union of categories, then [`order_categories`]
 /// - Time: min(all_mins), max(all_maxes)
 ///
 /// The existing `infer_scales()` is unchanged.
@@ -1040,6 +1068,9 @@ fn union_scales(scales: &[Scale], range_start: f64, range_end: f64) -> Option<Sc
                     }
                 }
             }
+            // The union of two ordered lists is not ordered, so the rule is
+            // re-applied to the merged set rather than inherited from the parts.
+            order_categories(&mut categories);
             Some(Scale::Colour {
                 categories,
                 palette,
@@ -1284,6 +1315,7 @@ fn infer_column_scale(
                 }
             }
             if matches!(channel, Channel::Fill | Channel::Stroke) {
+                order_categories(&mut categories);
                 Some(Scale::Colour {
                     palette: CATEGORICAL_PALETTE.to_vec(),
                     categories,

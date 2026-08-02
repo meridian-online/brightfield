@@ -194,7 +194,9 @@ use brightfield_sql::navigation_filter_pass::NavigationFilterPass;
 use brightfield_sql::passes::Pass;
 
 use crate::error::EngineError;
-use crate::facts::{positional_columns, read_mark_facts, MarkFacts};
+use crate::facts::{
+    categorical_columns, positional_columns, read_categories, read_mark_facts, MarkFacts,
+};
 
 /// One dispatched mark's re-query outcome: the mark's depth-first index paired
 /// with the batches it produced, or the error that stopped it.
@@ -1613,13 +1615,47 @@ impl Session {
             projections.join(", "),
             unsampled.sql
         );
-        Some(read_mark_facts(
+        let mut out = match read_mark_facts(
             &self.conn,
             &sql,
             index,
             x_col.is_some(),
             y_col.is_some(),
-        ))
+        ) {
+            Ok(f) => f,
+            Err(e) => return Some(Err(e)),
+        };
+
+        // The colour channels' unsampled value sets, one statement each and
+        // each one's failure confined to its own channel.
+        //
+        // Separate statements, not extra projections on the query above, for a
+        // reason the shape of the failure makes plain: a mark whose `fill` is
+        // the literal `steelblue` would make THAT query unbindable, the caller
+        // treats a facts error as "no facts", and a plot that really is sampled
+        // would then draw with no notice at all. A per-channel statement fails
+        // the channel and nothing else, so the worst case is the refusal that
+        // stands today.
+        //
+        // `typeof(...) = 'VARCHAR'` is a filter rather than a guard around the
+        // query: a non-string column yields no rows, which is exactly "no
+        // categorical domain to restore" and needs no separate probe. A numeric
+        // colour column therefore costs one empty scan and goes on being
+        // refused for its Sequential ramp, which no domain list can put back.
+        for (channel, col) in categorical_columns(&self.spec, index) {
+            let sql = format!(
+                "SELECT DISTINCT {col} AS \"__bf_cat\" FROM ({}) AS __bf_cats \
+                 WHERE {col} IS NOT NULL AND typeof({col}) = 'VARCHAR'",
+                unsampled.sql
+            );
+            match read_categories(&self.conn, &sql, index) {
+                Ok(cats) if !cats.is_empty() => out.categories.push((channel, cats)),
+                Ok(_) => {}
+                Err(e) => eprintln!("warning: unsampled categories for mark {index}: {e}"),
+            }
+        }
+
+        Some(Ok(out))
     }
 
     /// Execute all marks. Returns one result per mark in depth-first order.
