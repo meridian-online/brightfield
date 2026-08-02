@@ -15,8 +15,7 @@
 # is what gets drawn. One grouped query returns both numbers.
 #
 # The interactor carries no style options, so the unselected part takes the
-# default deemphasis — the mark's own colour, faded. `examples/highlight.yaml`
-# shows the same `otherwise` vocabulary being overridden on a scatter.
+# default deemphasis — the mark's own colour, faded.
 #
 # The companion is examples/rect-bin-count-ghost.yaml, which reaches a similar
 # reading by authoring two layers instead — the unfiltered total behind a

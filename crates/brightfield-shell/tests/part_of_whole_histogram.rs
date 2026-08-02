@@ -296,11 +296,22 @@ fn a_highlighted_aggregating_mark_draws_the_selected_part_inside_each_bar() {
     // brush covers only partly, the full-ink part starts well below the top of
     // the bar. A chart that redrew every bar in one ink — the failure above —
     // has no such column.
+    //
+    // Read over the SOLID INTERIOR columns — the set `inside` already selects
+    // for the height comparison, and for a sharper reason than there. A seam
+    // column between two abutting bars is covered in part by each rect and in
+    // full by neither, so its topmost non-chrome pixel sits at the taller
+    // neighbour's top while its first full-ink pixel appears lower down, where
+    // the two partial coverages sum to the whole. Such a column reads as a bar
+    // with a part inside it whatever the chart drew there, so this assertion
+    // taken over the frame can be carried by the pixel grid instead of by the
+    // data.
     let after_selected = selected_tops(&after, &frame);
     let partial: Vec<usize> = after_selected
         .iter()
         .zip(after_tops.iter())
         .enumerate()
+        .filter(|(x, _)| inside[*x])
         .filter_map(|(x, (s, b))| match (s, b) {
             (Some(s), Some(b)) if *s > b + 2 => Some(x),
             _ => None,
@@ -308,23 +319,26 @@ fn a_highlighted_aggregating_mark_draws_the_selected_part_inside_each_bar() {
         .collect();
     assert!(
         !partial.is_empty(),
-        "no frame column shows the selection as a part of its bar — the picture \
-         gives no account of what the selection accounts for"
+        "no solid bar column shows the selection as a part of its bar — the \
+         picture gives no account of what the selection accounts for"
     );
 
     // **And a bin the brush excludes keeps its bar with no selected ink in it.**
     // Without this the assertion above is satisfiable by a chart that shades
-    // every bar the same fraction.
+    // each bar the same fraction. Interior-only for the matching reason: a seam
+    // column does not reach the mark's full ink, so it reads as a bar the brush
+    // missed wherever it falls.
     let untouched: Vec<usize> = after_selected
         .iter()
         .zip(after_tops.iter())
         .enumerate()
+        .filter(|(x, _)| inside[*x])
         .filter(|(_, (s, b))| s.is_none() && b.is_some())
         .map(|(x, _)| x)
         .collect();
     assert!(
         !untouched.is_empty(),
-        "every column that has a bar also has selected ink, so the treatment is \
-         not discriminating between bins the brush reached and bins it did not"
+        "each solid bar column carries selected ink, so the treatment is not \
+         discriminating between bins the brush reached and bins it did not"
     );
 }
