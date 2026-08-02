@@ -74,34 +74,120 @@ pub struct HighlightState {
     pub otherwise: HighlightStyle,
 }
 
+/// Reserved column carrying the per-GROUP count of selected rows, as emitted by
+/// `brightfield-sql`'s `SELECTED_COUNT_COLUMN`. The two literals must agree; the
+/// same duplication `__bf_count` already carries across this boundary, and for
+/// the same reason — this crate does not depend on `brightfield-sql`.
+const SELECTED_COUNT_COLUMN: &str = "__bf_selected_count";
+
 /// Build a per-row [`HighlightState`] from a re-queried batch's reserved
-/// [`brightfield_spec::analysis::SELECTED_COLUMN`] boolean and the mark's
-/// resolved `otherwise` style. Returns `None` when the batch carries
-/// no membership column — the at-rest / empty-selection case, so every row
-/// renders normally — or when that column is not a boolean array.
+/// membership column and the mark's resolved `otherwise` style. Returns `None`
+/// when the batch carries neither — the at-rest / empty-selection case, so every
+/// row renders normally — or when the column it does carry has the wrong type.
 ///
-/// The membership booleans are copied into an owned `Vec` the predicate closure
-/// captures, so the returned state is self-contained (`Send + Sync + 'static`).
-/// A NULL membership (a predicate over a NULL column) reads as not-selected →
-/// deemphasised, matching Mosaic (only rows the predicate proves in stay lit).
+/// Two forms, one for each shape a query can come back in.
+///
+/// * [`brightfield_spec::analysis::SELECTED_COLUMN`], a per-row boolean, for a
+///   mark whose rows are rows. The booleans are copied into an owned `Vec` the
+///   predicate closure captures, so the returned state is self-contained
+///   (`Send + Sync + 'static`). A NULL membership (a predicate over a NULL
+///   column) reads as not-selected → deemphasised, matching Mosaic (only rows
+///   the predicate proves in stay lit).
+/// * The private `SELECTED_COUNT_COLUMN`, a per-group count, for a mark whose
+///   rows are groups. There is no whole element to keep lit here — a group is
+///   selected in PART — so every group reads as non-matching and the mark is
+///   deemphasised whole, which is Mosaic's `highlight` reading of a group. What
+///   this state adds over the batch alone is the author's `otherwise`: a
+///   renderer that can draw a part of its own shape reads the counts straight
+///   off the batch either way.
 #[must_use]
 pub fn build_highlight_state(
     batch: &RecordBatch,
     style: &HighlightStyle,
 ) -> Option<HighlightState> {
     use arrow::array::BooleanArray;
-    let idx = batch
+    if let Ok(idx) = batch
         .schema()
         .index_of(brightfield_spec::analysis::SELECTED_COLUMN)
-        .ok()?;
-    let col = batch.column(idx).as_any().downcast_ref::<BooleanArray>()?;
-    let selected: Vec<bool> = (0..col.len())
-        .map(|i| !col.is_null(i) && col.value(i))
-        .collect();
+    {
+        let col = batch.column(idx).as_any().downcast_ref::<BooleanArray>()?;
+        let selected: Vec<bool> = (0..col.len())
+            .map(|i| !col.is_null(i) && col.value(i))
+            .collect();
+        return Some(HighlightState {
+            predicate: Box::new(move |row| selected.get(row).copied().unwrap_or(false)),
+            otherwise: style.clone(),
+        });
+    }
+    batch.schema().index_of(SELECTED_COUNT_COLUMN).ok()?;
     Some(HighlightState {
-        predicate: Box::new(move |row| selected.get(row).copied().unwrap_or(false)),
+        predicate: Box::new(|_| false),
         otherwise: style.clone(),
     })
+}
+
+/// The per-group selected counts a batch carries, read once. `None` for a batch
+/// without the column, which is every mark whose rows are rows and every mark at
+/// rest.
+///
+/// Read off the BATCH rather than off a [`HighlightState`], the way `__bf_count`
+/// and the hexbin geometry columns are: the column is projected only under a
+/// live highlight, so its presence is the signal, and a renderer handed the
+/// batch can act on it whether or not the caller also resolved the author's
+/// deemphasis style.
+fn selected_counts(batch: &RecordBatch) -> Option<Vec<Option<f64>>> {
+    column_as_f64(batch, SELECTED_COUNT_COLUMN)
+}
+
+/// The ink for the part of a bar the selection did NOT account for: the mark's
+/// own colour, deemphasised.
+///
+/// Takes the author's `otherwise` when the render call was handed a
+/// [`HighlightState`], and the module default when it was not — the same default
+/// [`apply_highlight`] applies to a non-matching row of a per-row mark.
+fn remainder_ink(ink: Color, row: usize, highlight: Option<&HighlightState>) -> Color {
+    match highlight {
+        Some(_) => apply_highlight(ink, row, highlight),
+        None => deemphasise(ink, &HighlightStyle::default()),
+    }
+}
+
+/// The fraction of row `row`'s group the selection accounts for, given the
+/// group's own drawn value — `None` when the mark carries no per-group counts,
+/// when this group has none, or when the total is not a positive number to take
+/// a fraction of.
+///
+/// Clamped to `[0, 1]`: the selected rows of a group are a subset of it, so a
+/// ratio above one would be a fraction of something the bar is not drawn from.
+fn selected_fraction_of(counts: Option<&Vec<Option<f64>>>, row: usize, total: f64) -> Option<f64> {
+    let selected = (*counts?.get(row)?)?;
+    (total > 0.0 && selected > 0.0).then(|| (selected / total).min(1.0))
+}
+
+/// Floor on the pixel extent of a part-of-whole overdraw that stands for a
+/// non-empty selection.
+///
+/// A sub-pixel rectangle rasterises as partial coverage, so a selection small
+/// enough fades toward invisible — and invisible is the reading that means no
+/// selection at all, which is the confusion this treatment exists to remove. A
+/// floor makes a tiny selection a hairline instead.
+const MIN_SELECTED_EXTENT_PX: f64 = 0.25;
+
+/// The far edge of the part-of-whole overdraw: `fraction` of the way from a
+/// bar's baseline at `base` to its tip at `tip`, in pixels.
+///
+/// Floored at [`MIN_SELECTED_EXTENT_PX`] in the direction the bar grows, and
+/// never past `tip` — a bar that is itself sub-pixel gets its whole extent
+/// rather than an overdraw longer than the bar it is part of.
+fn selected_tip(base: f64, tip: f64, fraction: f64) -> f64 {
+    let span = tip - base;
+    let drawn = span * fraction;
+    let floor = MIN_SELECTED_EXTENT_PX.min(span.abs());
+    if drawn.abs() >= floor {
+        base + drawn
+    } else {
+        base + floor.copysign(span)
+    }
 }
 
 /// Parse a CSS hex colour (`#rgb`, `#rgba`, `#rrggbb`, or `#rrggbbaa`) into a
@@ -1205,6 +1291,8 @@ impl MarkRenderer for RectRenderer {
             None => return,
         };
 
+        let counts = selected_counts(batch);
+
         for i in 0..batch.num_rows() {
             let (xav, xbv, yav, ybv) = match (xa[i], xb[i], ya[i], yb[i]) {
                 (Some(a), Some(b), Some(c), Some(d)) => (a, b, c, d),
@@ -1233,10 +1321,43 @@ impl MarkRenderer for RectRenderer {
                 continue;
             }
 
-            let colour = resolve_colour(scales, channel_map, batch, i);
-            let colour = apply_highlight(colour, i, highlight);
+            let ink = resolve_colour(scales, channel_map, batch, i);
+            // The whole bar. Deemphasised when this mark carries per-group
+            // selected counts — it is about to become the denominator behind a
+            // part — and otherwise exactly as before.
+            let colour = if counts.is_some() {
+                remainder_ink(ink, i, highlight)
+            } else {
+                apply_highlight(ink, i, highlight)
+            };
             let rect = Rect::new(left, top, right, bottom);
             scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &rect);
+
+            // THE PART-OF-WHOLE READING. When the batch carries a per-group
+            // count of selected rows, the whole bar above has just been drawn
+            // deemphasised — it is the denominator — and the selected part is
+            // overdrawn on it at full ink, growing from the same baseline. So a
+            // selection reads as a fraction of a bar that did not move, rather
+            // than as a bar that changed height for reasons off the page.
+            //
+            // Only a value form has a baseline to grow that part from; the
+            // fully-ranged `rect` has none, so it keeps the deemphasised whole.
+            let part = match self.kind {
+                RectKind::Y => selected_fraction_of(counts.as_ref(), i, ybv).map(|f| {
+                    let base = y_scale.map_f64(yav);
+                    let edge = selected_tip(base, y_scale.map_f64(ybv), f);
+                    Rect::new(left, base.min(edge), right, base.max(edge))
+                }),
+                RectKind::X => selected_fraction_of(counts.as_ref(), i, xbv).map(|f| {
+                    let base = x_scale.map_f64(xav);
+                    let edge = selected_tip(base, x_scale.map_f64(xbv), f);
+                    Rect::new(base.min(edge), top, base.max(edge), bottom)
+                }),
+                RectKind::Xy => None,
+            };
+            if let Some(part) = part {
+                scene.fill(Fill::NonZero, Affine::IDENTITY, ink, None, &part);
+            }
         }
     }
 
@@ -4618,6 +4739,65 @@ mod tests {
             "#ccc grey"
         );
         assert!((a - 0.2).abs() < 1e-6, "fillOpacity sets alpha");
+    }
+
+    /// A selection too small to fill a pixel is still DRAWN. The floor is what
+    /// separates "almost none of this bar" from "none of it", which are
+    /// different answers and must not look the same.
+    ///
+    /// The extents below are written as literals rather than read off
+    /// `MIN_SELECTED_EXTENT_PX`: a test that takes its expectation from the
+    /// constant it is checking passes at every value of it, including zero.
+    #[test]
+    fn a_sub_pixel_selection_is_a_hairline_not_nothing() {
+        // A 200px bar growing upward (pixel y decreases), one row in a thousand
+        // selected: 0.2px of extent before any floor.
+        let (base, tip) = (300.0, 100.0);
+        let edge = selected_tip(base, tip, 0.001);
+        assert!(
+            edge < base,
+            "the part grows the way the bar does: {edge} is not above {base}"
+        );
+        assert!(
+            (base - edge) >= 0.25,
+            "a non-empty selection is drawn at least a quarter of a pixel: {}px",
+            base - edge
+        );
+        // A bar shorter than that gets its own extent, never more.
+        let short = selected_tip(300.0, 299.9, 0.001);
+        assert!(
+            (299.9..=300.0).contains(&short),
+            "the part never runs past the bar it is part of: {short}"
+        );
+        // A downward bar (a negative value) floors downward.
+        let down = selected_tip(100.0, 300.0, 0.001);
+        assert!(
+            down - 100.0 >= 0.25,
+            "the floor follows the bar's direction: {down}"
+        );
+        // Above the floor the fraction is honoured exactly.
+        let half = selected_tip(300.0, 100.0, 0.5);
+        assert!(
+            (half - 200.0).abs() < 1e-9,
+            "half a 200px bar is 100px: {half}"
+        );
+    }
+
+    /// The fraction is a proportion of the group's own drawn value, clamped to
+    /// the bar. No count, a zero count, or a group with nothing to be a
+    /// fraction of yields nothing to draw.
+    #[test]
+    fn selected_fraction_is_a_proportion_of_the_group() {
+        let counts = vec![Some(3.0), Some(0.0), None, Some(9.0)];
+        assert_eq!(selected_fraction_of(Some(&counts), 0, 12.0), Some(0.25));
+        assert_eq!(selected_fraction_of(Some(&counts), 1, 12.0), None);
+        assert_eq!(selected_fraction_of(Some(&counts), 2, 12.0), None);
+        assert_eq!(selected_fraction_of(Some(&counts), 3, 0.0), None);
+        // A count exceeding the drawn total cannot make a part longer than its
+        // whole.
+        assert_eq!(selected_fraction_of(Some(&counts), 3, 4.0), Some(1.0));
+        assert_eq!(selected_fraction_of(None, 0, 12.0), None);
+        assert_eq!(selected_fraction_of(Some(&counts), 9, 12.0), None);
     }
 
     /// a matching row (predicate true) is returned unchanged.

@@ -1,0 +1,83 @@
+# The part-of-whole cross-filtered histogram — one bar per bin, with the part
+# the selection accounts for drawn inside it.
+#
+# Drag an x-range on the LEFT scatter. The RIGHT plot has ONE rectY layer over
+# `observations`, and it is not filtered by the drag: its bars stay at the
+# unfiltered count, so the denominator never leaves the page and the count axis
+# never moves. What the drag changes is the ink INSIDE each bar — the pale part
+# is the rows the drag left out, the solid part is the rows it kept, growing
+# from the same baseline.
+#
+# The interactor is Mosaic's `highlight`, the same keyword `examples/highlight.yaml`
+# uses on a scatter, asked here of a mark that aggregates. On the scatter it
+# means "keep the selected points lit and fade the rest"; a bar is a GROUP, so
+# there is no whole element to keep lit — it is selected in part, and the part
+# is what gets drawn. One grouped query returns both numbers.
+#
+# The interactor carries no style options, so the unselected part takes the
+# default deemphasis — the mark's own colour, faded.
+#
+# The companion is examples/rect-bin-count-ghost.yaml, which reaches a similar
+# reading by authoring two layers instead — the unfiltered total behind a
+# filtered subset. Two devices, one question: what fraction of the whole is this?
+#
+#   cargo run -p brightfield-shell -- examples/rect-bin-count-part-of-whole.yaml
+params:
+  brush: { select: crossfilter }
+data:
+  observations:
+    - { temp: 1,  power: 4 }
+    - { temp: 2,  power: 12 }
+    - { temp: 3,  power: 7 }
+    - { temp: 4,  power: 16 }
+    - { temp: 5,  power: 9 }
+    - { temp: 6,  power: 21 }
+    - { temp: 7,  power: 13 }
+    - { temp: 8,  power: 18 }
+    - { temp: 9,  power: 24 }
+    - { temp: 10, power: 11 }
+    - { temp: 11, power: 27 }
+    - { temp: 12, power: 19 }
+    - { temp: 13, power: 33 }
+    - { temp: 14, power: 22 }
+    - { temp: 15, power: 38 }
+    - { temp: 16, power: 26 }
+    - { temp: 17, power: 41 }
+    - { temp: 18, power: 29 }
+    - { temp: 19, power: 47 }
+    - { temp: 20, power: 34 }
+    - { temp: 21, power: 52 }
+    - { temp: 22, power: 44 }
+    - { temp: 23, power: 58 }
+    - { temp: 24, power: 49 }
+    - { temp: 25, power: 63 }
+    - { temp: 26, power: 54 }
+    - { temp: 27, power: 68 }
+    - { temp: 28, power: 61 }
+    - { temp: 29, power: 72 }
+    - { temp: 30, power: 66 }
+    - { temp: 31, power: 77 }
+    - { temp: 32, power: 71 }
+    - { temp: 33, power: 83 }
+    - { temp: 34, power: 79 }
+    - { temp: 35, power: 88 }
+    - { temp: 36, power: 94 }
+hconcat:
+  - plot:
+      - mark: dot
+        data: { from: observations }
+        x: temp
+        y: power
+      - select: intervalX
+        as: $brush
+    width: 360
+    height: 320
+  - plot:
+      - mark: rectY
+        data: { from: observations }
+        x: { bin: power }
+        y: { count: }
+      - select: highlight
+        by: $brush
+    width: 360
+    height: 320

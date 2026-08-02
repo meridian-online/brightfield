@@ -13,11 +13,21 @@ use brightfield_spec::vocab::{ImplStatus, InteractorKind, SelectionResolution};
 
 use crate::binding::{Binding, EmittedQuery, ParamValues};
 use crate::error::EmitError;
-use crate::ir::{Predicate, QueryPlan, SampleRate, SelectionPredicate};
+use crate::ir::{AggregateExpr, Predicate, QueryPlan, SampleRate, SelectionPredicate};
 use crate::lower::{compile_selection, default_lowerers, find_lowerer, LowerCtx};
 use crate::passes::apply_passes;
 use crate::render::render_query;
 use crate::source;
+
+/// Reserved column carrying the per-GROUP count of selected rows — the
+/// aggregating counterpart of
+/// [`SELECTED_COLUMN`], which is a per-ROW boolean and cannot exist once the
+/// rows are groups.
+///
+/// Shared across the SQL/render boundary by name, the way `__bf_count` already
+/// is: `brightfield-render`'s `SELECTED_COUNT_COLUMN` holds the same literal and
+/// must keep holding it.
+pub const SELECTED_COUNT_COLUMN: &str = "__bf_selected_count";
 
 /// Tag identifying which dispatch arm produced a [`SourceDdl`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -868,7 +878,23 @@ pub fn plan_for_mark(
     // Membership evaluates against the source table (so a
     // splom panel highlights on a column it does not plot). An empty selection
     // compiles to `True` → no projection → the mark renders exactly as at rest.
-    // An aggregate plan is guarded out.
+    //
+    // AN AGGREGATING PLAN TAKES THE OTHER BRANCH, and the guard that sends it
+    // there stays. The reason it was written is still true: the rows of an
+    // aggregating plan are GROUPS, so there is no row for a per-row membership
+    // boolean to be about, and a `(<pred>)` in the select list of a `GROUP BY`
+    // is neither grouped nor aggregated — DuckDB rejects it whenever the
+    // brushed column is not one of the mark's own grouping dimensions, which is
+    // exactly the cross-filter case. What changes is that the branch no longer
+    // ends in silence: a group gets a COUNT of its selected rows instead
+    // (`selected_count_aggregate`), which is a number the renderer can draw a
+    // part of a bar from.
+    //
+    // That second branch is narrowed to the families
+    // `mark_honours_highlight` names, which is where the render side reads a
+    // highlight at all. A column no renderer looks at is SQL a chart pays for
+    // and nobody sees, and the aggregating families outside that list — the
+    // heatmaps, rasters, hexbins and contours — have no bar to draw a part of.
     //
     // Two departures from the filterBy path above:
     //   FIX A — the `by:` selection may be created ONLY by an `as:` binding and
@@ -893,30 +919,112 @@ pub fn plan_for_mark(
             None => Some(&default_node),
         };
         if let Some(sel_node) = sel_node {
-            if !plan_aggregates(&plan) {
-                let contributors: &[(String, Predicate)] = selection_predicates
-                    .and_then(|all| {
-                        all.iter()
-                            .find(|(n, _)| n == selection_name)
-                            .map(|(_, c)| c.as_slice())
-                    })
-                    .unwrap_or(&[]);
-                let predicate =
-                    compile_selection(sel_node, HIGHLIGHT_NO_SELF_EXCLUDE, contributors);
-                if predicate != Predicate::True {
-                    plan = QueryPlan::Projection {
+            let contributors: &[(String, Predicate)] = selection_predicates
+                .and_then(|all| {
+                    all.iter()
+                        .find(|(n, _)| n == selection_name)
+                        .map(|(_, c)| c.as_slice())
+                })
+                .unwrap_or(&[]);
+            let predicate = compile_selection(sel_node, HIGHLIGHT_NO_SELF_EXCLUDE, contributors);
+            if predicate != Predicate::True {
+                plan = if plan_aggregates(&plan) {
+                    if brightfield_spec::analysis::mark_honours_highlight(mark.kind) {
+                        project_selected_count(plan, &predicate)
+                    } else {
+                        plan
+                    }
+                } else {
+                    QueryPlan::Projection {
                         input: Box::new(plan),
                         columns: vec![
                             "*".to_string(),
                             format!("({predicate}) AS {SELECTED_COLUMN}"),
                         ],
-                    };
-                }
+                    }
+                };
             }
         }
     }
 
     Ok(plan)
+}
+
+/// Add the per-group count of SELECTED rows to an aggregating plan, as a second
+/// aggregate beside the ones the mark already asked for.
+///
+/// The predicate is summed as a boolean rather than applied as a `WHERE`:
+/// `SUM(CAST((<pred>) AS INT))`. Two things follow, and both are the reason
+/// this shape was chosen over filtering.
+///
+/// * **The group keeps its full count.** The mark stays unfiltered, so its bar
+///   is still the whole total and the selected count is a part OF it. A `WHERE`
+///   would give the subset and lose the denominator, which is the failure being
+///   fixed.
+/// * **The brushed column need not be a grouping dimension.** The expression is
+///   inside an aggregate, so it is legal over any column of the aggregation's
+///   input — which is what makes the genuine cross-filter case (brush one
+///   column, group by another) expressible at all.
+///
+/// One query, not two: the total and the selected part come back in the same
+/// grouped result.
+///
+/// Walks the row-preserving wrappers a lowerer puts above its aggregation
+/// (`Order`, `Limit`) to reach it. `Projection` is NOT walked through: a
+/// projection above an aggregation names its output columns, and an aggregate
+/// added underneath one would be projected away. Anything else is returned
+/// untouched — the caller has already established that the plan aggregates, so
+/// the only way to arrive here without finding one is a plan shape no lowerer
+/// currently emits.
+fn project_selected_count(plan: QueryPlan, predicate: &Predicate) -> QueryPlan {
+    match plan {
+        QueryPlan::Order { input, keys } => QueryPlan::Order {
+            input: Box::new(project_selected_count(*input, predicate)),
+            keys,
+        },
+        QueryPlan::Limit {
+            input,
+            limit,
+            offset,
+        } => QueryPlan::Limit {
+            input: Box::new(project_selected_count(*input, predicate)),
+            limit,
+            offset,
+        },
+        QueryPlan::Aggregation {
+            input,
+            group_by,
+            mut aggregates,
+        } => {
+            aggregates.push(selected_count_aggregate(predicate));
+            QueryPlan::Aggregation {
+                input,
+                group_by,
+                aggregates,
+            }
+        }
+        QueryPlan::AggregateScalar {
+            input,
+            mut aggregates,
+        } => {
+            aggregates.push(selected_count_aggregate(predicate));
+            QueryPlan::AggregateScalar { input, aggregates }
+        }
+        other => other,
+    }
+}
+
+/// `CAST(SUM(CAST((<pred>) AS INT)) AS DOUBLE) AS __bf_selected_count`.
+///
+/// [`AggregateExpr::Raw`] rather than a typed call, deliberately: the
+/// pre-aggregation layer treats `Raw` as opaque and bails to the direct query,
+/// which is the right answer here. The predicate is rewritten on every gesture,
+/// so a cube keyed on the plan that carried it would be stale the moment the
+/// brush moved.
+fn selected_count_aggregate(predicate: &Predicate) -> AggregateExpr {
+    AggregateExpr::Raw(format!(
+        "CAST(SUM(CAST(({predicate}) AS INT)) AS DOUBLE) AS {SELECTED_COUNT_COLUMN}"
+    ))
 }
 
 /// Emit the ROW-LEVEL query for a mark's step — every column of the step's
@@ -1845,6 +1953,89 @@ plot:
             !emitted.sql.contains(SELECTED_COLUMN),
             "aggregate plan is guarded out of the projection: {}",
             emitted.sql
+        );
+    }
+
+    /// A BINNED RECT aggregates, and is a honouring family, so its highlight
+    /// arrives as a per-GROUP count of selected rows rather than a per-row
+    /// boolean — summed as a boolean inside the aggregate, over a column the
+    /// mark does not group by.
+    #[test]
+    fn aggregating_honouring_mark_counts_the_selected_rows_per_group() {
+        let yaml = r#"
+params:
+  brush: { select: single }
+plot:
+  - mark: rectY
+    data: { from: t }
+    x: { bin: power }
+    y: { count: }
+  - select: highlight
+    by: $brush
+"#;
+        let spec = parse_spec(yaml, Format::Yaml).unwrap().spec;
+        let selections = vec![(
+            "brush".to_string(),
+            vec![(
+                "root/other".to_string(),
+                Predicate::Expr("temp > 1".to_string()),
+            )],
+        )];
+        let emitted = emit_query(&spec, 0, None, Some(&selections)).expect("emit");
+        assert!(
+            emitted.sql.contains(&format!(
+                "SUM(CAST((temp > 1) AS INT)) AS DOUBLE) AS {SELECTED_COUNT_COLUMN}"
+            )),
+            "the selected count is summed as a boolean inside the aggregate: {}",
+            emitted.sql
+        );
+        // The predicate is inside the aggregate, never a WHERE: the group keeps
+        // its full count, so the bar drawn from it is still the whole.
+        assert!(
+            !emitted.sql.to_uppercase().contains("WHERE (TEMP > 1)"),
+            "highlight must not filter the rows it counts: {}",
+            emitted.sql
+        );
+        // And no per-row boolean: `__bf_selected_count` contains that name as a
+        // prefix, so the absence has to be asked with the counts removed first.
+        assert!(
+            !emitted
+                .sql
+                .replace(SELECTED_COUNT_COLUMN, "")
+                .contains(SELECTED_COLUMN),
+            "no per-row membership boolean on a grouped plan: {}",
+            emitted.sql
+        );
+    }
+
+    /// The same binned rect, at rest, emits SQL byte-identical to the plot
+    /// without any highlight interactor.
+    #[test]
+    fn an_aggregating_mark_at_rest_is_byte_identical() {
+        let with = r#"
+params:
+  brush: { select: single }
+plot:
+  - mark: rectY
+    data: { from: t }
+    x: { bin: power }
+    y: { count: }
+  - select: highlight
+    by: $brush
+"#;
+        let without = r#"
+plot:
+  - mark: rectY
+    data: { from: t }
+    x: { bin: power }
+    y: { count: }
+"#;
+        let a = parse_spec(with, Format::Yaml).unwrap().spec;
+        let b = parse_spec(without, Format::Yaml).unwrap().spec;
+        assert_eq!(
+            emit_query(&a, 0, None, None).expect("emit").sql,
+            emit_query(&b, 0, None, None).expect("emit").sql,
+            "at rest, highlight is invisible in an aggregating mark's SQL too"
         );
     }
 
