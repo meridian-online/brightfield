@@ -26,10 +26,11 @@ pub struct MarkFacts {
     /// the renderer orders it, so the ordering rule lives in one place rather
     /// than being split across a SQL collation and a Rust comparator.
     ///
-    /// Empty for a channel the mark does not name, one it names as a literal
-    /// or a `$param`, one whose column is not a string, and one whose query
-    /// failed — every case in which no restoration is on offer and the caller
-    /// must go on refusing.
+    /// A channel with no entry has no measured set — it may not be named, be
+    /// named as a literal colour or a `$param`, sit on a column that holds
+    /// something other than strings, or have had its query fail. The caller
+    /// treats the absence itself as the answer and goes on refusing, so which
+    /// of those it was does not have to be told apart here.
     pub categories: Vec<(String, Vec<String>)>,
 }
 

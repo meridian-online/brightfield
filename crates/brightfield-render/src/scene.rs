@@ -423,10 +423,10 @@ fn pins_yielding_to_navigation(pins: &PinnedDomains, entry: &ChartData<'_>) -> P
 
 /// Put the scales back onto their unsampled domains, in place.
 ///
-/// Two kinds take an override: a continuous positional scale is widened to the
-/// unsampled extent, and a colour scale's category list is replaced by the
-/// unsampled set in [`order_categories`]' order. Every other scale kind is
-/// inferred from the drawn rows and is NOT restored here — see
+/// A continuous positional scale is widened to the unsampled extent, and a
+/// colour scale's category list is replaced by the unsampled set in
+/// [`order_categories`]' order. A scale kind not named there keeps what the
+/// drawn rows implied and is NOT restored here — see
 /// [`unrestorable_under_sampling`], which is the refusal that keeps a plot
 /// carrying one from being sampled at all.
 pub fn apply_unsampled_domains(scales: &mut ScaleSet, domains: &UnsampledDomains) {
@@ -477,10 +477,10 @@ pub enum Unrestorable {
     /// value takes a different colour in the two renders, and no category list
     /// puts that back.
     SequentialAnchor,
-    /// A colour scale whose unsampled value set was not measured: a channel
-    /// named as a literal colour or a `$param`, a column that does not hold
-    /// strings, or a measurement that came back missing a category the sample
-    /// drew.
+    /// A colour scale whose unsampled value set was not measured — a channel
+    /// named as a literal colour or a `$param`, a measurement that failed, or
+    /// one that came back missing a category the sample drew. Nothing changed
+    /// for it, so the refusal that stood before the restoration existed stands.
     ColourUnmeasured,
 }
 
@@ -508,13 +508,11 @@ impl Unrestorable {
 ///
 /// **This exists because the alternative is a confidently wrong picture.** A
 /// categorical domain is a LIST and the palette slot a category gets is its
-/// index in that list, so whatever fixes the list fixes the colours. Inferred
-/// in first-appearance order over the drawn rows, that was the scan: measured
-/// over a four-class scatter at `--force-sample 64`, complete drew `class-1`
-/// amber and `class-2` teal while the sampled render drew `class-1` teal and
-/// `class-2` amber. Nothing about that is visible to the reader — the notice
-/// says rows were dropped, and says nothing about the legend having been
-/// rewritten.
+/// index in that list, so whatever decides the list decides the colours.
+/// Inferred in first-appearance order over the drawn rows, the decider was the
+/// scan — and a class drawn amber in the complete render came out teal in the
+/// sampled one. That is not visible to the reader: the notice says rows were
+/// dropped, and says nothing about the legend having been rewritten.
 ///
 /// What each kind can be offered, and why they differ:
 ///

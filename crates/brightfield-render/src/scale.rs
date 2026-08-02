@@ -27,9 +27,9 @@ use crate::channel::{Channel, ChannelMap};
 /// **Colour only, and positional band scales deliberately not.** A band scale's
 /// order is where the bars are, and the query that produced the rows may have
 /// ordered them on purpose — re-ordering it alphabetically would answer a
-/// determinism problem by discarding an author's `ORDER BY`. A colour scale has
-/// no such claim on it: nothing in the picture says which category should be
-/// first, only that the same one should be first every time.
+/// determinism problem by discarding an author's `ORDER BY`. A colour scale
+/// carries no such instruction: what a reader needs from it is that the same
+/// category takes the same slot every time, not that a particular one leads.
 ///
 /// Ordering here rather than in SQL keeps one comparator for both producers.
 /// The categories a render infers come out of an Arrow batch and the ones a

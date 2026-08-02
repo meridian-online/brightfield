@@ -1273,8 +1273,8 @@ fn compose_from_results(
 
         // REFUSE rather than draw a confidently wrong picture. A sampled plot
         // whose scale set carries a channel `apply_unsampled_domains` cannot
-        // restore renders with a different category-to-position mapping than
-        // the complete one, under a notice that says only that rows were
+        // restore renders a value in a different place, or a different colour,
+        // than the complete one — under a notice that says only that rows were
         // dropped. Checked here because here is where the scales exist — one
         // seam covering `--force-sample` on `brightfield-shot`, on the live
         // window, and every re-present after a gesture, rather than three

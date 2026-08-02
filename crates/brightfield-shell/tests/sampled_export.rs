@@ -534,8 +534,8 @@ fn a_sampled_colour_channel_draws_in_the_complete_renders_colours() {
     // Fixture check, and the reason the unsampled value SET is doing work here
     // rather than agreeing by luck: the rare class is in the complete render's
     // domain and absent from the rows the sample drew, so a domain built from
-    // the drawn rows alone would be short by one and every class after it would
-    // slide a slot.
+    // the drawn rows alone would be short of it, and each class sorting after
+    // it would slide a slot.
     assert!(
         complete_cats.iter().any(|c| c == "earlybird"),
         "fixture check: the complete render must see the rare class, got {complete_cats:?}"
@@ -597,13 +597,8 @@ fn the_sampled_category_order_does_not_come_from_the_scan() {
     assert_eq!(
         first, sorted,
         "the colour domain must be ordered by the category's own text. `earlybird` is \
-         written into the fixture to arrive before every `class-` row and to sort after \
-         them all, so a domain in any other order is the scan's order."
-    );
-    assert_ne!(
-        first.first().map(String::as_str),
-        Some("earlybird"),
-        "fixture check: the rule under test must be distinguishable from first appearance"
+         written into the fixture to be produced before the `class-` rows and to sort \
+         after them, so a domain that leads with it is the scan's order."
     );
 
     for run in 1..4 {

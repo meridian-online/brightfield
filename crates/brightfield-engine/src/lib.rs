@@ -1635,8 +1635,9 @@ impl Session {
         // `typeof(...) = 'VARCHAR'` is a filter rather than a guard around the
         // query: a non-string column yields no rows, which is exactly "no
         // categorical domain to restore" and needs no separate probe. A numeric
-        // colour column therefore costs one empty scan and goes on being
-        // refused for its Sequential ramp, which no domain list can put back.
+        // colour column therefore costs one empty scan and supplies nothing,
+        // which is the right answer — a list of categories puts nothing back
+        // for a scale that is not built from one.
         for (channel, col) in categorical_columns(&self.spec, index) {
             let sql = format!(
                 "SELECT DISTINCT {col} AS \"__bf_cat\" FROM ({}) AS __bf_cats \
