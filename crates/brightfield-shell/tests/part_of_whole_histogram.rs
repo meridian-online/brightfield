@@ -16,7 +16,7 @@
 //!   * the bar tops do not move when the brush lands, so the denominator is
 //!     still on the page;
 //!   * the selected ink is a PROPER part — it starts at the baseline and stops
-//!     short of the top in a bin the brush only partly covers;
+//!     well short of the top in a bin the brush only partly covers;
 //!   * a bin the brush excludes entirely keeps its bar and carries no selected
 //!     ink at all.
 //!
@@ -33,15 +33,10 @@ use brightfield_sql::ir::ScalarValue;
 use image::RgbaImage;
 use std::path::PathBuf;
 
-/// The unselected part's ink — the pale constant
-/// `examples/rect-bin-count-part-of-whole.yaml` binds to its `highlight`.
-const UNSELECTED: [i32; 3] = [0xc4, 0xbc, 0xb0];
+/// Per-channel tolerance for an ink match.
+const INK_TOL: i32 = 12;
 
-/// The selected part's ink: the mark binds no colour channel, so it takes the
-/// default mark colour, read from the token layer so a palette bump moves the
-/// expectation with the picture.
-fn selected_ink() -> [i32; 3] {
-    let c = meridian_design::viz::MARK_DEFAULT_LIGHT;
+fn rgb(c: meridian_design::colour::Rgba) -> [i32; 3] {
     [
         (c.r * 255.0).round() as i32,
         (c.g * 255.0).round() as i32,
@@ -49,43 +44,56 @@ fn selected_ink() -> [i32; 3] {
     ]
 }
 
-/// Per-channel tolerance. Narrower than the mark-ink tolerance the other pixel
-/// gates use, because the unselected ink is a warm grey and so is the chart's
-/// own chrome — `the_unselected_ink_is_not_the_charts_own_chrome` is what holds
-/// the two apart.
-const INK_TOL: i32 = 12;
-
 fn matches(p: [u8; 4], want: [i32; 3]) -> bool {
     (0..3).all(|c| (i32::from(p[c]) - want[c]).abs() <= INK_TOL)
 }
 
-/// **The unselected part is measurable only while its ink is nobody else's.**
-///
-/// The example picks a literal, the chrome comes from tokens, and neither knows
-/// about the other. A palette bump that walked one of them into range would
-/// redden this rather than silently turn the readings below into a reading of
-/// the gridlines.
-#[test]
-fn the_unselected_ink_is_not_the_charts_own_chrome() {
+/// The selected part's ink: the mark binds no colour channel, so it takes the
+/// default mark colour, read from the token layer so a palette bump moves the
+/// expectation with the picture.
+fn selected_ink() -> [i32; 3] {
+    rgb(meridian_design::viz::MARK_DEFAULT_LIGHT)
+}
+
+/// The chart's own furniture — everything a frame pixel can be that is not a
+/// bar. Named from tokens for the same reason the mark ink is.
+fn chrome() -> Vec<[i32; 3]> {
     let ink = meridian_design::chrome::INK_LIGHT;
+    [ink.surface, ink.page, ink.gridline, ink.baseline]
+        .into_iter()
+        .map(rgb)
+        .collect()
+}
+
+/// Whether a frame pixel carries a bar — either part of one. Asked as "not the
+/// furniture" rather than as a list of bar inks, because the unselected part is
+/// the mark colour composited against whatever is behind it, so it is one ink
+/// over blank surface and a slightly different one over a gridline.
+fn is_bar(p: [u8; 4], chrome: &[[i32; 3]]) -> bool {
+    !chrome.iter().any(|c| matches(p, *c))
+}
+
+/// **The two readings must not be able to see each other's ink.**
+///
+/// `is_bar` is a negative test against the chrome tokens and `selected_ink` a
+/// positive one against the palette; neither knows about the other. A palette
+/// bump that walked the mark colour into a chrome token's tolerance would make
+/// the selected part invisible to `is_bar` and every assertion below vacuous,
+/// so it reddens here instead.
+#[test]
+fn the_mark_ink_is_not_the_charts_own_furniture() {
     for (name, token) in [
-        ("surface", ink.surface),
-        ("gridline", ink.gridline),
-        ("baseline", ink.baseline),
-        ("ink_muted", ink.ink_muted),
-        ("ink_secondary", ink.ink_secondary),
-        ("ink_primary", ink.ink_primary),
+        ("surface", meridian_design::chrome::INK_LIGHT.surface),
+        ("page", meridian_design::chrome::INK_LIGHT.page),
+        ("gridline", meridian_design::chrome::INK_LIGHT.gridline),
+        ("baseline", meridian_design::chrome::INK_LIGHT.baseline),
     ] {
-        let rgba = [
-            (token.r * 255.0).round() as u8,
-            (token.g * 255.0).round() as u8,
-            (token.b * 255.0).round() as u8,
-            255,
-        ];
+        let c = rgb(token);
+        let px = [c[0] as u8, c[1] as u8, c[2] as u8, 255];
         assert!(
-            !matches(rgba, UNSELECTED),
-            "the plot frame's {name} is inside the unselected part's measurement \
-             tolerance — the readings below would be reading chrome"
+            !matches(px, selected_ink()),
+            "the plot frame's {name} is inside the mark ink's tolerance — the \
+             readings below would be reading chrome"
         );
     }
 }
@@ -103,8 +111,9 @@ fn raster(composed: Composed, name: &str) -> RgbaImage {
 /// and the region every reading below is taken over.
 ///
 /// Text is what forces this: an axis label is anti-aliased against the surface,
-/// and a low-coverage pixel of that blend is a warm grey like every other warm
-/// grey. The labels live in the margins by construction, so reading inside the
+/// and a low-coverage pixel of that blend is neither the surface token nor the
+/// mark ink, so a reading over the whole image would report tick labels as
+/// bars. The labels live in the margins by construction, so reading inside the
 /// frame excludes them geometrically rather than by hoping a tolerance
 /// separates them.
 struct Frame {
@@ -128,24 +137,46 @@ impl Frame {
     }
 }
 
-/// The topmost frame row carrying `want`, per frame column. `None` for a column
-/// with no such ink.
-fn tops_of(img: &RgbaImage, frame: &Frame, want: [i32; 3]) -> Vec<Option<u32>> {
+/// The topmost frame row carrying a bar, per frame column — the top of the
+/// whole bar standing there, whichever part drew it.
+fn bar_tops(img: &RgbaImage, frame: &Frame) -> Vec<Option<u32>> {
+    let chrome = chrome();
     (frame.x0..frame.x1)
-        .map(|x| (frame.y0..frame.y1).find(|&y| matches(img.get_pixel(x, y).0, want)))
+        .map(|x| (frame.y0..frame.y1).find(|&y| is_bar(img.get_pixel(x, y).0, &chrome)))
         .collect()
 }
 
-/// The topmost frame row carrying EITHER ink, per frame column — the top of the
-/// whole bar standing in that column, whichever part drew it.
-fn bar_tops(img: &RgbaImage, frame: &Frame) -> Vec<Option<u32>> {
-    let selected = selected_ink();
+/// The topmost frame row carrying the mark's FULL ink, per frame column — the
+/// top of the selected part.
+fn selected_tops(img: &RgbaImage, frame: &Frame) -> Vec<Option<u32>> {
     (frame.x0..frame.x1)
-        .map(|x| {
-            (frame.y0..frame.y1).find(|&y| {
-                let p = img.get_pixel(x, y).0;
-                matches(p, UNSELECTED) || matches(p, selected)
-            })
+        .map(|x| (frame.y0..frame.y1).find(|&y| matches(img.get_pixel(x, y).0, selected_ink())))
+        .collect()
+}
+
+/// Which frame columns are the SOLID interior of a bar, judged on the resting
+/// render: a few rows under the bar's top the pixel is the mark's full ink.
+///
+/// Two kinds of column are excluded, and both would otherwise wreck a height
+/// comparison. A bar's outermost column is a partial-coverage sliver, and what
+/// that sliver blends to depends on how strong the ink behind it is — a faded
+/// edge lands inside the surface's tolerance where a full-ink edge does not, so
+/// its MEASURED top moves when the ink changes although the bar did not. And
+/// where two bars abut, the shared column is a seam neither rect covers fully,
+/// so it never reaches the mark's ink at all.
+fn solid_columns(img: &RgbaImage, frame: &Frame, tops: &[Option<u32>]) -> Vec<bool> {
+    /// How far under the top to sample: past the antialiased cap, still well
+    /// inside the shortest bar the fixture draws.
+    const UNDER_TOP: u32 = 3;
+    tops.iter()
+        .enumerate()
+        .map(|(i, top)| match top {
+            Some(t) => {
+                let x = frame.x0 + i as u32;
+                let y = t + UNDER_TOP;
+                y < frame.y1 && matches(img.get_pixel(x, y).0, selected_ink())
+            }
+            None => false,
         })
         .collect()
 }
@@ -162,25 +193,45 @@ fn a_highlighted_aggregating_mark_draws_the_selected_part_inside_each_bar() {
     // drawn on.
     let frame = Frame::of(&resting, 1);
 
-    // At rest nothing is selected, so no membership column is projected and the
-    // bars are drawn exactly as an uninteracted chart's: mark ink to the top,
-    // no pale part anywhere. That resting picture is the total, and it is what
-    // the brushed one is measured against.
+    // At rest nothing is selected, so no per-group counts are projected and the
+    // bars are drawn exactly as an uninteracted chart's: full mark ink all the
+    // way to the top, no faded part anywhere. That resting picture is the
+    // total, and it is what the brushed one is measured against.
     let before = raster(resting, "resting.png");
-    let unselected_at_rest = tops_of(&before, &frame, UNSELECTED);
-    assert!(
-        unselected_at_rest.iter().all(Option::is_none),
-        "with nothing selected the bar is not part-of-anything, so the pale ink \
-         must be absent — {} frame columns carry it",
-        unselected_at_rest.iter().filter(|t| t.is_some()).count()
-    );
     let total_tops = bar_tops(&before, &frame);
+    let rest_selected = selected_tops(&before, &frame);
     let bar_columns = total_tops.iter().filter(|t| t.is_some()).count();
     assert!(
         bar_columns * 2 > total_tops.len(),
         "fixture check: most of the frame must carry a bar for the readings \
          below to be measuring the chart ({bar_columns} of {} columns)",
         total_tops.len()
+    );
+    let inside = solid_columns(&before, &frame, &total_tops);
+    let measured = inside.iter().filter(|i| **i).count();
+    assert!(
+        measured * 3 > total_tops.len(),
+        "fixture check: too little of the frame is solid bar interior for the \
+         height comparisons below to be measuring the chart ({measured} of {} \
+         columns)",
+        total_tops.len()
+    );
+    let faded_at_rest: Vec<usize> = total_tops
+        .iter()
+        .zip(rest_selected.iter())
+        .enumerate()
+        .filter(|(x, _)| inside[*x])
+        .filter(|(_, (b, s))| match (b, s) {
+            (Some(b), Some(s)) => s.abs_diff(*b) > 1,
+            (Some(_), None) => true,
+            _ => false,
+        })
+        .map(|(x, _)| x)
+        .collect();
+    assert!(
+        faded_at_rest.is_empty(),
+        "with nothing selected the bar is not part of anything, so it is mark \
+         ink to the top — these frame columns are faded already: {faded_at_rest:?}"
     );
 
     // Brush the scatter down to its low temperatures. The subset is a real
@@ -213,7 +264,13 @@ fn a_highlighted_aggregating_mark_draws_the_selected_part_inside_each_bar() {
         total_tops.len(),
         "the two renders are the same size"
     );
-    let pairs = || total_tops.iter().zip(after_tops.iter()).enumerate();
+    let pairs = || {
+        total_tops
+            .iter()
+            .zip(after_tops.iter())
+            .enumerate()
+            .filter(|(x, _)| inside[*x])
+    };
     let vanished: Vec<usize> = pairs()
         .filter(|(_, (b, a))| b.is_some() && a.is_none())
         .map(|(x, _)| x)
@@ -236,17 +293,16 @@ fn a_highlighted_aggregating_mark_draws_the_selected_part_inside_each_bar() {
     );
 
     // **The selection is drawn, and it is drawn as a PART.** In a column the
-    // brush covers only partly, the selected ink starts somewhere below the top
-    // of the bar: its topmost row is strictly greater than the bar's. A chart
-    // that redrew the whole bar in one ink — the failure this card names —
-    // has no such column.
-    let selected_tops = tops_of(&after, &frame, selected_ink());
-    let partial: Vec<usize> = selected_tops
+    // brush covers only partly, the full-ink part starts well below the top of
+    // the bar. A chart that redrew every bar in one ink — the failure this card
+    // names — has no such column.
+    let after_selected = selected_tops(&after, &frame);
+    let partial: Vec<usize> = after_selected
         .iter()
         .zip(after_tops.iter())
         .enumerate()
         .filter_map(|(x, (s, b))| match (s, b) {
-            (Some(s), Some(b)) if *s > *b => Some(x),
+            (Some(s), Some(b)) if *s > b + 2 => Some(x),
             _ => None,
         })
         .collect();
@@ -257,9 +313,9 @@ fn a_highlighted_aggregating_mark_draws_the_selected_part_inside_each_bar() {
     );
 
     // **And a bin the brush excludes keeps its bar with no selected ink in it.**
-    // Without this the previous assertion is satisfiable by a chart that shades
+    // Without this the assertion above is satisfiable by a chart that shades
     // every bar the same fraction.
-    let untouched: Vec<usize> = selected_tops
+    let untouched: Vec<usize> = after_selected
         .iter()
         .zip(after_tops.iter())
         .enumerate()

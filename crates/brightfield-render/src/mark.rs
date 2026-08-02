@@ -96,10 +96,10 @@ const SELECTED_COUNT_COLUMN: &str = "__bf_selected_count";
 /// * [`SELECTED_COUNT_COLUMN`], a per-group count, for a mark whose rows are
 ///   groups. There is no whole element to keep lit here — a group is selected in
 ///   PART — so every group reads as non-matching and the mark is deemphasised
-///   whole. A renderer that can draw a part of its own shape then overdraws the
-///   selected fraction at full ink, reading the same column back off the batch
-///   ([`selected_fraction_of`]); one that cannot leaves the deemphasised whole,
-///   which is Mosaic's `highlight` reading of a group.
+///   whole, which is Mosaic's `highlight` reading of a group. What this state
+///   adds over the batch alone is the author's `otherwise`: a renderer that can
+///   draw a part of its own shape reads the counts straight off the batch
+///   ([`selected_counts`]) either way.
 #[must_use]
 pub fn build_highlight_state(
     batch: &RecordBatch,
@@ -126,15 +126,30 @@ pub fn build_highlight_state(
     })
 }
 
-/// The per-group selected counts a batch carries, once, for a mark that is
-/// being highlighted. `None` when there is no highlight in force or no such
-/// column — which is every mark whose rows are rows.
-fn selected_counts(
-    batch: &RecordBatch,
-    highlight: Option<&HighlightState>,
-) -> Option<Vec<Option<f64>>> {
-    highlight?;
+/// The per-group selected counts a batch carries, read once. `None` for a batch
+/// without the column, which is every mark whose rows are rows and every mark at
+/// rest.
+///
+/// Read off the BATCH rather than off a [`HighlightState`], the way `__bf_count`
+/// and the hexbin geometry columns are: the column is projected only under a
+/// live highlight, so its presence is the signal, and a renderer handed the
+/// batch can act on it whether or not the caller also resolved the author's
+/// deemphasis style.
+fn selected_counts(batch: &RecordBatch) -> Option<Vec<Option<f64>>> {
     column_as_f64(batch, SELECTED_COUNT_COLUMN)
+}
+
+/// The ink for the part of a bar the selection did NOT account for: the mark's
+/// own colour, deemphasised.
+///
+/// Takes the author's `otherwise` when the render call was handed a
+/// [`HighlightState`], and the module default when it was not — the same default
+/// [`apply_highlight`] applies to a non-matching row of a per-row mark.
+fn remainder_ink(ink: Color, row: usize, highlight: Option<&HighlightState>) -> Color {
+    match highlight {
+        Some(_) => apply_highlight(ink, row, highlight),
+        None => deemphasise(ink, &HighlightStyle::default()),
+    }
 }
 
 /// The fraction of row `row`'s group the selection accounts for, given the
@@ -1276,7 +1291,7 @@ impl MarkRenderer for RectRenderer {
             None => return,
         };
 
-        let counts = selected_counts(batch, highlight);
+        let counts = selected_counts(batch);
 
         for i in 0..batch.num_rows() {
             let (xav, xbv, yav, ybv) = match (xa[i], xb[i], ya[i], yb[i]) {
@@ -1307,7 +1322,14 @@ impl MarkRenderer for RectRenderer {
             }
 
             let ink = resolve_colour(scales, channel_map, batch, i);
-            let colour = apply_highlight(ink, i, highlight);
+            // The whole bar. Deemphasised when this mark carries per-group
+            // selected counts — it is about to become the denominator behind a
+            // part — and otherwise exactly as before.
+            let colour = if counts.is_some() {
+                remainder_ink(ink, i, highlight)
+            } else {
+                apply_highlight(ink, i, highlight)
+            };
             let rect = Rect::new(left, top, right, bottom);
             scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &rect);
 
