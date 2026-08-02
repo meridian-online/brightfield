@@ -1030,9 +1030,8 @@ pub fn spec_data_files(spec: &Spec, spec_dir: Option<&Path>) -> Vec<PathBuf> {
 /// The unsampled facts for every mark, or `None` per mark when the session is
 /// not sampling.
 ///
-/// One query per SAMPLED mark and none at all otherwise, which is what keeps
-/// an unsampled chart's query count byte-unchanged by this feature's
-/// existence.
+/// No query at all for a mark the rate did not reach, which is what keeps an
+/// unsampled chart's query count byte-unchanged by this feature's existence.
 fn unsampled_facts(session: &Session, marks: usize) -> Vec<Option<MarkFacts>> {
     (0..marks)
         .map(|i| match session.unsampled_mark_facts(i) {
@@ -1166,13 +1165,26 @@ fn compose_from_results(
             // A mark is sampled exactly when the session produced unsampled
             // facts for it; `drawn` is what actually arrived, `of` is what the
             // same query returns without the clause.
-            let sample = facts.get(mi).copied().flatten().map(|f| SampleFact {
+            let sample = facts.get(mi).and_then(Option::as_ref).map(|f| SampleFact {
                 drawn: batch.num_rows() as u64,
                 of: f.rows,
             });
-            if let Some(f) = facts.get(mi).copied().flatten() {
+            if let Some(f) = facts.get(mi).and_then(Option::as_ref) {
                 plot_domains.x = plot_domains.x.or(f.x_domain);
                 plot_domains.y = plot_domains.y.or(f.y_domain);
+                // Keyed by the channel's Mosaic wire name on the way out of the
+                // engine, which owns no view vocabulary. Unioned across the
+                // plot's marks, because the scale this is checked against is: a
+                // plot draws one scale per channel and its drawn domain is the
+                // union of what its marks drew, so the measured set has to be
+                // the union of what its marks measured or the comparison is
+                // between two differently-assembled lists.
+                for (wire, cats) in &f.categories {
+                    let Some(channel) = Channel::from_wire(wire) else {
+                        continue;
+                    };
+                    plot_domains.merge_categories(channel, cats);
+                }
             }
             chart_data.push(ChartData {
                 batch,
@@ -1247,7 +1259,7 @@ fn compose_from_results(
         // source of truth, and no in-plot swatch block a margin copy could
         // drift from or that could sit on top of the marks.
         let (scene, scales) =
-            build_multi_mark_scene_pinned(&refs, false, &titles, plot_domains, &plot_pins);
+            build_multi_mark_scene_pinned(&refs, false, &titles, &plot_domains, &plot_pins);
         drop(refs);
         drop(chart_data);
 
@@ -1259,26 +1271,33 @@ fn compose_from_results(
 
         // REFUSE rather than draw a confidently wrong picture. A sampled plot
         // whose scale set carries a channel `apply_unsampled_domains` cannot
-        // restore renders with a different category-to-colour (or
-        // category-to-position) mapping than the complete one, under a notice
-        // that says only that rows were dropped. Checked here because here is
-        // where the scales exist — one seam covering `--force-sample` on
-        // `brightfield-shot`, on the live window, and every re-present after a
-        // gesture, rather than three argument parsers each remembering.
+        // restore renders a value in a different place, or a different colour,
+        // than the complete one — under a notice that says only that rows were
+        // dropped. Checked here because here is where the scales exist — one
+        // seam covering `--force-sample` on `brightfield-shot`, on the live
+        // window, and every re-present after a gesture, rather than three
+        // argument parsers each remembering.
+        //
+        // The list this reads is derived from the scales and the domains, so it
+        // narrows on its own as restorations become available rather than being
+        // edited: a colour channel whose set `plot_domains` carries is no longer
+        // in it.
         if plot_sample.is_some() {
-            let unrestorable = unrestorable_under_sampling(&scales);
+            let unrestorable = unrestorable_under_sampling(&scales, &plot_domains);
             if !unrestorable.is_empty() {
-                let names: Vec<&str> = unrestorable.iter().map(|c| c.wire_name()).collect();
-                let s = if names.len() == 1 { "" } else { "s" };
+                let names: Vec<&str> = unrestorable.iter().map(|(c, _)| c.wire_name()).collect();
+                let faults: Vec<String> = unrestorable
+                    .iter()
+                    .map(|(c, why)| format!("{} is {}", c.wire_name(), why.reason()))
+                    .collect();
                 let names = names.join(", ");
                 return Err(format!(
-                    "refusing to sample plot {}: its {names} channel{s} carries a categorical \
-                     or ramp-anchored scale, whose domain is inferred from the rows actually \
-                     drawn. Sampling re-orders that domain, so the sampled render would give \
-                     the same value a DIFFERENT colour (or band position) than the complete \
-                     one — and the sampling notice would not say so. Sample a plot whose \
-                     channels are continuous x/y only, or drop {names} from this plot.",
+                    "refusing to sample plot {}: {}. The sampled render would place or colour \
+                     the same value differently from the complete one, and the sampling notice \
+                     would not say so. Drop {names} from this plot, or bind {names} to a column \
+                     whose domain the unsampled query can put back.",
                     plot.path,
+                    faults.join("; "),
                 ));
             }
         }

@@ -13,6 +13,33 @@ use brightfield_spec::layout::FixedDomains;
 
 use crate::channel::{Channel, ChannelMap};
 
+/// Put a colour scale's category list into the order that fixes each category's
+/// palette slot: ascending by the category's own text.
+///
+/// A palette slot is a category's INDEX in this list, so whatever produces the
+/// list decides the colours. Left to first appearance, that producer is the row
+/// order of a scan — which DuckDB does not promise to repeat, and which a
+/// sample changes outright. Ordering by the value instead makes the slot a
+/// function of the category set alone, so two renders of the same spec agree,
+/// and a render over a subset of the rows agrees with the render over all of
+/// them as long as the subset's set is the same.
+///
+/// **Colour only, and positional band scales deliberately not.** A band scale's
+/// order is where the bars are, and the query that produced the rows may have
+/// ordered them on purpose — re-ordering it alphabetically would answer a
+/// determinism problem by discarding an author's `ORDER BY`. A colour scale
+/// carries no such instruction: what a reader needs from it is that the same
+/// category takes the same slot every time, not that a particular one leads.
+///
+/// Ordering here rather than in SQL keeps one comparator for both producers.
+/// The categories a render infers come out of an Arrow batch and the ones a
+/// restoration supplies come out of a query, and a DuckDB collation ordering
+/// the second could disagree with a Rust comparator ordering the first on
+/// exactly the inputs where it matters.
+pub fn order_categories(categories: &mut [String]) {
+    categories.sort_unstable();
+}
+
 /// A single scale mapping a data domain to a pixel range.
 #[derive(Debug, Clone)]
 pub enum Scale {
@@ -912,7 +939,8 @@ pub fn infer_scales(
 /// For each channel that appears in any channel map, collects domain values from
 /// all batches and produces a single scale spanning the combined range:
 /// - Linear: min(all_mins), max(all_maxes)
-/// - Band/Colour: set union of categories (preserving insertion order)
+/// - Band: set union of categories, preserving insertion order
+/// - Colour: set union of categories, then [`order_categories`]
 /// - Time: min(all_mins), max(all_maxes)
 ///
 /// The existing `infer_scales()` is unchanged.
@@ -1040,6 +1068,9 @@ fn union_scales(scales: &[Scale], range_start: f64, range_end: f64) -> Option<Sc
                     }
                 }
             }
+            // The union of two ordered lists is not ordered, so the rule is
+            // re-applied to the merged set rather than inherited from the parts.
+            order_categories(&mut categories);
             Some(Scale::Colour {
                 categories,
                 palette,
@@ -1284,6 +1315,7 @@ fn infer_column_scale(
                 }
             }
             if matches!(channel, Channel::Fill | Channel::Stroke) {
+                order_categories(&mut categories);
                 Some(Scale::Colour {
                     palette: CATEGORICAL_PALETTE.to_vec(),
                     categories,
@@ -2594,5 +2626,63 @@ mod tests {
         pins.capture(&set, FixedDomains { x: false, y: true });
         assert_eq!(pins.x, None, "x was not requested");
         assert_eq!(pins.y, Some(PinnedDomain::Linear(0.0, 1.0)));
+    }
+
+    /// **A colour domain's order is the ordering rule's; a band domain's is the
+    /// rows'.** One column, two channels, and the two answers differ — which is
+    /// the whole of why `order_categories` is scoped to colour.
+    ///
+    /// A band scale's category order is where the marks ARE, and the query that
+    /// produced these rows may have ordered them on purpose. Sorting it would
+    /// answer a determinism problem by discarding an author's `ORDER BY`.
+    #[test]
+    fn colour_inference_orders_categories_and_band_inference_does_not() {
+        let col = StringArray::from(vec!["zulu", "alpha", "zulu", "mike"]);
+
+        let fill = infer_column_scale(&col, 0.0, 0.0, Channel::Fill)
+            .expect("a string column gives the fill channel a colour scale");
+        match &fill {
+            Scale::Colour { categories, .. } => assert_eq!(
+                categories,
+                &["alpha".to_string(), "mike".to_string(), "zulu".to_string()],
+                "a palette slot must be a function of the category set, not of arrival order"
+            ),
+            other => panic!("expected a colour scale, got {other:?}"),
+        }
+
+        let x = infer_column_scale(&col, 0.0, 100.0, Channel::X)
+            .expect("a string column gives a positional channel a band scale");
+        match &x {
+            Scale::Band { categories, .. } => assert_eq!(
+                categories,
+                &["zulu".to_string(), "alpha".to_string(), "mike".to_string()],
+                "the bands must stay in the order the rows arrived in"
+            ),
+            other => panic!("expected a band scale, got {other:?}"),
+        }
+    }
+
+    /// The union of two ordered lists is not ordered, so the merge re-applies
+    /// the rule rather than inheriting it from the parts.
+    #[test]
+    fn unioning_two_colour_scales_re_orders_the_merged_set() {
+        let left = infer_column_scale(
+            &StringArray::from(vec!["alpha", "zulu"]),
+            0.0,
+            0.0,
+            Channel::Fill,
+        )
+        .expect("colour scale");
+        let right = infer_column_scale(&StringArray::from(vec!["mike"]), 0.0, 0.0, Channel::Fill)
+            .expect("colour scale");
+
+        match union_scales(&[left, right], 0.0, 0.0).expect("a union of colour scales") {
+            Scale::Colour { categories, .. } => assert_eq!(
+                categories,
+                vec!["alpha".to_string(), "mike".to_string(), "zulu".to_string()],
+                "appending the second list to the first would leave `mike` after `zulu`"
+            ),
+            other => panic!("expected a colour scale, got {other:?}"),
+        }
     }
 }

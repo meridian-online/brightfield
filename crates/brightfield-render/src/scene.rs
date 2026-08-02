@@ -15,8 +15,8 @@ use crate::legend::render_colour_legend;
 use crate::mark::{HighlightState, MarkRenderer};
 use crate::sample_notice::{render_sample_notice, SampleFact};
 use crate::scale::{
-    apply_pinned_domains, infer_scales, infer_scales_multi, PinnedDomains, Scale, ScaleSet,
-    ViewExtent,
+    apply_pinned_domains, infer_scales, infer_scales_multi, order_categories, PinnedDomains, Scale,
+    ScaleSet, ViewExtent,
 };
 use crate::title::ResolvedTitles;
 
@@ -280,32 +280,109 @@ pub fn build_multi_mark_scene(
         entries,
         draw_inline_legend,
         titles,
-        UnsampledDomains::default(),
+        &UnsampledDomains::default(),
     )
 }
 
-/// The positional extent a plot's data covers when nothing is sampled away.
+/// The domains a plot's data covers when nothing is sampled away.
 ///
-/// A continuous domain is otherwise inferred by walking the DRAWN batch, so a
-/// sampled plot would infer a narrower one: the axis ticks would move, and
-/// because a brush inverts through those same scales, the same drag on a
-/// sampled plot would dispatch a different interval to every other plot than
-/// on a complete one. Restoring the unsampled extent also removes the wrong
-/// reason a sampled picture might look different — the judgement wanted is
-/// whether the sampling TREATMENT reads, not whether the axes moved.
+/// A domain is otherwise inferred by walking the DRAWN batch, so a sampled plot
+/// infers a different one. On a continuous axis that means a narrower one: the
+/// ticks move, and because a brush inverts through those same scales, the same
+/// drag on a sampled plot would dispatch a different interval to every other
+/// plot than on a complete one. On a colour scale it means a shorter category
+/// list, and since a palette slot is a category's index in that list, a
+/// category the sample dropped altogether re-colours every category after it.
 ///
-/// `None` on a channel means "no continuous domain to restore" — either the
-/// plot is not sampled, or the column is categorical and its extent is not a
-/// pair of numbers. The categorical case does not fall through to a
-/// best-effort render: [`unrestorable_under_sampling`] refuses it, because the
-/// picture it would produce is wrong in a way the sampling notice does not
-/// describe.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+/// Restoring both removes the wrong reasons a sampled picture might look
+/// different — the judgement wanted is whether the sampling TREATMENT reads,
+/// not whether the axes moved or the legend was recoloured.
+///
+/// A channel with nothing here has no domain to restore, and does not fall
+/// through to a best-effort render: [`unrestorable_under_sampling`] refuses it,
+/// because the picture it would produce is wrong in a way the sampling notice
+/// does not describe.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct UnsampledDomains {
     /// The x channel's unsampled `(min, max)`.
     pub x: Option<(f64, f64)>,
     /// The y channel's unsampled `(min, max)`.
     pub y: Option<(f64, f64)>,
+    /// The unsampled category set of each colour-bearing channel whose column
+    /// holds strings, unioned across the plot's marks by
+    /// [`UnsampledDomains::merge_categories`]. The ORDER here is not read:
+    /// [`order_categories`] decides it, so a restored list and an inferred one
+    /// are built by one rule.
+    pub categories: Vec<(Channel, Vec<String>)>,
+}
+
+impl UnsampledDomains {
+    /// This channel's unsampled category set, if one was measured.
+    #[must_use]
+    pub fn categories_for(&self, channel: Channel) -> Option<&[String]> {
+        self.categories
+            .iter()
+            .find(|(c, _)| *c == channel)
+            .map(|(_, cats)| cats.as_slice())
+    }
+
+    /// Fold one mark's measured category set for `channel` into this plot's.
+    ///
+    /// A UNION, because the drawn domain the plot's scale carries is the union
+    /// across its marks (`infer_scales_multi` → `union_scales`), and the
+    /// private helper behind [`apply_unsampled_domains`] compares the two.
+    /// Keeping one mark's answer for the channel leaves the measured set short
+    /// of a sibling mark's categories — and a sibling category that a sample
+    /// drops shrinks the drawn union back INSIDE that short set, where the
+    /// containment test passes and installs a domain the complete render does
+    /// not have.
+    ///
+    /// Duplicates are dropped rather than appended: a category's palette slot
+    /// is its index, and two marks naming the same class are one class.
+    pub fn merge_categories(&mut self, channel: Channel, measured: &[String]) {
+        if !self.categories.iter().any(|(c, _)| *c == channel) {
+            self.categories.push((channel, Vec::new()));
+        }
+        let Some((_, slot)) = self.categories.iter_mut().find(|(c, _)| *c == channel) else {
+            return;
+        };
+        for cat in measured {
+            if !slot.contains(cat) {
+                slot.push(cat.clone());
+            }
+        }
+    }
+}
+
+/// The category list a colour channel's scale should hold once the sample is
+/// accounted for, or `None` when this channel cannot be put back.
+///
+/// One function, so the restoration and the refusal cannot disagree:
+/// [`apply_unsampled_domains`] installs exactly what this returns, and
+/// [`unrestorable_under_sampling`] refuses exactly the colour channels for
+/// which it returns `None`. Asked again of an already-restored scale it returns
+/// the same list, which is what lets the refusal be checked after the
+/// restoration has run.
+///
+/// The measured set has to CONTAIN what was drawn. A sample is a subset of the
+/// rows, so it cannot legitimately carry a category the whole table does not;
+/// where that happens the two renders would disagree, which is the thing being
+/// prevented rather than a case to paper over.
+fn restored_colour_categories(
+    scale: &Scale,
+    domains: &UnsampledDomains,
+    channel: Channel,
+) -> Option<Vec<String>> {
+    let Scale::Colour { categories, .. } = scale else {
+        return None;
+    };
+    let measured = domains.categories_for(channel)?;
+    if !categories.iter().all(|c| measured.contains(c)) {
+        return None;
+    }
+    let mut restored = measured.to_vec();
+    order_categories(&mut restored);
+    Some(restored)
 }
 
 /// [`build_multi_mark_scene`] with the positional domains a sampled plot must
@@ -316,7 +393,7 @@ pub fn build_multi_mark_scene_with_domains(
     entries: &[&ChartData<'_>],
     draw_inline_legend: bool,
     titles: &ResolvedTitles,
-    domains: UnsampledDomains,
+    domains: &UnsampledDomains,
 ) -> (Scene, ScaleSet) {
     build_multi_mark_scene_pinned(
         entries,
@@ -345,7 +422,7 @@ pub fn build_multi_mark_scene_pinned(
     entries: &[&ChartData<'_>],
     draw_inline_legend: bool,
     titles: &ResolvedTitles,
-    domains: UnsampledDomains,
+    domains: &UnsampledDomains,
     pins: &PinnedDomains,
 ) -> (Scene, ScaleSet) {
     if entries.is_empty() {
@@ -373,13 +450,15 @@ fn pins_yielding_to_navigation(pins: &PinnedDomains, entry: &ChartData<'_>) -> P
     }
 }
 
-/// Widen the positional scales back to their unsampled extent, in place.
+/// Put the scales back onto their unsampled domains, in place.
 ///
-/// Only continuous positional scales take an override. Every other scale kind
-/// is inferred from the drawn rows and is NOT restored here — see
+/// A continuous positional scale is widened to the unsampled extent, and a
+/// colour scale's category list is replaced by the unsampled set in
+/// [`order_categories`]' order. A scale kind not named there keeps what the
+/// drawn rows implied and is NOT restored here — see
 /// [`unrestorable_under_sampling`], which is the refusal that keeps a plot
 /// carrying one from being sampled at all.
-pub fn apply_unsampled_domains(scales: &mut ScaleSet, domains: UnsampledDomains) {
+pub fn apply_unsampled_domains(scales: &mut ScaleSet, domains: &UnsampledDomains) {
     for (channel, bound) in [(Channel::X, domains.x), (Channel::Y, domains.y)] {
         let Some((lo, hi)) = bound else { continue };
         let Some(scale) = scales.get(channel) else {
@@ -390,38 +469,97 @@ pub fn apply_unsampled_domains(scales: &mut ScaleSet, domains: UnsampledDomains)
             scales.insert(channel, widened);
         }
     }
+
+    for &channel in Channel::all() {
+        let Some(scale) = scales.get(channel) else {
+            continue;
+        };
+        let Some(categories) = restored_colour_categories(scale, domains, channel) else {
+            continue;
+        };
+        let Scale::Colour { palette, .. } = scale else {
+            continue;
+        };
+        let palette = palette.clone();
+        scales.insert(
+            channel,
+            Scale::Colour {
+                categories,
+                palette,
+            },
+        );
+    }
+}
+
+/// Why a channel's domain cannot be put back once its rows are sampled.
+///
+/// Carried out with the channel rather than reconstructed by the caller,
+/// because a refusal that names the channel and then guesses at the mechanism
+/// is a sentence a reader can act on and be wrong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unrestorable {
+    /// A band scale. Its category order is where the marks ARE, and the query
+    /// that produced the rows may have ordered them deliberately, so putting
+    /// one back needs the unsampled ORDER rather than the unsampled set.
+    BandOrder,
+    /// A sequential ramp, anchored to the drawn `(min, max)` — so the same
+    /// value takes a different colour in the two renders, and no category list
+    /// puts that back.
+    SequentialAnchor,
+    /// A colour scale whose unsampled value set was not measured — a channel
+    /// named as a literal colour or a `$param`, a measurement that failed, or
+    /// one that came back missing a category the sample drew. Nothing changed
+    /// for it, so the refusal that stood before the restoration existed stands.
+    ColourUnmeasured,
+}
+
+impl Unrestorable {
+    /// The clause a refusal puts after the channel's name.
+    #[must_use]
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::BandOrder => {
+                "a band scale, whose category order is where the marks are — putting it back \
+                 needs the unsampled ORDER, and the unsampled query gives only the set"
+            }
+            Self::SequentialAnchor => {
+                "a sequential ramp anchored to the drawn extent, which no category list puts \
+                 back"
+            }
+            Self::ColourUnmeasured => "a colour scale whose unsampled value set was not measured",
+        }
+    }
 }
 
 /// The channels of `scales` whose domain a sample would move and
-/// [`apply_unsampled_domains`] cannot put back — empty when the plot is safe to
-/// sample.
+/// [`apply_unsampled_domains`] cannot put back, each with its reason — empty
+/// when the plot is safe to sample.
 ///
 /// **This exists because the alternative is a confidently wrong picture.** A
-/// categorical domain is a LIST, inferred by walking the drawn rows in
-/// first-appearance order, and the palette slot a category gets is its index in
-/// that list. Sampling changes which row appears first, so it re-orders the
-/// list, so it re-assigns the colours. Measured over a four-class scatter at
-/// `--force-sample 64`: complete draws `class-1` amber and `class-2` teal; the
-/// sampled render draws `class-1` teal and `class-2` amber. Nothing about that
-/// is visible to the reader — the notice says rows were dropped, and says
-/// nothing about the legend having been rewritten.
+/// categorical domain is a LIST and the palette slot a category gets is its
+/// index in that list, so whatever decides the list decides the colours.
+/// Inferred in first-appearance order over the drawn rows, the decider was the
+/// scan — and a class drawn amber in the complete render came out teal in the
+/// sampled one. That is not visible to the reader: the notice says rows were
+/// dropped, and says nothing about the legend having been rewritten.
 ///
-/// Three kinds are refused, for one reason each:
+/// What each kind can be offered, and why they differ:
 ///
-/// - [`Scale::Colour`] — the measured case above.
-/// - [`Scale::Band`] — a category missing from the sample loses its slot
-///   entirely and every later category slides one place along the axis.
-/// - [`Scale::Sequential`] — continuous, but its ramp is anchored to the drawn
-///   `(min, max)`, so the same value takes a different colour in the two
-///   renders. Same failure, continuous clothing.
-///
-/// **Why refuse rather than restore.** Restoring the list means reproducing
-/// first-appearance order from an unsampled query, and first-appearance order
-/// over a parallel scan is not something DuckDB promises. A restoration that is
-/// right most of the time reintroduces exactly this bug, intermittently, under
-/// a notice that says the picture is trustworthy — strictly worse than not
-/// drawing it. When a deterministic ordering lands, this list shrinks and the
-/// refusal narrows on its own.
+/// - [`Scale::Colour`] — restorable, and refused only when the restoration is
+///   not on offer. [`order_categories`] takes the scan out of the ordering and
+///   [`UnsampledDomains::categories`] carries the set the complete render would
+///   have seen, so the sampled list and the complete one are the same list. A
+///   channel with no measured set — a `$param` fill, a literal colour, a
+///   non-string column, a query that failed — is still refused, because for it
+///   nothing has changed.
+/// - [`Scale::Band`] — refused. Its order is where the bars ARE, and the query
+///   that produced the rows may have ordered them deliberately, so the ordering
+///   rule that fixes a colour scale would here overwrite an author's `ORDER
+///   BY`. Restoring a band domain needs the unsampled order, not just the
+///   unsampled set.
+/// - [`Scale::Sequential`] — refused. Continuous, but its ramp is anchored to
+///   the drawn `(min, max)`, so the same value takes a different colour in the
+///   two renders. A category list puts nothing back for it.
 ///
 /// The caller asks this per PLOT, over the plot's whole scale set, which is
 /// deliberately conservative: a plot mixing a sampled dot mark with an
@@ -429,28 +567,27 @@ pub fn apply_unsampled_domains(scales: &mut ScaleSet, domains: UnsampledDomains)
 /// though that ramp is over bins the sample never touched. Erring that way
 /// costs an unusual spec a loud, actionable error; erring the other way costs a
 /// reader a wrong picture they cannot see is wrong.
+///
+/// Ask this of the scales [`apply_unsampled_domains`] has already run over. The
+/// private helper both share answers the same for a restored scale as for the
+/// scale it restored, so the two calls agree in either order.
 #[must_use]
-pub fn unrestorable_under_sampling(scales: &ScaleSet) -> Vec<Channel> {
-    [
-        Channel::X,
-        Channel::Y,
-        Channel::Fill,
-        Channel::Stroke,
-        Channel::Size,
-        Channel::X1,
-        Channel::Y1,
-        Channel::X2,
-        Channel::Y2,
-        Channel::Text,
-    ]
-    .into_iter()
-    .filter(|&c| {
-        matches!(
-            scales.get(c),
-            Some(Scale::Band { .. } | Scale::Colour { .. } | Scale::Sequential { .. })
-        )
-    })
-    .collect()
+pub fn unrestorable_under_sampling(
+    scales: &ScaleSet,
+    domains: &UnsampledDomains,
+) -> Vec<(Channel, Unrestorable)> {
+    Channel::all()
+        .iter()
+        .copied()
+        .filter_map(|c| match scales.get(c) {
+            Some(Scale::Band { .. }) => Some((c, Unrestorable::BandOrder)),
+            Some(Scale::Sequential { .. }) => Some((c, Unrestorable::SequentialAnchor)),
+            Some(scale @ Scale::Colour { .. }) => restored_colour_categories(scale, domains, c)
+                .is_none()
+                .then_some((c, Unrestorable::ColourUnmeasured)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Infer the shared scale set for a multi-mark plot: `infer_scales_multi` to
@@ -1010,9 +1147,10 @@ mod tests {
             &[&data],
             false,
             &ResolvedTitles::default(),
-            UnsampledDomains {
+            &UnsampledDomains {
                 x: Some((0.0, 100.0)),
                 y: Some((-5.0, 80.0)),
+                ..UnsampledDomains::default()
             },
         );
         assert_eq!(
@@ -1744,6 +1882,132 @@ mod tests {
         assert!(
             !encoding2.path_tags.is_empty(),
             "scene without highlight should also work"
+        );
+    }
+
+    /// A colour scale over `cats`, in the order given.
+    fn colour_scale(cats: &[&str]) -> Scale {
+        Scale::Colour {
+            categories: cats.iter().map(|c| (*c).to_string()).collect(),
+            palette: vec![
+                [1.0, 0.0, 0.0, 1.0],
+                [0.0, 1.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0, 1.0],
+            ],
+        }
+    }
+
+    fn fill_categories(scales: &ScaleSet) -> Vec<String> {
+        match scales.get(Channel::Fill) {
+            Some(Scale::Colour { categories, .. }) => categories.clone(),
+            other => panic!("expected a colour fill scale, got {other:?}"),
+        }
+    }
+
+    /// The restoration puts back a category the sample dropped, and puts the
+    /// list in the ordering rule's order rather than the measurement's.
+    #[test]
+    fn a_measured_set_restores_the_category_a_sample_dropped() {
+        let mut scales = ScaleSet::new();
+        scales.insert(Channel::Fill, colour_scale(&["b", "a"]));
+        let domains = UnsampledDomains {
+            categories: vec![(
+                Channel::Fill,
+                vec!["c".to_string(), "a".to_string(), "b".to_string()],
+            )],
+            ..UnsampledDomains::default()
+        };
+
+        apply_unsampled_domains(&mut scales, &domains);
+        assert_eq!(
+            fill_categories(&scales),
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            "the restored domain is the measured SET in the ordering rule's order — the \
+             measurement's own order is not read"
+        );
+    }
+
+    /// The refusal and the restoration read one function, so a channel that was
+    /// restored is not refused and a channel that was not is.
+    #[test]
+    fn a_restored_colour_channel_is_no_longer_refused() {
+        let mut scales = ScaleSet::new();
+        scales.insert(Channel::Fill, colour_scale(&["b", "a"]));
+        let domains = UnsampledDomains {
+            categories: vec![(Channel::Fill, vec!["a".to_string(), "b".to_string()])],
+            ..UnsampledDomains::default()
+        };
+
+        assert_eq!(
+            unrestorable_under_sampling(&scales, &UnsampledDomains::default()),
+            vec![(Channel::Fill, Unrestorable::ColourUnmeasured)],
+            "with nothing measured there is nothing to put the domain back from"
+        );
+        apply_unsampled_domains(&mut scales, &domains);
+        assert!(
+            unrestorable_under_sampling(&scales, &domains).is_empty(),
+            "a colour channel whose set was measured draws"
+        );
+    }
+
+    /// A measurement that does not contain what was drawn restores nothing and
+    /// refuses instead. Half a domain is the miscolour the refusal exists for.
+    #[test]
+    fn a_measured_set_missing_a_drawn_category_still_refuses() {
+        let mut scales = ScaleSet::new();
+        scales.insert(Channel::Fill, colour_scale(&["a", "b"]));
+        let domains = UnsampledDomains {
+            categories: vec![(Channel::Fill, vec!["a".to_string()])],
+            ..UnsampledDomains::default()
+        };
+
+        apply_unsampled_domains(&mut scales, &domains);
+        assert_eq!(
+            fill_categories(&scales),
+            vec!["a".to_string(), "b".to_string()],
+            "an unusable measurement must leave the inferred domain alone"
+        );
+        assert_eq!(
+            unrestorable_under_sampling(&scales, &domains),
+            vec![(Channel::Fill, Unrestorable::ColourUnmeasured)]
+        );
+    }
+
+    /// Band and sequential scales are refused whatever was measured, and each
+    /// says which of the two it is.
+    #[test]
+    fn band_and_sequential_scales_are_refused_with_their_own_reasons() {
+        let mut scales = ScaleSet::new();
+        scales.insert(
+            Channel::X,
+            Scale::Band {
+                categories: vec!["a".to_string(), "b".to_string()],
+                range_start: 0.0,
+                range_end: 100.0,
+                padding: 0.1,
+            },
+        );
+        scales.insert(
+            Channel::Fill,
+            Scale::Sequential {
+                domain_min: 0.0,
+                domain_max: 1.0,
+                stops: vec![[0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0, 1.0]],
+            },
+        );
+        let domains = UnsampledDomains {
+            categories: vec![(Channel::X, vec!["a".to_string(), "b".to_string()])],
+            ..UnsampledDomains::default()
+        };
+
+        assert_eq!(
+            unrestorable_under_sampling(&scales, &domains),
+            vec![
+                (Channel::X, Unrestorable::BandOrder),
+                (Channel::Fill, Unrestorable::SequentialAnchor),
+            ],
+            "a measured set does not lift the band refusal, and a sequential ramp has no \
+             category list to be put back from"
         );
     }
 }

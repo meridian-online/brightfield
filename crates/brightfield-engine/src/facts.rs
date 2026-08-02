@@ -1,13 +1,13 @@
 //! The unsampled facts a sampled plot needs to stay honest.
 
-use duckdb::arrow::array::{Array, Float64Array, Int64Array};
+use duckdb::arrow::array::{Array, Float64Array, Int64Array, StringArray};
 use duckdb::Connection;
 
 use crate::error::EngineError;
 use brightfield_spec::ast::{Spec, ValueOrParamRef};
 
 /// What one mark's query would have returned had it not been sampled.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct MarkFacts {
     /// The unsampled row count — the `of` half of the notice. Counted, not
     /// inferred from the modulus: a hash sample is not a uniform partition.
@@ -17,6 +17,21 @@ pub struct MarkFacts {
     pub x_domain: Option<(f64, f64)>,
     /// The same for y.
     pub y_domain: Option<(f64, f64)>,
+    /// The unsampled VALUE SET of each colour-bearing channel whose column is
+    /// a string, keyed by the channel's Mosaic wire name (`fill`, `stroke`).
+    ///
+    /// A categorical domain is a list, and a category's palette slot is its
+    /// index in that list, so a sample that drops a category outright shifts
+    /// every later one. This is the set the complete render would have seen;
+    /// the renderer orders it, so the ordering rule lives in one place rather
+    /// than being split across a SQL collation and a Rust comparator.
+    ///
+    /// A channel with no entry has no measured set — it may not be named, be
+    /// named as a literal colour or a `$param`, sit on a column that holds
+    /// something other than strings, or have had its query fail. The caller
+    /// treats the absence itself as the answer and goes on refusing, so which
+    /// of those it was does not have to be told apart here.
+    pub categories: Vec<(String, Vec<String>)>,
 }
 
 /// The x and y channel column expressions of the mark at `index`, quoted for
@@ -34,6 +49,68 @@ pub(crate) fn positional_columns(spec: &Spec, index: usize) -> (Option<String>, 
         _ => None,
     };
     (col("x"), col("y"))
+}
+
+/// The colour-bearing channels of the mark at `index` that name a plain string
+/// option, as `(wire name, quoted SQL identifier)`.
+///
+/// The option is taken at face value as a column name — which is also how
+/// `fill: steelblue` reads here, since a literal colour and a column are the
+/// same YAML scalar. That ambiguity is resolved by the DATABASE rather than by
+/// a colour-name table: the distinct-values query binds `"steelblue"` as an
+/// identifier, DuckDB refuses it, and [`read_categories`] returns the error the
+/// caller drops the channel on. A colour-name table would have to stay in step
+/// with CSS, and being wrong about a name there would mean silently skipping a
+/// real column.
+pub(crate) fn categorical_columns(spec: &Spec, index: usize) -> Vec<(String, String)> {
+    let marks = brightfield_sql::emit::collect_marks(spec);
+    let Some(mark) = marks.get(index) else {
+        return Vec::new();
+    };
+    ["fill", "stroke"]
+        .into_iter()
+        .filter_map(|key| match mark.options.get(key) {
+            Some(ValueOrParamRef::Value(v)) => v
+                .as_str()
+                .map(|c| (key.to_string(), format!("\"{}\"", c.replace('"', "\"\"")))),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Run one channel's distinct-values query and read its column.
+///
+/// The rows come back in whatever order the scan produced them. That is
+/// deliberate: ordering them here would put the ordering rule in a SQL
+/// collation, while the renderer needs the same rule applied to the categories
+/// it infers from an Arrow batch. The caller that owns the palette owns the
+/// order.
+pub(crate) fn read_categories(
+    conn: &Connection,
+    sql: &str,
+    mark_index: usize,
+) -> Result<Vec<String>, EngineError> {
+    let fail = |cause: duckdb::Error| EngineError::QueryFailed {
+        mark_index,
+        mark_kind: "unsampled-categories".to_string(),
+        sql: sql.to_string(),
+        cause,
+    };
+    let mut stmt = conn.prepare(sql).map_err(fail)?;
+    let batches: Vec<duckdb::arrow::record_batch::RecordBatch> =
+        stmt.query_arrow(duckdb::params![]).map_err(fail)?.collect();
+    let mut out = Vec::new();
+    for batch in batches {
+        let Some(col) = batch.column(0).as_any().downcast_ref::<StringArray>() else {
+            continue;
+        };
+        for i in 0..col.len() {
+            if !col.is_null(i) {
+                out.push(col.value(i).to_string());
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Run the facts query and read its one row.
@@ -78,5 +155,6 @@ pub(crate) fn read_mark_facts(
         rows,
         x_domain: if has_x { pair(0) } else { None },
         y_domain: if has_y { pair(1) } else { None },
+        categories: Vec::new(),
     })
 }
