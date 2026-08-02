@@ -6,9 +6,9 @@
 //! `highlight` interactor bound to the brush on the sibling scatter. The bars
 //! never narrow; what changes is the ink inside them.
 //!
-//! The failure this exists to catch is the one the card was written for: a bar
-//! chart cross-filtered by a selection made elsewhere that shows NOTHING about
-//! it. Ink-versus-no-ink is therefore not enough — a chart drawing every bar in
+//! The failure this exists to catch: a bar chart cross-filtered by a selection
+//! made elsewhere that shows NOTHING about it. Ink-versus-no-ink is therefore
+//! not enough — a chart drawing every bar in
 //! one colour passes that. What is asserted instead is that the picture carries
 //! the two quantities a part-of-whole reading needs, and that they are
 //! genuinely different:
@@ -294,8 +294,8 @@ fn a_highlighted_aggregating_mark_draws_the_selected_part_inside_each_bar() {
 
     // **The selection is drawn, and it is drawn as a PART.** In a column the
     // brush covers only partly, the full-ink part starts well below the top of
-    // the bar. A chart that redrew every bar in one ink — the failure this card
-    // names — has no such column.
+    // the bar. A chart that redrew every bar in one ink — the failure above —
+    // has no such column.
     let after_selected = selected_tops(&after, &frame);
     let partial: Vec<usize> = after_selected
         .iter()

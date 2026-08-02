@@ -959,8 +959,8 @@ pub fn plan_for_mark(
 ///
 /// * **The group keeps its full count.** The mark stays unfiltered, so its bar
 ///   is still the whole total and the selected count is a part OF it. A `WHERE`
-///   would give the subset and lose the denominator, which is the failure the
-///   card exists to end.
+///   would give the subset and lose the denominator, which is the failure being
+///   fixed.
 /// * **The brushed column need not be a grouping dimension.** The expression is
 ///   inside an aggregate, so it is legal over any column of the aggregation's
 ///   input — which is what makes the genuine cross-filter case (brush one
