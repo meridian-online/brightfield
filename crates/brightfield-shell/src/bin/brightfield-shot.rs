@@ -38,12 +38,17 @@
 //! — the notice is in the scene precisely so it travels with the chart, which
 //! a banner would not.
 //!
-//! It **refuses** a plot with a categorical or ramp-anchored channel (`fill`,
-//! `stroke`, a band axis) and says which one. Those domains are inferred from
-//! the rows that were drawn, so sampling re-orders them and the same value
-//! takes a different colour in the two pictures — a wrong picture the notice
-//! does not describe. Measured: a four-class scatter at `--force-sample 64`
-//! swapped two classes' colours outright.
+//! A colour channel is sampled like any other: the domain order is the
+//! category's own text rather than the order the rows arrived in, and the
+//! unsampled query supplies the value set, so a class the sample drops keeps
+//! its palette slot for the classes after it.
+//!
+//! It still **refuses** a plot with a band axis or a sequential ramp, and says
+//! which channel. Those domains are read off the rows that were drawn and the
+//! unsampled query's value set does not put them back — a band domain's order
+//! is where the marks are, and a ramp is anchored to the drawn extent — so the
+//! sampled render would place or colour a value differently from the complete
+//! one, under a notice that mentions only the dropped rows.
 //!
 //! `--gallery` renders one design-gallery component solo through the same
 //! deterministic capture path — an agent that just changed a primitive can

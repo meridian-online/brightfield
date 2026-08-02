@@ -35,9 +35,9 @@ meta:
     and the correct nesting draw identical points there. Measured in
     `brightfield-engine`'s `sample_determinism` tests.
 
-    Continuous x and y only. `--force-sample` refuses a plot with a categorical
-    or ramp-anchored channel, because sampling re-orders those domains and the
-    two renders would colour the same value differently.
+    Continuous x and y only. `--force-sample` refuses a plot with a band axis
+    or a sequential ramp, because those domains are read off the rows that were
+    drawn and the unsampled query's value set does not put them back.
 data:
   points:
     query: |
