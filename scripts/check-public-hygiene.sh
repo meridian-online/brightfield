@@ -189,7 +189,7 @@ if [[ -f "$ALLOWLIST" ]]; then
 		# rather than reading into an array: `read -r -a` DISCARDS a trailing
 		# empty field, so `path | text |` — an entry whose author could not
 		# think of a reason, which is precisely the shape the next check
-		# exists to refuse — would arrive as two fields and be reported as a
+		# exists to refuse — arrived as two fields and was reported as a
 		# malformed line instead of a reasonless one.
 		seps="${line//[^|]/}"
 		if [[ ${#seps} -ne 2 ]]; then

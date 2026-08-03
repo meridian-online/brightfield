@@ -14,8 +14,6 @@
 #   2. the tracked innocent-strings fixture produces silence;
 #   3. a rule that cannot run is FATAL and names itself, never "clean";
 #   4. an allowlist entry that does not parse is fatal;
-#   4b. an allowlist entry with no written reason is fatal AS A MISSING REASON,
-#      not as a field-count error;
 #   5. an allowlist entry that suppresses nothing is fatal;
 #   6. a well-formed allowlist entry actually suppresses its match — including
 #      match text containing a `#`, which the first cut of the format could not
