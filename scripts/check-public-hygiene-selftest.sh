@@ -14,6 +14,8 @@
 #   2. the tracked innocent-strings fixture produces silence;
 #   3. a rule that cannot run is FATAL and names itself, never "clean";
 #   4. an allowlist entry that does not parse is fatal;
+#   4b. an allowlist entry with no written reason is fatal AS A MISSING REASON,
+#      not as a field-count error;
 #   5. an allowlist entry that suppresses nothing is fatal;
 #   6. a well-formed allowlist entry actually suppresses its match — including
 #      match text containing a `#`, which the first cut of the format could not
@@ -165,6 +167,19 @@ if [[ $rc -eq 2 ]] && printf '%s\n' "$out" | grep -q "expected 3 '|'-separated f
 	ok "an entry that does not parse is a hard error"
 else
 	bad "an unparseable allowlist entry was not rejected (exit $rc)"
+	printf '%s\n' "$out" | sed 's/^/        /'
+fi
+
+# 4b. Parses, but the explanation is empty.
+d="$(new_repo)"
+printf '%s\n' "$ac_line" >"$d/subject.txt"
+printf 'subject.txt | %s |\n' "$ac_text" >"$d/scripts/public-hygiene-allowlist.txt"
+out="$(run_gate "$d")"
+rc=$?
+if [[ $rc -eq 2 ]] && printf '%s\n' "$out" | grep -q "all required"; then
+	ok "an entry with no written reason is a hard error"
+else
+	bad "a reasonless allowlist entry was not rejected (exit $rc)"
 	printf '%s\n' "$out" | sed 's/^/        /'
 fi
 
