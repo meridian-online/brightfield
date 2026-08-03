@@ -337,6 +337,33 @@ impl UnsampledDomains {
     /// containment test passes and installs a domain the complete render does
     /// not have.
     ///
+    /// Fold one mark's measured positional extent for `channel` into this
+    /// plot's, as the union of the two.
+    ///
+    /// The same argument [`Self::merge_categories`] makes for a category list,
+    /// on the pair of numbers a continuous axis carries. `infer_scales_multi` →
+    /// `union_scales` unions the DRAWN extents across the plot's marks, so a
+    /// measured domain that stopped at whichever mark answered first is a
+    /// different quantity from the one [`apply_unsampled_domains`] widens
+    /// against — and on the positional channel there is no containment test to
+    /// notice, so the narrow answer is installed over the whole plot and the
+    /// marks outside it are clipped away.
+    ///
+    /// `Channel::X` and `Channel::Y` are the only channels with a slot here;
+    /// anything else is ignored, because a plot's positional domains are the
+    /// two this struct carries.
+    pub fn merge_extent(&mut self, channel: Channel, measured: (f64, f64)) {
+        let slot = match channel {
+            Channel::X => &mut self.x,
+            Channel::Y => &mut self.y,
+            _ => return,
+        };
+        *slot = Some(match *slot {
+            Some((lo, hi)) => (lo.min(measured.0), hi.max(measured.1)),
+            None => measured,
+        });
+    }
+
     /// Duplicates are dropped rather than appended: a category's palette slot
     /// is its index, and two marks naming the same class are one class.
     pub fn merge_categories(&mut self, channel: Channel, measured: &[String]) {
@@ -429,10 +456,41 @@ pub fn build_multi_mark_scene_pinned(
         return (Scene::new(), ScaleSet::new());
     }
     let mut scales = infer_multi_mark_scales(entries);
-    apply_unsampled_domains(&mut scales, domains);
+    apply_unsampled_domains(
+        &mut scales,
+        &domains_yielding_to_navigation(domains, entries[0]),
+    );
     apply_pinned_domains(&mut scales, &pins_yielding_to_navigation(pins, entries[0]));
     let scene = draw_multi_mark_scene(entries, draw_inline_legend, titles, &scales);
     (scene, scales)
+}
+
+/// `domains` with every positional axis the reader has navigated dropped.
+///
+/// Same rule as [`pins_yielding_to_navigation`], for the same reason and at the
+/// same seam: the view extent is already on the scale by the time
+/// [`apply_unsampled_domains`] runs, and the extent is the reader's answer to
+/// where the axis should be. Widening it out to the unsampled extent would
+/// carry the frame past where they put it — a sibling mark the extent names no
+/// column of keeps measuring its whole column, so the union reaches the far end
+/// of data the reader has navigated away from.
+///
+/// Only the navigated axis yields. The other one is restored exactly as on an
+/// unnavigated plot, so zooming x does not cost the plot its y domain.
+/// [`UnsampledDomains::categories`] is carried through untouched: a colour
+/// domain is not an axis, and no gesture moves it.
+fn domains_yielding_to_navigation(
+    domains: &UnsampledDomains,
+    entry: &ChartData<'_>,
+) -> UnsampledDomains {
+    let Some(extent) = entry.view_extent else {
+        return domains.clone();
+    };
+    UnsampledDomains {
+        x: extent.x.is_none().then_some(domains.x).flatten(),
+        y: extent.y.is_none().then_some(domains.y).flatten(),
+        categories: domains.categories.clone(),
+    }
 }
 
 /// `pins` with every axis the reader has navigated dropped.
@@ -452,12 +510,22 @@ fn pins_yielding_to_navigation(pins: &PinnedDomains, entry: &ChartData<'_>) -> P
 
 /// Put the scales back onto their unsampled domains, in place.
 ///
-/// A continuous positional scale is widened to the unsampled extent, and a
-/// colour scale's category list is replaced by the unsampled set in
+/// A continuous positional scale is WIDENED to cover the unsampled extent —
+/// the union of what it already carries and what was measured — and a colour
+/// scale's category list is replaced by the unsampled set in
 /// [`order_categories`]' order. A scale kind not named there keeps what the
 /// drawn rows implied and is NOT restored here — see
 /// [`unrestorable_under_sampling`], which is the refusal that keeps a plot
 /// carrying one from being sampled at all.
+///
+/// The union is what makes this land on the complete render's domain rather
+/// than near it. A complete plot's positional domain is the union over its
+/// marks of each mark's full extent; for a sampled mark that is the measured
+/// extent, and for a mark the rate never reached — an aggregating sibling, whose
+/// rows are bins — it is the extent already on the scale, which no measurement
+/// carries. Replacing instead of widening drops the second, and with it the
+/// half-bin and KDE-tail widening `augment_scales` contributes and the zero
+/// baseline a bar mark anchors.
 pub fn apply_unsampled_domains(scales: &mut ScaleSet, domains: &UnsampledDomains) {
     for (channel, bound) in [(Channel::X, domains.x), (Channel::Y, domains.y)] {
         let Some((lo, hi)) = bound else { continue };
@@ -465,6 +533,8 @@ pub fn apply_unsampled_domains(scales: &mut ScaleSet, domains: &UnsampledDomains
             continue;
         };
         if matches!(scale, Scale::Linear { .. } | Scale::Time { .. }) {
+            let lo = scale.domain_min().map_or(lo, |drawn| drawn.min(lo));
+            let hi = scale.domain_max().map_or(hi, |drawn| drawn.max(hi));
             let widened = override_scale_domain(scale, lo, hi);
             scales.insert(channel, widened);
         }

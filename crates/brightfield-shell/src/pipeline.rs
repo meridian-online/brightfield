@@ -1170,8 +1170,16 @@ fn compose_from_results(
                 of: f.rows,
             });
             if let Some(f) = facts.get(mi).and_then(Option::as_ref) {
-                plot_domains.x = plot_domains.x.or(f.x_domain);
-                plot_domains.y = plot_domains.y.or(f.y_domain);
+                // Unioned across the plot's marks for the reason the categories
+                // below are, and it bites harder here: the colour channel has a
+                // containment test that refuses a domain it cannot trust, and
+                // the positional one has none, so one mark's extent installed
+                // over the plot clips its siblings out of the frame entirely.
+                for (channel, measured) in [(Channel::X, f.x_domain), (Channel::Y, f.y_domain)] {
+                    if let Some(measured) = measured {
+                        plot_domains.merge_extent(channel, measured);
+                    }
+                }
                 // Keyed by the channel's Mosaic wire name on the way out of the
                 // engine, which owns no view vocabulary. Unioned across the
                 // plot's marks, because the scale this is checked against is: a
