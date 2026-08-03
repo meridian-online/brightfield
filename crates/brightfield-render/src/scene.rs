@@ -326,17 +326,6 @@ impl UnsampledDomains {
             .map(|(_, cats)| cats.as_slice())
     }
 
-    /// Fold one mark's measured category set for `channel` into this plot's.
-    ///
-    /// A UNION, because the drawn domain the plot's scale carries is the union
-    /// across its marks (`infer_scales_multi` → `union_scales`), and the
-    /// private helper behind [`apply_unsampled_domains`] compares the two.
-    /// Keeping one mark's answer for the channel leaves the measured set short
-    /// of a sibling mark's categories — and a sibling category that a sample
-    /// drops shrinks the drawn union back INSIDE that short set, where the
-    /// containment test passes and installs a domain the complete render does
-    /// not have.
-    ///
     /// Fold one mark's measured positional extent for `channel` into this
     /// plot's, as the union of the two.
     ///
@@ -364,6 +353,17 @@ impl UnsampledDomains {
         });
     }
 
+    /// Fold one mark's measured category set for `channel` into this plot's.
+    ///
+    /// A UNION, because the drawn domain the plot's scale carries is the union
+    /// across its marks (`infer_scales_multi` → `union_scales`), and the
+    /// private helper behind [`apply_unsampled_domains`] compares the two.
+    /// Keeping one mark's answer for the channel leaves the measured set short
+    /// of a sibling mark's categories — and a sibling category that a sample
+    /// drops shrinks the drawn union back INSIDE that short set, where the
+    /// containment test passes and installs a domain the complete render does
+    /// not have.
+    ///
     /// Duplicates are dropped rather than appended: a category's palette slot
     /// is its index, and two marks naming the same class are one class.
     pub fn merge_categories(&mut self, channel: Channel, measured: &[String]) {
