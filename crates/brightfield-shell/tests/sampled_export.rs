@@ -431,6 +431,254 @@ fn a_sampled_plot_keeps_the_complete_plots_positional_scales() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The `(min, max)` of a plot's linear positional scale, read off
+/// `PlotHandle::scales` — the set the axes are drawn from and a gesture inverts
+/// pixels through.
+fn positional_domain(
+    c: &brightfield_shell::pipeline::Composed,
+    channel: brightfield_render::channel::Channel,
+) -> (f64, f64) {
+    match c.plots[0].scales.get(channel) {
+        Some(brightfield_render::scale::Scale::Linear {
+            domain_min,
+            domain_max,
+            ..
+        }) => (*domain_min, *domain_max),
+        other => panic!("expected a linear {channel:?} scale, got {other:?}"),
+    }
+}
+
+/// Two datasets over the same row indices, one two orders of magnitude wider
+/// than the other on both positional channels.
+///
+/// The gap is what makes "whose measurement did the plot keep" decidable from
+/// the domain alone: `narrow` spans `[0, 100.8]` on x and `[0, 101.2]` on y,
+/// `wide` spans `[0, 10080]` and `[0, 10120]`, and their union is `wide`'s.
+///
+/// `CAST(... AS DOUBLE)` before the arithmetic, deliberately: a DuckDB decimal
+/// literal makes the product a DECIMAL, and a decimal column contributes no
+/// drawn domain at all — which would empty this fixture of the very thing it
+/// measures rather than failing it.
+const TWO_MARK_POSITIONAL_DATA: &str = "data:
+  narrow:
+    query: |
+      SELECT CAST(i % 1009 AS DOUBLE) / 10.0 AS a,
+             CAST(i * 104729 % 1013 AS DOUBLE) / 10.0 AS b
+      FROM range(8192) AS t(i)
+  wide:
+    query: |
+      SELECT CAST(i % 1009 AS DOUBLE) * 10.0 AS a,
+             CAST(i * 104729 % 1013 AS DOUBLE) * 10.0 AS b
+      FROM range(8192) AS t(i)
+";
+
+const NARROW_MARK: &str = "  - mark: dot
+    data: { from: narrow }
+    x: a
+    y: b
+";
+
+const WIDE_MARK: &str = "  - mark: dot
+    data: { from: wide }
+    x: a
+    y: b
+";
+
+/// One plot carrying both marks, in the declaration order given.
+fn two_mark_positional_spec(first: &str, second: &str) -> String {
+    format!("{TWO_MARK_POSITIONAL_DATA}plot:\n{first}{second}width: 400\nheight: 300\n")
+}
+
+/// **A sampled plot's positional domain is the same whichever mark is declared
+/// first.**
+///
+/// The measured domain a sampled plot is restored from has to be assembled the
+/// way the drawn one is — a union across the plot's marks
+/// (`infer_scales_multi` → `union_scales`) — because the restoration is applied
+/// to that drawn union. Folding the per-mark facts so that the first mark to
+/// answer wins leaves the measured extent short of a sibling's, and on the
+/// positional channel nothing catches that: the colour path has a containment
+/// test that refuses a domain it cannot trust, and this one installs whatever
+/// it was handed.
+///
+/// What that costs a reader: the wide mark's points map to pixels far outside
+/// the plot rect, the clip removes them, and the layer is gone from a picture
+/// whose notice says only that rows were thinned. The axis labels describe the
+/// narrow mark's range, and a drag inverts through a domain two orders of
+/// magnitude off — cross-filtering every other plot with it.
+///
+/// Both orders are asserted, because agreement in one order is exactly what the
+/// defect looks like: taking the FIRST answer is right by accident whenever the
+/// first mark happens to be the widest.
+#[test]
+fn a_sampled_two_mark_plots_domain_does_not_depend_on_mark_order() {
+    use brightfield_render::channel::Channel;
+
+    let dir = std::env::temp_dir().join(format!("bf-sampled-two-mark-xy-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let rate = SampleRate::from_modulus(32).expect("power of two");
+
+    for (order, yaml) in [
+        (
+            "narrow-first",
+            two_mark_positional_spec(NARROW_MARK, WIDE_MARK),
+        ),
+        (
+            "wide-first",
+            two_mark_positional_spec(WIDE_MARK, NARROW_MARK),
+        ),
+    ] {
+        let spec = dir.join(format!("{order}.yaml"));
+        std::fs::write(&spec, &yaml).expect("write spec");
+        let path = spec.to_str().unwrap();
+
+        let complete = compose_spec_sampled(path, None).expect("the complete render is unaffected");
+        let sampled = compose_spec_sampled(path, Some(rate))
+            .expect("a sampled two-mark plot must DRAW, not be refused");
+
+        // Fixture check first: the complete render spans BOTH marks, so the
+        // equality below is a claim about the union and not about one mark.
+        assert_eq!(
+            positional_domain(&complete, Channel::X),
+            (0.0, 10080.0),
+            "fixture check ({order}): the complete render's x domain is the union of the \
+             two marks' extents"
+        );
+        assert_eq!(
+            positional_domain(&complete, Channel::Y),
+            (0.0, 10120.0),
+            "fixture check ({order}): the complete render's y domain is the union of the \
+             two marks' extents"
+        );
+
+        for ch in [Channel::X, Channel::Y] {
+            assert_eq!(
+                positional_domain(&sampled, ch),
+                positional_domain(&complete, ch),
+                "{order}: the sampled plot's {ch:?} domain must equal the complete plot's. \
+                 A domain short of a sibling mark's extent maps that mark outside the plot \
+                 rect, where the clip deletes it — a layer missing from a picture whose \
+                 notice says only that rows were thinned."
+            );
+        }
+
+        // Not vacuous: the sample really did drop rows on this plot.
+        let fact = sampled.plots[0]
+            .sample
+            .expect("the sampled composition's plot must carry its fact");
+        assert!(
+            fact.drawn * 4 < fact.of,
+            "fixture check ({order}): a 1-in-32 sample must drop most of the rows ({} of {})",
+            fact.drawn,
+            fact.of
+        );
+
+        // The live window gathers the facts again on every repaint, so it can
+        // fold them differently from the one-shot path and nothing else would
+        // notice.
+        let (_, first) = live_spec_sampled(path, Some(rate))
+            .expect("the live window's --force-sample must draw the same spec");
+        for ch in [Channel::X, Channel::Y] {
+            assert_eq!(
+                positional_domain(&first, ch),
+                positional_domain(&complete, ch),
+                "{order}: the live window's first paint must carry the complete plot's \
+                 {ch:?} domain too"
+            );
+        }
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A sampled dot mark beside an aggregating `densityX` over the same rows.
+///
+/// The rate never reaches the density mark — its rows are bins, and the emitter
+/// applies the sample clause only to non-aggregating plans — so it carries no
+/// measured facts at all while still widening the plot's x domain by the KDE
+/// tail its curve is drawn over.
+const SAMPLED_BESIDE_AGGREGATING_SPEC: &str = "data:
+  points:
+    query: |
+      SELECT CAST(i * 7919 % 1009 AS DOUBLE) / 10.0 AS a,
+             CAST(i * 104729 % 1013 AS DOUBLE) / 10.0 AS b
+      FROM range(8192) AS t(i)
+plot:
+  - mark: dot
+    data: { from: points }
+    x: a
+    y: b
+  - mark: densityX
+    data: { from: points }
+    x: a
+width: 400
+height: 300
+";
+
+/// **A mark the rate never reached keeps the extent it drew.**
+///
+/// The mixed case, and the one a union of the measured extents cannot reach on
+/// its own: an aggregating sibling receives no sample clause, so there are no
+/// facts for it to contribute, and its contribution to the plot's domain lives
+/// only on the scale that inference already built. Installing the measured
+/// extent over that scale throws it away — here, the ±3σ the density curve's
+/// tails are drawn across, which is why the restoration has to WIDEN the
+/// inferred domain rather than replace it.
+///
+/// Asserted against the complete render of the same spec, so it pins the
+/// outcome — the two pictures share a domain — rather than the arithmetic that
+/// produces it.
+#[test]
+fn a_sampled_mark_beside_an_aggregating_one_keeps_the_plots_whole_domain() {
+    use brightfield_render::channel::Channel;
+
+    let dir = std::env::temp_dir().join(format!("bf-sampled-mixed-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = dir.join("sampled-beside-aggregating.yaml");
+    std::fs::write(&spec, SAMPLED_BESIDE_AGGREGATING_SPEC).expect("write spec");
+    let path = spec.to_str().unwrap();
+
+    let rate = SampleRate::from_modulus(32).expect("power of two");
+    let complete = compose_spec_sampled(path, None).expect("the complete render is unaffected");
+    let sampled = compose_spec_sampled(path, Some(rate))
+        .expect("a sampled mark beside an aggregating one must DRAW, not be refused");
+
+    // Fixture check: the density mark's tails really do carry the plot's x
+    // domain outside the dot mark's `[0, 100.8]`, on both ends. Without that
+    // there is nothing for a replacement to destroy and the assertion below
+    // would hold on either implementation.
+    let (complete_lo, complete_hi) = positional_domain(&complete, Channel::X);
+    assert!(
+        complete_lo < 0.0 && complete_hi > 100.8,
+        "fixture check: the complete render's x domain ({complete_lo}, {complete_hi}) must \
+         extend past the dot mark's own extent [0, 100.8], or the aggregating mark is \
+         contributing nothing"
+    );
+
+    for ch in [Channel::X, Channel::Y] {
+        assert_eq!(
+            positional_domain(&sampled, ch),
+            positional_domain(&complete, ch),
+            "the sampled plot's {ch:?} domain must equal the complete plot's. The measured \
+             extent covers the sampled mark only; the extent an unsampled aggregating \
+             sibling drew is on the scale and nowhere else, so a restoration that replaces \
+             instead of widening deletes it."
+        );
+    }
+
+    let fact = sampled.plots[0]
+        .sample
+        .expect("the sampled composition's plot must carry its fact");
+    assert!(
+        fact.drawn * 4 < fact.of,
+        "fixture check: a 1-in-32 sample must drop most of the rows ({} of {})",
+        fact.drawn,
+        fact.of
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A scatter whose fill has one class far rarer than the others, and whose
 /// classes' names do not sort into the order the rows arrive in.
 ///

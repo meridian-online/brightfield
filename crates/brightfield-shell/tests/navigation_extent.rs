@@ -1574,3 +1574,151 @@ fn applying_a_navigation_interaction_moves_the_axes_and_the_rows_together() {
     let x = queried.x.as_ref().expect("an x bound");
     assert!((x.min - 1.0).abs() < f64::EPSILON && (x.max - 6.0).abs() < f64::EPSILON);
 }
+
+// ---------------------------------------------------------------------------
+// 8. A sampled plot the reader has zoomed
+// ---------------------------------------------------------------------------
+
+/// A sampled plot whose two marks sit on differently-NAMED x columns, far apart.
+///
+/// The name is what makes this fixture bite. A navigation extent names the
+/// column of the plot's first mark, and `Session::navigation_pass` applies an
+/// axis to a mark only when that mark's own column carries the same name — so
+/// `far` is left alone by the gesture, goes on drawing and measuring its whole
+/// column, and its unsampled extent sits an order of magnitude outside the
+/// interval the reader asked for.
+///
+/// `CAST(... AS DOUBLE)` before the arithmetic: a DuckDB decimal literal would
+/// make these columns DECIMAL, which contributes no drawn domain at all.
+const SAMPLED_TWO_COLUMN_SPEC: &str = "data:
+  near:
+    query: |
+      SELECT CAST(i % 101 AS DOUBLE) * 10.0 AS a,
+             CAST(i * 104729 % 1013 AS DOUBLE) / 10.0 AS b
+      FROM range(8192) AS t(i)
+  far:
+    query: |
+      SELECT CAST(i % 101 AS DOUBLE) * 10.0 + 5000.0 AS c,
+             CAST(i * 104729 % 1013 AS DOUBLE) / 10.0 AS d
+      FROM range(8192) AS t(i)
+plot:
+  - mark: dot
+    data: { from: near }
+    x: a
+    y: b
+  - mark: dot
+    data: { from: far }
+    x: c
+    y: d
+width: 400
+height: 300
+";
+
+/// The `(min, max)` of a plot's linear positional scale.
+fn nav_domain(
+    composed: &brightfield_shell::pipeline::Composed,
+    channel: brightfield_render::channel::Channel,
+) -> (f64, f64) {
+    match composed.plots[0].scales.get(channel) {
+        Some(brightfield_render::scale::Scale::Linear {
+            domain_min,
+            domain_max,
+            ..
+        }) => (*domain_min, *domain_max),
+        other => panic!("expected a linear {channel:?} scale, got {other:?}"),
+    }
+}
+
+/// Load `SAMPLED_TWO_COLUMN_SPEC` live at `rate`, zoom x to `[255, 745]`, and
+/// hand back the composite the zoom produced.
+fn zoomed_two_column_plot(
+    rate: Option<brightfield_sql::ir::SampleRate>,
+) -> brightfield_shell::pipeline::Composed {
+    use brightfield_engine::coordinator::Interaction;
+    use brightfield_engine::{AxisExtent, NavigationExtent};
+    use brightfield_spec::analysis::ComponentPath;
+
+    let mut live = LiveDashboard::load_str(SAMPLED_TWO_COLUMN_SPEC, None).expect("loads live");
+    live.set_sample(rate);
+    let first = live.present().expect("first paint");
+    let path = first.plots[0].path.clone();
+
+    live.apply(Interaction::Navigate {
+        plot: ComponentPath(path),
+        extent: NavigationExtent {
+            x: Some(AxisExtent::new("a", 255.0, 745.0)),
+            y: None,
+        },
+    })
+    .expect("the navigation re-composites")
+}
+
+/// **A zoom holds on a sampled plot, on the axis the reader zoomed.**
+///
+/// The unsampled-domain restoration runs AFTER the view extent has landed on
+/// the scale, so it is the last writer on a navigated axis and the reader's
+/// interval is whatever it leaves there. Widening that interval out to the
+/// unsampled extent moves the frame off where the reader put it: the second
+/// mark here is on a column the gesture does not name, so it is never scoped,
+/// and its measured extent reaches `6000` on an axis the reader asked to stop
+/// at `745`.
+///
+/// The `y` half is asserted in the same breath and is the reason this is not
+/// simply "do not restore a sampled plot that has been navigated": y carries no
+/// extent, so it is restored exactly as on an unnavigated plot, and the two
+/// axes have to come out of one pass disagreeing about whether a gesture
+/// happened.
+#[test]
+fn a_zoomed_sampled_plot_keeps_the_readers_interval_on_the_navigated_axis() {
+    use brightfield_render::channel::Channel;
+
+    let rate = brightfield_sql::ir::SampleRate::from_modulus(32).expect("power of two");
+    let complete = zoomed_two_column_plot(None);
+    let sampled = zoomed_two_column_plot(Some(rate));
+
+    // Fixture check: the unscoped sibling really is measurable far outside the
+    // reader's interval, so widening the navigated axis would be visible.
+    let unzoomed_x = {
+        let mut live = LiveDashboard::load_str(SAMPLED_TWO_COLUMN_SPEC, None).expect("loads live");
+        live.set_sample(Some(rate));
+        nav_domain(&live.present().expect("first paint"), Channel::X)
+    };
+    assert!(
+        unzoomed_x.1 > 5000.0,
+        "fixture check: at rest the plot's x domain reaches {}, and the second mark is \
+         supposed to carry it past 5000",
+        unzoomed_x.1
+    );
+
+    assert_eq!(
+        nav_domain(&sampled, Channel::X),
+        (255.0, 745.0),
+        "the reader zoomed a sampled plot to [255, 745] and the axes came back describing \
+         something else. The restoration runs after the extent lands on the scale, so it \
+         must leave a navigated axis alone — replacing it crops the frame to the rows that \
+         survived inside it, and widening it drags the frame out to a sibling the gesture \
+         never scoped."
+    );
+    assert_eq!(
+        nav_domain(&sampled, Channel::X),
+        nav_domain(&complete, Channel::X),
+        "the same zoom on the same spec must land on the same x domain sampled as complete"
+    );
+
+    assert_eq!(
+        nav_domain(&sampled, Channel::Y),
+        nav_domain(&complete, Channel::Y),
+        "y carries no extent, so it is restored: a sampled plot's y domain must still be \
+         the complete plot's, or zooming x has quietly narrowed the other axis"
+    );
+
+    let fact = sampled.plots[0]
+        .sample
+        .expect("the zoomed plot must still carry its sampling fact");
+    assert!(
+        fact.drawn * 4 < fact.of,
+        "fixture check: a 1-in-32 sample must drop most of the rows ({} of {})",
+        fact.drawn,
+        fact.of
+    );
+}
