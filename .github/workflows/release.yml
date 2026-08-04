@@ -216,15 +216,9 @@ jobs:
   # against this tap with this token, and a dispatch would add a failure
   # surface that a pull request cannot exercise.
   #
-  # HOMEBREW_TAP_TOKEN is fine-grained, and its write scope is that tap alone.
-  # This job asks for no wider scope: the checksums come from this
-  # repository's own public release assets over plain HTTPS, so
-  # `secrets.HOMEBREW_TAP_TOKEN` appears once below — on the tap checkout.
-  #
   # `needs: release` because the formula's `url` fields address release assets.
   # The release has to exist before the sidecars next to those assets can be
-  # fetched — and fetching them from the same base URL the formula embeds is
-  # what proves the published asset paths resolve.
+  # fetched.
   update-homebrew:
     name: Update Homebrew formula
     needs: release
@@ -294,20 +288,11 @@ jobs:
             end
 
             test do
-              # brightfield is a GUI app: no confirmed non-window --version/--help that
-              # exits cleanly, and Homebrew CI has no graphics context. Use a presence
-              # stand-in until a non-window CLI surface exists to exercise here.
-              assert_path_exists bin/"brightfield"
-              assert_predicate bin/"brightfield", :executable?
+              assert_match "brightfield", shell_output("#{bin}/brightfield --version")
             end
           end
           FORMULA
 
-      # Without this, the "No changes" guard in the next step reports success
-      # for two different situations: a re-run over a tag whose formula is
-      # already current, and a rewrite that failed to take. This separates them
-      # by failing the run before the commit step when the formula on disk does
-      # not address the tag being released.
       - name: Check the formula addresses this tag
         run: |
           TAG="${GITHUB_REF_NAME}"
