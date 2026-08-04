@@ -25,8 +25,9 @@ WHAT IS CHECKED (changed comment lines only, `origin/main...HEAD`)
        package/crate/library ("the `foo` crate"). Resolved against the
        workspace crates and the `name = "..."` entries in Cargo.lock, so a
        package this tree does not build against does not resolve and must be
-       registered below. Attribution (A) needs a backticked SYMBOL to fire and
-       a package-and-version claim carries none, which is the gap this closes.
+       registered below. Attribution (A) needs a backticked SYMBOL to fire, and
+       a claim that names a package and a version need carry no symbol at all —
+       which is the gap this closes.
 
 WHAT IS *NOT* CHECKED (scope, stated so nobody reads this as more than it is)
     - Only ADDED comment lines in the diff. Pre-existing debt is not blocking;
@@ -97,15 +98,15 @@ PATH_REF = re.compile(r"`((?:crates|scripts|examples|vendor|\.github)/[A-Za-z0-9
 # package — `AGGREGATE_COUNT_COL` is rule A's business, not rule C's.
 PKG_NAME = r"[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*"
 
-# A version, in the two shapes that are unambiguous in prose: `v`-prefixed, or
-# three numeric components. Two bare components are excluded deliberately,
-# because durations, thresholds and ranges are written that way — "costs ~2.5
-# ms", "> 1.0", "clamped to [0.0, 1.0]". The lookarounds stop `127.0.0.1` from
-# yielding `0.0.1`. Both exclusions are held by control cases in --self-test.
+# A version, in two shapes: `v`-prefixed, or three numeric components. Two bare
+# components are excluded deliberately, because durations, thresholds and ranges
+# are written that way — "costs ~2.5 ms", "> 1.0", "clamped to [0.0, 1.0]". The
+# lookarounds stop `127.0.0.1` from yielding `0.0.1`. Each exclusion is held by
+# a control case in --self-test.
 PKG_VERSION = r"(?<![\d.])(?:v\d+\.\d+(?:\.\d+)*|\d+\.\d+\.\d+)(?![\d.])"
 
-# The gap never crosses a backtick, so a name cannot be paired with a version
-# that belongs to some other backticked span later in the line.
+# The gap excludes backticks, so a name cannot be paired with a version that
+# belongs to some other backticked span later in the line.
 PKG_GAP = r"[^`]{0,24}?"
 
 # `color-name` (v1.1.4)   /   `color-name 1.1.4`   /   v1.1.4 of `color-name`
@@ -190,9 +191,8 @@ def locked_packages() -> set[str]:
     `egui_tiles`.
 
     A missing lockfile is a LOUD failure rather than an empty set: with no
-    enumeration to resolve against, every package citation would be reported and
-    the reason would not be in the message. That is how a gate gets switched
-    off.
+    enumeration to resolve against, a package citation is reported and the
+    reason is not in the message. That is how a gate gets switched off.
     """
     global _LOCKED
     if _LOCKED is None:
@@ -448,10 +448,10 @@ def self_test() -> int:
                       f"STAYS GREEN: ACKNOWLEDGED as external ({why})"))
 
     # --- the PACKAGE fixtures ---------------------------------------------
-    # The defect these exist for carries NO symbol, so nothing above can reach
-    # it: a colour table sourced to a named npm package at a named version went
-    # through this gate green. The rejection cases below are what fails when the
-    # package rule is removed.
+    # The defect these exist for carries no symbol, so the cases above cannot
+    # reach it: a colour table sourced to a named package at a named version
+    # went through this gate green. The rejection cases below are what fail when
+    # the package rule is removed.
     #
     # Derived, not named: the negative name is checked against `package_resolves`
     # — the same resolver the case exercises — because a fixture that turns out
