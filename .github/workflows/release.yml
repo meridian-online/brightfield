@@ -27,6 +27,11 @@
 # target. If the hosted runner turns out to have no window session for the
 # verify job, move it behind a self-hosted runner rather than deleting it; the
 # claim must stay executable somewhere.
+#
+# The `update-homebrew` job carries the tag through to the Homebrew tap, so
+# `brew install meridian-online/tap/brightfield` serves the release this
+# workflow just published. Its shape is ported from the finetype release
+# workflow's job of the same name; the comment above it records what that buys.
 
 name: release
 
@@ -200,3 +205,126 @@ jobs:
           files: |
             artifacts/brightfield-*.tar.gz
             artifacts/brightfield-*.sha256
+
+  # The tap formula moves with the release instead of with somebody's memory.
+  #
+  # Ported from the `update-homebrew` job in the finetype release workflow,
+  # which drives Formula/finetype.rb in meridian-online/homebrew-tap today:
+  # check the tap out with a token into a subdirectory, regenerate the formula,
+  # commit and push behind a no-op guard. That route was chosen over the tap's
+  # repository_dispatch entry point because it is the one already running
+  # against this tap with this token, and a dispatch would add a failure
+  # surface that a pull request cannot exercise.
+  #
+  # HOMEBREW_TAP_TOKEN is fine-grained, and its write scope is that tap alone.
+  # This job asks for no wider scope: the checksums come from this
+  # repository's own public release assets over plain HTTPS, so
+  # `secrets.HOMEBREW_TAP_TOKEN` appears once below — on the tap checkout.
+  #
+  # `needs: release` because the formula's `url` fields address release assets.
+  # The release has to exist before the sidecars next to those assets can be
+  # fetched — and fetching them from the same base URL the formula embeds is
+  # what proves the published asset paths resolve.
+  update-homebrew:
+    name: Update Homebrew formula
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download the checksum sidecars from the release
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            curl -sfLO "${BASE}/brightfield-${TAG}-${target}.tar.gz.sha256"
+          done
+          ls -l ./*.sha256
+
+      - name: Read the checksums
+        id: sha
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            value=$(awk '{print $1}' "brightfield-${TAG}-${target}.tar.gz.sha256")
+            # A sidecar that downloads but parses to something other than a
+            # digest would otherwise reach the formula as an empty or truncated
+            # sha256, which surfaces as a checksum mismatch in a stranger's
+            # `brew install` rather than as a red release run.
+            if ! printf '%s' "$value" | grep -Eq '^[0-9a-f]{64}$'; then
+              echo "::error::${target} sidecar did not parse to a sha256: '${value}'"
+              exit 1
+            fi
+            echo "${target//-/_}=${value}" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Check out the tap
+        uses: actions/checkout@v5
+        with:
+          repository: meridian-online/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      # Regenerated wholesale, which makes this file the source of truth for the
+      # formula: a hand edit to Formula/brightfield.rb in the tap is overwritten
+      # by the next release, so changes to it belong in the heredoc below.
+      - name: Rewrite the formula
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          cat > homebrew-tap/Formula/brightfield.rb << FORMULA
+          class Brightfield < Formula
+            desc "Grammar-of-graphics renderer for Meridian data (macOS)"
+            homepage "https://github.com/meridian-online/brightfield"
+            license "MIT"
+
+            depends_on :macos
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "${BASE}/brightfield-${TAG}-aarch64-apple-darwin.tar.gz"
+                sha256 "${{ steps.sha.outputs.aarch64_apple_darwin }}"
+              else
+                url "${BASE}/brightfield-${TAG}-x86_64-apple-darwin.tar.gz"
+                sha256 "${{ steps.sha.outputs.x86_64_apple_darwin }}"
+              end
+            end
+
+            def install
+              bin.install "brightfield"
+            end
+
+            test do
+              # brightfield is a GUI app: no confirmed non-window --version/--help that
+              # exits cleanly, and Homebrew CI has no graphics context. Use a presence
+              # stand-in until a non-window CLI surface exists to exercise here.
+              assert_path_exists bin/"brightfield"
+              assert_predicate bin/"brightfield", :executable?
+            end
+          end
+          FORMULA
+
+      # Without this, the "No changes" guard in the next step reports success
+      # for two different situations: a re-run over a tag whose formula is
+      # already current, and a rewrite that failed to take. This separates them
+      # by failing the run before the commit step when the formula on disk does
+      # not address the tag being released.
+      - name: Check the formula addresses this tag
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            grep -Fq "/download/${TAG}/brightfield-${TAG}-${target}.tar.gz" \
+              homebrew-tap/Formula/brightfield.rb
+          done
+          if command -v ruby >/dev/null 2>&1; then
+            ruby -c homebrew-tap/Formula/brightfield.rb
+          fi
+
+      - name: Commit and push the formula
+        run: |
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/brightfield.rb
+          git diff --staged --quiet && echo "No changes" && exit 0
+          git commit -m "Update brightfield to ${GITHUB_REF_NAME}"
+          git push
