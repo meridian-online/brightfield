@@ -20,6 +20,13 @@ WHAT IS CHECKED (changed comment lines only, `origin/main...HEAD`)
        "brightfield-sql's AGGREGATE_COUNT_COL" is false precisely because that
        crate only ever *reads* the literal.
     B  PATH — a backticked repo-relative path (optionally `:LINE`) must exist.
+    C  PACKAGE — a backticked package name the comment pins to a version
+       ("`foo` (v1.2.3)", "`foo 1.2.3`", "v1.2.3 of `foo`") or labels as a
+       package/crate/library ("the `foo` crate"). Resolved against the
+       workspace crates and the `name = "..."` entries in Cargo.lock, so a
+       package this tree does not build against does not resolve and must be
+       registered below. Attribution (A) needs a backticked SYMBOL to fire and
+       a package-and-version claim carries none, which is the gap this closes.
 
 WHAT IS *NOT* CHECKED (scope, stated so nobody reads this as more than it is)
     - Only ADDED comment lines in the diff. Pre-existing debt is not blocking;
@@ -30,6 +37,11 @@ WHAT IS *NOT* CHECKED (scope, stated so nobody reads this as more than it is)
       repo has three defused guards already. Adding path resolution means
       teaching it modules, re-exports and glob imports; until then a `::` path
       is out of scope rather than half-checked.
+    - A package name has to be BACKTICKED, and pinned to a version or labelled
+      a package/crate/library, before it is treated as a citation. "tracks egui
+      0.35" is prose about a dependency, not a claim this can resolve. The
+      version itself is not compared against Cargo.lock: a comment may be
+      describing the version a workaround was written for.
     - It checks that a cited thing EXISTS where claimed. It cannot check what
       the code DOES. "merging under-reports every group but one" was false and
       no citation gate would ever have caught it — that needs a reviewer.
@@ -37,7 +49,8 @@ WHAT IS *NOT* CHECKED (scope, stated so nobody reads this as more than it is)
 ESCAPE HATCH
     A claim about code outside this repo (upstream libraries, a sibling repo)
     cannot resolve here and must be registered in ACKNOWLEDGED with a reason,
-    not silently skipped. Writing the reason is the point.
+    not silently skipped. Writing the reason is the point. The registry keys on
+    the name as the comment writes it — a symbol for A, a package for C.
 
 USAGE
     scripts/check-comment-citations.py             # gate the diff vs origin/main
@@ -54,15 +67,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# Symbols named in comments that are NOT defined in this repo. Each needs a
-# reason: the point of the registry is that "it's external" gets written down
-# rather than assumed.
+# Symbols and packages named in comments that this repo does not contain. Each
+# needs a reason: the point of the registry is that "it's external" gets
+# written down rather than assumed.
 ACKNOWLEDGED: dict[str, str] = {
     "markPlotSpec": "mosaic/vgplot source; this tree vendors only the YAML spec corpus",
     "channelOption": "mosaic/vgplot source, same reason",
     "queryFieldInfo": "mosaic/vgplot source, same reason",
     "isColorChannel": "mosaic/vgplot source, same reason",
     "literalToSQL": "mosaic sql package, not vendored",
+    "egui_code_editor": "evaluated against the spec editor and rejected, so it is "
+                        "deliberately absent from Cargo.lock; the comparison is in "
+                        "crates/brightfield-shell/src/editor.rs",
 }
 
 DEFN = r"(?:const|static|fn|struct|enum|trait|type|union|mod)\s+{sym}\b|macro_rules!\s+{sym}\b"
@@ -75,6 +91,34 @@ ATTR_IN = re.compile(r"`([A-Za-z_][A-Za-z0-9_]*)`\s+in\s+`([a-z][a-z0-9-]*)`")
 
 # A backticked repo-relative path, optionally with :LINE
 PATH_REF = re.compile(r"`((?:crates|scripts|examples|vendor|\.github)/[A-Za-z0-9_./-]+?)(?::\d+)?`")
+
+# A package name as crates.io and npm spell one: lowercase, hyphen/underscore
+# separated. Uppercase is excluded so a backticked SYMBOL is not read as a
+# package — `AGGREGATE_COUNT_COL` is rule A's business, not rule C's.
+PKG_NAME = r"[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*"
+
+# A version, in the two shapes that are unambiguous in prose: `v`-prefixed, or
+# three numeric components. Two bare components are excluded deliberately,
+# because durations, thresholds and ranges are written that way — "costs ~2.5
+# ms", "> 1.0", "clamped to [0.0, 1.0]". The lookarounds stop `127.0.0.1` from
+# yielding `0.0.1`. Both exclusions are held by control cases in --self-test.
+PKG_VERSION = r"(?<![\d.])(?:v\d+\.\d+(?:\.\d+)*|\d+\.\d+\.\d+)(?![\d.])"
+
+# The gap never crosses a backtick, so a name cannot be paired with a version
+# that belongs to some other backticked span later in the line.
+PKG_GAP = r"[^`]{0,24}?"
+
+# `color-name` (v1.1.4)   /   `color-name 1.1.4`   /   v1.1.4 of `color-name`
+PKG_AFTER = re.compile(rf"`({PKG_NAME})`{PKG_GAP}{PKG_VERSION}")
+PKG_INLINE = re.compile(rf"`({PKG_NAME})\s+{PKG_VERSION}`")
+PKG_BEFORE = re.compile(rf"{PKG_VERSION}{PKG_GAP}`({PKG_NAME})`")
+
+# the `color-name` package   /   package `color-name`
+PKG_NOUN = r"(?:package|crate|library)"
+PKG_LABELLED = re.compile(rf"`({PKG_NAME})`\s+{PKG_NOUN}\b")
+PKG_LABELLED_BEFORE = re.compile(rf"\b{PKG_NOUN}\s+`({PKG_NAME})`")
+
+PKG_PATTERNS = (PKG_AFTER, PKG_INLINE, PKG_BEFORE, PKG_LABELLED, PKG_LABELLED_BEFORE)
 
 
 def crates() -> set[str]:
@@ -133,6 +177,59 @@ def defines(crate: str, symbol: str) -> bool:
     if re.search(DEFN.format(sym=re.escape(symbol)), text):
         return True
     return f'"{symbol}"' in text
+
+
+_LOCKED: set[str] | None = None
+
+
+def locked_packages() -> set[str]:
+    """Package names Cargo.lock records, normalised so `-` and `_` compare equal.
+
+    Cargo treats the two as the same character in a package name and comments
+    write whichever they saw, so `egui-tiles` must resolve against the lock's
+    `egui_tiles`.
+
+    A missing lockfile is a LOUD failure rather than an empty set: with no
+    enumeration to resolve against, every package citation would be reported and
+    the reason would not be in the message. That is how a gate gets switched
+    off.
+    """
+    global _LOCKED
+    if _LOCKED is None:
+        lock = ROOT / "Cargo.lock"
+        if not lock.is_file():
+            sys.exit(
+                "check-comment-citations: a comment cites a package and there is no\n"
+                "Cargo.lock to resolve it against. Commit the lockfile, or drop the\n"
+                "package rule from this script."
+            )
+        _LOCKED = {
+            m.group(1).replace("-", "_")
+            for m in re.finditer(r'^name = "([^"]+)"$', lock.read_text(errors="replace"), re.M)
+        }
+    return _LOCKED
+
+
+def package_resolves(name: str) -> bool:
+    """Does this repo actually build against a package by that name?
+
+    A workspace crate or a Cargo.lock entry. Anything else is a claim about code
+    that is not here, which is what ACKNOWLEDGED is for.
+    """
+    key = name.replace("-", "_")
+    if key in {c.replace("-", "_") for c in crates()}:
+        return True
+    return key in locked_packages()
+
+
+def package_citations(body: str) -> list[str]:
+    """Package names this comment line cites, in first-seen order."""
+    seen: list[str] = []
+    for pattern in PKG_PATTERNS:
+        for name in pattern.findall(body):
+            if name not in seen:
+                seen.append(name)
+    return seen
 
 
 def path_exists(ref: str) -> bool:
@@ -226,6 +323,13 @@ def check(pairs: list[tuple[Path, list[tuple[int, str]]]]) -> list[str]:
             for ref in PATH_REF.findall(body):
                 if not path_exists(ref):
                     failures.append(f"{rel}:{lineno} cites `{ref}`, which does not exist")
+            for name in package_citations(body):
+                if name in ACKNOWLEDGED or package_resolves(name):
+                    continue
+                failures.append(
+                    f"{rel}:{lineno} cites the `{name}` package, which is not a crate "
+                    f"here and not in Cargo.lock"
+                )
     return failures
 
 
@@ -342,6 +446,69 @@ def self_test() -> int:
     for name, why in list(ACKNOWLEDGED.items())[:1]:
         cases.append((f"`{name}` is called here", True,
                       f"STAYS GREEN: ACKNOWLEDGED as external ({why})"))
+
+    # --- the PACKAGE fixtures ---------------------------------------------
+    # The defect these exist for carries NO symbol, so nothing above can reach
+    # it: a colour table sourced to a named npm package at a named version went
+    # through this gate green. The rejection cases below are what fails when the
+    # package rule is removed.
+    #
+    # Derived, not named: the negative name is checked against `package_resolves`
+    # — the same resolver the case exercises — because a fixture that turns out
+    # to BE a dependency would pass for the wrong reason and read as detection.
+    absent = "not-a-dependency-of-this-repo"
+    if package_resolves(absent) or absent in ACKNOWLEDGED:
+        print(f"self-test: {absent} resolves here, so it cannot serve as the negative case")
+        return 1
+
+    dep = next(
+        (
+            n
+            for n in sorted(locked_packages())
+            if re.fullmatch(PKG_NAME, n)
+            and n not in ACKNOWLEDGED
+            and n.replace("-", "_") not in {c.replace("-", "_") for c in known}
+        ),
+        None,
+    )
+    if dep is None:
+        print("self-test: no Cargo.lock package to derive the resolvable-package case from")
+        return 1
+
+    ack_pkg = next(
+        (
+            n
+            for n in ACKNOWLEDGED
+            if re.fullmatch(PKG_NAME, n) and not package_resolves(n)
+        ),
+        None,
+    )
+    if ack_pkg is None:
+        print("self-test: no ACKNOWLEDGED package-shaped name to derive the escape-hatch case from")
+        return 1
+
+    cases += [
+        (f"values were taken from the `{absent}` package (v1.1.4)", False,
+         f"a bare upstream-package claim, no symbol to attribute ({absent})"),
+        (f"ported from `{absent} 1.1.4`", False,
+         "the same claim with the version inside the backticks"),
+        (f"v1.1.4 of `{absent}` is the source", False,
+         "the same claim with the version first"),
+        (f"cross-checked against the `{absent}` crate", False,
+         "labelled a crate, with no version at all"),
+        (f"`{dep}` v1.1.4 behaves this way", True,
+         f"STAYS GREEN: a package Cargo.lock records ({dep})"),
+        (f"`{home}` v1.1.4 behaves this way", True,
+         f"STAYS GREEN: a workspace crate ({home})"),
+        (f"`{ack_pkg}` v1.1.4 was evaluated and rejected", True,
+         f"STAYS GREEN: ACKNOWLEDGED as external ({ACKNOWLEDGED[ack_pkg]})"),
+        (f"one `{absent}` sample costs ~2.5 ms", True,
+         "STAYS GREEN: a duration is not a version"),
+        (f"`{absent}` clamps to [0.0, 1.0]", True,
+         "STAYS GREEN: a range is not a version"),
+        (f"`{absent}` binds 127.0.0.1:1 to refuse connections", True,
+         "STAYS GREEN: an address is not a version"),
+    ]
 
     bad = 0
     for body, should_pass, label in cases:
