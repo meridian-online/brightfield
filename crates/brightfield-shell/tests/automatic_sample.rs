@@ -225,19 +225,26 @@ fn the_first_execution_of_a_row_level_mark_is_already_sampled() {
     // The statements the session actually sent to DuckDB through its execution
     // choke points, in order — so this is the query that ran, not a second
     // emission asked for afterwards.
+    //
+    // Selected by the predicate rather than by position, because the record
+    // also holds the statements that restore what the sample dropped: the
+    // unsampled row count, the positional domains, the band order. Those are
+    // emitted with NO rate, by construction — they are the picture the sample
+    // is a sample OF — so the one statement carrying the clause is the one the
+    // mark was DRAWN from, and a second would be the discarded materialisation
+    // this test exists to catch.
     let executed = session.executed_sql();
-    assert_eq!(
-        executed.len(),
-        1,
-        "one mark, one statement — got {executed:#?}"
-    );
-    let sql = &executed[0];
     let modulus =
         1_u32 << sample_exponent(fact.of).expect("fixture check: this count needs a sample");
-    assert!(
-        sql.contains(&format!("hash(_s) % {modulus} = 0")),
-        "the executed SQL does not carry the sample predicate at the chosen \
-         modulus:\n{sql}"
+    let predicate = format!("hash(_s) % {modulus} = 0");
+    let sampled: Vec<&String> = executed
+        .iter()
+        .filter(|sql| sql.contains(&predicate))
+        .collect();
+    assert_eq!(
+        sampled.len(),
+        1,
+        "one mark, one statement at the chosen modulus — got {executed:#?}"
     );
     assert!(
         fact.drawn < fact.of,
