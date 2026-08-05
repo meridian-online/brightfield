@@ -44,11 +44,14 @@ meta:
     not detect a brush-determinism regression even in principle. Measured in
     `brightfield-engine`'s `sample_determinism` tests.
 
-    The row count is deliberate too. On an Apple M-series adapter a plot this
-    size draws about 104,600 dots before vello's fixed flattening buffers
-    overflow, after which the frame comes back BLANK — every pixel transparent,
-    exit 0, no error raised. 75,000 sits under that with headroom, so
-    "complete" here means complete.
+    The row count is deliberate too. Past the drawn-primitive ceiling vello's
+    fixed flattening buffers overflow and the frame comes back BLANK — every
+    pixel transparent, exit 0, no error raised — so brightfield samples a plot
+    automatically rather than let that happen. This one sits under the ceiling
+    with headroom: it draws complete under no flag, which is what makes
+    `--force-sample` here a comparison rather than a rescue. The ceiling itself
+    is `MEASURED_INKED_MAX` in `crates/brightfield-render/src/sample_policy.rs`,
+    beside the measurement it came from.
 data:
   points:
     query: |

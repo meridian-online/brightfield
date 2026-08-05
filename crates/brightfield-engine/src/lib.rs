@@ -1654,6 +1654,88 @@ impl Session {
         Some(Ok(out))
     }
 
+    /// How many row-level primitives this spec would draw **before anything is
+    /// executed** — the input a sampling policy decides on.
+    ///
+    /// # Why it has to be answered first
+    ///
+    /// Past the renderer's drawn-primitive ceiling the failure is a BLANK frame
+    /// at exit 0, not an error to recover from. There is nothing to catch and
+    /// retry, so the decision cannot be made after the fact: it has to be made
+    /// before the scene is encoded, which means before the rows are
+    /// materialised.
+    ///
+    /// # What is counted
+    ///
+    /// One primitive per materialised row of each ROW-LEVEL mark, summed. An
+    /// aggregating mark contributes none — its rows are bins, its picture is
+    /// O(bins), and the emitter refuses to sample it anyway. A dot mark across
+    /// two views is two marks and therefore two primitives per row.
+    ///
+    /// Which marks are row-level is asked of the EMITTER rather than
+    /// re-derived: the plan is emitted with a rate and without, and the mark is
+    /// row-level exactly when the two differ. That is the same question
+    /// [`Self::unsampled_mark_facts`] asks, and asking it the same way is what
+    /// keeps the count that drives the policy in step with the marks the policy
+    /// will actually sample.
+    ///
+    /// # What it costs
+    ///
+    /// One `count(*)` per row-level mark, over that mark's own unsampled query.
+    /// An aggregate, not a materialisation: DuckDB streams it, so no result set
+    /// is built and thrown away. These go straight to the connection and are
+    /// not recorded in [`Self::duckdb_execute_count`], which counts the queries
+    /// marks are DRAWN from.
+    ///
+    /// # Errors
+    ///
+    /// The emit or DuckDB error of the first mark that fails. A caller that
+    /// cannot get a count has no basis to sample and should draw complete.
+    pub fn drawn_primitive_estimate(&self) -> Result<u64, EngineError> {
+        // Any rate at all: the comparison asks whether the clause REACHED the
+        // mark, and every rate reaches exactly the same set of marks.
+        let probe = SampleRate::from_exponent(1).expect("1 is inside SampleRate::MAX_EXPONENT");
+        let params = if self.param_state.is_empty() {
+            None
+        } else {
+            Some(&self.param_state)
+        };
+        let selections = self.selection_predicates_for_emit();
+        let selections_ref: Option<&[SelectionPredicate]> = if selections.is_empty() {
+            None
+        } else {
+            Some(selections.as_slice())
+        };
+
+        let mut total = 0_u64;
+        for index in 0..self.mark_index_map.len() {
+            // The navigation passes ride on both sides for the reason
+            // `unsampled_mark_facts` gives: the question is whether the RATE
+            // reached this mark, and an extent present on only one side would
+            // answer it by accident.
+            let nav = self.navigation_passes(index);
+            let emit = |rate| {
+                emit_query_sampled(&self.spec, index, params, selections_ref, &nav, rate)
+                    .map_err(|cause| EngineError::EmitFailed { cause })
+            };
+            // A mark this emitter cannot emit at all draws nothing, so it adds
+            // nothing to the count — it will fail again at execution, where it
+            // is reported.
+            let Ok(unsampled) = emit(None) else { continue };
+            if emit(Some(probe))?.sql == unsampled.sql {
+                continue;
+            }
+            let sql = format!(
+                "SELECT count(*) AS \"__bf_rows\" FROM ({}) AS __bf_estimate",
+                unsampled.sql
+            );
+            total = total.saturating_add(
+                crate::facts::read_mark_facts(&self.conn, &sql, index, false, false)?.rows,
+            );
+        }
+        Ok(total)
+    }
+
     /// Execute all marks. Returns one result per mark in depth-first order.
     /// Partial failure is possible.
     pub fn execute_all(&mut self) -> Vec<Result<Vec<RecordBatch>, EngineError>> {

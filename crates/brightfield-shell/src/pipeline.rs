@@ -29,6 +29,7 @@ use brightfield_render::inset::{resolve_insets_for_marks, DEFAULT_SCALE_INSET};
 use brightfield_render::layout::{ChartLayout, Margins};
 use brightfield_render::mark::{default_renderers, find_renderer, MarkRenderer};
 use brightfield_render::sample_notice::{sample_band_margins, SampleFact};
+use brightfield_render::sample_policy;
 use brightfield_render::scale::{PinnedDomains, ScaleSet, ViewExtent};
 use brightfield_render::scene::{
     build_multi_mark_scene_pinned, compose_dashboard, unrestorable_under_sampling, ChartData,
@@ -438,7 +439,13 @@ pub fn live_spec_sampled(
         Some(source_name(spec_path)),
         Path::new(spec_path).parent(),
     )?;
-    dash.set_sample(sample);
+    // Only when the caller named one. The constructor has already applied the
+    // policy's answer, and `set_sample(None)` would erase it — turning an
+    // automatic sample off is not what "no `--force-sample` on the command
+    // line" means.
+    if sample.is_some() {
+        dash.set_sample(sample);
+    }
     let composed = dash.present()?;
     Ok((dash, composed))
 }
@@ -493,7 +500,10 @@ fn compose(
         .load_spec(spec.clone(), analysis, spec_dir)
         .map_err(|e| format!("engine error: {e}"))?;
     let mut session = load.session;
-    session.set_sample(sample);
+    // Resolved BEFORE `execute_all`, which is the whole of the requirement: the
+    // first SQL each row-level mark issues already carries the predicate, so no
+    // full result set is ever materialised and discarded.
+    session.set_sample(resolved_sample(&session, sample));
 
     // Execute every mark; assemble all its result chunks into one drawable batch.
     let results = session.execute_all();
@@ -595,13 +605,27 @@ impl LiveDashboard {
         let diagnostics = LoadDiagnostics::collect(None, &spec, &[], &analysis.warnings);
         let coordinator = Coordinator::load(spec.clone(), analysis, spec_dir)
             .map_err(|e| format!("engine error: {e}"))?;
-        Ok(Self {
+        Ok(Self::sampled_by_policy(Self {
             coordinator,
             spec,
             diagnostics,
             view_extents: ViewExtents::new(),
             pins: PlotPins::new(),
-        })
+        }))
+    }
+
+    /// Put the automatic rate on a freshly-loaded dashboard, before anything
+    /// has executed.
+    ///
+    /// **Every constructor goes through here**, so a document opened from a
+    /// file, from spec text or from an embedded start is decided the same way.
+    /// A caller with a rate of its own overrides afterwards with
+    /// [`LiveDashboard::set_sample`] — see [`live_spec_sampled`], which is why
+    /// that call is conditional there rather than unconditional.
+    fn sampled_by_policy(mut dash: Self) -> Self {
+        let rate = automatic_sample(dash.coordinator.session());
+        dash.coordinator.session_mut().set_sample(rate);
+        dash
     }
 
     /// Load from a whole [`ParseOutput`], keeping its warnings.
@@ -620,13 +644,13 @@ impl LiveDashboard {
             LoadDiagnostics::collect(source, &spec, &parsed.warnings, &analysis.warnings);
         let coordinator = Coordinator::load(spec.clone(), analysis, spec_dir)
             .map_err(|e| format!("engine error: {e}"))?;
-        Ok(Self {
+        Ok(Self::sampled_by_policy(Self {
             coordinator,
             spec,
             diagnostics,
             view_extents: ViewExtents::new(),
             pins: PlotPins::new(),
-        })
+        }))
     }
 
     /// Load from spec text (mirrors [`compose_spec_str`]).
@@ -1025,6 +1049,54 @@ pub fn spec_data_files(spec: &Spec, spec_dir: Option<&Path>) -> Vec<PathBuf> {
             _ => None,
         })
         .collect()
+}
+
+/// **The rate a session will run at when nobody named one.**
+///
+/// This is the driver the sampling mechanism shipped without. `--force-sample`
+/// is a switch someone has to already know to reach for; above the renderer's
+/// drawn-primitive ceiling the failure is a blank frame at exit 0, so a plot
+/// nobody thought to flag draws nothing and says nothing about it.
+///
+/// Answered from [`brightfield_engine::Session::drawn_primitive_estimate`] —
+/// counted before any mark is executed, because there is no recoverable error
+/// to catch afterwards — and decided by
+/// [`sample_policy::sample_exponent`], which owns the ceiling and the choice of
+/// modulus.
+///
+/// `None` for a spec that draws complete, and `None` when the estimate cannot
+/// be taken: a session that cannot count its own rows has no basis to sample,
+/// and drawing complete is the behaviour every spec had before this existed.
+fn automatic_sample(session: &Session) -> Option<SampleRate> {
+    let estimate = match session.drawn_primitive_estimate() {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("warning: cannot estimate drawn primitives, drawing complete: {e}");
+            return None;
+        }
+    };
+    let exponent = sample_policy::sample_exponent(estimate)?;
+    let rate = SampleRate::from_exponent(exponent);
+    if rate.is_none() {
+        eprintln!(
+            "warning: {estimate} drawn primitives needs a 1-in-2^{exponent} sample, which is \
+             past the largest representable rate — drawing complete"
+        );
+    }
+    rate
+}
+
+/// The rate to run at: the caller's if they named one, otherwise
+/// [`automatic_sample`]'s.
+///
+/// An explicit `--force-sample` outranks the policy in both directions — it is
+/// how one spec is rendered complete and sampled over the same rows for
+/// comparison, and a policy that overrode it would take that away.
+fn resolved_sample(session: &Session, explicit: Option<SampleRate>) -> Option<SampleRate> {
+    match explicit {
+        Some(rate) => Some(rate),
+        None => automatic_sample(session),
+    }
 }
 
 /// The unsampled facts for every mark, or `None` per mark when the session is
