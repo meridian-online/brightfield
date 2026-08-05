@@ -18,8 +18,10 @@
 use std::path::{Path, PathBuf};
 
 use brightfield_protocol::layout::Flow;
+use brightfield_render::channel::Channel;
 use brightfield_render::sample_notice::NOTICE_BAND;
 use brightfield_render::sample_policy::{renders_complete, sample_exponent, MEASURED_INKED_MAX};
+use brightfield_render::scale::Scale;
 use brightfield_shell::capture::capture_vello_only;
 use brightfield_shell::design::Mode;
 use brightfield_shell::pipeline::{compose_spec_sampled, live_spec_sampled, Composed};
@@ -49,6 +51,43 @@ width: {W}
 height: {H}
 "
     )
+}
+
+/// A row-level dot scatter whose `band_axis` is a CATEGORY, over `rows` rows
+/// and `classes` classes — the shape every bar chart and categorical scatter
+/// shares, and the one whose positional scale is a band.
+///
+/// The class names are laid down in descending numeric order, so the order the
+/// rows produce is neither the ascending one an author would guess nor the
+/// ascending-by-text one a comparator would impose. A restoration that sorted
+/// the list, or that installed the drawn rows' own order, lands somewhere else.
+fn categorical_scatter(rows: u64, classes: u64, band_axis: &str) -> String {
+    let value_axis = if band_axis == "x" { "y" } else { "x" };
+    format!(
+        "data:
+  points:
+    query: |
+      SELECT
+        'class-' || ({classes} - 1 - (i % {classes}))::VARCHAR   AS band,
+        ((i * 40503 + 12345) % 100019) / 1000.0                  AS depth
+      FROM range({rows}) AS t(i)
+plot:
+  - mark: dot
+    data: {{ from: points }}
+    {band_axis}: band
+    {value_axis}: depth
+width: {W}
+height: {H}
+"
+    )
+}
+
+/// The category list an axis will lay out, in the order it will lay it out.
+fn band_order(composed: &Composed, channel: Channel) -> Vec<String> {
+    match composed.plots[0].scales.get(channel) {
+        Some(Scale::Band { categories, .. }) => categories.clone(),
+        other => panic!("expected a {channel:?} band scale, got {other:?}"),
+    }
 }
 
 /// Write a fixture into a test-private directory and hand back its path.
@@ -430,6 +469,133 @@ fn the_committed_ten_million_row_example_opens_and_samples_itself() {
     assert!(
         app.chart_doc().raster_rect.is_some_and(|r| r.area() > 0.0),
         "the chart pane recorded no raster — the example composed but did not draw"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **A categorical positional axis above the ceiling opens, and carries the
+/// notice.**
+///
+/// The whole suite above this point plots two continuous columns, so it was
+/// green on a tree where a plot with a band scale did not open at all: the
+/// refusal that guards a sampled plot's restorable domains fires per plot, the
+/// policy sets the rate without being asked, and `Boot::open` propagates the
+/// error out of `main` — no window, no PNG, exit 1. Nothing about the spec
+/// asks for a sample, and nothing about it should have to.
+#[test]
+fn a_categorical_axis_above_the_ceiling_opens_and_samples_itself() {
+    let (dir, spec) = fixture(
+        "band-above",
+        &categorical_scatter(MEASURED_INKED_MAX + 1, 12, "x"),
+    );
+    let path = spec.to_str().expect("utf-8 path");
+
+    let boot = Boot::open(path, Flow::Vertical, None).expect(
+        "a spec with a band positional scale must open with nothing on the command line — \
+         the sample is the policy's decision, not the author's request",
+    );
+    assert!(!boot.is_empty(), "the spec loaded no document");
+
+    let composed = compose_unflagged(&spec);
+    let fact = composed.plots[0]
+        .sample
+        .expect("one primitive past the ceiling must render SAMPLED with no flag");
+    assert_eq!(fact.of, MEASURED_INKED_MAX + 1);
+    assert!(
+        renders_complete(fact.drawn),
+        "the sample drew {} primitives, which is still past the ceiling",
+        fact.drawn
+    );
+    assert_eq!(
+        band_order(&composed, Channel::X).len(),
+        12,
+        "the axis must carry every class the whole table holds, not the ones the \
+         sample happened to keep"
+    );
+
+    // …and the notice is in the picture, which is the second half of what the
+    // refusal took away: a render that does not happen carries no notice.
+    let png = dir.join("band.png");
+    assert_eq!((composed.width, composed.height), (W, H));
+    capture_vello_only(composed, 1.0, &png).expect("capture");
+    let band = ink_in_band(&png);
+    assert!(
+        band > 400,
+        "the export's bottom band held {band} inked pixels — a reader shown a sample is \
+         owed the sentence saying so"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **A sampled band axis lays its categories out where the complete one does.**
+///
+/// One spec, rendered both ways over the same rows, and the two category lists
+/// compared as lists — which is order as well as membership, and order is the
+/// quantity a band scale reads. A category's index in that list is the slot it
+/// takes along the axis, so a list that differs by one entry slides every later
+/// bar, under a notice that says only that rows were dropped.
+///
+/// The fixture is built to have teeth. The band is on **y**, so the wire name
+/// the measurement is keyed by is not the one the x case would pass on. The
+/// sample is forced coarse enough that it draws fewer rows than there are
+/// classes — asserted below, and each drawn row carries one class, so the drawn
+/// rows cannot cover them all. The drawn order is therefore short, and a
+/// restoration that installed it, or that installed nothing, produces a
+/// different list. The class names run descending, so one that sorted the list
+/// produces a different list too.
+#[test]
+fn a_sampled_band_axis_lays_its_categories_out_where_the_complete_one_does() {
+    const CLASSES: u64 = 200;
+    let (dir, spec) = fixture("band-order", &categorical_scatter(6_400, CLASSES, "y"));
+    let path = spec.to_str().expect("utf-8 path");
+
+    let complete = compose_spec_sampled(path, None).expect("compose unflagged");
+    assert!(
+        complete.plots[0].sample.is_none(),
+        "fixture check: the complete side must be below the ceiling, or it is not the \
+         picture the sampled one is a sample OF"
+    );
+
+    let forced = SampleRate::from_modulus(64).expect("power of two");
+    let sampled = compose_spec_sampled(path, Some(forced)).expect(
+        "a plot with a band positional scale must compose under a sample rather than \
+         refusing to draw",
+    );
+    let fact = sampled.plots[0]
+        .sample
+        .expect("fixture check: the forced rate must have applied");
+    assert!(
+        fact.drawn < CLASSES,
+        "fixture check: the sample drew {} rows over {CLASSES} classes. It has to draw \
+         fewer rows than there are classes for the drawn rows to be missing one, and \
+         without that this compares two lists that agree by luck",
+        fact.drawn
+    );
+
+    let expected = band_order(&complete, Channel::Y);
+    assert_eq!(
+        expected.len(),
+        CLASSES as usize,
+        "fixture check: the complete render must carry every class"
+    );
+    assert_ne!(
+        expected,
+        {
+            let mut sorted = expected.clone();
+            sorted.sort();
+            sorted
+        },
+        "fixture check: the unsampled order must not already be the sorted one, or a \
+         restoration that sorted the list would pass this"
+    );
+    assert_eq!(
+        band_order(&sampled, Channel::Y),
+        expected,
+        "the sampled axis lays its categories out somewhere other than the complete \
+         axis does — the same class is drawn in a different place under a notice that \
+         says only that rows were dropped"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
