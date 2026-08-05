@@ -400,9 +400,9 @@ const TEN_MILLION: &str = concat!(
 /// classified — and then drawn through the headless layout pass the capture
 /// tiers use.
 ///
-/// Unsampled it would draw ten million primitives and come back BLANK. What
-/// makes this the criterion rather than a demo is that nothing in the file, on
-/// the command line, or in this test asks for a sample.
+/// Unsampled it would draw ten million primitives. What makes this the
+/// criterion rather than a demo is that nothing in the file, on the command
+/// line, or in this test asks for a sample.
 #[test]
 fn the_committed_ten_million_row_example_opens_and_samples_itself() {
     let boot = Boot::open(TEN_MILLION, Flow::Vertical, None).expect("the example opens");
@@ -412,10 +412,9 @@ fn the_committed_ten_million_row_example_opens_and_samples_itself() {
     );
 
     let composed = compose_unflagged(Path::new(TEN_MILLION));
-    let fact = composed.plots[0].sample.expect(
-        "the committed ten-million-row example must render SAMPLED under no flag — \
-         drawn whole it is a blank frame at exit 0",
-    );
+    let fact = composed.plots[0]
+        .sample
+        .expect("the committed ten-million-row example must render SAMPLED under no flag");
     assert_eq!(
         fact.of, 10_000_000,
         "the example's row count moved; this criterion is about the magnitude"
@@ -477,12 +476,12 @@ fn the_committed_ten_million_row_example_opens_and_samples_itself() {
 /// **A categorical positional axis above the ceiling opens, and carries the
 /// notice.**
 ///
-/// The whole suite above this point plots two continuous columns, so it was
-/// green on a tree where a plot with a band scale did not open at all: the
-/// refusal that guards a sampled plot's restorable domains fires per plot, the
-/// policy sets the rate without being asked, and `Boot::open` propagates the
-/// error out of `main` — no window, no PNG, exit 1. Nothing about the spec
-/// asks for a sample, and nothing about it should have to.
+/// The suite above this point was green on a tree where a plot with a band
+/// scale did not open at all: the refusal that guards a sampled plot's
+/// restorable domains fires per plot, the policy sets the rate without being
+/// asked, and `Boot::open` propagates the error out of `main` — no window, no
+/// PNG, exit 1. Nothing about the spec asks for a sample, and nothing about it
+/// should have to.
 #[test]
 fn a_categorical_axis_above_the_ceiling_opens_and_samples_itself() {
     let (dir, spec) = fixture(

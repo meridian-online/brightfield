@@ -7,9 +7,7 @@ meta:
       cargo run -p brightfield-shell -- examples/ten-million-scatter.yaml
 
     Ten million dots is far past the count the renderer can encode into one
-    scene. Drawn whole, the frame comes back BLANK — every pixel transparent,
-    exit 0, no error raised anywhere — which is why the count matters and why
-    nothing about it is visible if it goes wrong.
+    scene.
 
     So brightfield does not draw it whole. Before a single row is materialised
     it counts what each row-level mark would draw, picks the smallest
