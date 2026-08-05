@@ -153,7 +153,6 @@ mod tests {
             (1_000, 1, None),
             // The last count measured to ink a frame draws.
             (MEASURED_INKED_MAX, 1, None),
-            // One primitive further and the frame would be blank.
             (MEASURED_INKED_MAX + 1, 1, Some(2)),
             // The smallest count measured to come back blank.
             (MEASURED_BLANK_MIN, 1, Some(2)),

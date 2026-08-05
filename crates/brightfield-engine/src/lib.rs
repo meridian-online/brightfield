@@ -1699,14 +1699,6 @@ impl Session {
     /// How many row-level primitives this spec would draw **before anything is
     /// executed** — the input a sampling policy decides on.
     ///
-    /// # Why it has to be answered first
-    ///
-    /// Past the renderer's drawn-primitive ceiling the failure is a BLANK frame
-    /// at exit 0, not an error to recover from. There is nothing to catch and
-    /// retry, so the decision cannot be made after the fact: it has to be made
-    /// before the scene is encoded, which means before the rows are
-    /// materialised.
-    ///
     /// # What is counted
     ///
     /// One primitive per materialised row of each ROW-LEVEL mark, summed. An

@@ -274,8 +274,7 @@ its spread.
 
 Frame suites are capped by **drawn row-level primitives**, not table rows. Each
 row-per-mark mark contributes one primitive per materialised row (an
-aggregating mark contributes none — its picture stays O(bins)), and past the
-drawn-primitive ceiling **the frame comes back blank**.
+aggregating mark contributes none — its picture stays O(bins)).
 
 ### The ceiling is measured, and it is not the cap
 

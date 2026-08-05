@@ -1056,13 +1056,10 @@ pub fn spec_data_files(spec: &Spec, spec_dir: Option<&Path>) -> Vec<PathBuf> {
 /// **The rate a session will run at when nobody named one.**
 ///
 /// This is the driver the sampling mechanism shipped without. `--force-sample`
-/// is a switch someone has to already know to reach for; above the renderer's
-/// drawn-primitive ceiling the failure is a blank frame at exit 0, so a plot
-/// nobody thought to flag draws nothing and says nothing about it.
+/// is a switch someone has to already know to reach for.
 ///
 /// Answered from [`brightfield_engine::Session::drawn_primitive_estimate`] —
-/// counted before any mark is executed, because there is no recoverable error
-/// to catch afterwards — and decided by
+/// counted before any mark is executed — and decided by
 /// [`sample_policy::sample_exponent`], which owns the ceiling and the choice of
 /// modulus.
 ///

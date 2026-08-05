@@ -163,9 +163,7 @@ const SCENARIOS: &[SpecDef] = &[
 /// [`MEASURED_INKED_MAX`], which
 /// `brightfield_render::sample_policy` owns and documents with the measurement
 /// it came from; this sits under it with margin so a suite is declined rather
-/// than timed at a count close enough to the bracket to be in doubt. Above the
-/// ceiling a frame does not degrade — it comes back BLANK at exit 0, which is
-/// what an unattended capture records as a pass.
+/// than timed at a count close enough to the bracket to be in doubt.
 ///
 /// **The previous value, 10⁶, described the wrong ceiling.** It was derived
 /// from the storage-buffer binding size — the conservative 128 MiB the
@@ -461,7 +459,7 @@ fn methodology() -> Vec<String> {
             "Datasets are deterministic pure functions of the row index via DuckDB hash() — no RNG. \
              Frame suites are capped by DRAWN row-level primitives, not by table rows: a scenario's \
              row-per-mark marks each contribute one primitive per materialised row, an aggregating \
-             mark contributes none, and past the drawn-primitive ceiling the frame comes back BLANK. \
+             mark contributes none. \
              THE CEILING IS MEASURED, NOT INHERITED, and it is not the cap: on the reference machine \
              through the production render path, {MEASURED_INKED_MAX} dots is the largest count that \
              inked a frame and {MEASURED_BLANK_MIN} the smallest that came back with every pixel \
@@ -1149,13 +1147,6 @@ mod tests {
     /// call — and the measurement it reproduces is the one that looks at the
     /// written PNG, not the one that waits for the process to abort.
     ///
-    /// The old expectations asserted here said a one-scatter scene renders at
-    /// 10⁶ rows. It does return `Ok` and it does write a file. The file is
-    /// **blank**: past [`MEASURED_BLANK_MIN`] drawn primitives vello's fixed
-    /// `seg_counts` buffer overflows, coarse emits nothing, and every pixel comes back
-    /// transparent. A cap that only caught the abort was letting a whole
-    /// magnitude of empty frames through and timing them.
-    ///
     /// The per-scenario primitive counts are what put each row on the right
     /// side of the line, so they are asserted rather than trusted.
     #[test]
@@ -1170,9 +1161,6 @@ mod tests {
         // Measured inked: one scatter at a hundred thousand rows.
         assert!(!caps("brush-density", 100_000));
         assert!(!caps("brush-binned-density", 100_000));
-        // Measured BLANK (`Ok` returned, PNG written, every pixel transparent):
-        // one scatter an order of magnitude up, and two scatters at the same
-        // row count.
         assert!(caps("brush-density", 1_000_000));
         assert!(caps("crossfilter-dots", 100_000));
         // Two scatters stay inside it at half that.

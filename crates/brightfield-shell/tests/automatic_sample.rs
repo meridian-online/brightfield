@@ -2,11 +2,8 @@
 //! draws and to the query it issues.
 //!
 //! The mechanism this exercises shipped with a manual driver: `--force-sample`
-//! on either binary and nothing else. Above the renderer's drawn-primitive
-//! ceiling the failure is a blank frame at exit 0 — no error, no diagnostic,
-//! a written PNG — so a plot nobody thought to flag drew nothing and said
-//! nothing about it. These are the assertions that a plot now decides for
-//! itself.
+//! on either binary and nothing else. These are the assertions that a plot now
+//! decides for itself.
 //!
 //! The boundary cases are built at row counts taken FROM the ceiling constant
 //! rather than written out here, so moving the constant moves those fixtures
@@ -139,10 +136,10 @@ fn band_bytes(png: &Path) -> Vec<u8> {
 /// line.**
 ///
 /// The two counts are adjacent: [`MEASURED_INKED_MAX`] is the largest count
-/// measured to ink a frame, and one primitive more is a frame that would come
-/// back blank. A policy that compared the wrong way round, or that used a
-/// different threshold from the one the constant names, cannot satisfy both
-/// rows — which is what makes this a boundary test rather than two spot checks.
+/// measured to ink a frame. A policy that compared the wrong way round, or
+/// that used a different threshold from the one the constant names, cannot
+/// satisfy both rows — which is what makes this a boundary test rather than
+/// two spot checks.
 #[test]
 fn a_spec_above_the_ceiling_samples_itself_and_one_below_does_not() {
     let (complete_dir, complete_spec) = fixture("below", &scatter(MEASURED_INKED_MAX));
@@ -156,10 +153,9 @@ fn a_spec_above_the_ceiling_samples_itself_and_one_below_does_not() {
         "a spec at the largest count measured to ink a frame must render COMPLETE \
          with no flag — it draws, and a sample would drop half its points for nothing"
     );
-    let fact = sampled.plots[0].sample.expect(
-        "one primitive past the ceiling must render SAMPLED with no flag — unsampled \
-         it comes back blank at exit 0, which is the failure nothing reports",
-    );
+    let fact = sampled.plots[0]
+        .sample
+        .expect("one primitive past the ceiling must render SAMPLED with no flag");
     assert_eq!(
         fact.of,
         MEASURED_INKED_MAX + 1,
@@ -201,11 +197,10 @@ fn a_spec_above_the_ceiling_samples_itself_and_one_below_does_not() {
 
 /// **The first query already carries the predicate.**
 ///
-/// The decision cannot be made after the fact — above the ceiling there is no
-/// error to catch and retry, and a full result set materialised and then
-/// thrown away costs the memory the push-down exists to avoid. So: one execute
-/// per row-level mark, that execute's SQL carrying the sample clause, and the
-/// rows it materialised being the sampled count.
+/// A full result set materialised and then thrown away costs the memory the
+/// push-down exists to avoid. So: one execute per row-level mark, that
+/// execute's SQL carrying the sample clause, and the rows it materialised
+/// being the sampled count.
 #[test]
 fn the_first_execution_of_a_row_level_mark_is_already_sampled() {
     let (dir, spec) = fixture("first-query", &scatter(MEASURED_INKED_MAX + 1));
