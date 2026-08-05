@@ -31,6 +31,11 @@ use crate::channel::{Channel, ChannelMap};
 /// carries no such instruction: what a reader needs from it is that the same
 /// category takes the same slot every time, not that a particular one leads.
 ///
+/// A band scale under sampling answers the same determinism problem the other
+/// way: `brightfield-render`'s `restored_band_categories` installs the order
+/// measured on the unsampled rows, so the list stops depending on which rows
+/// the sample kept without any comparator being imposed on it.
+///
 /// Ordering here rather than in SQL keeps one comparator for both producers.
 /// The categories a render infers come out of an Arrow batch and the ones a
 /// restoration supplies come out of a query, and a DuckDB collation ordering

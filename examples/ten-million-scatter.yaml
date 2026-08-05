@@ -1,0 +1,41 @@
+meta:
+  title: Ten million rows — a scatter that samples itself
+  description: |
+    A row-level dot scatter over ten million rows, generated in DuckDB so there
+    is no data file. Open it with nothing on the command line:
+
+      cargo run -p brightfield-shell -- examples/ten-million-scatter.yaml
+
+    Ten million dots is far past the count the renderer can encode into one
+    scene.
+
+    So brightfield does not draw it whole. Before a single row is materialised
+    it counts what each row-level mark would draw, picks the smallest
+    power-of-two sample that brings the plot back under the ceiling, and pushes
+    that sample down into the query as a predicate on the row's own hash. What
+    arrives is the sample; the ten million rows never cross into memory. The
+    band below the plot says how many rows were drawn, out of how many, and
+    what fraction that is.
+
+    No flag turns this on. `--force-sample` still exists and still outranks the
+    policy, but a plot that needs a sample no longer waits to be told.
+
+    The picture is a correlated band rather than uniform noise, so a reader can
+    see that a 1-in-n sample of a shape is still that shape. Power-of-two
+    moduli nest: every point drawn here is also drawn at every coarser rate, so
+    changing the rate densifies the picture instead of reshuffling it.
+data:
+  points:
+    query: |
+      SELECT
+        (i * 2654435761 % 100003) / 1000.0                                AS spread,
+        (i * 2654435761 % 100003) / 1600.0
+          + ((i * 40503 + 12345) % 40009) / 1000.0                        AS depth
+      FROM range(10000000) AS t(i)
+plot:
+  - mark: dot
+    data: { from: points }
+    x: spread
+    y: depth
+width: 640
+height: 480

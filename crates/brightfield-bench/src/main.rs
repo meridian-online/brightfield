@@ -35,6 +35,10 @@ use std::process::ExitCode;
 
 use serde::Serialize;
 
+use brightfield_render::sample_policy::{
+    MEASURED_BLANK_MIN, MEASURED_INKED_MAX, VELLO_BIN_DATA_PANIC_DOTS,
+};
+
 use crate::machine::MachineProfile;
 use crate::scenario::{Drag, EngineMeasurement, Scenario};
 use crate::stats::Stats;
@@ -155,6 +159,12 @@ const SCENARIOS: &[SpecDef] = &[
 /// carry one primitive per table row, and what the renderer can encode has a
 /// ceiling.
 ///
+/// **This harness's POLICY cap, not the ceiling.** The ceiling is
+/// [`MEASURED_INKED_MAX`], which
+/// `brightfield_render::sample_policy` owns and documents with the measurement
+/// it came from; this sits under it with margin so a suite is declined rather
+/// than timed at a count close enough to the bracket to be in doubt.
+///
 /// **The previous value, 10⁶, described the wrong ceiling.** It was derived
 /// from the storage-buffer binding size — the conservative 128 MiB the
 /// renderer used to ask for, at ~128 bytes per drawn primitive. Two things are
@@ -163,101 +173,13 @@ const SCENARIOS: &[SpecDef] = &[
 /// ceiling moved by a factor of 32 and no longer binds. Second, and the reason
 /// the number here went DOWN rather than up: a much lower ceiling was always
 /// underneath it, and nothing was looking at it.
-///
-/// Vello's flattening and coarse-raster buffers are FIXED sizes chosen inside
-/// `vello_encoding` — 2^21 elements for `lines` / `tiles` / `seg_counts` /
-/// `segments`, 2^18 for `bin_data`. They do not scale with the scene and no
-/// wgpu limit moves them. When one overflows, vello sets a `failed` bit in a
-/// GPU-side counter, does not re-run coarse, and returns `Ok`. Brightfield
-/// never reads that counter, so **the render succeeds and the frame comes back
-/// BLANK** — which is worse than the abort this constant was written to avoid,
-/// because `Ok` and a written PNG is what an unattended capture records as a
-/// pass.
-///
-/// **Blank, not partial.** Once `seg_counts` overflows, coarse emits nothing at
-/// all: the counters come back with `segments = 0` and `ptcl = 0`, and the
-/// production render agrees — every pixel of the written PNG is
-/// `rgba(0, 0, 0, 0)`. An earlier version of this note said "partial" and
-/// "missing most of its ink", which would have had someone looking for a
-/// thinned picture instead of an empty one.
-///
-/// Measured on the reference machine (Apple M1 Pro, Metal) through the
-/// PRODUCTION path — `cargo run -p brightfield-shell --bin brightfield-shot --
-/// --vello-only`, a debug build, one dot scatter in a 640×480 plot at scale 2:
-///
-/// | dots | exit | written PNG |
-/// |---|---|---|
-/// | 50 000 | 0 | inked — 74 % of pixels carry mark or furniture |
-/// | 104 600 | 0 | inked |
-/// | 104 800 | 0 | **blank** — 1 280 × 960 px, every one `rgba(0,0,0,0)` |
-/// | 106 000 · 132 000 · 262 000 | 0 | blank |
-/// | 262 101 | 0 | blank |
-/// | 262 102 and up | 101 | `vello_encoding` `config.rs:185`, subtract overflow |
-///
-/// Two distinct ceilings, and they are an order of magnitude apart. The first
-/// is `seg_counts` (blank frame, exit 0, no diagnostic anywhere); its onset
-/// depends on how much rule each dot contributes, so the bracket above is
-/// fixture-specific rather than a constant. The second is exact and is not:
-/// `bin_data` is 2^18 = 262 144 elements and one solid-colour draw consumes one,
-/// so the subtraction goes negative at 262 144 filled paths. This plot carries
-/// 42 paths of frame, grid and axis rule, and the panic first fires at 262 102
-/// dots — 262 144 − 42, to the row.
-///
-/// **The panic is not the low ceiling.** An earlier version of this table
-/// attributed a 130 000–132 000 encode panic to `bin_data`. That panic is real
-/// but comes from `vello::DebugDownloads::map`, which slices the lines buffer to
-/// `bump.lines` without checking it against the buffer's own 2^21 length — and
-/// that function is `#[cfg(feature = "debug_layers")]`, so it exists only inside
-/// the probe below. It was the probe measuring itself. The production path runs
-/// clean through 262 101.
-///
-/// So the cap sits just under the lowest count proven to draw, and the frame
-/// suites above it are skipped for the same reason as before, against a real
-/// number instead of an inherited one. `vello_bump_ceiling.rs` in
-/// `brightfield-render` reproduces the counters; the table above is reproduced
-/// with `brightfield-shot` and a `range(N)` spec. Re-run both before moving this.
 const FRAME_DRAWN_ROW_CAP: u64 = 100_000;
 
-/// The largest one-scatter dot count MEASURED to ink a frame — the last count
-/// below the `seg_counts` ceiling, from the table on [`FRAME_DRAWN_ROW_CAP`].
-///
-/// This is the number a record has to state. [`FRAME_DRAWN_ROW_CAP`] is a
-/// policy cap chosen to sit under it with margin; quoting the cap as "what the
-/// renderer can do" understates the renderer by the margin and, worse, names
-/// a harness constant as though it were a property of the machine.
-const MEASURED_INKED_MAX: u64 = 104_600;
-
-/// The smallest one-scatter dot count MEASURED to come back BLANK: vello
-/// returns `Ok`, a frame is written, and every pixel is `rgba(0, 0, 0, 0)`.
-///
-/// The gap to [`MEASURED_INKED_MAX`] is the bracket the probe resolved to, not
-/// a tolerance — the onset depends on how much rule each dot contributes, so
-/// it is fixture-specific rather than a constant of the renderer.
-const MEASURED_BLANK_MIN: u64 = 104_800;
-
-/// `bin_data`, the second and exact ceiling: 2^18 elements, one consumed per
-/// solid-colour draw, so the subtraction underflows a u32 at 2^18 filled paths.
-const VELLO_BIN_DATA_ELEMENTS: u64 = 1 << 18;
-
-/// Where that underflow first fired in the probe fixture, measured to the row:
-/// [`VELLO_BIN_DATA_ELEMENTS`] less the 42 paths of frame, grid and axis rule
-/// the plot carries. 262 101 dots exits 0 (blank); 262 102 exits 101.
-const VELLO_BIN_DATA_PANIC_DOTS: u64 = 262_102;
-
-// The relationships between the four numbers above are the guard, and they are
-// compile-time facts — so the build checks them, rather than a test that has to
-// be run to say so.
-//
 // The cap must stay UNDER the largest count measured to ink a frame: a cap at
 // or above `MEASURED_BLANK_MIN` would let the harness time a frame already
-// proven blank, which is the defect the cap exists to prevent.
+// proven blank, which is the defect the cap exists to prevent. A compile-time
+// fact, so the build checks it rather than a test that has to be run.
 const _: () = assert!(FRAME_DRAWN_ROW_CAP < MEASURED_INKED_MAX);
-const _: () = assert!(MEASURED_INKED_MAX < MEASURED_BLANK_MIN);
-// The second ceiling is derived, not observed loose: 2^18 elements less the 42
-// paths of furniture. Edit either number without the other and this stops
-// holding.
-const _: () = assert!(VELLO_BIN_DATA_ELEMENTS - 42 == VELLO_BIN_DATA_PANIC_DOTS);
-const _: () = assert!(VELLO_BIN_DATA_PANIC_DOTS > MEASURED_BLANK_MIN);
 
 /// Why a frame suite was declined, in the words a reader of the record sees.
 ///
@@ -485,7 +407,7 @@ struct BaselineReport {
     schema: &'static str,
     machine: MachineProfile,
     config: RunConfig,
-    methodology: Vec<&'static str>,
+    methodology: Vec<String>,
     scaling: Vec<ScalingResult>,
     corpus: Vec<CorpusResult>,
 }
@@ -518,29 +440,58 @@ struct RunConfig {
 /// beside the readback that proved there was a picture to time.
 const SCHEMA: &str = "brightfield-bench/v4";
 
-const METHODOLOGY: &[&str] = &[
-    "Interaction latency is measured at the coordinator seam the live window blocks its frame on: one committed brush step = Coordinator::apply (predicate push-down into DuckDB + re-query of every affected mark). live_apply adds the re-composite into a Vello scene (LiveDashboard::apply), which is the full in-frame cost of a brush step in the live window.",
-    "Every timed drag step uses a distinct interval: the engine caches repeated identical SQL, so a repeated interval would time the cache. The harness has TWO step budgets and bounds BOTH against the generators' 35-step period — the engine suites' --iterations, and the frame suites' --warmup-frames + --frames (the interaction frame suite indexes its step by the frame counter, so it wraps independently of --iterations; validating only the latter left `--frames 31` free to re-issue step 0 silently). A non-vacuity check requires the drag to have actually reduced the cross-filtered step's row count, and every apply must affect at least one mark.",
-    "Frame times are headless: the real MeridianApp drawn by egui's real wgpu backend into an offscreen texture, timed per frame through GPU completion (submit + blocking wait). No swapchain, no present, no vsync — the number is the cost of producing a frame, not displaying one. Warm-up frames are discarded.",
-    "steady frames draw with nothing changing (the shell's floor). interaction frames each push one committed brush step through the live document before drawing, so they carry re-query + re-composite + canvas re-raster + GPU wait.",
-    "The composed scene draws EVERY materialised Arrow chunk: a mark's result batches are assembled into one drawable batch (assemble_batches), the same path the presentation layer uses. drawn_rows vs materialised_rows is the cross-check — they are equal, so the drawn picture holds every row the query answered (the raw-dot scenario spans many ~2048-row chunks and still draws them all). A future regression that reintroduced a first-chunk cap would show drawn_rows < materialised_rows here; an assembly that could not proceed fails the run loudly by name rather than reporting a smaller drawn count.",
-    "cold open = Coordinator::load (DDL, no mark queries) then the first full materialisation of every mark, on a session in the same process; the Parquet file is warm in the OS page cache.",
-    "Datasets are deterministic pure functions of the row index via DuckDB hash() — no RNG. Frame suites are capped by DRAWN row-level primitives, not by table rows: a scenario's row-per-mark marks each contribute one primitive per materialised row, an aggregating mark contributes none, and past the drawn-primitive ceiling the frame comes back BLANK. THE CEILING IS MEASURED, NOT INHERITED, and it is not the cap: on the reference machine through the production render path, 104600 dots is the largest count that inked a frame and 104800 the smallest that came back with every pixel rgba(0,0,0,0). It is vello's FIXED 2^21-element seg_counts buffer and NOT a device limit — this adapter reports a 4 GiB max storage buffer binding size, and no adapter limit moves seg_counts. Vello sets a failed bit in a GPU-side counter, does not re-run coarse and returns Ok, so nothing in the render path raises an error and a blank frame is indistinguishable from a fast one by timing alone; the harness therefore declines the suite at a policy cap of 100000, under the measured ceiling with margin, rather than time a picture that is not there. A second and exact ceiling sits an order of magnitude above: bin_data is 2^18 elements and the encode panics at 262102 dots in that fixture. Engine suites run at every magnitude regardless. This cap became load-bearing when the compose began assembling every Arrow chunk instead of the first: a record measured before that change reports frame times for scenes that were drawing ~2048 rows per mark, whatever its row column says.",
-    "The emitted SQL applies a selection predicate INSIDE an aggregating mark's query — it filters the base rows that get aggregated (row-level marks are wrapped whole). The aggregating scenarios keep their original brush-the-binned-column shape so the measured series stays comparable across harness runs.",
-    "Each scenario's engine suites run twice on identical code: automatic pre-aggregation enabled (the shipped configuration) and disabled (the direct-query control). The delta between the two brush-step latencies is the layer's contribution. Cube engagement is verified per run — engaged and serving where the scenario expects it, silent where it does not — and a run whose cube behaviour contradicts the expectation FAILS instead of reporting.",
-    "Active interval dimensions enter a cube at RAW data values in this first cut (answer-exactness over cube size). A cube over a ~unique-per-row brushed column (brush-density's value_a) therefore approaches the base table's size and buys little; the bounded-cardinality scenario (brush-binned-density, forty distinct brushed values) and the crosswalk scenario measure the shape the layer is built for. Frame suites run in the shipped configuration only.",
-    "THE SETTLED-ZOOM NUMBERS DO NOT GENERALISE ACROSS COLUMN CARDINALITY, and the committed scenarios are the favourable case. The raw-values rule above applies to a navigated column exactly as it does to a brushed one, but bites harder: on navigation the active column is usually the same column being binned, so the cube becomes GROUP BY bin(x), x. Measured on a densityX over 20,000 distinct doubles, the cube materialises 20,000 rows against a 20,000-row source — no reduction at all, plus the build cost, and every later zoom scans a table the size of the base. Answers stay exact; only the speed collapses. Every navigated column in the committed scenarios is low-cardinality, so this shape is absent from the recorded figures and must not be read out of them.",
-    "The crosswalk scenario is opt-in (--crosswalk-parquet) and fixed-scale: it measures the published company-identifier crosswalk dataset as-is; the harness records the file's row count rather than generating data.",
-    "In the enabled run, the FIRST brush step carries the one-time cube build (a full-table aggregation); it surfaces in the max percentile, while p50 reflects the steady per-step serve cost. Cubes are session-scoped and never persist.",
-    "Each row records which GESTURE drove its timed steps (`drag`). A brush moves BOTH interval endpoints as a rectangle is dragged inside a chart; a slider pins its lower end and advances one handle across fixed stops. They are not interchangeable: the slider's steps are monotone and land exactly on the brushed axis's forty stops (a step falling between two stops would emit different SQL while selecting identical rows, reporting a re-query that did no new work as though it had).",
-    "The slider-drag scenario drives a SELECTION, not a scalar param. Upstream Mosaic expresses a range slider as `select: interval`, and this engine's pre-aggregation layer keys its cubes off that structured clause — the only path reaching it is selection propagation. A slider wired to a scalar param arrives at the query layer as a substituted expression predicate that decomposes into no cube at all, so measuring it would measure a different mechanism under the slider's name. The spec vocabulary has no slider-to-selection widget form yet, so the contributor is declared as the interval interactor it does have and the harness drives it with slider-shaped steps; no row in this record took the scalar-param path.",
-    "slider-drag resolves its selection as `intersect`, not `crossfilter`. A slider is not a view and has no picture of its own to spare, so EVERY subscriber is filtered, including the plot that declares the contributor — both views re-query on every step. A crossfilter brush exempts its own plot, so a brush row's per-step work is one view lighter than a slider row's at the same row count; compare the two knowing that.",
-    "compose_memory is what the client held while the first full scene was composed — the window around LiveDashboard::present, which executes every mark and hands the whole result set to compose_from_results, which assembles every chunk of every mark and holds them all while it builds the scene. The window opens only after the coordinator-seam phase is gone: its session is dropped and its complete result set is moved into the shape pass, which consumes and drops it. That ordering is the measurement — resident size is a whole-process quantity, so a phase still holding its Arrow would be reported as this compose's cost. Two figures, because neither alone is honest. arrow_chunks_mib / arrow_assembled_mib are EXACT and deterministic, summed from the batches themselves (RecordBatch::get_array_memory_size) — the data the compose holds, identical on any host. A single-chunk mark assembles by pass-through, so its assembled bytes are the SAME allocation counted again, not a second copy.",
-    "rss_*_mib is the process's resident set size, polled from the OS across that same window (Linux /proc/self/status; macOS `ps -o rss=`, ~5ms resolution, so `rss_samples` states how coarse a given cell is). It is the only figure that sees the Arrow buffers' real cost: the chunks are imported from DuckDB over the C data interface, so DuckDB's C++ allocator owns them and a Rust allocator counter would not see them. It is also a SINGLE sample of a whole-process quantity and is NOT reproducible on its own. Every scenario records two windows — pre-aggregation off and on — over the same compose work (the first present precedes any interaction, so the toggle cannot change it); their disagreement is this figure's run-to-run noise and the generated summary states the widest one observed. Quote a peak only with that spread beside it; quote arrow_chunks_mib when a deterministic number is wanted. The pre-compose floor is not monotone: the OS reclaims pages between windows, so rss_before falls as often as it rises and rss_growth is not the compose's cost. The poller stops before the timed applies, so it cannot perturb a reported latency.",
-    "A cell's picture is rendered and read back BEFORE the cell is timed. The cell's spec is composed through the production pipeline, rendered once through VelloRenderer at the frame scale, and the target is read back and counted: frame_ink records the device size, how many of those pixels differ from the colour the render cleared to, whether the target came back holding one repeated value, and the verdict. A cell whose picture reads back empty publishes NO timing. It records frames_blank instead — a per-cell FAILURE, a different event from frames_skipped, which declined to measure at all — and the run continues and exits 0. The drawn-primitive cap still declines the suites it declines; what changed is that a cell UNDER the cap is no longer assumed to have drawn.",
-    "The ink probe is a SEPARATE submission from the frames the suite times, on the same composed scene through the same renderer at the same device scale. The timed frames go through the shell's egui path, which does not read back, by design — a readback there would time a cost the live window does not pay. So the probe answers whether this cell's picture can be produced at all, immediately before the cell is timed; it does not answer whether one particular timed submission drew. A defect that made a picture appear and then vanish between the probe and the timing is outside what this evidence covers. So is a THINNED picture: the overflow this detects emits nothing at all, so the two verdicts are a picture and no picture. inked_fraction is a share of the whole target, and a composed dashboard paints its page tone across that target before a mark is drawn — a row that rendered therefore reports a high share, and the figure is not mark coverage.",
-    "Record schema v4. v2 carried `first_batch_rows` beside `materialised_rows` — the pre-assembly presentation that drew a mark's FIRST Arrow chunk only. That field is gone; `drawn_rows` names what the field now holds. A v2 record's row counts describe code that no longer ships and must not be quoted against a v3 one. v3 → v4 adds frame_ink and frames_blank: a v3 frame cell states a time and nothing about what was on screen while the clock ran, because the harness of that era decided a picture existed from a primitive count computed before rendering.",
-];
+/// Every statement a record carries about how it was measured.
+///
+/// A function rather than a table of literals because one of these sentences
+/// states the measured drawn-primitive ceiling, and that figure has exactly one
+/// home — `brightfield_render::sample_policy`. Written out here it would be a
+/// copy, and a copy is a thing that can be true on the day it is typed and
+/// false afterwards.
+fn methodology() -> Vec<String> {
+    vec![
+        "Interaction latency is measured at the coordinator seam the live window blocks its frame on: one committed brush step = Coordinator::apply (predicate push-down into DuckDB + re-query of every affected mark). live_apply adds the re-composite into a Vello scene (LiveDashboard::apply), which is the full in-frame cost of a brush step in the live window.".to_string(),
+        "Every timed drag step uses a distinct interval: the engine caches repeated identical SQL, so a repeated interval would time the cache. The harness has TWO step budgets and bounds BOTH against the generators' 35-step period — the engine suites' --iterations, and the frame suites' --warmup-frames + --frames (the interaction frame suite indexes its step by the frame counter, so it wraps independently of --iterations; validating only the latter left `--frames 31` free to re-issue step 0 silently). A non-vacuity check requires the drag to have actually reduced the cross-filtered step's row count, and every apply must affect at least one mark.".to_string(),
+        "Frame times are headless: the real MeridianApp drawn by egui's real wgpu backend into an offscreen texture, timed per frame through GPU completion (submit + blocking wait). No swapchain, no present, no vsync — the number is the cost of producing a frame, not displaying one. Warm-up frames are discarded.".to_string(),
+        "steady frames draw with nothing changing (the shell's floor). interaction frames each push one committed brush step through the live document before drawing, so they carry re-query + re-composite + canvas re-raster + GPU wait.".to_string(),
+        "The composed scene draws EVERY materialised Arrow chunk: a mark's result batches are assembled into one drawable batch (assemble_batches), the same path the presentation layer uses. drawn_rows vs materialised_rows is the cross-check — they are equal, so the drawn picture holds every row the query answered (the raw-dot scenario spans many ~2048-row chunks and still draws them all). A future regression that reintroduced a first-chunk cap would show drawn_rows < materialised_rows here; an assembly that could not proceed fails the run loudly by name rather than reporting a smaller drawn count.".to_string(),
+        "cold open = Coordinator::load (DDL, no mark queries) then the first full materialisation of every mark, on a session in the same process; the Parquet file is warm in the OS page cache.".to_string(),
+        format!(
+            "Datasets are deterministic pure functions of the row index via DuckDB hash() — no RNG. \
+             Frame suites are capped by DRAWN row-level primitives, not by table rows: a scenario's \
+             row-per-mark marks each contribute one primitive per materialised row, an aggregating \
+             mark contributes none. \
+             THE CEILING IS MEASURED, NOT INHERITED, and it is not the cap: on the reference machine \
+             through the production render path, {MEASURED_INKED_MAX} dots is the largest count that \
+             inked a frame and {MEASURED_BLANK_MIN} the smallest that came back with every pixel \
+             rgba(0,0,0,0). It is vello's FIXED 2^21-element seg_counts buffer and NOT a device limit \
+             — this adapter reports a 4 GiB max storage buffer binding size, and no adapter limit \
+             moves seg_counts. Vello sets a failed bit in a GPU-side counter, does not re-run coarse \
+             and returns Ok, so nothing in the render path raises an error and a blank frame is \
+             indistinguishable from a fast one by timing alone; the harness therefore declines the \
+             suite at a policy cap of {FRAME_DRAWN_ROW_CAP}, under the measured ceiling with margin, \
+             rather than time a picture that is not there. A second and exact ceiling sits an order \
+             of magnitude above: bin_data is 2^18 elements and the encode panics at \
+             {VELLO_BIN_DATA_PANIC_DOTS} dots in that fixture. Engine suites run at every magnitude \
+             regardless. This cap became load-bearing when the compose began assembling every Arrow \
+             chunk instead of the first: a record measured before that change reports frame times \
+             for scenes that were drawing ~2048 rows per mark, whatever its row column says."
+        ),
+        "The emitted SQL applies a selection predicate INSIDE an aggregating mark's query — it filters the base rows that get aggregated (row-level marks are wrapped whole). The aggregating scenarios keep their original brush-the-binned-column shape so the measured series stays comparable across harness runs.".to_string(),
+        "Each scenario's engine suites run twice on identical code: automatic pre-aggregation enabled (the shipped configuration) and disabled (the direct-query control). The delta between the two brush-step latencies is the layer's contribution. Cube engagement is verified per run — engaged and serving where the scenario expects it, silent where it does not — and a run whose cube behaviour contradicts the expectation FAILS instead of reporting.".to_string(),
+        "Active interval dimensions enter a cube at RAW data values in this first cut (answer-exactness over cube size). A cube over a ~unique-per-row brushed column (brush-density's value_a) therefore approaches the base table's size and buys little; the bounded-cardinality scenario (brush-binned-density, forty distinct brushed values) and the crosswalk scenario measure the shape the layer is built for. Frame suites run in the shipped configuration only.".to_string(),
+        "THE SETTLED-ZOOM NUMBERS DO NOT GENERALISE ACROSS COLUMN CARDINALITY, and the committed scenarios are the favourable case. The raw-values rule above applies to a navigated column exactly as it does to a brushed one, but bites harder: on navigation the active column is usually the same column being binned, so the cube becomes GROUP BY bin(x), x. Measured on a densityX over 20,000 distinct doubles, the cube materialises 20,000 rows against a 20,000-row source — no reduction at all, plus the build cost, and every later zoom scans a table the size of the base. Answers stay exact; only the speed collapses. Every navigated column in the committed scenarios is low-cardinality, so this shape is absent from the recorded figures and must not be read out of them.".to_string(),
+        "The crosswalk scenario is opt-in (--crosswalk-parquet) and fixed-scale: it measures the published company-identifier crosswalk dataset as-is; the harness records the file's row count rather than generating data.".to_string(),
+        "In the enabled run, the FIRST brush step carries the one-time cube build (a full-table aggregation); it surfaces in the max percentile, while p50 reflects the steady per-step serve cost. Cubes are session-scoped and never persist.".to_string(),
+        "Each row records which GESTURE drove its timed steps (`drag`). A brush moves BOTH interval endpoints as a rectangle is dragged inside a chart; a slider pins its lower end and advances one handle across fixed stops. They are not interchangeable: the slider's steps are monotone and land exactly on the brushed axis's forty stops (a step falling between two stops would emit different SQL while selecting identical rows, reporting a re-query that did no new work as though it had).".to_string(),
+        "The slider-drag scenario drives a SELECTION, not a scalar param. Upstream Mosaic expresses a range slider as `select: interval`, and this engine's pre-aggregation layer keys its cubes off that structured clause — the only path reaching it is selection propagation. A slider wired to a scalar param arrives at the query layer as a substituted expression predicate that decomposes into no cube at all, so measuring it would measure a different mechanism under the slider's name. The spec vocabulary has no slider-to-selection widget form yet, so the contributor is declared as the interval interactor it does have and the harness drives it with slider-shaped steps; no row in this record took the scalar-param path.".to_string(),
+        "slider-drag resolves its selection as `intersect`, not `crossfilter`. A slider is not a view and has no picture of its own to spare, so EVERY subscriber is filtered, including the plot that declares the contributor — both views re-query on every step. A crossfilter brush exempts its own plot, so a brush row's per-step work is one view lighter than a slider row's at the same row count; compare the two knowing that.".to_string(),
+        "compose_memory is what the client held while the first full scene was composed — the window around LiveDashboard::present, which executes every mark and hands the whole result set to compose_from_results, which assembles every chunk of every mark and holds them all while it builds the scene. The window opens only after the coordinator-seam phase is gone: its session is dropped and its complete result set is moved into the shape pass, which consumes and drops it. That ordering is the measurement — resident size is a whole-process quantity, so a phase still holding its Arrow would be reported as this compose's cost. Two figures, because neither alone is honest. arrow_chunks_mib / arrow_assembled_mib are EXACT and deterministic, summed from the batches themselves (RecordBatch::get_array_memory_size) — the data the compose holds, identical on any host. A single-chunk mark assembles by pass-through, so its assembled bytes are the SAME allocation counted again, not a second copy.".to_string(),
+        "rss_*_mib is the process's resident set size, polled from the OS across that same window (Linux /proc/self/status; macOS `ps -o rss=`, ~5ms resolution, so `rss_samples` states how coarse a given cell is). It is the only figure that sees the Arrow buffers' real cost: the chunks are imported from DuckDB over the C data interface, so DuckDB's C++ allocator owns them and a Rust allocator counter would not see them. It is also a SINGLE sample of a whole-process quantity and is NOT reproducible on its own. Every scenario records two windows — pre-aggregation off and on — over the same compose work (the first present precedes any interaction, so the toggle cannot change it); their disagreement is this figure's run-to-run noise and the generated summary states the widest one observed. Quote a peak only with that spread beside it; quote arrow_chunks_mib when a deterministic number is wanted. The pre-compose floor is not monotone: the OS reclaims pages between windows, so rss_before falls as often as it rises and rss_growth is not the compose's cost. The poller stops before the timed applies, so it cannot perturb a reported latency.".to_string(),
+        "A cell's picture is rendered and read back BEFORE the cell is timed. The cell's spec is composed through the production pipeline, rendered once through VelloRenderer at the frame scale, and the target is read back and counted: frame_ink records the device size, how many of those pixels differ from the colour the render cleared to, whether the target came back holding one repeated value, and the verdict. A cell whose picture reads back empty publishes NO timing. It records frames_blank instead — a per-cell FAILURE, a different event from frames_skipped, which declined to measure at all — and the run continues and exits 0. The drawn-primitive cap still declines the suites it declines; what changed is that a cell UNDER the cap is no longer assumed to have drawn.".to_string(),
+        "The ink probe is a SEPARATE submission from the frames the suite times, on the same composed scene through the same renderer at the same device scale. The timed frames go through the shell's egui path, which does not read back, by design — a readback there would time a cost the live window does not pay. So the probe answers whether this cell's picture can be produced at all, immediately before the cell is timed; it does not answer whether one particular timed submission drew. A defect that made a picture appear and then vanish between the probe and the timing is outside what this evidence covers. So is a THINNED picture: the overflow this detects emits nothing at all, so the two verdicts are a picture and no picture. inked_fraction is a share of the whole target, and a composed dashboard paints its page tone across that target before a mark is drawn — a row that rendered therefore reports a high share, and the figure is not mark coverage.".to_string(),
+        "Record schema v4. v2 carried `first_batch_rows` beside `materialised_rows` — the pre-assembly presentation that drew a mark's FIRST Arrow chunk only. That field is gone; `drawn_rows` names what the field now holds. A v2 record's row counts describe code that no longer ships and must not be quoted against a v3 one. v3 → v4 adds frame_ink and frames_blank: a v3 frame cell states a time and nothing about what was on screen while the clock ran, because the harness of that era decided a picture existed from a primitive count computed before rendering.".to_string(),
+    ]
+}
 
 fn main() -> ExitCode {
     // The repo root: compiled in, so the harness runs correctly from any CWD.
@@ -793,7 +744,7 @@ fn run(root: &Path, args: &Args) -> Result<Vec<PathBuf>, String> {
             corpus_frames: args.corpus_frames,
             frame_scale: FRAME_SCALE,
         },
-        methodology: METHODOLOGY.to_vec(),
+        methodology: methodology(),
         scaling,
         corpus,
     };
@@ -1196,13 +1147,6 @@ mod tests {
     /// call — and the measurement it reproduces is the one that looks at the
     /// written PNG, not the one that waits for the process to abort.
     ///
-    /// The old expectations asserted here said a one-scatter scene renders at
-    /// 10⁶ rows. It does return `Ok` and it does write a file. The file is
-    /// **blank**: past ~104,800 drawn primitives vello's fixed `seg_counts`
-    /// buffer overflows, coarse emits nothing, and every pixel comes back
-    /// transparent. A cap that only caught the abort was letting a whole
-    /// magnitude of empty frames through and timing them.
-    ///
     /// The per-scenario primitive counts are what put each row on the right
     /// side of the line, so they are asserted rather than trusted.
     #[test]
@@ -1217,9 +1161,6 @@ mod tests {
         // Measured inked: one scatter at a hundred thousand rows.
         assert!(!caps("brush-density", 100_000));
         assert!(!caps("brush-binned-density", 100_000));
-        // Measured BLANK (`Ok` returned, PNG written, every pixel transparent):
-        // one scatter an order of magnitude up, and two scatters at the same
-        // row count.
         assert!(caps("brush-density", 1_000_000));
         assert!(caps("crossfilter-dots", 100_000));
         // Two scatters stay inside it at half that.
@@ -1282,7 +1223,7 @@ mod tests {
     #[test]
     fn no_surface_still_explains_a_blank_frame_with_the_refuted_mechanism() {
         let flatten = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
-        let methodology = flatten(&METHODOLOGY.join("\n"));
+        let methodology = flatten(&methodology().join("\n"));
         let readme = flatten(BENCH_README);
         let reason = flatten(&frames_skipped_reason(200_000));
 
@@ -1314,7 +1255,7 @@ mod tests {
     fn no_surface_still_says_the_harness_does_not_ask_the_renderer() {
         let flatten = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
         let readme = flatten(BENCH_README);
-        let methodology = flatten(&METHODOLOGY.join("\n"));
+        let methodology = flatten(&methodology().join("\n"));
         for (surface, text) in [("README", &readme), ("methodology", &methodology)] {
             for refuted in [
                 "That is a guard, not a detector",
@@ -1341,23 +1282,56 @@ mod tests {
         );
     }
 
-    /// AC5's ask, on the surfaces that can carry it without a re-run: the
-    /// MEASURED ceiling, not only the policy cap. A record that states 100000
-    /// and stops has told the reader a harness constant and called it a
-    /// property of the renderer.
+    /// Every surface states the MEASURED ceiling, not only the policy cap. A
+    /// record that names the cap and stops has told the reader a harness
+    /// constant and called it a property of the renderer.
+    ///
+    /// The expected figures are **read from the constants**, so this holds the
+    /// surfaces to `brightfield_render::sample_policy` rather than to a second
+    /// transcription of it here.
     #[test]
     fn every_generated_surface_states_the_measured_ceiling_not_only_the_cap() {
         let flatten = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
-        let methodology = flatten(&METHODOLOGY.join("\n"));
+        let methodology = flatten(&methodology().join("\n"));
         let reason = flatten(&frames_skipped_reason(200_000));
         // The README writes its figures for humans, with thousands separators.
         let readme = flatten(BENCH_README);
+        let plain = |n: u64| n.to_string();
+        // Group the digits from the right, which is what a human-facing
+        // document does with a five-or-more-digit count.
+        let grouped = |n: u64| {
+            let d = n.to_string();
+            let mut out = String::new();
+            for (i, c) in d.chars().enumerate() {
+                if i > 0 && (d.len() - i).is_multiple_of(3) {
+                    out.push(',');
+                }
+                out.push(c);
+            }
+            out
+        };
 
         for (surface, text, inked, blank) in [
-            ("methodology", &methodology, "104600", "104800"),
-            ("skip reason", &reason, "104600", "104800"),
-            ("README", &readme, "104,600", "104,800"),
+            (
+                "methodology",
+                &methodology,
+                plain(MEASURED_INKED_MAX),
+                plain(MEASURED_BLANK_MIN),
+            ),
+            (
+                "skip reason",
+                &reason,
+                plain(MEASURED_INKED_MAX),
+                plain(MEASURED_BLANK_MIN),
+            ),
+            (
+                "README",
+                &readme,
+                grouped(MEASURED_INKED_MAX),
+                grouped(MEASURED_BLANK_MIN),
+            ),
         ] {
+            let (inked, blank) = (inked.as_str(), blank.as_str());
             assert!(
                 text.contains(inked) && text.contains(blank),
                 "the {surface} must state the measured bracket, not only the cap"
@@ -1384,14 +1358,14 @@ mod tests {
     fn the_schema_id_is_past_the_first_batch_era() {
         assert_eq!(SCHEMA, "brightfield-bench/v4");
         assert!(
-            METHODOLOGY
+            methodology()
                 .iter()
                 .any(|m| m.contains("first_batch_rows") && m.contains("drawn_rows")),
             "the record must state the migration, so a v2 record is not quoted \
              against a v3 one"
         );
         assert!(
-            METHODOLOGY
+            methodology()
                 .iter()
                 .any(|m| m.contains("frame_ink") && m.contains("frames_blank")),
             "the record must state what v4 added, so a v3 frame cell is not \
@@ -1404,7 +1378,7 @@ mod tests {
     /// cap would be describing a guard and calling it a detector.
     #[test]
     fn the_methodology_states_that_a_timed_cell_was_proven_to_have_a_picture() {
-        let all = METHODOLOGY.join("\n");
+        let all = methodology().join("\n");
         assert!(
             all.contains("read back") && all.contains("frame_ink"),
             "the methodology must name the readback and the field it lands in"
@@ -1637,7 +1611,7 @@ mod tests {
                 corpus_frames: 20,
                 frame_scale: FRAME_SCALE,
             },
-            methodology: METHODOLOGY.to_vec(),
+            methodology: methodology(),
             scaling: vec![ScalingResult {
                 scenario: field("slider-drag"),
                 drag: Drag::Slider,
@@ -1757,7 +1731,7 @@ mod tests {
     /// the memory column were refuted by the JSON printed beside them.
     #[test]
     fn the_methodology_block_carries_no_refuted_memory_claim() {
-        let all = METHODOLOGY.join("\n");
+        let all = methodology().join("\n");
         for refuted in [
             "Read the PEAK",
             "RSS is cumulative",
@@ -1794,7 +1768,7 @@ mod tests {
         // reader of a *result* sees, which is the more consequential of the
         // two. A review found both retired sentences could be re-inserted into
         // the rendered blurb with all 42 tests still green.
-        let rendered = METHODOLOGY.join("\n");
+        let rendered = methodology().join("\n");
         for (surface, text) in [("README", BENCH_README), ("methodology", &rendered[..])] {
             for refuted in [
                 "Read the peak, not the growth",

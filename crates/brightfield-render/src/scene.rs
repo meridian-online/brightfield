@@ -314,6 +314,13 @@ pub struct UnsampledDomains {
     /// [`order_categories`] decides it, so a restored list and an inferred one
     /// are built by one rule.
     pub categories: Vec<(Channel, Vec<String>)>,
+    /// The unsampled category ORDER of each channel carrying a band scale,
+    /// unioned across the plot's marks by
+    /// [`UnsampledDomains::merge_band_categories`]. Here the order IS the
+    /// measurement: a band scale gives each category a slot by its index, so
+    /// the list is where the marks are, and [`order_categories`] is not applied
+    /// to it — see that function for why a band domain is not sorted.
+    pub band_categories: Vec<(Channel, Vec<String>)>,
 }
 
 impl UnsampledDomains {
@@ -321,6 +328,15 @@ impl UnsampledDomains {
     #[must_use]
     pub fn categories_for(&self, channel: Channel) -> Option<&[String]> {
         self.categories
+            .iter()
+            .find(|(c, _)| *c == channel)
+            .map(|(_, cats)| cats.as_slice())
+    }
+
+    /// This channel's unsampled category order, if one was measured.
+    #[must_use]
+    pub fn band_categories_for(&self, channel: Channel) -> Option<&[String]> {
+        self.band_categories
             .iter()
             .find(|(c, _)| *c == channel)
             .map(|(_, cats)| cats.as_slice())
@@ -379,6 +395,27 @@ impl UnsampledDomains {
             }
         }
     }
+
+    /// Fold one mark's measured category order for `channel` into this plot's.
+    ///
+    /// Append-if-unseen, which is `union_scales`' own rule for merging two band
+    /// scales — the plot's drawn band domain is built that way across its
+    /// marks, so the measured order has to be built that way too or the two
+    /// lists are assembled by different rules and the containment test compares
+    /// unlike things.
+    pub fn merge_band_categories(&mut self, channel: Channel, measured: &[String]) {
+        if !self.band_categories.iter().any(|(c, _)| *c == channel) {
+            self.band_categories.push((channel, Vec::new()));
+        }
+        let Some((_, slot)) = self.band_categories.iter_mut().find(|(c, _)| *c == channel) else {
+            return;
+        };
+        for cat in measured {
+            if !slot.contains(cat) {
+                slot.push(cat.clone());
+            }
+        }
+    }
 }
 
 /// The category list a colour channel's scale should hold once the sample is
@@ -410,6 +447,40 @@ fn restored_colour_categories(
     let mut restored = measured.to_vec();
     order_categories(&mut restored);
     Some(restored)
+}
+
+/// The category list a band channel's scale should hold once the sample is
+/// accounted for, or `None` when this channel cannot be put back.
+///
+/// [`restored_colour_categories`]' counterpart, and one function for the same
+/// reason: [`apply_unsampled_domains`] installs exactly what this returns and
+/// [`unrestorable_under_sampling`] refuses exactly the band channels for which
+/// it returns `None`, so the restoration and the refusal cannot disagree. Asked
+/// again of an already-restored scale it returns the same list.
+///
+/// The measured list is installed AS MEASURED. That is the difference from the
+/// colour case and it is the point: what a band scale needs back is not the set
+/// but the order the unsampled rows arrive in, because a category's index in
+/// this list is the slot it occupies along the axis. Sorting it here would
+/// discard an author's `ORDER BY` — see [`order_categories`], which is scoped
+/// to colour for that reason.
+///
+/// The same containment test as the colour case, for the same reason: a sample
+/// is a subset of the rows, so a drawn category the whole table does not carry
+/// means the two lists did not come from one query.
+fn restored_band_categories(
+    scale: &Scale,
+    domains: &UnsampledDomains,
+    channel: Channel,
+) -> Option<Vec<String>> {
+    let Scale::Band { categories, .. } = scale else {
+        return None;
+    };
+    let measured = domains.band_categories_for(channel)?;
+    if !categories.iter().all(|c| measured.contains(c)) {
+        return None;
+    }
+    Some(measured.to_vec())
 }
 
 /// [`build_multi_mark_scene`] with the positional domains a sampled plot must
@@ -479,6 +550,9 @@ pub fn build_multi_mark_scene_pinned(
 /// unnavigated plot, so zooming x does not cost the plot its y domain.
 /// [`UnsampledDomains::categories`] is carried through untouched: a colour
 /// domain is not an axis, and no gesture moves it.
+/// [`UnsampledDomains::band_categories`] is carried through for a narrower
+/// reason — a band axis IS an axis, but `override_scale_domain` returns a
+/// [`Scale::Band`] unchanged, so no extent has moved one to yield to.
 fn domains_yielding_to_navigation(
     domains: &UnsampledDomains,
     entry: &ChartData<'_>,
@@ -490,6 +564,7 @@ fn domains_yielding_to_navigation(
         x: extent.x.is_none().then_some(domains.x).flatten(),
         y: extent.y.is_none().then_some(domains.y).flatten(),
         categories: domains.categories.clone(),
+        band_categories: domains.band_categories.clone(),
     }
 }
 
@@ -511,11 +586,11 @@ fn pins_yielding_to_navigation(pins: &PinnedDomains, entry: &ChartData<'_>) -> P
 /// Put the scales back onto their unsampled domains, in place.
 ///
 /// A continuous positional scale is WIDENED to cover the unsampled extent —
-/// the union of what it already carries and what was measured — and a colour
-/// scale's category list is replaced by the unsampled set in
-/// [`order_categories`]' order. A scale kind not named there keeps what the
-/// drawn rows implied and is NOT restored here — see
-/// [`unrestorable_under_sampling`], which is the refusal that keeps a plot
+/// the union of what it already carries and what was measured. A colour scale's
+/// category list is replaced by the unsampled set in [`order_categories`]'
+/// order, and a band scale's by the unsampled order as measured. A scale kind
+/// not named there keeps what the drawn rows implied and is NOT restored here —
+/// see [`unrestorable_under_sampling`], which is the refusal that keeps a plot
 /// carrying one from being sampled at all.
 ///
 /// The union is what makes this land on the complete render's domain rather
@@ -544,20 +619,28 @@ pub fn apply_unsampled_domains(scales: &mut ScaleSet, domains: &UnsampledDomains
         let Some(scale) = scales.get(channel) else {
             continue;
         };
-        let Some(categories) = restored_colour_categories(scale, domains, channel) else {
-            continue;
-        };
-        let Scale::Colour { palette, .. } = scale else {
-            continue;
-        };
-        let palette = palette.clone();
-        scales.insert(
-            channel,
-            Scale::Colour {
+        let restored = match scale {
+            Scale::Colour { palette, .. } => restored_colour_categories(scale, domains, channel)
+                .map(|categories| Scale::Colour {
+                    categories,
+                    palette: palette.clone(),
+                }),
+            Scale::Band {
+                range_start,
+                range_end,
+                padding,
+                ..
+            } => restored_band_categories(scale, domains, channel).map(|categories| Scale::Band {
                 categories,
-                palette,
-            },
-        );
+                range_start: *range_start,
+                range_end: *range_end,
+                padding: *padding,
+            }),
+            _ => None,
+        };
+        if let Some(restored) = restored {
+            scales.insert(channel, restored);
+        }
     }
 }
 
@@ -568,10 +651,12 @@ pub fn apply_unsampled_domains(scales: &mut ScaleSet, domains: &UnsampledDomains
 /// is a sentence a reader can act on and be wrong.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unrestorable {
-    /// A band scale. Its category order is where the marks ARE, and the query
-    /// that produced the rows may have ordered them deliberately, so putting
-    /// one back needs the unsampled ORDER rather than the unsampled set.
-    BandOrder,
+    /// A band scale whose unsampled category order was not measured — a channel
+    /// bound to something other than a plain column, a measurement that failed,
+    /// or one that came back missing a category the sample drew. Its order is
+    /// where the marks ARE, so without that measurement there is nothing to put
+    /// back.
+    BandUnmeasured,
     /// A sequential ramp, anchored to the drawn `(min, max)` — so the same
     /// value takes a different colour in the two renders, and no category list
     /// puts that back.
@@ -588,9 +673,9 @@ impl Unrestorable {
     #[must_use]
     pub fn reason(self) -> &'static str {
         match self {
-            Self::BandOrder => {
-                "a band scale, whose category order is where the marks are — putting it back \
-                 needs the unsampled ORDER, and the unsampled query gives only the set"
+            Self::BandUnmeasured => {
+                "a band scale whose unsampled category order was not measured, and its order is \
+                 where the marks are"
             }
             Self::SequentialAnchor => {
                 "a sequential ramp anchored to the drawn extent, which no category list puts \
@@ -622,11 +707,14 @@ impl Unrestorable {
 ///   channel with no measured set — a `$param` fill, a literal colour, a
 ///   non-string column, a query that failed — is still refused, because for it
 ///   nothing has changed.
-/// - [`Scale::Band`] — refused. Its order is where the bars ARE, and the query
-///   that produced the rows may have ordered them deliberately, so the ordering
-///   rule that fixes a colour scale would here overwrite an author's `ORDER
-///   BY`. Restoring a band domain needs the unsampled order, not just the
-///   unsampled set.
+/// - [`Scale::Band`] — restorable, and refused on the same terms. What it needs
+///   back is the ORDER rather than the set, because a category's index in the
+///   list is the slot it occupies along the axis and the query that produced
+///   the rows may have ordered them deliberately. So the ordering rule that
+///   fixes a colour scale is not applied here; the order is measured on the
+///   unsampled rows and installed as measured, and
+///   [`UnsampledDomains::band_categories`] carries it. A channel with no
+///   measured order is still refused.
 /// - [`Scale::Sequential`] — refused. Continuous, but its ramp is anchored to
 ///   the drawn `(min, max)`, so the same value takes a different colour in the
 ///   two renders. A category list puts nothing back for it.
@@ -650,7 +738,9 @@ pub fn unrestorable_under_sampling(
         .iter()
         .copied()
         .filter_map(|c| match scales.get(c) {
-            Some(Scale::Band { .. }) => Some((c, Unrestorable::BandOrder)),
+            Some(scale @ Scale::Band { .. }) => restored_band_categories(scale, domains, c)
+                .is_none()
+                .then_some((c, Unrestorable::BandUnmeasured)),
             Some(Scale::Sequential { .. }) => Some((c, Unrestorable::SequentialAnchor)),
             Some(scale @ Scale::Colour { .. }) => restored_colour_categories(scale, domains, c)
                 .is_none()
@@ -2043,20 +2133,89 @@ mod tests {
         );
     }
 
-    /// Band and sequential scales are refused whatever was measured, and each
-    /// says which of the two it is.
+    /// A band scale to hang the band assertions on.
+    fn band_scale(categories: &[&str]) -> Scale {
+        Scale::Band {
+            categories: categories.iter().map(|c| (*c).to_string()).collect(),
+            range_start: 0.0,
+            range_end: 100.0,
+            padding: 0.1,
+        }
+    }
+
+    /// The band channel's category list, in the order the axis will lay it out.
+    fn band_categories(scales: &ScaleSet) -> Vec<String> {
+        match scales.get(Channel::X) {
+            Some(Scale::Band { categories, .. }) => categories.clone(),
+            other => panic!("expected an x band scale, got {other:?}"),
+        }
+    }
+
+    /// **A measured band order is installed AS MEASURED, not sorted.**
+    ///
+    /// The distinction the colour half does not have: a category's index in
+    /// this list is the slot it takes along the axis, so the measured order is
+    /// the answer and applying [`order_categories`] to it would discard the
+    /// author's. A measurement in a non-alphabetical order is what tells the
+    /// two apart.
+    #[test]
+    fn a_measured_band_order_is_installed_unsorted_and_lifts_the_refusal() {
+        let mut scales = ScaleSet::new();
+        scales.insert(Channel::X, band_scale(&["mike", "alpha"]));
+        let domains = UnsampledDomains {
+            band_categories: vec![(
+                Channel::X,
+                vec!["zulu".to_string(), "mike".to_string(), "alpha".to_string()],
+            )],
+            ..UnsampledDomains::default()
+        };
+
+        apply_unsampled_domains(&mut scales, &domains);
+        assert_eq!(
+            band_categories(&scales),
+            vec!["zulu".to_string(), "mike".to_string(), "alpha".to_string()],
+            "the axis must lay the categories out in the order the unsampled rows \
+             produced them"
+        );
+        assert_eq!(
+            unrestorable_under_sampling(&scales, &domains),
+            vec![],
+            "a band channel whose order was measured is no longer refused"
+        );
+    }
+
+    /// The colour half's containment test, on the band half. A measurement that
+    /// does not cover what was drawn did not come from the same query, and
+    /// installing it would move a drawn category's bar.
+    #[test]
+    fn a_measured_band_order_missing_a_drawn_category_still_refuses() {
+        let mut scales = ScaleSet::new();
+        scales.insert(Channel::X, band_scale(&["a", "b"]));
+        let domains = UnsampledDomains {
+            band_categories: vec![(Channel::X, vec!["a".to_string()])],
+            ..UnsampledDomains::default()
+        };
+
+        apply_unsampled_domains(&mut scales, &domains);
+        assert_eq!(
+            band_categories(&scales),
+            vec!["a".to_string(), "b".to_string()],
+            "an unusable measurement must leave the inferred domain alone"
+        );
+        assert_eq!(
+            unrestorable_under_sampling(&scales, &domains),
+            vec![(Channel::X, Unrestorable::BandUnmeasured)]
+        );
+    }
+
+    /// An unmeasured band scale and a sequential ramp are refused, and each says
+    /// which of the two it is. The colour SET is not a band measurement: it is
+    /// read by [`restored_colour_categories`] and nothing else, so carrying one
+    /// for the band channel lifts nothing.
     #[test]
     fn band_and_sequential_scales_are_refused_with_their_own_reasons() {
         let mut scales = ScaleSet::new();
-        scales.insert(
-            Channel::X,
-            Scale::Band {
-                categories: vec!["a".to_string(), "b".to_string()],
-                range_start: 0.0,
-                range_end: 100.0,
-                padding: 0.1,
-            },
-        );
+        scales.insert(Channel::X, band_scale(&["a", "b"]));
         scales.insert(
             Channel::Fill,
             Scale::Sequential {
@@ -2073,11 +2232,28 @@ mod tests {
         assert_eq!(
             unrestorable_under_sampling(&scales, &domains),
             vec![
-                (Channel::X, Unrestorable::BandOrder),
+                (Channel::X, Unrestorable::BandUnmeasured),
                 (Channel::Fill, Unrestorable::SequentialAnchor),
             ],
-            "a measured set does not lift the band refusal, and a sequential ramp has no \
-             category list to be put back from"
+            "a measured colour SET does not lift the band refusal, and a sequential ramp \
+             has no category list to be put back from"
+        );
+    }
+
+    /// **The union across a plot's marks is built by the same rule the drawn
+    /// domain is built by.** `union_scales` appends each band scale's unseen
+    /// categories in mark order; so does the merge, or the containment test
+    /// would compare two differently-assembled lists.
+    #[test]
+    fn merging_band_orders_appends_unseen_categories_in_mark_order() {
+        let mut domains = UnsampledDomains::default();
+        domains.merge_band_categories(Channel::X, &["zulu".to_string(), "mike".to_string()]);
+        domains.merge_band_categories(Channel::X, &["mike".to_string(), "alpha".to_string()]);
+        assert_eq!(
+            domains.band_categories_for(Channel::X),
+            Some(["zulu".to_string(), "mike".to_string(), "alpha".to_string()].as_slice()),
+            "a category named by two marks is one category, and it keeps the slot the \
+             first mark gave it"
         );
     }
 }

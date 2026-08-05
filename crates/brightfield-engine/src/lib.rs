@@ -195,7 +195,8 @@ use brightfield_sql::passes::Pass;
 
 use crate::error::EngineError;
 use crate::facts::{
-    categorical_columns, positional_columns, read_categories, read_mark_facts, MarkFacts,
+    band_columns, categorical_columns, positional_columns, read_categories, read_mark_facts,
+    MarkFacts,
 };
 
 /// One dispatched mark's re-query outcome: the mark's depth-first index paired
@@ -1651,7 +1652,123 @@ impl Session {
             }
         }
 
+        // The unsampled category ORDER of each channel a band scale can be
+        // inferred for. A band scale's category order is where the marks are —
+        // its index in the list is the slot the category occupies along the
+        // axis — so the set the colour query returns puts nothing back.
+        //
+        // The order is taken in SQL rather than by de-duplicating the column
+        // client-side, and that is the only reason this is not the query above
+        // with the DISTINCT removed: reading the order client-side means
+        // reading every row of a table the sample exists to avoid materialising.
+        // `row_number() OVER ()` numbers the unsampled rows as they arrive, the
+        // group-by keeps each category's first number, and the outer sort turns
+        // those into the order the complete render's own first-appearance walk
+        // over the drawn batch would have produced. An `ORDER BY` inside the
+        // aggregate would express the same thing in one clause and is
+        // deliberately not used: an aggregate-level ORDER BY reads out of bounds
+        // through DuckDB's C API (duckdb#21537).
+        //
+        // Per-channel statements and the `typeof(...) = 'VARCHAR'` filter for
+        // the reasons above, and the filter buys more here: a channel's type is
+        // fixed by the plan, so on a numeric column the optimiser folds the
+        // predicate away and the whole subtree becomes EMPTY_RESULT. A
+        // continuous scatter therefore pays for no scan at all.
+        for (channel, col) in band_columns(&self.spec, index) {
+            let sql = format!(
+                "SELECT \"__bf_cat\" FROM (\
+                   SELECT \"__bf_cat\", min(\"__bf_rn\") AS \"__bf_first\" FROM (\
+                     SELECT \"__bf_cat\", row_number() OVER () AS \"__bf_rn\" FROM (\
+                       SELECT {col} AS \"__bf_cat\" FROM ({}) AS __bf_band \
+                       WHERE {col} IS NOT NULL AND typeof({col}) = 'VARCHAR'\
+                     ) AS __bf_seq\
+                   ) AS __bf_win GROUP BY \"__bf_cat\"\
+                 ) AS __bf_ord ORDER BY \"__bf_first\"",
+                unsampled.sql
+            );
+            match read_categories(&self.conn, &sql, index) {
+                Ok(cats) if !cats.is_empty() => out.band_categories.push((channel, cats)),
+                Ok(_) => {}
+                Err(e) => eprintln!("warning: unsampled band order for mark {index}: {e}"),
+            }
+        }
+
         Some(Ok(out))
+    }
+
+    /// How many row-level primitives this spec would draw **before anything is
+    /// executed** — the input a sampling policy decides on.
+    ///
+    /// # What is counted
+    ///
+    /// One primitive per materialised row of each ROW-LEVEL mark, summed. An
+    /// aggregating mark contributes none — its rows are bins, its picture is
+    /// O(bins), and the emitter refuses to sample it anyway. A dot mark across
+    /// two views is two marks and therefore two primitives per row.
+    ///
+    /// Which marks are row-level is asked of the EMITTER rather than
+    /// re-derived: the plan is emitted with a rate and without, and the mark is
+    /// row-level exactly when the two differ. That is the same question
+    /// [`Self::unsampled_mark_facts`] asks, and asking it the same way is what
+    /// keeps the count that drives the policy in step with the marks the policy
+    /// will actually sample.
+    ///
+    /// # What it costs
+    ///
+    /// One `count(*)` per row-level mark, over that mark's own unsampled query.
+    /// An aggregate, not a materialisation: DuckDB streams it, so no result set
+    /// is built and thrown away. These go straight to the connection and are
+    /// not recorded in [`Self::duckdb_execute_count`], which counts the queries
+    /// marks are DRAWN from.
+    ///
+    /// # Errors
+    ///
+    /// The emit or DuckDB error of the first mark that fails. A caller that
+    /// cannot get a count has no basis to sample and should draw complete.
+    pub fn drawn_primitive_estimate(&self) -> Result<u64, EngineError> {
+        // Any rate at all: the comparison asks whether the clause REACHED the
+        // mark, and the emitter's guard on that is `plan_aggregates`, which does
+        // not consult the rate.
+        let probe = SampleRate::from_exponent(1).expect("1 is inside SampleRate::MAX_EXPONENT");
+        let params = if self.param_state.is_empty() {
+            None
+        } else {
+            Some(&self.param_state)
+        };
+        let selections = self.selection_predicates_for_emit();
+        let selections_ref: Option<&[SelectionPredicate]> = if selections.is_empty() {
+            None
+        } else {
+            Some(selections.as_slice())
+        };
+
+        let mut total = 0_u64;
+        for index in 0..self.mark_index_map.len() {
+            // The navigation passes ride on both sides for the reason
+            // `unsampled_mark_facts` gives: the question is whether the RATE
+            // reached this mark, and an extent present on only one side would
+            // answer it by accident.
+            let nav = self.navigation_passes(index);
+            let emit = |rate| {
+                emit_query_sampled(&self.spec, index, params, selections_ref, &nav, rate)
+                    .map_err(|cause| EngineError::EmitFailed { cause })
+            };
+            // A mark this emitter cannot emit at all draws nothing, so it adds
+            // nothing to the count — it will fail again at execution, where it
+            // is reported.
+            let Ok(unsampled) = emit(None) else { continue };
+            if emit(Some(probe))?.sql == unsampled.sql {
+                continue;
+            }
+            let sql = format!(
+                "SELECT count(*) AS \"__bf_rows\" FROM ({}) AS __bf_estimate",
+                unsampled.sql
+            );
+            total = total.saturating_add(
+                crate::facts::read_mark_facts(&self.conn, &sql, index, false, false)?.rows,
+            );
+        }
+        Ok(total)
     }
 
     /// Execute all marks. Returns one result per mark in depth-first order.
