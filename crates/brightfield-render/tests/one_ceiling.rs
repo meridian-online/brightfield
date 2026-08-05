@@ -74,7 +74,7 @@ fn spellings(n: u64) -> Vec<String> {
     let group = |sep: char| {
         let mut out = String::new();
         for (i, c) in plain.chars().enumerate() {
-            if i > 0 && (plain.len() - i) % 3 == 0 {
+            if i > 0 && (plain.len() - i).is_multiple_of(3) {
                 out.push(sep);
             }
             out.push(c);
