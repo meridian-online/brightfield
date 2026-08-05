@@ -2,14 +2,20 @@
 # Prove the packaged binary's air-gapped claim, against the artifact itself.
 #
 #   scripts/verify-airgapped.sh dist/brightfield-<version>-<target>.tar.gz
+#   scripts/verify-airgapped.sh dist/brightfield-<version>-<target>.dmg
+#
+# Both artifacts of a darwin build get a leg, and the disk image's is not
+# optional: without it the air-gapped proof runs against an artifact a download
+# button never hands anybody.
 #
 # What "proof" means here, in order:
 #
 #   1. NEGATIVE CONTROL — the network denial actually denies. curl is run
 #      inside the same jail the binary will run in and MUST fail; a jail that
 #      lets curl through proves nothing about anything run inside it.
-#   2. The tarball is unpacked into a fresh temp directory and the PACKAGED
-#      binary — not a repo build — opens, renders and screenshots
+#   2. The artifact is opened where a stranger would open it — the tarball
+#      unpacked into a fresh temp directory, the image attached read-only — and
+#      the PACKAGED binary, not a repo build, opens, renders and screenshots
 #      (a) a chart spec and (b) a Protocol manifest, entirely inside the jail,
 #      with HOME and BRIGHTFIELD_CONFIG_DIR pointed into the temp directory so
 #      nothing leaks in from this machine's config or out of the run.
@@ -20,12 +26,21 @@
 # (a network namespace with no interfaces). Both windows open briefly on a
 # desktop machine — the runs are real, that is the point.
 #
-# Everything the test opens ships inside the tarball, so this script proves
+# The image leg runs the bundle's executable directly. It does NOT use `open`:
+# `open` was measured returning exit 0 while the application never started, and
+# launchd reparents what it does start out of the jail, so an `open`-based check
+# would report on a process this script is not confining.
+#
+# What this does NOT cover, for either artifact: Gatekeeper. Nothing here
+# assesses a signature, a notarization ticket or the quarantine attribute, and a
+# green run says nothing about them.
+#
+# Everything the test opens ships inside the artifact, so this script proves
 # the artifact self-contained, not the artifact-plus-repo.
 set -euo pipefail
 
-TARBALL="${1:?usage: scripts/verify-airgapped.sh dist/brightfield-<version>-<target>.tar.gz}"
-[ -f "$TARBALL" ] || { echo "no such tarball: $TARBALL"; exit 1; }
+ARTIFACT="${1:?usage: scripts/verify-airgapped.sh dist/brightfield-<version>-<target>.(tar.gz|dmg)}"
+[ -f "$ARTIFACT" ] || { echo "no such artifact: $ARTIFACT"; exit 1; }
 
 case "$(uname -s)" in
   Darwin) JAIL=(sandbox-exec -p '(version 1)(allow default)(deny network*)') ;;
@@ -34,7 +49,14 @@ case "$(uname -s)" in
 esac
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/bf-airgap.XXXXXX")
-trap 'rm -rf "$TMP"' EXIT
+MOUNT=""
+cleanup() {
+  # Detach before the temp tree goes: the mount point lives inside it, and
+  # removing a directory an image is mounted on leaves the image attached.
+  if [ -n "$MOUNT" ]; then hdiutil detach "$MOUNT" -quiet >/dev/null 2>&1 || true; fi
+  rm -rf "$TMP"
+}
+trap cleanup EXIT
 
 # A window that never exits must be a FAILED check, not a stuck terminal.
 DEADLINE=180
@@ -42,6 +64,7 @@ DEADLINE=180
 # smoke OUT.png [ENV=VAL ...] -- SPEC ARGS...
 # Runs the packaged binary inside the jail, from the package directory, with a
 # sealed HOME/config, a screenshot countdown, and the deadline watchdog.
+# $PKG and $EXE are set by the leg that opened the artifact.
 smoke() {
   local out="$1"; shift
   local extra_env=()
@@ -49,7 +72,7 @@ smoke() {
   shift
   ( cd "$PKG" && env HOME="$TMP/home" BRIGHTFIELD_CONFIG_DIR="$TMP/config" \
       ${extra_env[@]+"${extra_env[@]}"} \
-      "${JAIL[@]}" ./brightfield "$@" --shot-after 45 --shot-out "$out" ) &
+      "${JAIL[@]}" "$EXE" "$@" --shot-after 45 --shot-out "$out" ) &
   local pid=$!
   ( sleep "$DEADLINE" && echo "   DEADLINE (${DEADLINE}s) — killing" && kill -9 "$pid" ) 2>/dev/null &
   local wd=$!
@@ -79,18 +102,44 @@ if "${JAIL[@]}" curl -sS --max-time 10 https://example.com -o /dev/null 2>/dev/n
 fi
 echo "   ok: curl cannot reach the network in the jail"
 
-echo "== unpack: $TARBALL"
-tar -xzf "$TARBALL" -C "$TMP"
-PKG=$(find "$TMP" -mindepth 1 -maxdepth 1 -type d | head -1)
-mkdir -p "$TMP/home" "$TMP/config"
-[ -x "$PKG/brightfield" ] || { echo "no executable 'brightfield' in the tarball"; exit 1; }
+# Each leg sets three things and nothing else: PKG (the directory to run from),
+# EXE (the executable, relative to PKG) and EXAMPLES (where the specs live,
+# relative to PKG). Everything below is common.
+case "$ARTIFACT" in
+  *.tar.gz)
+    echo "== unpack: $ARTIFACT"
+    tar -xzf "$ARTIFACT" -C "$TMP"
+    PKG=$(find "$TMP" -mindepth 1 -maxdepth 1 -type d | head -1)
+    mkdir -p "$TMP/home" "$TMP/config"
+    EXE="./brightfield"
+    EXAMPLES="examples"
+    [ -x "$PKG/$EXE" ] || { echo "no executable 'brightfield' in the tarball"; exit 1; }
+    ;;
+  *.dmg)
+    [ "$(uname -s)" = "Darwin" ] || { echo "a .dmg can only be attached on macOS"; exit 1; }
+    mkdir -p "$TMP/home" "$TMP/config" "$TMP/volume"
+    echo "== attach: $ARTIFACT"
+    # -readonly and -noverify keep the attach from writing to the image or
+    # spending a checksum pass on it; -nobrowse keeps it off the desktop.
+    hdiutil attach -nobrowse -noverify -readonly -mountpoint "$TMP/volume" "$ARTIFACT"
+    MOUNT="$TMP/volume"
+    PKG="$MOUNT"
+    EXE="./Brightfield.app/Contents/MacOS/brightfield"
+    EXAMPLES="Brightfield.app/Contents/Resources/examples"
+    [ -x "$PKG/$EXE" ] || { echo "no executable inside Brightfield.app on the image"; exit 1; }
+    ;;
+  *)
+    echo "not an artifact this script knows: $ARTIFACT (expected .tar.gz or .dmg)"
+    exit 1
+    ;;
+esac
 
 echo "== run 1: chart spec, jailed (a window opens briefly)"
-smoke "$TMP/chart.png" -- examples/bars.yaml
+smoke "$TMP/chart.png" -- "$EXAMPLES/bars.yaml"
 is_png "$TMP/chart.png" 20000
 
 echo "== run 2: Protocol manifest, jailed (a window opens briefly)"
-smoke "$TMP/protocol.png" BRIGHTFIELD_PROTOCOL_OFFLINE=1 -- examples/protocol/edgar_gleif/arcform.yaml
+smoke "$TMP/protocol.png" BRIGHTFIELD_PROTOCOL_OFFLINE=1 -- "$EXAMPLES/protocol/edgar_gleif/arcform.yaml"
 is_png "$TMP/protocol.png" 20000
 
 echo "== PASS: the packaged binary starts, renders and opens a local protocol with the network denied"

@@ -11,12 +11,18 @@
 #
 #   brightfield-<VERSION>-<TARGET>.tar.gz          the distributable
 #   brightfield-<VERSION>-<TARGET>.tar.gz.sha256   its checksum sidecar
+#   brightfield-<VERSION>-<TARGET>.dmg             the disk image (darwin only)
+#   brightfield-<VERSION>-<TARGET>.dmg.sha256      its checksum sidecar
 #
 # — the same asset naming the install.meridian.online convention consumes
 # (`<tool>-<version>-<target>.tar.gz` + `.sha256` per asset), so the tag-driven
 # release workflow and this script are the same packaging, not two.
 #
-# The tarball contains:
+# TWO ARTIFACTS PER DARWIN TARGET, FROM ONE BUILD, and the split is the point.
+#
+# The tarball is what `curl … | bash`, the Homebrew formula and
+# scripts/verify-airgapped.sh consume, and its interior does not change. It
+# contains:
 #   brightfield     the binary (built from the brightfield-shell crate)
 #   LICENSE
 #   README.txt      what it is, how to open the bundled examples
@@ -27,14 +33,49 @@
 #                   shipped: it needs a DuckDB extension download, which is
 #                   exactly what a sealed artifact must not depend on.
 #
-# After staging, the script audits the binary's linked libraries (otool -L /
-# ldd) against an OS allowlist and fails on anything else — the mechanical form
-# of "no runtime deps beyond graphics drivers". (On macOS and Linux the GPU
-# stack is reached via OS frameworks / dlopen at runtime, so it never appears
-# as a link-time dependency; anything non-OS that does appear is a packaging
-# regression.)
+# The disk image is what a download button hands a stranger: a window holding
+# Brightfield.app and an /Applications alias. A notarization ticket cannot be
+# stapled to a `.tar.gz` at any signing state — `stapler` refuses the format —
+# so the bundle is the artifact that can carry one. The bundle keeps its own
+# copy of `examples/` and `LICENSE` under Contents/Resources, because an app
+# launched from /Applications has no sibling directory to read them from.
+#
+# Before either artifact is assembled, the script audits the BUILT
+# EXECUTABLE's linked libraries (otool -L / ldd) against an OS allowlist and
+# fails on anything else — the mechanical form of "no runtime deps beyond
+# graphics drivers". (On macOS and Linux the GPU stack is reached via OS
+# frameworks / dlopen at runtime, so it never appears as a link-time
+# dependency; anything non-OS that does appear is a packaging regression.)
+# Auditing the built executable rather than a staged copy is what makes one
+# audit cover both artifacts, and it is what keeps a mistyped staging path from
+# turning the audit into a no-op that still prints its clean verdict.
+#
+# SIGNING. Two environment variables drive it, and with neither set the bundle
+# is signed ad-hoc and the tarball's Mach-O is left exactly as the linker signed
+# it:
+#
+#   BRIGHTFIELD_SIGN_IDENTITY   a codesign identity, e.g.
+#                               "Developer ID Application: … (TEAMID)". Signs
+#                               the tarball's bare Mach-O and the bundle, both
+#                               with the hardened runtime and a secure
+#                               timestamp.
+#   BRIGHTFIELD_NOTARY_PROFILE  a keychain profile stored by
+#                               `xcrun notarytool store-credentials`. Read only
+#                               when an identity is also set. Submits the
+#                               bundle once and staples the ticket to it.
+#
+# The chain runs in this order: sign the bare Mach-O → sign the bundle → zip the
+# bundle for submission → one `notarytool submit` → one `stapler staple` on the
+# bundle → build the image around the stapled bundle. The image itself is
+# neither signed nor stapled: the ticket rides on the bundle inside it, which is
+# what a stranger's machine reads at launch. If the image staple is wanted
+# later, `codesign` and `stapler staple` on the image append after
+# `hdiutil create` and change nothing above them.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+SIGN_IDENTITY="${BRIGHTFIELD_SIGN_IDENTITY:-}"
+NOTARY_PROFILE="${BRIGHTFIELD_NOTARY_PROFILE:-}"
 
 # The repo's exact toolchain pin (the same one CI nails via its toolchain
 # action; there is no rust-toolchain.toml). Overridable, but the default must
@@ -82,6 +123,67 @@ if [ "$TARGET" != "$HOST" ]; then
 fi
 "${BUILD[@]}"
 
+# ---------------------------------------------------------------------------
+# The audit runs HERE: against the built executable, before anything is copied
+# anywhere. Both artifacts carry this same object file, so one reading covers
+# both by construction, and no staging path can be mistyped between the reading
+# and the verdict.
+#
+# `audit_rule` doubles as the record of whether a rule ran at all. A branch that
+# sets it must reach a verdict; a branch that leaves it empty says so on its own
+# line and never reaches "clean", because a clean verdict from a case that
+# inspected nothing is the failure this whole block is arranged to prevent.
+# ---------------------------------------------------------------------------
+echo "== audit: linked libraries (${BIN})"
+[ -f "$BIN" ] || { echo "audit FAILED: no executable at ${BIN}"; exit 1; }
+audit_ok=1
+audit_rule=""
+audit_lines=0
+case "$TARGET" in
+  *-apple-darwin)
+    audit_rule="otool -L"
+    # otool reads any Mach-O regardless of host arch. Skip the first line
+    # (the file's own name); allow OS library dirs only.
+    while IFS= read -r line; do
+      audit_lines=$((audit_lines + 1))
+      lib=$(echo "$line" | awk '{print $1}')
+      case "$lib" in
+        /usr/lib/*|/System/Library/*) ;;
+        *) echo "   NON-OS LINKAGE: $lib"; audit_ok=0 ;;
+      esac
+    done < <(otool -L "$BIN" | tail -n +2)
+    ;;
+  *-linux-*)
+    if [ "$TARGET" = "$HOST" ]; then
+      audit_rule="ldd"
+      while IFS= read -r line; do
+        audit_lines=$((audit_lines + 1))
+        lib=$(echo "$line" | awk '{print $1}')
+        case "$lib" in
+          linux-vdso*|ld-linux*|/lib*/ld-linux*) ;;
+          libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libgcc_s.so*|libutil.so*) ;;
+          *) echo "   NON-OS LINKAGE: $line"; audit_ok=0 ;;
+        esac
+      done < <(ldd "$BIN")
+    else
+      echo "   NOT AUDITED (cross build: ldd needs the target OS — run it there)"
+    fi
+    ;;
+  *)
+    echo "   NOT AUDITED (no audit rule for ${TARGET})"
+    ;;
+esac
+if [ -n "$audit_rule" ]; then
+  # Reading zero lines is a failure, not a pass. otool -L and ldd write nothing
+  # to stdout when they cannot open the file they were handed, so the loop above
+  # would not run once and every check below it would be satisfied by an empty
+  # reading.
+  [ "$audit_lines" -gt 0 ] || {
+    echo "audit FAILED: ${audit_rule} listed no linked libraries for ${BIN}"; exit 1; }
+  [ "$audit_ok" -eq 1 ] || { echo "audit FAILED: the binary links non-OS libraries"; exit 1; }
+  echo "   clean: OS libraries only (${audit_lines} entries read)"
+fi
+
 echo "== stage: ${STAGE}"
 rm -rf "$STAGE"
 mkdir -p "$STAGE/examples"
@@ -120,46 +222,130 @@ Flags: [SPEC.yaml] [--theme light|dark] [--flow vertical|horizontal]
        [--shot-out PATH] [--shot-after N]
 EOF
 
-echo "== audit: linked libraries"
-audit_ok=1
-case "$TARGET" in
-  *-apple-darwin)
-    # otool reads any Mach-O regardless of host arch. Skip the first line
-    # (the file's own name); allow OS library dirs only.
-    while IFS= read -r line; do
-      lib=$(echo "$line" | awk '{print $1}')
-      case "$lib" in
-        /usr/lib/*|/System/Library/*) ;;
-        *) echo "   NON-OS LINKAGE: $lib"; audit_ok=0 ;;
-      esac
-    done < <(otool -L "$STAGE/brightfield" | tail -n +2)
-    ;;
-  *-linux-*)
-    if [ "$TARGET" = "$HOST" ]; then
-      while IFS= read -r line; do
-        lib=$(echo "$line" | awk '{print $1}')
-        case "$lib" in
-          linux-vdso*|ld-linux*|/lib*/ld-linux*) ;;
-          libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libgcc_s.so*|libutil.so*) ;;
-          *) echo "   NON-OS LINKAGE: $line"; audit_ok=0 ;;
-        esac
-      done < <(ldd "$STAGE/brightfield")
-    else
-      echo "   (cross build: ldd audit needs the target OS — run it there)"
-    fi
-    ;;
-  *)
-    echo "   (no audit rule for ${TARGET})"
-    ;;
-esac
-[ "$audit_ok" -eq 1 ] || { echo "audit FAILED: the binary links non-OS libraries"; exit 1; }
-echo "   clean: OS libraries only"
+# The tarball's Mach-O is signed only when a real identity is given. With none,
+# it keeps the ad-hoc signature the linker gave it — which is what ships today,
+# and re-signing it ad-hoc would change the code-signing identifier for no gain.
+if [ -n "$SIGN_IDENTITY" ]; then
+  case "$TARGET" in
+    *-apple-darwin)
+      echo "== sign: ${STAGE}/brightfield"
+      codesign --force --options runtime --timestamp \
+        --sign "$SIGN_IDENTITY" "$STAGE/brightfield"
+      ;;
+  esac
+fi
 
 echo "== archive"
 tar -czf "dist/${NAME}.tar.gz" -C dist "$NAME"
 (cd dist && shasum -a 256 "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256")
 rm -rf "$STAGE"
 
+case "$TARGET" in
+  *-apple-darwin)
+    APPSTAGE="dist/${NAME}.image"
+    APP="$APPSTAGE/Brightfield.app"
+
+    echo "== bundle: ${APP}"
+    rm -rf "$APPSTAGE"
+    mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/examples"
+    cp "$BIN" "$APP/Contents/MacOS/brightfield"
+    cp packaging/Info.plist "$APP/Contents/Info.plist"
+    cp packaging/Brightfield.icns "$APP/Contents/Resources/Brightfield.icns"
+    cp LICENSE "$APP/Contents/Resources/LICENSE"
+    # The bundle's own copy of the gallery. An app in /Applications has no
+    # sibling examples/ to fall back on, and it can read its own Resources.
+    cp examples/*.yaml "$APP/Contents/Resources/examples/"
+    cp -R examples/protocol "$APP/Contents/Resources/examples/protocol"
+
+    # The system floor is read out of the executable rather than declared, so a
+    # toolchain that moves its deployment target moves this with it. An empty
+    # reading is a hard failure: LSMinimumSystemVersion is what stops the bundle
+    # launching on a system its own Mach-O will not run on.
+    MINOS=$(otool -l "$BIN" | awk '/LC_BUILD_VERSION/{f=1} f && $1=="minos" {print $2; exit}')
+    [ -n "$MINOS" ] || {
+      echo "package.sh: no LC_BUILD_VERSION minos in ${BIN}; cannot set" >&2
+      echo "  LSMinimumSystemVersion honestly." >&2
+      exit 1; }
+    plutil -replace CFBundleShortVersionString -string "$CRATE_VERSION" "$APP/Contents/Info.plist"
+    plutil -replace CFBundleVersion -string "$CRATE_VERSION" "$APP/Contents/Info.plist"
+    plutil -replace LSMinimumSystemVersion -string "$MINOS" "$APP/Contents/Info.plist"
+    plutil -lint "$APP/Contents/Info.plist"
+
+    # CFBundleIconFile is a name, not a path, and a name that resolves to
+    # nothing costs an icon rather than a build. Resolve it here so it costs a
+    # build instead.
+    ICON=$(plutil -extract CFBundleIconFile raw "$APP/Contents/Info.plist")
+    [ -f "$APP/Contents/Resources/${ICON}.icns" ] || {
+      echo "package.sh: CFBundleIconFile '${ICON}' resolves to no .icns under" >&2
+      echo "  ${APP}/Contents/Resources." >&2
+      exit 1; }
+
+    echo "== sign: ${APP}"
+    if [ -n "$SIGN_IDENTITY" ]; then
+      codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
+    else
+      codesign --force --sign - "$APP"
+    fi
+    codesign --verify --strict "$APP"
+
+    STAPLED=""
+    if [ -n "$SIGN_IDENTITY" ] && [ -n "$NOTARY_PROFILE" ]; then
+      echo "== notarize: ${APP}"
+      ZIP="dist/${NAME}.submission.zip"
+      rm -f "$ZIP"
+      # ditto -c -k --keepParent is the form notarytool accepts: a zip that
+      # preserves the bundle's symlinks, extended attributes and top directory.
+      ditto -c -k --keepParent "$APP" "$ZIP"
+      xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
+      xcrun stapler staple "$APP"
+      rm -f "$ZIP"
+      STAPLED=1
+    fi
+
+    # syspolicy_check is the local gate: it reads the ticket off the bundle and
+    # reaches a verdict without a network round trip, which is what disqualifies
+    # `stapler validate` (an online check) and `spctl --assess` (which accepted a
+    # bundle whose ticket file had been removed).
+    #
+    # It is a gate only once a ticket is supposed to be there. An ad-hoc build
+    # has none by design, so its verdict is printed and not acted on.
+    if command -v syspolicy_check >/dev/null 2>&1; then
+      echo "== distribution check: ${APP}"
+      sp_status=0
+      syspolicy_check distribution "$APP" || sp_status=$?
+      if [ -n "$STAPLED" ]; then
+        [ "$sp_status" -eq 0 ] || {
+          echo "package.sh: syspolicy_check distribution failed (${sp_status}) on a" >&2
+          echo "  notarized and stapled bundle. Do not ship this image." >&2
+          exit 1; }
+      else
+        echo "   (unsigned build: reported, not gated — exit ${sp_status})"
+      fi
+    else
+      echo "== distribution check: skipped (no syspolicy_check on this machine)"
+    fi
+
+    # The alias a stranger drags the bundle onto. A symlink is what Finder
+    # renders as the Applications folder on a mounted image.
+    ln -s /Applications "$APPSTAGE/Applications"
+
+    echo "== image: dist/${NAME}.dmg"
+    # -format ULFO is pinned: it is the LZFSE-compressed UDIF format, and it
+    # produced a smaller image than UDZO over the same payload when the two were
+    # measured against each other. Nothing in this repo reddens if the flag is
+    # dropped, so it is commented here rather than left to look incidental.
+    rm -f "dist/${NAME}.dmg"
+    hdiutil create -volname Brightfield -srcfolder "$APPSTAGE" \
+      -format ULFO -ov "dist/${NAME}.dmg"
+    (cd dist && shasum -a 256 "${NAME}.dmg" > "${NAME}.dmg.sha256")
+    rm -rf "$APPSTAGE"
+    ;;
+esac
+
 echo "== done"
 ls -lh "dist/${NAME}.tar.gz" "dist/${NAME}.tar.gz.sha256"
 echo "verify air-gapped: scripts/verify-airgapped.sh dist/${NAME}.tar.gz"
+if [ -f "dist/${NAME}.dmg" ]; then
+  ls -lh "dist/${NAME}.dmg" "dist/${NAME}.dmg.sha256"
+  echo "verify air-gapped: scripts/verify-airgapped.sh dist/${NAME}.dmg"
+fi
