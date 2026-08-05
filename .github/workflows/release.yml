@@ -195,7 +195,7 @@ jobs:
 
             Two downloads, same build. On an Intel Mac, swap `aarch64` for `x86_64` throughout.
 
-            **`brightfield-${{ github.ref_name }}-aarch64-apple-darwin.dmg`** — a disk image holding `Brightfield.app`. Take this one if you want an application: an icon in the Dock, a double-click launch, and no terminal.
+            **`brightfield-${{ github.ref_name }}-aarch64-apple-darwin.dmg`** — a disk image holding `Brightfield.app`. Take this one if you want an application: an icon in the Dock and a double-click launch.
 
             **`brightfield-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz`** — the bare binary beside the example specs, its LICENSE and a README. Take this one for the terminal, for a scripted install, or to keep the whole thing in a folder you control.
 

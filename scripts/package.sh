@@ -252,8 +252,6 @@ case "$TARGET" in
     cp packaging/Info.plist "$APP/Contents/Info.plist"
     cp packaging/Brightfield.icns "$APP/Contents/Resources/Brightfield.icns"
     cp LICENSE "$APP/Contents/Resources/LICENSE"
-    # The bundle's own copy of the gallery. An app in /Applications has no
-    # sibling examples/ to fall back on, and it can read its own Resources.
     cp examples/*.yaml "$APP/Contents/Resources/examples/"
     cp -R examples/protocol "$APP/Contents/Resources/examples/protocol"
 
@@ -354,8 +352,8 @@ case "$TARGET" in
     # "create failed - No space left on device" partway through copying the
     # executable — on inputs identical to a run that had just succeeded. So the
     # volume is sized from the staged bytes plus headroom for the filesystem's
-    # own metadata. The headroom costs nothing in the shipped artifact: ULFO is
-    # a compressed read-only conversion, and unused blocks do not survive it.
+    # own metadata. ULFO is a compressed read-only conversion, and unused blocks
+    # do not survive it.
     rm -f "dist/${NAME}.dmg"
     stage_kb=$(du -sk "$APPSTAGE" | awk '{print $1}')
     hdiutil create -volname Brightfield -srcfolder "$APPSTAGE" \
