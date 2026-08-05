@@ -971,12 +971,20 @@ fn a_sibling_marks_colour_classes_survive_the_restored_domain() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A scatter positioned on a categorical x — a BAND scale, which the ordering
-/// rule deliberately does not cover.
+/// A scatter positioned on a categorical x — a BAND scale, whose order the
+/// ordering rule deliberately does not decide.
+///
+/// Both properties the colour fixture carries, for the same two reasons.
+/// `zulu` is written to be produced first, to sort last, and to be rare enough
+/// that a sample drops it: rare so the unsampled measurement does work rather
+/// than agreeing with the drawn rows by luck, and arriving-first-sorting-last so
+/// a list built by the ordering rule is told apart from the rows' own order.
+/// The `class-` names count DOWN, so the rest of the order is not the sorted one
+/// either.
 const BAND_SPEC: &str = "data:
   points:
     query: |
-      SELECT 'class-' || (i % 4) AS g,
+      SELECT CASE WHEN i < 3 THEN 'zulu' ELSE 'class-' || (3 - i % 4) END AS g,
              (i * 104729 % 1013) / 10.0 AS b
       FROM range(20000) AS t(i)
 plot:
@@ -988,23 +996,123 @@ width: 400
 height: 300
 ";
 
-/// **A band scale is still refused under sampling, and says which channel.**
+/// The category list of a plot's band scale — the order the axis lays them out
+/// in, which for a band scale is where the marks ARE.
+fn axis_categories(
+    c: &brightfield_shell::pipeline::Composed,
+    channel: brightfield_render::channel::Channel,
+) -> Vec<String> {
+    match c.plots[0].scales.get(channel) {
+        Some(brightfield_render::scale::Scale::Band { categories, .. }) => categories.clone(),
+        other => panic!("expected a band {channel:?} scale, got {other:?}"),
+    }
+}
+
+/// **A sampled band axis lays its categories out where the complete one does.**
 ///
-/// The refusal narrowed; it did not go. A band domain's order is where the bars
-/// ARE, so the ordering that fixes a colour scale would here overwrite whatever
-/// order the query put the rows in — restoring one needs the unsampled ORDER
-/// and not merely the unsampled set. A sequential ramp is anchored to the drawn
-/// extent, which a category list puts nothing back for either.
+/// The colour case's counterpart on the positional side, and the quantity is
+/// different: a colour domain needs its MEMBERSHIP back, because the ordering
+/// rule decides the rest, while a band domain needs its ORDER back, because a
+/// category's index in the list is the slot it takes along the axis. So the
+/// restoration installs the order measured on the unsampled rows and does not
+/// sort it — sorting would answer a determinism problem by discarding whatever
+/// order the query put the rows in.
 ///
-/// This is what keeps the narrowing honest: the same spec shape that now draws
-/// with a colour channel is refused with a positional one, so "the refusal was
-/// removed for the kinds the ordering covers" is a claim with a failing case.
+/// Asserted as a list against the complete render of the same spec, which is
+/// order and membership at once.
 #[test]
-fn sampling_a_band_channel_is_still_refused_with_a_reason() {
+fn a_sampled_band_axis_lays_its_categories_out_where_the_complete_one_does() {
+    use brightfield_render::channel::Channel;
+
     let dir = std::env::temp_dir().join(format!("bf-sampled-band-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
     let spec = dir.join("band.yaml");
     std::fs::write(&spec, BAND_SPEC).expect("write spec");
+    let path = spec.to_str().unwrap();
+
+    let rate = SampleRate::from_modulus(64).expect("power of two");
+    let complete = compose_spec_sampled(path, None).expect("the complete render is unaffected");
+    let sampled = compose_spec_sampled(path, Some(rate))
+        .expect("a plot with a band positional scale must DRAW under a sample, not be refused");
+
+    let expected = axis_categories(&complete, Channel::X);
+    assert_eq!(
+        expected.first().map(String::as_str),
+        Some("zulu"),
+        "fixture check: `zulu` is written to be produced first and to sort last, so an \
+         axis that does not lead with it is not carrying the rows' order"
+    );
+    assert_ne!(
+        expected,
+        {
+            let mut sorted = expected.clone();
+            sorted.sort();
+            sorted
+        },
+        "fixture check: the rows' order must not already be the sorted one, or a \
+         restoration that sorted the list would pass this"
+    );
+    assert_eq!(
+        axis_categories(&sampled, Channel::X),
+        expected,
+        "the sampled axis lays its categories out somewhere other than the complete axis \
+         does — the same class is drawn in a different place, under a notice that says \
+         only that rows were dropped"
+    );
+
+    // The live window takes the same path, so it draws the same axis.
+    let (_, first) = live_spec_sampled(path, Some(rate))
+        .expect("the live window's --force-sample must draw the same spec");
+    assert_eq!(
+        axis_categories(&first, Channel::X),
+        expected,
+        "the live window's first paint must agree with the one-shot render"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A sampled dot mark sharing a plot with an aggregating hexbin whose `fill` is
+/// a count — a SEQUENTIAL ramp, anchored to the drawn extent.
+const SEQUENTIAL_SPEC: &str = "data:
+  points:
+    query: |
+      SELECT (i * 7919 % 1009) / 10.0 AS a, (i * 104729 % 1013) / 10.0 AS b
+      FROM range(20000) AS t(i)
+plot:
+  - mark: dot
+    data: { from: points }
+    x: a
+    y: b
+  - mark: hexbin
+    data: { from: points }
+    x: a
+    y: b
+    fill: { count: }
+colorScheme: blues
+width: 400
+height: 300
+";
+
+/// **A sequential ramp is still refused under sampling, and says which
+/// channel.**
+///
+/// The refusal narrowed; it did not go, and this is the case that keeps the
+/// narrowing honest — "the refusal was removed for the kinds a measurement
+/// covers" is a claim with a failing case beside it. A ramp is anchored to the
+/// `(min, max)` of what was drawn, so the same value takes a different colour
+/// in the two renders and no category list puts that back.
+///
+/// The plot is refused as a whole, which is deliberately conservative: the ramp
+/// belongs to the aggregating sibling, over bins the sample never reached. That
+/// costs an unusual spec a loud, actionable error, where erring the other way
+/// costs a reader a wrong picture they cannot see is wrong.
+#[test]
+fn sampling_a_sequential_ramp_is_still_refused_with_a_reason() {
+    let dir = std::env::temp_dir().join(format!("bf-sampled-seq-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec = dir.join("sequential.yaml");
+    std::fs::write(&spec, SEQUENTIAL_SPEC).expect("write spec");
     let path = spec.to_str().unwrap();
 
     // Unsampled, the very same spec composes fine. The refusal is scoped to
@@ -1014,13 +1122,13 @@ fn sampling_a_band_channel_is_still_refused_with_a_reason() {
     let rate = SampleRate::from_modulus(64).expect("power of two");
     let err = compose_spec_sampled(path, Some(rate))
         .err()
-        .expect("sampling a band x must be refused, not drawn");
+        .expect("sampling a plot carrying a sequential ramp must be refused, not drawn");
     assert!(
         err.contains("refusing to sample"),
         "the refusal must say it is refusing: {err}"
     );
     assert!(
-        err.contains('x'),
+        err.contains("fill"),
         "the refusal must name the offending channel so it is actionable: {err}"
     );
 
