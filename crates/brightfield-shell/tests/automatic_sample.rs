@@ -8,9 +8,12 @@
 //! nothing about it. These are the assertions that a plot now decides for
 //! itself.
 //!
-//! Every case is built at a row count taken FROM the ceiling constant rather
-//! than written out here, so moving the constant moves the fixtures with it
-//! instead of leaving a suite testing a boundary the product no longer draws.
+//! The boundary cases are built at row counts taken FROM the ceiling constant
+//! rather than written out here, so moving the constant moves those fixtures
+//! with it instead of leaving a suite testing a boundary the product no longer
+//! draws. The committed ten-million-row example is the exception, and has to
+//! be: its count is the magnitude the scale claim is made at, not a position
+//! relative to the ceiling.
 
 use std::path::{Path, PathBuf};
 
@@ -352,11 +355,11 @@ const TEN_MILLION: &str = concat!(
 
 /// **Ten million rows, no flag, a picture with a notice on it.**
 ///
-/// The magnitude is the point. Every other case here is a spec written by a
-/// test at a count derived from the ceiling; this one is a file in
-/// `examples/`, opened the way the shell opens a spec named on the command
-/// line — [`Boot::open`], the one place a spec is classified — and then drawn
-/// through the headless layout pass the capture tiers use.
+/// The magnitude is the point. The boundary cases above are specs written by
+/// a test; this one is a file in `examples/`, opened the way the shell opens a
+/// spec named on the command line — [`Boot::open`], the one place a spec is
+/// classified — and then drawn through the headless layout pass the capture
+/// tiers use.
 ///
 /// Unsampled it would draw ten million primitives and come back BLANK. What
 /// makes this the criterion rather than a demo is that nothing in the file, on

@@ -1693,7 +1693,8 @@ impl Session {
     /// cannot get a count has no basis to sample and should draw complete.
     pub fn drawn_primitive_estimate(&self) -> Result<u64, EngineError> {
         // Any rate at all: the comparison asks whether the clause REACHED the
-        // mark, and every rate reaches exactly the same set of marks.
+        // mark, and the emitter's guard on that is `plan_aggregates`, which does
+        // not consult the rate.
         let probe = SampleRate::from_exponent(1).expect("1 is inside SampleRate::MAX_EXPONENT");
         let params = if self.param_state.is_empty() {
             None

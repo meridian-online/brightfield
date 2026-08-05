@@ -44,12 +44,12 @@
 //!
 //! # Widening is not the fix
 //!
-//! Raising the count a plot is allowed to draw does not merely mis-report.
-//! Measured with the bench harness's cap bypassed at 150 000 primitives per
-//! plot, the encoder hits the second ceiling in `bin_data` and panics. Nothing
-//! above the first ceiling draws; the only thing that keeps a picture on the
-//! screen is drawing fewer primitives, which is what [`sample_exponent`] is
-//! for.
+//! Raising the count a plot is allowed to draw buys nothing, because the
+//! ceiling is not a budget anyone here set. It is a buffer length compiled into
+//! `vello_encoding`, and past it the frame is not degraded — it is absent. A
+//! count admitted between the two ceilings above renders blank; a count past
+//! the second aborts the encode. What keeps a picture on the screen is drawing
+//! fewer primitives, which is what [`sample_exponent`] is for.
 //!
 //! # The policy
 //!
@@ -192,10 +192,13 @@ mod tests {
         }
     }
 
-    /// A sampled plot is under the ceiling for every magnitude a spec can
-    /// plausibly ask for, not only the tabled ones.
+    /// The answer holds away from the tabled cases too. The walk starts at one
+    /// primitive and triples-plus-one, so the counts it lands on are not the
+    /// powers of two the policy chooses between and a modulus rarely divides
+    /// one evenly — which is the arithmetic a hand-picked table is most likely
+    /// to have avoided.
     #[test]
-    fn every_magnitude_lands_under_the_ceiling() {
+    fn a_walk_across_the_magnitudes_lands_under_the_ceiling() {
         let mut primitives = 1_u64;
         while primitives < 1 << 40 {
             match sample_exponent(primitives) {

@@ -617,7 +617,9 @@ impl LiveDashboard {
     /// Put the automatic rate on a freshly-loaded dashboard, before anything
     /// has executed.
     ///
-    /// **Every constructor goes through here**, so a document opened from a
+    /// **Both constructors go through here** — [`LiveDashboard::load`] and
+    /// [`LiveDashboard::load_parsed`], which is what [`LiveDashboard::load_str`]
+    /// and every file-opening path resolve to — so a document opened from a
     /// file, from spec text or from an embedded start is decided the same way.
     /// A caller with a rate of its own overrides afterwards with
     /// [`LiveDashboard::set_sample`] — see [`live_spec_sampled`], which is why
@@ -1066,7 +1068,7 @@ pub fn spec_data_files(spec: &Spec, spec_dir: Option<&Path>) -> Vec<PathBuf> {
 ///
 /// `None` for a spec that draws complete, and `None` when the estimate cannot
 /// be taken: a session that cannot count its own rows has no basis to sample,
-/// and drawing complete is the behaviour every spec had before this existed.
+/// and drawing complete is what this driver replaced.
 fn automatic_sample(session: &Session) -> Option<SampleRate> {
     let estimate = match session.drawn_primitive_estimate() {
         Ok(n) => n,
