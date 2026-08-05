@@ -543,6 +543,7 @@ impl Engine {
             remote_sources,
             sample: None,
             nav_extents: HashMap::new(),
+            facts_cache: HashMap::new(),
         };
 
         Ok(LoadResult {
@@ -673,6 +674,16 @@ pub struct Session {
     /// each of them by construction rather than by each path remembering to
     /// carry it. Only an explicit reset (a full extent) removes one.
     nav_extents: HashMap<String, NavigationExtent>,
+    /// Per mark, the unsampled facts last measured for it and the statement
+    /// they were measured over — see [`Session::unsampled_mark_facts`], which
+    /// serves a mark whose statement is unchanged from here instead of
+    /// re-measuring.
+    ///
+    /// Uncapped, unlike [`SqlCache`], because the KEY is the mark index and
+    /// the statement rides in the value: a param drag replaces a mark's one
+    /// entry rather than adding another, so the LRU cap that bounds a cache
+    /// keyed by interpolated SQL has nothing to bound here.
+    facts_cache: HashMap<usize, (String, MarkFacts)>,
 }
 
 /// One navigable axis of a navigation extent: the column the gesture moved
@@ -875,13 +886,22 @@ impl Session {
     }
 
     /// Drop every artifact derived from the current (spec, data) pair: the
-    /// prepared-plan cache, the renderer-side SQL cache, and every
-    /// pre-aggregation cube and serve. The shared retirement seam behind
-    /// [`Session::reload_spec`] (the spec changed) and
+    /// prepared-plan cache, the renderer-side SQL cache, the measured
+    /// unsampled facts, and every pre-aggregation cube and serve. The shared
+    /// retirement seam behind [`Session::reload_spec`] (the spec changed) and
     /// [`Session::observe_data_fingerprint`] (the data changed).
+    ///
+    /// The facts join this seam rather than resting on their statement key
+    /// alone. WHICH columns they are measured on comes from the spec's
+    /// channels, and the statement a row-level dot emits — `SELECT * FROM
+    /// "points"` for the committed ten-million-row example — names none of
+    /// them. So an edit moving `x` or `fill` to another column changes the
+    /// answer while leaving that key byte-identical.
+    /// [`Session::reload_spec`] installs the new spec and calls this.
     fn invalidate_derived_state(&mut self) {
         self.cache.clear();
         self.sql_cache.invalidate();
+        self.facts_cache.clear();
         self.preagg_retire_all();
     }
 
@@ -1564,9 +1584,23 @@ impl Session {
     /// about. A guard that re-implemented `plan_aggregates` would be one
     /// refactor away from disagreeing with it silently.
     ///
+    /// **Measured once per statement, not once per call.** A pan or a zoom
+    /// re-composites the picture at the new frame long before the gesture
+    /// settles, and each of those repaints asks this. The measurement is over
+    /// the unsampled rows by construction — that is what makes it the answer
+    /// a sample cannot give — so repeating it per frame is the
+    /// difference between a gesture that reads as navigation and one that
+    /// reads as a stall. The statement emitted below IS the fingerprint —
+    /// the mark's source, its static filter, the live selection predicate,
+    /// the interpolated params and the session's navigation extent all reach
+    /// the measurement through that text, so a fact set is served back for
+    /// exactly as long as the text is unchanged. What the text does not carry
+    /// is which channels the facts are measured on;
+    /// `Session::invalidate_derived_state` holds that half, and says why.
+    ///
     /// # Errors
     /// Returns the DuckDB error if the facts query fails.
-    pub fn unsampled_mark_facts(&self, index: usize) -> Option<Result<MarkFacts, EngineError>> {
+    pub fn unsampled_mark_facts(&mut self, index: usize) -> Option<Result<MarkFacts, EngineError>> {
         self.sample?;
         let params = if self.param_state.is_empty() {
             None
@@ -1597,6 +1631,18 @@ impl Session {
             Ok(_) => {}
             Err(e) => return Some(Err(EngineError::EmitFailed { cause: e })),
         }
+        // Already measured over this exact statement. The lookup sits AFTER the
+        // rate comparison above rather than before it, so a mark the rate stops
+        // reaching still returns `None` from the one place that decides it —
+        // an entry left over from when the mark was sampled cannot answer for a
+        // mark that no longer is.
+        if let Some((_, facts)) = self
+            .facts_cache
+            .get(&index)
+            .filter(|(statement, _)| *statement == unsampled.sql)
+        {
+            return Some(Ok(facts.clone()));
+        }
         let (x_col, y_col) = positional_columns(&self.spec, index);
         let mut projections = vec!["count(*) AS \"__bf_rows\"".to_string()];
         for (i, col) in [&x_col, &y_col].into_iter().enumerate() {
@@ -1616,6 +1662,7 @@ impl Session {
             projections.join(", "),
             unsampled.sql
         );
+        self.preagg.log_sql(&sql);
         let mut out =
             match read_mark_facts(&self.conn, &sql, index, x_col.is_some(), y_col.is_some()) {
                 Ok(f) => f,
@@ -1645,6 +1692,7 @@ impl Session {
                  WHERE {col} IS NOT NULL AND typeof({col}) = 'VARCHAR'",
                 unsampled.sql
             );
+            self.preagg.log_sql(&sql);
             match read_categories(&self.conn, &sql, index) {
                 Ok(cats) if !cats.is_empty() => out.categories.push((channel, cats)),
                 Ok(_) => {}
@@ -1686,6 +1734,7 @@ impl Session {
                  ) AS __bf_ord ORDER BY \"__bf_first\"",
                 unsampled.sql
             );
+            self.preagg.log_sql(&sql);
             match read_categories(&self.conn, &sql, index) {
                 Ok(cats) if !cats.is_empty() => out.band_categories.push((channel, cats)),
                 Ok(_) => {}
@@ -1693,6 +1742,11 @@ impl Session {
             }
         }
 
+        // A per-channel statement that failed left a warning and no entry, and
+        // the fact set is cached with that gap in it. That is the same answer
+        // the next call would compute, and re-running a statement DuckDB has
+        // just refused would spend the whole measurement to arrive back here.
+        self.facts_cache.insert(index, (unsampled.sql, out.clone()));
         Some(Ok(out))
     }
 
@@ -6730,5 +6784,304 @@ plot:
             .distinct_values("t", "region", 50)
             .expect("session still usable");
         assert_eq!(dv.values.len(), 3);
+    }
+
+    // --- unsampled facts: measured once per statement ---
+    //
+    // The facts a sampled plot draws its notice and its axes from are an
+    // aggregate over the unsampled rows — the rows a sample exists to leave
+    // unread. A pan or a zoom re-composites the picture many times before the
+    // gesture settles, and each of those repaints asks for them again. These
+    // pin what the cached answer is keyed to — the emitted statement — and
+    // what the key cannot see, which `invalidate_derived_state` carries.
+
+    /// One row-level dot whose x is continuous, whose y is a band and whose
+    /// fill is a third string column, so a fact set over it populates the
+    /// domain, the band order AND the colour set rather than one of the three.
+    fn facts_fixture(fill_column: &str, filter_by: &str) -> String {
+        format!(
+            "data:
+  t:
+    query: |
+      SELECT
+        i::DOUBLE                             AS spread,
+        'band-' || (7 - i % 8)::VARCHAR       AS band,
+        'warm-' || (i % 3)::VARCHAR           AS warm,
+        'cool-' || (i % 5)::VARCHAR           AS cool
+      FROM range(1024) AS t(i)
+params:
+  sel:
+    select: intersect
+plot:
+  - mark: dot
+    data: {{ from: t{filter_by} }}
+    x: spread
+    y: band
+    fill: {fill_column}
+"
+        )
+    }
+
+    /// The fixture session, already sampling hard enough that the drawn rows
+    /// span less than the table does.
+    fn facts_session(yaml: &str) -> Session {
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let mut session = Engine::new()
+            .load_spec(spec, analysis, None)
+            .unwrap()
+            .session;
+        session.set_sample(SampleRate::from_exponent(7));
+        session
+    }
+
+    fn facts_of(session: &mut Session) -> MarkFacts {
+        session
+            .unsampled_mark_facts(0)
+            .expect("the fixture samples, so there are facts to restore")
+            .expect("the facts query runs")
+    }
+
+    /// The statement the facts are measured over, as the cache keys on it.
+    fn facts_statement(session: &Session) -> String {
+        let selections = session.selection_predicates_for_emit();
+        let selections_ref: Option<&[SelectionPredicate]> = if selections.is_empty() {
+            None
+        } else {
+            Some(selections.as_slice())
+        };
+        let nav = session.navigation_passes(0);
+        emit_query_sampled(&session.spec, 0, None, selections_ref, &nav, None)
+            .expect("the fixture emits")
+            .sql
+    }
+
+    /// **The cached answer is the measured answer, bit for bit.**
+    ///
+    /// The domains are compared as raw f64 bits rather than with `==`, because
+    /// the axis a reader sees is drawn from those two numbers and a domain
+    /// that differs in the last place is a domain that moved. The fixture is
+    /// checked to be one a sample WOULD move: the drawn rows span strictly
+    /// less than the table, so serving a domain inferred from them instead
+    /// would be visible.
+    ///
+    /// **`categories` is compared as a SET, and that is not a weakening.** It
+    /// is the value set behind a colour scale, and the statement that produces
+    /// it is a bare `SELECT DISTINCT` — no `ORDER BY`, on purpose, because
+    /// `restored_colour_categories` in `brightfield-render` orders it and
+    /// splitting that rule across a SQL collation and a Rust comparator is
+    /// what the engine declines to do. So DuckDB is free to hand back a
+    /// different permutation on each scan, and it does: comparing the field
+    /// as a list made this test fail once in a full serialised run and pass
+    /// on its own. `band_categories` IS compared in order, because there the
+    /// order is the whole payload — a band scale gives each category a slot
+    /// by its index in that list.
+    #[test]
+    fn a_cached_fact_set_is_bit_identical_to_a_re_measured_one() {
+        let mut session = facts_session(&facts_fixture("warm", ""));
+
+        let measured = facts_of(&mut session);
+        let served = facts_of(&mut session);
+
+        // Re-measuring is reached through the data-changed seam, so this arm
+        // runs the statements again rather than reading them back from the
+        // map it is being compared against.
+        assert!(
+            session.observe_data_fingerprint("the same rows, reported anew"),
+            "the fixture must retire the derived state for this arm to re-measure"
+        );
+        let again = facts_of(&mut session);
+
+        let bits = |f: &MarkFacts| {
+            let mut sets: Vec<(String, Vec<String>)> = f.categories.clone();
+            for (_, cats) in &mut sets {
+                cats.sort();
+            }
+            sets.sort();
+            (
+                f.rows,
+                f.x_domain.map(|(lo, hi)| (lo.to_bits(), hi.to_bits())),
+                f.y_domain.map(|(lo, hi)| (lo.to_bits(), hi.to_bits())),
+                sets,
+                f.band_categories.clone(),
+            )
+        };
+        assert_eq!(
+            bits(&served),
+            bits(&measured),
+            "the served fact set differs from the one that was measured"
+        );
+        assert_eq!(
+            bits(&served),
+            bits(&again),
+            "the served fact set differs from a freshly measured one"
+        );
+
+        // Fixture check: a sample would otherwise move this axis. The drawn
+        // batch spans strictly inside the restored domain, so a cache serving
+        // the wrong thing has somewhere wrong to land.
+        let drawn = session.execute_mark(0).expect("the sampled mark draws");
+        let spread = column_as_f64_vec(&drawn, "spread");
+        let drawn_lo = spread.iter().copied().fold(f64::INFINITY, f64::min);
+        let drawn_hi = spread.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let (lo, hi) = measured.x_domain.expect("a continuous x domain");
+        assert!(
+            drawn_lo > lo && drawn_hi < hi,
+            "fixture check: the drawn rows span {drawn_lo}..{drawn_hi}, the table \
+             {lo}..{hi} — a sample does not move this axis, so the test proves nothing"
+        );
+        assert!(
+            !measured.band_categories.is_empty() && !measured.categories.is_empty(),
+            "fixture check: the band order and the colour set must both be \
+             populated, or the comparison above covers neither: {measured:?}"
+        );
+    }
+
+    /// **A selection re-measures the facts, because it moves the statement.**
+    ///
+    /// The live predicate and the mark's own SQL are not two terms the key has
+    /// to carry separately: the emitter folds the predicate INTO the
+    /// statement, so there is one string to key on. This test therefore reads
+    /// the statement before and after and asserts it moved — without that
+    /// read, a cache keyed to nothing at all would pass.
+    #[test]
+    fn a_selection_moves_the_statement_and_the_facts_follow() {
+        let mut session = facts_session(&facts_fixture("warm", ", filterBy: $sel"));
+
+        let before = facts_of(&mut session);
+        let statement_before = facts_statement(&session);
+
+        session.propagate_selection(
+            "sel",
+            ComponentPath("plot0".to_string()),
+            Predicate::Expr("\"spread\" < 100".to_string()),
+        );
+
+        let statement_after = facts_statement(&session);
+        assert_ne!(
+            statement_before, statement_after,
+            "the fixture's selection never reached the statement, so this test \
+             would pass on a cache keyed to nothing at all"
+        );
+        let after = facts_of(&mut session);
+        assert!(
+            after.rows < before.rows,
+            "the facts were served from before the selection: {} rows then, {} now",
+            before.rows,
+            after.rows
+        );
+    }
+
+    /// **A navigation extent re-measures the facts, for the same reason.**
+    ///
+    /// This is the other half of what a pan does. Mid-gesture the session's
+    /// extent has not moved, so the statement holds still and the measurement
+    /// is served back; on settle the extent lands here, the statement moves,
+    /// and the domains are measured over the new frame.
+    #[test]
+    fn a_settled_navigation_extent_moves_the_statement_and_the_facts_follow() {
+        let mut session = facts_session(&facts_fixture("warm", ""));
+
+        let before = facts_of(&mut session);
+        let statement_before = facts_statement(&session);
+
+        let plot = session
+            .mark_plot_path(0)
+            .expect("the fixture's mark sits in a plot");
+        session.set_navigation_extent(
+            &plot,
+            NavigationExtent {
+                x: Some(AxisExtent::new("spread", 0.0, 99.0)),
+                y: None,
+            },
+        );
+
+        let statement_after = facts_statement(&session);
+        assert_ne!(
+            statement_before, statement_after,
+            "the fixture's extent never reached the statement"
+        );
+        let after = facts_of(&mut session);
+        assert!(
+            after.rows < before.rows,
+            "the facts were served from the full extent: {} rows then, {} now",
+            before.rows,
+            after.rows
+        );
+        let (_, hi) = after.x_domain.expect("a continuous x domain");
+        assert!(
+            hi <= 99.0,
+            "the restored domain still spans the pre-navigation frame: {hi}"
+        );
+    }
+
+    /// **A channel edit re-measures the facts, and the statement cannot see it.**
+    ///
+    /// The statement a row-level dot emits names its source and its filters,
+    /// not its channels. So moving `fill` to another column changes WHICH
+    /// column the colour set is read from while leaving the key byte-identical
+    /// — asserted here, so the test is about the retirement seam rather than
+    /// about the key. Drop `facts_cache` from `invalidate_derived_state` and
+    /// the plot goes on drawing the old column's categories.
+    #[test]
+    fn a_channel_edit_re_measures_the_facts_under_an_unchanged_statement() {
+        let mut session = facts_session(&facts_fixture("warm", ""));
+
+        let before = facts_of(&mut session);
+        let statement_before = facts_statement(&session);
+        let warm: Vec<String> = before
+            .categories
+            .iter()
+            .flat_map(|(_, cats)| cats.clone())
+            .collect();
+        assert!(
+            warm.iter().all(|c| c.starts_with("warm-")),
+            "fixture check: the colour set should come from `warm`: {warm:?}"
+        );
+
+        let (spec, analysis) = parse_and_analyse(&facts_fixture("cool", ""));
+        session.reload_spec(spec, analysis);
+
+        let statement_after = facts_statement(&session);
+        assert_eq!(
+            statement_before, statement_after,
+            "the fixture's channel edit DID move the statement, so the key \
+             would have caught it and this test says nothing about the seam"
+        );
+        let after = facts_of(&mut session);
+        let cool: Vec<String> = after
+            .categories
+            .iter()
+            .flat_map(|(_, cats)| cats.clone())
+            .collect();
+        assert!(
+            !cool.is_empty() && cool.iter().all(|c| c.starts_with("cool-")),
+            "the colour set was served from before the edit: {cool:?}"
+        );
+    }
+
+    /// **The executed-SQL record can see a domain-restoration statement.**
+    ///
+    /// The gate for a navigation move is that the record stays empty across
+    /// it. An empty record is worth nothing unless this class of statement
+    /// reaches the record in the first place, which is what this pins.
+    #[test]
+    fn a_measured_fact_set_reaches_the_executed_sql_record() {
+        let mut session = facts_session(&facts_fixture("warm", ""));
+        session.clear_executed_sql();
+
+        let _ = facts_of(&mut session);
+        let measured = session.executed_sql();
+        assert!(
+            measured.iter().any(|sql| sql.contains("__bf_facts")),
+            "the domain-restoration statement did not reach the record: {measured:#?}"
+        );
+
+        session.clear_executed_sql();
+        let _ = facts_of(&mut session);
+        assert!(
+            session.executed_sql().is_empty(),
+            "the second call re-ran statements: {:#?}",
+            session.executed_sql()
+        );
     }
 }

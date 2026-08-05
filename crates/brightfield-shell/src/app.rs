@@ -722,10 +722,12 @@ impl ChartDoc {
         live.set_view_extent(&path, outcome.extent.clone());
         // Re-composite at the new extent WITHOUT re-querying. Every mark's SQL
         // is unchanged — the session's extent moves only on settle — so this
-        // is served from the batches already materialised, and the axes track
-        // the hand while the data waits for the gesture to stop. A failed
-        // re-composite (a frame moved onto empty space) keeps the previous
-        // picture, the same posture an interaction takes.
+        // is served from the batches already materialised, and a sampled
+        // plot's unsampled facts from the measurement keyed to that same
+        // unchanged SQL. The axes track the hand while the data waits for the
+        // gesture to stop. A failed re-composite (a frame moved onto empty
+        // space) keeps the previous picture, the same posture an interaction
+        // takes.
         match live.present() {
             Ok(composed) => {
                 self.composed = composed;
