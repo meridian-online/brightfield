@@ -23,6 +23,7 @@
 //! cannot drift apart.
 
 mod data;
+mod frame_ink;
 mod frames;
 mod machine;
 mod mem;
@@ -55,6 +56,17 @@ const SPEC_CROSSWALK: &str = include_str!("../../../benchmarks/specs/crosswalk-c
 /// methodology section its own JSON refutes.
 #[cfg(test)]
 const BENCH_README: &str = include_str!("../../../benchmarks/README.md");
+
+/// The render crate's blank-frame gate, compiled in for tests only.
+///
+/// That gate renders a dot scatter AT this harness's cap and requires it to
+/// reach the target, and one past the measured overflow onset and requires it
+/// not to — which is what makes the cap's margin a measurement rather than a
+/// preference. Both counts are literals over there, because a binary crate's
+/// constants cannot be imported; reading the file back is how the two stay one
+/// fact instead of two that agree today.
+#[cfg(test)]
+const RENDER_INK_GATE: &str = include_str!("../../brightfield-render/tests/frame_ink.rs");
 
 /// One committed scaling scenario: which spec, which gesture, which column,
 /// what the pre-aggregation layer is expected to do.
@@ -442,6 +454,18 @@ struct ScalingResult {
     /// frames were not slow, they were not produced.
     #[serde(skip_serializing_if = "Option::is_none")]
     frames_skipped: Option<String>,
+    /// What this row's composed picture put on the target, read back from the
+    /// renderer before any frame was timed. `None` where no frame suite was
+    /// attempted, so there was nothing to prove.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frame_ink: Option<frame_ink::FrameInk>,
+    /// This row's picture was rendered and came back EMPTY — a per-cell
+    /// failure, and a different event from [`Self::frames_skipped`]. A skip
+    /// declined to measure; this measured and found nothing, which is what
+    /// would otherwise have been published as a fast frame. Recording it does
+    /// not fail the run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frames_blank: Option<String>,
 }
 
 /// One shipped example's steady-state frame time.
@@ -486,7 +510,13 @@ struct RunConfig {
 /// two different field sets shipped under one version; the bump is what makes
 /// a v2 record un-mistakable for a v3 one. v3 also adds `drag` (which gesture
 /// produced a row's steps), per-mark chunk/byte shape, and `compose_memory`.
-const SCHEMA: &str = "brightfield-bench/v3";
+///
+/// v3 → v4 adds `frame_ink` and `frames_blank`. A v3 frame cell states a time
+/// and nothing about what was on screen while the clock ran: the harness
+/// decided a picture existed from a primitive count computed before rendering,
+/// and that arithmetic cannot see an empty frame. A v4 frame cell states a time
+/// beside the readback that proved there was a picture to time.
+const SCHEMA: &str = "brightfield-bench/v4";
 
 const METHODOLOGY: &[&str] = &[
     "Interaction latency is measured at the coordinator seam the live window blocks its frame on: one committed brush step = Coordinator::apply (predicate push-down into DuckDB + re-query of every affected mark). live_apply adds the re-composite into a Vello scene (LiveDashboard::apply), which is the full in-frame cost of a brush step in the live window.",
@@ -507,7 +537,9 @@ const METHODOLOGY: &[&str] = &[
     "slider-drag resolves its selection as `intersect`, not `crossfilter`. A slider is not a view and has no picture of its own to spare, so EVERY subscriber is filtered, including the plot that declares the contributor — both views re-query on every step. A crossfilter brush exempts its own plot, so a brush row's per-step work is one view lighter than a slider row's at the same row count; compare the two knowing that.",
     "compose_memory is what the client held while the first full scene was composed — the window around LiveDashboard::present, which executes every mark and hands the whole result set to compose_from_results, which assembles every chunk of every mark and holds them all while it builds the scene. The window opens only after the coordinator-seam phase is gone: its session is dropped and its complete result set is moved into the shape pass, which consumes and drops it. That ordering is the measurement — resident size is a whole-process quantity, so a phase still holding its Arrow would be reported as this compose's cost. Two figures, because neither alone is honest. arrow_chunks_mib / arrow_assembled_mib are EXACT and deterministic, summed from the batches themselves (RecordBatch::get_array_memory_size) — the data the compose holds, identical on any host. A single-chunk mark assembles by pass-through, so its assembled bytes are the SAME allocation counted again, not a second copy.",
     "rss_*_mib is the process's resident set size, polled from the OS across that same window (Linux /proc/self/status; macOS `ps -o rss=`, ~5ms resolution, so `rss_samples` states how coarse a given cell is). It is the only figure that sees the Arrow buffers' real cost: the chunks are imported from DuckDB over the C data interface, so DuckDB's C++ allocator owns them and a Rust allocator counter would not see them. It is also a SINGLE sample of a whole-process quantity and is NOT reproducible on its own. Every scenario records two windows — pre-aggregation off and on — over the same compose work (the first present precedes any interaction, so the toggle cannot change it); their disagreement is this figure's run-to-run noise and the generated summary states the widest one observed. Quote a peak only with that spread beside it; quote arrow_chunks_mib when a deterministic number is wanted. The pre-compose floor is not monotone: the OS reclaims pages between windows, so rss_before falls as often as it rises and rss_growth is not the compose's cost. The poller stops before the timed applies, so it cannot perturb a reported latency.",
-    "Record schema v3. v2 carried `first_batch_rows` beside `materialised_rows` — the pre-assembly presentation that drew a mark's FIRST Arrow chunk only. That field is gone; `drawn_rows` names what the field now holds. A v2 record's row counts describe code that no longer ships and must not be quoted against a v3 one.",
+    "A cell's picture is rendered and read back BEFORE the cell is timed. The cell's spec is composed through the production pipeline, rendered once through VelloRenderer at the frame scale, and the target is read back and counted: frame_ink records the device size, how many of those pixels differ from the colour the render cleared to, whether the target came back holding one repeated value, and the verdict. A cell whose picture reads back empty publishes NO timing. It records frames_blank instead — a per-cell FAILURE, a different event from frames_skipped, which declined to measure at all — and the run continues and exits 0. The drawn-primitive cap still declines the suites it declines; what changed is that a cell UNDER the cap is no longer assumed to have drawn.",
+    "The ink probe is a SEPARATE submission from the frames the suite times, on the same composed scene through the same renderer at the same device scale. The timed frames go through the shell's egui path, which does not read back, by design — a readback there would time a cost the live window does not pay. So the probe answers whether this cell's picture can be produced at all, immediately before the cell is timed; it does not answer whether one particular timed submission drew. A defect that made a picture appear and then vanish between the probe and the timing is outside what this evidence covers. So is a THINNED picture: the overflow this detects emits nothing at all, so the two verdicts are a picture and no picture. inked_fraction is a share of the whole target, and a composed dashboard paints its page tone across that target before a mark is drawn — a row that rendered therefore reports a high share, and the figure is not mark coverage.",
+    "Record schema v4. v2 carried `first_batch_rows` beside `materialised_rows` — the pre-assembly presentation that drew a mark's FIRST Arrow chunk only. That field is gone; `drawn_rows` names what the field now holds. A v2 record's row counts describe code that no longer ships and must not be quoted against a v3 one. v3 → v4 adds frame_ink and frames_blank: a v3 frame cell states a time and nothing about what was on screen while the clock ran, because the harness of that era decided a picture existed from a primitive count computed before rendering.",
 ];
 
 fn main() -> ExitCode {
@@ -593,39 +625,63 @@ fn run(root: &Path, args: &Args) -> Result<Vec<PathBuf>, String> {
             } else {
                 None
             };
+            // The readback stands between the decision to time this cell and
+            // the timing itself: compose the picture, render it once, ask what
+            // reached the target. A cell that came back empty is timed by
+            // nothing, because a blank frame is a fast frame on the clock.
+            let mut ink = None;
+            let mut frames_blank = None;
             let frames = if frames_skipped.is_some() {
                 None
             } else {
-                // The spec must exist as a file for the shell's boot path.
+                // The spec must exist as a file for the shell's boot path and
+                // for the ink probe's compose.
                 let spec_path = args.data_dir.join(format!("{}_{rows}.yaml", def.name));
                 std::fs::write(&spec_path, &sc.spec_text)
                     .map_err(|e| format!("write {}: {e}", spec_path.display()))?;
-                let parsed =
-                    brightfield_spec::parse_spec(&sc.spec_text, brightfield_spec::Format::Yaml)
-                        .map_err(|e| format!("{}: parse: {e}", def.name))?;
-                let bindings = brightfield_spec::analysis::build_brushable_bindings(&parsed.spec);
-                let b = bindings.first().ok_or("no brushable binding")?;
-                let steady = frames::frames_steady(
-                    &spec_path,
-                    FRAME_SCALE,
-                    args.warmup_frames,
-                    args.measured_frames,
-                )?;
-                let interaction = frames::frames_interaction(
-                    &spec_path,
-                    def.drag,
-                    def.brush_column,
-                    def.brush_domain,
-                    &b.selection,
-                    &b.parent_plot,
-                    FRAME_SCALE,
-                    args.warmup_frames,
-                    args.measured_frames,
-                )?;
-                Some(frames::FrameMeasurement {
-                    steady,
-                    interaction: Some(interaction),
-                })
+                let probe = frame_ink::probe(&spec_path, FRAME_SCALE)?;
+                let drew = probe.drew_ink;
+                eprintln!(
+                    "  picture: {}/{} device pixels inked",
+                    probe.inked_pixels, probe.total_pixels
+                );
+                if !drew {
+                    let why = frame_ink::blank_reason(&probe);
+                    eprintln!("  {} @ {rows} rows: {why}", def.name);
+                    frames_blank = Some(why);
+                }
+                ink = Some(probe);
+                if !drew {
+                    None
+                } else {
+                    let parsed =
+                        brightfield_spec::parse_spec(&sc.spec_text, brightfield_spec::Format::Yaml)
+                            .map_err(|e| format!("{}: parse: {e}", def.name))?;
+                    let bindings =
+                        brightfield_spec::analysis::build_brushable_bindings(&parsed.spec);
+                    let b = bindings.first().ok_or("no brushable binding")?;
+                    let steady = frames::frames_steady(
+                        &spec_path,
+                        FRAME_SCALE,
+                        args.warmup_frames,
+                        args.measured_frames,
+                    )?;
+                    let interaction = frames::frames_interaction(
+                        &spec_path,
+                        def.drag,
+                        def.brush_column,
+                        def.brush_domain,
+                        &b.selection,
+                        &b.parent_plot,
+                        FRAME_SCALE,
+                        args.warmup_frames,
+                        args.measured_frames,
+                    )?;
+                    Some(frames::FrameMeasurement {
+                        steady,
+                        interaction: Some(interaction),
+                    })
+                }
             };
 
             scaling.push(ScalingResult {
@@ -640,6 +696,8 @@ fn run(root: &Path, args: &Args) -> Result<Vec<PathBuf>, String> {
                 engine_direct,
                 frames,
                 frames_skipped,
+                frame_ink: ink,
+                frames_blank,
             });
         }
     }
@@ -685,6 +743,10 @@ fn run(root: &Path, args: &Args) -> Result<Vec<PathBuf>, String> {
             frames_skipped: Some(
                 "fixed-scale scenario: engine suites only, no frame suites".to_string(),
             ),
+            // No frame suite was attempted, so nothing was rendered to read
+            // back and there is no picture to judge.
+            frame_ink: None,
+            frames_blank: None,
         });
     }
 
@@ -878,11 +940,11 @@ fn render_markdown(r: &BaselineReport) -> String {
          Settled zoom → data, direct (ms) | Settled zoom → data, cubed (ms) | \
          Step → scene, direct (ms) | Step → scene, cubed (ms) | Cube | \
          Steady frame (ms) | Interaction frame (ms) | Drawn/materialised rows | \
-         Arrow held (MiB) | Compose peak RSS, direct / cubed (MiB) |"
+         Arrow held (MiB) | Compose peak RSS, direct / cubed (MiB) | Picture |"
     );
     let _ = writeln!(
         md,
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
     );
     for s in &r.scaling {
         let drawn = s
@@ -899,9 +961,20 @@ fn render_markdown(r: &BaselineReport) -> String {
         let peak = |m: &crate::mem::ComposeMemory| {
             m.rss_peak_mib.map_or("—".into(), |p| format!("{p:.0}"))
         };
+        // What the renderer said this cell's picture held, in the row beside
+        // the times it produced. A frame column and a BLANK picture together
+        // are a contradiction a reader must be able to see without opening the
+        // JSON — which is the whole point of measuring it.
+        let picture = s.frame_ink.as_ref().map_or("—".into(), |ink| {
+            if ink.drew_ink {
+                format!("{:.0}% inked", ink.inked_fraction * 100.0)
+            } else {
+                "**BLANK**".to_string()
+            }
+        });
         let _ = writeln!(
             md,
-            "| {} | {} | {} | {:.1} + {:.1} | {} | {} | {} | {} | {} | {} | {}/{} | {} | {} | {} | {:.1} | {} / {} |",
+            "| {} | {} | {} | {:.1} + {:.1} | {} | {} | {} | {} | {} | {} | {}/{} | {} | {} | {} | {:.1} | {} / {} | {} |",
             s.scenario,
             drag_label(s.drag),
             s.rows,
@@ -926,6 +999,7 @@ fn render_markdown(r: &BaselineReport) -> String {
             s.engine_direct.compose_memory.arrow_chunks_mib,
             peak(&s.engine_direct.compose_memory),
             peak(&s.engine.compose_memory),
+            picture,
         );
     }
     let _ = writeln!(md);
@@ -966,6 +1040,50 @@ fn render_markdown(r: &BaselineReport) -> String {
         ),
     );
     let _ = writeln!(md);
+    let _ = writeln!(
+        md,
+        "**`Picture` is read back from the renderer, not inferred.** Before a \
+         row's frame suites run, its spec is composed and rendered once at the \
+         frame scale and the target is counted: the cell states what share of \
+         those device pixels carry anything the clear did not put there. \
+         `BLANK` means the render returned success and the target came back \
+         empty — vello can overflow one of its fixed buffers, emit nothing and \
+         report `Ok`, and by the clock alone that is a very fast frame. A row \
+         whose picture is `BLANK` carries no frame timing, and it is a \
+         **failure**, not a skip: a skip declined to measure, this measured and \
+         found nothing. `—` means no frame suite was attempted for that row, so \
+         nothing was rendered to judge. The share is of the whole target and a \
+         composed dashboard paints its page tone across that target before a \
+         mark is drawn, so a row that rendered reports a high share: the figure \
+         separates a picture from no picture, and it is not mark coverage."
+    );
+    let _ = writeln!(md);
+    let blank: Vec<&ScalingResult> = r
+        .scaling
+        .iter()
+        .filter(|s| s.frames_blank.is_some())
+        .collect();
+    if !blank.is_empty() {
+        let _ = writeln!(md, "### Rows whose picture came back empty");
+        let _ = writeln!(md);
+        let _ = writeln!(
+            md,
+            "These rows were rendered and produced nothing. They are recorded \
+             as failures and no timing is published for them; the run they came \
+             from still completed."
+        );
+        let _ = writeln!(md);
+        for s in blank {
+            let _ = writeln!(
+                md,
+                "- **{} @ {} rows** — {}",
+                s.scenario,
+                s.rows,
+                s.frames_blank.as_deref().unwrap_or("")
+            );
+        }
+        let _ = writeln!(md);
+    }
     let skipped: Vec<&ScalingResult> = r
         .scaling
         .iter()
@@ -1113,6 +1231,44 @@ mod tests {
         assert!(!caps("slider-drag", 10_000_000));
     }
 
+    /// The cap's margin is a claim about the renderer, and the render crate is
+    /// where it is measured — a scatter at this cap must reach the target, and
+    /// one past the recorded onset must not. Both counts live there as
+    /// literals. Held equal here so moving one alone reddens rather than
+    /// leaving a gate measuring a boundary the harness no longer draws.
+    #[test]
+    fn the_render_crates_ink_gate_brackets_this_harness_at_these_numbers() {
+        let literal = |name: &str| -> u64 {
+            let line = RENDER_INK_GATE
+                .lines()
+                .find(|l| l.contains(&format!("const {name}: usize =")))
+                .unwrap_or_else(|| panic!("the ink gate declares {name}"));
+            line.split('=')
+                .nth(1)
+                .expect("a const declaration has a value")
+                .trim()
+                .trim_end_matches(';')
+                .replace('_', "")
+                .parse()
+                .expect("the value is a decimal literal")
+        };
+        assert_eq!(
+            literal("AT_THE_HARNESS_CAP"),
+            FRAME_DRAWN_ROW_CAP,
+            "the gate must render at the count this harness actually admits"
+        );
+        assert!(
+            literal("PAST_THE_ONSET") > MEASURED_BLANK_MIN,
+            "the gate's blank case must sit past the onset this record states, \
+             or it proves nothing about the boundary"
+        );
+        assert!(
+            literal("PAST_THE_ONSET") < VELLO_BIN_DATA_PANIC_DOTS,
+            "and under the count where the encode panics instead of drawing \
+             nothing, which is a different failure"
+        );
+    }
+
     /// A blank frame was explained, on every surface a reader could reach, by a
     /// mechanism that measurement refuted: the storage-buffer binding size (4
     /// GiB on this adapter — it does not bind) and a wgpu validation abort
@@ -1147,6 +1303,42 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The README described this harness as a guard that "never asks the
+    /// renderer whether the frame it produced had ink in it". It asks now, and
+    /// the README is the document read before a run — a reader left with the
+    /// old sentence goes looking for a gap that is closed, or discounts a
+    /// number that was checked.
+    #[test]
+    fn no_surface_still_says_the_harness_does_not_ask_the_renderer() {
+        let flatten = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        let readme = flatten(BENCH_README);
+        let methodology = flatten(&METHODOLOGY.join("\n"));
+        for (surface, text) in [("README", &readme), ("methodology", &methodology)] {
+            for refuted in [
+                "That is a guard, not a detector",
+                "never asks the renderer",
+                "the cap is doing prediction's job",
+            ] {
+                assert!(
+                    !text.contains(refuted),
+                    "the {surface} still claims {refuted:?}"
+                );
+            }
+        }
+        assert!(
+            readme.contains("A cell is now rendered before it is timed"),
+            "the README must state what stands where the prediction did"
+        );
+        assert!(
+            readme.contains("frames_blank"),
+            "and name the field a failed cell lands in"
+        );
+        assert!(
+            readme.contains("brightfield-bench/v4"),
+            "and name the schema that carries it"
+        );
     }
 
     /// AC5's ask, on the surfaces that can carry it without a re-run: the
@@ -1184,18 +1376,125 @@ mod tests {
     }
 
     /// The schema id must move when the field set does. v2 shipped
-    /// `first_batch_rows`; v3 ships `drawn_rows`, `drag` and `compose_memory`.
-    /// Leaving the id at v2 is what let two different field sets share one
-    /// version — the failure this assertion exists to stop repeating.
+    /// `first_batch_rows`; v3 shipped `drawn_rows`, `drag` and
+    /// `compose_memory`; v4 adds `frame_ink` and `frames_blank`. Leaving the id
+    /// at v2 is what let two different field sets share one version — the
+    /// failure this assertion exists to stop repeating.
     #[test]
     fn the_schema_id_is_past_the_first_batch_era() {
-        assert_eq!(SCHEMA, "brightfield-bench/v3");
+        assert_eq!(SCHEMA, "brightfield-bench/v4");
         assert!(
             METHODOLOGY
                 .iter()
                 .any(|m| m.contains("first_batch_rows") && m.contains("drawn_rows")),
             "the record must state the migration, so a v2 record is not quoted \
              against a v3 one"
+        );
+        assert!(
+            METHODOLOGY
+                .iter()
+                .any(|m| m.contains("frame_ink") && m.contains("frames_blank")),
+            "the record must state what v4 added, so a v3 frame cell is not \
+             read as though something had checked it"
+        );
+    }
+
+    /// The claim the whole readback rests on: a timed frame is one whose
+    /// picture was rendered and found. A methodology that only described the
+    /// cap would be describing a guard and calling it a detector.
+    #[test]
+    fn the_methodology_states_that_a_timed_cell_was_proven_to_have_a_picture() {
+        let all = METHODOLOGY.join("\n");
+        assert!(
+            all.contains("read back") && all.contains("frame_ink"),
+            "the methodology must name the readback and the field it lands in"
+        );
+        assert!(
+            all.contains("UNDER the cap is no longer assumed to have drawn"),
+            "the methodology must say what changed about a cell below the cap"
+        );
+        // The honest boundary of the evidence. The probe renders its own
+        // submission; the timed frames are not read back, and a methodology
+        // that let a reader think otherwise would be overclaiming.
+        assert!(
+            all.contains("SEPARATE submission"),
+            "the methodology must state what the probe does not cover"
+        );
+        // The second boundary, and the one a reader is likelier to overshoot:
+        // the share is of the whole target, which a composed dashboard fills
+        // with its own page tone before a mark exists. Read as mark coverage
+        // it would say a picture is complete when it holds furniture alone.
+        assert!(
+            all.contains("THINNED") && all.contains("not mark coverage"),
+            "the methodology must say the figure separates a picture from no \
+             picture rather than measuring how much ink reached one"
+        );
+    }
+
+    /// A blank picture and a skip both leave the frame columns empty, and they
+    /// are opposite events. The summary has to separate them on the page, not
+    /// only in the JSON.
+    #[test]
+    fn a_blank_picture_is_reported_as_a_failure_and_not_as_a_skip() {
+        let mut r = synthetic_report();
+        let ink = blank_ink();
+        r.scaling[0].frames_blank = Some(frame_ink::blank_reason(&ink));
+        r.scaling[0].frame_ink = Some(ink);
+        r.scaling[0].frames_skipped = None;
+        let md = render_markdown(&r);
+        assert!(
+            md.contains("### Rows whose picture came back empty"),
+            "the failure gets its own section: {md}"
+        );
+        assert!(
+            !md.contains("### Rows with no frame cells, and why"),
+            "this row was not skipped, so it must not appear as one: {md}"
+        );
+        assert!(
+            md.contains("FAILED, not skipped"),
+            "the row's reason must say which of the two it is: {md}"
+        );
+        assert!(
+            md.contains("| **BLANK** |"),
+            "the table cell must say it too, beside the empty frame columns: {md}"
+        );
+    }
+
+    /// The column exists so a reader of the table can see the contradiction —
+    /// a frame time beside a picture that was never there — without opening
+    /// the JSON.
+    #[test]
+    fn a_row_with_a_picture_states_what_share_of_it_was_inked() {
+        let mut r = synthetic_report();
+        r.scaling[0].frame_ink = Some(frame_ink::FrameInk {
+            width: 1_280,
+            height: 960,
+            inked_pixels: 921_600,
+            total_pixels: 1_228_800,
+            inked_fraction: 0.75,
+            uniform: false,
+            drew_ink: true,
+        });
+        let md = render_markdown(&r);
+        assert!(md.contains("| 75% inked |"), "{md}");
+        assert!(
+            md.contains("read back from the renderer, not inferred"),
+            "the legend must say where the number came from: {md}"
+        );
+    }
+
+    /// A row that attempted no frame suite rendered nothing, so it has no
+    /// picture to report — and must not borrow a verdict it did not earn.
+    #[test]
+    fn a_row_that_attempted_no_frame_suite_claims_no_picture() {
+        let md = render_markdown(&synthetic_report());
+        assert!(
+            md.contains("| — |"),
+            "an unattempted row's picture cell is a gap: {md}"
+        );
+        assert!(
+            !md.contains("### Rows whose picture came back empty"),
+            "nothing was rendered, so nothing came back empty: {md}"
         );
     }
 
@@ -1348,8 +1647,24 @@ mod tests {
                 engine_direct: measurement(100.0),
                 frames: None,
                 frames_skipped: Some(field("capped")),
+                frame_ink: None,
+                frames_blank: None,
             }],
             corpus: vec![],
+        }
+    }
+
+    /// A cell whose picture was rendered and came back empty: the shape the
+    /// readback exists to catch, and the one the primitive count cannot see.
+    fn blank_ink() -> frame_ink::FrameInk {
+        frame_ink::FrameInk {
+            width: 1_280,
+            height: 960,
+            inked_pixels: 0,
+            total_pixels: 1_228_800,
+            inked_fraction: 0.0,
+            uniform: true,
+            drew_ink: false,
         }
     }
 

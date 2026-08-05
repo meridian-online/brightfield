@@ -13,6 +13,10 @@ brightfield-spec = { path = "../brightfield-spec" }
 brightfield-sql = { path = "../brightfield-sql" }
 brightfield-shell = { path = "../brightfield-shell" }
 brightfield-protocol = { path = "../brightfield-protocol" }
+# The blank-frame readback: `VelloRenderer::frame_ink` renders a composed scene
+# and reports what reached the target, so a cell is timed only after its picture
+# is proven to exist.
+brightfield-render = { path = "../brightfield-render" }
 # Dataset generation: deterministic hash-derived columns written to Parquet.
 # Same version spec as brightfield-engine, so Cargo resolves ONE bundled build.
 duckdb = { version = "1", features = ["bundled"] }

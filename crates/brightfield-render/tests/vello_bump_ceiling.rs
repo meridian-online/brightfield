@@ -4,8 +4,8 @@
 //! that never scale with the primitive count — `vello_encoding`'s buffer table
 //! carries a source comment saying the numbers were hand-picked to fit that
 //! project's own test scenes. Nothing re-runs coarse when one of them
-//! overflows, and this renderer reads nothing back: it calls `.expect()` on a
-//! `Result` that is `Ok` either way.
+//! overflows, and the render call reports success either way: it returns a
+//! `Result` that is `Ok` whether or not a picture came out.
 //!
 //! **Above those constants the frame comes back BLANK, with no error.** Not
 //! thinned, not partial: once `seg_counts` overflows, `segments` and `ptcl`
@@ -52,13 +52,25 @@
 //!     --spec <a range(N) scatter> --out /tmp/n.png --vello-only
 //! ```
 //!
-//! Feature-gated and ignored by default: it needs a real GPU adapter *and*
-//! vello's `debug_layers` readback, and it is an instrument, not a gate:
+//! # The ladder is an instrument; the agreement below it is a gate
+//!
+//! `report_bump_headroom_across_dot_counts` prints and asserts nothing — a
+//! ladder of counters is read, not passed or failed, and it is `#[ignore]`d so
+//! a run has to ask for it:
 //!
 //! ```text
 //! cargo test -p brightfield-render --features vello-bump-probe \
 //!     --test vello_bump_ceiling -- --ignored --nocapture
 //! ```
+//!
+//! `the_failed_bit_and_the_pixels_agree_about_the_same_frame` is not ignored
+//! and runs whenever this file compiles, which needs the same feature. It holds
+//! vello's own account of the overflow against
+//! [`FrameInk`](brightfield_render::frame_ink::FrameInk) — the reading
+//! `crates/brightfield-render/tests/frame_ink.rs` gates on in a normal build,
+//! where these counters come back `None`. Two readings of one frame from
+//! opposite ends of the pipeline: if they ever disagree, the one shipped to
+//! callers is the pixel one, and that is worth finding out here.
 #![cfg(feature = "vello-bump-probe")]
 
 use std::sync::Arc;
@@ -72,6 +84,7 @@ use brightfield_render::layout::ChartLayout;
 use brightfield_render::mark::DotRenderer;
 use brightfield_render::scene::{build_multi_mark_scene, ChartData};
 use brightfield_render::title::ResolvedTitles;
+use brightfield_render::vello_renderer::VelloRenderer;
 use vello::wgpu;
 
 /// Capacities `vello_encoding::BufferSizes::new` hands the GPU regardless of
@@ -120,6 +133,156 @@ fn scatter_batch(n: usize) -> RecordBatch {
         ],
     )
     .expect("scatter batch")
+}
+
+/// One dot scatter of `rows` rows, scaled onto the device raster — the fixture
+/// both the ladder and the agreement gate measure.
+fn scatter_scene(rows: usize) -> vello::Scene {
+    let batch = scatter_batch(rows);
+    let mut cm = ChannelMap::new();
+    cm.insert(Channel::X, "x".to_string());
+    cm.insert(Channel::Y, "y".to_string());
+    let dot = DotRenderer;
+    let data = ChartData {
+        batch: &batch,
+        channel_map: &cm,
+        renderer: &dot,
+        layout: ChartLayout::new(PLOT_W, PLOT_H),
+        view_extent: None,
+        highlight: None,
+        sample: None,
+        beyond_frame: false,
+    };
+    let (plot, _scales) = build_multi_mark_scene(&[&data], false, &ResolvedTitles::default());
+    let mut scaled = vello::Scene::new();
+    scaled.append(&plot, Some(kurbo::Affine::scale(SCALE)));
+    scaled
+}
+
+fn device_size() -> (u32, u32) {
+    (
+        (PLOT_W * SCALE).round() as u32,
+        (PLOT_H * SCALE).round() as u32,
+    )
+}
+
+/// vello's `failed` word for one render of `scene`, on a device of its own.
+///
+/// The download happens because this crate's `vello-bump-probe` feature turns
+/// vello's `debug_layers` on; without it the async path sets `robust = false`
+/// and the counters come back `None`, which is why the harness cannot read this
+/// signal and reads pixels instead.
+fn bump_failed_word(scene: &vello::Scene) -> u32 {
+    let instance = wgpu::Instance::default();
+    let adapter =
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+            .expect("a GPU adapter");
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("bump-agreement"),
+        required_features: wgpu::Features::empty(),
+        required_limits: adapter.limits(),
+        memory_hints: wgpu::MemoryHints::default(),
+        ..Default::default()
+    }))
+    .expect("a GPU device");
+    let mut renderer = vello::Renderer::new(
+        &device,
+        vello::RendererOptions {
+            use_cpu: false,
+            antialiasing_support: vello::AaSupport::all(),
+            num_init_threads: None,
+            pipeline_cache: None,
+        },
+    )
+    .expect("vello renderer");
+    let (dev_w, dev_h) = device_size();
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("bump-agreement-target"),
+        size: wgpu::Extent3d {
+            width: dev_w,
+            height: dev_h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    #[allow(deprecated)]
+    let bump = vello::util::block_on_wgpu(
+        &device,
+        renderer.render_to_texture_async(
+            &device,
+            &queue,
+            scene,
+            &view,
+            &vello::RenderParams {
+                base_color: vello::peniko::Color::TRANSPARENT,
+                width: dev_w,
+                height: dev_h,
+                antialiasing_method: vello::AaConfig::Msaa16,
+            },
+            vello::low_level::DebugLayers::none(),
+        ),
+    )
+    .expect("render")
+    .expect("the probe feature turns vello's bump readback on");
+    bump.failed
+}
+
+/// One dot count vello draws whole, and one it drops work on — measured on this
+/// fixture, and both kept under the count where this instrument's own
+/// `DebugDownloads::map` slices past the lines buffer and panics.
+const DRAWN: usize = 104_000;
+const DROPPED: usize = 110_000;
+
+/// The renderer's account of the frame, and the frame.
+///
+/// `failed` is what vello says it did; [`FrameInk`] is what came out. The
+/// harness consumes the second — it is available with no feature on, where
+/// these counters are `None` — so the pair is worth holding together at least
+/// where both can be read. A disagreement would mean the shipped detector is
+/// answering a different question from the renderer's own flag.
+#[test]
+fn the_failed_bit_and_the_pixels_agree_about_the_same_frame() {
+    let (w, h) = device_size();
+    let base = vello::peniko::Color::TRANSPARENT;
+    let renderer = VelloRenderer::new();
+
+    let drawn = scatter_scene(DRAWN);
+    let drawn_failed = bump_failed_word(&drawn);
+    let drawn_ink = renderer
+        .lock()
+        .expect("renderer poisoned")
+        .frame_ink(&drawn, w, h, base);
+    assert_eq!(
+        drawn_failed, 0,
+        "{DRAWN} dots must leave vello's failure word clear"
+    );
+    assert!(
+        drawn_ink.drew_ink(),
+        "and the frame it produced must carry ink: {drawn_ink:?}"
+    );
+
+    let dropped = scatter_scene(DROPPED);
+    let dropped_failed = bump_failed_word(&dropped);
+    let dropped_ink = renderer
+        .lock()
+        .expect("renderer poisoned")
+        .frame_ink(&dropped, w, h, base);
+    assert_ne!(
+        dropped_failed, 0,
+        "{DROPPED} dots must set a bit in vello's failure word"
+    );
+    assert!(
+        !dropped_ink.drew_ink(),
+        "and the frame it produced must be empty, which is what makes the \
+         pixel reading a usable stand-in for a counter no normal build \
+         downloads: {dropped_ink:?}"
+    );
 }
 
 #[test]
@@ -199,24 +362,7 @@ fn report_bump_headroom_across_dot_counts() {
         262_000,
         300_000,
     ] {
-        let batch = scatter_batch(rows);
-        let mut cm = ChannelMap::new();
-        cm.insert(Channel::X, "x".to_string());
-        cm.insert(Channel::Y, "y".to_string());
-        let dot = DotRenderer;
-        let data = ChartData {
-            batch: &batch,
-            channel_map: &cm,
-            renderer: &dot,
-            layout: ChartLayout::new(PLOT_W, PLOT_H),
-            view_extent: None,
-            highlight: None,
-            sample: None,
-            beyond_frame: false,
-        };
-        let (plot, _scales) = build_multi_mark_scene(&[&data], false, &ResolvedTitles::default());
-        let mut scaled = vello::Scene::new();
-        scaled.append(&plot, Some(kurbo::Affine::scale(SCALE)));
+        let scaled = scatter_scene(rows);
 
         let rendered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             #[allow(deprecated)]

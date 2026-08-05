@@ -12,6 +12,7 @@ pub mod axis;
 pub mod canvas_host;
 pub mod channel;
 pub mod contour;
+pub mod frame_ink;
 pub mod grid;
 pub mod ink;
 pub mod inset;
@@ -33,6 +34,7 @@ pub mod vello_renderer;
 // Re-exports for downstream consumers.
 pub use canvas_host::{CanvasHost, ChartSurface, OverlayPainter};
 pub use channel::ChannelMap;
+pub use frame_ink::FrameInk;
 pub use layout::ChartLayout;
 pub use mark::{HighlightState, MarkRenderer};
 pub use nearest::{find_nearest, NearestHit, NearestMode};
