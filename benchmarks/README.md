@@ -206,6 +206,11 @@ Records carry a `schema` id and are **not** comparable across a bump.
   changed, which shipped two field sets under one version.
 - `brightfield-bench/v3` names what it holds: `drawn_rows`, plus `drag`,
   per-mark chunk/byte shape, `compose_memory`, and `frames_skipped`.
+- `brightfield-bench/v4` adds `frame_ink` and `frames_blank`. A v3 frame cell
+  states a time and says nothing about what was on screen while the clock ran:
+  the harness of that era decided a picture existed from a primitive count
+  computed before rendering. A v4 frame cell states a time beside the readback
+  that proved there was a picture to time — see *A skip is one report* below.
 
 **A v2 record's numbers describe code that no longer ships.** Do not quote one
 against a v3 record; re-measure instead. `results/2026-07-23-apple-m1-pro.*`
@@ -324,7 +329,10 @@ scene is O(bins) at every magnitude and it never approaches the ceiling.
 - **`2026-07-27` (current)** — nothing. Every cell that carries a frame number
   drew at most 100,000 primitives. The two at exactly 100,000
   (`brush-density` and `brush-binned-density` @ 10⁵) are the closest to the
-  boundary and the first to re-verify if the fixture changes.
+  boundary — a re-verification the harness now performs on every run, rather
+  than one a reader has to remember. That record predates the readback, so it
+  carries no `frame_ink` of its own; a v4 re-measurement is what would put the
+  evidence in the file.
 - **`2026-07-25`** — three cells carry frame timings for scenes above the
   ceiling and are **withdrawn**: `crossfilter-dots` @ 10⁵ (200,000
   primitives), `brush-density` @ 10⁶ and `brush-binned-density` @ 10⁶
@@ -339,21 +347,46 @@ scene is O(bins) at every magnitude and it never approaches the ceiling.
 Each record states this in its own `record_status` block and at the top of its
 generated markdown, so a reader who opens one file learns it from that file.
 
-### A skip is the report, and what it does not cover
+### A skip is one report; a blank picture is a different one
 
 Every declined row records **why**, in the JSON (`frames_skipped`) and as a
 named list under the generated table, and no timing is emitted for it. A blank
 frame cell is not a fast frame.
 
-That is a **guard, not a detector**. The harness predicts the blank from a
-primitive count it computes before rendering; it never asks the renderer
-whether the frame it produced had ink in it. Below the cap a blank frame would
-still be timed and published as a fast one — which is exactly how
-`crossfilter-dots` @ 10⁵ got its numbers in the `2026-07-25` record, under a
-cap that was legitimate at the time. Closing that needs the `failed` bit read
-back out of vello's bump counters through the shell's paint path and the suite
-failed on it; until then the cap is doing prediction's job and its margin is
-what makes it safe.
+The cap decides which suites to **attempt**. It cannot decide whether an
+attempted one produced a picture, and for a while nothing did: the harness
+predicted the blank from a primitive count it computed before rendering and
+never asked the renderer what came out, so below the cap a blank frame was
+timed and published as a fast one. That is how `crossfilter-dots` @ 10⁵ got its
+numbers in the `2026-07-25` record, under a cap that was legitimate at the time.
+
+**A cell is now rendered before it is timed.** Its spec is composed through the
+production pipeline, rendered once through `VelloRenderer::frame_ink` at the
+frame scale, and the target is read back and counted — `frame_ink` in the JSON,
+the `Picture` column in the generated summary. A cell whose picture comes back
+empty publishes **no timing** and records `frames_blank`, which is a per-cell
+**failure** and a different field from `frames_skipped`: a skip declined to
+measure, this measured and found nothing. Neither fails the run, which still
+exits 0.
+
+What that evidence does **not** cover: the probe is a separate submission from
+the frames the suite times, on the same composed scene through the same
+renderer at the same device scale. The timed frames go through the shell's egui
+path, which does not read back, by design — a readback there would time a cost
+the live window does not pay. So the probe answers whether a cell's picture can
+be produced at all, immediately before that cell is timed; it does not answer
+whether one particular timed submission drew. Nor does it see a **thinned**
+picture: the overflow it detects emits nothing at all, so the two verdicts are
+a picture and no picture. `inked_fraction` is a share of the whole target, and
+a composed dashboard paints its page tone across that target before a mark is
+drawn — so a row that rendered reports a high share, and the figure is not mark
+coverage.
+
+The renderer-side gate is `crates/brightfield-render/tests/frame_ink.rs`: it
+renders a dot scatter **at** this cap and requires it to reach the target, and
+one past the measured onset and requires it not to. That is what makes the
+cap's margin a measurement rather than a preference, and a vello bump that
+lowered the ceiling under the cap reddens there.
 
 The cap became load-bearing the moment the compose began assembling every
 Arrow chunk instead of the first: before that, a "ten-million-row" frame cell

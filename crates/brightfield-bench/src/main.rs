@@ -538,7 +538,7 @@ const METHODOLOGY: &[&str] = &[
     "compose_memory is what the client held while the first full scene was composed — the window around LiveDashboard::present, which executes every mark and hands the whole result set to compose_from_results, which assembles every chunk of every mark and holds them all while it builds the scene. The window opens only after the coordinator-seam phase is gone: its session is dropped and its complete result set is moved into the shape pass, which consumes and drops it. That ordering is the measurement — resident size is a whole-process quantity, so a phase still holding its Arrow would be reported as this compose's cost. Two figures, because neither alone is honest. arrow_chunks_mib / arrow_assembled_mib are EXACT and deterministic, summed from the batches themselves (RecordBatch::get_array_memory_size) — the data the compose holds, identical on any host. A single-chunk mark assembles by pass-through, so its assembled bytes are the SAME allocation counted again, not a second copy.",
     "rss_*_mib is the process's resident set size, polled from the OS across that same window (Linux /proc/self/status; macOS `ps -o rss=`, ~5ms resolution, so `rss_samples` states how coarse a given cell is). It is the only figure that sees the Arrow buffers' real cost: the chunks are imported from DuckDB over the C data interface, so DuckDB's C++ allocator owns them and a Rust allocator counter would not see them. It is also a SINGLE sample of a whole-process quantity and is NOT reproducible on its own. Every scenario records two windows — pre-aggregation off and on — over the same compose work (the first present precedes any interaction, so the toggle cannot change it); their disagreement is this figure's run-to-run noise and the generated summary states the widest one observed. Quote a peak only with that spread beside it; quote arrow_chunks_mib when a deterministic number is wanted. The pre-compose floor is not monotone: the OS reclaims pages between windows, so rss_before falls as often as it rises and rss_growth is not the compose's cost. The poller stops before the timed applies, so it cannot perturb a reported latency.",
     "A cell's picture is rendered and read back BEFORE the cell is timed. The cell's spec is composed through the production pipeline, rendered once through VelloRenderer at the frame scale, and the target is read back and counted: frame_ink records the device size, how many of those pixels differ from the colour the render cleared to, whether the target came back holding one repeated value, and the verdict. A cell whose picture reads back empty publishes NO timing. It records frames_blank instead — a per-cell FAILURE, a different event from frames_skipped, which declined to measure at all — and the run continues and exits 0. The drawn-primitive cap still declines the suites it declines; what changed is that a cell UNDER the cap is no longer assumed to have drawn.",
-    "The ink probe is a SEPARATE submission from the frames the suite times, on the same composed scene through the same renderer at the same device scale. The timed frames go through the shell's egui path, which does not read back, by design — a readback there would time a cost the live window does not pay. So the probe answers whether this cell's picture can be produced at all, immediately before the cell is timed; it does not answer whether one particular timed submission drew. A defect that made a picture appear and then vanish between the probe and the timing is outside what this evidence covers.",
+    "The ink probe is a SEPARATE submission from the frames the suite times, on the same composed scene through the same renderer at the same device scale. The timed frames go through the shell's egui path, which does not read back, by design — a readback there would time a cost the live window does not pay. So the probe answers whether this cell's picture can be produced at all, immediately before the cell is timed; it does not answer whether one particular timed submission drew. A defect that made a picture appear and then vanish between the probe and the timing is outside what this evidence covers. So is a THINNED picture: the overflow this detects emits nothing at all, so the two verdicts are a picture and no picture. inked_fraction is a share of the whole target, and a composed dashboard paints its page tone across that target before a mark is drawn — a row that rendered therefore reports a high share, and the figure is not mark coverage.",
     "Record schema v4. v2 carried `first_batch_rows` beside `materialised_rows` — the pre-assembly presentation that drew a mark's FIRST Arrow chunk only. That field is gone; `drawn_rows` names what the field now holds. A v2 record's row counts describe code that no longer ships and must not be quoted against a v3 one. v3 → v4 adds frame_ink and frames_blank: a v3 frame cell states a time and nothing about what was on screen while the clock ran, because the harness of that era decided a picture existed from a primitive count computed before rendering.",
 ];
 
@@ -1052,7 +1052,10 @@ fn render_markdown(r: &BaselineReport) -> String {
          whose picture is `BLANK` carries no frame timing, and it is a \
          **failure**, not a skip: a skip declined to measure, this measured and \
          found nothing. `—` means no frame suite was attempted for that row, so \
-         nothing was rendered to judge."
+         nothing was rendered to judge. The share is of the whole target and a \
+         composed dashboard paints its page tone across that target before a \
+         mark is drawn, so a row that rendered reports a high share: the figure \
+         separates a picture from no picture, and it is not mark coverage."
     );
     let _ = writeln!(md);
     let blank: Vec<&ScalingResult> = r
@@ -1302,6 +1305,42 @@ mod tests {
         }
     }
 
+    /// The README described this harness as a guard that "never asks the
+    /// renderer whether the frame it produced had ink in it". It asks now, and
+    /// the README is the document read before a run — a reader left with the
+    /// old sentence goes looking for a gap that is closed, or discounts a
+    /// number that was checked.
+    #[test]
+    fn no_surface_still_says_the_harness_does_not_ask_the_renderer() {
+        let flatten = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        let readme = flatten(BENCH_README);
+        let methodology = flatten(&METHODOLOGY.join("\n"));
+        for (surface, text) in [("README", &readme), ("methodology", &methodology)] {
+            for refuted in [
+                "That is a guard, not a detector",
+                "never asks the renderer",
+                "the cap is doing prediction's job",
+            ] {
+                assert!(
+                    !text.contains(refuted),
+                    "the {surface} still claims {refuted:?}"
+                );
+            }
+        }
+        assert!(
+            readme.contains("A cell is now rendered before it is timed"),
+            "the README must state what stands where the prediction did"
+        );
+        assert!(
+            readme.contains("frames_blank"),
+            "and name the field a failed cell lands in"
+        );
+        assert!(
+            readme.contains("brightfield-bench/v4"),
+            "and name the schema that carries it"
+        );
+    }
+
     /// AC5's ask, on the surfaces that can carry it without a re-run: the
     /// MEASURED ceiling, not only the policy cap. A record that states 100000
     /// and stops has told the reader a harness constant and called it a
@@ -1380,6 +1419,15 @@ mod tests {
         assert!(
             all.contains("SEPARATE submission"),
             "the methodology must state what the probe does not cover"
+        );
+        // The second boundary, and the one a reader is likelier to overshoot:
+        // the share is of the whole target, which a composed dashboard fills
+        // with its own page tone before a mark exists. Read as mark coverage
+        // it would say a picture is complete when it holds furniture alone.
+        assert!(
+            all.contains("THINNED") && all.contains("not mark coverage"),
+            "the methodology must say the figure separates a picture from no \
+             picture rather than measuring how much ink reached one"
         );
     }
 

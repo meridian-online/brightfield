@@ -572,6 +572,7 @@ version = "0.1.0"
 dependencies = [
  "brightfield-engine",
  "brightfield-protocol",
+ "brightfield-render",
  "brightfield-shell",
  "brightfield-spec",
  "brightfield-sql",
