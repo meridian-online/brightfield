@@ -28,8 +28,9 @@
 //! filled paths makes that subtraction go negative: a debug build panics inside
 //! `vello_encoding` (`config.rs:185`), and a release build wraps to ~4×10⁹ and
 //! tells the binning shader it has room it does not have. No wgpu limit moves
-//! it. Measured through the production path, it first fires at 262 102 dots in
-//! a plot carrying 42 paths of furniture — 2^18 = 262 144, to the row.
+//! it. Measured through the production path, it first fires at
+//! [`VELLO_BIN_DATA_PANIC_DOTS`](brightfield_render::sample_policy::VELLO_BIN_DATA_PANIC_DOTS)
+//! in a plot carrying 42 paths of furniture — 2^18 = 262 144, to the row.
 //!
 //! # This instrument can panic for reasons that are only its own
 //!

@@ -68,7 +68,15 @@ fn rust_sources() -> Vec<(String, String)> {
 }
 
 /// The forms a five-or-six-digit count gets written in: bare, underscored the
-/// way Rust literals are, and comma-grouped the way prose is.
+/// way Rust literals are, and grouped the way prose is.
+///
+/// **The separator list is drawn from what this repo actually writes, not from
+/// what a formatter would emit.** A scan that covered only the comma would pass
+/// a copy spelled with a space — and space-grouping is not hypothetical here:
+/// the measurement table in `sample_policy` writes `50 000` and `1 280`, and
+/// `vello_bump_ceiling.rs` writes `262 144`. A guard against duplication that
+/// misses the house style is a guard against the duplications nobody was going
+/// to write.
 fn spellings(n: u64) -> Vec<String> {
     let plain = n.to_string();
     let group = |sep: char| {
@@ -81,7 +89,17 @@ fn spellings(n: u64) -> Vec<String> {
         }
         out
     };
-    vec![plain.clone(), group('_'), group(','), group('\u{202f}')]
+    vec![
+        plain.clone(),
+        group('_'),
+        group(','),
+        // The space forms, in the order of how likely they are to be typed:
+        // an ordinary ASCII space, then the two the typographic separators a
+        // paste from a rendered document brings in.
+        group(' '),
+        group('\u{202f}'),
+        group('\u{2009}'),
+    ]
 }
 
 #[test]
