@@ -348,9 +348,18 @@ case "$TARGET" in
     # produced a smaller image than UDZO over the same payload when the two were
     # measured against each other. Nothing in this repo reddens if the flag is
     # dropped, so it is commented here rather than left to look incidental.
+    #
+    # -size is pinned for a harder reason. Left to size the volume from
+    # -srcfolder on its own, hdiutil failed intermittently on this payload with
+    # "create failed - No space left on device" partway through copying the
+    # executable — on inputs identical to a run that had just succeeded. So the
+    # volume is sized from the staged bytes plus headroom for the filesystem's
+    # own metadata. The headroom costs nothing in the shipped artifact: ULFO is
+    # a compressed read-only conversion, and unused blocks do not survive it.
     rm -f "dist/${NAME}.dmg"
+    stage_kb=$(du -sk "$APPSTAGE" | awk '{print $1}')
     hdiutil create -volname Brightfield -srcfolder "$APPSTAGE" \
-      -format ULFO -ov "dist/${NAME}.dmg"
+      -size "$((stage_kb + 65536))k" -format ULFO -ov "dist/${NAME}.dmg"
     (cd dist && shasum -a 256 "${NAME}.dmg" > "${NAME}.dmg.sha256")
     rm -rf "$APPSTAGE"
     ;;
