@@ -14,10 +14,13 @@
 
 use std::path::{Path, PathBuf};
 
+use brightfield_protocol::layout::Flow;
 use brightfield_render::sample_notice::NOTICE_BAND;
 use brightfield_render::sample_policy::{renders_complete, sample_exponent, MEASURED_INKED_MAX};
 use brightfield_shell::capture::capture_vello_only;
+use brightfield_shell::design::Mode;
 use brightfield_shell::pipeline::{compose_spec_sampled, live_spec_sampled, Composed};
+use brightfield_shell::window::{chart_window_size, Boot, MeridianApp};
 use brightfield_sql::ir::SampleRate;
 
 const W: u32 = 640;
@@ -335,6 +338,95 @@ height: {H}
         composed.plots[0].sample.is_none(),
         "an aggregating plot draws one primitive per BIN — sampling it is sampling \
          bins, and the notice would describe a loss that did not happen"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The committed ten-million-row scatter, at the magnitude the scale claim is
+/// made at.
+const TEN_MILLION: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/ten-million-scatter.yaml"
+);
+
+/// **Ten million rows, no flag, a picture with a notice on it.**
+///
+/// The magnitude is the point. Every other case here is a spec written by a
+/// test at a count derived from the ceiling; this one is a file in
+/// `examples/`, opened the way the shell opens a spec named on the command
+/// line — [`Boot::open`], the one place a spec is classified — and then drawn
+/// through the headless layout pass the capture tiers use.
+///
+/// Unsampled it would draw ten million primitives and come back BLANK. What
+/// makes this the criterion rather than a demo is that nothing in the file, on
+/// the command line, or in this test asks for a sample.
+#[test]
+fn the_committed_ten_million_row_example_opens_and_samples_itself() {
+    let boot = Boot::open(TEN_MILLION, Flow::Vertical, None).expect("the example opens");
+    assert!(
+        !boot.is_empty(),
+        "the example loaded nothing — a boot with no document is not an open spec"
+    );
+
+    let composed = compose_unflagged(Path::new(TEN_MILLION));
+    let fact = composed.plots[0].sample.expect(
+        "the committed ten-million-row example must render SAMPLED under no flag — \
+         drawn whole it is a blank frame at exit 0",
+    );
+    assert_eq!(
+        fact.of, 10_000_000,
+        "the example's row count moved; this criterion is about the magnitude"
+    );
+    assert!(
+        renders_complete(fact.drawn),
+        "the sample drew {} primitives, which is still past the ceiling",
+        fact.drawn
+    );
+    // Not `drawn * modulus == of`: a hash sample is a predicate on the row's
+    // own bytes, not a partition, so the surviving count is near `of / modulus`
+    // rather than exactly it. What has to hold is that the picture fits.
+    let modulus = 1_u64 << sample_exponent(fact.of).expect("ten million needs a sample");
+    assert!(
+        fact.drawn < fact.of,
+        "a 1-in-{modulus} sample of {} rows drew {} — nothing was dropped",
+        fact.of,
+        fact.drawn
+    );
+
+    // The notice, in the exported chart's own ink.
+    let dir = std::env::temp_dir().join(format!("bf-auto-sample-10m-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let png = dir.join("ten-million.png");
+    assert_eq!((composed.width, composed.height), (W, H));
+    capture_vello_only(composed, 1.0, &png).expect("capture");
+    let band = ink_in_band(&png);
+    assert!(
+        band > 400,
+        "the export's bottom band held {band} inked pixels — a reader shown a \
+         sample is owed the sentence saying so"
+    );
+
+    // …and it draws in the shell, at the window the content asks for, rather
+    // than only composing. Two frames, as the capture path runs: font atlas
+    // then layout settle.
+    let composed = compose_unflagged(Path::new(TEN_MILLION));
+    let (w, h) = chart_window_size(&composed);
+    let mut app = MeridianApp::headless(Boot::charts(composed), Mode::Light);
+    let ctx = egui::Context::default();
+    let raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(w, h),
+        )),
+        ..Default::default()
+    };
+    for _ in 0..2 {
+        let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
+    }
+    assert!(
+        app.chart_doc().raster_rect.is_some_and(|r| r.area() > 0.0),
+        "the chart pane recorded no raster — the example composed but did not draw"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
