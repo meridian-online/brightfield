@@ -5,8 +5,8 @@
 //! detector exists for, which only a GPU produces: vello's flattening and
 //! coarse-raster buffers are fixed sizes chosen inside `vello_encoding`, and a
 //! scene that overflows one of them rasters to an empty target while the render
-//! returns `Ok`. Nothing in the pipeline raises an error, so an empty frame and
-//! a fast frame are the same event to any caller that does not look.
+//! returns `Ok`. The render reports success either way, so an empty frame and a
+//! fast frame are the same event to a caller that does not look.
 //!
 //! So these render. Three scenes go through
 //! [`VelloRenderer`](brightfield_render::vello_renderer::VelloRenderer) — a
@@ -40,13 +40,17 @@ const PLOT_H: f64 = 480.0;
 const SCALE: f64 = 2.0;
 
 /// The drawn-primitive count the performance harness admits for a frame suite.
-/// A one-scatter scene of this many dots is what its two closest-to-the-line
-/// cells submit, so this is the count whose inking the cap's margin rests on.
+/// A one-scatter scene of this size is the largest picture it will time, so the
+/// cap's margin means this count reaching the target and nothing weaker. The
+/// number is the harness's, duplicated here because a binary crate's constants
+/// cannot be imported; `crates/brightfield-bench/src/main.rs` holds the
+/// original and a test there holds the two equal.
 const AT_THE_HARNESS_CAP: usize = 100_000;
 
-/// A count past the overflow onset measured for this fixture, and well under
-/// the exact `bin_data` ceiling (2^18 filled paths) where the encode panics
-/// instead of drawing nothing.
+/// A count past the overflow onset measured for this fixture, and under the
+/// exact `bin_data` ceiling (2^18 filled paths) where the encode panics instead
+/// of drawing nothing. The harness records the onset it measured; a test there
+/// holds this count above it.
 const PAST_THE_ONSET: usize = 150_000;
 
 /// The base the offscreen capture path clears to — `brightfield-shot

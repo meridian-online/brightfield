@@ -9,7 +9,7 @@
 //! that drew quickly from one that drew nothing:
 //! `crates/brightfield-render/tests/vello_bump_ceiling.rs` measures where the
 //! overflow starts for a dot scatter, and the frames past it come back empty
-//! with no error anywhere.
+//! while the render reports success.
 //!
 //! [`FrameInk`] answers from the pixels the render was read back into.
 //! [`VelloRenderer::frame_ink`](crate::vello_renderer::VelloRenderer::frame_ink)
@@ -35,11 +35,10 @@ impl FrameInk {
     /// Count the pixels of `pixels` that differ from `base` — the colour the
     /// render was told to clear its target to.
     ///
-    /// `base` is compared in its 8-bit encoding, which is exact for the two
-    /// bases the render paths in this crate use (`TRANSPARENT` and a page
-    /// tone whose components are already 8-bit). [`Self::is_uniform`] is the
-    /// cross-check for a base that does not round cleanly: it needs no colour
-    /// at all.
+    /// `base` is compared in its 8-bit encoding, which is exact for a colour
+    /// whose components already sit on 8-bit steps — `TRANSPARENT`, which the
+    /// capture path clears to, is one. [`Self::is_uniform`] is the cross-check
+    /// for a base that does not round cleanly: it consults no colour at all.
     #[must_use]
     pub fn measure(pixels: &[u8], base: Color) -> Self {
         let base_px = base.to_rgba8().to_u8_array();
