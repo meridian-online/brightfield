@@ -14,6 +14,8 @@ use std::sync::{Arc, Mutex};
 use vello::wgpu;
 use vello::{Renderer as VelloInner, RendererOptions, Scene};
 
+use crate::frame_ink::FrameInk;
+
 /// GPU-backed Vello renderer.
 ///
 /// Owns (or shares — see [`VelloRenderer::from_shared`]) a wgpu device and
@@ -49,9 +51,13 @@ pub struct VelloRenderer {
 /// It removes only that one. Vello's flattening and coarse-raster buffers are
 /// **fixed** sizes chosen inside `vello_encoding` — they do not scale with the
 /// scene and no wgpu limit moves them — so a scene can still exhaust them, and
-/// when it does vello reports the overflow in a GPU-side counter that this
-/// renderer does not read. `crates/brightfield-render/tests/vello_bump_ceiling.rs`
-/// measures where that happens; it is a far lower ceiling than this one.
+/// when it does vello records the overflow in a GPU-side counter and returns
+/// `Ok` anyway. The frame that comes back is still readable, and
+/// [`VelloRenderer::frame_ink`] reads it: a caller can ask whether the picture
+/// arrived rather than infer it from what the scene asked for.
+/// `crates/brightfield-render/tests/vello_bump_ceiling.rs` measures where the
+/// overflow starts and holds that counter against those pixels; it is a far
+/// lower ceiling than this one.
 ///
 /// Every device brightfield creates goes through here, including the one
 /// `eframe` creates for the live window (via `NativeOptions::wgpu_options`),
@@ -267,6 +273,50 @@ impl VelloRenderer {
             .expect("VelloRenderer: render_to_texture failed");
 
         self.read_texture_to_pixels(&texture, width, height)
+    }
+
+    /// Render `scene` over `base` and report what reached the target, beside
+    /// the pixels themselves.
+    ///
+    /// The measurement is a pass over the read-back buffer, which is why it is
+    /// a method of its own rather than a widening of
+    /// [`Self::render_to_pixels_with_base`]: the present path pays for the
+    /// readback it already needs and nothing more.
+    ///
+    /// # Panics
+    ///
+    /// As [`Self::render_to_pixels_with_base`].
+    pub fn render_to_pixels_with_ink(
+        &mut self,
+        scene: &Scene,
+        width: u32,
+        height: u32,
+        base: vello::peniko::Color,
+    ) -> (Vec<u8>, FrameInk) {
+        let pixels = self.render_to_pixels_with_base(scene, width, height, base);
+        let ink = FrameInk::measure(&pixels, base);
+        (pixels, ink)
+    }
+
+    /// Render `scene` over `base` and report what reached the target,
+    /// discarding the pixels.
+    ///
+    /// The blank-frame check: a scene whose encoding overflows one of vello's
+    /// fixed buffers rasters to an empty target and reports success, so a
+    /// caller about to time or publish a frame can ask here whether there was
+    /// a frame to time. See [`crate::frame_ink`] for what the counters mean.
+    ///
+    /// # Panics
+    ///
+    /// As [`Self::render_to_pixels_with_base`].
+    pub fn frame_ink(
+        &mut self,
+        scene: &Scene,
+        width: u32,
+        height: u32,
+        base: vello::peniko::Color,
+    ) -> FrameInk {
+        self.render_to_pixels_with_ink(scene, width, height, base).1
     }
 
     fn read_texture_to_pixels(&self, texture: &wgpu::Texture, width: u32, height: u32) -> Vec<u8> {
