@@ -62,10 +62,10 @@
 /// The largest one-scatter dot count MEASURED to ink a frame — the last count
 /// below the `seg_counts` ceiling.
 ///
-/// **The drawn-primitive ceiling, and the only copy of it.** The sampling
-/// policy here and `brightfield-bench`'s frame-suite cap both read this
-/// constant; `crates/brightfield-render/tests/one_ceiling.rs` fails if a second
-/// copy of the figure appears in the workspace's Rust sources.
+/// **The drawn-primitive ceiling.** The sampling policy here and
+/// `brightfield-bench`'s frame-suite cap both read this constant;
+/// `crates/brightfield-render/tests/one_ceiling.rs` fails if a second copy of
+/// the figure appears in the workspace's Rust sources.
 ///
 /// A harness or a shell may choose to stay further under it, and
 /// `brightfield-bench` does. Quoting such a cap as "what the renderer can do"

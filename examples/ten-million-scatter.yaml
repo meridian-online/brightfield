@@ -20,9 +20,7 @@ meta:
     what fraction that is.
 
     No flag turns this on. `--force-sample` still exists and still outranks the
-    policy — that is how one spec produces a complete picture and a sampled one
-    over the same rows for comparison — but a plot that needs a sample no
-    longer waits to be told.
+    policy, but a plot that needs a sample no longer waits to be told.
 
     The picture is a correlated band rather than uniform noise, so a reader can
     see that a 1-in-n sample of a shape is still that shape. Power-of-two
