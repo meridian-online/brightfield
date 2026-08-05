@@ -191,13 +191,19 @@ fn a_sustained_pan_issues_no_band_order_statement() {
     );
 }
 
-/// **What the reader sees does not move under the gesture.**
+/// **The notice reads the same before and after the gesture.**
 ///
-/// The record says no statement ran. This says the axes are still drawn from
-/// the unsampled domain while it does not — the outcome the statement exists
-/// to produce, read off the composed plot rather than off the cache.
+/// The two tests above say no statement ran. This one says what the reader
+/// sees is unmoved by that, read off the composed plot rather than off the
+/// cache. The notice is the visible half of the fact set the domains ride in —
+/// same measurement, same key — so a cache handing back a different entry
+/// would move `drawn of N` where a reader can watch it happen.
+///
+/// The axes themselves deliberately DO move under a pan: that is the gesture
+/// tracking the hand. What must not move is the answer about the unsampled
+/// rows, which is why the notice is what is compared.
 #[test]
-fn the_restored_domain_survives_a_pan_unchanged() {
+fn the_notice_survives_a_pan_unchanged() {
     let mut doc = sampled_doc(&sampling_scatter());
     let before = doc
         .composed
