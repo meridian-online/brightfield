@@ -1267,6 +1267,16 @@ fn compose_from_results(
                     };
                     plot_domains.merge_categories(channel, cats);
                 }
+                // The band channels' unsampled ORDER, keyed and unioned the
+                // same way, and kept apart from the sets above because it is a
+                // different quantity: a band scale reads the order, a colour
+                // scale reads only the membership.
+                for (wire, cats) in &f.band_categories {
+                    let Some(channel) = Channel::from_wire(wire) else {
+                        continue;
+                    };
+                    plot_domains.merge_band_categories(channel, cats);
+                }
             }
             chart_data.push(ChartData {
                 batch,

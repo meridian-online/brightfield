@@ -195,7 +195,8 @@ use brightfield_sql::passes::Pass;
 
 use crate::error::EngineError;
 use crate::facts::{
-    categorical_columns, positional_columns, read_categories, read_mark_facts, MarkFacts,
+    band_columns, categorical_columns, positional_columns, read_categories, read_mark_facts,
+    MarkFacts,
 };
 
 /// One dispatched mark's re-query outcome: the mark's depth-first index paired
@@ -1648,6 +1649,47 @@ impl Session {
                 Ok(cats) if !cats.is_empty() => out.categories.push((channel, cats)),
                 Ok(_) => {}
                 Err(e) => eprintln!("warning: unsampled categories for mark {index}: {e}"),
+            }
+        }
+
+        // The unsampled category ORDER of each channel a band scale can be
+        // inferred for. A band scale's category order is where the marks are —
+        // its index in the list is the slot the category occupies along the
+        // axis — so the set the colour query returns puts nothing back.
+        //
+        // The order is taken in SQL rather than by de-duplicating the column
+        // client-side, and that is the only reason this is not the query above
+        // with the DISTINCT removed: reading the order client-side means
+        // reading every row of a table the sample exists to avoid materialising.
+        // `row_number() OVER ()` numbers the unsampled rows as they arrive, the
+        // group-by keeps each category's first number, and the outer sort turns
+        // those into the order the complete render's own first-appearance walk
+        // over the drawn batch would have produced. An `ORDER BY` inside the
+        // aggregate would express the same thing in one clause and is
+        // deliberately not used: an aggregate-level ORDER BY reads out of bounds
+        // through DuckDB's C API (duckdb#21537).
+        //
+        // Per-channel statements and the `typeof(...) = 'VARCHAR'` filter for
+        // the reasons above, and the filter buys more here: a channel's type is
+        // fixed by the plan, so on a numeric column the optimiser folds the
+        // predicate away and the whole subtree becomes EMPTY_RESULT. A
+        // continuous scatter therefore pays for no scan at all.
+        for (channel, col) in band_columns(&self.spec, index) {
+            let sql = format!(
+                "SELECT \"__bf_cat\" FROM (\
+                   SELECT \"__bf_cat\", min(\"__bf_rn\") AS \"__bf_first\" FROM (\
+                     SELECT \"__bf_cat\", row_number() OVER () AS \"__bf_rn\" FROM (\
+                       SELECT {col} AS \"__bf_cat\" FROM ({}) AS __bf_band \
+                       WHERE {col} IS NOT NULL AND typeof({col}) = 'VARCHAR'\
+                     ) AS __bf_seq\
+                   ) AS __bf_win GROUP BY \"__bf_cat\"\
+                 ) AS __bf_ord ORDER BY \"__bf_first\"",
+                unsampled.sql
+            );
+            match read_categories(&self.conn, &sql, index) {
+                Ok(cats) if !cats.is_empty() => out.band_categories.push((channel, cats)),
+                Ok(_) => {}
+                Err(e) => eprintln!("warning: unsampled band order for mark {index}: {e}"),
             }
         }
 

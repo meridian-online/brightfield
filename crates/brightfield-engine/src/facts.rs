@@ -32,6 +32,20 @@ pub struct MarkFacts {
     /// treats the absence itself as the answer and goes on refusing, so which
     /// of those it was does not have to be told apart here.
     pub categories: Vec<(String, Vec<String>)>,
+    /// The unsampled category ORDER of each non-colour channel whose column is
+    /// a string, keyed by the channel's Mosaic wire name (`x`, `y`, …), in the
+    /// order the unsampled query first produces each category.
+    ///
+    /// A separate field from [`Self::categories`] because it is a separate
+    /// quantity. That one is a SET whose order the renderer discards; this is
+    /// the order itself, and it is the whole payload — a band scale gives each
+    /// category a slot by its index here, so the list decides where the marks
+    /// are. Merging the two would let a colour set be read as an order.
+    ///
+    /// Absent for the same reasons [`Self::categories`] is absent, and treated
+    /// the same way by the caller: no entry means the channel goes on being
+    /// refused.
+    pub band_categories: Vec<(String, Vec<String>)>,
 }
 
 /// The x and y channel column expressions of the mark at `index`, quoted for
@@ -78,13 +92,43 @@ pub(crate) fn categorical_columns(spec: &Spec, index: usize) -> Vec<(String, Str
         .collect()
 }
 
-/// Run one channel's distinct-values query and read its column.
+/// The non-colour channels of the mark at `index` that name a plain string
+/// option, as `(wire name, quoted SQL identifier)` — the channels a band scale
+/// can be inferred for.
 ///
-/// The rows come back in whatever order the scan produced them. That is
-/// deliberate: ordering them here would put the ordering rule in a SQL
-/// collation, while the renderer needs the same rule applied to the categories
-/// it infers from an Arrow batch. The caller that owns the palette owns the
-/// order.
+/// The complement of [`categorical_columns`] over the channel vocabulary
+/// `brightfield-render` maps a column to. Scale inference sends a string column
+/// to a colour scale on `fill` and `stroke` and to a band scale everywhere
+/// else, so the split here is the same split, made at the same place in the
+/// name list.
+///
+/// A key the mark does not name, or names as a `$param`, contributes nothing —
+/// as in [`categorical_columns`], and a non-column value is left for the
+/// database to reject rather than screened here.
+pub(crate) fn band_columns(spec: &Spec, index: usize) -> Vec<(String, String)> {
+    let marks = brightfield_sql::emit::collect_marks(spec);
+    let Some(mark) = marks.get(index) else {
+        return Vec::new();
+    };
+    ["x", "y", "x1", "y1", "x2", "y2", "size", "text"]
+        .into_iter()
+        .filter_map(|key| match mark.options.get(key) {
+            Some(ValueOrParamRef::Value(v)) => v
+                .as_str()
+                .map(|c| (key.to_string(), format!("\"{}\"", c.replace('"', "\"\"")))),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Run one channel's category query and read its column, row by row.
+///
+/// The values arrive in the order the statement produced them, and what that
+/// order means is the STATEMENT's to decide. The distinct-values query behind a
+/// colour scale leaves it to the scan and the renderer sorts it, so the
+/// ordering rule is not split across a SQL collation and a Rust comparator; the
+/// band-order query orders in SQL, because the quantity it is measuring IS the
+/// order the unsampled rows arrive in and no client-side rule reconstructs it.
 pub(crate) fn read_categories(
     conn: &Connection,
     sql: &str,
@@ -156,5 +200,6 @@ pub(crate) fn read_mark_facts(
         x_domain: if has_x { pair(0) } else { None },
         y_domain: if has_y { pair(1) } else { None },
         categories: Vec::new(),
+        band_categories: Vec::new(),
     })
 }
