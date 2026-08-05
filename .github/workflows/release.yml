@@ -1,12 +1,22 @@
-# Tag-driven single-binary release.
+# Tag-driven release: two artifacts per darwin target, from one build.
 #
 # The packaging IS scripts/package.sh — this workflow only runs it per target
 # and lifts the results onto a GitHub release, so a release asset and a locally
-# packaged tarball are the same artifact, byte-for-byte in construction. The
-# asset layout (`brightfield-<tag>-<target>.tar.gz` + `.sha256` sidecar per
-# asset) is the contract the install.meridian.online convention consumes; when
-# this repo onboards there, the script that site serves resolves exactly these
-# names by `uname`.
+# packaged artifact are the same thing, byte-for-byte in construction. Each
+# target produces a `brightfield-<tag>-<target>.tar.gz` and a
+# `brightfield-<tag>-<target>.dmg`, each with a `.sha256` sidecar.
+#
+# The tarball's layout is the contract the install.meridian.online convention
+# consumes (`<tool>-<version>-<target>.tar.gz` + `.sha256` per asset); when this
+# repo onboards there, the script that site serves resolves exactly these names
+# by `uname`. Its interior is unchanged by the disk image's arrival, so the
+# install script, the Homebrew formula and every pinned older tag keep resolving
+# with no shape detection anywhere.
+#
+# The disk image carries `Brightfield.app` and an `/Applications` alias. It
+# exists because a notarization ticket cannot be stapled to a `.tar.gz` and
+# because `open` on a bare Mach-O starts Terminal — so a download button needs a
+# bundle, and a bundle needs a container that Finder presents as one.
 #
 # Two macOS targets, deliberately. test.yml runs the suite on macOS only,
 # because that is the one hosted runner where the winit/wgpu window stack is
@@ -76,11 +86,27 @@ jobs:
       - name: Package
         run: scripts/package.sh "${GITHUB_REF_NAME}" "${{ matrix.target }}"
 
+      # Per-target, per-path, and NOT a glob. `if-no-files-found: error` below
+      # and `fail_on_unmatched_files: true` in the release job both fire on an
+      # EMPTY glob, and the tarball satisfies both on its own — so a disk image
+      # that failed to build would be dropped from the release with the run
+      # green. This step is what makes that loud, and it names each file it
+      # expects rather than counting what arrived.
+      - name: Assert both artifacts were built
+        run: |
+          NAME="brightfield-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          test -f "dist/${NAME}.tar.gz"
+          test -f "dist/${NAME}.tar.gz.sha256"
+          test -f "dist/${NAME}.dmg"
+          test -f "dist/${NAME}.dmg.sha256"
+          ls -l "dist/${NAME}.tar.gz" "dist/${NAME}.dmg"
+
       - uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.target }}
           path: |
             dist/brightfield-*.tar.gz
+            dist/brightfield-*.dmg
             dist/brightfield-*.sha256
           if-no-files-found: error
 
@@ -112,8 +138,17 @@ jobs:
           name: dist-aarch64-apple-darwin
           path: dist
 
-      - name: Verify air-gapped
+      - name: Verify air-gapped (tarball)
         run: scripts/verify-airgapped.sh "dist/brightfield-${GITHUB_REF_NAME}-aarch64-apple-darwin.tar.gz"
+
+      # The image leg, and it runs even when the tarball leg has just failed:
+      # the two artifacts fail for different reasons, and a runner with no
+      # window session would otherwise hide whether `hdiutil attach` works here
+      # at all. That question is the one this job answers ahead of the first
+      # signed release.
+      - name: Verify air-gapped (disk image)
+        if: ${{ !cancelled() }}
+        run: scripts/verify-airgapped.sh "dist/brightfield-${GITHUB_REF_NAME}-aarch64-apple-darwin.dmg"
 
   release:
     name: Create release
@@ -137,11 +172,14 @@ jobs:
           # second tag on, the diff base is the previous tag and auto-notes are
           # safe to switch back on if hand-writing them stops earning its keep.
           #
-          # A release page is a browser-download surface, and this binary is
-          # unsigned: unpacked by the Finder's Archive Utility it inherits the
-          # quarantine attribute and macOS kills it on launch with no
-          # explanation. Unpacked by `tar` in a terminal it does not. That is
-          # why the install instructions lead with the command and say why.
+          # A release page is a browser-download surface, and this build is
+          # unsigned: unpacked by the Finder's Archive Utility the tarball's
+          # binary inherits the quarantine attribute and macOS kills it on
+          # launch with no explanation. Unpacked by `tar` in a terminal it does
+          # not. That is why the tarball instructions lead with the command and
+          # say why, and the disk image is added beside them rather than in
+          # front of them — a browser download quarantines it too, and it stays
+          # that way until the bundle inside is notarized.
           prerelease: true
           fail_on_unmatched_files: true
           # Prose paragraphs are each ONE physical line on purpose. GitHub
@@ -151,19 +189,38 @@ jobs:
           #   gh api --method POST /markdown -f mode=gfm -f text="$(...)" | grep -c '<br>'
           # must be 0. Code fences are exempt; keep them wrapped as they are.
           body: |
-            One native binary for macOS. No server, no webview, no language runtime, no account — the only thing it asks of the machine is a working graphics driver. Every example in this archive renders with the network switched off.
+            One native binary for macOS. No server, no webview, no language runtime, no account — the only thing it asks of the machine is a working graphics driver. Every example here renders with the network switched off.
 
-            **This is an early preview**, macOS only, and it is not signed or notarized by Apple. Read the two notes below before you unpack it.
+            **This is an early preview**, macOS only, and it is not signed or notarized by Apple. That is the one thing to read before you open either download, because macOS treats an unsigned application downloaded through a browser as suspect and says so in language that sounds like the file is broken. It is not broken; each section below says what to do.
+
+            Two downloads, same build. On an Intel Mac, swap `aarch64` for `x86_64` throughout.
+
+            **`brightfield-${{ github.ref_name }}-aarch64-apple-darwin.dmg`** — a disk image holding `Brightfield.app`. Take this one if you want an application: an icon in the Dock and a double-click launch.
+
+            **`brightfield-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz`** — the bare binary beside the example specs, its LICENSE and a README. Take this one for the terminal, for a scripted install, or to keep the whole thing in a folder you control.
 
             ### Check what you downloaded
 
-            Download the tarball **and** its `.sha256` sidecar, then from the folder they landed in:
+            Take the `.sha256` sidecar next to whichever file you took, then from the folder they landed in:
 
             ```
+            shasum -a 256 -c brightfield-${{ github.ref_name }}-aarch64-apple-darwin.dmg.sha256
             shasum -a 256 -c brightfield-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz.sha256
             ```
 
-            On an Intel Mac, swap `aarch64` for `x86_64` throughout.
+            ## The disk image
+
+            Open it, drag `Brightfield.app` onto the `Applications` alias in the window, and eject the image.
+
+            Because this preview is unsigned, macOS will refuse to open the copy you just installed. Clear the download mark once, and it opens from then on:
+
+            ```
+            xattr -dr com.apple.quarantine /Applications/Brightfield.app
+            ```
+
+            The examples ship inside the bundle, at `Brightfield.app/Contents/Resources/examples`.
+
+            ## The tarball
 
             ### Unpack it in Terminal, not in Finder
 
@@ -204,6 +261,7 @@ jobs:
             `scripts/verify-airgapped.sh` in the repository proves that against the packaged artifact — it denies the network, checks that the denial really bites, and only then renders a chart and a protocol graph inside the jail. Run it yourself; it takes a minute. The Intel build is the same source and packaging, cross-compiled.
           files: |
             artifacts/brightfield-*.tar.gz
+            artifacts/brightfield-*.dmg
             artifacts/brightfield-*.sha256
 
   # The tap formula moves with the release instead of with somebody's memory.

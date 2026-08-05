@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>brightfield</string>
+	<!-- Resolves to Contents/Resources/Brightfield.icns; the extension is
+	     implied, and Launch Services appends it. -->
+	<key>CFBundleIconFile</key>
+	<string>Brightfield</string>
+	<key>CFBundleIdentifier</key>
+	<string>online.meridian.brightfield</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Brightfield</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<!-- scripts/package.sh overwrites the three placeholders below with
+	     `plutil -replace` on the bundle's copy: the two version strings from
+	     the crate version, and the system floor read out of the built
+	     executable. This file keeps the placeholders so it lints on its own. -->
+	<key>CFBundleShortVersionString</key>
+	<string>0.0.0</string>
+	<key>CFBundleVersion</key>
+	<string>0.0.0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>0.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+</dict>
+</plist>
