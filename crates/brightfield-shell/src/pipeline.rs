@@ -507,7 +507,7 @@ fn compose(
 
     // Execute every mark; assemble all its result chunks into one drawable batch.
     let results = session.execute_all();
-    let facts = unsampled_facts(&session, results.len());
+    let facts = unsampled_facts(&mut session, results.len());
     // A one-shot compose never navigates, so nothing can have declined; read it
     // through the same helper anyway rather than hard-coding the empty answer.
     let beyond = marks_beyond_frame(&session, &spec, results.len());
@@ -1103,7 +1103,7 @@ fn resolved_sample(session: &Session, explicit: Option<SampleRate>) -> Option<Sa
 ///
 /// No query at all for a mark the rate did not reach, which is what keeps an
 /// unsampled chart's query count byte-unchanged by this feature's existence.
-fn unsampled_facts(session: &Session, marks: usize) -> Vec<Option<MarkFacts>> {
+fn unsampled_facts(session: &mut Session, marks: usize) -> Vec<Option<MarkFacts>> {
     (0..marks)
         .map(|i| match session.unsampled_mark_facts(i) {
             None => None,
