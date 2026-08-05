@@ -3,17 +3,17 @@
 //!
 //! **What a sampled plot owes the reader, and what it costs.** A sampled plot
 //! draws its axes from the domain the UNSAMPLED rows span, because a domain
-//! inferred from one row in a hundred and twenty-eight shrinks toward the
-//! interior and moves the ticks. That measurement is a full-table aggregate
-//! over the positional columns — the one thing a sample exists to avoid — and
-//! `LiveDashboard::present()` asks for it on every repaint, including the many
-//! a single pan produces before the gesture settles.
+//! inferred from a sample shrinks toward the interior and moves the ticks.
+//! That measurement is an aggregate over the positional columns of the rows
+//! the sample left unread, and `LiveDashboard::present()` asks for it on each
+//! repaint — including the many a single pan produces before the gesture
+//! settles.
 //!
-//! **Why this is asserted against the executed-SQL record and never against a
-//! clock.** A timing assertion is a claim about the machine it runs on, and
-//! the interval slider's own gate says the same thing in the same words. What
-//! is being asserted here is not that the repaint is fast; it is that the
-//! statement is not issued. The record answers that exactly, and the same
+//! **Why this is asserted against the executed-SQL record rather than against
+//! a clock.** A timing assertion is a claim about the machine it runs on; the
+//! interval slider's gate declines one for that reason and this declines one
+//! for the same. What is asserted here is not that the repaint is fast, but
+//! that the statement is not issued. The record answers that, and the same
 //! reading proves the record can SEE this class of statement — the settled
 //! gesture at the end of each test puts one there — so an empty window is the
 //! cache's doing rather than the log's silence.

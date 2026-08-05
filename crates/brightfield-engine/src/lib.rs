@@ -680,10 +680,9 @@ pub struct Session {
     /// re-measuring.
     ///
     /// Uncapped, unlike [`SqlCache`], because the KEY is the mark index and
-    /// the statement rides in the value: the map is as large as the spec's
-    /// mark space and no larger, so the LRU cap that bounds a cache keyed by
-    /// interpolated SQL buys nothing here. A param drag replaces a mark's one
-    /// entry rather than adding another.
+    /// the statement rides in the value: a param drag replaces a mark's one
+    /// entry rather than adding another, so the LRU cap that bounds a cache
+    /// keyed by interpolated SQL has nothing to bound here.
     facts_cache: HashMap<usize, (String, MarkFacts)>,
 }
 
@@ -1588,8 +1587,8 @@ impl Session {
     /// **Measured once per statement, not once per call.** A pan or a zoom
     /// re-composites the picture at the new frame long before the gesture
     /// settles, and each of those repaints asks this. The measurement is over
-    /// the whole unsampled table by construction — that is what makes it the
-    /// answer a sample cannot give — so repeating it per frame is the
+    /// the unsampled rows by construction — that is what makes it the answer
+    /// a sample cannot give — so repeating it per frame is the
     /// difference between a gesture that reads as navigation and one that
     /// reads as a stall. The statement emitted below IS the fingerprint —
     /// the mark's source, its static filter, the live selection predicate,
@@ -6789,12 +6788,12 @@ plot:
 
     // --- unsampled facts: measured once per statement ---
     //
-    // The facts a sampled plot draws its notice and its axes from cost one
-    // full-table aggregate over columns a sample never reads. A pan or a zoom
-    // re-composites the picture many times before the gesture settles, and
-    // each of those repaints asks for them again. These pin what the cached
-    // answer is keyed to — the emitted statement — and what the key cannot
-    // see, which `invalidate_derived_state` carries instead.
+    // The facts a sampled plot draws its notice and its axes from are an
+    // aggregate over the unsampled rows — the rows a sample exists to leave
+    // unread. A pan or a zoom re-composites the picture many times before the
+    // gesture settles, and each of those repaints asks for them again. These
+    // pin what the cached answer is keyed to — the emitted statement — and
+    // what the key cannot see, which `invalidate_derived_state` carries.
 
     /// One row-level dot whose x is continuous, whose y is a band and whose
     /// fill is a third string column, so a fact set over it populates the
@@ -6858,11 +6857,24 @@ plot:
 
     /// **The cached answer is the measured answer, bit for bit.**
     ///
-    /// Compared as raw f64 bits rather than with `==`, because the axis a
-    /// reader sees is drawn from these two numbers and a domain that differs
-    /// in the last place is a domain that moved. The fixture is checked to be
-    /// one a sample WOULD move: the drawn rows span strictly less than the
-    /// table, so serving a domain inferred from them instead would be visible.
+    /// The domains are compared as raw f64 bits rather than with `==`, because
+    /// the axis a reader sees is drawn from those two numbers and a domain
+    /// that differs in the last place is a domain that moved. The fixture is
+    /// checked to be one a sample WOULD move: the drawn rows span strictly
+    /// less than the table, so serving a domain inferred from them instead
+    /// would be visible.
+    ///
+    /// **`categories` is compared as a SET, and that is not a weakening.** It
+    /// is the value set behind a colour scale, and the statement that produces
+    /// it is a bare `SELECT DISTINCT` — no `ORDER BY`, on purpose, because
+    /// `restored_colour_categories` in `brightfield-render` orders it and
+    /// splitting that rule across a SQL collation and a Rust comparator is
+    /// what the engine declines to do. So DuckDB is free to hand back a
+    /// different permutation on each scan, and it does: comparing the field
+    /// as a list made this test fail once in a full serialised run and pass
+    /// on its own. `band_categories` IS compared in order, because there the
+    /// order is the whole payload — a band scale gives each category a slot
+    /// by its index in that list.
     #[test]
     fn a_cached_fact_set_is_bit_identical_to_a_re_measured_one() {
         let mut session = facts_session(&facts_fixture("warm", ""));
@@ -6880,11 +6892,16 @@ plot:
         let again = facts_of(&mut session);
 
         let bits = |f: &MarkFacts| {
+            let mut sets: Vec<(String, Vec<String>)> = f.categories.clone();
+            for (_, cats) in &mut sets {
+                cats.sort();
+            }
+            sets.sort();
             (
                 f.rows,
                 f.x_domain.map(|(lo, hi)| (lo.to_bits(), hi.to_bits())),
                 f.y_domain.map(|(lo, hi)| (lo.to_bits(), hi.to_bits())),
-                f.categories.clone(),
+                sets,
                 f.band_categories.clone(),
             )
         };
@@ -6921,10 +6938,11 @@ plot:
 
     /// **A selection re-measures the facts, because it moves the statement.**
     ///
-    /// The card this was built for names the selection set and the mark SQL as
-    /// two things the fingerprint must carry. They are one: the emitter folds
-    /// the live predicate INTO the statement, which is why this test reads the
-    /// statement before and after and asserts it moved.
+    /// The live predicate and the mark's own SQL are not two terms the key has
+    /// to carry separately: the emitter folds the predicate INTO the
+    /// statement, so there is one string to key on. This test therefore reads
+    /// the statement before and after and asserts it moved — without that
+    /// read, a cache keyed to nothing at all would pass.
     #[test]
     fn a_selection_moves_the_statement_and_the_facts_follow() {
         let mut session = facts_session(&facts_fixture("warm", ", filterBy: $sel"));
