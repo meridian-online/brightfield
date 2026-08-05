@@ -261,10 +261,24 @@ case "$TARGET" in
     # toolchain that moves its deployment target moves this with it. An empty
     # reading is a hard failure: LSMinimumSystemVersion is what stops the bundle
     # launching on a system its own Mach-O will not run on.
-    MINOS=$(otool -l "$BIN" | awk '/LC_BUILD_VERSION/{f=1} f && $1=="minos" {print $2; exit}')
+    #
+    # Both load commands are read because the two darwin targets in the release
+    # matrix do not agree on which one they carry. Measured on this toolchain:
+    # aarch64-apple-darwin emits `LC_BUILD_VERSION` with a `minos` field,
+    # x86_64-apple-darwin emits the older `LC_VERSION_MIN_MACOSX` with a
+    # `version` field, and neither carries the other's. `want` is cleared at
+    # every `cmd` line so a field of the same name in some later load command
+    # — LC_SOURCE_VERSION also has a `version` — cannot be read as this one.
+    MINOS=$(otool -l "$BIN" | awk '
+      $1 == "cmd" && $2 == "LC_BUILD_VERSION"     { want = "minos";   next }
+      $1 == "cmd" && $2 == "LC_VERSION_MIN_MACOSX" { want = "version"; next }
+      $1 == "cmd"                                  { want = "";       next }
+      want != "" && $1 == want                     { print $2; exit }
+    ')
     [ -n "$MINOS" ] || {
-      echo "package.sh: no LC_BUILD_VERSION minos in ${BIN}; cannot set" >&2
-      echo "  LSMinimumSystemVersion honestly." >&2
+      echo "package.sh: no macOS version floor in ${BIN} — neither" >&2
+      echo "  LC_BUILD_VERSION nor LC_VERSION_MIN_MACOSX was readable, so" >&2
+      echo "  LSMinimumSystemVersion cannot be set honestly." >&2
       exit 1; }
     plutil -replace CFBundleShortVersionString -string "$CRATE_VERSION" "$APP/Contents/Info.plist"
     plutil -replace CFBundleVersion -string "$CRATE_VERSION" "$APP/Contents/Info.plist"
