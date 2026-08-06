@@ -76,9 +76,34 @@ pub struct PlotSample {
     pub of: u64,
 }
 
-/// One cell's readback: what reached the target, and what the picture about to
-/// be timed is a sample of.
-#[derive(Debug, Clone)]
+/// Proof that this cell's picture reached the target.
+///
+/// **It carries no data, and that is the whole design.** Its single field is
+/// private, so a value of it can be built in this module and nowhere else, and
+/// the only thing in this module that builds one is [`probe`] — after it has
+/// counted the pixels the render was read back into. A timing branch that
+/// takes one therefore cannot assert its own precondition: `let drew = true;`
+/// is a type error against it, and `Drew(())` does not compile outside here.
+///
+/// It is deliberately neither `Copy` nor `Clone`. A proof that can be
+/// duplicated can be carried past the branch that earned it.
+#[derive(Debug)]
+pub struct Drew(());
+
+/// The readback's verdict — and the only route to a [`Drew`].
+#[derive(Debug)]
+pub enum Picture {
+    /// The target came back with ink on it, and here is the proof.
+    Drew(Drew),
+    /// The target came back EMPTY, with the sentence the record prints against
+    /// the cell. A per-cell failure: the render reported success and produced
+    /// nothing, which by the clock alone is a very fast frame.
+    Blank(String),
+}
+
+/// One cell's readback: what reached the target, what the picture about to be
+/// timed is a sample of, and whether there is a picture to time at all.
+#[derive(Debug)]
 pub struct Probe {
     /// What the render put on the target.
     pub ink: FrameInk,
@@ -86,6 +111,9 @@ pub struct Probe {
     /// drew complete — which is the common case and the one that needs no
     /// qualification in the record.
     pub sample: Vec<PlotSample>,
+    /// The verdict. Matching it is how a caller reaches the timing path, and
+    /// there is no other way in.
+    pub picture: Picture,
 }
 
 /// Compose `spec_path` through the production pipeline, render it once at
@@ -120,17 +148,26 @@ pub fn probe(spec_path: &Path, scale: f32) -> Result<Probe, String> {
         .lock()
         .map_err(|_| "renderer lock poisoned".to_string())?
         .frame_ink(&scaled, width, height, BASE);
+    let ink = FrameInk {
+        width,
+        height,
+        inked_pixels: ink.inked_pixels(),
+        total_pixels: ink.total_pixels(),
+        inked_fraction: ink.inked_fraction(),
+        uniform: ink.is_uniform(),
+        drew_ink: ink.drew_ink(),
+    };
+    // The one place a `Drew` is minted, and it is minted from the counted
+    // pixels rather than from anything the caller supplied.
+    let picture = if ink.drew_ink {
+        Picture::Drew(Drew(()))
+    } else {
+        Picture::Blank(blank_reason(&ink))
+    };
     Ok(Probe {
-        ink: FrameInk {
-            width,
-            height,
-            inked_pixels: ink.inked_pixels(),
-            total_pixels: ink.total_pixels(),
-            inked_fraction: ink.inked_fraction(),
-            uniform: ink.is_uniform(),
-            drew_ink: ink.drew_ink(),
-        },
+        ink,
         sample,
+        picture,
     })
 }
 

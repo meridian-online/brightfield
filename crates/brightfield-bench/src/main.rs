@@ -562,6 +562,56 @@ fn main() -> ExitCode {
     }
 }
 
+/// Time one cell's frame suites — the steady floor and the interaction cost.
+///
+/// **It takes the readback's proof by value, and that is the point.** The
+/// verdict used to arrive here as a `bool` read off the probe, which meant the
+/// branch that decides "this frame was real" could assert its own
+/// precondition: replacing `let drew = probe.drew_ink;` with `let drew =
+/// true;` left the crate compiling and every test green, restoring the defect
+/// the readback was built to close. [`frame_ink::Drew`] has a private field, so
+/// no value of it exists outside `frame_ink` and no literal has its type. The
+/// mutation is now a compile error rather than an uncaught pass.
+///
+/// The proof is consumed rather than borrowed, and it is not `Clone`: one
+/// readback authorises one timing.
+fn timed_frames(
+    proof: frame_ink::Drew,
+    spec_path: &Path,
+    def: &SpecDef,
+    spec_text: &str,
+    args: &Args,
+) -> Result<frames::FrameMeasurement, String> {
+    // Named, so the parameter reads as the precondition it is rather than as
+    // an argument somebody forgot to delete.
+    let _proved_there_was_a_picture = proof;
+    let parsed = brightfield_spec::parse_spec(spec_text, brightfield_spec::Format::Yaml)
+        .map_err(|e| format!("{}: parse: {e}", def.name))?;
+    let bindings = brightfield_spec::analysis::build_brushable_bindings(&parsed.spec);
+    let b = bindings.first().ok_or("no brushable binding")?;
+    let steady = frames::frames_steady(
+        spec_path,
+        FRAME_SCALE,
+        args.warmup_frames,
+        args.measured_frames,
+    )?;
+    let interaction = frames::frames_interaction(
+        spec_path,
+        def.drag,
+        def.brush_column,
+        def.brush_domain,
+        &b.selection,
+        &b.parent_plot,
+        FRAME_SCALE,
+        args.warmup_frames,
+        args.measured_frames,
+    )?;
+    Ok(frames::FrameMeasurement {
+        steady,
+        interaction: Some(interaction),
+    })
+}
+
 fn run(root: &Path, args: &Args) -> Result<Vec<PathBuf>, String> {
     if cfg!(debug_assertions) {
         eprintln!(
@@ -627,18 +677,12 @@ fn run(root: &Path, args: &Args) -> Result<Vec<PathBuf>, String> {
                 std::fs::write(&spec_path, &sc.spec_text)
                     .map_err(|e| format!("write {}: {e}", spec_path.display()))?;
                 let probe = frame_ink::probe(&spec_path, FRAME_SCALE)?;
-                let drew = probe.ink.drew_ink;
                 eprintln!(
                     "  picture: {}/{} device pixels inked",
                     probe.ink.inked_pixels, probe.ink.total_pixels
                 );
                 if let Some(label) = frame_ink::sample_label(&probe.sample) {
                     eprintln!("  sampled: {label}");
-                }
-                if !drew {
-                    let why = frame_ink::blank_reason(&probe.ink);
-                    eprintln!("  {} @ {rows} rows: {why}", def.name);
-                    frames_blank = Some(why);
                 }
                 // A complete scene past the cap is the one shape still worth
                 // declining: nothing thinned it, so timing it would publish
@@ -651,36 +695,22 @@ fn run(root: &Path, args: &Args) -> Result<Vec<PathBuf>, String> {
                 }
                 frame_sample = probe.sample;
                 ink = Some(probe.ink);
-                if !drew || unsampled_above_the_cap {
-                    None
-                } else {
-                    let parsed =
-                        brightfield_spec::parse_spec(&sc.spec_text, brightfield_spec::Format::Yaml)
-                            .map_err(|e| format!("{}: parse: {e}", def.name))?;
-                    let bindings =
-                        brightfield_spec::analysis::build_brushable_bindings(&parsed.spec);
-                    let b = bindings.first().ok_or("no brushable binding")?;
-                    let steady = frames::frames_steady(
-                        &spec_path,
-                        FRAME_SCALE,
-                        args.warmup_frames,
-                        args.measured_frames,
-                    )?;
-                    let interaction = frames::frames_interaction(
-                        &spec_path,
-                        def.drag,
-                        def.brush_column,
-                        def.brush_domain,
-                        &b.selection,
-                        &b.parent_plot,
-                        FRAME_SCALE,
-                        args.warmup_frames,
-                        args.measured_frames,
-                    )?;
-                    Some(frames::FrameMeasurement {
-                        steady,
-                        interaction: Some(interaction),
-                    })
+                match probe.picture {
+                    frame_ink::Picture::Blank(why) => {
+                        eprintln!("  {} @ {rows} rows: {why}", def.name);
+                        frames_blank = Some(why);
+                        None
+                    }
+                    // Timed on a picture the readback proved was there. `proof`
+                    // is what the timing consumes and what nothing here can
+                    // manufacture — see `timed_frames`.
+                    frame_ink::Picture::Drew(proof) => {
+                        if unsampled_above_the_cap {
+                            None
+                        } else {
+                            Some(timed_frames(proof, &spec_path, def, &sc.spec_text, args)?)
+                        }
+                    }
                 }
             };
 
@@ -1692,6 +1722,46 @@ mod tests {
         assert!(
             all.contains("NOT full-scene measurements"),
             "and say plainly what a sampled cell is not"
+        );
+    }
+
+    /// The compiler is what enforces this, and the compiler cannot be asserted
+    /// against from inside a passing test — so this pins the two source facts
+    /// the compile-time guarantee rests on, and reddens when either is
+    /// loosened.
+    ///
+    /// The guarantee: `Drew`'s only field is private, so it can be built in
+    /// `frame_ink` and nowhere else, and `timed_frames` takes one. A `pub fn`
+    /// handing one out, a public field, or a second construction site would
+    /// each put the verdict back within reach of the branch that consumes it —
+    /// which is the mutation that used to leave the crate green.
+    #[test]
+    fn the_readbacks_proof_token_stays_unconstructible() {
+        let module = include_str!("frame_ink.rs");
+        assert!(
+            module.contains("pub struct Drew(());"),
+            "the proof token's field must stay private"
+        );
+        assert!(
+            !module.contains("impl Drew"),
+            "an inherent impl is where a constructor would arrive"
+        );
+        // The declaration and the one construction beside the readback. A
+        // third occurrence in CODE is a second way to mint a verdict; a
+        // comment that quotes the syntax is prose and is not counted.
+        let code = module
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .filter(|l| l.contains("Drew(())"))
+            .count();
+        assert_eq!(
+            code, 2,
+            "a `Drew` is minted in exactly one place, and it is the readback"
+        );
+        let harness = include_str!("main.rs");
+        assert!(
+            harness.contains("proof: frame_ink::Drew,"),
+            "the timing branch must consume the proof, not a bool it can write"
         );
     }
 
