@@ -1147,10 +1147,14 @@ fn render_markdown(r: &BaselineReport) -> String {
          such cost to set beside it."
     );
     let _ = writeln!(md);
+    // Sampled AND timed. A thinned scene can still come back empty, and such a
+    // row carries a sample with no frame time beside it — the sentence under
+    // this heading is about frame timings, so a row that has none does not
+    // belong under it. It is listed under the blank heading below instead.
     let sampled: Vec<&ScalingResult> = r
         .scaling
         .iter()
-        .filter(|s| !s.frame_sample.is_empty())
+        .filter(|s| !s.frame_sample.is_empty() && s.frames.is_some())
         .collect();
     if !sampled.is_empty() {
         let _ = writeln!(md, "### Rows timed on a sampled picture");
@@ -1847,6 +1851,36 @@ mod tests {
         assert!(
             row.contains("| complete |"),
             "and the column must say what it drew from: {row}"
+        );
+    }
+
+    /// Sampling and drawing are two events, and a row can have the first
+    /// without the second: the policy pushes a rate down, the thinned picture
+    /// still comes back empty, and the row records a sample with no timing at
+    /// all. The section headed *Rows timed on a sampled picture* states that
+    /// those rows' frame timings were measured on a thinned scene, which is
+    /// false of a row that has no frame timing — so membership is being timed
+    /// AND sampled, not sampled alone.
+    #[test]
+    fn a_sampled_row_whose_picture_came_back_empty_is_not_listed_as_timed() {
+        let mut r = sampled_report();
+        r.scaling[0].frames = None;
+        r.scaling[0].frame_ink = Some(blank_ink());
+        r.scaling[0].frames_blank = Some("the target came back empty".to_string());
+        let md = render_markdown(&r);
+        assert!(
+            !md.contains("### Rows timed on a sampled picture"),
+            "the row was sampled but never timed, so nothing belongs under a \
+             heading about timings: {md}"
+        );
+        assert!(
+            md.contains("### Rows whose picture came back empty"),
+            "it is reported as the failure it is: {md}"
+        );
+        let row = data_row(&md);
+        assert!(
+            row.contains("| **BLANK** |"),
+            "and the row says what the renderer returned: {row}"
         );
     }
 
