@@ -1894,10 +1894,10 @@ mod tests {
             .to_string()
     }
 
-    /// The one shape still declined, and the words it is declined in. A hole
-    /// excused by the scene's size alone is what this card removed; a hole
-    /// because nothing thinned the scene is a different and much rarer event,
-    /// and the sentence has to separate them.
+    /// The one shape still declined, and the words it is declined in. Size
+    /// alone no longer excuses a hole — a scene past the cap is thinned and
+    /// timed on what it drew. A hole now means nothing thinned it, which is a
+    /// different and much rarer event, and the sentence has to separate them.
     #[test]
     fn the_only_declined_shape_is_a_scene_nothing_thinned() {
         let why = drawn_complete_above_the_cap_reason(200_000);
