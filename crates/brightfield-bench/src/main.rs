@@ -2373,7 +2373,7 @@ mod tests {
     fn magnitude_label(rows: u64) -> String {
         let mut n = rows;
         let mut exponent = 0usize;
-        while n % 10 == 0 && n > 1 {
+        while n.is_multiple_of(10) && n > 1 {
             n /= 10;
             exponent += 1;
         }
@@ -2389,106 +2389,220 @@ mod tests {
         format!("10{digits}")
     }
 
-    /// The README says how many cells a named record leaves without a frame
-    /// timing, and lists them. Both are claims about a file that is committed
-    /// three directories away, so neither is taken on trust: this opens the
-    /// record the sentence names, counts the rows the harness serialised with
-    /// no `frames` object, and requires the stated number AND the listed cells
-    /// to be exactly those rows.
-    ///
-    /// The sentence it pins was true of a different set before it was reworded.
-    /// "Six cells LOST frame coverage under this cap" counted cells a v2 record
-    /// had numbers for and a later one does not. Rewritten into a claim about
-    /// what the committed record *holds*, six is wrong by one:
-    /// `crossfilter-dots` @ 10⁷ had no coverage to lose and is uncovered all
-    /// the same. A count in prose that nothing reddens when it is wrong is how
-    /// that survived review, so the count is derived here instead.
-    #[test]
-    fn the_readme_states_the_uncovered_cells_of_the_record_it_names() {
-        const CLAIM: &str = "cells have no frame coverage in `results/";
-        let flat = BENCH_README
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
-        let (before, after) = flat
-            .split_once(CLAIM)
-            .expect("the README states how many cells its record leaves uncovered");
-        let stated = before
-            .rsplit(|c: char| !c.is_alphabetic())
-            .find(|w| !w.is_empty())
-            .expect("the count precedes the claim")
-            .to_ascii_lowercase();
-        let named = after
-            .split_once('`')
-            .expect("the claim names the record it is about")
-            .0;
-
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+    /// The repo root, from the crate this test lives in.
+    fn repo_root() -> &'static Path {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
             .ancestors()
             .nth(2)
             .expect("the crate lives two levels under the repo root")
-            .join("benchmarks/results")
-            .join(named);
+    }
+
+    /// Open a committed record by file name and hand back its scaling rows.
+    fn scaling_rows_of(record: &str) -> Vec<serde_json::Value> {
+        let path = repo_root().join("benchmarks/results").join(record);
         let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
             panic!(
                 "the README names {}, which does not open: {e}",
                 path.display()
             )
         });
-        let record: serde_json::Value =
-            serde_json::from_str(&text).unwrap_or_else(|e| panic!("{} is not JSON: {e}", named));
-        let uncovered: Vec<String> = record["scaling"]
+        let json: serde_json::Value =
+            serde_json::from_str(&text).unwrap_or_else(|e| panic!("{record} is not JSON: {e}"));
+        json["scaling"]
             .as_array()
-            .unwrap_or_else(|| panic!("{named} carries a scaling array"))
-            .iter()
-            .filter(|s| s["frames"].is_null())
-            .map(|s| {
-                format!(
-                    "{} @ {}",
-                    s["scenario"].as_str().unwrap_or("?"),
-                    magnitude_label(s["rows"].as_u64().unwrap_or_default())
-                )
-            })
-            .collect();
+            .unwrap_or_else(|| panic!("{record} carries a scaling array"))
+            .clone()
+    }
 
-        let expected = count_in_words(uncovered.len())
-            .unwrap_or_else(|| panic!("{named} leaves {} cells uncovered", uncovered.len()));
-        assert_eq!(
-            stated,
-            expected,
-            "the README says {stated:?} cells have no frame coverage in {named}; \
-             that record leaves {} of them: {uncovered:?}",
-            uncovered.len()
-        );
+    /// A scaling row as the README labels a cell: `crossfilter-dots @ 10⁵`.
+    fn cell_label(row: &serde_json::Value) -> String {
+        format!(
+            "{} @ {}",
+            row["scenario"].as_str().unwrap_or("?"),
+            magnitude_label(row["rows"].as_u64().unwrap_or_default())
+        )
+    }
 
-        // The table beneath the sentence is the same claim, cell by cell, and
-        // it is what a reader actually uses. The count agreeing while the list
-        // omits a row is the exact shape of the defect above.
-        let listed: Vec<String> = BENCH_README
-            .lines()
-            .map(str::trim)
-            .filter(|l| l.starts_with('|') && l.ends_with("| no frame |"))
-            .map(|l| {
-                l.trim_start_matches('|')
-                    .split('|')
-                    .next()
-                    .unwrap_or("")
-                    .trim()
-                    .to_string()
-            })
-            .collect();
-        for cell in &uncovered {
-            assert!(
-                listed.contains(cell),
-                "{named} leaves {cell} with no frame timing and the README's table \
-                 does not list it: {listed:?}"
+    /// The README says how many cells a named record leaves without a frame
+    /// timing, and lists them. Both are claims about a file committed three
+    /// directories away, so neither is taken on trust: this opens the record
+    /// the sentence names, counts the rows the harness serialised with no
+    /// `frames` object, and requires the stated number AND the listed cells to
+    /// be exactly those rows.
+    ///
+    /// Every occurrence is checked, not the first, so a second record's
+    /// sentence cannot ride in behind a true one.
+    #[test]
+    fn the_readme_states_the_uncovered_cells_of_the_record_it_names() {
+        const CLAIM: &str = "cells have no frame coverage in `results/";
+        let flat = flat_readme();
+        let mut seen = 0usize;
+        for after_count in flat.split(CLAIM).skip(1).collect::<Vec<_>>() {
+            let named = after_count
+                .split_once('`')
+                .expect("the claim names the record it is about")
+                .0;
+            let uncovered: Vec<String> = scaling_rows_of(named)
+                .iter()
+                .filter(|row| row["frames"].is_null())
+                .map(cell_label)
+                .collect();
+            let stated = count_stated_before(&flat, CLAIM, seen);
+            let expected = count_in_words(uncovered.len())
+                .unwrap_or_else(|| panic!("{named} leaves {} cells uncovered", uncovered.len()));
+            assert_eq!(
+                stated,
+                expected,
+                "the README says {stated:?} cells have no frame coverage in {named}; \
+                 that record leaves {} of them: {uncovered:?}",
+                uncovered.len()
+            );
+            seen += 1;
+
+            if uncovered.is_empty() {
+                continue;
+            }
+            // The table beneath the sentence is the same claim, cell by cell,
+            // and it is what a reader actually uses. The count agreeing while
+            // the list omits a row is the exact shape of the defect above.
+            let listed: Vec<String> = BENCH_README
+                .lines()
+                .map(str::trim)
+                .filter(|l| l.starts_with('|') && l.ends_with("| no frame |"))
+                .map(|l| {
+                    l.trim_start_matches('|')
+                        .split('|')
+                        .next()
+                        .unwrap_or("")
+                        .trim()
+                        .to_string()
+                })
+                .collect();
+            for cell in &uncovered {
+                assert!(
+                    listed.contains(cell),
+                    "{named} leaves {cell} with no frame timing and the README's \
+                     table does not list it: {listed:?}"
+                );
+            }
+            assert_eq!(
+                listed.len(),
+                uncovered.len(),
+                "the README's table lists {listed:?}; {named} leaves {uncovered:?}"
             );
         }
-        assert_eq!(
-            listed.len(),
-            uncovered.len(),
-            "the README's table lists {listed:?}; {named} leaves {uncovered:?}"
+        assert!(seen > 0, "the README states no such claim to check");
+    }
+
+    /// The two counted claims the current record's entry makes about itself:
+    /// how many of its cells carry a frame timing at all, and how many of those
+    /// were measured on a picture the sampling policy had thinned. Both are
+    /// read out of the file the sentence names.
+    ///
+    /// These are what make the entry a measurement rather than an argument. The
+    /// sampled path can be traced statically end to end and still never have
+    /// been executed on a GPU; a record with seven sampled cells in it is the
+    /// evidence that it was.
+    #[test]
+    fn the_readme_counts_the_timed_and_the_sampled_cells_of_the_record_it_names() {
+        let flat = flat_readme();
+        for (verb, predicate) in [
+            (
+                "carry a frame timing",
+                (|row: &serde_json::Value| !row["frames"].is_null())
+                    as fn(&serde_json::Value) -> bool,
+            ),
+            ("were timed on a picture the policy thinned", |row| {
+                row["frame_sample"]
+                    .as_array()
+                    .is_some_and(|a| !a.is_empty())
+            }),
+        ] {
+            const CLAIM: &str = "cells of `results/";
+            let mut checked = 0usize;
+            let mut index = 0usize;
+            for after_count in flat.split(CLAIM).skip(1).collect::<Vec<_>>() {
+                let (named, rest) = after_count
+                    .split_once('`')
+                    .expect("the claim names the record it is about");
+                index += 1;
+                if !rest.trim_start().starts_with(verb) {
+                    continue;
+                }
+                let matching: Vec<String> = scaling_rows_of(named)
+                    .iter()
+                    .filter(|row| predicate(row))
+                    .map(cell_label)
+                    .collect();
+                let stated = count_stated_before(&flat, CLAIM, index - 1);
+                let expected = count_in_words(matching.len())
+                    .unwrap_or_else(|| panic!("{named} has {} such cells", matching.len()));
+                assert_eq!(
+                    stated,
+                    expected,
+                    "the README says {stated:?} cells of {named} {verb}; that record \
+                     has {}: {matching:?}",
+                    matching.len()
+                );
+                checked += 1;
+            }
+            assert!(
+                checked > 0,
+                "the README makes no {verb:?} claim about a named record, so the \
+                 record it was measured from is unstated"
+            );
+        }
+    }
+
+    /// The record the README's list marks `(current)` must be the newest one in
+    /// `benchmarks/results/`. Landing a record and leaving the label on the one
+    /// before it is how a reader ends up quoting a superseded file, and the
+    /// file names sort chronologically, so nothing has to be remembered.
+    #[test]
+    fn the_readme_marks_the_newest_record_as_current() {
+        let marked = BENCH_README
+            .lines()
+            .find_map(|l| {
+                let l = l.trim();
+                let rest = l.strip_prefix("- **`")?;
+                let (stem, tail) = rest.split_once('`')?;
+                tail.trim_start().starts_with("(current)").then_some(stem)
+            })
+            .expect("the record list marks one entry (current)");
+        let mut records: Vec<String> = std::fs::read_dir(repo_root().join("benchmarks/results"))
+            .expect("benchmarks/results is readable")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".json"))
+            .collect();
+        records.sort();
+        let newest = records.last().expect("at least one committed record");
+        assert!(
+            newest.starts_with(marked),
+            "the README marks {marked} current; the newest record in results/ is \
+             {newest}"
         );
+    }
+
+    /// The README, whitespace-collapsed: line wrapping is not part of a claim,
+    /// so a re-wrap must not turn a gate off.
+    fn flat_readme() -> String {
+        BENCH_README
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// The count word immediately before the `skip`th occurrence of `claim`.
+    fn count_stated_before(flat: &str, claim: &str, skip: usize) -> String {
+        flat.match_indices(claim)
+            .nth(skip)
+            .map(|(at, _)| &flat[..at])
+            .expect("the occurrence exists")
+            .rsplit(|c: char| !c.is_alphabetic())
+            .find(|w| !w.is_empty())
+            .expect("a count precedes the claim")
+            .to_ascii_lowercase()
     }
 
     /// The scenario spec files are committed public documents and are compiled

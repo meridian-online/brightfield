@@ -334,11 +334,20 @@ choosing a top magnitude; the blank frame arrives first and silently.
 `slider-drag` is absent from every list below: both its marks aggregate, so its
 scene is O(bins) at every magnitude and it never approaches the ceiling.
 
-- **`2026-07-27` (current)** — nothing. Every cell that carries a frame number
+- **`2026-08-07` (current)** — nothing above the ceiling, and nothing missing.
+  **Sixteen cells of `results/2026-08-07-apple-m1-pro.json` carry a frame
+  timing** — four scenarios at four magnitudes — and **seven cells of
+  `results/2026-08-07-apple-m1-pro.json` were timed on a picture the policy
+  thinned**: the seven a complete row-per-mark scene would have taken past the
+  cap. Each of those carries `frame_sample`, stating per plot what it drew and
+  what the same query answers unsampled, and wears `(sampled)` on both its
+  frame cells in the generated summary. A blank picture publishes no timing, so
+  sixteen timings is sixteen pictures the readback found.
+- **`2026-07-27`** — nothing. Every cell that carries a frame number
   drew at most 100,000 primitives. The two at exactly 100,000
   (`brush-density` and `brush-binned-density` @ 10⁵) are the closest to the
   boundary. That record predates the readback, so it carries no `frame_ink` of
-  its own; a v5 re-measurement is what would put the evidence in the file.
+  its own; `2026-08-07` is the re-measurement that put the evidence in a file.
 - **`2026-07-25`** — three cells carry frame timings for scenes above the
   ceiling and are **withdrawn**: `crossfilter-dots` @ 10⁵ (200,000
   primitives), `brush-density` @ 10⁶ and `brush-binned-density` @ 10⁶
@@ -351,8 +360,11 @@ scene is O(bins) at every magnitude and it never approaches the ceiling.
   counts*; six of its eleven would be timed on a sampled picture today, which is
   a third measurement again and not a recovery of either.
 
-Each record states this in its own `record_status` block and at the top of its
-generated markdown, so a reader who opens one file learns it from that file.
+A record with a withdrawn cell says so in its own `record_status` block and at
+the top of its generated markdown, so a reader who opens one file learns it
+from that file. `2026-08-07` carries no such block and needs none: nothing in
+it is withdrawn, and what each cell was drawn from is a measured field of the
+record rather than an annotation added after the fact.
 
 ### How to read a sampled frame timing
 
@@ -472,11 +484,20 @@ produced at all. The honest statement is that **at these magnitudes this
 renderer cannot produce a frame for a COMPLETE row-per-mark scene**, and the
 coverage that existed before was coverage of a different picture.
 
-**The gaps belong to the committed record, not to the harness.** The harness no
-longer declines these cells: it times each on the picture the sampling policy
-drew and records what that picture was drawn from. Closing them is a
-re-measurement — a v5 record — and a v5 number in one of these rows is a
-different measurement from the v2 number beside it, not a recovery of it.
+**Those gaps belonged to that record, not to the harness, and the record has
+been re-measured.** `results/2026-08-07-apple-m1-pro.json` is a v5 record taken
+on the same reference machine, through `scripts/bench-baseline.sh` with no
+arguments. Each of the seven rows above carries a frame timing in it, measured
+on the picture the sampling policy drew, with the counts it was drawn over
+beside it — the entry for `2026-08-07` under *Which committed cells sit above
+it* states how many cells that is and pins the number to the file.
+
+A v5 number in one of those rows is a **different measurement** from the v2
+number beside it, not a recovery of it. The v2 figure timed ~2048 rows per
+row-per-mark mark because that was all the compose of the day assembled; the v5
+figure times whatever the policy left standing at that magnitude, which the
+record states per plot. Neither is the cost of drawing every row, and that cost
+still has not been measured on this machine at these magnitudes.
 
 ## Methodology honesty
 
