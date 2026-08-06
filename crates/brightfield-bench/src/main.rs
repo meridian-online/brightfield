@@ -1142,7 +1142,9 @@ fn render_markdown(r: &BaselineReport) -> String {
          modulus, because a hash sample does not partition evenly. Read a \
          sampled cell as the cost of drawing the picture a reader would \
          actually be shown at that row count. It is not the cost of drawing \
-         every row, and this record contains no cell that is."
+         every row of the table: past the measured bracket no complete \
+         row-per-mark frame has been produced on this machine, so there is no \
+         such cost to set beside it."
     );
     let _ = writeln!(md);
     let sampled: Vec<&ScalingResult> = r

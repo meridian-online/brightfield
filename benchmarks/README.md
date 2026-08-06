@@ -379,11 +379,12 @@ actually be shown at that row count: the same layout, the same device scale,
 the same table, fewer drawn primitives. Steady frames and interaction frames
 alike are measured on it.
 
-**What it is not.** It is not the cost of drawing every row at that row count —
-no committed cell is, and above the ceiling no such frame exists to time. So a
-sampled cell is not comparable with an unsampled one at a smaller row count as
-though the pair traced one curve: the picture changed between them, and the
-`(sampled)` mark is where it changed.
+**What it is not.** It is not the cost of drawing every row of the table at
+that row count. Past the measured bracket no complete row-per-mark frame has
+been produced on this machine at all, so there is no such cost to have
+measured. A sampled cell is therefore not comparable with an unsampled one at a
+smaller row count as though the pair traced one curve: the picture changed
+between them, and the `(sampled)` mark is where it changed.
 
 **It reaches further than the frame columns.** `Step → scene` and
 `compose_memory` wrap `LiveDashboard::present`, which is the call the policy
