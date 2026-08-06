@@ -1,0 +1,244 @@
+# Scheduled run for the tests the push suites deliberately do not run.
+#
+# WHY THIS EXISTS. One shipped starting point reads a large published Parquet
+# over https. Its load gate and its thumbnail-drift gate cannot sit in `test`:
+# that workflow runs on every push and every pull request, so those two checks
+# would fetch someone else's server on every CI run, and would go red for
+# reasons — host down, DNS, a slow object store — that say nothing about the
+# commit under test. So they are `#[ignore]`d, which is the right call for a
+# per-push suite and the wrong end state on its own: the start most able to
+# break for reasons OUTSIDE this repo (file moved, schema changed, host down)
+# became the one nothing checked automatically. "Run it when you think of it"
+# is not a check. This workflow is the other half of that trade.
+#
+# A workflow of its own rather than a job in `test`, for three reasons:
+#
+# * It needs the network. `test` deliberately does not, and burying a
+#   network-dependent job inside it would blur that line for every reader.
+# * A red here means something different. `test` red means the commit broke
+#   something. Red here often means the PUBLISHED DATA moved, and the fix is
+#   usually to republish or to re-point the spec — not to revert a commit.
+# * It is not on the push path at all, so it must not be able to delay,
+#   cancel, or be cancelled by, a run somebody is waiting on.
+#
+# TWO LIMITATIONS, STATED SO NOBODY READS MORE INTO A GREEN BADGE THAN IS
+# THERE:
+#
+# 1. A `schedule:` trigger only ever fires for the workflow file as it exists
+#    on the DEFAULT BRANCH. Until this file is on `main` it runs on no
+#    schedule at all, and edits to it on a branch change nothing about what
+#    the cron executes. Nor can a branch reach it through
+#    `workflow_dispatch`: that path wants the workflow on the default branch
+#    too. Confirmed by asking for one before this landed, which GitHub refused
+#    by name — "HTTP 404: workflow nightly-network.yml not found on the default
+#    branch". So the FIRST real execution of this file is after it merges.
+# 2. GitHub DISABLES scheduled workflows in a repository with no activity for
+#    60 days, and re-enabling is a manual action. A quiet quarter therefore
+#    turns this off silently — the badge does not go red, the runs simply stop
+#    happening. If this repo goes quiet, check the Actions tab before trusting
+#    the absence of failures.
+#
+# Neither limitation is worked around here. Both are the platform's, and a
+# comment that says so is worth more than a cron job that pretends otherwise.
+
+name: nightly-network
+
+on:
+  # 06:37 UTC daily.
+  #
+  # The MINUTE is off the top of the hour on purpose: GitHub's own scheduling
+  # guidance is that runs queued on the hour contend with everybody else's and
+  # get delayed, sometimes by a lot. A scheduled job nobody is waiting on can
+  # absorb the delay, but there is no reason to volunteer for it.
+  #
+  # The HOUR is outside roughly 13:00-23:00 UTC, when hosted-runner demand
+  # peaks with the US working day, so a 60-minute macOS job is less likely to
+  # sit in a queue. It is also late afternoon in the timezone this repo's
+  # commits are authored in (UTC+10), which is the property that actually
+  # matters: a red run lands inside a working day and gets looked at, instead
+  # of arriving at 3am and being scrolled past.
+  schedule:
+    - cron: "37 6 * * *"
+
+  # On demand, so the answer to "is the published data still there?" does not
+  # have to wait for tomorrow's cron — and so this is runnable at all before
+  # the first scheduled fire.
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+# `test` groups per ref and cancels in flight, because stacked pushes to a PR
+# branch make earlier runs worthless. Neither half applies here. The group is
+# the workflow itself (a schedule has one meaningful ref), and cancellation is
+# OFF: if a cron run is under way when somebody dispatches manually, the
+# already-running answer is the one worth keeping, and two runs of a job that
+# only reads is harmless.
+concurrency:
+  group: nightly-network
+  cancel-in-progress: false
+
+# Nothing here writes. The job checks out and runs tests.
+permissions:
+  contents: read
+
+jobs:
+  network-gated:
+    # macos-15, the same single runner `test` and `lint` use, and for the same
+    # reason `test.yml` records at length: it is the hosted runner where the
+    # winit/wgpu window stack is validated in this repo, and where the
+    # egui_kittest pixel tier has a real adapter to render through. That is
+    # not optional here — one of the tests below IS a pixel-tier snapshot
+    # (a thumbnail diff), so a runner without a GPU adapter could not run it.
+    runs-on: macos-15
+
+    # 60, matching `test`. The work is comparable: the same cold-ish build of
+    # the same large graph (wgpu/vello/egui/duckdb) dominates, and the five
+    # tests themselves are a rounding error on top of it. Lower would mean a
+    # cache miss reads as a failure.
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The same exact pin as `test` and `lint` — `dtolnay/rust-toolchain` at
+      # `1.95.0`, not `stable`. Read from those files rather than assumed; the
+      # local loop is `cargo +1.95.0 ...` and a red run here has to be
+      # reproducible with it.
+      - uses: dtolnay/rust-toolchain@1.95.0
+
+      # Shares the cache `test` and `lint` populate on `main`. Worth having on
+      # a nightly specifically: without it every run is a full cold build of
+      # the git dependencies plus wgpu/vello, to execute five tests.
+      - uses: Swatinem/rust-cache@v2
+
+      # ------------------------------------------------------------------
+      # WHAT THIS COVERS — every `#[ignore]`d test in the workspace whose
+      # reason is the network, enumerated from the source rather than from
+      # memory (`grep -rn '#\[ignore' crates/`):
+      #
+      #   crates/brightfield-shell/tests/front_door.rs
+      #     every_remote_start_still_renders_and_its_thumbnail_is_current
+      #       - the THUMBNAIL-DRIFT gate for the remote start: renders it and
+      #         diffs against the committed assets/starts/*.png, so the
+      #         gallery cannot show a picture of something the click no longer
+      #         opens.
+      #
+      #   crates/brightfield-shell/tests/crosswalk_chart.rs
+      #     the_published_crosswalk_is_still_past_the_drawn_primitive_ceiling
+      #       - the published table is still big enough that the chart's
+      #         aggregating marks are still the right choice.
+      #     the_crosswalk_chart_start_opens_over_the_network_drawing_every_row
+      #       - the LOAD gate: the start composes over the network, and both
+      #         marks account for the same number of rows.
+      #
+      #   crates/brightfield-engine/src/lib.rs  (unit tests)
+      #     remote_https_parquet_executes_via_httpfs
+      #     ducklake_catalog_attaches_read_only_over_https
+      #       - the layer underneath: DuckDB httpfs reads a published parquet,
+      #         and the published DuckLake catalog attaches read-only. These
+      #         are `#[ignore]`d for the same network reason and read the same
+      #         published host, so leaving them out would mean a nightly that
+      #         watches the start but not the mechanism the start depends on.
+      #         Running them here also splits the diagnosis: engine red and
+      #         shell red together points at the host or the data; shell red
+      #         alone points at the start.
+      #
+      # DELIBERATELY NOT COVERED: the one other `#[ignore]`d test in the
+      # workspace, `vello_bump_ceiling.rs`'s counter ladder. Its own module
+      # comment calls it "an instrument, not a gate" — it reads counters
+      # rather than passing or failing, and it is ignored for GPU reasons, not
+      # network ones. Adding it would put a non-gate in a gate.
+      #
+      # THE GUARD, which is the point of the step's shape. `cargo test --
+      # --ignored` with a filter that matches NOTHING exits 0 and prints
+      # "0 passed". A nightly badge that goes green having executed no tests
+      # is worse than no nightly at all, because it reads as coverage. So each
+      # target's executed count is parsed back out of the harness summary and
+      # held to a floor, and the floors are PER TARGET rather than only on the
+      # total: a single total would stay green if the front-door target
+      # silently ran nothing while the engine's two still ran.
+      #
+      # The floors are floors, not equalities — a new network test added to
+      # one of these targets should not redden the nightly at 6am for being
+      # new. What must never happen, and what these catch, is a covered test
+      # being renamed, deleted, or filtered away to nothing.
+      - name: network-gated tests, with a non-zero-count guard
+        shell: bash
+        run: |
+          set -u
+
+          # label | cargo target selector | how many ignored tests must run
+          targets=(
+            "front_door|-p brightfield-shell --test front_door|1"
+            "crosswalk_chart|-p brightfield-shell --test crosswalk_chart|2"
+            "engine_httpfs|-p brightfield-engine --lib|2"
+          )
+          # The sum of the floors above, stated once as a number so a reader
+          # and the log both see what this job expects to have executed.
+          expected_total=5
+
+          failed=0
+          total=0
+
+          for entry in "${targets[@]}"; do
+            IFS='|' read -r label selector expected <<<"$entry"
+            log="${RUNNER_TEMP}/ignored-${label}.log"
+
+            # The exit code is captured, never masked: no pipe into head/tail,
+            # output redirected to a file, the code kept in a variable and the
+            # file printed afterwards.
+            code=0
+            # shellcheck disable=SC2086
+            cargo test --locked $selector -- --ignored --test-threads=1 >"$log" 2>&1 || code=$?
+            cat "$log"
+
+            # libtest's summary line, copied from a real run of the
+            # crosswalk_chart target rather than remembered:
+            #   test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 9.92s
+            # so the number before the literal "passed;" is what actually
+            # EXECUTED, as opposed to what was compiled or filtered out. The
+            # match is anchored to the START of a line, so the phrase occurring
+            # mid-line in a test's own output does not add to the count.
+            ran=$(awk '/^test result:/ { for (i = 1; i <= NF; i++) if ($i == "passed;") n += $(i - 1) } END { print n + 0 }' "$log")
+            echo "--- ${label}: cargo exited ${code}, ${ran} test(s) executed (floor ${expected})"
+
+            if [ "$code" -ne 0 ]; then
+              echo "::error title=${label} failed::cargo test exited ${code} for ${label} — read the log above"
+              failed=1
+            fi
+
+            if [ "$ran" -lt "$expected" ]; then
+              echo "::error title=${label} executed too few tests::expected at least ${expected} ignored test(s) to execute in ${label}, ${ran} executed — the filter matched nothing, or a covered test was renamed, deleted or un-ignored. A green run here would prove nothing."
+              failed=1
+            fi
+
+            total=$((total + ran))
+          done
+
+          if [ "$total" -lt "$expected_total" ]; then
+            echo "::error title=too few network-gated tests executed::expected at least ${expected_total} network-gated test(s) across all targets, ${total} executed"
+            failed=1
+          fi
+
+          if [ "$failed" -ne 0 ]; then
+            exit 1
+          fi
+
+          echo "${total} network-gated test(s) executed and passed (floor ${expected_total})"
+
+      # A thumbnail-drift red is undiagnosable from a log alone, so hand back
+      # what the remote start actually rendered and its perceptual diff. Same
+      # device as `test.yml`'s step, pointed at the directory the front-door
+      # thumbnail gate writes to (`assets/starts`, its SnapshotOptions
+      # output_path) rather than the `tests/snapshots` tree.
+      - name: upload thumbnail diffs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: remote-start-thumbnail-output
+          path: |
+            crates/brightfield-shell/assets/starts/**/*.new.png
+            crates/brightfield-shell/assets/starts/**/*.diff.png
+          if-no-files-found: ignore
+          retention-days: 7
