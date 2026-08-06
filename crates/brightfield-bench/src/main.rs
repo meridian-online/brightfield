@@ -150,9 +150,16 @@ const SCENARIOS: &[SpecDef] = &[
     },
 ];
 
-/// The most row-level primitives a frame suite may ask the renderer to encode
-/// — summed across every row-per-mark mark in the scene. Above it the FRAME
-/// suites are skipped; the engine suites still run at every magnitude.
+/// The most row-level primitives a frame suite may time on a COMPLETE scene —
+/// summed across every row-per-mark mark. Above it the record must show what
+/// the cell drew instead of the whole table.
+///
+/// **It stopped being a decline.** It used to skip the frame suites above this
+/// count, which put the holes in the record at exactly the magnitudes worth
+/// looking at. The pushed-down sampling policy now brings a large scene back
+/// under the ceiling on its own, so the suite runs and the timing is published
+/// beside the counts it was measured over — and this constant is what decides
+/// whether a cell needs those counts beside it.
 ///
 /// This is not a wall-clock convenience. Since the compose began assembling
 /// EVERY Arrow chunk rather than the first, a row-per-mark scene really does
@@ -181,7 +188,15 @@ const FRAME_DRAWN_ROW_CAP: u64 = 100_000;
 // fact, so the build checks it rather than a test that has to be run.
 const _: () = assert!(FRAME_DRAWN_ROW_CAP < MEASURED_INKED_MAX);
 
-/// Why a frame suite was declined, in the words a reader of the record sees.
+/// Why a cell above the cap has no frame timing, when the reason is that
+/// nothing thinned its picture.
+///
+/// The event this describes is not "the scene exceeds the ceiling" — that is
+/// no longer a reason for a hole, because the shipped policy samples such a
+/// scene and the suite runs on what it drew. This is the narrower case where
+/// the composition came back **complete** at a count the harness will not time:
+/// the policy declined to sample, or could not, and no other part of this
+/// harness gets to decide that question on its behalf.
 ///
 /// The string this replaced said the primitive count "exceeds the
 /// {FRAME_DRAWN_ROW_CAP} the renderer can encode in one scene buffer — the
@@ -192,17 +207,21 @@ const _: () = assert!(FRAME_DRAWN_ROW_CAP < MEASURED_INKED_MAX);
 /// binding size, which this adapter reports as 4 GiB and which does not bind;
 /// what binds is vello's FIXED 2^21-element `seg_counts`, which no adapter
 /// limit moves. A reader given the old sentence goes looking for a bigger GPU.
-fn frames_skipped_reason(drawn_primitives: u64) -> String {
+fn drawn_complete_above_the_cap_reason(drawn_primitives: u64) -> String {
     format!(
-        "{drawn_primitives} row-level primitives is past the MEASURED \
-         drawn-primitive ceiling: {MEASURED_INKED_MAX} dots is the largest \
-         count measured to ink a frame and {MEASURED_BLANK_MIN} the smallest \
-         measured to come back BLANK — vello returns Ok, a frame is written, \
-         and every pixel is transparent. The ceiling is vello's fixed \
-         2^21-element seg_counts buffer, NOT a device limit: this adapter \
-         reports a 4 GiB max storage buffer binding size and no adapter limit \
-         moves seg_counts. The harness declines the suite at \
-         {FRAME_DRAWN_ROW_CAP} rather than time a picture that is not there."
+        "NOT TIMED: this cell's composition drew COMPLETE at {drawn_primitives} \
+         row-level primitives, past this harness's cap of {FRAME_DRAWN_ROW_CAP} \
+         — the pushed-down sampling policy pushed no rate, so nothing brought \
+         the scene under the ceiling and there is no sampled picture to time \
+         either. The cap sits under the MEASURED drawn-primitive ceiling with \
+         margin: {MEASURED_INKED_MAX} dots is the largest count measured to ink \
+         a frame and {MEASURED_BLANK_MIN} the smallest measured to come back \
+         BLANK, with vello returning Ok, a frame written, and every pixel \
+         transparent. What overflows is vello's fixed 2^21-element seg_counts \
+         buffer, NOT a device limit: this adapter reports a 4 GiB max storage \
+         buffer binding size and no adapter limit moves seg_counts. That \
+         outcome holds up to {VELLO_BIN_DATA_PANIC_DOTS} dots, where bin_data \
+         underflows instead and the encode aborts with no frame at all."
     )
 }
 
@@ -381,6 +400,11 @@ struct ScalingResult {
     /// attempted, so there was nothing to prove.
     #[serde(skip_serializing_if = "Option::is_none")]
     frame_ink: Option<frame_ink::FrameInk>,
+    /// What each sampled plot of this row's picture drew, and what it drew it
+    /// from. Empty for a row whose scene was composed complete — which is the
+    /// only shape whose frame timing is a full-scene measurement.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    frame_sample: Vec<frame_ink::PlotSample>,
     /// This row's picture was rendered and came back EMPTY — a per-cell
     /// failure, and a different event from [`Self::frames_skipped`]. A skip
     /// declined to measure; this measured and found nothing, which is what
@@ -438,7 +462,14 @@ struct RunConfig {
 /// decided a picture existed from a primitive count computed before rendering,
 /// and that arithmetic cannot see an empty frame. A v4 frame cell states a time
 /// beside the readback that proved there was a picture to time.
-const SCHEMA: &str = "brightfield-bench/v4";
+///
+/// v4 → v5 adds `frame_sample` and changes what a large cell holds. Under v4 a
+/// scene past the cap was declined and the row carried no frame time at all; a
+/// v5 row of that size carries one, measured on the picture the shipped
+/// sampling policy drew, with the rows it drew and the rows it drew them from
+/// beside it. So a v4 gap and a v5 number at the same row count are not a
+/// regression fixed — they are two different pictures.
+const SCHEMA: &str = "brightfield-bench/v5";
 
 /// Every statement a record carries about how it was measured.
 ///
@@ -457,9 +488,9 @@ fn methodology() -> Vec<String> {
         "cold open = Coordinator::load (DDL, no mark queries) then the first full materialisation of every mark, on a session in the same process; the Parquet file is warm in the OS page cache.".to_string(),
         format!(
             "Datasets are deterministic pure functions of the row index via DuckDB hash() — no RNG. \
-             Frame suites are capped by DRAWN row-level primitives, not by table rows: a scenario's \
-             row-per-mark marks each contribute one primitive per materialised row, an aggregating \
-             mark contributes none. \
+             Frame suites are measured against DRAWN row-level primitives, not against table rows: a \
+             scenario's row-per-mark marks each contribute one primitive per materialised row, an \
+             aggregating mark contributes none. \
              THE CEILING IS MEASURED, NOT INHERITED, and it is not the cap: on the reference machine \
              through the production render path, {MEASURED_INKED_MAX} dots is the largest count that \
              inked a frame and {MEASURED_BLANK_MIN} the smallest that came back with every pixel \
@@ -467,14 +498,14 @@ fn methodology() -> Vec<String> {
              — this adapter reports a 4 GiB max storage buffer binding size, and no adapter limit \
              moves seg_counts. Vello sets a failed bit in a GPU-side counter, does not re-run coarse \
              and returns Ok, so nothing in the render path raises an error and a blank frame is \
-             indistinguishable from a fast one by timing alone; the harness therefore declines the \
-             suite at a policy cap of {FRAME_DRAWN_ROW_CAP}, under the measured ceiling with margin, \
-             rather than time a picture that is not there. A second and exact ceiling sits an order \
-             of magnitude above: bin_data is 2^18 elements and the encode panics at \
-             {VELLO_BIN_DATA_PANIC_DOTS} dots in that fixture. Engine suites run at every magnitude \
-             regardless. This cap became load-bearing when the compose began assembling every Arrow \
-             chunk instead of the first: a record measured before that change reports frame times \
-             for scenes that were drawing ~2048 rows per mark, whatever its row column says."
+             indistinguishable from a fast one by timing alone. A second and exact ceiling sits an \
+             order of magnitude above: bin_data is 2^18 elements and the encode panics at \
+             {VELLO_BIN_DATA_PANIC_DOTS} dots in that fixture, so the blank outcome is what happens \
+             between the two counts rather than everywhere past the first. The harness's policy cap \
+             is {FRAME_DRAWN_ROW_CAP}, under the measured ceiling with margin. This cap became \
+             load-bearing when the compose began assembling every Arrow chunk instead of the first: \
+             a record measured before that change reports frame times for scenes that were drawing \
+             ~2048 rows per mark, whatever its row column says."
         ),
         "The emitted SQL applies a selection predicate INSIDE an aggregating mark's query — it filters the base rows that get aggregated (row-level marks are wrapped whole). The aggregating scenarios keep their original brush-the-binned-column shape so the measured series stays comparable across harness runs.".to_string(),
         "Each scenario's engine suites run twice on identical code: automatic pre-aggregation enabled (the shipped configuration) and disabled (the direct-query control). The delta between the two brush-step latencies is the layer's contribution. Cube engagement is verified per run — engaged and serving where the scenario expects it, silent where it does not — and a run whose cube behaviour contradicts the expectation FAILS instead of reporting.".to_string(),
@@ -489,7 +520,9 @@ fn methodology() -> Vec<String> {
         "rss_*_mib is the process's resident set size, polled from the OS across that same window (Linux /proc/self/status; macOS `ps -o rss=`, ~5ms resolution, so `rss_samples` states how coarse a given cell is). It is the only figure that sees the Arrow buffers' real cost: the chunks are imported from DuckDB over the C data interface, so DuckDB's C++ allocator owns them and a Rust allocator counter would not see them. It is also a SINGLE sample of a whole-process quantity and is NOT reproducible on its own. Every scenario records two windows — pre-aggregation off and on — over the same compose work (the first present precedes any interaction, so the toggle cannot change it); their disagreement is this figure's run-to-run noise and the generated summary states the widest one observed. Quote a peak only with that spread beside it; quote arrow_chunks_mib when a deterministic number is wanted. The pre-compose floor is not monotone: the OS reclaims pages between windows, so rss_before falls as often as it rises and rss_growth is not the compose's cost. The poller stops before the timed applies, so it cannot perturb a reported latency.".to_string(),
         "A cell's picture is rendered and read back BEFORE the cell is timed. The cell's spec is composed through the production pipeline, rendered once through VelloRenderer at the frame scale, and the target is read back and counted: frame_ink records the device size, how many of those pixels differ from the colour the render cleared to, whether the target came back holding one repeated value, and the verdict. A cell whose picture reads back empty publishes NO timing. It records frames_blank instead — a per-cell FAILURE, a different event from frames_skipped, which declined to measure at all — and the run continues and exits 0. The drawn-primitive cap still declines the suites it declines; what changed is that a cell UNDER the cap is no longer assumed to have drawn.".to_string(),
         "The ink probe is a SEPARATE submission from the frames the suite times, on the same composed scene through the same renderer at the same device scale. The timed frames go through the shell's egui path, which does not read back, by design — a readback there would time a cost the live window does not pay. So the probe answers whether this cell's picture can be produced at all, immediately before the cell is timed; it does not answer whether one particular timed submission drew. A defect that made a picture appear and then vanish between the probe and the timing is outside what this evidence covers. So is a THINNED picture: the overflow this detects emits nothing at all, so the two verdicts are a picture and no picture. inked_fraction is a share of the whole target, and a composed dashboard paints its page tone across that target before a mark is drawn — a row that rendered therefore reports a high share, and the figure is not mark coverage.".to_string(),
-        "Record schema v4. v2 carried `first_batch_rows` beside `materialised_rows` — the pre-assembly presentation that drew a mark's FIRST Arrow chunk only. That field is gone; `drawn_rows` names what the field now holds. A v2 record's row counts describe code that no longer ships and must not be quoted against a v3 one. v3 → v4 adds frame_ink and frames_blank: a v3 frame cell states a time and nothing about what was on screen while the clock ran, because the harness of that era decided a picture existed from a primitive count computed before rendering.".to_string(),
+        "A SUITE PAST THE CAP IS TIMED ON A SAMPLED SCENE, NOT SKIPPED. The pushed-down sampling policy ships in the render and shell crates and engages on its own; this harness neither chooses a rate nor triggers one, it reads back what the composition drew. A row whose picture was sampled records frame_sample — per plot, the rows that plot drew and the rows the same query answers with no rate on it, both COUNTED by queries rather than inferred from a modulus, because a hash sample is not a perfectly uniform partition and the multiplied figure would be a guess in a measured column. Its frame cells are marked `(sampled)` in the generated summary and are NOT full-scene measurements: a sampled frame time is the cost of drawing that thinned picture on the same layout at the same device scale, over a table of the stated size. The one shape still declined is a composition that came back COMPLETE past the cap, which would be the number the cap exists to keep out; that row records why and publishes no timing.".to_string(),
+        "The frame suites and the live-apply engine suite both compose through the shipped pipeline, so BOTH inherit the automatic rate; the coordinator and navigation suites hold their own session and are unsampled at every magnitude. Where a row carries frame_sample, read its `Step -> scene` and compose_memory figures as the sampled composition's too — those windows wrap LiveDashboard::present, which is the call the policy acts on.".to_string(),
+        "Record schema v5. v2 carried `first_batch_rows` beside `materialised_rows` — the pre-assembly presentation that drew a mark's FIRST Arrow chunk only. That field is gone; `drawn_rows` names what the field now holds. A v2 record's row counts describe code that no longer ships and must not be quoted against a v3 one. v3 → v4 adds frame_ink and frames_blank: a v3 frame cell states a time and nothing about what was on screen while the clock ran, because the harness of that era decided a picture existed from a primitive count computed before rendering. v4 → v5 adds frame_sample and fills the holes v4 left: a v4 row past the cap was declined and carries no frame time, and the v5 row at that row count carries one measured on a sampled picture — two different pictures, not a regression repaired.".to_string(),
     ]
 }
 
@@ -549,7 +582,10 @@ fn run(root: &Path, args: &Args) -> Result<Vec<PathBuf>, String> {
         let dataset = data::ensure_dataset(&gen_conn, &args.data_dir, rows)?;
         for def in SCENARIOS {
             let drawn_primitives = def.row_level_marks * rows;
-            let frames_capped = drawn_primitives > FRAME_DRAWN_ROW_CAP;
+            // What a COMPLETE scene would carry. Above it the record has to
+            // show what the cell actually drew; it is no longer a reason to
+            // decline the suite.
+            let needs_a_sample = drawn_primitives > FRAME_DRAWN_ROW_CAP;
             eprintln!("scenario {} @ {rows} rows ...", def.name);
             let spec_text = def.template.replace(
                 "__DATA_PARQUET__",
@@ -569,19 +605,19 @@ fn run(root: &Path, args: &Args) -> Result<Vec<PathBuf>, String> {
             let engine_direct = scenario::run_engine_suites(&sc, None, args.iterations, false)?;
             let engine = scenario::run_engine_suites(&sc, None, args.iterations, true)?;
 
-            let frames_skipped = if args.skip_frames {
+            // The readback stands between the decision to time this cell and
+            // the timing itself: compose the picture, render it once, ask what
+            // reached the target and what it was drawn from. A cell that came
+            // back empty is timed by nothing, because a blank frame is a fast
+            // frame on the clock.
+            let mut ink = None;
+            let mut frame_sample = Vec::new();
+            let mut frames_blank = None;
+            let mut frames_skipped = if args.skip_frames {
                 Some("--skip-frames".to_string())
-            } else if frames_capped {
-                Some(frames_skipped_reason(drawn_primitives))
             } else {
                 None
             };
-            // The readback stands between the decision to time this cell and
-            // the timing itself: compose the picture, render it once, ask what
-            // reached the target. A cell that came back empty is timed by
-            // nothing, because a blank frame is a fast frame on the clock.
-            let mut ink = None;
-            let mut frames_blank = None;
             let frames = if frames_skipped.is_some() {
                 None
             } else {
@@ -591,18 +627,31 @@ fn run(root: &Path, args: &Args) -> Result<Vec<PathBuf>, String> {
                 std::fs::write(&spec_path, &sc.spec_text)
                     .map_err(|e| format!("write {}: {e}", spec_path.display()))?;
                 let probe = frame_ink::probe(&spec_path, FRAME_SCALE)?;
-                let drew = probe.drew_ink;
+                let drew = probe.ink.drew_ink;
                 eprintln!(
                     "  picture: {}/{} device pixels inked",
-                    probe.inked_pixels, probe.total_pixels
+                    probe.ink.inked_pixels, probe.ink.total_pixels
                 );
+                if let Some(label) = frame_ink::sample_label(&probe.sample) {
+                    eprintln!("  sampled: {label}");
+                }
                 if !drew {
-                    let why = frame_ink::blank_reason(&probe);
+                    let why = frame_ink::blank_reason(&probe.ink);
                     eprintln!("  {} @ {rows} rows: {why}", def.name);
                     frames_blank = Some(why);
                 }
-                ink = Some(probe);
-                if !drew {
+                // A complete scene past the cap is the one shape still worth
+                // declining: nothing thinned it, so timing it would publish
+                // the number the cap has always existed to keep out.
+                let unsampled_above_the_cap = needs_a_sample && probe.sample.is_empty();
+                if unsampled_above_the_cap {
+                    let why = drawn_complete_above_the_cap_reason(drawn_primitives);
+                    eprintln!("  {} @ {rows} rows: {why}", def.name);
+                    frames_skipped = Some(why);
+                }
+                frame_sample = probe.sample;
+                ink = Some(probe.ink);
+                if !drew || unsampled_above_the_cap {
                     None
                 } else {
                     let parsed =
@@ -648,6 +697,7 @@ fn run(root: &Path, args: &Args) -> Result<Vec<PathBuf>, String> {
                 frames,
                 frames_skipped,
                 frame_ink: ink,
+                frame_sample,
                 frames_blank,
             });
         }
@@ -697,6 +747,7 @@ fn run(root: &Path, args: &Args) -> Result<Vec<PathBuf>, String> {
             // No frame suite was attempted, so nothing was rendered to read
             // back and there is no picture to judge.
             frame_ink: None,
+            frame_sample: Vec::new(),
             frames_blank: None,
         });
     }
@@ -789,6 +840,20 @@ fn slugify(s: &str) -> String {
 
 fn fmt_stats(s: &Stats) -> String {
     format!("{:.1} / {:.1} / {:.1}", s.p50_ms, s.p95_ms, s.max_ms)
+}
+
+/// A frame cell: the times, and the mark that keeps a sampled one from being
+/// read as a full-scene measurement.
+///
+/// The qualifier rides in the CELL rather than in a footnote, because the
+/// number is what gets quoted and a footnote is what gets left behind when it
+/// is.
+fn frame_cell(stats: Option<&Stats>, sampled: bool) -> String {
+    match (stats, sampled) {
+        (None, _) => "—".into(),
+        (Some(s), false) => fmt_stats(s),
+        (Some(s), true) => format!("{} (sampled)", fmt_stats(s)),
+    }
 }
 
 /// The widest disagreement between a row's two compose-memory windows, and the
@@ -890,12 +955,13 @@ fn render_markdown(r: &BaselineReport) -> String {
          Step → data, direct (ms) | Step → data, cubed (ms) | \
          Settled zoom → data, direct (ms) | Settled zoom → data, cubed (ms) | \
          Step → scene, direct (ms) | Step → scene, cubed (ms) | Cube | \
-         Steady frame (ms) | Interaction frame (ms) | Drawn/materialised rows | \
+         Steady frame (ms) | Interaction frame (ms) | Frame drawn from | \
+         Drawn/materialised rows | \
          Arrow held (MiB) | Compose peak RSS, direct / cubed (MiB) | Picture |"
     );
     let _ = writeln!(
         md,
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|"
     );
     for s in &r.scaling {
         let drawn = s
@@ -923,9 +989,21 @@ fn render_markdown(r: &BaselineReport) -> String {
                 "**BLANK**".to_string()
             }
         });
+        // What the timed picture was drawn from. A frame time beside a sample
+        // is a measurement of a thinned scene, and the two frame cells say so
+        // themselves — this column is where the counts live.
+        let sampled = !s.frame_sample.is_empty();
+        let drawn_from = frame_ink::sample_label(&s.frame_sample).unwrap_or_else(|| {
+            if s.frames.is_some() {
+                "complete"
+            } else {
+                "—"
+            }
+            .to_string()
+        });
         let _ = writeln!(
             md,
-            "| {} | {} | {} | {:.1} + {:.1} | {} | {} | {} | {} | {} | {} | {}/{} | {} | {} | {} | {:.1} | {} / {} | {} |",
+            "| {} | {} | {} | {:.1} + {:.1} | {} | {} | {} | {} | {} | {} | {}/{} | {} | {} | {} | {} | {:.1} | {} / {} | {} |",
             s.scenario,
             drag_label(s.drag),
             s.rows,
@@ -939,13 +1017,12 @@ fn render_markdown(r: &BaselineReport) -> String {
             fmt_stats(&s.engine.live_apply),
             s.engine.preagg.cubes_built,
             s.engine.preagg.cube_hits,
-            s.frames
-                .as_ref()
-                .map_or("—".into(), |f| fmt_stats(&f.steady)),
-            s.frames
-                .as_ref()
-                .and_then(|f| f.interaction.as_ref())
-                .map_or("—".into(), fmt_stats),
+            frame_cell(s.frames.as_ref().map(|f| &f.steady), sampled),
+            frame_cell(
+                s.frames.as_ref().and_then(|f| f.interaction.as_ref()),
+                sampled
+            ),
+            drawn_from,
             drawn,
             s.engine_direct.compose_memory.arrow_chunks_mib,
             peak(&s.engine_direct.compose_memory),
@@ -1009,6 +1086,48 @@ fn render_markdown(r: &BaselineReport) -> String {
          separates a picture from no picture, and it is not mark coverage."
     );
     let _ = writeln!(md);
+    let _ = writeln!(
+        md,
+        "**A frame cell marked `(sampled)` is not a full-scene measurement.** \
+         Past the point where a complete row-per-mark scene stops reaching the \
+         target, the shipped pipeline pushes a sample down into the query and \
+         draws fewer rows — the same policy the live window runs under, not a \
+         harness setting. The suite is then timed on THAT picture: the same \
+         layout, the same device scale, the same table, fewer primitives. \
+         `Frame drawn from` states what it drew and what it drew it from, both \
+         COUNTED — the second figure is a query, not the first multiplied by a \
+         modulus, because a hash sample does not partition evenly. Read a \
+         sampled cell as the cost of drawing the picture a reader would \
+         actually be shown at that row count. It is not the cost of drawing \
+         every row, and this record contains no cell that is."
+    );
+    let _ = writeln!(md);
+    let sampled: Vec<&ScalingResult> = r
+        .scaling
+        .iter()
+        .filter(|s| !s.frame_sample.is_empty())
+        .collect();
+    if !sampled.is_empty() {
+        let _ = writeln!(md, "### Rows timed on a sampled picture");
+        let _ = writeln!(md);
+        let _ = writeln!(
+            md,
+            "These rows' frame timings were measured on a thinned scene. The \
+             counts are per plot: rows drawn, and rows the same query answers \
+             unsampled."
+        );
+        let _ = writeln!(md);
+        for s in sampled {
+            let _ = writeln!(
+                md,
+                "- **{} @ {} rows** — {}",
+                s.scenario,
+                s.rows,
+                frame_ink::sample_label(&s.frame_sample).unwrap_or_default()
+            );
+        }
+        let _ = writeln!(md);
+    }
     let blank: Vec<&ScalingResult> = r
         .scaling
         .iter()
@@ -1147,6 +1266,10 @@ mod tests {
     /// call — and the measurement it reproduces is the one that looks at the
     /// written PNG, not the one that waits for the process to abort.
     ///
+    /// What it decides changed: these are now the cells whose frame timing
+    /// must arrive with the counts it was measured over, rather than the cells
+    /// that get no timing.
+    ///
     /// The per-scenario primitive counts are what put each row on the right
     /// side of the line, so they are asserted rather than trusted.
     #[test]
@@ -1218,19 +1341,19 @@ mod tests {
     ///
     /// Checked on ALL THREE surfaces because they fail independently: the
     /// README is read before a run, `METHODOLOGY` ships inside every record,
-    /// and `frames_skipped_reason` is the sentence printed against the very
-    /// cell that has no number in it.
+    /// and `drawn_complete_above_the_cap_reason` is the sentence printed
+    /// against the one cell that still has no number in it.
     #[test]
     fn no_surface_still_explains_a_blank_frame_with_the_refuted_mechanism() {
         let flatten = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
         let methodology = flatten(&methodology().join("\n"));
         let readme = flatten(BENCH_README);
-        let reason = flatten(&frames_skipped_reason(200_000));
+        let reason = flatten(&drawn_complete_above_the_cap_reason(200_000));
 
         for (surface, text) in [
             ("README", &readme),
             ("methodology", &methodology),
-            ("skip reason", &reason),
+            ("not-timed reason", &reason),
         ] {
             for refuted in [
                 "aborts inside the wgpu validation layer",
@@ -1293,7 +1416,7 @@ mod tests {
     fn every_generated_surface_states_the_measured_ceiling_not_only_the_cap() {
         let flatten = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
         let methodology = flatten(&methodology().join("\n"));
-        let reason = flatten(&frames_skipped_reason(200_000));
+        let reason = flatten(&drawn_complete_above_the_cap_reason(200_000));
         // The README writes its figures for humans, with thousands separators.
         let readme = flatten(BENCH_README);
         let plain = |n: u64| n.to_string();
@@ -1319,7 +1442,7 @@ mod tests {
                 plain(MEASURED_BLANK_MIN),
             ),
             (
-                "skip reason",
+                "not-timed reason",
                 &reason,
                 plain(MEASURED_INKED_MAX),
                 plain(MEASURED_BLANK_MIN),
@@ -1351,12 +1474,13 @@ mod tests {
 
     /// The schema id must move when the field set does. v2 shipped
     /// `first_batch_rows`; v3 shipped `drawn_rows`, `drag` and
-    /// `compose_memory`; v4 adds `frame_ink` and `frames_blank`. Leaving the id
+    /// `compose_memory`; v4 added `frame_ink` and `frames_blank`; v5 adds
+    /// `frame_sample` and fills cells v4 left empty. Leaving the id
     /// at v2 is what let two different field sets share one version — the
     /// failure this assertion exists to stop repeating.
     #[test]
     fn the_schema_id_is_past_the_first_batch_era() {
-        assert_eq!(SCHEMA, "brightfield-bench/v4");
+        assert_eq!(SCHEMA, "brightfield-bench/v5");
         assert!(
             methodology()
                 .iter()
@@ -1370,6 +1494,13 @@ mod tests {
                 .any(|m| m.contains("frame_ink") && m.contains("frames_blank")),
             "the record must state what v4 added, so a v3 frame cell is not \
              read as though something had checked it"
+        );
+        assert!(
+            methodology()
+                .iter()
+                .any(|m| m.contains("frame_sample") && m.contains("v4 → v5")),
+            "the record must state what v5 added, so a v4 gap and a v5 number \
+             at the same row count are not read as a regression repaired"
         );
     }
 
@@ -1454,6 +1585,113 @@ mod tests {
         assert!(
             md.contains("read back from the renderer, not inferred"),
             "the legend must say where the number came from: {md}"
+        );
+    }
+
+    /// The cell that carries the number carries the qualifier. A sampled
+    /// timing printed bare is the failure this column exists to prevent: it
+    /// reads as the cost of drawing the whole table, which is a picture this
+    /// renderer does not produce at that magnitude.
+    #[test]
+    fn a_sampled_frame_cell_says_so_in_the_cell_and_states_what_it_drew() {
+        let r = sampled_report();
+        let md = render_markdown(&r);
+        let row = data_row(&md);
+        let times = fmt_stats(&r.scaling[0].frames.as_ref().expect("timed").steady);
+        assert!(
+            row.contains(&format!("| {times} (sampled) | {times} (sampled) |")),
+            "BOTH frame cells carry the qualifier, not a footnote: {row}"
+        );
+        assert!(
+            row.contains("| root/hconcat[0] drew 78125 of 10000000 |"),
+            "the counts the timing was measured over sit beside it: {row}"
+        );
+        assert!(
+            md.contains("### Rows timed on a sampled picture"),
+            "and the rows are listed, so a skim finds them: {md}"
+        );
+        assert!(
+            md.contains("is not a full-scene measurement"),
+            "the legend must say how to read the cell: {md}"
+        );
+    }
+
+    /// A complete cell must not wear the qualifier — a mark on every row stops
+    /// distinguishing anything.
+    #[test]
+    fn an_unsampled_frame_cell_carries_no_qualifier() {
+        let mut r = sampled_report();
+        r.scaling[0].frame_sample.clear();
+        let md = render_markdown(&r);
+        let row = data_row(&md);
+        assert!(
+            !row.contains("(sampled)"),
+            "the row drew complete, so its cells must not be qualified: {row}"
+        );
+        assert!(
+            !md.contains("### Rows timed on a sampled picture"),
+            "nothing was sampled, so the section must not appear: {md}"
+        );
+        assert!(
+            row.contains("| complete |"),
+            "and the column must say what it drew from: {row}"
+        );
+    }
+
+    /// The one data row of a [`synthetic_report`]-shaped summary. Asserting on
+    /// the row rather than the whole document is what keeps a legend that
+    /// EXPLAINS a qualifier from being read as a row that WEARS one.
+    fn data_row(md: &str) -> String {
+        md.lines()
+            .find(|l| l.starts_with("| slider-drag |"))
+            .expect("the summary carries the scenario's row")
+            .to_string()
+    }
+
+    /// The one shape still declined, and the words it is declined in. A hole
+    /// excused by the scene's size alone is what this card removed; a hole
+    /// because nothing thinned the scene is a different and much rarer event,
+    /// and the sentence has to separate them.
+    #[test]
+    fn the_only_declined_shape_is_a_scene_nothing_thinned() {
+        let why = drawn_complete_above_the_cap_reason(200_000);
+        assert!(why.contains("drew COMPLETE"), "{why}");
+        assert!(
+            why.contains("pushed no rate"),
+            "the reason must name what did not happen, not the size alone: {why}"
+        );
+        assert!(
+            why.contains(&FRAME_DRAWN_ROW_CAP.to_string()),
+            "and where this harness drew its line: {why}"
+        );
+    }
+
+    /// The methodology ships inside every record and outlives this README, so
+    /// the sampling statement has to be in it: a reader of a v5 record must
+    /// learn there that a large frame cell was measured on a thinned picture.
+    #[test]
+    fn the_methodology_states_that_a_large_cell_is_timed_on_a_sampled_scene() {
+        let all = methodology().join("\n");
+        assert!(
+            all.contains("TIMED ON A SAMPLED SCENE, NOT SKIPPED"),
+            "the methodology must state what replaced the skip"
+        );
+        assert!(
+            all.contains("frame_sample"),
+            "and name the field the counts land in"
+        );
+        assert!(
+            all.contains("this harness neither chooses a rate nor triggers one"),
+            "and say the policy is not this harness's, so a reader looks for it \
+             where it lives"
+        );
+        assert!(
+            all.contains("COUNTED by queries rather than inferred from a modulus"),
+            "and say the counts are measured, not derived from the rate"
+        );
+        assert!(
+            all.contains("NOT full-scene measurements"),
+            "and say plainly what a sampled cell is not"
         );
     }
 
@@ -1622,10 +1860,38 @@ mod tests {
                 frames: None,
                 frames_skipped: Some(field("capped")),
                 frame_ink: None,
+                frame_sample: Vec::new(),
                 frames_blank: None,
             }],
             corpus: vec![],
         }
+    }
+
+    /// A row shaped like a large one: its frame suites ran, and they ran on a
+    /// picture the shipped policy had thinned.
+    fn sampled_report() -> BaselineReport {
+        let mut r = synthetic_report();
+        let stats = Stats::from_ms(vec![1.6, 2.0, 3.1]).expect("a non-empty sample");
+        r.scaling[0].frames = Some(frames::FrameMeasurement {
+            steady: stats.clone(),
+            interaction: Some(stats),
+        });
+        r.scaling[0].frames_skipped = None;
+        r.scaling[0].frame_sample = vec![frame_ink::PlotSample {
+            plot: "root/hconcat[0]".to_string(),
+            drawn: 78_125,
+            of: 10_000_000,
+        }];
+        r.scaling[0].frame_ink = Some(frame_ink::FrameInk {
+            width: 1_280,
+            height: 960,
+            inked_pixels: 921_600,
+            total_pixels: 1_228_800,
+            inked_fraction: 0.75,
+            uniform: false,
+            drew_ink: true,
+        });
+        r
     }
 
     /// A cell whose picture was rendered and came back empty: the shape the

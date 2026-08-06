@@ -42,9 +42,11 @@ and 10⁷ rows (columns are pure functions of the row index via DuckDB `hash()`
 - **crossfilter-dots** — two linked raw dot plots, each cross-filtering the
   other. The row-per-mark shape: both the data path and the picture scale
   with rows; there is nothing to pre-aggregate, and the harness verifies the
-  layer stays silent. Its engine suites run at every magnitude; its frame
-  suites stop after 10⁴, because two dot plots over 10⁵ rows is 200,000
-  drawn primitives against a uniform 100,000 cap.
+  layer stays silent. Its engine suites run at every magnitude, and so do its
+  frame suites — two dot plots over 10⁵ rows is 200,000 drawn primitives, past
+  the 100,000 cap, so the shipped sampling policy thins the scene and the
+  timing is recorded against what it drew (see *When a frame cell is
+  sampled* below).
 - **slider-drag** — a range slider dragged across its stops, filtering every
   view. The only scenario whose gesture is not a brush, and the reason the
   record carries a `drag` field per row (see *Two gestures* below).
@@ -139,6 +141,7 @@ Per scenario × row count, the record holds:
 | `preagg` | what the layer did during the suite: enabled, cubes built, **mark re-queries** served from a cube (one per served mark per drag step — not a step count), build/serve failures — the non-vacuity evidence beside the latencies |
 | `frames.steady` | headless full-window frame time with nothing changing — the shell's floor |
 | `frames.interaction` | headless full-window frame time where every frame carries one committed brush step: re-query + re-composite + canvas re-raster + GPU wait |
+| `frame_sample` | what the timed picture was drawn from, per plot: `drawn` rows, and the `of` rows the same query answers unsampled. Absent for a scene composed complete. Present means the frame cells above are **not** full-scene measurements — see *When a frame cell is sampled* |
 | `marks[].materialised_rows` / `drawn_rows` | how many rows the mark's query answered vs how many the composed scene draws — the presentation layer assembles **every** Arrow chunk (measured through that same assembly path), so the two are equal; a regression that reintroduced a first-chunk cap would show `drawn_rows` < `materialised_rows` here |
 | `marks[].chunks` / `chunk_bytes` / `assembled_bytes` | the compose's working set per mark: how many Arrow chunks it is handed, their exact byte size, and the assembled drawable's. A single-chunk mark assembles by pass-through, so its assembled bytes are the SAME allocation counted again, not a second copy |
 | `compose_memory` | what the client held while the first full scene was composed — see *The compose's memory* below |
@@ -211,6 +214,12 @@ Records carry a `schema` id and are **not** comparable across a bump.
   the harness of that era decided a picture existed from a primitive count
   computed before rendering. A v4 frame cell states a time beside the readback
   that proved there was a picture to time — see *A skip is one report* below.
+- `brightfield-bench/v5` adds `frame_sample` and fills cells v4 left empty. A
+  scene past the cap was declined under v4 and carries no frame time at all; a
+  v5 row at the same row count carries one, measured on the picture the shipped
+  sampling policy drew, with what it drew and what it drew it from beside it.
+  Those are two different pictures, so a v4 gap becoming a v5 number is not a
+  regression repaired — see *How to read a sampled frame timing* below.
 
 **A v2 record's numbers describe code that no longer ships.** Do not quote one
 against a v3 record; re-measure instead. `results/2026-07-23-apple-m1-pro.*`
@@ -270,10 +279,10 @@ so the compose is partly served from pages the coordinator phase already had.
 `arrow_chunks_mib`; treat the peak as an upper bound on the process, stated with
 its spread.
 
-## When a frame cell is blank
+## When a frame cell is sampled, and when it is blank
 
-Frame suites are capped by **drawn row-level primitives**, not table rows. Each
-row-per-mark mark contributes one primitive per materialised row (an
+Frame suites are measured against **drawn row-level primitives**, not table
+rows. Each row-per-mark mark contributes one primitive per materialised row (an
 aggregating mark contributes none — its picture stays O(bins)).
 
 ### The ceiling is measured, and it is not the cap
@@ -283,7 +292,7 @@ Two numbers get confused here, so they are stated apart.
 | | value | what it is |
 |---|---:|---|
 | **Measured ceiling** | **104,600 inked / 104,800 blank** | where the renderer stops drawing, measured |
-| Harness cap | 100,000 | the policy line the harness declines at, chosen under the ceiling with margin |
+| Harness cap | 100,000 | the line above which a frame timing must arrive with the counts it was measured over, chosen under the ceiling with margin |
 
 The measured bracket comes from the production render path on the reference
 machine (Apple M1 Pro, Metal) — `brightfield-shot --vello-only`, one dot
@@ -328,10 +337,8 @@ scene is O(bins) at every magnitude and it never approaches the ceiling.
 - **`2026-07-27` (current)** — nothing. Every cell that carries a frame number
   drew at most 100,000 primitives. The two at exactly 100,000
   (`brush-density` and `brush-binned-density` @ 10⁵) are the closest to the
-  boundary — a re-verification the harness now performs on every run, rather
-  than one a reader has to remember. That record predates the readback, so it
-  carries no `frame_ink` of its own; a v4 re-measurement is what would put the
-  evidence in the file.
+  boundary. That record predates the readback, so it carries no `frame_ink` of
+  its own; a v5 re-measurement is what would put the evidence in the file.
 - **`2026-07-25`** — three cells carry frame timings for scenes above the
   ceiling and are **withdrawn**: `crossfilter-dots` @ 10⁵ (200,000
   primitives), `brush-density` @ 10⁶ and `brush-binned-density` @ 10⁶
@@ -346,18 +353,60 @@ scene is O(bins) at every magnitude and it never approaches the ceiling.
 Each record states this in its own `record_status` block and at the top of its
 generated markdown, so a reader who opens one file learns it from that file.
 
+### How to read a sampled frame timing
+
+A scene past the cap is **timed on a sampled picture**, not skipped. That is
+the change a v5 record carries and a v4 one does not, and it is worth being
+exact about what the number then means.
+
+**Nothing in this harness decides to sample.** The rate is chosen by the
+pushed-down sampling policy that ships in `brightfield-render` and
+`brightfield-shell` — the same policy the live window runs under, engaging on
+its own with no flag typed. The harness composes the cell's spec through that
+pipeline and reads back what came out. A harness that picked its own rate would
+be measuring a configuration nobody is ever shown.
+
+**The counts are measured, not derived.** `frame_sample` holds, per plot, the
+rows it drew and the rows the same query answers with no rate on it — two
+queries, two counts. Dividing them would not recover the modulus that was
+pushed down, because a hash sample does not partition a table evenly, so the
+record states the pair and no quotient. The generated summary prints the pair
+under `Frame drawn from` and marks both frame cells `(sampled)`.
+
+**What the timing is.** The cost of producing the picture a reader would
+actually be shown at that row count: the same layout, the same device scale,
+the same table, fewer drawn primitives. Steady frames and interaction frames
+alike are measured on it.
+
+**What it is not.** It is not the cost of drawing every row at that row count —
+no committed cell is, and above the ceiling no such frame exists to time. So a
+sampled cell is not comparable with an unsampled one at a smaller row count as
+though the pair traced one curve: the picture changed between them, and the
+`(sampled)` mark is where it changed.
+
+**It reaches further than the frame columns.** `Step → scene` and
+`compose_memory` wrap `LiveDashboard::present`, which is the call the policy
+acts on, so on a row that carries `frame_sample` those figures describe the
+sampled composition too. `Step → data` and `Settled zoom → data` hold their own
+session and are unsampled at every magnitude.
+
 ### A skip is one report; a blank picture is a different one
 
 Every declined row records **why**, in the JSON (`frames_skipped`) and as a
 named list under the generated table, and no timing is emitted for it. A blank
 frame cell is not a fast frame.
 
-The cap decides which suites to **attempt**. It cannot decide whether an
-attempted one produced a picture, and for a while nothing did: the harness
-predicted the blank from a primitive count it computed before rendering and
-never asked the renderer what came out, so below the cap a blank frame was
-timed and published as a fast one. That is how `crossfilter-dots` @ 10⁵ got its
-numbers in the `2026-07-25` record, under a cap that was legitimate at the time.
+One shape is still declined, and it is narrow: a composition that comes back
+**complete** past the cap, because nothing thinned it and timing it would
+publish the number the cap exists to keep out. Size alone is no longer a reason
+— that is what the sampling above replaced.
+
+The cap cannot decide whether an attempted suite produced a picture, and for a
+while nothing did: the harness predicted the blank from a primitive count it
+computed before rendering and never asked the renderer what came out, so below
+the cap a blank frame was timed and published as a fast one. That is how
+`crossfilter-dots` @ 10⁵ got its numbers in the `2026-07-25` record, under a cap
+that was legitimate at the time.
 
 **A cell is now rendered before it is timed.** Its spec is composed through the
 production pipeline, rendered once through `VelloRenderer::frame_ink` at the
@@ -391,12 +440,12 @@ The cap became load-bearing the moment the compose began assembling every
 Arrow chunk instead of the first: before that, a "ten-million-row" frame cell
 was a ~2048-row scene.
 
-**Six cells lost frame coverage under this cap**, and the current record has
-gaps where the v2 record had numbers. Three of them went when the cap was
-1,000,000; the other three went when it came down to 100,000 and the real
-boundary was measured:
+**Six cells have no frame coverage in the committed record**, which has gaps
+where the v2 record had numbers. Three of them went when the cap was 1,000,000;
+the other three went when it came down to 100,000 and the real boundary was
+measured:
 
-| Cell | drawn primitives | v2 steady / interaction (p50, ms) | now |
+| Cell | drawn primitives, complete | v2 steady / interaction (p50, ms) | in `results/` |
 |---|---:|---:|---|
 | crossfilter-dots @ 10⁵ | 200,000 | 1.6 / 7.9 | no frame |
 | brush-density @ 10⁶ | 1,000,000 | 1.6 / 7.0 | no frame |
@@ -405,17 +454,21 @@ boundary was measured:
 | brush-density @ 10⁷ | 10,000,000 | 1.6 / 9.0 | no frame |
 | brush-binned-density @ 10⁷ | 10,000,000 | 1.6 / 5.4 | no frame |
 
-The `drawn primitives` column is what the scene would carry **today**; the v2
-numbers beside it were produced by a compose that drew ~2048 per row-level
-mark, which is the whole reason they exist.
+The `drawn primitives, complete` column is what the scene would carry today if
+nothing thinned it; the v2 numbers beside it were produced by a compose that
+drew ~2048 per row-level mark, which is the whole reason they exist.
 
 Those v2 numbers are not a baseline the current record failed to beat — they
 timed scenes of ~2048 rows per row-per-mark mark, which is why they could be
 produced at all. The honest statement is that **at these magnitudes this
-renderer cannot produce a frame for a row-per-mark scene**, and the coverage
-that existed before was coverage of a different picture. Any claim that a
-re-measurement covered "every existing row" is true per row and false per
-cell: three cells regressed to gaps.
+renderer cannot produce a frame for a COMPLETE row-per-mark scene**, and the
+coverage that existed before was coverage of a different picture.
+
+**The gaps belong to the committed record, not to the harness.** The harness no
+longer declines these cells: it times each on the picture the sampling policy
+drew and records what that picture was drawn from. Closing them is a
+re-measurement — a v5 record — and a v5 number in one of these rows is a
+different measurement from the v2 number beside it, not a recovery of it.
 
 ## Methodology honesty
 
