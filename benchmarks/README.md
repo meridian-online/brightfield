@@ -442,10 +442,11 @@ The cap became load-bearing the moment the compose began assembling every
 Arrow chunk instead of the first: before that, a "ten-million-row" frame cell
 was a ~2048-row scene.
 
-**Six cells have no frame coverage in the committed record**, which has gaps
-where the v2 record had numbers. Three of them went when the cap was 1,000,000;
-the other three went when it came down to 100,000 and the real boundary was
-measured:
+**Seven cells have no frame coverage in `results/2026-07-27-apple-m1-pro.json`.**
+Six of them are gaps where the v2 record had a number: three went when the cap
+was 1,000,000, and three more when it came down to 100,000 and the real boundary
+was measured. The seventh, `crossfilter-dots` @ 10⁷, had no v2 number to lose —
+it is 20,000,000 drawn primitives and has never been timed on this machine.
 
 | Cell | drawn primitives, complete | v2 steady / interaction (p50, ms) | in `results/` |
 |---|---:|---:|---|
@@ -455,6 +456,11 @@ measured:
 | crossfilter-dots @ 10⁶ | 2,000,000 | 1.6 / 21.8 | no frame |
 | brush-density @ 10⁷ | 10,000,000 | 1.6 / 9.0 | no frame |
 | brush-binned-density @ 10⁷ | 10,000,000 | 1.6 / 5.4 | no frame |
+| crossfilter-dots @ 10⁷ | 20,000,000 | — | no frame |
+
+The count and the table are both derived from that file by
+`the_readme_states_the_uncovered_cells_of_the_record_it_names`, so a record
+landing beside a stale sentence reddens the bench suite rather than shipping.
 
 The `drawn primitives, complete` column is what the scene would carry today if
 nothing thinned it; the v2 numbers beside it were produced by a compose that

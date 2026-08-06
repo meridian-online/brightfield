@@ -2321,6 +2321,142 @@ mod tests {
         }
     }
 
+    /// English for a small count, as the README writes it. Only the range the
+    /// harness can produce is covered: a record holds one row per scenario per
+    /// magnitude, and the sentence this serves counts a subset of those.
+    fn count_in_words(n: usize) -> Option<&'static str> {
+        [
+            "no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+            "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+        ]
+        .get(n)
+        .copied()
+    }
+
+    /// A magnitude as the README writes it in a cell label — `10⁵`. Anything
+    /// that is not a power of ten is written out, because the fixed-scale
+    /// scenario's row count is whatever its parquet holds.
+    fn magnitude_label(rows: u64) -> String {
+        let mut n = rows;
+        let mut exponent = 0usize;
+        while n % 10 == 0 && n > 1 {
+            n /= 10;
+            exponent += 1;
+        }
+        if n != 1 {
+            return rows.to_string();
+        }
+        let superscripts = ['⁰', '¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹'];
+        let digits: String = exponent
+            .to_string()
+            .chars()
+            .filter_map(|c| c.to_digit(10).map(|d| superscripts[d as usize]))
+            .collect();
+        format!("10{digits}")
+    }
+
+    /// The README says how many cells a named record leaves without a frame
+    /// timing, and lists them. Both are claims about a file that is committed
+    /// three directories away, so neither is taken on trust: this opens the
+    /// record the sentence names, counts the rows the harness serialised with
+    /// no `frames` object, and requires the stated number AND the listed cells
+    /// to be exactly those rows.
+    ///
+    /// The sentence it pins was true of a different set before it was reworded.
+    /// "Six cells LOST frame coverage under this cap" counted cells a v2 record
+    /// had numbers for and a later one does not. Rewritten into a claim about
+    /// what the committed record *holds*, six is wrong by one:
+    /// `crossfilter-dots` @ 10⁷ had no coverage to lose and is uncovered all
+    /// the same. A count in prose that nothing reddens when it is wrong is how
+    /// that survived review, so the count is derived here instead.
+    #[test]
+    fn the_readme_states_the_uncovered_cells_of_the_record_it_names() {
+        const CLAIM: &str = "cells have no frame coverage in `results/";
+        let flat = BENCH_README
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let (before, after) = flat
+            .split_once(CLAIM)
+            .expect("the README states how many cells its record leaves uncovered");
+        let stated = before
+            .rsplit(|c: char| !c.is_alphabetic())
+            .find(|w| !w.is_empty())
+            .expect("the count precedes the claim")
+            .to_ascii_lowercase();
+        let named = after
+            .split_once('`')
+            .expect("the claim names the record it is about")
+            .0;
+
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .expect("the crate lives two levels under the repo root")
+            .join("benchmarks/results")
+            .join(named);
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "the README names {}, which does not open: {e}",
+                path.display()
+            )
+        });
+        let record: serde_json::Value =
+            serde_json::from_str(&text).unwrap_or_else(|e| panic!("{} is not JSON: {e}", named));
+        let uncovered: Vec<String> = record["scaling"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{named} carries a scaling array"))
+            .iter()
+            .filter(|s| s["frames"].is_null())
+            .map(|s| {
+                format!(
+                    "{} @ {}",
+                    s["scenario"].as_str().unwrap_or("?"),
+                    magnitude_label(s["rows"].as_u64().unwrap_or_default())
+                )
+            })
+            .collect();
+
+        let expected = count_in_words(uncovered.len())
+            .unwrap_or_else(|| panic!("{named} leaves {} cells uncovered", uncovered.len()));
+        assert_eq!(
+            stated,
+            expected,
+            "the README says {stated:?} cells have no frame coverage in {named}; \
+             that record leaves {} of them: {uncovered:?}",
+            uncovered.len()
+        );
+
+        // The table beneath the sentence is the same claim, cell by cell, and
+        // it is what a reader actually uses. The count agreeing while the list
+        // omits a row is the exact shape of the defect above.
+        let listed: Vec<String> = BENCH_README
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with('|') && l.ends_with("| no frame |"))
+            .map(|l| {
+                l.trim_start_matches('|')
+                    .split('|')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string()
+            })
+            .collect();
+        for cell in &uncovered {
+            assert!(
+                listed.contains(cell),
+                "{named} leaves {cell} with no frame timing and the README's table \
+                 does not list it: {listed:?}"
+            );
+        }
+        assert_eq!(
+            listed.len(),
+            uncovered.len(),
+            "the README's table lists {listed:?}; {named} leaves {uncovered:?}"
+        );
+    }
+
     /// The scenario spec files are committed public documents and are compiled
     /// into this harness, so a stale claim in one of them ships twice. The
     /// dots spec described the pre-assembly presentation as current behaviour.
