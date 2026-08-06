@@ -8,8 +8,11 @@
 //! that judges a frame by what its scene *asked* for cannot separate a frame
 //! that drew quickly from one that drew nothing:
 //! `crates/brightfield-render/tests/vello_bump_ceiling.rs` measures where the
-//! overflow starts for a dot scatter, and the frames past it come back empty
-//! while the render reports success.
+//! overflow starts for a dot scatter. Between that onset and the count where
+//! the encode aborts instead, the frames it measured came back empty with the
+//! render still reporting success — [`crate::sample_policy`] holds both counts
+//! and the runs they came from. This module names neither: it counts pixels,
+//! and a count is not a diagnosis.
 //!
 //! [`FrameInk`] answers from the pixels the render was read back into.
 //! [`VelloRenderer::frame_ink`](crate::vello_renderer::VelloRenderer::frame_ink)

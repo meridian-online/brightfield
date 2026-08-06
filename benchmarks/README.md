@@ -348,7 +348,8 @@ scene is O(bins) at every magnitude and it never approaches the ceiling.
   compose of that era drew a mark's **first Arrow chunk only**, so every frame
   cell in it timed a scene of ~2048 primitives per row-level mark whatever its
   row column says. Its frame columns are withdrawn as frame times *at those row
-  counts*; six of its eleven would be skipped outright today.
+  counts*; six of its eleven would be timed on a sampled picture today, which is
+  a third measurement again and not a recovery of either.
 
 Each record states this in its own `record_status` block and at the top of its
 generated markdown, so a reader who opens one file learns it from that file.

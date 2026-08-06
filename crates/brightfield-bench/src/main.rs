@@ -72,6 +72,19 @@ const BENCH_README: &str = include_str!("../../../benchmarks/README.md");
 #[cfg(test)]
 const RENDER_INK_GATE: &str = include_str!("../../brightfield-render/tests/frame_ink.rs");
 
+/// The render crate's readback module, compiled in for tests only.
+///
+/// It is scanned rather than merely trusted because the refuted blank-frame
+/// claim has returned to it once already, and the module names no second
+/// ceiling — so nothing inside it repairs the sentence for a reader who only
+/// reads that far.
+#[cfg(test)]
+const RENDER_FRAME_INK: &str = include_str!("../../brightfield-render/src/frame_ink.rs");
+
+/// This crate's own readback module, scanned for the same reason.
+#[cfg(test)]
+const BENCH_FRAME_INK: &str = include_str!("frame_ink.rs");
+
 /// One committed scaling scenario: which spec, which gesture, which column,
 /// what the pre-aggregation layer is expected to do.
 struct SpecDef {
@@ -1361,6 +1374,156 @@ mod tests {
             "and under the count where the encode panics instead of drawing \
              nothing, which is a different failure"
         );
+    }
+
+    /// Sentences claiming that a frame past the ceiling comes back blank,
+    /// without saying where that stops being true.
+    ///
+    /// **The claim is false and it keeps coming back.** Past the *first*
+    /// measured ceiling a frame is written and empty; past the second — the
+    /// `bin_data` underflow, an order of magnitude up — the encode aborts and
+    /// there is no frame at all. So "past the ceiling the frame comes back
+    /// blank" describes a band and states it as an end state. It reached ten
+    /// sites, one of them the very row that disproves it, was corrected by hand
+    /// four times across three rounds, and came back each time with nothing
+    /// reddening.
+    ///
+    /// A sentence is flagged when it places something past a boundary, names
+    /// the mechanism, asserts the empty outcome, and bounds none of it. Naming
+    /// the second ceiling clears it, and so does any of the words that put a
+    /// far end on the range — which is the shape a true version of this
+    /// sentence has to take anyway.
+    ///
+    /// **What it does not read.** Table rows are not sentences and are skipped;
+    /// so is the harness's own commentary in `main.rs`, which quotes retired
+    /// wordings on purpose in order to say they are retired.
+    #[cfg(test)]
+    fn unscoped_blank_frame_claims(text: &str) -> Vec<String> {
+        // A boundary is placed, the mechanism is named, and the outcome is
+        // asserted — all three, or the sentence is about something else.
+        const PLACED: [&str; 3] = ["past", "above", "beyond"];
+        const MECHANISM: [&str; 3] = ["ceiling", "onset", "overflow"];
+        const OUTCOME: [&str; 2] = ["blank", "empty"];
+        // Anything that puts a far end on the range. `bin_data` and its count
+        // name the second ceiling outright; the rest are how a bounded
+        // sentence reads when it does not name it.
+        const BOUNDED: [&str; 7] = [
+            "bin_data",
+            "262,102",
+            "262102",
+            "second ceiling",
+            "between",
+            "up to",
+            "until",
+        ];
+        let mut out = Vec::new();
+        for block in text.split("\n\n") {
+            let prose: Vec<&str> = block
+                .lines()
+                .filter(|l| !l.trim_start().starts_with('|'))
+                .collect();
+            let flat = prose.join(" ");
+            let flat = flat.split_whitespace().collect::<Vec<_>>().join(" ");
+            for sentence in split_sentences(&flat) {
+                let lower = sentence.to_lowercase();
+                let hits = |set: &[&str]| set.iter().any(|m| lower.contains(m));
+                if hits(&PLACED) && hits(&MECHANISM) && hits(&OUTCOME) && !hits(&BOUNDED) {
+                    out.push(sentence);
+                }
+            }
+        }
+        out
+    }
+
+    /// Split flattened prose into sentences, breaking at a full stop only when
+    /// the next character is a space or the end.
+    ///
+    /// A version number, a decimal and `vello_bump_ceiling.rs` all carry a stop
+    /// mid-token, and splitting on those would tear a claim away from the
+    /// clause that bounds it.
+    #[cfg(test)]
+    fn split_sentences(flat: &str) -> Vec<String> {
+        let chars: Vec<char> = flat.chars().collect();
+        let mut out = Vec::new();
+        let mut start = 0usize;
+        for i in 0..chars.len() {
+            if chars[i] == '.' && chars.get(i + 1).is_none_or(|c| c.is_whitespace()) {
+                out.push(
+                    chars[start..=i]
+                        .iter()
+                        .collect::<String>()
+                        .trim()
+                        .to_string(),
+                );
+                start = i + 1;
+            }
+        }
+        if start < chars.len() {
+            out.push(chars[start..].iter().collect::<String>().trim().to_string());
+        }
+        out.retain(|s| !s.is_empty());
+        out
+    }
+
+    /// The claim three rounds were spent deleting must not be able to return in
+    /// silence. Re-inserting it into any of these surfaces reddens here.
+    ///
+    /// Four surfaces, because they fail independently: the README is read
+    /// before a run, `methodology()` ships inside every record, the not-timed
+    /// reason is printed against the one cell that has no number, and the two
+    /// readback modules are where the sentence lived when nothing was watching.
+    #[test]
+    fn no_surface_states_the_blank_outcome_without_bounding_it() {
+        for (surface, text) in [
+            ("README", BENCH_README),
+            ("methodology", &methodology().join("\n\n")[..]),
+            (
+                "not-timed reason",
+                &drawn_complete_above_the_cap_reason(200_000)[..],
+            ),
+            ("bench readback module", BENCH_FRAME_INK),
+            ("render readback module", RENDER_FRAME_INK),
+        ] {
+            let found = unscoped_blank_frame_claims(text);
+            assert!(
+                found.is_empty(),
+                "the {surface} asserts a blank frame past the ceiling and says \
+                 nowhere that it stops: {found:#?}"
+            );
+        }
+    }
+
+    /// The gate's own regression test: it must still be able to fail. A
+    /// checker that quietly stopped detecting is the way a claim like this one
+    /// returns for an eleventh time.
+    #[test]
+    fn the_blank_claim_gate_still_catches_the_sentence_it_exists_for() {
+        // The wording that was re-inserted into the README, and the one that
+        // was already sitting in a readback module.
+        for refuted in [
+            "and past the drawn-primitive ceiling the frame comes back blank.",
+            "It measures where the overflow starts, and the frames past it come \
+             back empty while the render reports success.",
+        ] {
+            assert_eq!(
+                unscoped_blank_frame_claims(refuted).len(),
+                1,
+                "the gate must catch {refuted:?}"
+            );
+        }
+        // And it must not fire on the bounded version, or the only way to a
+        // green tree would be saying nothing at all.
+        for bounded in [
+            "Past the drawn-primitive ceiling and up to the bin_data underflow \
+             the frame comes back blank.",
+            "Between the two measured ceilings a frame past the onset comes back \
+             empty; past the second there is no frame.",
+        ] {
+            assert!(
+                unscoped_blank_frame_claims(bounded).is_empty(),
+                "the gate must accept the bounded statement: {bounded:?}"
+            );
+        }
     }
 
     /// A blank frame was explained, on every surface a reader could reach, by a
