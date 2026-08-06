@@ -193,6 +193,16 @@ fn canvas_subject(doc: &ProtocolDoc) -> Subject {
 /// directory, and the suite runs from the crate root rather than the repo
 /// root, so a start that read a file relative to the process would fail
 /// here.
+///
+/// **What it deliberately does not cover.** A start that declares
+/// [`starts::Start::remote`] reads a source this binary does not carry, so
+/// loading it here would put an https fetch of someone else's server inside a
+/// hermetic suite — green or red for reasons that have nothing to do with this
+/// repo. Those are skipped, the skip is counted so it cannot quietly swallow
+/// the set, and the same assertions are made over them by the `#[ignore]`d
+/// `the_crosswalk_chart_start_opens_over_the_network_drawing_every_row` in
+/// `tests/crosswalk_chart.rs`. The trade is stated rather than hidden: that
+/// start's load gate runs on demand, not on every push.
 #[test]
 fn every_shipped_start_loads_into_a_document_with_something_in_it() {
     assert!(
@@ -206,7 +216,14 @@ fn every_shipped_start_loads_into_a_document_with_something_in_it() {
         "the crosswalk anchors the set; a gallery without it is a different \
          product decision, not a refactor"
     );
-    for start in starts::STARTS {
+    let local: Vec<&starts::Start> = starts::STARTS.iter().filter(|s| !s.remote).collect();
+    assert!(
+        local.len() >= 3,
+        "only {} start(s) can be loaded without a network, so this gate has \
+         been hollowed out by the `remote` exemption rather than narrowed by it",
+        local.len()
+    );
+    for start in local {
         let opened = starts::load(start.id)
             .unwrap_or_else(|e| panic!("the shipped start {} does not load: {e}", start.id));
         assert_eq!(
@@ -829,15 +846,60 @@ fn front_door_dark_surface() {
 /// no longer opens. Regenerate with `UPDATE_SNAPSHOTS=1` after a deliberate
 /// change to a starter spec or to the renderer, and re-commit the PNGs —
 /// they are pre-rendered on purpose; the door never renders them live.
+///
+/// A start that declares [`starts::Start::remote`] is rendered by the
+/// `#[ignore]`d sibling below instead, for the reason
+/// `every_shipped_start_loads_into_a_document_with_something_in_it` gives: its
+/// picture cannot be redrawn without fetching someone else's server, and this
+/// suite renders on every push. Both halves share [`render_thumbnails`], so the
+/// two gates cannot drift into different definitions of "current".
 #[test]
 fn every_shipped_start_still_renders_and_its_thumbnail_is_current() {
+    let drawn = render_thumbnails(
+        &starts::STARTS
+            .iter()
+            .filter(|s| !s.remote)
+            .collect::<Vec<_>>(),
+    );
+    assert!(
+        drawn >= 3,
+        "only {drawn} thumbnail(s) were held against their specs — the \
+         `remote` exemption has taken over the gate"
+    );
+}
+
+/// The same gate for the starts whose picture cannot be redrawn offline.
+///
+/// `cargo +1.95.0 test -p brightfield-shell --test front_door -- --ignored`,
+/// and with `UPDATE_SNAPSHOTS=1` to regenerate. Run it after touching
+/// `examples/remote/**` or the renderer, and commit the PNG it writes.
+#[test]
+#[ignore = "network: renders a start whose spec fetches over https"]
+fn every_remote_start_still_renders_and_its_thumbnail_is_current() {
+    let drawn = render_thumbnails(
+        &starts::STARTS
+            .iter()
+            .filter(|s| s.remote)
+            .collect::<Vec<_>>(),
+    );
+    assert!(
+        drawn > 0,
+        "no shipped start needs a network any more — delete this test and the \
+         `remote` exemption in its sibling with it"
+    );
+}
+
+/// Render each start at the window it asks for, thumbnail it, and diff against
+/// the committed PNG. Returns how many were held, so a caller filtering the
+/// set can refuse to pass over an empty one.
+fn render_thumbnails(starts: &[&'static starts::Start]) -> usize {
     // Hermetic capture: keep `BRIGHTFIELD_DEVTOOLS` from baking the top-bar
     // renderer string into a regenerated thumbnail (see `door_surface`).
     std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
     let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/starts");
     let options = egui_kittest::SnapshotOptions::default().output_path(&assets);
     let mut failures = Vec::new();
-    for start in starts::STARTS {
+    for start in starts {
         let boot = Boot::start(start.id, Flow::Vertical)
             .unwrap_or_else(|e| panic!("{} no longer loads: {e}", start.id));
         // The window the start itself asks for — its content's own natural
@@ -857,4 +919,5 @@ fn every_shipped_start_still_renders_and_its_thumbnail_is_current() {
         "thumbnails have drifted from what their specs render:\n{}",
         failures.join("\n")
     );
+    starts.len()
 }

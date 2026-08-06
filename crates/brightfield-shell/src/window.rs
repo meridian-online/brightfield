@@ -2399,12 +2399,20 @@ impl MeridianApp {
                         }
 
                         // Explore — the gallery, and the flagship: every card
-                        // opens onto a drawn result.
+                        // opens onto a drawn result. The second sentence is
+                        // the narrowing a fetched start forced: the SPECS all
+                        // ship inside the binary, but one of them reads a
+                        // table that does not, and the sentence that used to
+                        // end at "rendered result" read as a promise it could
+                        // not keep on a plane. Its card carries
+                        // `starts::REMOTE_MARK`; this says what that means.
                         door_zone_heading(ui, "Explore", sem);
                         ui.label(
                             egui::RichText::new(
                                 "Starting points that ship with the binary — \
-                                 every one opens on a rendered result.",
+                                 each opens on a rendered result. A card \
+                                 marked over the network fetches its data \
+                                 when you open it.",
                             )
                             .font(ui_font())
                             .color(chrome::colour(sem.text.secondary)),

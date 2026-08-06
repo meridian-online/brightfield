@@ -26,12 +26,19 @@
 #   brightfield     the binary (built from the brightfield-shell crate)
 #   LICENSE
 #   README.txt      what it is, how to open the bundled examples
-#   examples/       the self-contained specs (inline data, no network) plus the
-#                   vendored Protocol manifests — everything the air-gapped
-#                   smoke test (scripts/verify-airgapped.sh) needs is inside
-#                   the artifact it tests. examples/live/ is deliberately NOT
-#                   shipped: it needs a DuckDB extension download, which is
-#                   exactly what a sealed artifact must not depend on.
+#   examples/       the self-contained specs (inline data, no network), the
+#                   vendored Protocol manifests, and examples/remote/ — the
+#                   specs that DO fetch. Everything the air-gapped smoke test
+#                   (scripts/verify-airgapped.sh) needs is inside the artifact
+#                   it tests, and that now includes the negative case: a spec
+#                   that must FAIL with the network denied, which cannot be
+#                   demonstrated against an artifact that does not carry one.
+#                   examples/live/ is still deliberately NOT shipped, and the
+#                   distinction is worth keeping straight — a live spec needs a
+#                   data file this repo does not vendor, so it could only ever
+#                   fail for want of a file the user was told to download; a
+#                   remote spec is complete, and either reaches its source or
+#                   says exactly why it could not.
 #
 # The disk image is what a download button hands a stranger: a window holding
 # Brightfield.app and an /Applications alias. A notarization ticket cannot be
@@ -192,14 +199,21 @@ cp "$BIN" "$STAGE/brightfield"
 cp LICENSE "$STAGE/LICENSE"
 cp examples/*.yaml "$STAGE/examples/"
 cp -R examples/protocol "$STAGE/examples/protocol"
+cp -R examples/remote "$STAGE/examples/remote"
 cat > "$STAGE/README.txt" <<EOF
 brightfield ${VERSION} (${TARGET})
 
 One native binary. No server, no webview, no language runtime, and no network
 needed to run — the only thing it asks of the machine is a working graphics
 driver. Nothing here reports anywhere; it reaches out only when a spec names a
-remote source, a DuckLake catalog or a spatial source, and everything bundled
-below is local.
+remote source, a DuckLake catalog or a spatial source.
+
+Everything under examples/ is local and self-contained EXCEPT examples/remote/,
+which is where the specs that fetch are kept, so that "does this need a
+connection" is a fact about a path rather than something you find out by
+running one. With no connection a remote spec does not open: it exits non-zero
+having named the network and the URL it could not reach, and nothing else in
+here is affected.
 
 Start on the bundled gallery:
 
@@ -212,6 +226,10 @@ Or run it on a bundled example:
 Open a Protocol manifest (rendered from the manifest alone, no run):
 
   BRIGHTFIELD_PROTOCOL_OFFLINE=1 ./brightfield examples/protocol/edgar_gleif/arcform.yaml
+
+Chart the published EDGAR-GLEIF crosswalk (this one needs a connection):
+
+  ./brightfield examples/remote/edgar-gleif-crosswalk.yaml
 
 Unattended smoke test (renders, screenshots itself, exits; exit 0 means the
 PNG landed):
@@ -254,6 +272,7 @@ case "$TARGET" in
     cp LICENSE "$APP/Contents/Resources/LICENSE"
     cp examples/*.yaml "$APP/Contents/Resources/examples/"
     cp -R examples/protocol "$APP/Contents/Resources/examples/protocol"
+    cp -R examples/remote "$APP/Contents/Resources/examples/remote"
 
     # The system floor is read out of the executable rather than declared, so a
     # toolchain that moves its deployment target moves this with it. An empty

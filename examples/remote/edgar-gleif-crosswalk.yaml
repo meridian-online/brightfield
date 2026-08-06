@@ -1,0 +1,85 @@
+# The published EDGAR ↔ GLEIF crosswalk, charted — the whole table, over the
+# network, with nothing sampled away.
+#
+# THE SOURCE IS REMOTE. `data.crosswalk` is an `https://` Parquet read through
+# DuckDB's httpfs. Opening this spec needs the network; `examples/remote/README.md`
+# states what happens without it, and a test holds that statement rather than
+# leaving it as a hope.
+#
+# WHY BOTH MARKS AGGREGATE, WHICH IS THE POINT OF THE FILE. This table is past
+# `sample_policy::MEASURED_INKED_MAX`, the largest row-level primitive count
+# measured to ink a frame. A dot scatter over these rows is therefore sampled
+# automatically, and would draw a picture of a fraction of the table — correctly,
+# and without saying much about it. Both marks here reduce in SQL instead:
+# `rectY` GROUP BYs the bin edges of a numeric column, `cell` GROUP BYs the two
+# category columns. Their row-level primitive count is the number of BINS and
+# CELLS, not the number of rows, so the emitter's sample clause never reaches
+# them and every edge in the file arrives on screen inside its group's count.
+# Swap either for a row-level mark and that stops being true —
+# `crates/brightfield-shell/tests/crosswalk_chart.rs` is the test that reddens
+# when it does, and it reddens with no network and no data.
+#
+# WHAT THE PICTURE SAYS. `corpus` is the crosswalk's published search text: each
+# edge's company name, legal name, ticker and LEI run together, which is exactly
+# the string the record-linkage model had to work with. Its length is therefore
+# how much evidence was available per link. The left histogram is that length
+# across the whole table; the right grid is what the links were worth — the tier
+# they landed in, against whether the SEC key is an operating-company CIK or a
+# fund series id. Series ids are linked from filed authority, so they are only
+# ever `authoritative`; CIKs are the ones the model had to guess at.
+#
+# THE DRAG IS A RE-QUERY, not a filter over rows already in memory. The brush
+# commits into `$band`; the cell mark's `filterBy: $band` threads the predicate
+# into its plan BELOW the GROUP BY, so DuckDB re-aggregates the remote table
+# under a new WHERE and returns a new grid. The histogram is deliberately not
+# filtered by its own brush — a plot never filters itself — so the denominator
+# stays on the page while the grid moves.
+#
+# Run it (a window, and a connection):
+#   cargo run -p brightfield-shell -- examples/remote/edgar-gleif-crosswalk.yaml
+#
+# The same chart is bundled in the binary as the `edgar-gleif-crosswalk-chart`
+# starting point, one click from the front door.
+meta:
+  title: The EDGAR ↔ GLEIF crosswalk
+  description: |
+    Every published edge between an SEC EDGAR filer key and a GLEIF legal
+    entity identifier, read live from the open lake over https. Both marks
+    aggregate in-engine, so the whole table is drawn rather than a sample of
+    it; brushing the histogram re-queries the grid beside it.
+params:
+  band: { select: crossfilter }
+data:
+  crosswalk:
+    file: "https://openlake.meridian.online/edgar_gleif.parquet"
+  # A projection, not a restriction: no WHERE and no LIMIT, so this view has
+  # exactly the rows the Parquet has. `corpus` is NOT NULL in the published
+  # table (it always carries at least the LEI), so the histogram's own
+  # `IS NOT NULL` guard drops nothing either.
+  links:
+    query: |
+      SELECT
+        tier,
+        key_type,
+        length(corpus) AS match_text_chars
+      FROM crosswalk
+hconcat:
+  - plot:
+      - mark: rectY
+        data: { from: links }
+        x: { bin: match_text_chars }
+        y: { count: }
+      - select: intervalX
+        as: $band
+    title: How much text each link had to match on
+    width: 460
+    height: 340
+  - plot:
+      - mark: cell
+        data: { from: links, filterBy: $band }
+        x: tier
+        y: key_type
+        fill: { count: }
+    title: What that bought, by key type
+    width: 380
+    height: 340

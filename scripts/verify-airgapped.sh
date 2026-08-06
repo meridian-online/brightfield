@@ -21,6 +21,16 @@
 #      nothing leaks in from this machine's config or out of the run.
 #   3. Both screenshots are verified to be real PNGs of non-trivial size —
 #      "it exited 0" is not "it rendered".
+#   4. THE NEGATIVE CASE, which is the half a green run used to be silent
+#      about. The artifact also carries specs that DO fetch (examples/remote/),
+#      and the promise about those is not "they work" — it is that they fail
+#      loudly, naming the network and the URL, and take nothing else down with
+#      them. So one is run in the same jail and REQUIRED to fail: non-zero,
+#      no PNG, and a message carrying both the word "network" and the URL. A
+#      spec that needs the network and comes back quiet is the silent-degrade
+#      defect this file exists to keep out of the artifact, and it would
+#      otherwise be invisible here — the two positive legs above pass whether
+#      or not it is present.
 #
 # The jail: macOS `sandbox-exec` with `(deny network*)`; Linux `unshare -rn`
 # (a network namespace with no interfaces). Both windows open briefly on a
@@ -83,6 +93,51 @@ smoke() {
   [ "$status" -eq 0 ] || { echo "   FAILED: exit $status"; return 1; }
 }
 
+# refuses OUT.png LOG -- SPEC ARGS...
+# The negative leg. Runs the packaged binary inside the same jail on a spec
+# that needs the network, and passes only when it REFUSES: non-zero exit, no
+# screenshot written, and a message naming the network and the location it
+# could not reach.
+#
+# stderr is captured rather than shown, because here it is the evidence. It is
+# echoed on failure, where it is the diagnosis.
+refuses() {
+  local out="$1" log="$2"; shift 2
+  [ "$1" = "--" ] || { echo "   refuses(): expected -- before the spec"; return 1; }
+  shift
+  rm -f "$out"
+  local status=0
+  ( cd "$PKG" && env HOME="$TMP/home" BRIGHTFIELD_CONFIG_DIR="$TMP/config" \
+      "${JAIL[@]}" "$EXE" "$@" --shot-after 45 --shot-out "$out" ) > "$log" 2>&1 &
+  local pid=$!
+  ( sleep "$DEADLINE" && echo "   DEADLINE (${DEADLINE}s) — killing" && kill -9 "$pid" ) 2>/dev/null &
+  local wd=$!
+  wait "$pid" || status=$?
+  kill "$wd" 2>/dev/null || true
+  wait "$wd" 2>/dev/null || true
+
+  if [ "$status" -eq 0 ]; then
+    echo "   FAILED: a spec that needs the network exited 0 with the network denied"
+    sed 's/^/     /' "$log"
+    return 1
+  fi
+  if [ -f "$out" ]; then
+    echo "   FAILED: it refused, and still wrote $out — a picture of what?"
+    return 1
+  fi
+  if ! grep -qi 'network' "$log"; then
+    echo "   FAILED: it refused without naming the network:"
+    sed 's/^/     /' "$log"
+    return 1
+  fi
+  if ! grep -qF "$REMOTE_URL" "$log"; then
+    echo "   FAILED: it refused without naming what it could not reach (${REMOTE_URL}):"
+    sed 's/^/     /' "$log"
+    return 1
+  fi
+  echo "   ok: refused (exit ${status}), naming the network and ${REMOTE_URL}"
+}
+
 is_png() {
   local f="$1" min_bytes="$2"
   [ -f "$f" ] || { echo "   MISSING: $f"; return 1; }
@@ -102,9 +157,16 @@ if "${JAIL[@]}" curl -sS --max-time 10 https://example.com -o /dev/null 2>/dev/n
 fi
 echo "   ok: curl cannot reach the network in the jail"
 
-# Each leg sets three things and nothing else: PKG (the directory to run from),
-# EXE (the executable, relative to PKG) and EXAMPLES (where the specs live,
+# Each leg sets four things and nothing else: PKG (the directory to run from),
+# EXE (the executable, relative to PKG), EXAMPLES (where the specs live,
+# relative to PKG) and REMOTE_SPEC (the negative case's spec, likewise
 # relative to PKG). Everything below is common.
+
+# The negative case's subject, and the location its refusal has to name. The
+# URL is written out rather than read from the spec so that a spec silently
+# repointed at somewhere else fails this check instead of passing it against
+# whatever it now says.
+REMOTE_URL="https://openlake.meridian.online/edgar_gleif.parquet"
 case "$ARTIFACT" in
   *.tar.gz)
     echo "== unpack: $ARTIFACT"
@@ -113,6 +175,7 @@ case "$ARTIFACT" in
     mkdir -p "$TMP/home" "$TMP/config"
     EXE="./brightfield"
     EXAMPLES="examples"
+    REMOTE_SPEC="examples/remote/edgar-gleif-crosswalk.yaml"
     [ -x "$PKG/$EXE" ] || { echo "no executable 'brightfield' in the tarball"; exit 1; }
     ;;
   *.dmg)
@@ -126,6 +189,7 @@ case "$ARTIFACT" in
     PKG="$MOUNT"
     EXE="./Brightfield.app/Contents/MacOS/brightfield"
     EXAMPLES="Brightfield.app/Contents/Resources/examples"
+    REMOTE_SPEC="Brightfield.app/Contents/Resources/examples/remote/edgar-gleif-crosswalk.yaml"
     [ -x "$PKG/$EXE" ] || { echo "no executable inside Brightfield.app on the image"; exit 1; }
     ;;
   *)
@@ -142,4 +206,17 @@ echo "== run 2: Protocol manifest, jailed (a window opens briefly)"
 smoke "$TMP/protocol.png" BRIGHTFIELD_PROTOCOL_OFFLINE=1 -- "$EXAMPLES/protocol/edgar_gleif/arcform.yaml"
 is_png "$TMP/protocol.png" 20000
 
-echo "== PASS: the packaged binary starts, renders and opens a local protocol with the network denied"
+echo "== run 3: a spec that needs the network, jailed — it must REFUSE"
+[ -f "$PKG/$REMOTE_SPEC" ] || {
+  echo "   FAILED: the artifact carries no $REMOTE_SPEC, so the negative case"
+  echo "   cannot be run against it. See scripts/package.sh."
+  exit 1
+}
+refuses "$TMP/remote.png" "$TMP/remote.log" -- "$REMOTE_SPEC"
+
+echo "== run 4: the local chart again, AFTER the refusal — the jail is unchanged"
+smoke "$TMP/chart-again.png" -- "$EXAMPLES/bars.yaml"
+is_png "$TMP/chart-again.png" 20000
+
+echo "== PASS: the packaged binary starts, renders and opens a local protocol with the"
+echo "         network denied — and refuses a remote spec by name without disturbing either"
