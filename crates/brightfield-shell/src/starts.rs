@@ -12,24 +12,30 @@
 //! worth offering:
 //!
 //! - **They ship with the binary.** Every spec is `include_str!`-ed and every
-//!   thumbnail `include_bytes!`-ed at compile time, so opening one fetches
-//!   nothing and there is no path to get wrong: a start works from any working
-//!   directory and cannot be broken by moving the checkout. (Note what this
-//!   claim is NOT: `ureq` and `rustls` do reach this binary, as normal
-//!   dependencies of `arc` by way of `brightfield-protocol`. The property that
-//!   holds is behavioural — these starts open without touching the network —
-//!   not an absence from the dependency graph. Do not restate it as the
-//!   latter; it is false and trivially falsifiable with `cargo tree`.)
+//!   thumbnail `include_bytes!`-ed at compile time, so there is no path to get
+//!   wrong: a start works from any working directory and cannot be broken by
+//!   moving the checkout. What ships is the *spec*, which is not the same as
+//!   what the spec reads — see [`Start::remote`] below, and the narrowing it
+//!   forced on the sentence that used to end this bullet. (Note what the
+//!   no-network claim is NOT, for the starts that keep it: `ureq` and `rustls`
+//!   do reach this binary, as normal dependencies of `arc` by way of
+//!   `brightfield-protocol`. The property that holds is behavioural — those
+//!   starts open without touching the network — not an absence from the
+//!   dependency graph. Do not restate it as the latter; it is false and
+//!   trivially falsifiable with `cargo tree`.)
 //! - **Choosing one lands on a result.** [`load`] returns a *composed*
 //!   dashboard or a *built* asset graph, not a file path and not an editor
 //!   buffer. A front door whose second click opens a blank surface has moved
 //!   the blank canvas rather than removed it.
 //! - **Their data is a table the engine queries.** Every chart start's
-//!   `data:` entries are SQL queries the engine materialises as DuckDB views
-//!   — generated, aggregated and ordered where the data lives. None of them
-//!   is a YAML file of inline numbers: inline rows are a testing affordance
-//!   under the emitter's 1000-row cap, and two of the starts deliberately
-//!   query tables past that cap to keep the distinction honest.
+//!   `data:` entries resolve to DuckDB views the engine materialises —
+//!   generated, aggregated and ordered where the data lives. None of them is
+//!   a YAML file of inline numbers: inline rows are a testing affordance under
+//!   the emitter's 1000-row cap, and several of the starts deliberately query
+//!   tables past that cap to keep the distinction honest. Where the table
+//!   comes from varies — the generated starts declare it in SQL, and
+//!   [`CROSSWALK_CHART`] reads a published Parquet — but what the chart draws
+//!   is a query result either way, never a literal.
 //!
 //! # Why an id rather than a path
 //!
@@ -39,29 +45,41 @@
 //! design; and an id this build does not recognise resolves to `None`, which
 //! means the same thing as never having opened anything.
 //!
-//! # Why these four
+//! # Why these five
 //!
-//! The crosswalk is the anchor. It is the vendored EDGAR ↔ GLEIF manifest
-//! under `examples/protocol/`, and it is the most legible thing this product
+//! The crosswalk is the anchor, and it appears twice — as the declaration and
+//! as the result.
+//!
+//! The **manifest** is the vendored EDGAR ↔ GLEIF Protocol under
+//! `examples/protocol/`, and it is the most legible thing this product
 //! renders: a ten-file fan-in, a parameterised fetch-and-extract family, a
 //! long-running operator step, a validation gate and one terminal sink. It
 //! also loads with no run behind it and no engine — `build_graph` reads the
 //! declared steps, so the `https://` inputs in the manifest are graph nodes
 //! that are never fetched.
 //!
-//! The three chart starts around it each land on a different drawn answer —
-//! a two-plot dashboard, a histogram, a ranked bar chart — and each is a
+//! The **chart** is what that Protocol produces, once someone has run it and
+//! published the Parquet: the whole crosswalk, read live over httpfs and drawn
+//! as two aggregating marks. It is the only start whose data is not inside the
+//! binary, which is what [`Start::remote`] exists to say out loud. It is here
+//! because a lineage graph cannot be filtered, panned or brushed, and a
+//! product whose gallery offers only the declaration has nothing on it to
+//! demonstrate the verbs with.
+//!
+//! The three generated chart starts each land on a different drawn answer — a
+//! two-plot dashboard, a histogram, a ranked bar chart — and each is a
 //! self-contained proof of the same architecture: the spec declares queries,
 //! the engine holds the tables, the chart reads the result. Between three and
 //! five is the deliberate size of this set — few enough to choose from at a
 //! glance, enough that the gallery reads as a gallery.
 //!
 //! The chart view's empty pane offers the first chart start; the protocol
-//! view's empty canvas offers the crosswalk. Neither switches the view out
-//! from under the click, and the front door's gallery makes all four one
-//! click away.
+//! view's empty canvas offers the crosswalk manifest. Neither switches the
+//! view out from under the click, neither empty pane offers a start that
+//! needs the network, and the front door's gallery makes all five one click
+//! away.
 //!
-//! # The one thing the crosswalk has to say out loud
+//! # The one thing the crosswalk MANIFEST has to say out loud
 //!
 //! The crosswalk loads with no run behind it, and that is exactly what
 //! [`protocol::run_less_manifest_refusal`](crate::protocol::run_less_manifest_refusal)
@@ -88,6 +106,25 @@
 //! taken. `run_less_manifest_refusal` states that in full, including what the
 //! memory can come from and what invalidates it.
 //!
+//! # The one thing the crosswalk CHART has to say out loud
+//!
+//! It needs the network, and every start beside it opens without one — a
+//! difference a user meets at the click, so it is disclosed at the click:
+//! [`Start::remote`] is the property, [`REMOTE_MARK`] is the words, and
+//! `a_start_that_reaches_the_network_says_so_on_its_own_button` is what keeps
+//! the flag and the label from drifting apart — exactly the strut
+//! [`Start::run_less`] already has.
+//!
+//! **What it does with no network is stated, not assumed.** The load fails —
+//! DuckDB binds a view over an `https://` Parquet eagerly, so the failure
+//! happens at open rather than at draw — and it fails as a structured
+//! `EngineError` naming the network and the URL, which
+//! [`MeridianApp::open_start`](crate::window::MeridianApp) raises as an error
+//! banner over a window that stays up. It is not a blank chart and not a
+//! silent partial one. `crates/brightfield-shell/tests/crosswalk_chart.rs`
+//! holds that offline, hermetically, by denying the engine the httpfs
+//! extension rather than by unplugging anything.
+//!
 //! # The thumbnails are shipped product surface
 //!
 //! Each start carries a pre-rendered PNG of what its click lands on, drawn on
@@ -95,7 +132,10 @@
 //! and regenerated by a test from the bundled specs — rendering them live at
 //! startup was considered and rejected (slow, and a render that can fail has
 //! no business on a first-run surface). The regeneration test is also the
-//! gate that fails if a bundled start stops rendering at all.
+//! gate that fails if a bundled start stops rendering at all — for every
+//! start whose spec that test can compose without a network, which is the
+//! whole set bar [`CROSSWALK_CHART`]; that one's render gate is the
+//! network-gated test beside it, run on demand rather than in CI.
 
 use brightfield_workbench::ViewKind;
 
@@ -104,6 +144,10 @@ use crate::protocol::{load_protocol_str, ProtocolInputs};
 
 /// The EDGAR ↔ GLEIF crosswalk Protocol — the anchor of the set.
 pub const CROSSWALK: &str = "edgar-gleif-crosswalk";
+/// The published EDGAR ↔ GLEIF crosswalk, charted: the same subject as
+/// [`CROSSWALK`] on the far side of a run and a publish. The one start whose
+/// data is fetched rather than shipped — see [`Start::remote`].
+pub const CROSSWALK_CHART: &str = "edgar-gleif-crosswalk-chart";
 /// The two-plot signals dashboard: a year of readings and their weekday
 /// profile, both views over one generated table.
 pub const DASHBOARD: &str = "signals-dashboard";
@@ -142,6 +186,24 @@ pub struct Start {
     /// the exemption is made once at the pick and then remembered, and
     /// `run_less_manifest_refusal` is where that is stated in full.
     pub run_less: bool,
+    /// Whether opening this reaches the **network** — its spec reads a source
+    /// this binary does not carry.
+    ///
+    /// The bullet at the top of this module says a start's spec and thumbnail
+    /// ship inside the binary. They do, for every start. What does not
+    /// necessarily ship is the *data the spec reads*, and a user meets that
+    /// difference at the click: with no connection this start does not open,
+    /// where the others do. So it is disclosed at the click, by
+    /// [`REMOTE_MARK`] in the [`label`](Self::label), on the same strut
+    /// [`run_less`](Self::run_less) uses — drop the mark and the test fails
+    /// rather than the disclosure quietly disappearing.
+    ///
+    /// It is also what the hermetic front-door gates read to decide which
+    /// starts they can load and render without a network. A `remote` start is
+    /// covered by the `#[ignore]`d network tests beside them instead; the
+    /// hermetic pass asserts how many it skipped, so the exemption cannot
+    /// swallow the whole set.
+    pub remote: bool,
 }
 
 /// What a [`Start::run_less`] start's label has to contain.
@@ -149,6 +211,10 @@ pub struct Start {
 /// A literal rather than a formatting rule so a test can assert it and a
 /// translator cannot lose it by accident.
 pub const RUN_LESS_MARK: &str = "(no run)";
+
+/// What a [`Start::remote`] start's label has to contain — the same device as
+/// [`RUN_LESS_MARK`], for the other property a click cannot take back.
+pub const REMOTE_MARK: &str = "over the network";
 
 /// Every shipped starting point, in the order the front door's gallery shows
 /// them — the crosswalk anchors, so it comes first.
@@ -167,6 +233,7 @@ pub const STARTS: &[Start] = &[
         view: ViewKind::Protocol,
         thumbnail: include_bytes!("../assets/starts/edgar-gleif-crosswalk.png"),
         run_less: true,
+        remote: false,
     },
     Start {
         id: DASHBOARD,
@@ -176,6 +243,7 @@ pub const STARTS: &[Start] = &[
         view: ViewKind::Charts,
         thumbnail: include_bytes!("../assets/starts/signals-dashboard.png"),
         run_less: false,
+        remote: false,
     },
     Start {
         id: DISTRIBUTION,
@@ -185,6 +253,7 @@ pub const STARTS: &[Start] = &[
         view: ViewKind::Charts,
         thumbnail: include_bytes!("../assets/starts/reading-distribution.png"),
         run_less: false,
+        remote: false,
     },
     Start {
         id: BREAKDOWN,
@@ -193,6 +262,21 @@ pub const STARTS: &[Start] = &[
         view: ViewKind::Charts,
         thumbnail: include_bytes!("../assets/starts/activity-breakdown.png"),
         run_less: false,
+        remote: false,
+    },
+    // Last on purpose. `for_view` hands an empty pane the FIRST start for its
+    // view, and an empty state whose one button can fail for want of a
+    // connection is a worse empty state than the one it replaced. The gallery
+    // offers this alongside the rest; the pane's single button stays local.
+    Start {
+        id: CROSSWALK_CHART,
+        label: "Open the EDGAR ↔ GLEIF crosswalk chart (over the network)",
+        summary: "The whole published crosswalk, binned and grouped in-engine \
+                  — read live over https.",
+        view: ViewKind::Charts,
+        thumbnail: include_bytes!("../assets/starts/edgar-gleif-crosswalk-chart.png"),
+        run_less: false,
+        remote: true,
     },
 ];
 
@@ -235,6 +319,16 @@ const BREAKDOWN_SPEC: &str = include_str!("../assets/starts/activity-breakdown.y
 const CROSSWALK_MANIFEST: &str =
     include_str!("../../../examples/protocol/edgar_gleif/arcform.yaml");
 
+/// The crosswalk chart, included from `examples/` rather than copied into
+/// `assets/starts/` — the same arrangement the private `CROSSWALK_MANIFEST`
+/// has, and for the same reason: one file, so the spec a reader runs from the
+/// checkout and the spec the button opens cannot drift.
+///
+/// Public so a test can hold the shipped bytes to the mark family this start
+/// is *for*, with no engine, no data and no network.
+pub const CROSSWALK_CHART_SPEC: &str =
+    include_str!("../../../examples/remote/edgar-gleif-crosswalk.yaml");
+
 /// The crosswalk's `sql:` models, keyed exactly as its manifest spells them.
 const CROSSWALK_MODELS: &[(&str, &str)] = &[
     (
@@ -257,20 +351,27 @@ const CROSSWALK_MODELS: &[(&str, &str)] = &[
 
 /// Load the start with this id, all the way to a renderable document.
 ///
-/// The chart starts' data is declared as SQL queries in their specs, so
-/// composing one touches no file — `base_dir` is `None` and there is nothing
-/// for a relative `file:` to resolve against; the engine materialises the
-/// declared views and executes the marks over them. The crosswalk's graph is
-/// derived from its declared steps, so it touches no file and no network
+/// The generated chart starts' data is declared as SQL queries in their specs,
+/// so composing one touches no file — `base_dir` is `None` and there is
+/// nothing for a relative `file:` to resolve against; the engine materialises
+/// the declared views and executes the marks over them. The crosswalk's graph
+/// is derived from its declared steps, so it touches no file and no network
 /// either.
+///
+/// [`CROSSWALK_CHART`] is the exception, and the only one: its `file:` source
+/// is an `https://` URL, so composing it fetches. That is what
+/// [`Start::remote`] declares and what the label discloses.
 ///
 /// # Errors
 ///
 /// If `id` is not a start this build ships, or if the embedded fixture fails
-/// to compose. The second is a build-time defect rather than a user's
-/// circumstance — `every_shipped_start_loads_into_a_document_with_something_in_it`
-/// and the thumbnail regeneration test in `tests/front_door.rs` are what keep
-/// it from reaching a user.
+/// to compose. For every start but [`CROSSWALK_CHART`] the second is a
+/// build-time defect rather than a user's circumstance —
+/// `every_shipped_start_loads_into_a_document_with_something_in_it` and the
+/// thumbnail regeneration test in `tests/front_door.rs` are what keep it from
+/// reaching a user. For [`CROSSWALK_CHART`] it is *also* the ordinary offline
+/// answer: a structured engine error naming the network and the URL, which the
+/// caller raises as a banner rather than swallowing.
 pub fn load(id: &str) -> Result<Opened, String> {
     match id {
         DASHBOARD => compose_spec_str(DASHBOARD_SPEC, None)
@@ -278,6 +379,8 @@ pub fn load(id: &str) -> Result<Opened, String> {
         DISTRIBUTION => compose_spec_str(DISTRIBUTION_SPEC, None)
             .map(|composed| Opened::Charts(Box::new(composed))),
         BREAKDOWN => compose_spec_str(BREAKDOWN_SPEC, None)
+            .map(|composed| Opened::Charts(Box::new(composed))),
+        CROSSWALK_CHART => compose_spec_str(CROSSWALK_CHART_SPEC, None)
             .map(|composed| Opened::Charts(Box::new(composed))),
         CROSSWALK => load_protocol_str(CROSSWALK_MANIFEST, CROSSWALK_MODELS)
             .map(|inputs| Opened::Protocol(Box::new(inputs))),
