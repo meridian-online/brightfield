@@ -1409,10 +1409,18 @@ mod tests {
         // Anything that puts a far end on the range. `bin_data` and its count
         // name the second ceiling outright; the rest are how a bounded
         // sentence reads when it does not name it.
-        const BOUNDED: [&str; 7] = [
+        //
+        // The count is READ from the constant, in both spellings a document
+        // uses. Typing the digits here would put a second copy of a measured
+        // figure in the workspace's Rust sources, which is the duplication
+        // `crates/brightfield-render/tests/one_ceiling.rs` exists to refuse —
+        // and it refused this one.
+        let panic_plain = VELLO_BIN_DATA_PANIC_DOTS.to_string();
+        let panic_grouped = group_digits(VELLO_BIN_DATA_PANIC_DOTS);
+        let bounded: [&str; 7] = [
             "bin_data",
-            "262,102",
-            "262102",
+            &panic_plain,
+            &panic_grouped,
             "second ceiling",
             "between",
             "up to",
@@ -1429,10 +1437,29 @@ mod tests {
             for sentence in split_sentences(&flat) {
                 let lower = sentence.to_lowercase();
                 let hits = |set: &[&str]| set.iter().any(|m| lower.contains(m));
-                if hits(&PLACED) && hits(&MECHANISM) && hits(&OUTCOME) && !hits(&BOUNDED) {
+                if hits(&PLACED) && hits(&MECHANISM) && hits(&OUTCOME) && !hits(&bounded) {
                     out.push(sentence);
                 }
             }
+        }
+        out
+    }
+
+    /// A count written the way a human-facing document writes it: digits
+    /// grouped in threes from the right.
+    ///
+    /// Derived from the value so that no test transcribes a measured figure —
+    /// `crates/brightfield-render/tests/one_ceiling.rs` refuses a second copy
+    /// of one anywhere in the workspace's Rust sources, and it is right to.
+    #[cfg(test)]
+    fn group_digits(n: u64) -> String {
+        let d = n.to_string();
+        let mut out = String::new();
+        for (i, c) in d.chars().enumerate() {
+            if i > 0 && (d.len() - i).is_multiple_of(3) {
+                out.push(',');
+            }
+            out.push(c);
         }
         out
     }
@@ -1617,17 +1644,7 @@ mod tests {
         let plain = |n: u64| n.to_string();
         // Group the digits from the right, which is what a human-facing
         // document does with a five-or-more-digit count.
-        let grouped = |n: u64| {
-            let d = n.to_string();
-            let mut out = String::new();
-            for (i, c) in d.chars().enumerate() {
-                if i > 0 && (d.len() - i).is_multiple_of(3) {
-                    out.push(',');
-                }
-                out.push(c);
-            }
-            out
-        };
+        let grouped = group_digits;
 
         for (surface, text, inked, blank) in [
             (
