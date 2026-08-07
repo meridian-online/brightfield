@@ -162,6 +162,8 @@ pub struct CubeDerivation {
     regr_groups: Vec<RegrGroup>,
     stats: StatRegistry,
     order: Vec<(String, SortDir)>,
+    /// `(limit, offset)` when the plan carried a `LIMIT` above its `ORDER BY`.
+    limit: Option<(usize, Option<usize>)>,
     scalar: bool,
     probe: Option<String>,
 }
@@ -280,6 +282,7 @@ impl CubeDerivation {
             active_rewritten: self.active_rewritten,
             reassembled,
             order: self.order,
+            limit: self.limit,
             scalar: self.scalar,
         })
     }
@@ -297,6 +300,7 @@ pub struct CubeSqls {
     active_rewritten: Predicate,
     reassembled: Vec<String>,
     order: Vec<(String, SortDir)>,
+    limit: Option<(usize, Option<usize>)>,
     scalar: bool,
 }
 
@@ -337,13 +341,23 @@ impl CubeSqls {
                     .collect(),
             }
         };
-        let plan = if self.order.is_empty() {
+        let ordered = if self.order.is_empty() {
             core
         } else {
             QueryPlan::Order {
                 input: Box::new(core),
                 keys: self.order.clone(),
             }
+        };
+        // Above the ORDER BY, where the direct query put it: the truncation is
+        // of the bars, not of the cube rows they are re-aggregated from.
+        let plan = match self.limit {
+            Some((limit, offset)) => QueryPlan::Limit {
+                input: Box::new(ordered),
+                limit,
+                offset,
+            },
+            None => ordered,
         };
         let mut bindings = Vec::new();
         let sql = render_query(&plan, &mut bindings);
@@ -385,7 +399,20 @@ pub fn derive_cube(
     let clauses = active_clauses(active)?;
 
     // --- shape analysis -----------------------------------------------------
-    let (order, core) = match plan {
+    // A `LIMIT` is accepted only directly above an `ORDER BY`, which is the
+    // only shape a lowerer emits one in (`BarLowerer`'s `sort: {limit: n}`).
+    // An unordered `LIMIT` names an arbitrary subset, so the cube's re-query
+    // and the direct query could both be right and disagree, and the whole
+    // contract here is that their result sets are equal.
+    let (limit, ordered) = match plan {
+        QueryPlan::Limit {
+            input,
+            limit,
+            offset,
+        } if matches!(&**input, QueryPlan::Order { .. }) => (Some((*limit, *offset)), &**input),
+        p => (None, p),
+    };
+    let (order, core) = match ordered {
         QueryPlan::Order { input, keys } => (keys.clone(), &**input),
         p => (Vec::new(), p),
     };
@@ -511,6 +538,7 @@ pub fn derive_cube(
         regr_groups,
         stats,
         order,
+        limit,
         scalar,
         probe,
     })

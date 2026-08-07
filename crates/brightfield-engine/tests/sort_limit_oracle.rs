@@ -18,7 +18,10 @@
 //! changes the totals as well as the number of bars.
 
 use brightfield_spec::{parse_spec, Format};
-use brightfield_sql::emit::{emit_all_queries, emit_sources};
+use brightfield_sql::cube::derive_cube;
+use brightfield_sql::emit::{emit_all_queries, emit_sources, lower_mark_plan};
+use brightfield_sql::ir::{Predicate, QueryPlan, ScalarValue};
+use brightfield_sql::render::render_query;
 use duckdb::Connection;
 
 /// One output bar: `(band value, aggregate)`.
@@ -195,4 +198,128 @@ fn a_pre_aggregated_bar_ranks_and_truncates_too() {
             .collect::<Vec<_>>(),
         vec!["b", "c"]
     );
+}
+
+/// The pre-aggregation layer serves the same ranked, truncated bars the direct
+/// query does.
+///
+/// `derive_cube` unwraps the structural wrappers above an aggregation looking
+/// for one it can decompose. It knew `ORDER BY` and not `LIMIT`, so a ranked
+/// bar chart with a `limit:` — the one this card exists to make possible — was
+/// the single mark shape that fell back to the direct query on every brush
+/// step. The cube's contract is that its result set EQUALS the direct query's,
+/// so the claim to prove is not that a cube is built but that the two agree,
+/// row for row and in order, with the truncation applied to the bars rather
+/// than to the cube rows they are re-aggregated from.
+///
+/// The brush is what makes that non-trivial: unbrushed the top two bands are
+/// `a` and `b`, brushed to `g = 1` they are `b` and `q`. A cube that ignored
+/// the clause, or truncated before applying it, cannot return the second.
+#[test]
+fn the_cube_serves_the_same_ranked_bars_as_the_direct_query() {
+    const SRC: &str = "params:\n  brush:\n    select: intersect\ndata:\n  t:\n  \
+                       - { cat: a, v: 1, g: 1 }\n  - { cat: b, v: 4, g: 1 }\n  \
+                       - { cat: c, v: 2, g: 2 }\n  - { cat: q, v: 3, g: 1 }\n  \
+                       - { cat: a, v: 9, g: 2 }\nplot:\n- mark: barX\n  \
+                       data: { from: t, filterBy: $brush }\n  x: { sum: v }\n  \
+                       y: cat\n  sort: { y: -x, limit: 2 }\n";
+
+    let spec = parse_spec(SRC, Format::Yaml).expect("spec parses").spec;
+    let conn = Connection::open_in_memory().expect("duckdb opens");
+    for ddl in emit_sources(&spec, None).expect("sources emit").statements {
+        conn.execute_batch(&ddl.sql).expect("ddl runs");
+    }
+
+    // The plan without any live selection — what the pre-aggregation layer's
+    // selection path hands `derive_cube`.
+    let (plan, _) = lower_mark_plan(&spec, 0).expect("mark lowers");
+    let active = Predicate::Interval {
+        column: "\"g\"".to_string(),
+        lo: ScalarValue::Int(1),
+        hi: ScalarValue::Int(1),
+        meta: None,
+    };
+
+    // The direct query: the clause beneath the aggregation, where emission
+    // threads it, leaving the ORDER BY and the LIMIT above.
+    let direct = sql_with_clause_under_aggregation(&plan, &active);
+    let direct_rows = rows(&conn, &direct);
+    assert_eq!(
+        direct_rows,
+        vec![("b".to_string(), 4.0), ("q".to_string(), 3.0)],
+        "with `g = 1` the top two bands are b and q, not the a and b an \
+         unbrushed query returns: {direct}"
+    );
+
+    // The served query, over a materialised cube.
+    let derivation = derive_cube(&plan, &active, None)
+        .expect("a ranked, limited bar over one source must decompose");
+    let sqls = derivation.finalize(&[]).expect("no centering needed");
+    conn.execute_batch(&format!(
+        "CREATE TEMP TABLE ranked_cube AS {}",
+        sqls.build_select
+    ))
+    .expect("cube builds");
+    let served = sqls.query_select("ranked_cube").expect("re-query renders");
+    assert!(
+        !served.contains("\"t\""),
+        "the re-query is served from the cube and never touches the source: {served}"
+    );
+    assert!(served.contains("LIMIT 2"), "{served}");
+
+    assert_eq!(
+        rows(&conn, &served),
+        direct_rows,
+        "the cube and the direct query must return the same bars in the same \
+         order: {served}"
+    );
+}
+
+/// Thread `predicate` onto the aggregation's input, descending through the
+/// `LIMIT` and `ORDER BY` above it — the placement `emit`'s
+/// `apply_selection_filter` produces.
+fn sql_with_clause_under_aggregation(plan: &QueryPlan, predicate: &Predicate) -> String {
+    fn thread(plan: QueryPlan, predicate: &Predicate) -> QueryPlan {
+        match plan {
+            QueryPlan::Limit {
+                input,
+                limit,
+                offset,
+            } => QueryPlan::Limit {
+                input: Box::new(thread(*input, predicate)),
+                limit,
+                offset,
+            },
+            QueryPlan::Order { input, keys } => QueryPlan::Order {
+                input: Box::new(thread(*input, predicate)),
+                keys,
+            },
+            QueryPlan::Aggregation {
+                input,
+                group_by,
+                aggregates,
+            } => QueryPlan::Aggregation {
+                input: Box::new(QueryPlan::Filter {
+                    input,
+                    predicate: predicate.clone(),
+                }),
+                group_by,
+                aggregates,
+            },
+            other => other,
+        }
+    }
+    let mut bindings = Vec::new();
+    let sql = render_query(&thread(plan.clone(), predicate), &mut bindings);
+    assert!(bindings.is_empty(), "this plan carries no parameters");
+    sql
+}
+
+/// Execute `sql` and read it as `(band, aggregate)` rows.
+fn rows(conn: &Connection, sql: &str) -> Vec<Bar> {
+    let mut stmt = conn.prepare(sql).expect("query prepares");
+    stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)))
+        .expect("query runs")
+        .collect::<Result<Vec<Bar>, _>>()
+        .expect("rows read")
 }
