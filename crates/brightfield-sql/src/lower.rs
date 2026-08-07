@@ -1100,9 +1100,18 @@ fn bin_spec_query(table: &str, col: &str, steps: i64) -> String {
 ///
 /// Rows come out ordered by the band column. GROUP BY output order is
 /// unspecified in DuckDB and the renderer draws in row order, so an unordered
-/// aggregation is a chart whose bars can move between runs. Ordering by VALUE
-/// — the ranked part of a ranked category bar — is `sort:`, which this does
-/// not read.
+/// aggregation is a chart whose bars can move between runs.
+///
+/// A lifted `sort:` ([`SpecValue::Sort`]) replaces that ordering with one on
+/// the VALUE — the ranked part of a ranked category bar — and its `limit:`
+/// becomes a [`QueryPlan::Limit`] above it, so the truncation happens after
+/// the ranking rather than to the rows feeding it. The band ordering stays as
+/// the tiebreak, because two categories with the same total would otherwise be
+/// back to the unspecified order this ordering exists to remove. Both halves
+/// reach the picture through ROW ORDER: `brightfield-render`'s
+/// `infer_column_scale` collects a band scale's categories in first-seen row
+/// order, so the query's row order is the order the bars are drawn in and the
+/// rows a limit kept are the only categories the launch scale has.
 pub struct BarLowerer;
 
 impl MarkLower for BarLowerer {
@@ -1110,9 +1119,21 @@ impl MarkLower for BarLowerer {
         let Some((value_key, band_key)) = mark.kind.band_aggregate_axes() else {
             return SimpleLowerer.lower(mark, ctx);
         };
+        let sort = opt_sort(&mark.options);
         let Some(agg) = opt_aggregate(&mark.options, value_key) else {
-            // Pre-aggregated bar — unchanged.
-            return SimpleLowerer.lower(mark, ctx);
+            // Pre-aggregated bar — the rows pass through as before, ordered by
+            // the value column itself when the spec asked for an order.
+            let plan = SimpleLowerer.lower(mark, ctx)?;
+            let Some((sort, value_col)) = sort.zip(opt_string(&mark.options, value_key)) else {
+                return Ok(plan);
+            };
+            let tiebreak = opt_string(&mark.options, band_key).map(|c| format!("\"{c}\""));
+            return Ok(apply_mark_sort(
+                plan,
+                &format!("\"{value_col}\""),
+                tiebreak.as_deref(),
+                sort,
+            ));
         };
         let Some(band) = opt_string(&mark.options, band_key).map(str::to_string) else {
             return SimpleLowerer.lower(mark, ctx);
@@ -1137,14 +1158,89 @@ impl MarkLower for BarLowerer {
             input: Box::new(QueryPlan::Source { table: source }),
             predicate: Predicate::Expr(format!("\"{band}\" IS NOT NULL{row_filter}")),
         };
-        Ok(QueryPlan::Order {
-            input: Box::new(QueryPlan::Aggregation {
-                input: Box::new(filtered),
-                group_by: vec![format!("\"{band}\"")],
-                aggregates: vec![hex_aggregate_expr(&agg)],
-            }),
-            keys: vec![(format!("\"{band}\""), SortDir::Asc)],
+        let aggregate = hex_aggregate_expr(&agg);
+        let value_alias = aggregate_output_column(&aggregate);
+        let band_key = format!("\"{band}\"");
+        let aggregated = QueryPlan::Aggregation {
+            input: Box::new(filtered),
+            group_by: vec![band_key.clone()],
+            aggregates: vec![aggregate],
+        };
+        Ok(match sort {
+            Some(sort) => apply_mark_sort(aggregated, &value_alias, Some(&band_key), sort),
+            None => QueryPlan::Order {
+                input: Box::new(aggregated),
+                keys: vec![(band_key, SortDir::Asc)],
+            },
         })
+    }
+}
+
+/// The `(descending, limit)` a parser-lifted [`SpecValue::Sort`] carries, or
+/// `None` when the mark wrote no `sort:` the parser could lift.
+fn opt_sort(options: &IndexMap<String, ValueOrParamRef<SpecValue>>) -> Option<(bool, Option<u64>)> {
+    match options.get("sort")? {
+        ValueOrParamRef::Value(SpecValue::Sort {
+            descending, limit, ..
+        }) => Some((*descending, *limit)),
+        _ => None,
+    }
+}
+
+/// The output column an aggregate expression writes, read off the expression
+/// itself rather than re-derived from the aggregate.
+///
+/// The alias rule (`count` to the reserved `__bf_count`, everything else to
+/// its source column) is [`hex_aggregate_expr`]'s, and an `ORDER BY` that
+/// restated it would be a second copy free to drift from the first.
+fn aggregate_output_column(aggregate: &AggregateExpr) -> String {
+    match aggregate {
+        AggregateExpr::Call(call) => call.alias.clone().unwrap_or_default(),
+        AggregateExpr::Raw(raw) => raw.clone(),
+    }
+}
+
+/// Wrap `plan` in the `ORDER BY` — and the `LIMIT`, when one was written —
+/// that a lifted `sort:` asks for.
+///
+/// `by` is the OUTPUT column the order reads: the aggregate's alias on the
+/// aggregating path, the value channel's own column on the pre-aggregated one.
+/// [`QueryPlan::Order`] renders its input as a subquery, so an alias is in
+/// scope there where it would not be in the aggregation's own `ORDER BY`.
+///
+/// `tiebreak` is appended as a second ascending key. It is what keeps the
+/// picture stable when two bands share a value, and it is the reason a
+/// `limit:` is reproducible rather than a coin toss over the rows at the cut.
+fn apply_mark_sort(
+    plan: QueryPlan,
+    by: &str,
+    tiebreak: Option<&str>,
+    (descending, limit): (bool, Option<u64>),
+) -> QueryPlan {
+    let dir = if descending {
+        SortDir::Desc
+    } else {
+        SortDir::Asc
+    };
+    let mut keys = vec![(by.to_string(), dir)];
+    if let Some(t) = tiebreak {
+        if t != by {
+            keys.push((t.to_string(), SortDir::Asc));
+        }
+    }
+    let ordered = QueryPlan::Order {
+        input: Box::new(plan),
+        keys,
+    };
+    match limit {
+        // A `limit:` wider than the row count is not an error in SQL and is
+        // not one here either; `usize::MAX` is the whole result set.
+        Some(n) => QueryPlan::Limit {
+            input: Box::new(ordered),
+            limit: usize::try_from(n).unwrap_or(usize::MAX),
+            offset: None,
+        },
+        None => ordered,
     }
 }
 

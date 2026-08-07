@@ -27,19 +27,25 @@ fn unconsumed(source: &str) -> BTreeSet<String> {
 }
 
 /// `sorted-bars.yaml` asks a bar chart to sort by descending value and keep
-/// the top ten. Brightfield draws every row in source order. Both halves of
-/// that instruction are named.
+/// the top ten. Brightfield now does both, so neither half may be named here.
+///
+/// This test used to assert the opposite — `barX:sort` and `barX:sort.limit`
+/// were the two lines it demanded — and inverting it is the point the file's
+/// header makes: the capability and the diagnostic move together, or the
+/// product lies in one direction or the other. A `sort:` shape brightfield
+/// does NOT compute is still reported, by `ParseWarning::UnconsumedSort`;
+/// `tests/sort_lift.rs` holds that half.
 #[test]
-fn sorted_bars_sort_and_limit_are_named() {
+fn sorted_bars_sort_and_limit_are_no_longer_named() {
     let found = unconsumed(include_str!("../vendor/mosaic-specs/yaml/sorted-bars.yaml"));
     assert!(
-        found.contains("barX:sort"),
-        "the ignored `sort` option must be named: {found:?}"
+        !found.contains("barX:sort"),
+        "`sort` has a reader and must not be reported as an option nothing \
+         reads: {found:?}"
     );
     assert!(
-        found.contains("barX:sort.limit"),
-        "the `limit` nested inside the ignored `sort` is a separate ignored \
-         instruction and must be named too: {found:?}"
+        !found.contains("barX:sort.limit"),
+        "the `limit` nested inside it is read by the same lowerer: {found:?}"
     );
 }
 
