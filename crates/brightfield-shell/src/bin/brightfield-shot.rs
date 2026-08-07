@@ -71,11 +71,10 @@
 //! protocol acc (5 collapsed / 5 full nodes, 3 steps, Vertical flow, 1 degraded) from S.yaml
 //! ```
 //!
-//! A degrade raised by the model read leads with its class — `absent` (the
-//! protocol names a model that is not there) / `unreadable` (the read was
-//! refused — a permission, an ACL, a sandbox grant) / `unavailable` — because
-//! of those three only `unreadable` is the reader's to fix, and its line is the
-//! one that says what makes it go away. A degrade raised anywhere else carries the
+//! A degrade raised by the model read leads with its class — `absent`,
+//! `unreadable` or `unavailable`. What each one means, and how much it commits
+//! to about the cause, is [`brightfield_protocol::Degradation`]; the rest of
+//! the line is that class's own guidance. A degrade raised anywhere else carries the
 //! underlying message with no class tag; `examples/protocol/degrade.yaml` is
 //! one, and its line opens `degraded step transform: SQL parse error`.
 //!
