@@ -1093,9 +1093,10 @@ fn bin_spec_query(table: &str, col: &str, steps: i64) -> String {
 /// and `examples/bars-x.yaml` emit the same bytes as before.
 ///
 /// The aggregate is aliased to its source column (`count` to the reserved
-/// `__bf_count`) by [`hex_aggregate_expr`] — the convention hexbin and cell
-/// already use, and the one `brightfield_render::channel` reads a positional
-/// `SpecValue::Aggregate` through, so the renderer needs nothing new.
+/// `__bf_count`) by the private `hex_aggregate_expr` — the convention hexbin
+/// and cell already use, and the one `brightfield_render::channel` reads a
+/// positional `SpecValue::Aggregate` through, so the renderer needs nothing
+/// new.
 ///
 /// Rows come out ordered by the band column. GROUP BY output order is
 /// unspecified in DuckDB and the renderer draws in row order, so an unordered
