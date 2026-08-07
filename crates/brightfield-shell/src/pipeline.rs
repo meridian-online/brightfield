@@ -406,6 +406,7 @@ pub fn compose_spec_sampled(
         Some(source_name(spec_path)),
         Path::new(spec_path).parent(),
         sample,
+        Rect::zero(),
     )
 }
 
@@ -465,8 +466,26 @@ pub fn live_spec_sampled(
 ///
 /// As [`compose_spec`].
 pub fn compose_spec_str(source: &str, base_dir: Option<&Path>) -> Result<Composed, String> {
+    compose_spec_str_at(source, base_dir, Rect::zero())
+}
+
+/// [`compose_spec_str`] into a box the caller names, in logical pixels.
+///
+/// [`Rect::zero`] is [`compose_spec_str`] exactly. A positive extent on an axis
+/// is the size the composition is laid out to on that axis, whatever the spec
+/// declares — the one-shot half of what a resizable pane does through
+/// [`LiveDashboard::set_viewport`].
+///
+/// # Errors
+///
+/// As [`compose_spec`].
+pub fn compose_spec_str_at(
+    source: &str,
+    base_dir: Option<&Path>,
+    viewport: Rect,
+) -> Result<Composed, String> {
     let parsed = parse_spec(source, Format::Yaml).map_err(|e| format!("parse error: {e}"))?;
-    compose(parsed, None, base_dir, None)
+    compose(parsed, None, base_dir, None, viewport)
 }
 
 /// The name a diagnostic cites for a spec loaded from a path: its file name,
@@ -490,6 +509,7 @@ fn compose(
     source: Option<String>,
     spec_dir: Option<&Path>,
     sample: Option<SampleRate>,
+    viewport: Rect,
 ) -> Result<Composed, String> {
     let spec = parsed.spec;
     let analysis = analyse_spec(&spec).map_err(|e| format!("analysis error: {e}"))?;
@@ -518,6 +538,7 @@ fn compose(
         &ViewExtents::new(),
         &beyond,
         &mut PlotPins::new(),
+        viewport,
     )?
     .with_diagnostics(diagnostics))
 }
@@ -567,6 +588,15 @@ pub struct LiveDashboard {
     /// to outlive the composition that produced it. The one-shot compose path
     /// holds no equivalent and needs none.
     pins: PlotPins,
+    /// The box this dashboard composes into, in logical pixels — what a
+    /// surface hands over through [`LiveDashboard::set_viewport`] once it
+    /// knows how much room the chart has.
+    ///
+    /// [`Rect::zero`] until one does, which is the offer that means "no offer":
+    /// a dashboard nobody has sized composes at the spec's own declared size,
+    /// so the capture tiers and the boot paint are unchanged by the existence
+    /// of this field.
+    viewport: Rect,
 }
 
 /// What each plot's axes are drawn at, keyed by plot node path.
@@ -611,6 +641,7 @@ impl LiveDashboard {
             diagnostics,
             view_extents: ViewExtents::new(),
             pins: PlotPins::new(),
+            viewport: Rect::zero(),
         }))
     }
 
@@ -652,6 +683,7 @@ impl LiveDashboard {
             diagnostics,
             view_extents: ViewExtents::new(),
             pins: PlotPins::new(),
+            viewport: Rect::zero(),
         }))
     }
 
@@ -669,6 +701,24 @@ impl LiveDashboard {
     #[must_use]
     pub fn diagnostics(&self) -> &LoadDiagnostics {
         &self.diagnostics
+    }
+
+    /// The box the next composite will be laid out into.
+    #[must_use]
+    pub fn viewport(&self) -> Rect {
+        self.viewport
+    }
+
+    /// Offer this dashboard a box to compose into, and say whether that is
+    /// news. A caller re-presents on `true` and does nothing on `false`, which
+    /// is what keeps a surface that reports its size every frame from
+    /// re-querying every frame.
+    pub fn set_viewport(&mut self, viewport: Rect) -> bool {
+        if self.viewport == viewport {
+            return false;
+        }
+        self.viewport = viewport;
+        true
     }
 
     /// Composite the CURRENT materialisation into a dashboard scene — the first
@@ -704,6 +754,7 @@ impl LiveDashboard {
             &self.view_extents,
             &beyond,
             &mut self.pins,
+            self.viewport,
         )?
         .with_diagnostics(self.diagnostics.clone());
         ink_committed_selections(&mut composed, self.coordinator.session());
@@ -1160,6 +1211,7 @@ fn compose_from_results(
     extents: &ViewExtents,
     beyond_frame: &[bool],
     pins: &mut PlotPins,
+    viewport: Rect,
 ) -> Result<Composed, String> {
     let marks = collect_marks(spec);
     let mut batches: Vec<Option<RecordBatch>> = Vec::with_capacity(marks.len());
@@ -1191,7 +1243,7 @@ fn compose_from_results(
         kinds.push(marks[i].kind);
     }
 
-    let placed = placed_plots(spec, Rect::new(0.0, 0.0, 0.0, 0.0));
+    let placed = placed_plots(spec, viewport);
     let groups = collect_plot_groups(spec);
     let plot_nodes = collect_plot_nodes(spec);
     let registry = default_renderers();
@@ -1795,6 +1847,7 @@ plot:
             &ViewExtents::new(),
             &[],
             &mut PlotPins::new(),
+            Rect::zero(),
         )
         .expect("compose full");
 
@@ -1809,6 +1862,7 @@ plot:
             &ViewExtents::new(),
             &[],
             &mut PlotPins::new(),
+            Rect::zero(),
         )
         .expect("compose first");
 
@@ -1830,6 +1884,7 @@ plot:
             &ViewExtents::new(),
             &[],
             &mut PlotPins::new(),
+            Rect::zero(),
         )
         .expect("compose single");
         assert_eq!(
@@ -1886,6 +1941,7 @@ plot:
             &ViewExtents::new(),
             &[],
             &mut PlotPins::new(),
+            Rect::zero(),
         )
         .err()
         .expect("must fail loudly");

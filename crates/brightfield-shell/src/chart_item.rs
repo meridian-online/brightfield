@@ -640,6 +640,20 @@ impl Item<ChartDoc> for ChartItem {
             run_state_pill(ui, state);
         }
 
+        // The dashboard is laid out into the room this pane has left, so the
+        // raster below is a re-layout of the chart at the pane's size rather
+        // than a fixed picture the window was sized around. The band beside it
+        // is subtracted first: it is drawn outside the raster, so offering the
+        // whole row would compose a chart the legend then pushes off the edge.
+        let reserved = legend::band_width(&doc.composed);
+        let gap = if reserved > 0.0 {
+            meridian_design::spacing::CONTROL_GAP
+        } else {
+            0.0
+        };
+        let room = ui.available_size();
+        doc.reflow_to(egui::vec2(room.x - reserved - gap, room.y));
+
         let (w, h) = (doc.composed.width, doc.composed.height);
         let band = legend::band_width(&doc.composed);
 
