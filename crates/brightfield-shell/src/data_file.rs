@@ -28,13 +28,13 @@
 //! is a profile pass over the table before the first picture, and it buys a
 //! first look chosen from the data rather than guessed at.
 //!
-//! # The offline promise, and why a URL is refused
+//! # Why a URL is refused
 //!
-//! Every bundled example draws with the network switched off, and DuckDB will
-//! happily bind a view over an `https://` Parquet through `httpfs` — so a path
-//! box that accepted a URL would be the shortest route to breaking that promise
-//! by accident. [`accept`] refuses anything carrying a URL scheme, before the
-//! engine is involved at all, and says so.
+//! This opens a file on this machine. DuckDB will happily bind a view over an
+//! `https://` Parquet through `httpfs`, so a path box that passed the string on
+//! would fetch instead — and succeed, with nothing red anywhere. [`accept`]
+//! refuses anything carrying a URL scheme, before the engine is involved at
+//! all, and says so.
 
 use std::path::{Path, PathBuf};
 
@@ -120,10 +120,7 @@ pub fn accept(chosen: &str) -> Result<PathBuf, String> {
     if let Some(scheme) = url_scheme(chosen) {
         return Err(format!(
             "{chosen}: Brightfield opens files on this machine, and `{scheme}:` \
-             is a URL. Every example this build ships draws with the network \
-             switched off, and reading a table over the network from a path box \
-             is the easiest way to lose that without noticing. Download the file \
-             and open it from disk."
+             is a URL. Download the file and open it from disk."
         ));
     }
     let path = PathBuf::from(chosen);
@@ -486,8 +483,8 @@ mod tests {
     }
 
     /// Every URL form a path box realistically receives is refused, and the
-    /// refusal says the word — the offline promise is what this defends, so
-    /// "it happens to fail later" is not the same answer.
+    /// refusal says the word — what this defends is that the box opens a file
+    /// on this machine, so "it happens to fail later" is not the same answer.
     #[test]
     fn a_url_is_refused_by_scheme_not_by_hostname() {
         for url in [

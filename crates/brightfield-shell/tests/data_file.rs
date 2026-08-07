@@ -501,10 +501,10 @@ fn a_path_naming_nothing_fails_by_name() {
 /// A URL is refused, through the same entry point the door's control reaches,
 /// with a message saying it is a URL — and nothing is opened.
 ///
-/// This is the offline promise's cheapest failure mode. DuckDB binds a view
-/// over an `https://` Parquet through `httpfs` eagerly and without complaint,
-/// so a path box that merely *passed the string on* would fetch, succeed, and
-/// leave the promise broken with nothing red anywhere.
+/// This is the cheapest way for the box to stop being about this machine.
+/// DuckDB binds a view over an `https://` Parquet through `httpfs` eagerly and
+/// without complaint, so a path box that merely *passed the string on* would
+/// fetch, succeed, and leave nothing red anywhere.
 #[test]
 fn a_url_is_refused_at_the_window_and_opens_nothing() {
     let mut win = Window::open();
