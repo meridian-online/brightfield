@@ -979,6 +979,32 @@ pub struct MeridianApp {
     door_continue: Option<egui::Rect>,
     /// Where the front door drew the Start zone's keyboard-help control.
     door_help: Option<egui::Rect>,
+    /// Where the front door drew the Start zone's open-a-file control —
+    /// recorded for the reason [`Self::door_cards`] is, so the test that proves
+    /// the verb is reachable clicks it where it was actually laid out.
+    door_open_file: Option<egui::Rect>,
+    /// Whether this frame's front door asked for the file dialog.
+    ///
+    /// A flag rather than a call inside the door's closure: `pick` blocks on an
+    /// operating-system modal, and blocking inside the layout pass would hold
+    /// the `Ui` borrow across a window this process does not own. It is read
+    /// after the frame's requests are applied — see [`MeridianApp::draw`].
+    pick_requested: bool,
+    /// Whether this app may raise an operating-system dialog at all.
+    ///
+    /// **Off unless the live window turns it on**, which is the safe default
+    /// rather than the polite one. Three tiers build a `MeridianApp` and only
+    /// one of them has a person in front of it: `capture_png` and the
+    /// `brightfield-shot` binary drive real frames through real wgpu devices
+    /// with no window and no user, and `brightfield-shot --script` feeds
+    /// synthetic pointer events — so a scripted click that happened to land on
+    /// the door's open control would raise a modal on a CI runner and block
+    /// there until the job timed out. The headless test tiers are the same
+    /// case one step further down.
+    ///
+    /// So the permission is granted at exactly one call site, by
+    /// [`MeridianApp::allowing_dialogs`], and `main` is the only caller.
+    dialogs_allowed: bool,
     /// The one modal slot — see [`Overlay`].
     overlay: Option<Overlay>,
     /// The keystrokes that open overlays, read off the registry at boot.
@@ -1203,6 +1229,9 @@ impl MeridianApp {
             door_cards: Vec::new(),
             door_continue: None,
             door_help: None,
+            door_open_file: None,
+            pick_requested: false,
+            dialogs_allowed: false,
             overlay: None,
             overlay_keys: OverlayKeys::from_registry(),
             home_binding: brightfield_keys::registry()
@@ -1518,6 +1547,38 @@ impl MeridianApp {
         self.door_help
     }
 
+    /// The rect of the front door's open-a-data-file control, when the last
+    /// frame drew the door.
+    ///
+    /// `None` on a frame the door did not draw, exactly as
+    /// [`MeridianApp::front_door_card_rect`] answers — the door's controls are
+    /// its own, not the window's.
+    #[must_use]
+    pub fn front_door_open_file_rect(&self) -> Option<egui::Rect> {
+        self.door_open_file
+    }
+
+    /// Whether the last frame's door asked for the file dialog — the test hook
+    /// that proves the control is wired without opening a dialog on anyone's
+    /// desktop.
+    #[must_use]
+    pub fn pick_requested(&self) -> bool {
+        self.pick_requested
+    }
+
+    /// Permit this app to raise operating-system dialogs — the live window's
+    /// declaration that there is a person in front of it.
+    ///
+    /// `main` is the only caller, and the default is off for the reason the
+    /// `dialogs_allowed` field records: the capture tiers and the pixel tier
+    /// drive the same frames with no window and no user, and a modal raised
+    /// there blocks until something kills the process.
+    #[must_use]
+    pub fn allowing_dialogs(mut self) -> Self {
+        self.dialogs_allowed = true;
+        self
+    }
+
     /// The protocol view's interaction model, read-only.
     ///
     /// The window is the only thing that feeds it keys, and it feeds it keys
@@ -1752,6 +1813,7 @@ impl MeridianApp {
             self.door_cards.clear();
             self.door_continue = None;
             self.door_help = None;
+            self.door_open_file = None;
             let (ws, charts, protocol, affordances) = (
                 self.layout.workspace_mut(),
                 &mut self.charts,
@@ -1793,6 +1855,23 @@ impl MeridianApp {
         self.status_rail_ui(&ctx, &mut requests);
 
         self.apply(&ctx, view, requests);
+
+        // The file dialog, after the frame and outside every borrow it took:
+        // it blocks the thread on a window this process did not lay out, so it
+        // may not run inside the layout pass. A cancelled dialog is not an
+        // error and says nothing — the user changed their mind.
+        //
+        // `dialogs_allowed` is the gate, not an afterthought: every other tier
+        // that drives this method has no user in front of it, and a modal
+        // raised there hangs until something kills it. The flag is left set so
+        // a headless test can still assert the control asked; the door rewrites
+        // it on its next frame.
+        if self.pick_requested && self.dialogs_allowed {
+            self.pick_requested = false;
+            if let Some(path) = crate::data_file::pick() {
+                self.open_data_file(&ctx, &path.to_string_lossy());
+            }
+        }
         if view == ViewKind::Protocol {
             if !door {
                 self.read_active_tab();
@@ -2331,6 +2410,55 @@ impl MeridianApp {
         ctx.request_repaint();
     }
 
+    /// Open the data file at `chosen` into the charts view: the file as a live
+    /// DuckDB view, a first look drawn over it, and the Data pane beside the
+    /// chart reading the file's own rows back.
+    ///
+    /// **Public, and taking a string rather than a dialog result.** The dialog
+    /// is one line in [`crate::data_file`] and a headless test may not open
+    /// one; every decision worth gating — what is refused, what is drawn, what
+    /// a failure says — is on this side of that line, so this is the entry
+    /// point a test drives and the entry point the door's button reaches
+    /// through.
+    ///
+    /// A failure raises a banner and changes nothing else. That is the whole of
+    /// the contract: the window stays up with whatever was on it, and the
+    /// banner carries the path and the engine's own words — a file that will
+    /// not read must never present as an empty window. The banner id is fixed
+    /// rather than composite over the path, so a second attempt replaces the
+    /// first attempt's message instead of stacking a history of what did not
+    /// open.
+    ///
+    /// Nothing is recorded in the layout, deliberately: `SavedLayout::opened`
+    /// holds a **start id**, and an id cannot name a file that has since been
+    /// deleted or moved. Reopening files across launches is a recent-files
+    /// list, which is its own piece of work.
+    pub fn open_data_file(&mut self, ctx: &egui::Context, chosen: &str) {
+        let banner = NotificationId::new("open-data-file");
+        let (live, composed) = match crate::data_file::open(chosen) {
+            Ok(opened) => opened,
+            Err(e) => {
+                eprintln!("could not open {chosen}: {e}");
+                self.notifications.raise(
+                    Notification::new(banner, Severity::Error, "Could not open that data file")
+                        .body(e),
+                );
+                ctx.request_repaint();
+                return;
+            }
+        };
+        self.open_chart(composed);
+        self.charts.doc.attach_live(live);
+        self.notifications.dismiss(banner);
+        self.ws_mut().set_active(ViewKind::Charts);
+        self.toasts.push(Toast::new(
+            Severity::Success,
+            format!("Opened {}", self.title()),
+        ));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
+        ctx.request_repaint();
+    }
+
     // -----------------------------------------------------------------------
     // The front door
     // -----------------------------------------------------------------------
@@ -2355,6 +2483,7 @@ impl MeridianApp {
         self.door_cards.clear();
         self.door_continue = None;
         self.door_help = None;
+        self.door_open_file = None;
         self.affordances.clear();
         self.ensure_door_thumbs(ui.ctx());
 
@@ -2371,6 +2500,7 @@ impl MeridianApp {
             .as_deref()
             .and_then(crate::starts::find);
         let mut open_help = false;
+        let mut open_file = false;
 
         egui::ScrollArea::vertical()
             .id_salt("bf-front-door")
@@ -2401,7 +2531,37 @@ impl MeridianApp {
                         // here: the help sheet opens on any view, and its
                         // keystroke is the registry's, printed rather than
                         // claimed.
+                        //
+                        // **Open leads it**, and it is the one verb here that
+                        // does not open something this binary already carries.
+                        // Everything else on this door — every gallery card,
+                        // the Continue button — resolves to a start compiled
+                        // into the executable, which is a fine first click and
+                        // a poor second one: the product's own promise is that
+                        // you open a file and the picture is already there, and
+                        // until this control existed the only way to do that
+                        // was to name a spec on the command line. It is
+                        // deliberately NOT a `Request::Open`, because that
+                        // carries a `&'static str` start id and a file the user
+                        // chose is neither static nor a start.
                         door_zone_heading(ui, "Start", sem);
+                        let open =
+                            ui.button(egui::RichText::new("Open a data file…").font(ui_font()));
+                        self.door_open_file = Some(open.rect);
+                        if open.clicked() {
+                            open_file = true;
+                        }
+                        ui.add_space(spacing::SPACE_2);
+                        ui.label(
+                            egui::RichText::new(
+                                "A CSV or a Parquet on this machine. It opens as \
+                                 a table you can read and a first look drawn from \
+                                 it — nothing is uploaded and nothing is fetched.",
+                            )
+                            .font(ui_font())
+                            .color(chrome::colour(sem.text.secondary)),
+                        );
+                        ui.add_space(spacing::CONTROL_GAP);
                         let help_label = match help_key {
                             Some(k) => format!("Keyboard help  {k}"),
                             None => "Keyboard help".to_string(),
@@ -2469,6 +2629,9 @@ impl MeridianApp {
         if open_help {
             self.overlay = Some(Overlay::Help(Picker::new(HelpSheet::new())));
         }
+        // Latched, not acted on: the dialog blocks on the operating system and
+        // the `Ui` borrow is still live here. `draw` takes it after the frame.
+        self.pick_requested = open_file;
     }
 
     /// One gallery card: the start's pre-rendered thumbnail, its label and

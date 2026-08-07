@@ -194,7 +194,7 @@ jobs:
           #   gh api --method POST /markdown -f mode=gfm -f text="$(...)" | grep -c '<br>'
           # must be 0. Code fences are exempt; keep them wrapped as they are.
           body: |
-            One native binary for macOS. No server, no webview, no language runtime, no account — the only thing it asks of the machine is a working graphics driver. Every example here renders with the network switched off.
+            One native binary for macOS. No server, no webview, no language runtime, no account — the only thing it asks of the machine is a working graphics driver. Nothing here reports anywhere; it reaches out only when a spec names a remote source, a DuckLake catalog or a spatial source. Everything under `examples/` is local and self-contained except `examples/remote/`, which is where the specs that fetch are kept — with no connection one of those does not open, it exits non-zero having named the network and the URL, and nothing else is affected.
 
             **This is an early preview**, macOS only, and it is not signed or notarized by Apple. That is the one thing to read before you open either download, because macOS treats an unsigned application downloaded through a browser as suspect and says so in language that sounds like the file is broken. It is not broken; each section below says what to do.
 
