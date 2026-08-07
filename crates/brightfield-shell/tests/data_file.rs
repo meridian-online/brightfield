@@ -310,6 +310,224 @@ fn a_table_with_nothing_to_draw_says_what_it_is_missing() {
 }
 
 // ---------------------------------------------------------------------------
+// AC1, the other half — the file that opens is the file that was CHOSEN
+// ---------------------------------------------------------------------------
+
+/// Assert the invariant this section exists for, against a real decoy on a real
+/// filesystem: **either the chosen file's rows come back, or the open is
+/// refused by name.** Silently opening the other file is the one outcome barred.
+///
+/// Written as a constraint rather than as "it returns `Err`" on purpose. The
+/// refusal is this build's answer, but a later one that escaped the name
+/// faithfully instead would be a *better* answer, and a test asserting the
+/// mechanism would redden on the improvement while staying green on the defect.
+/// What must never pass is `Ok` over the decoy.
+fn assert_opens_the_chosen_file_or_refuses(chosen: &Path, chosen_rows: u64, decoy_rows: u64) {
+    let shown = chosen.display().to_string();
+    match data_file::open(&chosen.to_string_lossy()) {
+        Err(refusal) => {
+            let name = chosen
+                .file_name()
+                .map(|n| n.to_string_lossy().escape_debug().to_string())
+                .unwrap_or_default();
+            assert!(
+                refusal.contains(&name),
+                "a refusal has to name the file the user picked. Wanted {name:?} \
+                 in: {refusal}"
+            );
+            assert!(
+                refusal.len() > name.len() + 8,
+                "…and has to carry a reason as well as a name: {refusal}"
+            );
+        }
+        Ok((mut live, _composed)) => {
+            let rows = live
+                .coordinator()
+                .session()
+                .step_rows_count(0)
+                .expect("the step counts");
+            assert_ne!(
+                rows, decoy_rows,
+                "{shown} opened, and the table behind it holds the DECOY's \
+                 {decoy_rows} rows — the window is titled from the picked name, \
+                 so this is one file's name over another file's data"
+            );
+            assert_eq!(
+                rows, chosen_rows,
+                "{shown} opened over neither file's row count"
+            );
+        }
+    }
+}
+
+/// A file name holding a bracket sits beside the file a **glob** of that name
+/// matches, and the app does not quietly read the neighbour.
+///
+/// `sales[1].csv` is not a contrived name — it is what a browser writes for a
+/// second download of `sales.csv`. DuckDB resolves a reader path as a glob, so
+/// `read_csv('…/sales[1].csv')` binds over `sales1.csv`: measured on this
+/// build's DuckDB, 3 rows where the chosen file has 8. Nothing is red when it
+/// happens, which is why this gate is here rather than a comment.
+#[test]
+fn a_bracket_in_the_name_does_not_open_the_file_a_glob_would_match() {
+    let dir = TempDir::new("glob-decoy");
+    // The decoy is what `sales[1].csv` matches as a pattern: 3 rows.
+    dir.write("sales1.csv", "region,reading\nnorth,12\nsouth,31\neast,7\n");
+    // …and the file actually picked, 8 rows.
+    let chosen = dir.write("sales[1].csv", READINGS_CSV);
+
+    assert_opens_the_chosen_file_or_refuses(&chosen, 8, 3);
+}
+
+/// The same, one layer up: the **folder** carries the bracket. A reader path is
+/// globbed whole, so a directory component matches exactly as a file name does,
+/// and a guard that only looked at `file_name()` would pass this.
+#[test]
+fn a_bracket_in_a_parent_folder_is_caught_too() {
+    let dir = TempDir::new("glob-decoy-dir");
+    std::fs::create_dir_all(dir.path().join("q1")).expect("the decoy folder");
+    std::fs::write(
+        dir.path().join("q1").join("sales.csv"),
+        "region,reading\nnorth,12\nsouth,31\neast,7\n",
+    )
+    .expect("the decoy writes");
+    std::fs::create_dir_all(dir.path().join("q[1]")).expect("the chosen folder");
+    let chosen = dir.path().join("q[1]").join("sales.csv");
+    std::fs::write(&chosen, READINGS_CSV).expect("the fixture writes");
+
+    assert_opens_the_chosen_file_or_refuses(&chosen, 8, 3);
+}
+
+/// A file name holding a **line break** sits beside the file that name folds
+/// to, and the app does not quietly read the neighbour.
+///
+/// A line break is legal in a POSIX file name and YAML folds one inside a
+/// quoted scalar to a space, so `sales<LF>2026.csv` written into the
+/// synthesised spec parses back as `sales 2026.csv` — a different file, which
+/// on this fixture has 3 rows rather than 8. DuckDB reads the real name
+/// perfectly well; the loss is entirely in the round trip through the spec.
+#[test]
+fn a_line_break_in_the_name_does_not_open_the_file_it_folds_to() {
+    let dir = TempDir::new("fold-decoy");
+    // The decoy is what the line break folds to — a space: 3 rows.
+    dir.write("sales 2026.csv", "region,reading\nnorth,12\nsouth,31\neast,7\n");
+    let chosen = dir.path().join("sales\n2026.csv");
+    let Ok(()) = std::fs::write(&chosen, READINGS_CSV) else {
+        // A filesystem that refuses the name has nothing to gate here.
+        return;
+    };
+
+    assert_opens_the_chosen_file_or_refuses(&chosen, 8, 3);
+}
+
+/// A refused name reaches the **window** as a banner and leaves the door up,
+/// which is what makes the refusal an answer rather than a dropped click.
+///
+/// `data_file::open` returning a good sentence is not the same as a user seeing
+/// one: `open_data_file` is the seam the door's control reaches through, and
+/// the swallow would happen there.
+#[test]
+fn a_pattern_name_refused_at_the_window_opens_nothing_and_says_so() {
+    let dir = TempDir::new("glob-window");
+    dir.write("sales1.csv", "region,reading\nnorth,12\nsouth,31\neast,7\n");
+    let chosen = dir.write("sales[1].csv", READINGS_CSV);
+
+    let mut win = Window::open();
+    win.settle();
+    let ctx = win.ctx.clone();
+    win.app.open_data_file(&ctx, &chosen.to_string_lossy());
+    win.settle();
+
+    assert!(
+        !win.app.chart_doc().is_live(),
+        "no session may be built over a name the reader would resolve to a \
+         different file"
+    );
+    assert_eq!(
+        win.app.notifications().len(),
+        1,
+        "…and it is refused out loud, not ignored"
+    );
+    assert!(
+        win.app.front_door_is_live(),
+        "the door is still standing — a refusal is never a blank frame"
+    );
+}
+
+/// **The dialect gate.** Ask this build's DuckDB which characters it resolves
+/// as a pattern, and require `accept` to refuse every one of them.
+///
+/// The refusal list in `data_file.rs` is a constant, and a constant about
+/// somebody else's parser goes stale silently — a DuckDB bump that taught the
+/// reader a new metacharacter would reopen exactly the defect this section
+/// gates, with every test above still green. So the list is not trusted here:
+/// each candidate character gets a real file of its own in a directory of
+/// plausible siblings, `glob()` is asked what that path matches, and the
+/// **danger condition is measured** — a non-empty match set that is not the
+/// file itself. When nothing matches, DuckDB falls back to the literal path,
+/// which is why most punctuation is safe and is asserted safe rather than
+/// assumed.
+///
+/// This gate is one-directional by design: it requires the refusal list to
+/// COVER what DuckDB globs, not to equal it. Refusing a character DuckDB
+/// happens to resolve literally today is the deliberate margin documented on
+/// `PATTERN_CHARACTERS`.
+#[test]
+fn every_character_this_duckdb_reads_as_a_pattern_is_refused() {
+    let dir = TempDir::new("dialect");
+    // Siblings a pattern could plausibly land on instead of the file itself.
+    for sibling in ["s1.csv", "sa.csv", "sb.csv", "sX.csv", "sq.csv", "sxyz.csv", "s.csv"] {
+        dir.write(sibling, "region,reading\nnorth,12\n");
+    }
+
+    let conn = duckdb::Connection::open_in_memory().expect("an in-memory DuckDB");
+    let mut globbed_by_duckdb: Vec<char> = Vec::new();
+
+    // Every printable ASCII character a file name may legally carry on both
+    // POSIX and Windows, plus the two glob wildcards. `/` and NUL are excluded
+    // because no file name may hold them at all.
+    let candidates: Vec<char> = (0x20u8..0x7f).map(char::from).filter(|c| *c != '/').collect();
+
+    for candidate in candidates {
+        let name = format!("s{candidate}.csv");
+        let chosen = dir.path().join(&name);
+        // Windows and some filesystems refuse a few of these outright; a name
+        // that cannot exist cannot be opened, so it is not this gate's business.
+        if std::fs::write(&chosen, READINGS_CSV).is_err() {
+            continue;
+        }
+        let literal = chosen.display().to_string();
+        let sql = format!("SELECT file FROM glob('{}')", literal.replace('\'', "''"));
+        let mut statement = conn.prepare(&sql).expect("glob() prepares");
+        let matched: Vec<String> = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("glob() runs")
+            .map(|row| row.expect("a matched path"))
+            .collect();
+        let resolves_elsewhere = !matched.is_empty() && matched != vec![literal.clone()];
+        if resolves_elsewhere {
+            globbed_by_duckdb.push(candidate);
+            assert!(
+                data_file::accept(&literal).is_err(),
+                "DuckDB resolves a path containing `{candidate}` to {matched:?} \
+                 rather than to the file itself, so opening it would read a \
+                 different file — `accept` has to refuse it and does not"
+            );
+        }
+        let _ = std::fs::remove_file(&chosen);
+    }
+
+    // The sweep has to have found something, or a `glob()` that silently
+    // stopped working would make this test vacuous — the shape a structural
+    // gate fails in.
+    assert!(
+        globbed_by_duckdb.contains(&'*') && globbed_by_duckdb.contains(&'?'),
+        "the sweep did not observe DuckDB globbing `*` or `?`, so it proved \
+         nothing about anything. Observed: {globbed_by_duckdb:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // AC2 — the front door offers it
 // ---------------------------------------------------------------------------
 

@@ -35,6 +35,41 @@
 //! would fetch instead — and succeed, with nothing red anywhere. [`accept`]
 //! refuses anything carrying a URL scheme, before the engine is involved at
 //! all, and says so.
+//!
+//! # Why a name the reader would take as a pattern is refused
+//!
+//! A chosen path crosses two languages on its way to DuckDB: it is written into
+//! a YAML scalar, and it is handed to `read_csv` / `read_parquet`, which resolve
+//! it as a **glob**. Each has characters that mean something other than
+//! themselves, and in both the failure is the same and it is silent — the file
+//! that opens is not the file that was picked, under a window titled with the
+//! picked name.
+//!
+//! Measured against this build's DuckDB (`SELECT version()` reports `v1.5.2`),
+//! with `sales1.csv` sitting beside `sales[1].csv`: `read_csv` on the second
+//! path returns the first file's rows. `glob()` is what decides it, and the
+//! danger is exactly *`glob(p)` matching a non-empty set that is not `{p}`* —
+//! when nothing matches, DuckDB falls back to the literal path, which is why
+//! most punctuation is harmless. There is no way to turn this off. Measured on
+//! the same build: no reader keyword disables it, the list form
+//! `read_csv([…])` still globs, a `file://` prefix still globs, and `\[` is not
+//! an escape — it matches nothing rather than matching the bracket.
+//!
+//! So [`accept`] **refuses** these names rather than escaping them, and the
+//! reason is that the escape is not ours to rely on. The one spelling that does
+//! work today, rewriting `[` as the character class `[[]`, is undocumented
+//! dialect: if a DuckDB bump changed it the app would go back to opening the
+//! wrong file silently, which is the one outcome that is not allowed here.
+//! Escaping in the emitter was rejected for a second reason — `brightfield-sql`
+//! is shared, and a glob in a hand-written spec's `file:` is a feature there,
+//! so that seam cannot tell a pattern from a name. A refusal naming the file
+//! and the character is the answer that cannot silently be wrong, and it is the
+//! same answer a URL gets.
+//!
+//! The control-character half is the YAML side: a line break inside a
+//! single-quoted scalar is **folded to a space** by the parser, so
+//! `sales<LF>2026.csv` would come back as `sales 2026.csv` and open that file
+//! instead. It is refused in the same place and for the same reason.
 
 use std::path::{Path, PathBuf};
 
@@ -104,18 +139,40 @@ const PLOT_HEIGHT: u32 = 460;
 // What may be opened
 // ---------------------------------------------------------------------------
 
+/// The characters this build refuses in a chosen path because DuckDB's file
+/// readers resolve a path as a **glob**, where each of them means something
+/// other than itself: `*` and `?` are wildcards, `[…]` is a character class and
+/// `{…}` is an alternation.
+///
+/// Wider than what this DuckDB was measured mis-resolving, deliberately. On
+/// `v1.5.2` only `*`, `?` and a `[` that closes into a class were observed
+/// selecting a different file; `]`, `{` and `}` resolved to themselves. They
+/// are refused anyway because they are the closing halves of the same two
+/// constructs, and the cost of the two errors is not symmetric — refusing a
+/// name that would have worked is a sentence the user can act on, while
+/// accepting one that stops working on a DuckDB bump is a wrong table nobody
+/// sees. `every_character_this_duckdb_reads_as_a_pattern_is_refused` in
+/// `tests/data_file.rs` asks DuckDB itself, so a bump that widens the dialect
+/// past this list reddens rather than shipping.
+const PATTERN_CHARACTERS: &[char] = &['*', '?', '[', ']', '{', '}'];
+
 /// The chosen location as a path this build will open, or the words to show
 /// the user for refusing it.
 ///
-/// Three refusals, each with its own sentence, and all three happen **before**
+/// Five refusals, each with its own sentence, and all five happen **before**
 /// the engine exists — a refusal that arrived as a DuckDB binder error would
 /// name a SQL view rather than the thing the user picked.
+///
+/// What the last two defend is the invariant the rest of this module rests on:
+/// **the path that reaches DuckDB names the file the user chose.** See the
+/// module docs for the two measured ways it can stop being true.
 ///
 /// # Errors
 ///
 /// A URL rather than a local path; a path with no extension or an extension
-/// this build does not read; or a path naming something that is not a readable
-/// file.
+/// this build does not read; a path the reader would resolve as a pattern
+/// (see `PATTERN_CHARACTERS`) or one carrying a control character; or a path
+/// naming something that is not a readable file.
 pub fn accept(chosen: &str) -> Result<PathBuf, String> {
     if let Some(scheme) = url_scheme(chosen) {
         return Err(format!(
@@ -143,6 +200,23 @@ pub fn accept(chosen: &str) -> Result<PathBuf, String> {
                 openable_prose()
             ))
         }
+    }
+    if let Some(found) = chosen.chars().find(|c| PATTERN_CHARACTERS.contains(c)) {
+        return Err(format!(
+            "{chosen}: Brightfield cannot open this path, because `{found}` is \
+             pattern syntax to the reader underneath — it would match the name \
+             rather than read it, and could open a different file. Rename the \
+             file without it, or move it to a folder whose name has none."
+        ));
+    }
+    if chosen.chars().any(char::is_control) {
+        return Err(format!(
+            "{}: Brightfield cannot open this path, because it contains a \
+             control character — a line break or a similar invisible one — and \
+             there is no way to write that into a spec without it naming a \
+             different file. Rename the file without it.",
+            chosen.escape_debug()
+        ));
     }
     if !path.is_file() {
         return Err(format!("{chosen}: there is no file there to open."));
@@ -342,9 +416,13 @@ pub fn spec_for(path: &Path, look: &FirstLook) -> String {
 /// Single-quoted rather than double-quoted because the only escape a
 /// single-quoted YAML scalar has is a doubled quote — no backslashes, no
 /// interpretation — so a Windows path or a column name full of punctuation
-/// survives verbatim. `accept` has already refused anything with a control
-/// character in it by the time a path reaches here, and `first_look` skips
-/// column names carrying one.
+/// survives verbatim.
+///
+/// What single-quoting cannot carry is a **line break**: YAML folds one inside
+/// a quoted scalar to a space, so a value holding one would parse back as a
+/// different string. Two guards keep such a value from reaching here, and this
+/// function is correct only because both do — `accept`'s control-character
+/// refusal for a path, and `nameable` for a column name.
 fn yaml_quoted(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
@@ -529,6 +607,100 @@ mod tests {
             assert!(
                 refusal.contains(&format!(".{ext}")),
                 "the refusal has to name .{ext} as openable: {refusal}"
+            );
+        }
+    }
+
+    /// A path the reader would resolve as a pattern is refused by name and by
+    /// character, and the refusal happens without touching the disk — these
+    /// paths are not written anywhere, so a check that needed the file to exist
+    /// would be gating the wrong thing.
+    ///
+    /// The sentence has to carry the character, because "rename it" is useless
+    /// advice when the user cannot see which byte is the problem.
+    #[test]
+    fn a_path_the_reader_would_take_as_a_pattern_is_refused_by_character() {
+        for (path, offender) in [
+            ("/tmp/sales[1].csv", '['),
+            ("/tmp/sales].csv", ']'),
+            ("/tmp/sales*.csv", '*'),
+            ("/tmp/sales?.csv", '?'),
+            ("/tmp/sales{a,b}.csv", '{'),
+            ("/tmp/sales}.csv", '}'),
+            // A folder is resolved by the same glob the file name is.
+            ("/tmp/quarter[1]/sales.csv", '['),
+        ] {
+            let refusal = accept(path).unwrap_err_or_else_message(path);
+            assert!(refusal.contains(path), "the refusal must name it: {refusal}");
+            assert!(
+                refusal.contains(offender),
+                "the refusal of {path} must name `{offender}`: {refusal}"
+            );
+            assert!(
+                refusal.contains("pattern"),
+                "the refusal of {path} must say why: {refusal}"
+            );
+        }
+    }
+
+    /// `expect_err` with a sentence naming the path, so a regression reads as
+    /// "this path opened" rather than as an `unwrap` backtrace.
+    trait RefusalExt {
+        fn unwrap_err_or_else_message(self, path: &str) -> String;
+    }
+
+    impl RefusalExt for Result<PathBuf, String> {
+        fn unwrap_err_or_else_message(self, path: &str) -> String {
+            match self {
+                Err(message) => message,
+                Ok(accepted) => panic!(
+                    "{path} is pattern syntax to the reader underneath and must \
+                     not be accepted — it was, as {}",
+                    accepted.display()
+                ),
+            }
+        }
+    }
+
+    /// …and a path carrying a control character is refused too, with the
+    /// character shown escaped rather than raw — a banner holding a real line
+    /// break is a banner that does not read as one line.
+    #[test]
+    fn a_path_with_a_control_character_is_refused_and_shown_escaped() {
+        let refusal = accept("/tmp/sales\n2026.csv").expect_err("a line break is not openable");
+        assert!(
+            refusal.contains("/tmp/sales\\n2026.csv"),
+            "the refusal names the path with the control character escaped: {refusal}"
+        );
+        assert!(
+            !refusal.contains('\n'),
+            "…and holds no raw line break of its own: {refusal:?}"
+        );
+        assert!(refusal.contains("control character"), "{refusal}");
+        assert!(accept("/tmp/sales\r2026.csv").is_err());
+        assert!(accept("/tmp/sales\t2026.csv").is_err());
+    }
+
+    /// An ordinary path with punctuation that means nothing to either language
+    /// is NOT refused by these two checks — they are narrow on purpose, and a
+    /// guard that turned away `Hugh's data (final).csv` would be a worse answer
+    /// than the defect it prevents.
+    ///
+    /// Asserted by the message, because a path that does not exist is refused
+    /// by `is_file` at the end regardless: what is gated is *which* sentence.
+    #[test]
+    fn ordinary_punctuation_is_not_mistaken_for_a_pattern() {
+        for path in [
+            "/tmp/Hugh's data (final).csv",
+            "/tmp/sales+2026.csv",
+            "/tmp/sales@2026 #2.csv",
+            "/tmp/100% of sales, £ & $.csv",
+            "C:\\Users\\hugh\\sales.csv",
+        ] {
+            let refusal = accept(path).expect_err("none of these exist on disk");
+            assert!(
+                refusal.contains("there is no file there to open"),
+                "{path} must reach the last refusal, not a pattern one: {refusal}"
             );
         }
     }
