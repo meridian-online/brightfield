@@ -208,7 +208,9 @@ impl LoadDiagnostics {
 fn warning_wire_name(warning: &ParseWarning) -> String {
     match warning {
         ParseWarning::Unimplemented { name, .. } => name.clone(),
-        ParseWarning::UnconsumedMarkOption { mark, .. } => mark.clone(),
+        ParseWarning::UnconsumedMarkOption { mark, .. } | ParseWarning::UnconsumedSort { mark } => {
+            mark.clone()
+        }
         ParseWarning::DeadParam { name }
         | ParseWarning::InteractorBindingMissing { name }
         | ParseWarning::InteractorBindingNonSelection { name }
@@ -242,9 +244,9 @@ fn warning_wire_name(warning: &ParseWarning) -> String {
 fn warning_surface(warning: &ParseWarning) -> &'static str {
     match warning {
         ParseWarning::Unimplemented { surface, .. } => surface.label(),
-        ParseWarning::UnconsumedMarkOption { .. } | ParseWarning::HighlightOnAggregate { .. } => {
-            "mark"
-        }
+        ParseWarning::UnconsumedMarkOption { .. }
+        | ParseWarning::UnconsumedSort { .. }
+        | ParseWarning::HighlightOnAggregate { .. } => "mark",
         ParseWarning::InteractorBindingMissing { .. }
         | ParseWarning::InteractorBindingNonSelection { .. }
         | ParseWarning::HighlightBindingMissing { .. }
@@ -348,20 +350,37 @@ mod tests {
 
     /// Parse warnings reach the diagnostics. This is the half that every
     /// spec-load entry point used to drop.
+    ///
+    /// The vehicle is a `sort:` on the wrong axis. `sort: { y: -x }` on a
+    /// `barX` orders the band by the value and IS lowered, so it says nothing;
+    /// `sort: { x: -y }` asks for the value axis — a continuous scale — to be
+    /// re-ordered, which no lowerer does. Both are asserted, because a
+    /// diagnostic that fires on the shape that works is the defect this file
+    /// guards from the other side.
     #[test]
     fn dfconf_parse_warnings_reach_the_diagnostics() {
-        let d = diagnose(
+        let refused = diagnose(
+            "data:\n  t: { file: t.parquet }\nplot:\n  - mark: barX\n    data: { from: t }\n    \
+             x: a\n    y: b\n    sort: { x: -y, limit: 10 }\n",
+        );
+        let lines = refused.lines();
+        assert!(
+            lines.iter().any(|l| l.contains("sort")),
+            "the uncomputed sort is said: {lines:?}"
+        );
+        assert!(
+            refused.blocking().is_empty(),
+            "…as advisory, because the chart still draws"
+        );
+
+        let honoured = diagnose(
             "data:\n  t: { file: t.parquet }\nplot:\n  - mark: barX\n    data: { from: t }\n    \
              x: a\n    y: b\n    sort: { y: -x, limit: 10 }\n",
         );
-        let lines = d.lines();
         assert!(
-            lines.iter().any(|l| l.contains("sort")),
-            "the ignored mark option is said: {lines:?}"
-        );
-        assert!(
-            d.blocking().is_empty(),
-            "…as advisory, because the chart still draws"
+            !honoured.lines().iter().any(|l| l.contains("sort")),
+            "the lowered sort must say nothing: {:?}",
+            honoured.lines()
         );
     }
 

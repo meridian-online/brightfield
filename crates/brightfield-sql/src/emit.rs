@@ -325,6 +325,10 @@ pub(crate) fn spec_value_to_sql_literal(val: &SpecValue) -> String {
         // `RectLowerer`. Render the source column so the output is at least
         // valid SQL naming the right thing.
         SpecValue::Bin { column, .. } => format!("\"{column}\""),
+        // A `sort:` reaching a kwarg/literal position is degenerate for the
+        // same reason — it is a mark option consumed by `BarLowerer`, not a
+        // value. Render the ordered column, which is the one identifier in it.
+        SpecValue::Sort { by, .. } => format!("\"{by}\""),
     }
 }
 
@@ -654,7 +658,7 @@ pub fn lower_mark_plan(spec: &Spec, mark_index: usize) -> Result<(QueryPlan, Str
 /// wraps the whole plan — the historical placement, byte-unchanged.
 ///
 /// For an **aggregating plan** (`Aggregation` / `AggregateScalar`, possibly
-/// under `Order`) the predicate is pushed onto the aggregation's *input*: a
+/// under `Order` and `Limit`) the predicate is pushed onto the aggregation's *input*: a
 /// selection filters the base rows that get aggregated, it does not filter the
 /// aggregated output (whose columns are the group keys and aggregate aliases —
 /// the brushed column is usually not among them, and even when an alias
@@ -666,6 +670,21 @@ fn apply_selection_filter(plan: QueryPlan, predicate: Predicate) -> QueryPlan {
         QueryPlan::Order { input, keys } => QueryPlan::Order {
             input: Box::new(apply_selection_filter(*input, predicate)),
             keys,
+        },
+        // A `sort: {limit: n}` bar is `Limit{Order{Aggregation{…}}}`, and the
+        // filter has to reach past the truncation as well as past the order.
+        // Wrapping here instead would filter the top n rather than take the
+        // top n of what the selection keeps — a different chart, and the one
+        // both corpus `barX` marks would have drawn, since each carries a
+        // `filterBy`.
+        QueryPlan::Limit {
+            input,
+            limit,
+            offset,
+        } => QueryPlan::Limit {
+            input: Box::new(apply_selection_filter(*input, predicate)),
+            limit,
+            offset,
         },
         QueryPlan::Aggregation {
             input,

@@ -422,6 +422,13 @@ vocab_enum! {
 ///   on a colour-scheme rebuild.
 /// - `geometry` — the geo mark's geometry column, resolved in
 ///   `brightfield_spec::layout`.
+/// - `sort` — the band channel's order and row cap, read by
+///   `brightfield-sql`'s `BarLowerer` for the kinds
+///   [`MarkKind::band_aggregate_axes`] names. The `sort:` shapes that lowerer
+///   does not compute are reported by
+///   [`ParseWarning::UnconsumedSort`](crate::parse::ParseWarning::UnconsumedSort)
+///   rather than by this list, for the same reason `x` is listed here while
+///   the transforms sitting on it are reported separately.
 pub const CONSUMED_MARK_OPTION_KEYS: &[&str] = &[
     "x",
     "y",
@@ -440,6 +447,7 @@ pub const CONSUMED_MARK_OPTION_KEYS: &[&str] = &[
     "binWidth",
     "bandwidth",
     "geometry",
+    "sort",
 ];
 
 /// Whether a mark option key reaches a lowerer or a renderer.
@@ -844,8 +852,17 @@ mod tests {
                 "{channel} is a rendered channel and must be listed as consumed"
             );
         }
+        // `sort` joined the list with `BarLowerer`; `limit` did not, and that
+        // is not an oversight. A `limit:` brightfield reads is the one nested
+        // inside a `sort:` map, never a mark-level key of its own, so listing
+        // it here would silence a top-level `limit:` nothing reads.
+        assert!(
+            mark_option_is_consumed("sort"),
+            "`sort` has a reader and must be listed, or its authors are told a \
+             working instruction has no effect"
+        );
         // And the keys the corpus proved unconsumed stay unconsumed.
-        for ignored in ["sort", "limit", "curve", "fillOpacity", "r"] {
+        for ignored in ["limit", "curve", "fillOpacity", "r"] {
             assert!(
                 !mark_option_is_consumed(ignored),
                 "{ignored} has no reader; listing it as consumed would hide a real diagnostic"
