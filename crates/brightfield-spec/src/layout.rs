@@ -9,7 +9,7 @@
 //! axis — a plot's declared `width:`/`height:`, or [`DEFAULT_PLOT_WIDTH`] /
 //! [`DEFAULT_PLOT_HEIGHT`]. An axis with a positive extent is **constrained**:
 //! the root fills it, and each container distributes what is left after its
-//! fixed-size children among the ones [`component_flexes`] admits, in
+//! fixed-size children among the ones the private `component_flexes` admits, in
 //! proportion to their intrinsic sizes.
 
 use crate::ast::{
