@@ -730,13 +730,13 @@ impl Boot {
     /// report whether the render is complete. Measured through this method in
     /// `crates/brightfield-shell/tests/protocol_degrade_channel.rs`, over the
     /// three-step manifest that suite builds: with its two-statement model,
-    /// readable / absent / refused each produce
-    /// `5 collapsed / 5 full nodes, 3 steps` — one summary line, three
-    /// different pictures. Widen the model to four statements and readable
-    /// moves to `7 collapsed / 7 full nodes` while both faults stay at 5/5,
-    /// the step count 3 throughout. A total that is equal on one model and
-    /// lower by an unknown amount on the next is not a completeness check
-    /// either way, so the count is stated.
+    /// readable / absent / refused each produce the same
+    /// `5 collapsed / 5 full nodes, 3 steps` behind three different pictures.
+    /// Widen the model to four statements and readable moves to
+    /// `7 collapsed / 7 full nodes` while both faults stay at 5/5, the step
+    /// count 3 throughout. Those totals track the model's length, not the
+    /// fault, so no reading of them is a completeness check and the count is
+    /// stated instead.
     #[must_use]
     pub fn describe(&self, view: ViewKind) -> String {
         if self.is_empty() {

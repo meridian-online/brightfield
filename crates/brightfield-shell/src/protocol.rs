@@ -146,14 +146,17 @@ impl ProtocolInputs {
 
     /// What a run with nobody watching reads instead of diffing pictures: one
     /// line per node that stands in for something the derivation could not
-    /// produce, each naming the class first and then whose problem it is.
+    /// produce. A degrade from the model read opens with its class — `absent`,
+    /// `unreadable`, `unavailable` — and then says whose problem it is; one
+    /// raised elsewhere reaches [`brightfield_protocol::Degradation::Other`],
+    /// which carries the underlying message and no class tag.
+    /// `examples/protocol/degrade.yaml` is the second kind.
     ///
     /// **Empty means the render is everything the manifest asked for.** That is
     /// the bit an unattended caller wants, and the other three numbers on the
-    /// boot summary — collapsed nodes, full nodes, steps — do not carry it. A
-    /// degraded step is one chip whatever it stood in for, so the totals are
-    /// equal to the complete render's on a short model and merely lower on a
-    /// longer one, by an amount only a complete render knows. Measured through
+    /// boot summary — collapsed nodes, full nodes, steps — do not carry it,
+    /// because they move with the model's length rather than with the fault.
+    /// Measured through
     /// this method and [`crate::window::Boot::describe`] in
     /// `crates/brightfield-shell/tests/protocol_degrade_channel.rs`: on the
     /// two-statement model that suite ships, readable / absent / refused each

@@ -191,16 +191,17 @@ pub struct Degrade {
 ///
 /// **The channel for a run with nobody watching.** An empty return says the
 /// graph is everything the protocol asked for; a non-empty one names each node
-/// that stands in for something that could not be derived, with the class that
-/// says whether the cause is the protocol or the access to it. A degraded
+/// that stands in for something that could not be derived. A degrade from the
+/// model read carries a class saying whether the cause is the protocol or the
+/// access to it; [`Degradation::Other`] carries the underlying message
+/// instead, and its [`Degradation::guidance`] is empty. A degraded
 /// render is a picture that looks finished, so the thing that distinguishes it
 /// from a complete one must not itself be the picture.
 ///
 /// That claim is only worth the call site behind it: `brightfield-shell`'s
 /// `degrade_report` is the caller, reached on every `--spec` boot of a protocol
 /// manifest, and `protocol_degrade_channel` in `brightfield-shell` holds the
-/// shipped binary to it. This function existing is not the same as it running,
-/// and for one round of this work it did not run anywhere but a test.
+/// shipped binary to it.
 #[must_use]
 pub fn degrades(graph: &AssetGraph) -> Vec<Degrade> {
     graph
