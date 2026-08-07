@@ -56,10 +56,10 @@
 //! opaque chip in place of the statements inside the step — rather than
 //! refusing. That is deliberate, and it is a failure mode an unattended caller
 //! could not otherwise see: the picture looks finished, the step count is
-//! unchanged, and the node counts settle nothing either — they move with the
-//! model's length rather than with the fault, so a caller holding one render
-//! cannot read completeness off them in any direction. The figures behind that
-//! are in [`brightfield_shell::protocol::ProtocolInputs::degrade_report`], each
+//! unchanged, and the node counts settle nothing either — a caller holding one
+//! render has nothing telling it what those totals should have been. The
+//! figures behind that are in
+//! [`brightfield_shell::protocol::ProtocolInputs::degrade_report`], each
 //! against the fixture that produced it.
 //!
 //! So the boot summary carries a `, N degraded` clause, and one line per
@@ -73,14 +73,14 @@
 //! A degrade raised by the model read leads with its class — `absent` (the
 //! protocol names a model that is not there) / `unreadable` (the read was
 //! refused — a permission, an ACL, a sandbox grant) / `unavailable` — because
-//! of those three only `unreadable` is the reader's to fix, and the rest of the
-//! line says what makes it go away. A degrade raised anywhere else carries the
+//! of those three only `unreadable` is the reader's to fix, and its line is the
+//! one that says what makes it go away. A degrade raised anywhere else carries the
 //! underlying message with no class tag; `examples/protocol/degrade.yaml` is
 //! one, and its line opens `degraded step transform: SQL parse error`.
 //!
 //! **The exit code stays 0 and the PNG is still written.** On this binary a
-//! non-zero exit means *no image was produced* — `report` below is where that
-//! convention is spelled. Spending it on a
+//! non-zero exit means *no image was produced* — `report` below implements it,
+//! mapping `Ok` to success and `Err` to 1. Spending it on a
 //! degraded-but-drawn render would tell a caller its capture failed when a file
 //! exists on disk, and would contradict the degrade's own design — draw what
 //! you can. The stderr line is the channel; a caller that wants to fail on a

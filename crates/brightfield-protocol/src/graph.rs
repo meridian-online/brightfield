@@ -71,7 +71,9 @@ pub enum AssetKind {
     Opaque,
 }
 
-/// Why a node stands in for something the derivation could not produce.
+/// Why a node carries a degrade — either standing in for something the
+/// derivation could not produce, or badged in place where the lineage it
+/// recovered is real but incomplete.
 ///
 /// The distinction the first three draw is the point of the type. *Absent* and
 /// *unreadable* are one shape to this code — a `sql:` step with no source — and
@@ -131,8 +133,10 @@ impl Degradation {
     }
 
     /// What the class means for the reader, appended to the degrade text the
-    /// inspector shows. The chip says which class; this says whose problem it
-    /// is and what makes it go away.
+    /// inspector shows. For the three model-read classes the chip says which
+    /// class and this says whose problem it is; for [`Self::Other`] it is the
+    /// empty string, and the degrade text carries the underlying message on its
+    /// own.
     #[must_use]
     pub const fn guidance(self) -> &'static str {
         match self {
@@ -174,7 +178,8 @@ fn tagged(text: &str) -> Option<(Degradation, &str)> {
     Some((class, rest))
 }
 
-/// One node that stands in for something the derivation could not produce.
+/// One node carrying a degrade — a stand-in chip, or a real node badged in
+/// place because its lineage is incomplete.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Degrade {
     /// The id of the issue-badged node.
@@ -191,7 +196,9 @@ pub struct Degrade {
 ///
 /// **The channel for a run with nobody watching.** An empty return says the
 /// graph is everything the protocol asked for; a non-empty one names each node
-/// that stands in for something that could not be derived. A degrade from the
+/// carrying a degrade — a chip standing in for what could not be derived, or a
+/// real node badged in place whose recovered lineage is incomplete. A degrade
+/// from the
 /// model read carries a class saying whether the cause is the protocol or the
 /// access to it; [`Degradation::Other`] carries the underlying message
 /// instead, and its [`Degradation::guidance`] is empty. A degraded
