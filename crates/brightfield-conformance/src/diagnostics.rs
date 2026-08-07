@@ -208,7 +208,8 @@ impl LoadDiagnostics {
 fn warning_wire_name(warning: &ParseWarning) -> String {
     match warning {
         ParseWarning::Unimplemented { name, .. } => name.clone(),
-        ParseWarning::UnconsumedMarkOption { mark, .. } => mark.clone(),
+        ParseWarning::UnconsumedMarkOption { mark, .. }
+        | ParseWarning::UnconsumedSort { mark } => mark.clone(),
         ParseWarning::DeadParam { name }
         | ParseWarning::InteractorBindingMissing { name }
         | ParseWarning::InteractorBindingNonSelection { name }
@@ -242,9 +243,9 @@ fn warning_wire_name(warning: &ParseWarning) -> String {
 fn warning_surface(warning: &ParseWarning) -> &'static str {
     match warning {
         ParseWarning::Unimplemented { surface, .. } => surface.label(),
-        ParseWarning::UnconsumedMarkOption { .. } | ParseWarning::HighlightOnAggregate { .. } => {
-            "mark"
-        }
+        ParseWarning::UnconsumedMarkOption { .. }
+        | ParseWarning::UnconsumedSort { .. }
+        | ParseWarning::HighlightOnAggregate { .. } => "mark",
         ParseWarning::InteractorBindingMissing { .. }
         | ParseWarning::InteractorBindingNonSelection { .. }
         | ParseWarning::HighlightBindingMissing { .. }

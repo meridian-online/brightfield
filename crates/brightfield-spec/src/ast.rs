@@ -507,6 +507,29 @@ pub enum SpecValue {
         /// `binSpec` in `mosaic-sql`'s `transforms/util/bin-step.ts`.
         steps: Option<i64>,
     },
+    /// A mark's **`sort:`** option, lifted from `sort: {y: -x, limit: 10}` on
+    /// a kind that has a band axis — the ranked half of a ranked category bar.
+    ///
+    /// Lifted by the private `mark_sort` resolver in [`crate::parse`] and read
+    /// by `brightfield-sql`'s `BarLowerer`, which turns it into an `ORDER BY`
+    /// on the value channel's output column and a `LIMIT`.
+    ///
+    /// `channel` and `by` are held as written rather than re-derived from the
+    /// mark kind, because serialisation sees a [`SpecValue`] and no kind: they
+    /// are what lets `{y: -x}` be rebuilt from the lift, so parse → serialise
+    /// → parse is idempotent.
+    Sort {
+        /// The channel whose order this sets — the mark's band axis (`y` on a
+        /// `barX`).
+        channel: String,
+        /// The channel the order is read from — the mark's value axis (`x` on
+        /// a `barX`).
+        by: String,
+        /// Whether the spec wrote the `-` prefix.
+        descending: bool,
+        /// `limit:`, when the spec wrote one.
+        limit: Option<u64>,
+    },
 }
 
 impl SpecValue {

@@ -228,6 +228,22 @@ struct BinnedHistogram {
 /// band lift is refused. Present on a mark, any one of them is enough.
 const INTERVAL_CHANNEL_FIELDS: &[&str] = &["x1", "x2", "y1", "y2"];
 
+/// The one key a `sort:` map may carry beside its channel entry.
+const SORT_MODIFIER_KEYS: &[&str] = &["limit"];
+
+/// One mark's lifted `sort:` — the ranked half of a ranked category bar:
+/// `sort: { y: -x, limit: 10 }` on a `barX`.
+struct MarkSort {
+    /// The channel whose order the sort sets — the mark's band axis.
+    channel: &'static str,
+    /// The channel the order is read from — the mark's value axis.
+    by: &'static str,
+    /// Whether the spec wrote the `-` prefix.
+    descending: bool,
+    /// `limit:`, when written.
+    limit: Option<u64>,
+}
+
 /// One mark's lifted positional aggregate over a band channel — the ranked
 /// category bar: `x: {sum: gold}` with `y: nationality` on a `barX`.
 struct BandedAggregate {
@@ -434,6 +450,24 @@ pub enum ParseWarning {
         key: String,
     },
 
+    /// A mark wrote a `sort:` in a shape no lowerer orders by — see the
+    /// private `mark_sort` resolver for each refusal and its reason. The rows
+    /// arrive in whatever order the query returned them and any `limit:`
+    /// inside the same map is dropped with it.
+    ///
+    /// Distinct from [`ParseWarning::UnconsumedMarkOption`], which is about a
+    /// *key* nothing reads: `sort` is on
+    /// [`crate::vocab::CONSUMED_MARK_OPTION_KEYS`], so the key-level check
+    /// passes and only the value SHAPE is left to report. The same split
+    /// [`ParseWarning::UnconsumedChannelTransform`] makes for a channel.
+    ///
+    /// Raised only for marks whose kind is `Implemented`, on the same grounds
+    /// as [`ParseWarning::UnconsumedMarkOption`].
+    UnconsumedSort {
+        /// The mark kind's wire name (e.g. `dot`).
+        mark: String,
+    },
+
     /// A node declaring `input: slider` over an interval `select:` is missing
     /// one of the four literals the widget cannot be built without — `as:`,
     /// `column:`, `min:`, `max:` — so **no control is drawn for it at all**.
@@ -599,6 +633,17 @@ impl fmt::Display for ParseWarning {
             Self::UnconsumedMarkOption { mark, key } => write!(
                 f,
                 "mark `{mark}` sets `{key}`, which nothing in the render path reads — it has no effect"
+            ),
+            // The key IS read, so the line has to say that it is the SHAPE
+            // that was refused — an author told "`sort` has no effect" would
+            // go looking for the missing reader rather than at what they
+            // wrote. It names the `limit:` too, for the reason the nested
+            // `sort.limit` line did before this warning replaced it.
+            Self::UnconsumedSort { mark } => write!(
+                f,
+                "mark `{mark}` asks for a `sort:` brightfield does not compute — the rows keep \
+                 the order the query returned them in, and a `limit:` written beside it is \
+                 dropped with it"
             ),
             // "no literal", not "no value". A slider may well declare
             // `min: $lo`, and telling its author they declared no `min:` sends
@@ -1309,6 +1354,11 @@ impl Walker {
             None => banded_aggregate(kind, parent),
         };
 
+        // Resolved here rather than in the per-key loop for the same reason:
+        // whether `sort: {y: -x}` is computable is decided by the mark KIND,
+        // which names which axis is the band and which the value.
+        let sort = mark_sort(kind, parent);
+
         let mut data: Option<MarkData> = None;
         let mut options = IndexMap::new();
         for (k, val) in parent {
@@ -1354,6 +1404,20 @@ impl Walker {
                     continue;
                 }
             }
+            if let Some(s) = &sort {
+                if key == "sort" {
+                    options.insert(
+                        key.clone(),
+                        ValueOrParamRef::Value(SpecValue::Sort {
+                            channel: s.channel.to_string(),
+                            by: s.by.to_string(),
+                            descending: s.descending,
+                            limit: s.limit,
+                        }),
+                    );
+                    continue;
+                }
+            }
             if let Some(lifted) = self.maybe_aggregate_channel(&key, val) {
                 options.insert(key.clone(), lifted);
                 continue;
@@ -1363,6 +1427,10 @@ impl Walker {
         }
         if status == ImplStatus::Implemented {
             self.warn_unconsumed_mark_options(name, parent);
+            if sort.is_none() && parent.contains_key(serde_yaml::Value::String("sort".into())) {
+                self.warnings
+                    .push(ParseWarning::UnconsumedSort { mark: name.into() });
+            }
         }
         Ok(Mark {
             kind,
@@ -1831,6 +1899,66 @@ fn banded_aggregate(kind: MarkKind, parent: &serde_yaml::Mapping) -> Option<Band
         value_channel,
         func,
         column,
+    })
+}
+
+/// Resolve a mark's `sort:` into the order a lowerer can emit, or `None` when
+/// the shape is one nothing computes.
+///
+/// `sort: { y: -x, limit: 10 }` on a `barX` orders the `y` band by the `x`
+/// value, descending, and keeps ten bars.
+///
+/// Every condition below is a refusal that keeps the mark's
+/// [`ParseWarning::UnconsumedSort`] rather than ordering by something the
+/// author did not ask for:
+///
+/// - **The mark kind** must have a band axis
+///   ([`MarkKind::band_aggregate_axes`]) — the one list `BarLowerer` is
+///   registered against, so a lifted sort always has a reader.
+/// - **The sort key** must be that band axis. `sort: {x: -y}` on a `barX` asks
+///   for the value axis to be re-ordered, which is a continuous scale with no
+///   order to set.
+/// - **The value** must name the mark's value axis, optionally behind a single
+///   `-`. Ordering a band by a channel that is not on the mark would need a
+///   column the query does not select.
+/// - **`limit:`** must be a positive integer. `0` and a negative both mean a
+///   chart with nothing in it, which is worth a diagnostic rather than a blank
+///   frame.
+/// - **No other key.** Mosaic's `sort:` also takes `reverse`, `reduce` and an
+///   explicit `order`; none of them reaches a lowerer, and honouring the half
+///   of a map that does would order the bars while silently dropping the rest
+///   of the instruction.
+fn mark_sort(kind: MarkKind, parent: &serde_yaml::Mapping) -> Option<MarkSort> {
+    let (value_channel, band_channel) = kind.band_aggregate_axes()?;
+    let m = channel_map_at(parent, "sort")?;
+    let mut descending = None;
+    let mut limit = None;
+    for (k, v) in m {
+        let key = k.as_str()?;
+        if key == band_channel {
+            let written = v.as_str()?;
+            let (desc, named) = written
+                .strip_prefix('-')
+                .map_or((false, written), |rest| (true, rest));
+            if named != value_channel {
+                return None;
+            }
+            descending = Some(desc);
+        } else if SORT_MODIFIER_KEYS.contains(&key) {
+            let n = v.as_u64()?;
+            if n == 0 {
+                return None;
+            }
+            limit = Some(n);
+        } else {
+            return None;
+        }
+    }
+    Some(MarkSort {
+        channel: band_channel,
+        by: value_channel,
+        descending: descending?,
+        limit,
     })
 }
 
@@ -2362,6 +2490,23 @@ impl Serialize for SerSpecValue<'_> {
                 map.serialize_entry("bin", column)?;
                 if let Some(n) = steps {
                     map.serialize_entry("steps", n)?;
+                }
+                map.end()
+            }
+            // And likewise back to `{y: -x, limit: n}`. The `-` is written
+            // only when the lift read one, and `limit:` only when the spec
+            // carried one, so a re-serialised spec gains no key it never had.
+            SpecValue::Sort {
+                channel,
+                by,
+                descending,
+                limit,
+            } => {
+                let mut map = s.serialize_map(Some(1 + usize::from(limit.is_some())))?;
+                let sign = if *descending { "-" } else { "" };
+                map.serialize_entry(channel, &format!("{sign}{by}"))?;
+                if let Some(n) = limit {
+                    map.serialize_entry("limit", n)?;
                 }
                 map.end()
             }
