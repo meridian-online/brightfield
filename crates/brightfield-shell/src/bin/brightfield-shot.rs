@@ -56,9 +56,9 @@
 //! opaque chip in place of the statements inside the step — rather than
 //! refusing. That is deliberate, and it is also the one failure mode of this
 //! binary that an unattended caller could not see: the picture looks finished,
-//! and the node counts, the step count and the geometry are the same as the
-//! complete render's, because the chip takes the slot the statement it replaced
-//! would have had.
+//! and the node counts and the step count are the same as the complete
+//! render's, because the chip takes the slot the statement it replaced would
+//! have had.
 //!
 //! So the boot summary carries a `, N degraded` clause, and one line per
 //! stand-in precedes it:

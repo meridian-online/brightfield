@@ -153,8 +153,7 @@ impl ProtocolInputs {
     /// one: a degraded protocol draws a picture that looks finished at the same
     /// node count as the complete one — the statement intermediate a readable
     /// model produces and the chip that replaces it occupy the same id — so
-    /// neither the geometry, the counts, nor "did it draw something" separates
-    /// them.
+    /// neither the counts nor "did it draw something" separates them.
     ///
     /// Read off [`Self::graph_full`] rather than the canvas that happens to be
     /// on screen: a collapsed family tile stands in for its members, so a
