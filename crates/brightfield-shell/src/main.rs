@@ -558,7 +558,12 @@ fn main() -> Result<(), String> {
             let chart_host = host_from_frame(cc)?;
             let protocol_host = host_from_frame(cc)?;
             Ok(Box::new(BrightfieldApp {
-                app: MeridianApp::with_layout(boot, layout, chart_host, protocol_host, mode),
+                // `allowing_dialogs` here and nowhere else: this is the one
+                // construction with an operating-system window behind it and a
+                // person in front of it, so it is the one that may raise a file
+                // dialog. The capture tiers build the same app without it.
+                app: MeridianApp::with_layout(boot, layout, chart_host, protocol_host, mode)
+                    .allowing_dialogs(),
                 shot: ShotLatch::new(shot_out, shot_after, saved),
                 layout_path: path,
                 fit,

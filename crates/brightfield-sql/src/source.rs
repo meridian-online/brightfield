@@ -70,7 +70,8 @@ fn emit_parquet(name: &str, resolved_path: &str) -> SourceDdl {
         view_name: name.to_string(),
         sql: format!(
             "CREATE OR REPLACE VIEW \"{}\" AS SELECT * FROM read_parquet('{}')",
-            name, resolved_path
+            name,
+            emit::sql_path_literal(resolved_path)
         ),
         source_kind: SourceKindTag::Parquet,
         remote_location: emit::remote_location(resolved_path),
@@ -86,7 +87,7 @@ fn emit_csv(name: &str, resolved_path: &str, extras: &IndexMap<String, SpecValue
         sql: format!(
             "CREATE OR REPLACE VIEW \"{}\" AS SELECT * FROM read_csv('{}', {})",
             name,
-            resolved_path,
+            emit::sql_path_literal(resolved_path),
             kwargs.join(", ")
         ),
         source_kind: SourceKindTag::Csv,
@@ -99,7 +100,8 @@ fn emit_json(name: &str, resolved_path: &str) -> SourceDdl {
         view_name: name.to_string(),
         sql: format!(
             "CREATE OR REPLACE VIEW \"{}\" AS SELECT * FROM read_json_auto('{}', format='auto')",
-            name, resolved_path
+            name,
+            emit::sql_path_literal(resolved_path)
         ),
         source_kind: SourceKindTag::Json,
         remote_location: emit::remote_location(resolved_path),
@@ -115,7 +117,7 @@ fn emit_spatial(
     let resolved = emit::resolve_path(file_value, base_dir);
 
     let layer_kwarg = if let Some(SpecValue::String(layer)) = extras.get("layer") {
-        format!(", layer='{layer}'")
+        format!(", layer='{}'", emit::sql_path_literal(layer))
     } else {
         String::new()
     };
@@ -124,7 +126,9 @@ fn emit_spatial(
         view_name: name.to_string(),
         sql: format!(
             "CREATE OR REPLACE VIEW \"{}\" AS SELECT * FROM ST_Read('{}'{})",
-            name, resolved, layer_kwarg
+            name,
+            emit::sql_path_literal(&resolved),
+            layer_kwarg
         ),
         source_kind: SourceKindTag::Spatial,
         remote_location: emit::remote_location(&resolved),
@@ -134,7 +138,11 @@ fn emit_spatial(
 fn emit_duckdb_attach(name: &str, resolved_path: &str) -> SourceDdl {
     SourceDdl {
         view_name: name.to_string(),
-        sql: format!("ATTACH '{}' AS \"{}\" (READ_ONLY)", resolved_path, name),
+        sql: format!(
+            "ATTACH '{}' AS \"{}\" (READ_ONLY)",
+            emit::sql_path_literal(resolved_path),
+            name
+        ),
         source_kind: SourceKindTag::DuckDb,
         remote_location: emit::remote_location(resolved_path),
     }
@@ -152,7 +160,11 @@ fn emit_ducklake_attach(name: &str, resolved_path: &str) -> SourceDdl {
     };
     SourceDdl {
         view_name: name.to_string(),
-        sql: format!("ATTACH '{}' AS \"{}\" (READ_ONLY)", uri, name),
+        sql: format!(
+            "ATTACH '{}' AS \"{}\" (READ_ONLY)",
+            emit::sql_path_literal(&uri),
+            name
+        ),
         source_kind: SourceKindTag::DuckLake,
         remote_location: emit::remote_location(&uri),
     }

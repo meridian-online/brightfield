@@ -25,6 +25,9 @@
 //! - [`interval_drag`] — where an interval slider's handle is *while* it is
 //!   dragged, and the UI-thread coalescing that keeps a sustained drag from
 //!   executing values it has already superseded.
+//! - [`data_file`] — opening a CSV or a Parquet the user chose: the refusal of
+//!   anything that is not a local file, the first look chosen from the table's
+//!   own profile, and the synthesised spec that hands the file to the engine.
 //! - [`data_grid`] — the Data pane: the chart's peer, a DuckDB-backed grid
 //!   reading the SAME step materialisation through the engine's windowed
 //!   rows seam — and the one Meridian table chrome the Steps sheet renders
@@ -51,6 +54,7 @@ pub mod app;
 pub mod canvas;
 pub mod capture;
 pub mod chart_item;
+pub mod data_file;
 pub mod data_grid;
 pub mod devtools;
 pub mod editor;
