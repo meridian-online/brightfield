@@ -208,8 +208,9 @@ impl LoadDiagnostics {
 fn warning_wire_name(warning: &ParseWarning) -> String {
     match warning {
         ParseWarning::Unimplemented { name, .. } => name.clone(),
-        ParseWarning::UnconsumedMarkOption { mark, .. }
-        | ParseWarning::UnconsumedSort { mark } => mark.clone(),
+        ParseWarning::UnconsumedMarkOption { mark, .. } | ParseWarning::UnconsumedSort { mark } => {
+            mark.clone()
+        }
         ParseWarning::DeadParam { name }
         | ParseWarning::InteractorBindingMissing { name }
         | ParseWarning::InteractorBindingNonSelection { name }

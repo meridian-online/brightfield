@@ -1217,7 +1217,11 @@ fn apply_mark_sort(
     tiebreak: Option<&str>,
     (descending, limit): (bool, Option<u64>),
 ) -> QueryPlan {
-    let dir = if descending { SortDir::Desc } else { SortDir::Asc };
+    let dir = if descending {
+        SortDir::Desc
+    } else {
+        SortDir::Asc
+    };
     let mut keys = vec![(by.to_string(), dir)];
     if let Some(t) = tiebreak {
         if t != by {

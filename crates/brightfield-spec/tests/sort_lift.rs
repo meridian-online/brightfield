@@ -148,13 +148,23 @@ fn each_refused_shape_earns_exactly_one_line() {
         // set.
         ("sorts the value axis", "barX", value_axis, "{ x: -y }"),
         // The value names a channel the mark does not bind.
-        ("orders by an absent channel", "barX", value_axis, "{ y: -z }"),
+        (
+            "orders by an absent channel",
+            "barX",
+            value_axis,
+            "{ y: -z }",
+        ),
         // A limit of zero is a chart with nothing in it.
         ("limit: 0", "barX", value_axis, "{ y: -x, limit: 0 }"),
         ("negative limit", "barX", value_axis, "{ y: -x, limit: -3 }"),
         // A key beside the channel and `limit`. Mosaic's `sort:` takes
         // `reverse` and `reduce` too, and neither reaches a lowerer.
-        ("an unread modifier", "barX", value_axis, "{ y: -x, reverse: true }"),
+        (
+            "an unread modifier",
+            "barX",
+            value_axis,
+            "{ y: -x, reverse: true }",
+        ),
         // Not a map at all.
         ("a bare string", "barX", value_axis, "x"),
         // A kind with no band axis.
@@ -171,7 +181,11 @@ fn each_refused_shape_earns_exactly_one_line() {
             "{case}: a refused sort is still carried through the AST"
         );
         let lines = sort_lines(&src);
-        assert_eq!(lines.len(), 1, "{case}: must earn exactly one line: {lines:?}");
+        assert_eq!(
+            lines.len(),
+            1,
+            "{case}: must earn exactly one line: {lines:?}"
+        );
         assert!(
             lines[0].contains("`sort:`") && lines[0].contains("`limit:`"),
             "{case}: the line must name the option and say the nested `limit:` \
@@ -217,5 +231,8 @@ fn the_lift_survives_a_serialise_and_reparse() {
     let second = parse_spec(&round_tripped, Format::Yaml)
         .expect("the serialised spec parses")
         .spec;
-    assert_eq!(first, second, "parse → serialise → parse must be idempotent");
+    assert_eq!(
+        first, second,
+        "parse → serialise → parse must be idempotent"
+    );
 }
