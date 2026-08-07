@@ -77,6 +77,22 @@ brightfield-workbench = { version = "0.1.0", path = "../brightfield-workbench" }
 # (rerun-io; deliberately styling-free — sticky headers, millions of rows).
 # Tracks egui majors: 0.9 rides egui 0.35; bump the two together.
 egui_table = "0.9"
+# The native file dialog behind the front door's "Open a data file" verb — the
+# ONLY reason this crate opens a window it did not lay out itself.
+#
+# 0.17 rather than an earlier line, and the difference is a gate: through 0.16
+# rfd's default features pulled an async runtime for its Linux xdg-portal
+# backend, and one of the two choices was `async-std`, which the RUSTSEC feed
+# reports unmaintained — `cargo deny check advisories` runs on every pull
+# request here and would have failed on it. 0.17 carries no async runtime at
+# all. Its whole macOS graph is objc2/block2/dispatch2, all MIT or
+# Apache-2.0/MIT and already on the allow-list; nothing new was added to
+# deny.toml to land this.
+#
+# Default features are kept: they select the Linux backend, which this repo
+# does not build for today (release.yml packages the two darwin targets, and
+# both CI suites run on macos-15) but which `cargo deny` resolves anyway.
+rfd = "0.17"
 
 [dev-dependencies]
 # Tier-1 real-UI snapshot loop: egui_kittest renders the real app headlessly on
