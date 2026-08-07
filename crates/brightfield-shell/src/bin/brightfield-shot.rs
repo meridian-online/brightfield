@@ -50,6 +50,42 @@
 //! sampled render would place or colour a value differently from the complete
 //! one, under a notice that mentions only the dropped rows.
 //!
+//! # A degraded protocol render says so, on stderr
+//!
+//! A protocol whose models could not all be read draws what it can — one
+//! opaque chip in place of the statements inside the step — rather than
+//! refusing. That is deliberate, and it is a failure mode an unattended caller
+//! could not otherwise see: the picture looks finished, the step count is
+//! unchanged, and the node counts settle nothing either — a caller holding one
+//! render has nothing telling it what those totals should have been. The
+//! figures behind that are in
+//! [`brightfield_shell::protocol::ProtocolInputs::degrade_report`], each
+//! against the fixture that produced it.
+//!
+//! So the boot summary carries a `, N degraded` clause, and one line per
+//! degraded node precedes it — `N` counts nodes, and a single fault can badge
+//! more than one:
+//!
+//! ```text
+//! S.yaml: degraded step tier: unreadable: models/t.sql: Permission denied (os error 13) — …
+//! protocol acc (5 collapsed / 5 full nodes, 3 steps, Vertical flow, 1 degraded) from S.yaml
+//! ```
+//!
+//! A degrade raised by the model read leads with its class — `absent`,
+//! `unreadable` or `unavailable`. What each one means, and how much it commits
+//! to about the cause, is [`brightfield_protocol::Degradation`]; the rest of
+//! the line is that class's own guidance. A degrade raised anywhere else carries the
+//! underlying message with no class tag; `examples/protocol/degrade.yaml` is
+//! one, and its line opens `degraded step transform: SQL parse error`.
+//!
+//! **The exit code stays 0 and the PNG is still written.** On this binary a
+//! non-zero exit means *no image was produced* — `report` below implements it,
+//! mapping `Ok` to success and `Err` to 1. Spending it on a
+//! degraded-but-drawn render would tell a caller its capture failed when a file
+//! exists on disk, and would contradict the degrade's own design — draw what
+//! you can. The stderr line is the channel; a caller that wants to fail on a
+//! partial render matches it.
+//!
 //! `--gallery` renders one design-gallery component solo through the same
 //! deterministic capture path — an agent that just changed a primitive can
 //! see it without composing a dashboard. On this path `--size` is honoured

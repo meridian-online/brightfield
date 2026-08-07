@@ -143,6 +143,48 @@ impl ProtocolInputs {
             sheet_rows: Vec::new(),
         }
     }
+
+    /// What a run with nobody watching reads instead of diffing pictures: one
+    /// line per node carrying a degrade — a chip standing in for what could not
+    /// be derived, or a real node badged in place whose recovered lineage is
+    /// incomplete. A degrade from the model read opens with its class —
+    /// [`brightfield_protocol::Degradation`] documents what each one means. One
+    /// raised elsewhere reaches [`brightfield_protocol::Degradation::Other`],
+    /// which carries the underlying message and no class tag;
+    /// `examples/protocol/degrade.yaml` is that kind.
+    ///
+    /// **Empty means the render is everything the manifest asked for.** That is
+    /// the bit an unattended caller wants, and the other three numbers on the
+    /// boot summary — collapsed nodes, full nodes, steps — do not carry it.
+    /// Measured through
+    /// this method and [`crate::window::Boot::describe`] in
+    /// `crates/brightfield-shell/tests/protocol_degrade_channel.rs`: on the
+    /// two-statement model that suite ships, readable / absent / refused each
+    /// print `5 collapsed / 5 full nodes, 3 steps`; widen it to four
+    /// statements and readable prints `7 collapsed / 7 full nodes` while both
+    /// faults stay at 5/5, the step count 3 throughout. Neither shape lets one
+    /// render in hand be compared with the render it should have been, which
+    /// is why completeness has to be stated rather than inferred.
+    ///
+    /// Read off [`Self::graph_full`] rather than the canvas that happens to be
+    /// on screen: a collapsed family tile stands in for its members, so a
+    /// degrade inside one would be reported by the full graph and missed by the
+    /// collapsed one. What is being answered is what the *derivation* could not
+    /// do, which the fold does not change.
+    ///
+    /// [`crate::window::Boot::open_sampled`] prints these, which is how they
+    /// reach `brightfield-shot`'s stderr; the same call is the chart path's
+    /// diagnostics loop one branch over.
+    #[must_use]
+    pub fn degrade_report(&self) -> Vec<String> {
+        brightfield_protocol::graph::degrades(&self.graph_full)
+            .into_iter()
+            .map(|d| match &d.step {
+                Some(step) => format!("degraded step {step}: {}", d.detail),
+                None => format!("degraded node {}: {}", d.node, d.detail),
+            })
+            .collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
