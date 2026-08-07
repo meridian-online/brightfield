@@ -162,10 +162,22 @@ fn a_refused_model_does_not_render_like_a_readable_one() {
         Some("unreadable: models/entity_tiering_rules.sql"),
         "the chip names the cause on the canvas"
     );
-    assert_ne!(
+    assert_eq!(
+        readable.nodes["stmt.acc.tier#0"].kind,
+        AssetKind::Internal,
+        "the readable model's slot holds a statement intermediate"
+    );
+    // And here is why the count is not the check. This fixture's two renders
+    // have the SAME number of nodes: the statement intermediate the readable
+    // model produces and the chip that replaces it occupy one slot, and the
+    // relation the export names is created either way — as the model's output
+    // or as an external stand-in. A count, a node total or a "did it draw
+    // something" probe all pass on the degraded render. Only what is drawn ON
+    // each node separates them.
+    assert_eq!(
         readable.nodes.len(),
         refused.nodes.len(),
-        "the refused render is not the same node count as the complete one"
+        "the fixture is the hard case: equal node counts, different pictures"
     );
 
     drop(_guard);
