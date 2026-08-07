@@ -92,8 +92,9 @@ const ENGINE_REFUSED: &str = "The chart is missing data the engine refused to qu
 /// The smallest box [`ChartDoc::reflow_to`] will compose a dashboard into, on
 /// either axis, in logical points.
 ///
-/// A plot's default margins take 60 points of width and 50 of height
-/// (`brightfield_render::layout::Margins::default`).
+/// A plot's margins come off this before any data area is left;
+/// `brightfield_render::layout::Margins::default` is what they are when the
+/// spec declares none.
 pub const MIN_CHART_EXTENT: f32 = 160.0;
 
 /// The headline over a settled navigation whose re-query drew nothing.

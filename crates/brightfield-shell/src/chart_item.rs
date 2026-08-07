@@ -642,9 +642,9 @@ impl Item<ChartDoc> for ChartItem {
 
         // The dashboard is laid out into the room this pane has left, so the
         // raster below is a re-layout of the chart at the pane's size rather
-        // than a fixed picture the window was sized around. The band beside it
-        // is subtracted first: it is drawn outside the raster, so offering the
-        // whole row would compose a chart the legend then pushes off the edge.
+        // than a fixed picture the window was sized around. The legend band is
+        // drawn beside the raster rather than inside it, so it comes off the
+        // offer.
         let reserved = legend::band_width(&doc.composed);
         let gap = if reserved > 0.0 {
             meridian_design::spacing::CONTROL_GAP
