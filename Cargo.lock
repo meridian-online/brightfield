@@ -669,6 +669,7 @@ dependencies = [
  "brightfield-spec",
  "brightfield-sql",
  "brightfield-workbench",
+ "duckdb",
  "eframe",
  "egui",
  "egui-wgpu",

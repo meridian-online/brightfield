@@ -198,6 +198,24 @@ pub(crate) fn resolve_path(file_value: &str, base_dir: Option<&Path>) -> String 
     }
 }
 
+/// A resolved data location as the BODY of a SQL single-quoted string: every
+/// `'` doubled, per the SQL standard.
+///
+/// Every reader call this crate emits interpolates a path into `'…'`, and until
+/// this existed it interpolated it raw. A spec author typing an apostrophe into
+/// a `file:` value therefore emitted `read_csv('/data/Hugh's.csv')` — a syntax
+/// error at best, and at worst SQL of the author's choosing running on the
+/// reader's machine. `spec_value_to_sql_literal` had escaped kwarg strings for
+/// exactly this reason since it was written; the path beside them had not.
+///
+/// It matters more now than it did: with a file dialog on the front door the
+/// path is no longer something an author typed into a checked-in spec, it is
+/// whatever the operating system handed back — and `Hugh's data.csv` is an
+/// ordinary name for a file on a Mac.
+pub(crate) fn sql_path_literal(resolved_path: &str) -> String {
+    resolved_path.replace('\'', "''")
+}
+
 /// `Some(resolved_path)` when the resolved data location is reached over
 /// the network — an `http://` / `https://` URL, directly or inside a
 /// `ducklake:` URI. This is what a [`SourceDdl::remote_location`] carries.

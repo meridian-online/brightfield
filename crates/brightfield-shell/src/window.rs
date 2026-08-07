@@ -960,10 +960,24 @@ pub struct MeridianApp {
     ///
     /// A flag rather than a call inside the door's closure: `pick` blocks on an
     /// operating-system modal, and blocking inside the layout pass would hold
-    /// the `Ui` borrow across a window this process does not own. It is taken
-    /// and cleared after the frame's requests are applied — see
-    /// [`MeridianApp::draw`].
+    /// the `Ui` borrow across a window this process does not own. It is read
+    /// after the frame's requests are applied — see [`MeridianApp::draw`].
     pick_requested: bool,
+    /// Whether this app may raise an operating-system dialog at all.
+    ///
+    /// **Off unless the live window turns it on**, which is the safe default
+    /// rather than the polite one. Three tiers build a `MeridianApp` and only
+    /// one of them has a person in front of it: `capture_png` and the
+    /// `brightfield-shot` binary drive real frames through real wgpu devices
+    /// with no window and no user, and `brightfield-shot --script` feeds
+    /// synthetic pointer events — so a scripted click that happened to land on
+    /// the door's open control would raise a modal on a CI runner and block
+    /// there until the job timed out. The headless test tiers are the same
+    /// case one step further down.
+    ///
+    /// So the permission is granted at exactly one call site, by
+    /// [`MeridianApp::allowing_dialogs`], and `main` is the only caller.
+    dialogs_allowed: bool,
     /// The one modal slot — see [`Overlay`].
     overlay: Option<Overlay>,
     /// The keystrokes that open overlays, read off the registry at boot.
@@ -1190,6 +1204,7 @@ impl MeridianApp {
             door_help: None,
             door_open_file: None,
             pick_requested: false,
+            dialogs_allowed: false,
             overlay: None,
             overlay_keys: OverlayKeys::from_registry(),
             home_binding: brightfield_keys::registry()
@@ -1524,6 +1539,19 @@ impl MeridianApp {
         self.pick_requested
     }
 
+    /// Permit this app to raise operating-system dialogs — the live window's
+    /// declaration that there is a person in front of it.
+    ///
+    /// `main` is the only caller, and the default is off for the reason the
+    /// `dialogs_allowed` field records: the capture tiers and the pixel tier
+    /// drive the same frames with no window and no user, and a modal raised
+    /// there blocks until something kills the process.
+    #[must_use]
+    pub fn allowing_dialogs(mut self) -> Self {
+        self.dialogs_allowed = true;
+        self
+    }
+
     /// The protocol view's interaction model, read-only.
     ///
     /// The window is the only thing that feeds it keys, and it feeds it keys
@@ -1805,7 +1833,14 @@ impl MeridianApp {
         // it blocks the thread on a window this process did not lay out, so it
         // may not run inside the layout pass. A cancelled dialog is not an
         // error and says nothing — the user changed their mind.
-        if std::mem::take(&mut self.pick_requested) {
+        //
+        // `dialogs_allowed` is the gate, not an afterthought: every other tier
+        // that drives this method has no user in front of it, and a modal
+        // raised there hangs until something kills it. The flag is left set so
+        // a headless test can still assert the control asked; the door rewrites
+        // it on its next frame.
+        if self.pick_requested && self.dialogs_allowed {
+            self.pick_requested = false;
             if let Some(path) = crate::data_file::pick() {
                 self.open_data_file(&ctx, &path.to_string_lossy());
             }
@@ -2483,9 +2518,8 @@ impl MeridianApp {
                         // carries a `&'static str` start id and a file the user
                         // chose is neither static nor a start.
                         door_zone_heading(ui, "Start", sem);
-                        let open = ui.button(
-                            egui::RichText::new("Open a data file…").font(ui_font()),
-                        );
+                        let open =
+                            ui.button(egui::RichText::new("Open a data file…").font(ui_font()));
                         self.door_open_file = Some(open.rect);
                         if open.clicked() {
                             open_file = true;

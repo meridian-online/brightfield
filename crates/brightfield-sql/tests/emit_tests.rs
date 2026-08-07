@@ -116,6 +116,67 @@ fn dfsql_parquet_http_url_passthrough() {
         .contains("https://example.com/data.parquet"));
 }
 
+/// A path carrying an apostrophe is escaped into the reader call rather than
+/// closing its string literal early.
+///
+/// `spec_value_to_sql_literal` had escaped kwarg strings since it was written;
+/// the path beside them had not, so `/data/Hugh's.parquet` emitted
+/// `read_parquet('/data/Hugh's.parquet')` — a syntax error at best, and at
+/// worst SQL of the author's choosing. It stopped being hypothetical when a
+/// file dialog reached the front door: the path is now whatever the operating
+/// system handed back, and `Hugh's data.csv` is an ordinary name for a file on
+/// a Mac.
+///
+/// Every reader this crate emits is checked, because the escaping is per-call
+/// site and one site left raw is the whole hole.
+#[test]
+fn dfsql_a_quote_in_a_path_is_escaped_not_left_to_close_the_literal() {
+    for (file, needle) in [
+        ("Hugh's.parquet", "read_parquet('/data/Hugh''s.parquet')"),
+        ("Hugh's.csv", "read_csv('/data/Hugh''s.csv'"),
+        ("Hugh's.json", "read_json_auto('/data/Hugh''s.json'"),
+        ("Hugh's.duckdb", "ATTACH '/data/Hugh''s.duckdb'"),
+        (
+            "Hugh's.ducklake",
+            "ATTACH 'ducklake:/data/Hugh''s.ducklake'",
+        ),
+    ] {
+        let spec = spec_with_source(
+            "src",
+            DataSourceKind::File(file.to_string()),
+            IndexMap::new(),
+        );
+        let output = emit_sources(&spec, Some(Path::new("/data"))).unwrap();
+        let sql = &output.statements[0].sql;
+        assert!(sql.contains(needle), "{file} emitted {sql}");
+        // …and the raw form is gone entirely, so a partial escape cannot pass.
+        assert!(
+            !sql.contains("Hugh's"),
+            "{file} left an unescaped quote in {sql}"
+        );
+    }
+}
+
+/// The spatial reader's `layer:` kwarg travels the same path as the file it
+/// sits beside, and was interpolated raw for the same reason.
+#[test]
+fn dfsql_a_quote_in_a_spatial_layer_is_escaped() {
+    let mut extras = IndexMap::new();
+    extras.insert("type".to_string(), SpecValue::String("spatial".to_string()));
+    extras.insert(
+        "layer".to_string(),
+        SpecValue::String("Hugh's layer".to_string()),
+    );
+    let spec = spec_with_source(
+        "shapes",
+        DataSourceKind::File("shapes.gpkg".to_string()),
+        extras,
+    );
+    let output = emit_sources(&spec, Some(Path::new("/data"))).unwrap();
+    let sql = &output.statements[0].sql;
+    assert!(sql.contains("layer='Hugh''s layer'"), "{sql}");
+}
+
 // ── CSV emission ────────────────────────────────────────────────────
 
 #[test]

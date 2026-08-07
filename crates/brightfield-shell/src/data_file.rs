@@ -148,9 +148,7 @@ pub fn accept(chosen: &str) -> Result<PathBuf, String> {
         }
     }
     if !path.is_file() {
-        return Err(format!(
-            "{chosen}: there is no file there to open."
-        ));
+        return Err(format!("{chosen}: there is no file there to open."));
     }
     Ok(path)
 }
@@ -358,10 +356,10 @@ fn yaml_quoted(value: &str) -> String {
 /// the person who picked it was looking at — not the absolute path they never
 /// typed.
 fn file_label(path: &Path) -> String {
-    path.file_name()
-        .map_or_else(|| path.to_string_lossy().into_owned(), |n| {
-            n.to_string_lossy().into_owned()
-        })
+    path.file_name().map_or_else(
+        || path.to_string_lossy().into_owned(),
+        |n| n.to_string_lossy().into_owned(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -392,8 +390,8 @@ pub fn open(chosen: &str) -> Result<(LiveDashboard, Composed), String> {
         ));
     };
     let spec = spec_for(&path, &look);
-    let mut live = LiveDashboard::load_str(&spec, None)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut live =
+        LiveDashboard::load_str(&spec, None).map_err(|e| format!("{}: {e}", path.display()))?;
     let composed = live
         .present()
         .map_err(|e| format!("{}: {e}", path.display()))?;
@@ -652,9 +650,7 @@ mod tests {
             .expect("the source is declared under the fixed key");
         assert_eq!(
             source.kind,
-            brightfield_spec::ast::DataSourceKind::File(
-                "/Users/hugh/Hugh's data.csv".to_string()
-            ),
+            brightfield_spec::ast::DataSourceKind::File("/Users/hugh/Hugh's data.csv".to_string()),
             "the doubled quote is a YAML escape, not part of the path"
         );
     }

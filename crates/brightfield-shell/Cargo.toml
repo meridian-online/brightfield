@@ -98,6 +98,12 @@ rfd = "0.17"
 # Tier-1 real-UI snapshot loop: egui_kittest renders the real app headlessly on
 # wgpu and perceptually diffs against committed baselines (dify under the hood).
 egui_kittest = { version = "0.35", features = ["wgpu", "snapshot"] }
+# Writes the Parquet fixture `tests/data_file.rs` opens — the same DuckDB the
+# engine reads it back with, so the gate cannot pass because a second writer's
+# idea of Parquet happens to match. Not a new crate in the graph: it is
+# brightfield-engine's own dependency, on the same version line and the same
+# `bundled` feature (features unify, so this declaration adds no build).
+duckdb = { version = "1", features = ["bundled"] }
 
 [[bin]]
 name = "brightfield-shell"
