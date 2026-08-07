@@ -24,9 +24,30 @@
 # the string the record-linkage model had to work with. Its length is therefore
 # how much evidence was available per link. The left histogram is that length
 # across the whole table; the right grid is what the links were worth — the tier
-# they landed in, against whether the SEC key is an operating-company CIK or a
-# fund series id. Series ids are linked from filed authority, so they are only
-# ever `authoritative`; CIKs are the ones the model had to guess at.
+# they landed in, against the METHOD that produced them.
+#
+# WHY METHOD IS THE SECOND AXIS. Method is the column that separates an edge a
+# filing ASSERTED from an edge a string comparison GUESSED at, which is the first
+# thing a reader of a crosswalk has to know about a row.
+# `examples/protocol/edgar_gleif/models/tier.sql` sets both columns, and it is
+# also where they can be read apart: `sec-registration` and `sec-ncen` are taken
+# off filed SEC sources and written `authoritative` by construction, while
+# `exact_name` and `jaro_winkler` carry the resolver's own status through, so
+# their tier is a verdict on evidence rather than a definition.
+#
+# The SEC key's TYPE was the previous second axis, and it answers a smaller
+# question. In that same file the probabilistic branch hardcodes `key_type` to
+# `cik`, so a `series` edge can only reach the table through the authoritative
+# branch: that value of the axis reports how the row was BUILT, and it can only
+# ever land opposite the tier the grid is already drawing. Method splits the
+# same tier by the source that asserted it — a registration filing is not an
+# N-CEN filing — and splits the resolver's own output by the comparison that
+# produced it. `the_grid_groups_by_the_method_that_made_the_link` pins the
+# choice, so the next edit argues with a test rather than with a comment.
+#
+# How the methods actually divide the published table is what the picture is
+# for, and it is deliberately not written out here: the table is republished, so
+# a figure in this comment would go stale silently while the grid would not.
 #
 # THE DRAG IS A RE-QUERY, not a filter over rows already in memory. The brush
 # commits into `$band`; the cell mark's `filterBy: $band` threads the predicate
@@ -60,7 +81,7 @@ data:
     query: |
       SELECT
         tier,
-        key_type,
+        method,
         length(corpus) AS match_text_chars
       FROM crosswalk
 hconcat:
@@ -78,8 +99,8 @@ hconcat:
       - mark: cell
         data: { from: links, filterBy: $band }
         x: tier
-        y: key_type
+        y: method
         fill: { count: }
-    title: What that bought, by key type
+    title: What that bought, by how the link was made
     width: 380
     height: 340
