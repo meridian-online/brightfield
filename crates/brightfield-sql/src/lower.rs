@@ -1261,7 +1261,7 @@ fn hex_aggregate_expr(agg: &(AggregateFunc, Option<String>)) -> AggregateExpr {
 
 /// Build the registry of mark lowerers.
 ///
-/// Registers SimpleLowerer for Dot, Line, BarX, BarY; the statistical-mark
+/// Registers SimpleLowerer for Dot, Line; the statistical-mark
 /// lowerers (RegressionLowerer, DensityLowerer) for regression and density
 /// kinds.
 /// Marks not listed here fall back to DefaultLowerer (unsupported).
