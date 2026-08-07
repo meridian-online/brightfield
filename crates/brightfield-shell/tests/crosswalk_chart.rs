@@ -113,6 +113,11 @@ fn parse_and_analyse(yaml: &str) -> (Spec, SpecAnalysis) {
 /// The two mark bodies below are lifted from the shipped spec and differ in
 /// exactly one thing — the mark family — which is the difference this file
 /// exists to measure.
+///
+/// `tier` and `method` are cut on different strides (`i` against `i / 4`) so
+/// they vary independently. A shared stride would collapse the grid to one cell
+/// per tier, and "the cells account for every row" is a weaker claim when there
+/// are four cells than when there are sixteen.
 fn local_table(rows: u64) -> String {
     format!(
         "data:
@@ -120,7 +125,7 @@ fn local_table(rows: u64) -> String {
     query: |
       SELECT
         (['ambiguous', 'authoritative', 'candidate', 'confirmed'])[(i % 4) + 1] AS tier,
-        (['cik', 'series'])[(i % 2) + 1] AS key_type,
+        (['exact_name', 'jaro_winkler', 'sec-ncen', 'sec-registration'])[(i // 4 % 4) + 1] AS method,
         20 + CAST(hash(i) % 270 AS BIGINT) AS match_text_chars
       FROM range({rows}) AS t(i)
 "
@@ -138,7 +143,7 @@ fn local_aggregating(rows: u64) -> String {
   - mark: cell
     data: {{ from: links }}
     x: tier
-    y: key_type
+    y: method
     fill: {{ count: }}
 width: 640
 height: 400
@@ -337,6 +342,62 @@ fn at_the_crosswalks_row_count_the_scatter_is_sampled_and_the_aggregate_is_not()
 }
 
 // ---------------------------------------------------------------------------
+// What the grid is grouped by
+// ---------------------------------------------------------------------------
+
+/// The grid's second category is the METHOD that made the link, not the type of
+/// the SEC key.
+///
+/// This is an editorial claim about the chart, so it is worth saying why a test
+/// holds it at all. `key_type` and `method` are interchangeable to every other
+/// gate in this file: both are categories, both group, both keep the mark out
+/// of the sampler's reach. Swapping one for the other is invisible to the
+/// machine and changes what the chart says, which is exactly the kind of edit
+/// that needs an assertion rather than a comment.
+///
+/// What separates them is legible in
+/// `examples/protocol/edgar_gleif/models/tier.sql`, the model that writes both
+/// columns. Its probabilistic branch hardcodes `key_type` to `cik`, so a
+/// `series` edge reaches the table only through the authoritative branch: that
+/// value reports how the row was BUILT and can only ever land opposite the tier
+/// the other axis already draws. `method` reports what asserted the edge — a
+/// filing, or a fuzzy string comparison — which is the fact a consumer of a
+/// crosswalk needs in order to decide what a row is worth.
+///
+/// Decided from the shipped bytes, with no data and no network: the grid's
+/// emitted SQL groups by both category columns, so naming them is enough.
+#[test]
+fn the_grid_groups_by_the_method_that_made_the_link() {
+    let (spec, _) = shipped();
+    let groups = brightfield_sql::collect_plot_groups(&spec);
+    let grid_mark = *groups
+        .last()
+        .expect("the shipped chart has plots")
+        .mark_indices
+        .first()
+        .expect("the last plot has a mark");
+    let sql = emit_query_sampled(&spec, grid_mark, None, None, &[], None)
+        .expect("the grid emits")
+        .sql;
+
+    let group_by = sql
+        .split_once("GROUP BY")
+        .expect("the grid aggregates, so it has a GROUP BY")
+        .1;
+    for column in ["method", "tier"] {
+        assert!(
+            group_by.contains(&format!("\"{column}\"")),
+            "the grid does not group by {column}:\n{sql}"
+        );
+    }
+    assert!(
+        !sql.contains("key_type"),
+        "the grid still reads key_type, which the header of \
+         examples/remote/edgar-gleif-crosswalk.yaml says it does not:\n{sql}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // The filter is a re-query
 // ---------------------------------------------------------------------------
 
@@ -438,7 +499,7 @@ fn a_brush_over_the_local_twin_re_executes_and_the_counts_move() {
       - mark: cell
         data: {{ from: links, filterBy: $band }}
         x: tier
-        y: key_type
+        y: method
         fill: {{ count: }}
     width: 380
     height: 340
