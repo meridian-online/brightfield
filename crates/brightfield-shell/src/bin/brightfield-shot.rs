@@ -54,11 +54,13 @@
 //!
 //! A protocol whose models could not all be read draws what it can — one
 //! opaque chip in place of the statements inside the step — rather than
-//! refusing. That is deliberate, and it is also the one failure mode of this
-//! binary that an unattended caller could not see: the picture looks finished,
-//! and the node counts and the step count are the same as the complete
-//! render's, because the chip takes the slot the statement it replaced would
-//! have had.
+//! refusing. That is deliberate, and it is a failure mode an unattended caller
+//! could not otherwise see: the picture looks finished, the step count is
+//! unchanged, and the node counts settle nothing either. The chip is one node
+//! whatever it stood in for, so on a short model the totals equal the complete
+//! render's and on a longer one they are lower by an amount nobody holding a
+//! single render can know — measured both ways in
+//! `crates/brightfield-shell/tests/protocol_degrade_channel.rs`.
 //!
 //! So the boot summary carries a `, N degraded` clause, and one line per
 //! stand-in precedes it:
@@ -69,9 +71,9 @@
 //! ```
 //!
 //! The class leads — `absent` (the protocol names a model that is not there) /
-//! `unreadable` (it is there and the read was refused — a permission, an ACL,
-//! a sandbox grant) / `unavailable` — because only one of those is the
-//! reader's to fix, and the rest of the line says what makes it go away.
+//! `unreadable` (the read was refused — a permission, an ACL, a sandbox grant)
+//! / `unavailable` — because of those three only `unreadable` is the reader's
+//! to fix, and the rest of the line says what makes it go away.
 //!
 //! **The exit code stays 0 and the PNG is still written.** On this binary a
 //! non-zero exit means *no image was produced*, which is how the invocations in

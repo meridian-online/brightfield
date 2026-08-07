@@ -77,17 +77,26 @@ pub enum AssetKind {
 /// *unreadable* are one shape to this code — a `sql:` step with no source — and
 /// two different problems for whoever is looking at the chart. One is a
 /// protocol that was authored naming a model that is not there; the other is a
-/// permission, an ACL or a sandbox grant, and the render comes back whole once
-/// it is widened. A chip that cannot tell them apart sends someone to fix the
-/// wrong thing.
+/// read the filesystem refused — a permission, an ACL or a sandbox grant. A
+/// chip that cannot tell them apart sends someone to fix the wrong thing.
+///
+/// The split is drawn on evidence of a *refusal*, never on evidence of
+/// absence: `classify_read_failure` — private, in this module — returns
+/// `ModelUnreadable` where access was refused and `ModelAbsent` for everything
+/// else, and states there why it leans that way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Degradation {
-    /// A `sql:` step's model file is not on disk, and the directory holding it
-    /// could be read to establish that. The protocol's author's to fix.
+    /// A `sql:` step's model file did not open and nothing about the failure
+    /// says access was refused — which includes a `models/` directory that
+    /// does not exist at all. The protocol's author's to fix.
     ModelAbsent,
-    /// A `sql:` step's model file is there and could not be opened — a
-    /// permission, an ACL, a parent directory with no search bit, or a sandbox
-    /// grant that does not reach it. The reader's to fix.
+    /// A `sql:` step's model file did not open and the filesystem said access
+    /// was refused — a permission, an ACL, a parent directory with no search
+    /// bit, or a sandbox grant that does not reach it. The reader's to fix.
+    ///
+    /// Claims nothing about the file existing, deliberately. A directory at
+    /// mode `000` refuses the read whether or not anything is inside it, and
+    /// the process that was refused is in no position to say which.
     ModelUnreadable,
     /// A `sql:` step's model source did not arrive and no filesystem verdict
     /// says why: a caller-built source map that omits it, or an I/O failure of
@@ -102,11 +111,12 @@ impl Degradation {
     /// The word this class writes at the HEAD of a chip label and of the
     /// degrade text.
     ///
-    /// At the head, not the tail, for a measured reason: the renderer sizes a
-    /// card from its label's char count and then fits the label to that width
-    /// (`node_width` here, `fit_label` in
-    /// `crates/brightfield-render/src/asset_scene.rs`), and the count is capped
-    /// — so a marker after a model path longer than the cap is elided before it
+    /// At the head, not the tail, for a measured reason: the layout sizes a
+    /// card from its label's char count and caps that count (`node_width` in
+    /// `crates/brightfield-protocol/src/layout.rs`), and the render then fits
+    /// the label to the width it was given, truncating with an ellipsis
+    /// (`fit_label` in `crates/brightfield-render/src/asset_scene.rs`). So a
+    /// marker after a model path longer than the cap is elided before it
     /// reaches a pixel.
     #[must_use]
     pub const fn tag(self) -> &'static str {
@@ -129,9 +139,9 @@ impl Degradation {
                  one chip in place of the statements inside it."
             }
             Self::ModelUnreadable => {
-                " — the file is there and could not be opened. Access, not authorship: a \
-                 permission, an ACL, a parent directory with no search bit, or a sandbox grant \
-                 that does not reach it. The statements are drawn again once the read succeeds."
+                " — the read was refused. Access, not authorship: a permission, an ACL, a parent \
+                 directory with no search bit, or a sandbox grant that does not reach it. The \
+                 statements are drawn in place of this chip once the read succeeds."
             }
             Self::ModelUnavailable => {
                 " — no source arrived for this model and no filesystem verdict says why, so this \
@@ -295,12 +305,27 @@ pub struct AssetGraph {
 /// both the `io::Error` and the path — by the time the failure is a string in
 /// the source map the two cases are indistinguishable.
 ///
-/// `NotFound` is not taken at face value. A refusal can surface as `NotFound`
-/// rather than `PermissionDenied` when something between the process and the
-/// file hides its existence, so absence is claimed only when the entry really
-/// is not there AND the directory holding it could be opened to establish
-/// that. Everything else falls to `ModelUnreadable`, the verdict that sends a
-/// reader to look at access rather than at the protocol.
+/// **The rule is evidence of a refusal, not evidence of absence.**
+/// `ModelUnreadable` is the verdict wherever the filesystem said access was
+/// refused: the open failed with `PermissionDenied`, or the entry turns out to
+/// be there after all — a `NotFound` can be a refusal wearing the wrong error,
+/// when something between the process and the file hides its existence — or
+/// listing the directory holding it was itself refused. `ModelAbsent` is what
+/// remains.
+///
+/// That leaves a `models/` directory which does not exist reported as *absent*
+/// rather than *unreadable*, and it is the right way round for the reader:
+/// there is no grant to widen on a directory that is not there, so the fix is
+/// the protocol. Sending someone to check a permission instead would be the
+/// same wrong-instruction failure this split exists to remove, pointed the
+/// other way.
+///
+/// Measured through the shipped loader on macOS, and pinned by
+/// `the_parent_directorys_state_decides_absent_from_unreadable` in
+/// `crates/brightfield-shell/tests/protocol_degrade_channel.rs`: a missing
+/// parent directory and a readable-but-empty one both report `absent`; a
+/// parent at mode `000` reports `unreadable` whether or not the model file is
+/// inside it.
 fn classify_read_failure(path: &Path, error: &std::io::Error) -> Degradation {
     match error.kind() {
         std::io::ErrorKind::PermissionDenied => Degradation::ModelUnreadable,
@@ -309,7 +334,10 @@ fn classify_read_failure(path: &Path, error: &std::io::Error) -> Degradation {
             if path.symlink_metadata().is_ok() {
                 return Degradation::ModelUnreadable;
             }
-            // The directory could not be listed, so "not there" is unfounded.
+            // Listing the directory was refused, so nothing here establishes
+            // that the file is missing — only that this process cannot look.
+            // A directory that does not EXIST fails this test rather than
+            // passing it: its error is `NotFound`, not `PermissionDenied`.
             let parent_refused = path.parent().is_some_and(|dir| {
                 !dir.as_os_str().is_empty()
                     && std::fs::read_dir(dir)
@@ -1468,9 +1496,10 @@ steps:
             classify_read_failure(nowhere, &Error::from(ErrorKind::PermissionDenied)),
             Degradation::ModelUnreadable
         );
-        // Absence is claimed only where the entry really is not there and its
-        // directory could be opened to establish that. Here neither holds
-        // (the parent does not exist), which is not a refusal either.
+        // Absence is what remains when nothing says access was refused. Here
+        // the entry is not there and neither is the directory holding it — and
+        // a directory that does not exist answers `NotFound`, so it is no
+        // evidence of a refusal.
         assert_eq!(
             classify_read_failure(nowhere, &Error::from(ErrorKind::NotFound)),
             Degradation::ModelAbsent

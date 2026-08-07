@@ -149,11 +149,19 @@ impl ProtocolInputs {
     /// produce, each naming the class first and then whose problem it is.
     ///
     /// **Empty means the render is everything the manifest asked for.** That is
-    /// the bit an unattended caller wants, and it is not otherwise available to
-    /// one: a degraded protocol draws a picture that looks finished at the same
-    /// node count as the complete one — the statement intermediate a readable
-    /// model produces and the chip that replaces it occupy the same id — so
-    /// neither the counts nor "did it draw something" separates them.
+    /// the bit an unattended caller wants, and the other three numbers on the
+    /// boot summary — collapsed nodes, full nodes, steps — do not carry it. A
+    /// degraded step is one chip whatever it stood in for, so the totals are
+    /// equal to the complete render's on a short model and merely lower on a
+    /// longer one, by an amount only a complete render knows. Measured through
+    /// this method and [`crate::window::Boot::describe`] in
+    /// `crates/brightfield-shell/tests/protocol_degrade_channel.rs`: on the
+    /// two-statement model that suite ships, readable / absent / refused each
+    /// print `5 collapsed / 5 full nodes, 3 steps`; widen it to four
+    /// statements and readable prints `7 collapsed / 7 full nodes` while both
+    /// faults stay at 5/5, the step count 3 throughout. Neither shape lets one
+    /// render in hand be compared with the render it should have been, which
+    /// is why completeness has to be stated rather than inferred.
     ///
     /// Read off [`Self::graph_full`] rather than the canvas that happens to be
     /// on screen: a collapsed family tile stands in for its members, so a

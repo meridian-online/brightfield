@@ -59,6 +59,15 @@ steps:
 const MODEL: &str = "CREATE TABLE staged AS SELECT * FROM read_csv('build/a.csv');\n\
                      CREATE TABLE tiered AS SELECT * FROM staged;\n";
 
+/// The same lineage, two statements longer. Only the readable render can draw
+/// the extra intermediates, so this is the shape where the node totals move —
+/// see `the_summary_totals_are_not_a_completeness_check`.
+const MODEL_FOUR_STATEMENTS: &str = "CREATE TABLE staged AS SELECT * FROM read_csv('build/a.csv');
+CREATE TABLE mid AS SELECT * FROM staged;
+CREATE TABLE late AS SELECT * FROM mid;
+CREATE TABLE tiered AS SELECT * FROM late;
+";
+
 const MODEL_PATH: &str = "models/entity_tiering_rules.sql";
 
 /// Restore a path's mode when the scope ends — including on a panic. A test
@@ -101,15 +110,43 @@ enum Case {
 /// A protocol directory staged for `case`, plus the mode guard the refused case
 /// needs held for as long as the directory is read.
 fn fixture(name: &str, case: Case) -> (PathBuf, Option<RestoreMode>) {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("degrade_channel_{name}"));
-    let _ = fs::remove_dir_all(&dir);
+    fixture_with_model(name, case, MODEL)
+}
+
+/// As [`fixture`], with the model's body chosen by the caller — the knob
+/// `the_summary_totals_are_not_a_completeness_check` turns.
+fn fixture_with_model(name: &str, case: Case, model: &str) -> (PathBuf, Option<RestoreMode>) {
+    let dir = staging_dir(name);
     fs::create_dir_all(dir.join("models")).expect("create fixture");
     fs::write(dir.join("arcform.yaml"), MANIFEST).expect("write manifest");
     if case != Case::Absent {
-        fs::write(dir.join(MODEL_PATH), MODEL).expect("write model");
+        fs::write(dir.join(MODEL_PATH), model).expect("write model");
     }
     let guard = (case == Case::Refused).then(|| RestoreMode::set(&dir.join(MODEL_PATH), 0o000));
     (dir, guard)
+}
+
+/// An empty directory to stage into, with the manifest not yet written.
+///
+/// The chmod before the delete is not belt-and-braces: a run interrupted
+/// between staging a `000` directory and dropping its guard leaves one behind,
+/// and `remove_dir_all` cannot descend into it.
+fn staging_dir(name: &str) -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("degrade_channel_{name}"));
+    let _ = fs::set_permissions(dir.join("models"), fs::Permissions::from_mode(0o755));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("create fixture");
+    dir
+}
+
+/// The `N collapsed / N full nodes, N steps` prefix of a summary line, with the
+/// flow and the degrade clause dropped — the part this suite compares.
+fn totals(summary: &str) -> String {
+    let (head, _) = summary
+        .split_once(", Vertical flow")
+        .unwrap_or((summary, ""));
+    let (_, counts) = head.split_once('(').unwrap_or(("", head));
+    counts.to_string()
 }
 
 /// True when this process reads `path` whatever its mode — running as root,
@@ -315,5 +352,187 @@ fn the_shipped_binary_reports_the_degrade_and_still_writes_the_png() {
     }
     for png in [&complete_png, &absent_png, &refused_png] {
         let _ = fs::remove_file(png);
+    }
+}
+
+/// Why the summary needs the degrade count and cannot infer it: the three
+/// totals on that line report the shape of the model, not whether the render
+/// is complete.
+///
+/// Two model lengths, deliberately — three earlier attempts at this claim were
+/// certified against ONE fixture and were false on the next. A two-statement
+/// model makes the degraded totals *equal* to the complete ones; a
+/// four-statement model makes them *lower*. Neither is a check a caller
+/// holding a single render can perform, and a sentence that names only one of
+/// the two shapes is a generalisation from a fixture.
+#[test]
+fn the_summary_totals_are_not_a_completeness_check() {
+    // Every summary this test reads, keyed by (model length, case).
+    let read = |name: &str, case: Case, model: &str| -> (String, String) {
+        let (dir, guard) = fixture_with_model(name, case, model);
+        if case == Case::Refused && refusal_is_impossible(&dir) {
+            return (String::new(), String::new());
+        }
+        let (_, summary) = report_and_summary(&dir);
+        drop(guard);
+        (totals(&summary), summary)
+    };
+
+    // Two statements: the chip stands in for the one intermediate a readable
+    // model would have drawn, so nothing on the line moves but the count.
+    let (short_complete, short_complete_line) = read("totals_2_complete", Case::Complete, MODEL);
+    assert_eq!(
+        short_complete, "5 collapsed / 5 full nodes, 3 steps",
+        "the control's totals: {short_complete_line}"
+    );
+    let (short_absent, _) = read("totals_2_absent", Case::Absent, MODEL);
+    let (short_refused, refused_line) = read("totals_2_refused", Case::Refused, MODEL);
+    assert_eq!(
+        short_absent, short_complete,
+        "a two-statement model degrades at an UNCHANGED node total"
+    );
+    if refused_line.is_empty() {
+        eprintln!(
+            "SKIPPED the refused half of the_summary_totals_are_not_a_completeness_check: \
+             this process reads a 000 file (running as root)"
+        );
+    } else {
+        assert_eq!(short_refused, short_complete, "and so does a refused read");
+    }
+
+    // Four statements: the readable render draws two more intermediates, so
+    // the totals DO move — and still say nothing, because the number they
+    // moved from is the one the caller does not have.
+    let (long_complete, long_complete_line) =
+        read("totals_4_complete", Case::Complete, MODEL_FOUR_STATEMENTS);
+    assert_eq!(
+        long_complete, "7 collapsed / 7 full nodes, 3 steps",
+        "two more statements, two more nodes: {long_complete_line}"
+    );
+    let (long_absent, _) = read("totals_4_absent", Case::Absent, MODEL_FOUR_STATEMENTS);
+    let (long_refused, long_refused_line) =
+        read("totals_4_refused", Case::Refused, MODEL_FOUR_STATEMENTS);
+    assert_eq!(
+        long_absent, "5 collapsed / 5 full nodes, 3 steps",
+        "the degraded render is one chip whatever it stood in for"
+    );
+    assert_ne!(
+        long_absent, long_complete,
+        "on this model the totals DO separate the two — which is why the \
+         unscoped claim that they never move was false"
+    );
+    if !long_refused_line.is_empty() {
+        assert_eq!(long_refused, long_absent, "a refused read, likewise");
+    }
+
+    // The step count is the number that moved on none of these renders — it
+    // counts the manifest's steps, and a degraded step is still a step.
+    for line in [
+        &short_complete,
+        &short_absent,
+        &short_refused,
+        &long_complete,
+        &long_absent,
+        &long_refused,
+    ] {
+        assert!(
+            line.is_empty() || line.ends_with(", 3 steps"),
+            "the step count never moves: {line}"
+        );
+    }
+}
+
+/// The classification rule, stated where it is decided: **`unreadable` is
+/// claimed on evidence that access was REFUSED, and `absent` is what remains.**
+///
+/// The three states of the directory holding the model, each through the
+/// shipped offline loader:
+///
+/// | `models/`                | class        | what the reader is told           |
+/// |--------------------------|--------------|-----------------------------------|
+/// | does not exist           | `absent`     | the protocol names a file that is not there |
+/// | exists, mode `000`       | `unreadable` | the read was refused — access, not authorship |
+/// | exists, readable, empty  | `absent`     | the protocol names a file that is not there |
+///
+/// A missing directory reporting *absent* is the deliberate half. There is no
+/// grant to widen on a directory that is not there, so *unreadable* would send
+/// the reader to check a permission that is not the problem — the same
+/// wrong-instruction failure the split exists to remove.
+///
+/// And the mode-`000` row is staged with **no model file inside**, which is the
+/// case that made the old wording false: the badge said "the file is there" for
+/// a path this test asserts does not exist.
+#[test]
+fn the_parent_directorys_state_decides_absent_from_unreadable() {
+    // 1. `models/` never created.
+    let missing = staging_dir("parent_missing");
+    fs::write(missing.join("arcform.yaml"), MANIFEST).expect("write manifest");
+    let (missing_report, _) = report_and_summary(&missing);
+    assert_eq!(missing_report.len(), 1, "one stand-in: {missing_report:?}");
+    assert!(
+        missing_report[0].starts_with("degraded step tier: absent: "),
+        "a `models/` directory that does not exist is the protocol's problem, \
+         not a permission to widen: {:?}",
+        missing_report[0]
+    );
+
+    // 3. `models/` there and readable, model file never written. (Staged before
+    //    case 2 so the mode-000 directory is live for as short a time as
+    //    possible.)
+    let empty = staging_dir("parent_readable_empty");
+    fs::create_dir_all(empty.join("models")).expect("models dir");
+    fs::write(empty.join("arcform.yaml"), MANIFEST).expect("write manifest");
+    let (empty_report, _) = report_and_summary(&empty);
+    assert!(
+        empty_report[0].starts_with("degraded step tier: absent: "),
+        "a readable directory with nothing in it establishes absence: {:?}",
+        empty_report[0]
+    );
+
+    // 2. `models/` there at mode 000 and EMPTY — the read is refused before
+    //    anything can be learned about what is inside.
+    let refused = staging_dir("parent_unreadable_empty");
+    fs::create_dir_all(refused.join("models")).expect("models dir");
+    fs::write(refused.join("arcform.yaml"), MANIFEST).expect("write manifest");
+    let model = refused.join(MODEL_PATH);
+    assert!(
+        model.symlink_metadata().is_err(),
+        "the fixture is the hard case: no model file exists at {}",
+        model.display()
+    );
+    let guard = RestoreMode::set(&refused.join("models"), 0o000);
+    if fs::read_to_string(&model).is_ok() || fs::read_dir(refused.join("models")).is_ok() {
+        eprintln!(
+            "SKIPPED the mode-000 row of the_parent_directorys_state_decides_absent_from_unreadable: \
+             this process reads a 000 directory (running as root)"
+        );
+        return;
+    }
+    let (refused_report, _) = report_and_summary(&refused);
+    drop(guard);
+    assert!(
+        refused_report[0].starts_with("degraded step tier: unreadable: "),
+        "a directory that refuses the read is the reader's to fix: {:?}",
+        refused_report[0]
+    );
+    assert!(
+        refused_report[0].contains("the read was refused")
+            && refused_report[0].contains("Access, not authorship"),
+        "and the badge says so: {:?}",
+        refused_report[0]
+    );
+    // The regression this row exists for. `classify_read_failure` declines to
+    // claim the file is absent here, so nothing downstream may claim it is
+    // present either — and the file measurably is not.
+    assert!(
+        !refused_report[0].contains("the file is there"),
+        "the badge must not assert a presence the classifier declined to \
+         establish — the file at {} does not exist: {:?}",
+        model.display(),
+        refused_report[0]
+    );
+
+    for dir in [&missing, &empty, &refused] {
+        let _ = fs::remove_dir_all(dir);
     }
 }
