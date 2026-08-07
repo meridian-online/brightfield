@@ -58,7 +58,9 @@ pub use contract_graph::{
 };
 pub use cte::{contract_sql, cte_id, explode_ctes, manifest_sql};
 pub use error::Error;
-pub use graph::{AssetGraph, AssetKind, AssetNode, Edge, Seam, SeamKind};
+pub use graph::{
+    degrades, AssetGraph, AssetKind, AssetNode, Degradation, Degrade, Edge, Seam, SeamKind,
+};
 pub use layout::{layout, Flow, Layout, LayoutConfig};
 pub use manifest::{is_protocol_manifest, parse_manifest_str, Manifest, Step, StepExt};
 pub use nav::{Dir, FoldOutcome, ProtocolNav};

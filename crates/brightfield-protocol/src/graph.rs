@@ -36,6 +36,12 @@
 //! (the chip drawn BESIDE a statement recovered from its `WITH`-stripped form,
 //! whose lineage is real but incomplete). Everything is
 //! `BTreeMap`/`BTreeSet`/`Vec` — deterministic end-to-end.
+//!
+//! **A degraded graph says so, and says which kind.** A step-level degrade's
+//! chip is labelled `<class>: <model>` — the class first, because the renderer
+//! fits a label to the chip's width and elides the tail. [`Degradation`] is
+//! the class set and [`degrades`] enumerates them off a built graph, which is
+//! the channel a run with nobody watching reads instead of diffing pictures.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -60,6 +66,135 @@ pub enum AssetKind {
     Family,
     /// A degraded statement (or unreadable model) — an issue-badged chip.
     Opaque,
+}
+
+/// Why a node stands in for something the derivation could not produce.
+///
+/// The distinction the first three draw is the point of the type. *Absent* and
+/// *unreadable* are one shape to this code — a `sql:` step with no source — and
+/// two different problems for whoever is looking at the chart. One is a
+/// protocol that was authored naming a model that is not there; the other is a
+/// permission, an ACL or a sandbox grant, and the render comes back whole once
+/// it is widened. A chip that cannot tell them apart sends someone to fix the
+/// wrong thing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Degradation {
+    /// A `sql:` step's model file is not on disk, and the directory holding it
+    /// could be read to establish that. The protocol's author's to fix.
+    ModelAbsent,
+    /// A `sql:` step's model file is there and could not be opened — a
+    /// permission, an ACL, a parent directory with no search bit, or a sandbox
+    /// grant that does not reach it. The reader's to fix.
+    ModelUnreadable,
+    /// A `sql:` step's model source did not arrive and no filesystem verdict
+    /// says why: a caller-built source map that omits it, or an I/O failure of
+    /// neither class above.
+    ModelUnavailable,
+    /// A degrade of another kind — a statement that did not parse, a step that
+    /// declares no output asset, a lineage recovered only in part.
+    Other,
+}
+
+impl Degradation {
+    /// The word this class writes at the HEAD of a chip label and of the
+    /// degrade text.
+    ///
+    /// At the head, not the tail, for a measured reason: the renderer sizes a
+    /// card from its label's char count and then fits the label to that width
+    /// (`node_width` here, `fit_label` in
+    /// `crates/brightfield-render/src/asset_scene.rs`), and the count is capped
+    /// — so a marker after a model path longer than the cap is elided before it
+    /// reaches a pixel.
+    #[must_use]
+    pub const fn tag(self) -> &'static str {
+        match self {
+            Self::ModelAbsent => "absent",
+            Self::ModelUnreadable => "unreadable",
+            Self::ModelUnavailable => "unavailable",
+            Self::Other => "degraded",
+        }
+    }
+
+    /// What the class means for the reader, appended to the degrade text the
+    /// inspector shows. The chip says which class; this says whose problem it
+    /// is and what makes it go away.
+    #[must_use]
+    pub const fn guidance(self) -> &'static str {
+        match self {
+            Self::ModelAbsent => {
+                " — the protocol names a model file that is not there, so this step is drawn as \
+                 one chip in place of the statements inside it."
+            }
+            Self::ModelUnreadable => {
+                " — the file is there and could not be opened. Access, not authorship: a \
+                 permission, an ACL, a parent directory with no search bit, or a sandbox grant \
+                 that does not reach it. The statements are drawn again once the read succeeds."
+            }
+            Self::ModelUnavailable => {
+                " — no source arrived for this model and no filesystem verdict says why, so this \
+                 step is drawn as one chip in place of the statements inside it."
+            }
+            Self::Other => "",
+        }
+    }
+}
+
+/// Read back the class a tagged degrade text opens with, plus the rest of it.
+/// `None` when the text carries no class tag, which is how a degrade raised
+/// somewhere other than the model read reaches [`Degradation::Other`].
+///
+/// The class travels as a leading token because the source map's error type is
+/// a plain `String` shared with callers that build the map themselves (a start
+/// whose models are compiled in, a test with sources in memory), and widening
+/// that type would reach across crates for a distinction only this file draws.
+fn tagged(text: &str) -> Option<(Degradation, &str)> {
+    let (head, rest) = text.split_once(": ")?;
+    let class = match head {
+        "absent" => Degradation::ModelAbsent,
+        "unreadable" => Degradation::ModelUnreadable,
+        "unavailable" => Degradation::ModelUnavailable,
+        "degraded" => Degradation::Other,
+        _ => return None,
+    };
+    Some((class, rest))
+}
+
+/// One node that stands in for something the derivation could not produce.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Degrade {
+    /// The id of the issue-badged node.
+    pub node: AssetId,
+    /// The step it belongs to, where the derivation knows one.
+    pub step: Option<StepId>,
+    /// What class of problem produced it.
+    pub class: Degradation,
+    /// The full reason, exactly as the inspector shows it.
+    pub detail: String,
+}
+
+/// Every degrade in `graph`, in node-id order.
+///
+/// **The channel for a run with nobody watching.** An empty return says the
+/// graph is everything the protocol asked for; a non-empty one names each node
+/// that stands in for something that could not be derived, with the class that
+/// says whether the cause is the protocol or the access to it. A degraded
+/// render is a picture that looks finished, so the thing that distinguishes it
+/// from a complete one must not itself be the picture.
+#[must_use]
+pub fn degrades(graph: &AssetGraph) -> Vec<Degrade> {
+    graph
+        .nodes
+        .values()
+        .filter_map(|node| {
+            let issue = node.issue.as_ref()?;
+            Some(Degrade {
+                node: node.id.clone(),
+                step: node.step.clone(),
+                class: tagged(issue).map_or(Degradation::Other, |(class, _)| class),
+                detail: issue.clone(),
+            })
+        })
+        .collect()
 }
 
 /// Stable node identity (dotted, namespaced by protocol name).
@@ -145,9 +280,50 @@ pub struct AssetGraph {
     pub edges: Vec<Edge>,
 }
 
+/// Which class of failure a model read hit.
+///
+/// Drawn here, at the read, because this is the last place that still holds
+/// both the `io::Error` and the path — by the time the failure is a string in
+/// the source map the two cases are indistinguishable.
+///
+/// `NotFound` is not taken at face value. A refusal can surface as `NotFound`
+/// rather than `PermissionDenied` when something between the process and the
+/// file hides its existence, so absence is claimed only when the entry really
+/// is not there AND the directory holding it could be opened to establish
+/// that. Everything else falls to `ModelUnreadable`, the verdict that sends a
+/// reader to look at access rather than at the protocol.
+fn classify_read_failure(path: &Path, error: &std::io::Error) -> Degradation {
+    match error.kind() {
+        std::io::ErrorKind::PermissionDenied => Degradation::ModelUnreadable,
+        std::io::ErrorKind::NotFound => {
+            // The entry is there after all: the read was refused, not missed.
+            if path.symlink_metadata().is_ok() {
+                return Degradation::ModelUnreadable;
+            }
+            // The directory could not be listed, so "not there" is unfounded.
+            let parent_refused = path.parent().is_some_and(|dir| {
+                !dir.as_os_str().is_empty()
+                    && std::fs::read_dir(dir)
+                        .err()
+                        .is_some_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied)
+            });
+            if parent_refused {
+                Degradation::ModelUnreadable
+            } else {
+                Degradation::ModelAbsent
+            }
+        }
+        _ => Degradation::ModelUnavailable,
+    }
+}
+
 /// Read every `sql:` step's model file relative to the manifest's parent
 /// directory. A missing/unreadable model is an `Err` entry — a step-level
 /// degrade (opaque chip for that step's SQL), never a parse failure.
+///
+/// The `Err` string opens with the [`Degradation`] tag, so the class the read
+/// established survives into [`build_graph`], which no longer has the path or
+/// the `io::Error` to establish it from.
 #[must_use]
 pub fn load_model_sources(
     manifest: &Manifest,
@@ -159,10 +335,14 @@ pub fn load_model_sources(
         .filter_map(|step| {
             let model = step.sql.as_ref()?;
             let path = manifest_dir.join(model);
-            Some((
-                step.name.clone(),
-                std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display())),
-            ))
+            let source = std::fs::read_to_string(&path).map_err(|e| {
+                format!(
+                    "{}: {}: {e}",
+                    classify_read_failure(&path, &e).tag(),
+                    path.display()
+                )
+            });
+            Some((step.name.clone(), source))
         })
         .collect()
 }
@@ -591,6 +771,14 @@ pub fn build_graph(
         } else if let Some(error) = &ir.sql_error {
             // Step-level degrade: the whole model is one opaque chip wired
             // from its depends_on (the file-read sibling).
+            //
+            // The chip LEADS with the fault class, so a reader learns from the
+            // canvas alone whether the model was never there or was refused —
+            // the second is theirs to fix and the first is not. An untagged
+            // error is a source map a caller built without touching a
+            // filesystem, so no verdict on the file is available to state.
+            let (class, detail) =
+                tagged(error).unwrap_or((Degradation::ModelUnavailable, error.as_str()));
             let model = match &ir.seam.kind {
                 SeamKind::Sql { model } => model.clone(),
                 _ => String::new(),
@@ -598,10 +786,10 @@ pub fn build_graph(
             let chip = b.ensure_node(AssetNode {
                 id: format!("stmt.{proto}.{}#0", ir.name),
                 kind: AssetKind::Opaque,
-                label: format!("{model} (unreadable)"),
+                label: format!("{}: {model}", class.tag()),
                 step: Some(ir.name.clone()),
                 family_count: None,
-                issue: Some(error.clone()),
+                issue: Some(format!("{}: {detail}{}", class.tag(), class.guidance())),
             });
             for dep in &ir.depends {
                 let ids = if is_path_like(dep) {
@@ -1149,9 +1337,145 @@ steps:
             .issue
             .as_deref()
             .is_some_and(|e| e.contains("not found")));
+        // An untagged error is a caller-built source map, which touched no
+        // filesystem — so no verdict on the file is claimed.
+        assert_eq!(chip.label, "unavailable: models/missing.sql");
         assert!(
             g.edges.iter().any(|e| e.to == "stmt.deg.broken#0"),
             "depends_on wires the chip"
+        );
+    }
+
+    /// A `sql:` step whose model is one of `absent` / `unreadable`, plus its
+    /// readable form. `models/` under a manifest directory, one `sql:` step.
+    fn degraded_graph(model_source: Result<String, String>) -> AssetGraph {
+        let yaml = "name: acc\nsteps:\n  - name: fetch\n    op: http_fetch@1\n    with: { url: 'https://h/a', out: build/a.csv }\n  - name: tier\n    sql: models/entity_tiering_rules.sql\n    depends_on: [build/a.csv]\n";
+        let manifest = parse_manifest_str(yaml).unwrap();
+        let mut sources = BTreeMap::new();
+        sources.insert("tier".to_string(), model_source);
+        build_graph(&manifest, &sources)
+    }
+
+    /// AC2 at the derivation layer: a model that is not there and a model that
+    /// is there and refused are two different chips, and the difference is in
+    /// the part of the label a narrow chip still shows.
+    #[test]
+    fn pds_absent_and_unreadable_models_do_not_draw_the_same_chip() {
+        let absent = degraded_graph(Err(
+            "absent: models/entity_tiering_rules.sql: No such file or directory (os error 2)"
+                .to_string(),
+        ));
+        let unreadable = degraded_graph(Err(
+            "unreadable: models/entity_tiering_rules.sql: Permission denied (os error 13)"
+                .to_string(),
+        ));
+        let chip = |g: &AssetGraph| g.nodes["stmt.acc.tier#0"].clone();
+        let (a, u) = (chip(&absent), chip(&unreadable));
+        assert_ne!(a.label, u.label, "the two causes are not one label");
+        // The renderer fits a label to the card's width and elides the tail, so
+        // a difference late in a long label never reaches a pixel — and the
+        // width is capped, so a long enough model path elides any marker after
+        // it. Asserting the divergence is EARLY is what stops the marker
+        // migrating back to the end of the label.
+        let diverges_at = a
+            .label
+            .chars()
+            .zip(u.label.chars())
+            .position(|(x, y)| x != y)
+            .unwrap_or(usize::MAX);
+        assert!(
+            diverges_at < 4,
+            "the cause is legible before any elision (diverges at char {diverges_at}): \
+             {:?} vs {:?}",
+            a.label,
+            u.label
+        );
+        // And the badge text names whose problem each is.
+        assert!(a.issue.as_deref().is_some_and(|i| i.contains("not there")));
+        assert!(u
+            .issue
+            .as_deref()
+            .is_some_and(|i| i.contains("Access, not authorship")));
+    }
+
+    /// AC4 at the derivation layer: the graph answers "did this draw
+    /// everything it was asked for" without anyone looking at it.
+    #[test]
+    fn pds_degrades_reports_complete_and_classifies_each_degrade() {
+        let complete = degraded_graph(Ok(
+            "CREATE TABLE tiered AS SELECT * FROM read_csv('build/a.csv');".to_string(),
+        ));
+        assert_eq!(
+            degrades(&complete),
+            Vec::new(),
+            "a graph with nothing missing reports nothing"
+        );
+
+        for (source, expected) in [
+            (
+                "absent: models/entity_tiering_rules.sql: No such file or directory (os error 2)",
+                Degradation::ModelAbsent,
+            ),
+            (
+                "unreadable: models/entity_tiering_rules.sql: Permission denied (os error 13)",
+                Degradation::ModelUnreadable,
+            ),
+            (
+                "models/entity_tiering_rules.sql: not embedded",
+                Degradation::ModelUnavailable,
+            ),
+        ] {
+            let g = degraded_graph(Err(source.to_string()));
+            let found = degrades(&g);
+            assert_eq!(found.len(), 1, "one degrade for {source}");
+            assert_eq!(found[0].class, expected, "class of {source}");
+            assert_eq!(found[0].node, "stmt.acc.tier#0");
+            assert_eq!(found[0].step.as_deref(), Some("tier"));
+            assert_eq!(
+                Some(found[0].detail.as_str()),
+                g.nodes["stmt.acc.tier#0"].issue.as_deref(),
+                "the report carries exactly what the inspector shows"
+            );
+        }
+
+        // A degrade raised somewhere other than the model read still counts as
+        // "this is not a complete render" — it is only unclassed.
+        let yaml = "name: c\nsteps:\n  - name: scrub\n    command: ./scrub.sh\n";
+        let g = build_graph(&parse_manifest_str(yaml).unwrap(), &BTreeMap::new());
+        let found = degrades(&g);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].class, Degradation::Other);
+    }
+
+    /// The read-site classifier is the only place that can tell the two apart,
+    /// so it is held to the `io::ErrorKind` mapping directly. The filesystem
+    /// half — a real refused read — is
+    /// `crates/brightfield-protocol/tests/model_source_faults.rs`.
+    #[test]
+    fn pds_read_failures_classify_by_error_kind() {
+        use std::io::{Error, ErrorKind};
+        let nowhere = Path::new("/nonexistent-brightfield-fixture/models/t.sql");
+        assert_eq!(
+            classify_read_failure(nowhere, &Error::from(ErrorKind::PermissionDenied)),
+            Degradation::ModelUnreadable
+        );
+        // Absence is claimed only where the entry really is not there and its
+        // directory could be opened to establish that. Here neither holds
+        // (the parent does not exist), which is not a refusal either.
+        assert_eq!(
+            classify_read_failure(nowhere, &Error::from(ErrorKind::NotFound)),
+            Degradation::ModelAbsent
+        );
+        // A path that DOES exist reported as NotFound is a refusal wearing the
+        // wrong error: the entry is there, so absence is refused.
+        let here = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        assert_eq!(
+            classify_read_failure(&here, &Error::from(ErrorKind::NotFound)),
+            Degradation::ModelUnreadable
+        );
+        assert_eq!(
+            classify_read_failure(nowhere, &Error::from(ErrorKind::InvalidData)),
+            Degradation::ModelUnavailable
         );
     }
 
