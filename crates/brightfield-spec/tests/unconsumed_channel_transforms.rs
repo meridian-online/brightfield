@@ -261,25 +261,29 @@ fn only_the_specs_that_bin_or_count_positionally_are_reported() {
 }
 
 /// The vendored specs that ask for a channel transform brightfield does not
-/// compute — **12** of 54, each drawing a blank or a partial frame, every one
+/// compute — **10** of 54, each drawing a blank or a partial frame, every one
 /// of them silent before this gate.
 ///
 /// It was 18. **Six left when the positional bin+count landed**: `crossfilter`,
 /// `flights-200k`, `flights-10m`, `gaia`, `nyc-taxi-rides` and
-/// `flights-hexbin`, whose two binned rects take both orientations. Each of
-/// those now draws a histogram, which is the only reason it is allowed to stop
-/// warning.
+/// `flights-hexbin`, whose two binned rects take both orientations. **Two more
+/// left when the positional aggregate over a band channel landed**:
+/// `sorted-bars` and `observable-latency`, whose `barX` marks bind
+/// `x: {sum: col}` over a categorical `y`. Each of those now draws, which is
+/// the only reason any of them is allowed to stop warning.
 ///
 /// The transforms behind what remains, so a reader knows what the list is made
-/// of without re-running it: positional aggregates (`sum`, `avg`, `min`,
-/// `max`), the windowed average (`{avg: …, orderby: …, rows: …}`), date binning
-/// (`dateMonth`, `dateMonthDay`), geo centroids (`centroidX`, `centroidY`), the
-/// param-driven column selector (`column`, as `x: { column: $x }` — the
-/// dropdown in `symbols.yaml` chooses a column nothing then resolves), and one
-/// entry that is still the histogram idiom: `protein-design`, whose binned
-/// rects carry `fill: version`. Mosaic STACKS a binned rect with a grouping
-/// colour and brightfield does not yet, so the lift is refused and the
-/// diagnostic is the truth about that chart.
+/// of without re-running it: aggregates on channels no lowerer groups
+/// (`seattle-temp`'s `y1: {max: …}` on an interval channel, `weather`'s
+/// `x: {dateMonthDay: date}` on a dot), the windowed average
+/// (`{avg: …, orderby: …, rows: …}`), date binning (`dateMonth`,
+/// `dateMonthDay`), geo centroids (`centroidX`, `centroidY`), the param-driven
+/// column selector (`column`, as `x: { column: $x }` — the dropdown in
+/// `symbols.yaml` chooses a column nothing then resolves), and one entry that
+/// is still the histogram idiom: `protein-design`, whose binned rects carry
+/// `fill: version`. Mosaic STACKS a binned rect with a grouping colour and
+/// brightfield does not yet, so the lift is refused and the diagnostic is the
+/// truth about that chart.
 ///
 /// This list SHRINKING is the point: each entry that leaves is a capability
 /// that landed. Nothing here is a defect in this check.
@@ -287,10 +291,8 @@ const EXPECTED_SPEAKING: &[&str] = &[
     "athlete-birth-waffle.yaml",
     "athlete-height.yaml",
     "moving-average.yaml",
-    "observable-latency.yaml",
     "protein-design.yaml",
     "seattle-temp.yaml",
-    "sorted-bars.yaml",
     "symbols.yaml",
     "us-county-map.yaml",
     "us-state-map.yaml",
@@ -388,34 +390,37 @@ plot:
     );
 }
 
-/// The trap the lift was designed around: **positional aggregates other than
-/// the histogram `count` are still uncomputed, and still say so.**
+/// The trap both positional lifts were designed around: **a positional
+/// aggregate no lowerer groups is still uncomputed, and still says so.**
 ///
-/// The cheap way to make `y: {count:}` parse would have been to add `x` and `y`
-/// to the aggregate-capable channel list. That one line would also have
-/// consumed `weather.yaml`'s `x: {count:}` on a `barX`, `sorted-bars.yaml`'s
-/// `x: {sum: gold}` and `seattle-temp.yaml`'s `y1: {max: …}` — none of which
-/// any lowerer computes. Every one would have gone quiet while still drawing
-/// nothing: this milestone's defect arriving through the back door.
+/// The cheap way to make either lift parse would have been to add `x` and `y`
+/// to the aggregate-capable channel list. That one line consumes every
+/// positional aggregate in the corpus at once, including the ones nothing
+/// computes — `seattle-temp.yaml`'s `y1: {max: …}` on an INTERVAL channel and
+/// `moving-average.yaml`'s windowed `y: {avg: cases, orderby: day}`. Both
+/// would have gone quiet while still drawing nothing: this milestone's defect
+/// arriving through the back door.
+///
+/// What the band lift computes instead is a NAMED pair — an aggregate on a
+/// bar's value axis against a plain column on its band axis — resolved the
+/// same way the histogram's `bin`+`count` pair is. Everything outside that
+/// shape keeps warning, and the four synthesised refusals below are the edges
+/// of it.
 #[test]
 fn positional_aggregates_no_lowerer_computes_still_speak() {
-    let weather = transforms(include_str!("../vendor/mosaic-specs/yaml/weather.yaml"));
-    assert!(
-        weather.contains("x:count"),
-        "`x: {{count:}}` on a barX is not the rect histogram idiom and nothing \
-         computes it: {weather:?}"
-    );
-    let sorted = transforms(include_str!("../vendor/mosaic-specs/yaml/sorted-bars.yaml"));
-    assert!(
-        sorted.contains("x:sum"),
-        "a positional `sum` has no lowerer: {sorted:?}"
-    );
     let seattle = transforms(include_str!(
         "../vendor/mosaic-specs/yaml/seattle-temp.yaml"
     ));
     assert!(
         seattle.iter().any(|t| t.ends_with(":max")),
-        "a positional `max` has no lowerer: {seattle:?}"
+        "an aggregate on an INTERVAL channel has no lowerer: {seattle:?}"
+    );
+    let ma = transforms(include_str!(
+        "../vendor/mosaic-specs/yaml/moving-average.yaml"
+    ));
+    assert!(
+        ma.contains("y:avg"),
+        "a windowed average is not a band aggregate and has no lowerer: {ma:?}"
     );
     // And a `count` with no `bin` opposite it has nothing to group by, so it
     // is not the idiom either — the pair is what makes it computable.
@@ -432,6 +437,116 @@ plot:
     assert!(
         lone_count.contains("y:count"),
         "a `count` with no positional `bin` opposite it is uncomputed: {lone_count:?}"
+    );
+    // A mark with no band axis at all. `dot` places both channels
+    // continuously, so there is no category to group by and nothing to draw
+    // one bar per.
+    let dot = transforms(
+        "data:
+  athletes: { file: data/athletes.parquet }
+plot:
+- mark: dot
+  data: { from: athletes }
+  x: { sum: gold }
+  y: nationality
+",
+    );
+    assert!(
+        dot.contains("x:sum"),
+        "a `dot` has no band axis, so its positional aggregate is uncomputed: {dot:?}"
+    );
+    // The aggregate on the WRONG half of a barX's pair. `barX` runs its bars
+    // along `x`; an aggregate on `y` with the category on `x` is a barY
+    // written under the wrong name, and drawing it would transpose the chart
+    // the author asked for.
+    let transposed = transforms(
+        "data:
+  athletes: { file: data/athletes.parquet }
+plot:
+- mark: barX
+  data: { from: athletes }
+  x: nationality
+  y: { sum: gold }
+",
+    );
+    assert!(
+        transposed.contains("y:sum"),
+        "an aggregate on a barX's BAND axis is refused and keeps warning: {transposed:?}"
+    );
+    // A band whose bars would be split by a second column. Mosaic stacks;
+    // brightfield does not, so the lift is refused for the same reason the
+    // binned rect refuses `fill: version`.
+    let stacked = transforms(
+        "data:
+  athletes: { file: data/athletes.parquet }
+plot:
+- mark: barX
+  data: { from: athletes }
+  x: { sum: gold }
+  y: nationality
+  fill: sport
+",
+    );
+    assert!(
+        stacked.contains("x:sum"),
+        "a grouping fill would stack, so the band lift is refused: {stacked:?}"
+    );
+    // A bar that already carries both ends of its extent has nothing left to
+    // aggregate over.
+    let intervalled = transforms(
+        "data:
+  athletes: { file: data/athletes.parquet }
+plot:
+- mark: barX
+  data: { from: athletes }
+  x: { sum: gold }
+  x1: low
+  x2: high
+  y: nationality
+",
+    );
+    assert!(
+        intervalled.contains("x:sum"),
+        "an interval channel refuses the band lift: {intervalled:?}"
+    );
+}
+
+/// The band lift itself, through the diagnostic that is the only thing an
+/// author sees when it does not fire.
+///
+/// Two vendored specs bind a positional `sum` over a categorical band and
+/// drew nothing at all before this: `sorted-bars.yaml` (`x: {sum: gold}` over
+/// `y: nationality`) and `observable-latency.yaml` (`x: {sum: count}` over
+/// `y: route`, with `fill: route` naming the band column itself rather than a
+/// second grouping). Both must now be silent on the channel, and
+/// `weather.yaml`'s two `barX` marks — `x: {count:}` over `y: weather` — must
+/// be silent on `x` while its `dot` keeps reporting the date binning nothing
+/// computes.
+///
+/// Asserted as an ABSENCE against a spec that still reports something else, so
+/// the check cannot pass by the diagnostic dying wholesale.
+#[test]
+fn the_band_aggregate_stops_warning_because_it_now_computes() {
+    let sorted = transforms(include_str!("../vendor/mosaic-specs/yaml/sorted-bars.yaml"));
+    assert!(
+        sorted.is_empty(),
+        "`x: {{sum: gold}}` over `y: nationality` is the band idiom: {sorted:?}"
+    );
+    let latency = transforms(include_str!(
+        "../vendor/mosaic-specs/yaml/observable-latency.yaml"
+    ));
+    assert!(
+        latency.is_empty(),
+        "`fill: route` names the BAND column, so it splits nothing: {latency:?}"
+    );
+    let weather = transforms(include_str!("../vendor/mosaic-specs/yaml/weather.yaml"));
+    assert!(
+        !weather.contains("x:count"),
+        "`x: {{count:}}` over `y: weather` is the band idiom: {weather:?}"
+    );
+    assert!(
+        weather.contains("x:dateMonthDay"),
+        "the dot's date binning is a different transform and still speaks: {weather:?}"
     );
 }
 

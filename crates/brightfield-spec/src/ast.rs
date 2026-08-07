@@ -490,10 +490,15 @@ pub enum SpecValue {
     /// channel counts.
     ///
     /// Deliberately a separate variant rather than a widening of
-    /// [`Self::Aggregate`]'s channel list: `fill`/`r` stay the only
-    /// aggregate-capable channels, so lifting a bin can never quieten
-    /// `weather.yaml`'s `x: {count:}` or `sorted-bars.yaml`'s `x: {sum: gold}`
-    /// — positional aggregates no lowerer computes, which must keep warning.
+    /// [`Self::Aggregate`]'s channel list: a bin is an interval and an
+    /// aggregate is a scalar, and each reaches a positional channel through
+    /// its OWN pair resolver (`parse::binned_histogram`,
+    /// `parse::banded_aggregate`) rather than through
+    /// `AGGREGATE_CHANNEL_FIELDS`, which stays `fill`/`r`. So neither lift can
+    /// quieten the other's diagnostic: `seattle-temp.yaml`'s `y1: {max: …}` is
+    /// on an interval channel no lowerer computes and keeps warning, while
+    /// `sorted-bars.yaml`'s `x: {sum: gold}` over `y: nationality` is the band
+    /// idiom `BarLowerer` groups.
     Bin {
         /// The source column to bin.
         column: String,
