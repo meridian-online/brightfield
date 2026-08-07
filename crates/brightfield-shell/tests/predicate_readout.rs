@@ -31,6 +31,12 @@
 //!   over a QUOTED string literal for one value, a parenthesised OR chain for
 //!   several, `FALSE` for none. Held by clicking real bars and by holding a
 //!   multi-value clause.
+//! - **The readout has only ever met one PLAN shape.** Every case above filters
+//!   a row-level plan, where the clause wraps the whole query. An aggregating
+//!   bar is `Order{Aggregation{Filter{Source}}}`, and `apply_selection_filter`
+//!   threads the clause onto the aggregation's INPUT instead — a different
+//!   place in a different string. Held by reading the rail over a ranked
+//!   category bar and locating the shown clause inside its `GROUP BY`.
 
 use brightfield_engine::coordinator::Interaction;
 use brightfield_engine::{RecordBatch, Session, SqlPredicate};
@@ -970,5 +976,213 @@ fn a_point_gesture_can_never_hold_an_empty_clause() {
         readout(app.chart_doc()).as_deref(),
         Some("$pick = (region = 'East')"),
         "a click that resolved no category disturbed the held selection"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 6. The other plan shape: a clause pushed inside a GROUP BY
+// ---------------------------------------------------------------------------
+
+/// A ranked category bar and the plot that filters it.
+///
+/// Mark 0 is the contributor; mark 1 is a `barX` binding `x: {sum: revenue}`
+/// over `y: region`, which lowers to `Order{Aggregation{Filter{Source}}}` —
+/// the plan shape no other case in this file reaches.
+///
+/// The six rows are built so a clause landing on the WRONG side of the
+/// grouping cannot pass by coincidence: `quarter = 'Q1'` moves every one of the
+/// three totals (30→12, 24→9, 18→7), so filtering the aggregated output —
+/// where the totals all exceed any bound the clause could carry, and `quarter`
+/// is not even a column — is a different picture in every bar.
+const AGGREGATING_BAR: &str = r#"
+params:
+  pick: { select: crossfilter }
+data:
+  sales:
+    - { region: North, quarter: Q1, revenue: 12 }
+    - { region: South, quarter: Q1, revenue: 9 }
+    - { region: East,  quarter: Q1, revenue: 7 }
+    - { region: North, quarter: Q2, revenue: 18 }
+    - { region: South, quarter: Q2, revenue: 15 }
+    - { region: East,  quarter: Q2, revenue: 11 }
+hconcat:
+  - plot:
+      - mark: dot
+        data: { from: sales }
+        x: quarter
+        y: revenue
+  - plot:
+      - mark: barX
+        data: { from: sales, filterBy: $pick }
+        x: { sum: revenue }
+        y: region
+"#;
+
+/// The same source, parsed independently of the running session — the
+/// "executed" side of the identity, for a fixture that lives in this file
+/// rather than in `examples/`. Same discipline as [`spec_of`]: an emission
+/// built from the object under test would be comparing the readout with
+/// itself.
+fn spec_of_str(source: &str) -> Spec {
+    parse_spec(source, Format::Yaml).expect("parse").spec
+}
+
+/// The bars a mark is drawing, as `(band, aggregate)` in row order — read off
+/// the Arrow batches the coordinator returned, so this is what the picture was
+/// built from rather than what the SQL was expected to produce.
+///
+/// The band is cast to `Utf8` and the value to `Float64` rather than downcast
+/// directly, because which Arrow string layout DuckDB hands back is its
+/// choice, not this test's.
+fn bars_drawn(doc: &mut ChartDoc, mark: usize, band: &str, value: &str) -> Vec<(String, f64)> {
+    use arrow::array::{Float64Array, StringArray};
+    use arrow::compute::cast;
+    use arrow::datatypes::DataType;
+    let batches = doc
+        .live_coordinator()
+        .expect("a live document")
+        .chart_rows(mark)
+        .expect("the mark queries");
+    let mut bars = Vec::new();
+    for batch in &batches {
+        let bi = batch
+            .schema()
+            .index_of(band)
+            .unwrap_or_else(|_| panic!("the emitted columns carry the band `{band}`"));
+        let vi = batch
+            .schema()
+            .index_of(value)
+            .unwrap_or_else(|_| panic!("the emitted columns carry the aggregate `{value}`"));
+        let bands = cast(batch.column(bi), &DataType::Utf8).expect("a text band");
+        let bands = bands
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("utf-8 band");
+        let values = cast(batch.column(vi), &DataType::Float64).expect("a numeric aggregate");
+        let values = values
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .expect("f64 aggregate");
+        for i in 0..batch.num_rows() {
+            bars.push((bands.value(i).to_string(), values.value(i)));
+        }
+    }
+    bars
+}
+
+/// **The clause a ranked category bar grouped under is the clause on the
+/// rail.** AC3 for the shape the lift introduced.
+///
+/// Every other case in this file filters a row-level plan, where the selection
+/// wraps the whole query and the readout's identity with the emitted SQL is a
+/// substring test over one WHERE. An aggregating bar has two candidate places
+/// for the same string — around the aggregation, or beneath it — and only one
+/// of them is the chart the author asked for. So three things are held at once:
+///
+/// 1. the rail shows the clause the store holds, as it does for a brush;
+/// 2. that string is in the mark's emitted SQL **byte for byte**, and it is
+///    positioned BEFORE the `GROUP BY`, which is what "the filter is inside the
+///    grouping" means in the emitted text; and
+/// 3. the bars the mark actually drew are the totals of the rows that clause
+///    selects — hand-computed here, so a plausible-but-wrong grouping fails on
+///    the numbers rather than passing on the text.
+///
+/// Assertion 3 is what makes 2 more than a string search. A clause threaded
+/// beneath the aggregation and a clause wrapped around it can both appear
+/// before a `GROUP BY` in some emitted string; only one of them recomputes the
+/// totals.
+#[test]
+fn an_aggregating_bars_readout_is_the_clause_it_grouped_under() {
+    let mut doc = live_doc(AGGREGATING_BAR);
+
+    // At rest: the totals over all six rows, in the ascending band order the
+    // lowerer emits. A fixture check — if these are wrong the identities below
+    // are being read off the wrong chart.
+    assert_eq!(
+        bars_drawn(&mut doc, 1, "region", "revenue"),
+        vec![
+            ("East".to_string(), 18.0),
+            ("North".to_string(), 30.0),
+            ("South".to_string(), 24.0),
+        ],
+        "fixture check: unfiltered, the bar is each region's whole total"
+    );
+    assert_eq!(doc.selection_sql(), None, "a rest state claims nothing");
+    assert!(readout(&doc).is_none());
+
+    doc.apply_interaction(Interaction::Select {
+        name: "pick".to_string(),
+        contributor: ComponentPath("root/hconcat[0]".to_string()),
+        predicate: SqlPredicate::Point {
+            column: "quarter".to_string(),
+            values: vec![ScalarValue::Text("Q1".to_string())],
+            meta: None,
+        },
+    });
+
+    // 1. The rail.
+    let line = readout(&doc).expect("a held selection is shown");
+    assert_eq!(
+        line, "$pick = (quarter = 'Q1')",
+        "the readout over an aggregating bar is not the clause the store holds"
+    );
+    let clause = clause_of(&line);
+
+    // 3. The picture, first — so that if the push-down is wrong the failure
+    // names the arithmetic rather than a missing substring.
+    assert_eq!(
+        bars_drawn(&mut doc, 1, "region", "revenue"),
+        vec![
+            ("East".to_string(), 7.0),
+            ("North".to_string(), 12.0),
+            ("South".to_string(), 9.0),
+        ],
+        "the bars are not the totals of the rows `{clause}` selects — the \
+         clause did not reach the rows that were grouped"
+    );
+
+    // 2. The emitted SQL, and where in it the shown string sits.
+    let spec = spec_of_str(AGGREGATING_BAR);
+    let session = doc.live_coordinator().expect("a live document").session();
+    let sql = emitted_chart_sql(session, &spec, 1);
+    let at = sql.find(&clause).unwrap_or_else(|| {
+        panic!(
+            "the shown clause is not in the executed SQL byte for byte — \
+             something rewrote it on the way to the rail.\nshown:    {clause}\nexecuted: {sql}"
+        )
+    });
+    let group_by = sql
+        .find("GROUP BY")
+        .unwrap_or_else(|| panic!("an aggregating bar emits a GROUP BY: {sql}"));
+    assert!(
+        at < group_by,
+        "the shown clause is in the SQL but OUTSIDE the grouping — it is \
+         filtering the totals rather than the rows they are computed \
+         from.\nshown:    {clause}\nexecuted: {sql}"
+    );
+
+    // And it follows the next selection, as it does over a row-level plan.
+    doc.apply_interaction(Interaction::Select {
+        name: "pick".to_string(),
+        contributor: ComponentPath("root/hconcat[0]".to_string()),
+        predicate: SqlPredicate::Point {
+            column: "quarter".to_string(),
+            values: vec![ScalarValue::Text("Q2".to_string())],
+            meta: None,
+        },
+    });
+    assert_eq!(
+        readout(&doc).as_deref(),
+        Some("$pick = (quarter = 'Q2')"),
+        "the readout did not follow the second selection"
+    );
+    assert_eq!(
+        bars_drawn(&mut doc, 1, "region", "revenue"),
+        vec![
+            ("East".to_string(), 11.0),
+            ("North".to_string(), 18.0),
+            ("South".to_string(), 15.0),
+        ],
+        "the bars did not follow the second selection"
     );
 }
