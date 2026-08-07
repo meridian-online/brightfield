@@ -631,7 +631,10 @@ mod tests {
             ("/tmp/quarter[1]/sales.csv", '['),
         ] {
             let refusal = accept(path).unwrap_err_or_else_message(path);
-            assert!(refusal.contains(path), "the refusal must name it: {refusal}");
+            assert!(
+                refusal.contains(path),
+                "the refusal must name it: {refusal}"
+            );
             assert!(
                 refusal.contains(offender),
                 "the refusal of {path} must name `{offender}`: {refusal}"

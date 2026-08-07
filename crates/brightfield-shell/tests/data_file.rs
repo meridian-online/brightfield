@@ -410,7 +410,10 @@ fn a_bracket_in_a_parent_folder_is_caught_too() {
 fn a_line_break_in_the_name_does_not_open_the_file_it_folds_to() {
     let dir = TempDir::new("fold-decoy");
     // The decoy is what the line break folds to — a space: 3 rows.
-    dir.write("sales 2026.csv", "region,reading\nnorth,12\nsouth,31\neast,7\n");
+    dir.write(
+        "sales 2026.csv",
+        "region,reading\nnorth,12\nsouth,31\neast,7\n",
+    );
     let chosen = dir.path().join("sales\n2026.csv");
     let Ok(()) = std::fs::write(&chosen, READINGS_CSV) else {
         // A filesystem that refuses the name has nothing to gate here.
@@ -476,17 +479,23 @@ fn a_pattern_name_refused_at_the_window_opens_nothing_and_says_so() {
 fn every_character_this_duckdb_reads_as_a_pattern_is_refused() {
     let dir = TempDir::new("dialect");
     // Siblings a pattern could plausibly land on instead of the file itself.
-    for sibling in ["s1.csv", "sa.csv", "sb.csv", "sX.csv", "sq.csv", "sxyz.csv", "s.csv"] {
+    for sibling in [
+        "s1.csv", "sa.csv", "sb.csv", "sX.csv", "sq.csv", "sxyz.csv", "s.csv",
+    ] {
         dir.write(sibling, "region,reading\nnorth,12\n");
     }
 
     let conn = duckdb::Connection::open_in_memory().expect("an in-memory DuckDB");
     let mut globbed_by_duckdb: Vec<char> = Vec::new();
 
-    // Every printable ASCII character a file name may legally carry on both
-    // POSIX and Windows, plus the two glob wildcards. `/` and NUL are excluded
-    // because no file name may hold them at all.
-    let candidates: Vec<char> = (0x20u8..0x7f).map(char::from).filter(|c| *c != '/').collect();
+    // Every printable ASCII character, which is the alphabet a file name is
+    // realistically drawn from. `/` is excluded because no POSIX file name may
+    // hold one; anything else the filesystem refuses is skipped below rather
+    // than predicted here.
+    let candidates: Vec<char> = (0x20u8..0x7f)
+        .map(char::from)
+        .filter(|c| *c != '/')
+        .collect();
 
     for candidate in candidates {
         let name = format!("s{candidate}.csv");
