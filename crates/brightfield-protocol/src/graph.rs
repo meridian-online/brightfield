@@ -112,8 +112,11 @@ pub enum Degradation {
 }
 
 impl Degradation {
-    /// The word this class writes at the HEAD of a chip label and of the
-    /// degrade text.
+    /// The word a model-read class writes at the HEAD of a chip label and of
+    /// the degrade text. [`Self::Other`]'s `"degraded"` reaches a label only
+    /// through `tagged`, which yields `Other` for text opening `"degraded: "`;
+    /// `load_model_sources` writes `absent:` / `unreadable:` / `unavailable:`,
+    /// so an `Other` degrade arrives untagged and keeps its own message.
     ///
     /// At the head, not the tail, for a measured reason: the layout sizes a
     /// card from its label's char count and caps that count (`node_width` in
@@ -133,10 +136,8 @@ impl Degradation {
     }
 
     /// What the class means for the reader, appended to the degrade text the
-    /// inspector shows. For the three model-read classes the chip says which
-    /// class and this says whose problem it is; for [`Self::Other`] it is the
-    /// empty string, and the degrade text carries the underlying message on its
-    /// own.
+    /// inspector shows. The arms below are the whole of it; [`Self::Other`]
+    /// returns the empty string, and its degrade text stands alone.
     #[must_use]
     pub const fn guidance(self) -> &'static str {
         match self {
@@ -197,13 +198,10 @@ pub struct Degrade {
 /// **The channel for a run with nobody watching.** An empty return says the
 /// graph is everything the protocol asked for; a non-empty one names each node
 /// carrying a degrade — a chip standing in for what could not be derived, or a
-/// real node badged in place whose recovered lineage is incomplete. A degrade
-/// from the
-/// model read carries a class saying whether the cause is the protocol or the
-/// access to it; [`Degradation::Other`] carries the underlying message
-/// instead, and its [`Degradation::guidance`] is empty. A degraded
-/// render is a picture that looks finished, so the thing that distinguishes it
-/// from a complete one must not itself be the picture.
+/// real node badged in place whose recovered lineage is incomplete. What each
+/// class means is [`Degradation`]'s own documentation. A degraded render is a
+/// picture that looks finished, so the thing that distinguishes it from a
+/// complete one must not itself be the picture.
 ///
 /// That claim is only worth the call site behind it: `brightfield-shell`'s
 /// `degrade_report` is the caller, reached on every `--spec` boot of a protocol

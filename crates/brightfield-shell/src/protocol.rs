@@ -147,11 +147,11 @@ impl ProtocolInputs {
     /// What a run with nobody watching reads instead of diffing pictures: one
     /// line per node carrying a degrade — a chip standing in for what could not
     /// be derived, or a real node badged in place whose recovered lineage is
-    /// incomplete. A degrade from the model read opens with its class — `absent`,
-    /// `unreadable`, `unavailable` — and then says whose problem it is; one
+    /// incomplete. A degrade from the model read opens with its class —
+    /// [`brightfield_protocol::Degradation`] documents what each one means. One
     /// raised elsewhere reaches [`brightfield_protocol::Degradation::Other`],
-    /// which carries the underlying message and no class tag.
-    /// `examples/protocol/degrade.yaml` is the second kind.
+    /// which carries the underlying message and no class tag;
+    /// `examples/protocol/degrade.yaml` is that kind.
     ///
     /// **Empty means the render is everything the manifest asked for.** That is
     /// the bit an unattended caller wants, and the other three numbers on the

@@ -358,9 +358,9 @@ fn the_shipped_binary_reports_the_degrade_and_still_writes_the_png() {
     }
 }
 
-/// Why the summary needs the degrade count and cannot infer it: the three
-/// totals on that line report the shape of the model, not whether the render
-/// is complete.
+/// Why the summary needs the degrade count and cannot infer it: a caller
+/// holding one render has nothing telling it what those totals should have
+/// been.
 ///
 /// Two model lengths, deliberately. The claim these tests replace was written
 /// at three sites off the two-statement fixture alone and was false on the

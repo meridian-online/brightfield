@@ -63,7 +63,8 @@
 //! against the fixture that produced it.
 //!
 //! So the boot summary carries a `, N degraded` clause, and one line per
-//! stand-in precedes it:
+//! degraded node precedes it — `N` counts nodes, and a single fault can badge
+//! more than one:
 //!
 //! ```text
 //! S.yaml: degraded step tier: unreadable: models/t.sql: Permission denied (os error 13) — …
