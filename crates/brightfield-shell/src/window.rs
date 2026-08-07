@@ -610,7 +610,22 @@ impl Boot {
             if !crate::protocol::offline_optin() {
                 return Err(crate::protocol::run_less_manifest_refusal(spec));
             }
-            return Ok(Self::protocol(load_protocol_offline(spec)?, flow, focus));
+            let inputs = load_protocol_offline(spec)?;
+            // The protocol half of the chart path's diagnostics loop below, and
+            // it is here for the same reason: a headless capture draws no
+            // banner, so a run with nobody watching has nothing but this. It
+            // needs its own emission rather than sharing one because a degraded
+            // protocol is the harder case — the chart diagnostic reports a mark
+            // that is missing from a picture somebody is looking at, and this
+            // reports a render that looks finished and is not.
+            //
+            // The PNG is still written and the exit code is still 0. The
+            // degrade is deliberate (draw what you can); what was missing was
+            // any way to know it happened.
+            for line in inputs.degrade_report() {
+                eprintln!("{spec}: {line}");
+            }
+            return Ok(Self::protocol(inputs, flow, focus));
         }
         // A chart spec named on the command line boots **live**: the session
         // is held behind the document, so a brush, a click or a param slider
@@ -709,6 +724,14 @@ impl Boot {
     }
 
     /// One line describing what `view` was given, for the binaries' stderr.
+    ///
+    /// **The protocol form carries the degrade count**, because every other
+    /// number on that line is the same for a complete render and a degraded
+    /// one. Measured on a three-step fixture: models readable, models absent
+    /// and models refused each produced `5 collapsed / 5 full nodes, 3 steps`
+    /// — one summary line, three different pictures. A count that cannot move
+    /// when the render loses a step's worth of lineage is a summary that
+    /// reports completeness it never checked.
     #[must_use]
     pub fn describe(&self, view: ViewKind) -> String {
         if self.is_empty() {
@@ -720,12 +743,16 @@ impl Boot {
                 self.composed.width, self.composed.height
             ),
             ViewKind::Protocol => format!(
-                "protocol {} ({} collapsed / {} full nodes, {} steps, {:?} flow)",
+                "protocol {} ({} collapsed / {} full nodes, {} steps, {:?} flow{})",
                 self.protocol.protocol,
                 self.protocol.graph_collapsed.nodes.len(),
                 self.protocol.graph_full.nodes.len(),
                 self.protocol.sheet_rows.len(),
                 self.flow,
+                match self.protocol.degrade_report().len() {
+                    0 => String::new(),
+                    n => format!(", {n} degraded"),
+                },
             ),
         }
     }

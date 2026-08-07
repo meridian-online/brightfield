@@ -40,8 +40,11 @@
 //! **A degraded graph says so, and says which kind.** A step-level degrade's
 //! chip is labelled `<class>: <model>` — the class first, because the renderer
 //! fits a label to the chip's width and elides the tail. [`Degradation`] is
-//! the class set and [`degrades`] enumerates them off a built graph, which is
-//! the channel a run with nobody watching reads instead of diffing pictures.
+//! the class set and [`degrades`] enumerates them off a built graph. That
+//! enumeration is what a run with nobody watching reads instead of diffing
+//! pictures: `brightfield-shell`'s `degrade_report` turns it into stderr lines
+//! and the boot summary's degrade count, on the path
+//! `crates/brightfield-shell/src/bin/brightfield-shot.rs` takes.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -180,6 +183,12 @@ pub struct Degrade {
 /// says whether the cause is the protocol or the access to it. A degraded
 /// render is a picture that looks finished, so the thing that distinguishes it
 /// from a complete one must not itself be the picture.
+///
+/// That claim is only worth the call site behind it: `brightfield-shell`'s
+/// `degrade_report` is the caller, reached on every `--spec` boot of a protocol
+/// manifest, and `protocol_degrade_channel` in `brightfield-shell` holds the
+/// shipped binary to it. This function existing is not the same as it running,
+/// and for one round of this work it did not run anywhere but a test.
 #[must_use]
 pub fn degrades(graph: &AssetGraph) -> Vec<Degrade> {
     graph

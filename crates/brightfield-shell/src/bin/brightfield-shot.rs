@@ -50,6 +50,37 @@
 //! sampled render would place or colour a value differently from the complete
 //! one, under a notice that mentions only the dropped rows.
 //!
+//! # A degraded protocol render says so, on stderr
+//!
+//! A protocol whose models could not all be read draws what it can — one
+//! opaque chip in place of the statements inside the step — rather than
+//! refusing. That is deliberate, and it is also the one failure mode of this
+//! binary that an unattended caller could not see: the picture looks finished,
+//! and the node counts, the step count and the geometry are the same as the
+//! complete render's, because the chip takes the slot the statement it replaced
+//! would have had.
+//!
+//! So the boot summary carries a `, N degraded` clause, and one line per
+//! stand-in precedes it:
+//!
+//! ```text
+//! S.yaml: degraded step tier: unreadable: models/t.sql: Permission denied (os error 13) — …
+//! protocol acc (5 collapsed / 5 full nodes, 3 steps, Vertical flow, 1 degraded) from S.yaml
+//! ```
+//!
+//! The class leads — `absent` (the protocol names a model that is not there) /
+//! `unreadable` (it is there and the read was refused — a permission, an ACL,
+//! a sandbox grant) / `unavailable` — because only one of those is the
+//! reader's to fix, and the rest of the line says what makes it go away.
+//!
+//! **The exit code stays 0 and the PNG is still written.** On this binary a
+//! non-zero exit means *no image was produced*, which is how the invocations in
+//! `README.md` and the `examples/` spec headers read it. Spending it on a
+//! degraded-but-drawn render would tell a caller its capture failed when a file
+//! exists on disk, and would contradict the degrade's own design — draw what
+//! you can. The stderr line is the channel; a caller that wants to fail on a
+//! partial render matches it.
+//!
 //! `--gallery` renders one design-gallery component solo through the same
 //! deterministic capture path — an agent that just changed a primitive can
 //! see it without composing a dashboard. On this path `--size` is honoured

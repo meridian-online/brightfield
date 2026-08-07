@@ -143,6 +143,38 @@ impl ProtocolInputs {
             sheet_rows: Vec::new(),
         }
     }
+
+    /// What a run with nobody watching reads instead of diffing pictures: one
+    /// line per node that stands in for something the derivation could not
+    /// produce, each naming the class first and then whose problem it is.
+    ///
+    /// **Empty means the render is everything the manifest asked for.** That is
+    /// the bit an unattended caller wants, and it is not otherwise available to
+    /// one: a degraded protocol draws a picture that looks finished at the same
+    /// node count as the complete one — the statement intermediate a readable
+    /// model produces and the chip that replaces it occupy the same id — so
+    /// neither the geometry, the counts, nor "did it draw something" separates
+    /// them.
+    ///
+    /// Read off [`Self::graph_full`] rather than the canvas that happens to be
+    /// on screen: a collapsed family tile stands in for its members, so a
+    /// degrade inside one would be reported by the full graph and missed by the
+    /// collapsed one. What is being answered is what the *derivation* could not
+    /// do, which the fold does not change.
+    ///
+    /// [`crate::window::Boot::open_sampled`] prints these, which is how they
+    /// reach `brightfield-shot`'s stderr; the same call is the chart path's
+    /// diagnostics loop one branch over.
+    #[must_use]
+    pub fn degrade_report(&self) -> Vec<String> {
+        brightfield_protocol::graph::degrades(&self.graph_full)
+            .into_iter()
+            .map(|d| match &d.step {
+                Some(step) => format!("degraded step {step}: {}", d.detail),
+                None => format!("degraded node {}: {}", d.node, d.detail),
+            })
+            .collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
