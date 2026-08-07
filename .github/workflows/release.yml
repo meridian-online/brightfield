@@ -42,6 +42,11 @@
 # `brew install meridian-online/tap/brightfield` serves the release this
 # workflow just published. Its shape is ported from the finetype release
 # workflow's job of the same name; the comment above it records what that buys.
+# Before it pushes, it fetches each url the formula publishes and compares the
+# asset against the checksum written beside it — the tap has no pull-request CI
+# of its own, so this workflow is where a formula addressing a file that is not
+# there has to stop. The comment above that job says what the check covers on
+# the Intel side and what it deliberately does not.
 
 name: release
 
@@ -277,27 +282,50 @@ jobs:
   # `needs: release` because the formula's `url` fields address release assets.
   # The release has to exist before the sidecars next to those assets can be
   # fetched.
+  #
+  # Where this repository stands on the Intel install path, stated rather than
+  # left silent. The formula publishes an x86_64 block; this job now proves that
+  # the asset it addresses exists at that url and hashes to the checksum written
+  # beside it (`scripts/check-formula-asset.sh`, below), which is what a
+  # `brew install` resolves before it unpacks anything. It does NOT prove the
+  # Intel binary then runs: that is a cross-compile from the arm64 runner and,
+  # as the header says, it cannot be executed there. No runner in this repository
+  # is an Intel macOS host, so until one exists — a self-hosted x86_64 box, or the
+  # `verify` job's air-gapped run repeated on that architecture — the Intel path
+  # is asset-verified and execution-unverified, and it ships as a preview on that
+  # basis. Do not read a green release as the Intel binary having launched
+  # anywhere.
   update-homebrew:
     name: Update Homebrew formula
     needs: release
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # This job runs scripts/check-formula-asset.sh below, so it needs the
+      # repository as well as the tap. First, before the tap lands in a
+      # subdirectory of the workspace: a checkout cleans its destination.
+      - uses: actions/checkout@v4
+
+      # Into `sidecars/` rather than the workspace root, which is now a checkout
+      # of this repository: downloads that land beside the tracked tree are one
+      # careless glob away from being mistaken for it.
       - name: Download the checksum sidecars from the release
         run: |
           TAG="${GITHUB_REF_NAME}"
           BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          mkdir -p sidecars
           for target in aarch64-apple-darwin x86_64-apple-darwin; do
-            curl -sfLO "${BASE}/brightfield-${TAG}-${target}.tar.gz.sha256"
+            curl -sfL -o "sidecars/brightfield-${TAG}-${target}.tar.gz.sha256" \
+              "${BASE}/brightfield-${TAG}-${target}.tar.gz.sha256"
           done
-          ls -l ./*.sha256
+          ls -l sidecars/*.sha256
 
       - name: Read the checksums
         id: sha
         run: |
           TAG="${GITHUB_REF_NAME}"
           for target in aarch64-apple-darwin x86_64-apple-darwin; do
-            value=$(awk '{print $1}' "brightfield-${TAG}-${target}.tar.gz.sha256")
+            value=$(awk '{print $1}' "sidecars/brightfield-${TAG}-${target}.tar.gz.sha256")
             # A sidecar that downloads but parses to something other than a
             # digest would otherwise reach the formula as an empty or truncated
             # sha256, which surfaces as a checksum mismatch in a stranger's
@@ -361,6 +389,27 @@ jobs:
           if command -v ruby >/dev/null 2>&1; then
             ruby -c homebrew-tap/Formula/brightfield.rb
           fi
+
+      # The step above reads the formula as a string: it proves the tag appears
+      # where it should and that ruby can parse the file. Neither of those
+      # touches the other end of the url. Everything upstream of here is
+      # string-handling too — the checksums come from the `.sha256` sidecars,
+      # and a sidecar downloading correctly says nothing about the asset beside
+      # it being reachable under the name the heredoc just wrote.
+      #
+      # So this fetches both assets the formula publishes, at the exact urls
+      # written into the file, and compares each against the checksum on the
+      # next line — the same two facts `brew install` establishes before it
+      # unpacks anything. `--min-pairs 2` is one per darwin target: a formula
+      # that lost a platform block must not pass by checking the block that
+      # survived.
+      #
+      # It runs BEFORE the push, so a broken pair stops here instead of landing
+      # in the tap and surfacing on a stranger's machine. The Intel block is the
+      # reason: it is the one no other step in this workflow touches after
+      # packaging, on the architecture the runner cannot execute.
+      - name: Prove the formula's assets exist and match their checksums
+        run: scripts/check-formula-asset.sh --min-pairs 2 homebrew-tap/Formula/brightfield.rb
 
       - name: Commit and push the formula
         run: |
