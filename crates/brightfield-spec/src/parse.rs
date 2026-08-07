@@ -223,6 +223,22 @@ struct BinnedHistogram {
     steps: Option<i64>,
 }
 
+/// The interval channels that make a bar a PRE-EXTENTED one — the author has
+/// written both ends themselves, so there is nothing to aggregate and the
+/// band lift is refused. Present on a mark, any one of them is enough.
+const INTERVAL_CHANNEL_FIELDS: &[&str] = &["x1", "x2", "y1", "y2"];
+
+/// One mark's lifted positional aggregate over a band channel — the ranked
+/// category bar: `x: {sum: gold}` with `y: nationality` on a `barX`.
+struct BandedAggregate {
+    /// The positional channel carrying the aggregate (`"x"` on a `barX`).
+    value_channel: &'static str,
+    /// The aggregate written there.
+    func: AggregateFunc,
+    /// The column the aggregate consumes; `None` for `{count:}`.
+    column: Option<String>,
+}
+
 /// Wire format of the source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -1282,6 +1298,17 @@ impl Walker {
             }
         }
 
+        // Resolved BEFORE the per-key loop for the same reason the histogram
+        // is: an aggregate on `x` is only computable when `y` names a category
+        // to group it by, so the decision belongs to the PAIR. The two idioms
+        // are disjoint by mark kind — no kind both bins positionally and has a
+        // band axis — but the histogram is asked first so that stays true by
+        // construction rather than by coincidence.
+        let banded = match histogram {
+            Some(_) => None,
+            None => banded_aggregate(kind, parent),
+        };
+
         let mut data: Option<MarkData> = None;
         let mut options = IndexMap::new();
         for (k, val) in parent {
@@ -1310,6 +1337,18 @@ impl Walker {
                         ValueOrParamRef::Value(SpecValue::Aggregate {
                             func: AggregateFunc::Count,
                             column: None,
+                        }),
+                    );
+                    continue;
+                }
+            }
+            if let Some(b) = &banded {
+                if key == b.value_channel {
+                    options.insert(
+                        key.clone(),
+                        ValueOrParamRef::Value(SpecValue::Aggregate {
+                            func: b.func,
+                            column: b.column.clone(),
                         }),
                     );
                     continue;
@@ -1741,6 +1780,111 @@ fn binned_histogram(kind: MarkKind, parent: &serde_yaml::Mapping) -> Option<Binn
                 steps,
             })
         })
+}
+
+/// Resolve a mark's positional aggregate over a band channel, or `None` when
+/// the mark is not the ranked-category-bar idiom brightfield computes.
+///
+/// The shape is one aggregate on the mark's VALUE axis and a plain column on
+/// its BAND axis — `x: {sum: gold}` with `y: nationality` on a `barX` — which
+/// lowers to one `GROUP BY` on the band column and one aggregate call.
+///
+/// Like [`binned_histogram`], every condition below is a refusal that keeps a
+/// spec's uncomputed-transform diagnostic rather than drawing something wrong:
+///
+/// - **The mark kind** must have a band axis
+///   ([`MarkKind::band_aggregate_axes`]), and the aggregate must sit on the
+///   VALUE half of that pair. An aggregate on the band axis is a different
+///   chart from the one the kind names.
+/// - **The band channel** must name a plain column. A `$param`, a map or a
+///   number is not a category to group by, and inventing one would group by an
+///   expression the author never wrote.
+/// - **No interval channel** ([`INTERVAL_CHANNEL_FIELDS`]). A bar carrying
+///   `x1`/`x2` already has both ends written; aggregating over it would throw
+///   one of them away.
+/// - **No grouping channel beyond the band itself**
+///   ([`mark_is_grouped_beyond`]). Mosaic STACKS a bar split by a second
+///   column and brightfield does not, so lifting one would collapse the
+///   stacks into a single bar — the right TOTAL with the composition silently
+///   gone, which is the same failure the binned rect refuses.
+/// - **A column-taking aggregate must name its column.** A bare `{sum:}` has
+///   nothing to sum; degrading it to a count would answer a question nobody
+///   asked.
+/// - **`count` must take no column.** `{count: col}` is `COUNT(col)` in
+///   Mosaic and `COUNT(*)` is what this path emits — a different number
+///   wherever `col` is nullable, so the pair is refused rather than
+///   approximated.
+fn banded_aggregate(kind: MarkKind, parent: &serde_yaml::Mapping) -> Option<BandedAggregate> {
+    let (value_channel, band_channel) = kind.band_aggregate_axes()?;
+    if INTERVAL_CHANNEL_FIELDS
+        .iter()
+        .any(|f| parent.contains_key(serde_yaml::Value::String((*f).to_string())))
+    {
+        return None;
+    }
+    let band_column = plain_column_at(parent, band_channel)?;
+    if mark_is_grouped_beyond(parent, &band_column) {
+        return None;
+    }
+    let (func, column) = aggregate_transform(channel_map_at(parent, value_channel)?)?;
+    Some(BandedAggregate {
+        value_channel,
+        func,
+        column,
+    })
+}
+
+/// The column name written plainly at `channel` — a bare string that is not a
+/// `$param` reference. `None` for every other shape.
+fn plain_column_at(parent: &serde_yaml::Mapping, channel: &str) -> Option<String> {
+    let s = parent
+        .get(serde_yaml::Value::String(channel.to_string()))?
+        .as_str()?;
+    (dollar_ident(s).is_none()).then(|| s.to_string())
+}
+
+/// The `(func, column)` of a single-key aggregate map — `{count:}`,
+/// `{sum: col}`, `{avg: col}`. `None` for any other shape, including a
+/// recognised aggregate name carrying the wrong argument (see
+/// [`banded_aggregate`] for why each of those is a refusal rather than a
+/// best effort).
+fn aggregate_transform(m: &serde_yaml::Mapping) -> Option<(AggregateFunc, Option<String>)> {
+    let mut entries = m.iter();
+    let (k, v) = entries.next()?;
+    if entries.next().is_some() {
+        return None;
+    }
+    let func = AggregateFunc::from_wire(k.as_str()?)?;
+    match (func, v) {
+        (AggregateFunc::Count, serde_yaml::Value::Null) => Some((func, None)),
+        (AggregateFunc::Count, _) => None,
+        (_, serde_yaml::Value::String(col)) if dollar_ident(col).is_none() => {
+            Some((func, Some(col.clone())))
+        }
+        _ => None,
+    }
+}
+
+/// Whether a mark carries a grouping channel that would split each band into
+/// MORE than one bar.
+///
+/// The band column itself does not count. `observable-latency.yaml` writes
+/// `fill: route` beside `y: route`: that colours one bar per route, it does
+/// not stack two routes into one. A colour constant does not count either,
+/// for the same reason [`mark_is_grouped`] excludes it. Anything else does.
+fn mark_is_grouped_beyond(parent: &serde_yaml::Mapping, band_column: &str) -> bool {
+    GROUPING_CHANNEL_FIELDS.iter().any(|field| {
+        match parent.get(serde_yaml::Value::String((*field).to_string())) {
+            None => false,
+            Some(serde_yaml::Value::String(s)) => {
+                s != band_column && (*field == "z" || !is_colour_literal(s))
+            }
+            // A non-string binding on a grouping channel (a map, a `$param`, a
+            // number) is not the band column and not a colour constant, so it
+            // may carry groups.
+            Some(_) => true,
+        }
+    })
 }
 
 /// The mapping written at `channel`, or `None` when the channel is absent or

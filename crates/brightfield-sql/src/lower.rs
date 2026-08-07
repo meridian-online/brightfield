@@ -1077,6 +1077,76 @@ fn bin_spec_query(table: &str, col: &str, steps: i64) -> String {
     )
 }
 
+/// Lowerer for the bar marks, handling BOTH the pre-aggregated path and the
+/// positional aggregate over a band channel.
+///
+/// The aggregating form is the ranked category bar: `x: {sum: gold}` with
+/// `y: nationality` on a `barX` becomes one `GROUP BY` on the band column and
+/// one `SUM` on the value column. Which channel is which comes from
+/// [`MarkKind::band_aggregate_axes`] — the same list the parser's lift
+/// consults, so this lowerer computes exactly the shape the parser stopped
+/// warning about, and there is no spec that parses as aggregating and lowers
+/// as `SELECT *`.
+///
+/// A bar whose value channel is a plain column is pre-aggregated and
+/// delegates to [`SimpleLowerer`] unchanged, which is why `examples/bars.yaml`
+/// and `examples/bars-x.yaml` emit the same bytes as before.
+///
+/// The aggregate is aliased to its source column (`count` to the reserved
+/// `__bf_count`) by [`hex_aggregate_expr`] — the convention hexbin and cell
+/// already use, and the one `brightfield_render::channel` reads a positional
+/// `SpecValue::Aggregate` through, so the renderer needs nothing new.
+///
+/// Rows come out ordered by the band column. GROUP BY output order is
+/// unspecified in DuckDB and the renderer draws in row order, so an unordered
+/// aggregation is a chart whose bars can move between runs. Ordering by VALUE
+/// — the ranked part of a ranked category bar — is `sort:`, which this does
+/// not read.
+pub struct BarLowerer;
+
+impl MarkLower for BarLowerer {
+    fn lower(&self, mark: &Mark, ctx: &LowerCtx<'_>) -> Result<QueryPlan, EmitError> {
+        let Some((value_key, band_key)) = mark.kind.band_aggregate_axes() else {
+            return SimpleLowerer.lower(mark, ctx);
+        };
+        let Some(agg) = opt_aggregate(&mark.options, value_key) else {
+            // Pre-aggregated bar — unchanged.
+            return SimpleLowerer.lower(mark, ctx);
+        };
+        let Some(band) = opt_string(&mark.options, band_key).map(str::to_string) else {
+            return SimpleLowerer.lower(mark, ctx);
+        };
+        let (source, filter) = match &mark.data {
+            Some(MarkData::From { source, extras, .. }) => {
+                (source.clone(), data_filter_sql(extras))
+            }
+            _ => {
+                return Err(EmitError::UnsupportedMark {
+                    kind: "bar (an aggregating bar requires data: { from: ... })".to_string(),
+                })
+            }
+        };
+
+        // The data filter scopes the aggregated rows, and the band's null
+        // check keeps a NULL category from becoming a nameless bar. There are
+        // no pixel extents to scope, so the row WHERE is the only place either
+        // applies — the same shape `CellLowerer` emits.
+        let row_filter = filter.map(|f| format!(" AND ({f})")).unwrap_or_default();
+        let filtered = QueryPlan::Filter {
+            input: Box::new(QueryPlan::Source { table: source }),
+            predicate: Predicate::Expr(format!("\"{band}\" IS NOT NULL{row_filter}")),
+        };
+        Ok(QueryPlan::Order {
+            input: Box::new(QueryPlan::Aggregation {
+                input: Box::new(filtered),
+                group_by: vec![format!("\"{band}\"")],
+                aggregates: vec![hex_aggregate_expr(&agg)],
+            }),
+            keys: vec![(format!("\"{band}\""), SortDir::Asc)],
+        })
+    }
+}
+
 /// Lowerer for the cell mark, handling BOTH the pre-aggregated path and the
 /// self-aggregating form. When `fill` is a self-aggregating channel
 /// (`{count:}` / `{avg: col}`) on Band × Band categorical axes, it GROUP BYs
@@ -1203,8 +1273,13 @@ pub fn default_lowerers() -> Vec<(MarkKind, Box<dyn MarkLower>)> {
         (MarkKind::RuleX, Box::new(SimpleLowerer)),
         (MarkKind::RuleY, Box::new(SimpleLowerer)),
         (MarkKind::Text, Box::new(SimpleLowerer)),
-        (MarkKind::BarX, Box::new(SimpleLowerer)),
-        (MarkKind::BarY, Box::new(SimpleLowerer)),
+        // Bar family — a pre-aggregated bar delegates to SimpleLowerer; a
+        // positional aggregate on the value axis with a column on the band
+        // axis becomes a GROUP BY on the band. Registered for exactly the
+        // kinds `MarkKind::band_aggregate_axes` names, so the parser cannot
+        // lift a pair this lowerer would then ignore.
+        (MarkKind::BarX, Box::new(BarLowerer)),
+        (MarkKind::BarY, Box::new(BarLowerer)),
         // Rect family — pre-aggregated x1/x2 rects delegate to SimpleLowerer;
         // a positional `{bin: col}` + `{count:}` pair becomes a GROUP BY over
         // the two bin edges. Registered for exactly the kinds

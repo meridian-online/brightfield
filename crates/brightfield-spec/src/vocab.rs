@@ -230,6 +230,33 @@ impl MarkKind {
     pub fn bins_positionally(self) -> bool {
         matches!(self, Self::RectX | Self::RectY)
     }
+
+    /// The `(value, band)` positional channel pair this mark aggregates over,
+    /// or `None` for a kind that has no band axis.
+    ///
+    /// A `barX` draws horizontal bars: the length is on `x` and the category
+    /// runs down `y`, so `x: {sum: gold}` with `y: nationality` is one bar per
+    /// nationality whose length is that nationality's total. `barY` is the
+    /// transpose. The orientation comes from the KIND rather than from which
+    /// channel happens to carry the map, so `mark: barX, x: nationality,
+    /// y: {sum: gold}` — an aggregate on the band axis — is refused rather
+    /// than silently drawn sideways.
+    ///
+    /// The same contract as [`Self::bins_positionally`]: this is the one list
+    /// the lift consults, and `brightfield-sql` registers `BarLowerer` for
+    /// exactly these kinds, so a spec cannot parse as aggregating and then
+    /// lower as `SELECT *`. **A kind belongs here only once something
+    /// downstream draws what it produces** — quieting the
+    /// uncomputed-transform diagnostic is the easy half, and on its own it
+    /// trades a true report for a blank frame.
+    #[must_use]
+    pub fn band_aggregate_axes(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            Self::BarX => Some(("x", "y")),
+            Self::BarY => Some(("y", "x")),
+            _ => None,
+        }
+    }
 }
 
 vocab_enum! {
