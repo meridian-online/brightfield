@@ -15,7 +15,10 @@
 //!
 //! * the pure one — `ProtocolInputs::degrade_report` off the same offline
 //!   loader `--spec` uses, and the summary line `Boot::describe` builds — which
-//!   needs no GPU and localises a break to the report or the summary;
+//!   needs no GPU and localises a break to the report or the summary. Three
+//!   tests: that a fault reaches both, what the summary totals do across two
+//!   model lengths, and which class each state of the model's parent directory
+//!   earns;
 //! * the shipped one — the real `brightfield-shot` binary over the same three
 //!   directories, which is the only tier that can catch the caller being
 //!   dropped again.
@@ -359,12 +362,12 @@ fn the_shipped_binary_reports_the_degrade_and_still_writes_the_png() {
 /// totals on that line report the shape of the model, not whether the render
 /// is complete.
 ///
-/// Two model lengths, deliberately — three earlier attempts at this claim were
-/// certified against ONE fixture and were false on the next. A two-statement
-/// model makes the degraded totals *equal* to the complete ones; a
-/// four-statement model makes them *lower*. Neither is a check a caller
-/// holding a single render can perform, and a sentence that names only one of
-/// the two shapes is a generalisation from a fixture.
+/// Two model lengths, deliberately. The claim these tests replace was written
+/// at three sites off the two-statement fixture alone and was false on the
+/// next model length. A two-statement model makes the degraded totals *equal*
+/// to the complete ones; a four-statement model makes them *lower*. Neither is
+/// a check a caller holding a single render can perform, and a sentence that
+/// names only one of the two shapes is a generalisation from a fixture.
 #[test]
 fn the_summary_totals_are_not_a_completeness_check() {
     // Every summary this test reads, keyed by (model length, case).
@@ -445,23 +448,26 @@ fn the_summary_totals_are_not_a_completeness_check() {
 /// The classification rule, stated where it is decided: **`unreadable` is
 /// claimed on evidence that access was REFUSED, and `absent` is what remains.**
 ///
-/// The three states of the directory holding the model, each through the
-/// shipped offline loader:
+/// The states of the directory holding the model, each through the shipped
+/// offline loader:
 ///
-/// | `models/`                | class        | what the reader is told           |
-/// |--------------------------|--------------|-----------------------------------|
-/// | does not exist           | `absent`     | the protocol names a file that is not there |
-/// | exists, mode `000`       | `unreadable` | the read was refused — access, not authorship |
-/// | exists, readable, empty  | `absent`     | the protocol names a file that is not there |
+/// | `models/`                       | class        | what the reader is told           |
+/// |---------------------------------|--------------|-----------------------------------|
+/// | does not exist                  | `absent`     | the protocol names a file that is not there |
+/// | exists, readable, empty         | `absent`     | the protocol names a file that is not there |
+/// | exists, mode `000`, empty       | `unreadable` | the read was refused — access, not authorship |
+/// | exists, mode `000`, model inside| `unreadable` | the read was refused — access, not authorship |
 ///
 /// A missing directory reporting *absent* is the deliberate half. There is no
 /// grant to widen on a directory that is not there, so *unreadable* would send
 /// the reader to check a permission that is not the problem — the same
 /// wrong-instruction failure the split exists to remove.
 ///
-/// And the mode-`000` row is staged with **no model file inside**, which is the
-/// case that made the old wording false: the badge said "the file is there" for
-/// a path this test asserts does not exist.
+/// The two mode-`000` rows are why the badge may claim nothing about the file
+/// existing: they differ only in whether the model is inside, and the refused
+/// process cannot tell them apart. The empty one is the case that made the old
+/// wording false — the badge said "the file is there" for a path this test
+/// asserts does not exist.
 #[test]
 fn the_parent_directorys_state_decides_absent_from_unreadable() {
     // 1. `models/` never created.
@@ -534,7 +540,25 @@ fn the_parent_directorys_state_decides_absent_from_unreadable() {
         refused_report[0]
     );
 
-    for dir in [&missing, &empty, &refused] {
+    // 4. `models/` at mode 000 with the model INSIDE it. Same verdict and the
+    //    same badge as the empty one — which is the whole reason the badge may
+    //    not speak about the file. These two fixtures differ in exactly the
+    //    fact the refused process cannot observe.
+    let occupied = staging_dir("parent_unreadable_occupied");
+    fs::create_dir_all(occupied.join("models")).expect("models dir");
+    fs::write(occupied.join("arcform.yaml"), MANIFEST).expect("write manifest");
+    fs::write(occupied.join(MODEL_PATH), MODEL).expect("write model");
+    let occupied_guard = RestoreMode::set(&occupied.join("models"), 0o000);
+    let (occupied_report, _) = report_and_summary(&occupied);
+    drop(occupied_guard);
+    assert_eq!(
+        occupied_report[0].replace(occupied.to_str().expect("utf-8 path"), "<DIR>"),
+        refused_report[0].replace(refused.to_str().expect("utf-8 path"), "<DIR>"),
+        "a model inside the refused directory and no model at all are one \
+         report, because the refused process cannot tell them apart"
+    );
+
+    for dir in [&missing, &empty, &refused, &occupied] {
         let _ = fs::remove_dir_all(dir);
     }
 }

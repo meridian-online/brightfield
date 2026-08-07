@@ -80,13 +80,15 @@ pub enum AssetKind {
 /// read the filesystem refused — a permission, an ACL or a sandbox grant. A
 /// chip that cannot tell them apart sends someone to fix the wrong thing.
 ///
-/// The split is drawn on evidence of a *refusal*, never on evidence of
-/// absence: `classify_read_failure` — private, in this module — returns
-/// `ModelUnreadable` where access was refused and `ModelAbsent` for everything
-/// else, and states there why it leans that way.
+/// The split between those two is drawn on evidence of a *refusal*, never on
+/// evidence of absence — `ModelUnreadable` wherever the filesystem said access
+/// was refused, `ModelAbsent` for the rest of a lookup that found no file, and
+/// `ModelUnavailable` for a read that failed some other way entirely.
+/// `classify_read_failure` — private, in this module — is that rule, and
+/// states there why it leans the way it does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Degradation {
-    /// A `sql:` step's model file did not open and nothing about the failure
+    /// A `sql:` step's model file was not found, and nothing about the failure
     /// says access was refused — which includes a `models/` directory that
     /// does not exist at all. The protocol's author's to fix.
     ModelAbsent,
@@ -302,8 +304,10 @@ pub struct AssetGraph {
 /// Which class of failure a model read hit.
 ///
 /// Drawn here, at the read, because this is the last place that still holds
-/// both the `io::Error` and the path — by the time the failure is a string in
-/// the source map the two cases are indistinguishable.
+/// both the `io::Error` and the path — and the path is what separates a
+/// `NotFound` meaning the file is gone from one meaning this process cannot
+/// look. The class is written into the error string as a leading tag rather
+/// than re-established downstream, where the `io::Error` no longer exists.
 ///
 /// **The rule is evidence of a refusal, not evidence of absence.**
 /// `ModelUnreadable` is the verdict wherever the filesystem said access was
@@ -311,7 +315,8 @@ pub struct AssetGraph {
 /// be there after all — a `NotFound` can be a refusal wearing the wrong error,
 /// when something between the process and the file hides its existence — or
 /// listing the directory holding it was itself refused. `ModelAbsent` is what
-/// remains.
+/// remains of a `NotFound`. A read that failed some other way is neither: it
+/// is `ModelUnavailable`, which claims no verdict on the file.
 ///
 /// That leaves a `models/` directory which does not exist reported as *absent*
 /// rather than *unreadable*, and it is the right way round for the reader:
