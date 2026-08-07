@@ -515,20 +515,22 @@ fn the_parent_directorys_state_decides_absent_from_unreadable() {
         "a directory that refuses the read is the reader's to fix: {:?}",
         refused_report[0]
     );
+    // The regression this row exists for, asserted before the positive wording
+    // so that a re-added presence claim fails on the sentence that names it.
+    // `classify_read_failure` declines to claim the file is absent here; on the
+    // same evidence nothing downstream may claim it is present — and the file
+    // measurably is not.
+    assert!(
+        !refused_report[0].contains("is there"),
+        "the badge must not assert a presence the classifier declined to \
+         establish — the file at {} does not exist: {:?}",
+        model.display(),
+        refused_report[0]
+    );
     assert!(
         refused_report[0].contains("the read was refused")
             && refused_report[0].contains("Access, not authorship"),
         "and the badge says so: {:?}",
-        refused_report[0]
-    );
-    // The regression this row exists for. `classify_read_failure` declines to
-    // claim the file is absent here, so nothing downstream may claim it is
-    // present either — and the file measurably is not.
-    assert!(
-        !refused_report[0].contains("the file is there"),
-        "the badge must not assert a presence the classifier declined to \
-         establish — the file at {} does not exist: {:?}",
-        model.display(),
         refused_report[0]
     );
 
