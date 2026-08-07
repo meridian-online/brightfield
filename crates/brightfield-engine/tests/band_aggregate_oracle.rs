@@ -194,11 +194,16 @@ fn a_pre_aggregated_bar_still_passes_its_rows_through() {
 /// *inside* the aggregation, so the bars are recomputed over the filtered
 /// rows rather than the totals being filtered after the fact.
 ///
-/// `v > 3` keeps `a`'s 10, `b`'s 4 and `c`'s 7 and drops `a`'s 1 and `b`'s 3,
-/// so the totals move to 10, 4 and 7. Applying the same clause AFTER the
-/// GROUP BY would leave 11, 7 and 7 and drop nothing, because every total
-/// already exceeds 3 — which is exactly why this case is asserted on the
-/// numbers and not on the SQL text.
+/// `v > 2` drops `a`'s 1 and keeps the other four rows, so the totals move to
+/// 10, 7 and 7. Applying the same clause AFTER the GROUP BY would leave 11, 7
+/// and 7 and drop nothing, because every total already exceeds 2 — which is
+/// exactly why this case is asserted on the numbers and not on the SQL text.
+///
+/// The threshold is chosen so the ungrouped answer differs in LENGTH as well
+/// as in value: four rows survive `v > 2` and three bars come out of them. At
+/// `v > 3` the two answers coincide row for row, and the case passed against
+/// `SimpleLowerer` — a guard that agrees with the code it is meant to
+/// contradict.
 ///
 /// What this does NOT cover is the readout itself: the string a reader sees is
 /// `brightfield_shell::chart_item::PREDICATE_READOUT`, and asserting that the
@@ -219,12 +224,12 @@ fn a_selection_is_applied_before_the_grouping() {
     }
     let brushed: Vec<SelectionPredicate> = vec![(
         "brush".to_string(),
-        vec![("t".to_string(), Predicate::Expr("\"v\" > 3".to_string()))],
+        vec![("t".to_string(), Predicate::Expr("\"v\" > 2".to_string()))],
     )];
     let query = emit_query(&spec, 0, None, Some(&brushed)).expect("mark lowers");
     assert_bars(
         &run(&conn, &query.sql),
-        &[("a", 10.0), ("b", 4.0), ("c", 7.0)],
+        &[("a", 10.0), ("b", 7.0), ("c", 7.0)],
         "brushed",
     );
 }
