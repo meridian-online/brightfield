@@ -290,7 +290,7 @@ jobs:
   # `brew install` resolves before it unpacks anything. It does NOT prove the
   # Intel binary then runs: that is a cross-compile from the arm64 runner and,
   # as the header says, it cannot be executed there. No runner in this repository
-  # is an Intel host, so until one exists — a self-hosted x86_64 box, or the
+  # is an Intel macOS host, so until one exists — a self-hosted x86_64 box, or the
   # `verify` job's air-gapped run repeated on that architecture — the Intel path
   # is asset-verified and execution-unverified, and it ships as a preview on that
   # basis. Do not read a green release as the Intel binary having launched
