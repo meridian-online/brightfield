@@ -440,31 +440,181 @@ fn host_from_frame(cc: &eframe::CreationContext<'_>) -> Result<EguiCanvasHost, S
     Ok(EguiCanvasHost::new(device, queue, vello, egui_renderer))
 }
 
+/// Set by the outer phase of `--check-type-source` on the sealed child, so the
+/// child knows it is the child. Not trusted on its own — the child verifies
+/// the environment it actually got.
+const SEALED_MARKER: &str = "BRIGHTFIELD_TYPE_SOURCE_SEALED";
+
+/// Everything the sealed phase is permitted to see, and nothing else.
+///
+/// An ALLOWLIST, not a list of variables to strip, and that choice is the
+/// point. A denylist is a list of the redirections somebody has thought of: it
+/// was wrong about `FINETYPE_INJECT_LABEL` before anyone looked, and it will be
+/// wrong again the next time FineType, `hf_hub` or DuckDB reads a new one. This
+/// is right by construction — a variable nobody has heard of yet is absent
+/// because everything is absent.
+///
+/// Each entry is here because the run needs it, and each is SET by the outer
+/// phase rather than inherited, so none of them carries a value the caller
+/// chose:
+///
+/// - `PATH` — a fixed system path. Nothing is resolved through it (the child is
+///   exec'd by absolute path); it is set because a process with no `PATH` at
+///   all is a strange thing to hand a library.
+/// - `HOME`, `TMPDIR` — inside a fresh directory the outer phase creates and
+///   deletes. Any cache a dependency reaches for lands there, empty, and is
+///   thrown away. This is what closes `hf_hub`'s fallback, which resolves
+///   `$HOME/.cache/huggingface` when `HF_HOME` is unset — and `HF_HOME` is
+///   unset because it is not on this list.
+/// - `LC_ALL`, `LANG` — pinned to `C` so a locale cannot move a comparison.
+const SEALED_ENV: &[&str] = &["PATH", "HOME", "TMPDIR", "LC_ALL", "LANG", SEALED_MARKER];
+
+/// Variables the child writes into ITSELF after `execve`, which no caller can
+/// supply and no allowlist can therefore exclude.
+///
+/// One entry, and it is here on a measurement rather than a hunch.
+/// `__CF_USER_TEXT_ENCODING` appears in this binary's sealed child because it
+/// links CoreFoundation, which records the account's text encoding in its own
+/// environment at initialisation. A bare Rust binary spawning a child with
+/// `env_clear` shows an environment of exactly what it set — including when the
+/// grandparent exported `__CF_USER_TEXT_ENCODING=HOSTILE`, which does not
+/// survive the clear. So a value seen here was written after the environment
+/// was sealed, by the process being sealed.
+///
+/// Anything ELSE a future dependency injects will fail this check loudly rather
+/// than pass quietly, which is the direction to fail in.
+const SEALED_ENV_SELF_SET: &[&str] = &["__CF_USER_TEXT_ENCODING"];
+
 /// `--check-type-source`: prove the bundled semantic type source works, from
-/// inside this binary, with no window.
+/// inside this binary, with no window and with nothing but the bundle.
 ///
 /// This exists because the thing worth proving about a packaged Brightfield's
 /// type source cannot be seen from outside it. The bundle's FILES can be read
 /// off disk by `scripts/check-bundled-extension.sh`; what that cannot say is
 /// whether the DuckDB this binary links will load that extension, whether the
 /// model beside it is loadable, and whether the pair can actually put a label
-/// on a column — from wherever the artefact happens to be unpacked, and with
-/// whatever network the caller has denied it.
+/// on a column.
 ///
-/// So `scripts/verify-airgapped.sh` runs THIS inside its jail. Everything the
-/// run needs is in the binary and the bundle: the fixture is four inline rows,
-/// the load is [`brightfield_engine::NetworkPolicy::Disabled`], and the verdict
-/// is an exit code rather than a line of prose somebody has to grep for.
+/// # Why it runs twice
 ///
-/// Exit codes are distinct because the three outcomes want different actions:
+/// An earlier version of this check reported success on a bundle whose weights
+/// were eighteen bytes of rubbish, whenever `FINETYPE_MODEL_DIR` happened to be
+/// exported in the caller's environment: the extension took the model from
+/// there, classified perfectly, and the check said the artefact worked. It had
+/// asked whether the answer was right without asking where the inputs came
+/// from, which is the only question an artefact check exists to answer.
+///
+/// Refusing that one variable would have been the nearest fix and the wrong
+/// shape. So the outer phase re-execs this binary with the environment CLEARED
+/// and only [`SEALED_ENV`] put back, and the inner phase refuses to proceed if
+/// it sees anything else. A re-exec rather than clearing the variables in
+/// place, because the dynamic loader reads `DYLD_*` / `LD_*` before `main` runs
+/// and a process cannot un-substitute a library that was already interposed
+/// into it.
+///
+/// # Exit codes
+///
+/// Distinct because the outcomes want different actions:
 ///
 /// - `0` — a bundle was found, came up, and typed a column. Its name, the
 ///   directory, the label and the value-check result go to stdout.
-/// - `1` — a bundle is present and did not work. The reason goes to stderr.
-///   This is a packaging defect.
+/// - `1` — a bundle is present and did not work, or the sealed environment
+///   could not be established. The reason goes to stderr. A packaging defect.
 /// - `2` — there is no bundle beside this executable. Not a defect: a build
 ///   packaged without one is supported (see `scripts/package.sh`).
 fn check_type_source() -> i32 {
+    if std::env::var_os(SEALED_MARKER).is_none() {
+        return reexec_sealed();
+    }
+    // The marker is a hint, not a credential — a caller can export it too. What
+    // is trusted is the environment actually present.
+    let stowaways = unsealed_variables();
+    if !stowaways.is_empty() {
+        eprintln!(
+            "check-type-source: refusing to report on an artefact with {} variable(s) this \
+             process did not set: {}. Each one can redirect a file the check reads, so a \
+             verdict taken here would be about the machine and not the artefact.",
+            stowaways.len(),
+            stowaways.join(", ")
+        );
+        return 1;
+    }
+    sealed_check_type_source()
+}
+
+/// Environment variables present that the sealed phase does not permit.
+fn unsealed_variables() -> Vec<String> {
+    unsealed_among(std::env::vars_os().map(|(k, _)| k.to_string_lossy().into_owned()))
+}
+
+/// The allowlist decision itself, over a supplied set of names.
+///
+/// Split from the live environment so a test can drive it: a test process is
+/// full of Cargo's own variables, so a check that reads the real environment
+/// can only ever be exercised by the sealed child it is meant to protect.
+fn unsealed_among(names: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut found: Vec<String> = names
+        .into_iter()
+        .filter(|k| !SEALED_ENV.contains(&k.as_str()) && !SEALED_ENV_SELF_SET.contains(&k.as_str()))
+        .collect();
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// Re-run this binary's `--check-type-source` with a scrubbed environment, and
+/// forward its verdict.
+///
+/// The sandbox a caller has put this process in — `sandbox-exec` on macOS,
+/// `unshare -rn` on Linux — applies to the whole process tree, so the child is
+/// jailed exactly as the parent was. Neither scrubs the environment, which is
+/// why this is needed at all.
+fn reexec_sealed() -> i32 {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("check-type-source: cannot locate this executable: {e}");
+            return 1;
+        }
+    };
+    // A directory of this run's own, so HOME and TMPDIR point somewhere empty
+    // and disposable rather than anywhere the caller chose.
+    let sealed_root =
+        std::env::temp_dir().join(format!("brightfield-type-source-{}", std::process::id()));
+    let home = sealed_root.join("home");
+    let tmp = sealed_root.join("tmp");
+    if let Err(e) = std::fs::create_dir_all(&home).and_then(|()| std::fs::create_dir_all(&tmp)) {
+        eprintln!("check-type-source: cannot make a sealed working directory: {e}");
+        return 1;
+    }
+
+    let status = std::process::Command::new(&exe)
+        .arg("--check-type-source")
+        .env_clear()
+        .env(SEALED_MARKER, "1")
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", &home)
+        .env("TMPDIR", &tmp)
+        .env("LC_ALL", "C")
+        .env("LANG", "C")
+        .status();
+
+    std::fs::remove_dir_all(&sealed_root).ok();
+
+    match status {
+        Ok(s) => s.code().unwrap_or(1),
+        Err(e) => {
+            eprintln!(
+                "check-type-source: cannot re-run {} sealed: {e}",
+                exe.display()
+            );
+            1
+        }
+    }
+}
+
+/// The check itself, in a process whose environment has been verified minimal.
+fn sealed_check_type_source() -> i32 {
     use brightfield_engine::semantic::{self, TypeSourceSpec};
     use brightfield_engine::{
         Engine, LoadOptions, NetworkPolicy, ProfileOutcome, SemanticType, ValueCheck,
@@ -509,9 +659,21 @@ plot:
         eprintln!("check-type-source: the built-in fixture does not analyse");
         return 1;
     };
+    // An empty directory of this run's own, and the second half of "nothing but
+    // the bundle". `LOAD` takes the bundled extension by absolute path so it
+    // could not be redirected here — but DuckDB's extension directory defaults
+    // to `~/.duckdb`, and a machine with FineType already installed has one
+    // sitting in it. Pointing this at an empty directory means an extension
+    // resolved by NAME has nowhere to come from, so a warm cache cannot stand
+    // in for the artefact.
+    let ext_dir = std::env::temp_dir().join("brightfield-type-source-extensions");
+    if let Err(e) = std::fs::create_dir_all(&ext_dir) {
+        eprintln!("check-type-source: cannot make an empty extension directory: {e}");
+        return 1;
+    }
     let options = LoadOptions {
         network: NetworkPolicy::Disabled,
-        extension_directory: None,
+        extension_directory: Some(ext_dir),
         type_source: Some(TypeSourceSpec::Bundle(bundle.clone())),
     };
     let session = match Engine::new().load_spec_with(parsed.spec, analysis, None, &options) {
@@ -842,6 +1004,51 @@ mod tests {
             parse(&["spec.yaml", "--check-type-source", "--shot-after", "45"]),
             Ok(Invocation::CheckTypeSource)
         ));
+    }
+
+    /// The sealed phase admits what it set and refuses everything else.
+    ///
+    /// An allowlist, asserted as one: the named intruders below are the
+    /// redirections that were actually found or looked for — a model path, a
+    /// label override, three HuggingFace cache homes, a DuckDB extension
+    /// directory, and the two dynamic-loader families — but the case that
+    /// matters is `SOMETHING_INVENTED_TOMORROW`, which nobody enumerated and
+    /// which is refused anyway.
+    #[test]
+    fn the_sealed_environment_admits_only_what_it_set() {
+        let permitted = ["PATH", "HOME", "TMPDIR", "LC_ALL", "LANG", SEALED_MARKER];
+        assert!(
+            unsealed_among(permitted.iter().map(|s| (*s).to_string())).is_empty(),
+            "the sealed phase rejected the environment it builds for itself"
+        );
+        assert!(
+            unsealed_among(SEALED_ENV_SELF_SET.iter().map(|s| (*s).to_string())).is_empty(),
+            "a variable the child writes into itself was treated as a stowaway"
+        );
+
+        for intruder in [
+            "FINETYPE_MODEL_DIR",
+            "FINETYPE_INJECT_LABEL",
+            "RHH_DISABLE_HINTS",
+            "HF_HOME",
+            "HF_HUB_CACHE",
+            "HUGGINGFACE_HUB_CACHE",
+            "XDG_CACHE_HOME",
+            "DUCKDB_EXTENSION_DIRECTORY",
+            "DYLD_INSERT_LIBRARIES",
+            "DYLD_LIBRARY_PATH",
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+            "SOMETHING_INVENTED_TOMORROW",
+        ] {
+            let mut env: Vec<String> = permitted.iter().map(|s| (*s).to_string()).collect();
+            env.push(intruder.to_string());
+            assert_eq!(
+                unsealed_among(env),
+                vec![intruder.to_string()],
+                "{intruder} was admitted to the sealed environment"
+            );
+        }
         assert!(matches!(parse(&["-V"]), Ok(Invocation::Version)));
         // Wins over anything else on the line, and opens no window.
         assert!(matches!(

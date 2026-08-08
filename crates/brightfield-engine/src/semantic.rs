@@ -298,10 +298,10 @@ pub trait OpenTypeSource: Send + Sync {
     ///
     /// `false` by default, and say so honestly: the flag is not per-extension,
     /// so a source that asks for it takes signature checking off for
-    /// EVERYTHING that connection loads. Answering `true` therefore costs the
-    /// session its ability to acquire an extension at all — see
-    /// [`LoadOptions::type_source`] — which is what keeps the relaxation
-    /// covering only files this process named.
+    /// EVERYTHING that connection loads. Answering `true` therefore shuts the
+    /// acquisition routes the engine itself travels — see
+    /// [`LoadOptions::type_source`], which records what that covers and the
+    /// measured form of `INSTALL` it does not.
     ///
     /// [`LoadOptions::type_source`]: crate::LoadOptions::type_source
     fn needs_unsigned_extensions(&self) -> bool {
@@ -570,8 +570,6 @@ impl FinetypeBundle {
         coverage.accept().map_err(|e| at("coverage", e))?;
 
         // ── From here the extension is running. ──
-        point_model_dir_at(&model);
-
         let quoted = ext.to_string_lossy().replace('\'', "''");
         conn.execute_batch(&format!("LOAD '{quoted}';"))
             .map_err(|e| at("LOAD", e.to_string()))?;
@@ -579,6 +577,11 @@ impl FinetypeBundle {
         let name = conn
             .query_row("SELECT ft_version()", [], |r| r.get::<_, String>(0))
             .map_err(|e| at("ft_version()", e.to_string()))?;
+
+        // Immediately before the first call that needs a model, not earlier: a
+        // bundle whose extension will not even load must not leave a pointer to
+        // its model behind for the next bundle opened in this process.
+        seal_model_dir_to(&model).map_err(|e| at(MODEL_DIR_ENV, e))?;
 
         let bundle = FinetypeBundle { name, schemas };
         bundle.canary(conn).map_err(|e| at("canary", e))?;
@@ -721,8 +724,9 @@ pub const LABEL_MAP_FILE: &str = "label_map.json";
 /// anyone able to replace the extension can rewrite the manifest — and could
 /// equally replace the executable that reads either. The control that bounds
 /// the unsigned-extension relaxation is not this; it is that the relaxation is
-/// granted only to a connection barred from acquiring extensions over the
-/// network (see [`LoadOptions::type_source`]).
+/// granted only to a connection on which the engine's own acquisition routes
+/// are shut (see [`LoadOptions::type_source`], which also records the form of
+/// `INSTALL` that is outside that bound).
 ///
 /// A bundle with no manifest passes. That is the locally assembled bundle a
 /// contributor points `BRIGHTFIELD_FINETYPE_BUNDLE` at, which no packaging run
@@ -858,21 +862,44 @@ pub fn catalogue_coverage(
     })
 }
 
-/// Point the FineType extension's model resolution at `dir`, once per process.
+/// Make `FINETYPE_MODEL_DIR` name THIS bundle's model, or say why it cannot.
 ///
-/// The extension reads `FINETYPE_MODEL_DIR` from the environment and, finding
-/// nothing there, downloads a model from HuggingFace — which is precisely what
-/// an air-gapped build must not do. There is no SQL setting for it, so the
-/// environment is the only lever the extension offers.
+/// The extension reads that variable and, finding nothing there, downloads a
+/// model from HuggingFace — which is precisely what an air-gapped build must
+/// not do. There is no SQL setting for it, so the environment is the only lever
+/// the extension offers.
 ///
-/// Written once and never overwritten: a value already in the environment is
-/// the operator's, and a session opened later on another thread must not have
-/// the variable rewritten underneath it. The extension resolves its model into
-/// a `OnceLock` on first use, so a later write would be ignored anyway while
-/// still being a data race against any thread reading the environment.
-fn point_model_dir_at(dir: &Path) {
-    if std::env::var_os(MODEL_DIR_ENV).is_none() {
-        std::env::set_var(MODEL_DIR_ENV, dir);
+/// # Why a value already there is refused
+///
+/// It used to be left alone, on the reasoning that an existing value was the
+/// operator's to choose. The consequence was that a bundle whose weights were
+/// eighteen bytes of rubbish passed [`FinetypeBundle::open`]'s canary whenever
+/// the variable happened to be exported: the extension classified beautifully,
+/// using somebody else's model, and every claim this module then made about
+/// the bundle was a claim about a file the bundle does not contain.
+///
+/// So an inherited value pointing anywhere else is an error. There is no
+/// legitimate reading of it — `open` exists to answer "does THIS bundle work",
+/// and it cannot be answered by a model the bundle did not supply. A value that
+/// already names this model is fine and common: it is what the previous
+/// successful open in this process wrote.
+///
+/// # Errors
+///
+/// The variable names a different directory, with both paths in the message.
+fn seal_model_dir_to(dir: &Path) -> Result<(), String> {
+    match std::env::var_os(MODEL_DIR_ENV) {
+        None => {
+            std::env::set_var(MODEL_DIR_ENV, dir);
+            Ok(())
+        }
+        Some(existing) if Path::new(&existing) == dir => Ok(()),
+        Some(existing) => Err(format!(
+            "{MODEL_DIR_ENV} already names {:?}, so the extension would classify with that \
+             model and nothing here would be about this bundle's own ({})",
+            existing.to_string_lossy(),
+            dir.display()
+        )),
     }
 }
 
@@ -1309,6 +1336,53 @@ mod tests {
 
     /// A manifest is verified when present, absent is fine, and a file whose
     /// bytes changed since packaging is refused.
+    /// The model directory is sealed to the bundle's own, and an inherited
+    /// value naming somewhere else is refused.
+    ///
+    /// The failure this closes, measured before it was: with a value already
+    /// exported, a bundle whose weights were eighteen bytes of rubbish passed
+    /// the canary — the extension classified with somebody else's model and
+    /// every claim about the bundle was about a file it does not contain.
+    ///
+    /// Restores whatever the variable was, because it is process-global and
+    /// this is one test in a binary full of others.
+    #[test]
+    fn the_model_directory_is_sealed_to_the_bundle_that_asked_for_it() {
+        let prior = std::env::var_os(MODEL_DIR_ENV);
+        std::env::remove_var(MODEL_DIR_ENV);
+
+        let mine = Path::new("/tmp/bf-seal-mine/model");
+        assert_eq!(
+            seal_model_dir_to(mine),
+            Ok(()),
+            "an unset variable is ours to set"
+        );
+        assert_eq!(
+            std::env::var_os(MODEL_DIR_ENV).map(PathBuf::from),
+            Some(mine.to_path_buf())
+        );
+
+        // The same bundle again — what a second open in one process sees.
+        assert_eq!(
+            seal_model_dir_to(mine),
+            Ok(()),
+            "our own value is not a conflict"
+        );
+
+        // Somebody else's model.
+        let theirs = Path::new("/tmp/bf-seal-theirs/model");
+        let err = seal_model_dir_to(theirs).expect_err("a foreign model must be refused");
+        assert!(
+            err.contains("bf-seal-mine") && err.contains("bf-seal-theirs"),
+            "the refusal names neither model: {err}"
+        );
+
+        match prior {
+            Some(v) => std::env::set_var(MODEL_DIR_ENV, v),
+            None => std::env::remove_var(MODEL_DIR_ENV),
+        }
+    }
+
     #[test]
     fn a_manifest_catches_a_bundle_whose_bytes_changed_since_packaging() {
         let conn = Connection::open_in_memory().expect("in-memory duckdb");

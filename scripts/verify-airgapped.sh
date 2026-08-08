@@ -40,6 +40,10 @@
 #      inside the same jail, which loads that extension with its own DuckDB,
 #      loads the model beside it, and puts a label on a column — and reports it
 #      as an EXIT CODE. Nothing here is inferred from the absence of a message.
+#      That flag seals its own environment before it does any of it, so the
+#      verdict is about the artifact rather than about what this machine
+#      happened to have exported; this script does not have to arrange that and
+#      could not do it completely if it tried.
 #      An artifact with NO bundle skips this leg (a supported build, see
 #      scripts/package.sh); a bundle that is present and does not work is a
 #      failure.
@@ -238,17 +242,28 @@ fi
 
 # THE AIR-GAPPED HALF OF THE TYPE-SOURCE CLAIM. The file checks above say the
 # bytes are present; this says the PACKAGED BINARY can load that extension with
-# its own DuckDB, load the model beside it, and put a label on a column — from
-# wherever the artifact was unpacked, with the network denied and with HOME and
-# the config directory pointed at an empty temp tree so no warm cache on this
-# machine is reachable.
+# its own DuckDB, load the model beside it, and put a label on a column, with
+# the network denied.
 #
-# It asserts an EXIT CODE from a run that exists to be asserted on, and that is
-# the whole design. The version of this leg that shipped first grepped a
-# rendering run's stderr for a warning and passed on its absence — but the
-# rendering path never configures a type source, so the warning could not
-# appear, and the leg passed for any bundle including a broken one. A check
-# whose failing case cannot be reached is not a check.
+# WHERE THE INPUTS COME FROM IS THE BINARY'S JOB, NOT THIS SCRIPT'S, and that
+# division is the correction of a defect rather than a preference. Redirecting
+# HOME here — which this script does — closes the HuggingFace cache and leaves
+# a larger door open: with FINETYPE_MODEL_DIR exported in whatever environment
+# the script was invoked from, an earlier version of this leg reported success
+# on a bundle whose weights were eighteen bytes of rubbish, because the
+# extension took its model from there. Neither sandbox-exec nor unshare -rn
+# scrubs the environment, and `env HOME=…` without -i does not either.
+#
+# So --check-type-source re-execs itself with the environment CLEARED and only
+# what it needs put back, and refuses to report at all if it sees anything it
+# did not set. This script therefore passes it whatever environment it likes and
+# trusts the EXIT CODE, which is what the flag exists to produce.
+#
+# The version of this leg that shipped first grepped a rendering run's stderr
+# for a warning and passed on its absence — but the rendering path never
+# configures a type source, so the warning could not appear and the leg passed
+# for any bundle at all. A check whose failing case cannot be reached is not a
+# check; so is one whose inputs it cannot account for.
 #
 # `--check-type-source` opens no window: it is the one leg here that can be run
 # unattended, and the one that can be made to fail on demand by planting a

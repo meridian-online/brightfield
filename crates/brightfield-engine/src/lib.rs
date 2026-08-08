@@ -285,12 +285,17 @@ pub struct LoadOptions {
     ///
     /// So a source declaring
     /// [`semantic::OpenTypeSource::needs_unsigned_extensions`] costs the
-    /// session its ability to ACQUIRE an extension: autoinstall off, and an
-    /// extension repository that cannot resolve. Nothing can then reach `LOAD`
-    /// that was not already on this disk. A spec on such a session whose
-    /// sources need `httpfs`, `spatial` or `ducklake` and does not already have
-    /// them gets the same treatment as under [`NetworkPolicy::Disabled`] — the
-    /// per-source failure it already reports.
+    /// session the two acquisition routes this engine can travel: autoinstall
+    /// is off, and the extension repository is a path that cannot resolve, so
+    /// the bare `INSTALL <name>` the engine issues for `httpfs`, `spatial` and
+    /// `ducklake` fails — the per-source failure those already report.
+    ///
+    /// It is a bound on what this engine does, NOT a sandbox. Measured on a
+    /// connection carrying exactly these settings: `INSTALL spatial` fails,
+    /// and `INSTALL spatial FROM core` succeeds and writes the extension to
+    /// disk. An explicit `FROM <repo>` names its own repository and neither
+    /// setting gates it. No code path here issues one; anyone adding a
+    /// `FROM`-qualified `INSTALL` is stepping outside this bound.
     ///
     /// A source that loads nothing native — the default — declares `false` and
     /// costs the session nothing.
@@ -368,10 +373,10 @@ impl Engine {
         // flag — and with the flag, this connection would equally load an
         // unsigned extension `INSTALL`ed from a repository over the network.
         //
-        // So it comes with a restriction, applied below: a connection with
-        // signatures relaxed may not ACQUIRE an extension. Nothing can then
-        // reach `LOAD` that was not already on this disk, and the relaxation
-        // covers only files this process named.
+        // So it comes with a restriction, applied below: on a connection with
+        // signatures relaxed, the acquisition routes this engine travels are
+        // shut. See `LoadOptions::type_source` for what that covers and the
+        // measured form of `INSTALL` it does not.
         //
         // Asked of the SPEC, not of "a type source exists": a source that loads
         // nothing native needs no relaxation and pays no restriction.
@@ -422,12 +427,17 @@ impl Engine {
             // `autoload_known_extensions` is deliberately NOT touched, and the
             // difference matters. Autoload is not a network control: it is how
             // DuckDB registers an extension it ALREADY has, and the bundled
-            // library carries `parquet` statically. Switching it off here broke
-            // opening a Parquet file — caught by
-            // `brightfield-shell`'s data_file suite, which is where a user's
-            // first action after choosing a file lives. With acquisition off
-            // and the repository unresolvable, autoload can only ever succeed
-            // for something already on this disk.
+            // library carries `parquet` statically. An earlier form of this
+            // restriction switched it off and stopped Parquet files opening at
+            // all. What holds that now is
+            // `a_native_type_source_costs_the_session_acquisition_but_not_autoload`,
+            // which reads the setting off a live session — NOT the data_file
+            // suite, which has no bundle beside its test binary and so never
+            // reaches this branch.
+            //
+            // Autoload resolves through the same repository as autoinstall, so
+            // with both shut it can only succeed for an extension already
+            // present.
             conn.execute_batch(
                 "SET autoinstall_known_extensions=false; \
                  SET custom_extension_repository='/dev/null/brightfield-no-network';",
@@ -986,18 +996,6 @@ impl Session {
         self.type_source_error.as_deref()
     }
 
-    /// What the linked DuckDB calls its platform and its version, e.g.
-    /// `("osx_arm64", "v1.5.2")`.
-    ///
-    /// Asked of the running library rather than read off a manifest, because
-    /// the manifest states a semver RANGE and the loadable-extension ABI is
-    /// decided by the exact build that ends up linked. This is the pair
-    /// [`semantic::check_abi`] compares a bundled extension against.
-    ///
-    /// # Errors
-    ///
-    /// DuckDB failed to answer about itself, which is not a thing a working
-    /// connection does.
     /// One of DuckDB's own settings, as this connection currently has it.
     ///
     /// The engine's extension-acquisition policy is a set of `SET` statements
@@ -1015,6 +1013,18 @@ impl Session {
         )
     }
 
+    /// What the linked DuckDB calls its platform and its version, e.g.
+    /// `("osx_arm64", "v1.5.2")`.
+    ///
+    /// Asked of the running library rather than read off a manifest, because
+    /// the manifest states a semver RANGE and the loadable-extension ABI is
+    /// decided by the exact build that ends up linked. This is the pair
+    /// [`semantic::check_abi`] compares a bundled extension against.
+    ///
+    /// # Errors
+    ///
+    /// DuckDB failed to answer about itself, which is not a thing a working
+    /// connection does.
     pub fn duckdb_platform_and_version(&self) -> Result<(String, String), duckdb::Error> {
         let platform = self
             .conn
