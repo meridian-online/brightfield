@@ -94,17 +94,81 @@ impl Channel {
     }
 }
 
+/// The number a mark prints on its own geometry, and what it is a number OF.
+///
+/// Not a [`Channel`]: a channel binds a column and takes part in scale
+/// inference, and this binds neither — it names an ARITHMETIC the renderer does
+/// over columns the mark already carries. Binding it as a channel would put it
+/// in front of `infer_scales` and give a bar chart a phantom axis.
+///
+/// Both forms read the same two numbers, and which two depends on the batch
+/// rather than on the form:
+///
+/// * at rest a mark carries one number per group — the group's own aggregate;
+/// * under a live `highlight` a mark that aggregates additionally carries the
+///   count of rows in that group the selection accounts for
+///   (`brightfield-sql`'s `__bf_selected_count`, read in `crate::mark` through
+///   the private `SELECTED_COUNT_COLUMN` — a private helper, so this is a name
+///   and not a link).
+///
+/// So a label reads `total` at rest and `selected / total` under a selection,
+/// in whichever units the form names. The second is the in-bar form of the
+/// part-of-whole reading the geometry already draws, which is the point: the
+/// label pins the fraction the ink is showing rather than restating the axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LabelForm {
+    /// The numbers themselves — `1234`, and `567 / 1234` under a selection.
+    Count,
+    /// The same two numbers as whole percentages **of the values this mark
+    /// drew** — `36%`, and `17% / 36%` under a selection.
+    ///
+    /// Of the drawn values and not of the table: a `sort: { limit: n }` leaves
+    /// the mark holding the top `n` groups, and the percentages then sum to
+    /// 100% over what is on the page rather than over what was aggregated. That
+    /// is the only denominator a renderer holding one batch has; a share of the
+    /// whole table would need the untruncated total projected alongside.
+    Percent,
+}
+
+impl LabelForm {
+    /// The spec spelling.
+    #[must_use]
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Count => "count",
+            Self::Percent => "percent",
+        }
+    }
+
+    /// Read a spec spelling. `None` for anything else, which leaves the mark
+    /// unlabelled — the same silence an unrecognised channel value gets.
+    #[must_use]
+    pub fn from_wire(name: &str) -> Option<Self> {
+        match name {
+            "count" => Some(Self::Count),
+            "percent" => Some(Self::Percent),
+            _ => None,
+        }
+    }
+}
+
 /// Maps visual encoding channels to column names in the RecordBatch, plus any
 /// channels bound to a constant **literal** value (e.g. `y: 0` for a baseline
 /// rule, or `fill: steelblue` for constant ink). Columns and literals are kept
 /// in separate maps so existing column-based renderers are unaffected;
 /// renderers that accept constants read [`ChannelMap::literal`] or
 /// [`ChannelMap::colour`].
+///
+/// It also carries the one mark option that is not a channel and that a
+/// RENDERER (rather than a lowerer) reads — see [`ChannelMap::label`]. This is
+/// the only route such an option has: [`crate::mark::MarkRenderer::render`] is
+/// handed a batch, a channel map and a scale set, and never the mark.
 #[derive(Debug, Clone, Default)]
 pub struct ChannelMap {
     map: HashMap<Channel, String>,
     literals: HashMap<Channel, f64>,
     colours: HashMap<Channel, Color>,
+    label: Option<LabelForm>,
 }
 
 impl ChannelMap {
@@ -157,6 +221,19 @@ impl ChannelMap {
     /// True if the channel is mapped to a column.
     pub fn has(&self, channel: Channel) -> bool {
         self.map.contains_key(&channel)
+    }
+
+    /// Set the in-bar label form (the `label:` mark option).
+    pub fn set_label(&mut self, label: LabelForm) {
+        self.label = Some(label);
+    }
+
+    /// The label form this mark asked to print on its own geometry, or `None`
+    /// when it wrote no `label:` — which is every mark in the corpus that
+    /// predates the option, so an unlabelled mark draws exactly as before.
+    #[must_use]
+    pub fn label(&self) -> Option<LabelForm> {
+        self.label
     }
 
     /// Extract a ChannelMap from a mark's options.
@@ -275,6 +352,14 @@ impl ChannelMap {
                     }
                     _ => {}
                 }
+            }
+        }
+        // The one non-channel option read here. It is scanned outside the
+        // channel loop because it binds no column: there is nothing for
+        // `infer_scales` to see and nothing for a scale to be built over.
+        if let Some(ValueOrParamRef::Value(SpecValue::String(form))) = mark.options.get("label") {
+            if let Some(form) = LabelForm::from_wire(form) {
+                cm.set_label(form);
             }
         }
         cm

@@ -422,6 +422,14 @@ vocab_enum! {
 ///   on a colour-scheme rebuild.
 /// - `geometry` — the geo mark's geometry column, resolved in
 ///   `brightfield_spec::layout`.
+/// - `label` — the number a bar prints on itself, read by
+///   `brightfield_render::channel::ChannelMap::from_mark` into a
+///   `brightfield_render::channel::LabelForm` and drawn by `BarRenderer`.
+///   Brightfield's own key, not Mosaic's: upstream has no in-bar label on a
+///   bar mark, and the count plots that show one draw it with a template
+///   renderer outside the spec language. The word is Mosaic's for the same
+///   idea on an input (`input: menu, label: Sport`), which is why it is
+///   already in the parser's lift surface.
 /// - `sort` — the band channel's order and row cap, read by
 ///   `brightfield-sql`'s `BarLowerer` for the kinds
 ///   [`MarkKind::band_aggregate_axes`] names. The `sort:` shapes that lowerer
@@ -448,6 +456,7 @@ pub const CONSUMED_MARK_OPTION_KEYS: &[&str] = &[
     "bandwidth",
     "geometry",
     "sort",
+    "label",
 ];
 
 /// Whether a mark option key reaches a lowerer or a renderer.
