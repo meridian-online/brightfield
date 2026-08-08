@@ -494,7 +494,10 @@ plot:
         }
     };
     let Some(bundle) = semantic::bundle_beside(&exe) else {
-        println!("check-type-source: no type source bundled beside {}", exe.display());
+        println!(
+            "check-type-source: no type source bundled beside {}",
+            exe.display()
+        );
         return 2;
     };
 

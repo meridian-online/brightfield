@@ -66,6 +66,193 @@ fn load_against(dir: &Path) -> (Option<String>, Option<String>, Vec<SemanticType
     (name, err, semantics)
 }
 
+/// Write a bundle with a well-formed DuckDB metadata trailer and fake contents
+/// everywhere else.
+///
+/// The extension is not an extension — but it is stamped for the DuckDB this
+/// build links, so `read_stamp` and `check_abi` pass and the file-level checks
+/// past them are reachable. Nothing here can survive as far as `LOAD`, which is
+/// the point: it exercises the stretch of `open` that decides on bytes alone.
+fn synthetic_bundle(dir: &Path, label_map: &str, catalogue: &str) {
+    let (platform, version) = {
+        let conn = duckdb::Connection::open_in_memory().expect("in-memory duckdb");
+        let p: String = conn
+            .query_row("SELECT * FROM pragma_platform()", [], |r| r.get(0))
+            .unwrap();
+        let v: String = conn
+            .query_row("SELECT version()", [], |r| r.get(0))
+            .unwrap();
+        (p, v)
+    };
+    // A floor at or below the running engine, whatever that is.
+    let floor = version.split('.').next().unwrap_or("v1").to_string() + ".0.0";
+
+    let pad = |s: &str| {
+        let mut f = [0u8; 32];
+        f[..s.len()].copy_from_slice(s.as_bytes());
+        f
+    };
+    let mut file = b"not really a shared library".to_vec();
+    file.extend_from_slice(&[0u8; 96]);
+    file.extend_from_slice(&pad("C_STRUCT"));
+    file.extend_from_slice(&pad("0.0.0"));
+    file.extend_from_slice(&pad(&floor));
+    file.extend_from_slice(&pad(&platform));
+    file.extend_from_slice(&pad("4"));
+    file.extend_from_slice(&[0u8; 256]);
+
+    std::fs::create_dir_all(dir.join(semantic::MODEL_DIR)).unwrap();
+    std::fs::write(dir.join(semantic::EXTENSION_FILE), file).unwrap();
+    std::fs::write(
+        dir.join(semantic::MODEL_DIR).join("model.safetensors"),
+        b"fake",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join(semantic::MODEL_DIR).join(semantic::LABEL_MAP_FILE),
+        label_map,
+    )
+    .unwrap();
+    std::fs::write(dir.join(semantic::SCHEMA_CATALOGUE), catalogue).unwrap();
+}
+
+const ONE_LABEL_CATALOGUE: &str =
+    r#"[{"x-finetype-label": "identity.person.email", "type": "string", "pattern": "^.+@.+$"}]"#;
+
+/// A model and a schema catalogue from different FineType versions is refused
+/// by `open` itself — not merely by the function that decides it.
+///
+/// The distinction is the whole reason this test exists. A unit test on
+/// `CatalogueCoverage::accept` stays green when the CALL is deleted from
+/// `open`, and the call is on a path no CI run reaches without a real bundle.
+/// A synthesised bundle reaches it, because every file-level check now runs
+/// before the extension is loaded.
+#[test]
+fn a_bundle_whose_catalogue_does_not_describe_its_model_is_refused_by_open() {
+    let dir = std::env::temp_dir().join(format!("bf-skew-{}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    let skewed = r#"["a.b.c", "d.e.f", "g.h.i", "identity.person.email"]"#;
+    synthetic_bundle(&dir, skewed, ONE_LABEL_CATALOGUE);
+
+    let (name, err, semantics) = load_against(&dir);
+    assert_eq!(name, None);
+    let err = err.expect("a skewed bundle has to be reported");
+    assert!(
+        err.contains("different FineType versions"),
+        "the refusal does not name the cause: {err}"
+    );
+    assert_eq!(semantics, vec![SemanticType::NotAsked]);
+
+    // And a bundle whose catalogue DOES describe its model gets past this check
+    // — it then dies at the LOAD, because the extension here is not one. Two
+    // different refusals from two bundles differing only in the label map is
+    // what says the coverage check is the thing being exercised.
+    let agreed = r#"["identity.person.email"]"#;
+    std::fs::write(
+        dir.join(semantic::MODEL_DIR).join(semantic::LABEL_MAP_FILE),
+        agreed,
+    )
+    .unwrap();
+    let (_, err, _) = load_against(&dir);
+    let err = err.expect("a fake extension still cannot load");
+    assert!(
+        !err.contains("different FineType versions"),
+        "the coverage check fired on a catalogue that does describe the model: {err}"
+    );
+    assert!(
+        err.contains("LOAD"),
+        "expected the load to be what failed: {err}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A bundle whose bytes changed after packaging is refused by `open` itself,
+/// before the extension is loaded.
+///
+/// Pins the CALL, for the same reason as the coverage test above: a unit test
+/// on `verify_against_manifest` stays green when the call is deleted from
+/// `open`, and "verified before loading" is the only version of this check
+/// worth having — after the LOAD the code is already running.
+#[test]
+fn a_bundle_that_does_not_match_its_manifest_is_refused_before_the_extension_loads() {
+    let dir = std::env::temp_dir().join(format!("bf-tamper-{}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    synthetic_bundle(&dir, r#"["identity.person.email"]"#, ONE_LABEL_CATALOGUE);
+    // A hash that is well-formed and simply is not this file's.
+    std::fs::write(
+        dir.join(semantic::MANIFEST_FILE),
+        format!("{}  {}\n", "0".repeat(64), semantic::SCHEMA_CATALOGUE),
+    )
+    .unwrap();
+
+    let (name, err, semantics) = load_against(&dir);
+    assert_eq!(name, None);
+    let err = err.expect("a bundle contradicting its manifest has to be reported");
+    assert!(
+        err.contains("not the file that was packaged") && err.contains(semantic::SCHEMA_CATALOGUE),
+        "the refusal does not name the file or the cause: {err}"
+    );
+    assert!(
+        !err.contains("LOAD"),
+        "the extension was loaded before its bundle was verified: {err}"
+    );
+    assert_eq!(semantics, vec![SemanticType::NotAsked]);
+
+    // Remove the contradiction and the same bundle gets past this check, dying
+    // at the LOAD instead — two refusals from bundles differing only in a
+    // manifest is what says the manifest is what was consulted.
+    std::fs::remove_file(dir.join(semantic::MANIFEST_FILE)).unwrap();
+    let (_, err, _) = load_against(&dir);
+    let err = err.expect("a fake extension still cannot load");
+    assert!(
+        err.contains("LOAD"),
+        "expected the load to be what failed: {err}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A type source is refused on a session that may install extensions over the
+/// network, and the conflict is named.
+///
+/// This is the bound on `allow_unsigned_extensions`, asserted rather than
+/// described. Loading a FineType bundle needs signature checking off for the
+/// WHOLE connection — not just for the bundle — so it must not be granted to a
+/// connection that can also fetch an extension from a repository. The refusal
+/// happens before the bundle directory is even looked at, which is why this
+/// test needs no bundle: the argument below is a real path and it is never
+/// read.
+#[test]
+fn a_type_source_is_refused_on_a_session_that_could_still_fetch() {
+    let dir = std::env::temp_dir();
+    for network in [NetworkPolicy::Auto, NetworkPolicy::default()] {
+        let parsed = parse_spec(FIXTURE, Format::Yaml).expect("the fixture parses");
+        let analysis = analyse_spec(&parsed.spec).expect("the fixture analyses");
+        let options = LoadOptions {
+            network,
+            extension_directory: None,
+            type_source: Some(semantic::TypeSourceSpec::Bundle(dir.clone())),
+        };
+        let load = Engine::new()
+            .load_spec_with(parsed.spec, analysis, None, &options)
+            .expect("the conflict must not fail the load");
+        assert_eq!(load.session.type_source_name(), None);
+        let err = load
+            .session
+            .type_source_error()
+            .expect("a refused type source has to say why");
+        assert!(
+            err.contains("over the network") && err.contains("NetworkPolicy::Disabled"),
+            "the refusal does not name the conflict or the fix: {err}"
+        );
+    }
+
+    // And the pairing the application actually uses carries both fields, so it
+    // can never land on the refused side by accident.
+    assert_eq!(LoadOptions::packaged().network, NetworkPolicy::Disabled);
+}
+
 /// A directory that is not a bundle is refused, by name, and the session still
 /// loads.
 ///

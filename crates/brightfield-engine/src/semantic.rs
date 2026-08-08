@@ -507,7 +507,14 @@ impl FinetypeBundle {
             .map_err(|e| at("version()", e.to_string()))?;
         check_abi(&stamp, &platform, &version).map_err(|e| at(EXTENSION_FILE, e))?;
 
-        // BEFORE the LOAD, because after it the code is already running.
+        // ── Everything readable off disk is decided HERE, before the LOAD. ──
+        //
+        // Ordering, not taste: `LOAD` maps a shared library into this process
+        // and runs its entry point, so every question that can be answered
+        // without doing that should be. It also keeps this whole stretch
+        // reachable by a test holding a synthesised bundle and no extension at
+        // all, which is the difference between these checks being exercised on
+        // every CI run and only when somebody has a 30 MB artefact to hand.
         verify_against_manifest(dir, conn).map_err(|e| at(MANIFEST_FILE, e))?;
 
         let model = dir.join(MODEL_DIR);
@@ -517,11 +524,6 @@ impl FinetypeBundle {
                 "no model.safetensors — the extension would fall back to downloading one".into(),
             ));
         }
-        point_model_dir_at(&model);
-
-        let quoted = ext.to_string_lossy().replace('\'', "''");
-        conn.execute_batch(&format!("LOAD '{quoted}';"))
-            .map_err(|e| at("LOAD", e.to_string()))?;
 
         let catalogue = dir.join(SCHEMA_CATALOGUE);
         let text =
@@ -529,12 +531,18 @@ impl FinetypeBundle {
         let schemas = parse_schema_catalogue(&text).map_err(|e| at(SCHEMA_CATALOGUE, e))?;
 
         // The model and the catalogue are two artefacts, bundled independently,
-        // and nothing so far compares them.
+        // and nothing before this compares them.
         let labels = std::fs::read_to_string(model.join(LABEL_MAP_FILE))
             .map_err(|e| at(LABEL_MAP_FILE, e.to_string()))?;
-        let coverage =
-            catalogue_coverage(&labels, &schemas).map_err(|e| at(LABEL_MAP_FILE, e))?;
+        let coverage = catalogue_coverage(&labels, &schemas).map_err(|e| at(LABEL_MAP_FILE, e))?;
         coverage.accept().map_err(|e| at("coverage", e))?;
+
+        // ── From here the extension is running. ──
+        point_model_dir_at(&model);
+
+        let quoted = ext.to_string_lossy().replace('\'', "''");
+        conn.execute_batch(&format!("LOAD '{quoted}';"))
+            .map_err(|e| at("LOAD", e.to_string()))?;
 
         let name = conn
             .query_row("SELECT ft_version()", [], |r| r.get::<_, String>(0))
