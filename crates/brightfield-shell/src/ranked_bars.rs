@@ -419,6 +419,28 @@ mod tests {
         );
     }
 
+    /// A module's size reaches the plot it emits, and the id the registry
+    /// resolves against is the one the kind carries.
+    ///
+    /// Both are one-liners and both are here for the same reason: a public
+    /// setter nothing exercises is a setter free to write the wrong key, and a
+    /// kind whose published id is not its own id is a kind
+    /// [`ChartKindRegistry::find`] cannot reach.
+    #[test]
+    fn a_modules_size_and_the_kinds_published_id_are_what_they_say() {
+        let sized = RankedCategoryBars::new("tag")
+            .with_size(512, 128)
+            .plot_yaml("t", "sel", 0);
+        assert!(sized.contains("width: 512"), "{sized}");
+        assert!(sized.contains("height: 128"), "{sized}");
+        assert_eq!(chart_kind().id, KIND_ID);
+        let reg = ChartKindRegistry::new(vec![chart_kind()]);
+        assert!(
+            reg.find(KIND_ID).is_some(),
+            "the published id resolves in a registry holding the kind"
+        );
+    }
+
     /// The label form reaches the spec, and `None` writes no key at all —
     /// an unlabelled module has to be indistinguishable from every bar mark
     /// that predates the option.
