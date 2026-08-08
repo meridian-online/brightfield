@@ -9,7 +9,7 @@
 //! rendering shim that only lays these strings out. No UI-framework import may
 //! enter this crate (semantic-layer rule).
 
-pub use brightfield_engine::{ColumnProfile, ProfileOutcome, SourceProfile};
+pub use brightfield_engine::{ColumnProfile, ProfileOutcome, SemanticType, SourceProfile};
 
 /// The most columns the sidebar renders per source before collapsing the tail
 /// into a "(+N more)" row. Flat-list v1 scrolls, but a pathologically wide
@@ -133,6 +133,7 @@ mod tests {
             distinct,
             min: min.map(str::to_string),
             max: max.map(str::to_string),
+            semantic: SemanticType::NotAsked,
         }
     }
 

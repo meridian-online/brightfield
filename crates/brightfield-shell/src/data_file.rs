@@ -547,6 +547,7 @@ pub fn pick() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use brightfield_engine::SemanticType;
 
     fn column(name: &str, type_name: &str, distinct: u64) -> ColumnProfile {
         ColumnProfile {
@@ -557,6 +558,7 @@ mod tests {
             distinct,
             min: None,
             max: None,
+            semantic: SemanticType::NotAsked,
         }
     }
 

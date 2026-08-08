@@ -11,6 +11,7 @@ description = "In-process DuckDB execution engine for Mosaic spec pipelines"
 brightfield-spec = { path = "../brightfield-spec" }
 brightfield-sql = { path = "../brightfield-sql" }
 duckdb = { version = "1", features = ["bundled"] }
+serde_json = "1"
 thiserror = "2"
 
 [lints]

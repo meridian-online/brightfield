@@ -11,6 +11,8 @@
 use duckdb::arrow::array::{Array, Int64Array, StringArray};
 use duckdb::arrow::record_batch::RecordBatch;
 
+use crate::semantic::SemanticType;
+
 /// One `data:` source's profile, emitted in spec declaration order.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SourceProfile {
@@ -58,6 +60,15 @@ pub struct ColumnProfile {
     pub min: Option<String>,
     /// Maximum (see [`ColumnProfile::min`]).
     pub max: Option<String>,
+    /// What the column MEANS, as opposed to what DuckDB stored it as — and
+    /// whether the column's own values bear that meaning out.
+    ///
+    /// [`SemanticType::NotAsked`] unless the session was loaded with
+    /// [`LoadOptions::type_source`]. This is the one place a semantic label
+    /// reaches anything downstream of the engine; see [`crate::semantic`].
+    ///
+    /// [`LoadOptions::type_source`]: crate::LoadOptions::type_source
+    pub semantic: SemanticType,
 }
 
 /// Columns Brightfield's SQL layer synthesises (e.g. a raster's `__bf_count`)
