@@ -242,8 +242,10 @@ fn yaml_string(s: &str) -> String {
 /// The spec type is `String`: what a module hands its host here is YAML source,
 /// which is what the composer takes. The builder is a plain function of the
 /// bound column, which it can be because [`ChartKind::spec`] has already
-/// checked the id and re-checked the column against [`SLOTS`] before it makes
-/// the [`Bound`] the builder takes.
+/// checked the id and re-checked the column against this kind's slots before it
+/// makes the [`Bound`] the builder takes. (Those are the private `SLOTS` const
+/// above — named rather than linked, since a doc link does not get to widen an
+/// API.)
 ///
 /// No [`ModuleControl`](brightfield_workbench::registry::ModuleControl): a
 /// control must carry a registered keyboard verb, and inventing one is a
