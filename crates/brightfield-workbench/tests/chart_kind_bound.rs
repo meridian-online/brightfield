@@ -27,8 +27,7 @@ const BAR_SLOTS: &[FieldSlot] = &[
 ];
 
 /// `bars`' required slots, with `colour` declared to take the type `bars` will
-/// not. Filling it needs a third column, which is why `bars`' own `bind` leaves
-/// it empty above.
+/// not. Filling it needs a third column, which no other fixture here offers.
 const MEASURE_COLOUR_SLOTS: &[FieldSlot] = &[
     FieldSlot::required("x", &[FieldType::Categorical]),
     FieldSlot::required("y", &[FieldType::Quantitative]),
@@ -221,9 +220,13 @@ fn a_binding_sharing_this_id_must_also_match_this_kinds_shape() {
 /// exempt it.
 ///
 /// Every required slot here agrees, so a check that tested only required slots
-/// would pass this binding — and `bars`' builder would read a measure out of a
-/// slot `bars` declares takes a name. The two fixtures differ in exactly one
-/// place, the `colour` slot's `accepts`, so nothing else can be what reddens.
+/// would pass this binding — and a measure would reach a builder through a slot
+/// `bars` declares takes a name. Whether *this* fixture's builder goes on to
+/// read `colour` is beside the point: the guarantee is about what `spec` hands
+/// over, not about which fields a given builder happens to use.
+///
+/// The two fixtures differ in exactly one place, the `colour` slot's `accepts`,
+/// so nothing else can be what reddens.
 #[test]
 fn an_optional_slot_is_type_checked_like_any_other() {
     let binding = measure_colour_bars()
