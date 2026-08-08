@@ -106,21 +106,6 @@ fn faded_ink() -> [i32; 3] {
     ]
 }
 
-/// The chart's own furniture — the tokens a frame pixel takes when no bar
-/// stands on it.
-///
-/// `surface` is in this list twice over: it is what a blank frame pixel is, and
-/// it is the ink an in-bar label is knocked out in (`meridian_design`'s
-/// `text.on_solid`, which that crate defines as the light surface colour in
-/// both modes).
-fn chrome() -> Vec<[i32; 3]> {
-    let ink = meridian_design::chrome::INK_LIGHT;
-    [ink.surface, ink.page, ink.gridline, ink.baseline]
-        .into_iter()
-        .map(rgb)
-        .collect()
-}
-
 /// Whether a frame pixel carries a bar — either ink, either part.
 ///
 /// A POSITIVE test against the two inks a bar can be, rather than a negative
@@ -130,6 +115,13 @@ fn chrome() -> Vec<[i32; 3]> {
 /// produced the gesture, so "not the furniture" would report that band as a bar
 /// running the full width of the frame. Naming the two inks measures the marks
 /// and nothing else.
+///
+/// A knocked-out in-bar label is therefore NOT a bar to this predicate — it is
+/// drawn in `meridian_design`'s `text.on_solid`, which that crate defines as
+/// the light surface colour in both modes. That is right for a reading that
+/// wants a bar's EXTENT, because the label is inset from the tip and the
+/// outermost pixel is still fill; the label's own reading counts what is inside
+/// a bar and not the fill, which is the same fact read the other way.
 fn is_bar(p: [u8; 4]) -> bool {
     matches(p, mark_ink()) || matches(p, faded_ink())
 }
@@ -201,7 +193,7 @@ fn fixture_rows(n: usize) -> String {
     let mut rows = Vec::new();
     for step in 0..n {
         let i = (n - 1 + step) % n;
-        let side = if i % 2 == 0 { "a" } else { "b" };
+        let side = if i.is_multiple_of(2) { "a" } else { "b" };
         for _ in 0..=i {
             rows.push(format!("    - {{ cat: cat-{i:02}, side: {side} }}"));
         }
