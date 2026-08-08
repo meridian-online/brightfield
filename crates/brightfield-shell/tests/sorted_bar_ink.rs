@@ -44,8 +44,8 @@ use image::RgbaImage;
 /// asserted, so the test does not depend on which pixel a bar starts at.
 ///
 /// **A band scale's first row is at the BOTTOM of the frame**, so the
-/// sequences below read reversed against the query. `Layout::y_range` returns
-/// `(bottom, top)` — right for a continuous `y`, where a larger value belongs
+/// sequences below read reversed against the query. `ChartLayout::y_range`
+/// returns `(bottom, top)` — right for a continuous `y`, where a larger value belongs
 /// higher up, and inherited by the band scale built over the same range. The
 /// control proves it is not this card's doing: it carries no `sort:` at all,
 /// its query orders by the band ascending, and its bars still come out

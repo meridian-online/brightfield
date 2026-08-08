@@ -17,6 +17,9 @@
 //!   `brightfield-workbench` shell contract.
 //! - [`chart_item`] — the chart pane: one `Item`, parameterised by mark kind,
 //!   binding brush/click gestures to the engine's coordinator seam.
+//! - [`ranked_bars`] — the ranked category bars module and the dashboard that
+//!   gives one to every categorical column: a chart kind as data, and the
+//!   spec its builder emits.
 //! - [`legend`] — the chart legend as a native egui margin panel, outside the
 //!   plot rect, derived from the scales each chart was drawn against.
 //! - [`navigation`] — pan/zoom: the gesture arithmetic read off the displayed
@@ -65,6 +68,7 @@ pub mod navigation;
 pub mod overlays;
 pub mod pipeline;
 pub mod protocol;
+pub mod ranked_bars;
 pub mod starts;
 pub mod startup;
 pub mod watch;

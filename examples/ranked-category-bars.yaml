@@ -1,0 +1,82 @@
+# The ranked category bars — the module a categorical column gets.
+#
+# Click a bar in either plot. Both plots respond, and NEITHER of them moves:
+# every bar stays exactly where and as long as it was, and what changes is the
+# ink inside it. The pale part is the rows the click left out, the solid part
+# is the rows it kept, growing from the same baseline, and each bar prints both
+# numbers.
+#
+# That stillness is the device. A module's mark is not filtered by the
+# selection — it reads the table straight and carries a `select: highlight`,
+# which puts the predicate inside a conditional SUM beside the count instead of
+# in a WHERE. So the rows, the grouping, the ranking and the `limit:` above
+# them are all computed from the UNFILTERED table, and none of them can move
+# under a gesture that changed no data. A category cannot leave the axis by
+# being selected against, because the query that decides which categories
+# exist never sees the selection at all.
+#
+# `sort: { y: -x, limit: 10 }` is the ranked half: order by the count
+# descending, keep the top ten. The tie-break is the category name, so the cut
+# is reproducible rather than a coin toss over the rows at the boundary.
+#
+# THE DATA IS THE LIST-VALUED CASE, EXPLODED. A reading can carry several tags,
+# and the form that reaches a GROUP BY is one row per (reading, tag) pair —
+# reading 3 carries two tags and reading 5 carries three. So a count here is a
+# count of CONTRIBUTIONS, not of readings: twelve rows over eight readings.
+#
+# The companion devices are examples/rect-bin-count-part-of-whole.yaml (the
+# same part-of-whole reading over binned continuous groups) and
+# examples/rect-bin-count-ghost.yaml (the same question answered with two
+# layers instead of one query).
+#
+# This file is generated: `brightfield_shell::ranked_bars::Dashboard::to_spec`
+# emits it, and a test in that module holds the two byte-identical.
+#
+#   cargo run -p brightfield-shell -- examples/ranked-category-bars.yaml
+params:
+  sel: { select: crossfilter }
+data:
+  observations:
+    - { reading: 1, tag: drift, band: low }
+    - { reading: 2, tag: drift, band: low }
+    - { reading: 3, tag: drift, band: high }
+    - { reading: 3, tag: spike, band: high }
+    - { reading: 4, tag: spike, band: mid }
+    - { reading: 5, tag: drift, band: mid }
+    - { reading: 5, tag: spike, band: mid }
+    - { reading: 5, tag: gap, band: mid }
+    - { reading: 6, tag: drift, band: low }
+    - { reading: 7, tag: gap, band: high }
+    - { reading: 8, tag: drift, band: low }
+    - { reading: 8, tag: spike, band: low }
+hconcat:
+  - plot:
+    - mark: barX
+      data: { from: "observations" }
+      x: { count: }
+      y: "tag"
+      sort: { y: -x, limit: 10 }
+      label: count
+    - select: toggleY
+      as: $sel
+    - select: highlight
+      by: $sel
+    yLabel: "tag"
+    width: 360
+    height: 300
+    marginLeft: 90
+  - plot:
+    - mark: barX
+      data: { from: "observations" }
+      x: { count: }
+      y: "band"
+      sort: { y: -x, limit: 10 }
+      label: count
+    - select: toggleY
+      as: $sel
+    - select: highlight
+      by: $sel
+    yLabel: "band"
+    width: 360
+    height: 300
+    marginLeft: 90

@@ -12,7 +12,7 @@ use kurbo::{Affine, BezPath, Circle, Line, Rect};
 use peniko::{Color, Fill};
 use vello::Scene;
 
-use crate::channel::{Channel, ChannelMap};
+use crate::channel::{Channel, ChannelMap, LabelForm};
 use crate::kde::{kde_1d_weighted, kde_2d, silverman_1d_weighted, silverman_2d_per_axis};
 use crate::scale::{
     apply_colour_override, merge_linear_scale, ColourOverride, Scale, ScaleSet, SequentialScheme,
@@ -873,9 +873,155 @@ pub enum BarAxis {
 /// returned before a single fill), the value axis (never extended to zero), and
 /// the baseline inset (never exempted, so the value axis got a 5 px gap at the
 /// end the bars are supposed to sit flush against).
+///
+/// # The part-of-whole reading, and why the axis holds still
+///
+/// A band-aggregating bar under a live `highlight` gets its per-group count of
+/// selected rows projected beside its own aggregate — one grouped query, the
+/// predicate inside a conditional `SUM` rather than in a `WHERE`. The bar then
+/// draws twice: **the whole**, deemphasised, standing for the unfiltered total,
+/// and **the selected part** overdrawn on it at full ink from the same
+/// baseline.
+///
+/// The consequence worth naming is about the CATEGORY AXIS, not about the ink.
+/// Because the selection never reaches the `GROUP BY`, the rows, the grouping,
+/// the ranking and any `limit:` above them are all computed from the unfiltered
+/// table — so the bands, their order and their pixel positions do not depend on
+/// what is selected. A category cannot drop off the axis by being selected
+/// against, and a bar cannot change length under a gesture that did not change
+/// the data. That property is a consequence of where the predicate sits; it is
+/// not enforced anywhere, and moving the predicate into a filter would lose it
+/// silently while every test that only reads ink stayed green.
+///
+/// [`RectRenderer`] draws the same device over binned continuous groups; the
+/// two share `remainder_ink`, `selected_fraction_of` and `selected_tip` so the
+/// categorical and continuous forms cannot drift apart.
 pub struct BarRenderer {
     /// Orientation — `Y` for barY, `X` for barX.
     pub axis: BarAxis,
+}
+
+/// Padding between an in-bar label and the bar's tip, in logical pixels.
+const BAR_LABEL_PAD: f64 = 6.0;
+
+/// Font size for an in-bar label. One step below the private `TEXT_MARK_SIZE`
+/// a `text` mark draws at — named rather than linked, since a doc link does not
+/// get to widen an API: the label annotates a mark rather than being one, and
+/// it has to fit inside a band.
+///
+/// `pub` because a test that reads a label back off a raster has to draw the
+/// same string at the same size to compare against, and a second copy of this
+/// number in the test would be free to drift from this one — which is the
+/// drift that would make such a test go red for a reason that is not a defect.
+pub const BAR_LABEL_SIZE: f32 = 10.0;
+
+/// Format one number for an in-bar label.
+///
+/// Integral values print without a decimal point — a count of rows is the
+/// common case and `1234.0` reads as a measurement rather than a tally.
+fn label_number(v: f64) -> String {
+    if (v.fract()).abs() < f64::EPSILON {
+        format!("{v:.0}")
+    } else {
+        format!("{v:.1}")
+    }
+}
+
+/// The text of one bar's label: the whole at rest, and `part / whole` once the
+/// batch carries a selected count for this group.
+///
+/// `share` is the denominator [`LabelForm::Percent`] takes its percentages
+/// against — the sum of the values this mark drew. `None` (or a non-positive
+/// sum) drops back to the count form rather than dividing by nothing, so a
+/// percentage is never printed against a denominator that does not exist.
+fn bar_label(
+    form: LabelForm,
+    value: f64,
+    selected: Option<f64>,
+    share: Option<f64>,
+) -> Option<String> {
+    let (whole, part) = match form {
+        LabelForm::Count => (label_number(value), selected.map(label_number)),
+        LabelForm::Percent => {
+            let total = share.filter(|t| *t > 0.0)?;
+            let pct = |v: f64| format!("{:.0}%", 100.0 * v / total);
+            (pct(value), selected.map(pct))
+        }
+    };
+    Some(match part {
+        Some(part) => format!("{part} / {whole}"),
+        None => whole,
+    })
+}
+
+/// Where an in-bar label goes, and in what ink.
+///
+/// Inside the bar against its tip when the bar is long enough to hold the text
+/// and the padding, knocked out in the design system's ink-on-a-solid; just
+/// past the tip otherwise, in the bar's own colour so it reads against the
+/// plot surface.
+///
+/// The fallback is what makes the label honest on a ranked chart: the whole
+/// point of ranking is that the last bars are short, and a label that silently
+/// vanished on them would leave exactly the rows a reader most needs a number
+/// for unlabelled.
+struct LabelPlacement {
+    /// The anchor position along the VALUE axis.
+    at: f64,
+    anchor: TextAnchor,
+    colour: Color,
+}
+
+/// Ink for a label knocked out of a filled shape.
+///
+/// `meridian_design`'s `text.on_solid`, which that crate documents as the same
+/// paint in both modes, so a renderer with no mode to consult may read it
+/// through either. Not a colour invented here.
+fn knockout_ink() -> Color {
+    let c = meridian_design::semantic(false).text.on_solid;
+    Color::new([c.r, c.g, c.b, c.a])
+}
+
+/// Place a label on a bar running from `base` to `tip` in pixels.
+///
+/// `needed` is the extent the text occupies **along the bar's own axis** — its
+/// width for a horizontal bar, its cap height for a vertical one. The caller
+/// knows which because the caller knows the orientation; passing the wrong one
+/// puts every short bar's label on the wrong side of its tip.
+fn place_bar_label(needed: f64, base: f64, tip: f64, ink: Color) -> LabelPlacement {
+    let width = needed;
+    let span = tip - base;
+    let direction = if span < 0.0 { -1.0 } else { 1.0 };
+    if span.abs() >= width + 2.0 * BAR_LABEL_PAD {
+        LabelPlacement {
+            at: tip - direction * BAR_LABEL_PAD,
+            anchor: if direction > 0.0 {
+                TextAnchor::End
+            } else {
+                TextAnchor::Start
+            },
+            colour: knockout_ink(),
+        }
+    } else {
+        LabelPlacement {
+            at: tip + direction * BAR_LABEL_PAD,
+            anchor: if direction > 0.0 {
+                TextAnchor::Start
+            } else {
+                TextAnchor::End
+            },
+            colour: ink,
+        }
+    }
+}
+
+/// Vertical offset from a band's centre to the text baseline of a label
+/// centred in it, for a font of `size`.
+///
+/// Half the cap height, near enough: [`draw_text`] positions by BASELINE, so
+/// centring means dropping the baseline by half the height of the digits.
+fn label_baseline_offset(size: f32) -> f64 {
+    f64::from(size) * 0.35
 }
 
 impl MarkRenderer for BarRenderer {
@@ -926,6 +1072,17 @@ impl MarkRenderer for BarRenderer {
         // Baseline: 0 mapped through the value scale.
         let baseline = value_scale.map_f64(0.0);
 
+        // The per-group counts of selected rows, when a live highlight put them
+        // in the batch. Their presence is what turns each bar into a
+        // denominator with a part drawn inside it.
+        let counts = selected_counts(batch);
+        // The denominator a percentage label is a percentage OF: the values
+        // this mark drew, summed. Computed once, and only when a label asked
+        // for it.
+        let label_form = channel_map.label();
+        let drawn_total = (label_form == Some(LabelForm::Percent))
+            .then(|| value_f64.iter().filter_map(|v| *v).sum::<f64>());
+
         let n = batch.num_rows();
         for i in 0..n {
             let cat = match band_str[i].as_deref() {
@@ -961,13 +1118,68 @@ impl MarkRenderer for BarRenderer {
                 (baseline, tip)
             };
 
-            let colour = resolve_colour(scales, channel_map, batch, i);
-            let colour = apply_highlight(colour, i, highlight);
+            let ink = resolve_colour(scales, channel_map, batch, i);
+            // The whole bar. Deemphasised when this mark carries per-group
+            // selected counts — it is about to become the denominator behind a
+            // part — and otherwise exactly as before. Identical to
+            // `RectRenderer`'s choice, through the same two helpers.
+            let colour = if counts.is_some() {
+                remainder_ink(ink, i, highlight)
+            } else {
+                apply_highlight(ink, i, highlight)
+            };
             let rect = match self.axis {
                 BarAxis::Y => Rect::new(band_lo, val_lo, band_hi, val_hi),
                 BarAxis::X => Rect::new(val_lo, band_lo, val_hi, band_hi),
             };
             scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &rect);
+
+            // The selected part, overdrawn on the whole from the same baseline.
+            // The bar itself did not move, so the part reads as a fraction of a
+            // total still on the page.
+            let selected = counts.as_ref().and_then(|c| *c.get(i)?);
+            if let Some(fraction) = selected_fraction_of(counts.as_ref(), i, value) {
+                let edge = selected_tip(baseline, tip, fraction);
+                let (lo, hi) = (baseline.min(edge), baseline.max(edge));
+                let part = match self.axis {
+                    BarAxis::Y => Rect::new(band_lo, lo, band_hi, hi),
+                    BarAxis::X => Rect::new(lo, band_lo, hi, band_hi),
+                };
+                scene.fill(Fill::NonZero, Affine::IDENTITY, ink, None, &part);
+            }
+
+            // The number, printed on the bar it belongs to.
+            if let Some(text) =
+                label_form.and_then(|form| bar_label(form, value, selected, drawn_total))
+            {
+                let centre_offset = label_baseline_offset(BAR_LABEL_SIZE);
+                let needed = match self.axis {
+                    // A vertical bar's label runs ACROSS the bar, so what has
+                    // to fit along the bar is the text's height, not its width.
+                    BarAxis::Y => f64::from(BAR_LABEL_SIZE),
+                    BarAxis::X => crate::text::measure_width(&text, BAR_LABEL_SIZE),
+                };
+                let placed = place_bar_label(needed, baseline, tip, ink);
+                let (x, y) = match self.axis {
+                    BarAxis::Y => (centre, placed.at + centre_offset),
+                    BarAxis::X => (placed.at, centre + centre_offset),
+                };
+                draw_text(
+                    scene,
+                    &text,
+                    x,
+                    y,
+                    BAR_LABEL_SIZE,
+                    placed.colour,
+                    match self.axis {
+                        // A vertical bar's label is centred across the band and
+                        // sits at the tip; the anchor that runs along the value
+                        // axis has no horizontal meaning there.
+                        BarAxis::Y => TextAnchor::Middle,
+                        BarAxis::X => placed.anchor,
+                    },
+                );
+            }
         }
     }
 
@@ -4656,6 +4868,157 @@ mod tests {
         assert!(
             !encoding.path_tags.is_empty(),
             "dot scene with highlight should have content"
+        );
+    }
+
+    // --- the in-bar label ---
+
+    /// **What a label SAYS**, for both forms and both states. This is the
+    /// content pin the raster gate cites: that gate measures where the label is
+    /// drawn and how much of it there is, which cannot tell `6` from `9`.
+    ///
+    /// The `part / whole` form is what makes the label the in-bar reading of
+    /// the geometry rather than a restatement of the axis: it is the same two
+    /// numbers the deemphasised whole and the solid part are drawn from.
+    #[test]
+    fn a_label_reads_the_whole_at_rest_and_part_of_whole_under_a_selection() {
+        let count = |v, s, share| bar_label(LabelForm::Count, v, s, share);
+        assert_eq!(count(1234.0, None, None).as_deref(), Some("1234"));
+        assert_eq!(
+            count(1234.0, Some(567.0), None).as_deref(),
+            Some("567 / 1234")
+        );
+        // A group with nothing selected says so. Zero and "not selected at all"
+        // are different answers, and only the first has a numerator to print.
+        assert_eq!(count(12.0, Some(0.0), None).as_deref(), Some("0 / 12"));
+        // A count is integral; a mean is not, and neither is printed as the
+        // other.
+        assert_eq!(count(12.5, None, None).as_deref(), Some("12.5"));
+
+        let pct = |v, s, share| bar_label(LabelForm::Percent, v, s, share);
+        assert_eq!(pct(25.0, None, Some(100.0)).as_deref(), Some("25%"));
+        assert_eq!(
+            pct(25.0, Some(5.0), Some(100.0)).as_deref(),
+            Some("5% / 25%")
+        );
+        // Both percentages are of the SAME denominator — the values the mark
+        // drew — so the pair reads as a part of a whole on one base rather than
+        // as two unrelated fractions.
+        assert_eq!(
+            pct(50.0, Some(25.0), Some(200.0)).as_deref(),
+            Some("12% / 25%")
+        );
+    }
+
+    /// A percentage of nothing is not printed as `NaN%` or as `0%`: with no
+    /// denominator there is no percentage, and the label is dropped.
+    #[test]
+    fn a_percentage_with_no_denominator_is_not_printed() {
+        assert_eq!(bar_label(LabelForm::Percent, 1.0, None, None), None);
+        assert_eq!(bar_label(LabelForm::Percent, 1.0, None, Some(0.0)), None);
+        // The count form has no denominator to want, so it survives.
+        assert!(bar_label(LabelForm::Count, 1.0, None, None).is_some());
+    }
+
+    /// **A label too long for its bar goes outside it, in the bar's own ink.**
+    ///
+    /// The fallback is what keeps a ranked chart honest: ranking is what makes
+    /// the last bars short, so a label that vanished when it did not fit would
+    /// leave unlabelled exactly the rows a reader most needs a number for.
+    ///
+    /// The extents are literals rather than read off [`BAR_LABEL_PAD`], for the
+    /// reason the sub-pixel selection test gives: a test taking its expectation
+    /// from the constant it checks passes at every value of that constant.
+    #[test]
+    fn a_label_that_does_not_fit_is_drawn_past_the_tip_instead_of_inside_it() {
+        let ink = Color::new([0.0, 0.5, 0.8, 1.0]);
+        // A 200px bar and a 40px label: it fits, so the label is knocked out of
+        // the fill and anchored at the tip end.
+        let inside = place_bar_label(40.0, 100.0, 300.0, ink);
+        assert!(
+            inside.at < 300.0 && inside.at > 260.0,
+            "an inside label sits at the tip, inset: {}",
+            inside.at
+        );
+        assert!(matches!(inside.anchor, TextAnchor::End));
+        assert_ne!(
+            inside.colour.components, ink.components,
+            "a label on the fill is knocked out of it, not drawn in it"
+        );
+
+        // The same label on a 20px bar does not fit, so it goes past the tip in
+        // the bar's own ink — which reads against the plot surface.
+        let outside = place_bar_label(40.0, 100.0, 120.0, ink);
+        assert!(
+            outside.at > 120.0,
+            "an outside label is past the tip: {}",
+            outside.at
+        );
+        assert!(matches!(outside.anchor, TextAnchor::Start));
+        assert_eq!(outside.colour.components, ink.components);
+
+        // A bar growing the other way takes the same treatment mirrored — a
+        // `barY` runs up the frame, where pixel y DECREASES.
+        let down = place_bar_label(40.0, 300.0, 280.0, ink);
+        assert!(
+            down.at < 280.0,
+            "the fallback follows the bar's direction: {}",
+            down.at
+        );
+        assert!(matches!(down.anchor, TextAnchor::End));
+    }
+
+    /// **A bar under a live selection draws twice.**
+    ///
+    /// Two rects per row where an unselected chart draws one: the deemphasised
+    /// whole, and the selected part over it. Counted through the scene's path
+    /// tags, so what is asserted is that the second fill was emitted rather
+    /// than that some code ran.
+    #[test]
+    fn a_bar_carrying_selected_counts_draws_the_part_over_the_whole() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("category", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+            Field::new(SELECTED_COUNT_COLUMN, DataType::Float64, true),
+        ]));
+        let rows = |selected: Vec<Option<f64>>| {
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(StringArray::from(vec!["a", "b"])),
+                    Arc::new(Float64Array::from(vec![10.0, 20.0])),
+                    Arc::new(Float64Array::from(selected)),
+                ],
+            )
+            .unwrap()
+        };
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::Y, "category".to_string());
+        cm.insert(Channel::X, "value".to_string());
+
+        let renderer = BarRenderer { axis: BarAxis::X };
+        let tags = |batch: &RecordBatch| {
+            let scales = infer_scales(batch, &cm, (40.0, 600.0), (450.0, 20.0));
+            let mut scene = Scene::new();
+            renderer.render(&mut scene, batch, &cm, &scales, None);
+            scene.encoding().path_tags.len()
+        };
+
+        // Both groups partly selected: two wholes and two parts.
+        let both = tags(&rows(vec![Some(4.0), Some(9.0)]));
+        // Neither selected: two wholes and no part at all — a zero count is a
+        // group the selection did not reach, and there is nothing to overdraw.
+        let neither = tags(&rows(vec![Some(0.0), Some(0.0)]));
+        assert!(
+            both > neither,
+            "a selected part is a second fill per bar: {both} path tags against \
+             {neither} with nothing selected"
+        );
+        // And a group with no count at all is the same as one with a zero.
+        let null = tags(&rows(vec![None, None]));
+        assert_eq!(
+            null, neither,
+            "a NULL selected count draws no part, exactly as a zero does"
         );
     }
 
